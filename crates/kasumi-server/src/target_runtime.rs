@@ -4,7 +4,7 @@ use crate::{
     cluster::ClusterNetwork,
     runtime::{RuntimeConfig, SecurityAudit, read_private_file},
     serving_runtime::CredentialSource,
-    target_phase_runtime::RuntimeTargetPhase,
+    target_phase_runtime::{RuntimeTargetPhase, observe_initial_dispatch_from_control},
     target_runtime_config::{TargetRecoveryConfig, TargetTenantTemplate},
 };
 use anyhow::{Context, Result, ensure};
@@ -19,6 +19,8 @@ use kasumi_store::{
 use kasumi_types::drain::{DrainCompletion, DrainFailure, DrainReport, DrainResult};
 use kasumi_types::*;
 use ring::signature::{Ed25519KeyPair, KeyPair};
+#[cfg(test)]
+use std::sync::atomic::AtomicU64;
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
@@ -35,6 +37,10 @@ type GenerationKey = (String, Uuid);
 #[path = "target_call_jobs.rs"]
 mod target_call_jobs;
 use target_call_jobs::TargetCallJobs;
+#[path = "target_membership_status.rs"]
+mod initial_membership_status;
+#[path = "target_start_status.rs"]
+mod initial_start_status;
 #[path = "target_serving_runtime.rs"]
 mod serving;
 #[cfg(test)]
@@ -287,6 +293,8 @@ enum ResponseEvidence {
     Activated(Box<kasumi_engine::VerifiedTargetActivation>),
     Inspected(Box<kasumi_engine::VerifiedTargetInspection>),
     Started(Arc<TenantStorageSet>),
+    InitialStarted(TargetInitialStartRequest),
+    Initialized(TargetInitialMembershipHistoryRequest),
     Stopped(Box<VerifiedTargetStop>, GenerationKey),
 }
 pub(crate) struct TargetRuntimeReply {
@@ -316,6 +324,56 @@ impl TargetRuntimeReply {
             ResponseEvidence::Started(db) => {
                 db.check_access()?;
                 self.operation.check()?;
+            }
+            ResponseEvidence::InitialStarted(query) => {
+                let key = (query.request.tenant.clone(), query.target_incarnation);
+                let owner = self
+                    .operation
+                    .run(async {
+                        self.runtime
+                            .generations
+                            .lock()
+                            .await
+                            .get(&key)
+                            .cloned()
+                            .context("original Start generation is no longer owned")
+                    })
+                    .await?;
+                let generation = self.operation.run(async { Ok(owner.lock().await) }).await?;
+                self.runtime
+                    .check_initial_start_status(
+                        &generation,
+                        query,
+                        self.operation.context(),
+                        &self.bearer,
+                        self.operation.admission(),
+                    )
+                    .await?;
+            }
+            ResponseEvidence::Initialized(query) => {
+                let key = (query.request.tenant.clone(), query.target_incarnation);
+                let owner = self
+                    .operation
+                    .run(async {
+                        self.runtime
+                            .generations
+                            .lock()
+                            .await
+                            .get(&key)
+                            .cloned()
+                            .context("original Start generation is no longer owned")
+                    })
+                    .await?;
+                let generation = self.operation.run(async { Ok(owner.lock().await) }).await?;
+                self.runtime
+                    .check_initial_membership_status(
+                        &generation,
+                        query,
+                        self.operation.context(),
+                        &self.bearer,
+                        self.operation.admission(),
+                    )
+                    .await?;
             }
             ResponseEvidence::Stopped(stop, key) => {
                 self.runtime.journal.stop(&self.operation, stop)?;
@@ -358,6 +416,12 @@ pub struct TargetRecoveryRuntime {
     calls: Arc<Semaphore>,
     call_jobs: TargetCallJobs,
     closing: AtomicBool,
+    #[cfg(test)]
+    marked_first_membership_reads: AtomicU64,
+    #[cfg(test)]
+    fail_next_initial_start_reply: AtomicBool,
+    #[cfg(test)]
+    fail_next_initialize_reply: AtomicBool,
 }
 /// Keep the outer owner reachable across cancellation of its recursive drain.
 pub(crate) async fn shutdown_target(owner: &mut Option<Arc<TargetRecoveryRuntime>>) -> DrainResult {
@@ -376,6 +440,100 @@ pub(crate) async fn shutdown_target(owner: &mut Option<Arc<TargetRecoveryRuntime
     Ok(())
 }
 impl TargetRecoveryRuntime {
+    #[cfg(test)]
+    pub(crate) fn test_initial_dispatch_status(
+        &self,
+        identity: &TargetInitialDispatchIdentity,
+        request: &TargetRuntimeRequest,
+    ) -> Result<kasumi_engine::InitialDispatchStatus> {
+        self.journal
+            .read_initial_dispatch_status(&self.installed.control_root, identity, request)
+    }
+    #[cfg(test)]
+    pub(crate) fn test_marked_first_membership_reads(&self) -> u64 {
+        self.marked_first_membership_reads.load(Ordering::Acquire)
+    }
+    #[cfg(test)]
+    pub(crate) async fn test_owned_start_identity(
+        &self,
+        tenant: &str,
+        incarnation: Uuid,
+    ) -> Result<TargetInitialDispatchIdentity> {
+        let owner = self
+            .generations
+            .lock()
+            .await
+            .get(&(tenant.to_owned(), incarnation))
+            .cloned()
+            .context("fixture generation absent")?;
+        let generation = owner.lock().await;
+        let stores = generation
+            .stores
+            .as_ref()
+            .context("fixture stores absent")?;
+        let bytes = stores
+            .custody()
+            .store()
+            .get_bounded(
+                kasumi_raft::TARGET_PREBIND_NAMESPACE,
+                kasumi_raft::TARGET_PREBIND_KEY,
+                256 << 10,
+            )?
+            .context("fixture Start prebind absent")?;
+        let prebind: kasumi_raft::TargetFirstMembershipPrebind = serde_json::from_slice(&bytes)?;
+        kasumi_raft::read_target_first_membership_prebind(stores, &prebind)?;
+        Ok(prebind.dispatch)
+    }
+    #[cfg(test)]
+    pub(crate) fn test_lose_next_initialize_reply(&self) {
+        self.fail_next_initialize_reply
+            .store(true, Ordering::Release);
+    }
+    #[cfg(test)]
+    pub(crate) fn test_lose_next_initial_start_reply(&self) {
+        self.fail_next_initial_start_reply
+            .store(true, Ordering::Release);
+    }
+    /// Observe target child construction without opening or retaining the
+    /// generation. Materialization alone must not count as a Raft child.
+    #[cfg(test)]
+    pub(crate) async fn test_has_replica(&self, tenant: &str, incarnation: Uuid) -> bool {
+        let owner = self
+            .generations
+            .lock()
+            .await
+            .get(&(tenant.to_owned(), incarnation))
+            .cloned();
+        let Some(owner) = owner else { return false };
+        owner.lock().await.replica.is_some()
+    }
+    #[cfg(test)]
+    pub(crate) async fn test_owned_custody_group(
+        &self,
+        tenant: &str,
+        incarnation: Uuid,
+    ) -> Result<Option<Option<String>>> {
+        let generation = self
+            .generations
+            .lock()
+            .await
+            .get(&(tenant.to_owned(), incarnation))
+            .cloned();
+        let Some(generation) = generation else {
+            return Ok(None);
+        };
+        let stores = generation.lock().await.stores.clone();
+        let Some(stores) = stores else {
+            return Ok(None);
+        };
+        stores
+            .custody()
+            .store()
+            .get_bounded(kasumi_raft::TARGET_PREBIND_NAMESPACE, b"group", 2048)?
+            .map(|bytes| serde_json::from_slice(&bytes).map_err(Into::into))
+            .transpose()
+            .map(Some)
+    }
     /// Inspect an already owned target in the native integration fixture. This
     /// never opens storage, publishes a route, or creates serving authority.
     #[cfg(test)]
@@ -535,6 +693,12 @@ impl TargetRecoveryRuntime {
             calls: Arc::new(Semaphore::new(MAX_CALLS as usize)),
             call_jobs,
             closing: AtomicBool::new(false),
+            #[cfg(test)]
+            marked_first_membership_reads: AtomicU64::new(0),
+            #[cfg(test)]
+            fail_next_initial_start_reply: AtomicBool::new(false),
+            #[cfg(test)]
+            fail_next_initialize_reply: AtomicBool::new(false),
         });
         if let Err(error) = runtime.start_serving_reconciliation(&monitor_budget) {
             // The actual unpublished target remains owned while its journal and
@@ -559,16 +723,21 @@ impl TargetRecoveryRuntime {
     pub fn control_root(&self) -> &ControlSigningRoot {
         &self.installed.control_root
     }
+    pub(crate) fn node_id(&self) -> u64 {
+        self.installed.node.node_id
+    }
+    /// Read an existing generation's exact committed/applied first membership.
+    /// This status path never reserves another dispatch or constructs a child.
     pub(crate) async fn execute(
         self: &Arc<Self>,
         context: RequestContext,
         bearer: Zeroizing<String>,
-        request: TargetRuntimeRequest,
+        envelope: TargetExecuteRequest,
     ) -> Result<TargetRuntimeReply> {
         let admission = TargetRequestAdmission::capture_until(
             context.clone(),
             self.installed.limits.operation_timeout_ms,
-            request.not_after_ms,
+            envelope.request.not_after_ms,
         )?;
         let deadline = admission.response_deadline()?;
         context
@@ -578,7 +747,7 @@ impl TargetRecoveryRuntime {
             context.tenant == "__kasumi_control" && context.scopes.contains(&Action::Admin),
             "target requires current Control Admin"
         );
-        request.validate()?;
+        envelope.validate_for_node(self.installed.node.node_id)?;
         ensure!(
             !self.closing.load(Ordering::Acquire),
             "target runtime closing"
@@ -599,7 +768,7 @@ impl TargetRecoveryRuntime {
             .call_jobs
             .submit(deadline, async move {
                 let mut reply = this
-                    .execute_owned(context, bearer, request, admission)
+                    .execute_owned(context, bearer, envelope, admission)
                     .await?;
                 reply.permit = Some(permit);
                 Ok::<_, anyhow::Error>(reply)
@@ -608,15 +777,40 @@ impl TargetRecoveryRuntime {
         // A lost waiter returns UnknownOutcome. The private ticket owns a
         // completed result until a synchronous claim; the child retires any
         // unclaimed reply and preserves its exact terminal outcome.
-        self.call_jobs.await_reply(deadline, receive).await
+        let reply = self.call_jobs.await_reply(deadline, receive).await?;
+        #[cfg(test)]
+        if matches!(reply.evidence, ResponseEvidence::InitialStarted(_))
+            && self
+                .fail_next_initial_start_reply
+                .swap(false, Ordering::AcqRel)
+        {
+            return Err(unknown(
+                "fixture discarded the actual successful Start reply",
+            ));
+        }
+        #[cfg(test)]
+        if matches!(reply.evidence, ResponseEvidence::Initialized(_))
+            && self
+                .fail_next_initialize_reply
+                .swap(false, Ordering::AcqRel)
+        {
+            return Err(unknown(
+                "fixture discarded the actual successful Initialize reply",
+            ));
+        }
+        Ok(reply)
     }
     async fn execute_owned(
         self: Arc<Self>,
         context: RequestContext,
         bearer: Zeroizing<String>,
-        request: TargetRuntimeRequest,
+        envelope: TargetExecuteRequest,
         admission: TargetRequestAdmission,
     ) -> Result<TargetRuntimeReply> {
+        let TargetExecuteRequest {
+            request,
+            initial_dispatch,
+        } = envelope;
         let template = self
             .installed
             .tenants
@@ -628,8 +822,9 @@ impl TargetRecoveryRuntime {
             .serving_authorities
             .get(&template.authority)
             .context("target issuer missing")?;
-        let phase = RuntimeTargetPhase::acquire(
+        let (phase, initial_start) = RuntimeTargetPhase::acquire(
             &self.installed,
+            &self.journal,
             authority,
             self.authority_trusts
                 .get(&template.authority)
@@ -639,7 +834,10 @@ impl TargetRecoveryRuntime {
             self.installed.node.node_id,
             context.clone(),
             Zeroizing::new(bearer.to_string()),
-            request.command_id,
+            &request,
+            initial_dispatch.as_ref(),
+            #[cfg(test)]
+            &self.marked_first_membership_reads,
             &admission,
         )
         .await?;
@@ -768,6 +966,10 @@ impl TargetRecoveryRuntime {
                 &operation,
                 &template,
                 &request.step,
+                initial_start,
+                initial_dispatch.as_ref(),
+                &request,
+                &bearer,
             )
             .await
             .map_err(unknown)?;
@@ -986,6 +1188,7 @@ impl TargetRecoveryRuntime {
             key,
         )
     }
+    #[allow(clippy::too_many_arguments)]
     async fn perform(
         &self,
         g: &mut Generation,
@@ -993,6 +1196,10 @@ impl TargetRecoveryRuntime {
         op: &TargetOperation,
         template: &TargetTenantTemplate,
         step: &TargetRuntimeStep,
+        initial_start: Option<kasumi_engine::VerifiedInitialMembership>,
+        initial_dispatch: Option<&TargetInitialDispatchIdentity>,
+        request: &TargetRuntimeRequest,
+        bearer: &Zeroizing<String>,
     ) -> Result<(TargetRuntimeOutcome, ResponseEvidence)> {
         let intent = &phase.original().observation().intent;
         let key = (
@@ -1186,7 +1393,26 @@ impl TargetRecoveryRuntime {
             .next()
             .context("target materializations missing")?;
         self.placement(&first.fact.origin.input)?;
+        ensure!(
+            !matches!(
+                step,
+                TargetRuntimeStep::Start(TargetReplicaInput::Quorum(_))
+            ) || g.replica.is_none(),
+            "accepted Start cannot replace a live target child"
+        );
+        ensure!(
+            !matches!(step, TargetRuntimeStep::Initialize(_)) || g.replica.is_some(),
+            "Initialize requires the continuously owned original Start child"
+        );
+        let mut initial_candidate = initial_start;
         if g.replica.is_none() {
+            let startup = match initial_candidate.take() {
+                Some(membership) => kasumi_engine::TargetReplicaStartup::Initial {
+                    membership,
+                    journal: self.journal.clone(),
+                },
+                None => kasumi_engine::TargetReplicaStartup::Established,
+            };
             let replica = kasumi_engine::open_target_replica(
                 op,
                 stores.clone(),
@@ -1198,6 +1424,7 @@ impl TargetRecoveryRuntime {
                 },
                 self.cluster.clone(),
                 self.audit.clone(),
+                startup,
             )
             .await?;
             let group = replica.database().raft_group();
@@ -1214,6 +1441,36 @@ impl TargetRecoveryRuntime {
             g.replica = Some(replica);
         }
         let replica = g.replica.as_ref().unwrap();
+        if let TargetRuntimeStep::Start(TargetReplicaInput::Quorum(_)) = step {
+            let identity = initial_dispatch.context("initial Start dispatch identity absent")?;
+            let (original, marked) = observe_initial_dispatch_from_control(
+                &self.installed,
+                op.context(),
+                bearer,
+                request,
+                identity,
+                key.1,
+                op.admission(),
+                #[cfg(test)]
+                &self.marked_first_membership_reads,
+            )
+            .await?;
+            self.journal
+                .record_initial_start(&original, &marked, identity, request, replica)?
+                .check()?;
+            let query = TargetInitialStartRequest {
+                target_incarnation: key.1,
+                request: request.clone(),
+                identity: identity.clone(),
+            };
+            query.validate_for_node(self.installed.node.node_id)?;
+            return Ok((
+                TargetRuntimeOutcome::Started {
+                    origin_sha256: input.quorum().origin_sha256.clone(),
+                },
+                ResponseEvidence::InitialStarted(query),
+            ));
+        }
         match step {
             TargetRuntimeStep::Start(_) | TargetRuntimeStep::StartActivation { .. } => Ok((
                 TargetRuntimeOutcome::Started {
@@ -1222,12 +1479,37 @@ impl TargetRecoveryRuntime {
                 ResponseEvidence::Started(stores.clone()),
             )),
             TargetRuntimeStep::Initialize(_) => {
-                replica.initialize(op).await?;
+                let permit = initial_candidate
+                    .context("accepted Initialize candidate absent")?
+                    .bind_initialize(&self.journal, op, replica)?;
+                replica.initialize(op, permit).await?;
+                let identity = initial_dispatch.context("Initialize dispatch identity absent")?;
+                let (original, marked) = observe_initial_dispatch_from_control(
+                    &self.installed,
+                    op.context(),
+                    bearer,
+                    request,
+                    identity,
+                    key.1,
+                    op.admission(),
+                    #[cfg(test)]
+                    &self.marked_first_membership_reads,
+                )
+                .await?;
+                self.journal
+                    .record_initial_membership_history(
+                        &original, &marked, identity, request, &stores,
+                    )?
+                    .require_owner(replica)?;
                 Ok((
                     TargetRuntimeOutcome::Initialized {
                         origin_sha256: input.quorum().origin_sha256.clone(),
                     },
-                    ResponseEvidence::Started(stores.clone()),
+                    ResponseEvidence::Initialized(TargetInitialMembershipHistoryRequest {
+                        target_incarnation: key.1,
+                        request: request.clone(),
+                        identity: identity.clone(),
+                    }),
                 ))
             }
             TargetRuntimeStep::Complete(q) => {

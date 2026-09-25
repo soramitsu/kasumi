@@ -1,15 +1,19 @@
 //! Live TLS endpoint measurements. Each request reads a fresh private credential
 //! file snapshot; secrets are never reported. Writes require --allow-writes.
-use anyhow::{Context, Result, ensure};
+use anyhow::{ensure, Context, Result};
 use kasumi_bench::{Measurement, Samples};
 use kasumi_client::proto;
-use kasumi_transport::{TlsIdentity, credentials::FileCredentialSource, grpc_channel};
+use kasumi_transport::{credentials::FileCredentialSource, grpc_channel, TlsIdentity};
 use kasumi_types::{Mutation, MutationBatch, Precondition, QueryRequest};
-use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde::{
+    de::{Error as _, MapAccess, SeqAccess, Visitor},
+    Deserialize, Deserializer, Serialize,
+};
+use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
+    fmt,
     path::{Path, PathBuf},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -56,6 +60,211 @@ struct Target {
     id: String,
     query: Option<QueryRequest>,
     mutation_body: Option<Value>,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct McpWriteReceipt {
+    revision: u64,
+    versions: BTreeMap<String, u64>,
+}
+
+fn verify_mcp_submitted_mutation_receipt(batch: &MutationBatch, result: Value) -> Result<()> {
+    let receipt: McpWriteReceipt =
+        serde_json::from_value(result).context("MCP mutation receipt shape differs")?;
+    ensure!(receipt.revision > 0, "MCP mutation revision is zero");
+    ensure!(
+        !batch.operations.is_empty(),
+        "submitted mutation has no targets"
+    );
+    let mut expected = BTreeSet::new();
+    for operation in &batch.operations {
+        let (collection, id) = operation.target();
+        kasumi_types::validate_name(collection)?;
+        kasumi_types::validate_name(id)?;
+        let escape = |part: &str| part.replace('~', "~0").replace('/', "~1");
+        ensure!(
+            expected.insert(format!("/{}/{}", escape(collection), escape(id))),
+            "submitted mutation repeats a target"
+        );
+    }
+    ensure!(
+        receipt.versions.len() == expected.len()
+            && expected
+                .iter()
+                .all(|path| receipt.versions.get(path) == Some(&receipt.revision)),
+        "MCP mutation receipt differs from the exact submitted targets or revision"
+    );
+    Ok(())
+}
+
+// Validate the raw response before decoding a Value. Value's map decoder
+// overwrites duplicate keys, which could turn an ambiguous receipt into a
+// seemingly valid one. This pass checks every object in the JSON-RPC envelope.
+struct UniqueJson;
+
+// serde_json's arbitrary-precision decoder represents a large number as a
+// synthetic one-entry map whose key is delivered as bytes. A JSON object key
+// is always delivered as text, so only text keys participate in duplicate
+// checks; the synthetic number decoder emits exactly one marker entry.
+enum UniqueJsonKey {
+    Text(String),
+    NumberMarker,
+}
+
+impl<'de> Deserialize<'de> for UniqueJsonKey {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+        struct KeyVisitor;
+        impl<'de> Visitor<'de> for KeyVisitor {
+            type Value = UniqueJsonKey;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a JSON object key or internal number marker")
+            }
+
+            fn visit_str<E: serde::de::Error>(
+                self,
+                value: &str,
+            ) -> std::result::Result<Self::Value, E> {
+                Ok(UniqueJsonKey::Text(value.into()))
+            }
+
+            fn visit_string<E: serde::de::Error>(
+                self,
+                value: String,
+            ) -> std::result::Result<Self::Value, E> {
+                Ok(UniqueJsonKey::Text(value))
+            }
+
+            fn visit_bytes<E: serde::de::Error>(
+                self,
+                value: &[u8],
+            ) -> std::result::Result<Self::Value, E> {
+                if value == b"$serde_json::private::Number" {
+                    Ok(UniqueJsonKey::NumberMarker)
+                } else {
+                    Err(E::custom("unknown internal JSON key marker"))
+                }
+            }
+        }
+        deserializer.deserialize_any(KeyVisitor)
+    }
+}
+
+impl<'de> Deserialize<'de> for UniqueJson {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+        struct UniqueJsonVisitor;
+        impl<'de> Visitor<'de> for UniqueJsonVisitor {
+            type Value = UniqueJson;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("JSON with unique object keys")
+            }
+
+            fn visit_unit<E: serde::de::Error>(self) -> std::result::Result<Self::Value, E> {
+                Ok(UniqueJson)
+            }
+
+            fn visit_bool<E: serde::de::Error>(
+                self,
+                _: bool,
+            ) -> std::result::Result<Self::Value, E> {
+                Ok(UniqueJson)
+            }
+
+            fn visit_i64<E: serde::de::Error>(self, _: i64) -> std::result::Result<Self::Value, E> {
+                Ok(UniqueJson)
+            }
+
+            fn visit_u64<E: serde::de::Error>(self, _: u64) -> std::result::Result<Self::Value, E> {
+                Ok(UniqueJson)
+            }
+
+            fn visit_f64<E: serde::de::Error>(self, _: f64) -> std::result::Result<Self::Value, E> {
+                Ok(UniqueJson)
+            }
+
+            fn visit_str<E: serde::de::Error>(
+                self,
+                _: &str,
+            ) -> std::result::Result<Self::Value, E> {
+                Ok(UniqueJson)
+            }
+
+            fn visit_seq<A: SeqAccess<'de>>(
+                self,
+                mut sequence: A,
+            ) -> std::result::Result<Self::Value, A::Error> {
+                while sequence.next_element::<UniqueJson>()?.is_some() {}
+                Ok(UniqueJson)
+            }
+
+            fn visit_map<A: MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> std::result::Result<Self::Value, A::Error> {
+                let mut keys = BTreeSet::new();
+                while let Some(key) = map.next_key::<UniqueJsonKey>()? {
+                    if let UniqueJsonKey::Text(key) = key {
+                        if !keys.insert(key) {
+                            return Err(A::Error::custom("duplicate JSON object key"));
+                        }
+                    }
+                    map.next_value::<UniqueJson>()?;
+                }
+                Ok(UniqueJson)
+            }
+        }
+        deserializer.deserialize_any(UniqueJsonVisitor)
+    }
+}
+
+fn decode_mcp_response(bytes: &[u8]) -> Result<Value> {
+    let mut decoder = serde_json::Deserializer::from_slice(bytes);
+    let _: UniqueJson = Deserialize::deserialize(&mut decoder)?;
+    decoder.end()?;
+    let value: Value = serde_json::from_slice(bytes)?;
+    let envelope = value.as_object().context("MCP envelope missing")?;
+    ensure!(
+        envelope.len() == 3
+            && envelope.contains_key("jsonrpc")
+            && envelope.contains_key("id")
+            && envelope.contains_key("result")
+            && value["jsonrpc"] == "2.0"
+            && value["id"] == 1,
+        "MCP envelope differs from the current tools/call contract"
+    );
+    let result = value
+        .get("result")
+        .and_then(Value::as_object)
+        .context("MCP result missing")?;
+    ensure!(
+        result.len() == 4
+            && result.get("resultType").and_then(Value::as_str) == Some("complete")
+            && result
+                .get("content")
+                .and_then(Value::as_array)
+                .is_some_and(Vec::is_empty)
+            && result
+                .get("structuredContent")
+                .and_then(Value::as_object)
+                .is_some()
+            && result.contains_key("isError"),
+        "MCP result differs from the current complete structured contract"
+    );
+    let is_error = result
+        .get("isError")
+        .and_then(Value::as_bool)
+        .context("MCP isError missing")?;
+    if is_error {
+        let error: kasumi_types::Error =
+            serde_json::from_value(result["structuredContent"]["error"].clone())
+                .context("MCP operation rejected without database error")?;
+        return Err(error.into());
+    }
+    result
+        .get("structuredContent")
+        .cloned()
+        .context("MCP structured result missing")
 }
 impl Target {
     fn authorization(&self) -> Result<Zeroizing<String>> {
@@ -249,14 +458,16 @@ impl Client {
         };
         match self {
             Self::Grpc(client) => {
-                client
+                let response = client
                     .mutate(authenticated(
                         proto::MutateRequest {
                             batch_json: serde_json::to_vec(&batch)?,
                         },
                         target,
                     )?)
-                    .await?;
+                    .await?
+                    .into_inner();
+                kasumi_client::verify_submitted_mutation_receipt(&batch, response)?;
             }
             Self::Mcp { http, endpoint } => {
                 let result = mcp(
@@ -264,10 +475,10 @@ impl Client {
                     endpoint,
                     target,
                     "kasumi_mutate",
-                    serde_json::to_value(batch)?,
+                    serde_json::to_value(&batch)?,
                 )
                 .await?;
-                ensure!(result["revision"].is_u64(), "MCP mutation receipt missing");
+                verify_mcp_submitted_mutation_receipt(&batch, result)?;
             }
         }
         Ok(())
@@ -376,21 +587,7 @@ async fn mcp(
         );
         bytes.extend_from_slice(&chunk);
     }
-    let value: Value = serde_json::from_slice(&bytes)?;
-    ensure!(
-        value["id"] == 1 && value.get("error").is_none(),
-        "MCP protocol error"
-    );
-    if value["result"]["isError"] == true {
-        let error: kasumi_types::Error =
-            serde_json::from_value(value["result"]["structuredContent"]["error"].clone())
-                .context("MCP operation rejected without database error")?;
-        return Err(error.into());
-    }
-    value["result"]
-        .get("structuredContent")
-        .cloned()
-        .context("MCP structured result missing")
+    decode_mcp_response(&bytes)
 }
 async fn run(
     config: CaseConfig,
@@ -582,6 +779,126 @@ async fn main() -> Result<()> {
 mod tests {
     use super::*;
     use std::{io::Write, os::unix::fs::PermissionsExt};
+
+    fn submitted_batch() -> MutationBatch {
+        MutationBatch {
+            read_set: Vec::new(),
+            idempotency_key: "benchmark-write".into(),
+            operations: vec![
+                Mutation::Put {
+                    collection: "doc/~s".into(),
+                    id: "order/~a".into(),
+                    body: json!({"amount": 7}),
+                    expected: Precondition::Any,
+                },
+                Mutation::Put {
+                    collection: "other".into(),
+                    id: "x".into(),
+                    body: json!({"amount": 8}),
+                    expected: Precondition::Any,
+                },
+            ],
+        }
+    }
+
+    fn mcp_response(receipt: &str) -> String {
+        format!(
+            r#"{{"jsonrpc":"2.0","id":1,"result":{{"resultType":"complete","content":[],"structuredContent":{receipt},"isError":false}}}}"#
+        )
+    }
+
+    #[test]
+    fn mcp_write_requires_the_exact_submitted_targets_at_one_applying_revision() {
+        let original = submitted_batch();
+        let valid = r#"{"revision":7,"versions":{"/doc~1~0s/order~1~0a":7,"/other/x":7}}"#;
+        let decoded = decode_mcp_response(mcp_response(valid).as_bytes()).unwrap();
+        verify_mcp_submitted_mutation_receipt(&original, decoded).unwrap();
+
+        for invalid in [
+            r#"{"revision":7,"versions":{"/doc~1~0s/order~1~0a":7}}"#,
+            r#"{"revision":7,"versions":{"/doc~1~0s/order~1~0a":7,"/other/x":7,"/foreign/y":7}}"#,
+            r#"{"revision":7,"versions":{"/doc~1~0s/order~1~0a":7,"/foreign/x":7}}"#,
+            r#"{"revision":7,"versions":{"/doc/~s/order/~a":7,"/other/x":7}}"#,
+            r#"{"revision":0,"versions":{"/doc~1~0s/order~1~0a":0,"/other/x":0}}"#,
+            r#"{"revision":7,"versions":{"/doc~1~0s/order~1~0a":6,"/other/x":7}}"#,
+            r#"{"revision":7,"versions":{"/doc~1~0s/order~1~0a":7,"/other/x":0}}"#,
+            r#"{"revision":7,"versions":[["/doc~1~0s/order~1~0a",7],["/other/x",7]]}"#,
+            r#"{"revision":7,"versions":{"/doc~1~0s/order~1~0a":7,"/other/x":7},"status":"ok"}"#,
+            r#"{"revision":7}"#,
+        ] {
+            let decoded = decode_mcp_response(mcp_response(invalid).as_bytes()).unwrap();
+            assert!(
+                verify_mcp_submitted_mutation_receipt(&original, decoded).is_err(),
+                "accepted {invalid}"
+            );
+        }
+    }
+
+    #[test]
+    fn mcp_write_rejects_duplicate_json_keys_before_value_decoding() {
+        let valid = r#"{"revision":7,"versions":{"/doc~1~0s/order~1~0a":7,"/other/x":7}}"#;
+        let duplicate_receipt =
+            r#"{"revision":0,"revision":7,"versions":{"/doc~1~0s/order~1~0a":7,"/other/x":7}}"#;
+        let escaped_duplicate_receipt = r#"{"revision":0,"revi\u0073ion":7,"versions":{"/doc~1~0s/order~1~0a":7,"/other/x":7}}"#;
+        let duplicate_version = r#"{"revision":7,"versions":{"/doc~1~0s/order~1~0a":0,"/doc~1~0s/order~1~0a":7,"/other/x":7}}"#;
+        for raw in [
+            mcp_response(duplicate_receipt),
+            mcp_response(escaped_duplicate_receipt),
+            mcp_response(duplicate_version),
+            format!(
+                r#"{{"jsonrpc":"1.0","jsonrpc":"2.0","id":1,"result":{{"resultType":"complete","content":[],"structuredContent":{valid},"isError":false}}}}"#
+            ),
+            format!(
+                r#"{{"jsonrpc":"2.0","id":1,"result":{{"resultType":"complete","content":[{{"type":"text","text":"old","text":"new"}}],"structuredContent":{valid},"isError":false}}}}"#
+            ),
+        ] {
+            assert!(
+                decode_mcp_response(raw.as_bytes()).is_err(),
+                "accepted {raw}"
+            );
+        }
+    }
+
+    #[test]
+    fn mcp_result_requires_the_current_complete_shape_and_preserves_precise_numbers() {
+        let valid = br#"{"jsonrpc":"2.0","id":1,"result":{"resultType":"complete","content":[],"structuredContent":{"body":{"amount":90071992547409931234567890,"$serde_json::private::Number":"literal"}},"isError":false}}"#;
+        let decoded = decode_mcp_response(valid).unwrap();
+        assert_eq!(
+            decoded["body"]["amount"].to_string(),
+            "90071992547409931234567890"
+        );
+        assert_eq!(decoded["body"]["$serde_json::private::Number"], "literal");
+        let receipt = r#"{"revision":7,"versions":{"/doc~1~0s/order~1~0a":7,"/other/x":7}}"#;
+        for invalid in [
+            format!(
+                r#"{{"jsonrpc":"2.0","id":1,"result":{{"content":[],"structuredContent":{receipt},"isError":false}}}}"#
+            ),
+            format!(
+                r#"{{"jsonrpc":"2.0","id":1,"result":{{"resultType":"partial","content":[],"structuredContent":{receipt},"isError":false}}}}"#
+            ),
+            format!(
+                r#"{{"jsonrpc":"2.0","id":1,"result":{{"resultType":"complete","content":[],"structuredContent":{receipt}}}}}"#
+            ),
+            format!(
+                r#"{{"jsonrpc":"2.0","id":2,"result":{{"resultType":"complete","content":[],"structuredContent":{receipt},"isError":false}}}}"#
+            ),
+            format!(
+                r#"{{"jsonrpc":"2.0","id":1,"result":{{"resultType":"complete","content":[],"structuredContent":{receipt},"isError":false}},"trace":1}}"#
+            ),
+            format!(
+                r#"{{"jsonrpc":"2.0","id":1,"result":{{"resultType":"complete","content":[],"structuredContent":{receipt},"isError":false,"extension":1}}}}"#
+            ),
+            format!(
+                r#"{{"jsonrpc":"2.0","id":1,"result":{{"resultType":"complete","content":[{{"type":"text","text":"untrusted"}}],"structuredContent":{receipt},"isError":false}}}}"#
+            ),
+            r#"{"jsonrpc":"2.0","id":1,"result":{"resultType":"complete","content":[],"structuredContent":[],"isError":false}}"#.into(),
+        ] {
+            assert!(
+                decode_mcp_response(invalid.as_bytes()).is_err(),
+                "accepted {invalid}"
+            );
+        }
+    }
 
     fn publish(path: &Path, value: &[u8]) {
         let mut file = tempfile::NamedTempFile::new_in(path.parent().unwrap()).unwrap();

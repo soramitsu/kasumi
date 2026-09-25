@@ -5,12 +5,28 @@ No release acceptance adapter is registered by this prerequisite.
 """
 from __future__ import annotations
 
+import sys
+if __name__ == "__main__" and not (sys.flags.isolated and sys.flags.no_site
+                                  and sys.flags.dont_write_bytecode):
+    raise SystemExit("dependency launcher requires native Python -I -S -B")
+
 import argparse
 import datetime as dt
 import os
 from pathlib import Path
-import sys
 
+if __name__ == "__main__":
+    _scripts = Path(__file__).resolve(strict=True).parent
+    if sys.pycache_prefix is not None or "PYTHONPYCACHEPREFIX" in os.environ:
+        raise SystemExit("dependency launcher forbids a redirected Python bytecode cache")
+    if ((_scripts / "__pycache__").exists() or (_scripts / "__pycache__").is_symlink()
+            or any(path.suffix in {".pyc", ".pyo"} or
+                   (path.suffix == ".py" and path.is_symlink())
+                   for path in _scripts.rglob("*"))):
+        raise SystemExit("dependency launcher requires source-only Python imports")
+    sys.path.insert(0, str(_scripts))
+
+import attempt_index
 import assembly_inputs
 import check_dependency_patches
 import dependency_advisory
@@ -39,7 +55,7 @@ def now():
 
 
 def command(inputs, source, evidence, declaration, advisory, output):
-    return [inputs["tools"]["python"]["path"], "-B", "-S", str(Path(source) / review.RUNNER),
+    return [inputs["tools"]["python"]["path"], "-I", "-B", "-S", str(Path(source) / review.RUNNER),
             "--evidence", str(evidence), "--native-inputs", str(declaration),
             "--advisory-inputs", str(advisory), "--output", str(Path(output) / "review")]
 
@@ -56,6 +72,7 @@ def source_scripts(evidence, source):
     require(Path(__file__).resolve(strict=True) == Path(source) / LAUNCHER,
             "dependency launcher is not the frozen source executable")
     loaded = {"scripts/assembly_inputs.py": assembly_inputs,
+              "scripts/attempt_index.py": attempt_index,
               "scripts/check_dependency_patches.py": check_dependency_patches,
               "scripts/dependency_advisory.py": dependency_advisory,
               "scripts/dependency_git.py": dependency_git,
@@ -213,6 +230,26 @@ def check_child_custody(rows, closed, census, expected):
             "dependency child census or original process ownership differs")
 
 
+def check_selected_primary(root, inner, evidence, source_files_sha256):
+    """Reopen the native primary bytes that the child retained before dispatch."""
+    root = Path(root).resolve(strict=True)
+    evidence = Path(evidence).resolve(strict=True)
+    primary_path = owned.check_ref(root / "review", inner["selected_primary"])
+    require(primary_path == root / "review" / "blobs" / inner["selected_primary"]["sha256"]
+            and inner["selected_primary"]["sha256"] == sha256(evidence / "evidence.json"),
+            "dependency runner did not retain its selected native primary")
+    functional = owned.read(primary_path)
+    require(inner["source"] == {
+                "commit": functional["source_commit"],
+                "tree": functional["source_tree"],
+                "archive_sha256": functional["source_archive_sha256"],
+                "source_files_sha256": functional["source_files_sha256"],
+                "lockfile_sha256": functional["lockfile_sha256"]}
+            and functional["source_files_sha256"] == source_files_sha256,
+            "dependency source identity differs from retained native primary")
+    return functional
+
+
 def verify(root):
     """Recalculate verdicts from retained bytes and original process receipts."""
     root = Path(root).resolve(strict=True)
@@ -263,6 +300,7 @@ def verify(root):
             and inner["declaration"]["sha256"] == record["declaration"]["sha256"]
             and inner["advisory_declaration"]["sha256"] == record["advisory_declaration"]["sha256"],
             "dependency inner run differs from launched source and inputs")
+    check_selected_primary(root, inner, evidence, record["source_files_sha256"])
     require(started <= dt.datetime.fromisoformat(inner["started_at"])
             and dt.datetime.fromisoformat(inner["finished_at"]) <= finished,
             "dependency inner interval escapes launcher")
@@ -348,8 +386,8 @@ def verify(root):
 
 
 def launch(evidence, declaration, advisory_declaration, output):
-    require(sys.version_info >= (3, 11) and sys.dont_write_bytecode and sys.flags.no_site,
-            "dependency launcher requires native Python 3.11+ -B -S")
+    require(sys.version_info >= (3, 11) and sys.flags.isolated and sys.dont_write_bytecode
+            and sys.flags.no_site, "dependency launcher requires native Python 3.11+ -I -B -S")
     require(not os.environ.get("PYTHONPATH") and not os.environ.get("PYTHONHOME"),
             "dependency launcher cannot inherit Python import overrides")
     require(owned.gate_process.GROUP_LEDGER_ENV not in os.environ,

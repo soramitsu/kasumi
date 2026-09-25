@@ -7,6 +7,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import assembly_inputs
 import repeatable_assembly as assembly
@@ -45,6 +46,12 @@ class AssemblyCustodyTests(unittest.TestCase):
                                        self.declaration, self.environment,
                                        lambda value: observed.append(copy.deepcopy(value)))
         return result, observed
+
+    def test_packager_dispatch_requires_isolated_source_only_python(self):
+        selected = assembly.command(self.inputs, str(self.source), str(self.evidence),
+                                    str(self.root / "output"), self.declaration)
+        self.assertEqual(selected[1:4], ["-I", "-B", "-S"])
+        self.assertEqual(selected[4], str(self.program))
 
     def test_two_actual_invocations_have_distinct_groups_and_equal_artifacts(self):
         result, observed = self.execute()
@@ -109,6 +116,7 @@ class AssemblyCustodyTests(unittest.TestCase):
     def test_changed_command_cwd_tool_deadline_output_and_drain_are_rejected(self):
         changes = {
             "command": lambda p: p.update(command=[p["command"][0], "--version"]),
+            "command-zero": lambda p: p["command"].__setitem__(0, "/usr/bin/true"),
             "cwd": lambda p: p.update(working_directory=str(self.root)),
             "tool": lambda p: p["executable"].update(sha256="a" * 64),
             "deadline": lambda p: p.update(timeout_seconds=99),
@@ -125,6 +133,31 @@ class AssemblyCustodyTests(unittest.TestCase):
                 item["receipt"] = assembly.ref(self.custody, path)
                 with self.assertRaises(ValueError):
                     assembly.check_owned(self.custody, item, self.selected, str(self.source), 10)
+
+    def test_owned_runner_rejects_a_dispatch_identity_changed_after_preflight(self):
+        original = assembly.gate_process.run
+
+        def substituted(*args, **kwargs):
+            receipt = original(*args, **kwargs)
+            receipt["executable"]["sha256"] = "0" * 64
+            return receipt
+
+        with patch.object(assembly.gate_process, "run", substituted):
+            with self.assertRaisesRegex(ValueError, "dispatch differs"):
+                assembly.run_owned(self.custody, "changed-dispatch", self.selected,
+                                   str(self.source), self.environment, 10)
+        retained = assembly.read(self.custody / "changed-dispatch/process.json")
+        self.assertEqual(retained["command"][0], self.selected[0])
+        self.assertEqual(retained["executable"]["sha256"], "0" * 64)
+
+    def test_owned_verifier_rejects_a_rehashed_substitute_executable(self):
+        item = assembly.run_owned(self.custody, "substitute-executable", self.selected,
+                                  str(self.source), self.environment, 10)
+        replacement = self.custody / "different-executable"
+        replacement.write_bytes(b"synthetic substitute; never executed\n")
+        item["executable"] = assembly.ref(self.custody, replacement)
+        with self.assertRaisesRegex(ValueError, "executable is unbound"):
+            assembly.check_owned(self.custody, item, self.selected, str(self.source), 10)
 
     def test_rehashed_substitute_stdout_does_not_belong_to_original_process(self):
         item = assembly.run_owned(self.custody, "substitution", self.selected, str(self.source), self.environment, 10)
@@ -267,7 +300,7 @@ class AssemblyCustodyTests(unittest.TestCase):
     def test_documented_frozen_dispatch_binds_imports_and_rejects_checkout_dispatch(self):
         docs = Path(__file__).resolve().parents[1] / "docs/release-artifacts.md"
         documented = docs.read_text()
-        self.assertIn("python3 -B -S /absolute/evidence/final-functional/source/scripts/run_repeatable_assembly_owned.py", documented)
+        self.assertIn("python3 -I -B -S /absolute/evidence/final-functional/source/scripts/run_repeatable_assembly_owned.py", documented)
         self.assertNotIn("python3 -B -S /absolute/evidence/final-functional/source/scripts/repeatable_assembly.py", documented)
         workflow = (Path(__file__).resolve().parents[1] / ".github/workflows/release-candidate.yml").read_text()
         self.assertEqual(workflow.count("source/scripts/run_repeatable_assembly_owned.py"), 2)
@@ -285,7 +318,8 @@ class AssemblyCustodyTests(unittest.TestCase):
             scripts = directory / "scripts"
             scripts.mkdir(parents=True)
             for name in ("run_repeatable_assembly_owned.py", "repeatable_assembly.py", "assembly_inputs.py",
-                         "package_release.py", "release_gate.py", "gate_process.py", "verify_release_acceptance.py"):
+                         "package_release.py", "release_gate.py", "gate_process.py",
+                         "verify_release_acceptance.py", "attempt_index.py"):
                 if (source_scripts / name).exists():
                     original = source_scripts / name
                 else:

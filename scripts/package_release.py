@@ -6,6 +6,11 @@ production acceptance. Missing provenance, notices or changed inputs fail closed
 """
 from __future__ import annotations
 
+import sys
+if __name__ == "__main__" and not (sys.flags.isolated and sys.flags.no_site
+                                  and sys.flags.dont_write_bytecode):
+    raise SystemExit("candidate packager requires native Python -I -S -B")
+
 import argparse
 import datetime
 import gzip
@@ -16,9 +21,19 @@ from pathlib import Path
 import re
 import shutil
 import struct
-import sys
 import tarfile
 import tomllib
+
+if __name__ == "__main__":
+    _scripts = Path(__file__).resolve(strict=True).parent
+    if sys.pycache_prefix is not None or "PYTHONPYCACHEPREFIX" in os.environ:
+        raise SystemExit("candidate packager forbids a redirected Python bytecode cache")
+    if ((_scripts / "__pycache__").exists() or (_scripts / "__pycache__").is_symlink()
+            or any(path.suffix in {".pyc", ".pyo"} or
+                   (path.suffix == ".py" and path.is_symlink())
+                   for path in _scripts.rglob("*"))):
+        raise SystemExit("candidate packager requires source-only Python imports")
+    sys.path.insert(0, str(_scripts))
 
 import gate_process
 import assembly_inputs

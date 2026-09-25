@@ -172,7 +172,7 @@ async fn native_sdk_query_feed_schema_preserve_literal_values_and_admission() {
     assert_eq!(payload["exponent"].to_string(), "1e+400");
     let schema = json!({"type":"object","properties":{"payload":{"const":payload}},
         "required":["payload","n"]});
-    let schema_request = ReadSchema {
+    let schema_request = ReadSchema::Named {
         collections: BTreeSet::from(["literal".into()]),
     };
     let before = admin

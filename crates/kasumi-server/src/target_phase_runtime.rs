@@ -5,18 +5,114 @@ use crate::{
     serving_runtime::{CredentialSource, RuntimeLease, ServingAuthorityConfig},
 };
 use anyhow::{Context, Result, ensure};
-use kasumi_client::{KasumiAuthorityPool, KasumiClientConfig, KasumiLifecyclePool};
+use kasumi_client::{
+    KasumiAuthorityPool, KasumiClientConfig, KasumiLifecyclePool, KasumiRecoveryPool,
+};
 use kasumi_engine::{
-    TargetLifecycleInvocation, TargetOperation, TargetOperationScope, TargetRequestAdmission,
+    InitialDispatchReservation, TargetJournal, TargetLifecycleInvocation, TargetOperation,
+    TargetOperationScope, TargetRequestAdmission,
 };
 use kasumi_serving::{
     AuthorityTrust, ControlTrust, LifecycleBoot, LifecycleGate, NodeIdentity, VerifiedControlIntent,
 };
-use kasumi_types::{Action, LifecyclePhase, RequestContext};
+use kasumi_types::{
+    Action, LifecyclePhase, RecoveryPhaseRequest, RequestContext, TargetInitialDispatchIdentity,
+    TargetRuntimeRequest,
+};
+#[cfg(test)]
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::{sync::Arc, time::Duration};
 use tokio::sync::Mutex as AsyncMutex;
 use uuid::Uuid;
 use zeroize::Zeroizing;
+
+/// Fresh installed-Control authorization for one still-unresolved exact
+/// initial packet. Retained rows and caller-supplied originals are not inputs.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn observe_initial_dispatch_from_control(
+    configured: &super::target_runtime_config::TargetRecoveryConfig,
+    reader_context: &RequestContext,
+    reader_bearer: &Zeroizing<String>,
+    request: &TargetRuntimeRequest,
+    identity: &TargetInitialDispatchIdentity,
+    target_incarnation: Uuid,
+    admission: &TargetRequestAdmission,
+    #[cfg(test)] marked_read_count: &AtomicU64,
+) -> Result<(VerifiedControlIntent, kasumi_types::RecoveryPhaseRecord)> {
+    admission.require_context(reader_context)?;
+    reader_context.authorization.check_live()?;
+    reader_context
+        .authorization
+        .require_control(&configured.control_root.control_incarnation.to_string())?;
+    ensure!(
+        reader_context.tenant == "__kasumi_control"
+            && reader_context.scopes.contains(&Action::Admin),
+        "current installed Control Admin required"
+    );
+    identity.validate_for(configured.node.node_id, request)?;
+
+    let connections = configured.control_connections()?;
+    let trust = ControlTrust::install(configured.control_root.clone())?;
+    let credential = reader_bearer.clone();
+    let mut control = KasumiLifecyclePool::new(
+        connections.clone(),
+        trust,
+        Arc::new(move || Ok(credential.clone())),
+    )?;
+    let original = admission
+        .run(async {
+            Ok(control
+                .observe_intent(request.command_id, Duration::from_secs(5))
+                .await?)
+        })
+        .await?;
+    let intent = &original.observation().intent;
+    ensure!(
+        intent.request.target_incarnation == target_incarnation
+            && intent.request.tenant == request.tenant,
+        "historical target generation differs from signed Control intent"
+    );
+    let committed_node = intent
+        .request
+        .target_nodes
+        .get(&configured.node.node_id)
+        .context("historical target node absent from signed Control intent")?;
+    ensure!(
+        committed_node.node_id == configured.node.node_id
+            && committed_node.verifier == configured.node.verifier
+            && committed_node.principal == configured.node.principal
+            && committed_node.certificate_sha256 == configured.node.certificate_sha256,
+        "historical signed Control intent differs from installed target"
+    );
+
+    let credential = reader_bearer.clone();
+    let mut recovery =
+        KasumiRecoveryPool::new(connections, Arc::new(move || Ok(credential.clone())))?;
+    let marked = admission
+        .run(async {
+            Ok(recovery
+                .read_phase(
+                    &RecoveryPhaseRequest {
+                        operation_id: identity.operation_id,
+                        phase_id: identity.phase_id,
+                    },
+                    Duration::from_secs(5),
+                )
+                .await?)
+        })
+        .await?;
+    identity.validate_marked_phase(
+        &configured.control_root,
+        configured.node.node_id,
+        request,
+        intent,
+        &marked,
+    )?;
+    admission.check()?;
+    #[cfg(test)]
+    marked_read_count.fetch_add(1, Ordering::AcqRel);
+    Ok((original, marked))
+}
 
 pub(crate) struct RuntimeTargetPhase {
     scope: Arc<TargetOperationScope>,
@@ -70,15 +166,18 @@ impl RuntimeTargetPhase {
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn acquire(
         configured: &super::target_runtime_config::TargetRecoveryConfig,
+        journal: &TargetJournal,
         authority: &ServingAuthorityConfig,
         trust: AuthorityTrust,
         credential: CredentialSource,
         node_id: u64,
         original_context: RequestContext,
         original_bearer: Zeroizing<String>,
-        command_id: Uuid,
+        request: &TargetRuntimeRequest,
+        initial_dispatch: Option<&TargetInitialDispatchIdentity>,
+        #[cfg(test)] marked_read_count: &AtomicU64,
         admission: &TargetRequestAdmission,
-    ) -> Result<Arc<Self>> {
+    ) -> Result<(Arc<Self>, Option<kasumi_engine::VerifiedInitialMembership>)> {
         admission.require_context(&original_context)?;
         original_context.authorization.check_live()?;
         original_context
@@ -91,6 +190,7 @@ impl RuntimeTargetPhase {
         );
         authority.validate()?;
         let control_connections = configured.control_connections()?;
+        let recovery_connections = initial_dispatch.map(|_| control_connections.clone());
         let control_trust = ControlTrust::install(configured.control_root.clone())?;
         let original_credential = original_bearer.clone();
         let mut control = KasumiLifecyclePool::new(
@@ -101,7 +201,7 @@ impl RuntimeTargetPhase {
         let original = admission
             .run(async {
                 Ok(control
-                    .observe_intent(command_id, Duration::from_secs(5))
+                    .observe_intent(request.command_id, Duration::from_secs(5))
                     .await?)
             })
             .await?;
@@ -141,6 +241,54 @@ impl RuntimeTargetPhase {
                 && committed_node.certificate_sha256 == node.certificate_sha256,
             "actual target TLS identity differs from committed placement"
         );
+        let mut initial_start = None;
+        if let Some(identity) = initial_dispatch {
+            // These installed TLS endpoints are the same Control members used
+            // for the signed lifecycle read. ReadPhase crosses their live
+            // quorum barrier; an envelope alone never authenticates a marker.
+            let original_credential = original_bearer.clone();
+            let mut recovery = KasumiRecoveryPool::new(
+                recovery_connections.context("installed Control recovery route absent")?,
+                Arc::new(move || Ok(original_credential.clone())),
+            )?;
+            let marked = admission
+                .run(async {
+                    Ok(recovery
+                        .read_phase(
+                            &RecoveryPhaseRequest {
+                                operation_id: identity.operation_id,
+                                phase_id: identity.phase_id,
+                            },
+                            Duration::from_secs(5),
+                        )
+                        .await?)
+                })
+                .await?;
+            identity.validate_marked_phase(
+                &configured.control_root,
+                node_id,
+                request,
+                intent,
+                &marked,
+            )?;
+            admission.check()?;
+            #[cfg(test)]
+            marked_read_count.fetch_add(1, Ordering::AcqRel);
+            let decision = journal.reserve_initial_dispatch(
+                &configured.control_root,
+                &marked,
+                intent,
+                request,
+            )?;
+            let InitialDispatchReservation::NewlyAccepted(prebind) = decision else {
+                anyhow::bail!(
+                    "accepted first-membership dispatch is status-only; historical resolution required"
+                )
+            };
+            admission.check()?;
+            initial_start =
+                Some(prebind.verify_initial_membership(node_id, LifecyclePhase::Initialize)?);
+        }
         let connections = endpoints
             .iter()
             .map(|(id, endpoint)| {
@@ -286,7 +434,7 @@ impl RuntimeTargetPhase {
             },
         )?;
         admission.check()?;
-        Ok(runtime)
+        Ok((runtime, initial_start))
     }
     pub(crate) fn scope(&self) -> &Arc<TargetOperationScope> {
         &self.scope

@@ -89,8 +89,40 @@ async fn routed(
 fn receipt(value: kasumi_types::WriteReceipt) -> WriteReceipt {
     WriteReceipt {
         revision: value.revision,
-        versions: value.versions.into_iter().collect(),
+        contract: kasumi_client::NATIVE_WRITE_RECEIPT_CONTRACT.into(),
+        versions: value
+            .versions
+            .into_iter()
+            .map(|(target_path, revision)| VersionEntry {
+                target_path,
+                revision,
+            })
+            .collect(),
     }
+}
+
+#[cfg(test)]
+#[test]
+fn native_write_receipt_encodes_canonical_map_order_as_visible_rows() {
+    let encoded = receipt(kasumi_types::WriteReceipt {
+        revision: 11,
+        versions: std::collections::BTreeMap::from([
+            ("/rows/z".into(), 11),
+            ("/rows/a".into(), 11),
+        ]),
+    });
+    assert_eq!(
+        encoded.contract,
+        kasumi_client::NATIVE_WRITE_RECEIPT_CONTRACT
+    );
+    assert_eq!(
+        encoded
+            .versions
+            .iter()
+            .map(|entry| entry.target_path.as_str())
+            .collect::<Vec<_>>(),
+        vec!["/rows/a", "/rows/z"]
+    );
 }
 fn document(value: kasumi_types::Document) -> Result<Document, Status> {
     Ok(Document {

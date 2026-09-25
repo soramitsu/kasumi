@@ -432,6 +432,9 @@ impl TargetOperationScope {
     }
 }
 impl TargetOperation {
+    pub fn admission(&self) -> &TargetRequestAdmission {
+        &self.admission
+    }
     pub fn context(&self) -> &RequestContext {
         &self.admission.context
     }

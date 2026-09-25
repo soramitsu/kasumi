@@ -293,7 +293,7 @@ async fn applied_metadata_does_not_block_runtime_while_snapshot_capture_holds_st
 
 fn envelope(bytes: Vec<u8>, fixture_scratch: Arc<kasumi_store::ScratchDisk>) -> SnapshotEnvelope {
     SnapshotEnvelope {
-        version: 1,
+        version: 2,
         kind: SnapshotKind::Application,
         meta: SnapshotMeta {
             last_log_id: Some(LogId::new(openraft::CommittedLeaderId::new(1, 1), 3)),
@@ -302,6 +302,7 @@ fn envelope(bytes: Vec<u8>, fixture_scratch: Arc<kasumi_store::ScratchDisk>) -> 
         },
         backend: kasumi_store::SnapshotImage::from_bytes(&fixture_scratch.clone(), &bytes).unwrap(),
         retirement: None,
+        first_membership: None,
     }
 }
 
@@ -368,6 +369,136 @@ async fn invalid_backend_snapshot_never_replaces_durable_recoverable_state() -> 
     )
     .await?;
     assert_eq!(*restored.0.lock().unwrap(), b"valid");
+    Ok(())
+}
+
+#[tokio::test]
+async fn first_membership_snapshot_install_reopen_and_substitution_are_bound() -> Result<()> {
+    let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = kasumi_store::test_utils::private_tempdir()?;
+    let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
+    let disk = FaultBackend::new();
+    let store = new_fault_store(disk.clone(), fixture_scratch.clone()).await?;
+    let domains = kasumi_store::test_utils::initialize_custody_fixture(
+        store.clone(),
+        Arc::new(LocalKeyProvider::new([241; 32])),
+    )
+    .await?;
+    let mut machine = StateMachine::open(
+        domains.clone(),
+        Arc::new(BytesBackend::default()),
+        crate::SnapshotBufferOwner::fixture(),
+    )
+    .await?;
+
+    let first_id = LogId::new(openraft::CommittedLeaderId::new(1, 1), 1);
+    let first_membership = openraft::Membership::new(
+        vec![std::collections::BTreeSet::from([1])],
+        std::collections::BTreeMap::from([(1, BasicNode::new("first"))]),
+    );
+    let first_entry = Entry::<TypeConfig> {
+        log_id: first_id,
+        payload: EntryPayload::Membership(first_membership),
+    };
+    let first_fact = crate::control::FirstAppliedMembership {
+        header: LogHeader::build(&first_entry, &encode_entry(&first_entry)?)?.0,
+    };
+    let later_membership = openraft::Membership::new(
+        vec![std::collections::BTreeSet::from([1])],
+        std::collections::BTreeMap::from([(1, BasicNode::new("later"))]),
+    );
+    let mut snapshot = envelope(b"first-snapshot".to_vec(), fixture_scratch.clone());
+    snapshot.meta.last_membership = StoredMembership::new(
+        Some(LogId::new(openraft::CommittedLeaderId::new(1, 1), 2)),
+        later_membership,
+    );
+    snapshot.first_membership = Some(first_fact.clone());
+    let encoded = snapshot.encode(64 << 20)?;
+    let decoded = SnapshotEnvelope::decode(encoded.disk(), &mut encoded.reader(), 64 << 20)?;
+    assert_eq!(decoded.first_membership, Some(first_fact.clone()));
+    machine
+        .install_snapshot(
+            &snapshot.meta,
+            Box::new(SnapshotBuffer::from_bytes(
+                &fixture_scratch,
+                encoded.read_bounded(64 << 20)?,
+                64 << 20,
+                &crate::SnapshotBufferOwner::fixture(),
+            )?),
+        )
+        .await?;
+    assert_eq!(
+        crate::control::first_applied_membership(domains.custody().store())?,
+        Some(first_fact.clone())
+    );
+    assert_eq!(
+        load_snapshot(&store, 64 << 20)?.unwrap().first_membership,
+        Some(first_fact.clone())
+    );
+
+    let substituted = Entry::<TypeConfig> {
+        log_id: first_id,
+        payload: EntryPayload::Membership(openraft::Membership::new(
+            vec![std::collections::BTreeSet::from([1])],
+            std::collections::BTreeMap::from([(1, BasicNode::new("substituted"))]),
+        )),
+    };
+    let mut alternate = snapshot.clone();
+    alternate.first_membership = Some(crate::control::FirstAppliedMembership {
+        header: LogHeader::build(&substituted, &encode_entry(&substituted)?)?.0,
+    });
+    let alternate_bytes = alternate.encode(64 << 20)?.read_bounded(64 << 20)?;
+    assert!(
+        machine
+            .install_snapshot(
+                &alternate.meta,
+                Box::new(SnapshotBuffer::from_bytes(
+                    &fixture_scratch,
+                    alternate_bytes,
+                    64 << 20,
+                    &crate::SnapshotBufferOwner::fixture(),
+                )?),
+            )
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        crate::control::first_applied_membership(domains.custody().store())?,
+        Some(first_fact.clone())
+    );
+    assert_eq!(
+        load_snapshot(&store, 64 << 20)?.unwrap().first_membership,
+        Some(first_fact.clone())
+    );
+
+    let crash = disk.crash();
+    drop(machine);
+    drop(domains);
+    drop(store);
+    let reopened_store = existing_fault_store(crash, fixture_scratch).await?;
+    let reopened_domains = kasumi_store::test_utils::open_existing_custody_fixture(
+        reopened_store.clone(),
+        Arc::new(LocalKeyProvider::new([241; 32])),
+    )
+    .await?;
+    let restored = Arc::new(BytesBackend::default());
+    StateMachine::open(
+        reopened_domains.clone(),
+        restored.clone(),
+        crate::SnapshotBufferOwner::fixture(),
+    )
+    .await?;
+    assert_eq!(*restored.0.lock().unwrap(), b"first-snapshot");
+    assert_eq!(
+        crate::control::first_applied_membership(reopened_domains.custody().store())?,
+        Some(first_fact.clone())
+    );
+    assert_eq!(
+        load_snapshot(&reopened_store, 64 << 20)?
+            .unwrap()
+            .first_membership,
+        Some(first_fact)
+    );
     Ok(())
 }
 

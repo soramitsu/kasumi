@@ -13,6 +13,13 @@ A principal and idempotency key select one immutable encrypted point row. The ro
 retains the original tenant/incarnation/principal, canonical batch digest,
 result, collections, and exact original applied command/position. Authorization
 uses the current verified context; these stored fields never grant authority.
+Native `WriteReceipt` replies carry the required
+`kasumi.write-receipt.v1` contract identity and ordered repeated target/version
+rows. Clients reject duplicate or noncanonical paths and revisions before
+converting rows to the typed map. Direct `Mutate` replies and retained committed
+`Receipt` outcomes must name every distinct target in the original mutation
+batch, at the applying revision. The former protobuf map wire is rejected; no
+compatibility decoder is provided.
 An exact retry returns the retained result even after batch/receipt limits change.
 Public mutation submission keeps the immutable 8 MiB request envelope; ordered
 application enforces today’s batch limits only for a newly admitted identity.
@@ -70,6 +77,17 @@ DTOs remain bounded independently of history length. This is an accounting model
 not a hard RSS guarantee. The selected Generation may retain existing document
 roots while its bounded point worker runs; this change adds no lifetime receipt
 RAM map. A returned plain DTO is not a revocable memory capability.
+
+The native `WriteReceipt.versions` field is still a protobuf map. Prost folds
+duplicate wire entries for one document path into one map entry before the SDK
+can inspect them. The SDK now rejects committed ordinary mutation replies and
+retained committed receipts whose decoded paths or versions differ from the
+exact original batch and applying revision, but it cannot reject a duplicate
+wire entry that folds to a valid value. This is a CBSI first-release blocker:
+replace this map with a repeated version-entry contract, reject duplicate paths
+at native decode, validate server emission, and exercise adversarial raw-wire
+submission and retained-receipt tests before release qualification. The current
+SDK checks are source work only and do not close this wire-format gap.
 
 Required gates are recorded in `permanent-mutation-receipts-gates.json`. They
 include encrypted future-row/reopen/prefix tests, an actual Database service retry

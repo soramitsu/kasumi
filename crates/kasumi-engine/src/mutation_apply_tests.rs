@@ -1,5 +1,6 @@
 use super::*;
 use crate::test_utils::SnapshotFixture;
+use kasumi_types::ReadPrecondition;
 use serde_json::json;
 fn context() -> RequestContext {
     RequestContext {
@@ -96,6 +97,189 @@ fn apply(engine: &CodecFixture, revision: u64, operation: Operation) -> Result<W
     engine
         .apply_command(&engine.disk, revision, command(operation, revision))
         .unwrap()
+}
+
+#[test]
+fn recovery_seal_two_writes_three_reads_are_atomic_and_replay_original_receipts() {
+    let engine = engine(
+        kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 32),
+        2 << 20,
+    );
+    apply(
+        &engine,
+        2,
+        Operation::CreateCollection(CollectionDefinition {
+            name: "intent".into(),
+            schema: json!({"type":"object"}),
+            indexes: vec![],
+            strict_read_audit: false,
+            retention_class: CollectionRetentionClass::Operational,
+            write_mode: CollectionWriteMode::Mutable,
+        }),
+    )
+    .unwrap();
+    let claimed = MutationBatch {
+        idempotency_key: "claim".into(),
+        read_set: vec![],
+        operations: vec![Mutation::Put {
+            collection: "docs".into(),
+            id: "recovery".into(),
+            body: json!({"state":"processing"}),
+            expected: Precondition::Absent,
+        }],
+    };
+    apply(&engine, 3, Operation::Mutate(claimed)).unwrap();
+
+    let state = engine.generation().unwrap().state.clone();
+    let reads = vec![
+        ReadAssertion::Snapshot {
+            incarnation: state.incarnation,
+            policy_epoch: state.policy_epoch,
+            schema_epoch: state.schema_epoch,
+        },
+        ReadAssertion::Document {
+            collection: "docs".into(),
+            id: "recovery".into(),
+            expected: ReadPrecondition::Version(3),
+        },
+        ReadAssertion::Document {
+            collection: "intent".into(),
+            id: "recovery".into(),
+            expected: ReadPrecondition::Absent,
+        },
+    ];
+    let seal = MutationBatch {
+        idempotency_key: "seal".into(),
+        read_set: reads.clone(),
+        operations: vec![
+            Mutation::Put {
+                collection: "docs".into(),
+                id: "recovery".into(),
+                body: json!({"state":"writing"}),
+                expected: Precondition::Version(3),
+            },
+            Mutation::Put {
+                collection: "intent".into(),
+                id: "recovery".into(),
+                body: json!({"state":"sealed"}),
+                expected: Precondition::Absent,
+            },
+        ],
+    };
+    let committed = apply(&engine, 4, Operation::Mutate(seal.clone())).unwrap();
+    assert_eq!(
+        committed.versions,
+        BTreeMap::from([("/docs/recovery".into(), 4), ("/intent/recovery".into(), 4)])
+    );
+    let generation = engine.generation().unwrap();
+    assert_eq!(
+        generation.state.collections["docs"].documents["recovery"].body,
+        json!({"state":"writing"})
+    );
+    assert_eq!(
+        generation.state.collections["intent"].documents["recovery"].body,
+        json!({"state":"sealed"})
+    );
+    let receipt_key = staged_digest(&("owner", "seal")).unwrap().0;
+    let retained = generation.receipts.get(&receipt_key).unwrap().unwrap();
+    assert_eq!(retained.receipt.request_digest, seal.digest().unwrap());
+    assert_eq!(retained.receipt.outcome, Ok(committed.clone()));
+    let committed_head = generation.state.mutation_receipt_head.clone();
+    drop(generation);
+
+    // A later failure in the second operation must roll back the first while
+    // retaining the rejection for this exact original batch identity.
+    let mut failing_reads = reads;
+    failing_reads[1] = ReadAssertion::Document {
+        collection: "docs".into(),
+        id: "recovery".into(),
+        expected: ReadPrecondition::Version(4),
+    };
+    failing_reads[2] = ReadAssertion::Document {
+        collection: "intent".into(),
+        id: "invalid".into(),
+        expected: ReadPrecondition::Absent,
+    };
+    let rejected = MutationBatch {
+        idempotency_key: "bad-seal".into(),
+        read_set: failing_reads,
+        operations: vec![
+            Mutation::Put {
+                collection: "docs".into(),
+                id: "recovery".into(),
+                body: json!({"state":"failed-write"}),
+                expected: Precondition::Version(4),
+            },
+            Mutation::Put {
+                collection: "intent".into(),
+                id: "invalid".into(),
+                body: json!(false),
+                expected: Precondition::Absent,
+            },
+        ],
+    };
+    let rejected_error = apply(&engine, 5, Operation::Mutate(rejected.clone())).unwrap_err();
+    assert_eq!(rejected_error.code, ErrorCode::SchemaViolation);
+    let generation = engine.generation().unwrap();
+    assert_eq!(
+        generation.state.collections["docs"].documents["recovery"].body,
+        json!({"state":"writing"})
+    );
+    assert!(
+        !generation.state.collections["intent"]
+            .documents
+            .contains_key("invalid")
+    );
+    assert_eq!(
+        generation.state.mutation_receipt_head.count,
+        committed_head.count + 1
+    );
+    drop(generation);
+
+    engine
+        .fixture_restore(&engine.fixture_snapshot(&engine.disk).unwrap())
+        .unwrap();
+    let restored_head = engine
+        .generation()
+        .unwrap()
+        .state
+        .mutation_receipt_head
+        .clone();
+    assert_eq!(
+        apply(&engine, 6, Operation::Mutate(seal.clone())).unwrap(),
+        committed
+    );
+    assert_eq!(
+        apply(&engine, 7, Operation::Mutate(rejected.clone())).unwrap_err(),
+        rejected_error
+    );
+    let mut substituted = seal;
+    substituted.operations[1] = Mutation::Put {
+        collection: "intent".into(),
+        id: "recovery".into(),
+        body: json!({"state":"substituted"}),
+        expected: Precondition::Absent,
+    };
+    assert_eq!(
+        apply(&engine, 8, Operation::Mutate(substituted))
+            .unwrap_err()
+            .code,
+        ErrorCode::Conflict
+    );
+    assert_eq!(
+        engine.generation().unwrap().state.mutation_receipt_head,
+        restored_head
+    );
+    let receipt_key = staged_digest(&("owner", "bad-seal")).unwrap().0;
+    let retained = engine
+        .generation()
+        .unwrap()
+        .receipts
+        .get(&receipt_key)
+        .unwrap()
+        .unwrap();
+    assert_eq!(retained.receipt.request_digest, rejected.digest().unwrap());
+    assert_eq!(retained.receipt.outcome, Err(rejected_error));
 }
 #[test]
 fn admitted_failure_survives_byte_exhaustion_expansion_and_snapshot_replay() {

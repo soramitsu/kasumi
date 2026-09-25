@@ -7,14 +7,30 @@ Nested packager/probe/metadata children retain their own original groups.
 """
 from __future__ import annotations
 
+import sys
+if __name__ == "__main__" and not (sys.flags.isolated and sys.flags.no_site
+                                  and sys.flags.dont_write_bytecode):
+    raise SystemExit("owned assembly launcher requires native Python -I -S -B")
+
 import argparse
 import datetime as dt
 import os
 from pathlib import Path
 import signal
-import sys
 import time
 
+if __name__ == "__main__":
+    _scripts = Path(__file__).resolve(strict=True).parent
+    if sys.pycache_prefix is not None or "PYTHONPYCACHEPREFIX" in os.environ:
+        raise SystemExit("owned assembly launcher forbids a redirected Python bytecode cache")
+    if ((_scripts / "__pycache__").exists() or (_scripts / "__pycache__").is_symlink()
+            or any(path.suffix in {".pyc", ".pyo"} or
+                   (path.suffix == ".py" and path.is_symlink())
+                   for path in _scripts.rglob("*"))):
+        raise SystemExit("owned assembly launcher requires source-only Python imports")
+    sys.path.insert(0, str(_scripts))
+
+import attempt_index
 import assembly_inputs
 import repeatable_assembly as assembly
 from release_gate import sha256, write_json
@@ -25,6 +41,8 @@ RUNNER = assembly.RUNNER
 TIMEOUT_SECONDS = 7200
 GROUP_LEDGER = "descendant-groups.jsonl"
 TERMINAL_CENSUS = "descendant-census.json"
+DOMAIN_OBSERVATION = "domain-observation.json"
+DOMAIN_SCHEMA = attempt_index.DOMAIN_SCHEMA
 
 
 def require(value, message):
@@ -37,7 +55,7 @@ def now():
 
 
 def command(inputs, source, evidence, declaration, output):
-    return [inputs["tools"]["python"]["path"], "-B", "-S", str(Path(source) / RUNNER),
+    return [inputs["tools"]["python"]["path"], "-I", "-B", "-S", str(Path(source) / RUNNER),
             "--evidence", str(evidence), "--native-inputs", str(declaration),
             "--output", str(Path(output) / "assembly")]
 
@@ -188,7 +206,63 @@ def terminal_census(root, ledger_path):
     return census
 
 
-def launch(evidence, declaration, output):
+def attempt_receipt(root, attempt_id, output, result):
+    """Retain the original launcher outcome under its permanent admission."""
+    root = Path(root).resolve(strict=True)
+    outcome = attempt_index.file_ref(root, Path(output) / "launcher.json")
+    processes = []
+    if result["runner_process"] is not None:
+        original = result["runner_process"]
+        processes.append({"id": "runner",
+                          "receipt": attempt_index.file_ref(
+                              root, assembly.check_ref(output, original["receipt"])),
+                          "log": attempt_index.file_ref(
+                              root, assembly.check_ref(output, original["stdout"])),
+                          "executable": attempt_index.file_ref(
+                              root, assembly.check_ref(output, original["executable"]))})
+    return {"schema": attempt_index.ACCEPTANCE_SCHEMA, "id": attempt_id,
+            "status": result["status"], "evidence": outcome,
+            "domain_observation": (attempt_index.file_ref(root, Path(output) / DOMAIN_OBSERVATION)
+                                   if result["status"] == "passed" else None),
+            "started_at": result["started_at"], "finished_at": result["finished_at"],
+            "processes": processes}
+
+
+def domain_observation(root, record, parsed):
+    """Describe only original native assembly bytes; this is not release acceptance."""
+    root = Path(root).resolve(strict=True)
+    inner = root / "assembly"
+    outputs = []
+    for name in parsed["archives"]:
+        kind = "source" if name.endswith("-source.tar.gz") else "package"
+        outputs.append({"id": kind, "name": name,
+                        "first": assembly.ref(root, inner / "assembly-a-output" / name),
+                        "second": assembly.ref(root, inner / "assembly-b-output" / name)})
+    require({item["id"] for item in outputs} == {"source", "package"}
+            and len(outputs) == 2,
+            "native assembly output kinds differ")
+    return {"schema": DOMAIN_SCHEMA, "status": "unqualified",
+            "attempt_id": record["attempt_id"], "custody_root": record["custody_root"],
+            "target": parsed["inputs"]["target"],
+            "started_at": record["started_at"], "finished_at": record["finished_at"],
+            "launcher": assembly.ref(root, root / "launcher.json"),
+            "report": assembly.ref(root, inner / "attempt.json"),
+            "outputs": sorted(outputs, key=lambda item: item["id"])}
+
+
+def verify_domain_observation(root, record, parsed):
+    root = Path(root).resolve(strict=True)
+    path = root / DOMAIN_OBSERVATION
+    observed = assembly.read(assembly.check_ref(root, assembly.ref(root, path)))
+    assembly.exact(observed, {"schema", "status", "attempt_id", "custody_root", "target",
+                            "started_at", "finished_at", "launcher", "report", "outputs"},
+                   "native assembly domain observation")
+    require(observed == domain_observation(root, record, parsed),
+            "native assembly domain observation differs from original verified bytes")
+    return observed
+
+
+def launch(evidence, declaration, output, attempt_root, attempt_id):
     require(assembly.gate_process.GROUP_LEDGER_ENV not in os.environ,
             "owned launcher cannot inherit a nested process group ledger")
     evidence = Path(evidence).resolve(strict=True)
@@ -197,10 +271,13 @@ def launch(evidence, declaration, output):
     require(output.is_absolute(), "owned assembly output must be absolute")
     output = output.resolve()
     require(not output.is_relative_to(evidence), "owned assembly output must be fresh and outside evidence")
+    started_at = now()
+    attempt_index.begin(attempt_root, attempt_id, "repeatable-assembly", output, started_at)
     output.mkdir(exist_ok=False)
     source = evidence / "source"
     result_path = output / "launcher.json"
-    result = {"schema": SCHEMA, "status": "running", "started_at": now(), "finished_at": None,
+    result = {"schema": SCHEMA, "status": "running", "attempt_id": attempt_id,
+              "started_at": started_at, "finished_at": None,
               "evidence_root": str(evidence), "source_root": str(source),
               "declaration_path": str(declaration), "custody_root": str(output),
               "source_files_sha256": None, "source_scripts": None, "tools": None,
@@ -249,25 +326,31 @@ def launch(evidence, declaration, output):
         result["status"] = "passed"
         result["finished_at"] = now()
         write_json(result_path, result)
+        write_json(output / DOMAIN_OBSERVATION, domain_observation(output, result, parsed))
         verify(output, assembly.ref(output, result_path))
-        return result
     except BaseException as error:
-        result["status"] = "failed"
+        result["status"] = "interrupted" if isinstance(error, KeyboardInterrupt) else "failed"
         result["error"] = repr(error)
         result["finished_at"] = now()
         write_json(result_path, result)
+        attempt_index.finish(attempt_root, attempt_id,
+                             attempt_receipt(attempt_root, attempt_id, output, result))
         raise
+    attempt_index.finish(attempt_root, attempt_id,
+                         attempt_receipt(attempt_root, attempt_id, output, result))
+    return result
 
 
 def verify(root, ref):
     """Read-only check; receipt paths may have been copied into an evidence bundle."""
     root = Path(root).resolve(strict=True)
     record = assembly.read(assembly.check_ref(root, ref))
-    assembly.exact(record, {"schema", "status", "started_at", "finished_at", "evidence_root",
+    assembly.exact(record, {"schema", "status", "attempt_id", "started_at", "finished_at", "evidence_root",
                             "source_root", "declaration_path", "custody_root", "source_files_sha256",
                             "source_scripts", "tools", "declaration", "runner_process", "inner_report",
                             "group_ledger", "descendant_census", "error"}, "owned assembly launcher")
-    require(record["schema"] == SCHEMA and record["status"] == "passed" and record["error"] is None,
+    require(record["schema"] == SCHEMA and record["status"] == "passed" and record["error"] is None
+            and isinstance(record["attempt_id"], str),
             "owned assembly launcher did not pass")
     started = dt.datetime.fromisoformat(record["started_at"])
     finished = dt.datetime.fromisoformat(record["finished_at"])
@@ -331,6 +414,7 @@ def verify(root, ref):
     require(entries == expected,
             "descendant ledger differs from original process ownership")
     groups = sorted([process["process_group"], *(entry["group"] for entry in expected)])
+    verify_domain_observation(root, record, parsed)
     return {"record": record, "inner": parsed, "groups": groups}
 
 
@@ -339,8 +423,10 @@ def main():
     parser.add_argument("--evidence", required=True, type=Path)
     parser.add_argument("--native-inputs", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--attempt-root", required=True, type=Path)
+    parser.add_argument("--attempt-id", required=True)
     args = parser.parse_args()
-    launch(args.evidence, args.native_inputs, args.output)
+    launch(args.evidence, args.native_inputs, args.output, args.attempt_root, args.attempt_id)
     print("Owned repeatable assembly verified: " + str(args.output))
     return 0
 

@@ -355,7 +355,7 @@ fn change_feed_schema_and_audit_construct_values_from_literal_spans() {
     };
     let prepared = Prepared {
         input: vec![],
-        kind: Kind::Schema(ReadSchema {
+        kind: Kind::Schema(ReadSchema::Named {
             collections: BTreeSet::from(["docs".into()]),
         }),
         path: "",
@@ -620,7 +620,7 @@ fn schema_read_rejects_impossible_schema_and_collection_epochs() {
     let call = options.admit().unwrap();
     let prepared = Prepared {
         input: vec![],
-        kind: Kind::Schema(ReadSchema {
+        kind: Kind::Schema(ReadSchema::Named {
             collections: BTreeSet::from(["docs".into()]),
         }),
         path: "",
@@ -656,6 +656,42 @@ fn schema_read_rejects_impossible_schema_and_collection_epochs() {
     assert!(decode::<SchemaSnapshot>(&raw(&absent), &prepared, &call).is_ok());
     absent["schema_epoch"] = json!(0);
     assert!(decode::<SchemaSnapshot>(&raw(&absent), &prepared, &call).is_ok());
+}
+
+#[test]
+fn complete_schema_read_decodes_extra_installed_names_and_rejects_null_or_over_budget() {
+    let options = read_options();
+    let call = options.admit().unwrap();
+    let prepared = Prepared {
+        input: vec![],
+        kind: Kind::Schema(ReadSchema::All),
+        path: "",
+        _owner: call.clone(),
+    };
+    let installed = |name: &str| {
+        json!({"definition":{
+        "name":name,"write_mode":"mutable","retention_class":"operational",
+        "schema":{"type":"object"},"indexes":[],"strict_read_audit":true
+    },"data_epoch":1,"archived_document_count":0})
+    };
+    let valid = json!({"incarnation":uuid::Uuid::new_v4().to_string(),
+        "revision":2,"policy_epoch":1,"schema_epoch":1,
+        "collections":{"docs":installed("docs"),"retired":installed("retired")}});
+    let decoded: SchemaSnapshot = decode(&raw(&valid), &prepared, &call).unwrap();
+    assert_eq!(decoded.collections.len(), 2);
+    assert!(decoded.collections.contains_key("retired"));
+    let mut null = valid.clone();
+    null["collections"]["retired"] = Value::Null;
+    assert!(decode::<SchemaSnapshot>(&raw(&null), &prepared, &call).is_err());
+    let mut narrow = read_options();
+    narrow.limits.max_rows = 1;
+    let narrow_call = narrow.admit().unwrap();
+    assert!(decode::<SchemaSnapshot>(&raw(&valid), &prepared, &narrow_call).is_err());
+    assert!(serde_json::from_value::<ReadSchema>(json!({"collections":["docs"]})).is_err());
+    assert!(
+        serde_json::from_value::<ReadSchema>(json!({"selection":"all","collections":["docs"]}))
+            .is_err()
+    );
 }
 
 #[test]

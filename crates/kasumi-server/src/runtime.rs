@@ -4179,7 +4179,11 @@ mod lifecycle_tests {
     }
     #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
     async fn three_runtime_nodes_report_committed_recovery_prepare_over_protected_tls() {
-        replicated_runtime_fixture_inner(false, None, false, true).await;
+        replicated_runtime_fixture_inner(false, None, false, true, false).await;
+    }
+    #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+    async fn three_runtime_nodes_resolve_lost_start_and_initialize_over_protected_tls() {
+        replicated_runtime_fixture_inner(false, None, false, false, true).await;
     }
     #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
     async fn runtime_catches_up_spare_and_replaces_three_voters_through_admin_control() {
@@ -4212,6 +4216,7 @@ mod lifecycle_tests {
             bootstrap_fault,
             false,
             false,
+            false,
         ))
     }
 
@@ -4235,10 +4240,15 @@ mod lifecycle_tests {
         bootstrap_fault: Option<BootstrapFault>,
         fenced_source: bool,
         protected_prepare_only: bool,
+        initial_start_only: bool,
     ) {
         let _fixture = LIFECYCLE_GATE.lock().await;
         let canonical = !with_spare && bootstrap_fault.is_none();
-        assert!(!protected_prepare_only || (canonical && !fenced_source));
+        assert!(
+            !(protected_prepare_only && initial_start_only)
+                && (!(protected_prepare_only || initial_start_only)
+                    || (canonical && !fenced_source))
+        );
         let recovery_credentials = recovery_fixture::Credentials::new();
         let recovery_jwks = recovery_credentials.jwks.clone();
         let node_count = if with_spare { 4 } else { 3 };
@@ -5399,11 +5409,16 @@ mod lifecycle_tests {
                 checkpoint,
             )
             .await;
-        if protected_prepare_only {
+        if protected_prepare_only || initial_start_only {
             // A separate installed three-node point-status acceptance case:
-            // observe a committed Prepare before any target Execute. Keep the
-            // full terminal recovery test independent of G09's current block.
-            fixture_operation(|| recovery.assert_protected_prepare_status(&configurations)).await;
+            // observe Prepare or resolve one lost Start through the actual
+            // owned child, without claiming terminal recovery or Initialize.
+            if protected_prepare_only {
+                fixture_operation(|| recovery.assert_protected_prepare_status(&configurations))
+                    .await;
+            } else {
+                fixture_operation(|| recovery.assert_initial_start_lost_reply_status()).await;
+            }
             fixture_operation(|| recovery.close_targets()).await;
             for stop in &stops {
                 stop.send_replace(true);

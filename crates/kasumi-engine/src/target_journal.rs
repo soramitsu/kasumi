@@ -22,13 +22,23 @@ const COMPLETION_RESERVE: u64 = MAX_RECORD as u64;
 const GENERATION_RESERVE: u64 = COMPLETION_RESERVE * 2;
 // Every accepted first-membership dispatch precharges one bounded future fact.
 const DISPATCH_TERMINAL_RESERVE: u64 = MAX_RECORD as u64;
+// One immutable Start observation or Initialize association and one membership observation share
+// this original reservation. Neither may consume the other's half.
+const DISPATCH_OBSERVATION_LIMIT: usize = MAX_RECORD / 2;
 #[path = "target_journal_dispatch.rs"]
 mod dispatch;
+#[path = "target_journal_start.rs"]
+mod initial_start;
+pub use dispatch::{
+    AcceptedInitialDispatchPrebind, InitialDispatchReservation, InitialDispatchStatus,
+    InitialInitializePermit, ResolvedInitialMembershipHistory, VerifiedInitialMembership,
+};
+pub use initial_start::ResolvedInitialStart;
 #[path = "target_projection.rs"]
 mod projection;
 pub use projection::VerifiedTargetServingProjection;
 
-/// A format-2 journal record is the exact current writer's JSON bytes. This
+/// A format-4 journal record is the exact current writer's JSON bytes. This
 /// streaming comparison avoids allocating another record during bounded reopen.
 fn decode_current<T: serde::de::DeserializeOwned + Serialize>(bytes: &[u8]) -> Result<T> {
     struct Compare<'a>(&'a [u8]);
@@ -161,6 +171,9 @@ struct Metadata {
     intents: u64,
     generations: u64,
     dispatches: u64,
+    dispatch_terminals: u64,
+    dispatch_starts: u64,
+    dispatch_initializes: u64,
     charged_bytes: u64,
 }
 /// The unique store catalog owns the mutation lock; runtime retains this one
@@ -285,11 +298,14 @@ impl TargetJournal {
                 anyhow::bail!("target journal records exist without a canonical head")
             })?;
             let metadata = Metadata {
-                format: 2,
+                format: 4,
                 installation: journal.installed.clone(),
                 intents: 0,
                 generations: 0,
                 dispatches: 0,
+                dispatch_terminals: 0,
+                dispatch_starts: 0,
+                dispatch_initializes: 0,
                 charged_bytes: MAX_RECORD as u64,
             };
             journal.store.write_batch(&[WriteOp::put(
@@ -304,6 +320,9 @@ impl TargetJournal {
         let mut intents = 0u64;
         let mut generations = 0u64;
         let mut dispatches = 0u64;
+        let mut dispatch_terminals = 0u64;
+        let mut dispatch_starts = 0u64;
+        let mut dispatch_initializes = 0u64;
         let mut charged = MAX_RECORD as u64;
         journal.store.visit(NS, MAX_RECORD, |key, value| {
             if key.starts_with(b"intent/") {
@@ -343,6 +362,23 @@ impl TargetJournal {
                 charged = charged
                     .checked_add(value.len() as u64)
                     .context("journal file bytes exhausted")?;
+            } else if key.starts_with(b"dispatch-terminal/") {
+                dispatch_terminals = dispatch_terminals
+                    .checked_add(1)
+                    .context("journal dispatch terminal count exhausted")?;
+                journal.validate_dispatch_terminal(key, value)?;
+                // Its original dispatch already charged the full bounded
+                // terminal reserve; publication never needs more capacity.
+            } else if key.starts_with(b"dispatch-start/") {
+                dispatch_starts = dispatch_starts
+                    .checked_add(1)
+                    .context("journal Start observation count exhausted")?;
+                journal.validate_initial_start_record(key, value)?;
+            } else if key.starts_with(b"dispatch-initialize/") {
+                dispatch_initializes = dispatch_initializes
+                    .checked_add(1)
+                    .context("journal Initialize association count exhausted")?;
+                journal.validate_initial_initialize_record(key, value)?;
             } else if key.starts_with(b"serving/") {
                 journal.decode_serving_candidate(key, value)?;
             } else if key.starts_with(b"activation/") {
@@ -366,6 +402,9 @@ impl TargetJournal {
             metadata.intents == intents
                 && metadata.generations == generations
                 && metadata.dispatches == dispatches
+                && metadata.dispatch_terminals == dispatch_terminals
+                && metadata.dispatch_starts == dispatch_starts
+                && metadata.dispatch_initializes == dispatch_initializes
                 && metadata.charged_bytes == charged,
             "target journal accounting differs"
         );
@@ -379,8 +418,12 @@ impl TargetJournal {
             .context("target journal metadata missing")?;
         let m: Metadata = decode_current(&value)?;
         ensure!(
-            m.format == 2
+            m.format == 4
                 && m.installation == self.installed
+                && m.dispatch_terminals <= m.dispatches
+                && m.dispatch_starts
+                    .checked_add(m.dispatch_initializes)
+                    .is_some_and(|count| count <= m.dispatches)
                 && m.charged_bytes <= self.limits.max_metadata_bytes,
             "target journal binding or capacity differs"
         );

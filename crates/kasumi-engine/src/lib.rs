@@ -55,11 +55,11 @@ pub use bootstrap::{
     ControlGenesis, ControlLifecycleGenesis, LocalRestoreRequest, MaterializedTargetReplica,
     OpenedReplica, PreparedReplicaRestore, ReplicaPlacement, ReplicaRestoreConfig,
     ReplicatedBootstrap, ReplicatedGenesis, RestoreSource, TargetMaterializationConfig,
-    TargetReplica, TargetReplicaConfig, VerifiedTargetMaterialization, initialize_replicated,
-    materialize_target_replica, open_existing_local, open_existing_replicated, open_local,
-    open_local_with_incarnation, open_replicated, open_target_replica, persisted_bootstrap_digest,
-    prepare_replicated_restore, recovery_workspace_bytes, restore_local,
-    resume_target_materialization,
+    TargetReplica, TargetReplicaConfig, TargetReplicaStartup, VerifiedTargetMaterialization,
+    initialize_replicated, materialize_target_replica, open_existing_local,
+    open_existing_replicated, open_local, open_local_with_incarnation, open_replicated,
+    open_target_replica, persisted_bootstrap_digest, prepare_replicated_restore,
+    recovery_workspace_bytes, restore_local, resume_target_materialization,
 };
 pub use security_audit::{
     SECURITY_TENANT, SecurityAudit, SecurityEvent, SecurityEventKind, SecurityOutcome,
@@ -102,8 +102,11 @@ impl EncodedResponseFence for RetirementResponseFence<'_> {
 
 mod target_journal;
 pub use target_journal::{
-    MaterializationFile, MaterializationNode, TargetJournal, TargetJournalInstallation,
-    TargetJournalIntent, VerifiedTargetServingProjection,
+    AcceptedInitialDispatchPrebind, InitialDispatchReservation, InitialDispatchStatus,
+    InitialInitializePermit, MaterializationFile, MaterializationNode,
+    ResolvedInitialMembershipHistory, ResolvedInitialStart, TargetJournal,
+    TargetJournalInstallation, TargetJournalIntent, VerifiedInitialMembership,
+    VerifiedTargetServingProjection,
 };
 
 pub use bootstrap::target_serving::{TargetServingReplica, open_serving_target};

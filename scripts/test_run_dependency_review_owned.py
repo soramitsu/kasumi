@@ -4,7 +4,9 @@ import copy
 import datetime as dt
 import hashlib
 import json
+import os
 from pathlib import Path
+import py_compile
 import shutil
 import subprocess
 import sys
@@ -21,6 +23,75 @@ from release_gate import sha256
 
 
 class DependencyRunnerTests(unittest.TestCase):
+    def test_owned_python_entrypoints_reject_cached_code_before_local_import(self):
+        source_scripts = Path(__file__).resolve().parent
+        first_import = {
+            "run_dependency_review_launcher.py": "attempt_index",
+            "run_dependency_review_owned.py": "assembly_inputs",
+            "run_repeatable_assembly_owned.py": "attempt_index",
+            "repeatable_assembly.py": "assembly_inputs",
+            "package_release.py": "gate_process",
+        }
+        environment = dict(os.environ)
+        environment.pop("PYTHONPYCACHEPREFIX", None)
+        for entrypoint, helper in first_import.items():
+            for mode in (py_compile.PycInvalidationMode.TIMESTAMP,
+                         py_compile.PycInvalidationMode.UNCHECKED_HASH):
+                with self.subTest(entrypoint=entrypoint, mode=mode.name), \
+                        tempfile.TemporaryDirectory() as directory:
+                    scripts = Path(directory) / "scripts"
+                    scripts.mkdir()
+                    shutil.copyfile(source_scripts / entrypoint, scripts / entrypoint)
+                    marker = scripts / "untrusted-code-executed"
+                    helper_source = scripts / (helper + ".py")
+                    payload = f"open({str(marker)!r}, 'w').write('executed')\n"
+                    helper_source.write_text(payload)
+                    original_time = helper_source.stat().st_mtime_ns
+                    py_compile.compile(str(helper_source), doraise=True,
+                                       invalidation_mode=mode)
+                    helper_source.write_text("pass\n" + "#" * (len(payload) - 5))
+                    os.utime(helper_source, ns=(original_time, original_time))
+                    probe = scripts / "probe.py"
+                    probe.write_text("import sys\nfrom pathlib import Path\n"
+                                     "sys.path.insert(0, str(Path(__file__).resolve().parent))\n"
+                                     f"import {helper}\n")
+                    baseline = subprocess.run([sys.executable, "-I", "-B", "-S", str(probe)],
+                                              env=environment, capture_output=True, text=True)
+                    self.assertEqual(baseline.returncode, 0, baseline.stderr)
+                    self.assertTrue(marker.exists(), "fixture did not demonstrate cached execution")
+                    marker.unlink()
+                    blocked = subprocess.run([sys.executable, "-I", "-B", "-S",
+                                              str(scripts / entrypoint)], env=environment,
+                                             capture_output=True, text=True)
+                    self.assertNotEqual(blocked.returncode, 0)
+                    self.assertIn("source-only Python imports", blocked.stderr)
+                    self.assertFalse(marker.exists(), "launcher imported untrusted cached code")
+
+    def test_owned_python_entrypoints_require_isolation_and_import_clean_sources(self):
+        source_scripts = Path(__file__).resolve().parent
+        entrypoints = ("run_dependency_review_launcher.py", "run_dependency_review_owned.py",
+                       "run_repeatable_assembly_owned.py", "repeatable_assembly.py",
+                       "package_release.py")
+        environment = dict(os.environ)
+        environment.pop("PYTHONPYCACHEPREFIX", None)
+        with tempfile.TemporaryDirectory() as directory:
+            scripts = Path(directory) / "scripts"
+            scripts.mkdir()
+            for source in source_scripts.glob("*.py"):
+                shutil.copyfile(source, scripts / source.name)
+            for entrypoint in entrypoints:
+                with self.subTest(entrypoint=entrypoint):
+                    selected = str(scripts / entrypoint)
+                    unisolated = subprocess.run([sys.executable, "-B", "-S", selected],
+                                                env=environment, capture_output=True, text=True)
+                    self.assertNotEqual(unisolated.returncode, 0)
+                    self.assertIn("requires native Python -I -S -B", unisolated.stderr)
+                    clean = subprocess.run([sys.executable, "-I", "-B", "-S", selected],
+                                           env=environment, capture_output=True, text=True)
+                    self.assertEqual(clean.returncode, 2, clean.stderr)
+                    self.assertIn("usage:", clean.stderr)
+                    self.assertNotIn("ModuleNotFoundError", clean.stderr)
+
     def test_named_memory_safety_requires_each_original_test_verdict(self):
         source = Path.cwd().resolve()
         files = {case["source"]: {"sha256": sha256(source / case["source"])}
@@ -133,9 +204,51 @@ class DependencyRunnerTests(unittest.TestCase):
         inputs = {"tools": {"python": {"path": "/native/python"}}}
         self.assertEqual(launcher.command(inputs, "/frozen/source", "/frozen", "/native.json",
                                           "/advisories.json", "/attempt"),
-                         ["/native/python", "-B", "-S", "/frozen/source/scripts/run_dependency_review_owned.py",
+                         ["/native/python", "-I", "-B", "-S", "/frozen/source/scripts/run_dependency_review_owned.py",
                           "--evidence", "/frozen", "--native-inputs", "/native.json",
                          "--advisory-inputs", "/advisories.json", "--output", "/attempt/review"])
+
+    def test_owned_dependency_primary_rejects_substitution_and_mutation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            review = root / "review"
+            blobs = review / "blobs"
+            blobs.mkdir(parents=True)
+            evidence = root / "evidence"
+            evidence.mkdir()
+            functional = {"source_commit": "1" * 40, "source_tree": "2" * 40,
+                          "source_archive_sha256": "3" * 64,
+                          "source_files_sha256": "4" * 64, "lockfile_sha256": "5" * 64}
+            original = evidence / "evidence.json"
+            original.write_text(json.dumps(functional) + "\n")
+            blob = blobs / sha256(original)
+            blob.write_bytes(original.read_bytes())
+            inner = {"selected_primary": owned.ref(review, blob),
+                     "source": {"commit": functional["source_commit"],
+                                "tree": functional["source_tree"],
+                                "archive_sha256": functional["source_archive_sha256"],
+                                "source_files_sha256": functional["source_files_sha256"],
+                                "lockfile_sha256": functional["lockfile_sha256"]}}
+            self.assertEqual(launcher.check_selected_primary(
+                root, inner, evidence, functional["source_files_sha256"]), functional)
+
+            different = copy.deepcopy(inner)
+            different["source"]["commit"] = "9" * 40
+            with self.assertRaisesRegex(ValueError, "source identity differs"):
+                launcher.check_selected_primary(root, different, evidence,
+                                                functional["source_files_sha256"])
+            with self.assertRaisesRegex(ValueError, "source identity differs"):
+                launcher.check_selected_primary(root, inner, evidence, "0" * 64)
+
+            original.write_text('{"source_commit":"other"}\n')
+            with self.assertRaisesRegex(ValueError, "did not retain"):
+                launcher.check_selected_primary(root, inner, evidence,
+                                                functional["source_files_sha256"])
+            original.write_bytes(blob.read_bytes())
+            blob.write_text('{"source_commit":"tampered"}\n')
+            with self.assertRaises(ValueError):
+                launcher.check_selected_primary(root, inner, evidence,
+                                                functional["source_files_sha256"])
 
     def test_packed_git_attestation_and_fabricated_head_fail_closed(self):
         git = shutil.which("git")

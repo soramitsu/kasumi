@@ -55,9 +55,10 @@ impl KasumiTargetClient {
         &mut self,
         bearer: &str,
         phase: &VerifiedControlIntent,
-        request: &TargetRuntimeRequest,
+        envelope: &TargetExecuteRequest,
     ) -> std::result::Result<TargetAcknowledgement, ClientError> {
-        request.validate()?;
+        envelope.validate_for_node(self.node_id)?;
+        let request = &envelope.request;
         let phase = self.control.verify_intent(phase.signed())?;
         let intent = &phase.observation().intent;
         if intent.request.command_id != request.command_id
@@ -76,8 +77,8 @@ impl KasumiTargetClient {
             .inner
             .execute(authorized(
                 bearer,
-                proto::TargetRuntimeRequest {
-                    request_json: encode(request)?,
+                proto::TargetExecuteRequest {
+                    envelope_json: encode(envelope)?,
                 },
             )?)
             .await?
@@ -85,6 +86,50 @@ impl KasumiTargetClient {
         let response: TargetRuntimeResponse = serde_json::from_slice(&response.response_json)?;
         self.verify_response(intent, request, &response)?;
         Ok(TargetAcknowledgement { response })
+    }
+    /// Read retained first-membership history from the pinned target. This
+    /// status has no Execute or child-start capability.
+    pub async fn read_initial_membership_history(
+        &mut self,
+        bearer: &str,
+        query: &TargetInitialMembershipHistoryRequest,
+    ) -> std::result::Result<TargetInitialMembershipHistoryStatus, ClientError> {
+        query.validate_for_node(self.node_id)?;
+        let response = self
+            .inner
+            .read_initial_membership_history(authorized(
+                bearer,
+                proto::TargetHistoryQuery {
+                    query_json: encode(query)?,
+                },
+            )?)
+            .await?
+            .into_inner();
+        let status: TargetInitialMembershipHistoryStatus =
+            serde_json::from_slice(&response.status_json)?;
+        status.validate_for(query)?;
+        Ok(status)
+    }
+    /// Observe the same continuously owned child without retrying Execute.
+    pub async fn read_initial_start(
+        &mut self,
+        bearer: &str,
+        query: &TargetInitialStartRequest,
+    ) -> std::result::Result<TargetInitialStartStatus, ClientError> {
+        query.validate_for_node(self.node_id)?;
+        let response = self
+            .inner
+            .read_initial_start(authorized(
+                bearer,
+                proto::TargetStartQuery {
+                    query_json: encode(query)?,
+                },
+            )?)
+            .await?
+            .into_inner();
+        let status: TargetInitialStartStatus = serde_json::from_slice(&response.status_json)?;
+        status.validate_for(query, self.node_id)?;
+        Ok(status)
     }
     fn verify_response(
         &self,

@@ -45,6 +45,20 @@ impl TlsIdentity {
     pub fn certificate_pin(&self) -> CertificatePin {
         certificate_digest(&self.certificates[0])
     }
+
+    /// Identity of the loaded leaf certificate's public key. Reissued
+    /// certificates with the same key have different certificate pins but the
+    /// same SubjectPublicKeyInfo pin. No private key bytes are exposed.
+    pub fn public_key_pin(&self) -> Result<CertificatePin> {
+        let encoded = self.certificates[0].as_ref();
+        let (remaining, certificate) = x509_parser::parse_x509_certificate(encoded)
+            .map_err(|_| anyhow::anyhow!("TLS leaf certificate is invalid"))?;
+        ensure!(
+            remaining.is_empty(),
+            "TLS leaf certificate has trailing bytes"
+        );
+        Ok(Sha256::digest(certificate.tbs_certificate.subject_pki.raw).into())
+    }
 }
 
 fn certificates_from_pem(pem: &[u8]) -> Result<Vec<CertificateDer<'static>>> {
@@ -55,6 +69,45 @@ fn certificates_from_pem(pem: &[u8]) -> Result<Vec<CertificateDer<'static>>> {
 
 pub fn certificate_pin(pem: &[u8]) -> Result<CertificatePin> {
     Ok(certificate_digest(&certificates_from_pem(pem)?[0]))
+}
+
+#[cfg(test)]
+mod identity_pin_tests {
+    use super::*;
+
+    #[test]
+    fn reissued_leaf_cannot_hide_reused_tls_public_key() {
+        let shared_key = rcgen::KeyPair::generate().unwrap();
+        let first = rcgen::CertificateParams::new(vec!["data.local".into()])
+            .unwrap()
+            .self_signed(&shared_key)
+            .unwrap();
+        let reissued = rcgen::CertificateParams::new(vec!["admin.local".into()])
+            .unwrap()
+            .self_signed(&shared_key)
+            .unwrap();
+        let separate_key = rcgen::KeyPair::generate().unwrap();
+        let separate = rcgen::CertificateParams::new(vec!["separate.local".into()])
+            .unwrap()
+            .self_signed(&separate_key)
+            .unwrap();
+        let identity = |certificate: &rcgen::Certificate, key: &rcgen::KeyPair| {
+            TlsIdentity::from_pem(certificate.pem().as_bytes(), key.serialize_pem().as_bytes())
+                .unwrap()
+        };
+        let first = identity(&first, &shared_key);
+        let reissued = identity(&reissued, &shared_key);
+        let separate = identity(&separate, &separate_key);
+        assert_ne!(first.certificate_pin(), reissued.certificate_pin());
+        assert_eq!(
+            first.public_key_pin().unwrap(),
+            reissued.public_key_pin().unwrap()
+        );
+        assert_ne!(
+            first.public_key_pin().unwrap(),
+            separate.public_key_pin().unwrap()
+        );
+    }
 }
 
 pub fn certificate_digest(certificate: &CertificateDer<'_>) -> CertificatePin {

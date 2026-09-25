@@ -1850,6 +1850,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "kasumi-private-evidence"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "hex",
+ "kasumi-client",
+ "kasumi-query",
+ "kasumi-transport",
+ "kasumi-types",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.20",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "kasumi-query"
 version = "0.1.0"
 dependencies = [
@@ -1876,10 +1895,12 @@ dependencies = [
  "anyhow",
  "async-trait",
  "hex",
+ "kasumi-serving",
  "kasumi-store",
  "kasumi-types",
  "openraft",
  "postcard",
+ "ring",
  "serde",
  "serde_json",
  "sha2",
@@ -2021,6 +2042,7 @@ dependencies = [
  "tonic",
  "tower",
  "url",
+ "x509-parser",
  "zeroize",
 ]
 

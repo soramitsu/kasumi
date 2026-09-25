@@ -13,6 +13,8 @@ mod custody_snapshot_storage;
 mod custody_state;
 mod custody_tables;
 mod domains;
+#[cfg(any(test, feature = "test-utils"))]
+pub mod historical_test_utils;
 mod lifetime;
 mod network;
 mod quorum;
@@ -34,7 +36,10 @@ pub use command::{
     MAX_RETIREMENT_SEED_BYTES, RaftCommand, RetirementLogSeed, RetirementReplayState,
 };
 pub use control::{
-    AppliedEntryContext, CommittedRetirementSeed, ControlLog, initial_storage_identity,
+    AppliedEntryContext, CommittedRetirementSeed, ControlLog, TARGET_PREBIND_KEY,
+    TARGET_PREBIND_NAMESPACE, TargetFirstMembershipHistory, TargetFirstMembershipPrebind,
+    initial_storage_identity, read_target_first_membership_history,
+    read_target_first_membership_prebind,
 };
 pub use custody_command::{CustodyCommand, MAX_CUSTODY_COMMAND_BYTES};
 pub use custody_group::{CustodyRaftGroup, CustodyView};
@@ -327,6 +332,7 @@ impl RaftGroup {
                     transport,
                     config,
                     snapshot_buffers,
+                    None,
                 )
                 .await
                 .map(startup_owner::StartedGroup::Serving)
@@ -338,6 +344,45 @@ impl RaftGroup {
         }
     }
 
+    /// The first target startup must supply an expectation freshly derived
+    /// from its authenticated journal and signed Control originals. The local
+    /// custody row is compared before `Raft::new` can replay or apply entries.
+    /// This check grants no child, issuer lease, or historical outcome.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn open_target_prebound(
+        id: u64,
+        group: String,
+        store: Arc<TenantStorageSet>,
+        backend: Arc<dyn StateMachineBackend>,
+        transport: Arc<dyn RaftTransport>,
+        config: RaftGroupConfig,
+        snapshot_buffers: Arc<SnapshotBufferOwner>,
+        expected: TargetFirstMembershipPrebind,
+    ) -> Result<Self> {
+        let owner = snapshot_buffers.clone();
+        match owner
+            .start(async move {
+                Self::open_inner(
+                    id,
+                    group,
+                    store,
+                    backend,
+                    transport,
+                    config,
+                    snapshot_buffers,
+                    Some(expected),
+                )
+                .await
+                .map(startup_owner::StartedGroup::Serving)
+            })
+            .await?
+        {
+            startup_owner::StartedGroup::Serving(group) => Ok(group),
+            _ => unreachable!("serving startup result"),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
     async fn open_inner(
         id: u64,
         group: String,
@@ -346,6 +391,7 @@ impl RaftGroup {
         transport: Arc<dyn RaftTransport>,
         config: RaftGroupConfig,
         snapshot_buffers: Arc<SnapshotBufferOwner>,
+        target_prebind: Option<TargetFirstMembershipPrebind>,
     ) -> Result<Self> {
         let RaftGroupConfig {
             raft: mut config,
@@ -357,6 +403,13 @@ impl RaftGroup {
         );
         config.cluster_name = group.clone();
         let config = Arc::new(config.validate()?);
+        if let Some(expected) = &target_prebind {
+            ensure!(
+                expected.node.node_id == id && expected.group == group,
+                "target Raft prebind startup node or group differs"
+            );
+            read_target_first_membership_prebind(&store, expected)?;
+        }
         let ownership = claim_store(&store)?;
         let backend = Arc::new(OwnedBackend {
             inner: backend,
@@ -443,6 +496,7 @@ impl RaftGroup {
             router.clone(),
             RaftGroupConfig::default(),
             snapshot_buffers,
+            None,
         )
         .await?;
         router.register(group.clone(), id, instance.raft.clone());

@@ -890,6 +890,66 @@ struct RunningTarget {
     stores: Arc<TenantStorageSet>,
     audit: Arc<kasumi_engine::SecurityAudit>,
     owner: kasumi_engine::TargetReplica,
+    initial_start: Option<InitialStartFixture>,
+}
+struct InitialStartFixture {
+    journal: Arc<kasumi_engine::TargetJournal>,
+    journal_store: Arc<TenantStore>,
+    phase: kasumi_types::RecoveryPhaseRecord,
+    request: kasumi_types::TargetRuntimeRequest,
+    identity: kasumi_types::TargetInitialDispatchIdentity,
+}
+impl RunningTarget {
+    async fn initialize(
+        &self,
+    ) -> anyhow::Result<(
+        kasumi_types::RecoveryPhaseRecord,
+        kasumi_types::TargetRuntimeRequest,
+    )> {
+        use kasumi_types::{RecoveryDispatch, RecoveryEffect, TargetRuntimeStep};
+        let start = self
+            .initial_start
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("fixture has no original Start owner"))?;
+        let mut request = start.request.clone();
+        let TargetRuntimeStep::Start(input) = &request.step else {
+            unreachable!()
+        };
+        request.step = TargetRuntimeStep::Initialize(input.quorum().clone());
+        let mut phase = start.phase.clone();
+        phase.phase_id = Uuid::new_v4();
+        phase.previous_phase = Some(start.phase.phase_id);
+        phase.sequence += 1;
+        phase.prepared_revision += 10;
+        phase.input = RecoveryDispatch::Target {
+            node_id: self.id,
+            request: Box::new(request.clone()),
+        };
+        phase.input_sha256 = kasumi_types::staged_digest(&phase.input)?.0;
+        let marker = phase
+            .effect_attempts
+            .get_mut(&RecoveryEffect::TargetCommand)
+            .unwrap();
+        marker.attempt_id = Uuid::new_v4();
+        marker.input_sha256 = phase.input_sha256.clone();
+        marker.begun_revision = phase.prepared_revision + 1;
+        let lease = self.operation.invocation().gate().current()?;
+        let kasumi_engine::InitialDispatchReservation::NewlyAccepted(candidate) =
+            start.journal.reserve_initial_dispatch(
+                &lease.commitment().root,
+                &phase,
+                &lease.commitment().intent,
+                &request,
+            )?
+        else {
+            anyhow::bail!("fixture Initialize candidate already consumed")
+        };
+        let permit = candidate
+            .verify_initial_membership(self.id, LifecyclePhase::Initialize)?
+            .bind_initialize(&start.journal, &self.operation, &self.owner)?;
+        self.owner.initialize(&self.operation, permit).await?;
+        Ok((phase, request))
+    }
 }
 fn initial_complete(input: &TargetQuorumInput) -> kasumi_types::TargetCompletionInput {
     kasumi_types::TargetCompletionInput {
@@ -898,6 +958,116 @@ fn initial_complete(input: &TargetQuorumInput) -> kasumi_types::TargetCompletion
     }
 }
 impl MaterialFixture {
+    async fn initial_start(
+        &self,
+        id: u64,
+        signed: &SignedControlIntent,
+        input: &TargetReplicaInput,
+    ) -> (
+        kasumi_engine::TargetReplicaStartup,
+        Option<InitialStartFixture>,
+    ) {
+        use kasumi_types::{
+            RecoveryDispatch, RecoveryEffect, RecoveryEffectAttempt, RecoveryPhase,
+            RecoveryPhaseRecord, TargetInitialDispatchIdentity, TargetJournalLimits,
+            TargetRuntimeRequest, TargetRuntimeStep, staged_digest,
+        };
+        if signed.observation.intent.request.phase != LifecyclePhase::Initialize {
+            return (kasumi_engine::TargetReplicaStartup::Established, None);
+        }
+        let node_identity = nodes().into_iter().find(|node| node.node_id == id).unwrap();
+        let node = self.target_nodes.lock().unwrap()[&id].clone();
+        let store = TenantStore::initialize_catalog(
+            node,
+            format!(
+                "kasumi.target.{}.{id}",
+                self.control.root.control_incarnation
+            ),
+            Arc::new(LocalKeyProvider::new([231; 32])),
+            StorageAccess::target_journal(&self.control.root, &node_identity).unwrap(),
+        )
+        .await
+        .unwrap();
+        let journal = kasumi_engine::TargetJournal::create_new(
+            store.clone(),
+            kasumi_engine::TargetJournalInstallation {
+                root: self.control.root.clone(),
+                node: node_identity,
+            },
+            TargetJournalLimits {
+                max_metadata_bytes: 4 << 20,
+            },
+            self.physical[&id].admission.clone(),
+        )
+        .unwrap();
+        let lifecycle = &signed.observation.intent;
+        let request = TargetRuntimeRequest {
+            tenant: lifecycle.request.tenant.clone(),
+            command_id: lifecycle.request.command_id,
+            not_after_ms: lifecycle.original_credential_expires_at_ms,
+            step: TargetRuntimeStep::Start(input.clone()),
+        };
+        let dispatch = RecoveryDispatch::Target {
+            node_id: id,
+            request: Box::new(request.clone()),
+        };
+        let digest = staged_digest(&dispatch).unwrap().0;
+        let attempt_id = Uuid::new_v4();
+        let phase = RecoveryPhaseRecord {
+            operation_id: Uuid::new_v4(),
+            phase_id: Uuid::new_v4(),
+            sequence: 1,
+            phase: RecoveryPhase::Initialize,
+            completion_scope: None,
+            previous_phase: None,
+            input: dispatch,
+            input_sha256: digest.clone(),
+            principal: lifecycle.original_principal.clone(),
+            admitted_at_ms: lifecycle.accepted_at_ms,
+            original_credential_expires_at_ms: lifecycle.original_credential_expires_at_ms,
+            prepared_revision: lifecycle.revision,
+            effect_attempts: BTreeMap::from([(
+                RecoveryEffect::TargetCommand,
+                RecoveryEffectAttempt {
+                    attempt_id,
+                    input_sha256: digest.clone(),
+                    admitted_at_ms: lifecycle.accepted_at_ms,
+                    begun_revision: lifecycle.revision + 1,
+                },
+            )]),
+            activation_acceptance: None,
+            outcome: None,
+            resolved_revision: None,
+        };
+        let identity = TargetInitialDispatchIdentity {
+            operation_id: phase.operation_id,
+            phase_id: phase.phase_id,
+            attempt_id,
+            input_sha256: digest,
+        };
+        let kasumi_engine::InitialDispatchReservation::NewlyAccepted(candidate) = journal
+            .reserve_initial_dispatch(&self.control.root, &phase, lifecycle, &request)
+            .unwrap()
+        else {
+            panic!("new fixture Start did not issue candidate")
+        };
+        let membership = candidate
+            .verify_initial_membership(id, LifecyclePhase::Initialize)
+            .unwrap();
+        (
+            kasumi_engine::TargetReplicaStartup::Initial {
+                membership,
+                journal: journal.clone(),
+            },
+            Some(InitialStartFixture {
+                journal,
+                journal_store: store,
+                phase,
+                request,
+                identity,
+            }),
+        )
+    }
     async fn commit_phase(
         &self,
         phase: LifecyclePhase,
@@ -996,6 +1166,7 @@ impl MaterialFixture {
         for id in 1..=3 {
             let (scope, stores, audit) = self.phase(id, phase).await;
             let operation = scope.begin_operation(60_000).unwrap();
+            let (startup, initial_start) = self.initial_start(id, phase, &input).await;
             let owner = open_target_replica(
                 &operation,
                 stores.clone(),
@@ -1012,9 +1183,28 @@ impl MaterialFixture {
                 },
                 router.clone(),
                 audit.clone(),
+                startup,
             )
             .await
             .unwrap();
+            if let Some(start) = &initial_start {
+                let verified = ControlTrust::install(self.control.root.clone())
+                    .unwrap()
+                    .verify_intent(phase)
+                    .unwrap();
+                start
+                    .journal
+                    .record_initial_start(
+                        &verified,
+                        &start.phase,
+                        &start.identity,
+                        &start.request,
+                        &owner,
+                    )
+                    .unwrap()
+                    .check()
+                    .unwrap();
+            }
             router.register(
                 format!("city/{}", self.target.incarnation),
                 id,
@@ -1027,6 +1217,7 @@ impl MaterialFixture {
                 stores,
                 audit,
                 owner,
+                initial_start,
             });
         }
         targets
@@ -1042,6 +1233,9 @@ impl MaterialFixture {
             assert!(t.stores.application().check_access().is_err());
             assert!(t.stores.custody().store().check_access().is_err());
             drop(t.owner);
+            if let Some(initial) = t.initial_start {
+                initial.journal.shutdown().await.unwrap();
+            }
             drop(t.operation);
             t.scope.close();
             t.scope.drain().await;
@@ -1070,6 +1264,403 @@ async fn current_target(targets: &[RunningTarget]) -> usize {
     .await
     .unwrap()
 }
+
+#[tokio::test]
+async fn retained_initial_start_requires_the_same_live_prebound_child() {
+    let f = MaterialFixture::new().await;
+    let input = f.materialize_all().await;
+    let signed = f.commit_phase(LifecyclePhase::Initialize, &input).await;
+    let control = ControlTrust::install(f.control.root.clone())
+        .unwrap()
+        .verify_intent(&signed)
+        .unwrap();
+    let router = Arc::new(InProcessRouter::default());
+    let targets = f.open_targets(&signed, &input, &router).await;
+    let target = &targets[0];
+    let start = target.initial_start.as_ref().unwrap();
+    assert!(
+        !target
+            .owner
+            .database()
+            .raft_group()
+            .raft()
+            .is_initialized()
+            .await
+            .unwrap()
+    );
+    assert!(
+        start
+            .journal
+            .resolve_initial_membership_history(
+                &control,
+                &start.phase,
+                &start.identity,
+                &start.request,
+                &target.stores,
+            )
+            .is_err(),
+        "Start acknowledgement is not a committed membership"
+    );
+
+    // The original response may be lost. A status read verifies the same
+    // retained owner without sending or reserving another Start packet.
+    let proof = start
+        .journal
+        .resolve_initial_start(
+            &control,
+            &start.phase,
+            &start.identity,
+            &start.request,
+            &target.owner,
+        )
+        .unwrap();
+    assert_eq!(proof.identity(), &start.identity);
+    proof.check().unwrap();
+    start
+        .journal
+        .record_initial_start(
+            &control,
+            &start.phase,
+            &start.identity,
+            &start.request,
+            &target.owner,
+        )
+        .unwrap()
+        .check()
+        .unwrap();
+    assert!(matches!(
+        start
+            .journal
+            .reserve_initial_dispatch(
+                &f.control.root,
+                &start.phase,
+                &signed.observation.intent,
+                &start.request,
+            )
+            .unwrap(),
+        kasumi_engine::InitialDispatchReservation::ExistingStatusOnly
+    ));
+
+    let mut wrong_identity = start.identity.clone();
+    wrong_identity.attempt_id = Uuid::new_v4();
+    assert!(
+        start
+            .journal
+            .resolve_initial_start(
+                &control,
+                &start.phase,
+                &wrong_identity,
+                &start.request,
+                &target.owner,
+            )
+            .is_err()
+    );
+    assert!(
+        start
+            .journal
+            .resolve_initial_start(
+                &control,
+                &start.phase,
+                &start.identity,
+                &start.request,
+                &targets[1].owner,
+            )
+            .is_err(),
+        "another actual target child cannot replace the original Start owner"
+    );
+    let mut initialize = start.request.clone();
+    initialize.step = kasumi_types::TargetRuntimeStep::Initialize(input.clone());
+    assert!(
+        start
+            .journal
+            .resolve_initial_start(
+                &control,
+                &start.phase,
+                &start.identity,
+                &initialize,
+                &target.owner,
+            )
+            .is_err(),
+        "Start status cannot resolve the later Initialize dispatch"
+    );
+
+    // A later Initialize is a separate accepted packet in the same recovery
+    // operation. Its marker and journal key cannot overwrite the Start owner.
+    let mut initialize_phase = start.phase.clone();
+    initialize_phase.phase_id = Uuid::new_v4();
+    initialize_phase.sequence = 4;
+    initialize_phase.previous_phase = Some(Uuid::new_v4());
+    initialize_phase.prepared_revision += 10;
+    initialize_phase.input = kasumi_types::RecoveryDispatch::Target {
+        node_id: target.id,
+        request: Box::new(initialize.clone()),
+    };
+    initialize_phase.input_sha256 = kasumi_types::staged_digest(&initialize_phase.input)
+        .unwrap()
+        .0;
+    let marker = initialize_phase
+        .effect_attempts
+        .get_mut(&kasumi_types::RecoveryEffect::TargetCommand)
+        .unwrap();
+    marker.attempt_id = Uuid::new_v4();
+    marker.input_sha256 = initialize_phase.input_sha256.clone();
+    marker.begun_revision = initialize_phase.prepared_revision + 1;
+    let kasumi_engine::InitialDispatchReservation::NewlyAccepted(initialize_candidate) = start
+        .journal
+        .reserve_initial_dispatch(
+            &f.control.root,
+            &initialize_phase,
+            &signed.observation.intent,
+            &initialize,
+        )
+        .unwrap()
+    else {
+        panic!("distinct Initialize did not retain its own accepted packet")
+    };
+    assert_eq!(
+        initialize_candidate.identity().operation_id,
+        start.identity.operation_id
+    );
+    assert_ne!(
+        initialize_candidate.identity().phase_id,
+        start.identity.phase_id
+    );
+    assert_ne!(
+        initialize_candidate.identity().attempt_id,
+        start.identity.attempt_id
+    );
+    assert!(
+        initialize_candidate
+            .verify_initial_membership(target.id, LifecyclePhase::Initialize)
+            .unwrap()
+            .persist_target_raft_prebind(&start.journal, &target.stores)
+            .is_err(),
+        "later Initialize cannot replace the original node-local Start prebind"
+    );
+    start
+        .journal
+        .resolve_initial_start(
+            &control,
+            &start.phase,
+            &start.identity,
+            &start.request,
+            &target.owner,
+        )
+        .unwrap()
+        .check()
+        .unwrap();
+
+    // A proof already handed to the response path becomes unusable as soon
+    // as its exact phase closes, even though permanent journal rows survive.
+    target.scope.close();
+    assert!(proof.check().is_err());
+    assert!(
+        start
+            .journal
+            .resolve_initial_start(
+                &control,
+                &start.phase,
+                &start.identity,
+                &start.request,
+                &target.owner,
+            )
+            .is_err()
+    );
+    assert!(
+        start
+            .journal
+            .record_initial_start(
+                &control,
+                &start.phase,
+                &start.identity,
+                &start.request,
+                &target.owner,
+            )
+            .is_err()
+    );
+    f.close_targets(targets, &router).await;
+    f.close().await;
+}
+#[tokio::test]
+async fn initialize_association_reopens_and_requires_exact_start_and_custody_owner() {
+    use kasumi_types::{RecoveryEffect, TargetInitialDispatchIdentity, TargetJournalLimits};
+    let f = MaterialFixture::new().await;
+    let input = f.materialize_all().await;
+    let signed = f.commit_phase(LifecyclePhase::Initialize, &input).await;
+    let control = ControlTrust::install(f.control.root.clone())
+        .unwrap()
+        .verify_intent(&signed)
+        .unwrap();
+    let router = Arc::new(InProcessRouter::default());
+    let mut targets = f.open_targets(&signed, &input, &router).await;
+    let (phase, request) = targets[0].initialize().await.unwrap();
+    let identity = TargetInitialDispatchIdentity {
+        operation_id: phase.operation_id,
+        phase_id: phase.phase_id,
+        attempt_id: phase.effect_attempts[&RecoveryEffect::TargetCommand].attempt_id,
+        input_sha256: phase.input_sha256.clone(),
+    };
+    let target = &mut targets[0];
+    let start = target.initial_start.take().unwrap();
+    start
+        .journal
+        .record_initial_membership_history(&control, &phase, &identity, &request, &target.stores)
+        .unwrap()
+        .require_owner(&target.owner)
+        .unwrap();
+    assert!(matches!(
+        start
+            .journal
+            .reserve_initial_dispatch(
+                &f.control.root,
+                &phase,
+                &signed.observation.intent,
+                &request
+            )
+            .unwrap(),
+        kasumi_engine::InitialDispatchReservation::ExistingStatusOnly
+    ));
+    let association_key = format!(
+        "dispatch-initialize/{}/{}",
+        identity.operation_id, identity.phase_id
+    );
+    let bytes = start
+        .journal_store
+        .get_bounded("target.journal", association_key.as_bytes(), 256 << 10)
+        .unwrap()
+        .unwrap();
+    let metadata = start
+        .journal_store
+        .get_bounded("target.journal", b"metadata", 256 << 10)
+        .unwrap()
+        .unwrap();
+    let journal_store = start.journal_store.clone();
+    drop(start.journal);
+    let reopen = || {
+        kasumi_engine::TargetJournal::open_existing(
+            journal_store.clone(),
+            kasumi_engine::TargetJournalInstallation {
+                root: f.control.root.clone(),
+                node: nodes().into_iter().find(|n| n.node_id == 1).unwrap(),
+            },
+            TargetJournalLimits {
+                max_metadata_bytes: 4 << 20,
+            },
+            f.physical[&1].admission.clone(),
+        )
+    };
+    let journal = reopen().unwrap();
+    journal
+        .resolve_initial_membership_history(&control, &phase, &identity, &request, &target.stores)
+        .unwrap()
+        .require_owner(&target.owner)
+        .unwrap();
+    drop(journal);
+    let substituted = String::from_utf8(bytes.clone())
+        .unwrap()
+        .replace(
+            &start.identity.attempt_id.to_string(),
+            &Uuid::new_v4().to_string(),
+        )
+        .into_bytes();
+    assert_ne!(substituted, bytes);
+    journal_store
+        .write_batch(&[kasumi_store::WriteOp::put(
+            "target.journal",
+            association_key.as_bytes(),
+            substituted,
+        )])
+        .unwrap();
+    assert!(
+        reopen().is_err(),
+        "foreign Start cannot survive association reopen"
+    );
+    journal_store
+        .write_batch(&[kasumi_store::WriteOp::put(
+            "target.journal",
+            association_key.as_bytes(),
+            bytes,
+        )])
+        .unwrap();
+    let torn = String::from_utf8(metadata.clone())
+        .unwrap()
+        .replace("\"dispatch_initializes\":1", "\"dispatch_initializes\":0")
+        .into_bytes();
+    assert_ne!(torn, metadata);
+    journal_store
+        .write_batch(&[kasumi_store::WriteOp::put(
+            "target.journal",
+            b"metadata",
+            torn,
+        )])
+        .unwrap();
+    assert!(
+        reopen().is_err(),
+        "Initialize association count must match retained records"
+    );
+    journal_store
+        .write_batch(&[kasumi_store::WriteOp::put(
+            "target.journal",
+            b"metadata",
+            metadata,
+        )])
+        .unwrap();
+    let journal = reopen().unwrap();
+    let custody = target.stores.custody().store();
+    let owned = custody
+        .get_bounded("target.lifecycle", b"initialize", 256 << 10)
+        .unwrap()
+        .unwrap();
+    // Serialize through the exact existing order by changing only the final
+    // enum value in canonical bytes, retaining a valid current-format row.
+    let split = owned
+        .windows(b"\"initialize_ownership\":".len())
+        .position(|part| part == b"\"initialize_ownership\":")
+        .unwrap();
+    let mut prepared = owned[..split].to_vec();
+    prepared.extend_from_slice(b"\"initialize_ownership\":\"Prepared\"}");
+    custody
+        .write_batch(&[kasumi_store::WriteOp::put(
+            "target.lifecycle",
+            b"initialize",
+            prepared,
+        )])
+        .unwrap();
+    assert!(
+        journal
+            .resolve_initial_membership_history(
+                &control,
+                &phase,
+                &identity,
+                &request,
+                &target.stores
+            )
+            .is_err(),
+        "journal association and membership cannot replace custody Initialize owner"
+    );
+    custody
+        .write_batch(&[kasumi_store::WriteOp::put(
+            "target.lifecycle",
+            b"initialize",
+            owned,
+        )])
+        .unwrap();
+    journal
+        .resolve_initial_membership_history(&control, &phase, &identity, &request, &target.stores)
+        .unwrap()
+        .require_owner(&target.owner)
+        .unwrap();
+    target.initial_start = Some(InitialStartFixture {
+        journal,
+        journal_store: start.journal_store,
+        phase: start.phase,
+        request: start.request,
+        identity: start.identity,
+    });
+    drop(journal_store);
+    f.close_targets(targets, &router).await;
+    f.close().await;
+}
 #[tokio::test]
 async fn three_actual_materializations_initialize_and_commit_completion_with_restart_proof() {
     let f = MaterialFixture::new().await;
@@ -1077,11 +1668,7 @@ async fn three_actual_materializations_initialize_and_commit_completion_with_res
     let initialize = f.commit_phase(LifecyclePhase::Initialize, &input).await;
     let router = Arc::new(InProcessRouter::default());
     let targets = f.open_targets(&initialize, &input, &router).await;
-    targets[0]
-        .owner
-        .initialize(&targets[0].operation)
-        .await
-        .unwrap();
+    targets[0].initialize().await.unwrap();
     current_target(&targets).await;
     // Initialization cannot dispatch an ordinary Data command or Complete phase.
     assert!(
@@ -1178,11 +1765,7 @@ async fn exercise_target_activation(maintenance: bool) {
     let initialize = f.commit_phase(LifecyclePhase::Initialize, &input).await;
     let router = Arc::new(InProcessRouter::default());
     let targets = f.open_targets(&initialize, &input, &router).await;
-    targets[0]
-        .owner
-        .initialize(&targets[0].operation)
-        .await
-        .unwrap();
+    targets[0].initialize().await.unwrap();
     current_target(&targets).await;
     f.close_targets(targets, &router).await;
     let complete = f.commit_phase(LifecyclePhase::Complete, &input).await;
@@ -1580,11 +2163,7 @@ async fn expired_completion_with_missing_journal_recovers_only_exact_inspection_
     let initialize = f.commit_phase(LifecyclePhase::Initialize, &input).await;
     let router = Arc::new(InProcessRouter::default());
     let targets = f.open_targets(&initialize, &input, &router).await;
-    targets[0]
-        .owner
-        .initialize(&targets[0].operation)
-        .await
-        .unwrap();
+    targets[0].initialize().await.unwrap();
     current_target(&targets).await;
     f.close_targets(targets, &router).await;
     let complete = f
@@ -1654,13 +2233,7 @@ async fn expired_completion_with_missing_journal_recovers_only_exact_inspection_
     let index = current_target(&targets).await;
     let selected = &targets[index];
     let db = selected.owner.database();
-    assert!(
-        selected
-            .owner
-            .initialize(&selected.operation)
-            .await
-            .is_err()
-    );
+    assert!(selected.initialize().await.is_err());
     assert!(
         db.complete_target(&selected.operation, initial_complete(&input))
             .await
@@ -2181,7 +2754,7 @@ async fn target_file_creation_outcome_distinguishes_original_creation_from_stric
     .await
     .unwrap();
     let journal = TargetJournal::create_new(
-        store,
+        store.clone(),
         installation,
         TargetJournalLimits {
             max_metadata_bytes: 4 << 20,
@@ -2231,21 +2804,58 @@ async fn target_file_creation_outcome_distinguishes_original_creation_from_stric
     assert_eq!(std::fs::read(&path).unwrap(), before);
     // Even absence after an earlier creation cannot turn a replay into a creator.
     std::fs::remove_file(&path).unwrap();
-    assert!(
-        journal
-            .reserve_materialization_file(&operation)
-            .unwrap()
-            .open(&path, f.physical[&1].scratch.clone())
-            .is_err()
-    );
+    let memory = node.persistent_disk().memory().clone();
+    let registered_before = memory.storage_census().snapshot().databases;
+    let missing = journal
+        .reserve_materialization_file(&operation)
+        .unwrap()
+        .open(&path, f.physical[&1].scratch.clone())
+        .err()
+        .unwrap();
+    let missing = missing.downcast::<kasumi_types::Error>().unwrap();
+    assert_eq!(missing.code, ErrorCode::UnknownOutcome);
     assert!(!path.exists());
+    assert_eq!(
+        memory.storage_census().snapshot().databases,
+        registered_before + 1,
+        "failed replay must retain its registered opening after caller loss"
+    );
     drop(operation);
     scope.close();
     scope.drain().await;
     journal.shutdown().await.unwrap();
     drop(journal);
     store.shutdown().await.unwrap();
-    node.shutdown().await.unwrap();
+    // Removing an enrolled name outside NodeDisk's authorized cleanup path
+    // seals the physical owner. Closing the journal database may drain its
+    // descriptor, but cannot turn that failed owner into a clean retirement.
+    let opening_id = node.registered_opening_id().unwrap();
+    let close = node.shutdown().await.unwrap_err();
+    assert_eq!(
+        close.completion(),
+        kasumi_types::drain::DrainCompletion::Retained
+    );
+    let issue = close
+        .issues()
+        .iter()
+        .find(|issue| issue.component() == "node database")
+        .unwrap();
+    assert_eq!(
+        issue.error().to_string(),
+        format!("registered node opening {opening_id:?} close settled DrainedWithFailure")
+    );
+    let retained = kasumi_store::RegisteredNodeOpening::retained(memory, opening_id).unwrap();
+    assert_eq!(
+        format!("{:?}", retained.report().engine().settlement()),
+        "DrainedWithFailure"
+    );
+    let repeated = node.shutdown().await.unwrap_err();
+    assert!(
+        repeated
+            .issues()
+            .iter()
+            .any(|again| Arc::ptr_eq(again, issue))
+    );
     drop(node);
     f.issuer.close().await;
 }

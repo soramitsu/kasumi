@@ -47,12 +47,14 @@ pub(crate) fn capture(custody: &CustodyStore) -> Result<SnapshotEnvelope> {
         snapshot_id: uuid::Uuid::new_v4().to_string(),
     };
     let retirement = crate::snapshot_custody::capture(custody, &meta, Some(state.origin))?;
+    let first_membership = control::first_membership_for_snapshot(custody, &meta)?;
     Ok(SnapshotEnvelope {
-        version: 1,
+        version: 2,
         kind: SnapshotKind::Custody,
         meta,
         backend: kasumi_store::SnapshotImage::from_bytes(custody.store().scratch_disk(), &[])?,
         retirement,
+        first_membership,
     })
 }
 
@@ -64,7 +66,7 @@ pub(crate) fn publish(
     crate::custody_snapshot_storage::check_format(custody)?;
     ensure!(
         snapshot.kind == SnapshotKind::Custody
-            && snapshot.version == 1
+            && snapshot.version == 2
             && snapshot.backend.is_empty(),
         "application payload forbidden in custody snapshot"
     );
@@ -89,6 +91,7 @@ pub(crate) fn publish(
         custody,
         &snapshot.meta,
         Some(retirement),
+        snapshot.first_membership.as_ref(),
         &backend_digest,
         &digest,
     )?;
@@ -116,7 +119,7 @@ pub(crate) fn load_snapshot(
     let snapshot = SnapshotEnvelope::decode(bytes.disk(), &mut bytes.reader(), limit)?;
     ensure!(
         snapshot.kind == SnapshotKind::Custody
-            && snapshot.version == 1
+            && snapshot.version == 2
             && snapshot.backend.is_empty(),
         "application payload forbidden in custody snapshot"
     );
@@ -134,6 +137,7 @@ pub(crate) fn load_snapshot(
         &snapshot.meta,
         &coverage.snapshot_sha256,
         snapshot.retirement.as_ref(),
+        snapshot.first_membership.as_ref(),
     )?;
     ensure!(
         snapshot.retirement.is_some(),

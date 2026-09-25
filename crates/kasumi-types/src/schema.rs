@@ -7,10 +7,13 @@ pub const MAX_SCHEMA_CHANGESET_BYTES: usize = 8 << 20;
 pub const MAX_SCHEMA_CHANGESET_COLLECTIONS: usize = 128;
 pub const MAX_SCHEMA_READ_ASSERTIONS: usize = 512;
 
+/// Named reads may include absent names. `All` is an exact snapshot of every
+/// installed collection, for administrative inventory admission.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ReadSchema {
-    pub collections: BTreeSet<String>,
+#[serde(tag = "selection", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ReadSchema {
+    All,
+    Named { collections: BTreeSet<String> },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

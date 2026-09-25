@@ -1305,7 +1305,7 @@ async fn encrypted_restart_and_full_restore_preserve_permanent_activation_receip
     let (db, audit) = open(&physical, &path, true).await;
     let names: Vec<_> = (0..32).map(|n| format!("financial_{n}")).collect();
     let refs: Vec<_> = names.iter().map(String::as_str).collect();
-    let schema_read = ReadSchema {
+    let schema_read = ReadSchema::Named {
         collections: names.iter().cloned().collect(),
     };
     let empty = db
@@ -1330,6 +1330,17 @@ async fn encrypted_restart_and_full_restore_preserve_permanent_activation_receip
             .as_ref()
             .is_some_and(|schema| schema.data_epoch == 0 && schema.archived_document_count == 0)
     }));
+    let complete = db
+        .read_schema(&context("owner"), ReadSchema::All)
+        .await
+        .unwrap();
+    assert_eq!(complete.collections.len(), names.len());
+    assert_eq!(complete.collections.keys().cloned().collect::<Vec<_>>(), {
+        let mut expected = names.clone();
+        expected.sort();
+        expected
+    });
+    assert!(complete.collections.values().all(Option::is_some));
     assert_eq!(db.engine().generation().unwrap().state.schema_epoch, 1);
     assert_eq!(db.collections(&context("owner")).await.unwrap().len(), 32);
     assert_eq!(
@@ -1562,7 +1573,7 @@ async fn cold_schema_change_rejects_whole_bundle_and_scoped_status_rechecks_auth
     let scoped_snapshot = db
         .read_schema(
             &context("scoped"),
-            ReadSchema {
+            ReadSchema::Named {
                 collections: BTreeSet::from(["scoped".into()]),
             },
         )
@@ -1572,7 +1583,7 @@ async fn cold_schema_change_rejects_whole_bundle_and_scoped_status_rechecks_auth
     assert_eq!(
         db.read_schema(
             &context("scoped"),
-            ReadSchema {
+            ReadSchema::Named {
                 collections: BTreeSet::from(["history".into()])
             }
         )

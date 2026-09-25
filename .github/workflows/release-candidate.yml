@@ -29,6 +29,7 @@ jobs:
     env:
       KASUMI_TARGET: ${{ matrix.target }}
       KASUMI_RUN_NAME: kasumi-release-${{ github.run_id }}-${{ github.run_attempt }}
+      KASUMI_ASSEMBLY_ATTEMPT_ID: assembly-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
       PYTHONDONTWRITEBYTECODE: "1"
       KASUMI_ASSEMBLY_INPUTS_DIR: ${{ vars.KASUMI_ASSEMBLY_INPUTS_DIR }}
       KASUMI_FUNCTIONAL_MAX_BYTES: ${{ vars.KASUMI_FUNCTIONAL_MAX_BYTES }}
@@ -82,6 +83,7 @@ jobs:
             --env KASUMI_FUNCTIONAL_PRODUCER="$KASUMI_FUNCTIONAL_PRODUCER" \
             --env KASUMI_ASSEMBLY_TAR="$KASUMI_ASSEMBLY_TAR" \
             --env KASUMI_ASSEMBLY_PRODUCER="$KASUMI_ASSEMBLY_PRODUCER" \
+            --env KASUMI_ASSEMBLY_ATTEMPT_ID="$KASUMI_ASSEMBLY_ATTEMPT_ID" \
             --env KASUMI_EXPECTED_SHA="$GITHUB_SHA" \
             --env KASUMI_EXPECTED_TREE="$KASUMI_EXPECTED_TREE" \
             --env KASUMI_UPLOAD_UID="$KASUMI_UPLOAD_UID" \
@@ -124,9 +126,10 @@ jobs:
               chmod 0600 "/evidence/$KASUMI_FUNCTIONAL_TAR" \
                 /evidence/functional-manifest.sha256 /evidence/functional-archive.sha256 \
                 "/evidence/$KASUMI_FUNCTIONAL_PRODUCER" /evidence/functional-producer.sha256
-              python3 -B -S /evidence/run/source/scripts/run_repeatable_assembly_owned.py \
+              python3 -I -B -S /evidence/run/source/scripts/run_repeatable_assembly_owned.py \
                 --evidence /evidence/run --native-inputs /assembly-inputs/inputs.json \
-                --output /evidence/repeatable-assembly
+                --output /evidence/repeatable-assembly \
+                --attempt-root /evidence --attempt-id "$KASUMI_ASSEMBLY_ATTEMPT_ID"
               python3 -B -S /evidence/run/source/scripts/transport_assembly_evidence.py produce \
                 --assembly /evidence/repeatable-assembly --evidence /evidence/run \
                 --archive "/evidence/$KASUMI_ASSEMBLY_TAR" \
@@ -182,7 +185,7 @@ jobs:
                     snapshot_result=1
                   fi
                 fi
-                for path in /evidence/repeatable-assembly \
+                for path in /evidence/attempts /evidence/repeatable-assembly \
                             "/evidence/$KASUMI_ASSEMBLY_TAR" \
                             "/evidence/$KASUMI_ASSEMBLY_PRODUCER" \
                             /evidence/assembly-transport.json \
@@ -245,9 +248,10 @@ jobs:
             --max-bytes "$KASUMI_FUNCTIONAL_MAX_BYTES" \
             --output "$KASUMI_RUN/$KASUMI_FUNCTIONAL_PRODUCER" \
             > "$KASUMI_RUN/functional-producer.sha256"
-          python3 -B -S "$KASUMI_RUN/run/source/scripts/run_repeatable_assembly_owned.py" \
+          python3 -I -B -S "$KASUMI_RUN/run/source/scripts/run_repeatable_assembly_owned.py" \
             --evidence "$KASUMI_RUN/run" --native-inputs "$KASUMI_ASSEMBLY_INPUTS_DIR/inputs.json" \
-            --output "$KASUMI_RUN/repeatable-assembly"
+            --output "$KASUMI_RUN/repeatable-assembly" \
+            --attempt-root "$KASUMI_RUN" --attempt-id "$KASUMI_ASSEMBLY_ATTEMPT_ID"
           python3 -B -S "$KASUMI_RUN/run/source/scripts/transport_assembly_evidence.py" produce \
             --assembly "$KASUMI_RUN/repeatable-assembly" --evidence "$KASUMI_RUN/run" \
             --archive "$KASUMI_RUN/$KASUMI_ASSEMBLY_TAR" \
@@ -555,4 +559,5 @@ jobs:
             ${{ runner.temp }}/${{ env.KASUMI_RUN_NAME }}/run/*.json
             ${{ runner.temp }}/${{ env.KASUMI_RUN_NAME }}/run/*.log
             ${{ runner.temp }}/${{ env.KASUMI_RUN_NAME }}/run/source.tar
+            ${{ runner.temp }}/${{ env.KASUMI_RUN_NAME }}/attempts/**
             ${{ runner.temp }}/${{ env.KASUMI_RUN_NAME }}/repeatable-assembly/**

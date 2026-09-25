@@ -282,6 +282,7 @@ pub(crate) fn installation_writes(
     custody: &CustodyStore,
     meta: &SnapshotMeta<u64, BasicNode>,
     retirement: Option<&SnapshotRetirement>,
+    first_membership: Option<&control::FirstAppliedMembership>,
     backend_sha256: &str,
     snapshot_sha256: &str,
 ) -> Result<Installation> {
@@ -290,6 +291,30 @@ pub(crate) fn installation_writes(
     let control = custody.store();
     let mut writes = Vec::new();
     let mut records = None;
+    control::validate_snapshot_first_membership(meta, first_membership)?;
+    let existing_first = control::first_applied_membership(control)?;
+    match (existing_first.as_ref(), first_membership) {
+        (Some(existing), Some(incoming)) => ensure!(
+            existing == incoming,
+            "snapshot would substitute immutable first applied membership"
+        ),
+        (Some(existing), None) => ensure!(
+            meta.last_log_id
+                .is_none_or(|last| last.index < existing.header.log_id.index),
+            "snapshot would erase first applied membership"
+        ),
+        (None, Some(incoming)) => writes.push(WriteOp::put(
+            META,
+            b"first_membership",
+            serde_json::to_vec(incoming)?,
+        )),
+        (None, None) => {}
+    }
+    if let Some(association) =
+        control::local_first_association_write(custody, existing_first.as_ref(), first_membership)?
+    {
+        writes.push(association);
+    }
     let existing_boundary = control::retired_boundary(custody)?;
     match retirement {
         Some(retirement) => {
@@ -439,7 +464,24 @@ pub(crate) fn check_published(
     meta: &SnapshotMeta<u64, BasicNode>,
     snapshot_sha256: &str,
     retirement: Option<&SnapshotRetirement>,
+    first_membership: Option<&control::FirstAppliedMembership>,
 ) -> Result<()> {
+    control::validate_snapshot_first_membership(meta, first_membership)?;
+    let local_first = control::first_applied_membership(custody.store())?;
+    match (local_first.as_ref(), first_membership) {
+        (Some(local), Some(embedded)) => ensure!(
+            local == embedded,
+            "published snapshot first membership differs from custody"
+        ),
+        (Some(local), None) => ensure!(
+            meta.last_log_id
+                .is_none_or(|last| last.index < local.header.log_id.index),
+            "published snapshot lost first membership"
+        ),
+        (None, Some(_)) => anyhow::bail!("published snapshot first membership is absent locally"),
+        (None, None) => {}
+    }
+    control::local_first_association_write(custody, local_first.as_ref(), None)?;
     if let Some(retirement) = retirement {
         retirement.validate(meta)?;
         retirement.check_installation(custody)?;

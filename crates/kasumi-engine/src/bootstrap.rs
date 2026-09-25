@@ -32,7 +32,9 @@ pub use target::{
 
 #[path = "bootstrap_target_quorum.rs"]
 mod target_quorum;
-pub use target_quorum::{TargetReplica, TargetReplicaConfig, open_target_replica};
+pub use target_quorum::{
+    TargetReplica, TargetReplicaConfig, TargetReplicaStartup, open_target_replica,
+};
 
 #[path = "bootstrap_control_genesis.rs"]
 mod control_genesis;

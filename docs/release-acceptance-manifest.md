@@ -16,10 +16,14 @@ qualification evidence, or permission to close the release goal.
 
 ## Invocation and custody
 
-Run Python 3.11 or newer from the exact, clean final source checkout:
+Run Python 3.11 or newer from the exact, clean final source checkout using an
+isolated interpreter with site imports and bytecode writes disabled. Leave
+`PYTHONPYCACHEPREFIX` unset. The verifier rejects an existing local Python
+bytecode cache before importing its helpers, including timestamp-valid and
+unchecked-hash `.pyc` files:
 
 ```sh
-python3 scripts/verify_release_acceptance.py /absolute/evidence/acceptance.json \
+python3 -I -S -B scripts/verify_release_acceptance.py /absolute/evidence/acceptance.json \
   --repository /absolute/frozen-checkout
 ```
 
@@ -86,8 +90,10 @@ configurations_sha256
 
 The last digest hashes `{configuration_id: actual_file_sha256}`. Aggregate
 hashes use UTF-8 JSON with sorted keys, separators `,` and `:`, and no nonfinite
-values. The executing verifier, package verifier, functional runner, and
-process helper must themselves match the frozen source inventory.
+values. The executing verifier, package verifier, functional runner, process
+helper, native assembly input parser, and permanent attempt-index reader must
+themselves match the frozen source inventory and load from the verifier's source
+directory.
 
 ## Native candidates and independent builds
 
@@ -120,6 +126,11 @@ actual binaries, and byte-for-byte equality with the primary binaries. Its
 `build_id`, absolute `build_root`, and `environment_id` must differ from the
 primary. It may use the same physical host. It need not rerun the full test
 suite, and a copied primary output is not an independent compilation.
+The verifier reconstructs the independent package, feature, and target inventory
+from the retained Cargo JSON compiler-artifact log. It requires exactly the three
+production binary emissions at `build_root/target/release/<name>` and checks the
+retained binary references under `target/release/`. A declared inventory or
+copied binary without the original owned compiler transcript is rejected.
 
 Every native execution records physical and execution architecture, an explicit
 non-emulated claim, the original `release_host.py` preflight, an operator or
@@ -230,20 +241,51 @@ forced cleanup, uncertain census, surviving children, or nonzero outcomes.
 Domain adapters must additionally reconstruct and compare the exact command,
 arguments, configuration files, artifacts, and service inventory they own.
 
-The existing generic process runner does not yet record this extra dispatch
-identity for domain/rebuild attempts. Extend the actual runner; do not retrofit
-claims into historical receipts. Process groups do not prove custody of
-daemonized or remote services. Domain adapters must preserve those services'
-actual terminal outcomes too.
+The owned repeatable-assembly runner retains the executable selected at dispatch
+and rejects a process receipt whose command or executable differs from its
+retained preflight bytes. Its verifier also rejects a substituted retained
+executable or `command[0]` that differs from the selected absolute path. Every
+other domain or independent rebuild runner still needs this original process
+identity and a domain-specific command check; historical receipts cannot gain
+it through projection. Process groups do not prove custody of daemonized or
+remote services. Domain adapters must preserve those services' actual terminal
+outcomes too. Before registering an adapter, its native Python launcher must
+also rule out execution of stale or unchecked bytecode. The final verifier
+enforces its own isolated cache-free invocation; `-B` alone cannot establish
+which imported code ran.
 
-Each permanent attempt occupies `attempts/<id>/attempt.json`. The manifest
-indexes every on-disk attempt receipt. It has schema/id/status, evidence,
+Each native attempt is admitted into `attempts/index.jsonl` before its owned
+launcher dispatches. The append-only writer holds a file lock, uses canonical
+hash-chained rows, and syncs each admission to disk. Its terminal row binds
+the immutable `attempts/<id>/attempt.json` receipt and the original launcher
+outcome. Admitted output directories are disjoint: no attempt may run inside
+another attempt's retained output tree or contain it. The verifier enumerates
+every entry in `attempts/` before and after receipt checks, replays the entire
+index, and requires its exact attempt IDs
+and receipt hashes in the manifest. A missing, truncated, reordered,
+duplicated, or unfinished admission rejects acceptance. An extra file,
+symlink, attempt directory without a regular terminal receipt, or directory
+omitted from the manifest also rejects. A receipt has schema/id/status, evidence,
+an additional unqualified domain observation for a successful assembly,
 start/finish, and processes. Failed/interrupted attempts may retain nonzero
 outcomes, but their custody must be terminal and drained. They cannot be
 selected as successful gates. Every selected primary, independent build, and
 domain result must appear in the attempt index. The verifier never deletes,
 rewrites, or upgrades a failed attempt. Evidence custody must also preserve
 attempts outside the bundle; a local verifier cannot discover withheld history.
+Independent custody and a separately published journal head remain required to
+detect removal of the entire index or a rewritten complete history before
+bundle collection. The owned assembly launcher is the first indexed native
+entry point; other native acceptance dispatchers must join this journal before
+their semantic adapters can be registered.
+
+Its successful attempt also retains `domain-observation.json` as an additional
+hash-bound journal reference. This exact native observation binds the original
+launcher, inner report, target, and both package/source assembly outputs. Its
+status is `unqualified`: it supplies no authenticated host or reservation, no
+final domain receipt, and no registration in `DOMAIN_ADAPTERS`. The journal
+rejects a substituted or stale observation while retaining the launcher
+outcome as the attempt's primary evidence.
 
 ## Deliverables and remaining adapters
 
@@ -258,6 +300,23 @@ Checksums cover every other delivered file exactly once. Smoke receipts must
 bind the actual package/image/unit digests; repeat assembly must produce
 distinct files with identical package and source hashes.
 
+The unregistered `check_native_admin_readback` component now checks retained
+`kasumictl` policy, schema, and policy readbacks against independently pinned
+admin-client bytes, tenant/incarnation, exact policy/grants and limits, and
+collection definitions. It requires three distinct candidate-executable
+processes whose `--config` and request-file arguments are the verified local
+files, and rejects changed policy/schema epochs or nonmonotonic revisions.
+Transported native evidence needs an independently verified original-path to
+retained-byte binding before it can use this local-file check. Revisions may advance for
+strict read audit events, so equality is not assumed. This is only a semantic check
+of supplied evidence. The installed-domain runner must still prove original
+dispatch order and input-byte custody, own the native TLS endpoint and process
+lifetimes, bind the pinned intent to reviewed release configuration, and retain
+the native receipts before an adapter can register. No live tenant, grant, or
+schema readback is claimed by the synthetic tests. `ReadSchema` returns only
+requested collection definitions; a claim that no additional collections exist
+requires a separate native collection-list observation.
+
 Before enabling any domain adapter, implement and review its actual runner,
 fixed executable/argument/configuration/artifact contract, and semantic parser.
 Required work includes the installed full lifecycle, real providers, complete
@@ -268,8 +327,9 @@ verify the image's platform, manifest/layer identities, contained candidate
 binaries, and matching OS/image SBOM; hashing an arbitrary archive is
 insufficient. Dependency review must parse the actual advisory scan and every
 disposition rather than accept an opaque “reviewed” report. Independent-build
-collection must bind compiler outputs to its recorded command and isolated
-environment, not only assert an inventory.
+collection must retain the actual compiler transcript and source-bound isolated
+environment; the verifier's local replay does not produce or authenticate that
+native run.
 
 Tests intentionally use synthetic temporary fixtures to challenge validators.
 They do not produce or commit a populated acceptance manifest. The empty

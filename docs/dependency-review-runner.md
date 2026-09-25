@@ -1,26 +1,35 @@
-# Owned dependency upstream runner prerequisite
+# Owned dependency review prerequisite
 
-`scripts/run_dependency_review_owned.py` is a prerequisite for the G11
-`dependency-review` acceptance adapter. It does not register that adapter,
-perform an advisory scan, dispose of advisories, or close G11.
+`scripts/run_dependency_review_launcher.py` owns the G11 dependency review
+runner, its upstream test children, an offline advisory scan and the terminal
+process census. The acceptance verifier has an unregistered semantic bridge
+that checks the original launcher and its retained native primary. The bridge
+does not close G11 or qualify a release.
 
-Run the frozen script with native Python 3.11+ using `-B -S` and the exact
-selected Linux ARM64 primary functional evidence and native input declaration:
+Run the frozen script with native Python 3.11+ using `-I -B -S` and the exact
+selected Linux ARM64 primary functional evidence, native input declaration and
+reviewed advisory declaration:
 
 ```sh
-/absolute/native/python -B -S /absolute/evidence/source/scripts/run_dependency_review_owned.py \
+/absolute/native/python -I -B -S /absolute/evidence/source/scripts/run_dependency_review_launcher.py \
   --evidence /absolute/evidence \
   --native-inputs /absolute/native-inputs.json \
+  --advisory-inputs /absolute/advisory-inputs.json \
   --output /absolute/new/dependency-upstream-attempt
 ```
 
+The launcher and its child reject cached Python bytecode and aliased local
+sources before importing their frozen helpers. `-B` stops cache writes but
+would otherwise still permit stale or unchecked cache reads.
+
 The output directory must be fresh and outside the frozen evidence. Its
-`attempt.json` retains the source commit, source archive/inventory/lockfile
+`launcher.json` and `review/attempt.json` retain the selected primary's exact
+functional receipt bytes, source commit, source archive/inventory/lockfile
 hashes, runner and supporting-script hashes, exact command for every step,
 direct native tool paths and hashes, version probes, parsed test counts,
-failure counts, logs, and original process-group drain receipts. Failed and
-interrupted attempts remain on disk. A successful upstream-only run has status
-`passed-locked-upstream-only`; that status is never a release acceptance result.
+failure counts, advisory findings/dispositions, logs, and original
+process-group drain receipts. Failed and interrupted attempts remain on disk.
+A successful owned review is still only a prerequisite.
 
 The fixed roster first runs the official dependency-patch verifier and its
 own Python regression suite. It then runs all-target/all-feature tests and
@@ -48,7 +57,10 @@ The dependency verifier's Python regression fixture uses the process-owned
 temporary directory. The runner sets `TMPDIR` inside the evidence output so
 those synthetic files cannot alter the frozen source inventory.
 
-Before an acceptance adapter can be registered, a separate source-bound
-scanner runner and machine-checked advisory disposition contract must bind
-real current findings to exact resolved packages and reviewed fixes. This
-upstream runner intentionally contains no advisory field other than `null`.
+The launcher verifier reconstructs the scanner command and parses its original
+stdout against the projected frozen lock and retained advisory database. The
+unregistered acceptance bridge also binds that runner to the final manifest's
+selected primary receipt, exact configuration IDs and scenario logs. Native
+Linux ARM64 execution, authenticated current advisory inputs, durable attempt
+custody and final-source qualification remain outstanding. The empty adapter
+registry prevents a source-only bridge from passing the final release gate.

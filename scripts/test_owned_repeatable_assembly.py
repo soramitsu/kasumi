@@ -12,6 +12,7 @@ import threading
 import unittest
 from unittest.mock import patch
 
+import attempt_index
 import repeatable_assembly as assembly
 import run_repeatable_assembly_owned as owned
 from release_gate import sha256, write_json
@@ -200,20 +201,23 @@ class OwnedRunnerTests(unittest.TestCase):
                 owned.source_scripts(self.evidence, source)
         output = self.root / "failed-launch"
         with self.assertRaises(ValueError):
-            owned.launch(self.evidence, self.declaration, output)
+            owned.launch(self.evidence, self.declaration, output, self.root, "failed-preflight")
         failed = assembly.read(output / "launcher.json")
         self.assertEqual(failed["status"], "failed")
         self.assertIsNotNone(failed["error"])
         self.assertIsNone(failed["runner_process"])
+        self.assertIsNotNone(attempt_index.replay(self.root)["failed-preflight"]["terminal"])
         actual = self.root / "actual-parent"
         actual.mkdir()
         alias = self.root / "alias-parent"
         alias.symlink_to(actual, target_is_directory=True)
         with self.assertRaises(ValueError):
-            owned.launch(self.evidence, self.declaration, alias / "failed-launch")
+            owned.launch(self.evidence, self.declaration, alias / "failed-launch",
+                         self.root, "alias-preflight")
         aliased = assembly.read(actual / "failed-launch" / "launcher.json")
         self.assertEqual(aliased["custody_root"], str(actual / "failed-launch"))
         self.assertEqual(aliased["status"], "failed")
+        self.assertIsNotNone(attempt_index.replay(self.root)["alias-preflight"]["terminal"])
 
     def test_locked_spawn_ledger_seals_admission_and_binds_original_group(self):
         ledger = self.root / "groups.jsonl"

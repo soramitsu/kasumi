@@ -12,10 +12,11 @@ use crate::{
     },
 };
 use kasumi_types::{
-    Aggregation, ChangeFeedPage, MAX_POLICY_LIMITS_SNAPSHOT_BYTES, MAX_SECURITY_AUDIT_PAGE_BYTES,
-    MutationBatch, OrderedSeekRequest, OrderedSeekResponse, PolicyLimitsSnapshot, Predicate,
-    QueryRequest, QueryResponse, ReadChangeFeed, ReadPolicyLimits, ReadSchema, SchemaChangeSet,
-    SchemaSnapshot, SecurityAuditExportRequest, SecurityAuditPage, Sort, StagedChunk, TextSearch,
+    Aggregation, ChangeFeedPage, MAX_POLICY_LIMITS_SNAPSHOT_BYTES,
+    MAX_SCHEMA_CHANGESET_COLLECTIONS, MAX_SECURITY_AUDIT_PAGE_BYTES, MutationBatch,
+    OrderedSeekRequest, OrderedSeekResponse, PolicyLimitsSnapshot, Predicate, QueryRequest,
+    QueryResponse, ReadChangeFeed, ReadPolicyLimits, ReadSchema, SchemaChangeSet, SchemaSnapshot,
+    SecurityAuditExportRequest, SecurityAuditPage, Sort, StagedChunk, TextSearch,
 };
 use std::sync::Arc;
 
@@ -377,8 +378,13 @@ impl KasumiAdminClient {
     ) -> Result<AdmittedResponse<SchemaSnapshot>, ClientError> {
         let call = options.admit()?;
         let input = snapshot_decode::encode(request, &call)?;
-        if request.collections.len() > call.limits.max_rows {
-            return Err(exhausted());
+        if let ReadSchema::Named { collections } = request {
+            if collections.is_empty()
+                || collections.len() > call.limits.max_rows
+                || collections.len() > MAX_SCHEMA_CHANGESET_COLLECTIONS
+            {
+                return Err(exhausted());
+            }
         }
         let prepared = Arc::new(Prepared {
             input,

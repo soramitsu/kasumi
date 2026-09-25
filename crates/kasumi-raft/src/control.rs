@@ -2,14 +2,282 @@
 //! recovery input, not fresh quorum or administrative release authority.
 use crate::{BasicNode, LogId, RetirementLogSeed, TypeConfig, command::sha256};
 use anyhow::{Context, Result, ensure};
-use kasumi_store::{CustodyStore, TenantStorageSet, TenantStore, WriteOp};
+use kasumi_store::{CustodyStore, StoragePurpose, TenantStorageSet, TenantStore, WriteOp};
+use kasumi_types::{ControlSigningRoot, NodeIdentity, TargetInitialDispatchIdentity};
 use openraft::{Entry, EntryPayload, Membership, StoredMembership, Vote};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use std::sync::Arc;
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
+use uuid::Uuid;
 
 pub(crate) const META: &str = "raft.meta";
 pub(crate) const HEADERS: &str = "raft.headers";
 pub(crate) const SEEDS: &str = "raft.retirement-seeds";
+/// Local to one target's custody. This identity must never enter a portable
+/// Raft snapshot or be accepted as an applied membership fact on its own.
+pub const TARGET_PREBIND_NAMESPACE: &str = META;
+pub const TARGET_PREBIND_KEY: &[u8] = b"target_first_membership_prebind";
+
+/// Exact first-release target dispatch expectation. The writer is the engine's
+/// one-use `VerifiedInitialMembership` candidate, not a Raft replay or peer.
+/// These bytes are inert until a later local applied-fact association exists.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct TargetFirstMembershipPrebind {
+    pub format: u8,
+    pub control_root: ControlSigningRoot,
+    pub node: NodeIdentity,
+    pub tenant: String,
+    pub target_incarnation: Uuid,
+    pub group: String,
+    pub dispatch: TargetInitialDispatchIdentity,
+    pub journal_row_sha256: String,
+    pub voters: BTreeMap<u64, String>,
+    pub bootstrap_sha256: String,
+}
+
+impl TargetFirstMembershipPrebind {
+    pub fn validate(&self) -> Result<()> {
+        ensure!(self.format == 1, "unsupported target Raft prebind format");
+        self.control_root.validate()?;
+        self.node.validate()?;
+        kasumi_types::validate_name(&self.tenant)?;
+        ensure!(
+            !self.target_incarnation.is_nil()
+                && self.group == format!("{}/{}", self.tenant, self.target_incarnation),
+            "target Raft prebind group differs"
+        );
+        ensure!(
+            !self.dispatch.operation_id.is_nil()
+                && !self.dispatch.phase_id.is_nil()
+                && !self.dispatch.attempt_id.is_nil(),
+            "target Raft prebind dispatch identity is incomplete"
+        );
+        kasumi_types::validate_sha256(&self.dispatch.input_sha256)?;
+        kasumi_types::validate_sha256(&self.journal_row_sha256)?;
+        kasumi_types::validate_sha256(&self.bootstrap_sha256)?;
+        ensure!(
+            self.voters.len() == 3 && self.voters.contains_key(&self.node.node_id),
+            "target Raft prebind lacks exact three-voter placement"
+        );
+        for (node, endpoint) in &self.voters {
+            ensure!(
+                *node > 0 && !endpoint.is_empty() && endpoint.len() <= 2048,
+                "invalid target Raft prebind voter"
+            );
+        }
+        Ok(())
+    }
+
+    /// Check the live storage lease and the installed, immutable Raft identity
+    /// before either publication or reopening. This does not authenticate the
+    /// Control dispatch; its caller must retain that original evidence.
+    pub fn validate_storage(&self, stores: &TenantStorageSet) -> Result<()> {
+        self.validate_serving_storage(stores)?;
+        self.validate_custody(stores.custody())
+    }
+
+    fn validate_serving_storage(&self, stores: &TenantStorageSet) -> Result<()> {
+        self.validate()?;
+        stores.check_access()?;
+        ensure!(
+            stores.application().tenant() == self.tenant,
+            "target Raft prebind tenant differs"
+        );
+        let StoragePurpose::Serving { identity, .. } =
+            stores.application().storage_access().purpose()
+        else {
+            anyhow::bail!("target Raft prebind requires installed serving storage")
+        };
+        identity.validate()?;
+        ensure!(
+            identity.tenant == self.tenant
+                && identity.incarnation == self.target_incarnation
+                && identity.node == self.node,
+            "target Raft prebind installed serving identity differs"
+        );
+        Ok(())
+    }
+
+    /// The one-use signed candidate binds a materialized target whose Raft
+    /// identity has not yet been installed. Node, group, and prebind must be
+    /// published in one custody batch; an earlier partial or competing writer
+    /// cannot be repaired by this path.
+    pub fn validate_unbound_storage(&self, stores: &TenantStorageSet) -> Result<()> {
+        self.validate_serving_storage(stores)?;
+        let store = stores.custody().store();
+        let expected_bootstrap = serde_json::to_vec(&self.bootstrap_sha256)?;
+        ensure!(
+            store.scan(META)?
+                == vec![(b"application_bootstrap_sha256".to_vec(), expected_bootstrap,)],
+            "target Raft identity was already or incompletely installed"
+        );
+        for namespace in [
+            HEADERS,
+            SEEDS,
+            "raft.log",
+            "raft.custody-log",
+            "raft.snapshot",
+            "raft.custody-snapshot",
+            "raft.custody-commands",
+            "raft.custody-audit",
+        ] {
+            ensure!(
+                store.scan(namespace)?.is_empty(),
+                "target Raft data exists before first identity binding"
+            );
+        }
+        Ok(())
+    }
+
+    /// The candidate is consumed before any target Raft apply or snapshot.
+    /// An already running group's durable coverage cannot be prebound later.
+    pub fn validate_unapplied_storage(&self, stores: &TenantStorageSet) -> Result<()> {
+        self.validate_storage(stores)?;
+        let store = stores.custody().store();
+        ensure!(
+            load::<AppliedCursor>(store, META, b"applied")?.is_none()
+                && first_applied_membership(store)?.is_none()
+                && committed_coverage(store)?.is_none()
+                && load::<LocalFirstMembershipAssociation>(
+                    store,
+                    META,
+                    LOCAL_FIRST_ASSOCIATION_KEY,
+                )?
+                .is_none(),
+            "target Raft prebind arrived after durable consensus progress"
+        );
+        Ok(())
+    }
+
+    fn validate_custody(&self, custody: &CustodyStore) -> Result<()> {
+        self.validate()?;
+        ensure!(
+            load::<u64>(custody.store(), META, b"node_id")? == Some(self.node.node_id)
+                && load::<String>(custody.store(), META, b"group")?.as_ref() == Some(&self.group),
+            "target Raft prebind installed group differs"
+        );
+        ensure!(
+            load::<String>(custody.store(), META, b"application_bootstrap_sha256")?.as_ref()
+                == Some(&self.bootstrap_sha256),
+            "target Raft prebind installed bootstrap differs"
+        );
+        Ok(())
+    }
+}
+
+/// Strict local reopen check. The caller must derive `expected` from the
+/// authenticated journal and signed Control originals, never from this row.
+pub fn read_target_first_membership_prebind(
+    stores: &TenantStorageSet,
+    expected: &TargetFirstMembershipPrebind,
+) -> Result<TargetFirstMembershipPrebind> {
+    expected.validate_storage(stores)?;
+    let actual = load::<TargetFirstMembershipPrebind>(
+        stores.custody().store(),
+        TARGET_PREBIND_NAMESPACE,
+        TARGET_PREBIND_KEY,
+    )?
+    .context("target Raft prebind absent")?;
+    actual.validate()?;
+    ensure!(
+        actual == *expected,
+        "target Raft prebind differs from authenticated dispatch"
+    );
+    Ok(actual)
+}
+
+/// Read-only local historical result for one externally authenticated target
+/// dispatch. It grants no Raft startup, child ticket, or current quorum proof.
+/// The caller must derive `expected` from the fresh signed Control original and
+/// the exact accepted target-journal row, never from this custody store.
+pub struct TargetFirstMembershipHistory {
+    first_fact_sha256: String,
+    first_log_id: LogId<u64>,
+    applied_log_id: LogId<u64>,
+    committed_log_id: LogId<u64>,
+}
+
+impl TargetFirstMembershipHistory {
+    /// Digest of the exact immutable portable first-membership fact, including
+    /// its canonical log header. Equal indices alone do not identify history.
+    pub fn first_fact_sha256(&self) -> &str {
+        &self.first_fact_sha256
+    }
+    pub fn first_log_id(&self) -> LogId<u64> {
+        self.first_log_id
+    }
+    pub fn applied_log_id(&self) -> LogId<u64> {
+        self.applied_log_id
+    }
+    pub fn committed_log_id(&self) -> LogId<u64> {
+        self.committed_log_id
+    }
+}
+
+/// Authenticate the node-local prebind, its atomic association to the
+/// portable first fact, and current applied/committed and snapshot coverage.
+/// The per-store gate gives this read one ordered view against Raft publication.
+pub fn read_target_first_membership_history(
+    stores: &TenantStorageSet,
+    expected: &TargetFirstMembershipPrebind,
+) -> Result<TargetFirstMembershipHistory> {
+    let control_gate = crate::storage::control_gate(stores.custody())?;
+    let _control = control_gate
+        .lock()
+        .map_err(|_| anyhow::anyhow!("target history control gate poisoned"))?;
+    read_target_first_membership_prebind(stores, expected)?;
+    let custody = stores.custody();
+    let store = custody.store();
+    let first =
+        first_applied_membership(store)?.context("target first applied membership absent")?;
+    local_first_association_write(custody, Some(&first), None)?;
+    if let Some(active) =
+        load::<LogHeader>(store, HEADERS, &first.header.log_id.index.to_be_bytes())?
+    {
+        ensure!(
+            active == first.header,
+            "target first membership active header differs"
+        );
+    } else {
+        let purged: Option<LogId<u64>> = load(store, META, b"purged")?;
+        let snapshot = crate::storage::load_snapshot_coverage(store)?;
+        ensure!(
+            purged.is_some_and(|id| id.index >= first.header.log_id.index)
+                || snapshot
+                    .as_ref()
+                    .and_then(|coverage| coverage.meta.last_log_id)
+                    .is_some_and(|id| id >= first.header.log_id),
+            "target first membership lacks purged or snapshot log coverage"
+        );
+    }
+    let applied =
+        load::<AppliedCursor>(store, META, b"applied")?.context("target applied cursor absent")?;
+    let applied_log_id = applied
+        .log_id()
+        .context("target applied cursor lacks log coverage")?;
+    let latest = match &applied {
+        AppliedCursor::Entry(position) => &position.membership,
+        AppliedCursor::Snapshot { meta, .. } => &meta.last_membership,
+    };
+    first.validate_covered(Some(applied_log_id), latest)?;
+    let committed_log_id =
+        committed_coverage(store)?.context("target committed coverage absent")?;
+    ensure!(
+        committed_log_id >= applied_log_id,
+        "target applied cursor exceeds committed coverage"
+    );
+    crate::storage::validate_target_history_snapshot(stores, &first, &applied)?;
+    stores.check_access()?;
+    Ok(TargetFirstMembershipHistory {
+        first_fact_sha256: sha256(&serde_json::to_vec(&first)?),
+        first_log_id: first.header.log_id,
+        applied_log_id,
+        committed_log_id,
+    })
+}
 
 /// Actual adapter-assigned execution position. No request can select its term,
 /// leader, predecessor or membership. The engine validates a seed against its
@@ -155,6 +423,186 @@ impl LogHeader {
         );
         Ok(())
     }
+}
+
+/// The first membership entry actually applied by this state machine. It is
+/// written in the same custody transaction as the applied cursor and survives
+/// log purge and later membership changes. It is historical evidence only.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct FirstAppliedMembership {
+    pub(crate) header: LogHeader,
+}
+
+/// Local association of the accepted dispatch to the portable first applied
+/// membership. Peer snapshots carry the portable fact, never this local row.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct LocalFirstMembershipAssociation {
+    format: u8,
+    prebind_sha256: String,
+    first_fact_sha256: String,
+}
+
+pub(crate) const LOCAL_FIRST_ASSOCIATION_KEY: &[u8] = b"target_first_membership_association";
+
+impl LocalFirstMembershipAssociation {
+    fn expected(
+        prebind: &TargetFirstMembershipPrebind,
+        first: &FirstAppliedMembership,
+    ) -> Result<Self> {
+        prebind.validate()?;
+        let stored = first.stored_membership()?;
+        let membership = stored.membership();
+        let expected_voters = prebind.voters.keys().copied().collect::<BTreeSet<_>>();
+        let actual_nodes = membership
+            .nodes()
+            .map(|(id, node)| (*id, node.addr.clone()))
+            .collect::<BTreeMap<_, _>>();
+        ensure!(
+            membership.get_joint_config().len() == 1
+                && membership.get_joint_config()[0] == expected_voters
+                && actual_nodes == prebind.voters,
+            "first applied membership differs from prebound target voters"
+        );
+        Ok(Self {
+            format: 1,
+            prebind_sha256: sha256(&serde_json::to_vec(prebind)?),
+            first_fact_sha256: sha256(&serde_json::to_vec(first)?),
+        })
+    }
+
+    fn validate(&self) -> Result<()> {
+        ensure!(
+            self.format == 1,
+            "unsupported local membership association format"
+        );
+        kasumi_types::validate_sha256(&self.prebind_sha256)?;
+        kasumi_types::validate_sha256(&self.first_fact_sha256)?;
+        Ok(())
+    }
+}
+
+/// Validate an existing local association or prepare its one-time write in
+/// the caller's applied/snapshot custody transaction. An existing first fact
+/// without its local association is never repaired after the fact.
+pub(crate) fn local_first_association_write(
+    custody: &CustodyStore,
+    existing_first: Option<&FirstAppliedMembership>,
+    incoming_first: Option<&FirstAppliedMembership>,
+) -> Result<Option<WriteOp>> {
+    let store = custody.store();
+    let prebind =
+        load::<TargetFirstMembershipPrebind>(store, TARGET_PREBIND_NAMESPACE, TARGET_PREBIND_KEY)?;
+    let existing_association =
+        load::<LocalFirstMembershipAssociation>(store, META, LOCAL_FIRST_ASSOCIATION_KEY)?;
+    let Some(prebind) = prebind else {
+        ensure!(
+            existing_association.is_none(),
+            "local first membership association lacks target prebind"
+        );
+        return Ok(None);
+    };
+    prebind.validate_custody(custody)?;
+    if let Some(existing) = existing_first {
+        let expected = LocalFirstMembershipAssociation::expected(&prebind, existing)?;
+        let actual = existing_association
+            .context("first applied target membership lacks atomic local association")?;
+        actual.validate()?;
+        ensure!(
+            actual == expected,
+            "local first membership association differs from durable fact"
+        );
+        return Ok(None);
+    }
+    ensure!(
+        existing_association.is_none(),
+        "local first membership association precedes applied fact"
+    );
+    incoming_first
+        .map(|first| -> Result<_> {
+            let expected = LocalFirstMembershipAssociation::expected(&prebind, first)?;
+            Ok(WriteOp::put(
+                META,
+                LOCAL_FIRST_ASSOCIATION_KEY,
+                serde_json::to_vec(&expected)?,
+            ))
+        })
+        .transpose()
+}
+
+impl FirstAppliedMembership {
+    fn stored_membership(&self) -> Result<StoredMembership<u64, crate::BasicNode>> {
+        self.header.validate()?;
+        let HeaderPayload::Membership(membership) = &self.header.payload else {
+            anyhow::bail!("first applied fact is not a membership entry")
+        };
+        ensure!(
+            membership.voter_ids().next().is_some(),
+            "first applied membership has no voter"
+        );
+        let entry = Entry::<TypeConfig> {
+            log_id: self.header.log_id,
+            payload: EntryPayload::Membership(membership.clone()),
+        };
+        self.header
+            .check_entry(&entry, &crate::storage::encode_entry(&entry)?)?;
+        Ok(StoredMembership::new(
+            Some(self.header.log_id),
+            membership.clone(),
+        ))
+    }
+
+    pub(crate) fn validate_covered(
+        &self,
+        last_log_id: Option<LogId<u64>>,
+        latest: &StoredMembership<u64, crate::BasicNode>,
+    ) -> Result<()> {
+        let first = self.stored_membership()?;
+        let first_id = self.header.log_id;
+        let latest_id = (*latest.log_id()).context("first membership has no current coverage")?;
+        ensure!(
+            last_log_id.is_some_and(|last| last >= first_id)
+                && latest_id >= first_id
+                && (latest_id != first_id || *latest == first),
+            "first applied membership differs from durable coverage"
+        );
+        Ok(())
+    }
+}
+
+pub(crate) fn first_applied_membership(
+    store: &TenantStore,
+) -> Result<Option<FirstAppliedMembership>> {
+    let fact = load::<FirstAppliedMembership>(store, META, b"first_membership")?;
+    if let Some(fact) = &fact {
+        fact.stored_membership()?;
+    }
+    Ok(fact)
+}
+
+pub(crate) fn first_membership_for_snapshot(
+    custody: &CustodyStore,
+    meta: &openraft::SnapshotMeta<u64, crate::BasicNode>,
+) -> Result<Option<FirstAppliedMembership>> {
+    let fact = first_applied_membership(custody.store())?;
+    local_first_association_write(custody, fact.as_ref(), None)?;
+    validate_snapshot_first_membership(meta, fact.as_ref())?;
+    Ok(fact)
+}
+
+pub(crate) fn validate_snapshot_first_membership(
+    meta: &openraft::SnapshotMeta<u64, crate::BasicNode>,
+    fact: Option<&FirstAppliedMembership>,
+) -> Result<()> {
+    match fact {
+        Some(fact) => fact.validate_covered(meta.last_log_id, &meta.last_membership)?,
+        None => ensure!(
+            meta.last_membership.log_id().is_none(),
+            "snapshot lacks immutable first applied membership"
+        ),
+    }
+    Ok(())
 }
 
 /// Durable control JSON has exactly the current writer's byte spelling.
@@ -603,7 +1051,18 @@ pub(crate) fn persist_applied(
     if let (Some(existing), Some(new)) = (&existing_boundary, &boundary) {
         ensure!(existing == new, "immutable retired boundary differs");
     }
-    if let Some(previous) = load::<AppliedCursor>(store, META, b"applied")?
+    let previous = load::<AppliedCursor>(store, META, b"applied")?;
+    let existing_first = first_applied_membership(store)?;
+    local_first_association_write(domains.custody(), existing_first.as_ref(), None)?;
+    let previous_membership = previous.as_ref().and_then(|cursor| match cursor {
+        AppliedCursor::Entry(position) => *position.membership.log_id(),
+        AppliedCursor::Snapshot { meta, .. } => *meta.last_membership.log_id(),
+    });
+    ensure!(
+        previous_membership.is_none() || existing_first.is_some(),
+        "previously applied membership lacks immutable first fact"
+    );
+    if let Some(previous) = &previous
         && previous
             .log_id()
             .is_some_and(|id| id.index >= context.log_id.index)
@@ -629,7 +1088,38 @@ pub(crate) fn persist_applied(
         );
         return Ok(());
     }
+    let new_first = match (existing_first.as_ref(), *context.membership.log_id()) {
+        (None, None) => None,
+        (None, Some(membership_id)) => {
+            ensure!(
+                membership_id == context.log_id && previous_membership.is_none(),
+                "later membership cannot synthesize a first applied fact"
+            );
+            let header: LogHeader = load(store, HEADERS, &context.log_id.index.to_be_bytes())?
+                .context("first membership lacks its exact retained log header")?;
+            let fact = FirstAppliedMembership { header };
+            fact.validate_covered(Some(context.log_id), &context.membership)?;
+            Some(fact)
+        }
+        (Some(first), Some(_)) => {
+            first.validate_covered(Some(context.log_id), &context.membership)?;
+            None
+        }
+        (Some(_), None) => anyhow::bail!("applied membership would lose its first fact"),
+    };
     let mut writes = vec![applied_write(context)?];
+    if let Some(fact) = new_first {
+        if let Some(association) =
+            local_first_association_write(domains.custody(), None, Some(&fact))?
+        {
+            writes.push(association);
+        }
+        writes.push(WriteOp::put(
+            META,
+            b"first_membership",
+            serde_json::to_vec(&fact)?,
+        ));
+    }
     if let Some(boundary) = boundary {
         if existing_boundary.is_none() {
             let seed = context

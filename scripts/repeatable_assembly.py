@@ -7,13 +7,28 @@ same trusted-producer boundary as the release host inventory and attestation.
 """
 from __future__ import annotations
 
+import sys
+if __name__ == "__main__" and not (sys.flags.isolated and sys.flags.no_site
+                                  and sys.flags.dont_write_bytecode):
+    raise SystemExit("repeatable assembly requires native Python -I -S -B")
+
 import argparse
 import datetime as dt
 import json
 import os
 from pathlib import Path
 import shutil
-import sys
+
+if __name__ == "__main__":
+    _scripts = Path(__file__).resolve(strict=True).parent
+    if sys.pycache_prefix is not None or "PYTHONPYCACHEPREFIX" in os.environ:
+        raise SystemExit("repeatable assembly forbids a redirected Python bytecode cache")
+    if ((_scripts / "__pycache__").exists() or (_scripts / "__pycache__").is_symlink()
+            or any(path.suffix in {".pyc", ".pyo"} or
+                   (path.suffix == ".py" and path.is_symlink())
+                   for path in _scripts.rglob("*"))):
+        raise SystemExit("repeatable assembly requires source-only Python imports")
+    sys.path.insert(0, str(_scripts))
 
 import assembly_inputs
 import gate_process
@@ -26,7 +41,7 @@ PROBE_TIMEOUT_SECONDS = 60
 RUNNER = "scripts/repeatable_assembly.py"
 SCRIPTS = {RUNNER, "scripts/package_release.py", "scripts/assembly_inputs.py",
            "scripts/release_gate.py", "scripts/gate_process.py", "scripts/verify_release_acceptance.py",
-           "scripts/run_repeatable_assembly_owned.py"}
+           "scripts/run_repeatable_assembly_owned.py", "scripts/attempt_index.py"}
 
 
 def now():
@@ -90,6 +105,8 @@ def run_owned(root, name, command, source, environment, timeout, *, before_clean
     process["stdout"] = ref(root, directory / "stdout.log")
     process["stderr"] = ref(root, directory / "stderr.log")
     write_json(directory / "process.json", process)
+    require(process.get("command") == command and process.get("executable") == executable,
+            "owned process dispatch differs from the retained preflight executable")
     return {"id": name, "receipt": ref(root, directory / "process.json"),
             "stdout": process["stdout"], "stderr": process["stderr"], "executable": retained}
 
@@ -113,7 +130,7 @@ def check_owned(root, item, command, cwd, timeout):
 
 
 def command(inputs, source, evidence, output, declaration):
-    return [inputs["tools"]["python"]["path"], "-B", "-S", str(Path(source) / "scripts/package_release.py"),
+    return [inputs["tools"]["python"]["path"], "-I", "-B", "-S", str(Path(source) / "scripts/package_release.py"),
             "--evidence", evidence, "--output", output, "--native-inputs", declaration]
 
 

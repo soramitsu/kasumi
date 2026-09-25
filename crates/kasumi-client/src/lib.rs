@@ -63,6 +63,28 @@ pub mod proto {
     tonic::include_proto!("kasumi.v1");
 }
 
+/// Required identity of the first-release native write-receipt wire contract.
+pub const NATIVE_WRITE_RECEIPT_CONTRACT: &str = "kasumi.write-receipt.v1";
+
+/// Decode the strict current native write-receipt wire. This checks the
+/// contract, canonical ordered unique paths, and applying revisions, but does
+/// not match the reply to a specific request.
+pub fn decode_native_write_receipt(
+    response: proto::WriteReceipt,
+) -> Result<WriteReceipt, ClientError> {
+    mutation_receipt::decode_write_receipt(response)
+}
+
+/// Verify a native `Mutate` reply against the exact submitted batch.
+/// This matches input on an authenticated connection; it is not independent
+/// authentication of the server or a finality proof.
+pub fn verify_submitted_mutation_receipt(
+    original: &MutationBatch,
+    response: proto::WriteReceipt,
+) -> Result<WriteReceipt, ClientError> {
+    mutation_receipt::verify_committed_write_receipt(original, response)
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum ClientError {
     #[error("native secure connection failed: {0}")]
@@ -184,10 +206,7 @@ impl KasumiClient {
             )?)
             .await?
             .into_inner();
-        Ok(WriteReceipt {
-            revision: response.revision,
-            versions: response.versions.into_iter().collect(),
-        })
+        mutation_receipt::decode_write_receipt(response)
     }
 
     pub async fn append_staged_chunk(
@@ -205,10 +224,7 @@ impl KasumiClient {
             )?)
             .await?
             .into_inner();
-        Ok(WriteReceipt {
-            revision: response.revision,
-            versions: response.versions.into_iter().collect(),
-        })
+        mutation_receipt::decode_write_receipt(response)
     }
 
     pub async fn finalize_staged_transaction(
@@ -226,10 +242,7 @@ impl KasumiClient {
             )?)
             .await?
             .into_inner();
-        Ok(WriteReceipt {
-            revision: response.revision,
-            versions: response.versions.into_iter().collect(),
-        })
+        mutation_receipt::decode_write_receipt(response)
     }
 
     pub async fn stop_staged_transaction(
@@ -302,10 +315,7 @@ impl KasumiClient {
             )?)
             .await?
             .into_inner();
-        Ok(WriteReceipt {
-            revision: response.revision,
-            versions: response.versions.into_iter().collect(),
-        })
+        mutation_receipt::verify_committed_write_receipt(batch, response)
     }
 }
 
@@ -480,10 +490,7 @@ impl KasumiAdminClient {
             )?)
             .await?
             .into_inner();
-        Ok(WriteReceipt {
-            revision: response.revision,
-            versions: response.versions.into_iter().collect(),
-        })
+        mutation_receipt::decode_write_receipt(response)
     }
 
     pub async fn schema_activation_status(
@@ -535,10 +542,7 @@ impl KasumiAdminClient {
             )?)
             .await?
             .into_inner();
-        Ok(WriteReceipt {
-            revision: response.revision,
-            versions: response.versions.into_iter().collect(),
-        })
+        mutation_receipt::decode_write_receipt(response)
     }
 }
 

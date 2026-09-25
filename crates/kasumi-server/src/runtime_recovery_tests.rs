@@ -1209,6 +1209,297 @@ impl Fixture {
         self.assert_protected_status_record(configurations, &expected)
             .await;
     }
+    /// Drive installed Control/issuer/target services through one actual
+    /// Start, discard its original reply, and resolve only its retained owner.
+    pub async fn assert_initial_start_lost_reply_status(&self) {
+        let request = self.request.as_ref().unwrap();
+        let mut control = self.client().await;
+        if control
+            .start(request, Duration::from_secs(5))
+            .await
+            .is_err()
+        {
+            self.status(&mut control, "initial Start operation readback")
+                .await;
+        }
+        tokio::time::timeout(Duration::from_secs(180), async {
+            for _ in 0..64 {
+                let before = self.status(&mut control, "initial Start progress").await;
+                if let Some(phase_id) = before.pending_phase {
+                    let phase = control.read_phase(&RecoveryPhaseRequest {
+                        operation_id: request.operation_id, phase_id,
+                    }, Duration::from_secs(5)).await.unwrap();
+                    if let RecoveryDispatch::Target { node_id, request: original } = &phase.input
+                        && matches!(original.step, TargetRuntimeStep::Start(TargetReplicaInput::Quorum(_))) {
+                        let receiver = self.targets.iter().find(|target| target.node_id() == *node_id).unwrap();
+                        receiver.test_lose_next_initial_start_reply();
+                        assert!(self.step(&mut control).await.is_err(), "fixture must lose the real first Start reply");
+                        let marked = control.read_phase(&RecoveryPhaseRequest {
+                            operation_id: request.operation_id, phase_id,
+                        }, Duration::from_secs(5)).await.unwrap();
+                        assert!(marked.outcome.is_none());
+                        let attempt = marked.effect_attempts.get(&RecoveryEffect::TargetCommand).unwrap();
+                        let identity = TargetInitialDispatchIdentity {
+                            operation_id: marked.operation_id, phase_id: marked.phase_id,
+                            attempt_id: attempt.attempt_id, input_sha256: marked.input_sha256.clone(),
+                        };
+                        assert!(receiver.test_has_replica("acme", self.target).await,
+                            "lost Start reply must retain the actual prebound Raft owner");
+                        assert_eq!(receiver.test_initial_dispatch_status(&identity, original).unwrap(),
+                            kasumi_engine::InitialDispatchStatus::AcceptedOnly);
+                        assert_eq!(receiver.test_owned_custody_group("acme", self.target).await.unwrap(),
+                            Some(Some(format!("acme/{}", self.target))));
+                        let query = TargetInitialStartRequest {
+                            target_incarnation: self.target, request: (**original).clone(), identity: identity.clone(),
+                        };
+                        let index = *node_id as usize - 1;
+                        let connection = kasumi_client::KasumiClientConfig {
+                            endpoint: format!("https://localhost:{}", self.native_addresses[index].port()),
+                            identity: self.files[0].load().unwrap(),
+                            trusted_ca_pem: read_bounded(&self.ca, 1 << 20).unwrap(),
+                            server_certificate_pins: BTreeSet::from([self.files[index].load().unwrap().certificate_pin()]),
+                        };
+                        let mut target = kasumi_client::KasumiTargetClient::connect(&connection,
+                            kasumi_serving::ControlTrust::install(self.root.clone()).unwrap(),
+                            kasumi_serving::AuthorityTrust::install(self.manifest.clone()).unwrap(), *node_id,
+                        ).await.unwrap();
+                        let before_reads = receiver.test_marked_first_membership_reads();
+                        let status = target.read_initial_start(&self.control_token, &query).await
+                            .expect("lost Start reply must resolve over pinned mTLS while original child is live");
+                        status.validate_for(&query, *node_id).unwrap();
+                        assert!(receiver.test_marked_first_membership_reads() >= before_reads + 3,
+                            "Start RPC must refresh Control at admission and both release fences");
+                        let unauthorized_reads = receiver.test_marked_first_membership_reads();
+                        assert!(target.read_initial_start(&self.source_token, &query).await.is_err());
+                        assert_eq!(receiver.test_marked_first_membership_reads(), unauthorized_reads,
+                            "source token must fail before Control reads");
+                        let mut substituted = query.clone();
+                        substituted.identity.attempt_id = Uuid::new_v4();
+                        assert!(target.read_initial_start(&self.control_token, &substituted).await.is_err());
+                        let history = TargetInitialMembershipHistoryRequest {
+                            target_incarnation: self.target, request: (**original).clone(), identity: identity.clone(),
+                        };
+                        assert!(target.read_initial_membership_history(&self.control_token, &history).await.is_err(),
+                            "owned Start is not committed/applied first membership");
+                        let authenticator = self.authenticator(self.issuer_audits[0].clone()).await;
+                        let context = authenticator.authenticate(&format!("Bearer {}", self.control_token)).await.unwrap();
+                        let retry = receiver.execute(context, zeroize::Zeroizing::new(self.control_token.clone()),
+                            TargetExecuteRequest { request: (**original).clone(), initial_dispatch: Some(identity.clone()) },
+                        ).await;
+                        let error = retry.err().expect("replayed Execute must not issue another child");
+                        assert!(format!("{error:#}").contains("status-only"), "{error:#}");
+
+                        // The next coordinator attempt consumes the protected
+                        // status. The committed attempt ID remains unchanged.
+                        self.step(&mut control).await.expect("coordinator must resolve retained Start without Execute");
+                        let resolved = control.read_phase(&RecoveryPhaseRequest {
+                            operation_id: request.operation_id, phase_id,
+                        }, Duration::from_secs(5)).await.unwrap();
+                        assert_eq!(resolved.effect_attempts, marked.effect_attempts);
+                        assert!(matches!(resolved.outcome, Some(RecoveryDispatchOutcome::Target(ref response))
+                            if matches!(response.outcome, TargetRuntimeOutcome::Started { .. })));
+                        assert!(resolved.resolved_revision.is_some());
+                        assert!(target.read_initial_start(&self.control_token, &query).await.is_err(),
+                            "resolved Control phase cannot be normalized into current Start authority");
+                        assert!(receiver.test_has_replica("acme", self.target).await);
+                        for other in self.targets.iter().filter(|other| other.node_id() != *node_id) {
+                            assert!(!other.test_has_replica("acme", self.target).await,
+                                "status continuation must not construct another target child");
+                        }
+                        self.assert_initialize_lost_reply_status(&mut control).await;
+                        return;
+                    }
+                }
+                let _ = self.step(&mut control).await;
+            }
+            panic!("initial Start was not reached in 64 exact phases");
+        }).await.expect("installed lost-Start fixture exceeded its deadline");
+    }
+    async fn assert_initialize_lost_reply_status(
+        &self,
+        control: &mut kasumi_client::KasumiRecoveryPool,
+    ) {
+        let operation = self.request.as_ref().unwrap().operation_id;
+        for _ in 0..16 {
+            let before = self.status(control, "Initialize progress").await;
+            if let Some(phase_id) = before.pending_phase {
+                let phase = control
+                    .read_phase(
+                        &RecoveryPhaseRequest {
+                            operation_id: operation,
+                            phase_id,
+                        },
+                        Duration::from_secs(5),
+                    )
+                    .await
+                    .unwrap();
+                if let RecoveryDispatch::Target { node_id, request } = &phase.input
+                    && matches!(request.step, TargetRuntimeStep::Initialize(_))
+                {
+                    let receiver = self
+                        .targets
+                        .iter()
+                        .find(|target| target.node_id() == *node_id)
+                        .unwrap();
+                    let original_start = receiver
+                        .test_owned_start_identity("acme", self.target)
+                        .await
+                        .unwrap();
+                    for target in &self.targets {
+                        assert!(
+                            target.test_has_replica("acme", self.target).await,
+                            "all original voters must be owned before Initialize"
+                        );
+                    }
+                    receiver.test_lose_next_initialize_reply();
+                    assert!(
+                        self.step(control).await.is_err(),
+                        "fixture must discard actual Initialize reply"
+                    );
+                    let marked = control
+                        .read_phase(
+                            &RecoveryPhaseRequest {
+                                operation_id: operation,
+                                phase_id,
+                            },
+                            Duration::from_secs(5),
+                        )
+                        .await
+                        .unwrap();
+                    assert!(marked.outcome.is_none());
+                    let attempt = marked
+                        .effect_attempts
+                        .get(&RecoveryEffect::TargetCommand)
+                        .unwrap();
+                    let identity = TargetInitialDispatchIdentity {
+                        operation_id: operation,
+                        phase_id,
+                        attempt_id: attempt.attempt_id,
+                        input_sha256: marked.input_sha256.clone(),
+                    };
+                    assert_eq!(identity.operation_id, original_start.operation_id);
+                    assert_ne!(identity.phase_id, original_start.phase_id);
+                    assert_ne!(identity.attempt_id, original_start.attempt_id);
+                    assert_eq!(
+                        receiver
+                            .test_owned_start_identity("acme", self.target)
+                            .await
+                            .unwrap(),
+                        original_start,
+                        "Initialize must preserve original Start prebind"
+                    );
+                    let index = *node_id as usize - 1;
+                    let connection = kasumi_client::KasumiClientConfig {
+                        endpoint: format!(
+                            "https://localhost:{}",
+                            self.native_addresses[index].port()
+                        ),
+                        identity: self.files[0].load().unwrap(),
+                        trusted_ca_pem: read_bounded(&self.ca, 1 << 20).unwrap(),
+                        server_certificate_pins: BTreeSet::from([self.files[index]
+                            .load()
+                            .unwrap()
+                            .certificate_pin()]),
+                    };
+                    let mut target = kasumi_client::KasumiTargetClient::connect(
+                        &connection,
+                        kasumi_serving::ControlTrust::install(self.root.clone()).unwrap(),
+                        kasumi_serving::AuthorityTrust::install(self.manifest.clone()).unwrap(),
+                        *node_id,
+                    )
+                    .await
+                    .unwrap();
+                    let query = TargetInitialMembershipHistoryRequest {
+                        target_incarnation: self.target,
+                        request: (**request).clone(),
+                        identity: identity.clone(),
+                    };
+                    let reads = receiver.test_marked_first_membership_reads();
+                    let status = target
+                        .read_initial_membership_history(&self.control_token, &query)
+                        .await
+                        .expect(
+                            "lost Initialize reply must prove real committed/applied membership",
+                        );
+                    status.validate_for(&query).unwrap();
+                    assert!(receiver.test_marked_first_membership_reads() >= reads + 3);
+                    assert!(
+                        target
+                            .read_initial_membership_history(&self.source_token, &query)
+                            .await
+                            .is_err()
+                    );
+                    let mut substituted = query.clone();
+                    substituted.identity.attempt_id = Uuid::new_v4();
+                    assert!(
+                        target
+                            .read_initial_membership_history(&self.control_token, &substituted)
+                            .await
+                            .is_err()
+                    );
+                    let start_query = TargetInitialStartRequest {
+                        target_incarnation: self.target,
+                        request: (**request).clone(),
+                        identity: identity.clone(),
+                    };
+                    assert!(
+                        target
+                            .read_initial_start(&self.control_token, &start_query)
+                            .await
+                            .is_err()
+                    );
+                    let authenticator = self.authenticator(self.issuer_audits[0].clone()).await;
+                    let context = authenticator
+                        .authenticate(&format!("Bearer {}", self.control_token))
+                        .await
+                        .unwrap();
+                    let retry = receiver
+                        .execute(
+                            context,
+                            zeroize::Zeroizing::new(self.control_token.clone()),
+                            TargetExecuteRequest {
+                                request: (**request).clone(),
+                                initial_dispatch: Some(identity.clone()),
+                            },
+                        )
+                        .await;
+                    let error = retry
+                        .err()
+                        .expect("accepted Initialize Execute must remain one use");
+                    assert!(format!("{error:#}").contains("status-only"), "{error:#}");
+                    self.step(control).await.expect(
+                        "coordinator must resolve Initialize from exact retained membership",
+                    );
+                    let resolved = control
+                        .read_phase(
+                            &RecoveryPhaseRequest {
+                                operation_id: operation,
+                                phase_id,
+                            },
+                            Duration::from_secs(5),
+                        )
+                        .await
+                        .unwrap();
+                    assert_eq!(resolved.effect_attempts, marked.effect_attempts);
+                    assert!(
+                        matches!(resolved.outcome, Some(RecoveryDispatchOutcome::Target(ref response))
+                        if matches!(response.outcome, TargetRuntimeOutcome::Initialized { .. }))
+                    );
+                    assert!(resolved.resolved_revision.is_some());
+                    assert!(
+                        target
+                            .read_initial_membership_history(&self.control_token, &query)
+                            .await
+                            .is_err(),
+                        "resolved Initialize phase is not new authority"
+                    );
+                    return;
+                }
+            }
+            let _ = self.step(control).await;
+        }
+        panic!("Initialize was not reached in 16 exact phases");
+    }
     /// Query the actual NodeRuntime protected listener after the same operation
     /// has reached a durable terminal phase through the native coordinator.
     pub async fn assert_protected_status(&self, configurations: &[RuntimeConfig]) {
@@ -1256,8 +1547,7 @@ impl Fixture {
             .max_tls_version(reqwest::tls::Version::TLS_1_3)
             .tls_built_in_root_certs(false)
             .add_root_certificate(
-                reqwest::Certificate::from_pem(&read_bounded(&self.ca, 1 << 20).unwrap())
-                    .unwrap(),
+                reqwest::Certificate::from_pem(&read_bounded(&self.ca, 1 << 20).unwrap()).unwrap(),
             )
             .identity(reqwest::Identity::from_pem(&identity).unwrap())
             .redirect(reqwest::redirect::Policy::none())

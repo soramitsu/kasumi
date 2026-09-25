@@ -95,6 +95,28 @@ impl DatabaseConstruction {
         Ok(self.finish(engine, group, false))
     }
 
+    pub(crate) async fn start_target_prebound(
+        self,
+        engine: Arc<TenantEngine>,
+        transport: Arc<dyn RaftTransport>,
+        config: RaftGroupConfig,
+        expected: kasumi_raft::TargetFirstMembershipPrebind,
+    ) -> anyhow::Result<Arc<Database>> {
+        let buffers = self.admission().snapshot_buffer_owner()?;
+        let group = RaftGroup::open_target_prebound(
+            expected.node.node_id,
+            expected.group.clone(),
+            self.stores.clone(),
+            engine.clone(),
+            transport,
+            config,
+            buffers,
+            expected,
+        )
+        .await?;
+        Ok(self.finish(engine, group, false))
+    }
+
     fn finish(self, engine: Arc<TenantEngine>, group: RaftGroup, embedded: bool) -> Arc<Database> {
         Database::finish_construction(
             engine,

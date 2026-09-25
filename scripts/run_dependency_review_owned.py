@@ -6,14 +6,29 @@ The source is the frozen native primary's source, never a replacement checkout.
 """
 from __future__ import annotations
 
+import sys
+if __name__ == "__main__" and not (sys.flags.isolated and sys.flags.no_site
+                                  and sys.flags.dont_write_bytecode):
+    raise SystemExit("dependency runner requires native Python -I -S -B")
+
 import argparse
 import datetime as dt
 import json
 import os
 from pathlib import Path
 import re
-import sys
 import tomllib
+
+if __name__ == "__main__":
+    _scripts = Path(__file__).resolve(strict=True).parent
+    if sys.pycache_prefix is not None or "PYTHONPYCACHEPREFIX" in os.environ:
+        raise SystemExit("dependency runner forbids a redirected Python bytecode cache")
+    if ((_scripts / "__pycache__").exists() or (_scripts / "__pycache__").is_symlink()
+            or any(path.suffix in {".pyc", ".pyo"} or
+                   (path.suffix == ".py" and path.is_symlink())
+                   for path in _scripts.rglob("*"))):
+        raise SystemExit("dependency runner requires source-only Python imports")
+    sys.path.insert(0, str(_scripts))
 
 import assembly_inputs
 import check_dependency_patches
@@ -36,6 +51,7 @@ SCRIPTS = {
     "scripts/test_run_dependency_review_owned.py", "scripts/dependency_advisory.py",
     "scripts/dependency_git.py", "scripts/path_patch_projection.py",
     "scripts/run_dependency_review_launcher.py", "scripts/run_repeatable_assembly_owned.py",
+    "scripts/attempt_index.py",
 }
 REFERENCE = "aarch64-unknown-linux-gnu"
 JOBS = 2
@@ -357,8 +373,8 @@ def attest_git(output, source, environment, advisory_inputs):
 
 
 def run(evidence, declaration, advisory_declaration, output):
-    require(sys.version_info >= (3, 11) and sys.dont_write_bytecode and sys.flags.no_site,
-            "run with native Python 3.11+ -B -S")
+    require(sys.version_info >= (3, 11) and sys.flags.isolated and sys.dont_write_bytecode
+            and sys.flags.no_site, "run with native Python 3.11+ -I -B -S")
     require(not os.environ.get("PYTHONPATH") and not os.environ.get("PYTHONHOME"),
             "dependency runner cannot inherit Python import overrides")
     evidence = Path(evidence).resolve(strict=True)
@@ -379,7 +395,7 @@ def run(evidence, declaration, advisory_declaration, output):
               "evidence_root": str(evidence), "source_root": str(source), "custody_root": str(output),
               "declaration_path": str(declaration), "declaration": None,
               "advisory_declaration_path": str(advisory_declaration), "advisory_declaration": None,
-              "source": None, "source_scripts": None,
+              "source": None, "selected_primary": None, "source_scripts": None,
               "manifest_sha256": None, "suites": None, "toolchain": None,
               "steps": [], "totals": None, "memory_safety": None,
               "advisory_projection": None, "advisory_git": None,
@@ -392,6 +408,9 @@ def run(evidence, declaration, advisory_declaration, output):
                 runtime.machine == "aarch64", "dependency review requires a native Linux ARM64 runtime")
         functional, _, target, _ = package_release.verify_evidence(evidence)
         require(target == REFERENCE, "dependency review requires native Linux ARM64 reference")
+        record["selected_primary"] = owned.retain(output, evidence / "evidence.json")
+        require(owned.read(owned.check_ref(output, record["selected_primary"])) == functional,
+                "retained dependency primary differs from verified functional evidence")
         inputs = assembly_inputs.validate_declaration(owned.read(declaration))
         advisory_inputs = owned.read(advisory_declaration)
         require(inputs["target"] == target and

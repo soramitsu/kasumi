@@ -491,14 +491,20 @@ async fn benchmark(
 
     let collection_setup = Instant::now();
     for (_, token) in &oauth {
-        admin_client
+        let response = admin_client
             .create_collection(request(
                 proto::CollectionDefinitionRequest {
                     definition_json: serde_json::to_vec(&definition())?,
                 },
                 token,
             )?)
-            .await?;
+            .await?
+            .into_inner();
+        let receipt = kasumi_client::decode_native_write_receipt(response)?;
+        ensure!(
+            receipt.versions.is_empty(),
+            "collection creation unexpectedly reported document versions"
+        );
     }
     let collection_setup_seconds = collection_setup.elapsed().as_secs_f64();
     let empty_index_rss_bytes = resident_bytes(server_pid);
@@ -514,32 +520,40 @@ async fn benchmark(
                 expected: Precondition::Absent,
             });
             if operations_batch.len() == 256 {
-                data.mutate(request(
-                    proto::MutateRequest {
-                        batch_json: serde_json::to_vec(&MutationBatch {
-                            read_set: Vec::new(),
-                            idempotency_key: format!("load-{batch}"),
-                            operations: std::mem::take(&mut operations_batch),
-                        })?,
-                    },
-                    token,
-                )?)
-                .await?;
+                let original = MutationBatch {
+                    read_set: Vec::new(),
+                    idempotency_key: format!("load-{batch}"),
+                    operations: std::mem::take(&mut operations_batch),
+                };
+                let response = data
+                    .mutate(request(
+                        proto::MutateRequest {
+                            batch_json: serde_json::to_vec(&original)?,
+                        },
+                        token,
+                    )?)
+                    .await?
+                    .into_inner();
+                kasumi_client::verify_submitted_mutation_receipt(&original, response)?;
                 batch += 1;
             }
         }
         if !operations_batch.is_empty() {
-            data.mutate(request(
-                proto::MutateRequest {
-                    batch_json: serde_json::to_vec(&MutationBatch {
-                        read_set: Vec::new(),
-                        idempotency_key: format!("load-{batch}"),
-                        operations: operations_batch,
-                    })?,
-                },
-                token,
-            )?)
-            .await?;
+            let original = MutationBatch {
+                read_set: Vec::new(),
+                idempotency_key: format!("load-{batch}"),
+                operations: operations_batch,
+            };
+            let response = data
+                .mutate(request(
+                    proto::MutateRequest {
+                        batch_json: serde_json::to_vec(&original)?,
+                    },
+                    token,
+                )?)
+                .await?
+                .into_inner();
+            kasumi_client::verify_submitted_mutation_receipt(&original, response)?;
         }
         if (tenant + 1) % 100 == 0 || tenants == 1 {
             eprintln!("network fixture loaded tenant {}/{tenants}", tenant + 1);

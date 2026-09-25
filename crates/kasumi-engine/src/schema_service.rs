@@ -100,25 +100,41 @@ impl Database {
         request: ReadSchema,
     ) -> Result<SchemaSnapshot> {
         self.access()?;
-        if request.collections.is_empty()
-            || request.collections.len() > MAX_SCHEMA_CHANGESET_COLLECTIONS
-        {
-            return Err(Error::new(
-                ErrorCode::InvalidArgument,
-                "schema snapshot targets outside bounds",
-            ));
-        }
-        for name in &request.collections {
-            validate_name(name)?;
-            self.engine.authorize(context, Some(name), Action::Admin)?;
+        if let ReadSchema::Named { collections } = &request {
+            if collections.is_empty() || collections.len() > MAX_SCHEMA_CHANGESET_COLLECTIONS {
+                return Err(Error::new(
+                    ErrorCode::InvalidArgument,
+                    "schema snapshot targets outside bounds",
+                ));
+            }
+            for name in collections {
+                validate_name(name)?;
+                self.engine.authorize(context, Some(name), Action::Admin)?;
+            }
         }
         let mut reservation = self
             .admission()
             .reserve((MAX_SCHEMA_CHANGESET_BYTES * 3 + (1 << 20)) as u64, None)?;
         self.barrier().await?;
         let generation = self.engine.generation()?;
+        let collections: BTreeSet<String> = match request {
+            ReadSchema::All => generation.state.collections.keys().cloned().collect(),
+            ReadSchema::Named { collections } => collections,
+        };
+        if collections.len() > MAX_SCHEMA_CHANGESET_COLLECTIONS {
+            return Err(Error::new(
+                ErrorCode::ResourceExhausted,
+                "complete schema inventory exceeds collection bound",
+            ));
+        }
+        // Complete inventory can name collections only after the barrier.
+        // Every installed name must be Admin-authorized before the snapshot
+        // or any per-collection release event is exposed.
+        for name in &collections {
+            self.engine.authorize(context, Some(name), Action::Admin)?;
+        }
         let mut bytes = 0usize;
-        for name in &request.collections {
+        for name in &collections {
             self.engine.authorize_release(
                 context,
                 Some(name),
@@ -141,8 +157,7 @@ impl Database {
             revision: generation.state.revision,
             policy_epoch: generation.state.policy_epoch,
             schema_epoch: generation.state.schema_epoch,
-            collections: request
-                .collections
+            collections: collections
                 .iter()
                 .map(|name| {
                     (
@@ -160,9 +175,15 @@ impl Database {
                 })
                 .collect(),
         };
+        if crate::accounting::encoded_len(&snapshot)? > MAX_SCHEMA_CHANGESET_BYTES {
+            return Err(Error::new(
+                ErrorCode::ResourceExhausted,
+                "schema snapshot exceeds byte budget",
+            ));
+        }
         drop(generation);
         reservation.retain_workspace();
-        for collection in &request.collections {
+        for collection in &collections {
             self.release_event(
                 context,
                 Some(collection),

@@ -2,7 +2,10 @@
 async fn fenced_source_startup_keeps_control_handle_without_constructing_application_provider() {
     // The canonical fixture first enrolls the Independent tenant against its
     // live three-voter issuer. Only the subsequent reopen fences that issuer.
-    Box::pin(replicated_runtime_fixture_inner(false, None, true, false)).await;
+    Box::pin(replicated_runtime_fixture_inner(
+        false, None, true, false, false,
+    ))
+    .await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

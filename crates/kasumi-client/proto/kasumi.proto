@@ -130,7 +130,16 @@ message QueryResponse {
   optional string cursor = 4;
 }
 message MutateRequest { bytes batch_json = 1; }
-message WriteReceipt { uint64 revision = 1; map<string, uint64> versions = 2; }
+// Entries are emitted in ascending canonical target-path order. A repeated
+// message preserves duplicate raw-wire entries for strict client rejection.
+message VersionEntry { string target_path = 1; uint64 revision = 2; }
+message WriteReceipt {
+  uint64 revision = 1;
+  // Required literal "kasumi.write-receipt.v1". Old map-shaped replies have no
+  // current-contract identity and are rejected, including empty receipts.
+  string contract = 2;
+  repeated VersionEntry versions = 3;
+}
 message CollectionsRequest {}
 message CollectionsResponse { repeated bytes definitions_json = 1; }
 message ReceiptRequest { string idempotency_key = 1; }
@@ -184,10 +193,16 @@ message ControlChangeReference { string command_id = 1; string authority_partiti
 // Fixed installed target templates and actual issuer/Control capabilities.
 // No endpoint, key, filesystem path or deserialized live proof is accepted.
 service KasumiTargetRecovery {
-  rpc Execute(TargetRuntimeRequest) returns (TargetRuntimeResponse);
+  rpc Execute(TargetExecuteRequest) returns (TargetRuntimeResponse);
+  rpc ReadInitialMembershipHistory(TargetHistoryQuery) returns (TargetHistoryStatus);
+  rpc ReadInitialStart(TargetStartQuery) returns (TargetStartStatus);
 }
-message TargetRuntimeRequest { bytes request_json = 1; }
+message TargetExecuteRequest { bytes envelope_json = 1; }
 message TargetRuntimeResponse { bytes response_json = 1; }
+message TargetHistoryQuery { bytes query_json = 1; }
+message TargetHistoryStatus { bytes status_json = 1; }
+message TargetStartQuery { bytes query_json = 1; }
+message TargetStartStatus { bytes status_json = 1; }
 
 // Closed Control coordinator. Remote callers cannot submit internal phase
 // preparations or fabricated dispatch outcomes.

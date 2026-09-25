@@ -2,13 +2,77 @@ use super::*;
 use crate::{LogStore, RaftCommand, RetirementReplayState};
 use anyhow::Result;
 use kasumi_store::{
-    NodeStore, TenantStorageSet,
+    NodeStore, StorageAccess, TenantStorageSet,
     test_utils::{FaultBackend, LocalKeyProvider, ManualClock},
 };
 use kasumi_types::*;
 use openraft::RaftLogReader;
 use openraft::storage::{RaftLogStorage, RaftLogStorageExt};
 use std::collections::BTreeSet;
+
+#[test]
+fn target_first_membership_prebind_rejects_substitution_and_noncanonical_bytes() -> Result<()> {
+    let target_incarnation = uuid::Uuid::new_v4();
+    let record = TargetFirstMembershipPrebind {
+        format: 1,
+        control_root: ControlSigningRoot {
+            control_incarnation: uuid::Uuid::new_v4(),
+            public_key: "11".repeat(32),
+        },
+        node: NodeIdentity {
+            node_id: 1,
+            verifier: TrustVerifierIdentity {
+                installation_id: uuid::Uuid::new_v4(),
+                node_id: 1,
+            },
+            principal: "target-node".into(),
+            certificate_sha256: "22".repeat(32),
+        },
+        tenant: "tenant".into(),
+        target_incarnation,
+        group: format!("tenant/{target_incarnation}"),
+        dispatch: TargetInitialDispatchIdentity {
+            operation_id: uuid::Uuid::new_v4(),
+            phase_id: uuid::Uuid::new_v4(),
+            attempt_id: uuid::Uuid::new_v4(),
+            input_sha256: "33".repeat(32),
+        },
+        journal_row_sha256: "44".repeat(32),
+        voters: [
+            (1, "https://target-1:7400".into()),
+            (2, "https://target-2:7400".into()),
+            (3, "https://target-3:7400".into()),
+        ]
+        .into(),
+        bootstrap_sha256: "55".repeat(32),
+    };
+    record.validate()?;
+    let canonical = serde_json::to_vec(&record)?;
+    assert_eq!(
+        crate::control::decode_canonical::<TargetFirstMembershipPrebind>(&canonical)?,
+        record
+    );
+    let mut padded = canonical.clone();
+    padded.push(b' ');
+    assert!(crate::control::decode_canonical::<TargetFirstMembershipPrebind>(&padded).is_err());
+
+    let mut changed = record.clone();
+    changed.group = "tenant/other".into();
+    assert!(changed.validate().is_err());
+    let mut changed = record.clone();
+    changed.voters.remove(&2);
+    assert!(changed.validate().is_err());
+    let mut changed = record.clone();
+    changed.node.verifier.node_id = 2;
+    assert!(changed.validate().is_err());
+    let mut changed = record.clone();
+    changed.dispatch.attempt_id = uuid::Uuid::nil();
+    assert!(changed.validate().is_err());
+    let mut changed = record;
+    changed.journal_row_sha256 = "not-a-digest".into();
+    assert!(changed.validate().is_err());
+    Ok(())
+}
 
 const INCARNATION: &str = "f38b3bea-9d6e-4ecb-9eab-9c5e4cb412d6";
 pub(crate) fn group() -> String {
@@ -222,6 +286,100 @@ pub(crate) async fn fixture(
     let log = LogStore::open(stores.clone(), 1).await?;
     log.bind_group(group()).await?;
     Ok((stores, app_provider, custody_provider, log))
+}
+
+fn signed_target_serving_access(prebind: &TargetFirstMembershipPrebind) -> Result<StorageAccess> {
+    let pkcs8 = ring::signature::Ed25519KeyPair::generate_pkcs8(&ring::rand::SystemRandom::new())
+        .map_err(|_| anyhow::anyhow!("target serving fixture key generation failed"))?;
+    let root = kasumi_serving::test_utils::FixtureSigningRoot::from_pkcs8(pkcs8.as_ref())?;
+    let manifest = kasumi_serving::AuthorityManifest {
+        lifecycle_controls: Default::default(),
+        authority_id: uuid::Uuid::new_v4(),
+        max_lease_ms: 60_000,
+        clock_rate_error_ppm: 0,
+        partitions: std::collections::BTreeMap::from([(
+            0,
+            kasumi_serving::AuthorityPartition {
+                group: "target-history-fixture-issuer".into(),
+                public_key: root.public_key(),
+            },
+        )]),
+    };
+    let signing = root
+        .install(manifest.clone(), 0)?
+        .for_verifier(prebind.node.verifier.clone())?;
+    let signer = signing.signer.clone();
+    let boot = kasumi_serving::ServingBoot::new(
+        signing.trust,
+        kasumi_serving::ServingIdentity {
+            tenant: prebind.tenant.clone(),
+            incarnation: prebind.target_incarnation,
+            authority_epoch: 1,
+            node: prebind.node.clone(),
+        },
+    )?;
+    let attempt = boot.begin_acquisition()?;
+    let lease = attempt.verify(signer.sign_lease(kasumi_serving::LeaseClaims {
+        request: attempt.request().clone(),
+        authority_id: manifest.authority_id,
+        partition: 0,
+        authority_term: 1,
+        authority_revision: 1,
+        lifetime_ms: manifest.max_lease_ms,
+        credential_lifetime_ms: manifest.max_lease_ms,
+        activation_digest: "aa".repeat(32),
+        recovery_checkpoint: None,
+    })?)?;
+    StorageAccess::serving(kasumi_serving::ServingGate::new(lease)?)
+}
+
+async fn target_serving_fixture(
+    disk: FaultBackend,
+    create: bool,
+    fixture_scratch: Arc<kasumi_store::ScratchDisk>,
+    prebind: &TargetFirstMembershipPrebind,
+    access: StorageAccess,
+    app_provider: Arc<LocalKeyProvider>,
+    custody_provider: Arc<LocalKeyProvider>,
+) -> Result<(Arc<TenantStorageSet>, LogStore)> {
+    let node = NodeStore::open_with_backend(
+        disk,
+        kasumi_store::test_utils::storage_admission(),
+        fixture_scratch,
+    )?;
+    let stores = if create {
+        TenantStorageSet::initialize_catalogs(
+            node,
+            prebind.tenant.clone(),
+            app_provider,
+            custody_provider,
+            access,
+        )
+        .await?
+    } else {
+        TenantStorageSet::open_existing(
+            node,
+            prebind.tenant.clone(),
+            app_provider,
+            custody_provider,
+            access,
+        )
+        .await?
+    };
+    if create {
+        let mut identity = initial_storage_identity(prebind.node.node_id, &prebind.group)?
+            .into_iter()
+            .collect::<Vec<_>>();
+        identity.push(WriteOp::put(
+            META,
+            b"application_bootstrap_sha256",
+            serde_json::to_vec(&prebind.bootstrap_sha256)?,
+        ));
+        stores.custody().store().write_batch(&identity)?;
+    }
+    let log = LogStore::open(stores.clone(), prebind.node.node_id).await?;
+    log.bind_group(prebind.group.clone()).await?;
+    Ok((stores, log))
 }
 
 fn replace_with_alternate_json(
@@ -653,15 +811,357 @@ async fn accepted_boundary_and_exact_applied_position_publish_atomically_before_
 }
 
 fn membership(index: u64) -> Entry<TypeConfig> {
+    membership_with_address(index, "local")
+}
+
+fn membership_with_address(index: u64, address: &str) -> Entry<TypeConfig> {
     Entry {
         log_id: id(index),
         payload: EntryPayload::Membership(Membership::new(
             vec![BTreeSet::from([1])],
-            [(1, BasicNode::new("local"))]
+            [(1, BasicNode::new(address))]
                 .into_iter()
                 .collect::<std::collections::BTreeMap<_, _>>(),
         )),
     }
+}
+
+fn membership_context(
+    entry: &Entry<TypeConfig>,
+    previous: Option<LogId<u64>>,
+) -> Result<AppliedEntryContext> {
+    let EntryPayload::Membership(membership) = &entry.payload else {
+        anyhow::bail!("membership fixture entry required")
+    };
+    Ok(AppliedEntryContext {
+        log_id: entry.log_id,
+        previous,
+        membership: StoredMembership::new(Some(entry.log_id), membership.clone()),
+        command_sha256: crate::command::sha256(&crate::storage::encode_entry(entry)?),
+        retirement_seed: None,
+    })
+}
+
+#[tokio::test]
+async fn first_applied_membership_and_cursor_survive_every_atomic_write_boundary() -> Result<()> {
+    let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = kasumi_store::test_utils::private_tempdir()?;
+    let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
+    let seed_disk = FaultBackend::new();
+    let (stores, _, _, mut log) = fixture(seed_disk.clone(), true, fixture_scratch.clone()).await?;
+    let entry = membership(0);
+    let context = membership_context(&entry, None)?;
+    let (header, _) = LogHeader::build(&entry, &crate::storage::encode_entry(&entry)?)?;
+    log.blocking_append([entry]).await?;
+    log.save_committed(Some(id(0))).await?;
+    let baseline = seed_disk.crash();
+    drop(log);
+    drop(stores);
+
+    let mut successes = 0;
+    for failure in 0..40 {
+        let disk = baseline.crash();
+        let (stores, _, _, _) = fixture(disk.clone(), false, fixture_scratch.clone()).await?;
+        disk.fail_after(failure);
+        let result = persist_applied(&stores, &context, None);
+        let crash = disk.crash();
+        disk.disarm();
+        drop(stores);
+        let (reopened, _, _, _) = fixture(crash, false, fixture_scratch.clone()).await?;
+        let applied: Option<AppliedCursor> = load(reopened.custody().store(), META, b"applied")?;
+        let first = first_applied_membership(reopened.custody().store())?;
+        assert_eq!(
+            applied.is_some(),
+            first.is_some(),
+            "torn first-membership capture at write boundary {failure}"
+        );
+        if let Some(first) = first {
+            assert_eq!(applied, Some(AppliedCursor::Entry(context.record())));
+            assert_eq!(first.header, header);
+        }
+        if result.is_ok() {
+            successes += 1;
+        }
+    }
+    assert!(successes > 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn first_applied_membership_survives_later_membership_purge_and_reopen() -> Result<()> {
+    let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = kasumi_store::test_utils::private_tempdir()?;
+    let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
+    let disk = FaultBackend::new();
+    let (stores, _, _, mut log) = fixture(disk.clone(), true, fixture_scratch.clone()).await?;
+    let first = membership(0);
+    let later = membership_with_address(1, "later-local");
+    let first_context = membership_context(&first, None)?;
+    let later_context = membership_context(&later, Some(id(0)))?;
+    log.blocking_append([first, later]).await?;
+    log.save_committed(Some(id(1))).await?;
+    persist_applied(&stores, &first_context, None)?;
+    let fact = first_applied_membership(stores.custody().store())?
+        .context("first applied membership fact missing")?;
+    persist_applied(&stores, &later_context, None)?;
+    assert_eq!(
+        first_applied_membership(stores.custody().store())?,
+        Some(fact.clone())
+    );
+    log.purge(id(1)).await?;
+    assert!(
+        stores
+            .custody()
+            .store()
+            .get(HEADERS, &0u64.to_be_bytes())?
+            .is_none()
+    );
+    let crash = disk.crash();
+    drop(log);
+    drop(stores);
+    let (reopened, _, _, _) = fixture(crash, false, fixture_scratch).await?;
+    assert_eq!(
+        first_applied_membership(reopened.custody().store())?,
+        Some(fact.clone())
+    );
+    assert_eq!(
+        load::<AppliedCursor>(reopened.custody().store(), META, b"applied")?,
+        Some(AppliedCursor::Entry(later_context.record()))
+    );
+    let snapshot_meta = openraft::SnapshotMeta {
+        last_log_id: Some(id(1)),
+        last_membership: later_context.membership,
+        snapshot_id: uuid::Uuid::new_v4().to_string(),
+    };
+    assert_eq!(
+        first_membership_for_snapshot(reopened.custody(), &snapshot_meta)?,
+        Some(fact)
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn prebound_first_membership_association_survives_later_apply_purge_and_reopen() -> Result<()>
+{
+    use std::collections::BTreeMap;
+    let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = kasumi_store::test_utils::private_tempdir()?;
+    let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
+    let disk = FaultBackend::new();
+    let voters = (1..=3)
+        .map(|node| (node, format!("https://target-{node}:7400")))
+        .collect::<BTreeMap<_, _>>();
+    let prebind = TargetFirstMembershipPrebind {
+        format: 1,
+        control_root: ControlSigningRoot {
+            control_incarnation: uuid::Uuid::new_v4(),
+            public_key: "11".repeat(32),
+        },
+        node: NodeIdentity {
+            node_id: 1,
+            verifier: TrustVerifierIdentity {
+                installation_id: uuid::Uuid::new_v4(),
+                node_id: 1,
+            },
+            principal: "target-node".into(),
+            certificate_sha256: "22".repeat(32),
+        },
+        tenant: "tenant".into(),
+        target_incarnation: uuid::Uuid::parse_str(INCARNATION)?,
+        group: group(),
+        dispatch: TargetInitialDispatchIdentity {
+            operation_id: uuid::Uuid::new_v4(),
+            phase_id: uuid::Uuid::new_v4(),
+            attempt_id: uuid::Uuid::new_v4(),
+            input_sha256: "33".repeat(32),
+        },
+        journal_row_sha256: "44".repeat(32),
+        voters: voters.clone(),
+        bootstrap_sha256: "0".repeat(64),
+    };
+    let access = signed_target_serving_access(&prebind)?;
+    let app_provider = Arc::new(LocalKeyProvider::new([11; 32]));
+    let custody_provider = Arc::new(LocalKeyProvider::new([12; 32]));
+    let (stores, mut log) = target_serving_fixture(
+        disk.clone(),
+        true,
+        fixture_scratch.clone(),
+        &prebind,
+        access.clone(),
+        app_provider.clone(),
+        custody_provider.clone(),
+    )
+    .await?;
+    stores.custody().store().write_batch(&[WriteOp::put(
+        META,
+        TARGET_PREBIND_KEY,
+        serde_json::to_vec(&prebind)?,
+    )])?;
+    let first = Entry {
+        log_id: id(0),
+        payload: EntryPayload::Membership(Membership::new(
+            vec![BTreeSet::from([1, 2, 3])],
+            voters
+                .iter()
+                .map(|(node, endpoint)| (*node, BasicNode::new(endpoint)))
+                .collect::<BTreeMap<_, _>>(),
+        )),
+    };
+    let later = membership_with_address(1, "later-local");
+    let first_context = membership_context(&first, None)?;
+    let later_context = membership_context(&later, Some(id(0)))?;
+    log.blocking_append([first, later]).await?;
+    log.save_committed(Some(id(1))).await?;
+    let mut wrong_voters = prebind.clone();
+    wrong_voters
+        .voters
+        .insert(2, "https://substituted:7400".into());
+    stores.custody().store().write_batch(&[WriteOp::put(
+        META,
+        TARGET_PREBIND_KEY,
+        serde_json::to_vec(&wrong_voters)?,
+    )])?;
+    assert!(persist_applied(&stores, &first_context, None).is_err());
+    assert!(first_applied_membership(stores.custody().store())?.is_none());
+    assert!(load::<AppliedCursor>(stores.custody().store(), META, b"applied")?.is_none());
+    assert!(
+        load::<LocalFirstMembershipAssociation>(
+            stores.custody().store(),
+            META,
+            LOCAL_FIRST_ASSOCIATION_KEY,
+        )?
+        .is_none()
+    );
+    stores.custody().store().write_batch(&[WriteOp::put(
+        META,
+        TARGET_PREBIND_KEY,
+        serde_json::to_vec(&prebind)?,
+    )])?;
+    persist_applied(&stores, &first_context, None)?;
+    let original_fact = first_applied_membership(stores.custody().store())?
+        .context("prebound first membership absent")?;
+    let association: LocalFirstMembershipAssociation =
+        load(stores.custody().store(), META, LOCAL_FIRST_ASSOCIATION_KEY)?
+            .context("atomic local association absent")?;
+    persist_applied(&stores, &later_context, None)?;
+    assert_eq!(
+        read_target_first_membership_history(&stores, &prebind)?.first_log_id(),
+        id(0)
+    );
+    let original_header = stores
+        .custody()
+        .store()
+        .get(HEADERS, &0u64.to_be_bytes())?
+        .context("retained first log header absent")?;
+    let mut substituted_header: LogHeader = serde_json::from_slice(&original_header)?;
+    substituted_header.entry_sha256 = "aa".repeat(32);
+    stores.custody().store().write_batch(&[WriteOp::put(
+        HEADERS,
+        &0u64.to_be_bytes(),
+        serde_json::to_vec(&substituted_header)?,
+    )])?;
+    assert!(read_target_first_membership_history(&stores, &prebind).is_err());
+    stores.custody().store().write_batch(&[WriteOp::put(
+        HEADERS,
+        &0u64.to_be_bytes(),
+        original_header,
+    )])?;
+    log.purge(id(1)).await?;
+    let crash = disk.crash();
+    drop(log);
+    drop(stores);
+    let (reopened, _) = target_serving_fixture(
+        crash,
+        false,
+        fixture_scratch,
+        &prebind,
+        access,
+        app_provider,
+        custody_provider,
+    )
+    .await?;
+    assert_eq!(
+        first_applied_membership(reopened.custody().store())?,
+        Some(original_fact.clone())
+    );
+    assert_eq!(
+        load::<LocalFirstMembershipAssociation>(
+            reopened.custody().store(),
+            META,
+            LOCAL_FIRST_ASSOCIATION_KEY,
+        )?,
+        Some(association.clone())
+    );
+    let history = read_target_first_membership_history(&reopened, &prebind)?;
+    assert_eq!(history.first_log_id(), id(0));
+    assert_eq!(history.applied_log_id(), id(1));
+    assert_eq!(history.committed_log_id(), id(1));
+    let snapshot_meta = openraft::SnapshotMeta {
+        last_log_id: Some(id(1)),
+        last_membership: later_context.membership,
+        snapshot_id: uuid::Uuid::new_v4().to_string(),
+    };
+    assert_eq!(
+        first_membership_for_snapshot(reopened.custody(), &snapshot_meta)?,
+        Some(original_fact)
+    );
+    let incomplete_coverage = crate::storage::SnapshotCoverage {
+        kind: crate::storage::SnapshotKind::Application,
+        manifest_id: uuid::Uuid::new_v4().to_string(),
+        snapshot_sha256: "aa".repeat(32),
+        backend_sha256: "bb".repeat(32),
+        meta: snapshot_meta.clone(),
+    };
+    reopened.custody().store().write_batch(&[WriteOp::put(
+        META,
+        b"snapshot_coverage",
+        serde_json::to_vec(&incomplete_coverage)?,
+    )])?;
+    assert!(
+        read_target_first_membership_history(&reopened, &prebind).is_err(),
+        "snapshot control coverage without its published image must fail"
+    );
+    reopened
+        .custody()
+        .store()
+        .write_batch(&[WriteOp::delete(META, b"snapshot_coverage")])?;
+    reopened
+        .custody()
+        .store()
+        .write_batch(&[WriteOp::delete(META, LOCAL_FIRST_ASSOCIATION_KEY)])?;
+    assert!(first_membership_for_snapshot(reopened.custody(), &snapshot_meta).is_err());
+    assert!(read_target_first_membership_history(&reopened, &prebind).is_err());
+    reopened.custody().store().write_batch(&[WriteOp::put(
+        META,
+        LOCAL_FIRST_ASSOCIATION_KEY,
+        serde_json::to_vec(&association)?,
+    )])?;
+    reopened.custody().store().write_batch(&[WriteOp::put(
+        META,
+        b"committed",
+        serde_json::to_vec(&Some(id(0)))?,
+    )])?;
+    assert!(read_target_first_membership_history(&reopened, &prebind).is_err());
+    reopened.custody().store().write_batch(&[WriteOp::put(
+        META,
+        b"committed",
+        serde_json::to_vec(&Some(id(1)))?,
+    )])?;
+    let mut substituted = prebind.clone();
+    substituted.dispatch.attempt_id = uuid::Uuid::new_v4();
+    reopened.custody().store().write_batch(&[WriteOp::put(
+        META,
+        TARGET_PREBIND_KEY,
+        serde_json::to_vec(&substituted)?,
+    )])?;
+    assert!(first_membership_for_snapshot(reopened.custody(), &snapshot_meta).is_err());
+    assert!(read_target_first_membership_history(&reopened, &prebind).is_err());
+    reopened.custody().store().write_batch(&[
+        WriteOp::delete(META, TARGET_PREBIND_KEY),
+        WriteOp::delete(META, LOCAL_FIRST_ASSOCIATION_KEY),
+    ])?;
+    assert!(read_target_first_membership_history(&reopened, &prebind).is_err());
+    Ok(())
 }
 
 #[tokio::test]

@@ -1,4 +1,4 @@
-//! Dormant first-release format for the first Start(Quorum) custody binding.
+//! First-release format for the first Start(Quorum) custody binding.
 //! A serialized Control phase is history, not authority to call the writer.
 //! Runtime admission must verify it through installed Control and reserve the
 //! exact dispatch in the independent journal before using this format.
@@ -200,6 +200,20 @@ pub(crate) struct InitialTargetIntent {
 }
 
 impl InitialTargetIntent {
+    pub(crate) fn require_origin(
+        bytes: &[u8],
+        origin: &TargetOrigin,
+        input: &TargetQuorumInput,
+        root: &ControlSigningRoot,
+    ) -> Result<()> {
+        let row = Self::decode(bytes)?;
+        ensure!(
+            row.origin == *origin && row.input == *input && row.start_owner.control_root == *root,
+            "target initial custody differs from exact origin, quorum or Control root"
+        );
+        Ok(())
+    }
+
     pub(crate) fn prepared(
         origin: TargetOrigin,
         intent: LifecycleIntent,

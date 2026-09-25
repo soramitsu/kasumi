@@ -4,6 +4,16 @@ use super::*;
 use crate::TargetOperation;
 use kasumi_types::{LifecyclePhase, TargetQuorumInput, TargetReplicaInput};
 
+/// Initial startup consumes the original journal reservation exactly once.
+/// Established phases cannot serve as a fallback for an initial child.
+pub enum TargetReplicaStartup {
+    Initial {
+        membership: crate::VerifiedInitialMembership,
+        journal: Arc<crate::TargetJournal>,
+    },
+    Established,
+}
+
 pub struct TargetReplicaConfig {
     pub node_id: u64,
     pub raft: Config,
@@ -16,8 +26,80 @@ pub struct TargetReplica {
     invocation: crate::TargetLifecycleInvocation,
     registration: Option<crate::admission::WorkRegistration>,
     shutdown_runtime: tokio::runtime::Handle,
+    initial_start: Option<kasumi_raft::TargetFirstMembershipPrebind>,
+    initial_start_owner: Option<crate::target_initial_intent::StartOwner>,
 }
 impl TargetReplica {
+    pub(crate) fn initial_start_prebind(
+        &self,
+    ) -> anyhow::Result<&kasumi_raft::TargetFirstMembershipPrebind> {
+        let prebind = self
+            .initial_start
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("original Start owner absent"))?;
+        self.require_initial_start(prebind)?;
+        Ok(prebind)
+    }
+    pub(crate) fn bind_initial_initialize(
+        &self,
+        root: &kasumi_types::ControlSigningRoot,
+        phase: &kasumi_types::RecoveryPhaseRecord,
+    ) -> anyhow::Result<()> {
+        self.initial_start_prebind()?;
+        let custody = self.database.stores().custody().store();
+        let prior = custody.get_bounded("target.lifecycle", b"initialize", 256 << 10)?;
+        let owner = crate::target_initial_intent::InitializeOwner::from_marked_phase(root, phase)?;
+        let crate::target_initial_intent::InitializeBinding::Write(encoded) =
+            crate::target_initial_intent::decide_initialize_binding(
+                prior.as_deref(),
+                &owner,
+                root,
+            )?
+        else {
+            anyhow::bail!("Initialize custody owner already consumed; status only")
+        };
+        self.invocation.check()?;
+        custody.write_batch(&[WriteOp::put("target.lifecycle", b"initialize", encoded)])?;
+        anyhow::ensure!(
+            crate::target_initial_intent::read_initialize_intent_status(custody, &owner, root)?
+                == crate::target_initial_intent::InitializeIntentStatus::OwnedWithoutAppliedProof,
+            "Initialize custody owner readback differs"
+        );
+        self.invocation.check()?;
+        Ok(())
+    }
+    pub(crate) fn require_initial_start(
+        &self,
+        expected: &kasumi_raft::TargetFirstMembershipPrebind,
+    ) -> anyhow::Result<()> {
+        self.invocation.check()?;
+        let lease = self.invocation.gate().current()?;
+        anyhow::ensure!(
+            self.initial_start.as_ref() == Some(expected)
+                && lease.commitment().root == expected.control_root
+                && lease.commitment().intent.request.phase == LifecyclePhase::Initialize
+                && lease.commitment().intent.request.tenant == expected.tenant
+                && lease.commitment().intent.request.target_incarnation
+                    == expected.target_incarnation,
+            "target Start observation lacks its continuously owned original child"
+        );
+        self.database.raft_group().check_access()?;
+        kasumi_raft::read_target_first_membership_prebind(self.database.stores(), expected)?;
+        let owner = self
+            .initial_start_owner
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("original custody Start owner absent"))?;
+        anyhow::ensure!(
+            crate::target_initial_intent::read_start_intent_status(
+                self.database.stores().custody().store(),
+                owner,
+                &expected.control_root,
+            )? != crate::target_initial_intent::StartIntentStatus::NoLocalIntent,
+            "original Start custody intent absent"
+        );
+        self.invocation.check()?;
+        Ok(())
+    }
     pub fn database(&self) -> &Arc<Database> {
         &self.database
     }
@@ -45,8 +127,13 @@ impl TargetReplica {
     /// Only the designated member may initialize, after all three actual native
     /// materialization signatures have been verified. Existing membership must
     /// equal the installed peers; this does not reconfigure a live group.
-    pub async fn initialize(&self, operation: &TargetOperation) -> anyhow::Result<()> {
+    pub async fn initialize(
+        &self,
+        operation: &TargetOperation,
+        permit: crate::InitialInitializePermit,
+    ) -> anyhow::Result<()> {
         self.check(operation, LifecyclePhase::Initialize)?;
+        permit.consume(self, operation)?;
         let group = self.database.raft_group();
         let id = group.raft().metrics().borrow().id;
         anyhow::ensure!(
@@ -89,7 +176,29 @@ impl TargetReplica {
                 })?;
         }
         self.check(operation, LifecyclePhase::Initialize)?;
-        let metrics = group.raft().metrics().borrow().clone();
+        let metrics = operation
+            .run(async {
+                Ok(group
+                    .raft()
+                    .wait(Some(std::time::Duration::from_secs(60)))
+                    .metrics(
+                        |metrics| {
+                            metrics
+                                .membership_config
+                                .log_id()
+                                .as_ref()
+                                .is_some_and(|first| {
+                                    metrics
+                                        .last_applied
+                                        .as_ref()
+                                        .is_some_and(|applied| applied >= first)
+                                })
+                        },
+                        "original target membership locally applied",
+                    )
+                    .await?)
+            })
+            .await?;
         let expected: BTreeSet<_> = self.bootstrap.voters.keys().copied().collect();
         anyhow::ensure!(
             metrics.membership_config.membership().get_joint_config() == &vec![expected]
@@ -124,13 +233,6 @@ impl Drop for TargetReplica {
         });
     }
 }
-#[derive(Serialize, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-struct InitialTargetIntent {
-    origin: TargetOrigin,
-    intent: LifecycleIntent,
-    input: TargetQuorumInput,
-}
 /// Opens only a previously published exact target image. No bootstrap or
 /// application key is synthesized on missing state, and no membership starts
 /// until the caller has registered the returned peer and invokes initialize.
@@ -142,6 +244,7 @@ pub async fn open_target_replica(
     config: TargetReplicaConfig,
     transport: Arc<dyn RaftTransport>,
     security_audit: Arc<SecurityAudit>,
+    startup: TargetReplicaStartup,
 ) -> anyhow::Result<TargetReplica> {
     security_audit.require_admission(&config.admission)?;
     let construction = DatabaseConstruction::new(stores.clone(), security_audit.clone())?;
@@ -165,6 +268,15 @@ pub async fn open_target_replica(
         "target group startup phase or node differs"
     );
     invocation.check_target(stores.application(), phase)?;
+    match &startup {
+        TargetReplicaStartup::Initial { membership, .. } => {
+            membership.require_start_operation(operation, &input, config.node_id)?;
+        }
+        TargetReplicaStartup::Established => anyhow::ensure!(
+            phase != LifecyclePhase::Initialize,
+            "initial target startup requires its one-use accepted Start"
+        ),
+    }
     // This worker owns the original operation through actual startup. A closed
     // receiver drops TargetReplica, whose owner joins its real Raft workers.
     let owned = operation.clone();
@@ -182,6 +294,28 @@ pub async fn open_target_replica(
         let verification = owned.clone();
         let input_copy = input.quorum().clone();
         let requested_input = input.clone();
+        let installed_root = lease.commitment().root.clone();
+        let initial_start_owner = match &startup {
+            TargetReplicaStartup::Initial { membership, .. } => Some(membership.start_owner()?),
+            TargetReplicaStartup::Established => None,
+        };
+        let prepared_start = match &startup {
+            TargetReplicaStartup::Initial { membership, .. } => Some(
+                membership.prepared_start_intent(
+                    input
+                        .quorum()
+                        .materialized
+                        .values()
+                        .next()
+                        .ok_or_else(|| anyhow::anyhow!("target materializations missing"))?
+                        .fact
+                        .origin
+                        .clone(),
+                    input.quorum().clone(),
+                )?,
+            ),
+            TargetReplicaStartup::Established => None,
+        };
         let (engine, bootstrap) = owned
             .run(
                 owned
@@ -264,37 +398,33 @@ pub async fn open_target_replica(
                             256 << 10,
                         )?;
                         if phase == LifecyclePhase::Initialize {
-                            let requested = InitialTargetIntent {
-                                origin,
-                                intent,
-                                input: input_copy,
+                            let proposed = prepared_start.as_ref().ok_or_else(|| {
+                                anyhow::anyhow!("accepted Start custody intent absent")
+                            })?;
+                            let crate::target_initial_intent::PreparedBinding::Write(encoded) =
+                                crate::target_initial_intent::decide_prepared_binding(
+                                    prior.as_deref(),
+                                    proposed,
+                                    &installed_root,
+                                )?
+                            else {
+                                anyhow::bail!("accepted Start custody intent already consumed")
                             };
-                            if let Some(prior) = prior {
-                                anyhow::ensure!(
-                                    serde_json::from_slice::<InitialTargetIntent>(&prior)?
-                                        == requested,
-                                    "target initialization identity already bound"
-                                );
-                            } else {
-                                authority.check_target(material.application(), phase)?;
-                                material.custody().store().write_batch(&[WriteOp::put(
-                                    "target.lifecycle",
-                                    b"initialize",
-                                    serde_json::to_vec(&requested)?,
-                                )])?;
-                            }
+                            authority.check_target(material.application(), phase)?;
+                            material.custody().store().write_batch(&[WriteOp::put(
+                                "target.lifecycle",
+                                b"initialize",
+                                encoded,
+                            )])?;
                         } else {
-                            let initialized: InitialTargetIntent =
-                                serde_json::from_slice(&prior.ok_or_else(|| {
+                            crate::target_initial_intent::InitialTargetIntent::require_origin(
+                                &prior.ok_or_else(|| {
                                     anyhow::anyhow!("target initialization intent missing")
-                                })?)?;
-                            anyhow::ensure!(
-                                initialized.origin == origin && initialized.input == input_copy,
-                                "target initialization origin or quorum inputs differ"
-                            );
-                            initialized
-                                .origin
-                                .accepts_phase(&initialized.intent, LifecyclePhase::Initialize)?;
+                                })?,
+                                &origin,
+                                &input_copy,
+                                &installed_root,
+                            )?;
                         }
                         drop(generation);
                         engine.install_storage_access(material.application())?;
@@ -309,22 +439,40 @@ pub async fn open_target_replica(
         // here until open returns and the target owner closes any started group.
         let registration = owned.register_group()?;
         engine.install_audit_maintenance(&config.admission)?;
-        let database = construction
-            .start_replicated(
-                engine,
-                config.node_id,
-                format!(
-                    "{}/{}",
-                    stores.application().tenant(),
-                    bootstrap.incarnation
-                ),
-                transport,
-                kasumi_raft::RaftGroupConfig {
-                    raft: config.raft,
-                    limits: kasumi_raft::RaftLimits::default(),
-                },
-            )
-            .await?;
+        let raft_config = kasumi_raft::RaftGroupConfig {
+            raft: config.raft,
+            limits: kasumi_raft::RaftLimits::default(),
+        };
+        let (database, initial_start) = match startup {
+            TargetReplicaStartup::Initial {
+                membership,
+                journal,
+            } => {
+                membership.require_start_operation(&owned, &input, config.node_id)?;
+                let expected = membership.persist_target_raft_prebind(&journal, &stores)?;
+                owned.check()?;
+                let database = construction
+                    .start_target_prebound(engine, transport, raft_config, expected.clone())
+                    .await?;
+                (database, Some(expected))
+            }
+            TargetReplicaStartup::Established => {
+                let database = construction
+                    .start_replicated(
+                        engine,
+                        config.node_id,
+                        format!(
+                            "{}/{}",
+                            stores.application().tenant(),
+                            bootstrap.incarnation
+                        ),
+                        transport,
+                        raft_config,
+                    )
+                    .await?;
+                (database, None)
+            }
+        };
         let owner = TargetReplica {
             database,
             bootstrap,
@@ -332,6 +480,8 @@ pub async fn open_target_replica(
             invocation,
             registration: Some(registration),
             shutdown_runtime: tokio::runtime::Handle::current(),
+            initial_start,
+            initial_start_owner,
         };
         owned.check()?;
         Ok::<_, anyhow::Error>(owner)

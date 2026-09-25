@@ -761,17 +761,11 @@ impl ControlRecoveryCoordinator {
                     TargetRuntimeStep::Start(TargetReplicaInput::Quorum(_))
                         | TargetRuntimeStep::Initialize(_)
                 );
-                // A committed BeginEffect may already have reached the target.
-                // Historical status is the only valid continuation; the current
-                // bare target protocol has no such reader yet.
-                if first_membership
-                    && prepared
-                        .record()
-                        .effect_attempts
-                        .contains_key(&RecoveryEffect::TargetCommand)
-                {
-                    return Err(unknown_recovery_effect());
-                }
+                let prior_attempt = prepared
+                    .record()
+                    .effect_attempts
+                    .get(&RecoveryEffect::TargetCommand);
+                let resolve_initial = first_membership && prior_attempt.is_some();
                 prepared.admit_dispatch().await?;
                 let phase = self
                     .database
@@ -802,7 +796,59 @@ impl ControlRecoveryCoordinator {
                         KasumiTargetClient::connect(&config, control, trust.clone(), *node_id)
                             .await?;
                     prepared.admit_dispatch().await?;
-                    if first_membership {
+                    if resolve_initial {
+                        let attempt = prior_attempt.context("retained Start attempt absent")?;
+                        let query = TargetInitialStartRequest {
+                            target_incarnation: verified
+                                .observation()
+                                .intent
+                                .request
+                                .target_incarnation,
+                            request: request.as_ref().clone(),
+                            identity: TargetInitialDispatchIdentity {
+                                operation_id: prepared.record().operation_id,
+                                phase_id: prepared.record().phase_id,
+                                attempt_id: attempt.attempt_id,
+                                input_sha256: prepared.record().input_sha256.clone(),
+                            },
+                        };
+                        let outcome = if matches!(request.step, TargetRuntimeStep::Initialize(_)) {
+                            let history = TargetInitialMembershipHistoryRequest {
+                                target_incarnation: query.target_incarnation,
+                                request: query.request,
+                                identity: query.identity,
+                            };
+                            let status = client
+                                .read_initial_membership_history(&bearer, &history)
+                                .await
+                                .map_err(|_| unknown_recovery_effect())?;
+                            status.validate_for(&history)?;
+                            let TargetRuntimeStep::Initialize(input) = &request.step else {
+                                unreachable!()
+                            };
+                            TargetRuntimeOutcome::Initialized {
+                                origin_sha256: input.origin_sha256.clone(),
+                            }
+                        } else {
+                            let status = client
+                                .read_initial_start(&bearer, &query)
+                                .await
+                                .map_err(|_| unknown_recovery_effect())?;
+                            status.validate_for(&query, *node_id)?;
+                            TargetRuntimeOutcome::Started {
+                                origin_sha256: status.origin_sha256,
+                            }
+                        };
+                        // The pinned receiver verified its original live child
+                        // and current exact Control marker. No BeginEffect or
+                        // Execute is issued by this continuation.
+                        return Ok::<_, anyhow::Error>(TargetRuntimeResponse {
+                            command_id: request.command_id,
+                            node_id: *node_id,
+                            outcome,
+                        });
+                    }
+                    let initial_dispatch = if first_membership {
                         // A failed or cancelled BeginEffect can have committed.
                         // Never send a second packet or infer absence from its
                         // reply; the exact retained phase remains unresolved.
@@ -810,18 +856,31 @@ impl ControlRecoveryCoordinator {
                             .begin_effect(RecoveryEffect::TargetCommand)
                             .await
                             .map_err(|_| unknown_recovery_effect())?;
+                        let attempt_id = ticket.attempt_id();
                         ticket
                             .consume(&prepared.record().input)
                             .await
                             .map_err(|_| unknown_recovery_effect())?;
-                    }
-                    let acknowledgement = client.execute(&bearer, &verified, request).await;
+                        Some(TargetInitialDispatchIdentity {
+                            operation_id: prepared.record().operation_id,
+                            phase_id: prepared.record().phase_id,
+                            attempt_id,
+                            input_sha256: prepared.record().input_sha256.clone(),
+                        })
+                    } else {
+                        None
+                    };
+                    let envelope = TargetExecuteRequest {
+                        request: request.as_ref().clone(),
+                        initial_dispatch,
+                    };
+                    let acknowledgement = client.execute(&bearer, &verified, &envelope).await;
                     let acknowledgement = if first_membership {
                         acknowledgement.map_err(|_| unknown_recovery_effect())?
                     } else {
                         acknowledgement?
                     };
-                    Ok::<_, anyhow::Error>(acknowledgement)
+                    Ok::<_, anyhow::Error>(acknowledgement.response().clone())
                 })
                 .await
                 .map_err(|elapsed| {
@@ -845,9 +904,7 @@ impl ControlRecoveryCoordinator {
                         error.into()
                     }
                 })?;
-                Ok(RecoveryDispatchOutcome::Target(Box::new(
-                    acknowledgement.response().clone(),
-                )))
+                Ok(RecoveryDispatchOutcome::Target(Box::new(acknowledgement)))
             }
             RecoveryDispatch::PublishRoute(_) => {
                 let published = self

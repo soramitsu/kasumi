@@ -9,8 +9,9 @@ use crate::{
 };
 use kasumi_types::{
     ChangeEvent, ChangeFeedCursor, ChangeFeedPage, ChangeFeedStart, CollectionDefinition, Document,
-    Limits, Policy, PolicyLimitsSnapshot, ReadChangeFeed, ReadPolicyLimits, ReadSchema,
-    SchemaCollection, SchemaSnapshot, SecurityAuditExportRequest, SecurityAuditPage,
+    Limits, MAX_SCHEMA_CHANGESET_COLLECTIONS, Policy, PolicyLimitsSnapshot, ReadChangeFeed,
+    ReadPolicyLimits, ReadSchema, SchemaCollection, SchemaSnapshot, SecurityAuditExportRequest,
+    SecurityAuditPage,
 };
 use serde::{
     Deserialize,
@@ -140,11 +141,16 @@ pub(super) fn schema(
     let schema_epoch = object.field("schema_epoch")?;
     let values = Object::new(object.raw("collections")?)?;
     object.finish()?;
+    let named = match request {
+        ReadSchema::All => None,
+        ReadSchema::Named { collections } => Some(collections),
+    };
     if uuid::Uuid::parse_str(&incarnation)
         .ok()
         .is_none_or(|id| id.is_nil() || id.to_string() != incarnation)
         || values.0.len() > call.limits.max_rows
-        || values.0.len() != request.collections.len()
+        || values.0.len() > MAX_SCHEMA_CHANGESET_COLLECTIONS
+        || named.is_some_and(|collections| values.0.len() != collections.len())
         || schema_epoch > policy_epoch
     {
         return Err(invalid("schema collection/identity differs"));
@@ -152,10 +158,15 @@ pub(super) fn schema(
     let mut collections = BTreeMap::new();
     for (name, raw) in values.0 {
         call.check()?;
-        if !request.collections.contains(&name) {
+        if named.is_some_and(|collections| !collections.contains(&name)) {
             return Err(invalid("unexpected schema collection"));
         }
         let value = if raw.get() == "null" {
+            if named.is_none() {
+                return Err(invalid(
+                    "complete schema inventory contains an absent collection",
+                ));
+            }
             None
         } else {
             let mut value = Object::new(raw)?;

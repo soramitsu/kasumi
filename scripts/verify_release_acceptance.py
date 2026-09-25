@@ -11,8 +11,10 @@ import argparse
 import contextvars
 import datetime as dt
 import hashlib
+from importlib.machinery import BuiltinImporter, FrozenImporter, PathFinder
 import json
 import math
+import os
 from pathlib import Path, PurePosixPath
 import re
 import subprocess
@@ -20,8 +22,55 @@ import sys
 import tarfile
 import tempfile
 
+_LOCAL_HELPERS = ("assembly_inputs", "attempt_index", "gate_process",
+                  "package_release", "release_gate")
+_CLEAN_SOURCE_EXECUTION = False
+
+
+def check_clean_source_execution(scripts, *, flags, cache_prefix, environment,
+                                 loaded, importers):
+    """Reject every local bytecode route before importing acceptance helpers.
+
+    This is the production CLI bootstrap. Unit tests can import this module to
+    test validators, but an imported call cannot certify a final release.
+    """
+    if not (flags.isolated and flags.no_site and flags.dont_write_bytecode):
+        raise ValueError("final acceptance requires Python -I -S -B")
+    if cache_prefix is not None or "PYTHONPYCACHEPREFIX" in environment:
+        raise ValueError("final acceptance forbids a redirected Python bytecode cache")
+    if set(_LOCAL_HELPERS) & set(loaded):
+        raise ValueError("local acceptance helper was imported before the cache check")
+    if any(importer not in (BuiltinImporter, FrozenImporter, PathFinder)
+           for importer in importers):
+        raise ValueError("final acceptance has an untrusted Python importer")
+    scripts = Path(scripts)
+    for name in _LOCAL_HELPERS:
+        source = scripts / (name + ".py")
+        if source.is_symlink() or not source.is_file():
+            raise ValueError("local acceptance helper source is absent or aliased: " + name)
+    if (scripts / "__pycache__").exists() or (scripts / "__pycache__").is_symlink():
+        raise ValueError("local Python bytecode cache is present")
+    if any(path.suffix in {".pyc", ".pyo"} for path in scripts.rglob("*")):
+        raise ValueError("local Python bytecode cache is present")
+
+
+if __name__ == "__main__":
+    _scripts = Path(__file__).resolve(strict=True).parent
+    check_clean_source_execution(_scripts, flags=sys.flags,
+                                 cache_prefix=sys.pycache_prefix,
+                                 environment=os.environ, loaded=sys.modules,
+                                 importers=sys.meta_path)
+    sys.path.insert(0, str(_scripts))
+    _CLEAN_SOURCE_EXECUTION = True
+
+import assembly_inputs
+import attempt_index
+import gate_process
 import package_release as package
-from release_gate import TOOLCHAIN, functional_gates, sha256
+import release_gate
+from release_gate import (FORBIDDEN_FIXTURE_FEATURES, TOOLCHAIN,
+                          compiler_artifact_messages, compiler_executable_identity,
+                          functional_gates, record_compiled_package, sha256)
 
 SCHEMA = "kasumi-release-acceptance-v1"
 # Registrations must be reviewed code in the frozen source: each adapter owns a
@@ -212,6 +261,27 @@ def required_artifacts():
                for kind in ("package", "dependency-sbom", "third-party-notices")}
     result |= {kind + ":" + target for target in LINUX for kind in ("oci", "image-sbom")}
     return result
+
+
+SOURCE_DELIVERABLES = {
+    "license": "LICENSE",
+    "notice": "NOTICE",
+    "contribution": "CONTRIBUTING.md",
+    "security": "SECURITY.md",
+    "systemd-data": "release/systemd/kasumid.service",
+    "systemd-authority": "release/systemd/kasumi-authority.service",
+}
+
+
+def check_source_deliverables(source_files, artifacts):
+    """Bind separately delivered release files to present frozen source bytes."""
+    for artifact_id, source_name in SOURCE_DELIVERABLES.items():
+        source = source_files.get(source_name)
+        require(source is not None, "frozen source omits required deliverable: " + source_name)
+        delivered = artifacts[artifact_id]["file"]
+        require(delivered["sha256"] == source["sha256"]
+                and delivered["bytes"] == source["bytes"],
+                "delivered file differs from frozen source: " + artifact_id)
 
 
 def timestamp(value):
@@ -470,6 +540,26 @@ def archive_inventory(path, strip_root=True):
     return result
 
 
+def verify_executing_tools(files):
+    """Bind every imported local acceptance helper to the frozen source bytes.
+
+    A clean repository passed as --repository does not establish that Python
+    imported helpers from that repository. In particular, attempt_index owns
+    the retained failure census and assembly_inputs influences package review.
+    """
+    scripts = Path(__file__).resolve(strict=True).parent
+    modules = {"verify_release_acceptance.py": sys.modules[__name__],
+               "package_release.py": package, "release_gate.py": release_gate,
+               "gate_process.py": gate_process, "assembly_inputs.py": assembly_inputs,
+               "attempt_index.py": attempt_index}
+    for name, module in modules.items():
+        path = scripts / name
+        require(Path(module.__file__).resolve(strict=True) == path,
+                "executing verifier imported a different helper: " + name)
+        require(files.get("scripts/" + name, {}).get("sha256") == sha256(path),
+                "executing verifier differs from final source: " + name)
+
+
 def verify_source(root, manifest, repository):
     source = manifest["source"]
     exact(source, {"commit", "tree", "archive", "files", "lockfile_sha256", "patches_sha256", "configurations"}, "source")
@@ -501,9 +591,7 @@ def verify_source(root, manifest, repository):
                 "source_archive_sha256": source["archive"]["sha256"], "source_files_sha256": source["files"]["sha256"],
                 "lockfile_sha256": source["lockfile_sha256"], "patches_sha256": source["patches_sha256"],
                 "configurations_sha256": canonical_hash({key: value["file"]["sha256"] for key, value in configs.items()})}
-    for tool in ("verify_release_acceptance.py", "package_release.py", "release_gate.py", "gate_process.py"):
-        require(files.get("scripts/" + tool, {}).get("sha256") == sha256(Path(__file__).parent / tool),
-                "executing verifier differs from final source: " + tool)
+    verify_executing_tools(files)
     return identity, files, configs
 
 
@@ -588,19 +676,49 @@ def check_independent_build(root, ref, primary, target, identity, binaries):
     command = dict(functional_gates(jobs, sys.executable))["production"]
     require(Path(process["command"][0]).name == "cargo" and process["command"][1:] == command[1:],
             "independent build did not invoke exact fixture-free production compilation")
-    compiled = record["compiled_packages"]
-    require(isinstance(compiled, dict) and compiled, "independent compilation dependency inventory missing")
-    for item in compiled.values():
-        require(isinstance(item, dict) and isinstance(item.get("features"), list)
-                and not set(item["features"]) & {"test-utils", "embedded-fixture", "loopback-fixture"},
-                "independent production compilation contains fixture capabilities")
+    check_independent_compiler_transcript(root, record, process)
     actual = unique(record["binaries"], "name", "independent binaries")
     require(set(actual) == package.BINARIES, "independent production executable set is incomplete")
     for name, artifact in actual.items():
         exact(artifact, {"name", "file"}, "independent binary")
         path = reference(root, artifact["file"])
+        require(PurePosixPath(artifact["file"]["path"]).parts[-3:] ==
+                ("target", "release", name),
+                "independent binary is not the retained Cargo output")
         package.verify_architecture(path, target)
         require(artifact["file"]["sha256"] == binaries[name], "independent build binary hashes differ")
+
+
+def check_independent_compiler_transcript(root, build, process):
+    """Reconstruct the production compilation from the original owned Cargo log."""
+    build_root = Path(build["build_root"])
+    require(os.path.normpath(build["build_root"]) == build["build_root"],
+            "independent build root is not canonical")
+    require(process.get("working_directory") == str(build_root / "source"),
+            "independent Cargo ran outside its isolated source root")
+    packages = {}
+    executables = {}
+    for message in compiler_artifact_messages(reference(root, build["processes"][0]["log"])):
+        record_compiled_package(packages, message)
+        raw = message.get("executable")
+        if raw is None:
+            continue
+        emitted = compiler_executable_identity(message)
+        name = emitted["target"]
+        require(name in package.BINARIES and not emitted["test"]
+                and message["target"]["kind"] == ["bin"]
+                and message["target"]["crate_types"] == ["bin"]
+                and raw == str(build_root / "target" / "release" / name)
+                and name not in executables,
+                "independent Cargo emitted an unexpected executable")
+        executables[name] = emitted
+    require(set(executables) == package.BINARIES,
+            "independent Cargo executable transcript is incomplete")
+    require(packages and build["compiled_packages"] == packages,
+            "independent compilation dependency inventory differs from Cargo transcript")
+    require(all(not set(item["features"]) & FORBIDDEN_FIXTURE_FEATURES
+                for item in packages.values()),
+            "independent production compilation contains fixture capabilities")
 
 
 def verify_artifacts(root, manifest, source_files, candidates, binaries):
@@ -609,6 +727,7 @@ def verify_artifacts(root, manifest, source_files, candidates, binaries):
     for artifact in artifacts.values():
         exact(artifact, {"id", "file"}, "deliverable")
         require(reference(root, artifact["file"]).stat().st_size > 0, "empty deliverable")
+    check_source_deliverables(source_files, artifacts)
     for target in PLATFORMS:
         contents = archive_inventory(reference(root, artifacts["package:" + target]["file"]))
         for name, digest in binaries[target].items():
@@ -616,7 +735,7 @@ def verify_artifacts(root, manifest, source_files, candidates, binaries):
         for member in ("LICENSE", "NOTICE", "SECURITY.md", "CONTRIBUTING.md",
                        "systemd/kasumid.service", "systemd/kasumi-authority.service"):
             source_name = "release/" + member if member.startswith("systemd/") else member
-            require(contents.get(member) == source_files.get(source_name), "package omitted or changed source deliverable: " + member)
+            require(contents.get(member) == source_files[source_name], "package omitted or changed source deliverable: " + member)
         for kind, member in (("dependency-sbom", "sbom.spdx.json"), ("third-party-notices", "THIRD-PARTY-NOTICES.json")):
             require(contents.get(member, {}).get("sha256") == artifacts[kind + ":" + target]["file"]["sha256"],
                     "packaged SBOM/notices differ from delivered bytes")
@@ -673,6 +792,235 @@ def repeatable_assembly_adapter(root, domain, files, configs, artifacts, candida
     repeatable_assembly.domain_adapter(root, domain, files, configs, artifacts)
     target = domain["id"].split(":", 1)[1]
     check_repeatable_assembly_primary(root, domain, candidates[target])
+
+
+def check_dependency_review_primary(root, domain, candidate):
+    """Bind the owned review's retained functional bytes to the selected primary."""
+    report_path = reference(root, domain["details"]["report"])
+    require(report_path.name == "launcher.json", "dependency review report is not the original launcher")
+    launcher_root = report_path.parent
+    launcher = read_json(report_path)
+    require(isinstance(launcher.get("inner_report"), dict),
+            "dependency review launcher has no original inner report")
+    inner_path = reference(launcher_root, launcher["inner_report"])
+    require(inner_path == launcher_root / "review" / "attempt.json",
+            "dependency review did not select its original inner report")
+    inner = read_json(inner_path)
+    selected = candidate["primary"]["functional"]
+    selected_path = reference(root, selected)
+    require(selected_path.name == "evidence.json", "selected primary functional receipt is misplaced")
+    retained = inner["selected_primary"]
+    retained_path = reference(inner_path.parent, retained)
+    require(retained_path == inner_path.parent / "blobs" / retained["sha256"]
+            and retained["sha256"] == selected["sha256"]
+            and retained["bytes"] == selected["bytes"],
+            "dependency review consumed another primary functional receipt")
+
+
+def check_native_admin_readback(root, witness, processes, binaries, expected):
+    """Check native policy/schema observations against independently pinned intent.
+
+    This is an unregistered semantic component. A future owned installed-domain
+    runner must prove dispatch order, input bytes at dispatch, endpoint custody,
+    and full process ownership before its adapter may use this check.
+    """
+    exact(expected, {"admin_config_sha256", "tenant", "incarnation", "policy",
+                     "limits", "collections"}, "pinned administrative intent")
+    checksum(expected["admin_config_sha256"])
+    require(isinstance(expected["tenant"], str) and expected["tenant"],
+            "pinned tenant is absent")
+    incarnation = expected["incarnation"]
+    require(isinstance(incarnation, str) and
+            re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", incarnation)
+            and incarnation != "00000000-0000-0000-0000-000000000000",
+            "pinned incarnation is not a canonical nonzero UUID")
+
+    def policy(value):
+        exact(value, {"grants", "strict_read_audit"}, "administrative policy")
+        require(type(value["strict_read_audit"]) is bool and isinstance(value["grants"], list),
+                "administrative policy is malformed")
+        seen = set()
+        for grant in value["grants"]:
+            exact(grant, {"principal", "collection", "actions"}, "administrative grant")
+            principal, collection, actions = grant["principal"], grant["collection"], grant["actions"]
+            require(isinstance(principal, str) and principal and
+                    (collection is None or isinstance(collection, str) and collection) and
+                    isinstance(actions, list) and actions and
+                    all(isinstance(action, str) and action in {"read", "write", "admin", "audit"}
+                        for action in actions) and len(actions) == len(set(actions)),
+                    "administrative grant is malformed")
+            key = (principal, collection, tuple(sorted(actions)))
+            require(key not in seen, "duplicate administrative grant")
+            seen.add(key)
+
+    policy(expected["policy"])
+    require(isinstance(expected["limits"], dict) and expected["limits"],
+            "pinned limits are absent")
+    collections = expected["collections"]
+    require(isinstance(collections, dict) and collections and len(collections) <= 128
+            and all(isinstance(name, str) and name and isinstance(definition, dict)
+                    for name, definition in collections.items()),
+            "pinned collection definitions are malformed")
+    for name, definition in collections.items():
+        exact(definition, {"name", "write_mode", "retention_class", "schema", "indexes",
+                           "strict_read_audit"}, "pinned collection definition")
+        require(definition["name"] == name and
+                isinstance(definition["write_mode"], str) and
+                definition["write_mode"] in {"mutable", "append_only"} and
+                isinstance(definition["retention_class"], str) and
+                definition["retention_class"] in {"operational", "archivable_history"} and
+                isinstance(definition["indexes"], list) and
+                type(definition["strict_read_audit"]) is bool,
+                "pinned collection definition is malformed")
+    exact(witness, {"admin_config", "policy_request", "schema_request",
+                    "policy_before", "schema", "policy_after"}, "native admin readback witness")
+    config = witness["admin_config"]
+    config_path = reference(root, config)
+    require(config["sha256"] == expected["admin_config_sha256"],
+            "admin readback used another pinned client configuration")
+    policy_request_path = reference(root, witness["policy_request"])
+    policy_request = read_json(policy_request_path)
+    exact(policy_request, {"tenant", "expected_incarnation"}, "native policy request")
+    require(policy_request == {"tenant": expected["tenant"],
+                               "expected_incarnation": incarnation},
+            "native policy request targets another database")
+    schema_request_path = reference(root, witness["schema_request"])
+    schema_request = read_json(schema_request_path)
+    exact(schema_request, {"collections"}, "native schema request")
+    requested = schema_request["collections"]
+    require(isinstance(requested, list) and len(requested) == len(collections)
+            and all(isinstance(name, str) for name in requested)
+            and set(requested) == set(collections),
+            "native schema request does not cover exact pinned collections")
+
+    owned = unique(processes, "id", "native admin processes")
+    process_ids = [witness[field] for field in ("policy_before", "schema", "policy_after")]
+    require(all(isinstance(item, str) and item in owned for item in process_ids)
+            and len(set(process_ids)) == 3, "native admin readbacks need three separate owned processes")
+
+    def observed(process_id, operation, request_path):
+        process = owned[process_id]
+        exact(process, {"id", "receipt", "log", "executable"}, "native admin process")
+        require(process["executable"]["sha256"] == binaries["kasumictl"],
+                "native admin readback did not execute candidate kasumictl")
+        reference(root, process["executable"])
+        receipt = json_reference(root, process["receipt"])
+        executable = receipt.get("executable")
+        exact(executable, {"path", "sha256"}, "native admin executable")
+        source = receipt.get("working_directory")
+        require(isinstance(source, str) and Path(source).is_absolute()
+                and os.path.normpath(source) == source and
+                isinstance(executable["path"], str) and Path(executable["path"]).is_absolute()
+                and executable["sha256"] == binaries["kasumictl"],
+                "native admin process identity is malformed")
+        command = [executable["path"], "--config", str(config_path), operation,
+                   str(request_path)]
+        require(receipt.get("command") == command and receipt.get("status") == "passed"
+                and receipt.get("outputs_stable") is True and receipt.get("exit_code") == 0,
+                "native admin command or outcome differs from readback contract")
+        return json_reference(root, process["log"])
+
+    before = observed(witness["policy_before"], "read-policy-limits", policy_request_path)
+    schema = observed(witness["schema"], "read-schema", schema_request_path)
+    after = observed(witness["policy_after"], "read-policy-limits", policy_request_path)
+    for snapshot in (before, after):
+        exact(snapshot, {"tenant", "incarnation", "revision", "policy_epoch",
+                         "schema_epoch", "policy", "limits"}, "native policy snapshot")
+        policy(snapshot["policy"])
+        require(snapshot["tenant"] == expected["tenant"] and
+                snapshot["incarnation"] == incarnation and
+                canonical_hash(snapshot["policy"]) == canonical_hash(expected["policy"]) and
+                canonical_hash(snapshot["limits"]) == canonical_hash(expected["limits"]),
+                "native policy or limits differ from pinned intent")
+        uint(snapshot["revision"], "native policy revision")
+        uint(snapshot["policy_epoch"], "native policy epoch", 1)
+        uint(snapshot["schema_epoch"], "native schema epoch", 1)
+    exact(schema, {"incarnation", "revision", "policy_epoch", "schema_epoch", "collections"},
+          "native schema snapshot")
+    require(schema["incarnation"] == incarnation and isinstance(schema["collections"], dict)
+            and set(schema["collections"]) == set(collections),
+            "native schema snapshot targets another database or collection set")
+    uint(schema["revision"], "native schema revision")
+    uint(schema["policy_epoch"], "native schema policy epoch", 1)
+    uint(schema["schema_epoch"], "native schema epoch", 1)
+    for name, observed_collection in schema["collections"].items():
+        exact(observed_collection, {"definition", "data_epoch", "archived_document_count"},
+              "native schema collection")
+        uint(observed_collection["data_epoch"], "native collection data epoch")
+        uint(observed_collection["archived_document_count"], "native archived document count")
+        require(canonical_hash(observed_collection["definition"]) == canonical_hash(collections[name]),
+                "native collection definition differs from pinned intent")
+    require(before["policy_epoch"] == schema["policy_epoch"] == after["policy_epoch"]
+            and before["schema_epoch"] == schema["schema_epoch"] == after["schema_epoch"]
+            and before["revision"] <= schema["revision"] <= after["revision"],
+            "native policy/schema readbacks do not share a stable administrative epoch")
+
+
+def dependency_review_adapter(root, domain, files, configs, artifacts, candidates):
+    """Semantic bridge for the owned review; unregistered pending native qualification."""
+    import run_dependency_review_launcher as owned
+
+    root = Path(root).resolve(strict=True)
+    exact(domain["details"], {"report"}, "dependency review details")
+    launcher_path = reference(root, domain["details"]["report"])
+    require(launcher_path.name == "launcher.json", "dependency review report is not the original launcher")
+    launch_root = launcher_path.parent
+    verified = owned.verify(launch_root)
+    launch, inner = verified["record"], verified["inner"]
+    target = domain["id"].split(":", 1)[1]
+    require(target == REFERENCE and domain["runner"] == {
+                "source_path": owned.LAUNCHER, "sha256": files[owned.LAUNCHER]["sha256"]},
+            "dependency review target or frozen runner differs")
+    require(domain["started_at"] == launch["started_at"]
+            and domain["finished_at"] == launch["finished_at"],
+            "dependency review interval differs from original launcher")
+    require(read_json(Path(launch["evidence_root"]) / "source-files.json") == files
+            and launch["source_files_sha256"] == domain["identity"]["source_files_sha256"]
+            and inner["source"] == {
+                "commit": domain["identity"]["source_commit"],
+                "tree": domain["identity"]["source_tree"],
+                "archive_sha256": domain["identity"]["source_archive_sha256"],
+                "source_files_sha256": domain["identity"]["source_files_sha256"],
+                "lockfile_sha256": domain["identity"]["lockfile_sha256"]},
+            "dependency review consumed another frozen source")
+    check_dependency_review_primary(root, domain, candidates[target])
+    declared = {launch["declaration"]["sha256"], launch["advisory_declaration"]["sha256"]}
+    require(len(declared) == 2, "dependency review native and advisory declarations are aliased")
+    config_ids = sorted(key for key, value in configs.items()
+                        if value["file"]["sha256"] in declared)
+    require(len(config_ids) == 2 and domain["configuration_ids"] == config_ids
+            and {configs[key]["file"]["sha256"] for key in config_ids} == declared,
+            "dependency review declarations are not exactly configured")
+
+    def global_ref(origin, item):
+        path = reference(origin, item)
+        ref = {"path": path.relative_to(root).as_posix(), "sha256": item["sha256"],
+               "bytes": item["bytes"]}
+        reference(root, ref)
+        return ref
+
+    runner = launch["runner_process"]
+    expected_process = {"id": "runner", "receipt": global_ref(launch_root, runner["receipt"]),
+                        "log": global_ref(launch_root, runner["stdout"]),
+                        "executable": global_ref(launch_root, runner["executable"])}
+    require(domain["processes"] == [expected_process],
+            "dependency review process differs from the original owned runner")
+    inner_ref = global_ref(launch_root, launch["inner_report"])
+    scan_log = global_ref(launch_root / "review", inner["advisory_scan"]["step"]["process"]["stdout"])
+    scenarios = unique(domain["scenarios"], "id", "dependency review scenarios")
+    require(set(scenarios) == SCENARIOS["dependency-review"],
+            "dependency review scenario roster differs")
+    for name, original in (("patch-upstream-tests", inner_ref),
+                           ("memory-safety-regressions", inner_ref),
+                           ("advisory-dispositions", scan_log)):
+        require(scenarios[name] == {"id": name, "status": "passed", "iterations": 1,
+                                    "failures": 0, "unattempted": 0, "log": original},
+                "dependency review scenario does not identify original evidence: " + name)
+    for path in launch_root.rglob("*"):
+        require(not path.is_symlink(), "dependency review custody contains a symlink")
+        if path.is_file():
+            reference(root, {"path": path.relative_to(root).as_posix(),
+                             "sha256": sha256(path), "bytes": path.stat().st_size})
 
 
 def verify_gate(root, gate, identity, files, configs, binaries, artifacts, candidates):
@@ -812,9 +1160,36 @@ def verify_gate(root, gate, identity, files, configs, binaries, artifacts, candi
         reference(root, details["report"])
 
 
+def attempt_namespace(root):
+    """Census every retained attempt, including ones without terminal receipts."""
+    directory = root / "attempts"
+    require(not directory.is_symlink() and directory.is_dir(),
+            "permanent attempt namespace is absent or aliased")
+    names = set()
+    with os.scandir(directory) as entries:
+        for entry in entries:
+            if entry.name == attempt_index.INDEX:
+                require(entry.is_file(follow_symlinks=False),
+                        "attempt index is not a regular file")
+                continue
+            relative_path(entry.name)
+            require("/" not in entry.name and entry.is_dir(follow_symlinks=False),
+                    "attempt namespace contains an unowned entry")
+            receipt = Path(entry.path) / "attempt.json"
+            require(not receipt.is_symlink() and receipt.is_file(),
+                    "retained attempt has no regular terminal receipt")
+            names.add(entry.name)
+    return names
+
+
 def verify_attempts(root, attempts, selected):
+    original_names = attempt_namespace(root)
+    journal = attempt_index.file_ref(root, Path(root) / "attempts/index.jsonl")
+    reference(root, journal)
+    admitted = attempt_index.replay(root, complete=True)
     indexed = unique(attempts, "id", "retained attempts")
-    require(indexed, "attempt history is missing")
+    require(indexed and set(indexed) == set(admitted),
+            "acceptance manifest omits a native attempt admission")
     paths = set()
     selected_paths = set()
     for name, attempt in indexed.items():
@@ -822,28 +1197,44 @@ def verify_attempts(root, attempts, selected):
         relative_path(name)
         require("/" not in name and attempt["receipt"]["path"] == "attempts/" + name + "/attempt.json",
                 "attempt receipt is outside its permanent namespace")
+        require(attempt["receipt"] == admitted[name]["terminal"]["receipt"],
+                "attempt receipt differs from append-only terminal index")
         record = json_reference(root, attempt["receipt"])
-        exact(record, {"schema", "id", "status", "evidence", "started_at", "finished_at", "processes"}, "attempt receipt")
+        exact(record, {"schema", "id", "status", "evidence", "domain_observation",
+                       "started_at", "finished_at", "processes"}, "attempt receipt")
         require(record["schema"] == SCHEMA and record["id"] == name and
                 record["status"] in {"passed", "failed", "interrupted"}, "attempt has no retained terminal result")
         reference(root, record["evidence"])
+        if record["domain_observation"] is not None:
+            reference(root, record["domain_observation"])
         selected_paths.add(record["evidence"]["path"])
         elapsed = (timestamp(record["finished_at"]) - timestamp(record["started_at"])).total_seconds()
         check_processes(root, record["processes"], elapsed, passed=record["status"] == "passed")
         if record["evidence"]["path"] in selected:
             require(record["status"] == "passed", "selected attempt failed")
         paths.add(attempt["receipt"]["path"])
-    actual = {path.relative_to(root).as_posix() for path in (root / "attempts").glob("*/attempt.json")}
-    require(actual == paths and selected <= selected_paths, "attempt history omitted an on-disk or selected attempt")
+    require(original_names == set(indexed) == attempt_namespace(root)
+            and paths == {"attempts/" + name + "/attempt.json" for name in indexed}
+            and journal == attempt_index.file_ref(root, Path(root) / "attempts/index.jsonl")
+            and set(indexed) == set(attempt_index.replay(root, complete=True))
+            and selected <= selected_paths,
+            "attempt history omitted an on-disk or selected attempt")
+    reference(root, journal)
 
 
 def verify(manifest_path, repository):
+    require(_CLEAN_SOURCE_EXECUTION,
+            "final acceptance requires the isolated clean-source CLI bootstrap")
     observations = {}
     token = OBSERVATIONS.set(observations)
     try:
         result = verify_inputs(manifest_path, repository)
         for root, _, ref in tuple(observations.values()):
             reference(root, ref)
+        check_clean_source_execution(Path(__file__).resolve(strict=True).parent,
+                                     flags=sys.flags, cache_prefix=sys.pycache_prefix,
+                                     environment=os.environ, loaded=(),
+                                     importers=sys.meta_path)
         return result
     finally:
         OBSERVATIONS.reset(token)

@@ -496,10 +496,7 @@ async fn run(
                 )?)
                 .await?
                 .into_inner();
-            let receipt = WriteReceipt {
-                revision: receipt.revision,
-                versions: receipt.versions.into_iter().collect(),
-            };
+            let receipt = kasumi_client::verify_submitted_mutation_receipt(&batch, receipt)?;
             validate_receipt(&config.corpus, first, count, &receipt)?;
             journal.event(json!({"event":"committed","first":first,"count":count,"idempotency_key":key,
                 "revision":receipt.revision,"versions":receipt.versions,"seconds":started.elapsed().as_secs_f64()}))?;

@@ -600,6 +600,8 @@ impl RaftLogStorage<TypeConfig> for LogStore {
             let mut index = index
                 .lock()
                 .map_err(|_| anyhow::anyhow!("raft index lock poisoned"))?;
+            let first = crate::control::first_applied_membership(domains.custody().store())?;
+            crate::control::local_first_association_write(domains.custody(), first.as_ref(), None)?;
             let retired = crate::control::retired_boundary(domains.custody())?.is_some();
             let ids = index
                 .range(..=log_id.index)
@@ -657,6 +659,7 @@ pub(crate) struct SnapshotEnvelope {
     pub(crate) meta: SnapshotMeta<u64, BasicNode>,
     pub(crate) backend: SnapshotImage,
     pub(crate) retirement: Option<crate::snapshot_custody::SnapshotRetirement>,
+    pub(crate) first_membership: Option<crate::control::FirstAppliedMembership>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -780,8 +783,64 @@ fn validate_snapshot_coverage(
         &snapshot.meta,
         &manifest.sha256,
         snapshot.retirement.as_ref(),
+        snapshot.first_membership.as_ref(),
     )?;
     Ok(())
+}
+
+/// A historical target read cannot treat a custody cursor as a complete
+/// snapshot proof. Read the bounded published image and match its manifest,
+/// control coverage, portable first fact and any snapshot applied cursor.
+pub(crate) fn validate_target_history_snapshot(
+    domains: &TenantStorageSet,
+    first: &crate::control::FirstAppliedMembership,
+    applied: &crate::control::AppliedCursor,
+) -> Result<()> {
+    let custody = domains.custody().store();
+    let limit = RaftLimits::default().max_snapshot_bytes;
+    let coverage = load_snapshot_coverage(custody)?;
+    let snapshot = load_snapshot(domains.application(), limit)?;
+    match (coverage, snapshot) {
+        (None, None) => {
+            ensure!(
+                !matches!(applied, crate::control::AppliedCursor::Snapshot { .. }),
+                "target snapshot applied cursor lacks published image"
+            );
+            Ok(())
+        }
+        (Some(coverage), Some(snapshot)) => {
+            ensure!(
+                coverage.kind == SnapshotKind::Application,
+                "target history snapshot has another kind"
+            );
+            validate_snapshot_coverage(domains, &snapshot, limit)?;
+            if snapshot
+                .meta
+                .last_log_id
+                .is_some_and(|id| id >= first.header.log_id)
+            {
+                ensure!(
+                    snapshot.first_membership.as_ref() == Some(first),
+                    "target history snapshot lost exact first membership"
+                );
+            }
+            if let crate::control::AppliedCursor::Snapshot {
+                meta,
+                backend_sha256,
+                snapshot_sha256,
+            } = applied
+            {
+                ensure!(
+                    meta == &coverage.meta
+                        && backend_sha256 == &coverage.backend_sha256
+                        && snapshot_sha256 == &coverage.snapshot_sha256,
+                    "target applied snapshot differs from published coverage"
+                );
+            }
+            Ok(())
+        }
+        _ => anyhow::bail!("target snapshot manifest or control coverage absent"),
+    }
 }
 
 struct PendingSnapshot {
@@ -863,6 +922,7 @@ fn publish_snapshot(
         domains.custody(),
         &snapshot.meta,
         snapshot.retirement.as_ref(),
+        snapshot.first_membership.as_ref(),
         &coverage.backend_sha256,
         &coverage.snapshot_sha256,
     )?;
@@ -992,10 +1052,17 @@ impl StateMachine {
         let limit = limits.max_snapshot_bytes;
         let state = tokio::task::spawn_blocking(move || -> Result<AppliedState> {
             captured_domains.check_access()?;
+            let first =
+                crate::control::first_applied_membership(captured_domains.custody().store())?;
+            crate::control::local_first_association_write(
+                captured_domains.custody(),
+                first.as_ref(),
+                None,
+            )?;
             cleanup_snapshots(&captured, limit)?;
             if let Some(snapshot) = load_snapshot(&captured, limit)? {
                 validate_snapshot_coverage(&captured_domains, &snapshot, limit)?;
-                ensure!(snapshot.version == 1, "unsupported raft snapshot version");
+                ensure!(snapshot.version == 2, "unsupported raft snapshot version");
                 let context = crate::SnapshotRestoreContext {
                     mode: crate::SnapshotRestoreMode::Reopen,
                     backend_sha256: snapshot.backend.sha256().into(),
@@ -1054,6 +1121,7 @@ struct LogicalSnapshot {
     meta: SnapshotMeta<u64, BasicNode>,
     backend: crate::CapturedSnapshot,
     retirement: Option<crate::snapshot_custody::SnapshotRetirement>,
+    first_membership: Option<crate::control::FirstAppliedMembership>,
 }
 pub struct SnapshotBuilder {
     machine: StateMachine,
@@ -1140,13 +1208,14 @@ impl RaftSnapshotBuilder<TypeConfig> for SnapshotBuilder {
             }
             let logical = captured;
             let captured = SnapshotEnvelope {
-                version: 1,
+                version: 2,
                 kind: SnapshotKind::Application,
                 meta: logical.meta.clone(),
                 backend: SnapshotImage::capture(store.scratch_disk(), limit, |writer| {
                     logical.backend.write(writer)
                 })?,
                 retirement: logical.retirement.clone(),
+                first_membership: logical.first_membership.clone(),
             };
             let snapshot = as_snapshot(&captured, limit, &snapshot_buffers)?;
             let mut pending =
@@ -1298,10 +1367,13 @@ impl RaftStateMachine<TypeConfig> for StateMachine {
                 &meta,
                 captured.retirement.clone(),
             )?;
+            let first_membership =
+                crate::control::first_membership_for_snapshot(machine.domains.custody(), &meta)?;
             Ok(LogicalSnapshot {
                 meta,
                 backend: captured,
                 retirement,
+                first_membership,
             })
         })
         .await
@@ -1351,7 +1423,7 @@ impl RaftStateMachine<TypeConfig> for StateMachine {
                 machine.limits.max_snapshot_bytes,
             )?;
             ensure!(
-                envelope.version == 1 && envelope.meta == meta,
+                envelope.version == 2 && envelope.meta == meta,
                 "snapshot metadata mismatch"
             );
             let mut state = machine

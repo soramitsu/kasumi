@@ -27,3 +27,5 @@ postcard = { version = "1", default-features = false, features = ["alloc"] }
 [dev-dependencies]
 tempfile.workspace = true
 kasumi-store = { workspace = true, features = ["test-utils"] }
+kasumi-serving = { workspace = true, features = ["test-utils"] }
+ring = "0.17"

@@ -140,6 +140,9 @@ async fn target_monitor_and_outer_owner_survive_cancelled_shutdown_until_journal
             calls: Arc::new(Semaphore::new(MAX_CALLS as usize)),
             call_jobs: TargetCallJobs::new(&physical.admission).unwrap(),
             closing: AtomicBool::new(false),
+            marked_first_membership_reads: AtomicU64::new(0),
+            fail_next_initial_start_reply: AtomicBool::new(false),
+            fail_next_initialize_reply: AtomicBool::new(false),
         });
         let weak_runtime = Arc::downgrade(&runtime);
         // A materializer can fail after opening both key domains but before a Raft

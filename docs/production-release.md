@@ -26,15 +26,399 @@ final-source workspace Clippy and test gates remain to run. A first full
 workspace test run passed 67 authority and 290 engine library cases, then
 failed one Raft capacity fixture; that fixture now passes focused with the
 production native reserve installed. Full downstream reruns remain in progress.
-The G01
-current-byte bootstrap-manifest engine and server fingerprint cases each
+On the later combined BPNG integration source, an authority test initially
+failed to compile because it moved its journal `TenantStore` before the same
+test's explicit shutdown. Retaining a second `Arc` fixes that test-only compile
+error. The nine-case G07 authority request-drain module and the focused
+replicated-signer-head case pass on the warm build lane. The now-runnable
+target-file replay case initially failed at node shutdown after its deliberate
+external unlink of an already enrolled file. The corrected fixture preserves
+the missing-file replay rejection and now passes **1/1** while asserting the
+exact `UnknownOutcome`, the failed replay's retained registered opening, the
+journal node's retained `DrainedWithFailure`, and stable original close issue
+across a repeated shutdown. This is fail-closed custody evidence for an external
+unlink, not a qualified recovery or cleanup path. G02 production custody
+adoption, complete G07 child ownership, and final-source authority
+qualification remain open.
+
+The G01 current-byte bootstrap-manifest engine and server fingerprint cases each
 pass **1/1** after an in-progress native KV read-bound mismatch was corrected.
-Full-source suites are pending. The latest seven-case G09 Control lifecycle
-run passes **3/7**; four cases fail around cached-route reads or negative
-outcome responses under leadership changes. Positive signed first
+Full-source suites are pending. The earlier G09 Control lifecycle **3/7** run
+was superseded by the revision-6 exact-read fixture's **7/7** serial pass on its
+recorded source. A later combined-source focused expired-completion case failed
+on two retained follower reads in the fixture; routing those exact reads and
+preparation through its existing current-leader helpers passes the case **1/1**.
+The complete current-source cohort has not been rerun. Positive signed first
 membership and historical status remain absent. Bundled Python 3.12 discovery
 passes **191/191** while the native KV source is still changing. These are
 development checkpoints; no G01–G14 goal or final release gate is closed.
+
+A G09 authority-path audit found that the frozen target request could not carry
+the recovery effect-attempt ID: `BeginEffect` creates it only after the request
+and its digest are committed. A bounded first-release native Execute envelope
+now carries the exact operation, phase, attempt and frozen-input digest outside
+that request. The coordinator fills it from the committed effect ticket; old
+bare packets, missing fields and extra fields are rejected. The target checks
+the claimed identity structurally against its node and request, and the
+format-2 journal status reader accepts the same identity type. Focused owner
+tests pass **4/4**, protocol envelope tests pass **2/2**, journal open/reservation
+tests originally passed **11/11**. The next bounded cutover makes the target
+read the exact marked RecoveryPhaseRecord from its installed pinned-mTLS Control
+endpoints with the original credential after verifying the signed lifecycle
+intent and actual node. Control's protected ReadPhase crosses the replicated
+quorum barrier. Before issuer admission or target generation creation, the
+target rejects a missing, uncertain or mismatched read, including a wrong
+operation, phase, attempt, target node, frozen request, input digest, lifecycle
+intent or absent TargetCommand marker. A matching marked read now enters the
+format-2 target journal's unique mutation owner: its exact phase, lifecycle,
+target node and permanent terminal reserve are written atomically once.
+`NewlyAccepted` consumes that packet; `ExistingStatusOnly`, conflicting rows,
+capacity failure and uncertain writes grant no second dispatch. The receiver
+still stops before issuer admission or target Raft child creation because
+first-applied membership recording is not installed. The focused marked-phase
+case passes **1/1** for Start and Initialize variants and the complete current
+journal open/reservation module passes **12/12**. A named installed
+three-Control/three-target TLS regression passes **1/1**: it reaches the
+committed Start(Quorum) marker, retains its unresolved phase after the
+coordinator's failed Resume, records exactly one target's successful
+authenticated ReadPhase, reads back `AcceptedOnly` from that receiver's journal
+and confirms zero target Raft replicas across all three receivers. The affected
+client, engine and server crates check on the warm target. These are
+authenticated point-read and durable local-reservation checks only. Raft's
+applied cursor and snapshots retain current membership without an immutable
+first-applied fact bound to that exact owner. No positive signed
+first-membership outcome, historical resolver or G09 qualification is claimed.
+
+The next G09 applied-history audit found no safe narrow post-dispatch fact
+writer in the current Raft interfaces. Membership application updates the
+moving `StoredMembership`; `persist_applied` durably writes the current applied
+cursor without an immutable first-membership row. Snapshot metadata carries
+the latest `last_membership` and retirement capsule, while Raft purge deletes
+covered log headers. After another membership entry or a covered snapshot,
+those current views cannot prove which first membership was applied. The
+accepted dispatch is in the independent encrypted target journal, so a later
+write there cannot be atomic with Raft's applied cursor. The required source
+cutover must bind the exact accepted dispatch before target group startup,
+capture the first applied membership in Raft's application transaction, carry
+and validate that immutable fact through snapshot build/install/reopen and
+purge, and define crash-safe journal terminalization and historical resolution.
+No fact or child-admission change was made in this audit; the receiver gate
+remains closed.
+
+A subsequent in-progress source slice adds an exact first-membership log-header
+row to the Raft custody transaction that advances the applied cursor, plus a
+strict snapshot envelope field and publication checks intended to preserve it
+through build, install, reopen and purge. The focused production `kasumi-raft`
+check passes. Three focused regression cases now cover fault-injected atomic
+first capture, later membership plus purge/reopen retention, and snapshot
+install/reopen with same-position first-fact substitution rejection. These
+three focused library cases passed **3/3** on the current local source at
+2026-09-24 18:31 UTC (`cargo test -p kasumi-raft --lib first_applied_membership`
+ran 2/2; `cargo test -p kasumi-raft --lib
+first_membership_snapshot_install_reopen_and_substitution_are_bound` ran 1/1).
+Format and diff checks pass. The fact is not yet
+prebound to an accepted target-journal dispatch, the target historical resolver
+is absent, and child admission remains closed. This slice is not G09 evidence
+or a release qualification. Further builds were stopped when shared free disk
+reached approximately 20 GiB during an unrelated release prepare.
+
+The next G09 binding audit leaves child admission closed. The accepted
+dispatch is encrypted in the independent target journal, whose reservation
+API then returned only `NewlyAccepted` or `ExistingStatusOnly`. The authenticated
+initial request exits immediately after that reservation, before issuer
+access or target catalog open. `open_target_replica` receives neither the
+journal row nor a sealed receipt; `RaftGroup::open` and `StateMachine::open`
+receive no prebound dispatch; and `persist_applied` sees only the applied log
+position and membership. The separate `target_initial_intent` format is
+dormant; the active target startup still has a three-field local intent. No
+source path can currently carry the exact accepted operation, phase, attempt,
+frozen input digest, installed Control root, target node, and expected first
+membership across this boundary before `Raft::new` can replay/apply.
+
+The required first-release cutover has **two distinct custody facts**. The
+portable Raft first-membership fact contains the exact applied log header and
+can travel in a peer snapshot. A separate node-local prebind must be written
+to that target node's custody *before* group startup from a one-use,
+journal-validated accepted dispatch, with the exact group, node, installed
+root, phase/attempt, frozen input digest and expected membership. The node's
+first applied membership (or first covering snapshot) must atomically write a
+local association of that prebind to the portable fact in the same custody
+publication as the applied cursor. Same-position replay, later membership,
+purge, snapshot install and reopen must preserve and compare the local
+association; a peer snapshot may supply its portable membership fact but
+must never copy the sender's node-local dispatch identity. Start and
+Initialize may have different target nodes and phase attempts, so the
+initiator's Initialize owner cannot be inferred for every follower from the
+shared membership header.
+
+A crash after journal reservation or local prebind grants no second child
+ticket. The historical resolver must freshly authenticate the exact marked
+Control phase and original signed lifecycle, compare the canonical journal
+row and local prebind, then verify the local association, immutable first
+membership, committed/applied coverage and snapshot coverage before returning
+a positive result. An absent, conflicting, partially published, or uncertain
+record remains unresolved and fail closed; a current membership cursor or
+transport acknowledgement alone cannot resolve it. The journal's reserved
+terminal capacity must record the exact outcome without re-executing the
+packet. This prebind, association, resolver and node-role contract is design
+only: no code path was opened, no new tests or Cargo builds were run for this
+audit, and G09 remains unqualified.
+
+A later bounded handoff slice changes the successful first reservation to
+return a non-cloneable, non-deserializable in-process prebind candidate only
+after reading back and validating the exact canonical journal row. It carries
+the installed Control root and node, operation/phase/attempt/input digest,
+target identity and frozen request, plus the SHA-256 of that journal row.
+`ExistingStatusOnly` returns no candidate, and an uncertain or mismatched
+readback returns an error. The native receiver still drops the candidate at
+the existing fail-closed gate before issuer or child creation. The candidate
+has no Raft custody writer or startup parameter yet, and no expected
+membership has been authenticated from its materialization signatures. Its
+focused journal test checks exact fields and row digest and passed **1/1** on
+the current local source at 2026-09-24 18:31 UTC with
+`cargo test -p kasumi-engine --lib
+exact_dispatch_reservation_is_one_use_and_reopen_recounts_terminal_capacity`.
+This is not an applied membership or a
+positive historical result; G09 remains open.
+
+The following bounded source slice derives the exact expected first voter map
+from that one-use candidate without creating a child. It takes the original
+`TargetOrigin` committed by the accepted Control quorum input, checks it
+against the journal-retained Initialize lifecycle, matches the frozen origin
+digest, target incarnation and installed node, and verifies all three
+materialization signatures with the original installed target attestation
+keys. The resulting opaque value retains the candidate, exact voter endpoints
+and agreed bootstrap digest; it has no decoder, public constructor, issuer
+lease or Raft custody writer. A focused source test covers Start and
+Initialize derivation, wrong node, wrong lifecycle phase, substituted voter
+materialization and status-only replay. The focused test passed **1/1** on
+the current local source at 2026-09-24 18:40 UTC with
+`cargo test -p kasumi-engine --lib
+accepted_dispatch_derives_only_exact_signed_initial_membership`;
+scoped format and diff checks pass. The target still bails before issuer or child
+admission. A durable node-local Raft prebind, atomic first-fact association,
+snapshot/reopen checks and historical resolver remain open; G09 is unqualified.
+
+The next source-only G09 slice adds a canonical node-local Raft prebind row in
+`raft.meta`. Only consuming the one-use `VerifiedInitialMembership` candidate
+can publish it through the engine writer: that writer rechecks the exact
+accepted journal row and digest, the installed target serving identity and
+Raft group, rejects an existing row, durably writes once, and reads it back.
+The row binds the installed Control root and physical node, target tenant and
+incarnation, exact group, operation/phase/attempt/input digest, journal row
+digest, three original voter endpoints and agreed bootstrap digest. A separate
+opt-in `open_target_prebound` path compares the canonical row with an
+authenticated caller expectation before `Raft::new`; ordinary and Control
+group opens are unchanged. This path is not yet called by the native target
+receiver, which still stops before issuer or child admission. No node-local
+association to the first applied Raft membership, snapshot/reopen historical
+resolution, or positive G09 outcome exists yet. The new schema/substitution
+test is source-only and **unrun**: shared free disk fell below 15 GiB while
+another release build was active, so no Cargo build was started. Scoped
+format and diff checks are the only validation of this slice; G09 remains
+unqualified.
+
+A later source-only combined fixture now signs a real serving lease for the
+journal's installed physical node and opens separately encrypted target
+application/custody catalogs with the exact Raft group identity. Its focused
+test consumes the one-use candidate through the actual prebind writer, reads
+back the custody row, shuts down and reopens the pair, then substitutes a
+different valid canonical accepted journal row and requires writer refusal.
+It also substitutes the reopened local prebind row and requires the strict
+reader to reject it. This test is **unrun** while shared disk remains low; it
+does not exercise the opt-in `open_target_prebound` call itself. The receiver
+still creates no child, the applied-fact association and historical resolver
+remain open, and G09 remains unqualified.
+
+The subsequent G09 source slice binds a prebound target to the actual first
+applied Raft membership. The prebind must match the installed bootstrap digest
+and the first applied entry must have one exact three-voter configuration with
+the signed endpoints and no extra learners. On first apply, Raft writes a
+canonical node-local association of the prebind and portable first fact in
+the same custody batch as the applied cursor and first fact. Peer snapshots
+still carry only the portable fact; installation builds any local association
+from the receiving node's own prebind in the snapshot publication batch.
+With the local prebind retained, replay, snapshot publication, reopen and purge
+reject a missing or substituted association once the first fact exists. A
+future historical resolver must freshly require the exact prebind and journal
+row, so removal of both local rows cannot be mistaken for a positive result.
+A focused source test covers mismatched voters before apply, successful
+association, later membership, purge, reopen and prebind substitution. The combined engine
+prebind test and this Raft test are **unrun** because concurrent Iroha release
+builds drove shared free disk into the 12–14 GiB range; static formatting and
+diff checks alone are not runtime evidence. Target child admission and the
+fresh-Control historical resolver remain closed; G09 is unqualified.
+
+The next source-only historical slice adds a read-only target resolver. A caller
+must supply a newly observed signed installed-Control intent and a newly read
+marked Control phase; the resolver compares both to the exact canonical
+accepted journal row, re-verifies all three signed materializations, and
+derives the expected node-local Raft prebind without minting another one-use
+candidate. The Raft reader requires that prebind, its atomic local association
+to the immutable portable first membership fact, applied and committed log
+coverage, and a complete published snapshot image and coverage when one
+exists. It returns an opaque historical observation with no child or write
+capability. Focused source tests include the positive committed/applied path,
+pre-apply refusal, a different valid signed Control original, row and active
+header substitution, missing association or prebind, incomplete snapshot
+publication, and coverage rollback. After the Iroha preparation released the
+shared build lane, the engine test
+`historical_initial_membership_requires_exact_control_journal_and_applied_custody`
+passed **1/1**, and `cargo test -p kasumi-raft --lib
+prebound_first_membership_association_survives_later_apply_purge_and_reopen`
+passed **1/1** on 2026-09-25 UTC. The latter used a real signed serving lease
+and exact installed target identity; the Raft library run filtered 85 other
+tests. These focused passes
+are not a full-source or G09 qualification. The production receiver does not
+yet call this resolver or create the target child. The resolver's Control
+freshness still relies on its caller obtaining both live reads. G09 remains
+unqualified.
+
+A further server-side source slice supplies a read-only historical resolver
+entry point that obtains both observations itself from the installed pinned
+Control endpoints under a current Control Admin credential. It binds the
+fresh signed lifecycle intent and quorum-barrier ReadPhase to the exact
+accepted journal row and node-local Raft history through the existing engine
+resolver. It cannot reserve an Execute attempt, acquire an issuer lease or
+start a child. No production receiver calls this entry point yet, and the
+target child remains closed. A focused warm `cargo check -p kasumi-server
+--lib --locked` passes on this source, as do scoped formatting and diff
+checks. The installed three-node
+`three_runtime_nodes_reject_first_membership_without_receiver_admission`
+regression passes **1/1** and confirms zero target Raft children across all
+receivers. That regression does not invoke the new live-read entry point, so
+the entry point has no runtime test result.
+The missing receiver call, authenticated historical status contract, child
+startup binding and terminal outcome remain open; G09 is unqualified.
+
+The next receiver slice adds a status-only native target RPC and typed client
+query for one exact accepted first-membership identity. The receiver performs
+a fresh signed intent read and a fresh quorum-barrier ReadPhase under a current
+Control Admin, then requires an already owned target generation. It
+compares both to the accepted journal row and local Raft custody; it cannot
+reserve another Execute attempt, create a generation, or start a child. The
+installed three-node fixture confirms a retained materialized generation has
+no Raft group identity yet; direct and pinned-mTLS status reads reach the fresh
+Control checks and reject either unbound local history or a generation drained
+before the read. A substituted attempt is rejected, a source credential cannot
+reach the protected history read, and
+every target Raft child remains absent. The focused installed
+test passes **1/1**. A separate correction makes the one-use, signed-Control
+prebind writer atomically publish the target node, group and prebind on an
+otherwise unbound materialized custody store; it rejects prior partial or
+competing identity. Its positive reopen, partial-identity refusal and exact
+historical resolver engine tests pass **3/3**; the focused Raft association,
+later-apply, purge and reopen test passes **1/1**. The production receiver still
+does not consume that one-use candidate or produce a committed first
+membership, and the status RPC cannot report a positive result on the current
+installed fixture. G09 startup binding, terminal recovery and complete
+qualification remain open.
+
+The next source slice adds permanent first-membership observation publication
+to the independent target journal. It revalidates the fresh signed Control
+intent and marked phase against the accepted dispatch, then rereads the exact
+local prebind, immutable first fact and committed/applied coverage before
+writing. The terminal retains the accepted-row, prebind and first-fact hashes,
+the complete first log identity and original observed coverage. Repeated reads
+recheck custody and cannot overwrite that original observation or manufacture
+another Execute permission. Publication and its terminal count share one
+journal batch and consume only the capacity precharged by the accepted
+dispatch. Journal format 3 requires the terminal counter and rejects retired
+format 2 without an upgrade path. Reopen checks canonical terminal bytes,
+accepted-row binding and exact accounting; retained terminal bytes alone never
+prove current local history. The two new focused terminal tests pass **2/2**,
+and the complete target-journal reopen subset passes **18/18** on this source
+with `cargo test --locked -p kasumi-engine --lib target_journal::open_tests`.
+These are local signed-fixture tests, including actual custody publication,
+and are not installed target-process or crash-injection acceptance.
+A warm `cargo check --locked -p kasumi-server --lib` and scoped format/diff
+checks pass; the check reports the existing three vendored `rmcp` dead-code
+warnings.
+The production status RPC remains read-only and does not call the new writer.
+The receiver remains closed before issuer and target-child acquisition. Before
+opening it, the first-release startup contract must distinguish each node's
+original Start prebind from the initiator's later, separately marked Initialize
+attempt, and provide a safe continuation for a lost Start reply before any
+membership has committed. The coordinator currently waits for all three Start
+acknowledgements before dispatching Initialize, so a committed-membership-only
+resolver cannot resolve that earlier lost-reply case. This source slice does
+not claim G09 startup, terminal recovery or release qualification.
+
+The subsequent bounded Start slice requires typed startup admission in the
+engine: an Initialize-phase child must consume the one-use accepted **Start**
+candidate under its exact original lifecycle and dispatch deadline. It verifies
+the materialized image, publishes the candidate's node-local prebind, and calls
+`RaftGroup::open_target_prebound` before any Raft replay. The established-phase
+mode rejects Initialize and cannot substitute for this admission. A separate
+immutable journal Start observation binds that original accepted dispatch and
+prebind while the actual child remains owned, healthy and under the original
+live phase. Its returned proof borrows the owner and rechecks access at release;
+closing the phase invalidates it immediately. Status-only recovery of a lost
+Start reply requires fresh installed-Control originals, the exact retained Start
+record and that continuously owned child. Retained bytes after a drain/restart
+cannot create a replacement child or claim that one is running. The Start and
+first-membership observations each have a fixed half of the original dispatch
+reservation and separate atomically published counters in journal format 3.
+
+The new actual three-target fixture passes **1/1** on the final source, including
+distinct later Initialize coexistence, wrong-attempt and foreign-child refusal,
+and immediate proof invalidation on phase closure. It uses real encrypted
+materializations, a real three-voter issuer and owned Raft children; its Control
+signatures and marked phases are explicit local fixtures, not live installed-
+Control acceptance. It does not call Initialize or claim committed membership.
+The final-source target-journal subset also passes **18/18**, including both
+terminal tests after adding the separate Start-record counter and capacity
+split. The final-source warm server library check passes in 41.59 seconds with
+only the same three vendored `rmcp` warnings; scoped formatting and diff checks
+also pass.
+The production receiver still stops before issuer/child admission. It does not
+invoke the new Start writer or expose its status proof, and the coordinator has
+no lost-Start status continuation yet. This read is currently limited to the
+fresh, still-unresolved original Start phase; resolved Control phases are
+rejected rather than stripped into new authority. Separate Initialize ownership
+admission, its association with the Start owner, and restart/expired-phase
+recovery remain open. G09 is unqualified.
+
+The next installed-runtime slice now consumes the accepted Start candidate in
+the production receiver. It opens the actual prebound Raft child, registers its
+peer route, and publishes the independent Start observation only after another
+fresh installed-Control intent and marked-phase read. The protected
+`ReadInitialStart` RPC requires current Control Admin authentication, actual
+mutual TLS, the exact unresolved original marker and original absolute dispatch
+deadline, and the continuously owned matching generation, phase, route and
+child. It retains the generation lock through response encoding and audit,
+repeats the fresh Control and local-owner checks at both release fences, and
+cannot open a child from retained bytes. The coordinator's existing-Start
+continuation now queries that pinned receiver status and resolves the same
+Control phase without another `BeginEffect` or `Execute`.
+
+The real installed three-node fixture passes **1/1** with a deliberately lost
+Start reply. It exercises actual Control and issuer services, encrypted target
+materialization, the original owned Raft child, and the pinned-mTLS status RPC.
+It rejects a source credential, substituted attempt, replayed Execute, and a
+membership-history claim before membership exists. The coordinator resolves
+the original Start with the same retained attempt and does not construct another
+target child. A later status read rejects the now-resolved Control phase instead
+of normalizing it into new authority. This is local installed-runtime evidence,
+not a process-crash, live-cluster or release qualification result.
+The final-source command is `cargo test --locked -p kasumi-server --lib
+three_runtime_nodes_resolve_lost_initial_start_over_protected_tls`; its test
+passes in 48.83 seconds after the original-deadline fence was added. The
+final-source target-journal reopen subset again passes **18/18** in 1.88 seconds
+with `cargo test --locked -p kasumi-engine --lib target_journal::open_tests`.
+Scoped format and diff checks pass. The native test harness reports an Apple
+linker unwind-table size warning in addition to the three existing vendored
+`rmcp` dead-code warnings. The final normal `cargo check --locked -p
+kasumi-server --lib` passes in 8.71 seconds with those three vendored warnings.
+
+Initialize remains closed in the receiver. Its later distinct accepted marker
+still needs a separate one-use association to the original Start owner and the
+actual first membership, without overwriting that owner's Start prebind. The
+coordinator does not yet recover a lost Initialize reply from that association
+and committed/applied membership history. A missing child, expired original
+dispatch or resolved phase grants no new startup permission; recovery after
+those conditions requires a separately designed authority contract. G09 and
+the full recovery acceptance remain open.
 
 Latest master-only development evidence is recorded in the
 [integration bundle](evidence/installed-disk-integration-20260923/README.md).

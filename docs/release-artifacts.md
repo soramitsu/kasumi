@@ -9,10 +9,11 @@ functional run made with this source's runner and packager:
 python3 scripts/release_gate.py \
   --output /absolute/evidence/final-functional \
   --execution-description 'Describe the actual pinned native host or VM' --jobs 2
-python3 -B -S /absolute/evidence/final-functional/source/scripts/run_repeatable_assembly_owned.py \
+python3 -I -B -S /absolute/evidence/final-functional/source/scripts/run_repeatable_assembly_owned.py \
   --evidence /absolute/evidence/final-functional \
   --native-inputs /absolute/native-inputs/inputs.json \
-  --output /absolute/artifacts/repeatable-assembly-001
+  --output /absolute/artifacts/repeatable-assembly-001 \
+  --attempt-root /absolute/artifacts --attempt-id assembly-001
 python3 -B -S /absolute/evidence/final-functional/source/scripts/transport_assembly_evidence.py produce \
   --assembly /absolute/artifacts/repeatable-assembly-001 \
   --evidence /absolute/evidence/final-functional \
@@ -26,6 +27,8 @@ python3 -B -S /absolute/evidence/final-functional/source/scripts/transport_assem
 
 The native input declaration is mandatory; there is no ambient Cargo/Rustup
 fallback. See [the assembly input contract](repeatable-assembly.md). The owned
+launcher, runner and packager require isolated Python and reject cached
+bytecode before importing local helpers. The owned
 launcher retains `launcher.json`, its runner process, descendant group ledger and
 terminal census at the output root. Its child produces `assembly/attempt.json`
 and the two original outputs, `assembly/assembly-a-output` and

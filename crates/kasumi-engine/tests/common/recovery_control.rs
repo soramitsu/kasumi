@@ -2084,31 +2084,31 @@ async fn exercise_route_publication(f: &mut Fixture, db: Arc<Database>, request:
         topology,
         "a stale prepared phase cannot overwrite concurrent topology"
     );
-    let expiring = f.context_for("owner", 3_000);
     let expired = Uuid::new_v4();
-    let head = db
-        .recovery_status(f.context("owner"), request.operation_id)
-        .await
-        .unwrap();
-    let pending = db
-        .next_recovery_dispatch(&expiring, request.operation_id, expired)
-        .await
-        .unwrap()
-        .unwrap();
-    let prepared = db
-        .prepare_recovery_dispatch(
-            expiring,
-            request.operation_id,
-            expired,
-            head.record().next_phase_sequence,
-            None,
-            pending,
-        )
-        .await
-        .unwrap();
+    let head = read_recovery_status(f, f.context("owner"), request.operation_id).await;
+    let sequence = head.record().next_phase_sequence;
+    let pending_phase = head.record().pending_phase;
+    let previous_phase = head.record().last_phase;
+    assert_eq!(pending_phase, None);
+    drop(head);
+    let pending =
+        read_next_recovery_dispatch(f, f.context("owner"), request.operation_id, expired).await;
+    let expiring = f.context_for("owner", 3_000);
+    let prepared = prepare_exact_recovery_phase(
+        f,
+        expiring,
+        ExactRecoveryPhase {
+            operation: request.operation_id,
+            phase_id: expired,
+            sequence,
+            pending: pending_phase,
+            previous_phase,
+            input: pending,
+        },
+    )
+    .await;
     let original_cutoff = prepared.dispatch_limit().await.unwrap();
     drop(prepared);
-    drop(head);
     let now = kasumi_clock::EpochClock::system()
         .unwrap()
         .observe()
@@ -2157,10 +2157,7 @@ async fn exercise_route_publication(f: &mut Fixture, db: Arc<Database>, request:
         active.topology.tenants["unrelated"],
         topology.tenants["unrelated"]
     );
-    let head = db
-        .recovery_status(f.context("owner"), request.operation_id)
-        .await
-        .unwrap();
+    let head = read_recovery_status(f, f.context("owner"), request.operation_id).await;
     assert_eq!(head.record().phase, RecoveryPhase::Finished);
     assert_eq!(head.record().route_publication, Some(fresh));
     drop(head);
@@ -3379,9 +3376,8 @@ async fn resolve_expired_completion(
         "inspection retries preserve their exact finite request"
     );
     assert!(
-        db.recovery_phase(f.context("owner"), operation, unresolved)
+        read_recovery_phase(f, f.context("owner"), operation, unresolved)
             .await
-            .unwrap()
             .record()
             .outcome
             .is_none()

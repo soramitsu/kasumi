@@ -23,6 +23,7 @@ struct Header {
     kind: SnapshotKind,
     meta: openraft::SnapshotMeta<u64, crate::BasicNode>,
     retirement: Option<crate::snapshot_custody::SnapshotRetirement>,
+    first_membership: Option<crate::control::FirstAppliedMembership>,
 }
 fn frame(writer: &mut dyn Write, tag: u8, bytes: &[u8], digest: &mut Sha256) -> Result<()> {
     let mut header = [0; 9];
@@ -39,12 +40,19 @@ impl SnapshotEnvelope {
         self.encode_records(limit, true)
     }
     fn encode_records(&self, limit: u64, check_metadata: bool) -> Result<SnapshotImage> {
+        if check_metadata {
+            crate::control::validate_snapshot_first_membership(
+                &self.meta,
+                self.first_membership.as_ref(),
+            )?;
+        }
         SnapshotImage::capture(self.backend.disk(), limit, |writer| {
             let header = serde_json::to_vec(&Header {
                 version: self.version,
                 kind: self.kind,
                 meta: self.meta.clone(),
                 retirement: self.retirement.clone(),
+                first_membership: self.first_membership.clone(),
             })?;
             ensure!(
                 header.len() <= MAX_METADATA,
@@ -167,7 +175,7 @@ impl SnapshotEnvelope {
                 METADATA => {
                     let value: Header = serde_json::from_slice(&bytes)?;
                     ensure!(
-                        value.version == 1
+                        value.version == 2
                             && crate::storage::current_snapshot_id(&value.meta.snapshot_id)
                             && serde_json::to_vec(&value)? == bytes,
                         "noncanonical snapshot metadata"
@@ -213,6 +221,10 @@ impl SnapshotEnvelope {
             previous_tag = tag[0];
         }
         let mut header = header.context("snapshot metadata absent")?;
+        crate::control::validate_snapshot_first_membership(
+            &header.meta,
+            header.first_membership.as_ref(),
+        )?;
         if let Some(builder) = custody {
             let records = builder.finish()?;
             let retirement = header
@@ -230,6 +242,7 @@ impl SnapshotEnvelope {
             kind: header.kind,
             meta: header.meta,
             retirement: header.retirement,
+            first_membership: header.first_membership,
             backend: SnapshotImage::freeze(spool)?,
         })
     }

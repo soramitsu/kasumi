@@ -10,6 +10,7 @@ import unittest
 from unittest.mock import patch
 
 import repeatable_assembly as assembly
+import attempt_index
 import run_repeatable_assembly_owned as owned
 import verify_release_acceptance as acceptance
 from release_gate import sha256, write_json
@@ -53,6 +54,7 @@ from pathlib import Path
 import shutil
 import sys
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 import gate_process
 
 def save(path, value):
@@ -120,6 +122,7 @@ import os
 from pathlib import Path
 import sys
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 import gate_process
 
 args = sys.argv
@@ -242,11 +245,32 @@ class OwnedAssemblyIntegrationTests(unittest.TestCase):
 
     def test_successful_outer_launch_verify_and_disabled_bridge_reject_substitutions(self):
         self.assertEqual(acceptance.DOMAIN_ADAPTERS, {})
+        dispatched = []
+        original_run_owned = assembly.run_owned
+
+        def witnessed_dispatch(*args, **kwargs):
+            rows = attempt_index.replay(self.root, complete=False)
+            self.assertEqual(set(rows), {"assembly-test"})
+            self.assertIsNone(rows["assembly-test"]["terminal"])
+            self.assertTrue((self.root / "attempts/index.jsonl").stat().st_size > 0)
+            dispatched.append(args[1])
+            return original_run_owned(*args, **kwargs)
+
         with patch.object(owned.assembly_inputs, "validate_declaration", return_value=self.inputs), \
                 patch.object(assembly, "verify", side_effect=self.inner_verify), \
+                patch.object(assembly, "run_owned", side_effect=witnessed_dispatch), \
                 patch.object(owned, "__file__", str(self.source / owned.LAUNCHER)):
-            result = owned.launch(self.evidence, self.declaration, self.launch_root)
+            result = owned.launch(self.evidence, self.declaration, self.launch_root,
+                                  self.root, "assembly-test")
+            self.assertEqual(dispatched, ["runner"])
+            self.assertIsNotNone(attempt_index.replay(self.root)["assembly-test"]["terminal"])
             self.assertEqual(result["status"], "passed")
+            observation_path = self.launch_root / owned.DOMAIN_OBSERVATION
+            observation = assembly.read(observation_path)
+            self.assertEqual(observation["schema"], owned.DOMAIN_SCHEMA)
+            self.assertEqual(observation["status"], "unqualified")
+            attempt = assembly.read(self.root / "attempts/assembly-test/attempt.json")
+            self.assertEqual(attempt["domain_observation"], self.file_ref(observation_path))
             parsed = owned.verify(self.launch_root, assembly.ref(self.launch_root, self.launch_root / "launcher.json"))
             self.assertEqual(len(parsed["groups"]), 8)
             domain, configs, artifacts = self.domain(result)
@@ -259,12 +283,19 @@ class OwnedAssemblyIntegrationTests(unittest.TestCase):
             swapped["details"]["second_source"] = artifacts["source"]["file"]
             with self.assertRaises(ValueError):
                 assembly.domain_adapter(self.root, swapped, self.files, configs, artifacts)
+            changed = copy.deepcopy(observation)
+            changed["target"] = "x86_64-unknown-linux-gnu"
+            write_json(observation_path, changed)
+            with self.assertRaisesRegex(ValueError, "domain observation differs"):
+                owned.verify(self.launch_root, assembly.ref(self.launch_root,
+                                                            self.launch_root / "launcher.json"))
 
     def test_actual_nested_graph_rejects_rehashed_ledger_and_census_substitutions(self):
         with patch.object(owned.assembly_inputs, "validate_declaration", return_value=self.inputs), \
                 patch.object(assembly, "verify", side_effect=self.inner_verify), \
                 patch.object(owned, "__file__", str(self.source / owned.LAUNCHER)):
-            result = owned.launch(self.evidence, self.declaration, self.launch_root)
+            result = owned.launch(self.evidence, self.declaration, self.launch_root,
+                                  self.root, "assembly-test")
             launcher_path = self.launch_root / "launcher.json"
             runner_path = assembly.check_ref(self.launch_root, result["runner_process"]["receipt"])
             ledger_path = assembly.check_ref(self.launch_root, result["group_ledger"])
@@ -334,7 +365,8 @@ class OwnedAssemblyIntegrationTests(unittest.TestCase):
                 patch.object(owned, "__file__", str(self.source / owned.LAUNCHER)), \
                 patch.object(owned, "TIMEOUT_SECONDS", 1):
             with self.assertRaises(ValueError):
-                owned.launch(self.evidence, self.declaration, self.launch_root)
+                owned.launch(self.evidence, self.declaration, self.launch_root,
+                             self.root, "assembly-test")
         receipt = assembly.read(self.launch_root / "launcher.json")
         self.assertEqual(receipt["status"], "failed")
         runner_process = assembly.read(assembly.check_ref(self.launch_root,

@@ -136,7 +136,7 @@ async fn native_schema_activation_is_atomic_scoped_permanent_and_private() {
     };
     let reference = request.reference().unwrap();
     let read = || proto::ReadSchemaRequest {
-        request_json: serde_json::to_vec(&kasumi_types::ReadSchema {
+        request_json: serde_json::to_vec(&kasumi_types::ReadSchema::Named {
             collections: BTreeSet::from(["journal".into(), "balances".into()]),
         })
         .unwrap(),
@@ -198,6 +198,28 @@ async fn native_schema_activation_is_atomic_scoped_permanent_and_private() {
         serde_json::from_slice(&installed.response_json).unwrap();
     assert_eq!(installed.schema_epoch, before.schema_epoch + 1);
     assert!(installed.collections.values().all(Option::is_some));
+    let complete = proto::ReadSchemaRequest {
+        request_json: serde_json::to_vec(&kasumi_types::ReadSchema::All).unwrap(),
+    };
+    assert_eq!(
+        admin
+            .read_schema(native(complete.clone(), &read_only))
+            .await
+            .unwrap_err()
+            .code(),
+        Code::PermissionDenied
+    );
+    let complete = admin
+        .read_schema(native(complete, &token))
+        .await
+        .unwrap()
+        .into_inner();
+    let complete: kasumi_types::SchemaSnapshot =
+        serde_json::from_slice(&complete.response_json).unwrap();
+    assert_eq!(
+        serde_json::to_value(&complete.collections).unwrap(),
+        serde_json::to_value(&installed.collections).unwrap()
+    );
     let replay = admin
         .activate_schema(native(wire(), &token))
         .await
