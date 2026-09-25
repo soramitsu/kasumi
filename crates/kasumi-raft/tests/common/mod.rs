@@ -106,6 +106,8 @@ pub async fn store(
     path: &Path,
     create: bool,
     fixture_scratch: Arc<kasumi_store::ScratchDisk>,
+    node_id: u64,
+    group: &str,
 ) -> Result<Arc<kasumi_store::TenantStorageSet>> {
     let node = if create {
         NodeStore::create_new_fixture(
@@ -122,14 +124,14 @@ pub async fn store(
             fixture_scratch.clone(),
         )?
     };
-    if create {
+    let stores = if create {
         kasumi_store::TenantStorageSet::initialize_catalogs_fixture(
             node,
             "tenant-a".into(),
             Arc::new(LocalKeyProvider::new([19; 32])),
             Arc::new(LocalKeyProvider::new([241; 32])),
         )
-        .await
+        .await?
     } else {
         kasumi_store::TenantStorageSet::open_existing_fixture(
             node,
@@ -137,8 +139,12 @@ pub async fn store(
             Arc::new(LocalKeyProvider::new([19; 32])),
             Arc::new(LocalKeyProvider::new([241; 32])),
         )
-        .await
+        .await?
+    };
+    if create {
+        stores.write_batch(&[], &kasumi_raft::initial_storage_identity(node_id, group)?)?;
     }
+    Ok(stores)
 }
 
 pub fn config() -> Config {

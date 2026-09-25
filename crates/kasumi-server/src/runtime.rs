@@ -1038,6 +1038,7 @@ pub struct NodeRuntime {
     stopping_audit_observed: bool,
     administration: Option<Arc<crate::administration::Administration>>,
     target_recovery: Option<Arc<crate::target_runtime::TargetRecoveryRuntime>>,
+    shutdown_runtime: tokio::runtime::Handle,
     tls_reload: Option<crate::tls_reload::RuntimeTlsReload>,
     // Scope-owned cached stores observed during startup, including custody probes.
     startup_stores: Vec<Arc<TenantStore>>,
@@ -1266,18 +1267,20 @@ impl NodeRuntime {
             .await?;
             pending.stores.push(control_stores.application().clone());
             pending.stores.push(control_stores.custody().store().clone());
-            if config.mode == DeploymentMode::Replicated {
+            let expected_fingerprint = if config.mode == DeploymentMode::Replicated {
                 let enrolled = crate::node_enrollment::tenant_record(audit.store(), CONTROL_TENANT)?
                     .context("Control enrollment receipt is missing")?;
-                ensure!(enrolled.bootstrap_sha256.as_ref() == Some(&persisted_replicated_bootstrap_fingerprint(&control_stores)?),
-                    "installed Control bootstrap differs from its enrollment receipt");
-            }
+                Some(enrolled.bootstrap_sha256.context("Control enrollment fingerprint is missing")?)
+            } else {
+                None
+            };
             Self::open_database(
                 &config,
                 control_stores,
                 config.control.initial_policy.clone(),
                 config.control.initial_limits.clone(),
                 config.control.incarnation.as_deref(),
+                expected_fingerprint.as_deref(),
                 cluster.as_ref(),
                 audit.clone(),
                 &mut pending,
@@ -1318,6 +1321,7 @@ impl NodeRuntime {
             audit_release_gate: Arc::new(tokio::sync::Mutex::new(None)),
             administration: None,
             target_recovery: None,
+            shutdown_runtime: tokio::runtime::Handle::current(),
             tls_reload: None,
         });
         let runtime = retained_runtime.as_mut().expect("runtime owner just retained");
@@ -1411,20 +1415,25 @@ impl NodeRuntime {
                     provider.clone(), custody_provider.clone(), storage_access).await?;
                 runtime.startup_stores.push(stores.application().clone());
                 runtime.startup_stores.push(stores.custody().store().clone());
-                if crate::node_enrollment::required(&config) && active.is_none() {
+                let expected_fingerprint = if crate::node_enrollment::required(&config) && active.is_none() {
                     let enrolled = crate::node_enrollment::tenant_record(runtime.audit.store(), &tenant.tenant)?.context("enrollment disappeared during startup")?;
-                    ensure!(enrolled.bootstrap_sha256.as_ref() == Some(&if config.mode == DeploymentMode::Replicated {
-                        persisted_replicated_bootstrap_fingerprint(&stores)?
+                    if config.mode == DeploymentMode::Replicated {
+                        Some(enrolled.bootstrap_sha256.context("enrollment fingerprint is missing")?)
                     } else {
-                        persisted_bootstrap_fingerprint(stores.application())?
-                    }), "installed bootstrap differs from its enrollment receipt");
-                }
+                        ensure!(enrolled.bootstrap_sha256.as_ref() == Some(&persisted_bootstrap_fingerprint(stores.application())?),
+                            "installed bootstrap differs from its enrollment receipt");
+                        None
+                    }
+                } else {
+                    None
+                };
                 let opened = Self::open_database(
                     &config,
                     stores,
                     tenant.initial_policy.clone(),
                     tenant.initial_limits.clone(),
                     tenant.incarnation.as_deref(),
+                    expected_fingerprint.as_deref(),
                     runtime.cluster.as_ref(),
                     runtime.audit.clone(),
                     &mut pending,
@@ -1574,6 +1583,7 @@ impl NodeRuntime {
         policy: Policy,
         limits: Limits,
         installed_incarnation: Option<&str>,
+        expected_replicated_fingerprint: Option<&str>,
         cluster: Option<&Arc<ClusterNetwork>>,
         audit: Arc<SecurityAudit>,
         pending: &mut crate::startup_resources::Resources,
@@ -1588,7 +1598,6 @@ impl NodeRuntime {
                     .as_ref()
                     .context("replication configuration missing")?;
                 let network = cluster.context("cluster transport missing")?;
-                let fingerprint = persisted_replicated_bootstrap_fingerprint(&stores)?;
                 let opened = kasumi_engine::open_existing_replicated(
                     replication.node_id,
                     stores.clone(),
@@ -1602,6 +1611,13 @@ impl NodeRuntime {
                 )
                 .await?;
                 pending.databases.push(opened.database.clone());
+                let fingerprint = opened_replicated_bootstrap_fingerprint(store.tenant(), &opened)?;
+                if let Some(expected) = expected_replicated_fingerprint {
+                    ensure!(
+                        fingerprint == expected,
+                        "installed bootstrap differs from its enrollment receipt"
+                    );
+                }
                 #[cfg(test)]
                 crate::startup_preparation::checkpoint(config.database_id, "data-database");
                 let group = format!("{}/{}", store.tenant(), opened.bootstrap.incarnation);
@@ -2144,12 +2160,26 @@ pub(crate) fn persisted_bootstrap_fingerprint(store: &TenantStore) -> Result<Str
 pub(crate) fn persisted_replicated_bootstrap_fingerprint(
     stores: &TenantStorageSet,
 ) -> Result<String> {
-    let binding = stores
+    let view = stores.read_view()?;
+    let binding = view
         .deployment_binding()?
         .context("immutable replicated deployment binding missing")?;
     let store = stores.application();
-    let digest = kasumi_engine::persisted_bootstrap_digest(store)?;
+    let digest = kasumi_engine::persisted_bootstrap_digest_at(&view)?;
     initial_bootstrap_fingerprint(store.tenant(), binding.as_bytes(), &digest)
+}
+
+/// Hash only the identity that engine actually verified while its pinned view
+/// was live; callers use this value for receipt comparison and registration.
+pub(crate) fn opened_replicated_bootstrap_fingerprint(
+    tenant: &str,
+    opened: &kasumi_engine::OpenedReplica,
+) -> Result<String> {
+    initial_bootstrap_fingerprint(
+        tenant,
+        opened.verified_binding(),
+        opened.verified_snapshot_sha256(),
+    )
 }
 
 /// A retired source no longer has an application provider. The custody commit
@@ -2225,14 +2255,40 @@ fn validate_configured_topology(
 
 impl Drop for NodeRuntime {
     fn drop(&mut self) {
-        // Cancellation still closes key access. The explicit async path additionally
-        // waits for Raft tasks and records graceful termination durably.
         if !self.closed {
+            // Application and audit admission close immediately. A retained
+            // target may still have a Raft writer in its own generation store.
             for tenant in std::iter::once(&self.control).chain(self.tenants.iter()) {
+                tenant.database.seal_admission();
                 tenant.database.engine().seal();
                 tenant.store.seal();
             }
             self.audit.seal();
+            if let Some(target) = self.target_recovery.take() {
+                target.seal_admission();
+                self.shutdown_runtime.spawn(async move {
+                    let mut reported_retention = false;
+                    loop {
+                        match target.shutdown().await {
+                            Ok(()) => break,
+                            Err(failure)
+                                if failure.completion()
+                                    == kasumi_types::drain::DrainCompletion::Retained =>
+                            {
+                                if !reported_retention {
+                                    tracing::error!(%failure, "abandoned target runtime drain retained");
+                                    reported_retention = true;
+                                }
+                                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                            }
+                            Err(failure) => {
+                                tracing::error!(%failure, "abandoned target runtime drain failed");
+                                break;
+                            }
+                        }
+                    }
+                });
+            }
         }
     }
 }
@@ -2700,7 +2756,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn paired_replicated_fingerprint_rejects_orphan_and_divergent_custody() -> Result<()> {
+    async fn paired_replicated_fingerprint_preserves_installed_custody_binding() -> Result<()> {
         let directory = kasumi_store::test_utils::private_tempdir()?;
         let physical =
             crate::runtime_storage_fixtures::physical(directory.path(), Default::default())?;
@@ -2728,16 +2784,23 @@ mod tests {
         let digest = "a".repeat(64);
         let manifest =
             format!(r#"{{"format":2,"bytes":1,"chunks":1,"digest":"{digest}"}}"#).into_bytes();
+        let [node_id, group] =
+            kasumi_raft::initial_storage_identity(1, &format!("acme/{}", bootstrap.incarnation))?;
         stores.write_batch(
             &[
                 kasumi_store::WriteOp::put("engine.deployment", b"mode", binding.as_slice()),
                 kasumi_store::WriteOp::put("engine.bootstrap", b"manifest", manifest.as_slice()),
             ],
-            &[kasumi_store::WriteOp::put(
-                "engine.deployment",
-                b"mode",
-                binding.as_slice(),
-            )],
+            &[
+                kasumi_store::WriteOp::put("engine.deployment", b"mode", binding.as_slice()),
+                kasumi_store::WriteOp::put(
+                    "raft.meta",
+                    b"application_bootstrap_sha256",
+                    serde_json::to_vec(&digest)?,
+                ),
+                node_id,
+                group,
+            ],
         )?;
         let expected = initial_bootstrap_fingerprint("acme", &binding, &digest)?;
         assert_eq!(
@@ -2745,40 +2808,32 @@ mod tests {
             expected
         );
 
-        // The application row and bootstrap manifest stay valid throughout.
-        // The former single-domain hash would still match an enrollment receipt.
-        stores
-            .custody()
-            .store()
-            .write_batch(&[kasumi_store::WriteOp::delete("engine.deployment", b"mode")])?;
-        let orphan = persisted_replicated_bootstrap_fingerprint(&stores).unwrap_err();
-        assert!(format!("{orphan:#}").contains("absent from one domain"));
-        assert_eq!(
-            persisted_bootstrap_fingerprint(stores.application())?,
-            expected
-        );
-        assert_eq!(
-            stores.application().get("engine.deployment", b"mode")?,
-            Some(binding.clone())
-        );
-        assert_eq!(
-            stores.application().get("engine.bootstrap", b"manifest")?,
-            Some(manifest.clone())
+        assert!(
+            stores
+                .custody()
+                .store()
+                .write_batch(&[kasumi_store::WriteOp::delete("engine.deployment", b"mode")])
+                .is_err()
         );
 
         let mut substituted = bootstrap;
         substituted.incarnation = Uuid::new_v4().to_string();
         let different_binding = serde_json::to_vec(&("replicated", &substituted))?;
-        stores
-            .custody()
-            .store()
-            .write_batch(&[kasumi_store::WriteOp::put(
-                "engine.deployment",
-                b"mode",
-                different_binding,
-            )])?;
-        let divergent = persisted_replicated_bootstrap_fingerprint(&stores).unwrap_err();
-        assert!(format!("{divergent:#}").contains("differs across domains"));
+        assert!(
+            stores
+                .custody()
+                .store()
+                .write_batch(&[kasumi_store::WriteOp::put(
+                    "engine.deployment",
+                    b"mode",
+                    different_binding,
+                )])
+                .is_err()
+        );
+        assert_eq!(
+            persisted_replicated_bootstrap_fingerprint(&stores)?,
+            expected
+        );
         assert_eq!(
             persisted_bootstrap_fingerprint(stores.application())?,
             expected
@@ -2799,47 +2854,78 @@ mod tests {
 
     #[tokio::test]
     async fn persisted_bootstrap_fingerprint_requires_current_bounded_manifest() -> Result<()> {
-        let directory = kasumi_store::test_utils::private_tempdir()?;
-        let physical =
-            crate::runtime_storage_fixtures::physical(directory.path(), Default::default())?;
-        let node = physical.create_new(
-            directory.path().join("persistent/node.kv"),
-            kasumi_store::test_utils::NODE_STORE_ID,
-        )?;
-        let store = TenantStore::initialize_catalog_fixture(
-            node,
-            "acme".into(),
-            Arc::new(LocalKeyProvider::new([34; 32])),
-        )
-        .await?;
         let digest = "a".repeat(64);
         let canonical =
             format!(r#"{{"format":2,"bytes":1,"chunks":1,"digest":"{digest}"}}"#).into_bytes();
-        store.write_batch(&[
-            kasumi_store::WriteOp::put("engine.deployment", b"mode", b"local-v1"),
-            kasumi_store::WriteOp::put("engine.bootstrap", b"manifest", canonical.clone()),
-        ])?;
         let expected = initial_bootstrap_fingerprint("acme", b"local-v1", &digest)?;
-        assert_eq!(persisted_bootstrap_fingerprint(&store)?, expected);
         let mut alternate = vec![b' '];
         alternate.extend_from_slice(&canonical);
         assert!(serde_json::from_slice::<serde_json::Value>(&alternate).is_ok());
         let oversized = vec![b' '; 257];
-        for altered in [alternate, oversized] {
-            store.write_batch(&[kasumi_store::WriteOp::put(
-                "engine.bootstrap",
-                b"manifest",
-                altered.clone(),
-            )])?;
-            assert!(persisted_bootstrap_fingerprint(&store).is_err());
-            assert_eq!(store.get("engine.bootstrap", b"manifest")?, Some(altered));
+        for (manifest, valid) in [(canonical, true), (alternate, false), (oversized, false)] {
+            // Each case is an initial publication. A malformed authenticated
+            // first manifest tests the reader without replacing a bound row.
+            let directory = kasumi_store::test_utils::private_tempdir()?;
+            let physical =
+                crate::runtime_storage_fixtures::physical(directory.path(), Default::default())?;
+            let node = physical.create_new(
+                directory.path().join("persistent/node.kv"),
+                kasumi_store::test_utils::NODE_STORE_ID,
+            )?;
+            let stores = TenantStorageSet::initialize_catalogs_fixture(
+                node.clone(),
+                "acme".into(),
+                Arc::new(LocalKeyProvider::new([34; 32])),
+                Arc::new(LocalKeyProvider::new([35; 32])),
+            )
+            .await?;
+            let [node_id, group] =
+                kasumi_raft::initial_storage_identity(1, "acme/fingerprint-fixture")?;
+            stores.write_batch(
+                &[
+                    kasumi_store::WriteOp::put("engine.deployment", b"mode", b"local-v1"),
+                    kasumi_store::WriteOp::put(
+                        "engine.bootstrap",
+                        b"manifest",
+                        manifest.as_slice(),
+                    ),
+                ],
+                &[
+                    kasumi_store::WriteOp::put("engine.deployment", b"mode", b"local-v1"),
+                    kasumi_store::WriteOp::put(
+                        "raft.meta",
+                        b"application_bootstrap_sha256",
+                        serde_json::to_vec(&digest)?,
+                    ),
+                    node_id,
+                    group,
+                ],
+            )?;
+            let fingerprint = persisted_bootstrap_fingerprint(stores.application());
+            if valid {
+                assert_eq!(fingerprint?, expected);
+            } else if manifest.len() > 256 {
+                let failure = fingerprint
+                    .unwrap_err()
+                    .downcast::<kasumi_store::TenantPointReadFailure>()?;
+                assert_eq!(failure.stage(), "record bytes");
+                let reader = failure.into_reader();
+                assert_eq!(reader.phase(), kasumi_store::NodeReadPhase::Failed);
+                assert_eq!(reader.finish(), kasumi_store::NodeReadPhase::Finished);
+                assert_eq!(
+                    reader.retire(),
+                    kasumi_store::StorageCensusDisposition::Retired
+                );
+            } else {
+                assert!(fingerprint.is_err());
+            }
+            assert_eq!(
+                stores.application().get("engine.bootstrap", b"manifest")?,
+                Some(manifest)
+            );
+            stores.shutdown().await?;
+            node.shutdown().await?;
         }
-        store.write_batch(&[kasumi_store::WriteOp::put(
-            "engine.bootstrap",
-            b"manifest",
-            canonical,
-        )])?;
-        assert_eq!(persisted_bootstrap_fingerprint(&store)?, expected);
         Ok(())
     }
 
@@ -3564,6 +3650,54 @@ mod lifecycle_tests {
         }];
         next
     }
+
+    async fn elect_control_member_for_local_preparation(
+        controls: &[Arc<kasumi_engine::Database>],
+        index: usize,
+    ) {
+        let control = &controls[index];
+        let mut last = "election not attempted".to_owned();
+        let elected = tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                control.raft_group().check_access().unwrap();
+                let before = control.raft_group().raft().metrics().borrow().clone();
+                if before.current_leader == Some(before.id) {
+                    match tokio::time::timeout(
+                        Duration::from_secs(5),
+                        control.raft_group().linearizable_barrier(),
+                    )
+                    .await
+                    {
+                        Ok(Ok(_)) => {
+                            let after = control.raft_group().raft().metrics().borrow().clone();
+                            if after.current_leader == Some(after.id)
+                                && after.current_term == before.current_term
+                            {
+                                return;
+                            }
+                            last = format!(
+                                "leadership changed after barrier: {before:?} -> {after:?}"
+                            );
+                        }
+                        Ok(Err(error)) => last = format!("local barrier failed: {error:#}"),
+                        Err(error) => last = format!("local barrier timed out: {error:?}"),
+                    }
+                } else {
+                    control.raft_group().raft().trigger().elect().await.unwrap();
+                    last = format!("requested election from {before:?}");
+                }
+                tokio::time::sleep(Duration::from_millis(300)).await;
+            }
+        })
+        .await;
+        assert!(
+            elected.is_ok(),
+            "Control member {} could not establish its local preparation quorum: {last}; {}",
+            index + 1,
+            replica_diagnostics(controls)
+        );
+    }
+
     async fn exercise_provisioning(
         managers: &[Arc<crate::administration::Administration>],
         controls: &[Arc<kasumi_engine::Database>],
@@ -3617,29 +3751,83 @@ mod lifecycle_tests {
                     .is_err()
             );
         }
-        tokio::time::timeout(Duration::from_secs(20), async {
+        let mut approval_errors = vec!["not attempted".to_owned(); managers.len()];
+        let approved = tokio::time::timeout(Duration::from_secs(20), async {
             loop {
-                for (manager, control) in managers.iter().zip(controls) {
+                for (index, (manager, control)) in managers.iter().zip(controls).enumerate() {
                     let metrics = control.raft_group().raft().metrics().borrow().clone();
-                    if metrics.current_leader == Some(metrics.id)
-                        && manager
-                            .execute_for_test(
-                                operator.clone(),
-                                M::ApproveTenant {
-                                    tenant: tenant.into(),
-                                },
-                            )
-                            .await
-                            .is_ok()
-                    {
-                        return;
+                    if metrics.current_leader == Some(metrics.id) {
+                        approval_errors[index] = "leader approval attempt in flight".to_owned();
+                        match crate::api::mutation_release(
+                            manager
+                                .execute_for_test(
+                                    operator.clone(),
+                                    M::ApproveTenant {
+                                        tenant: tenant.into(),
+                                    },
+                                )
+                                .await,
+                        ) {
+                            Ok(_) => return,
+                            Err(error) => {
+                                approval_errors[index] = format!("{error:#}");
+                                if !matches!(
+                                    error.code,
+                                    kasumi_types::ErrorCode::Unavailable
+                                        | kasumi_types::ErrorCode::UnknownOutcome
+                                ) {
+                                    panic!(
+                                        "configured tenant approval failed: {error:#}; Control={}",
+                                        replica_diagnostics(controls)
+                                    );
+                                }
+                                let ready =
+                                    quorum_ready_leader(controls, "resolve tenant approval").await;
+                                match managers[ready].exact_enrollment_approved_for_test(tenant) {
+                                    Ok(Some(true)) => return,
+                                    Ok(Some(false)) => {
+                                        panic!(
+                                            "committed tenant approval differs from configuration"
+                                        )
+                                    }
+                                    Ok(None) => {}
+                                    Err(read_error) => {
+                                        approval_errors[ready] =
+                                            format!("approval resolution failed: {read_error:#}");
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        approval_errors[index] = format!(
+                            "not leader; leader={:?} state={:?}",
+                            metrics.current_leader, metrics.state
+                        );
                     }
                 }
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
         })
-        .await
-        .unwrap();
+        .await;
+        approved.unwrap_or_else(|_| {
+            let controls = controls
+                .iter()
+                .map(|control| {
+                    let metrics = control.raft_group().raft().metrics().borrow().clone();
+                    format!(
+                        "node={} leader={:?} state={:?} term={} applied={:?}",
+                        metrics.id,
+                        metrics.current_leader,
+                        metrics.state,
+                        metrics.current_term,
+                        metrics.last_applied
+                    )
+                })
+                .collect::<Vec<_>>();
+            panic!(
+                "configured tenant approval timed out: last errors={approval_errors:?}; Control={controls:?}"
+            )
+        });
         // Neither control approval nor one prepared replica publishes data.
         assert!(
             managers[0]
@@ -3653,9 +3841,14 @@ mod lifecycle_tests {
                 .is_err()
         );
         for (index, manager) in managers.iter().enumerate() {
-            tokio::time::timeout(Duration::from_secs(10), async {
+            // Preparation is local to each replica, while its administration
+            // authorization requires a fresh quorum on that replica's Control
+            // group. Elect each member before preparing its own tenant state.
+            elect_control_member_for_local_preparation(controls, index).await;
+            let mut last_error = "prepare not attempted".to_owned();
+            let prepared = tokio::time::timeout(Duration::from_secs(10), async {
                 loop {
-                    if manager
+                    match manager
                         .execute_for_test(
                             operator.clone(),
                             M::PrepareTenant {
@@ -3663,15 +3856,22 @@ mod lifecycle_tests {
                             },
                         )
                         .await
-                        .is_ok()
                     {
-                        break;
+                        Ok(_) => break,
+                        Err(error) => last_error = format!("{error:#}"),
                     }
                     tokio::time::sleep(Duration::from_millis(20)).await;
                 }
             })
-            .await
-            .unwrap();
+            .await;
+            prepared.unwrap_or_else(|_| {
+                panic!(
+                    "configured tenant preparation timed out on manager {}: {}; Control metrics={:?}",
+                    index + 1,
+                    last_error,
+                    controls[index].raft_group().raft().metrics().borrow().clone()
+                )
+            });
             assert!(registries[index].database(&beta).is_err());
             if index == 0 && managers.len() > 1 {
                 assert!(
@@ -3687,6 +3887,9 @@ mod lifecycle_tests {
                 );
             }
         }
+        // Initialization is restricted to the lowest configured data voter.
+        // It also needs that node's Control administration barrier.
+        elect_control_member_for_local_preparation(controls, 0).await;
         managers[0]
             .execute_for_test(
                 operator.clone(),
@@ -4236,7 +4439,21 @@ mod lifecycle_tests {
         fenced_source: bool,
         protected_prepare_only: bool,
     ) {
+        #[cfg(test)]
+        let fixture_started = std::time::Instant::now();
+        macro_rules! fixture_stage {
+            ($($arg:tt)*) => {
+                #[cfg(test)]
+                eprintln!(
+                    "[replicated fixture +{:?}] {}",
+                    fixture_started.elapsed(),
+                    format_args!($($arg)*)
+                );
+            };
+        }
+        fixture_stage!("waiting for lifecycle gate");
         let _fixture = LIFECYCLE_GATE.lock().await;
+        fixture_stage!("acquired lifecycle gate");
         let canonical = !with_spare && bootstrap_fault.is_none();
         assert!(!protected_prepare_only || (canonical && !fenced_source));
         let recovery_credentials = recovery_fixture::Credentials::new();
@@ -4257,9 +4474,12 @@ mod lifecycle_tests {
             &template.scratch_disk,
         )
         .unwrap();
+        fixture_stage!("prepared cluster storage");
         let storage = cluster_storage.storage.clone();
         let (mock_files, _) = certificate_files(dir.path());
+        fixture_stage!("binding mock KMS listener");
         let mock_socket = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        fixture_stage!("bound mock KMS listener");
         let kms_endpoint = format!(
             "https://localhost:{}",
             mock_socket.local_addr().unwrap().port()
@@ -4342,9 +4562,11 @@ mod lifecycle_tests {
             });
             files.push(identity);
         }
+        fixture_stage!("generated {node_count} node identities");
         let incarnation = uuid::Uuid::new_v4().to_string();
         let control_incarnation = uuid::Uuid::new_v4().to_string();
         let mut recovery = if canonical {
+            fixture_stage!("creating recovery fixture");
             Some(
                 recovery_fixture::Fixture::new(
                     dir.path(),
@@ -4363,8 +4585,10 @@ mod lifecycle_tests {
         } else {
             None
         };
+        fixture_stage!("recovery fixture ready");
         let mut configurations = Vec::new();
         for node in 0..node_count {
+            fixture_stage!("configuring node {node}");
             let mut config = fixture_config();
             config.mode = DeploymentMode::Replicated;
             // All old per-node policies are identical; differing policies need
@@ -4440,7 +4664,9 @@ mod lifecycle_tests {
                 }
             }
             if let Some(recovery) = &recovery {
+                fixture_stage!("node {node}: configuring recovery credentials");
                 fixture_operation(|| recovery.configure(&mut config, node)).await;
+                fixture_stage!("node {node}: recovery credentials configured");
                 if fenced_source && node == 0 {
                     // Keep a distinct application credential path so a failed
                     // key-provider construction is observable on the reopen.
@@ -4450,6 +4676,7 @@ mod lifecycle_tests {
                     kasumi_store::private_files::publish(&path, &original).unwrap();
                     application.token_file = path.to_str().unwrap().into();
                 }
+                fixture_stage!("node {node}: enrolling storage");
                 fixture_operation(|| {
                     crate::data_node_enrollment::initialize_with_storage(
                         config.clone(),
@@ -4458,11 +4685,15 @@ mod lifecycle_tests {
                 })
                 .await
                 .unwrap();
+                fixture_stage!("node {node}: storage enrolled");
             } else {
+                fixture_stage!("node {node}: creating fixture storage");
                 create_fixture_node(&config, &storage).await;
+                fixture_stage!("node {node}: fixture storage created");
             }
             configurations.push(config);
         }
+        fixture_stage!("all node configurations ready");
         drop(reserved);
         if fenced_source {
             // All three data nodes have completed explicit enrollment while
@@ -4547,10 +4778,12 @@ mod lifecycle_tests {
             request_id: uuid::Uuid::new_v4().to_string(),
         };
         let context = if let Some(recovery) = &recovery {
+            fixture_stage!("creating recovery request context");
             fixture_operation(|| recovery.context(false)).await
         } else {
             context
         };
+        fixture_stage!("request context ready");
         if let Some(fault) = bootstrap_fault {
             let mut runtimes = Vec::new();
             let mut servers = Vec::new();
@@ -4662,7 +4895,8 @@ mod lifecycle_tests {
         let mut cluster_networks = Vec::new();
         let mut recovery_handles = Vec::new();
         let mut first_facades = Vec::new();
-        for config in configurations.iter().cloned() {
+        for (node, config) in configurations.iter().cloned().enumerate() {
+            fixture_stage!("node {node}: opening runtime");
             let runtime = open_replicated_fixture_node(
                 config,
                 move |path| {
@@ -4676,6 +4910,7 @@ mod lifecycle_tests {
             )
             .await
             .unwrap();
+            fixture_stage!("node {node}: runtime opened");
             assert!(Arc::ptr_eq(
                 runtime.audit.admission().memory(),
                 storage.memory()
@@ -4695,6 +4930,7 @@ mod lifecycle_tests {
             let (stop, shutdown) = watch::channel(false);
             stops.push(stop);
             tasks.push(tokio::spawn(runtime.serve(shutdown)));
+            fixture_stage!("node {node}: server spawned");
         }
         if with_spare {
             let control_leader = tokio::time::timeout(Duration::from_secs(20), async {
@@ -4745,6 +4981,7 @@ mod lifecycle_tests {
             .await
             .unwrap();
         }
+        fixture_stage!("waiting for tenant registries");
         let databases = tokio::time::timeout(Duration::from_secs(25), async {
             loop {
                 let databases = registries
@@ -4841,6 +5078,8 @@ mod lifecycle_tests {
                 );
             }
         };
+        fixture_stage!("tenant registries ready");
+        fixture_stage!("waiting for data leader");
         let leader = tokio::time::timeout(Duration::from_secs(20), async {
             loop {
                 for (i, database) in databases.iter().enumerate() {
@@ -4860,6 +5099,8 @@ mod lifecycle_tests {
         })
         .await
         .unwrap();
+        fixture_stage!("data leader selected: node {leader}");
+        fixture_stage!("creating docs collection");
         let creation = fixture_operation(|| {
             databases[leader].administer(
                 context.clone(),
@@ -4954,6 +5195,7 @@ mod lifecycle_tests {
                 "initial tenant CreateCollection failed: {error:?}; selected leader: {leader}; data metrics: {data_metrics:?}; control metrics: {control_metrics:?}; data access (application, custody, raft): {data_access:?}; applied docs (revision, exists): {applied_docs:?}; bootstrap probes (1->1, 2->2, 3->3, 1->2, 2->1, 3->1): {bootstrap:?}; transport free slots (incoming, outgoing): {transport_free:?}; shared disk: {disk:?}"
             );
         }
+        fixture_stage!("docs collection created");
         let batch = MutationBatch {
             read_set: Vec::new(),
             idempotency_key: "replicated-runtime".into(),
@@ -4964,6 +5206,7 @@ mod lifecycle_tests {
                 expected: Precondition::Absent,
             }],
         };
+        fixture_stage!("writing initial document");
         let write =
             fixture_operation(|| databases[leader].mutate(context.clone(), batch.clone())).await;
         match write {
@@ -5008,6 +5251,8 @@ mod lifecycle_tests {
             }
             Err(error) => panic!("initial tenant mutation failed: {error:?}"),
         }
+        fixture_stage!("initial document write resolved");
+        fixture_stage!("waiting for document replication");
         let replication = tokio::time::timeout(Duration::from_secs(20), async {
             loop {
                 if databases.iter().all(|database| {
@@ -5119,6 +5364,7 @@ mod lifecycle_tests {
                 "replicated document application timed out: {elapsed:?}; original selected leader: {leader}; data metrics: {data_metrics:?}; control metrics: {control_metrics:?}; current registry routes: {registered:?}; data access (application, custody, raft): {data_access:?}; applied docs (revision, exists): {applied_docs:?}; bootstrap probes (1->1, 2->2, 3->3, 1->2, 2->1, 3->1): {bootstrap:?}; transport free slots (incoming, outgoing): {transport_free:?}; shared disk: {disk:?}"
             );
         }
+        fixture_stage!("document replicated");
         use crate::administration::ManagementCommand as M;
         if with_spare {
             managers[leader]
@@ -5268,11 +5514,14 @@ mod lifecycle_tests {
             mock.await.unwrap().unwrap();
             return;
         }
+        fixture_stage!("suspending source database");
         fixture_operation(|| {
             databases[leader].administer(context.clone(), Operation::Suspend(true))
         })
         .await
         .unwrap();
+        fixture_stage!("source suspend accepted");
+        fixture_stage!("starting backup");
         let backup = managers[leader]
             .execute_for_test(
                 context.clone(),
@@ -5283,7 +5532,9 @@ mod lifecycle_tests {
             )
             .await
             .unwrap();
+        fixture_stage!("backup command completed");
         let backup_id = uuid::Uuid::parse_str(backup["backup_id"].as_str().unwrap()).unwrap();
+        fixture_stage!("waiting for suspend replication");
         tokio::time::timeout(Duration::from_secs(20), async {
             while !databases
                 .iter()
@@ -5294,6 +5545,7 @@ mod lifecycle_tests {
         })
         .await
         .unwrap();
+        fixture_stage!("suspend replicated");
         let source_incarnation = Uuid::parse_str(
             &databases[leader]
                 .engine()
@@ -5308,10 +5560,12 @@ mod lifecycle_tests {
             .iter()
             .map(|database| database.raft_group().raft().metrics().borrow().clone())
             .collect::<Vec<_>>();
+        fixture_stage!("verifying backup checkpoint");
         let checkpoint_result = fixture_operation(|| {
             databases[leader].verify_backup_checkpoint_named(context.clone(), "primary", backup_id)
         })
         .await;
+        fixture_stage!("backup checkpoint verification returned");
         let checkpoint = match checkpoint_result {
             Ok(proof) => proof.checkpoint().clone(),
             Err(error) => {
@@ -5390,6 +5644,7 @@ mod lifecycle_tests {
         };
         let recovery = recovery.as_mut().unwrap();
         let incarnation = recovery.target;
+        fixture_stage!("installing recovery targets");
         recovery
             .install_targets(
                 &configurations,
@@ -5399,11 +5654,14 @@ mod lifecycle_tests {
                 checkpoint,
             )
             .await;
+        fixture_stage!("recovery targets installed");
         if protected_prepare_only {
             // A separate installed three-node point-status acceptance case:
             // observe a committed Prepare before any target Execute. Keep the
             // full terminal recovery test independent of G09's current block.
+            fixture_stage!("checking protected Prepare status");
             fixture_operation(|| recovery.assert_protected_prepare_status(&configurations)).await;
+            fixture_stage!("protected Prepare status checked");
             fixture_operation(|| recovery.close_targets()).await;
             for stop in &stops {
                 stop.send_replace(true);
@@ -5437,8 +5695,10 @@ mod lifecycle_tests {
                 .prepare(source_context.clone(), M::Status {})
                 .unwrap();
             let source_release = source_status.response_fence().unwrap();
+            fixture_stage!("executing retained source status");
             let retained_source_response =
                 fixture_operation(|| source_status.execute()).await.unwrap();
+            fixture_stage!("retained source status completed");
             assert_eq!(
                 retained_source_response["incarnation"],
                 databases[leader]
@@ -5449,7 +5709,9 @@ mod lifecycle_tests {
                     .incarnation
             );
             source_release.check_release().unwrap();
+            fixture_stage!("starting recovery");
             fixture_operation(|| recovery.recover(&cluster_networks)).await;
+            fixture_stage!("recovery completed");
             fixture_operation(|| recovery.assert_protected_status(&configurations)).await;
             // Keep the exact pre-activation database selection and request clock.
             // Target activation never upgrades this original source response fence.
@@ -5556,7 +5818,36 @@ mod lifecycle_tests {
         }
         drop(restored);
         drop(restored_databases);
-        fixture_operation(|| recovery.close_targets()).await;
+        let target_drain_failures = fixture_operation(|| recovery.drain_targets()).await;
+        // The terminal three-node recovery has already proved every voter
+        // confirmed and the restored document is readable. A final
+        // confirmation may still leave one timed-out call response in local
+        // custody; require its exact shutdown diagnostic. Other fixture modes
+        // and all other shutdown issues remain failures.
+        assert!(
+            target_drain_failures.len() <= usize::from(canonical),
+            "unexpected target drain failures: {target_drain_failures:?}"
+        );
+        for (index, failure) in &target_drain_failures {
+            assert!(*index < 3, "unexpected target drain node: {failure:?}");
+            assert_eq!(
+                failure.completion(),
+                kasumi_types::drain::DrainCompletion::Complete,
+                "target drain retained an owner: {failure:?}"
+            );
+            assert_eq!(
+                failure.issues().len(),
+                1,
+                "target drain issues: {failure:?}"
+            );
+            let issue = &failure.issues()[0];
+            assert_eq!(issue.component(), "abandoned target call");
+            assert_eq!(
+                issue.error().to_string(),
+                "backup verification deadline expired",
+                "unexpected abandoned target call: {failure:?}"
+            );
+        }
         for stop in &stops {
             stop.send_replace(true);
         }

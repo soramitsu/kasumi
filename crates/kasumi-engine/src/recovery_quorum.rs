@@ -117,7 +117,7 @@ pub(crate) fn validate_quorum_step(
             if phase_kind == RecoveryPhase::Complete && actual == &complete_input =>
         {
             if admission {
-                require_eligible_observer(state, operation, current.request.command_id, node_id)?;
+                require_initialized_mutation_observer(state, operation, node_id)?;
             }
             receiver::preparation(state, operation)?;
         }
@@ -285,6 +285,30 @@ pub(crate) fn require_eligible_observer(
     }
     Ok(())
 }
+
+/// An exact Complete mutation can open its target replica at the selected
+/// voter. Its original initialized membership and all materialization proofs
+/// establish the candidate set; a fresh Start reply only ranks reachable
+/// candidates and cannot exclude a leader elected at another installed voter.
+pub(crate) fn require_initialized_mutation_observer(
+    state: &TenantState,
+    operation: &RecoveryRecord,
+    node: u64,
+) -> Result<()> {
+    established(state, operation)?;
+    if !operation.voters.contains_key(&node)
+        || operation
+            .voters
+            .get(&node)
+            .and_then(|voter| voter.materialization)
+            .is_none()
+    {
+        return Err(conflict(
+            "target mutation observer lacks original materialization",
+        ));
+    }
+    Ok(())
+}
 pub(crate) fn retry_destination(
     state: &TenantState,
     operation: &RecoveryRecord,
@@ -298,6 +322,20 @@ pub(crate) fn retry_destination(
             return Err(conflict("another pending startup route is unavailable"));
         }
         return Ok(candidate);
+    }
+    if matches!(
+        step,
+        TargetRuntimeStep::PrepareComplete(_) | TargetRuntimeStep::Complete(_)
+    ) {
+        established(state, operation)?;
+        return operation
+            .voters
+            .keys()
+            .copied()
+            .find(|node| *node > old)
+            .or_else(|| operation.voters.keys().next().copied())
+            .filter(|node| *node != old)
+            .ok_or_else(|| conflict("another initialized target voter is unavailable"));
     }
     let ready = ready_nodes(state, operation, current)?;
     ready

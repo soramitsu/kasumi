@@ -279,6 +279,17 @@ impl TargetRequestAdmission {
         self.check()?;
         Ok(self.response_deadline)
     }
+    /// Remaining time on the original reply and work cap. A nested transport
+    /// read may use this budget, but cannot create a fresh operation deadline.
+    pub fn remaining_response(&self) -> Result<std::time::Duration> {
+        let remaining = self
+            .response_deadline()?
+            .saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            return Err(unauthorized("native target response deadline elapsed"));
+        }
+        Ok(remaining)
+    }
     pub fn require_context(&self, context: &RequestContext) -> Result<()> {
         self.check()?;
         if self.context != *context
@@ -326,6 +337,7 @@ impl TargetRequestAdmission {
 pub struct TargetOperationScope {
     invocation: Arc<TargetLifecycleInvocation>,
     work: Arc<crate::admission::WorkFence>,
+    group_work: Arc<crate::admission::WorkFence>,
     slot: Arc<tokio::sync::Semaphore>,
 }
 impl TargetOperationScope {
@@ -334,6 +346,7 @@ impl TargetOperationScope {
         Ok(Arc::new(Self {
             invocation: Arc::new(invocation),
             work: Arc::new(crate::admission::WorkFence::default()),
+            group_work: Arc::new(crate::admission::WorkFence::default()),
             slot: Arc::new(tokio::sync::Semaphore::new(1)),
         }))
     }
@@ -345,12 +358,23 @@ impl TargetOperationScope {
     pub fn is_idle(&self) -> bool {
         self.slot.available_permits() == 1
     }
-    pub fn close(&self) {
+    /// Fence target requests while retaining the lifecycle gate for Raft drain.
+    pub fn seal_admission(&self) {
         self.work.seal();
+        self.group_work.seal();
+    }
+    pub fn close(&self) {
+        self.seal_admission();
         self.invocation.gate.close();
     }
-    pub async fn drain(&self) {
+    /// Join finite verification and response work before storage teardown.
+    /// The group registration deliberately remains until its replica closes.
+    pub async fn drain_detached(&self) {
         self.work.drain().await;
+    }
+    pub async fn drain(&self) {
+        self.drain_detached().await;
+        self.group_work.drain().await;
     }
     pub(crate) fn begin(
         &self,
@@ -435,6 +459,10 @@ impl TargetOperation {
     pub fn context(&self) -> &RequestContext {
         &self.admission.context
     }
+    pub fn remaining_response(&self) -> Result<std::time::Duration> {
+        self.check().map_err(unauthorized)?;
+        self.admission.remaining_response()
+    }
     pub fn invocation(&self) -> &TargetLifecycleInvocation {
         &self.scope.invocation
     }
@@ -514,7 +542,7 @@ impl TargetOperation {
 
 impl TargetOperation {
     pub(crate) fn register_group(&self) -> Result<crate::admission::WorkRegistration> {
-        self.scope.work.begin(self.token.clone())
+        self.scope.group_work.begin(self.token.clone())
     }
 }
 
@@ -625,5 +653,57 @@ mod admission_tests {
                 );
             }
         }
+    }
+    #[tokio::test]
+    async fn slow_control_observation_uses_original_budget_without_extending_short_work() {
+        let clock = kasumi_clock::EpochClock::system().unwrap();
+        let observed = clock.observe().unwrap();
+        let context = RequestContext {
+            tenant: "__kasumi_control".into(),
+            principal: "control-admin".into(),
+            request_id: "slow-control-observation".into(),
+            scopes: BTreeSet::from([Action::Admin]),
+            authorization: RequestAuthorization::from_verified_credential(
+                observed.utc_ms() + 60_000,
+                &observed,
+                CredentialResource::Control {
+                    incarnation: uuid::Uuid::new_v4(),
+                },
+            )
+            .unwrap(),
+        };
+        let admission = TargetRequestAdmission::capture(context.clone(), 30_000).unwrap();
+        let original_deadline = admission.response_deadline().unwrap();
+        let read_budget = admission.remaining_response().unwrap();
+        assert!(read_budget > Duration::from_secs(5));
+        admission
+            .run(async {
+                // A forwarded Control quorum read can take longer than five
+                // seconds while native storage synchronizes its journal.
+                tokio::time::timeout(
+                    read_budget,
+                    tokio::time::sleep(Duration::from_millis(5_100)),
+                )
+                .await?;
+                Ok::<(), anyhow::Error>(())
+            })
+            .await
+            .unwrap();
+        assert_eq!(admission.response_deadline().unwrap(), original_deadline);
+        assert!(admission.remaining_response().unwrap() < read_budget);
+
+        let short = TargetRequestAdmission::capture(context, 100).unwrap();
+        let started = tokio::time::Instant::now();
+        assert!(
+            short
+                .run(async {
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                    Ok::<(), anyhow::Error>(())
+                })
+                .await
+                .is_err()
+        );
+        assert!(started.elapsed() < Duration::from_millis(500));
+        assert!(short.remaining_response().is_err());
     }
 }

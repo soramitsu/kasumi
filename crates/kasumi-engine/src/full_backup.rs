@@ -198,7 +198,7 @@ impl Database {
             .session_put(
                 session_id,
                 kasumi_store::BackupSessionSlot::Intent,
-                intent_bytes,
+                intent_bytes.into(),
             )
             .await
             .map_err(|_| {
@@ -533,7 +533,7 @@ impl Database {
                 ));
             }
             let _uncertain = tokio::select! {
-                result = destination.put(link.object_id, ciphertext) => result,
+                result = destination.put(link.object_id, kasumi_store::BackupUpload::received(ciphertext)) => result,
                 _ = cancelled(cancellation) => return Err(cancelled_error()),
             };
             ownership.check()?;
@@ -602,7 +602,7 @@ impl Database {
         self.engine
             .authorize_release(context, None, Action::Admin, policy_epoch)?;
         let _put_result = tokio::select! {
-            result = destination.put(id, bytes) => result,
+            result = destination.put(id, kasumi_store::BackupUpload::received(bytes)) => result,
             _ = cancelled(cancellation) => return Err(cancelled_error()),
         };
         let copied = self

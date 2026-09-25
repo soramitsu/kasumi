@@ -6,12 +6,11 @@
 
 use crate::core::{
     AdmittedValue, BackendCloseEntry, BackendCloseOutcome, BackendNativeDisposition, Core,
-    CoreError, FileBackend, MAX_BATCH_BYTES, MAX_KEY_BYTES, MAX_VALUE_BYTES, Operation,
-    ReadSnapshot, ResidentLease, StorageAdmission, StorageBackend,
+    CoreError, MAX_BATCH_BYTES, MAX_KEY_BYTES, MAX_VALUE_BYTES, Operation, ReadSnapshot,
+    ResidentLease, StorageAdmission, StorageBackend,
 };
 use std::collections::BTreeMap;
 use std::fmt;
-use std::fs::File;
 use std::io;
 use std::marker::PhantomData;
 use std::ops::{Bound, RangeFrom};
@@ -318,18 +317,28 @@ impl<K: TableCodec, V: TableCodec> TableDefinition<K, V> {
 pub struct AccessGuard<T: TableCodec> {
     value: T::Owned,
     _lease: Box<dyn ResidentLease>,
+    // The guard may outlive its table and transaction facade. Keep the exact
+    // snapshot live until both its owned value and resident lease are gone.
+    _snapshot: Arc<ReadSnapshot>,
 }
 
 impl<T: TableCodec> AccessGuard<T> {
-    fn decode_parts((bytes, lease): LeasedBytes) -> Result<Self, TableError> {
+    fn decode_parts(
+        (bytes, lease): LeasedBytes,
+        snapshot: &Arc<ReadSnapshot>,
+    ) -> Result<Self, TableError> {
         Ok(Self {
             value: T::decode(bytes)?,
             _lease: lease,
+            _snapshot: snapshot.clone(),
         })
     }
 
-    fn decode_admitted(value: AdmittedValue) -> Result<Self, TableError> {
-        Self::decode_parts(value.into_parts())
+    fn decode_admitted(
+        value: AdmittedValue,
+        snapshot: &Arc<ReadSnapshot>,
+    ) -> Result<Self, TableError> {
+        Self::decode_parts(value.into_parts(), snapshot)
     }
 
     pub fn value(&self) -> T::View<'_> {
@@ -382,10 +391,6 @@ impl Builder {
             Core::create_with_backend(backend, self.admission)?,
             admission,
         ))
-    }
-
-    pub fn create_file(self, file: File) -> Result<Database, DatabaseError> {
-        self.create_with_backend(FileBackend::from_file(file))
     }
 
     pub fn create_strict_with_backend(
@@ -488,6 +493,29 @@ pub struct Database {
     inner: Arc<DatabaseInner>,
 }
 
+/// A borrowed transaction admission kept alive independently of a database
+/// owner's close mutex. A pending writer counts as live work; sealing the
+/// database wakes it before physical close can proceed.
+pub struct DatabaseTransactionAdmission {
+    inner: Arc<DatabaseInner>,
+}
+
+impl DatabaseTransactionAdmission {
+    pub fn begin_read(&self) -> Result<ReadTransaction, TransactionError> {
+        Database {
+            inner: self.inner.clone(),
+        }
+        .begin_read()
+    }
+
+    pub fn begin_write(&self) -> Result<WriteTransaction, TransactionError> {
+        Database {
+            inner: self.inner.clone(),
+        }
+        .begin_write()
+    }
+}
+
 impl Database {
     pub fn builder(admission: Arc<dyn StorageAdmission>) -> Builder {
         Builder { admission }
@@ -509,6 +537,12 @@ impl Database {
 
     pub(crate) fn admission(&self) -> Arc<dyn StorageAdmission> {
         self.inner.admission.clone()
+    }
+
+    pub fn transaction_admission(&self) -> DatabaseTransactionAdmission {
+        DatabaseTransactionAdmission {
+            inner: self.inner.clone(),
+        }
     }
 
     pub fn active_transactions(&self) -> usize {
@@ -650,6 +684,13 @@ impl ReadTransaction {
         Arc::ptr_eq(&self.inner, &database.inner)
     }
 
+    /// Tables, ranges and admitted access guards all carry this exact Arc.
+    /// A count of one cannot race a new descendant without another owner of
+    /// this same snapshot from which to clone it.
+    pub(crate) fn has_snapshot_descendants(&self) -> bool {
+        Arc::strong_count(&self.snapshot) != 1
+    }
+
     pub fn open_table<K: TableCodec, V: TableCodec>(
         &self,
         definition: TableDefinition<K, V>,
@@ -674,6 +715,14 @@ impl ReadTransaction {
         self.inner
             .core
             .get_admitted(&self.snapshot, table, key, max_value_bytes)
+    }
+
+    pub fn key_exists(&self, table: &str, key: &[u8]) -> Result<bool, CoreError> {
+        self.inner.core.key_exists(&self.snapshot, table, key)
+    }
+
+    pub fn prefix_exists(&self, table: &str, prefix: &[u8]) -> Result<bool, CoreError> {
+        self.inner.core.prefix_exists(&self.snapshot, table, prefix)
     }
 
     pub fn next_bytes(
@@ -930,7 +979,7 @@ impl<K: TableCodec, V: TableCodec> Table<K, V> {
             &self.name,
             &K::encode(key),
         )?
-        .map(AccessGuard::decode_parts)
+        .map(|parts| AccessGuard::decode_parts(parts, &self.snapshot))
         .transpose()
     }
 
@@ -952,7 +1001,7 @@ impl<K: TableCodec, V: TableCodec> Table<K, V> {
         }
         let key = K::encode(key);
         let old = current_bytes(&self.inner, &self.snapshot, &self.staged, &self.name, &key)?
-            .map(AccessGuard::decode_parts)
+            .map(|parts| AccessGuard::decode_parts(parts, &self.snapshot))
             .transpose()?;
         let mut pending = self
             .staged
@@ -981,7 +1030,7 @@ impl<K: TableCodec, V: TableCodec> Table<K, V> {
         }
         let key = K::encode(key);
         let old = current_bytes(&self.inner, &self.snapshot, &self.staged, &self.name, &key)?
-            .map(AccessGuard::decode_parts)
+            .map(|parts| AccessGuard::decode_parts(parts, &self.snapshot))
             .transpose()?;
         let mut pending = self
             .staged
@@ -994,6 +1043,28 @@ impl<K: TableCodec, V: TableCodec> Table<K, V> {
             .or_default()
             .insert(key, None);
         Ok(old)
+    }
+
+    /// Stage a tombstone without reading or admitting the prior value. This
+    /// is idempotent for an absent key; the caller does not receive old bytes.
+    pub fn delete_key(&mut self, key: K::Input<'_>) -> Result<(), TableError> {
+        check_key_bound::<K>(key)?;
+        self.inner.core.check_read_owner()?;
+        let mut pending = self
+            .staged
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        pending.ensure_active()?;
+        pending.reserve(
+            &self.inner.admission,
+            K::encoded_len(key).saturating_add(256),
+        )?;
+        pending
+            .writes
+            .entry(self.name.clone())
+            .or_default()
+            .insert(K::encode(key), None);
+        Ok(())
     }
 
     pub fn range(&self, range: RangeFrom<K::Input<'_>>) -> Result<TableRange<K, V>, TableError> {
@@ -1070,7 +1141,7 @@ impl<K: TableCodec, V: TableCodec> ReadOnlyTable<K, V> {
                 &K::encode(key),
                 MAX_TABLE_VALUE_BYTES,
             )?
-            .map(AccessGuard::decode_admitted)
+            .map(|value| AccessGuard::decode_admitted(value, &self.snapshot))
             .transpose()
     }
 
@@ -1207,8 +1278,8 @@ impl<K: TableCodec, V: TableCodec> TableRange<K, V> {
             };
             let Some(value) = value else { continue };
             return Ok(Some((
-                AccessGuard::decode_parts(key)?,
-                AccessGuard::decode_parts(value)?,
+                AccessGuard::decode_parts(key, &self.snapshot)?,
+                AccessGuard::decode_parts(value, &self.snapshot)?,
             )));
         }
     }
@@ -1238,7 +1309,7 @@ impl<K: TableCodec, V: TableCodec> Iterator for TableRange<K, V> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::{AtomicU64, AtomicUsize};
 
     const BYTES: TableDefinition<&[u8], &[u8]> = TableDefinition::new("records");
     const INTEGERS: TableDefinition<u64, u64> = TableDefinition::new("records");
@@ -1283,6 +1354,94 @@ mod tests {
         }
 
         fn sync_data(&self) -> io::Result<()> {
+            Ok(())
+        }
+
+        fn close(&self) -> BackendCloseOutcome {
+            BackendCloseOutcome::drained(Ok(()))
+        }
+    }
+
+    #[derive(Clone, Default)]
+    struct CrashBackend(Arc<Mutex<CrashBytes>>);
+
+    #[derive(Default)]
+    struct CrashBytes {
+        working: Vec<u8>,
+        durable: Vec<u8>,
+        fail_sync: Option<(usize, bool)>,
+    }
+
+    impl CrashBackend {
+        fn fail_sync(&self, call: usize, after_persist: bool) {
+            self.0.lock().unwrap().fail_sync = Some((call, after_persist));
+        }
+
+        fn crash(&self) -> Self {
+            let durable = self.0.lock().unwrap().durable.clone();
+            Self(Arc::new(Mutex::new(CrashBytes {
+                working: durable.clone(),
+                durable,
+                fail_sync: None,
+            })))
+        }
+    }
+
+    impl StorageBackend for CrashBackend {
+        fn len(&self) -> io::Result<u64> {
+            Ok(self.0.lock().unwrap().working.len() as u64)
+        }
+
+        fn read(&self, at: u64, out: &mut [u8]) -> io::Result<()> {
+            let state = self.0.lock().unwrap();
+            let start = usize::try_from(at).map_err(|_| io::ErrorKind::InvalidInput)?;
+            let end = start
+                .checked_add(out.len())
+                .ok_or(io::ErrorKind::InvalidInput)?;
+            out.copy_from_slice(
+                state
+                    .working
+                    .get(start..end)
+                    .ok_or(io::ErrorKind::UnexpectedEof)?,
+            );
+            Ok(())
+        }
+
+        fn write(&self, at: u64, data: &[u8]) -> io::Result<()> {
+            let mut state = self.0.lock().unwrap();
+            let start = usize::try_from(at).map_err(|_| io::ErrorKind::InvalidInput)?;
+            let end = start
+                .checked_add(data.len())
+                .ok_or(io::ErrorKind::InvalidInput)?;
+            state
+                .working
+                .get_mut(start..end)
+                .ok_or(io::ErrorKind::UnexpectedEof)?
+                .copy_from_slice(data);
+            Ok(())
+        }
+
+        fn set_len(&self, length: u64) -> io::Result<()> {
+            self.0.lock().unwrap().working.resize(
+                usize::try_from(length).map_err(|_| io::ErrorKind::InvalidInput)?,
+                0,
+            );
+            Ok(())
+        }
+
+        fn sync_data(&self) -> io::Result<()> {
+            let mut state = self.0.lock().unwrap();
+            if let Some((remaining, after_persist)) = state.fail_sync {
+                if remaining == 1 {
+                    state.fail_sync = None;
+                    if after_persist {
+                        state.durable = state.working.clone();
+                    }
+                    return Err(io::ErrorKind::Other.into());
+                }
+                state.fail_sync = Some((remaining - 1, after_persist));
+            }
+            state.durable = state.working.clone();
             Ok(())
         }
 
@@ -1411,10 +1570,211 @@ mod tests {
         fn owner_failed(&self) {}
     }
 
+    struct WorkspaceCeiling {
+        limit: AtomicU64,
+    }
+
+    impl WorkspaceCeiling {
+        fn new() -> Self {
+            Self {
+                limit: AtomicU64::new(u64::MAX),
+            }
+        }
+    }
+
+    impl StorageAdmission for WorkspaceCeiling {
+        fn check_owner(&self) -> Result<(), crate::core::OwnerFailed> {
+            Ok(())
+        }
+
+        fn reserve_workspace(
+            &self,
+            bytes: u64,
+        ) -> Result<Box<dyn ResidentLease>, crate::core::AdmissionError> {
+            if bytes > self.limit.load(Ordering::Acquire) {
+                return Err(crate::core::AdmissionError::CapacityDenied);
+            }
+            Ok(Box::new(()))
+        }
+
+        fn reserve_growth(
+            &self,
+            _current: u64,
+            _requested: u64,
+        ) -> Result<(), crate::core::AdmissionError> {
+            Ok(())
+        }
+
+        fn settle_growth(&self, _actual: u64) -> Result<(), crate::core::OwnerFailed> {
+            Ok(())
+        }
+
+        fn owner_failed(&self) {}
+    }
+
     fn database(backend: MemoryBackend) -> Database {
         Database::builder(Arc::new(AllowAll))
             .create_with_backend(backend)
             .unwrap()
+    }
+
+    #[test]
+    fn key_only_delete_needs_no_old_value_headroom_and_preserves_pinned_reader() {
+        let admission = Arc::new(WorkspaceCeiling::new());
+        let backend = MemoryBackend::default();
+        let database = Database::builder(admission.clone())
+            .create_with_backend(backend.clone())
+            .unwrap();
+        let value = vec![0xa5; 8 << 20];
+        let write = database.begin_write().unwrap();
+        write
+            .open_table(BYTES)
+            .unwrap()
+            .insert(b"large", value.as_slice())
+            .unwrap();
+        write.commit().unwrap();
+        let old = database.begin_read().unwrap();
+        admission.limit.store(4096, Ordering::Release);
+        let write = database.begin_write().unwrap();
+        let mut table = write.open_table(BYTES).unwrap();
+        table.delete_key(b"large").unwrap();
+        assert!(table.get(b"large").unwrap().is_none());
+        drop(table);
+        write.commit().unwrap();
+        let current = database.begin_read().unwrap();
+        assert!(
+            current
+                .open_table(BYTES)
+                .unwrap()
+                .get(b"large")
+                .unwrap()
+                .is_none()
+        );
+        drop(current);
+        admission.limit.store(u64::MAX, Ordering::Release);
+        assert_eq!(
+            old.open_table(BYTES)
+                .unwrap()
+                .get(b"large")
+                .unwrap()
+                .unwrap()
+                .value(),
+            value.as_slice()
+        );
+        drop(old);
+        database.close().unwrap();
+        let reopened = Database::builder(admission)
+            .open_with_backend(backend)
+            .unwrap();
+        let read = reopened.begin_read().unwrap();
+        assert!(
+            read.open_table(BYTES)
+                .unwrap()
+                .get(b"large")
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn key_only_delete_denied_pre_effect_does_not_stage_a_tombstone() {
+        let admission = Arc::new(WorkspaceCeiling::new());
+        let database = Database::builder(admission.clone())
+            .create_with_backend(MemoryBackend::default())
+            .unwrap();
+        let write = database.begin_write().unwrap();
+        write
+            .open_table(BYTES)
+            .unwrap()
+            .insert(b"key", b"value")
+            .unwrap();
+        write.commit().unwrap();
+
+        let write = database.begin_write().unwrap();
+        let mut table = write.open_table(BYTES).unwrap();
+        admission.limit.store(0, Ordering::Release);
+        assert!(matches!(
+            table.delete_key(b"key"),
+            Err(TableError::Storage(StorageError::Core(
+                CoreError::CapacityDenied
+            )))
+        ));
+        admission.limit.store(u64::MAX, Ordering::Release);
+        assert_eq!(table.get(b"key").unwrap().unwrap().value(), b"value");
+        drop(table);
+        write.abort().unwrap();
+    }
+
+    #[test]
+    fn key_only_delete_validates_key_and_obeys_staged_order() {
+        let database = database(MemoryBackend::default());
+        let write = database.begin_write().unwrap();
+        let mut table = write.open_table(BYTES).unwrap();
+        let oversized = vec![0x44; MAX_KEY_BYTES + 1];
+        assert!(matches!(
+            table.delete_key(oversized.as_slice()),
+            Err(TableError::Storage(StorageError::Core(
+                CoreError::InvalidInput(_)
+            )))
+        ));
+        table.delete_key(b"missing").unwrap();
+        table.insert(b"key", b"first").unwrap();
+        table.delete_key(b"key").unwrap();
+        assert!(table.get(b"key").unwrap().is_none());
+        table.delete_key(b"key").unwrap();
+        table.insert(b"key", b"second").unwrap();
+        assert_eq!(table.get(b"key").unwrap().unwrap().value(), b"second");
+        drop(table);
+        write.commit().unwrap();
+        let read = database.begin_read().unwrap();
+        let table = read.open_table(BYTES).unwrap();
+        assert!(table.get(b"missing").unwrap().is_none());
+        assert_eq!(table.get(b"key").unwrap().unwrap().value(), b"second");
+    }
+
+    #[test]
+    fn key_only_delete_crash_replay_is_atomic_after_sync_failure() {
+        for (failed_sync, persisted, deleted) in [
+            (1, false, false),
+            (2, false, false),
+            (3, false, true),
+            (3, true, true),
+        ] {
+            let backend = CrashBackend::default();
+            let database = Database::builder(Arc::new(AllowAll))
+                .create_with_backend(backend.clone())
+                .unwrap();
+            let write = database.begin_write().unwrap();
+            write
+                .open_table(BYTES)
+                .unwrap()
+                .insert(b"old", b"before")
+                .unwrap();
+            write.commit().unwrap();
+
+            let write = database.begin_write().unwrap();
+            let mut table = write.open_table(BYTES).unwrap();
+            table.delete_key(b"old").unwrap();
+            table.insert(b"new", b"after").unwrap();
+            drop(table);
+            backend.fail_sync(failed_sync, persisted);
+            assert!(matches!(
+                write.commit(),
+                Err(CommitError(StorageError::UnknownCommit(_)))
+            ));
+            let reopened = Database::builder(Arc::new(AllowAll))
+                .open_with_backend(backend.crash())
+                .unwrap();
+            let read = reopened.begin_read().unwrap();
+            let table = read.open_table(BYTES).unwrap();
+            assert_eq!(table.get(b"old").unwrap().is_none(), deleted);
+            assert_eq!(table.get(b"new").unwrap().is_some(), deleted);
+            if deleted {
+                assert_eq!(table.get(b"new").unwrap().unwrap().value(), b"after");
+            } else {
+                assert_eq!(table.get(b"old").unwrap().unwrap().value(), b"before");
+            }
+        }
     }
 
     #[test]

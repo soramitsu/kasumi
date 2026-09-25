@@ -105,6 +105,10 @@ impl Fixture {
             Arc::new(LocalKeyProvider::new([73; 32])),
         )
         .await?;
+        stores.write_batch(
+            &[],
+            &kasumi_raft::initial_storage_identity(1, &format!("{name}/{incarnation}"))?,
+        )?;
         let database = construction::DatabaseConstruction::new(stores, audit.clone())?
             .start_local(engine, 1, format!("{name}/{incarnation}"))
             .await?;
@@ -168,6 +172,31 @@ async fn until(mut predicate: impl FnMut() -> bool) {
     })
     .await
     .expect("worker fixture did not reach its actual boundary");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn sealed_database_admission_preserves_raft_storage_until_shutdown() -> anyhow::Result<()> {
+    let fixture = Fixture::new("tenant").await?;
+    let database = &fixture.database;
+    database.seal_admission();
+    assert!(database.check_serving().is_err());
+
+    // Raft may still persist shutdown state after ordinary work is fenced.
+    database.raft_group().check_access()?;
+    database.store().write_batch(&[kasumi_store::WriteOp::put(
+        "worker-test",
+        b"after-admission-seal",
+        b"durable".to_vec(),
+    )])?;
+    assert_eq!(
+        database
+            .store()
+            .get("worker-test", b"after-admission-seal")?,
+        Some(b"durable".to_vec())
+    );
+
+    tokio::time::timeout(Duration::from_secs(10), database.shutdown()).await??;
+    fixture.release().await
 }
 
 fn panic_issue(failure: &DrainFailure, component: &str) -> Arc<kasumi_types::drain::DrainIssue> {

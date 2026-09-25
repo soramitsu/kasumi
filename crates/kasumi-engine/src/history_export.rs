@@ -7,6 +7,21 @@ pub(super) struct PublishedObject {
     pub ciphertext_sha256: String,
 }
 
+fn bundle_output_error(error: anyhow::Error) -> Error {
+    if let Some(admission) = error.downcast_ref::<kasumi_store::BackupBundleAdmissionError>()
+        && admission.kind() != std::io::ErrorKind::OutOfMemory
+    {
+        return Error::new(
+            ErrorCode::Unavailable,
+            "history bundle memory owner unavailable",
+        );
+    }
+    Error::new(
+        ErrorCode::ResourceExhausted,
+        "history object exceeds encoding bound",
+    )
+}
+
 impl Database {
     pub async fn archive_history(
         &self,
@@ -327,17 +342,12 @@ impl Database {
             .map_err(|_| Error::new(ErrorCode::Unavailable, "history encryption failed"))?;
         drop(plaintext);
         let id = encrypted.id();
-        let bytes = encrypted.to_bytes().map_err(|_| {
-            Error::new(
-                ErrorCode::ResourceExhausted,
-                "history object exceeds encoding bound",
-            )
-        })?;
+        let bytes = encrypted.to_bytes().map_err(bundle_output_error)?;
         let digest = hex::encode(Sha256::digest(&bytes));
         // A transport failure may follow a durable create. Verify the same
         // immutable object before deciding whether publication can proceed.
         let _put_result = tokio::select! {
-            result = destination.put(id, bytes) => result,
+            result = destination.put(id, bytes.into()) => result,
             _ = cancelled(cancellation) => return Err(cancelled_error()),
         };
         cancellation.check()?;
@@ -362,5 +372,25 @@ impl Database {
             id,
             ciphertext_sha256: verified.ciphertext_sha256,
         })
+    }
+}
+
+#[cfg(test)]
+mod bundle_output_tests {
+    use super::*;
+
+    #[test]
+    fn non_capacity_bundle_owner_failure_is_unavailable() {
+        let owner_failure = kasumi_store::BackupBundleAdmissionError::from(std::io::Error::other(
+            "installed owner failed",
+        ));
+        let error = bundle_output_error(owner_failure.into());
+        assert_eq!(error.code, ErrorCode::Unavailable);
+
+        let capacity = kasumi_store::BackupBundleAdmissionError::from(std::io::Error::from(
+            std::io::ErrorKind::OutOfMemory,
+        ));
+        let error = bundle_output_error(capacity.into());
+        assert_eq!(error.code, ErrorCode::ResourceExhausted);
     }
 }

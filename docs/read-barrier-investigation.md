@@ -1,5 +1,8 @@
 # Replicated read barrier investigation
 
+> Historical investigation of the 2026-09-05 storage path. The current
+> implementation uses the [native Kasumi KV engine](native-kv-goal.md).
+
 The first 1-million-document replicated matrix case failed during balanced
 traffic, at read operation 8. Its original report and host samples remain in
 `benchmarks/results/release-matrix-macos-arm64-20260905-01/`; the failed run is
@@ -71,8 +74,9 @@ A bounded read-only review identifies remaining sources of latency:
   snapshot builder, so application can wait behind work proportional to the
   dataset. Moving execution to a blocking worker keeps that serialization off
   Tokio workers but does not remove this ordering delay.
-- Snapshot persistence uses bounded 32 MiB batches through the same tenant
-  mutation lock and redb write transaction path used by consensus metadata.
+- At the time, snapshot persistence used bounded 32 MiB batches through the
+  same tenant mutation lock and redb write transaction path as consensus
+  metadata.
   Log-store operations share an I/O gate; pinned OpenRaft directly awaits
   committed-cursor persistence and covered-log purging. These are storage
   throughput and scheduling costs, not evidence of an unbounded wait in this run.

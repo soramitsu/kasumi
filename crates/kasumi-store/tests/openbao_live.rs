@@ -222,14 +222,14 @@ async fn actual_openbao_transit_roundtrip_rotation_backups_and_warm_revocation()
                 .is_err()
         );
         assert!(
-            EncryptedBackup::from_bytes(&before_rotation, 1 << 20)?
-                .decrypt_fixture("tenant-a", provider.clone())
+            EncryptedBackup::from_bytes(&before_rotation, 1 << 20, &store)?
+                .decrypt_fixture("tenant-a", provider.clone(), &store)
                 .await
                 .is_err()
         );
         assert_eq!(
-            &*EncryptedBackup::from_bytes(&after_rotation, 1 << 20)?
-                .decrypt_fixture("tenant-a", provider.clone())
+            &*EncryptedBackup::from_bytes(&after_rotation, 1 << 20, &store)?
+                .decrypt_fixture("tenant-a", provider.clone(), &store)
                 .await?
                 .snapshot,
             b"rotated logical snapshot"

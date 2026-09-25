@@ -234,12 +234,7 @@ impl ServingFixture {
                 stores,
                 &self.bootstrap,
                 self.router.clone(),
-                kasumi_raft::Config {
-                    heartbeat_interval: 30,
-                    election_timeout_min: 100,
-                    election_timeout_max: 180,
-                    ..Default::default()
-                },
+                kasumi_raft::server_config(),
                 audit.clone(),
             )
             .await
@@ -260,7 +255,7 @@ impl ServingFixture {
     }
     async fn leader(&self, phase: &str) -> Arc<Database> {
         let mut last_barrier_error = None;
-        let selected = tokio::time::timeout(Duration::from_secs(10), async {
+        let selected = tokio::time::timeout(Duration::from_secs(30), async {
             loop {
                 for db in &self.databases {
                     let metrics = db.group.raft().metrics().borrow().clone();

@@ -145,31 +145,62 @@ impl ControlPlane {
         self.database
             .engine()
             .authorize(&context, None, Action::Admin)?;
-        let definition = Self::topology_definition();
-        let existing = self
-            .database
-            .collections(&context)
-            .await?
-            .into_iter()
-            .find(|c| c.name == COLLECTION);
-        if let Some(existing) = existing {
-            if serde_json::to_value(existing).ok() != serde_json::to_value(&definition).ok() {
+        for definition in [Self::topology_definition(), Self::enrollment_definition()] {
+            let existing = self
+                .database
+                .collections(&context)
+                .await?
+                .into_iter()
+                .find(|collection| collection.name == definition.name);
+            if let Some(existing) = existing {
+                if existing != definition {
+                    return Err(Error::new(
+                        ErrorCode::Corruption,
+                        "reserved Control schema differs from expected schema",
+                    ));
+                }
+                continue;
+            }
+            if self
+                .database
+                .engine()
+                .generation()?
+                .state
+                .lifecycle_control
+                .is_some()
+            {
                 return Err(Error::new(
                     ErrorCode::Corruption,
-                    "control topology schema differs from expected schema",
+                    "installed Control reserved schema is missing",
                 ));
             }
-            return Ok(());
+            match self
+                .database
+                .administer(
+                    context.clone(),
+                    Operation::CreateCollection(definition.clone()),
+                )
+                .await
+            {
+                Ok(_) => {}
+                Err(error) if error.code == ErrorCode::AlreadyExists => {
+                    if !self
+                        .database
+                        .collections(&context)
+                        .await?
+                        .iter()
+                        .any(|collection| collection == &definition)
+                    {
+                        return Err(Error::new(
+                            ErrorCode::Corruption,
+                            "reserved Control schema differs from expected schema",
+                        ));
+                    }
+                }
+                Err(error) => return Err(error),
+            }
         }
-        match self
-            .database
-            .administer(context, Operation::CreateCollection(definition))
-            .await
-        {
-            Ok(_) => Ok(()),
-            Err(error) if error.code == ErrorCode::AlreadyExists => Ok(()),
-            Err(error) => Err(error),
-        }
+        Ok(())
     }
     pub(crate) fn topology_definition() -> CollectionDefinition {
         CollectionDefinition {
@@ -181,6 +212,18 @@ impl ControlPlane {
                 "required":["nodes","tenants"], "additionalProperties":false,
                 "properties":{"nodes":{"type":"object"},"tenants":{"type":"object"}}
             }),
+            indexes: vec![],
+            strict_read_audit: true,
+        }
+    }
+    /// Reserved append-only approvals must exist before a closed lifecycle
+    /// installation, which forbids later generic schema changes.
+    pub fn enrollment_definition() -> CollectionDefinition {
+        CollectionDefinition {
+            retention_class: CollectionRetentionClass::Operational,
+            write_mode: CollectionWriteMode::AppendOnly,
+            name: "tenant_enrollments".into(),
+            schema: json!({"type":"object"}),
             indexes: vec![],
             strict_read_audit: true,
         }
@@ -198,6 +241,16 @@ impl ControlPlane {
             .ok_or_else(|| corrupt("installed Control topology schema is missing"))?;
         if collection.definition != Self::topology_definition() {
             return Err(corrupt("installed Control topology schema differs"));
+        }
+        if state.lifecycle_control.is_some()
+            && state
+                .collections
+                .get("tenant_enrollments")
+                .is_none_or(|collection| collection.definition != Self::enrollment_definition())
+        {
+            return Err(corrupt(
+                "installed Control enrollment schema is missing or differs",
+            ));
         }
         let document = collection
             .documents
@@ -217,11 +270,9 @@ impl ControlPlane {
         self.database
             .engine()
             .authorize(context, None, Action::Admin)?;
-        let existing = self
-            .database
-            .collections(context)
-            .await?
-            .into_iter()
+        let collections = self.database.collections(context).await?;
+        let existing = collections
+            .iter()
             .find(|collection| collection.name == COLLECTION)
             .ok_or_else(|| {
                 Error::new(
@@ -237,6 +288,23 @@ impl ControlPlane {
             return Err(Error::new(
                 ErrorCode::Corruption,
                 "installed Control topology schema differs",
+            ));
+        }
+        if self
+            .database
+            .engine()
+            .generation()?
+            .state
+            .lifecycle_control
+            .is_some()
+            && collections
+                .iter()
+                .find(|collection| collection.name == "tenant_enrollments")
+                != Some(&Self::enrollment_definition())
+        {
+            return Err(Error::new(
+                ErrorCode::Corruption,
+                "installed Control enrollment schema is missing or differs",
             ));
         }
         Ok(())
@@ -301,3 +369,7 @@ impl ControlPlane {
             .await
     }
 }
+
+#[cfg(test)]
+#[path = "control_enrollment_genesis_tests.rs"]
+mod enrollment_genesis_tests;

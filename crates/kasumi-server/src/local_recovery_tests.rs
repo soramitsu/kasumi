@@ -413,8 +413,27 @@ async fn local_recovery_resumes_each_phase_and_fences_old_resources_after_activa
     drain_operations().await.unwrap();
 }
 
-#[tokio::test]
-async fn local_cleanup_absence_requires_durable_parent_sync_after_operator_restart() {
+#[test]
+fn local_cleanup_absence_requires_durable_parent_sync_after_operator_restart() {
+    std::thread::Builder::new()
+        .name("local recovery cleanup sync fixture".into())
+        .stack_size(16 << 20)
+        .spawn(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(Box::pin(
+                    local_cleanup_absence_requires_durable_parent_sync_after_operator_restart_impl(
+                    ),
+                ));
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+async fn local_cleanup_absence_requires_durable_parent_sync_after_operator_restart_impl() {
     let root = kasumi_store::test_utils::private_tempdir().unwrap();
     let (configuration, request, _, storage) = backup(root.path()).await;
     start_with_storage(&configuration, request.clone(), storage.clone())
@@ -779,11 +798,30 @@ async fn create_catalogs(operator: &Operator, journal: &mut Journal) {
     .unwrap();
     stores.shutdown().await.unwrap();
     drop(stores);
-    node.drain_initializers().await.unwrap();
+    node.shutdown().await.unwrap();
 }
 
-#[tokio::test]
-async fn cancelled_local_operator_retains_exclusive_installation_until_joined_drain() {
+#[test]
+fn cancelled_local_operator_retains_exclusive_installation_until_joined_drain() {
+    std::thread::Builder::new()
+        .name("local recovery cancellation fixture".into())
+        .stack_size(16 << 20)
+        .spawn(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(Box::pin(
+                    cancelled_local_operator_retains_exclusive_installation_until_joined_drain_impl(
+                    ),
+                ));
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+async fn cancelled_local_operator_retains_exclusive_installation_until_joined_drain_impl() {
     use std::{future::Future, task::Poll};
     let _serial = crate::standalone::ownership_tests::drain_serial()
         .lock()
@@ -847,8 +885,26 @@ async fn cancelled_local_operator_retains_exclusive_installation_until_joined_dr
     crate::startup_owner::finish(&mut operator).await.unwrap();
 }
 
-#[tokio::test]
-async fn local_creation_replay_never_creates_or_adopts_an_absent_or_empty_file() {
+#[test]
+fn local_creation_replay_never_creates_or_adopts_an_absent_or_empty_file() {
+    std::thread::Builder::new()
+        .name("local recovery creation replay fixture".into())
+        .stack_size(16 << 20)
+        .spawn(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(Box::pin(
+                    local_creation_replay_never_creates_or_adopts_an_absent_or_empty_file_impl(),
+                ));
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+async fn local_creation_replay_never_creates_or_adopts_an_absent_or_empty_file_impl() {
     let root = kasumi_store::test_utils::private_tempdir().unwrap();
     let (configuration, request, _, storage) = backup(root.path()).await;
     start_with_storage(&configuration, request.clone(), storage.clone())
@@ -908,8 +964,26 @@ async fn local_creation_replay_never_creates_or_adopts_an_absent_or_empty_file()
     drain_operations().await.unwrap();
 }
 
-#[tokio::test]
-async fn local_lost_file_binding_cleanup_requires_the_original_node_identity() {
+#[test]
+fn local_lost_file_binding_cleanup_requires_the_original_node_identity() {
+    std::thread::Builder::new()
+        .name("local recovery file binding fixture".into())
+        .stack_size(16 << 20)
+        .spawn(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(Box::pin(
+                    local_lost_file_binding_cleanup_requires_the_original_node_identity_impl(),
+                ));
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+async fn local_lost_file_binding_cleanup_requires_the_original_node_identity_impl() {
     let root = kasumi_store::test_utils::private_tempdir().unwrap();
     let (configuration, request, _, storage) = backup(root.path()).await;
     start_with_storage(&configuration, request.clone(), storage.clone())
@@ -988,8 +1062,26 @@ async fn local_lost_file_binding_cleanup_requires_the_original_node_identity() {
     drain_operations().await.unwrap();
 }
 
-#[tokio::test]
-async fn local_catalog_replay_resolves_complete_catalogs_without_reinitialization() {
+#[test]
+fn local_catalog_replay_resolves_complete_catalogs_without_reinitialization() {
+    std::thread::Builder::new()
+        .name("local recovery catalog replay fixture".into())
+        .stack_size(16 << 20)
+        .spawn(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(Box::pin(
+                    local_catalog_replay_resolves_complete_catalogs_without_reinitialization_impl(),
+                ));
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+async fn local_catalog_replay_resolves_complete_catalogs_without_reinitialization_impl() {
     let root = kasumi_store::test_utils::private_tempdir().unwrap();
     let (configuration, request, _, storage) = backup(root.path()).await;
     start_with_storage(&configuration, request.clone(), storage.clone())
@@ -1028,8 +1120,26 @@ async fn local_catalog_replay_resolves_complete_catalogs_without_reinitializatio
     drain_operations().await.unwrap();
 }
 
-#[tokio::test]
-async fn local_incomplete_catalogs_or_dispatched_restore_never_restart_creation() {
+#[test]
+fn local_incomplete_catalogs_or_dispatched_restore_never_restart_creation() {
+    std::thread::Builder::new()
+        .name("local recovery incomplete catalog fixture".into())
+        .stack_size(16 << 20)
+        .spawn(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(Box::pin(
+                    local_incomplete_catalogs_or_dispatched_restore_never_restart_creation_impl(),
+                ));
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+async fn local_incomplete_catalogs_or_dispatched_restore_never_restart_creation_impl() {
     for dispatched in [false, true] {
         let root = kasumi_store::test_utils::private_tempdir().unwrap();
         let (configuration, request, _, storage) = backup(root.path()).await;
@@ -1049,12 +1159,11 @@ async fn local_incomplete_catalogs_or_dispatched_restore_never_restart_creation(
                 .prepare_stage(&mut journal, TargetPreparation::MaterializationDispatched)
                 .unwrap();
         } else {
-            drop(
-                operator
-                    .prepare_database_file(&mut journal)
-                    .unwrap()
-                    .unwrap(),
-            );
+            let node = operator
+                .prepare_database_file(&mut journal)
+                .unwrap()
+                .unwrap();
+            node.shutdown().await.unwrap();
         }
         let path = journal.target_directory.join("node.kv");
         let identity = private_files::file_identity(&path).unwrap();
@@ -1108,8 +1217,26 @@ async fn local_incomplete_catalogs_or_dispatched_restore_never_restart_creation(
     drain_operations().await.unwrap();
 }
 
-#[tokio::test]
-async fn activated_local_recovery_never_recreates_missing_control_topology() {
+#[test]
+fn activated_local_recovery_never_recreates_missing_control_topology() {
+    std::thread::Builder::new()
+        .name("local recovery topology fixture".into())
+        .stack_size(16 << 20)
+        .spawn(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(Box::pin(
+                    activated_local_recovery_never_recreates_missing_control_topology_impl(),
+                ));
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+async fn activated_local_recovery_never_recreates_missing_control_topology_impl() {
     let root = kasumi_store::test_utils::private_tempdir().unwrap();
     let (configuration, request, _, storage) = backup(root.path()).await;
     start_with_storage(&configuration, request.clone(), storage.clone())
@@ -1184,8 +1311,26 @@ async fn activated_local_recovery_never_recreates_missing_control_topology() {
     drain_operations().await.unwrap();
 }
 
-#[tokio::test]
-async fn failed_restored_generation_startup_retains_alternate_node_through_cancelled_drain() {
+#[test]
+fn failed_restored_generation_startup_retains_alternate_node_through_cancelled_drain() {
+    std::thread::Builder::new()
+        .name("local recovery failed startup fixture".into())
+        .stack_size(16 << 20)
+        .spawn(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(Box::pin(
+                    failed_restored_generation_startup_retains_alternate_node_through_cancelled_drain_impl(),
+                ));
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+async fn failed_restored_generation_startup_retains_alternate_node_through_cancelled_drain_impl() {
     use kasumi_store::NodeStore;
     use std::{future::Future, task::Poll};
     let _serial = crate::standalone::ownership_tests::drain_serial()

@@ -97,6 +97,7 @@ impl Replica {
     async fn close(self) -> (tempfile::TempDir, crate::test_utils::FixtureStorage) {
         self.stores.shutdown().await.unwrap();
         self.audit.shutdown().await.unwrap();
+        self.node.shutdown().await.unwrap();
         let Self {
             directory,
             storage,
@@ -118,15 +119,63 @@ impl Replica {
             &self.stores,
             &serde_json::to_vec(&("replicated", installed))?,
         )?;
+        persist_new(&self.stores, &self.image(installed, actual_incarnation)?)
+    }
+    fn image(
+        &self,
+        installed: &ReplicatedBootstrap,
+        actual_incarnation: &str,
+    ) -> anyhow::Result<SnapshotImage> {
         let engine = TenantEngine::new(
             "replica".into(),
             actual_incarnation.into(),
             installed.initial_policy.clone(),
             installed.initial_limits.clone(),
         )?;
-        persist_new(
-            &self.stores,
-            &engine.logical_snapshot(self.node.scratch_disk())?,
+        Ok(engine.logical_snapshot(self.node.scratch_disk())?)
+    }
+    fn first_publish_image(
+        &self,
+        image: &SnapshotImage,
+        manifest_bytes: Vec<u8>,
+        custody_digest: &str,
+        incarnation: &str,
+        first_chunk: Option<Vec<u8>>,
+        omit_first_chunk: bool,
+    ) -> anyhow::Result<()> {
+        let mut reader = image.reader();
+        let chunks = image.len().div_ceil(CHUNK as u64);
+        for index in 0..chunks {
+            let mut chunk =
+                vec![0; (image.len() - index * CHUNK as u64).min(CHUNK as u64) as usize];
+            reader.read_exact(&mut chunk)?;
+            if index == 0 {
+                if omit_first_chunk {
+                    continue;
+                }
+                chunk = first_chunk.clone().unwrap_or(chunk);
+            }
+            self.stores.application().write_batch(&[WriteOp::put(
+                NS,
+                index.to_be_bytes(),
+                chunk,
+            )])?;
+        }
+        let [node_id, group] = kasumi_raft::initial_storage_identity(
+            1,
+            &format!("{}/{}", self.stores.application().tenant(), incarnation),
+        )?;
+        self.stores.write_batch(
+            &[WriteOp::put(NS, b"manifest", manifest_bytes)],
+            &[
+                WriteOp::put(
+                    "raft.meta",
+                    b"application_bootstrap_sha256",
+                    serde_json::to_vec(custody_digest)?,
+                ),
+                node_id,
+                group,
+            ],
         )
     }
     async fn reject(
@@ -151,6 +200,39 @@ impl Replica {
         assert_eq!(retained(&self.stores)?, before);
         Ok(())
     }
+}
+
+fn manifest_for(image: &SnapshotImage) -> Manifest {
+    Manifest {
+        format: 2,
+        bytes: image.len(),
+        chunks: image.len().div_ceil(CHUNK as u64),
+        digest: image.sha256().to_owned(),
+    }
+}
+
+async fn reject_first_installed_descriptor(
+    installed: &ReplicatedBootstrap,
+    bytes: &[u8],
+    diagnostic: &str,
+) -> anyhow::Result<()> {
+    let fixture = Replica::new().await?;
+    fixture.stores.write_batch(
+        &[WriteOp::put("engine.deployment", b"mode", bytes)],
+        &[WriteOp::put("engine.deployment", b"mode", bytes)],
+    )?;
+    let image = fixture.image(installed, &installed.incarnation)?;
+    persist_new(&fixture.stores, &image)?;
+    fixture
+        .reject(
+            1,
+            uuid::Uuid::parse_str(&installed.incarnation)?,
+            diagnostic,
+        )
+        .await?;
+    drop(image);
+    drop(fixture.close().await);
+    Ok(())
 }
 
 fn bootstrap() -> ReplicatedBootstrap {
@@ -215,7 +297,235 @@ fn retained(stores: &TenantStorageSet) -> anyhow::Result<String> {
 }
 
 #[tokio::test]
-async fn existing_replica_never_creates_missing_bootstrap_or_consensus_identity()
+async fn installed_raft_identity_uses_the_bootstrap_view_generation() -> anyhow::Result<()> {
+    let fixture = Replica::new().await?;
+    let custody = fixture.stores.custody().store();
+    fixture.stores.write_batch(
+        &[],
+        &[
+            WriteOp::put("raft.meta", b"node_id", b"1"),
+            WriteOp::put("raft.meta", b"group", b"\"replica/first\""),
+        ],
+    )?;
+    let view = fixture.stores.read_view()?;
+    assert!(
+        custody
+            .write_batch(&[
+                WriteOp::put("raft.meta", b"node_id", b"2"),
+                WriteOp::put("raft.meta", b"group", b"\"replica/second\""),
+            ])
+            .is_err()
+    );
+    assert_eq!(
+        kasumi_raft::ControlLog::installed_identity_at(&view)?,
+        Some((1, "replica/first".into()))
+    );
+    drop(view);
+    assert_eq!(
+        kasumi_raft::ControlLog::installed_identity_at(&fixture.stores.read_view()?)?,
+        Some((1, "replica/first".into()))
+    );
+    drop(fixture.close().await);
+    Ok(())
+}
+
+#[tokio::test]
+async fn physical_a_to_b_generation_keeps_pinned_bootstrap_and_reopens_only_b() -> anyhow::Result<()>
+{
+    use kasumi_store::test_utils::inject_authenticated_rows_below_facade;
+
+    let fixture = Replica::new().await?;
+    let installed_a = bootstrap();
+    fixture.seed(&installed_a, &installed_a.incarnation)?;
+    let old = fixture.stores.read_view()?;
+    let image_a = load_at(&old, fixture.node.scratch_disk())?.expect("A image");
+    validate_bootstrap_control_at(&old, &image_a)?;
+    assert_eq!(
+        kasumi_raft::ControlLog::installed_identity_at(&old)?,
+        Some((1, format!("replica/{}", installed_a.incarnation)))
+    );
+
+    let installed_b = bootstrap();
+    let image_b = fixture.image(&installed_b, &installed_b.incarnation)?;
+    assert_ne!(image_a.sha256(), image_b.sha256());
+    let binding_b = serde_json::to_vec(&("replicated", &installed_b))?;
+    let mut application_b = vec![WriteOp::put(
+        "engine.deployment",
+        b"mode",
+        binding_b.clone(),
+    )];
+    let mut reader = image_b.reader();
+    for index in 0..image_b.len().div_ceil(CHUNK as u64) {
+        let mut chunk = vec![0; (image_b.len() - index * CHUNK as u64).min(CHUNK as u64) as usize];
+        reader.read_exact(&mut chunk)?;
+        application_b.push(WriteOp::put(NS, index.to_be_bytes(), chunk));
+    }
+    application_b.push(WriteOp::put(
+        NS,
+        b"manifest",
+        serde_json::to_vec(&manifest_for(&image_b))?,
+    ));
+    let custody_b = [
+        WriteOp::put("engine.deployment", b"mode", binding_b),
+        WriteOp::put(
+            "raft.meta",
+            b"application_bootstrap_sha256",
+            serde_json::to_vec(image_b.sha256())?,
+        ),
+        WriteOp::put("raft.meta", b"node_id", serde_json::to_vec(&2_u64)?),
+        WriteOp::put(
+            "raft.meta",
+            b"group",
+            serde_json::to_vec(&format!("replica/{}", installed_b.incarnation))?,
+        ),
+    ];
+    assert!(
+        fixture
+            .stores
+            .write_batch(&application_b, &custody_b)
+            .is_err()
+    );
+    inject_authenticated_rows_below_facade(&fixture.stores, &application_b, &custody_b)?;
+
+    // The old view still sees only A, including its independently encrypted
+    // descriptor, manifest/chunks, digest, and Raft node/group rows.
+    assert_eq!(
+        installed_replicated_bootstrap(&old, uuid::Uuid::parse_str(&installed_a.incarnation)?)?
+            .0
+            .incarnation,
+        installed_a.incarnation
+    );
+    let pinned_image = load_at(&old, fixture.node.scratch_disk())?.expect("pinned A image");
+    assert_eq!(pinned_image.sha256(), image_a.sha256());
+    validate_bootstrap_control_at(&old, &pinned_image)?;
+    assert_eq!(
+        kasumi_raft::ControlLog::installed_identity_at(&old)?,
+        Some((1, format!("replica/{}", installed_a.incarnation)))
+    );
+    let newer = fixture.stores.read_view()?;
+    assert_eq!(
+        installed_replicated_bootstrap(&newer, uuid::Uuid::parse_str(&installed_b.incarnation)?)?
+            .0
+            .incarnation,
+        installed_b.incarnation
+    );
+    let new_image = load_at(&newer, fixture.node.scratch_disk())?.expect("B image");
+    assert_eq!(new_image.sha256(), image_b.sha256());
+    validate_bootstrap_control_at(&newer, &new_image)?;
+    assert_eq!(
+        kasumi_raft::ControlLog::installed_identity_at(&newer)?,
+        Some((2, format!("replica/{}", installed_b.incarnation)))
+    );
+    drop((old, newer, image_a, image_b, pinned_image, new_image));
+
+    let reopened = Replica::existing(fixture.close().await).await?;
+    reopened
+        .reject(
+            1,
+            uuid::Uuid::parse_str(&installed_a.incarnation)?,
+            "installed replicated genesis differs from expected incarnation",
+        )
+        .await?;
+    let opened = open_existing_replicated(
+        2,
+        reopened.stores.clone(),
+        uuid::Uuid::parse_str(&installed_b.incarnation)?,
+        Arc::new(InProcessRouter::default()),
+        raft_config(),
+        reopened.audit.clone(),
+    )
+    .await?;
+    assert_eq!(opened.bootstrap.incarnation, installed_b.incarnation);
+    assert_eq!(opened.database.raft_group().raft().metrics().borrow().id, 2);
+    opened.database.shutdown().await?;
+    drop(opened.database);
+    drop(reopened.close().await);
+    Ok(())
+}
+
+#[tokio::test]
+async fn one_sided_physical_identity_fault_after_pin_rejects_existing_reopen() -> anyhow::Result<()>
+{
+    use kasumi_store::test_utils::inject_authenticated_rows_below_facade;
+
+    for case in 0..3 {
+        let fixture = Replica::new().await?;
+        let installed = bootstrap();
+        fixture.seed(&installed, &installed.incarnation)?;
+        let old = fixture.stores.read_view()?;
+        let image = load_at(&old, fixture.node.scratch_disk())?.expect("installed image");
+        let expected_identity = Some((1, format!("replica/{}", installed.incarnation)));
+        let (application_fault, custody_fault, diagnostic) = match case {
+            0 => (
+                vec![],
+                vec![WriteOp::put(
+                    "raft.meta",
+                    b"node_id",
+                    serde_json::to_vec(&2_u64)?,
+                )],
+                "consensus identity differs",
+            ),
+            1 => (
+                vec![],
+                vec![WriteOp::delete("raft.meta", b"group")],
+                "installed consensus identity is incomplete",
+            ),
+            _ => (
+                vec![],
+                vec![WriteOp::put(
+                    "raft.meta",
+                    b"application_bootstrap_sha256",
+                    serde_json::to_vec("wrong")?,
+                )],
+                "application bootstrap/control identity differs",
+            ),
+        };
+        assert!(
+            fixture
+                .stores
+                .write_batch(&application_fault, &custody_fault)
+                .is_err()
+        );
+        inject_authenticated_rows_below_facade(
+            &fixture.stores,
+            &application_fault,
+            &custody_fault,
+        )?;
+
+        let old_image = load_at(&old, fixture.node.scratch_disk())?.expect("pinned A image");
+        assert_eq!(old_image.sha256(), image.sha256());
+        validate_bootstrap_control_at(&old, &old_image)?;
+        assert_eq!(
+            kasumi_raft::ControlLog::installed_identity_at(&old)?,
+            expected_identity
+        );
+        let current = fixture.stores.read_view()?;
+        if case == 1 {
+            assert!(kasumi_raft::ControlLog::installed_identity_at(&current).is_err());
+        } else if case == 0 {
+            assert_eq!(
+                kasumi_raft::ControlLog::installed_identity_at(&current)?,
+                Some((2, format!("replica/{}", installed.incarnation)))
+            );
+        } else {
+            assert!(validate_bootstrap_control_at(&current, &image).is_err());
+        }
+        drop((old, current, old_image, image));
+        let reopened = Replica::existing(fixture.close().await).await?;
+        reopened
+            .reject(
+                1,
+                uuid::Uuid::parse_str(&installed.incarnation)?,
+                diagnostic,
+            )
+            .await?;
+        drop(reopened.close().await);
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn existing_replica_never_creates_missing_bootstrap_or_changes_consensus_identity()
 -> anyhow::Result<()> {
     let fixture = Replica::new().await?;
     let installed = bootstrap();
@@ -238,34 +548,27 @@ async fn existing_replica_never_creates_missing_bootstrap_or_consensus_identity(
         )
         .await?;
     fixture.seed(&installed, &installed.incarnation)?;
-    fixture
-        .reject(
-            1,
-            uuid::Uuid::parse_str(&installed.incarnation)?,
-            "consensus identity is not initialized",
-        )
-        .await?;
-    fixture
-        .stores
-        .custody()
-        .store()
-        .write_batch(&[WriteOp::put("raft.meta", b"node_id", b"1")])?;
-    fixture
-        .reject(
-            1,
-            uuid::Uuid::parse_str(&installed.incarnation)?,
-            "consensus identity is incomplete",
-        )
-        .await?;
-    fixture
-        .stores
-        .custody()
-        .store()
-        .write_batch(&[WriteOp::put(
-            "raft.meta",
-            b"group",
-            serde_json::to_vec(&format!("replica/{}", installed.incarnation))?,
-        )])?;
+    assert_eq!(
+        kasumi_raft::ControlLog::installed_identity_at(&fixture.stores.read_view()?)?,
+        Some((1, format!("replica/{}", installed.incarnation)))
+    );
+    assert!(
+        fixture
+            .stores
+            .write_batch(&[], &[WriteOp::put("raft.meta", b"node_id", b"1")])
+            .is_err()
+    );
+    fixture.stores.write_batch(
+        &[],
+        &[
+            WriteOp::put("raft.meta", b"node_id", b"1"),
+            WriteOp::put(
+                "raft.meta",
+                b"group",
+                serde_json::to_vec(&format!("replica/{}", installed.incarnation))?,
+            ),
+        ],
+    )?;
     fixture
         .reject(
             2,
@@ -273,18 +576,14 @@ async fn existing_replica_never_creates_missing_bootstrap_or_consensus_identity(
             "consensus identity differs",
         )
         .await?;
-    fixture
-        .stores
-        .custody()
-        .store()
-        .write_batch(&[WriteOp::put("raft.meta", b"group", b"\"another/group\"")])?;
-    fixture
-        .reject(
-            1,
-            uuid::Uuid::parse_str(&installed.incarnation)?,
-            "consensus identity differs",
-        )
-        .await?;
+    assert!(
+        fixture
+            .stores
+            .custody()
+            .store()
+            .write_batch(&[WriteOp::put("raft.meta", b"group", b"\"another/group\"",)])
+            .is_err()
+    );
     drop(fixture.close().await);
     Ok(())
 }
@@ -292,131 +591,108 @@ async fn existing_replica_never_creates_missing_bootstrap_or_consensus_identity(
 #[tokio::test]
 async fn existing_replica_rejects_corrupt_manifest_body_and_authenticated_incarnation()
 -> anyhow::Result<()> {
-    let fixture = Replica::new().await?;
     let installed = bootstrap();
-    fixture.seed(&installed, &installed.incarnation)?;
-    let store = fixture.stores.application();
-    let saved = store.get(NS, b"manifest")?.unwrap();
-    let mut wrong: Manifest = serde_json::from_slice(&saved)?;
-    wrong.format = 99;
-    store.write_batch(&[WriteOp::put(NS, b"manifest", serde_json::to_vec(&wrong)?)])?;
-    fixture
-        .reject(
-            1,
-            uuid::Uuid::parse_str(&installed.incarnation)?,
-            "invalid bootstrap manifest",
-        )
-        .await?;
-    store.write_batch(&[WriteOp::put(NS, b"manifest", b"{")])?;
-    fixture
-        .reject(1, uuid::Uuid::parse_str(&installed.incarnation)?, "EOF")
-        .await?;
-    store.write_batch(&[WriteOp::put(NS, b"manifest", saved)])?;
-    let chunk = store.get(NS, &0u64.to_be_bytes())?.unwrap();
-    store.write_batch(&[WriteOp::delete(NS, 0u64.to_be_bytes())])?;
-    fixture
-        .reject(
-            1,
-            uuid::Uuid::parse_str(&installed.incarnation)?,
-            "incomplete bootstrap",
-        )
-        .await?;
-    let mut corrupt = chunk.clone();
-    corrupt[0] ^= 1;
-    store.write_batch(&[WriteOp::put(NS, 0u64.to_be_bytes(), corrupt)])?;
-    fixture
-        .reject(
-            1,
-            uuid::Uuid::parse_str(&installed.incarnation)?,
-            "bootstrap digest mismatch",
-        )
-        .await?;
-    store.write_batch(&[WriteOp::put(NS, 0u64.to_be_bytes(), chunk)])?;
-    fixture
-        .stores
-        .custody()
-        .store()
-        .write_batch(&[WriteOp::put(
-            "raft.meta",
-            b"application_bootstrap_sha256",
-            b"\"wrong\"",
-        )])?;
-    fixture
-        .reject(
-            1,
-            uuid::Uuid::parse_str(&installed.incarnation)?,
-            "bootstrap/control identity differs",
-        )
-        .await?;
-    drop(fixture.close().await);
+    let expected = uuid::Uuid::parse_str(&installed.incarnation)?;
+    for case in 0..5 {
+        let fixture = Replica::new().await?;
+        let binding = serde_json::to_vec(&("replicated", &installed))?;
+        bind_deployment(&fixture.stores, &binding)?;
+        let image = fixture.image(&installed, &installed.incarnation)?;
+        let mut manifest = manifest_for(&image);
+        if case == 0 {
+            manifest.format = 99;
+        }
+        let manifest_bytes = if case == 1 {
+            b"{".to_vec()
+        } else {
+            serde_json::to_vec(&manifest)?
+        };
+        let mut first_chunk = None;
+        if case == 3 {
+            let mut reader = image.reader();
+            let mut corrupt = vec![0; image.len().min(CHUNK as u64) as usize];
+            reader.read_exact(&mut corrupt)?;
+            corrupt[0] ^= 1;
+            first_chunk = Some(corrupt);
+        }
+        fixture.first_publish_image(
+            &image,
+            manifest_bytes,
+            if case == 4 { "wrong" } else { image.sha256() },
+            &installed.incarnation,
+            first_chunk,
+            case == 2,
+        )?;
+        let diagnostic = match case {
+            0 => "invalid bootstrap manifest",
+            1 => "EOF",
+            2 => "incomplete bootstrap",
+            3 => "bootstrap digest mismatch",
+            4 => "bootstrap/control identity differs",
+            _ => unreachable!(),
+        };
+        fixture.reject(1, expected, diagnostic).await?;
+        drop(image);
+        drop(fixture.close().await);
+    }
     let fixture = Replica::new().await?;
     fixture.seed(&installed, &uuid::Uuid::new_v4().to_string())?;
     fixture
-        .reject(
-            1,
-            uuid::Uuid::parse_str(&installed.incarnation)?,
-            "replicated incarnation differs from bootstrap",
-        )
+        .reject(1, expected, "replicated incarnation differs from bootstrap")
         .await?;
     drop(fixture.close().await);
     Ok(())
 }
 
 #[tokio::test]
-async fn paired_bootstrap_readers_reject_orphan_divergence_and_alternate_bytes_without_repair()
+async fn paired_bootstrap_guard_rejects_orphan_divergence_and_reader_rejects_alternate_bytes()
 -> anyhow::Result<()> {
     let fixture = Replica::new().await?;
     let descriptor = bootstrap();
     let expected = uuid::Uuid::parse_str(&descriptor.incarnation)?;
     let binding = serde_json::to_vec(&("replicated", &descriptor))?;
-
-    fixture
-        .stores
-        .custody()
-        .store()
-        .write_batch(&[WriteOp::put(
-            "engine.deployment",
-            b"mode",
-            binding.as_slice(),
-        )])?;
-    let orphan = retained(&fixture.stores)?;
-    for error in [
-        bind_deployment(&fixture.stores, &binding).err(),
-        require_deployment(&fixture.stores, &binding).err(),
-        installed_replicated_bootstrap(&fixture.stores, expected).err(),
-    ] {
-        assert!(
-            format!("{:#}", error.expect("orphaned custody must fail"))
-                .contains("required deployment binding is absent from one domain")
-        );
-    }
-    assert_eq!(retained(&fixture.stores)?, orphan);
+    let pristine = retained(&fixture.stores)?;
+    // One-sided initial publication is forbidden by the writable facade.
+    assert!(
+        fixture
+            .stores
+            .custody()
+            .store()
+            .write_batch(&[WriteOp::put(
+                "engine.deployment",
+                b"mode",
+                binding.as_slice()
+            )])
+            .is_err()
+    );
     assert!(
         fixture
             .stores
             .application()
-            .get("engine.deployment", b"mode")?
-            .is_none()
+            .write_batch(&[WriteOp::put(
+                "engine.deployment",
+                b"mode",
+                binding.as_slice()
+            )])
+            .is_err()
     );
+    assert!(
+        fixture
+            .stores
+            .write_batch(
+                &[WriteOp::put(
+                    "engine.deployment",
+                    b"mode",
+                    binding.as_slice()
+                )],
+                &[WriteOp::put("engine.deployment", b"mode", b"local-v1")],
+            )
+            .is_err()
+    );
+    assert_eq!(retained(&fixture.stores)?, pristine);
+    drop(fixture.close().await);
 
-    fixture.stores.application().write_batch(&[WriteOp::put(
-        "engine.deployment",
-        b"mode",
-        b"local-v1",
-    )])?;
-    let divergent = retained(&fixture.stores)?;
-    for error in [
-        bind_deployment(&fixture.stores, &binding).err(),
-        require_deployment(&fixture.stores, &binding).err(),
-        installed_replicated_bootstrap(&fixture.stores, expected).err(),
-    ] {
-        assert!(
-            format!("{:#}", error.expect("divergent domains must fail"))
-                .contains("deployment binding differs across domains")
-        );
-    }
-    assert_eq!(retained(&fixture.stores)?, divergent);
-
+    let fixture = Replica::new().await?;
     let mut alternate = binding.clone();
     alternate.push(b' ');
     fixture.stores.write_batch(
@@ -432,7 +708,7 @@ async fn paired_bootstrap_readers_reject_orphan_divergence_and_alternate_bytes_w
         )],
     )?;
     let noncanonical = retained(&fixture.stores)?;
-    let error = match installed_replicated_bootstrap(&fixture.stores, expected) {
+    let error = match installed_replicated_bootstrap(&fixture.stores.read_view()?, expected) {
         Ok(_) => panic!("equal alternate bytes must fail"),
         Err(error) => error,
     };
@@ -456,25 +732,44 @@ async fn existing_replica_validates_authenticated_genesis_tag_domains_and_descri
         .reject(1, uuid::Uuid::new_v4(), "differs from expected incarnation")
         .await?;
     let binding = serde_json::to_vec(&("replicated", &installed))?;
-    let replace = |bytes: &[u8]| {
-        fixture.stores.write_batch(
-            &[WriteOp::put("engine.deployment", b"mode", bytes)],
-            &[WriteOp::put("engine.deployment", b"mode", bytes)],
-        )
-    };
-    replace(&serde_json::to_vec(&("local", &installed))?)?;
-    fixture
-        .reject(1, expected, "unsupported deployment field or enum")
-        .await?;
-    replace(b"{")?;
-    fixture
-        .reject(1, expected, "unexpected deployment token")
-        .await?;
+    let (restored, restored_binding) =
+        installed_replicated_bootstrap(&fixture.stores.read_view()?, expected)?;
+    assert_eq!(serde_json::to_vec(&("replicated", &restored))?, binding);
+    assert_eq!(restored_binding.as_bytes(), binding);
+    // An installed descriptor cannot be changed through a live custody
+    // facade. A physically altered copy needs a separate offline fault test.
+    assert!(
+        fixture
+            .stores
+            .custody()
+            .store()
+            .write_batch(&[WriteOp::put("engine.deployment", b"mode", b"other")])
+            .is_err()
+    );
+    assert!(
+        fixture
+            .stores
+            .custody()
+            .store()
+            .write_batch(&[WriteOp::delete("engine.deployment", b"mode")])
+            .is_err()
+    );
+    drop(fixture.close().await);
+
+    reject_first_installed_descriptor(
+        &installed,
+        &serde_json::to_vec(&("local", &installed))?,
+        "unsupported deployment field or enum",
+    )
+    .await?;
+    reject_first_installed_descriptor(&installed, b"{", "unexpected deployment token").await?;
     let canonical = std::str::from_utf8(&binding)?;
-    replace(canonical.replace("\"1\":", "\"01\":").as_bytes())?;
-    fixture
-        .reject(1, expected, "invalid numeric map key")
-        .await?;
+    reject_first_installed_descriptor(
+        &installed,
+        canonical.replace("\"1\":", "\"01\":").as_bytes(),
+        "invalid numeric map key",
+    )
+    .await?;
 
     for field in 0..5 {
         let mut invalid = installed.clone();
@@ -501,8 +796,12 @@ async fn existing_replica_validates_authenticated_genesis_tag_domains_and_descri
             }
             _ => unreachable!(),
         };
-        replace(&serde_json::to_vec(&("replicated", &invalid))?)?;
-        fixture.reject(1, expected, diagnostic).await?;
+        reject_first_installed_descriptor(
+            &installed,
+            &serde_json::to_vec(&("replicated", &invalid))?,
+            diagnostic,
+        )
+        .await?;
     }
     let mut whitespace = binding.clone();
     whitespace.push(b' ');
@@ -510,36 +809,23 @@ async fn existing_replica_validates_authenticated_genesis_tag_domains_and_descri
         serde_json::from_slice::<serde_json::Value>(&whitespace)?,
         serde_json::from_slice::<serde_json::Value>(&binding)?
     );
-    replace(&whitespace)?;
-    fixture
-        .reject(1, expected, "trailing deployment bytes")
-        .await?;
-    replace(&binding)?;
-    let restored = installed_replicated_bootstrap(&fixture.stores, expected)?;
-    assert_eq!(serde_json::to_vec(&("replicated", &restored))?, binding);
-    let mut substituted = installed.clone();
-    substituted.voters.get_mut(&1).unwrap().address = "tampered-domain".into();
-    fixture
-        .stores
-        .custody()
-        .store()
-        .write_batch(&[WriteOp::put(
-            "engine.deployment",
-            b"mode",
-            serde_json::to_vec(&("replicated", substituted))?,
-        )])?;
-    fixture
-        .reject(1, expected, "differs across domains")
-        .await?;
-    fixture
-        .stores
-        .custody()
-        .store()
-        .write_batch(&[WriteOp::delete("engine.deployment", b"mode")])?;
-    fixture
-        .reject(1, expected, "required deployment binding")
-        .await?;
-    drop(fixture.close().await);
+    reject_first_installed_descriptor(&installed, &whitespace, "trailing deployment bytes").await?;
+    let mut altered = installed.clone();
+    altered.initial_policy.strict_read_audit = !altered.initial_policy.strict_read_audit;
+    reject_first_installed_descriptor(
+        &installed,
+        &serde_json::to_vec(&("replicated", &altered))?,
+        "initial policy differs from bootstrap image",
+    )
+    .await?;
+    altered = installed.clone();
+    altered.initial_limits.max_documents += 1;
+    reject_first_installed_descriptor(
+        &installed,
+        &serde_json::to_vec(&("replicated", &altered))?,
+        "initial limits differ from bootstrap image",
+    )
+    .await?;
     Ok(())
 }
 
@@ -558,21 +844,39 @@ async fn target_deployment_requires_paired_current_writer_bytes() -> anyhow::Res
         serde_json::from_slice::<serde_json::Value>(&alternate)?,
         serde_json::from_slice::<serde_json::Value>(&binding)?
     );
-    fixture.stores.application().write_batch(&[WriteOp::put(
-        "engine.deployment",
-        b"mode",
-        alternate.as_slice(),
-    )])?;
     let before = retained(&fixture.stores)?;
-    let Err(error) = decode_current_target_deployment(&fixture.stores) else {
-        panic!("target reader accepted divergent deployment copies");
-    };
     assert!(
-        format!("{error:#}").contains("differs across domains"),
-        "{error:#}"
+        fixture
+            .stores
+            .application()
+            .write_batch(&[WriteOp::put(
+                "engine.deployment",
+                b"mode",
+                alternate.as_slice()
+            )])
+            .is_err()
+    );
+    assert!(
+        fixture
+            .stores
+            .write_batch(
+                &[WriteOp::put(
+                    "engine.deployment",
+                    b"mode",
+                    alternate.as_slice()
+                )],
+                &[WriteOp::put(
+                    "engine.deployment",
+                    b"mode",
+                    binding.as_slice()
+                )],
+            )
+            .is_err()
     );
     assert_eq!(retained(&fixture.stores)?, before);
+    drop(fixture.close().await);
 
+    let fixture = Replica::new().await?;
     fixture.stores.write_batch(
         &[WriteOp::put(
             "engine.deployment",
@@ -594,21 +898,6 @@ async fn target_deployment_requires_paired_current_writer_bytes() -> anyhow::Res
         "{error:#}"
     );
     assert_eq!(retained(&fixture.stores)?, before);
-
-    fixture.stores.write_batch(
-        &[WriteOp::put(
-            "engine.deployment",
-            b"mode",
-            binding.as_slice(),
-        )],
-        &[WriteOp::put(
-            "engine.deployment",
-            b"mode",
-            binding.as_slice(),
-        )],
-    )?;
-    let restored = decode_current_target_deployment(&fixture.stores)?;
-    assert_eq!(serde_json::to_vec(&("replicated", &restored))?, binding);
     drop(fixture.close().await);
     Ok(())
 }
@@ -660,8 +949,7 @@ async fn leader(nodes: &BTreeMap<u64, Arc<Database>>) -> anyhow::Result<u64> {
 }
 
 #[tokio::test]
-async fn initialize_replicated_rejects_missing_custody_binding_before_membership()
--> anyhow::Result<()> {
+async fn initialize_replicated_keeps_custody_binding_before_membership() -> anyhow::Result<()> {
     let fixture = Replica::new().await?;
     let installed = bootstrap();
     let router = Arc::new(InProcessRouter::default());
@@ -675,16 +963,19 @@ async fn initialize_replicated_rejects_missing_custody_binding_before_membership
     )
     .await?;
     assert!(!database.raft_group().raft().is_initialized().await?);
-    fixture
-        .stores
-        .custody()
-        .store()
-        .write_batch(&[WriteOp::delete("engine.deployment", b"mode")])?;
-    let error = initialize_replicated(&database, &installed)
-        .await
-        .expect_err("one-sided deployment authorized first membership");
-    assert!(format!("{error:#}").contains("required deployment binding"));
+    let before = retained(&fixture.stores)?;
+    assert!(
+        fixture
+            .stores
+            .custody()
+            .store()
+            .write_batch(&[WriteOp::delete("engine.deployment", b"mode")])
+            .is_err()
+    );
+    assert_eq!(retained(&fixture.stores)?, before);
     assert!(!database.raft_group().raft().is_initialized().await?);
+    initialize_replicated(&database, &installed).await?;
+    assert!(database.raft_group().raft().is_initialized().await?);
     database.shutdown().await?;
     drop(database);
     drop(fixture.close().await);
@@ -788,6 +1079,36 @@ async fn existing_replicas_replay_committed_state_and_membership_after_full_clos
             continue;
         }
         let fixture = Replica::existing(directory).await?;
+        let pinned = fixture.stores.read_view()?;
+        let installed_identity = Some((id, group.clone()));
+        assert_eq!(
+            kasumi_raft::ControlLog::installed_identity_at(&pinned)?,
+            installed_identity
+        );
+        let custody = fixture.stores.custody().store();
+        assert!(
+            custody
+                .write_batch(&[WriteOp::put(
+                    "raft.meta",
+                    b"node_id",
+                    serde_json::to_vec(&(id + 10))?,
+                )])
+                .is_err()
+        );
+        assert!(
+            custody
+                .write_batch(&[WriteOp::put(
+                    "raft.meta",
+                    b"group",
+                    serde_json::to_vec(&format!("{group}/other"))?,
+                )])
+                .is_err()
+        );
+        assert_eq!(
+            kasumi_raft::ControlLog::installed_identity_at(&fixture.stores.read_view()?)?,
+            installed_identity
+        );
+        drop(pinned);
         let opened = open_existing_replicated(
             id,
             fixture.stores.clone(),
@@ -803,7 +1124,13 @@ async fn existing_replicas_replay_committed_state_and_membership_after_full_clos
         );
         let binding = serde_json::to_vec(&("replicated", &installed))?;
         require_deployment(&fixture.stores, &binding)?;
+        assert_eq!(opened.verified_binding(), binding);
+        assert_eq!(
+            opened.verified_snapshot_sha256(),
+            persisted_bootstrap_digest_at(&fixture.stores.read_view()?)?
+        );
         let database = opened.database;
+        assert_eq!(database.raft_group().raft().metrics().borrow().id, id);
         // This is a no-op for recovered membership, even at an original voter.
         initialize_replicated(&database, &opened.bootstrap).await?;
         let generation = database.engine().generation()?;

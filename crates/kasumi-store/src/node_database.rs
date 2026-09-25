@@ -1,7 +1,9 @@
 //! A stopped node retains the exact database owner until accepted transactions end.
 use crate::{
-    NodeDiskMemoryAdmission, RegisteredNodeOpening, RegisteredNodeRead, StorageCensusDisposition,
-    StorageOwnerId,
+    NodeDiskMemoryAdmission, RegisteredBindingPut, RegisteredCatalogPut, RegisteredNodeOpening,
+    RegisteredNodeRead, StorageCensusDisposition, StorageOwnerId, TenantStore,
+    storage_domains::AdmittedBindingPut,
+    storage_opening::write_plan::{AdmittedCatalogPairPut, AdmittedCatalogPut},
 };
 use kasumi_kv::{Database, ReadTransaction, TransactionError, WriteTransaction};
 use kasumi_types::drain::{DrainFailure, DrainReport, DrainResult};
@@ -136,6 +138,66 @@ impl NodeDatabase {
         opening.queue_read()
     }
 
+    /// A catalog write is bound to the exact opening before any native effect.
+    pub(crate) fn queue_registered_catalog_put(
+        &self,
+        plan: AdmittedCatalogPut,
+    ) -> std::io::Result<RegisteredCatalogPut> {
+        let opening = {
+            let state = self.state.lock();
+            if self.stopped.load(Ordering::Acquire) {
+                return Err(std::io::ErrorKind::BrokenPipe.into());
+            }
+            state
+                .registered
+                .as_ref()
+                .cloned()
+                .ok_or(std::io::ErrorKind::InvalidInput)?
+        };
+        opening.queue_catalog_put(plan)
+    }
+
+    /// Both fresh catalogs share one exact child and one native terminal.
+    pub(crate) fn queue_registered_catalog_pair_put(
+        &self,
+        plan: AdmittedCatalogPairPut,
+        application: Arc<TenantStore>,
+        custody: Arc<TenantStore>,
+    ) -> std::io::Result<RegisteredCatalogPut> {
+        let opening = {
+            let state = self.state.lock();
+            if self.stopped.load(Ordering::Acquire) {
+                return Err(std::io::ErrorKind::BrokenPipe.into());
+            }
+            state
+                .registered
+                .as_ref()
+                .cloned()
+                .ok_or(std::io::ErrorKind::InvalidInput)?
+        };
+        opening.queue_catalog_pair_put(plan, application, custody)
+    }
+
+    pub(crate) fn queue_registered_binding_put(
+        &self,
+        plan: AdmittedBindingPut,
+        application: Arc<TenantStore>,
+        custody: Arc<TenantStore>,
+    ) -> std::io::Result<RegisteredBindingPut> {
+        let opening = {
+            let state = self.state.lock();
+            if self.stopped.load(Ordering::Acquire) {
+                return Err(std::io::ErrorKind::BrokenPipe.into());
+            }
+            state
+                .registered
+                .as_ref()
+                .cloned()
+                .ok_or(std::io::ErrorKind::InvalidInput)?
+        };
+        opening.queue_binding_put(plan, application, custody)
+    }
+
     #[cfg(any(test, feature = "test-utils"))]
     pub(crate) fn has_fixture_direct_database(&self) -> bool {
         self.state.lock().database.is_some()
@@ -167,6 +229,10 @@ impl NodeDatabase {
             return Err(failure.clone());
         }
         if let Some((provider, id)) = state.retirement.take() {
+            // A prior close may have skipped a released routine child while
+            // its census metadata was busy. That child still owns this parent
+            // registration, so rescan the exact children before parent drain.
+            RegisteredNodeOpening::drain_released_routine_readers(&provider, id);
             match provider.storage_census().drain_owner(id) {
                 StorageCensusDisposition::Retired => return state.terminal.complete(),
                 StorageCensusDisposition::Retained => {

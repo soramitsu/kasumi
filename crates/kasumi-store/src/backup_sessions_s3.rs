@@ -80,7 +80,7 @@ impl S3BackupDestination {
         &self,
         session: Uuid,
         slot: BackupSessionSlot,
-        encrypted: Vec<u8>,
+        encrypted: BackupUpload,
     ) -> Result<()> {
         ensure!(
             encrypted.len() <= self.max_bytes,
@@ -93,7 +93,7 @@ impl S3BackupDestination {
             .client
             .put(url)
             .headers(headers)
-            .body(encrypted)
+            .body(encrypted.into_http_body())
             .send()
             .await
             .map_err(|_| {

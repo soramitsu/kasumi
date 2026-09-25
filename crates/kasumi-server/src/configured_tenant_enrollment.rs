@@ -169,6 +169,24 @@ impl Administration {
         proposal.digest()?;
         Ok(proposal)
     }
+    #[cfg(test)]
+    pub(crate) fn exact_enrollment_approved_for_test(&self, tenant: &str) -> Result<Option<bool>> {
+        self.control.raft_group().check_access()?;
+        let generation = self.control.engine().generation()?;
+        let present = generation
+            .state
+            .collections
+            .get("tenant_enrollments")
+            .and_then(|collection| collection.documents.get(tenant))
+            .is_some();
+        if !present {
+            return Ok(None);
+        }
+        Ok(Some(
+            self.approved_enrollment(tenant)?.digest()?
+                == self.enrollment_proposal(tenant)?.digest()?,
+        ))
+    }
     pub(super) async fn approve_tenant(
         &self,
         context: &RequestContext,
@@ -186,14 +204,7 @@ impl Administration {
             !self.committed_topology()?.tenants.contains_key(tenant),
             "tenant already has a serving route"
         );
-        let definition = kasumi_types::CollectionDefinition {
-            retention_class: kasumi_types::CollectionRetentionClass::Operational,
-            write_mode: kasumi_types::CollectionWriteMode::AppendOnly,
-            name: "tenant_enrollments".into(),
-            schema: serde_json::json!({"type":"object"}),
-            indexes: vec![],
-            strict_read_audit: true,
-        };
+        let definition = ControlPlane::enrollment_definition();
         let existing = self
             .control
             .engine()
@@ -208,6 +219,20 @@ impl Administration {
                 "Control enrollment schema differs"
             ),
             None => {
+                if self
+                    .control
+                    .engine()
+                    .generation()?
+                    .state
+                    .lifecycle_control
+                    .is_some()
+                {
+                    return Err(kasumi_types::Error::new(
+                        kasumi_types::ErrorCode::Corruption,
+                        "installed Control enrollment schema is missing",
+                    )
+                    .into());
+                }
                 self.control
                     .administer(context.clone(), Operation::CreateCollection(definition))
                     .await?;
@@ -601,7 +626,10 @@ impl Administration {
             let record = node_enrollment::tenant_record(self.audit.store(), name)?
                 .context("prepared enrollment disappeared")?;
             record.require_proposal(&proposal)?;
-            let fingerprint = crate::runtime::persisted_replicated_bootstrap_fingerprint(&stores)?;
+            let fingerprint = crate::runtime::opened_replicated_bootstrap_fingerprint(
+                stores.application().tenant(),
+                &opened,
+            )?;
             ensure!(
                 record.stage == Stage::Prepared
                     && record.bootstrap_sha256.as_ref() == Some(&fingerprint),

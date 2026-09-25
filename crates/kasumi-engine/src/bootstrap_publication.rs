@@ -35,6 +35,7 @@ impl Publication {
         restored: backup_restore::PreparedState,
         gate: tokio::sync::MutexGuard<'static, ()>,
         binding: Vec<u8>,
+        identity: [WriteOp; 2],
     ) -> anyhow::Result<(
         backup_restore::PreparedState,
         tokio::sync::MutexGuard<'static, ()>,
@@ -51,7 +52,9 @@ impl Publication {
                 publication.check()?;
                 bind_deployment(&publication.stores, &binding)?;
                 publication.check()?;
-                persist_new_checked(&publication.stores, &prepared.bytes, || publication.check())?;
+                persist_new_checked(&publication.stores, &prepared.bytes, identity, || {
+                    publication.check()
+                })?;
                 publication.check()?;
                 Ok((prepared, serial))
             })

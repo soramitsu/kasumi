@@ -123,7 +123,7 @@ impl Database {
             .session_put(
                 session.intent().session_id,
                 BackupSessionSlot::Outcome,
-                bytes,
+                bytes.into(),
             )
             .await;
         let resolved = self
@@ -233,7 +233,7 @@ impl Database {
                 )
                 .await?;
                 let _publication = destination
-                    .session_put(request.session_id, BackupSessionSlot::Outcome, bytes)
+                    .session_put(request.session_id, BackupSessionSlot::Outcome, bytes.into())
                     .await;
                 let resolved = self
                     .backup_session(&context, destination.as_ref(), request.session_id)

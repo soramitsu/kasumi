@@ -266,7 +266,16 @@ pub(crate) fn validate_step(
             ));
         }
         if !startup {
-            quorum::require_eligible_observer(state, operation, current.request.command_id, node)?;
+            if matches!(request.step, TargetRuntimeStep::PrepareComplete(_)) {
+                quorum::require_initialized_mutation_observer(state, operation, node)?;
+            } else {
+                quorum::require_eligible_observer(
+                    state,
+                    operation,
+                    current.request.command_id,
+                    node,
+                )?;
+            }
         }
     }
     Ok(())

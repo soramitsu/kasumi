@@ -215,17 +215,18 @@ async fn actual_minio_tls_sigv4_encrypted_roundtrip_create_only_and_access_denia
     let encrypted = store.encrypt_backup(17, snapshot)?;
     let id = encrypted.id();
     let bytes = encrypted.to_bytes()?;
-    destination.put(id, bytes.clone()).await?;
-    assert_eq!(destination.get(id, 16 << 20).await?, bytes);
+    destination.put(id, bytes.try_clone()?.into()).await?;
+    assert_eq!(destination.get(id, 16 << 20).await?, bytes.as_bytes());
     assert!(
         destination
-            .put(id, b"overwrite attempt".to_vec())
+            .put(id, BackupUpload::received(b"overwrite attempt".to_vec()))
             .await
             .is_err()
     );
-    let recovered = EncryptedBackup::from_bytes(&destination.get(id, 16 << 20).await?, 1 << 20)?
-        .decrypt_fixture("customer", provider)
-        .await?;
+    let recovered =
+        EncryptedBackup::from_bytes(&destination.get(id, 16 << 20).await?, 1 << 20, &store)?
+            .decrypt_fixture("customer", provider, &store)
+            .await?;
     assert_eq!(recovered.snapshot.as_slice(), snapshot);
     assert_eq!(recovered.revision, 17);
     assert!(

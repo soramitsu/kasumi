@@ -78,11 +78,11 @@ async fn cancelled_local_startup_and_node_census_keep_actual_group_and_charges_u
     let owner_weak = Arc::downgrade(&owner);
     let gate = LocalStartupGate::install(&owner, OriginalStartupFailure(211).into())?;
     let node = storage.create_new(
-            directory
-                .path()
-                .join("persistent/cancelled-node-startup.kv"),
-            kasumi_store::test_utils::NODE_STORE_ID,
-        )?;
+        directory
+            .path()
+            .join("persistent/cancelled-node-startup.kv"),
+        kasumi_store::test_utils::NODE_STORE_ID,
+    )?;
     let stores = kasumi_store::TenantStorageSet::initialize_catalogs_fixture(
         node.clone(),
         "cancelled-startup".into(),
@@ -90,6 +90,10 @@ async fn cancelled_local_startup_and_node_census_keep_actual_group_and_charges_u
         Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
     )
     .await?;
+    stores.write_batch(
+        &[],
+        &kasumi_raft::initial_storage_identity(1, "cancelled-startup")?,
+    )?;
     // The live native KV index is charged to this same admission owner until
     // the store drains. Keep that installed charge in the startup baseline.
     let installed = admission.snapshot();

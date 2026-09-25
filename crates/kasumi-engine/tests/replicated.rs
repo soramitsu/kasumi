@@ -56,7 +56,11 @@ async fn store(
     physical: &common::PhysicalFixture,
     path: &std::path::Path,
     create: bool,
-) -> (Arc<TenantStore>, Arc<kasumi_engine::SecurityAudit>, Arc<NodeStore>) {
+) -> (
+    Arc<TenantStore>,
+    Arc<kasumi_engine::SecurityAudit>,
+    Arc<NodeStore>,
+) {
     let node = (if create {
         physical
             .storage
@@ -163,14 +167,16 @@ async fn replicated_service_preserves_batches_receipts_and_cursor_fences_across_
     let router = Arc::new(InProcessRouter::default());
     let mut nodes = BTreeMap::new();
     let mut audits = BTreeMap::new();
+    let mut node_owners = BTreeMap::new();
     for id in 1..=3 {
-        let (node_store, audit) = store(
+        let (node_store, audit, node_owner) = store(
             &physical[&id],
             &root.path().join(id.to_string()).join("node.kv"),
             true,
         )
         .await;
         audits.insert(id, audit.clone());
+        node_owners.insert(id, node_owner);
         let db = open_fixture_replicated(
             id,
             kasumi_store::test_utils::initialize_custody_fixture(
@@ -375,16 +381,17 @@ async fn replicated_service_preserves_batches_receipts_and_cursor_fences_across_
             .await
             .is_err()
     );
-    shutdown_nodes(&mut nodes, &mut audits, &router, &group).await;
+    shutdown_nodes(&mut nodes, &mut audits, &mut node_owners, &router, &group).await;
     nodes.clear();
     for id in 1..=3 {
-        let (node_store, audit) = store(
+        let (node_store, audit, node_owner) = store(
             &physical[&id],
             &root.path().join(id.to_string()).join("node.kv"),
             false,
         )
         .await;
         audits.insert(id, audit.clone());
+        node_owners.insert(id, node_owner);
         let db = open_fixture_replicated(
             id,
             kasumi_store::test_utils::open_existing_custody_fixture(
@@ -431,14 +438,15 @@ async fn replicated_service_preserves_batches_receipts_and_cursor_fences_across_
             .version,
         receipt.revision
     );
-    shutdown_nodes(&mut nodes, &mut audits, &router, &group).await;
+    shutdown_nodes(&mut nodes, &mut audits, &mut node_owners, &router, &group).await;
 }
 
 #[tokio::test]
 async fn deployment_modes_and_live_store_ownership_cannot_be_overridden() {
     let root = kasumi_store::test_utils::private_tempdir().unwrap();
     let physical = replica_fixture(root.path(), "local");
-    let (store, audit) = store(&physical, &root.path().join("local/node.kv"), true).await;
+    let (store, audit, node_owner) =
+        store(&physical, &root.path().join("local/node.kv"), true).await;
     let bootstrap = bootstrap();
     let db = open_fixture(
         kasumi_store::test_utils::initialize_custody_fixture(
@@ -507,6 +515,7 @@ async fn deployment_modes_and_live_store_ownership_cannot_be_overridden() {
     );
     reopened.shutdown().await.unwrap();
     audit.shutdown().await.unwrap();
+    node_owner.shutdown().await.unwrap();
     let mut invalid = bootstrap;
     invalid.voters.get_mut(&2).unwrap().failure_domain = "zone-1".into();
     assert!(invalid.validate().is_err());
@@ -523,7 +532,7 @@ async fn replicated_restore_has_identical_genesis_and_requires_quorum_audit_befo
     let physical: BTreeMap<_, _> = (1..=3)
         .map(|id| (id, replica_fixture(root.path(), &format!("restored-{id}"))))
         .collect();
-    let (source_store, source_audit) =
+    let (source_store, source_audit, source_node) =
         store(&source_physical, &root.path().join("source/node.kv"), true).await;
     let source = open_fixture(
         kasumi_store::test_utils::initialize_custody_fixture(
@@ -589,22 +598,45 @@ async fn replicated_restore_has_identical_genesis_and_requires_quorum_audit_befo
         .backup(context(), backups.as_ref(), uuid::Uuid::new_v4())
         .await
         .unwrap();
+    source.shutdown().await.unwrap();
+    source_audit.shutdown().await.unwrap();
+    source_node.shutdown().await.unwrap();
+    drop(source);
+    drop(source_audit);
+    drop(source_node);
+    drop(backups);
+    source_physical.storage.persistent.pause().unwrap();
     std::fs::remove_dir_all(cold_path).unwrap();
+    source_physical
+        .storage
+        .persistent
+        .reconcile(&kasumi_store::CensusCancellation::default())
+        .unwrap();
+    let backups = Arc::new(
+        kasumi_store::FilesystemBackupDestination::new(
+            root.path().join("source/backups"),
+            16 << 20,
+            source_physical.storage.persistent.clone(),
+        )
+        .unwrap(),
+    );
     let incarnation = uuid::Uuid::new_v4();
     let group = format!("tenant-a/{incarnation}");
     let router = Arc::new(InProcessRouter::default());
     let mut nodes = BTreeMap::new();
     let mut audits = BTreeMap::new();
+    let mut node_owners = BTreeMap::new();
     let mut hashes = BTreeSet::new();
     let mut restored_bootstrap = None;
     for id in 1..=3 {
-        let (node_store, audit) = store(
+        let (node_store, audit, node_owner) = store(
             &physical[&id],
             &root.path().join(format!("restored-{id}/node.kv")),
             true,
         )
         .await;
         audits.insert(id, audit.clone());
+        node_owners.insert(id, node_owner);
         let restored = prepare_replicated_restore(
             &kasumi_engine::RestoreSource {
                 timeout_ms: 300_000,
@@ -695,16 +727,17 @@ async fn replicated_restore_has_identical_genesis_and_requires_quorum_audit_befo
         nodes[&active].mutate(context(), batch()).await.unwrap(),
         receipt
     );
-    shutdown_nodes(&mut nodes, &mut audits, &router, &group).await;
+    shutdown_nodes(&mut nodes, &mut audits, &mut node_owners, &router, &group).await;
     nodes.clear();
     for id in 1..=3 {
-        let (node_store, audit) = store(
+        let (node_store, audit, node_owner) = store(
             &physical[&id],
             &root.path().join(format!("restored-{id}/node.kv")),
             false,
         )
         .await;
         audits.insert(id, audit.clone());
+        node_owners.insert(id, node_owner);
         let db = open_fixture_replicated(
             id,
             kasumi_store::test_utils::open_existing_custody_fixture(
@@ -743,7 +776,5 @@ async fn replicated_restore_has_identical_genesis_and_requires_quorum_audit_befo
             .version,
         receipt.revision
     );
-    shutdown_nodes(&mut nodes, &mut audits, &router, &group).await;
-    source.shutdown().await.unwrap();
-    source_audit.shutdown().await.unwrap();
+    shutdown_nodes(&mut nodes, &mut audits, &mut node_owners, &router, &group).await;
 }

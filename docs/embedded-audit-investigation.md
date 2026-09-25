@@ -1,5 +1,8 @@
 # Embedded request denial audit investigation
 
+Historical investigation: these runs and source observations predate the native
+Kasumi key-value engine. They do not qualify its recovery or release behavior.
+
 Review during the fifth full-size matrix found a concrete contract gap:
 embedded `Database` calls enforced authorization and tenant sealing, but their
 denials did not pass through the server-owned service audit writer. Network

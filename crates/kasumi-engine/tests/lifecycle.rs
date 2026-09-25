@@ -270,9 +270,9 @@ impl Fixture {
                 &self.bootstrap,
                 self.vote_probe.clone(),
                 Config {
-                    election_timeout_min: 100,
-                    election_timeout_max: 180,
-                    heartbeat_interval: 30,
+                    election_timeout_min: 1000,
+                    election_timeout_max: 1600,
+                    heartbeat_interval: 150,
                     ..Config::default()
                 },
                 audit.clone(),
@@ -765,6 +765,8 @@ async fn fresh_control_materialization_requires_exact_retained_original_after_ex
     wrong_source.source_incarnation = Uuid::new_v4();
     assert!(wrong_source.validate().is_err());
     tokio::time::sleep(Duration::from_millis(2100)).await;
+    drop(db);
+    let db = f.leader().await;
     assert!(
         db.observe_lifecycle_intent(f.context("owner"), request.command_id)
             .await
@@ -1022,8 +1024,9 @@ async fn control_completion_audit_reservation_survives_denials_and_current_admin
     let epoch = db.engine().generation().unwrap().state.policy_epoch;
     let change = f.change(epoch);
     let before = db.engine().generation().unwrap();
-    // Initialization checks the installed topology through a strict read and
-    // replays its exact genesis lifecycle installation, both durably audited.
+    // Initialization checks both reserved Control collections through strict
+    // reads and replays its exact genesis lifecycle installation, all durably
+    // audited.
     assert_eq!(
         before
             .state
@@ -1036,6 +1039,7 @@ async fn control_completion_audit_reservation_survives_denials_and_current_admin
             ))
             .collect::<Vec<_>>(),
         vec![
+            ("read", Some("tenant_enrollments"), "authorized_release"),
             ("read", Some("topology"), "authorized_release"),
             ("lifecycle_control", None, "committed"),
         ]

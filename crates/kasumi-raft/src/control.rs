@@ -2,7 +2,7 @@
 //! recovery input, not fresh quorum or administrative release authority.
 use crate::{BasicNode, LogId, RetirementLogSeed, TypeConfig, command::sha256};
 use anyhow::{Context, Result, ensure};
-use kasumi_store::{CustodyStore, TenantStorageSet, TenantStore, WriteOp};
+use kasumi_store::{CustodyStore, TenantStorageReadView, TenantStorageSet, TenantStore, WriteOp};
 use openraft::{Entry, EntryPayload, Membership, StoredMembership, Vote};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::sync::Arc;
@@ -235,6 +235,29 @@ pub struct ControlLog {
     node_id: u64,
 }
 impl ControlLog {
+    /// Read the installed identity from the caller's pinned application and
+    /// custody generation. This returns data only; it does not construct an
+    /// operational ControlLog against a later transaction.
+    pub fn installed_identity_at(view: &TenantStorageReadView) -> Result<Option<(u64, String)>> {
+        let node_id = view
+            .custody_get(META, b"node_id", 32)?
+            .map(|bytes| decode_canonical::<u64>(&bytes))
+            .transpose()?;
+        let group = view
+            .custody_get(META, b"group", 4096)?
+            .map(|bytes| decode_canonical::<String>(&bytes))
+            .transpose()?;
+        match (node_id, group) {
+            (None, None) => Ok(None),
+            (Some(node_id), Some(group)) => {
+                ensure!(node_id > 0, "installed consensus node identity is zero");
+                kasumi_types::validate_name(&group)?;
+                Ok(Some((node_id, group)))
+            }
+            _ => anyhow::bail!("installed consensus identity is incomplete"),
+        }
+    }
+
     pub fn installed(custody: Arc<CustodyStore>) -> Result<Option<Self>> {
         let node_id = load::<u64>(custody.store(), META, b"node_id")?;
         let group = load::<String>(custody.store(), META, b"group")?;

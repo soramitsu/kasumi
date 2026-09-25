@@ -70,6 +70,7 @@ struct Fixture {
     db: Arc<Database>,
     audit: Arc<SecurityAudit>,
     store: Arc<TenantStore>,
+    node: Arc<NodeStore>,
     destination: Arc<FilesystemBackupDestination>,
 }
 impl Fixture {
@@ -86,7 +87,7 @@ impl Fixture {
             .unwrap();
         let audit = common::security_audit(node.clone(), physical.storage.admission.clone()).await;
         let store = TenantStore::initialize_catalog_fixture(
-            node,
+            node.clone(),
             context().tenant,
             Arc::new(LocalKeyProvider::new([0xe1; 32])),
         )
@@ -134,6 +135,7 @@ impl Fixture {
             db,
             audit,
             store,
+            node,
             destination,
         }
     }
@@ -173,6 +175,7 @@ impl Fixture {
     async fn close(self) {
         self.db.shutdown().await.unwrap();
         self.audit.shutdown().await.unwrap();
+        self.node.shutdown().await.unwrap();
     }
 }
 
@@ -213,28 +216,32 @@ async fn actual_retirement_seed_reopens_through_control_domain_without_loading_s
     drop(control);
     fixture.db.shutdown().await.unwrap();
     fixture.audit.shutdown().await.unwrap();
+    fixture.node.shutdown().await.unwrap();
     let Fixture {
         directory,
         physical,
         db,
         audit,
         store,
+        node,
         destination,
     } = fixture;
     drop(db);
     drop(audit);
     drop(store);
+    drop(node);
     drop(destination);
     // The custody opener has no application provider or Database parameter.
     // This observation is recovery input; it is not a fresh Admin proof.
+    let node = physical
+        .storage
+        .open_existing(
+            directory.path().join("node.kv"),
+            kasumi_store::test_utils::NODE_STORE_ID,
+        )
+        .unwrap();
     let custody = kasumi_store::CustodyStore::open(
-        physical
-            .storage
-            .open_existing(
-                directory.path().join("node.kv"),
-                kasumi_store::test_utils::NODE_STORE_ID,
-            )
-            .unwrap(),
+        node.clone(),
         context().tenant,
         Arc::new(LocalKeyProvider::new([241; 32])),
     )
@@ -252,6 +259,7 @@ async fn actual_retirement_seed_reopens_through_control_domain_without_loading_s
         original
     );
     custody.store().shutdown().await.unwrap();
+    node.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -360,17 +368,20 @@ async fn exact_retirement_seals_source_once_and_retains_proof_after_encrypted_re
     let path = fixture.directory.path().join("node.kv");
     fixture.db.shutdown().await.unwrap();
     fixture.audit.shutdown().await.unwrap();
+    fixture.node.shutdown().await.unwrap();
     let Fixture {
         directory,
         physical,
         db,
         audit,
         store,
+        node,
         destination,
     } = fixture;
     drop(db);
     drop(audit);
     drop(store);
+    drop(node);
     drop(destination);
     let node = physical
         .storage
@@ -378,7 +389,7 @@ async fn exact_retirement_seals_source_once_and_retains_proof_after_encrypted_re
         .unwrap();
     let audit =
         common::existing_security_audit(node.clone(), physical.storage.admission.clone()).await;
-    let db = reopen_custody(node, audit.clone()).await;
+    let db = reopen_custody(node.clone(), audit.clone()).await;
     // Permanent recovery does not need backup objects to be read again, and the
     // original action deadline does not expire immutable retirement evidence.
     assert_eq!(
@@ -397,6 +408,7 @@ async fn exact_retirement_seals_source_once_and_retains_proof_after_encrypted_re
     );
     db.shutdown().await.unwrap();
     audit.shutdown().await.unwrap();
+    node.shutdown().await.unwrap();
     drop(directory);
 }
 
@@ -641,7 +653,7 @@ impl kasumi_store::BackupDestination for CountedDestination {
         &self,
         session: uuid::Uuid,
         slot: kasumi_store::BackupSessionSlot,
-        bytes: Vec<u8>,
+        bytes: kasumi_store::BackupUpload,
     ) -> anyhow::Result<()> {
         kasumi_store::BackupDestination::session_put(self.inner.as_ref(), session, slot, bytes)
             .await
@@ -659,7 +671,7 @@ impl kasumi_store::BackupDestination for CountedDestination {
             .await
     }
 
-    async fn put(&self, id: uuid::Uuid, bytes: Vec<u8>) -> anyhow::Result<()> {
+    async fn put(&self, id: uuid::Uuid, bytes: kasumi_store::BackupUpload) -> anyhow::Result<()> {
         kasumi_store::BackupDestination::put(self.inner.as_ref(), id, bytes).await
     }
     async fn get(&self, id: uuid::Uuid, max: usize) -> anyhow::Result<Vec<u8>> {
@@ -801,7 +813,7 @@ impl kasumi_store::BackupDestination for PausedRetirementDestination {
         &self,
         session: uuid::Uuid,
         slot: kasumi_store::BackupSessionSlot,
-        bytes: Vec<u8>,
+        bytes: kasumi_store::BackupUpload,
     ) -> anyhow::Result<()> {
         kasumi_store::BackupDestination::session_put(self.inner.as_ref(), session, slot, bytes)
             .await
@@ -822,7 +834,7 @@ impl kasumi_store::BackupDestination for PausedRetirementDestination {
             .await
     }
 
-    async fn put(&self, id: uuid::Uuid, bytes: Vec<u8>) -> anyhow::Result<()> {
+    async fn put(&self, id: uuid::Uuid, bytes: kasumi_store::BackupUpload) -> anyhow::Result<()> {
         kasumi_store::BackupDestination::put(self.inner.as_ref(), id, bytes).await
     }
     async fn get(&self, id: uuid::Uuid, max: usize) -> anyhow::Result<Vec<u8>> {
@@ -899,17 +911,20 @@ async fn durable_retirement_stop_defeats_inflight_backup_verification_and_surviv
     let path = fixture.directory.path().join("node.kv");
     fixture.db.shutdown().await.unwrap();
     fixture.audit.shutdown().await.unwrap();
+    fixture.node.shutdown().await.unwrap();
     let Fixture {
         directory,
         physical,
         db,
         audit,
         store,
+        node,
         destination,
     } = fixture;
     drop(db);
     drop(audit);
     drop(store);
+    drop(node);
     drop(destination);
     let node = physical
         .storage
@@ -918,7 +933,7 @@ async fn durable_retirement_stop_defeats_inflight_backup_verification_and_surviv
     let audit =
         common::existing_security_audit(node.clone(), physical.storage.admission.clone()).await;
     let store = TenantStore::open_existing_fixture(
-        node,
+        node.clone(),
         context().tenant,
         Arc::new(LocalKeyProvider::new([0xe1; 32])),
     )
@@ -951,6 +966,7 @@ async fn durable_retirement_stop_defeats_inflight_backup_verification_and_surviv
     );
     db.shutdown().await.unwrap();
     audit.shutdown().await.unwrap();
+    node.shutdown().await.unwrap();
     drop(directory);
 }
 

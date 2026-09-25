@@ -2086,29 +2086,29 @@ async fn exercise_route_publication(f: &mut Fixture, db: Arc<Database>, request:
     );
     let expiring = f.context_for("owner", 3_000);
     let expired = Uuid::new_v4();
-    let head = db
-        .recovery_status(f.context("owner"), request.operation_id)
-        .await
-        .unwrap();
-    let pending = db
-        .next_recovery_dispatch(&expiring, request.operation_id, expired)
-        .await
-        .unwrap()
-        .unwrap();
-    let prepared = db
-        .prepare_recovery_dispatch(
-            expiring,
-            request.operation_id,
-            expired,
-            head.record().next_phase_sequence,
-            None,
-            pending,
-        )
-        .await
-        .unwrap();
+    let head = read_recovery_status(f, f.context("owner"), request.operation_id).await;
+    let sequence = head.record().next_phase_sequence;
+    let prior_pending = head.record().pending_phase;
+    let previous_phase = head.record().last_phase;
+    assert_eq!(prior_pending, None);
+    drop(head);
+    let pending =
+        read_next_recovery_dispatch(f, expiring.clone(), request.operation_id, expired).await;
+    let prepared = prepare_exact_recovery_phase(
+        f,
+        expiring,
+        ExactRecoveryPhase {
+            operation: request.operation_id,
+            phase_id: expired,
+            sequence,
+            pending: prior_pending,
+            previous_phase,
+            input: pending,
+        },
+    )
+    .await;
     let original_cutoff = prepared.dispatch_limit().await.unwrap();
     drop(prepared);
-    drop(head);
     let now = kasumi_clock::EpochClock::system()
         .unwrap()
         .observe()
@@ -2157,10 +2157,7 @@ async fn exercise_route_publication(f: &mut Fixture, db: Arc<Database>, request:
         active.topology.tenants["unrelated"],
         topology.tenants["unrelated"]
     );
-    let head = db
-        .recovery_status(f.context("owner"), request.operation_id)
-        .await
-        .unwrap();
+    let head = read_recovery_status(f, f.context("owner"), request.operation_id).await;
     assert_eq!(head.record().phase, RecoveryPhase::Finished);
     assert_eq!(head.record().route_publication, Some(fresh));
     drop(head);

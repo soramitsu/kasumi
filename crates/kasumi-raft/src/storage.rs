@@ -170,14 +170,12 @@ impl LogStore {
         let domains = StorageHandle::new(domains, lease);
         let captured = store.clone();
         let index = tokio::task::spawn_blocking(move || -> Result<BTreeMap<u64, LogId<u64>>> {
-            if let Some(saved) = load::<u64>(&captured, META, b"node_id")? {
-                ensure!(
-                    saved == node_id,
-                    "persisted raft node identity differs from configuration"
-                );
-            } else {
-                captured.write_batch(&[put(META, b"node_id", serde_json::to_vec(&node_id)?)])?;
-            }
+            let saved = load::<u64>(&captured, META, b"node_id")?
+                .context("persisted raft node identity is missing")?;
+            ensure!(
+                saved == node_id,
+                "persisted raft node identity differs from configuration"
+            );
             // Detect malformed keys/entries before handing state to Raft.
             let entries = read_headers(&captured)?;
             for pair in entries.windows(2) {
@@ -231,14 +229,12 @@ impl LogStore {
 
     pub(crate) async fn bind_group(&self, group: String) -> Result<(), StorageError<u64>> {
         self.mutate(move |store| {
-            if let Some(saved) = load::<String>(store, META, b"group")? {
-                ensure!(
-                    saved == group,
-                    "persisted raft group identity differs from configuration"
-                );
-            } else {
-                store.write_batch(&[put(META, b"group", serde_json::to_vec(&group)?)])?;
-            }
+            let saved = load::<String>(store, META, b"group")?
+                .context("persisted raft group identity is missing")?;
+            ensure!(
+                saved == group,
+                "persisted raft group identity differs from configuration"
+            );
             Ok(())
         })
         .await

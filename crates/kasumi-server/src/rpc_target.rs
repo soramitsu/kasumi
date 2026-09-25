@@ -60,7 +60,10 @@ impl kasumi_target_recovery_server::KasumiTargetRecovery for NativeTargetRecover
                 .ok_or_else(|| Status::unauthenticated("original bearer unavailable"))?
                 .to_owned(),
         );
-        let input = decode_json(&request.into_inner().request_json).map_err(status)?;
+        let input: kasumi_types::TargetRuntimeRequest =
+            decode_json(&request.into_inner().request_json).map_err(status)?;
+        #[cfg(test)]
+        let command_id = input.command_id;
         let reply = match self.runtime.execute(context.clone(), bearer, input).await {
             Ok(reply) => {
                 self.auth
@@ -70,6 +73,8 @@ impl kasumi_target_recovery_server::KasumiTargetRecovery for NativeTargetRecover
                 reply
             }
             Err(failure) => {
+                #[cfg(test)]
+                eprintln!("target RPC execution command={command_id} error={failure:#}");
                 let failure = error(failure);
                 let failure = self
                     .auth
@@ -83,10 +88,27 @@ impl kasumi_target_recovery_server::KasumiTargetRecovery for NativeTargetRecover
             response_json: encode_json(&reply.response).map_err(unresolved)?,
         };
         self.auth
-            .audit_result(&context, reply.release().await.map_err(error))
+            .audit_result(
+                &context,
+                reply.release().await.map_err(|failure| {
+                    #[cfg(test)]
+                    eprintln!(
+                        "target RPC audited release command={} error={failure:#}",
+                        reply.response.command_id
+                    );
+                    error(failure)
+                }),
+            )
             .await
             .map_err(unresolved)?;
-        reply.release().await.map_err(unresolved)?;
+        reply.release().await.map_err(|failure| {
+            #[cfg(test)]
+            eprintln!(
+                "target RPC final release command={} error={failure:#}",
+                reply.response.command_id
+            );
+            unresolved(failure)
+        })?;
         context.authorization.check_live().map_err(unresolved)?;
         Ok(Response::new(response))
     }

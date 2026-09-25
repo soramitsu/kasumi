@@ -226,8 +226,26 @@ fn validate_files(directory: &Path, manifest: &Manifest) -> Result<(usize, u64)>
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[tokio::test]
-    async fn relocated_installed_keys_are_copied_and_inventory_detects_corruption() {
+    #[test]
+    fn relocated_installed_keys_are_copied_and_inventory_detects_corruption() {
+        std::thread::Builder::new()
+            .name("standalone key backup fixture".into())
+            .stack_size(16 << 20)
+            .spawn(|| {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap()
+                    .block_on(Box::pin(
+                        relocated_installed_keys_are_copied_and_inventory_detects_corruption_impl(),
+                    ));
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    async fn relocated_installed_keys_are_copied_and_inventory_detects_corruption_impl() {
         let root = kasumi_store::test_utils::private_tempdir().unwrap();
         let (installed, storage) = crate::runtime_storage_fixtures::initialize_standalone(
             &root.path().join("kasumi"),

@@ -27,6 +27,63 @@ pub fn private_tempdir() -> std::io::Result<tempfile::TempDir> {
         .tempdir()
 }
 
+/// A test-only physical fault: publish authenticated rows from both encrypted
+/// domains in one native transaction below TenantStore's write-once facade.
+/// The caller can therefore model an offline replacement of a complete disk
+/// generation, or deliberately tear just one installed identity row.
+pub fn inject_authenticated_rows_below_facade(
+    stores: &crate::TenantStorageSet,
+    application_ops: &[crate::WriteOp],
+    custody_ops: &[crate::WriteOp],
+) -> Result<()> {
+    let tx = stores.application().node.db.begin_write()?;
+    for (store, operations) in [
+        (stores.application(), application_ops),
+        (stores.custody().store(), custody_ops),
+    ] {
+        let state = store.state.read();
+        store.require_access(&state)?;
+        let index = state
+            .keys
+            .get(crate::INDEX_KEY)
+            .ok_or_else(|| anyhow::anyhow!("index key missing"))?;
+        let catalog = store.catalog.read();
+        let mut table = tx.open_table(crate::RECORDS)?;
+        for operation in operations {
+            match operation {
+                crate::WriteOp::Put {
+                    namespace,
+                    key,
+                    value,
+                } => {
+                    let disk_key = crate::record_key(&store.tenant, namespace, key, index);
+                    let data = state
+                        .keys
+                        .get(&catalog.active)
+                        .ok_or_else(|| anyhow::anyhow!("active data key missing"))?;
+                    let plaintext =
+                        Zeroizing::new(crate::encode_plain_record(namespace, key, value)?);
+                    let mut envelope = Vec::new();
+                    crate::append_bytes(&mut envelope, catalog.active.as_bytes())?;
+                    envelope.extend(encrypt(
+                        data,
+                        &plaintext,
+                        &crate::record_aad(&store.tenant, &disk_key),
+                    )?);
+                    table.insert(disk_key.as_slice(), envelope.as_slice())?;
+                }
+                crate::WriteOp::Delete { namespace, key } => {
+                    let disk_key = crate::record_key(&store.tenant, namespace, key, index);
+                    table.remove(disk_key.as_slice())?;
+                }
+            }
+        }
+        store.require_access(&state)?;
+    }
+    tx.commit()?;
+    Ok(())
+}
+
 /// Explicit fixture setup retry. Production and isolated single-attempt disk
 /// constructors never retry; only their typed registry-contention result may
 /// be retried here. Provider errors and filesystem ownership failures remain

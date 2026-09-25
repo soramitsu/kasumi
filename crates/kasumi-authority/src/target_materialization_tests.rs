@@ -635,13 +635,17 @@ async fn actual_target_materialization_preserves_image_and_original_operation_fe
     )
     .await
     .unwrap();
-    assert!(
+    assert_eq!(
         stores
             .custody()
             .store()
             .get("raft.meta", b"node_id")
-            .unwrap()
-            .is_none()
+            .unwrap(),
+        Some(serde_json::to_vec(&1_u64).unwrap())
+    );
+    assert_eq!(
+        stores.custody().store().get("raft.meta", b"group").unwrap(),
+        Some(serde_json::to_vec(&format!("city/{}", f.target.incarnation)).unwrap())
     );
     let proof = f.signers[&1]
         .sign_materialized(&materialized.proof, &operation)
@@ -2244,8 +2248,6 @@ async fn target_file_creation_outcome_distinguishes_original_creation_from_stric
     scope.drain().await;
     journal.shutdown().await.unwrap();
     drop(journal);
-    store.shutdown().await.unwrap();
-    node.shutdown().await.unwrap();
     drop(node);
     f.issuer.close().await;
 }

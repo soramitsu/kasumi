@@ -1,5 +1,8 @@
 //! Immutable authenticated full-backup session control and narrowly scoped GC.
-use crate::{BackupDestination, EncryptedBackup, KeyProvider, StorageAccess, TenantStore};
+use crate::{
+    AdmittedBackupBundle, BackupDestination, BackupUpload, EncryptedBackup, KeyProvider,
+    StorageAccess, TenantStore,
+};
 use anyhow::{Context, Result, ensure};
 use kasumi_types::*;
 use serde::{Deserialize, Serialize};
@@ -101,6 +104,7 @@ pub struct VerifiedBackupSession {
     intent_ciphertext_sha256: String,
     outcome_ciphertext_sha256: Option<String>,
     access: StorageAccess,
+    owner: Arc<TenantStore>,
     source_purpose: crate::StoragePurpose,
     intent_bytes: Vec<u8>,
     key_catalog_sha256: String,
@@ -110,7 +114,8 @@ impl VerifiedBackupSession {
         &self,
         value: &BackupSessionOutcome,
         provider: Arc<dyn KeyProvider>,
-    ) -> Result<Vec<u8>> {
+    ) -> Result<AdmittedBackupBundle> {
+        let owner = self.owner.as_ref();
         value.validate(&self.intent, &self.intent_ciphertext_sha256)?;
         self.access.check()?;
         let bytes = serde_json::to_vec(value)?;
@@ -118,9 +123,10 @@ impl VerifiedBackupSession {
             bytes.len() <= MAX_SESSION_RECORD_BYTES,
             "backup outcome exceeds limit"
         );
-        let original = EncryptedBackup::from_bytes(&self.intent_bytes, MAX_SESSION_RECORD_BYTES)?;
+        let original =
+            EncryptedBackup::from_bytes(&self.intent_bytes, MAX_SESSION_RECORD_BYTES, owner)?;
         original
-            .encrypt_related(&bytes, provider, &self.access)
+            .encrypt_related(&bytes, provider, owner)
             .await?
             .to_bytes()
     }
@@ -158,12 +164,11 @@ impl VerifiedBackupSession {
 }
 async fn decode<T: serde::de::DeserializeOwned>(
     bytes: &[u8],
-    tenant: &str,
+    owner: &TenantStore,
     provider: Arc<dyn KeyProvider>,
-    access: &StorageAccess,
 ) -> Result<(T, crate::StoragePurpose, u64, String)> {
-    let envelope = EncryptedBackup::from_bytes(bytes, MAX_SESSION_RECORD_BYTES)?;
-    let contents = envelope.decrypt(tenant, provider, access).await?;
+    let envelope = EncryptedBackup::from_bytes(bytes, MAX_SESSION_RECORD_BYTES, owner)?;
+    let contents = envelope.decrypt(owner.tenant(), provider, owner).await?;
     Ok((
         serde_json::from_slice(&contents.snapshot)?,
         envelope.source_purpose().clone(),
@@ -174,11 +179,12 @@ async fn decode<T: serde::de::DeserializeOwned>(
 pub async fn verify_backup_session(
     destination: &dyn BackupDestination,
     session: Uuid,
-    tenant: &str,
+    owner: &Arc<TenantStore>,
     provider: Arc<dyn KeyProvider>,
-    access: &StorageAccess,
 ) -> Result<Option<VerifiedBackupSession>> {
-    access.check()?;
+    owner.check_access()?;
+    let tenant = owner.tenant();
+    let access = owner.storage_access();
     let Some(intent_bytes) = destination
         .session_get(
             session,
@@ -190,7 +196,7 @@ pub async fn verify_backup_session(
         return Ok(None);
     };
     let (intent, source_purpose, revision, key_catalog_sha256): (BackupSessionIntent, _, _, _) =
-        decode(&intent_bytes, tenant, provider.clone(), access).await?;
+        decode(&intent_bytes, owner, provider.clone()).await?;
     intent.validate()?;
     ensure!(
         intent.revision == revision,
@@ -211,7 +217,7 @@ pub async fn verify_backup_session(
         .await?;
     let outcome = if let Some(bytes) = &outcome_bytes {
         let (outcome, purpose, revision, outcome_catalog): (BackupSessionOutcome, _, _, _) =
-            decode(bytes, tenant, provider, access).await?;
+            decode(bytes, owner, provider).await?;
         ensure!(
             purpose == source_purpose
                 && revision == intent.revision
@@ -228,6 +234,7 @@ pub async fn verify_backup_session(
         intent,
         outcome,
         access: access.clone(),
+        owner: owner.clone(),
         source_purpose,
         intent_bytes,
         key_catalog_sha256,
@@ -239,19 +246,13 @@ pub async fn verify_backup_session(
 }
 impl TenantStore {
     pub async fn verify_backup_session(
-        &self,
+        self: &Arc<Self>,
         destination: &dyn BackupDestination,
         session: Uuid,
     ) -> Result<Option<VerifiedBackupSession>> {
         self.check_access()?;
-        let result = verify_backup_session(
-            destination,
-            session,
-            self.tenant(),
-            self.provider.clone(),
-            self.storage_access(),
-        )
-        .await?;
+        let result =
+            verify_backup_session(destination, session, self, self.provider.clone()).await?;
         self.check_access()?;
         Ok(result)
     }
@@ -259,8 +260,12 @@ impl TenantStore {
         &self,
         session: &VerifiedBackupSession,
         value: &BackupSessionOutcome,
-    ) -> Result<Vec<u8>> {
+    ) -> Result<AdmittedBackupBundle> {
         self.check_access()?;
+        ensure!(
+            std::ptr::eq(self, session.owner.as_ref()),
+            "backup session differs from installed owner"
+        );
         ensure!(
             session.intent().tenant == self.tenant(),
             "backup session tenant differs"
@@ -271,7 +276,11 @@ impl TenantStore {
         self.check_access()?;
         Ok(bytes)
     }
-    pub fn encrypt_session_record(&self, revision: u64, value: &impl Serialize) -> Result<Vec<u8>> {
+    pub fn encrypt_session_record(
+        &self,
+        revision: u64,
+        value: &impl Serialize,
+    ) -> Result<AdmittedBackupBundle> {
         let bytes = serde_json::to_vec(value)?;
         ensure!(
             bytes.len() <= MAX_SESSION_RECORD_BYTES,
@@ -298,7 +307,7 @@ impl<'a> BackupSessionObjects<'a> {
 }
 #[async_trait::async_trait]
 impl BackupDestination for BackupSessionObjects<'_> {
-    async fn put(&self, id: Uuid, encrypted: Vec<u8>) -> Result<()> {
+    async fn put(&self, id: Uuid, encrypted: BackupUpload) -> Result<()> {
         self.destination
             .session_put(self.session, BackupSessionSlot::Object(id), encrypted)
             .await
@@ -349,7 +358,7 @@ mod tests {
     }
     pub(super) async fn begin(
         destination: &dyn BackupDestination,
-        store: &TenantStore,
+        store: &Arc<TenantStore>,
         keys: Arc<dyn KeyProvider>,
     ) -> VerifiedBackupSession {
         let session = Uuid::new_v4();
@@ -363,20 +372,23 @@ mod tests {
         };
         let bytes = store.encrypt_session_record(7, &intent).unwrap();
         destination
-            .session_put(session, BackupSessionSlot::Intent, bytes.clone())
+            .session_put(
+                session,
+                BackupSessionSlot::Intent,
+                bytes.try_clone().unwrap().into(),
+            )
             .await
             .unwrap();
         assert!(
             destination
-                .session_put(session, BackupSessionSlot::Intent, bytes)
+                .session_put(session, BackupSessionSlot::Intent, bytes.into())
                 .await
                 .is_err()
         );
-        let verified =
-            verify_backup_session(destination, session, "tenant", keys, store.storage_access())
-                .await
-                .unwrap()
-                .unwrap();
+        let verified = verify_backup_session(destination, session, store, keys)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(verified.intent(), &intent);
         assert!(verified.outcome().is_none());
         assert!(verified.aborted().is_err());
@@ -384,7 +396,7 @@ mod tests {
     }
     pub(super) async fn abort(
         destination: &dyn BackupDestination,
-        store: &TenantStore,
+        store: &Arc<TenantStore>,
         keys: Arc<dyn KeyProvider>,
         session: &VerifiedBackupSession,
     ) -> VerifiedBackupAbort {
@@ -398,22 +410,16 @@ mod tests {
             .session_put(
                 session.intent().session_id,
                 BackupSessionSlot::Outcome,
-                store.encrypt_session_record(7, &value).unwrap(),
+                store.encrypt_session_record(7, &value).unwrap().into(),
             )
             .await
             .unwrap();
-        verify_backup_session(
-            destination,
-            session.intent().session_id,
-            "tenant",
-            keys,
-            store.storage_access(),
-        )
-        .await
-        .unwrap()
-        .unwrap()
-        .aborted()
-        .unwrap()
+        verify_backup_session(destination, session.intent().session_id, store, keys)
+            .await
+            .unwrap()
+            .unwrap()
+            .aborted()
+            .unwrap()
     }
     #[tokio::test]
     async fn filesystem_abort_cleanup_is_bounded_repeatable_and_retains_control_and_other_namespaces()
@@ -428,7 +434,10 @@ mod tests {
         let id = session.intent().session_id;
         let shared = Uuid::new_v4();
         destination
-            .put(shared, b"independent audit archive".to_vec())
+            .put(
+                shared,
+                BackupUpload::received(b"independent audit archive".to_vec()),
+            )
             .await
             .unwrap();
         let other = begin(&destination, &store, keys.clone()).await;
@@ -436,7 +445,7 @@ mod tests {
             .session_put(
                 other.intent().session_id,
                 BackupSessionSlot::Object(shared),
-                b"other session".to_vec(),
+                BackupUpload::received(b"other session".to_vec()),
             )
             .await
             .unwrap();
@@ -445,7 +454,7 @@ mod tests {
                 .session_put(
                     id,
                     BackupSessionSlot::Object(Uuid::from_u128(object)),
-                    vec![42],
+                    BackupUpload::received(vec![42]),
                 )
                 .await
                 .unwrap();
@@ -496,7 +505,11 @@ mod tests {
             .unwrap();
         // An already-admitted upload can publish after the first cleanup pass.
         destination
-            .session_put(id, BackupSessionSlot::Object(late_id), vec![99])
+            .session_put(
+                id,
+                BackupSessionSlot::Object(late_id),
+                BackupUpload::received(vec![99]),
+            )
             .await
             .unwrap();
         let tail = destination.session_objects(&proof, 256).await.unwrap();
@@ -507,7 +520,11 @@ mod tests {
             .await
             .unwrap();
         destination
-            .session_put(id, BackupSessionSlot::Object(late_id), vec![88])
+            .session_put(
+                id,
+                BackupSessionSlot::Object(late_id),
+                BackupUpload::received(vec![88]),
+            )
             .await
             .unwrap();
         let late = destination.session_objects(&proof, 256).await.unwrap();
@@ -533,7 +550,7 @@ mod tests {
         );
         assert!(destination.session_objects(&proof, 257).await.is_err());
         assert!(
-            verify_backup_session(&destination, id, "tenant", keys, store.storage_access())
+            verify_backup_session(&destination, id, &store, keys)
                 .await
                 .unwrap()
                 .unwrap()
@@ -594,20 +611,14 @@ mod tests {
             .session_put(
                 id,
                 BackupSessionSlot::Outcome,
-                store.encrypt_session_record(7, &complete).unwrap(),
+                store.encrypt_session_record(7, &complete).unwrap().into(),
             )
             .await
             .unwrap();
-        let verified = verify_backup_session(
-            &destination,
-            id,
-            "tenant",
-            keys.clone(),
-            store.storage_access(),
-        )
-        .await
-        .unwrap()
-        .unwrap();
+        let verified = verify_backup_session(&destination, id, &store, keys.clone())
+            .await
+            .unwrap()
+            .unwrap();
         assert!(verified.aborted().is_err());
         let abort = BackupSessionOutcome::Aborted {
             intent_ciphertext_sha256: session.intent_ciphertext_sha256().into(),
@@ -620,7 +631,7 @@ mod tests {
                 .session_put(
                     id,
                     BackupSessionSlot::Outcome,
-                    store.encrypt_session_record(7, &abort).unwrap()
+                    store.encrypt_session_record(7, &abort).unwrap().into()
                 )
                 .await
                 .is_err()
@@ -632,7 +643,7 @@ mod tests {
             .session_put(
                 proof.session_id(),
                 BackupSessionSlot::Object(object),
-                vec![1],
+                BackupUpload::received(vec![1]),
             )
             .await
             .unwrap();
@@ -652,15 +663,9 @@ mod tests {
                 .is_err()
         );
         assert!(
-            verify_backup_session(
-                &destination,
-                proof.session_id(),
-                "tenant",
-                keys,
-                store.storage_access()
-            )
-            .await
-            .is_err()
+            verify_backup_session(&destination, proof.session_id(), &store, keys)
+                .await
+                .is_err()
         );
         // Out-of-band extent corruption fences the entire physical owner;
         // another object cannot escape through a still-retained destination.
@@ -695,7 +700,11 @@ mod tests {
                 let id = session.intent().session_id;
                 let object = Uuid::new_v4();
                 destination
-                    .session_put(id, BackupSessionSlot::Object(object), vec![42])
+                    .session_put(
+                        id,
+                        BackupSessionSlot::Object(object),
+                        BackupUpload::received(vec![42]),
+                    )
                     .await
                     .unwrap();
                 let outcome = if complete {
@@ -732,7 +741,11 @@ mod tests {
                 let bytes = store.encrypt_session_record(7, &outcome).unwrap();
                 assert!(
                     destination
-                        .session_put(id, BackupSessionSlot::Outcome, bytes.clone())
+                        .session_put(
+                            id,
+                            BackupSessionSlot::Outcome,
+                            bytes.try_clone().unwrap().into(),
+                        )
                         .await
                         .is_err()
                 );
@@ -747,30 +760,18 @@ mod tests {
                 assert_eq!(std::fs::metadata(&published).unwrap().len(), reserve_length);
                 assert_eq!(
                     filesystem::test_sync::decode_outcome(&physical, id, bytes.len()).unwrap(),
-                    bytes
+                    bytes.as_bytes()
                 );
                 assert!(
-                    verify_backup_session(
-                        &destination,
-                        id,
-                        "tenant",
-                        keys.clone(),
-                        store.storage_access(),
-                    )
-                    .await
-                    .is_err()
+                    verify_backup_session(&destination, id, &store, keys.clone())
+                        .await
+                        .is_err()
                 );
                 drop(fault);
-                let verified = verify_backup_session(
-                    &destination,
-                    id,
-                    "tenant",
-                    keys.clone(),
-                    store.storage_access(),
-                )
-                .await
-                .unwrap()
-                .unwrap();
+                let verified = verify_backup_session(&destination, id, &store, keys.clone())
+                    .await
+                    .unwrap()
+                    .unwrap();
                 assert_eq!(verified.outcome(), Some(&outcome));
                 assert_eq!(std::fs::read(&published).unwrap(), physical);
                 assert_eq!(
@@ -831,7 +832,11 @@ mod tests {
             let fault = fail(&directory, &name, &[Point::PublishDirectory, point]).unwrap();
             assert!(
                 destination
-                    .session_put(id, BackupSessionSlot::Object(id), vec![41])
+                    .session_put(
+                        id,
+                        BackupSessionSlot::Object(id),
+                        BackupUpload::received(vec![41]),
+                    )
                     .await
                     .is_err()
             );
@@ -888,7 +893,7 @@ mod tests {
                 .session_put(
                     proof.session_id(),
                     BackupSessionSlot::Object(object),
-                    vec![0]
+                    BackupUpload::received(vec![0])
                 )
                 .await
                 .is_err()
@@ -939,12 +944,26 @@ mod tests {
             .session_put(
                 id,
                 BackupSessionSlot::Intent,
-                store.encrypt_session_record(7, &intent).unwrap(),
+                store.encrypt_session_record(7, &intent).unwrap().into(),
             )
             .await
             .unwrap();
         let target = StorageAccess::standalone(installation, "tenant", Uuid::new_v4()).unwrap();
-        let session = verify_backup_session(&destination, id, "tenant", keys.clone(), &target)
+        let target_store = TenantStore::initialize_catalog_fixture_with_access(
+            NodeStore::create_new_fixture(
+                dir.path().join("target"),
+                crate::test_utils::NODE_STORE_ID,
+                fixture_memory.clone(),
+                fixture_scratch.clone(),
+            )
+            .unwrap(),
+            "tenant".into(),
+            keys.clone(),
+            target.clone(),
+        )
+        .await
+        .unwrap();
+        let session = verify_backup_session(&destination, id, &target_store, keys.clone())
             .await
             .unwrap()
             .unwrap();
@@ -956,6 +975,13 @@ mod tests {
             principal: "admin".into(),
             reason: "historical cleanup".into(),
         };
+        assert!(
+            store
+                .encrypt_backup_session_outcome(&session, &outcome)
+                .await
+                .is_err(),
+            "a verified session cannot be resumed under a different store owner"
+        );
         destination
             .session_put(
                 id,
@@ -963,11 +989,12 @@ mod tests {
                 session
                     .encrypt_outcome(&outcome, keys.clone())
                     .await
-                    .unwrap(),
+                    .unwrap()
+                    .into(),
             )
             .await
             .unwrap();
-        let verified = verify_backup_session(&destination, id, "tenant", keys.clone(), &target)
+        let verified = verify_backup_session(&destination, id, &target_store, keys.clone())
             .await
             .unwrap()
             .unwrap();
@@ -982,12 +1009,12 @@ mod tests {
             .session_put(
                 wrong.session_id,
                 BackupSessionSlot::Intent,
-                store.encrypt_session_record(7, &wrong).unwrap(),
+                store.encrypt_session_record(7, &wrong).unwrap().into(),
             )
             .await
             .unwrap();
         assert!(
-            verify_backup_session(&destination, wrong.session_id, "tenant", keys, &target)
+            verify_backup_session(&destination, wrong.session_id, &target_store, keys)
                 .await
                 .is_err()
         );

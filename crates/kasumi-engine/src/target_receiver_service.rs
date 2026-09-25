@@ -390,9 +390,22 @@ impl Database {
         request: Request,
     ) -> Result<VerifiedTargetReceiver> {
         self.target_phase_access(operation, request.phase())?;
+        #[cfg(test)]
+        let command_id = operation
+            .invocation()
+            .gate()
+            .current()
+            .ok()
+            .map(|lease| lease.commitment().intent.request.command_id);
         // Re-observing a positively present permanent fact consumes no new hot
         // audit record and remains possible at the retained hot budget ceiling.
-        if self.receiver_fact(operation, &request)?.is_none() {
+        let initial = self.receiver_fact(operation, &request)?;
+        #[cfg(test)]
+        eprintln!(
+            "target receiver command={command_id:?} initial_fact_present={}",
+            initial.is_some()
+        );
+        if initial.is_none() {
             let worker = Proposal {
                 database: self.clone(),
                 operation: operation.clone(),
@@ -404,15 +417,23 @@ impl Database {
                 _registration: self.work.begin(operation.token.clone())?,
             };
             let task = tokio::spawn(worker.run());
-            operation
-                .run(async { task.await? })
-                .await
-                .map_err(unknown)??;
+            let proposed = operation.run(async { task.await? }).await;
+            #[cfg(test)]
+            if let Err(failure) = &proposed {
+                eprintln!(
+                    "target receiver command={command_id:?} stage=proposal_join error={failure:#}"
+                );
+            }
+            proposed.map_err(unknown)??;
         }
-        let proof = self
-            .receiver_observation(operation, request)
-            .await
-            .map_err(unknown)?;
+        let observed = self.receiver_observation(operation, request).await;
+        #[cfg(test)]
+        if let Err(failure) = &observed {
+            eprintln!(
+                "target receiver command={command_id:?} stage=quorum_observation error={failure:#}"
+            );
+        }
+        let proof = observed.map_err(unknown)?;
         proof.release(operation).await?;
         Ok(proof)
     }
@@ -476,29 +497,68 @@ struct Proposal {
 }
 impl Proposal {
     async fn run(self) -> anyhow::Result<Result<()>> {
-        let _guard = self
+        #[cfg(test)]
+        let command_id = self
             .operation
-            .run(async { Ok(self.database.proposal_gate.clone().lock_owned().await) })
-            .await?;
-        self.database
-            .target_phase_access(&self.operation, self.request.phase())?;
-        let now = self.operation.invocation().gate().admission_time_ms()?;
-        let authorization =
+            .invocation()
+            .gate()
+            .current()
+            .ok()
+            .map(|lease| lease.commitment().intent.request.command_id);
+        macro_rules! stage {
+            ($name:literal, $result:expr) => {{
+                let result = $result;
+                #[cfg(test)]
+                if let Err(failure) = &result {
+                    eprintln!(
+                        "target receiver command={command_id:?} stage={} error={failure:#}",
+                        $name
+                    );
+                }
+                result?
+            }};
+        }
+        let _guard = stage!(
+            "proposal_gate",
             self.operation
-                .prepare(self.request.phase(), &self.request.digest()?, now)?;
-        let bytes = self
-            .database
-            .group
-            .write(self.request.command(authorization)?.encode()?)
-            .await?;
-        let outcome = serde_json::from_slice::<Result<TargetOutcome>>(&bytes)?;
+                .run(async { Ok(self.database.proposal_gate.clone().lock_owned().await) })
+                .await
+        );
+        stage!(
+            "phase_access",
+            self.database
+                .target_phase_access(&self.operation, self.request.phase())
+        );
+        let now = stage!(
+            "admission_time",
+            self.operation.invocation().gate().admission_time_ms()
+        );
+        let digest = stage!("input_digest", self.request.digest());
+        let authorization = stage!(
+            "prepare",
+            self.operation.prepare(self.request.phase(), &digest, now)
+        );
+        let command = stage!("command", self.request.command(authorization));
+        let encoded = stage!("encode", command.encode());
+        let bytes = stage!("group_write", self.database.group.write(encoded).await);
+        let outcome = stage!(
+            "decode",
+            serde_json::from_slice::<Result<TargetOutcome>>(&bytes)
+        );
         match (&self.request, outcome) {
             (Request::Prepare(_), Ok(TargetOutcome::Prepared(_)))
             | (Request::Resolve(_), Ok(TargetOutcome::Resolved(_)))
             | (Request::Budget(_), Ok(TargetOutcome::Budget(_))) => {
-                self.database
-                    .target_phase_access(&self.operation, self.request.phase())
-                    .map_err(unknown)?;
+                let checked = self
+                    .database
+                    .target_phase_access(&self.operation, self.request.phase());
+                #[cfg(test)]
+                if let Err(failure) = &checked {
+                    eprintln!(
+                        "target receiver command={command_id:?} stage=post_write_phase_access error={failure:#}"
+                    );
+                }
+                checked.map_err(unknown)?;
                 Ok(Ok(()))
             }
             (_, Err(error)) => Ok(Err(error)),

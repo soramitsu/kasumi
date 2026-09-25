@@ -233,6 +233,10 @@ async fn materialize_origin(
         voters,
     };
     bootstrap.validate()?;
+    let identity = kasumi_raft::initial_storage_identity(
+        replica.node_id,
+        &format!("{}/{}", target.tenant(), bootstrap.incarnation),
+    )?;
     let restored = operation
         .run(verified.into_genesis(
             operation.deadline,
@@ -268,12 +272,19 @@ async fn materialize_origin(
                 {
                     verify_persisted_digest(&stores, &expected)?;
                 } else {
-                    persist_target(&stores, &bytes, &authorization)?;
+                    persist_target(&stores, &bytes, &identity, &authorization)?;
                 }
                 authorization.check()
             },
         ))
         .await?;
+    let installed = kasumi_raft::ControlLog::installed(targets.custody().clone())?
+        .ok_or_else(|| anyhow::anyhow!("target consensus identity is missing"))?;
+    anyhow::ensure!(
+        installed.node_id() == replica.node_id
+            && installed.group() == format!("{}/{}", target.tenant(), bootstrap.incarnation),
+        "target consensus identity differs from its materialization"
+    );
     let proof = VerifiedTargetMaterialization {
         stores: targets.clone(),
         fact: TargetMaterializationFact {
@@ -312,6 +323,7 @@ impl TargetPublication {
 fn persist_target(
     stores: &TenantStorageSet,
     bytes: &SnapshotImage,
+    identity: &[WriteOp; 2],
     authorization: &TargetPublication,
 ) -> anyhow::Result<()> {
     authorization.check()?;
@@ -344,17 +356,22 @@ fn persist_target(
         digest: bytes.sha256().to_owned(),
     };
     authorization.check()?;
+    let custody_ops = [
+        WriteOp::put(
+            "raft.meta",
+            b"application_bootstrap_sha256",
+            serde_json::to_vec(&manifest.digest)?,
+        ),
+        identity[0].clone(),
+        identity[1].clone(),
+    ];
     stores.write_batch(
         &[WriteOp::put(
             NS,
             b"manifest",
             serde_json::to_vec(&manifest)?,
         )],
-        &[WriteOp::put(
-            "raft.meta",
-            b"application_bootstrap_sha256",
-            serde_json::to_vec(&manifest.digest)?,
-        )],
+        &custody_ops,
     )?;
     authorization.check()
 }

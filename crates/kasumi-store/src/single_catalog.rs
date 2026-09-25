@@ -216,7 +216,9 @@ async fn prepare(input: Input, receiver: &oneshot::Sender<Ticket>) -> Result<Pre
                 "catalog initialization conflicts with a live owner"
             );
             require_pristine(&node, &tenant)?;
-            TenantStore::generate_catalog(&tenant, &provider, &access).await?
+            TenantStore::generate_catalog(&tenant, &provider, &access)
+                .await?
+                .into()
         }
         Mode::Existing => {
             let catalog = node
@@ -309,32 +311,12 @@ async fn prepare(input: Input, receiver: &oneshot::Sender<Ticket>) -> Result<Pre
 }
 
 fn require_pristine(node: &NodeStore, tenant: &str) -> Result<()> {
-    let tx = node.db.begin_read()?;
-    let hash = tenant_hash(tenant);
-    ensure!(
-        tx.open_table(CATALOG)?.get(hash.as_slice())?.is_none(),
-        "catalog already initialized"
-    );
-    if let Some(row) = tx.open_table(RECORDS)?.range(hash.as_slice()..)?.next() {
+    #[cfg(any(test, feature = "test-utils"))]
+    if node.db.has_fixture_direct_database() {
+        let tx = node.db.begin_read()?;
+        let hash = tenant_hash(tenant);
         ensure!(
-            !row?.0.value().starts_with(&hash),
-            "new catalog has orphan physical rows"
-        );
-    }
-    Ok(())
-}
-
-fn save_new_catalog(store: &TenantStore) -> Result<()> {
-    store.access.check()?;
-    let catalog = store.catalog.read();
-    catalog.validate(store.tenant())?;
-    let bytes = serde_json::to_vec(&*catalog)?;
-    let hash = tenant_hash(store.tenant());
-    let tx = store.node.db.begin_write()?;
-    {
-        let mut catalogs = tx.open_table(CATALOG)?;
-        ensure!(
-            catalogs.get(hash.as_slice())?.is_none(),
+            tx.open_table(CATALOG)?.get(hash.as_slice())?.is_none(),
             "catalog already initialized"
         );
         if let Some(row) = tx.open_table(RECORDS)?.range(hash.as_slice()..)?.next() {
@@ -343,11 +325,81 @@ fn save_new_catalog(store: &TenantStore) -> Result<()> {
                 "new catalog has orphan physical rows"
             );
         }
-        catalogs.insert(hash.as_slice(), bytes.as_slice())?;
+        return Ok(());
     }
+    let hash = tenant_hash(tenant);
+    node.with_registered_read(|reader| {
+        ensure!(!reader.catalog_exists(hash)?, "catalog already initialized");
+        ensure!(
+            !reader.record_prefix_exists(&hash)?,
+            "new catalog has orphan physical rows"
+        );
+        Ok(())
+    })
+}
+
+fn save_new_catalog(store: &TenantStore) -> Result<()> {
     store.access.check()?;
-    tx.commit()
-        .context("singleton catalog initialization outcome may be unknown")?;
+    let catalog = store.catalog.read();
+    catalog.validate(store.tenant())?;
+    #[cfg(any(test, feature = "test-utils"))]
+    if store.node.db.has_fixture_direct_database() {
+        let bytes = serde_json::to_vec(&*catalog)?;
+        let hash = tenant_hash(store.tenant());
+        let tx = store.node.db.begin_write()?;
+        {
+            let mut catalogs = tx.open_table(CATALOG)?;
+            ensure!(
+                catalogs.get(hash.as_slice())?.is_none(),
+                "catalog already initialized"
+            );
+            if let Some(row) = tx.open_table(RECORDS)?.range(hash.as_slice()..)?.next() {
+                ensure!(
+                    !row?.0.value().starts_with(&hash),
+                    "new catalog has orphan physical rows"
+                );
+            }
+            catalogs.insert(hash.as_slice(), bytes.as_slice())?;
+        }
+        store.access.check()?;
+        tx.commit()
+            .context("singleton catalog initialization outcome may be unknown")?;
+        return store.access.check();
+    }
+
+    let provider = store.node.persistent_disk().memory().clone();
+    let plan = crate::storage_opening::write_plan::AdmittedCatalogPut::prepare_fresh(
+        store.tenant(),
+        &catalog,
+        provider.clone(),
+    )?;
+    drop(catalog);
+    store.access.check()?;
+    let writer = store.node.db.queue_registered_catalog_put(plan)?;
+    let _ = writer.run();
+    let (committed, rejection) = {
+        let report = writer.report();
+        (
+            report.committed_and_disposed(),
+            report.clean_freshness_rejection(),
+        )
+    };
+    if !committed && rejection.is_none() {
+        return Err(NodeCatalogWriteFailure { writer }.into());
+    }
+    let id = writer.id();
+    let disposition = writer.retire();
+    if disposition != StorageCensusDisposition::Retired {
+        return Err(NodeCatalogWriteRetirement {
+            provider,
+            id,
+            disposition,
+        }
+        .into());
+    }
+    if let Some(message) = rejection {
+        anyhow::bail!(message);
+    }
     store.access.check()
 }
 

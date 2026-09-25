@@ -180,10 +180,13 @@ async fn every_embedded_request_boundary_durably_audits_denials_and_sealed_tenan
         .storage
         .open_existing(&path, kasumi_store::test_utils::NODE_STORE_ID)
         .unwrap();
-    let service =
-        TenantStore::open_existing_fixture(reopened.clone(), SECURITY_TENANT.into(), service_provider)
-            .await
-            .unwrap();
+    let service = TenantStore::open_existing_fixture(
+        reopened.clone(),
+        SECURITY_TENANT.into(),
+        service_provider,
+    )
+    .await
+    .unwrap();
     assert_eq!(service.scan("security.audit").unwrap().len(), 12);
     service.shutdown().await.unwrap();
     reopened.shutdown().await.unwrap();
@@ -250,10 +253,13 @@ fn cancelled_embedded_denial_writer_is_drained_before_shutdown_and_reopen() {
             .storage
             .open_existing(&path, kasumi_store::test_utils::NODE_STORE_ID)
             .unwrap();
-        let service =
-            TenantStore::open_existing_fixture(reopened.clone(), SECURITY_TENANT.into(), service_provider)
-                .await
-                .unwrap();
+        let service = TenantStore::open_existing_fixture(
+            reopened.clone(),
+            SECURITY_TENANT.into(),
+            service_provider,
+        )
+        .await
+        .unwrap();
         assert_eq!(service.scan("security.audit").unwrap().len(), 1);
         service.shutdown().await.unwrap();
         reopened.shutdown().await.unwrap();
@@ -451,9 +457,10 @@ async fn standalone_restore_denials_are_audited_before_a_database_exists() {
         .storage
         .open_existing(&target_path, kasumi_store::test_utils::NODE_STORE_ID)
         .unwrap();
-    let service = TenantStore::open_existing_fixture(reopened.clone(), SECURITY_TENANT.into(), service_key)
-        .await
-        .unwrap();
+    let service =
+        TenantStore::open_existing_fixture(reopened.clone(), SECURITY_TENANT.into(), service_key)
+            .await
+            .unwrap();
     assert_eq!(service.scan("security.audit").unwrap().len(), 3);
     service.shutdown().await.unwrap();
     reopened.shutdown().await.unwrap();

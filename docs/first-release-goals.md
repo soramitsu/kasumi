@@ -135,7 +135,10 @@ held because it would skip semantic validation; current-writer adversarial
 probes confirm five such invalid inputs. A source-pinned audit confirms that
 the fingerprint, engine open and registration still observe paired rows,
 manifest and chunks in separate snapshots; atomic identity and write-once
-enforcement remain open. The older structural-preparse candidate remains
+enforcement remain open. A target-only write-once prototype passes static
+store-facade review but is held for cross-crate adversarial fixture migration,
+large-retry installed-memory proof and current-source validation; it does not
+close the engine/server snapshot gap. The older structural-preparse candidate remains
 held, while the newer production scanner is an applied prerequisite, not G01
 completion.
 The production `NodeStore` registered-opening cutover is applied and independently
@@ -145,11 +148,32 @@ cases on an unchanged source checkpoint. A reviewed strict-create native-file
 cutover removes the EEXIST adoption fallback and obsolete ambiguous `open` API.
 The combined applied store library then passes 434 runnable cases, with one
 shared-checkout test-file change during validation, so it is not a final gate.
+The later applied standalone native-file cut removes path-based
+`FileBackend::open_existing` and its obsolete identity type; the live native
+KV suite passes 45 unit and seven crash/recovery cases on unchanged selected
+source, with strict KV Clippy and formatting. A further reviewed cut removes
+the remaining public `FileBackend` and raw-file `Builder` convenience APIs,
+leaving only a private native-KV unit fixture; its applied-source native KV
+suite passes 45 unit and seven crash/recovery cases. The store's private raw
+format fixture is migrated to an observed one-shot close and 21 focused
+node-file cases pass. Exact namespace custody for embedding backends remains
+open.
 Other production raw transaction children, typed catalog allocation accounting,
-uncharged plaintext returned by tenant reads, and named existing-file identity
+uncharged plaintext returned by tenant reads, and embedding namespace custody
 remain open. A source-pinned breaking admitted-value design maps the affected
 production callers; a narrower point-read candidate is held after review for
-full-maximum reservation before missing or tiny reads. A later combined workspace
+full-maximum reservation before missing or tiny reads. Its target-only revision
+charges actual present ciphertext length after the native lookup, with focused
+missing/empty, low-headroom and maximum-value checks, but still duplicates the
+native ciphertext charge. The independently reviewed native-lease-only
+successor is applied: the serial store library passes 440 cases (two ignored)
+on unchanged selected source, as do strict store Clippy, formatting and the
+no-default-features check. Its registered reader and exact native ciphertext
+lease cover point-read acquisition without duplicate outer reservation. An
+AEAD source audit confirms the existing decrypt
+and parser allocate additional plaintext-sized buffers; the proposed admitted
+zeroizing output owner and caller migration are not implemented. Full G02
+resident accounting remains open. A later combined workspace
 all-target/all-feature check passes on its unchanged pinned source; source-bound
 logs and reviews are in the integration evidence ledger. Every G01–G14 goal
 remains open.
@@ -395,6 +419,51 @@ final-source integration and release acceptance remain open. The
 [integration evidence](evidence/installed-disk-integration-20260923/README.md)
 binds this result to its source and log.
 
+The later target-only pinned-view/write-once composition is **HOLD** for
+application (`target/g01-composed-opened-write-once/README.md`). Its focused
+same-snapshot/opened-identity checks pass, but independent review found that
+whole-namespace replacement bypasses its protected-row `WriteOp` guard; Raft
+node/group rows can also change before operational reopen. The exact candidate,
+failed supplementary three-node run and concurrent source drift remain
+preserved. A first-release successor must close both mutation paths before
+this composition can be applied or counted toward G01.
+
+The successor atomic Raft-identity guard is now applied on this `master`
+checkout from `target/g01-raft-identity-guard/candidate.patch` (SHA-256
+`504108086b74707199a597863ca7977cefdcd4efebabd57fcff2d350defb50f9`).
+All 20 observed preimages and applied postimages matched its frozen manifest,
+and an independent target-only replay produced the same postimages. Initial
+manifest/digest publication now includes node/group in one native transaction;
+ordinary identity-row writes, deletes and protected namespace replacement
+cannot reopen the old mutation path. Raft open requires the installed pair
+instead of filling missing rows. This is a narrow implementation prerequisite,
+not G01 acceptance: offline physical generation faults, transport/readiness
+interleavings and G02's registered read-view and plaintext custody remain open.
+The applied authenticated physical-generation fixture now proves pinned A,
+fresh B and full-close reopen behavior, plus one-sided fault rejection, on a
+source-pinned **11/11** engine module and **1/1** store case. It uses test-only
+below-facade writes while the node is open; at that checkpoint,
+stopped-process raw-file substitution, power-loss and coherent rollback
+proofs remained. Its exact
+receipt is in the [integration evidence](evidence/installed-disk-integration-20260923/README.md).
+
+A later stopped-process raw-file fixture is applied and passes **1/1**. It
+proves a coherent older `node.kv` can be restored after all Kasumi processes
+exit and reopened as A, even after B was installed and served. Supplying B as
+the expected incarnation rejects A; the file alone supplies no fact that B
+ever existed. Exact source pins and the trust-model analysis are in the
+[integration evidence](evidence/installed-disk-integration-20260923/README.md).
+The user's interpretation of offline rollback protection versus trusted
+installation storage is pending; G01 is open either way.
+
+The related Control-genesis fixture is corrected on `master`: it verifies the
+new atomic Raft identity and checks that a rejected reopen changes none of
+the Raft namespaces. After fixing two compile boundaries and one strict
+Clippy warning in concurrent Control-enrollment source, the pinned applied
+bootstrap module passes **25/25**, strict engine Clippy and formatting pass,
+and the new enrollment case passes **1/1**. Exact failed attempts and source
+pins are in the [integration evidence](evidence/installed-disk-integration-20260923/README.md).
+
 ### G02 — Physical ownership and native Kasumi KV engine
 
 The active G02 target is the [native KV engine goal](native-kv-goal.md):
@@ -404,6 +473,167 @@ cut over and redb removed. The first release rejects older physical formats;
 no migration, fallback reader or dual writer is permitted. Focused, complete
 and final native-source qualification remain open. The redb records below are
 preserved only as historical development evidence, not current G02 criteria.
+
+The reviewed G02 registered-read adoption is applied on `master` for
+installed-node paired, catalog, tenant-scan and long-lived view reads. Its
+applied-source KV suite passes **49 unit and seven crash/recovery** cases, the
+serial store library **462** runnable cases with two ignored, and the
+replicated engine reopen module **11/11**. Exact application, one-line
+post-application import drift, source pins and the unrelated workspace-format
+failure are retained in the [integration evidence](evidence/installed-disk-integration-20260923/README.md).
+The later long-lived view fix keeps the exact registered reader and native
+failure report inspectable after the view drops. Both applied focused tests
+pass; the stable combined store suite passes **470** with two ignored. Other
+production raw write/scratch transactions still lack registered child custody,
+and plaintext output ownership keeps G02 open.
+
+The registered production catalog-write child is also applied on `master`.
+The serialized catalog is admitted before a native transaction begins, and its
+write child retains exact commit, abort and disposal custody. Applied-source
+focused cases pass **3/3**, the serial store library **465** with two ignored,
+and strict store Clippy, package formatting and no-default-features check pass.
+Its exact application and source-bound receipt are in the
+[integration evidence](evidence/installed-disk-integration-20260923/README.md).
+Other raw writes, scratch transactions, typed catalog allocation and plaintext
+outputs remain G02 work.
+
+The typed catalog read/open cut now bounds the key map before decoding and
+retains an installed-memory lease for the decoded catalog. Its stable applied
+store suite passes **470** with two ignored, native KV **50 unit and seven
+crash/recovery** tests, and strict store Clippy, formatting and no-default
+check. The exact source-bound receipts are in the
+[integration evidence](evidence/installed-disk-integration-20260923/README.md).
+At that checkpoint catalog clones during lease refresh and later catalog
+growth remained uncharged; the read/open cut alone was not G02 acceptance.
+
+The installed missing-binding path now admits its serialized and encrypted
+buffers and uses a registered one-shot native writer. Four applied controls
+pass for success, pre-effect denial and exact terminal/report custody. Together
+with the later key-only native delete prerequisite, the current selected
+store/KV source passes **474** serial store tests with two ignored, **54**
+native KV unit and seven crash/recovery tests, strict KV/store Clippy,
+no-default-features checks and workspace formatting. Exact application and
+source pins are in the [integration evidence](evidence/installed-disk-integration-20260923/README.md).
+Other raw writes, scratch ownership and plaintext output remain G02 work.
+The first replicated engine integration check on this source failed **2/3**
+cases at the new binding writer during custody installation; the exact log is
+retained in the integration evidence. Its original report proved a successful
+native commit with disposal unentered after transient opening-lock contention.
+The four-file settled-disposal repair now passes the same serial replicated
+suite **3/3** on applied `master`. The production store delete caller and
+charged refresh/rotation/rewrap catalog clones are also applied. On their
+combined stable source, the serial store suite passes **479** with two ignored;
+strict KV/store Clippy, no-default library checks and formatting pass. The
+exact patches, negative controls, independent reviews and source-bound receipt
+are in the [integration evidence](evidence/installed-disk-integration-20260923/README.md).
+G02/G03 remain **HOLD** for the other raw and scratch ownership paths,
+plaintext/provider/backup allocations, generation reclaim and release gates.
+The later admitted direct-backup catalog clone is applied. Its full serial store
+library passes **480** runnable cases with two ignored, with strict KV/store
+Clippy, no-default checks and formatting. A serial engine backup-checkpoint
+run fails **1/12** at a post-reopen memory assertion by 253,104 bytes; the
+failed log and candidate hashes are in the integration evidence. The reopened
+catalog charge lifecycle is being diagnosed before changing the assertion.
+G02 and engine qualification remain open.
+The exact charge diagnostic attributes 253,104 bytes to two retained catalog
+leases, including their provider overhead, and proves both release after the
+reopened owners drop. A test-only accounting correction is applied; the focused
+restore case passes **1/1** and full serial engine backup/replicated suites
+pass **12/12** and **3/3**. The old failed run remains preserved. Full G02
+ownership and final-source release qualification remain open. Strict
+all-target/all-feature engine Clippy also passes on the corrected source;
+the integration evidence pins every selected source and log hash.
+The later exact-owner parsed-manifest and registered singleton-catalog writer
+cuts are applied together. Their combined selected source passes **483** serial
+store cases with two ignored, **12/12** engine backup checkpoint, **3/3**
+replicated engine and **1/1** chunked history restore. Strict KV/store/engine
+Clippy, no-default library checks, formatting and diff checks pass with no
+drift across 18 selected source files. The source-bound receipt is in the
+[integration evidence](evidence/installed-disk-integration-20260923/README.md).
+Ciphertext and canonical backup buffers, other raw/scratch writers, plaintext
+output ownership and G03 physical reclaim remain open; no release gate closes.
+The next parsed-ciphertext copy cut is applied and passes two focused
+applied-source cases plus a full workspace type check. Its isolated 46-case
+backup suite, history restore and strict checks pass, with exact patch and
+logs in the integration evidence. Caller input, canonical header/output,
+direct encryption and provider/plaintext buffers still need installed
+ownership. The later combined applied-source checkpoint is recorded below.
+The exact-owner paired catalog create writer is now applied on `master`. It
+registers one child before waiting, admits both catalog values, checks fresh
+and orphan rows inside one transaction, and rejects foreign nodes, swapped
+roles, and mismatched ordered plans before registration. The first candidate
+was held after review found that a different node could share the same memory
+provider; the successor passed that unchanged-source negative control, 489
+isolated store tests with two ignored, and 24 focused applied-source pair
+tests. Exact patch, replay, and log hashes are in the integration evidence.
+The canonical backup-manifest serialization cut is also applied. All five
+serialization call sites count the bounded output, reserve exact installed
+memory before allocation, and retain the lease for the Vec lifetime. Three
+old-source low-headroom controls fail as expected; the isolated backup suite
+passes 49 runnable cases with one ignored, plus chunked history and strict
+checks. The combined applied-source checkpoint now passes **493** serial store
+cases with two ignored, **12/12** engine backup checkpoint, **3/3** replication,
+and **1/1** chunked history restore. Strict all-target/all-feature KV/store/
+engine Clippy, no-default library checks, workspace formatting and diff checks
+pass. The receipt pins 259 package/lock files and records one unrelated server
+test-file drift during the run. G02 remains open for the backup bundle,
+plaintext, direct ciphertext, provider, and other production buffers.
+The source-pinned next-step audit at
+`target/g02-transaction-preflight-audit-20260925/README.md` identifies four
+installed-node direct transaction starts still outside registered writer
+custody: ordinary record batches, namespace replacement, paired-domain
+publication, and live signer trust. Scratch table writes have a separate
+direct database boundary. The proposed first cut is an exact-owner registered
+record batch with pre-begin admission, child-before-wait, foreign-node and
+terminal/atomicity controls. This audit is design evidence, not implementation;
+G02 remains **HOLD**.
+
+The subsequent G02 encrypted-record Put-buffer and backup ciphertext-output
+cuts are applied on `master`. The record writer uses one admitted, zeroizing
+in-place envelope under the exact installed NodeDisk memory owner; its two
+unchanged-source low-headroom controls fail and the isolated successor passes
+**495** store cases with two ignored. The backup direct/related encryption
+path admits its exact ciphertext output before AEAD/provider work and retains
+the charge until its zeroizing buffer drops; its isolated backup suite passes
+**51** cases with one ignored, and its historical restore passes **1/1**.
+The combined applied-source serial store suite passes **497** cases with two
+ignored; engine backup passes **12/12** and chunked historical restore **1/1**.
+The first serial replication attempt passes **2/3** and returns a typed
+`UnknownOutcome` after leadership changes at `complete_restore`. Its named
+case passes alone **1/1**, then the complete serial rerun passes **3/3**
+without the concurrent backup load. Both logs are retained. Strict all-target/
+all-feature KV/store/engine Clippy, no-default store check, workspace format
+and diff checks pass; all 259 selected source pins remain unchanged. The
+source-bound receipt is in the integration evidence. These cuts do not
+establish G02 transaction custody, typed backup bundle or other outstanding
+resident accounting, so G02 remains **HOLD**.
+
+The reviewed serialized backup-bundle cut is now applied on `master` with a
+separately reviewed one-line `Cargo.lock` addition for the direct `bytes`
+dependency. The output Vec is reserved against its exact installed memory
+owner before allocation and retains that charge through filesystem or S3
+publication, including cancellation. The combined applied-source serial store
+suite passes **500** cases with two ignored; engine backup, history and
+replicated suites pass **12/12**, **5/5** and **3/3**. Strict KV/store/engine
+Clippy, all-target/all-feature workspace check, strict no-default store check,
+formatting and diff checks pass on 259 unchanged selected source pins after
+the lockfile update. The `BackupUpload::Received(Vec<u8>)` route still accepts
+uncharged bytes from three production audit/history copy paths; read-side,
+plaintext, transport and other resident/error-classification work remains.
+This is a G02 development checkpoint, not release acceptance.
+
+The subsequent target-only ordinary record-batch writer at
+`target/g02-record-batch-20260925/README.md` admits its complete encrypted
+plan before native begin and registers one exact-opening child before waiting.
+Five focused cases, two expected old-source negatives, strict checks and an
+explicit clean-abort low-headroom control pass. Its full serial store suite is
+**474 passed, 28 failed, 2 ignored**, so the patch is **HOLD** and unapplied.
+The remaining failures include registered reopen/ownership fixtures, four
+synthetic FaultBackend crash cases, two retained-read assertions and an audit
+file-attempt assertion. The first broad run exposed a clean-abort lease leak
+(473/29); that leak was fixed and both logs are retained. The source-pinned
+package and registered fault-owner design forbid a raw writer fallback or
+replacing process-exit evidence with graceful shutdown.
 
 The next storage-accounting slice is specified in
 [installed storage admission](installed-storage-admission-plan.md). The shared
@@ -553,15 +783,55 @@ including actual read-view lifetime and owned queued writes; no constructor-only
 compatibility route is acceptable.
 The applied registered reader now holds an exact snapshot in the storage
 census and returns admitted owned bytes, but no production read caller uses it.
+The later five-file routine registered-read retirement cut is applied on
+`master` after independent review. Its serial applied-source store library
+passes 448 cases (two ignored), the focused engine regression passes, and
+strict store Clippy, no-default-features and formatting pass. The exact
+[integration evidence](evidence/installed-disk-integration-20260923/README.md)
+records the candidate, source pins, logs and concurrent server-only drift.
+The exact-parent gap for disposing child slots was addressed by the next
+reviewed cut; production caller adoption, the breaking admitted plaintext API
+and full G02 qualification remain open.
+That four-file child-census cut is applied on `master` with exact pre/postimage
+checks. Its applied-source serial store suite passes 451 cases (two ignored),
+strict Clippy, no-default-features and formatting pass, and its negative control
+reproduces the previous premature parent completion. The
+[integration evidence](evidence/installed-disk-integration-20260923/README.md)
+records the hashes, concurrent non-store drift and a retained parallel I/O
+safety abort. Raw transactions, active abandoned children, complete plaintext
+accounting and final G02 qualification remain open.
+
+The target-only breaking point-owner candidate in
+`target/g02-breaking-point-owner/README.md`
+removes the Vec-returning `TenantStore::get/get_bounded` API outright and
+passes focused store scopes plus strict Clippy, but is **HOLD** for application:
+  Raft has 17 direct point-read compile diagnostics at its tracked shutdown-lease
+  boundary. A lease-carrying admitted-value adapter and migration of all
+  supported callers are required before the first-release API cutover; no Vec
+  alias or untracked Arc escape is authorized.
+  The later frozen store+Raft prerequisite and target-only engine continuation
+  now reduce the composed engine library to two type errors at admitted-owner
+  handoffs into Vec-based tenant audit Raft commands and service audit segments.
+  These failed check and test attempts are preserved as **HOLD** evidence, not
+  qualification. G01 composition and supported caller migration remain open.
 
 - Require installed `NodeDisk` at every production storage constructor. Account
   for creation, growth, write, sync, shrink, deletion and directory publication
   through the same physical owner, including archives, journals and local backups
   under their configured roots. Remove production admission bypasses.
-- Complete redb admission for construction, repair, writes, commit, compaction
-  and close. Distinguish pre-publication `CapacityDenied` transaction rollback
-  from `OwnerFailed` fencing on uncertain I/O or identity substitution. Reopen
-  only after resources drain and a fresh census completes.
+- Complete native KV admission for construction, repair, reads, writes, commit,
+  compaction and close. Register the actual production transactions and read
+  views as census children; retire them only after their leases and native
+  resources settle. Distinguish pre-publication `CapacityDenied` rollback from
+  `OwnerFailed` fencing on uncertain I/O or identity substitution. Reopen only
+  after resources drain and a fresh census completes.
+  The source-pinned audit at `target/g02-raw-transaction-children/README.md`
+  finds 15 persistent raw transaction sites plus a separate scratch owner.
+  Its audit patch is intentionally empty. The later native retained-read
+  guard cut is applied on `master`: close and disposal now wait for the exact
+  table, range and output-guard descendants, with 48 unit and seven crash
+  cases passing on applied source. Store read/write child registration,
+  production callers and scratch ownership remain **HOLD**.
 - Prepare allocation, bookkeeping, repair metadata and publication before the
   winning commit header. Use immediate durability and two-phase publication,
   fallible explicit close, non-allocating destructor fallback and settlement of
@@ -570,20 +840,68 @@ census and returns admitted owned bytes, but no production read caller uses it.
 
 ### G03 — Streaming generations and bounded resources
 
-The current-source audit in `target/g03-generation-publication-next/audit.md`
-pinpoints the unbounded redb replacement transaction: snapshot install copies
-every encrypted row while deleting old namespaces in one write transaction.
-The existing read view has no generation pointer, so splitting that transaction
-would expose partial replacement. A coordinated staged-generation writer,
-pointer cutover, reader pin and bounded reclamation remain necessary; G03 is
-open.
+The historical redb audit in `target/g03-generation-publication-next/audit.md`
+pinpointed a whole-namespace replacement transaction. The native KV cutover
+does not itself establish staged-generation publication or a bounded snapshot
+install. A coordinated staged-generation writer, pointer cutover, reader pin
+and bounded reclamation remain necessary; G03 is open.
+
+The native-source follow-up audit in
+`target/g03-native-generation-next/README.md`
+identifies the current 96 MiB native write-batch ceiling and the one-transaction
+application/custody namespace replacement at the Raft publication boundary.
+Its staged-generation, small atomic pointer commit and pinned-reader reclamation
+sequence is implementation work, not acceptance evidence.
+The target-only native generation substrate at
+`target/g03-native-generation-slice/README.md` passes six focused tests and
+51 native KV library cases. Independent exact-patch review
+(`target/g03-native-generation-independent-review/REVIEW.md`) keeps it **HOLD**:
+caller-constructed proofs lack installed source authority, one pointer cannot
+commit the paired domains and Raft position together, and old-generation
+reclamation/headroom are absent. No live product path uses this candidate.
+The current-master target-only replay at
+`target/g03-native-generation-rebase-20260924/README.md` keeps the same
+four-file patch byte for byte and composes with the later native core. Its
+native library passes **56/56**, strict KV Clippy, no-default-features and
+downstream store check pass. An executable negative control confirms that a
+superseded generation's physical row remains after its old reader pins drop.
+Safe reclamation still requires durable retire state, a shared native pin gate,
+key-only deletion and compaction headroom; source authority, paired Raft
+cutover and uncertain transaction custody also remain unresolved. G03 remains
+**HOLD**, and the prototype is not applied to the product path.
+The later source-pinned `target/g03-reclaim-design-20260924/DESIGN.md` repeats
+the physical negative control (141,642 to 142,135 bytes after one completed
+retirement) and specifies a distinct segmented format with bounded relocation
+and durable cursor/root/deletion custody. Its held-overlay native suite passes
+63 library and seven crash cases, but no physical implementation is applied;
+G03 remains **HOLD**.
+
+The later target-only segmented-format boundary audit at
+`target/g03-segment-foundation-20260925/README.md` measures one current
+`compact()` call reading **33,554,432** bytes, writing **33,566,896** bytes,
+and increasing peak file length by **16,777,304** bytes while retiring a
+128 KiB value beside 16 MiB of unrelated live data. Its second executable
+negative shows the current reader still accepts a contiguous v2 image. The
+ordinary KV suite passes 55 cases with both controls ignored, crash recovery
+7/7, and strict KV checks. The source-pinned HOLD specifies the single
+Core/NodeFile/NodeDisk group-owner and new-format seam needed to remove the
+full-set copy; it supplies no production format patch or release acceptance.
+
+The reviewed native `Table::delete_key` prerequisite is now applied on
+`master`. It stages a tombstone without loading an old ciphertext value; an
+8 MiB low-headroom negative control fails under the earlier value-returning
+`remove`, while focused headroom, snapshot and crash-replay cases pass. The
+combined native suite passes **54 unit and seven crash/recovery** cases.
+`TenantStore::write_domain` still uses the value-returning delete path, and
+durable generation reclaim and paired publication are not implemented. G03
+remains **HOLD**.
 
 [Custody staging](custody-staging-plan.md) records the unimplemented bounded
 transaction writer identified by the failed capacity diagnostic. It depends on
 explicit memory admission and retained worker cleanup; the 4,200-command and
 8,400-audit workload, durability and original deadlines remain unchanged.
 The later 512-terminal-row restore passes its unchanged deadline twice with
-bounded batches. The input cap is not a redb transaction memory bound, and
+bounded batches. The input cap is not a native transaction memory bound, and
 consuming commit/close APIs can lose the exact failed owner. The local
 `target/snapshot-restore-deadline-candidate/follow-up-design/README.md` records
 the retained-transaction/database and decoder-owner sequence still required.
@@ -681,6 +999,14 @@ finds that the public destination constructor still opens an unmarked writable
 root and has no authenticated installed-owner handoff. Marker publication,
 operation-time verification and filesystem index registration therefore need
 one coordinated fail-closed cutover before any first backup write.
+The source-pinned target-only audit at
+`target/g05-durable-binding-audit-20260925/README.md` demonstrates the
+remaining restart failure: after an alias is repointed, status for the
+original backup UUID follows the new destination and returns `NotFound`, while
+the original backup remains readable at its physical root. The negative test
+fails **0/1** as intended. The in-memory S3 index has no production caller;
+filesystem marker enrollment, a source-authenticated durable Control claim,
+exact readback and UUID-based caller cutover are still required. G05 is **HOLD**.
 
 - Resolve durable session completion and abort, publishing roots only after
   dependency verification. Cleanup must page boundedly and delete exact objects
@@ -812,6 +1138,37 @@ still renames four cert/key pairs separately, then commits Control and rewrites
 profiles. Failure after the first rename can leave mixed generations across
 restart; a durable generation bundle, pointer, overlap pins and recovery
 journal are required before G08 can close.
+The later exact-source target-only control at
+`target/g08-stopped-rotation-20260924/README.md` interrupts after the first
+MCP key rename and proves Rustls `KeyMismatch` on actual runtime reopen while
+Control and installed profile pins remain old. Two earlier fixture runs stopped
+at a held database lock and are retained but excluded from that conclusion.
+The coherent first-release writer/reader cut must also change singular native
+profile pins and the startup Control topology comparison; no production patch
+is applied from this negative control. G08 remains **HOLD**.
+An independent review of the target-only stopped-rotation prototype preserves
+five further blockers: a same-UID substitution between inode check and unlink,
+accepting a configuration pointer after failed parent sync, serving and
+credential creation while a rotation journal is pending, valid profiles
+outside the scanned installation directory, and forgetting failed generation
+directory sync on retry. The author reproduced the destructive unlink window
+with a deterministic negative control. No G08 rotation patch is applied; the
+source-pinned review and failed control are in the integration evidence.
+The subsequent source-pinned redesign at
+`target/g08-rotation-redesign-20260925/DESIGN.md` (SHA-256
+`55b08ac37f0e8a6664c0477d6e534e59cb2c02e2312421ea55b5fc6d0b1681ac`)
+finds no portable macOS/Linux conditional unlink by expected inode. A writable
+same-UID namespace cannot guarantee exact retirement through the existing
+`statat`/`unlinkat` path. It specifies a separately owned credential namespace,
+registered profiles, durable journal fences and parent-sync retry controls as
+an architectural successor. No implementation or G08 acceptance is claimed.
+A target-only pointer-durability successor to the held prototype now requires
+successful file and parent sync before advancing past a renamed or already
+visible active pointer. Its injected old-source failure, repaired fault/retry
+case, and two restart cases are source-pinned in
+`target/g08-pointer-durability-20260925/manifest.json`. This is incremental
+to the unapplied prototype; the other four G08 blockers, including same-UID
+cleanup, remain **HOLD**.
 
 - Qualify installed endpoint pools, renewable credential files, original-deadline
   routing, exact receipt resolution and fresh admission after authority expiry.
@@ -1039,6 +1396,11 @@ reports `unqualified`. The native-lineage audit in
 physical-host attestation and a durable before-dispatch attempt registry.
 `DOMAIN_ADAPTERS` remains empty; no native assembly or final acceptance
 claim follows from the Python tests.
+An unchanged 38-file Python-script source pin on this later `master` checkpoint
+passes complete repository discovery **191/191** under bundled Python 3.12.14;
+`target/g11-python-current-validation/README.md` records the source and log
+hashes. Concurrent Rust edits and absent external/native evidence keep this a
+component check, not final-source G11 acceptance.
 
 - Add final acceptance verification above candidate packaging. Require every
   gate, exact clean source/tree/lockfile/configuration/patch/binary hashes,
@@ -1101,7 +1463,7 @@ claim follows from the Python tests.
 2. Complete G02's fixed inode backing, managed directory creation/removal and
    physical growth bounds. Adopt retained database/writer ownership at every
    production constructor and transaction, with complete memory admission.
-3. Bound historical redb reclamation with reserved maintenance progress, then
+3. Bound native KV reclamation with reserved maintenance progress, then
    implement G03's admitted custody/terminal batch writer. Keep the failed large
    restore and 4,200-command/8,400-audit cases unchanged for validation.
 4. Advance G07's actual child census and production shutdown adapters alongside

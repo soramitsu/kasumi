@@ -149,6 +149,20 @@ pub(crate) async fn fixture(
     Arc<LocalKeyProvider>,
     LogStore,
 )> {
+    fixture_for_node(disk, create, fixture_scratch, 1).await
+}
+
+pub(crate) async fn fixture_for_node(
+    disk: FaultBackend,
+    create: bool,
+    fixture_scratch: Arc<kasumi_store::ScratchDisk>,
+    node_id: u64,
+) -> Result<(
+    Arc<TenantStorageSet>,
+    Arc<LocalKeyProvider>,
+    Arc<LocalKeyProvider>,
+    LogStore,
+)> {
     let node = NodeStore::open_with_backend(
         disk,
         kasumi_store::test_utils::storage_admission(),
@@ -203,11 +217,25 @@ pub(crate) async fn fixture(
         pair
     };
     if create {
-        stores.custody().store().write_batch(&[WriteOp::put(
-            META,
-            b"application_bootstrap_sha256",
-            serde_json::to_vec(&"0".repeat(64))?,
-        )])?;
+        let digest = "0".repeat(64);
+        let manifest = format!(r#"{{"format":2,"bytes":1,"chunks":1,"digest":"{digest}"}}"#);
+        let [node_identity, group_id] = initial_storage_identity(node_id, &group())?;
+        stores.write_batch(
+            &[WriteOp::put(
+                "engine.bootstrap",
+                b"manifest",
+                manifest.as_bytes(),
+            )],
+            &[
+                WriteOp::put(
+                    META,
+                    b"application_bootstrap_sha256",
+                    serde_json::to_vec(&digest)?,
+                ),
+                node_identity,
+                group_id,
+            ],
+        )?;
     } else {
         ensure!(
             stores
@@ -219,7 +247,7 @@ pub(crate) async fn fixture(
             "existing fixture lost bootstrap commitment"
         );
     }
-    let log = LogStore::open(stores.clone(), 1).await?;
+    let log = LogStore::open(stores.clone(), node_id).await?;
     log.bind_group(group()).await?;
     Ok((stores, app_provider, custody_provider, log))
 }
@@ -248,6 +276,26 @@ fn restore_json(store: &TenantStore, namespace: &str, key: &[u8], original: Vec<
     store.write_batch(&[WriteOp::put(namespace, key, original)])
 }
 
+fn assert_alternate_initial_identity_rejected(store: &TenantStore, key: &[u8]) -> Result<()> {
+    let original = store
+        .get(META, key)?
+        .context("expected installed Raft identity")?;
+    let mut alternate = vec![b' '];
+    alternate.extend_from_slice(&original);
+    ensure!(
+        serde_json::from_slice::<serde_json::Value>(&original)?
+            == serde_json::from_slice::<serde_json::Value>(&alternate)?,
+        "alternate JSON changed Raft identity"
+    );
+    assert!(
+        store
+            .write_batch(&[WriteOp::put(META, key, alternate)])
+            .is_err()
+    );
+    assert_eq!(store.get(META, key)?, Some(original));
+    Ok(())
+}
+
 #[tokio::test]
 async fn raft_control_metadata_requires_current_writer_bytes_on_every_live_read() -> Result<()> {
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
@@ -265,17 +313,11 @@ async fn raft_control_metadata_requires_current_writer_bytes_on_every_live_read(
     assert!(view.retirement_seed(1)?.is_some());
     assert_eq!(log.try_get_log_entries(0..=1).await?.len(), 2);
 
-    let original = replace_with_alternate_json(store, META, b"node_id")?;
-    assert!(LogStore::open(stores.clone(), 1).await.is_err());
-    assert!(ControlLog::installed(stores.custody().clone()).is_err());
-    restore_json(store, META, b"node_id", original)?;
+    assert_alternate_initial_identity_rejected(store, b"node_id")?;
     LogStore::open(stores.clone(), 1).await?;
     ControlLog::installed(stores.custody().clone())?.context("restored control identity absent")?;
 
-    let original = replace_with_alternate_json(store, META, b"group")?;
-    assert!(log.bind_group(group()).await.is_err());
-    assert!(ControlLog::open(stores.custody().clone(), 1, group()).is_err());
-    restore_json(store, META, b"group", original)?;
+    assert_alternate_initial_identity_rejected(store, b"group")?;
     log.bind_group(group()).await?;
 
     let original = replace_with_alternate_json(store, META, b"vote")?;
@@ -293,9 +335,16 @@ async fn raft_control_metadata_requires_current_writer_bytes_on_every_live_read(
     restore_json(store, META, b"committed", original)?;
     assert_eq!(log.read_committed().await?, Some(id(1)));
 
-    let original = replace_with_alternate_json(store, META, b"application_bootstrap_sha256")?;
-    assert!(view.retirement_seed(1).is_err());
-    restore_json(store, META, b"application_bootstrap_sha256", original)?;
+    // This row is first-installed with the application manifest and cannot be
+    // rewritten through a live TenantStore, even to equivalent JSON bytes.
+    let original = store
+        .get(META, b"application_bootstrap_sha256")?
+        .context("bootstrap commitment absent")?;
+    assert!(replace_with_alternate_json(store, META, b"application_bootstrap_sha256").is_err());
+    assert_eq!(
+        store.get(META, b"application_bootstrap_sha256")?,
+        Some(original)
+    );
     assert!(view.retirement_seed(1)?.is_some());
 
     let key = 1u64.to_be_bytes();

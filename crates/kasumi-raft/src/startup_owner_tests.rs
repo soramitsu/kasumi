@@ -228,6 +228,7 @@ async fn cancelled_local_initialization_drains_real_group_and_breaks_router_cycl
         Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
     )
     .await?;
+    store.write_batch(&[], &crate::initial_storage_identity(1, "tenant-a")?)?;
     let owner = SnapshotBufferOwner::fixture();
     let gate = LocalStartupGate::install(&owner, OriginalFailure(83).into())?;
     let mut startup = Box::pin(crate::RaftGroup::local(

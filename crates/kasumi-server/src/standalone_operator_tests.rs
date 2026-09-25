@@ -257,6 +257,7 @@ fn singleton_open_failure_drains_node_before_releasing_operator_lock() -> Result
 }
 
 async fn singleton_open_failure_impl() -> Result<()> {
+    let _serial = drain_serial().lock().await;
     let root = kasumi_store::test_utils::private_tempdir()?;
     let (installed, storage) = crate::runtime_storage_fixtures::initialize_standalone(
         &root.path().join("database"),
@@ -300,6 +301,7 @@ fn early_control_pair_error_retains_and_drains_both_catalogs() -> Result<()> {
 }
 
 async fn early_control_pair_error_impl() -> Result<()> {
+    let _serial = drain_serial().lock().await;
     let root = kasumi_store::test_utils::private_tempdir()?;
     let (installed, storage) = crate::runtime_storage_fixtures::initialize_standalone(
         &root.path().join("database"),
@@ -335,6 +337,7 @@ fn early_initialization_audit_error_drains_without_publishing_completion() -> Re
 }
 
 async fn early_initialization_audit_error_impl() -> Result<()> {
+    let _serial = drain_serial().lock().await;
     let root = kasumi_store::test_utils::private_tempdir()?;
     let directory = std::fs::canonicalize(root.path())?.join("database");
     let failed = install(&directory.join("data/node.kv"), "initialize-audit", true);

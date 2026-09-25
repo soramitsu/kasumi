@@ -94,6 +94,9 @@ async fn dormant_resident() -> (
 
 #[tokio::test]
 async fn cancelled_preparation_of_borrowed_resident_preserves_its_original_storage_owner() {
+    let _serial = crate::control_genesis::tests::data_startup_serial()
+        .lock()
+        .await;
     let (_directory, mut runtime, manager, context) = dormant_resident().await;
     let before = manager.configured("tenant-a").unwrap();
     let original = before.store.get("engine.bootstrap", b"manifest").unwrap();
@@ -144,6 +147,9 @@ async fn cancelled_preparation_of_borrowed_resident_preserves_its_original_stora
 #[tokio::test]
 async fn closure_before_actual_enrollment_handoff_rejects_publication_and_preserves_borrowed_owner()
 {
+    let _serial = crate::control_genesis::tests::data_startup_serial()
+        .lock()
+        .await;
     let (_directory, mut runtime, manager, context) = dormant_resident().await;
     let before = manager.configured("tenant-a").unwrap();
     let pause = Arc::new(Pause::default());
@@ -208,6 +214,9 @@ fn abandoned_fresh_standalone_preparation_drains_without_publication_and_retries
 
 async fn abandoned_fresh_standalone_preparation_drains_without_publication_and_retries_existing_state_impl()
 -> Result<()> {
+    let _serial = crate::control_genesis::tests::data_startup_serial()
+        .lock()
+        .await;
     let directory = kasumi_store::test_utils::private_tempdir()?;
     let (installed, storage) = Box::pin(crate::runtime_storage_fixtures::initialize_standalone(
         &directory.path().join("installed"),

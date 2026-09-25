@@ -402,7 +402,7 @@ mod tests {
     fn load_snapshot(custody: &CustodyStore) -> Result<Option<SnapshotEnvelope>> {
         super::load_snapshot(custody, MAX_CLOSED_SNAPSHOT_BYTES)
     }
-    use crate::control::tests::{fixture, group, id, retirement_entry, seed};
+    use crate::control::tests::{fixture, fixture_for_node, group, id, retirement_entry, seed};
     use kasumi_store::test_utils::FaultBackend;
     use kasumi_types::{CustodyAction, CustodyReceipt, CustodyRequest, RetireSourceRequest};
     use openraft::storage::{RaftLogStorage, RaftLogStorageExt};
@@ -665,14 +665,7 @@ mod tests {
         };
         for node in voters {
             let (domains, app, _, mut log) =
-                fixture(FaultBackend::new(), true, fixture_scratch.clone()).await?;
-            // This is installed consensus metadata for each distinct replica;
-            // the source retirement producer is exercised by engine tests.
-            domains.custody().store().write_batch(&[WriteOp::put(
-                META,
-                b"node_id",
-                serde_json::to_vec(&node)?,
-            )])?;
+                fixture_for_node(FaultBackend::new(), true, fixture_scratch.clone(), node).await?;
             log.blocking_append([members.clone(), retirement.clone()])
                 .await?;
             log.save_committed(Some(id(1))).await?;

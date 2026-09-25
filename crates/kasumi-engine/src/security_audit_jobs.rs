@@ -150,10 +150,13 @@ mod tests {
             .create_new(&path, kasumi_store::test_utils::NODE_STORE_ID)
             .unwrap();
         let weak = Arc::downgrade(&node);
-        let store =
-            TenantStore::initialize_catalog_fixture(node.clone(), SECURITY_TENANT.into(), provider.clone())
-                .await
-                .unwrap();
+        let store = TenantStore::initialize_catalog_fixture(
+            node.clone(),
+            SECURITY_TENANT.into(),
+            provider.clone(),
+        )
+        .await
+        .unwrap();
         let audit =
             SecurityAudit::initialize(store.clone(), Default::default(), storage.admission.clone())
                 .unwrap();
@@ -208,6 +211,7 @@ mod tests {
         node.shutdown().await.unwrap();
         drop(audit);
         drop(store);
+        drop(node);
         assert!(weak.upgrade().is_none());
         let reopened = TenantStore::open_existing_fixture(
             storage
@@ -260,10 +264,13 @@ mod tests {
             .create_new(&path, kasumi_store::test_utils::NODE_STORE_ID)
             .unwrap();
         let weak = Arc::downgrade(&node);
-        let store =
-            TenantStore::initialize_catalog_fixture(node.clone(), SECURITY_TENANT.into(), provider.clone())
-                .await
-                .unwrap();
+        let store = TenantStore::initialize_catalog_fixture(
+            node.clone(),
+            SECURITY_TENANT.into(),
+            provider.clone(),
+        )
+        .await
+        .unwrap();
         let archive = Arc::new(PanickingArchive {
             inner: kasumi_store::FilesystemAuditArchive::open(
                 directory.path().join("persistent/archives"),
@@ -333,6 +340,7 @@ mod tests {
         node.shutdown().await.unwrap();
         drop(audit);
         drop(store);
+        drop(node);
         assert!(weak.upgrade().is_none());
         let reopened = TenantStore::open_existing_fixture(
             storage

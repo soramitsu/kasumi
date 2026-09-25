@@ -24,6 +24,142 @@ fn fixture_memory(capacity: usize) -> Arc<TestDiskMemory> {
     TestDiskMemory::new(1 << 20, capacity)
 }
 
+struct ReadyDatabase;
+impl StoragePayload for ReadyDatabase {
+    const KIND: StorageOwnerKind = StorageOwnerKind::Database;
+    fn drive(&self) -> bool {
+        true
+    }
+}
+struct ReadyChild;
+impl StoragePayload for ReadyChild {
+    const KIND: StorageOwnerKind = StorageOwnerKind::Reader;
+    fn drive(&self) -> bool {
+        true
+    }
+}
+
+#[test]
+fn denied_child_registration_never_increments_parent_count() {
+    let memory = fixture_memory(1);
+    let provider: Arc<dyn NodeDiskMemoryAdmission> = memory.clone();
+    let parent = memory
+        .storage_census()
+        .register(provider.clone(), 0, || ReadyDatabase)
+        .unwrap();
+    let constructed = AtomicBool::new(false);
+    assert!(
+        memory
+            .storage_census()
+            .register_child(provider, 0, &parent, || {
+                constructed.store(true, Ordering::Release);
+                ReadyChild
+            })
+            .is_err()
+    );
+    assert!(!constructed.load(Ordering::Acquire));
+    assert_eq!(parent.retire(), StorageCensusDisposition::Retired);
+    assert_eq!(memory.storage_census().snapshot().databases, 0);
+    assert_eq!(memory.snapshot().live_reservations, 0);
+}
+
+#[test]
+fn child_registration_waits_for_parent_metadata_observation() {
+    let memory = fixture_memory(2);
+    let provider: Arc<dyn NodeDiskMemoryAdmission> = memory.clone();
+    let parent = memory
+        .storage_census()
+        .register(provider.clone(), 0, || ReadyDatabase)
+        .unwrap();
+    let metadata = memory.storage_census().slots[parent.id().index]
+        .metadata
+        .lock()
+        .unwrap();
+    let (started_tx, started_rx) = std::sync::mpsc::sync_channel(0);
+    let (completed_tx, completed_rx) = std::sync::mpsc::channel();
+    let worker_memory = memory.clone();
+    let worker_parent = parent.clone();
+    let worker = std::thread::spawn(move || {
+        started_tx.send(()).unwrap();
+        let child =
+            worker_memory
+                .storage_census()
+                .register_child(provider, 0, &worker_parent, || ReadyChild);
+        completed_tx.send(()).unwrap();
+        child
+    });
+    started_rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .unwrap();
+    assert!(matches!(
+        completed_rx.recv_timeout(std::time::Duration::from_millis(100)),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+    ));
+    drop(metadata);
+    completed_rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .unwrap();
+    let child = worker.join().unwrap().unwrap();
+    assert_eq!(memory.storage_census().snapshot().databases, 1);
+    assert_eq!(memory.storage_census().snapshot().readers, 1);
+    assert_eq!(child.retire(), StorageCensusDisposition::Retired);
+    assert_eq!(parent.retire(), StorageCensusDisposition::Retired);
+    assert_eq!(memory.snapshot().live_reservations, 0);
+}
+
+#[test]
+fn poisoned_parent_metadata_fences_child_registration() {
+    let memory = fixture_memory(2);
+    let provider: Arc<dyn NodeDiskMemoryAdmission> = memory.clone();
+    let parent = memory
+        .storage_census()
+        .register(provider.clone(), 0, || ReadyDatabase)
+        .unwrap();
+    let index = parent.id().index;
+    let _ = catch_unwind(AssertUnwindSafe(|| {
+        let _metadata = memory.storage_census().slots[index]
+            .metadata
+            .lock()
+            .unwrap();
+        panic!("poison parent census metadata");
+    }));
+    let constructed = AtomicBool::new(false);
+    let error = memory
+        .storage_census()
+        .register_child(provider, 0, &parent, || {
+            constructed.store(true, Ordering::Release);
+            ReadyChild
+        })
+        .err()
+        .unwrap();
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    assert!(!constructed.load(Ordering::Acquire));
+    assert!(memory.storage_census().fenced.load(Ordering::Acquire));
+    assert_eq!(memory.snapshot().live_reservations, 1);
+}
+
+#[test]
+fn panicked_child_constructor_retains_parent_and_both_leases() {
+    let memory = fixture_memory(2);
+    let provider: Arc<dyn NodeDiskMemoryAdmission> = memory.clone();
+    let parent = memory
+        .storage_census()
+        .register(provider.clone(), 0, || ReadyDatabase)
+        .unwrap();
+    assert!(
+        memory
+            .storage_census()
+            .register_child::<ReadyChild, _>(provider, 0, &parent, || {
+                std::panic::panic_any(177_u64)
+            })
+            .is_err()
+    );
+    assert_eq!(parent.retire(), StorageCensusDisposition::Retained);
+    assert_eq!(memory.storage_census().snapshot().databases, 1);
+    assert_eq!(memory.storage_census().snapshot().readers, 1);
+    assert_eq!(memory.snapshot().live_reservations, 2);
+}
+
 #[test]
 fn fixed_census_is_precharged_and_bound_to_the_exact_provider() {
     let memory = fixture_memory(2);

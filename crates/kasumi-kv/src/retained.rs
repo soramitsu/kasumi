@@ -333,6 +333,36 @@ impl RetainedReadTransaction {
             })
     }
 
+    /// Consult the pinned index without materializing a value or exposing a
+    /// table guard outside this retained transaction.
+    pub fn key_exists(
+        &self,
+        definition: TableDefinition<&[u8], &[u8]>,
+        key: &[u8],
+    ) -> Result<bool, BoundedReadError> {
+        let table = Self::table_name(definition)?;
+        if key.len() > 8192 {
+            return Err(BoundedReadError::BoundExceeded);
+        }
+        self.readable()?
+            .key_exists(table, key)
+            .map_err(|error| BoundedReadError::Storage(error.into()))
+    }
+
+    pub fn prefix_exists(
+        &self,
+        definition: TableDefinition<&[u8], &[u8]>,
+        prefix: &[u8],
+    ) -> Result<bool, BoundedReadError> {
+        let table = Self::table_name(definition)?;
+        if prefix.len() > 8192 {
+            return Err(BoundedReadError::BoundExceeded);
+        }
+        self.readable()?
+            .prefix_exists(table, prefix)
+            .map_err(|error| BoundedReadError::Storage(error.into()))
+    }
+
     /// Both returned byte strings retain their resident admissions.
     pub fn next_bytes(
         &self,
@@ -362,18 +392,31 @@ impl RetainedReadTransaction {
     }
 
     pub fn close(&mut self, database: &RetainedDatabase) -> ReadCloseReport<'_> {
-        if self.settlement == ReadCloseSettlement::Open
-            && self
+        if matches!(
+            self.settlement,
+            ReadCloseSettlement::Open | ReadCloseSettlement::WaitingForGuards
+        ) && self
+            .transaction
+            .as_ref()
+            .is_some_and(|transaction| database.owns_reader(transaction))
+        {
+            // A table, range or access guard can outlive the transaction
+            // facade. Its exact snapshot is still a native reader; the
+            // release attempt has not entered while that owner survives.
+            if self
                 .transaction
                 .as_ref()
-                .is_some_and(|transaction| database.owns_reader(transaction))
-        {
-            self.release.run(|| Ok(()));
-            self.settlement = if self.release.succeeded() {
-                ReadCloseSettlement::Settled
+                .is_some_and(ReadTransaction::has_snapshot_descendants)
+            {
+                self.settlement = ReadCloseSettlement::WaitingForGuards;
             } else {
-                ReadCloseSettlement::Retained
-            };
+                self.release.run(|| Ok(()));
+                self.settlement = if self.release.succeeded() {
+                    ReadCloseSettlement::Settled
+                } else {
+                    ReadCloseSettlement::Retained
+                };
+            }
         }
         self.report()
     }
@@ -385,15 +428,26 @@ impl RetainedReadTransaction {
                 .as_ref()
                 .is_some_and(|transaction| database.owns_reader(transaction))
         {
-            self.disposal.run(|| {
-                drop(self.transaction.take());
-                Ok(())
-            });
-            self.settlement = if self.disposal.succeeded() {
-                ReadCloseSettlement::Disposed
+            // Recheck the exact snapshot at the disposal boundary. A future
+            // caller that can hold a descendant between close and disposal
+            // must not turn this owner's pending guard into a clean report.
+            if self
+                .transaction
+                .as_ref()
+                .is_some_and(ReadTransaction::has_snapshot_descendants)
+            {
+                self.settlement = ReadCloseSettlement::WaitingForGuards;
             } else {
-                ReadCloseSettlement::DisposalUncertain
-            };
+                self.disposal.run(|| {
+                    drop(self.transaction.take());
+                    Ok(())
+                });
+                self.settlement = if self.disposal.succeeded() {
+                    ReadCloseSettlement::Disposed
+                } else {
+                    ReadCloseSettlement::DisposalUncertain
+                };
+            }
         }
         self.report()
     }
@@ -970,6 +1024,287 @@ mod tests {
 
     fn builder() -> Builder {
         Database::builder(Arc::new(Permit))
+    }
+
+    #[test]
+    fn retained_index_existence_observes_exact_snapshot_and_tombstones() {
+        let rows: TableDefinition<&[u8], &[u8]> = TableDefinition::new("index-only-rows");
+        let mut opening =
+            builder().retain_backend(Box::new(InMemoryBackend::new()), DatabaseOpenMode::Create);
+        assert_eq!(opening.open().settlement(), DatabaseOpenSettlement::Ready);
+        let writer = opening.database().unwrap().begin_write().unwrap();
+        writer
+            .open_table(rows)
+            .unwrap()
+            .insert(b"app/old".as_slice(), b"opaque".as_slice())
+            .unwrap();
+        writer.commit().unwrap();
+        let mut old = opening.database().unwrap().begin_read_retained().unwrap();
+        assert!(old.key_exists(rows, b"app/old").unwrap());
+        assert!(old.prefix_exists(rows, b"app/").unwrap());
+        assert!(!old.prefix_exists(rows, b"peer/").unwrap());
+
+        let writer = opening.database().unwrap().begin_write().unwrap();
+        let mut table = writer.open_table(rows).unwrap();
+        table.remove(b"app/old".as_slice()).unwrap();
+        table
+            .insert(b"peer/new".as_slice(), b"opaque".as_slice())
+            .unwrap();
+        drop(table);
+        writer.commit().unwrap();
+        let mut fresh = opening.database().unwrap().begin_read_retained().unwrap();
+        assert!(old.key_exists(rows, b"app/old").unwrap());
+        assert!(old.prefix_exists(rows, b"app/").unwrap());
+        assert!(!fresh.key_exists(rows, b"app/old").unwrap());
+        assert!(!fresh.prefix_exists(rows, b"app/").unwrap());
+        assert!(fresh.prefix_exists(rows, b"peer/").unwrap());
+
+        assert_eq!(
+            opening.close().settlement(),
+            DatabaseOpenSettlement::WaitingForTransactions
+        );
+        let database = opening.retained_database().unwrap();
+        for reader in [&mut old, &mut fresh] {
+            assert_eq!(
+                reader.close(database).settlement(),
+                ReadCloseSettlement::Settled
+            );
+            assert_eq!(
+                reader.dispose_settled(database).settlement(),
+                ReadCloseSettlement::Disposed
+            );
+        }
+        assert_eq!(opening.close().settlement(), DatabaseOpenSettlement::Closed);
+    }
+
+    struct ReopenableBackend {
+        bytes: Arc<Mutex<Vec<u8>>>,
+        closes: Arc<AtomicUsize>,
+    }
+
+    impl StorageBackend for ReopenableBackend {
+        fn len(&self) -> io::Result<u64> {
+            Ok(self.bytes.lock().unwrap().len() as u64)
+        }
+
+        fn read(&self, at: u64, out: &mut [u8]) -> io::Result<()> {
+            let bytes = self.bytes.lock().unwrap();
+            let start = usize::try_from(at).map_err(|_| io::ErrorKind::InvalidInput)?;
+            let end = start
+                .checked_add(out.len())
+                .ok_or(io::ErrorKind::InvalidInput)?;
+            out.copy_from_slice(bytes.get(start..end).ok_or(io::ErrorKind::UnexpectedEof)?);
+            Ok(())
+        }
+
+        fn write(&self, at: u64, input: &[u8]) -> io::Result<()> {
+            let mut bytes = self.bytes.lock().unwrap();
+            let start = usize::try_from(at).map_err(|_| io::ErrorKind::InvalidInput)?;
+            let end = start
+                .checked_add(input.len())
+                .ok_or(io::ErrorKind::InvalidInput)?;
+            bytes
+                .get_mut(start..end)
+                .ok_or(io::ErrorKind::UnexpectedEof)?
+                .copy_from_slice(input);
+            Ok(())
+        }
+
+        fn set_len(&self, length: u64) -> io::Result<()> {
+            self.bytes.lock().unwrap().resize(
+                usize::try_from(length).map_err(|_| io::ErrorKind::InvalidInput)?,
+                0,
+            );
+            Ok(())
+        }
+
+        fn sync_data(&self) -> io::Result<()> {
+            Ok(())
+        }
+
+        fn close(&self) -> BackendCloseOutcome {
+            self.closes.fetch_add(1, Ordering::AcqRel);
+            BackendCloseOutcome::drained(Ok(()))
+        }
+    }
+
+    #[test]
+    fn retained_reader_waits_for_exact_table_range_and_guards_before_restart() {
+        let bytes = Arc::new(Mutex::new(Vec::new()));
+        let closes = Arc::new(AtomicUsize::new(0));
+        let backend = || ReopenableBackend {
+            bytes: bytes.clone(),
+            closes: closes.clone(),
+        };
+        let rows: TableDefinition<&[u8], &[u8]> = TableDefinition::new("held-rows");
+        let mut opening = builder().retain_backend(Box::new(backend()), DatabaseOpenMode::Create);
+        assert_eq!(opening.open().settlement(), DatabaseOpenSettlement::Ready);
+        let writer = opening.database().unwrap().begin_write().unwrap();
+        writer
+            .open_table(rows)
+            .unwrap()
+            .insert(b"key".as_slice(), b"value".as_slice())
+            .unwrap();
+        writer.commit().unwrap();
+
+        let mut reader = opening.database().unwrap().begin_read_retained().unwrap();
+        let table = reader
+            .transaction
+            .as_ref()
+            .unwrap()
+            .open_table(rows)
+            .unwrap();
+        let point = table.get(b"key".as_slice()).unwrap().unwrap();
+        assert_eq!(point.value(), b"value");
+        let mut range = table.iter().unwrap();
+        let (key, value) = range.next().unwrap().unwrap();
+        assert_eq!(key.value(), b"key");
+        assert_eq!(value.value(), b"value");
+        assert_eq!(
+            opening.close().settlement(),
+            DatabaseOpenSettlement::WaitingForTransactions
+        );
+        assert_eq!(closes.load(Ordering::Acquire), 0);
+        let database = opening.retained_database().unwrap();
+        assert_eq!(
+            reader.close(database).settlement(),
+            ReadCloseSettlement::WaitingForGuards
+        );
+        assert!(matches!(
+            reader.report().release(),
+            TerminalObservation::NotEntered
+        ));
+        assert_eq!(
+            reader.dispose_settled(database).settlement(),
+            ReadCloseSettlement::WaitingForGuards
+        );
+        drop(table);
+        assert_eq!(
+            reader.close(database).settlement(),
+            ReadCloseSettlement::WaitingForGuards
+        );
+        drop(range);
+        assert_eq!(
+            reader.close(database).settlement(),
+            ReadCloseSettlement::WaitingForGuards
+        );
+        drop(key);
+        assert_eq!(
+            reader.close(database).settlement(),
+            ReadCloseSettlement::WaitingForGuards
+        );
+        drop(value);
+        assert_eq!(
+            reader.close(database).settlement(),
+            ReadCloseSettlement::WaitingForGuards
+        );
+        drop(point);
+        assert_eq!(
+            reader.close(database).settlement(),
+            ReadCloseSettlement::Settled
+        );
+        assert_eq!(
+            reader.dispose_settled(database).settlement(),
+            ReadCloseSettlement::Disposed
+        );
+        assert_eq!(opening.close().settlement(), DatabaseOpenSettlement::Closed);
+        assert_eq!(closes.load(Ordering::Acquire), 1);
+
+        let mut restarted =
+            builder().retain_backend(Box::new(backend()), DatabaseOpenMode::Existing);
+        assert_eq!(restarted.open().settlement(), DatabaseOpenSettlement::Ready);
+        let snapshot = restarted.database().unwrap().begin_read().unwrap();
+        let table = snapshot.open_table(rows).unwrap();
+        assert_eq!(
+            table.get(b"key".as_slice()).unwrap().unwrap().value(),
+            b"value"
+        );
+        drop(table);
+        drop(snapshot);
+        assert_eq!(
+            restarted.close().settlement(),
+            DatabaseOpenSettlement::Closed
+        );
+        assert_eq!(closes.load(Ordering::Acquire), 2);
+    }
+
+    #[test]
+    fn retained_reader_guard_wait_is_per_snapshot_not_database_wide() {
+        let mut opening =
+            builder().retain_backend(Box::new(InMemoryBackend::new()), DatabaseOpenMode::Create);
+        assert_eq!(opening.open().settlement(), DatabaseOpenSettlement::Ready);
+        let rows: TableDefinition<&[u8], &[u8]> = TableDefinition::new("held-rows");
+        let writer = opening.database().unwrap().begin_write().unwrap();
+        writer.open_table(rows).unwrap();
+        writer.commit().unwrap();
+
+        let mut held = opening.database().unwrap().begin_read_retained().unwrap();
+        let table = held.transaction.as_ref().unwrap().open_table(rows).unwrap();
+        let mut independent = opening.database().unwrap().begin_read_retained().unwrap();
+        let database = opening.retained_database().unwrap();
+        assert_eq!(
+            independent.close(database).settlement(),
+            ReadCloseSettlement::Settled
+        );
+        assert_eq!(
+            independent.dispose_settled(database).settlement(),
+            ReadCloseSettlement::Disposed
+        );
+        assert_eq!(
+            held.close(database).settlement(),
+            ReadCloseSettlement::WaitingForGuards
+        );
+        drop(table);
+        assert_eq!(
+            held.close(database).settlement(),
+            ReadCloseSettlement::Settled
+        );
+        assert_eq!(
+            held.dispose_settled(database).settlement(),
+            ReadCloseSettlement::Disposed
+        );
+        assert_eq!(opening.close().settlement(), DatabaseOpenSettlement::Closed);
+    }
+
+    #[test]
+    fn retained_read_disposal_rechecks_a_late_snapshot_descendant() {
+        let mut opening =
+            builder().retain_backend(Box::new(InMemoryBackend::new()), DatabaseOpenMode::Create);
+        assert_eq!(opening.open().settlement(), DatabaseOpenSettlement::Ready);
+        let rows: TableDefinition<&[u8], &[u8]> = TableDefinition::new("held-rows");
+        let writer = opening.database().unwrap().begin_write().unwrap();
+        writer.open_table(rows).unwrap();
+        writer.commit().unwrap();
+
+        let mut reader = opening.database().unwrap().begin_read_retained().unwrap();
+        let database = opening.retained_database().unwrap();
+        assert_eq!(
+            reader.close(database).settlement(),
+            ReadCloseSettlement::Settled
+        );
+        // Private test access simulates a future caller admitting a descendant
+        // between the two public retained-operation steps.
+        let table = reader
+            .transaction
+            .as_ref()
+            .unwrap()
+            .open_table(rows)
+            .unwrap();
+        assert_eq!(
+            reader.dispose_settled(database).settlement(),
+            ReadCloseSettlement::WaitingForGuards
+        );
+        assert!(reader.report().retains_transaction());
+        drop(table);
+        assert_eq!(
+            reader.close(database).settlement(),
+            ReadCloseSettlement::Settled
+        );
+        assert_eq!(
+            reader.dispose_settled(database).settlement(),
+            ReadCloseSettlement::Disposed
+        );
+        assert_eq!(opening.close().settlement(), DatabaseOpenSettlement::Closed);
     }
 
     struct CountedBackend {

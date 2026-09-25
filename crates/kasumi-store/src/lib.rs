@@ -19,11 +19,13 @@ mod backup_destination_index;
 pub use backup_destination_index::{ExactBackupDestinationIndex, MAX_EXACT_BACKUP_DESTINATIONS};
 mod backup_marker;
 mod backup_sessions;
+mod catalog_read_budget;
 pub use backup_sessions::{
     BackupSessionObject, BackupSessionObjectPage, BackupSessionObjects, BackupSessionSlot,
     MAX_SESSION_GC_OBJECTS, MAX_SESSION_RECORD_BYTES, VerifiedBackupAbort, VerifiedBackupSession,
     verify_backup_session,
 };
+use catalog_read_budget::AdmittedKeyCatalog;
 #[cfg(test)]
 mod allocation_tests;
 mod device_disk;
@@ -38,11 +40,13 @@ pub use storage_census::{
     StorageCensusSnapshot, StorageOwnerId, StorageOwnerKind,
 };
 pub use storage_opening::{
-    AdmittedReadBytes, FailedOpeningAcknowledgement, FailedOpeningRecovery, NodeOpeningMode,
-    NodeOpeningPhase, NodeOpeningReport, NodeReadAccessError, NodeReadPhase, NodeReadReport,
-    NodeReadTablesError, NodeStartupFailureCustody, NodeStartupPhase, NodeTablesBodyError,
-    NodeTablesReport, NodeWriterPhase, OwnedEncryptedRow, RegisteredNodeOpening,
-    RegisteredNodeRead, RegisteredNodeStartup, RegisteredNodeTables,
+    AdmittedReadBytes, BindingInstallBodyError, FailedOpeningAcknowledgement,
+    FailedOpeningRecovery, NodeBindingWriteReport, NodeCatalogPutBodyError, NodeCatalogWriteReport,
+    NodeOpeningMode, NodeOpeningPhase, NodeOpeningReport, NodeReadAccessError, NodeReadPhase,
+    NodeReadReport, NodeReadTablesError, NodeStartupFailureCustody, NodeStartupPhase,
+    NodeTablesBodyError, NodeTablesReport, NodeWriterPhase, OwnedEncryptedRow,
+    RegisteredBindingPut, RegisteredCatalogPut, RegisteredNodeOpening, RegisteredNodeRead,
+    RegisteredNodeStartup, RegisteredNodeTables,
 };
 mod keys;
 mod node_database;
@@ -51,6 +55,7 @@ mod node_file;
 pub use node_file::NodeFileCleanup;
 pub mod node_store_ids;
 mod read_view;
+mod registered_read_scope;
 pub use node_disk::{
     CensusCancellation, DirectoryPolicy, DiskWork, NodeDisk, NodeDiskConfig, NodeDiskDirectory,
     NodeDiskDirectoryCloseError, NodeDiskDirectoryCursor, NodeDiskDirectoryEntry,
@@ -64,6 +69,7 @@ pub use scratch_disk::{ScratchDisk, ScratchDiskConfig, ScratchDiskSnapshot};
 mod serving_access;
 mod spool;
 pub use read_view::TenantReadView;
+pub use registered_read_scope::{NodeScopedReadFailure, NodeScopedReadRetirement};
 pub use scratch_table::{EncryptedTable, EncryptedTableBatch};
 mod storage_domains;
 pub use serving_access::{StorageAccess, StoragePurpose};
@@ -76,8 +82,9 @@ pub use spool::{EncryptedSpool, RetainedSpool, SnapshotImage, SnapshotReader, Sp
 pub mod test_utils;
 
 pub use backup::{
-    BackupContents, BackupDestination, EncryptedBackup, FilesystemBackupDestination,
-    S3BackupConfig, S3BackupDestination,
+    AdmittedBackupBundle, BackupBundleAdmissionError, BackupContents, BackupDestination,
+    BackupUpload, EncryptedBackup, FilesystemBackupDestination, S3BackupConfig,
+    S3BackupDestination,
 };
 pub use backup::{MAX_BACKUP_BUNDLE_BYTES, MAX_BACKUP_OBJECT_BYTES};
 use kasumi_clock::{LeaseClock, SystemLeaseClock};
@@ -87,7 +94,8 @@ pub use keys::{
     KeyProvider, SecretKey, TransitConfig, TransitKeyProvider, WrappedKey, WrappingIdentity,
 };
 pub use storage_domains::{
-    AdmittedDeploymentBinding, CustodyStore, StorageBinding, TenantStorageSet,
+    AdmittedDeploymentBinding, BindingInstallWriteFailure, BindingInstallWriteRetirement,
+    CustodyStore, StorageBinding, TenantStorageReadView, TenantStorageSet,
 };
 
 use std::{
@@ -103,7 +111,7 @@ use std::{
 use anyhow::{Context, Result, bail, ensure};
 use chacha20poly1305::{
     KeyInit, XChaCha20Poly1305, XNonce,
-    aead::{Aead, Payload},
+    aead::{Aead, AeadInPlace, Payload},
 };
 use hmac::{Hmac, Mac};
 use kasumi_kv::TableDefinition;
@@ -460,6 +468,182 @@ impl std::error::Error for NodeCatalogReadRetirement {
     }
 }
 
+/// A catalog mutation that did not prove a committed and disposed native
+/// writer retains its exact child, admitted input, and original observations.
+pub struct NodeCatalogWriteFailure {
+    writer: RegisteredCatalogPut,
+}
+impl NodeCatalogWriteFailure {
+    pub fn writer(&self) -> &RegisteredCatalogPut {
+        &self.writer
+    }
+    pub fn into_writer(self) -> RegisteredCatalogPut {
+        self.writer
+    }
+}
+impl std::fmt::Debug for NodeCatalogWriteFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NodeCatalogWriteFailure")
+            .field("writer_id", &self.writer.id())
+            .field("phase", &self.writer.report().phase())
+            .finish()
+    }
+}
+impl std::fmt::Display for NodeCatalogWriteFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "registered catalog write {:?} has an unproved outcome",
+            self.writer.id()
+        )
+    }
+}
+impl std::error::Error for NodeCatalogWriteFailure {}
+
+/// A clean catalog commit keeps its exact census identity if retirement waits.
+pub struct NodeCatalogWriteRetirement {
+    provider: Arc<dyn NodeDiskMemoryAdmission>,
+    id: StorageOwnerId,
+    disposition: StorageCensusDisposition,
+}
+impl NodeCatalogWriteRetirement {
+    pub fn id(&self) -> StorageOwnerId {
+        self.id
+    }
+    pub fn disposition(&self) -> StorageCensusDisposition {
+        self.disposition
+    }
+    pub fn retry_retirement(&self) -> StorageCensusDisposition {
+        if let Some(writer) = RegisteredCatalogPut::retained(self.provider.clone(), self.id) {
+            // The first retirement may have met a busy report mutex before it
+            // could release a clean outcome. Re-enter that same child to make
+            // the acknowledgement, without replaying its native terminal.
+            writer.retire()
+        } else {
+            self.provider.storage_census().drain_owner(self.id)
+        }
+    }
+}
+impl std::fmt::Debug for NodeCatalogWriteRetirement {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NodeCatalogWriteRetirement")
+            .field("id", &self.id)
+            .field("disposition", &self.disposition)
+            .finish()
+    }
+}
+impl std::fmt::Display for NodeCatalogWriteRetirement {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "registered catalog writer {:?} retirement {:?}",
+            self.id, self.disposition
+        )
+    }
+}
+impl std::error::Error for NodeCatalogWriteRetirement {}
+
+/// A failed point read keeps its exact registered child and original read or
+/// close observation. The census retains it after this facade is dropped.
+pub struct TenantPointReadFailure {
+    reader: RegisteredNodeRead,
+    stage: &'static str,
+    access: Option<NodeReadAccessError>,
+    validation_error: Option<anyhow::Error>,
+}
+impl TenantPointReadFailure {
+    pub fn reader(&self) -> &RegisteredNodeRead {
+        &self.reader
+    }
+    pub fn into_reader(self) -> RegisteredNodeRead {
+        self.reader
+    }
+    pub fn stage(&self) -> &'static str {
+        self.stage
+    }
+    pub fn validation_error(&self) -> Option<&anyhow::Error> {
+        self.validation_error.as_ref()
+    }
+}
+impl std::fmt::Debug for TenantPointReadFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TenantPointReadFailure")
+            .field("reader_id", &self.reader.id())
+            .field("stage", &self.stage)
+            .field("reader_phase", &self.reader.phase())
+            .field("access", &self.access)
+            .field("validation_error", &self.validation_error)
+            .finish()
+    }
+}
+impl std::fmt::Display for TenantPointReadFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "registered tenant point read {:?} failed at {}",
+            self.reader.id(),
+            self.stage
+        )
+    }
+}
+impl std::error::Error for TenantPointReadFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.access
+            .as_ref()
+            .map(|error| error as &(dyn std::error::Error + 'static))
+            .or_else(|| {
+                self.validation_error
+                    .as_ref()
+                    .map(|error| error.as_ref() as _)
+            })
+    }
+}
+
+/// Closing a point reader and retiring its census child are distinct steps.
+pub struct TenantPointReadRetirement {
+    provider: Arc<dyn NodeDiskMemoryAdmission>,
+    id: StorageOwnerId,
+    disposition: StorageCensusDisposition,
+    validation_error: Option<anyhow::Error>,
+}
+impl TenantPointReadRetirement {
+    pub fn id(&self) -> StorageOwnerId {
+        self.id
+    }
+    pub fn disposition(&self) -> StorageCensusDisposition {
+        self.disposition
+    }
+    pub fn validation_error(&self) -> Option<&anyhow::Error> {
+        self.validation_error.as_ref()
+    }
+    pub fn retry_retirement(&self) -> StorageCensusDisposition {
+        self.provider.storage_census().drain_owner(self.id)
+    }
+}
+impl std::fmt::Debug for TenantPointReadRetirement {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TenantPointReadRetirement")
+            .field("id", &self.id)
+            .field("disposition", &self.disposition)
+            .field("validation_error", &self.validation_error)
+            .finish()
+    }
+}
+impl std::fmt::Display for TenantPointReadRetirement {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "registered tenant point reader {:?} retirement {:?}",
+            self.id, self.disposition
+        )
+    }
+}
+impl std::error::Error for TenantPointReadRetirement {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.validation_error.as_ref().map(|error| error.as_ref())
+    }
+}
+
 pub struct NodeStore {
     db: node_database::NodeDatabase,
     persistent_disk: Option<Arc<NodeDisk>>,
@@ -758,12 +942,13 @@ impl NodeStore {
         })
     }
 
-    fn catalog(&self, tenant: &str) -> Result<Option<KeyCatalog>> {
+    fn catalog(&self, tenant: &str) -> Result<Option<AdmittedKeyCatalog>> {
         // Synthetic process-exit fixtures intentionally have a direct backend;
         // an installed production node always has a registered opening.
         #[cfg(any(test, feature = "test-utils"))]
         if self.db.has_fixture_direct_database() {
-            return Self::catalog_at(&self.db.begin_read()?, tenant);
+            return Self::catalog_at(&self.db.begin_read()?, tenant)
+                .map(|catalog| catalog.map(AdmittedKeyCatalog::unadmitted));
         }
 
         let reader = self.db.queue_registered_read()?;
@@ -790,7 +975,13 @@ impl NodeStore {
         };
         let decoded = bytes
             .as_ref()
-            .map(|bytes| Self::catalog_from_bytes(bytes.as_bytes(), tenant))
+            .map(|bytes| {
+                AdmittedKeyCatalog::decode(
+                    bytes.as_bytes(),
+                    tenant,
+                    self.persistent_disk().memory().clone(),
+                )
+            })
             .transpose();
         drop(bytes);
         if reader.finish() != NodeReadPhase::Finished {
@@ -816,6 +1007,7 @@ impl NodeStore {
         decoded
     }
 
+    #[cfg(any(test, feature = "test-utils"))]
     fn catalog_at(tx: &kasumi_kv::ReadTransaction, tenant: &str) -> Result<Option<KeyCatalog>> {
         let table = tx.open_table(CATALOG)?;
         table
@@ -863,14 +1055,41 @@ impl NodeStore {
     }
 
     fn save_catalog(&self, tenant: &str, catalog: &KeyCatalog) -> Result<()> {
-        catalog.validate(tenant)?;
-        let bytes = serde_json::to_vec(catalog)?;
-        let tx = self.db.begin_write()?;
-        {
+        // Only synthetic process-exit fixtures own a direct database. An
+        // installed node always registers its exact write before native begin.
+        #[cfg(any(test, feature = "test-utils"))]
+        if self.db.has_fixture_direct_database() {
+            catalog.validate(tenant)?;
+            let bytes = serde_json::to_vec(catalog)?;
+            let tx = self.db.begin_write()?;
             tx.open_table(CATALOG)?
                 .insert(tenant_hash(tenant).as_slice(), bytes.as_slice())?;
+            return tx.commit().context("committing wrapped-key catalog");
         }
-        tx.commit().context("committing wrapped-key catalog")
+
+        let provider = self.persistent_disk().memory().clone();
+        let plan = storage_opening::write_plan::AdmittedCatalogPut::prepare(
+            tenant,
+            catalog,
+            provider.clone(),
+        )?;
+        let writer = self.db.queue_registered_catalog_put(plan)?;
+        let _ = writer.run();
+        let committed = writer.report().committed_and_disposed();
+        if !committed {
+            return Err(NodeCatalogWriteFailure { writer }.into());
+        }
+        let id = writer.id();
+        let disposition = writer.retire();
+        if disposition != StorageCensusDisposition::Retired {
+            return Err(NodeCatalogWriteRetirement {
+                provider,
+                id,
+                disposition,
+            }
+            .into());
+        }
+        Ok(())
     }
 }
 
@@ -945,6 +1164,9 @@ pub struct TenantStore {
     access: StorageAccess,
     provider: Arc<dyn KeyProvider>,
     catalog: RwLock<KeyCatalog>,
+    // The current catalog's derived allocations remain charged through each
+    // replacement and for the exact lifetime of this owner.
+    catalog_charge: Mutex<Option<DiskMemoryLease>>,
     state: RwLock<KeyState>,
     mutations: Mutex<()>,
     refresh: AsyncMutex<()>,
@@ -1002,6 +1224,19 @@ impl TenantStore {
         self.node.scratch_disk()
     }
 
+    fn clone_catalog_for_mutation(&self) -> Result<AdmittedKeyCatalog> {
+        let current = self.catalog.read();
+        AdmittedKeyCatalog::clone_for_mutation(&current, self.scratch_disk().memory().clone())
+    }
+
+    fn replace_catalog(&self, admitted: AdmittedKeyCatalog) {
+        let (catalog, charge) = admitted.into_parts();
+        // Drop the previous catalog before retiring its charge. The new clone
+        // keeps its local lease until the replacement charge is installed.
+        *self.catalog.write() = catalog;
+        *self.catalog_charge.lock() = charge;
+    }
+
     /// Construct an unpublished owner. The caller retains its open gate until
     /// either publication or completed shutdown of this exact new owner.
     fn unpublished(
@@ -1010,16 +1245,18 @@ impl TenantStore {
         provider: Arc<dyn KeyProvider>,
         access: StorageAccess,
         clock: Arc<dyn LeaseClock>,
-        catalog: KeyCatalog,
+        catalog: impl Into<AdmittedKeyCatalog>,
     ) -> Arc<Self> {
         let (seal_notifier, _) = watch::channel(0);
         let (shutdown_signal, _) = watch::channel(false);
+        let (catalog, catalog_read_charge) = catalog.into().into_parts();
         Arc::new(Self {
             node: node.clone(),
             tenant: tenant.clone(),
             access,
             provider,
             catalog: RwLock::new(catalog),
+            catalog_charge: Mutex::new(catalog_read_charge),
             state: RwLock::new(KeyState {
                 keys: BTreeMap::new(),
                 deadline: Duration::ZERO,
@@ -1246,7 +1483,12 @@ impl TenantStore {
         );
         let start = self.clock.now();
         let epoch = self.access_epoch.load(Ordering::Acquire);
-        let catalog = self.catalog.read().clone();
+        // The installed scratch and persistent owners share one mandatory
+        // memory core. Fund this independent typed clone before it allocates.
+        let catalog = {
+            let current = self.catalog.read();
+            AdmittedKeyCatalog::clone_for_refresh(&current, self.scratch_disk().memory().clone())?
+        };
         let refresh = async {
             let mut keys = BTreeMap::new();
             for (id, wrapped) in &catalog.keys {
@@ -1260,6 +1502,9 @@ impl TenantStore {
             Ok::<_, anyhow::Error>(keys)
         };
         let result = tokio::time::timeout(PROVIDER_TIMEOUT, refresh).await;
+        // The probe future is complete (or cancelled by timeout). Destroy the
+        // cloned strings/map before the exact admission lease can retire.
+        drop(catalog);
         let keys = match result {
             Ok(Ok(keys)) => keys,
             Ok(Err(error)) => {
@@ -1320,33 +1565,132 @@ impl TenantStore {
             key,
             state.keys.get(INDEX_KEY).context("index key missing")?,
         );
-        let tx = self.node.db.begin_read()?;
-        let table = tx.open_table(RECORDS)?;
-        let mut result = match table.get(disk_key.as_slice())? {
-            Some(v) => {
-                check_encrypted_record_budget(
-                    v.value(),
-                    namespace.len(),
-                    key.len(),
-                    max_value_bytes,
-                )?;
-                let record = self.decode_record(&disk_key, v.value(), &state)?;
-                ensure!(
-                    record.value.len() <= max_value_bytes,
-                    "record value exceeds read budget"
-                );
-                ensure!(
-                    record.namespace == namespace && record.key == key,
-                    "record identity mismatch"
-                );
-                Some(record)
-            }
-            None => None,
+        #[cfg(any(test, feature = "test-utils"))]
+        let mut result = if self.node.db.has_fixture_direct_database() {
+            let tx = self.node.db.begin_read()?;
+            let table = tx.open_table(RECORDS)?;
+            table
+                .get(disk_key.as_slice())?
+                .map(|value| {
+                    self.decode_bounded_record(
+                        &disk_key,
+                        value.value(),
+                        namespace,
+                        key,
+                        max_value_bytes,
+                        &state,
+                    )
+                })
+                .transpose()?
+        } else {
+            self.get_bounded_registered(&disk_key, namespace, key, max_value_bytes, &state)?
         };
+        #[cfg(not(any(test, feature = "test-utils")))]
+        let mut result =
+            self.get_bounded_registered(&disk_key, namespace, key, max_value_bytes, &state)?;
         self.require_access(&state)?;
         Ok(result
             .as_mut()
             .map(|record| std::mem::take(&mut record.value)))
+    }
+
+    fn get_bounded_registered(
+        &self,
+        disk_key: &[u8],
+        namespace: &str,
+        key: &[u8],
+        max_value_bytes: usize,
+        state: &KeyState,
+    ) -> Result<Option<DecodedRecord>> {
+        // A valid envelope contains a retained key ID, three length fields,
+        // a nonce and an authentication tag. Bound the *owned ciphertext copy*
+        // before reading; the existing plaintext budget is checked again below.
+        let encrypted_limit =
+            encrypted_record_limit(namespace.len(), key.len(), max_value_bytes, state)?;
+
+        let reader = self.node.db.queue_registered_read()?;
+        if reader.begin() != NodeReadPhase::Active {
+            return Err(TenantPointReadFailure {
+                reader,
+                stage: "begin",
+                access: None,
+                validation_error: None,
+            }
+            .into());
+        }
+        let encrypted = match reader.record_bytes(disk_key, encrypted_limit) {
+            Ok(bytes) => bytes,
+            Err(access) => {
+                return Err(TenantPointReadFailure {
+                    reader,
+                    stage: "record bytes",
+                    access: Some(access),
+                    validation_error: None,
+                }
+                .into());
+            }
+        };
+        let decoded = encrypted
+            .as_ref()
+            .map(|bytes| {
+                self.decode_bounded_record(
+                    disk_key,
+                    bytes.as_bytes(),
+                    namespace,
+                    key,
+                    max_value_bytes,
+                    state,
+                )
+            })
+            .transpose()
+            .and_then(|record| {
+                self.require_access(state)?;
+                Ok(record)
+            });
+        drop(encrypted);
+        if reader.finish() != NodeReadPhase::Finished {
+            return Err(TenantPointReadFailure {
+                reader,
+                stage: "finish",
+                access: None,
+                validation_error: decoded.err(),
+            }
+            .into());
+        }
+        let id = reader.id();
+        let disposition = reader.retire();
+        if disposition != StorageCensusDisposition::Retired {
+            return Err(TenantPointReadRetirement {
+                provider: self.node.persistent_disk().memory().clone(),
+                id,
+                disposition,
+                validation_error: decoded.err(),
+            }
+            .into());
+        }
+        decoded
+    }
+
+    fn decode_bounded_record(
+        &self,
+        disk_key: &[u8],
+        envelope: &[u8],
+        namespace: &str,
+        key: &[u8],
+        max_value_bytes: usize,
+        state: &KeyState,
+    ) -> Result<DecodedRecord> {
+        check_encrypted_record_budget(envelope, namespace.len(), key.len(), max_value_bytes)?;
+        let record = self.decode_record(disk_key, envelope, state)?;
+        ensure!(
+            record.value.len() <= max_value_bytes,
+            "record value exceeds read budget"
+        );
+        ensure!(
+            record.namespace == namespace && record.key == key,
+            "record identity mismatch"
+        );
+        Ok(record)
     }
 
     /// Visits one authenticated record at a time without retaining a namespace's
@@ -1372,24 +1716,54 @@ impl TenantStore {
             namespace,
             state.keys.get(INDEX_KEY).context("index key missing")?,
         );
-        let tx = self.node.db.begin_read()?;
-        let table = tx.open_table(RECORDS)?;
-        for entry in table.range(prefix.as_slice()..)? {
-            let (key, value) = entry?;
-            if !key.value().starts_with(&prefix) {
-                break;
+        #[cfg(any(test, feature = "test-utils"))]
+        if self.node.db.has_fixture_direct_database() {
+            let tx = self.node.db.begin_read()?;
+            let table = tx.open_table(RECORDS)?;
+            for entry in table.range(prefix.as_slice()..)? {
+                let (key, value) = entry?;
+                if !key.value().starts_with(&prefix) {
+                    break;
+                }
+                self.require_access(&state)?;
+                check_encrypted_record_budget(
+                    value.value(),
+                    namespace.len(),
+                    4096,
+                    max_value_bytes,
+                )?;
+                let record = self.decode_record(key.value(), value.value(), &state)?;
+                ensure!(
+                    record.value.len() <= max_value_bytes,
+                    "record value exceeds visit budget"
+                );
+                ensure!(record.namespace == namespace, "record namespace mismatch");
+                visitor(&record.key, &record.value)?;
             }
-            self.require_access(&state)?;
-            check_encrypted_record_budget(value.value(), namespace.len(), 4096, max_value_bytes)?;
-            let record = self.decode_record(key.value(), value.value(), &state)?;
-            ensure!(
-                record.value.len() <= max_value_bytes,
-                "record value exceeds visit budget"
-            );
-            ensure!(record.namespace == namespace, "record namespace mismatch");
-            visitor(&record.key, &record.value)?;
+            return self.require_access(&state);
         }
-        self.require_access(&state)
+        let encrypted_limit =
+            encrypted_record_limit(namespace.len(), 4096, max_value_bytes, &state)?;
+        self.node.with_registered_read(|reader| {
+            let mut cursor: Option<AdmittedReadBytes> = None;
+            while let Some(row) = reader.next_record(
+                &prefix,
+                cursor.as_ref().map(AdmittedReadBytes::as_bytes),
+                encrypted_limit,
+            )? {
+                self.require_access(&state)?;
+                check_encrypted_record_budget(row.value(), namespace.len(), 4096, max_value_bytes)?;
+                let record = self.decode_record(row.key(), row.value(), &state)?;
+                ensure!(
+                    record.value.len() <= max_value_bytes,
+                    "record value exceeds visit budget"
+                );
+                ensure!(record.namespace == namespace, "record namespace mismatch");
+                visitor(&record.key, &record.value)?;
+                cursor = Some(row.into_key());
+            }
+            self.require_access(&state)
+        })
     }
 
     pub fn scan(&self, namespace: &str) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
@@ -1403,21 +1777,50 @@ impl TenantStore {
             namespace,
             state.keys.get(INDEX_KEY).context("index key missing")?,
         );
-        let tx = self.node.db.begin_read()?;
-        let table = tx.open_table(RECORDS)?;
-        let mut records = Vec::new();
-        for entry in table.range(prefix.as_slice()..)? {
-            let (key, value) = entry?;
-            if !key.value().starts_with(&prefix) {
-                break;
+        #[cfg(any(test, feature = "test-utils"))]
+        if self.node.db.has_fixture_direct_database() {
+            let tx = self.node.db.begin_read()?;
+            let table = tx.open_table(RECORDS)?;
+            let mut records = Vec::new();
+            for entry in table.range(prefix.as_slice()..)? {
+                let (key, value) = entry?;
+                if !key.value().starts_with(&prefix) {
+                    break;
+                }
+                self.require_access(&state)?;
+                let record = self.decode_record(key.value(), value.value(), &state)?;
+                ensure!(record.namespace == namespace, "record namespace mismatch");
+                records.push(record);
             }
-            self.require_access(&state)?;
-            let record = self.decode_record(key.value(), value.value(), &state)?;
-            ensure!(record.namespace == namespace, "record namespace mismatch");
-            records.push(record);
+            return self.sorted_scan_records(&state, records);
         }
+        let encrypted_limit = encrypted_record_limit(namespace.len(), 4096, MAX_RECORD, &state)?;
+        let records = self.node.with_registered_read(|reader| {
+            let mut records = Vec::new();
+            let mut cursor: Option<AdmittedReadBytes> = None;
+            while let Some(row) = reader.next_record(
+                &prefix,
+                cursor.as_ref().map(AdmittedReadBytes::as_bytes),
+                encrypted_limit,
+            )? {
+                self.require_access(&state)?;
+                let record = self.decode_record(row.key(), row.value(), &state)?;
+                ensure!(record.namespace == namespace, "record namespace mismatch");
+                records.push(record);
+                cursor = Some(row.into_key());
+            }
+            Ok(records)
+        })?;
+        self.sorted_scan_records(&state, records)
+    }
+
+    fn sorted_scan_records(
+        &self,
+        state: &KeyState,
+        mut records: Vec<DecodedRecord>,
+    ) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
         records.sort_by(|a, b| a.key.cmp(&b.key));
-        self.require_access(&state)?;
+        self.require_access(state)?;
         Ok(records
             .into_iter()
             .map(|mut record| {
@@ -1432,6 +1835,7 @@ impl TenantStore {
     pub fn write_batch(&self, operations: &[WriteOp]) -> Result<()> {
         let _access = AccessGuard(self);
         validate_batch(&[operations])?;
+        reject_unpaired_identity_ops(operations)?;
         self.check_access()?;
         let _mutation = self.mutations.lock();
         let state = self.state.read();
@@ -1463,14 +1867,14 @@ impl TenantStore {
         let _mutation = self.mutations.lock();
         let mut state = self.state.write();
         self.require_access(&state)?;
-        let mut catalog = self.catalog.read().clone();
+        let mut catalog = self.clone_catalog_for_mutation()?;
         ensure!(catalog.keys.len() < 1024, "too many retained data keys");
         let id = Uuid::new_v4().to_string();
         catalog.keys.insert(id.clone(), generated.wrapped);
         catalog.active = id.clone();
         self.node.save_catalog(&self.tenant, &catalog)?;
         state.keys.insert(id, key);
-        *self.catalog.write() = catalog;
+        self.replace_catalog(catalog);
         self.require_access(&state).context(
             "key rotation committed but access expired before acknowledgment; outcome unknown",
         )
@@ -1482,7 +1886,7 @@ impl TenantStore {
         let _access = AccessGuard(self);
         let _refresh = self.refresh.lock().await;
         self.check_access()?;
-        let mut catalog = self.catalog.read().clone();
+        let mut catalog = self.clone_catalog_for_mutation()?;
         for (id, wrapped) in &mut catalog.keys {
             *wrapped = tokio::time::timeout(
                 PROVIDER_TIMEOUT,
@@ -1506,7 +1910,7 @@ impl TenantStore {
         let state = self.state.read();
         self.require_access(&state)?;
         self.node.save_catalog(&self.tenant, &catalog)?;
-        *self.catalog.write() = catalog;
+        self.replace_catalog(catalog);
         self.require_access(&state).context(
             "key rewrap committed but access expired before acknowledgment; outcome unknown",
         )
@@ -1580,6 +1984,45 @@ fn validate_batch(domains: &[&[WriteOp]]) -> Result<()> {
     Ok(())
 }
 
+/// The initial bootstrap rows are immutable even when a caller holds a
+/// writable TenantStore. A repeated, byte-identical first-install write is a
+/// no-op so interrupted chunk publication can resume after an unknown commit.
+pub(crate) fn is_write_once_identity(namespace: &str, key: &[u8]) -> bool {
+    namespace == "engine.bootstrap"
+        || (namespace == "engine.deployment" && key == b"mode")
+        || (namespace == "raft.meta"
+            && matches!(key, b"application_bootstrap_sha256" | b"node_id" | b"group"))
+}
+
+pub(crate) fn is_initial_identity_namespace(namespace: &str) -> bool {
+    matches!(
+        namespace,
+        "engine.bootstrap" | "engine.deployment" | "raft.meta"
+    )
+}
+
+pub(crate) fn is_paired_identity(namespace: &str, key: &[u8]) -> bool {
+    (namespace == "engine.deployment" && key == b"mode")
+        || (namespace == "engine.bootstrap" && key == b"manifest")
+        || (namespace == "raft.meta"
+            && matches!(key, b"application_bootstrap_sha256" | b"node_id" | b"group"))
+}
+
+pub(crate) fn reject_unpaired_identity_ops(operations: &[WriteOp]) -> Result<()> {
+    for operation in operations {
+        let (namespace, key) = match operation {
+            WriteOp::Put { namespace, key, .. } | WriteOp::Delete { namespace, key } => {
+                (namespace, key)
+            }
+        };
+        ensure!(
+            !is_paired_identity(namespace, key),
+            "initial bootstrap identity requires paired domain publication"
+        );
+    }
+    Ok(())
+}
+
 fn write_domain(
     tx: &kasumi_kv::WriteTransaction,
     store: &TenantStore,
@@ -1601,21 +2044,176 @@ fn write_domain(
                 key,
                 value,
             } => {
-                let disk_key = record_key(&store.tenant, namespace, key, index);
-                let plaintext = Zeroizing::new(encode_plain_record(namespace, key, value)?);
-                let aad = record_aad(&store.tenant, &disk_key);
-                let mut envelope = Vec::new();
-                append_bytes(&mut envelope, catalog.active.as_bytes())?;
-                envelope.extend(encrypt(data, &plaintext, &aad)?);
-                table.insert(disk_key.as_slice(), envelope.as_slice())?;
+                let disk_key = inline_record_key(&store.tenant, namespace, key, index);
+                if is_write_once_identity(namespace, key)
+                    && let Some(existing) = table.get(disk_key.as_slice())?
+                {
+                    check_encrypted_record_budget(
+                        existing.value(),
+                        namespace.len(),
+                        key.len(),
+                        MAX_RECORD,
+                    )?;
+                    // Native KV admits the encrypted value. Fund both the
+                    // decrypted buffer and DecodedRecord's owned fields
+                    // before decrypting a potentially large old chunk.
+                    let workspace = u64::try_from(existing.value().len())?
+                        .checked_mul(2)
+                        .and_then(|bytes| bytes.checked_add(8192))
+                        .context("initial identity decode workspace overflow")?;
+                    let _plaintext = store
+                        .scratch_disk()
+                        .memory()
+                        .clone()
+                        .reserve_installed(workspace)
+                        .context("initial identity decode admission denied")?;
+                    let record = store.decode_record(&disk_key, existing.value(), state)?;
+                    ensure!(
+                        record.namespace == namespace.as_str()
+                            && record.key.as_slice() == key.as_slice()
+                            && record.value.as_slice() == value.as_slice(),
+                        "initial bootstrap identity is write-once"
+                    );
+                    store.require_access(state)?;
+                    continue;
+                }
+                let admitted = AdmittedRecordPut::prepare(
+                    store,
+                    state,
+                    namespace,
+                    key,
+                    value,
+                    &disk_key,
+                    &catalog.active,
+                    data,
+                )?;
+                table.insert(disk_key.as_slice(), admitted.bytes())?;
             }
             WriteOp::Delete { namespace, key } => {
+                ensure!(
+                    !is_write_once_identity(namespace, key),
+                    "initial bootstrap identity is write-once"
+                );
                 let disk_key = record_key(&store.tenant, namespace, key, index);
-                table.remove(disk_key.as_slice())?;
+                table.delete_key(disk_key.as_slice())?;
             }
         }
     }
     Ok(())
+}
+
+/// The one encrypted-record buffer owns its exact installed resident charge
+/// through native insertion. Its zeroizing allocation drops before the lease.
+struct AdmittedRecordPut {
+    envelope: Zeroizing<Vec<u8>>,
+    _charge: DiskMemoryLease,
+}
+impl AdmittedRecordPut {
+    #[allow(clippy::too_many_arguments)]
+    fn prepare(
+        store: &TenantStore,
+        state: &KeyState,
+        namespace: &str,
+        key: &[u8],
+        value: &[u8],
+        disk_key: &[u8; 96],
+        active: &str,
+        data: &SecretKey,
+    ) -> Result<Self> {
+        let active_bytes = active.as_bytes();
+        let active_len = u32::try_from(active_bytes.len())?;
+        let plain_len = 12usize
+            .checked_add(namespace.len())
+            .and_then(|size| size.checked_add(key.len()))
+            .and_then(|size| size.checked_add(value.len()))
+            .context("encrypted record plaintext length overflow")?;
+        let header_len = 4usize
+            .checked_add(active_bytes.len())
+            .context("encrypted record key ID overflow")?;
+        let plain_start = header_len
+            .checked_add(24)
+            .context("encrypted record nonce overflow")?;
+        let plain_end = plain_start
+            .checked_add(plain_len)
+            .context("encrypted record body overflow")?;
+        let envelope_len = plain_end
+            .checked_add(16)
+            .context("encrypted record tag overflow")?;
+        ensure!(
+            envelope_len <= MAX_BATCH,
+            "encrypted record exceeds batch limit"
+        );
+        let requested = u64::try_from(envelope_len)?;
+        let admitted = disk_memory::allocation::<u8>(requested)?;
+        #[cfg(any(test, feature = "test-utils"))]
+        let provider = if store.node.db.has_fixture_direct_database() {
+            // A synthetic direct database has no persistent NodeDisk, but its
+            // fixture scratch owner still installs mandatory resident credit.
+            store.node.scratch_disk().memory().clone()
+        } else {
+            store.node.persistent_disk().memory().clone()
+        };
+        #[cfg(not(any(test, feature = "test-utils")))]
+        let provider = store.node.persistent_disk().memory().clone();
+        let charge = provider
+            .reserve_installed(admitted)
+            .context("encrypted record output admission denied")?;
+
+        let tenant = store.tenant.as_bytes();
+        ensure!(tenant.len() <= 1024, "invalid encrypted record tenant");
+        const AAD_PREFIX: &[u8] = b"kasumi.encrypted-record.v1";
+        const AAD_MAX: usize = AAD_PREFIX.len() + 8 + 1024 + 96;
+        let mut aad = Zeroizing::new([0u8; AAD_MAX]);
+        let aad_len = AAD_PREFIX.len() + 8 + tenant.len() + disk_key.len();
+        aad[..AAD_PREFIX.len()].copy_from_slice(AAD_PREFIX);
+        aad[AAD_PREFIX.len()..AAD_PREFIX.len() + 8]
+            .copy_from_slice(&(tenant.len() as u64).to_be_bytes());
+        aad[AAD_PREFIX.len() + 8..AAD_PREFIX.len() + 8 + tenant.len()].copy_from_slice(tenant);
+        aad[AAD_PREFIX.len() + 8 + tenant.len()..aad_len].copy_from_slice(disk_key);
+
+        let mut envelope = Zeroizing::new(Vec::new());
+        envelope
+            .try_reserve_exact(envelope_len)
+            .context("encrypted record output allocation failed")?;
+        ensure!(
+            u64::try_from(envelope.capacity())? <= admitted,
+            "encrypted record output allocation exceeded admission"
+        );
+        envelope.resize(envelope_len, 0);
+        envelope[..4].copy_from_slice(&active_len.to_be_bytes());
+        envelope[4..header_len].copy_from_slice(active_bytes);
+        let mut nonce = [0u8; 24];
+        getrandom::fill(&mut nonce).map_err(|_| anyhow::anyhow!("OS randomness unavailable"))?;
+        envelope[header_len..plain_start].copy_from_slice(&nonce);
+        let mut at = plain_start;
+        for part in [namespace.as_bytes(), key, value] {
+            let len = u32::try_from(part.len())?;
+            envelope[at..at + 4].copy_from_slice(&len.to_be_bytes());
+            at += 4;
+            envelope[at..at + part.len()].copy_from_slice(part);
+            at += part.len();
+        }
+        debug_assert_eq!(at, plain_end);
+        let cipher = XChaCha20Poly1305::new_from_slice(data.as_bytes())
+            .map_err(|_| anyhow::anyhow!("invalid encryption key"))?;
+        let tag = cipher
+            .encrypt_in_place_detached(
+                XNonce::from_slice(&nonce),
+                &aad[..aad_len],
+                &mut envelope[plain_start..plain_end],
+            )
+            .map_err(|_| anyhow::anyhow!("record encryption failed"))?;
+        envelope[plain_end..].copy_from_slice(&tag);
+        store.require_access(state)?;
+        Ok(Self {
+            envelope,
+            _charge: charge,
+        })
+    }
+
+    fn bytes(&self) -> &[u8] {
+        &self.envelope
+    }
 }
 
 fn same_key(left: &SecretKey, right: &SecretKey) -> bool {
@@ -1666,6 +2264,29 @@ fn record_key(tenant: &str, namespace: &str, key: &[u8], index: &SecretKey) -> V
     result
 }
 
+fn inline_record_key(tenant: &str, namespace: &str, key: &[u8], index: &SecretKey) -> [u8; 96] {
+    let mut result = [0u8; 96];
+    result[..32].copy_from_slice(&tenant_hash(tenant));
+    result[32..64].copy_from_slice(&keyed_hash(
+        index,
+        &[
+            b"kasumi.namespace.v1",
+            tenant.as_bytes(),
+            namespace.as_bytes(),
+        ],
+    ));
+    result[64..].copy_from_slice(&keyed_hash(
+        index,
+        &[
+            b"kasumi.record.v1",
+            tenant.as_bytes(),
+            namespace.as_bytes(),
+            key,
+        ],
+    ));
+    result
+}
+
 fn record_aad(tenant: &str, key: &[u8]) -> Vec<u8> {
     let mut aad = b"kasumi.encrypted-record.v1".to_vec();
     aad.extend((tenant.len() as u64).to_be_bytes());
@@ -1685,6 +2306,7 @@ fn validate_record(namespace: &str, key: &[u8], value_len: usize) -> Result<()> 
     Ok(())
 }
 
+#[cfg(any(test, feature = "test-utils"))]
 fn append_bytes(out: &mut Vec<u8>, value: &[u8]) -> Result<()> {
     out.extend(
         u32::try_from(value.len())
@@ -1703,6 +2325,26 @@ fn take_bytes<'a>(input: &mut &'a [u8]) -> Result<&'a [u8]> {
     let result = &input[..len];
     *input = &input[len..];
     Ok(result)
+}
+
+fn encrypted_record_limit(
+    namespace_bytes: usize,
+    key_bytes: usize,
+    max_value_bytes: usize,
+    state: &KeyState,
+) -> Result<usize> {
+    let longest_key_id = state.keys.keys().map(String::len).max().unwrap_or(0);
+    let limit = max_value_bytes
+        .checked_add(namespace_bytes)
+        .and_then(|bytes| bytes.checked_add(key_bytes))
+        .and_then(|bytes| bytes.checked_add(longest_key_id))
+        .and_then(|bytes| bytes.checked_add(4 + 12 + 24 + 16))
+        .context("record read budget overflow")?;
+    ensure!(
+        limit <= MAX_BATCH,
+        "encrypted record read budget exceeds storage limit"
+    );
+    Ok(limit)
 }
 
 fn check_encrypted_record_budget(
@@ -1726,6 +2368,7 @@ fn check_encrypted_record_budget(
     Ok(())
 }
 
+#[cfg(any(test, feature = "test-utils"))]
 fn encode_plain_record(namespace: &str, key: &[u8], value: &[u8]) -> Result<Vec<u8>> {
     let mut result = Vec::with_capacity(12 + namespace.len() + key.len() + value.len());
     append_bytes(&mut result, namespace.as_bytes())?;

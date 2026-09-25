@@ -29,6 +29,20 @@ pub(crate) struct RuntimeTargetPhase {
     renewal: Arc<crate::runtime_worker::RuntimeWorker>,
     drain_report: AsyncMutex<kasumi_types::drain::DrainReport>,
 }
+enum ObservationBudget<'a> {
+    Admission(&'a TargetRequestAdmission),
+    Operation(&'a TargetOperation),
+    Renewal(&'a LifecycleGate),
+}
+impl ObservationBudget<'_> {
+    fn remaining(&self) -> Result<Duration> {
+        Ok(match self {
+            Self::Admission(admission) => admission.remaining_response()?,
+            Self::Operation(operation) => operation.remaining_response()?,
+            Self::Renewal(gate) => gate.remaining()?,
+        })
+    }
+}
 impl Drop for RuntimeTargetPhase {
     fn drop(&mut self) {
         self.scope.close();
@@ -36,9 +50,16 @@ impl Drop for RuntimeTargetPhase {
     }
 }
 impl RuntimeTargetPhase {
+    pub(crate) fn seal_admission(&self) {
+        self.scope.seal_admission();
+    }
+    pub(crate) async fn drain_detached(&self) {
+        self.scope.drain_detached().await;
+    }
     pub(crate) async fn shutdown(&self) -> kasumi_types::drain::DrainResult {
         use kasumi_types::drain::DrainCompletion;
-        self.close();
+        self.seal_admission();
+        self.renewal.close();
         let mut report = self.drain_report.lock().await;
         let mut retained = None;
         if let Err(error) = self.renewal.drain().await {
@@ -47,6 +68,14 @@ impl RuntimeTargetPhase {
                 retained = Some(error);
             }
         }
+        if retained.is_some() {
+            return report.outcome(retained);
+        }
+        // A replica's group registration survives finite operation work and
+        // releases only when the replica closes. Keep both storage gates live
+        // through that owned drain, including a canceled shutdown waiter.
+        self.scope.drain().await;
+        self.close();
         if let Some(serving) = &self.serving
             && let Err(error) = serving.shutdown().await
         {
@@ -55,7 +84,6 @@ impl RuntimeTargetPhase {
                 retained = Some(error);
             }
         }
-        self.scope.drain().await;
         report.outcome(retained)
     }
     pub(crate) fn close(&self) {
@@ -101,7 +129,7 @@ impl RuntimeTargetPhase {
         let original = admission
             .run(async {
                 Ok(control
-                    .observe_intent(command_id, Duration::from_secs(5))
+                    .observe_intent(command_id, admission.remaining_response()?)
                     .await?)
             })
             .await?;
@@ -179,10 +207,13 @@ impl RuntimeTargetPhase {
         let mut issuer_admin = issuer
             .clone()
             .with_credential(Arc::new(move || source(&path)));
+        // Give the original one-shot issuer effect more time to resolve through
+        // its exact receipt. The enclosing admission still enforces the original
+        // target deadline and credential lifetime; this does not replay an effect.
         admission
             .run(async {
                 Ok(issuer_admin
-                    .execute_lifecycle(&accepted, Duration::from_secs(5))
+                    .execute_lifecycle(&accepted, Duration::from_secs(15))
                     .await?)
             })
             .await?;
@@ -232,7 +263,8 @@ impl RuntimeTargetPhase {
             renewal: Default::default(),
             drain_report: Default::default(),
         });
-        admission.run(runtime.check_current()).await?;
+        let budget = ObservationBudget::Admission(admission);
+        admission.run(runtime.check_current(&budget)).await?;
         let weak = Arc::downgrade(&runtime);
         let wake = runtime.renewal.wake();
         let partition = runtime
@@ -294,6 +326,12 @@ impl RuntimeTargetPhase {
     pub(crate) fn original(&self) -> &VerifiedControlIntent {
         &self.original
     }
+    pub(crate) fn original_expires_at_ms(&self) -> u64 {
+        self.original
+            .observation()
+            .intent
+            .original_credential_expires_at_ms
+    }
     pub(crate) fn access(&self) -> Result<kasumi_store::StorageAccess> {
         self.scope.invocation().check()?;
         kasumi_store::StorageAccess::target_phase(
@@ -307,13 +345,13 @@ impl RuntimeTargetPhase {
     }
     /// This live check uses the exact installed Control route and original
     /// credential, not a historical signature or a renewable node lease alone.
-    pub(crate) async fn check_current(&self) -> Result<()> {
+    async fn check_current(&self, budget: &ObservationBudget<'_>) -> Result<()> {
         self.scope.invocation().check()?;
         let mut control = self.control.lock().await;
         let fresh = control
             .observe_intent(
                 self.original.observation().intent.request.command_id,
-                Duration::from_secs(5),
+                budget.remaining()?,
             )
             .await?;
         ensure!(
@@ -347,8 +385,9 @@ impl RuntimeTargetPhase {
                 && context.scopes.contains(&Action::Admin),
             "current request actor or resource differs"
         );
-        admission.run(self.check_current()).await?;
-        admission.run(self.observe_with(bearer)).await?;
+        let budget = ObservationBudget::Admission(admission);
+        admission.run(self.check_current(&budget)).await?;
+        admission.run(self.observe_with(bearer, &budget)).await?;
         admission.check()?;
         Ok(())
     }
@@ -365,11 +404,12 @@ impl RuntimeTargetPhase {
             ),
             "operation belongs to another target phase"
         );
-        operation.run(self.check_current()).await?;
-        operation.run(self.observe_with(bearer)).await?;
+        let budget = ObservationBudget::Operation(operation);
+        operation.run(self.check_current(&budget)).await?;
+        operation.run(self.observe_with(bearer, &budget)).await?;
         operation.check()
     }
-    async fn observe_with(&self, bearer: &str) -> Result<()> {
+    async fn observe_with(&self, bearer: &str, budget: &ObservationBudget<'_>) -> Result<()> {
         let credential = Zeroizing::new(bearer.to_owned());
         let mut control = self
             .control
@@ -380,7 +420,7 @@ impl RuntimeTargetPhase {
         let fresh = control
             .observe_intent(
                 self.original.observation().intent.request.command_id,
-                Duration::from_secs(5),
+                budget.remaining()?,
             )
             .await?;
         ensure!(
@@ -433,7 +473,8 @@ impl RuntimeTargetPhase {
         Ok(proof)
     }
     async fn renew(&self) -> Result<()> {
-        self.check_current().await?;
+        let budget = ObservationBudget::Renewal(self.scope.invocation().gate());
+        self.check_current(&budget).await?;
         let mut issuer = self.authority.lock().await;
         let attempt = self.boot.begin(&self.original)?;
         let lease = issuer

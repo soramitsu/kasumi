@@ -151,14 +151,16 @@ async fn real_three_node_raft_replicates_over_pinned_mutual_tls_http() -> Result
             kasumi_store::test_utils::NODE_STORE_ID,
         )?;
         physical_nodes.push(node.clone());
+        let stores = kasumi_store::test_utils::initialize_custody_fixture(
+            store(node).await?,
+            Arc::new(LocalKeyProvider::new([241; 32])),
+        )
+        .await?;
+        stores.write_batch(&[], &kasumi_raft::initial_storage_identity(id, "tenant-a")?)?;
         let group = RaftGroup::open(
             id,
             "tenant-a".into(),
-            kasumi_store::test_utils::initialize_custody_fixture(
-                store(node).await?,
-                Arc::new(LocalKeyProvider::new([241; 32])),
-            )
-            .await?,
+            stores,
             backend.clone(),
             network.clone(),
             kasumi_raft::RaftGroupConfig {
@@ -319,14 +321,16 @@ async fn peer_requests_bind_certificate_source_candidate_target_and_group_and_li
         dir.path().join("persistent/node.kv"),
         kasumi_store::test_utils::NODE_STORE_ID,
     )?;
+    let stores = kasumi_store::test_utils::initialize_custody_fixture(
+        store(node.clone()).await?,
+        Arc::new(LocalKeyProvider::new([241; 32])),
+    )
+    .await?;
+    stores.write_batch(&[], &kasumi_raft::initial_storage_identity(1, "tenant-a")?)?;
     let group = RaftGroup::open(
         1,
         "tenant-a".into(),
-        kasumi_store::test_utils::initialize_custody_fixture(
-            store(node.clone()).await?,
-            Arc::new(LocalKeyProvider::new([241; 32])),
-        )
-        .await?,
+        stores,
         Arc::new(Backend::default()),
         network.clone(),
         kasumi_raft::RaftGroupConfig {

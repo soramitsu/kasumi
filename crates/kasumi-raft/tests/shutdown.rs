@@ -78,14 +78,16 @@ async fn shutdown_drains_snapshot_worker_before_releasing_group_or_file_ownershi
         Arc::new(ManualClock::new()),
     )
     .await?;
+    let stores = kasumi_store::test_utils::initialize_custody_fixture(
+        store.clone(),
+        Arc::new(LocalKeyProvider::new([241; 32])),
+    )
+    .await?;
+    stores.write_batch(&[], &kasumi_raft::initial_storage_identity(1, "tenant-a")?)?;
     let group = RaftGroup::local(
         1,
         "tenant-a".into(),
-        kasumi_store::test_utils::initialize_custody_fixture(
-            store.clone(),
-            Arc::new(LocalKeyProvider::new([241; 32])),
-        )
-        .await?,
+        stores,
         Arc::new(PausedSnapshot {
             inner: common::Backend::default(),
             entered: Mutex::new(Some(entered)),
@@ -138,7 +140,7 @@ async fn shutdown_drains_snapshot_worker_before_releasing_group_or_file_ownershi
     let group = RaftGroup::local(
         1,
         "tenant-a".into(),
-        common::store(&path, false, fixture_scratch.clone()).await?,
+        common::store(&path, false, fixture_scratch.clone(), 1, "tenant-a").await?,
         recovered.clone(),
         common::snapshot_owner(),
     )

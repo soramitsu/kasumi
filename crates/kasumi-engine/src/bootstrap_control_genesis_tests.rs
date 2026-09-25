@@ -193,7 +193,16 @@ async fn audit(
 fn retained(stores: &TenantStorageSet) -> anyhow::Result<String> {
     let mut digest = Sha256::new();
     for store in [stores.application(), stores.custody().store()] {
-        for namespace in ["engine.deployment", NS, "raft.meta"] {
+        for namespace in [
+            "engine.deployment",
+            NS,
+            "raft.meta",
+            "raft.headers",
+            "raft.log",
+            "raft.custody-log",
+            "raft.snapshot",
+            "raft.retirement-seeds",
+        ] {
             store.visit(namespace, 8 << 20, |key, value| {
                 digest.update((key.len() as u64).to_be_bytes());
                 digest.update(key);
@@ -330,6 +339,11 @@ async fn strict_control_reopen_rejects_partial_genesis_without_catalog_or_raft_m
     )?
     .logical_snapshot(node.scratch_disk())?;
     persist_new(&pair, &partial)?;
+    let expected_group = format!("{CONTROL_TENANT}/{}", installed.incarnation);
+    let installed_identity = kasumi_raft::ControlLog::installed(pair.custody().clone())?
+        .expect("bootstrap published its Raft node/group pair");
+    assert_eq!(installed_identity.node_id(), 1);
+    assert_eq!(installed_identity.group(), expected_group);
     let before = retained(&pair)?;
     let error = open_existing_replicated(
         1,
@@ -344,7 +358,10 @@ async fn strict_control_reopen_rejects_partial_genesis_without_catalog_or_raft_m
     .unwrap();
     assert!(format!("{error:#}").contains("immutable genesis"));
     assert_eq!(retained(&pair)?, before);
-    assert!(kasumi_raft::ControlLog::installed(pair.custody().clone())?.is_none());
+    let installed_after = kasumi_raft::ControlLog::installed(pair.custody().clone())?
+        .expect("failed reopen retained its installed Raft identity");
+    assert_eq!(installed_after.node_id(), 1);
+    assert_eq!(installed_after.group(), expected_group);
     pair.shutdown().await?;
     node.drain_initializers().await?;
     audit.shutdown().await?;

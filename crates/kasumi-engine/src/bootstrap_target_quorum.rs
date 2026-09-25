@@ -17,16 +17,27 @@ pub struct TargetReplica {
     registration: Option<crate::admission::WorkRegistration>,
     shutdown_runtime: tokio::runtime::Handle,
 }
+struct ClosePhaseOnDrop(Arc<kasumi_serving::LifecycleGate>);
+impl Drop for ClosePhaseOnDrop {
+    fn drop(&mut self) {
+        self.0.close();
+    }
+}
 impl TargetReplica {
     pub fn database(&self) -> &Arc<Database> {
         &self.database
     }
     pub async fn close(&mut self) -> kasumi_types::drain::DrainResult {
-        self.invocation.gate().close();
+        // Cancellation leaves this owner available for a second drain attempt.
+        // Admission is already fenced, while Raft retains storage access.
+        self.database.seal_admission();
         let outcome = self.database.shutdown().await;
         if !outcome.as_ref().is_err_and(|failure| {
             failure.completion() == kasumi_types::drain::DrainCompletion::Retained
         }) {
+            // A retained database still owns a Raft task that may write while
+            // a later close joins it; its storage gate must remain valid.
+            self.invocation.gate().close();
             self.registration.take();
         }
         outcome
@@ -111,15 +122,35 @@ impl TargetReplica {
 }
 impl Drop for TargetReplica {
     fn drop(&mut self) {
-        self.invocation.gate().close();
+        self.database.seal_admission();
         let Some(registration) = self.registration.take() else {
+            self.invocation.gate().close();
             return;
         };
         let database = self.database.clone();
+        let close_phase = ClosePhaseOnDrop(self.invocation.gate().clone());
         self.shutdown_runtime.spawn(async move {
             let _registration = registration;
-            if let Err(failure) = database.shutdown().await {
-                tracing::error!(%failure, "abandoned target replica drain failed");
+            let _close_phase = close_phase;
+            let mut reported_retention = false;
+            loop {
+                match database.shutdown().await {
+                    Ok(()) => break,
+                    Err(failure)
+                        if failure.completion()
+                            == kasumi_types::drain::DrainCompletion::Retained =>
+                    {
+                        if !reported_retention {
+                            tracing::error!(%failure, "abandoned target replica drain retained");
+                            reported_retention = true;
+                        }
+                        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                    }
+                    Err(failure) => {
+                        tracing::error!(%failure, "abandoned target replica drain failed");
+                        break;
+                    }
+                }
             }
         });
     }

@@ -21,7 +21,7 @@ fn context() -> RequestContext {
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn captured_and_historical_backup_verification_fit_fixed_production_workspace() {
-    let maximum = 384 << 20;
+    let maximum = 480 << 20;
     let fixture = Fixture::with_admission(
         Limits {
             max_batch_bytes: 1 << 20,
@@ -64,7 +64,7 @@ async fn captured_and_historical_backup_verification_fit_fixed_production_worksp
     // Both production archival lanes and the service ledger are installed.
     // The former proportional verifier cannot fit alongside those same reserves.
     assert!(fixture.db.audit_maintenance_status().is_some());
-    assert!(resident * 3 + (256 << 20) > maximum);
+    assert!(resident * 3 + (256 << 20) + 2 * AuditRetentionBudget::MAINTENANCE_BYTES > maximum);
     let production_payload = fixture.production_payload_baseline();
     let proof = fixture
         .db
@@ -72,13 +72,19 @@ async fn captured_and_historical_backup_verification_fit_fixed_production_worksp
         .await
         .unwrap();
     assert_eq!(proof.checkpoint().tenant, "checkpoint");
+    let published_payload = fixture.reserved_payload();
+    assert!(
+        published_payload >= production_payload
+            && published_payload - production_payload <= 1 << 20,
+        "committed proof metadata stays bounded independently of the backup payload"
+    );
     let independently_verified = fixture
         .db
         .verify_backup_checkpoint_named(context(), "approved", proof.checkpoint().backup_id)
         .await
         .unwrap();
     assert_eq!(independently_verified.checkpoint(), proof.checkpoint());
-    assert_eq!(fixture.reserved_payload(), production_payload);
+    assert_eq!(fixture.reserved_payload(), published_payload);
     fixture.close().await;
 }
 
@@ -87,7 +93,7 @@ async fn restore_hands_off_verified_workspace_with_production_and_destination_re
     let fixture = Fixture::with_admission(
         Limits::default(),
         kasumi_engine::admission::AdmissionConfig {
-            max_inflight_bytes: Some(512 << 20),
+            max_inflight_bytes: Some(640 << 20),
             ..Default::default()
         },
         true,
@@ -153,19 +159,21 @@ async fn restore_hands_off_verified_workspace_with_production_and_destination_re
         restored.engine().generation().unwrap().state.document_count,
         1
     );
-    assert_eq!(
-        fixture.reserved_payload(),
-        production_payload
-            + (128 << 20)
-            + snapshot_owner_bytes()
-            + Database::fixture_proposal_metadata_bytes().unwrap()
+    let proposal_metadata = Database::fixture_proposal_metadata_bytes().unwrap();
+    let expected_live =
+        production_payload + (128 << 20) + snapshot_owner_bytes() + proposal_metadata;
+    let restored_payload = fixture.reserved_payload();
+    assert!(
+        restored_payload >= expected_live && restored_payload - expected_live <= 1 << 20,
+        "target node metadata remains bounded"
     );
+    let restore_metadata = restored_payload - expected_live;
     // Restore's mandatory audit proposal installs its own fixed registry. A
     // successful drain releases that registry while the group facade stays live.
     restored.shutdown().await.unwrap();
     assert_eq!(
         fixture.reserved_payload(),
-        production_payload + (128 << 20) + snapshot_owner_bytes()
+        production_payload + (128 << 20) + snapshot_owner_bytes() + restore_metadata
     );
     domains.custody().store().shutdown().await.unwrap();
     target.shutdown().await.unwrap();
@@ -173,6 +181,8 @@ async fn restore_hands_off_verified_workspace_with_production_and_destination_re
     drop(restored);
     drop(domains);
     drop(target);
+    let before_reopen_payload = fixture.reserved_payload();
+    let before_reopen_reservations = admission.snapshot().live_reservations;
     let node = fixture
         .physical
         .storage
@@ -181,6 +191,10 @@ async fn restore_hands_off_verified_workspace_with_production_and_destination_re
             kasumi_store::test_utils::NODE_STORE_ID,
         )
         .unwrap();
+    let before_catalog_open = fixture.reserved_payload();
+    let before_catalog_reservations = admission.snapshot().live_reservations;
+    // Reopening each decoded catalog retains its typed allocation charge with
+    // its owner. The restored catalog's shape can differ from the source.
     let target = TenantStore::open_existing_fixture(
         node.clone(),
         "checkpoint".into(),
@@ -188,12 +202,30 @@ async fn restore_hands_off_verified_workspace_with_production_and_destination_re
     )
     .await
     .unwrap();
+    let after_application_catalog = fixture.reserved_payload();
+    let application_catalog_charge = after_application_catalog
+        .checked_sub(before_catalog_open)
+        .expect("application catalog charge cannot reduce installed memory");
+    assert!(application_catalog_charge > 0 && application_catalog_charge <= 1 << 20);
+    assert_eq!(
+        admission.snapshot().live_reservations,
+        before_catalog_reservations + 1
+    );
     let domains = kasumi_store::test_utils::open_existing_custody_fixture(
         target,
         Arc::new(LocalKeyProvider::new([241; 32])),
     )
     .await
     .unwrap();
+    let custody_catalog_charge = fixture
+        .reserved_payload()
+        .checked_sub(after_application_catalog)
+        .expect("custody catalog charge cannot reduce installed memory");
+    assert!(custody_catalog_charge > 0 && custody_catalog_charge <= 1 << 20);
+    assert_eq!(
+        admission.snapshot().live_reservations,
+        before_catalog_reservations + 2
+    );
     let reopened =
         kasumi_engine::open_local(domains, policy(), Limits::default(), fixture.audit.clone())
             .await
@@ -204,11 +236,21 @@ async fn restore_hands_off_verified_workspace_with_production_and_destination_re
     );
     assert_eq!(
         fixture.reserved_payload(),
-        production_payload + (128 << 20) + snapshot_owner_bytes()
+        production_payload
+            + (128 << 20)
+            + snapshot_owner_bytes()
+            + restore_metadata
+            + application_catalog_charge
+            + custody_catalog_charge
     );
     reopened.shutdown().await.unwrap();
     node.shutdown().await.unwrap();
     drop(reopened);
+    assert_eq!(fixture.reserved_payload(), before_reopen_payload);
+    assert_eq!(
+        admission.snapshot().live_reservations,
+        before_reopen_reservations
+    );
     drop(destination_workspace);
     assert_eq!(fixture.reserved_payload(), production_payload);
     fixture.close().await;
@@ -608,7 +650,7 @@ async fn checkpoint_binds_actual_generation_complete_graph_keys_and_encrypted_re
     let audit =
         common::existing_security_audit(node.clone(), physical.storage.admission.clone()).await;
     let store = TenantStore::open_existing_fixture(
-        node,
+        node.clone(),
         "checkpoint".into(),
         Arc::new(LocalKeyProvider::new([0xD8; 32])),
     )
@@ -680,7 +722,7 @@ impl FaultyObjectRead {
 }
 #[async_trait::async_trait]
 impl BackupDestination for FaultyObjectRead {
-    async fn put(&self, id: uuid::Uuid, bytes: Vec<u8>) -> anyhow::Result<()> {
+    async fn put(&self, id: uuid::Uuid, bytes: kasumi_store::BackupUpload) -> anyhow::Result<()> {
         self.inner.put(id, bytes).await
     }
     async fn get(&self, id: uuid::Uuid, limit: usize) -> anyhow::Result<Vec<u8>> {
@@ -690,7 +732,7 @@ impl BackupDestination for FaultyObjectRead {
         &self,
         session: uuid::Uuid,
         slot: kasumi_store::BackupSessionSlot,
-        bytes: Vec<u8>,
+        bytes: kasumi_store::BackupUpload,
     ) -> anyhow::Result<()> {
         self.inner.session_put(session, slot, bytes).await
     }
@@ -847,7 +889,7 @@ impl BackupDestination for PausedRead {
         &self,
         session: uuid::Uuid,
         slot: kasumi_store::BackupSessionSlot,
-        bytes: Vec<u8>,
+        bytes: kasumi_store::BackupUpload,
     ) -> anyhow::Result<()> {
         kasumi_store::BackupDestination::session_put(
             self.destination.as_ref(),
@@ -876,7 +918,7 @@ impl BackupDestination for PausedRead {
         .await
     }
 
-    async fn put(&self, id: uuid::Uuid, bytes: Vec<u8>) -> anyhow::Result<()> {
+    async fn put(&self, id: uuid::Uuid, bytes: kasumi_store::BackupUpload) -> anyhow::Result<()> {
         self.destination.put(id, bytes).await
     }
     async fn get(&self, id: uuid::Uuid, limit: usize) -> anyhow::Result<Vec<u8>> {
@@ -997,7 +1039,7 @@ struct SessionFault {
 }
 #[async_trait::async_trait]
 impl BackupDestination for SessionFault {
-    async fn put(&self, id: uuid::Uuid, bytes: Vec<u8>) -> anyhow::Result<()> {
+    async fn put(&self, id: uuid::Uuid, bytes: kasumi_store::BackupUpload) -> anyhow::Result<()> {
         self.inner.put(id, bytes).await
     }
     async fn get(&self, id: uuid::Uuid, limit: usize) -> anyhow::Result<Vec<u8>> {
@@ -1015,7 +1057,7 @@ impl BackupDestination for SessionFault {
         &self,
         session: uuid::Uuid,
         slot: kasumi_store::BackupSessionSlot,
-        bytes: Vec<u8>,
+        bytes: kasumi_store::BackupUpload,
     ) -> anyhow::Result<()> {
         if (self.fail_objects && matches!(slot, kasumi_store::BackupSessionSlot::Object(_)))
             || (self.fail_outcome && matches!(slot, kasumi_store::BackupSessionSlot::Outcome))
@@ -1127,7 +1169,7 @@ async fn aborted_session_cleanup_is_bounded_and_catches_late_uploads() {
             .session_put(
                 session,
                 kasumi_store::BackupSessionSlot::Object(uuid::Uuid::new_v4()),
-                vec![12; 100],
+                kasumi_store::BackupUpload::received(vec![12; 100]),
             )
             .await
             .unwrap();
@@ -1158,7 +1200,7 @@ async fn aborted_session_cleanup_is_bounded_and_catches_late_uploads() {
         .session_put(
             session,
             kasumi_store::BackupSessionSlot::Object(uuid::Uuid::new_v4()),
-            vec![13; 100],
+            kasumi_store::BackupUpload::received(vec![13; 100]),
         )
         .await
         .unwrap();
