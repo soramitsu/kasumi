@@ -821,6 +821,14 @@ impl Database {
         self.shutdown_inner(false).await
     }
 
+    /// Fence new application work without revoking storage access still needed
+    /// by the owned Raft runtime while its shutdown is in progress.
+    pub fn seal_admission(&self) {
+        self.closing.store(true, Ordering::Release);
+        self.work.seal();
+        self.audit_work.seal();
+    }
+
     /// Trusted installed lifecycle transition. The source is already permanently
     /// retired; this neither authorizes a proof nor reopens an application route.
     /// Retained old Database handles cannot later seal the new custody owner.
@@ -853,9 +861,7 @@ impl Database {
             }
             self.custody_detached.store(true, Ordering::Release);
         }
-        self.closing.store(true, Ordering::Release);
-        self.work.seal();
-        self.audit_work.seal();
+        self.seal_admission();
         self.background_stop.send_replace(true);
         self.audit_worker_wake.notify_one();
         {

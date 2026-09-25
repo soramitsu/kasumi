@@ -119,9 +119,6 @@ paths = [
     '''(?:^|/)docs/evidence/stock\-json\-sdk\-3f88b44\-20260909/source/kasumi\-stock\-sdk\-consumer\-3f88b44\-source\-evidence\.json$''',
     '''(?:^|/)docs/evidence/stock\-json\-sdk\-3f88b44\-20260909/source/kasumi\-stock\-sdk\-consumer\-e36f596\-source\-evidence\.json$''',
     '''(?:^|/)vendor/patch\-manifest\.json$''',
-    '''(?:^|/)vendor/redb\-4\.2\.0\-capacity\-inputs\.json$''',
-    '''(?:^|/)vendor/redb\-4\.2\.0\-upstream\.json$''',
-    '''(?:^|/)vendor/redb\-4\.2\.0\-verification\-upstream\.json$''',
 ]
 
 [[rules.allowlists]]

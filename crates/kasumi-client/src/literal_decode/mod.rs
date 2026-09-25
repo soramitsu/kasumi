@@ -378,13 +378,12 @@ impl KasumiAdminClient {
     ) -> Result<AdmittedResponse<SchemaSnapshot>, ClientError> {
         let call = options.admit()?;
         let input = snapshot_decode::encode(request, &call)?;
-        if let ReadSchema::Named { collections } = request {
-            if collections.is_empty()
+        if let ReadSchema::Named { collections } = request
+            && (collections.is_empty()
                 || collections.len() > call.limits.max_rows
-                || collections.len() > MAX_SCHEMA_CHANGESET_COLLECTIONS
-            {
-                return Err(exhausted());
-            }
+                || collections.len() > MAX_SCHEMA_CHANGESET_COLLECTIONS)
+        {
+            return Err(exhausted());
         }
         let prepared = Arc::new(Prepared {
             input,

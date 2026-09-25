@@ -947,7 +947,7 @@ fn generation_validator_preserves_document_shape_typed_index_and_text_limits() {
             .validate_document(definition, &json!({"text":"x".repeat(241)}))
             .unwrap_err()
             .code,
-        ErrorCode::SchemaViolation
+        ErrorCode::InvalidArgument
     );
     let mut deeply_nested = json!({});
     for _ in 0..50 {

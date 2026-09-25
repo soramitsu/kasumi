@@ -1,5 +1,9 @@
 # Kasumi v1 measured results
 
+Historical result: this 2026-09-05 cohort measured the redb-backed source. Kasumi
+now uses its own native key-value engine; these measurements do not qualify its
+capacity or performance. A fresh matrix is required for the native engine.
+
 Recorded cohort outcome: **`completed_under_host_load`**. Full measurement coverage: **yes**. This report selects twelve unchanged engine measurements and three later network case outcomes. It is not a single execution or a relabeling of old results as corrected-source measurements. Shared-host observations do not establish production capacity, a launch SLA or a Redis speed ratio.
 
 The [cohort manifest](results/release-cohort-macos-arm64-20260905-listener/cohort.json) binds every selected origin, and the [derived capacity view](results/release-cohort-macos-arm64-20260905-listener/capacity.json) retains those origins. The original [run06 manifest](results/release-matrix-macos-arm64-20260905-06/matrix.json), [host samples](results/release-matrix-macos-arm64-20260905-06/host-samples.jsonl) and [run notes](results/release-matrix-macos-arm64-20260905-06/RUN_NOTES.md), and the network supplement's [manifest](results/network-rerun-macos-arm64-20260905-listener/matrix.json), [host samples](results/network-rerun-macos-arm64-20260905-listener/host-samples.jsonl) and [run notes](results/network-rerun-macos-arm64-20260905-listener/RUN_NOTES.md) remain separate records.

@@ -1,15 +1,15 @@
 //! Live TLS endpoint measurements. Each request reads a fresh private credential
 //! file snapshot; secrets are never reported. Writes require --allow-writes.
-use anyhow::{ensure, Context, Result};
+use anyhow::{Context, Result, ensure};
 use kasumi_bench::{Measurement, Samples};
 use kasumi_client::proto;
-use kasumi_transport::{credentials::FileCredentialSource, grpc_channel, TlsIdentity};
+use kasumi_transport::{TlsIdentity, credentials::FileCredentialSource, grpc_channel};
 use kasumi_types::{Mutation, MutationBatch, Precondition, QueryRequest};
 use serde::{
-    de::{Error as _, MapAccess, SeqAccess, Visitor},
     Deserialize, Deserializer, Serialize,
+    de::{Error as _, MapAccess, SeqAccess, Visitor},
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -204,10 +204,10 @@ impl<'de> Deserialize<'de> for UniqueJson {
             ) -> std::result::Result<Self::Value, A::Error> {
                 let mut keys = BTreeSet::new();
                 while let Some(key) = map.next_key::<UniqueJsonKey>()? {
-                    if let UniqueJsonKey::Text(key) = key {
-                        if !keys.insert(key) {
-                            return Err(A::Error::custom("duplicate JSON object key"));
-                        }
+                    if let UniqueJsonKey::Text(key) = key
+                        && !keys.insert(key)
+                    {
+                        return Err(A::Error::custom("duplicate JSON object key"));
                     }
                     map.next_value::<UniqueJson>()?;
                 }

@@ -280,47 +280,12 @@ async fn prepare(input: Input, receiver: &oneshot::Sender<Ticket>) -> Result<Pre
 }
 
 fn require_pristine(node: &NodeStore, tenants: [&str; 2]) -> Result<()> {
-    let tx = node.db.begin_read()?;
-    let catalogs = tx.open_table(CATALOG)?;
-    let records = tx.open_table(RECORDS)?;
-    for tenant in tenants {
-        let hash = tenant_hash(tenant);
-        ensure!(
-            catalogs.get(hash.as_slice())?.is_none(),
-            "catalog already initialized"
-        );
-        if let Some(row) = records.range(hash.as_slice()..)?.next() {
-            let (key, _) = row?;
-            ensure!(
-                !key.value().starts_with(&hash),
-                "new catalog has orphan physical rows"
-            );
-        }
-    }
-    Ok(())
-}
-
-fn save_new_catalogs(application: &TenantStore, custody: &TenantStore) -> Result<()> {
-    application.access.check()?;
-    custody.access.check()?;
-    let application_catalog = application.catalog.read();
-    let custody_catalog = custody.catalog.read();
-    application_catalog.validate(&application.tenant)?;
-    custody_catalog.validate(&custody.tenant)?;
-    let bytes = [
-        serde_json::to_vec(&*application_catalog)?,
-        serde_json::to_vec(&*custody_catalog)?,
-    ];
-    let tx = application.node.db.begin_write()?;
-    {
-        let mut catalogs = tx.open_table(CATALOG)?;
+    #[cfg(any(test, feature = "test-utils"))]
+    if node.db.has_fixture_direct_database() {
+        let tx = node.db.begin_read()?;
+        let catalogs = tx.open_table(CATALOG)?;
         let records = tx.open_table(RECORDS)?;
-        // Recheck under the actual publication transaction. No unknown record
-        // or partial catalog can be overwritten by this fresh-only operation.
-        for (tenant, bytes) in [
-            (&application.tenant, &bytes[0]),
-            (&custody.tenant, &bytes[1]),
-        ] {
+        for tenant in tenants {
             let hash = tenant_hash(tenant);
             ensure!(
                 catalogs.get(hash.as_slice())?.is_none(),
@@ -333,13 +298,108 @@ fn save_new_catalogs(application: &TenantStore, custody: &TenantStore) -> Result
                     "new catalog has orphan physical rows"
                 );
             }
-            catalogs.insert(hash.as_slice(), bytes.as_slice())?;
         }
+        return Ok(());
     }
+    node.with_registered_read(|reader| {
+        for tenant in tenants {
+            let hash = tenant_hash(tenant);
+            ensure!(!reader.catalog_exists(hash)?, "catalog already initialized");
+            ensure!(
+                !reader.record_prefix_exists(&hash)?,
+                "new catalog has orphan physical rows"
+            );
+        }
+        Ok(())
+    })
+}
+
+fn save_new_catalogs(application: &Arc<TenantStore>, custody: &Arc<TenantStore>) -> Result<()> {
     application.access.check()?;
     custody.access.check()?;
-    tx.commit()
-        .context("catalog pair initialization outcome may be unknown")?;
+    let application_catalog = application.catalog.read();
+    let custody_catalog = custody.catalog.read();
+    application_catalog.validate(&application.tenant)?;
+    custody_catalog.validate(&custody.tenant)?;
+    #[cfg(any(test, feature = "test-utils"))]
+    if application.node.db.has_fixture_direct_database() {
+        let bytes = [
+            serde_json::to_vec(&*application_catalog)?,
+            serde_json::to_vec(&*custody_catalog)?,
+        ];
+        let tx = application.node.db.begin_write()?;
+        {
+            let mut catalogs = tx.open_table(CATALOG)?;
+            let records = tx.open_table(RECORDS)?;
+            // Synthetic direct-database fixtures keep the original transaction.
+            for (tenant, bytes) in [
+                (&application.tenant, &bytes[0]),
+                (&custody.tenant, &bytes[1]),
+            ] {
+                let hash = tenant_hash(tenant);
+                ensure!(
+                    catalogs.get(hash.as_slice())?.is_none(),
+                    "catalog already initialized"
+                );
+                if let Some(row) = records.range(hash.as_slice()..)?.next() {
+                    let (key, _) = row?;
+                    ensure!(
+                        !key.value().starts_with(&hash),
+                        "new catalog has orphan physical rows"
+                    );
+                }
+                catalogs.insert(hash.as_slice(), bytes.as_slice())?;
+            }
+        }
+        application.access.check()?;
+        custody.access.check()?;
+        tx.commit()
+            .context("catalog pair initialization outcome may be unknown")?;
+        application.access.check()?;
+        return custody.access.check();
+    }
+
+    let provider = application.node.persistent_disk().memory().clone();
+    let plan = crate::storage_opening::write_plan::AdmittedCatalogPairPut::prepare(
+        &application.tenant,
+        &application_catalog,
+        &custody.tenant,
+        &custody_catalog,
+        provider.clone(),
+    )?;
+    drop(application_catalog);
+    drop(custody_catalog);
+    application.access.check()?;
+    custody.access.check()?;
+    let writer = application.node.db.queue_registered_catalog_pair_put(
+        plan,
+        application.clone(),
+        custody.clone(),
+    )?;
+    let _ = writer.run();
+    let (committed, rejection) = {
+        let report = writer.report();
+        (
+            report.committed_and_disposed(),
+            report.clean_freshness_rejection(),
+        )
+    };
+    if !committed && rejection.is_none() {
+        return Err(NodeCatalogWriteFailure { writer }.into());
+    }
+    let id = writer.id();
+    let disposition = writer.retire();
+    if disposition != StorageCensusDisposition::Retired {
+        return Err(NodeCatalogWriteRetirement {
+            provider,
+            id,
+            disposition,
+        }
+        .into());
+    }
+    if let Some(message) = rejection {
+        anyhow::bail!(message);
+    }
     application.access.check()?;
     custody.access.check()
 }

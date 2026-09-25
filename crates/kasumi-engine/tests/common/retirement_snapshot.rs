@@ -10,6 +10,8 @@ use std::time::Duration;
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn actual_retired_snapshot_only_replica_preserves_rotated_custody_after_encrypted_restart() {
     let source = Fixture::new().await;
+    let bootstrap_rows = source.store.scan("engine.bootstrap").unwrap();
+    assert!(bootstrap_rows.iter().any(|(key, _)| key == b"manifest"));
     for index in 0..32 {
         source
             .write(&format!("private-journal-entry-{index}"))
@@ -176,15 +178,17 @@ async fn actual_retired_snapshot_only_replica_preserves_rotated_custody_after_en
     )
     .await
     .unwrap();
-    domains
-        .custody()
-        .store()
-        .write_batch(&[WriteOp::put(
-            "raft.meta",
-            b"application_bootstrap_sha256",
-            bootstrap_digest,
-        )])
-        .unwrap();
+    let application_ops = bootstrap_rows
+        .into_iter()
+        .map(|(key, value)| WriteOp::put("engine.bootstrap", key, value))
+        .collect::<Vec<_>>();
+    let mut custody_ops = vec![WriteOp::put(
+        "raft.meta",
+        b"application_bootstrap_sha256",
+        bootstrap_digest,
+    )];
+    custody_ops.extend(kasumi_raft::initial_storage_identity(2, &group).unwrap());
+    domains.write_batch(&application_ops, &custody_ops).unwrap();
     assert_ne!(
         source_binding,
         domains.custody().binding().digest().unwrap()

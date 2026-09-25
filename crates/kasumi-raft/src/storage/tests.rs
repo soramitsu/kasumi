@@ -56,16 +56,16 @@ async fn cancelled_log_future_retains_drain_lease_until_blocking_persistence_fin
     )
     .await?;
     let (drain, lease) = StorageDrain::new();
-    let log = LogStore::open_tracked(
-        kasumi_store::test_utils::initialize_custody_fixture(
-            store.clone(),
-            Arc::new(LocalKeyProvider::new([241; 32])),
-        )
-        .await?,
-        1,
-        lease,
+    let domains = kasumi_store::test_utils::initialize_custody_fixture(
+        store.clone(),
+        Arc::new(LocalKeyProvider::new([241; 32])),
     )
     .await?;
+    domains.write_batch(
+        &[],
+        &crate::initial_storage_identity(1, "cancelled-persistence")?,
+    )?;
+    let log = LogStore::open_tracked(domains, 1, lease).await?;
     let (entered, ready) = tokio::sync::oneshot::channel();
     let (release, wait) = std::sync::mpsc::channel();
     let operation = tokio::spawn(async move {
@@ -621,6 +621,41 @@ async fn snapshot_install_power_loss_at_every_storage_operation_keeps_whole_old_
 }
 
 #[tokio::test]
+async fn raft_open_rejects_missing_initial_identity_without_publishing_it() -> Result<()> {
+    let memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = kasumi_store::test_utils::private_tempdir()?;
+    let scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), memory.clone());
+    let directory = kasumi_store::test_utils::private_tempdir()?;
+    let node = NodeStore::create_new_fixture(
+        directory.path().join("missing-raft-identity.kv"),
+        kasumi_store::test_utils::NODE_STORE_ID,
+        memory,
+        scratch,
+    )?;
+    let application = TenantStore::initialize_catalog_fixture(
+        node.clone(),
+        "missing-raft-identity".into(),
+        Arc::new(LocalKeyProvider::new([9; 32])),
+    )
+    .await?;
+    let domains = kasumi_store::test_utils::initialize_custody_fixture(
+        application,
+        Arc::new(LocalKeyProvider::new([241; 32])),
+    )
+    .await?;
+    let error = match LogStore::open(domains.clone(), 1).await {
+        Ok(_) => anyhow::bail!("Raft open created missing initial identity"),
+        Err(error) => error,
+    };
+    assert!(format!("{error:#}").contains("persisted raft node identity is missing"));
+    assert!(domains.custody().store().get(META, b"node_id")?.is_none());
+    assert!(domains.custody().store().get(META, b"group")?.is_none());
+    domains.shutdown().await?;
+    node.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn eight_mib_command_uses_compact_log_record_and_replays_after_reopen() -> Result<()> {
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
     let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
@@ -667,15 +702,16 @@ async fn eight_mib_command_uses_compact_log_record_and_replays_after_reopen() ->
     }
     {
         let store = open(&path, true, fixture_scratch.clone()).await?;
-        let mut log = LogStore::open(
-            kasumi_store::test_utils::initialize_custody_fixture(
-                store.clone(),
-                Arc::new(LocalKeyProvider::new([241; 32])),
-            )
-            .await?,
-            1,
+        let domains = kasumi_store::test_utils::initialize_custody_fixture(
+            store.clone(),
+            Arc::new(LocalKeyProvider::new([241; 32])),
         )
         .await?;
+        domains.write_batch(
+            &[],
+            &crate::initial_storage_identity(1, "large-command/group")?,
+        )?;
+        let mut log = LogStore::open(domains, 1).await?;
         let entry = Entry::<TypeConfig> {
             log_id: LogId::new(openraft::CommittedLeaderId::new(1, 1), 0),
             payload: EntryPayload::Normal(crate::RaftCommand::application(bytes.clone())),

@@ -183,14 +183,14 @@ async fn failed_profile_publication_drains_owners_and_never_marks_partial_instal
 }
 
 #[test]
-fn stopped_operator_reopen_never_recreates_missing_control_bootstrap() -> Result<()> {
+fn stopped_operator_keeps_control_bootstrap_write_once() -> Result<()> {
     ownership_tests::run_large_fixture(
-        "standalone missing-Control-bootstrap fixture",
-        stopped_operator_reopen_never_recreates_missing_control_bootstrap_impl,
+        "standalone write-once Control-bootstrap fixture",
+        stopped_operator_keeps_control_bootstrap_write_once_impl,
     )
 }
 
-async fn stopped_operator_reopen_never_recreates_missing_control_bootstrap_impl() -> Result<()> {
+async fn stopped_operator_keeps_control_bootstrap_write_once_impl() -> Result<()> {
     let root = kasumi_store::test_utils::private_tempdir()?;
     let (installed, storage) = crate::runtime_storage_fixtures::initialize_standalone(
         &root.path().join("database"),
@@ -210,34 +210,27 @@ async fn stopped_operator_reopen_never_recreates_missing_control_bootstrap_impl(
         StorageAccess::node_control(),
     )
     .await?;
-    stores
+    let manifest = stores
         .application()
-        .write_batch(&[kasumi_store::WriteOp::delete(
-            "engine.bootstrap",
-            b"manifest",
-        )])?;
+        .get("engine.bootstrap", b"manifest")?
+        .context("installed Control bootstrap manifest absent")?;
     let retained = stores
         .custody()
         .store()
         .get("raft.meta", b"application_bootstrap_sha256")?;
-    // Keep the exact opened catalogs while the strict bootstrap rejects; no new
-    // policy, identity, bootstrap manifest or custody commitment may be installed.
-    ensure!(
-        kasumi_engine::open_existing_local(
-            stores.clone(),
-            audit.clone(),
-            Uuid::parse_str(config.control.incarnation.as_deref().unwrap())?
-        )
-        .await
-        .is_err(),
-        "missing bootstrap reopened"
-    );
     ensure!(
         stores
             .application()
-            .get("engine.bootstrap", b"manifest")?
-            .is_none(),
-        "bootstrap was recreated"
+            .write_batch(&[kasumi_store::WriteOp::delete(
+                "engine.bootstrap",
+                b"manifest",
+            )])
+            .is_err(),
+        "live facade deleted installed Control bootstrap"
+    );
+    ensure!(
+        stores.application().get("engine.bootstrap", b"manifest")? == Some(manifest),
+        "rejected delete changed Control bootstrap"
     );
     ensure!(
         stores

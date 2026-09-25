@@ -29,7 +29,7 @@ impl BackupDestination for PendingSource {
         std::future::pending().await
     }
 
-    async fn put(&self, _id: uuid::Uuid, _bytes: Vec<u8>) -> anyhow::Result<()> {
+    async fn put(&self, _id: uuid::Uuid, _bytes: kasumi_store::BackupUpload) -> anyhow::Result<()> {
         anyhow::bail!("read-only test destination")
     }
     async fn get(&self, _id: uuid::Uuid, _limit: usize) -> anyhow::Result<Vec<u8>> {

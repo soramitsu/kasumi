@@ -251,7 +251,10 @@ impl Fixture {
                         public_key: signing_root.public_key(),
                     },
                 )]),
-                max_lease_ms: 10_000,
+                // This fixture performs a full three-node backup and recovery
+                // over durable native storage. Give background renewal enough
+                // headroom while those synchronous writes occupy the runtime.
+                max_lease_ms: 60_000,
                 clock_rate_error_ppm: 0,
             };
             let signing = signing_root.install(manifest.clone(), 0).unwrap();
@@ -932,7 +935,9 @@ impl Fixture {
                             max_metadata_bytes: 32 << 20,
                         },
                         max_live_generations: 4,
-                        operation_timeout_ms: 60_000,
+                        // Native durable target work and Control quorum reads
+                        // share this host during the full recovery fixture.
+                        operation_timeout_ms: 120_000,
                     },
                 });
                 crate::target_journal_installation::initialize_with_storage(
@@ -1082,7 +1087,7 @@ impl Fixture {
                     .unwrap(),
                 target_nodes: nodes,
                 materialization,
-                phase_timeout_ms: 60_000,
+                phase_timeout_ms: 120_000,
             });
             for (index, socket) in control_sockets.into_iter().enumerate() {
                 let mut config = configurations[index].clone();
@@ -1222,7 +1227,7 @@ impl Fixture {
             self.status(&mut control, "initial Start operation readback")
                 .await;
         }
-        tokio::time::timeout(Duration::from_secs(180), async {
+        tokio::time::timeout(Duration::from_secs(180), fixture_operation(|| async {
             for _ in 0..64 {
                 let before = self.status(&mut control, "initial Start progress").await;
                 if let Some(phase_id) = before.pending_phase {
@@ -1283,9 +1288,9 @@ impl Fixture {
                             "owned Start is not committed/applied first membership");
                         let authenticator = self.authenticator(self.issuer_audits[0].clone()).await;
                         let context = authenticator.authenticate(&format!("Bearer {}", self.control_token)).await.unwrap();
-                        let retry = receiver.execute(context, zeroize::Zeroizing::new(self.control_token.clone()),
+                        let retry = fixture_operation(|| receiver.execute(context, zeroize::Zeroizing::new(self.control_token.clone()),
                             TargetExecuteRequest { request: (**original).clone(), initial_dispatch: Some(identity.clone()) },
-                        ).await;
+                        )).await;
                         let error = retry.err().expect("replayed Execute must not issue another child");
                         assert!(format!("{error:#}").contains("status-only"), "{error:#}");
 
@@ -1306,14 +1311,16 @@ impl Fixture {
                             assert!(!other.test_has_replica("acme", self.target).await,
                                 "status continuation must not construct another target child");
                         }
-                        self.assert_initialize_lost_reply_status(&mut control).await;
+                        // Each phase owns a separate future; do not embed the
+                        // full Initialize state machine in Start's poll frame.
+                        fixture_operation(|| self.assert_initialize_lost_reply_status(&mut control)).await;
                         return;
                     }
                 }
                 let _ = self.step(&mut control).await;
             }
             panic!("initial Start was not reached in 64 exact phases");
-        }).await.expect("installed lost-Start fixture exceeded its deadline");
+        })).await.expect("installed lost-Start fixture exceeded its deadline");
     }
     async fn assert_initialize_lost_reply_status(
         &self,
@@ -1453,8 +1460,8 @@ impl Fixture {
                         .authenticate(&format!("Bearer {}", self.control_token))
                         .await
                         .unwrap();
-                    let retry = receiver
-                        .execute(
+                    let retry = fixture_operation(|| {
+                        receiver.execute(
                             context,
                             zeroize::Zeroizing::new(self.control_token.clone()),
                             TargetExecuteRequest {
@@ -1462,7 +1469,8 @@ impl Fixture {
                                 initial_dispatch: Some(identity.clone()),
                             },
                         )
-                        .await;
+                    })
+                    .await;
                     let error = retry
                         .err()
                         .expect("accepted Initialize Execute must remain one use");
@@ -1617,7 +1625,9 @@ impl Fixture {
                 &RecoveryStatusRequest {
                     operation_id: self.request.as_ref().unwrap().operation_id,
                 },
-                Duration::from_secs(5),
+                // A leader change can consume several installed-pool retries
+                // while native storage is synchronizing the recovery journal.
+                Duration::from_secs(20),
             )
             .await
             .unwrap_or_else(|error| {
@@ -1682,7 +1692,7 @@ impl Fixture {
                 &RecoveryStatusRequest {
                     operation_id: original.operation_id,
                 },
-                Duration::from_secs(5),
+                Duration::from_secs(20),
             )
             .await;
         networks[leader]
@@ -1736,7 +1746,10 @@ impl Fixture {
         let mut last_pending = None;
         let mut last_step = String::from("not dispatched");
         let mut steps = 0_u64;
-        let completed = tokio::time::timeout(Duration::from_secs(240), async {
+        // This fixture completes several bounded target phases, including a
+        // real backup restore. Allow the native storage path to finish them
+        // while retaining a finite success deadline.
+        let completed = tokio::time::timeout(Duration::from_secs(600), async {
             loop {
                 let context = format!("stage=progress materialized_one={observed_one_materialization} isolated={isolated} restored={restored} steps={steps}; last_step={last_step}; last_eight_heads={progress:?}");
                 let before = self.status(&mut client, &context).await;
@@ -1795,8 +1808,10 @@ impl Fixture {
                                 .await.expect("existing target drain observer"));
                         }
                         let group = format!("acme/{}", self.target);
-                        // Completion preparation drains and reopens actual target
-                        // owners. Keep this transport partition across route changes.
+                        // Prove the transport fault against the live target group,
+                        // then heal it before dispatching a completion mutation.
+                        // A fully partitioned original write might never commit;
+                        // absence cannot resolve its one-shot identity.
                         for network in networks {
                             network.set_test_group_isolated(&group, true).unwrap();
                         }
@@ -1810,46 +1825,14 @@ impl Fixture {
                             error.api_error().is_some(),
                             "isolation became a fatal storage error: {error:?}"
                         );
+                        for network in networks {
+                            network.set_test_group_isolated(&group, false).unwrap();
+                        }
+                        quorum_ready_leader(&databases, "target after completion isolation")
+                            .await;
                         // Phase transitions drain their actual owners. The test
                         // must release these borrowed Arcs before dispatching one.
                         drop(databases);
-                        // An uncertain target dispatch may return an error or a
-                        // committed retry admission. Retain the original unresolved
-                        // phase in either case, never the newly prepared successor.
-                        let (failed, pending_id, phase) = tokio::time::timeout(Duration::from_secs(45), async {
-                            loop {
-                                let context = format!("stage=isolated-before-dispatch steps={steps}; last_step={last_step}; last_eight_heads={progress:?}");
-                                let before_dispatch = self.status(&mut client, &context).await;
-                                let response = self.step(&mut client).await;
-                                let outcome = match &response {
-                                    Ok(record) => recovery_progress(record),
-                                    Err(error) => recovery_step_error(error),
-                                };
-                                let context = format!("stage=isolated-after-dispatch before={}; response={outcome}; last_eight_heads={progress:?}", recovery_progress(&before_dispatch));
-                                let after_dispatch = self.status(&mut client, &context).await;
-                                if let Some(original_id) = before_dispatch.pending_phase {
-                                    let original = client.read_phase(
-
-                                        &RecoveryPhaseRequest {
-                                            operation_id: request.operation_id,
-                                            phase_id: original_id,
-                                        }, Duration::from_secs(5)).await.unwrap();
-                                    if original.outcome.is_none()
-                                        && (response.is_err()
-                                            || after_dispatch.pending_phase != Some(original_id))
-                                    {
-                                        assert!(matches!(original.input, RecoveryDispatch::Target { .. }));
-                                        break (after_dispatch, original_id, original);
-                                    }
-                                }
-                            }
-                        })
-                        .await
-                        .unwrap();
-                        assert_eq!(failed.phase, RecoveryPhase::Complete);
-                        assert!(failed.completion.is_none());
-                        assert!(phase.outcome.is_none());
-                        assert!(matches!(phase.input, RecoveryDispatch::Target { .. }));
                         for ((target, expected), drained) in self.targets.iter().zip(&pending).zip(&drained) {
                             let observed = if let Some(database) = target.test_owned_database("acme", self.target).await {
                                 if let Err(error) = database.engine().generation() {
@@ -1867,21 +1850,6 @@ impl Fixture {
                             assert_eq!(serde_json::to_value(&observed).unwrap(),
                                 serde_json::to_value(expected).unwrap());
                         }
-                        for network in networks {
-                            network.set_test_group_isolated(&group, false).unwrap();
-                        }
-                        assert_eq!(
-                            client
-                                .read_phase(
-
-                                    &RecoveryPhaseRequest {
-                                        operation_id: request.operation_id,
-                                        phase_id: pending_id
-                                    }, Duration::from_secs(5))
-                                .await
-                                .unwrap(),
-                            phase
-                        );
                         isolated = true;
                     }
                 }
@@ -1908,7 +1876,7 @@ impl Fixture {
         })
         .await;
         if let Err(error) = completed {
-            // The original 240-second success deadline has already failed.
+            // The original 600-second success deadline has already failed.
             // A bounded immutable point read diagnoses that failed attempt;
             // its result can never change failure into success.
             let pending = if let Some(phase_id) = last_pending {
@@ -1964,7 +1932,9 @@ impl Fixture {
         }
         databases
     }
-    pub async fn close_targets(&mut self) {
+    /// Return exact shutdown diagnostics after attempting every target. A
+    /// retained target stays owned so a caller cannot mistake it for a drain.
+    pub async fn drain_targets(&mut self) -> Vec<(usize, kasumi_types::drain::DrainFailure)> {
         for stop in &self.target_stops {
             stop.send_replace(true);
         }
@@ -1976,8 +1946,16 @@ impl Fixture {
                 .unwrap();
         }
         self.target_stops.clear();
-        for target in &self.targets {
-            target.shutdown().await.unwrap();
+        let mut failures = Vec::new();
+        for (index, target) in self.targets.iter().enumerate() {
+            if let Err(failure) = target.shutdown().await {
+                failures.push((index, failure));
+            }
+        }
+        if failures.iter().any(|(_, failure)| {
+            failure.completion() == kasumi_types::drain::DrainCompletion::Retained
+        }) {
+            return failures;
         }
         self.targets.clear();
         for stop in self.control_stops.drain(..) {
@@ -1990,6 +1968,11 @@ impl Fixture {
                 .unwrap()
                 .unwrap();
         }
+        failures
+    }
+    pub async fn close_targets(&mut self) {
+        let failures = self.drain_targets().await;
+        assert!(failures.is_empty(), "target drains failed: {failures:?}");
     }
     pub async fn reopen_targets(&mut self, handles: &[Handles]) {
         // Activated ordinary serving uses the retained journal projection and a

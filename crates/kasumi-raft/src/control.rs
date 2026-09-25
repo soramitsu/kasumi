@@ -2,7 +2,9 @@
 //! recovery input, not fresh quorum or administrative release authority.
 use crate::{BasicNode, LogId, RetirementLogSeed, TypeConfig, command::sha256};
 use anyhow::{Context, Result, ensure};
-use kasumi_store::{CustodyStore, StoragePurpose, TenantStorageSet, TenantStore, WriteOp};
+use kasumi_store::{
+    CustodyStore, StoragePurpose, TenantStorageReadView, TenantStorageSet, TenantStore, WriteOp,
+};
 use kasumi_types::{ControlSigningRoot, NodeIdentity, TargetInitialDispatchIdentity};
 use openraft::{Entry, EntryPayload, Membership, StoredMembership, Vote};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -101,18 +103,24 @@ impl TargetFirstMembershipPrebind {
         Ok(())
     }
 
-    /// The one-use signed candidate binds a materialized target whose Raft
-    /// identity has not yet been installed. Node, group, and prebind must be
-    /// published in one custody batch; an earlier partial or competing writer
-    /// cannot be repaired by this path.
-    pub fn validate_unbound_storage(&self, stores: &TenantStorageSet) -> Result<()> {
-        self.validate_serving_storage(stores)?;
+    /// Materialization installs the immutable bootstrap, node and group
+    /// together. Those identity rows grant no startup authority: only the
+    /// one-use signed candidate may bind an otherwise pristine target to its
+    /// accepted Start. Partial identity or prior consensus work is not repairable.
+    pub fn validate_prebind_storage(&self, stores: &TenantStorageSet) -> Result<()> {
+        self.validate_storage(stores)?;
         let store = stores.custody().store();
-        let expected_bootstrap = serde_json::to_vec(&self.bootstrap_sha256)?;
         ensure!(
             store.scan(META)?
-                == vec![(b"application_bootstrap_sha256".to_vec(), expected_bootstrap,)],
-            "target Raft identity was already or incompletely installed"
+                == vec![
+                    (
+                        b"application_bootstrap_sha256".to_vec(),
+                        serde_json::to_vec(&self.bootstrap_sha256)?,
+                    ),
+                    (b"group".to_vec(), serde_json::to_vec(&self.group)?),
+                    (b"node_id".to_vec(), serde_json::to_vec(&self.node.node_id)?),
+                ],
+            "target Raft metadata is not a pristine materialized identity"
         );
         for namespace in [
             HEADERS,
@@ -126,7 +134,7 @@ impl TargetFirstMembershipPrebind {
         ] {
             ensure!(
                 store.scan(namespace)?.is_empty(),
-                "target Raft data exists before first identity binding"
+                "target Raft data exists before first dispatch binding"
             );
         }
         Ok(())
@@ -683,6 +691,29 @@ pub struct ControlLog {
     node_id: u64,
 }
 impl ControlLog {
+    /// Read the installed identity from the caller's pinned application and
+    /// custody generation. This returns data only; it does not construct an
+    /// operational ControlLog against a later transaction.
+    pub fn installed_identity_at(view: &TenantStorageReadView) -> Result<Option<(u64, String)>> {
+        let node_id = view
+            .custody_get(META, b"node_id", 32)?
+            .map(|bytes| decode_canonical::<u64>(&bytes))
+            .transpose()?;
+        let group = view
+            .custody_get(META, b"group", 4096)?
+            .map(|bytes| decode_canonical::<String>(&bytes))
+            .transpose()?;
+        match (node_id, group) {
+            (None, None) => Ok(None),
+            (Some(node_id), Some(group)) => {
+                ensure!(node_id > 0, "installed consensus node identity is zero");
+                kasumi_types::validate_name(&group)?;
+                Ok(Some((node_id, group)))
+            }
+            _ => anyhow::bail!("installed consensus identity is incomplete"),
+        }
+    }
+
     pub fn installed(custody: Arc<CustodyStore>) -> Result<Option<Self>> {
         let node_id = load::<u64>(custody.store(), META, b"node_id")?;
         let group = load::<String>(custody.store(), META, b"group")?;

@@ -10,7 +10,7 @@ use crate::{
 };
 use kasumi_kv::{
     DatabaseOpenMode, DatabaseOpenSettlement, RetainedDatabaseOpening, RetainedWriteTransaction,
-    TerminalObservation, WriteTerminalOperation,
+    TerminalObservation, WriteTerminalOperation, WriteTerminalSettlement,
 };
 use parking_lot::{Mutex, MutexGuard};
 use std::{
@@ -99,6 +99,10 @@ struct OpeningState {
     pending_transfer: Option<FailedFileWitness>,
     #[cfg(test)]
     after_failed_disposal: Option<Box<dyn FnOnce() + Send>>,
+    #[cfg(test)]
+    before_close_locked: Option<Box<dyn FnOnce() + Send>>,
+    #[cfg(test)]
+    before_retry_close_locked: Option<Box<dyn FnOnce() + Send>>,
     failed_recovery: Observation<io::Error>,
 }
 fn observed_failure<E>(observation: TerminalObservation<'_, E>) -> bool {
@@ -177,10 +181,43 @@ struct DatabaseOwner {
     state: Mutex<OpeningState>,
 }
 impl DatabaseOwner {
+    fn dispose_write(
+        &self,
+        transaction: &mut RetainedWriteTransaction,
+        wait_for_settled: bool,
+    ) -> bool {
+        // A settled commit or abort has released its native writer gate. The
+        // synchronous worker can wait for a concurrent opening-state reader
+        // without losing a clean terminal to transient try_lock contention.
+        // A retained terminal can still own that gate, so drain and retained
+        // failures must continue to use a nonblocking state attempt.
+        let database = if wait_for_settled
+            && transaction.report().settlement() == WriteTerminalSettlement::Settled
+        {
+            Some(self.state.lock())
+        } else {
+            self.state.try_lock()
+        };
+        let Some(database) = database else {
+            return false;
+        };
+        let Some(witness) = database.engine.retained_database() else {
+            return false;
+        };
+        if transaction.report().operation().is_none() {
+            let _ = transaction.abort();
+        }
+        transaction.dispose_settled(witness).disposal_complete()
+    }
+
     // Both explicit close and census drain enter the same retained operation.
     // An entered close is never replayed; only a busy transaction wait can
     // advance when its actual owner drains.
     fn close_locked(state: &mut OpeningState) -> DatabaseOpenSettlement {
+        #[cfg(test)]
+        if let Some(before_close) = state.before_close_locked.take() {
+            before_close();
+        }
         state.phase = NodeOpeningPhase::Closing;
         if state.pending_transfer.is_some() {
             let _ = state.transfer_failed();
@@ -289,6 +326,10 @@ impl RegisteredNodeOpening {
                             pending_transfer: None,
                             #[cfg(test)]
                             after_failed_disposal: None,
+                            #[cfg(test)]
+                            before_close_locked: None,
+                            #[cfg(test)]
+                            before_retry_close_locked: None,
                             failed_recovery: Observation::NotEntered,
                         }),
                     }
@@ -347,10 +388,36 @@ impl RegisteredNodeOpening {
     pub fn close(&self) -> io::Result<DatabaseOpenSettlement> {
         let owner = self.registration.owner();
         owner.stopped.store(true, Ordering::Release);
+        // A recoverable read error may have lost its last facade while this
+        // opening lock was busy. Revisit only this opening's released routine
+        // readers before asking the native database to close its transactions.
+        let provider = {
+            let Some(state) = owner.state.try_lock() else {
+                return Err(io::ErrorKind::WouldBlock.into());
+            };
+            state.file.disk().memory().clone()
+        };
+        Self::drain_released_routine_readers(&provider, self.registration.id());
         let Some(mut state) = owner.state.try_lock() else {
             return Err(io::ErrorKind::WouldBlock.into());
         };
-        Ok(DatabaseOwner::close_locked(&mut state))
+        let settlement = DatabaseOwner::close_locked(&mut state);
+        drop(state);
+        if settlement == DatabaseOpenSettlement::WaitingForTransactions {
+            // A last error facade can drop while close held the opening lock,
+            // after the pre-close pass. Give only this opening's routine readers
+            // a post-close pass and retry the existing busy close once.
+            Self::drain_released_routine_readers(&provider, self.registration.id());
+            let Some(mut state) = owner.state.try_lock() else {
+                return Err(io::ErrorKind::WouldBlock.into());
+            };
+            #[cfg(test)]
+            if let Some(before_retry) = state.before_retry_close_locked.take() {
+                before_retry();
+            }
+            return Ok(DatabaseOwner::close_locked(&mut state));
+        }
+        Ok(settlement)
     }
     // The legacy store transaction surface is still used by encrypted catalog
     // and Raft adapters. The database remains owned by this registered opening;
@@ -371,15 +438,18 @@ impl RegisteredNodeOpening {
         if owner.stopped.load(Ordering::Acquire) {
             return Err(kasumi_kv::StorageError::DatabaseClosed.into());
         }
-        let state = owner.state.lock();
-        if owner.stopped.load(Ordering::Acquire) || state.phase != NodeOpeningPhase::Open {
-            return Err(kasumi_kv::StorageError::DatabaseClosed.into());
-        }
-        state
-            .engine
-            .database()
-            .ok_or(kasumi_kv::StorageError::DatabaseClosed)?
-            .begin_read()
+        let admission = {
+            let state = owner.state.lock();
+            if owner.stopped.load(Ordering::Acquire) || state.phase != NodeOpeningPhase::Open {
+                return Err(kasumi_kv::StorageError::DatabaseClosed.into());
+            }
+            state
+                .engine
+                .database()
+                .ok_or(kasumi_kv::StorageError::DatabaseClosed)?
+                .transaction_admission()
+        };
+        admission.begin_read()
     }
 
     pub(crate) fn begin_store_write(
@@ -389,15 +459,18 @@ impl RegisteredNodeOpening {
         if owner.stopped.load(Ordering::Acquire) {
             return Err(kasumi_kv::StorageError::DatabaseClosed.into());
         }
-        let state = owner.state.lock();
-        if owner.stopped.load(Ordering::Acquire) || state.phase != NodeOpeningPhase::Open {
-            return Err(kasumi_kv::StorageError::DatabaseClosed.into());
-        }
-        state
-            .engine
-            .database()
-            .ok_or(kasumi_kv::StorageError::DatabaseClosed)?
-            .begin_write()
+        let admission = {
+            let state = owner.state.lock();
+            if owner.stopped.load(Ordering::Acquire) || state.phase != NodeOpeningPhase::Open {
+                return Err(kasumi_kv::StorageError::DatabaseClosed.into());
+            }
+            state
+                .engine
+                .database()
+                .ok_or(kasumi_kv::StorageError::DatabaseClosed)?
+                .transaction_admission()
+        };
+        admission.begin_write()
     }
 
     /// Fixed, closed operation shape with no user callback or raw transaction
@@ -420,22 +493,24 @@ impl RegisteredNodeOpening {
         let provider = state.file.disk().memory().clone();
         drop(state);
         let database = self.registration.clone();
-        let registration =
-            provider
-                .storage_census()
-                .register(provider.clone(), 0, || NodeTablesRequest {
-                    database,
-                    state: Mutex::new(WriterState {
-                        phase: NodeWriterPhase::Queued,
-                        transaction: None,
-                        begin: Observation::NotEntered,
-                        body: Observation::NotEntered,
-                        outer: Observation::NotEntered,
-                        outcomes_released: false,
-                        #[cfg(test)]
-                        fail_owner_before_terminal: false,
-                    }),
-                });
+        let registration = provider.storage_census().register_child(
+            provider.clone(),
+            0,
+            &self.registration,
+            || NodeTablesRequest {
+                database,
+                state: Mutex::new(WriterState {
+                    phase: NodeWriterPhase::Queued,
+                    transaction: None,
+                    begin: Observation::NotEntered,
+                    body: Observation::NotEntered,
+                    outer: Observation::NotEntered,
+                    outcomes_released: false,
+                    #[cfg(test)]
+                    fail_owner_before_terminal: false,
+                }),
+            },
+        );
         let mut state = self.registration.owner().state.lock();
         let registration = match registration {
             Ok(registration) => registration,
@@ -664,7 +739,7 @@ struct NodeTablesRequest {
     state: Mutex<WriterState>,
 }
 impl NodeTablesRequest {
-    fn dispose(&self, state: &mut WriterState) -> bool {
+    fn dispose(&self, state: &mut WriterState, wait_for_settled: bool) -> bool {
         let Some(transaction) = state.transaction.as_mut() else {
             return !matches!(state.outer, Observation::Panicked(_))
                 && !matches!(state.begin, Observation::Entered);
@@ -677,16 +752,9 @@ impl NodeTablesRequest {
         // Abort/disposal can create a new original outcome. An earlier report
         // release never acknowledges that future operation.
         state.outcomes_released = false;
-        let Some(database) = self.database.owner().state.try_lock() else {
-            return false;
-        };
-        let Some(witness) = database.engine.retained_database() else {
-            return false;
-        };
-        if transaction.report().operation().is_none() {
-            let _ = transaction.abort();
-        }
-        transaction.dispose_settled(witness).disposal_complete()
+        self.database
+            .owner()
+            .dispose_write(transaction, wait_for_settled)
     }
     fn execute(&self, state: &mut WriterState) {
         let owner = self.database.owner();
@@ -705,7 +773,11 @@ impl NodeTablesRequest {
                 Observation::Returned(Err(kasumi_kv::StorageError::DatabaseClosed.into()));
             return;
         };
-        match db.begin_write() {
+        // This admitted handle keeps close aware of the pending writer while
+        // the opening lock is released before the native writer-gate wait.
+        let admission = db.transaction_admission();
+        drop(database);
+        match admission.begin_write() {
             Ok(transaction) => {
                 state.transaction = Some(transaction.retain());
                 state.begin = Observation::Returned(Ok(()));
@@ -715,7 +787,6 @@ impl NodeTablesRequest {
                 return;
             }
         }
-        drop(database);
         state.phase = NodeWriterPhase::Body;
         state.body = Observation::Entered;
         let body = catch_unwind(AssertUnwindSafe(|| {
@@ -744,7 +815,7 @@ impl NodeTablesRequest {
             let _ = transaction.abort();
         }
         state.phase = NodeWriterPhase::Disposal;
-        if self.dispose(state) {
+        if self.dispose(state, true) {
             state.phase = NodeWriterPhase::Finished;
         }
         if state.phase != NodeWriterPhase::Finished {
@@ -761,7 +832,7 @@ impl StoragePayload for NodeTablesRequest {
         if state.phase == NodeWriterPhase::Queued {
             state.phase = NodeWriterPhase::Cancelled;
         }
-        self.dispose(&mut state) && (state.outcomes_released || !state.has_failures())
+        self.dispose(&mut state, false) && (state.outcomes_released || !state.has_failures())
     }
 }
 pub struct RegisteredNodeTables {
@@ -848,9 +919,12 @@ pub use reads::{
     OwnedEncryptedRow, RegisteredNodeRead,
 };
 
-// This fixed input plan is dormant until a retained, typed write request can
-// own the plan and its original terminal result without raw transaction escape.
-#[allow(dead_code)]
+mod catalog_put;
+pub use catalog_put::{NodeCatalogPutBodyError, NodeCatalogWriteReport, RegisteredCatalogPut};
+
+mod binding_put;
+pub use binding_put::{BindingInstallBodyError, NodeBindingWriteReport, RegisteredBindingPut};
+
 pub(crate) mod write_plan;
 
 #[cfg(test)]

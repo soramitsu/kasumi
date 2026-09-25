@@ -65,6 +65,8 @@ impl Fixture {
                 &dir.path().join(format!("{id}.kv")),
                 true,
                 fixture_scratch.clone(),
+                id,
+                "read-barrier",
             )
             .await?;
             let config = kasumi_raft::Config {

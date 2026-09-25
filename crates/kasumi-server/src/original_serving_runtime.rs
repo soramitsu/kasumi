@@ -136,12 +136,15 @@ impl Administration {
                         self.audit.clone(),
                     )
                     .await?;
+                    let fingerprint = crate::runtime::opened_replicated_bootstrap_fingerprint(
+                        stores.application().tenant(),
+                        &opened,
+                    )?;
                     let kasumi_engine::OpenedReplica {
                         database,
                         bootstrap,
+                        ..
                     } = opened;
-                    let fingerprint =
-                        crate::runtime::persisted_replicated_bootstrap_fingerprint(&stores)?;
                     let store = stores.application().clone();
                     if let Err(error) = network.register_group_with_bootstrap(
                         group.clone(),

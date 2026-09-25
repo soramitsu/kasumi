@@ -276,6 +276,13 @@ mod tests {
             )
             .await
             .unwrap();
+            stores
+                .write_batch(
+                    &[],
+                    &kasumi_raft::initial_storage_identity(1, &format!("tenant/{incarnation}"))
+                        .unwrap(),
+                )
+                .unwrap();
             let database =
                 crate::service::construction::DatabaseConstruction::new(stores, audit.clone())
                     .unwrap()
@@ -452,6 +459,13 @@ mod tests {
         )
         .await
         .unwrap();
+        stores
+            .write_batch(
+                &[],
+                &kasumi_raft::initial_storage_identity(1, &format!("tenant/{incarnation}"))
+                    .unwrap(),
+            )
+            .unwrap();
         let database =
             crate::service::construction::DatabaseConstruction::new(stores, audit.clone())
                 .unwrap()

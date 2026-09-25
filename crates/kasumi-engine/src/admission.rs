@@ -1613,7 +1613,9 @@ mod tests {
         let slots = Arc::new(tokio::sync::Semaphore::new(1));
         let permit = slots.clone().acquire_owned().await.unwrap();
         let fence = Arc::new(WorkFence::default());
+        let group_fence = Arc::new(WorkFence::default());
         let registration = fence.begin(token.clone()).unwrap();
+        let group_registration = group_fence.begin(token.clone()).unwrap();
         let (started, entered) = tokio::sync::oneshot::channel();
         let (release, stopped) = std::sync::mpsc::channel();
         let worker_token = token.clone();
@@ -1626,6 +1628,7 @@ mod tests {
         });
         entered.await.unwrap();
         fence.seal();
+        group_fence.seal();
         assert!(token.is_cancelled());
         assert_eq!(
             fence.release(&token, || Ok(())).unwrap_err().code,
@@ -1638,7 +1641,29 @@ mod tests {
         );
         assert_eq!(slots.available_permits(), 0);
         assert_eq!(payload_bytes(&node), 100);
+        let mut draining = Box::pin(fence.drain());
+        std::future::poll_fn(|cx| {
+            assert!(std::future::Future::poll(draining.as_mut(), cx).is_pending());
+            std::task::Poll::Ready(())
+        })
+        .await;
+        drop(draining);
+        assert_eq!(slots.available_permits(), 0);
+        assert_eq!(payload_bytes(&node), 100);
         release.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(1), fence.drain())
+            .await
+            .unwrap();
+        // Finite work can finish while the exact group owner remains held.
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), group_fence.drain())
+                .await
+                .is_err()
+        );
+        drop(group_registration);
+        tokio::time::timeout(Duration::from_secs(1), group_fence.drain())
+            .await
+            .unwrap();
         tokio::time::timeout(Duration::from_secs(1), async {
             while payload_bytes(&node) != 0 || slots.available_permits() != 1 {
                 tokio::task::yield_now().await;

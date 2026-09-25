@@ -58,6 +58,8 @@ impl Cluster {
             &self.dir.path().join(format!("node-{id}.kv")),
             create,
             self.fixture_scratch.clone(),
+            id,
+            GROUP,
         )
         .await?;
         let backend = Arc::new(common::Backend::default());
@@ -330,7 +332,7 @@ async fn one_voter_acknowledgment_recovers_without_a_snapshot() -> Result<()> {
         let group = RaftGroup::local(
             1,
             GROUP.into(),
-            common::store(&path, true, fixture_scratch.clone()).await?,
+            common::store(&path, true, fixture_scratch.clone(), 1, GROUP).await?,
             backend.clone(),
             common::snapshot_owner(),
         )
@@ -346,7 +348,7 @@ async fn one_voter_acknowledgment_recovers_without_a_snapshot() -> Result<()> {
     let group = RaftGroup::local(
         1,
         GROUP.into(),
-        common::store(&path, false, fixture_scratch.clone()).await?,
+        common::store(&path, false, fixture_scratch.clone(), 1, GROUP).await?,
         backend.clone(),
         common::snapshot_owner(),
     )
@@ -363,7 +365,7 @@ async fn fatal_snapshot_capture_blocks_even_local_generation_access() -> Result<
     let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
     let dir = kasumi_store::test_utils::private_tempdir()?;
     let path = dir.path().join("fatal-snapshot.kv");
-    let store = common::store(&path, true, fixture_scratch.clone()).await?;
+    let store = common::store(&path, true, fixture_scratch.clone(), 1, GROUP).await?;
     let backend = Arc::new(common::Backend::default());
     let group = RaftGroup::local(
         1,
@@ -444,7 +446,7 @@ async fn fatal_snapshot_capture_blocks_even_local_generation_access() -> Result<
     let reopened = RaftGroup::local(
         1,
         GROUP.into(),
-        common::store(&path, false, fixture_scratch.clone()).await?,
+        common::store(&path, false, fixture_scratch.clone(), 1, GROUP).await?,
         recovered.clone(),
         common::snapshot_owner(),
     )
@@ -466,7 +468,7 @@ async fn raft_crash_worker() -> Result<()> {
     let group = RaftGroup::local(
         1,
         GROUP.into(),
-        common::store(&path, true, fixture_scratch.clone()).await?,
+        common::store(&path, true, fixture_scratch.clone(), 1, GROUP).await?,
         Arc::new(common::Backend::default()),
         common::snapshot_owner(),
     )
@@ -510,7 +512,7 @@ async fn acknowledged_one_voter_write_survives_sigkill_without_graceful_shutdown
     let recovered = RaftGroup::local(
         1,
         GROUP.into(),
-        common::store(&path, false, fixture_scratch.clone()).await?,
+        common::store(&path, false, fixture_scratch.clone(), 1, GROUP).await?,
         backend.clone(),
         common::snapshot_owner(),
     )
@@ -579,6 +581,8 @@ async fn oversized_replication_backlog_shrinks_and_catches_up_without_changing_m
                 &dir.path().join(format!("node-{id}.kv")),
                 true,
                 fixture_scratch.clone(),
+                id,
+                GROUP,
             )
             .await?,
             backend.clone(),

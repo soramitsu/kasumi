@@ -204,11 +204,29 @@ async fn target_prebind_stores(
         access.clone(),
     )
     .await?;
-    stores.custody().store().write_batch(&[WriteOp::put(
+    let mut identity = kasumi_raft::initial_storage_identity(
+        f.installed.node.node_id,
+        &format!("{tenant}/{incarnation}"),
+    )?
+    .to_vec();
+    identity.push(WriteOp::put(
         "raft.meta",
         b"application_bootstrap_sha256",
         serde_json::to_vec(bootstrap_sha256)?,
-    )])?;
+    ));
+    stores.initialize_state(
+        &[WriteOp::put(
+            "engine.bootstrap",
+            b"manifest",
+            serde_json::to_vec(&serde_json::json!({
+                "format": 2,
+                "bytes": 0,
+                "chunks": 0,
+                "digest": bootstrap_sha256,
+            }))?,
+        )],
+        &identity,
+    )?;
     Ok((stores, access))
 }
 
@@ -708,21 +726,25 @@ async fn verified_initial_prebind_persists_reopens_and_rejects_substituted_accep
         .verify_initial_membership(f.installed.node.node_id, LifecyclePhase::Initialize)?;
     let (stores, access) =
         target_prebind_stores(&f, &lifecycle, verified.bootstrap_sha256()).await?;
-    assert!(
-        stores
-            .custody()
-            .store()
-            .get("raft.meta", b"node_id")?
-            .is_none()
+    assert_eq!(
+        stores.custody().store().get("raft.meta", b"node_id")?,
+        Some(serde_json::to_vec(&f.installed.node.node_id)?)
     );
-    assert!(
-        stores
-            .custody()
-            .store()
-            .get("raft.meta", b"group")?
-            .is_none()
+    assert_eq!(
+        stores.custody().store().get("raft.meta", b"group")?,
+        Some(serde_json::to_vec(&format!(
+            "{}/{}",
+            lifecycle.request.tenant, lifecycle.request.target_incarnation
+        ))?)
     );
+    let materialized_identity = stores.custody().store().scan("raft.meta")?;
     let expected = verified.persist_target_raft_prebind(&journal, &stores)?;
+    for (key, value) in materialized_identity {
+        assert_eq!(
+            stores.custody().store().get("raft.meta", &key)?,
+            Some(value)
+        );
+    }
     assert_eq!(
         stores.custody().store().get("raft.meta", b"node_id")?,
         Some(serde_json::to_vec(&f.installed.node.node_id)?)
@@ -818,52 +840,58 @@ async fn verified_initial_prebind_persists_reopens_and_rejects_substituted_accep
 #[tokio::test]
 async fn first_prebind_rejects_partial_or_competing_raft_identity_without_repair() -> Result<()> {
     use super::dispatch::InitialDispatchReservation as Decision;
-    let f = Fixture::new().await?;
-    let journal = f.create()?;
-    let (lifecycle, phase, request) = signed_initial_dispatch(&f, false)?;
-    let Decision::NewlyAccepted(candidate) =
-        journal.reserve_initial_dispatch(&f.installed.root, &phase, &lifecycle, &request)?
-    else {
-        anyhow::bail!("signed first dispatch returned no one-use candidate")
-    };
-    let verified = candidate
-        .verify_initial_membership(f.installed.node.node_id, LifecyclePhase::Initialize)?;
-    let (stores, _) = target_prebind_stores(&f, &lifecycle, verified.bootstrap_sha256()).await?;
-    let wrong_group = serde_json::to_vec("acme/other-incarnation")?;
-    stores.custody().store().write_batch(&[WriteOp::put(
-        "raft.meta",
-        b"group",
-        wrong_group.clone(),
-    )])?;
-    let error = verified
-        .persist_target_raft_prebind(&journal, &stores)
-        .err()
-        .context("partial Raft identity unexpectedly consumed one-use prebind")?;
-    assert!(
-        error
-            .to_string()
-            .contains("target Raft identity was already or incompletely installed"),
-        "unexpected partial-identity failure: {error:#}"
-    );
-    assert!(
-        stores
-            .custody()
-            .store()
-            .get("raft.meta", b"node_id")?
-            .is_none()
-    );
-    assert!(
-        stores
-            .custody()
-            .store()
-            .get("raft.meta", kasumi_raft::TARGET_PREBIND_KEY)?
-            .is_none()
-    );
-    assert_eq!(
-        stores.custody().store().get("raft.meta", b"group")?,
-        Some(wrong_group)
-    );
-    stores.shutdown().await?;
+    for mutation in [
+        WriteOp::delete("raft.meta", b"node_id"),
+        WriteOp::delete("raft.meta", b"group"),
+        WriteOp::put("raft.meta", b"node_id", serde_json::to_vec(&2_u64)?),
+        WriteOp::put(
+            "raft.meta",
+            b"group",
+            serde_json::to_vec("acme/other-incarnation")?,
+        ),
+        WriteOp::put("raft.meta", b"applied", b"prior consensus progress"),
+    ] {
+        let f = Fixture::new().await?;
+        let journal = f.create()?;
+        let (lifecycle, phase, request) = signed_initial_dispatch(&f, false)?;
+        let Decision::NewlyAccepted(candidate) =
+            journal.reserve_initial_dispatch(&f.installed.root, &phase, &lifecycle, &request)?
+        else {
+            anyhow::bail!("signed first dispatch returned no one-use candidate")
+        };
+        let verified = candidate
+            .verify_initial_membership(f.installed.node.node_id, LifecyclePhase::Initialize)?;
+        let (stores, _) =
+            target_prebind_stores(&f, &lifecycle, verified.bootstrap_sha256()).await?;
+        kasumi_store::test_utils::inject_authenticated_rows_below_facade(
+            &stores,
+            &[],
+            &[mutation],
+        )?;
+        let before = stores.custody().store().scan("raft.meta")?;
+        let error = verified
+            .persist_target_raft_prebind(&journal, &stores)
+            .err()
+            .context("partial Raft identity unexpectedly consumed one-use prebind")?;
+        assert!(
+            error
+                .to_string()
+                .contains("target Raft prebind installed group differs")
+                || error
+                    .to_string()
+                    .contains("target Raft metadata is not a pristine materialized identity"),
+            "unexpected partial-identity failure: {error:#}"
+        );
+        assert!(
+            stores
+                .custody()
+                .store()
+                .get("raft.meta", kasumi_raft::TARGET_PREBIND_KEY)?
+                .is_none()
+        );
+        assert_eq!(stores.custody().store().scan("raft.meta")?, before,);
+        stores.shutdown().await?;
+    }
     Ok(())
 }
 
@@ -1515,8 +1543,11 @@ async fn exact_dispatch_reservation_is_one_use_and_reopen_recounts_terminal_capa
         Decision::NewlyAccepted(_)
     ));
     let metadata: Metadata = serde_json::from_slice(&f.store.get(NS, b"metadata")?.unwrap())?;
-    assert_eq!(metadata.format, 3);
+    assert_eq!(metadata.format, 4);
     assert_eq!(metadata.dispatches, 2);
+    assert_eq!(metadata.dispatch_terminals, 0);
+    assert_eq!(metadata.dispatch_starts, 0);
+    assert_eq!(metadata.dispatch_initializes, 0);
     assert!(metadata.charged_bytes >= MAX_RECORD as u64 + 2 * DISPATCH_TERMINAL_RESERVE);
     drop(journal);
     let reopened = f.reopen()?;
@@ -1529,7 +1560,7 @@ async fn exact_dispatch_reservation_is_one_use_and_reopen_recounts_terminal_capa
 }
 
 #[tokio::test]
-async fn format_one_and_corrupt_dispatch_or_accounting_fail_closed_on_reopen() -> Result<()> {
+async fn previous_formats_and_corrupt_dispatch_or_accounting_fail_closed_on_reopen() -> Result<()> {
     let f = Fixture::new().await?;
     let journal = f.create()?;
     let (lifecycle, phase, request) = initial_dispatch(&f, false)?;
@@ -1538,11 +1569,16 @@ async fn format_one_and_corrupt_dispatch_or_accounting_fail_closed_on_reopen() -
     let original_head = f.store.get(NS, b"metadata")?.unwrap();
     let key = format!("dispatch/{}/{}", phase.operation_id, phase.phase_id).into_bytes();
     let original_row = f.store.get(NS, &key)?.unwrap();
-    let mut old: Metadata = serde_json::from_slice(&original_head)?;
-    old.format = 1;
-    f.store
-        .write_batch(&[WriteOp::put(NS, b"metadata", serde_json::to_vec(&old)?)])?;
-    assert!(f.reopen().is_err());
+    for format in 1..4 {
+        let mut old: Metadata = serde_json::from_slice(&original_head)?;
+        old.format = format;
+        f.store
+            .write_batch(&[WriteOp::put(NS, b"metadata", serde_json::to_vec(&old)?)])?;
+        assert!(
+            f.reopen().is_err(),
+            "retired journal format {format} reopened"
+        );
+    }
     f.store
         .write_batch(&[WriteOp::put(NS, b"metadata", original_head.clone())])?;
     let mut missing_field: serde_json::Value = serde_json::from_slice(&original_head)?;

@@ -4,6 +4,7 @@
 
 use anyhow::{Context, Result, ensure};
 use async_trait::async_trait;
+use chacha20poly1305::{KeyInit, XChaCha20Poly1305, XNonce, aead::AeadInPlace};
 use reqwest::{
     Client, Url,
     header::{HeaderMap, HeaderValue},
@@ -18,8 +19,8 @@ use uuid::Uuid;
 use zeroize::{Zeroize, Zeroizing};
 
 use crate::{
-    AccessGuard, KeyCatalog, KeyProvider, MAX_KEY_LEASE, PROVIDER_TIMEOUT, TenantStore, decrypt,
-    encrypt,
+    AccessGuard, AdmittedKeyCatalog, DiskMemoryLease, KeyCatalog, KeyProvider, MAX_KEY_LEASE,
+    NodeDiskMemoryAdmission, PROVIDER_TIMEOUT, SecretKey, TenantStore, decrypt,
 };
 use kasumi_clock::{LeaseClock, SystemLeaseClock};
 
@@ -48,7 +49,157 @@ struct Manifest {
 /// wrapped-key dependencies are authenticated as AEAD associated data.
 pub struct EncryptedBackup {
     manifest: Manifest,
-    ciphertext: Vec<u8>,
+    // Decoded/related manifests and directly cloned catalogs drop before this lease.
+    _catalog_charge: Option<DiskMemoryLease>,
+    ciphertext: Zeroizing<Vec<u8>>,
+    // Every ciphertext buffer is wiped and freed before its installed lease.
+    _ciphertext_charge: DiskMemoryLease,
+    memory_owner: Arc<dyn NodeDiskMemoryAdmission>,
+}
+
+/// One exact-owner serialized backup object. The byte allocation is retired
+/// before its installed memory lease, including when an async upload is
+/// cancelled after the body has taken ownership of the object.
+pub struct AdmittedBackupBundle {
+    bytes: Zeroizing<Vec<u8>>,
+    _charge: DiskMemoryLease,
+    memory_owner: Arc<dyn NodeDiskMemoryAdmission>,
+}
+
+/// Preserves the installed owner's failure kind across an `anyhow` boundary.
+/// Capacity denial is distinct from a failed owner or reservation identity.
+#[derive(Debug)]
+pub struct BackupBundleAdmissionError(std::io::Error);
+
+impl BackupBundleAdmissionError {
+    pub fn kind(&self) -> std::io::ErrorKind {
+        self.0.kind()
+    }
+}
+
+impl From<std::io::Error> for BackupBundleAdmissionError {
+    fn from(error: std::io::Error) -> Self {
+        Self(error)
+    }
+}
+
+impl std::fmt::Display for BackupBundleAdmissionError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "backup bundle output admission denied: {}",
+            self.0
+        )
+    }
+}
+
+impl std::error::Error for BackupBundleAdmissionError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.0)
+    }
+}
+
+impl std::fmt::Debug for AdmittedBackupBundle {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("AdmittedBackupBundle")
+            .field("len", &self.bytes.len())
+            .finish_non_exhaustive()
+    }
+}
+
+impl AdmittedBackupBundle {
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    pub fn try_clone(&self) -> Result<Self> {
+        Self::copy_from(self.as_bytes(), &self.memory_owner)
+    }
+
+    fn copy_from(bytes: &[u8], owner: &Arc<dyn NodeDiskMemoryAdmission>) -> Result<Self> {
+        let allocation = crate::disk_memory::allocation::<u8>(u64::try_from(bytes.len())?)?;
+        let charge = owner
+            .clone()
+            .reserve_installed(allocation)
+            .map_err(BackupBundleAdmissionError::from)?;
+        let mut output = Zeroizing::new(Vec::new());
+        output
+            .try_reserve_exact(bytes.len())
+            .context("backup bundle allocation failed")?;
+        ensure!(
+            u64::try_from(output.capacity())? <= allocation,
+            "backup bundle allocation exceeds admission"
+        );
+        output.extend_from_slice(bytes);
+        Ok(Self {
+            bytes: output,
+            _charge: charge,
+            memory_owner: owner.clone(),
+        })
+    }
+}
+
+impl AsRef<[u8]> for AdmittedBackupBundle {
+    fn as_ref(&self) -> &[u8] {
+        self.as_bytes()
+    }
+}
+
+impl std::ops::Deref for AdmittedBackupBundle {
+    type Target = [u8];
+
+    fn deref(&self) -> &Self::Target {
+        self.as_bytes()
+    }
+}
+
+/// Upload bytes are either newly serialized with retained installed memory
+/// admission, or received from an existing destination/audit archive. The
+/// latter path does not claim admission for that upstream read allocation.
+pub enum BackupUpload {
+    Generated(AdmittedBackupBundle),
+    Received(Vec<u8>),
+}
+
+impl BackupUpload {
+    pub fn received(bytes: Vec<u8>) -> Self {
+        Self::Received(bytes)
+    }
+
+    pub fn as_bytes(&self) -> &[u8] {
+        match self {
+            Self::Generated(bundle) => bundle.as_bytes(),
+            Self::Received(bytes) => bytes,
+        }
+    }
+
+    fn into_http_body(self) -> reqwest::Body {
+        match self {
+            Self::Generated(bundle) => reqwest::Body::from(bytes::Bytes::from_owner(bundle)),
+            Self::Received(bytes) => reqwest::Body::from(bytes),
+        }
+    }
+}
+
+impl From<AdmittedBackupBundle> for BackupUpload {
+    fn from(bundle: AdmittedBackupBundle) -> Self {
+        Self::Generated(bundle)
+    }
+}
+
+impl AsRef<[u8]> for BackupUpload {
+    fn as_ref(&self) -> &[u8] {
+        self.as_bytes()
+    }
+}
+
+impl std::ops::Deref for BackupUpload {
+    type Target = [u8];
+
+    fn deref(&self) -> &Self::Target {
+        self.as_bytes()
+    }
 }
 
 pub struct BackupContents {
@@ -85,28 +236,36 @@ impl TenantStore {
         );
         let state = self.state.read();
         self.require_access(&state)?;
-        let catalog = self.catalog.read().clone();
+        let tenant = self.tenant.clone();
+        let admitted = {
+            let current = self.catalog.read();
+            AdmittedKeyCatalog::clone_for_backup(&current, self.scratch_disk().memory().clone())?
+        };
         let key = state
             .keys
-            .get(&catalog.active)
+            .get(&admitted.active)
             .context("backup data key missing")?;
+        let (catalog, catalog_charge) = admitted.into_parts();
         let manifest = Manifest {
             format: FORMAT,
             backup_id: id,
-            tenant: self.tenant.clone(),
+            tenant,
             revision,
             plaintext_bytes: snapshot.len() as u64,
             catalog,
         };
-        let aad = manifest_bytes(&manifest)?;
-        let mut plaintext = Zeroizing::new(Vec::with_capacity(snapshot.len() + 32));
-        plaintext.extend(Sha256::digest(snapshot));
-        plaintext.extend(snapshot);
-        let ciphertext = encrypt(key, &plaintext, &aad)?;
+        let memory_owner = self.scratch_disk().memory().clone();
+        let aad = manifest_bytes(&manifest, &memory_owner)?;
+        let ciphertext_charge = reserve_backup_ciphertext(snapshot.len(), &memory_owner)?;
+        // Keep this lease live through encryption and then in the returned object.
+        let ciphertext = encrypt_backup_ciphertext(key, snapshot, &aad.bytes)?;
         self.require_access(&state)?;
         Ok(EncryptedBackup {
             manifest,
+            _catalog_charge: catalog_charge,
             ciphertext,
+            _ciphertext_charge: ciphertext_charge,
+            memory_owner,
         })
     }
 }
@@ -118,13 +277,29 @@ impl EncryptedBackup {
         &self,
         snapshot: &[u8],
         provider: Arc<dyn KeyProvider>,
-        access: &crate::StorageAccess,
+        owner: &TenantStore,
     ) -> Result<Self> {
         ensure!(
             snapshot.len() <= crate::MAX_SESSION_RECORD_BYTES,
             "session outcome exceeds limit"
         );
-        self.decrypt(self.source_tenant(), provider.clone(), access)
+        owner.check_access()?;
+        ensure!(
+            owner.tenant() == self.source_tenant(),
+            "backup source tenant differs from installed owner"
+        );
+        self.check_memory_owner(owner)?;
+        let charge = AdmittedKeyCatalog::admit_backup_manifest_clone(
+            &self.manifest,
+            self.manifest.catalog.keys.len(),
+            owner.scratch_disk().memory().clone(),
+        )?;
+        let mut manifest = self.manifest.clone();
+        manifest.backup_id = Uuid::new_v4();
+        manifest.plaintext_bytes = snapshot.len() as u64;
+        let aad = manifest_bytes(&manifest, &self.memory_owner)?;
+        let ciphertext_charge = reserve_backup_ciphertext(snapshot.len(), &self.memory_owner)?;
+        self.decrypt(self.source_tenant(), provider.clone(), owner)
             .await?;
         let wrapped = self
             .manifest
@@ -138,20 +313,24 @@ impl EncryptedBackup {
         )
         .await
         .context("session source key authorization timed out")??;
-        access.check()?;
-        let mut manifest = self.manifest.clone();
-        manifest.backup_id = Uuid::new_v4();
-        manifest.plaintext_bytes = snapshot.len() as u64;
-        let aad = manifest_bytes(&manifest)?;
-        let mut plaintext = Zeroizing::new(Vec::with_capacity(snapshot.len() + 32));
-        plaintext.extend(Sha256::digest(snapshot));
-        plaintext.extend(snapshot);
-        let ciphertext = encrypt(&key, &plaintext, &aad)?;
-        access.check()?;
+        owner.check_access()?;
+        // The earlier exact-owner lease remains live across provider calls.
+        let ciphertext = encrypt_backup_ciphertext(&key, snapshot, &aad.bytes)?;
+        owner.check_access()?;
         Ok(Self {
             manifest,
+            _catalog_charge: Some(charge),
             ciphertext,
+            _ciphertext_charge: ciphertext_charge,
+            memory_owner: self.memory_owner.clone(),
         })
+    }
+    fn check_memory_owner(&self, owner: &TenantStore) -> Result<()> {
+        ensure!(
+            Arc::ptr_eq(&self.memory_owner, owner.scratch_disk().memory()),
+            "backup memory owner differs from installed target"
+        );
+        Ok(())
     }
     pub fn id(&self) -> Uuid {
         self.manifest.backup_id
@@ -166,19 +345,45 @@ impl EncryptedBackup {
         self.manifest.revision
     }
 
-    pub fn to_bytes(&self) -> Result<Vec<u8>> {
-        let header = manifest_bytes(&self.manifest)?;
-        let mut bytes = Vec::with_capacity(12 + header.len() + self.ciphertext.len());
+    pub fn to_bytes(&self) -> Result<AdmittedBackupBundle> {
+        let header = manifest_bytes(&self.manifest, &self.memory_owner)?;
+        let length = 12usize
+            .checked_add(header.bytes.len())
+            .and_then(|len| len.checked_add(self.ciphertext.len()))
+            .context("backup bundle length overflow")?;
+        let allocation = crate::disk_memory::allocation::<u8>(u64::try_from(length)?)?;
+        let charge = self
+            .memory_owner
+            .clone()
+            .reserve_installed(allocation)
+            .map_err(BackupBundleAdmissionError::from)?;
+        let mut bytes = Zeroizing::new(Vec::new());
+        bytes
+            .try_reserve_exact(length)
+            .context("backup bundle allocation failed")?;
+        ensure!(
+            u64::try_from(bytes.capacity())? <= allocation,
+            "backup bundle allocation exceeds admission"
+        );
         bytes.extend(MAGIC);
-        bytes.extend((header.len() as u32).to_be_bytes());
-        bytes.extend(header);
-        bytes.extend(&self.ciphertext);
-        Ok(bytes)
+        bytes.extend((header.bytes.len() as u32).to_be_bytes());
+        bytes.extend(&header.bytes);
+        bytes.extend_from_slice(&self.ciphertext);
+        Ok(AdmittedBackupBundle {
+            bytes,
+            _charge: charge,
+            memory_owner: self.memory_owner.clone(),
+        })
     }
 
     /// Parse bounded input without contacting a key service. Metadata is not
     /// trusted until `decrypt` authenticates it.
-    pub fn from_bytes(bytes: &[u8], max_snapshot_bytes: usize) -> Result<Self> {
+    pub fn from_bytes(
+        bytes: &[u8],
+        max_snapshot_bytes: usize,
+        owner: &TenantStore,
+    ) -> Result<Self> {
+        owner.check_access()?;
         ensure!(
             bytes.len() >= 12 && &bytes[..8] == MAGIC,
             "invalid backup magic"
@@ -189,9 +394,17 @@ impl EncryptedBackup {
             "invalid backup header length"
         );
         let header = &bytes[12..12 + header_len];
+        let charge = AdmittedKeyCatalog::admit_backup_manifest_decode(
+            header,
+            owner.scratch_disk().memory().clone(),
+        )?;
         let manifest: Manifest =
             serde_json::from_slice(header).context("invalid backup manifest")?;
         ensure!(manifest.format == FORMAT, "unsupported backup format");
+        ensure!(
+            manifest.tenant == owner.tenant(),
+            "backup tenant differs from installed owner"
+        );
         manifest.catalog.validate(&manifest.tenant)?;
         ensure!(
             manifest.plaintext_bytes <= max_snapshot_bytes.min(MAX_BACKUP_OBJECT_BYTES) as u64,
@@ -203,13 +416,22 @@ impl EncryptedBackup {
             ciphertext.len() as u64 == manifest.plaintext_bytes + 72,
             "backup ciphertext length mismatch"
         );
-        ensure!(
-            manifest_bytes(&manifest)? == header,
-            "noncanonical backup manifest"
-        );
+        let canonical = manifest_bytes(&manifest, owner.scratch_disk().memory())?;
+        ensure!(canonical.bytes == header, "noncanonical backup manifest");
+        drop(canonical);
+        let copy_bytes = crate::disk_memory::allocation::<u8>(u64::try_from(ciphertext.len())?)?;
+        let ciphertext_charge = owner
+            .scratch_disk()
+            .memory()
+            .clone()
+            .reserve_installed(copy_bytes)
+            .context("backup ciphertext copy admission denied")?;
         Ok(Self {
             manifest,
-            ciphertext: ciphertext.to_vec(),
+            _catalog_charge: Some(charge),
+            ciphertext: Zeroizing::new(ciphertext.to_vec()),
+            _ciphertext_charge: ciphertext_charge,
+            memory_owner: owner.scratch_disk().memory().clone(),
         })
     }
 
@@ -217,19 +439,25 @@ impl EncryptedBackup {
         &self,
         source_tenant: &str,
         provider: Arc<dyn KeyProvider>,
-        access: &crate::StorageAccess,
+        owner: &TenantStore,
     ) -> Result<BackupContents> {
-        self.decrypt_with_clock(source_tenant, provider, &SystemLeaseClock, access)
-            .await
+        self.check_memory_owner(owner)?;
+        self.decrypt_with_clock(
+            source_tenant,
+            provider,
+            &SystemLeaseClock,
+            owner.storage_access(),
+        )
+        .await
     }
     #[cfg(any(test, feature = "test-utils"))]
     pub async fn decrypt_fixture(
         &self,
         tenant: &str,
         provider: Arc<dyn KeyProvider>,
+        owner: &TenantStore,
     ) -> Result<BackupContents> {
-        self.decrypt(tenant, provider, &crate::StorageAccess::fixture())
-            .await
+        self.decrypt(tenant, provider, owner).await
     }
 
     async fn decrypt_with_clock(
@@ -245,6 +473,7 @@ impl EncryptedBackup {
             "backup source tenant mismatch"
         );
         self.manifest.catalog.validate(source_tenant)?;
+        let aad = manifest_bytes(&self.manifest, &self.memory_owner)?;
         let start = clock.now();
         let keys = tokio::time::timeout(PROVIDER_TIMEOUT, async {
             let mut keys = std::collections::BTreeMap::new();
@@ -268,8 +497,7 @@ impl EncryptedBackup {
         let key = keys
             .get(&self.manifest.catalog.active)
             .context("backup key missing")?;
-        let aad = manifest_bytes(&self.manifest)?;
-        let mut plaintext = Zeroizing::new(decrypt(key, &self.ciphertext, &aad)?);
+        let mut plaintext = Zeroizing::new(decrypt(key, &self.ciphertext, &aad.bytes)?);
         ensure!(plaintext.len() >= 32, "invalid backup integrity record");
         let digest = Sha256::digest(&plaintext[32..]);
         ensure!(
@@ -287,9 +515,9 @@ impl EncryptedBackup {
         );
         let mut ciphertext_digest = Sha256::new();
         ciphertext_digest.update(MAGIC);
-        ciphertext_digest.update((aad.len() as u32).to_be_bytes());
-        ciphertext_digest.update(&aad);
-        ciphertext_digest.update(&self.ciphertext);
+        ciphertext_digest.update((aad.bytes.len() as u32).to_be_bytes());
+        ciphertext_digest.update(&aad.bytes);
+        ciphertext_digest.update(self.ciphertext.as_slice());
         let ciphertext_sha256 = hex::encode(ciphertext_digest.finalize());
         let key_catalog_sha256 =
             hex::encode(Sha256::digest(serde_json::to_vec(&self.manifest.catalog)?));
@@ -310,16 +538,142 @@ impl EncryptedBackup {
     }
 }
 
-fn manifest_bytes(manifest: &Manifest) -> Result<Vec<u8>> {
-    let bytes = serde_json::to_vec(manifest)?;
-    ensure!(bytes.len() <= HEADER_LIMIT, "backup manifest too large");
-    Ok(bytes)
+fn backup_ciphertext_len(snapshot_len: usize) -> Result<usize> {
+    snapshot_len
+        .checked_add(72) // 24-byte nonce, 32-byte digest, 16-byte tag.
+        .context("backup ciphertext length overflow")
+}
+
+fn reserve_backup_ciphertext(
+    snapshot_len: usize,
+    owner: &Arc<dyn NodeDiskMemoryAdmission>,
+) -> Result<DiskMemoryLease> {
+    let allocation =
+        crate::disk_memory::allocation::<u8>(u64::try_from(backup_ciphertext_len(snapshot_len)?)?)?;
+    owner
+        .clone()
+        .reserve_installed(allocation)
+        .context("backup ciphertext output admission denied")
+}
+
+/// Fill one pre-admitted buffer in the same nonce/ciphertext/tag format as
+/// encrypted records. The caller keeps its installed lease until this buffer
+/// has been zeroized and freed.
+fn encrypt_backup_ciphertext(
+    key: &SecretKey,
+    snapshot: &[u8],
+    aad: &[u8],
+) -> Result<Zeroizing<Vec<u8>>> {
+    let length = backup_ciphertext_len(snapshot.len())?;
+    let admitted_bytes = crate::disk_memory::allocation::<u8>(u64::try_from(length)?)?;
+    let mut ciphertext = Zeroizing::new(Vec::new());
+    ciphertext
+        .try_reserve_exact(length)
+        .context("backup ciphertext allocation failed")?;
+    ensure!(
+        u64::try_from(ciphertext.capacity())? <= admitted_bytes,
+        "backup ciphertext allocation exceeds admission"
+    );
+    ciphertext.resize(length, 0);
+    let mut nonce = [0u8; 24];
+    getrandom::fill(&mut nonce).map_err(|_| anyhow::anyhow!("OS randomness unavailable"))?;
+    ciphertext[..24].copy_from_slice(&nonce);
+    ciphertext[24..56].copy_from_slice(&Sha256::digest(snapshot));
+    let tag_start = 56 + snapshot.len();
+    ciphertext[56..tag_start].copy_from_slice(snapshot);
+    let cipher = XChaCha20Poly1305::new_from_slice(key.as_bytes())
+        .map_err(|_| anyhow::anyhow!("invalid encryption key"))?;
+    let tag = cipher
+        .encrypt_in_place_detached(
+            XNonce::from_slice(&nonce),
+            aad,
+            &mut ciphertext[24..tag_start],
+        )
+        .map_err(|_| anyhow::anyhow!("backup encryption failed"))?;
+    ciphertext[tag_start..].copy_from_slice(&tag);
+    Ok(ciphertext)
+}
+
+struct AdmittedManifestBytes {
+    bytes: Vec<u8>,
+    // The serialized bytes drop before their installed allocation lease.
+    _charge: DiskMemoryLease,
+}
+
+struct ManifestByteCount(usize);
+
+impl std::io::Write for ManifestByteCount {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0 = self
+            .0
+            .checked_add(bytes.len())
+            .filter(|size| *size <= HEADER_LIMIT)
+            .ok_or_else(|| std::io::Error::other("backup manifest too large"))?;
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+struct ManifestWriter<'a> {
+    bytes: &'a mut Vec<u8>,
+    admitted_len: usize,
+}
+
+impl std::io::Write for ManifestWriter<'_> {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        let next = self
+            .bytes
+            .len()
+            .checked_add(bytes.len())
+            .filter(|size| *size <= self.admitted_len)
+            .ok_or_else(|| std::io::Error::other("backup manifest changed after admission"))?;
+        self.bytes.extend_from_slice(bytes);
+        debug_assert_eq!(self.bytes.len(), next);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+fn manifest_bytes(
+    manifest: &Manifest,
+    owner: &Arc<dyn NodeDiskMemoryAdmission>,
+) -> Result<AdmittedManifestBytes> {
+    let mut count = ManifestByteCount(0);
+    serde_json::to_writer(&mut count, manifest).context("backup manifest too large")?;
+    let required = crate::disk_memory::allocation::<u8>(u64::try_from(count.0)?)?;
+    let charge = owner
+        .clone()
+        .reserve_installed(required)
+        .context("backup manifest serialization admission denied")?;
+    let mut bytes = Vec::with_capacity(count.0);
+    serde_json::to_writer(
+        ManifestWriter {
+            bytes: &mut bytes,
+            admitted_len: count.0,
+        },
+        manifest,
+    )
+    .context("backup manifest serialization changed after admission")?;
+    ensure!(
+        bytes.len() == count.0,
+        "backup manifest serialization changed after admission"
+    );
+    Ok(AdmittedManifestBytes {
+        bytes,
+        _charge: charge,
+    })
 }
 
 #[async_trait]
 pub trait BackupDestination: Send + Sync {
     /// Publishing is create-only: an existing backup must never be overwritten.
-    async fn put(&self, id: Uuid, encrypted: Vec<u8>) -> Result<()>;
+    async fn put(&self, id: Uuid, encrypted: BackupUpload) -> Result<()>;
     /// Enforce the caller's expected object bound before allocation and while
     /// reading, in addition to the destination's configured maximum.
     async fn get(&self, id: Uuid, max_bytes: usize) -> Result<Vec<u8>>;
@@ -328,7 +682,7 @@ pub trait BackupDestination: Send + Sync {
         &self,
         _session: Uuid,
         _slot: crate::BackupSessionSlot,
-        _encrypted: Vec<u8>,
+        _encrypted: BackupUpload,
     ) -> Result<()> {
         anyhow::bail!("backup destination lacks managed session storage")
     }
@@ -391,7 +745,7 @@ impl BackupDestination for FilesystemBackupDestination {
         &self,
         session: Uuid,
         slot: crate::BackupSessionSlot,
-        encrypted: Vec<u8>,
+        encrypted: BackupUpload,
     ) -> Result<()> {
         ensure!(
             encrypted.len() <= self.max_bytes,
@@ -433,7 +787,7 @@ impl BackupDestination for FilesystemBackupDestination {
         let objects = objects.to_vec();
         tokio::task::spawn_blocking(move || root.delete(&proof, &objects)).await?
     }
-    async fn put(&self, id: Uuid, encrypted: Vec<u8>) -> Result<()> {
+    async fn put(&self, id: Uuid, encrypted: BackupUpload) -> Result<()> {
         ensure!(
             encrypted.len() <= self.max_bytes,
             "backup exceeds destination byte limit"
@@ -706,7 +1060,7 @@ impl BackupDestination for S3BackupDestination {
         &self,
         session: Uuid,
         slot: crate::BackupSessionSlot,
-        encrypted: Vec<u8>,
+        encrypted: BackupUpload,
     ) -> Result<()> {
         self.managed_put(session, slot, encrypted).await
     }
@@ -732,7 +1086,7 @@ impl BackupDestination for S3BackupDestination {
     ) -> Result<()> {
         self.managed_delete(aborted, objects).await
     }
-    async fn put(&self, id: Uuid, encrypted: Vec<u8>) -> Result<()> {
+    async fn put(&self, id: Uuid, encrypted: BackupUpload) -> Result<()> {
         ensure!(
             encrypted.len() <= self.max_bytes,
             "backup exceeds destination byte limit"
@@ -744,7 +1098,7 @@ impl BackupDestination for S3BackupDestination {
             .client
             .put(url)
             .headers(headers)
-            .body(encrypted)
+            .body(encrypted.into_http_body())
             .send()
             .await
             .map_err(|_| anyhow::anyhow!("S3 backup upload failed; outcome may be unknown"))?;
@@ -790,10 +1144,640 @@ impl BackupDestination for S3BackupDestination {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::NodeDiskMemoryAdmission;
     use crate::{
         NodeStore, WriteOp,
         test_utils::{LocalKeyProvider, ManualClock},
     };
+
+    const MANIFEST_TEST_MEMORY_LIMIT: u64 = 256 << 20;
+
+    struct ManifestAdmissionFixture {
+        store: Arc<TenantStore>,
+        memory: Arc<crate::test_utils::TestDiskMemory>,
+        provider: Arc<LocalKeyProvider>,
+        _scratch_directory: tempfile::TempDir,
+        _directory: tempfile::TempDir,
+    }
+
+    impl ManifestAdmissionFixture {
+        async fn new() -> Self {
+            let memory = crate::test_utils::TestDiskMemory::new(MANIFEST_TEST_MEMORY_LIMIT, 4096);
+            let scratch_directory = crate::test_utils::private_tempdir().unwrap();
+            let scratch = crate::ScratchDisk::fixture(scratch_directory.path(), memory.clone());
+            let directory = crate::test_utils::private_tempdir().unwrap();
+            let provider = Arc::new(LocalKeyProvider::new([96; 32]));
+            let store = TenantStore::initialize_catalog_fixture_with_clock(
+                NodeStore::create_new_fixture(
+                    directory.path().join("manifest-admission.kv"),
+                    crate::test_utils::NODE_STORE_ID,
+                    memory.clone(),
+                    scratch,
+                )
+                .unwrap(),
+                "tenant".into(),
+                provider.clone(),
+                Arc::new(ManualClock::new()),
+            )
+            .await
+            .unwrap();
+            Self {
+                store,
+                memory,
+                provider,
+                _scratch_directory: scratch_directory,
+                _directory: directory,
+            }
+        }
+
+        fn manifest_cost(&self, backup: &EncryptedBackup) -> u64 {
+            let header = serde_json::to_vec(&backup.manifest).unwrap();
+            let allocation = crate::disk_memory::allocation::<u8>(header.len() as u64).unwrap();
+            crate::test_utils::TestDiskMemory::required_reservation_bytes(allocation).unwrap()
+        }
+
+        fn ciphertext_cost(&self, snapshot_len: usize) -> u64 {
+            let allocation =
+                crate::disk_memory::allocation::<u8>((snapshot_len + 72) as u64).unwrap();
+            crate::test_utils::TestDiskMemory::required_reservation_bytes(allocation).unwrap()
+        }
+
+        fn bundle_cost(&self, backup: &EncryptedBackup) -> u64 {
+            let header = serde_json::to_vec(&backup.manifest).unwrap();
+            let length = 12 + header.len() + backup.ciphertext.len();
+            let allocation = crate::disk_memory::allocation::<u8>(length as u64).unwrap();
+            crate::test_utils::TestDiskMemory::required_reservation_bytes(allocation).unwrap()
+        }
+
+        fn leave_available(&self, available: u64) -> DiskMemoryLease {
+            let before = self.memory.snapshot();
+            let filler = MANIFEST_TEST_MEMORY_LIMIT
+                - before.bookkeeping_bytes
+                - before.used_bytes
+                - available
+                - crate::test_utils::TestDiskMemory::required_reservation_bytes(0).unwrap();
+            self.memory.clone().reserve_installed(filler).unwrap()
+        }
+    }
+
+    #[tokio::test]
+    async fn serialized_bundle_requires_owner_headroom_and_retains_it_through_http_body() {
+        let fixture = ManifestAdmissionFixture::new().await;
+        let original = fixture.store.encrypt_backup(1, b"seed").unwrap();
+        let baseline = fixture.memory.snapshot();
+        let manifest_cost = fixture.manifest_cost(&original);
+        let bundle_cost = fixture.bundle_cost(&original);
+        let held = fixture.leave_available(manifest_cost + bundle_cost - 1);
+        let low = fixture.memory.snapshot();
+        let error = original
+            .to_bytes()
+            .expect_err("the serialized output must be denied before allocation");
+        assert!(format!("{error:#}").contains("backup bundle output admission denied"));
+        assert_eq!(fixture.memory.snapshot().used_bytes, low.used_bytes);
+        assert_eq!(
+            fixture.memory.snapshot().live_reservations,
+            low.live_reservations
+        );
+        drop(held);
+        assert_eq!(fixture.memory.snapshot().used_bytes, baseline.used_bytes);
+
+        let bundle = original.to_bytes().unwrap();
+        assert_eq!(
+            fixture.memory.snapshot().used_bytes - baseline.used_bytes,
+            bundle_cost
+        );
+        let expected = bundle.as_bytes().to_vec();
+        let body = BackupUpload::from(bundle).into_http_body();
+        assert_eq!(body.as_bytes(), Some(expected.as_slice()));
+        assert_eq!(
+            fixture.memory.snapshot().used_bytes - baseline.used_bytes,
+            bundle_cost
+        );
+        drop(body);
+        assert_eq!(fixture.memory.snapshot().used_bytes, baseline.used_bytes);
+        assert_eq!(
+            fixture.memory.snapshot().live_reservations,
+            baseline.live_reservations
+        );
+    }
+
+    #[tokio::test]
+    async fn cancelled_destination_put_retires_bundle_only_after_future_drop() {
+        struct PausedUpload {
+            entered: tokio::sync::Notify,
+        }
+
+        #[async_trait]
+        impl BackupDestination for PausedUpload {
+            async fn put(&self, _id: Uuid, upload: BackupUpload) -> Result<()> {
+                self.entered.notify_one();
+                std::future::pending::<()>().await;
+                drop(upload);
+                Ok(())
+            }
+
+            async fn get(&self, _id: Uuid, _max_bytes: usize) -> Result<Vec<u8>> {
+                anyhow::bail!("paused upload has no objects")
+            }
+        }
+
+        let fixture = ManifestAdmissionFixture::new().await;
+        let original = fixture.store.encrypt_backup(1, b"seed").unwrap();
+        let baseline = fixture.memory.snapshot();
+        let bundle_cost = fixture.bundle_cost(&original);
+        let bundle = original.to_bytes().unwrap();
+        let destination = Arc::new(PausedUpload {
+            entered: tokio::sync::Notify::new(),
+        });
+        let entered = destination.clone();
+        let id = original.id();
+        let upload = tokio::spawn(async move { destination.put(id, bundle.into()).await });
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            entered.entered.notified(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            fixture.memory.snapshot().used_bytes - baseline.used_bytes,
+            bundle_cost
+        );
+        upload.abort();
+        assert!(upload.await.unwrap_err().is_cancelled());
+        assert_eq!(fixture.memory.snapshot().used_bytes, baseline.used_bytes);
+        assert_eq!(
+            fixture.memory.snapshot().live_reservations,
+            baseline.live_reservations
+        );
+    }
+
+    #[tokio::test]
+    async fn non_capacity_bundle_owner_failure_retains_typed_cause_and_no_output() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct FailBundleMemory {
+            backing: Arc<crate::test_utils::TestDiskMemory>,
+            calls: AtomicUsize,
+            fail_on: AtomicUsize,
+        }
+
+        impl NodeDiskMemoryAdmission for FailBundleMemory {
+            fn storage_census(&self) -> &crate::StorageCensus {
+                self.backing.storage_census()
+            }
+
+            fn reserve_installed(self: Arc<Self>, bytes: u64) -> std::io::Result<DiskMemoryLease> {
+                let call = self.calls.fetch_add(1, Ordering::SeqCst);
+                if call == self.fail_on.load(Ordering::SeqCst) {
+                    return Err(std::io::Error::other("installed owner failed"));
+                }
+                self.backing.clone().reserve_installed(bytes)
+            }
+        }
+
+        let backing = crate::test_utils::TestDiskMemory::new(MANIFEST_TEST_MEMORY_LIMIT, 4096);
+        let memory = Arc::new(FailBundleMemory {
+            backing: backing.clone(),
+            calls: AtomicUsize::new(0),
+            fail_on: AtomicUsize::new(usize::MAX),
+        });
+        let scratch_directory = crate::test_utils::private_tempdir().unwrap();
+        let scratch = crate::ScratchDisk::fixture(scratch_directory.path(), memory.clone());
+        let directory = crate::test_utils::private_tempdir().unwrap();
+        let provider = Arc::new(LocalKeyProvider::new([97; 32]));
+        let store = TenantStore::initialize_catalog_fixture_with_clock(
+            NodeStore::create_new_fixture(
+                directory.path().join("bundle-owner.kv"),
+                crate::test_utils::NODE_STORE_ID,
+                memory.clone(),
+                scratch,
+            )
+            .unwrap(),
+            "tenant".into(),
+            provider,
+            Arc::new(ManualClock::new()),
+        )
+        .await
+        .unwrap();
+        let backup = store.encrypt_backup(1, b"seed").unwrap();
+        let before = backing.snapshot();
+        memory
+            .fail_on
+            .store(memory.calls.load(Ordering::SeqCst) + 1, Ordering::SeqCst);
+        let error = backup
+            .to_bytes()
+            .expect_err("owner failure must stop output");
+        assert_eq!(
+            error
+                .downcast_ref::<BackupBundleAdmissionError>()
+                .expect("exact typed bundle admission cause")
+                .kind(),
+            std::io::ErrorKind::Other
+        );
+        assert_eq!(backing.snapshot().used_bytes, before.used_bytes);
+        assert_eq!(
+            backing.snapshot().live_reservations,
+            before.live_reservations
+        );
+        let bundle = backup.to_bytes().unwrap();
+        assert_eq!(&bundle[..8], MAGIC);
+        drop(bundle);
+        assert_eq!(backing.snapshot().used_bytes, before.used_bytes);
+    }
+
+    #[tokio::test]
+    async fn manifest_serialization_denies_direct_backup_and_bundle_before_output() {
+        let fixture = ManifestAdmissionFixture::new().await;
+        let original = fixture.store.encrypt_backup(1, b"seed").unwrap();
+        let baseline = fixture.memory.snapshot();
+        let cloned = AdmittedKeyCatalog::clone_for_backup(
+            &fixture.store.catalog.read(),
+            fixture.store.scratch_disk().memory().clone(),
+        )
+        .unwrap();
+        let catalog_cost = fixture.memory.snapshot().used_bytes - baseline.used_bytes;
+        drop(cloned);
+        let manifest_cost = fixture.manifest_cost(&original);
+        assert!(catalog_cost > 0 && manifest_cost > 1);
+
+        let held = fixture.leave_available(catalog_cost + manifest_cost - 1);
+        let low = fixture.memory.snapshot();
+        let error = fixture
+            .store
+            .encrypt_backup(2, b"next")
+            .err()
+            .expect("manifest serialization must deny before direct ciphertext");
+        assert!(format!("{error:#}").contains("backup manifest serialization admission denied"));
+        assert_eq!(fixture.memory.snapshot().used_bytes, low.used_bytes);
+        assert_eq!(
+            fixture.memory.snapshot().live_reservations,
+            low.live_reservations
+        );
+        drop(held);
+        assert_eq!(fixture.memory.snapshot().used_bytes, baseline.used_bytes);
+
+        let held = fixture.leave_available(manifest_cost - 1);
+        let low = fixture.memory.snapshot();
+        let error = original
+            .to_bytes()
+            .expect_err("manifest serialization must deny before bundle allocation");
+        assert!(format!("{error:#}").contains("backup manifest serialization admission denied"));
+        assert_eq!(fixture.memory.snapshot().used_bytes, low.used_bytes);
+        drop(held);
+        assert_eq!(fixture.memory.snapshot().used_bytes, baseline.used_bytes);
+    }
+
+    #[tokio::test]
+    async fn direct_ciphertext_output_requires_owner_headroom_before_crypto() {
+        let fixture = ManifestAdmissionFixture::new().await;
+        let original = fixture.store.encrypt_backup(1, b"seed").unwrap();
+        let baseline = fixture.memory.snapshot();
+        let ciphertext_cost = fixture.ciphertext_cost(b"next".len());
+        let cloned = AdmittedKeyCatalog::clone_for_backup(
+            &fixture.store.catalog.read(),
+            fixture.store.scratch_disk().memory().clone(),
+        )
+        .unwrap();
+        let catalog_cost = fixture.memory.snapshot().used_bytes - baseline.used_bytes;
+        drop(cloned);
+        let manifest_cost = fixture.manifest_cost(&original);
+        assert!(catalog_cost > 0 && ciphertext_cost > 0);
+
+        let held = fixture.leave_available(catalog_cost + manifest_cost + ciphertext_cost - 1);
+        let low = fixture.memory.snapshot();
+        let error = fixture
+            .store
+            .encrypt_backup(2, b"next")
+            .err()
+            .expect("direct ciphertext must be denied before allocation");
+        assert!(format!("{error:#}").contains("backup ciphertext output admission denied"));
+        assert_eq!(fixture.memory.snapshot().used_bytes, low.used_bytes);
+        assert_eq!(
+            fixture.memory.snapshot().live_reservations,
+            low.live_reservations
+        );
+        drop(held);
+        assert_eq!(fixture.memory.snapshot().used_bytes, baseline.used_bytes);
+
+        let direct = fixture.store.encrypt_backup(3, b"next").unwrap();
+        assert_eq!(
+            fixture.memory.snapshot().live_reservations,
+            baseline.live_reservations + 2
+        );
+        drop(direct);
+        assert_eq!(fixture.memory.snapshot().used_bytes, baseline.used_bytes);
+    }
+
+    #[tokio::test]
+    async fn related_ciphertext_output_requires_owner_headroom_before_provider() {
+        let fixture = ManifestAdmissionFixture::new().await;
+        let original = fixture.store.encrypt_backup(1, b"seed").unwrap();
+        let baseline = fixture.memory.snapshot();
+        let snapshot = vec![0x5a; crate::MAX_SESSION_RECORD_BYTES];
+        let ciphertext_cost = fixture.ciphertext_cost(snapshot.len());
+        let manifest_cost = fixture.manifest_cost(&original);
+        let clone = AdmittedKeyCatalog::admit_backup_manifest_clone(
+            &original.manifest,
+            original.manifest.catalog.keys.len(),
+            fixture.store.scratch_disk().memory().clone(),
+        )
+        .unwrap();
+        let clone_cost = fixture.memory.snapshot().used_bytes - baseline.used_bytes;
+        drop(clone);
+        let held = fixture.leave_available(clone_cost + manifest_cost + ciphertext_cost - 1);
+        let low = fixture.memory.snapshot();
+        let probes = fixture.provider.probe_count();
+        let error = original
+            .encrypt_related(&snapshot, fixture.provider.clone(), &fixture.store)
+            .await
+            .err()
+            .expect("related ciphertext must be denied before provider effects");
+        assert!(format!("{error:#}").contains("backup ciphertext output admission denied"));
+        assert_eq!(fixture.provider.probe_count(), probes);
+        assert_eq!(fixture.memory.snapshot().used_bytes, low.used_bytes);
+        assert_eq!(
+            fixture.memory.snapshot().live_reservations,
+            low.live_reservations
+        );
+        drop(held);
+        assert_eq!(fixture.memory.snapshot().used_bytes, baseline.used_bytes);
+
+        let related = original
+            .encrypt_related(&snapshot, fixture.provider.clone(), &fixture.store)
+            .await
+            .unwrap();
+        assert_eq!(
+            fixture.memory.snapshot().live_reservations,
+            baseline.live_reservations + 2
+        );
+        assert_eq!(
+            related
+                .decrypt("tenant", fixture.provider.clone(), &fixture.store)
+                .await
+                .unwrap()
+                .snapshot
+                .as_slice(),
+            snapshot.as_slice()
+        );
+        drop(related);
+        assert_eq!(fixture.memory.snapshot().used_bytes, baseline.used_bytes);
+    }
+
+    #[tokio::test]
+    async fn manifest_canonical_check_denies_before_ciphertext_copy() {
+        let fixture = ManifestAdmissionFixture::new().await;
+        let original = fixture.store.encrypt_backup(1, b"seed").unwrap();
+        let bytes = original.to_bytes().unwrap();
+        let header_len = u32::from_be_bytes(bytes[8..12].try_into().unwrap()) as usize;
+        let header = &bytes[12..12 + header_len];
+        let before = fixture.memory.snapshot();
+        let typed = AdmittedKeyCatalog::admit_backup_manifest_decode(
+            header,
+            fixture.store.scratch_disk().memory().clone(),
+        )
+        .unwrap();
+        let typed_cost = fixture.memory.snapshot().used_bytes - before.used_bytes;
+        drop(typed);
+        assert_eq!(fixture.memory.snapshot().used_bytes, before.used_bytes);
+        let ciphertext_len = bytes.len() - 12 - header_len;
+        let ciphertext_allocation =
+            crate::disk_memory::allocation::<u8>(ciphertext_len as u64).unwrap();
+        let copy_cost =
+            crate::test_utils::TestDiskMemory::required_reservation_bytes(ciphertext_allocation)
+                .unwrap();
+        assert!(fixture.manifest_cost(&original) > copy_cost);
+
+        let held = fixture.leave_available(typed_cost + copy_cost);
+        let low = fixture.memory.snapshot();
+        let error = EncryptedBackup::from_bytes(&bytes, 1024, &fixture.store)
+            .err()
+            .expect("canonical header admission must deny before ciphertext copy");
+        assert!(format!("{error:#}").contains("backup manifest serialization admission denied"));
+        assert_eq!(fixture.memory.snapshot().used_bytes, low.used_bytes);
+        assert_eq!(
+            fixture.memory.snapshot().live_reservations,
+            low.live_reservations
+        );
+        drop(held);
+        assert_eq!(fixture.memory.snapshot().used_bytes, before.used_bytes);
+    }
+
+    #[tokio::test]
+    async fn manifest_serialization_denies_decrypt_and_related_before_provider() {
+        let fixture = ManifestAdmissionFixture::new().await;
+        let original = fixture.store.encrypt_backup(1, b"seed").unwrap();
+        let manifest_cost = fixture.manifest_cost(&original);
+        let baseline = fixture.memory.snapshot();
+
+        let held = fixture.leave_available(manifest_cost - 1);
+        let low = fixture.memory.snapshot();
+        let probes = fixture.provider.probe_count();
+        let error = original
+            .decrypt("tenant", fixture.provider.clone(), &fixture.store)
+            .await
+            .err()
+            .expect("manifest serialization must deny before key provider");
+        assert!(format!("{error:#}").contains("backup manifest serialization admission denied"));
+        assert_eq!(fixture.provider.probe_count(), probes);
+        assert_eq!(fixture.memory.snapshot().used_bytes, low.used_bytes);
+        drop(held);
+        assert_eq!(fixture.memory.snapshot().used_bytes, baseline.used_bytes);
+
+        let clone = AdmittedKeyCatalog::admit_backup_manifest_clone(
+            &original.manifest,
+            original.manifest.catalog.keys.len(),
+            fixture.store.scratch_disk().memory().clone(),
+        )
+        .unwrap();
+        let clone_cost = fixture.memory.snapshot().used_bytes - baseline.used_bytes;
+        drop(clone);
+        assert_eq!(fixture.memory.snapshot().used_bytes, baseline.used_bytes);
+        let held = fixture.leave_available(clone_cost + manifest_cost - 1);
+        let low = fixture.memory.snapshot();
+        let probes = fixture.provider.probe_count();
+        let error = original
+            .encrypt_related(b"next", fixture.provider.clone(), &fixture.store)
+            .await
+            .err()
+            .expect("related header admission must deny before provider");
+        assert!(format!("{error:#}").contains("backup manifest serialization admission denied"));
+        assert_eq!(fixture.provider.probe_count(), probes);
+        assert_eq!(fixture.memory.snapshot().used_bytes, low.used_bytes);
+        drop(held);
+        assert_eq!(fixture.memory.snapshot().used_bytes, baseline.used_bytes);
+    }
+
+    #[tokio::test]
+    async fn parsed_backup_ciphertext_copy_requires_installed_headroom_and_keeps_lease() {
+        let memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+        let scratch_directory = crate::test_utils::private_tempdir().unwrap();
+        let scratch = crate::ScratchDisk::fixture(scratch_directory.path(), memory.clone());
+        let directory = crate::test_utils::private_tempdir().unwrap();
+        let store = TenantStore::initialize_catalog_fixture_with_clock(
+            NodeStore::create_new_fixture(
+                directory.path().join("ciphertext-copy.kv"),
+                crate::test_utils::NODE_STORE_ID,
+                memory.clone(),
+                scratch,
+            )
+            .unwrap(),
+            "tenant".into(),
+            Arc::new(LocalKeyProvider::new([95; 32])),
+            Arc::new(ManualClock::new()),
+        )
+        .await
+        .unwrap();
+        let original = store.encrypt_backup(1, &vec![0xA5; 8 << 20]).unwrap();
+        let bytes = original.to_bytes().unwrap();
+        let copy_bound =
+            crate::disk_memory::allocation::<u8>(original.ciphertext.len() as u64).unwrap();
+        let before = memory.snapshot();
+        let available = 512 << 10;
+        assert!(copy_bound > available);
+        let filler = (256 << 20)
+            - before.bookkeeping_bytes
+            - before.used_bytes
+            - available
+            - crate::test_utils::TestDiskMemory::required_reservation_bytes(0).unwrap();
+        let held = memory.clone().reserve_installed(filler).unwrap();
+        let low_headroom = memory.snapshot();
+        let error = EncryptedBackup::from_bytes(&bytes, 8 << 20, &store)
+            .err()
+            .expect("ciphertext copy must deny before Vec allocation");
+        assert!(format!("{error:#}").contains("backup ciphertext copy admission denied"));
+        assert_eq!(memory.snapshot().used_bytes, low_headroom.used_bytes);
+        assert_eq!(
+            memory.snapshot().live_reservations,
+            low_headroom.live_reservations
+        );
+        drop(held);
+        assert_eq!(memory.snapshot().used_bytes, before.used_bytes);
+
+        let parsed = EncryptedBackup::from_bytes(&bytes, 8 << 20, &store).unwrap();
+        assert_eq!(parsed.ciphertext, original.ciphertext);
+        assert_eq!(
+            memory.snapshot().live_reservations,
+            before.live_reservations + 2
+        );
+        drop(parsed);
+        assert_eq!(memory.snapshot().used_bytes, before.used_bytes);
+        assert_eq!(
+            memory.snapshot().live_reservations,
+            before.live_reservations
+        );
+    }
+
+    #[tokio::test]
+    async fn decoded_and_related_backup_manifest_reserve_installed_memory_before_allocation() {
+        let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+        let scratch_directory = crate::test_utils::private_tempdir().unwrap();
+        let scratch = crate::ScratchDisk::fixture(scratch_directory.path(), fixture_memory.clone());
+        let directory = crate::test_utils::private_tempdir().unwrap();
+        let provider = Arc::new(LocalKeyProvider::new([91; 32]));
+        let store = TenantStore::initialize_catalog_fixture_with_clock(
+            NodeStore::create_new_fixture(
+                directory.path().join("backup-manifest.kv"),
+                crate::test_utils::NODE_STORE_ID,
+                fixture_memory.clone(),
+                scratch,
+            )
+            .unwrap(),
+            "tenant".into(),
+            provider.clone(),
+            Arc::new(ManualClock::new()),
+        )
+        .await
+        .unwrap();
+        let original = store.encrypt_backup(1, b"source").unwrap();
+        let bytes = original.to_bytes().unwrap();
+        let before = fixture_memory.snapshot();
+        let available = 48 << 10;
+        let filler = (256 << 20)
+            - before.bookkeeping_bytes
+            - before.used_bytes
+            - available
+            - crate::test_utils::TestDiskMemory::required_reservation_bytes(0).unwrap();
+        let held = fixture_memory.clone().reserve_installed(filler).unwrap();
+        let low_headroom = fixture_memory.snapshot();
+        let error = EncryptedBackup::from_bytes(&bytes, 1024, &store)
+            .err()
+            .expect("decoded manifest admission must fail");
+        assert!(format!("{error:#}").contains("backup manifest typed allocation admission denied"));
+        assert_eq!(
+            fixture_memory.snapshot().used_bytes,
+            low_headroom.used_bytes
+        );
+        let foreign_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+        let foreign_scratch_directory = crate::test_utils::private_tempdir().unwrap();
+        let foreign_scratch =
+            crate::ScratchDisk::fixture(foreign_scratch_directory.path(), foreign_memory.clone());
+        let foreign_directory = crate::test_utils::private_tempdir().unwrap();
+        let foreign_store = TenantStore::initialize_catalog_fixture_with_clock(
+            NodeStore::create_new_fixture(
+                foreign_directory.path().join("foreign.kv"),
+                crate::test_utils::NODE_STORE_ID,
+                foreign_memory,
+                foreign_scratch,
+            )
+            .unwrap(),
+            "tenant".into(),
+            Arc::new(LocalKeyProvider::new([93; 32])),
+            Arc::new(ManualClock::new()),
+        )
+        .await
+        .unwrap();
+        let foreign_decoded = EncryptedBackup::from_bytes(&bytes, 1024, &foreign_store).unwrap();
+        let error = foreign_decoded
+            .decrypt("tenant", provider.clone(), &store)
+            .await
+            .err()
+            .expect("foreign parse owner must not authorize target release");
+        assert!(format!("{error:#}").contains("backup memory owner differs from installed target"));
+        drop(foreign_decoded);
+        assert_eq!(
+            fixture_memory.snapshot().used_bytes,
+            low_headroom.used_bytes
+        );
+        let error = original
+            .encrypt_related(b"outcome", provider.clone(), &store)
+            .await
+            .err()
+            .expect("related manifest clone admission must fail");
+        assert!(format!("{error:#}").contains("backup manifest clone admission denied"));
+        assert_eq!(
+            fixture_memory.snapshot().used_bytes,
+            low_headroom.used_bytes
+        );
+        drop(held);
+        assert_eq!(fixture_memory.snapshot().used_bytes, before.used_bytes);
+
+        let decoded = EncryptedBackup::from_bytes(&bytes, 1024, &store).unwrap();
+        assert_eq!(
+            fixture_memory.snapshot().live_reservations,
+            before.live_reservations + 2
+        );
+        assert_eq!(
+            decoded
+                .decrypt("tenant", provider.clone(), &store)
+                .await
+                .unwrap()
+                .snapshot
+                .as_slice(),
+            b"source"
+        );
+        drop(decoded);
+        assert_eq!(fixture_memory.snapshot().used_bytes, before.used_bytes);
+        let related = original
+            .encrypt_related(b"outcome", provider, &store)
+            .await
+            .unwrap();
+        assert_eq!(
+            fixture_memory.snapshot().live_reservations,
+            before.live_reservations + 2
+        );
+        drop(related);
+        assert_eq!(fixture_memory.snapshot().used_bytes, before.used_bytes);
+    }
 
     #[tokio::test]
     async fn encrypted_bundle_round_trip_filesystem_reopen_and_tamper_rejection() {
@@ -834,36 +1818,49 @@ mod tests {
             fixture_memory.clone(),
         )
         .unwrap();
-        destination.put(backup.id(), bytes.clone()).await.unwrap();
-        assert!(destination.put(backup.id(), bytes.clone()).await.is_err());
+        destination
+            .put(backup.id(), bytes.try_clone().unwrap().into())
+            .await
+            .unwrap();
+        assert!(
+            destination
+                .put(backup.id(), bytes.try_clone().unwrap().into())
+                .await
+                .is_err()
+        );
         let read = destination.get(backup.id(), 16 << 20).await.unwrap();
-        assert_eq!(bytes, read);
-        let parsed = EncryptedBackup::from_bytes(&read, 1 << 20).unwrap();
+        assert_eq!(bytes.as_bytes(), read);
+        let parsed = EncryptedBackup::from_bytes(&read, 1 << 20, &store).unwrap();
         let plain = parsed
-            .decrypt_fixture("tenant", provider.clone())
+            .decrypt_fixture("tenant", provider.clone(), &store)
             .await
             .unwrap();
         assert_eq!(&*plain.snapshot, snapshot);
         assert_eq!(plain.revision, 42);
         assert!(
             parsed
-                .decrypt_fixture("another", provider.clone())
+                .decrypt_fixture("another", provider.clone(), &store)
                 .await
                 .is_err()
         );
-        assert!(EncryptedBackup::from_bytes(&read, 1).is_err());
+        assert!(EncryptedBackup::from_bytes(&read, 1, &store).is_err());
         let mut damaged = read;
         *damaged.last_mut().unwrap() ^= 1;
         assert!(
-            EncryptedBackup::from_bytes(&damaged, 1 << 20)
+            EncryptedBackup::from_bytes(&damaged, 1 << 20, &store)
                 .unwrap()
-                .decrypt_fixture("tenant", provider.clone())
+                .decrypt_fixture("tenant", provider.clone(), &store)
                 .await
                 .is_err()
         );
         let mut swapped = backup;
         swapped.manifest.revision += 1;
-        assert!(swapped.decrypt_fixture("tenant", provider).await.is_err());
+        assert!(
+            swapped
+                .decrypt_fixture("tenant", provider, &store)
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]
@@ -893,9 +1890,17 @@ mod tests {
         store.rewrap_keys().await.unwrap();
         let new = store.encrypt_backup(1, b"new").unwrap();
         provider.set_minimum_version(2);
-        assert!(old.decrypt_fixture("t", provider.clone()).await.is_err());
+        assert!(
+            old.decrypt_fixture("t", provider.clone(), &store)
+                .await
+                .is_err()
+        );
         assert_eq!(
-            &*new.decrypt_fixture("t", provider).await.unwrap().snapshot,
+            &*new
+                .decrypt_fixture("t", provider, &store)
+                .await
+                .unwrap()
+                .snapshot,
             b"new"
         );
     }
@@ -935,23 +1940,50 @@ mod tests {
             .clone();
         backup.manifest.catalog.keys.remove(&inactive);
         // Parsing cannot grant trust even when the remaining catalog is well-formed.
-        let parsed = EncryptedBackup::from_bytes(&backup.to_bytes().unwrap(), 1024).unwrap();
-        assert!(parsed.decrypt_fixture("tenant", provider).await.is_err());
+        let parsed =
+            EncryptedBackup::from_bytes(&backup.to_bytes().unwrap(), 1024, &store).unwrap();
+        assert!(
+            parsed
+                .decrypt_fixture("tenant", provider, &store)
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]
     async fn destination_byte_limits_and_untrusted_format_are_rejected() {
         let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
         let dir = crate::test_utils::private_tempdir().unwrap();
+        let scratch_directory = crate::test_utils::private_tempdir().unwrap();
+        let scratch = crate::ScratchDisk::fixture(scratch_directory.path(), fixture_memory.clone());
+        let store = TenantStore::initialize_catalog_fixture_with_clock(
+            NodeStore::create_new_fixture(
+                dir.path().join("db"),
+                crate::test_utils::NODE_STORE_ID,
+                fixture_memory.clone(),
+                scratch,
+            )
+            .unwrap(),
+            "tenant".into(),
+            Arc::new(LocalKeyProvider::new([92; 32])),
+            Arc::new(ManualClock::new()),
+        )
+        .await
+        .unwrap();
         let destination =
             FilesystemBackupDestination::new_fixture(dir.path(), 5, fixture_memory.clone())
                 .unwrap();
         let id = Uuid::new_v4();
-        assert!(destination.put(id, vec![0; 6]).await.is_err());
+        assert!(
+            destination
+                .put(id, BackupUpload::received(vec![0; 6]))
+                .await
+                .is_err()
+        );
         std::fs::write(destination.path(id), [0; 6]).unwrap();
         assert!(destination.get(id, 16 << 20).await.is_err());
         for bytes in [b"".as_slice(), b"KASUMIB1", b"KASUMIB1\xff\xff\xff\xff"] {
-            assert!(EncryptedBackup::from_bytes(bytes, 1024).is_err());
+            assert!(EncryptedBackup::from_bytes(bytes, 1024, &store).is_err());
         }
     }
 }
@@ -1264,7 +2296,7 @@ mod s3_tests {
     async fn assert_versioned_session_cleanup(
         destination: &S3BackupDestination,
         state: &Objects,
-        store: &TenantStore,
+        store: &Arc<TenantStore>,
         keys: Arc<dyn KeyProvider>,
         proof: &crate::VerifiedBackupAbort,
     ) {
@@ -1311,20 +2343,14 @@ mod s3_tests {
             .session_put(
                 complete_session,
                 BackupSessionSlot::Intent,
-                store.encrypt_session_record(3, &intent).unwrap(),
+                store.encrypt_session_record(3, &intent).unwrap().into(),
             )
             .await
             .unwrap();
-        let pending = verify_backup_session(
-            destination,
-            complete_session,
-            "tenant",
-            keys.clone(),
-            store.storage_access(),
-        )
-        .await
-        .unwrap()
-        .unwrap();
+        let pending = verify_backup_session(destination, complete_session, store, keys.clone())
+            .await
+            .unwrap()
+            .unwrap();
         let complete = BackupSessionOutcome::Complete {
             intent_ciphertext_sha256: pending.intent_ciphertext_sha256().into(),
             checkpoint: FullBackupCheckpoint {
@@ -1341,7 +2367,7 @@ mod s3_tests {
             .session_put(
                 complete_session,
                 BackupSessionSlot::Object(id),
-                b"complete root".to_vec(),
+                BackupUpload::received(b"complete root".to_vec()),
             )
             .await
             .unwrap();
@@ -1349,26 +2375,23 @@ mod s3_tests {
             .session_put(
                 complete_session,
                 BackupSessionSlot::Outcome,
-                store.encrypt_session_record(3, &complete).unwrap(),
+                store.encrypt_session_record(3, &complete).unwrap().into(),
             )
             .await
             .unwrap();
         assert!(
-            verify_backup_session(
-                destination,
-                complete_session,
-                "tenant",
-                keys.clone(),
-                store.storage_access()
-            )
-            .await
-            .unwrap()
-            .unwrap()
-            .aborted()
-            .is_err()
+            verify_backup_session(destination, complete_session, store, keys.clone())
+                .await
+                .unwrap()
+                .unwrap()
+                .aborted()
+                .is_err()
         );
         destination
-            .put(Uuid::new_v4(), b"independent archive".to_vec())
+            .put(
+                Uuid::new_v4(),
+                BackupUpload::received(b"independent archive".to_vec()),
+            )
             .await
             .unwrap();
         let preserved = state.values.lock().clone();
@@ -1437,7 +2460,11 @@ mod s3_tests {
         // An upload admitted before abort finishes after listing. Its new version
         // must survive deletion of the exact older page, then be found on rescan.
         destination
-            .session_put(session, BackupSessionSlot::Object(id), vec![9])
+            .session_put(
+                session,
+                BackupSessionSlot::Object(id),
+                BackupUpload::received(vec![9]),
+            )
             .await
             .unwrap();
         destination
@@ -1486,7 +2513,11 @@ mod s3_tests {
         );
         // A pass that observed an empty namespace is not a permanent GC receipt.
         destination
-            .session_put(session, BackupSessionSlot::Object(id), vec![8])
+            .session_put(
+                session,
+                BackupSessionSlot::Object(id),
+                BackupUpload::received(vec![8]),
+            )
             .await
             .unwrap();
         let late = destination.session_objects(proof, 2).await.unwrap();
@@ -1516,7 +2547,7 @@ mod s3_tests {
                 .all(|(key, version)| key.starts_with(&prefix) && version.is_some())
         );
         assert!(
-            verify_backup_session(destination, session, "tenant", keys, store.storage_access())
+            verify_backup_session(destination, session, store, keys)
                 .await
                 .unwrap()
                 .unwrap()
@@ -1573,20 +2604,14 @@ mod s3_tests {
             .session_put(
                 session,
                 crate::BackupSessionSlot::Intent,
-                store.encrypt_session_record(3, &intent).unwrap(),
+                store.encrypt_session_record(3, &intent).unwrap().into(),
             )
             .await
             .unwrap();
-        let pending = crate::verify_backup_session(
-            &destination,
-            session,
-            "tenant",
-            keys.clone(),
-            store.storage_access(),
-        )
-        .await
-        .unwrap()
-        .unwrap();
+        let pending = crate::verify_backup_session(&destination, session, &store, keys.clone())
+            .await
+            .unwrap()
+            .unwrap();
         assert!(pending.aborted().is_err());
         let outcome = kasumi_types::BackupSessionOutcome::Aborted {
             intent_ciphertext_sha256: pending.intent_ciphertext_sha256().into(),
@@ -1598,28 +2623,22 @@ mod s3_tests {
             .session_put(
                 session,
                 crate::BackupSessionSlot::Outcome,
-                store.encrypt_session_record(3, &outcome).unwrap(),
+                store.encrypt_session_record(3, &outcome).unwrap().into(),
             )
             .await
             .unwrap();
-        let proof = crate::verify_backup_session(
-            &destination,
-            session,
-            "tenant",
-            keys.clone(),
-            store.storage_access(),
-        )
-        .await
-        .unwrap()
-        .unwrap()
-        .aborted()
-        .unwrap();
+        let proof = crate::verify_backup_session(&destination, session, &store, keys.clone())
+            .await
+            .unwrap()
+            .unwrap()
+            .aborted()
+            .unwrap();
         for id in 1..=3 {
             destination
                 .session_put(
                     session,
                     crate::BackupSessionSlot::Object(Uuid::from_u128(id)),
-                    vec![3],
+                    BackupUpload::received(vec![3]),
                 )
                 .await
                 .unwrap();
@@ -1641,7 +2660,7 @@ mod s3_tests {
             .session_put(
                 session,
                 crate::BackupSessionSlot::Object(Uuid::from_u128(1)),
-                vec![9],
+                BackupUpload::received(vec![9]),
             )
             .await
             .unwrap();
@@ -1661,7 +2680,7 @@ mod s3_tests {
             .session_put(
                 session,
                 crate::BackupSessionSlot::Object(Uuid::from_u128(1)),
-                vec![8],
+                BackupUpload::received(vec![8]),
             )
             .await
             .unwrap();
@@ -1695,14 +2714,22 @@ mod s3_tests {
         assert_versioned_session_cleanup(&destination, &state, &store, keys, &proof).await;
         let id = Uuid::new_v4();
         destination
-            .put(id, b"encrypted snapshot bytes".to_vec())
+            .put(
+                id,
+                BackupUpload::received(b"encrypted snapshot bytes".to_vec()),
+            )
             .await
             .unwrap();
         assert_eq!(
             destination.get(id, 16 << 20).await.unwrap(),
             b"encrypted snapshot bytes"
         );
-        assert!(destination.put(id, b"replacement".to_vec()).await.is_err());
+        assert!(
+            destination
+                .put(id, BackupUpload::received(b"replacement".to_vec()))
+                .await
+                .is_err()
+        );
         assert!(
             destination
                 .get(Uuid::new_v4(), MAX_BACKUP_BUNDLE_BYTES)
@@ -1743,7 +2770,10 @@ mod s3_tests {
         );
         assert!(
             destination
-                .put(Uuid::new_v4(), vec![0; (1 << 20) + 1])
+                .put(
+                    Uuid::new_v4(),
+                    BackupUpload::received(vec![0; (1 << 20) + 1]),
+                )
                 .await
                 .is_err()
         );

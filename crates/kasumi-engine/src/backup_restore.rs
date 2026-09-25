@@ -125,17 +125,13 @@ async fn object(
             "backup object ciphertext differs"
         );
     }
-    let envelope = EncryptedBackup::from_bytes(&encrypted, max_plaintext)?;
+    let envelope = EncryptedBackup::from_bytes(&encrypted, max_plaintext, target)?;
     anyhow::ensure!(
         envelope.id() == id && envelope.source_tenant() == target.tenant(),
         "backup object identity mismatch"
     );
     let contents = envelope
-        .decrypt(
-            target.tenant(),
-            source.keys.clone(),
-            target.storage_access(),
-        )
+        .decrypt(target.tenant(), source.keys.clone(), target)
         .await?;
     anyhow::ensure!(
         target_history_keys || &contents.source_purpose == session.source_purpose(),
@@ -300,9 +296,8 @@ pub(super) async fn load_authorized(
         .run(kasumi_store::verify_backup_session(
             source.destination.as_ref(),
             backup_id,
-            target.tenant(),
+            target,
             source.keys.clone(),
-            target.storage_access(),
         ))
         .await??
         .ok_or_else(|| anyhow::anyhow!("backup session missing"))?;

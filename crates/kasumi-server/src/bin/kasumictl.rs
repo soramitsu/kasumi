@@ -276,13 +276,8 @@ async fn main() -> Result<()> {
     };
     match result {
         Ok(response) => {
-            let receipt = response.into_inner();
-            println!(
-                "{}",
-                serde_json::to_string(
-                    &serde_json::json!({"revision":receipt.revision,"versions":receipt.versions})
-                )?
-            );
+            let receipt = kasumi_client::decode_native_write_receipt(response.into_inner())?;
+            println!("{}", serde_json::to_string(&receipt)?);
             Ok(())
         }
         Err(status) => {

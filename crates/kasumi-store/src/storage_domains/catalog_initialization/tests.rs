@@ -561,3 +561,146 @@ async fn admission_reaper_reports_unclaimed_preparation_failure_before_new_work(
     stores.shutdown().await.unwrap();
     drain(&node).await
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn production_pair_registers_one_writer_before_waiting_for_native_gate() -> Result<()> {
+    let memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let directory = crate::test_utils::private_tempdir()?;
+    let path = directory.path().join("registered-pair.kv");
+    let disk = crate::test_utils::retry_disk_registry(|| {
+        crate::NodeDisk::fixture_for_path(&path, memory.clone())
+    })?;
+    let scratch_directory = crate::test_utils::private_tempdir()?;
+    let scratch = crate::ScratchDisk::fixture(scratch_directory.path(), memory.clone());
+    let node = NodeStore::create_new(&path, crate::test_utils::NODE_STORE_ID, disk, scratch)?;
+    let held = node.db.begin_write()?;
+    let receive = begin(input(node.clone())).await?;
+    let registered = tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if memory.storage_census().snapshot().writers == 1 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .is_ok();
+    drop(held);
+    let stores = receive.await?.claim()?;
+    assert!(
+        registered,
+        "paired catalog writer waited at the native gate without one registered child"
+    );
+    assert!(node.catalog("new-tenant")?.is_some());
+    assert!(
+        node.catalog(&CustodyStore::catalog_name("new-tenant"))?
+            .is_some()
+    );
+    stores.shutdown().await.unwrap();
+    drop(stores);
+    drain(&node).await?;
+    node.shutdown().await.unwrap();
+    assert_eq!(memory.storage_census().snapshot().writers, 0);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn production_pair_rechecks_second_catalog_and_orphan_inside_one_transaction() -> Result<()> {
+    for kind in ["catalog", "orphan"] {
+        let memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+        let directory = crate::test_utils::private_tempdir()?;
+        let path = directory.path().join(format!("pair-{kind}.kv"));
+        let disk = crate::test_utils::retry_disk_registry(|| {
+            crate::NodeDisk::fixture_for_path(&path, memory.clone())
+        })?;
+        let scratch_directory = crate::test_utils::private_tempdir()?;
+        let scratch = crate::ScratchDisk::fixture(scratch_directory.path(), memory.clone());
+        let node = NodeStore::create_new(&path, crate::test_utils::NODE_STORE_ID, disk, scratch)?;
+        let hash = tenant_hash(&CustodyStore::catalog_name("new-tenant"));
+        let held = node.db.begin_write()?;
+        if kind == "catalog" {
+            held.open_table(CATALOG)?
+                .insert(hash.as_slice(), b"preserved catalog".as_slice())?;
+        } else {
+            let mut key = hash.to_vec();
+            key.extend_from_slice(b"orphan");
+            held.open_table(RECORDS)?
+                .insert(key.as_slice(), b"preserved ciphertext".as_slice())?;
+        }
+        let receive = begin(input(node.clone())).await?;
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                if memory.storage_census().snapshot().writers == 1 {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await?;
+        held.commit()?;
+        let before = contents(&node)?;
+        let error = receive
+            .await?
+            .claim()
+            .err()
+            .expect("pair must reject conflict");
+        assert!(format!("{error:#}").contains(if kind == "catalog" {
+            "catalog already initialized"
+        } else {
+            "new catalog has orphan physical rows"
+        }));
+        drain(&node).await?;
+        assert_eq!(contents(&node)?, before);
+        let read = node.db.begin_read()?;
+        assert!(
+            read.open_table(CATALOG)?
+                .get(tenant_hash("new-tenant").as_slice())?
+                .is_none(),
+            "first catalog must not commit when second is rejected"
+        );
+        drop(read);
+        node.shutdown().await.unwrap();
+        assert_eq!(memory.storage_census().snapshot().writers, 0);
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cancelled_production_pair_waiter_drains_after_atomic_catalog_commit() -> Result<()> {
+    let memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let directory = crate::test_utils::private_tempdir()?;
+    let path = directory.path().join("cancelled-pair.kv");
+    let disk = crate::test_utils::retry_disk_registry(|| {
+        crate::NodeDisk::fixture_for_path(&path, memory.clone())
+    })?;
+    let scratch_directory = crate::test_utils::private_tempdir()?;
+    let scratch = crate::ScratchDisk::fixture(scratch_directory.path(), memory.clone());
+    let node = NodeStore::create_new(&path, crate::test_utils::NODE_STORE_ID, disk, scratch)?;
+    let held = node.db.begin_write()?;
+    let receive = begin(input(node.clone())).await?;
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if memory.storage_census().snapshot().writers == 1 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await?;
+    drop(receive);
+    drop(held);
+    let error = tokio::time::timeout(Duration::from_secs(10), node.drain_initializers())
+        .await?
+        .unwrap_err();
+    assert!(format!("{error:#}").contains("catalog initialization receiver closed"));
+    drain(&node).await?;
+    assert!(node.catalog("new-tenant")?.is_some());
+    assert!(
+        node.catalog(&CustodyStore::catalog_name("new-tenant"))?
+            .is_some()
+    );
+    assert_unpublished(&node).await;
+    node.shutdown().await.unwrap();
+    assert_eq!(memory.storage_census().snapshot().writers, 0);
+    Ok(())
+}

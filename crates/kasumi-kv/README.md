@@ -9,16 +9,19 @@ payload. The active transaction log normally begins at offset 8192. Every frame
 contains a generation, prior end offset, operation count, bounded payload size,
 and checksums for its header, payload, and individual values. A commit writes
 and synchronizes the whole frame, then writes and synchronizes the alternate
-commit header. A failed write or sync fences the live core; the caller must
-reopen the same owned backend to learn the outcome. Recovery selects the newest
-valid header and validates **all** committed frames. A valid newest header with
-corrupt committed data fails closed instead of falling back to old state.
+commit header and mirrors it to the previous slot, synchronizing each header
+before returning success. A failed write or sync fences the live core; the caller
+must reopen the same owned backend to learn the outcome. Recovery selects the
+newest valid header and validates **all** committed frames. A valid newest
+header with corrupt committed data fails closed instead of falling back to old
+state.
 
 Compaction writes a complete snapshot of live tables and keys to a shadow
 extent after the active log, synchronizes it, and publishes an alternate header
 pointing to the shadow. Only then does it copy the snapshot into the front
-extent. It synchronizes the front copy, publishes its header, then truncates
-the shadow tail. Reopening a published shadow finishes the front relocation.
+extent. It synchronizes the front copy, publishes its header, mirrors that
+header to the other slot, then truncates the shadow tail. Reopening a
+published shadow finishes the front relocation.
 Each copy may contain multiple bounded frames, and values move through an
 8 KiB buffer with their checksums verified. A failed physical effect fences
 the live core; reopening selects and verifies the durable header.
@@ -44,18 +47,14 @@ report when native drain remains unproved. A callback panic remains inspectable
 as `CorePanic`; a panic during close is recorded with the failed opening and
 does not trigger a second close attempt.
 
-For standalone files, `FileBackend::create_new` keeps a new file's parent
-directory open until the initial headers and directory have both synced. It
-fails with `EEXIST` if another owner inserts the name before acquisition; it
-never adopts that file. An existing path is directory-synced before
-`open_existing` returns, including after an uncertain creation attempt. A
-directory sync error leaves creation uncertain; reopen only through the
-original owner's namespace to resolve it. `from_file` relies on its caller
-to own and sync the surrounding namespace. Filesystems without directory sync
-support cause the named open or create to fail. Named opens use the held parent
-directory and reject final symlinks. A failed named open returns
-`FileBackendOpenError`, which preserves the original I/O error and any parent
-directory close report.
+The production API accepts an already owned `StorageBackend`; it does not
+create a named file, adopt a raw descriptor, or authenticate a filesystem
+namespace. The embedding owner must establish the exact installed file and
+directory binding, private single-link regular-file type, parent durability,
+and explicit close custody before passing its backend to KV. The store's
+`NodeFile` supplies that production boundary. Native KV keeps a private
+file-backed fixture for exercising its close and failure reports; that fixture
+does not provide a production constructor or namespace-ownership claim.
 
 `Core::commit(&[Operation])` publishes one atomic batch across named ordered
 tables. `Core::snapshot()` pins a generation. `get_admitted`, `next_admitted`,
@@ -91,9 +90,3 @@ release.
 
 Run `cargo test -p kasumi-kv --locked` and
 `cargo clippy -p kasumi-kv --all-targets --locked -- -D warnings`.
-
-Named-path acquisition still requires the caller to own the surrounding
-namespace. `open_existing` does not accept an expected inode identity, and a
-held parent descriptor alone cannot prevent another actor from renaming the
-directory or replacing the leaf name. These paths are not a complete adversarial
-namespace-custody boundary.

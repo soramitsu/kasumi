@@ -759,10 +759,11 @@ mod tests {
         drop(audit);
         drop(store);
 
+        let reopened_node = storage
+            .open_existing(&path, kasumi_store::test_utils::NODE_STORE_ID)
+            .unwrap();
         let store = TenantStore::open_existing_fixture(
-            storage
-                .open_existing(&path, kasumi_store::test_utils::NODE_STORE_ID)
-                .unwrap(),
+            reopened_node.clone(),
             SECURITY_TENANT.into(),
             provider,
         )
@@ -861,6 +862,7 @@ mod tests {
         archive.release.add_permits(1);
         shutdown.await.unwrap();
         assert!(store.check_access().is_err());
+        reopened_node.shutdown().await.unwrap();
         drop(audit);
         drop(store);
         // Strong installed disk owners and their eight metadata leases survive

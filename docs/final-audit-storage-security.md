@@ -1,5 +1,8 @@
 # Final storage, consensus and security acceptance audit
 
+> Historical 2026-09-05 audit. Its source and gate claims do not certify the
+> current [native Kasumi KV implementation](native-kv-goal.md).
+
 Updated on 2026-09-05 against inspected source SHA-256
 `28aeb80168d3ab02a0eec7bf2a0163a7cb99dbfd74adf596e849de17e1fa3c1d`.
 This update changes documentation only. Source, test assertions and retained logs

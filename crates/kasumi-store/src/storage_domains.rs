@@ -3,7 +3,9 @@
 use super::*;
 use std::collections::BTreeSet;
 
+mod binding_install_plan;
 mod catalog_initialization;
+pub(crate) use binding_install_plan::{AdmittedBindingBytes, AdmittedBindingPut};
 mod existing_catalogs;
 
 const BINDING_NS: &str = "kasumi.storage-domains";
@@ -29,7 +31,43 @@ impl AdmittedDeploymentBinding {
 }
 
 impl TenantStore {
-    fn deployment_at(
+    fn deployment_at_registered(
+        &self,
+        reader: &RegisteredNodeRead,
+        state: &KeyState,
+    ) -> Result<Option<AdmittedDeploymentBinding>> {
+        self.require_access(state)?;
+        let disk_key = record_key(
+            &self.tenant,
+            DEPLOYMENT_NS,
+            DEPLOYMENT_KEY,
+            state.keys.get(INDEX_KEY).context("index key missing")?,
+        );
+        let Some(encrypted) =
+            reader.record_bytes(disk_key.as_slice(), MAX_DEPLOYMENT_ENVELOPE_BYTES)?
+        else {
+            return Ok(None);
+        };
+        self.deployment_from_envelope(&disk_key, encrypted.as_bytes(), state)
+            .map(Some)
+    }
+
+    fn deployment_at_view(
+        &self,
+        transaction: &read_view::ViewTransaction,
+        state: &KeyState,
+    ) -> Result<Option<AdmittedDeploymentBinding>> {
+        match transaction {
+            read_view::ViewTransaction::Registered(reader) => self
+                .deployment_at_registered(reader, state)
+                .map_err(|error| transaction.preserve_report(error)),
+            #[cfg(any(test, feature = "test-utils"))]
+            read_view::ViewTransaction::Fixture(tx) => self.deployment_at_fixture(tx, state),
+        }
+    }
+
+    #[cfg(any(test, feature = "test-utils"))]
+    fn deployment_at_fixture(
         &self,
         tx: &kasumi_kv::ReadTransaction,
         state: &KeyState,
@@ -45,7 +83,16 @@ impl TenantStore {
         let Some(encrypted) = table.get(disk_key.as_slice())? else {
             return Ok(None);
         };
-        let envelope = encrypted.value();
+        self.deployment_from_envelope(&disk_key, encrypted.value(), state)
+            .map(Some)
+    }
+
+    fn deployment_from_envelope(
+        &self,
+        disk_key: &[u8],
+        envelope: &[u8],
+        state: &KeyState,
+    ) -> Result<AdmittedDeploymentBinding> {
         ensure!(
             envelope.len() <= MAX_DEPLOYMENT_ENVELOPE_BYTES,
             "encrypted deployment envelope exceeds read budget"
@@ -68,7 +115,7 @@ impl TenantStore {
             .clone()
             .reserve_installed(workspace)
             .context("deployment plaintext admission denied")?;
-        let mut record = self.decode_record(&disk_key, envelope, state)?;
+        let mut record = self.decode_record(disk_key, envelope, state)?;
         ensure!(
             record.namespace == DEPLOYMENT_NS
                 && record.key == DEPLOYMENT_KEY
@@ -76,10 +123,10 @@ impl TenantStore {
             "deployment binding identity or size differs"
         );
         self.require_access(state)?;
-        Ok(Some(AdmittedDeploymentBinding {
+        Ok(AdmittedDeploymentBinding {
             bytes: std::mem::take(&mut record.value),
             _charge: charge,
-        }))
+        })
     }
 }
 
@@ -120,6 +167,77 @@ impl StorageBinding {
         Ok(hex::encode(Sha256::digest(serde_json::to_vec(self)?)))
     }
 }
+
+/// A missing-binding installation keeps the exact registered native writer,
+/// its charged input, and any post-commit access failure or panic inspectable.
+pub struct BindingInstallWriteFailure {
+    writer: RegisteredBindingPut,
+}
+impl BindingInstallWriteFailure {
+    pub fn writer(&self) -> &RegisteredBindingPut {
+        &self.writer
+    }
+    pub fn into_writer(self) -> RegisteredBindingPut {
+        self.writer
+    }
+}
+impl std::fmt::Debug for BindingInstallWriteFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BindingInstallWriteFailure")
+            .field("writer_id", &self.writer.id())
+            .field("phase", &self.writer.report().phase())
+            .finish()
+    }
+}
+impl std::fmt::Display for BindingInstallWriteFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "registered binding installation {:?} has an unproved result",
+            self.writer.id()
+        )
+    }
+}
+impl std::error::Error for BindingInstallWriteFailure {}
+
+pub struct BindingInstallWriteRetirement {
+    provider: Arc<dyn NodeDiskMemoryAdmission>,
+    id: StorageOwnerId,
+    disposition: StorageCensusDisposition,
+}
+impl BindingInstallWriteRetirement {
+    pub fn id(&self) -> StorageOwnerId {
+        self.id
+    }
+    pub fn disposition(&self) -> StorageCensusDisposition {
+        self.disposition
+    }
+    pub fn retry_retirement(&self) -> StorageCensusDisposition {
+        if let Some(writer) = RegisteredBindingPut::retained(self.provider.clone(), self.id) {
+            writer.retire()
+        } else {
+            self.provider.storage_census().drain_owner(self.id)
+        }
+    }
+}
+impl std::fmt::Debug for BindingInstallWriteRetirement {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BindingInstallWriteRetirement")
+            .field("id", &self.id)
+            .field("disposition", &self.disposition)
+            .finish()
+    }
+}
+impl std::fmt::Display for BindingInstallWriteRetirement {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "registered binding writer {:?} retirement {:?}",
+            self.id, self.disposition
+        )
+    }
+}
+impl std::error::Error for BindingInstallWriteRetirement {}
 
 /// Independently keyed source control storage. Opening this handle reads only
 /// wrapped application metadata; it does not construct an application provider,
@@ -168,8 +286,14 @@ impl CustodyStore {
         self.store.check_access()?;
         let state = self.store.state.read();
         self.store.require_access(&state)?;
-        let tx = self.store.node.db.begin_read()?;
-        self.store.deployment_at(&tx, &state)
+        #[cfg(any(test, feature = "test-utils"))]
+        if self.store.node.db.has_fixture_direct_database() {
+            let tx = self.store.node.db.begin_read()?;
+            return self.store.deployment_at_fixture(&tx, &state);
+        }
+        self.store
+            .node
+            .with_registered_read(|reader| self.store.deployment_at_registered(reader, &state))
     }
 
     pub fn store(&self) -> &Arc<TenantStore> {
@@ -185,7 +309,123 @@ pub struct TenantStorageSet {
     shutdown_report: AsyncMutex<DrainReport>,
 }
 
+/// One immutable native generation for the installed deployment descriptor,
+/// application bootstrap image and custody commitment.
+pub struct TenantStorageReadView {
+    application: Arc<TenantStore>,
+    custody: Arc<TenantStore>,
+    transaction: Option<read_view::ViewTransaction>,
+}
+
+impl TenantStorageReadView {
+    pub fn close(mut self) -> Result<()> {
+        self.transaction
+            .take()
+            .expect("live paired view transaction")
+            .close(&self.application.node)
+    }
+
+    pub fn registered_reader_id(&self) -> Option<StorageOwnerId> {
+        self.transaction
+            .as_ref()
+            .expect("live paired view transaction")
+            .reader_id()
+    }
+
+    pub fn deployment_binding(&self) -> Result<Option<AdmittedDeploymentBinding>> {
+        self.application.check_access()?;
+        self.custody.check_access()?;
+        let app_state = self.application.state.read();
+        let custody_state = self.custody.state.read();
+        let transaction = self
+            .transaction
+            .as_ref()
+            .expect("live paired view transaction");
+        let app = self
+            .application
+            .deployment_at_view(transaction, &app_state)?;
+        let peer = self
+            .custody
+            .deployment_at_view(transaction, &custody_state)?;
+        self.application.require_access(&app_state)?;
+        self.custody.require_access(&custody_state)?;
+        match (app, peer) {
+            (None, None) => Ok(None),
+            (Some(app), Some(peer)) => {
+                ensure!(
+                    app.as_bytes() == peer.as_bytes(),
+                    "deployment binding differs across domains"
+                );
+                Ok(Some(app))
+            }
+            _ => bail!("required deployment binding is absent from one domain"),
+        }
+    }
+
+    pub fn application_get(
+        &self,
+        namespace: &str,
+        key: &[u8],
+        max_value_bytes: usize,
+    ) -> Result<Option<Vec<u8>>> {
+        read_view::get_at(
+            &self.application,
+            self.transaction
+                .as_ref()
+                .expect("live paired view transaction"),
+            namespace,
+            key,
+            max_value_bytes,
+        )
+    }
+
+    pub fn custody_get(
+        &self,
+        namespace: &str,
+        key: &[u8],
+        max_value_bytes: usize,
+    ) -> Result<Option<Vec<u8>>> {
+        read_view::get_at(
+            &self.custody,
+            self.transaction
+                .as_ref()
+                .expect("live paired view transaction"),
+            namespace,
+            key,
+            max_value_bytes,
+        )
+    }
+}
+
+impl Drop for TenantStorageReadView {
+    fn drop(&mut self) {
+        if let Some(transaction) = self.transaction.take() {
+            transaction.close_on_drop(&self.application.node);
+        }
+    }
+}
+
 impl TenantStorageSet {
+    pub fn read_view(&self) -> Result<TenantStorageReadView> {
+        self.check_access()?;
+        let transaction = read_view::ViewTransaction::begin(&self.application.node)?;
+        if let Err(error) = self.check_access() {
+            return match transaction {
+                read_view::ViewTransaction::Registered(reader) => self
+                    .application
+                    .node
+                    .settle_registered_read(reader, Err(error)),
+                #[cfg(any(test, feature = "test-utils"))]
+                read_view::ViewTransaction::Fixture(_) => Err(error),
+            };
+        }
+        Ok(TenantStorageReadView {
+            application: self.application.clone(),
+            custody: self.custody.store.clone(),
+            transaction: Some(transaction),
+        })
+    }
+
     /// Read both independently encrypted deployment copies from one immutable
     /// native KV generation. A concurrent paired publication cannot split them.
     pub fn deployment_binding(&self) -> Result<Option<AdmittedDeploymentBinding>> {
@@ -198,11 +438,44 @@ impl TenantStorageSet {
         let custody_state = custody.state.read();
         application.require_access(&app_state)?;
         custody.require_access(&custody_state)?;
-        let tx = application.node.db.begin_read()?;
-        let app = application.deployment_at(&tx, &app_state)?;
-        let peer = custody.deployment_at(&tx, &custody_state)?;
-        application.require_access(&app_state)?;
-        custody.require_access(&custody_state)?;
+        #[cfg(any(test, feature = "test-utils"))]
+        if application.node.db.has_fixture_direct_database() {
+            let tx = application.node.db.begin_read()?;
+            let app = application.deployment_at_fixture(&tx, &app_state)?;
+            let peer = custody.deployment_at_fixture(&tx, &custody_state)?;
+            return Self::matching_deployment_bindings(
+                app,
+                peer,
+                application,
+                custody,
+                &app_state,
+                &custody_state,
+            );
+        }
+        application.node.with_registered_read(|reader| {
+            let app = application.deployment_at_registered(reader, &app_state)?;
+            let peer = custody.deployment_at_registered(reader, &custody_state)?;
+            Self::matching_deployment_bindings(
+                app,
+                peer,
+                application,
+                custody,
+                &app_state,
+                &custody_state,
+            )
+        })
+    }
+
+    fn matching_deployment_bindings(
+        app: Option<AdmittedDeploymentBinding>,
+        peer: Option<AdmittedDeploymentBinding>,
+        application: &TenantStore,
+        custody: &TenantStore,
+        app_state: &KeyState,
+        custody_state: &KeyState,
+    ) -> Result<Option<AdmittedDeploymentBinding>> {
+        application.require_access(app_state)?;
+        custody.require_access(custody_state)?;
         match (app, peer) {
             (None, None) => Ok(None),
             (Some(app), Some(peer)) => {
@@ -300,40 +573,80 @@ impl TenantStorageSet {
         let _app_mutation = application.mutations.lock();
         let _custody_mutation = custody.mutations.lock();
         let saved = custody.get(BINDING_NS, BINDING_KEY)?;
-        let app_state = application.state.read();
-        let custody_state = custody.state.read();
-        application.require_access(&app_state)?;
-        custody.require_access(&custody_state)?;
-        let app_catalog = application.catalog.read();
-        let custody_catalog = custody.catalog.read();
-        validate_distinct_keys(&app_state, &custody_state)?;
-        let binding = derive_binding(&app_catalog, &custody_catalog)?;
-        let bytes = serde_json::to_vec(&binding)?;
-        if let Some(saved) = saved {
-            ensure!(
-                saved == bytes,
-                "installed storage domain binding bytes differ"
-            );
-        } else {
-            let tx = application.node.db.begin_write()?;
-            write_domain(
-                &tx,
-                &custody,
-                &custody_state,
-                &custody_catalog,
-                &[WriteOp::put(BINDING_NS, BINDING_KEY, bytes)],
+        let (binding, pending) = {
+            let app_state = application.state.read();
+            let custody_state = custody.state.read();
+            application.require_access(&app_state)?;
+            custody.require_access(&custody_state)?;
+            let app_catalog = application.catalog.read();
+            let custody_catalog = custody.catalog.read();
+            validate_distinct_keys(&app_state, &custody_state)?;
+            let binding = derive_binding(&app_catalog, &custody_catalog)?;
+            let pending = if let Some(saved) = saved {
+                let bytes = serde_json::to_vec(&binding)?;
+                ensure!(
+                    saved == bytes,
+                    "installed storage domain binding bytes differ"
+                );
+                None
+            } else {
+                #[cfg(any(test, feature = "test-utils"))]
+                let fixture_direct = application.node.db.has_fixture_direct_database();
+                #[cfg(not(any(test, feature = "test-utils")))]
+                let fixture_direct = false;
+                if fixture_direct {
+                    #[cfg(any(test, feature = "test-utils"))]
+                    {
+                        let bytes = serde_json::to_vec(&binding)?;
+                        let tx = application.node.db.begin_write()?;
+                        write_domain(
+                            &tx,
+                            &custody,
+                            &custody_state,
+                            &custody_catalog,
+                            &[WriteOp::put(BINDING_NS, BINDING_KEY, bytes)],
+                        )?;
+                        application.require_access(&app_state)?;
+                        custody.require_access(&custody_state)?;
+                        tx.commit()
+                            .context("storage domain installation outcome may be unknown")?;
+                        application.require_access(&app_state)?;
+                        custody.require_access(&custody_state)?;
+                    }
+                    None
+                } else {
+                    let provider = application.node.persistent_disk().memory().clone();
+                    let admitted = AdmittedBindingBytes::prepare(&binding, provider)?;
+                    let plan = admitted.encrypt(&custody, &custody_state, &custody_catalog)?;
+                    application.require_access(&app_state)?;
+                    custody.require_access(&custody_state)?;
+                    Some(plan)
+                }
+            };
+            (binding, pending)
+        };
+        if let Some(plan) = pending {
+            let provider = application.node.persistent_disk().memory().clone();
+            let writer = application.node.db.queue_registered_binding_put(
+                plan,
+                application.clone(),
+                custody.clone(),
             )?;
-            application.require_access(&app_state)?;
-            custody.require_access(&custody_state)?;
-            tx.commit()
-                .context("storage domain installation outcome may be unknown")?;
-            application.require_access(&app_state)?;
-            custody.require_access(&custody_state)?;
+            let _ = writer.run();
+            if !writer.report().confirmed() {
+                return Err(BindingInstallWriteFailure { writer }.into());
+            }
+            let id = writer.id();
+            let disposition = writer.retire();
+            if disposition != StorageCensusDisposition::Retired {
+                return Err(BindingInstallWriteRetirement {
+                    provider,
+                    id,
+                    disposition,
+                }
+                .into());
+            }
         }
-        drop(custody_catalog);
-        drop(app_catalog);
-        drop(custody_state);
-        drop(app_state);
         drop(_custody_mutation);
         drop(_app_mutation);
         let result = Arc::new(Self {
@@ -440,6 +753,7 @@ impl TenantStorageSet {
         initialize: bool,
     ) -> Result<()> {
         validate_batch(&[application_ops, custody_ops])?;
+        validate_paired_initial_identity(application_ops, custody_ops)?;
         crate::read_view::validate_replacements(application_replacements, application_ops)?;
         crate::read_view::validate_replacements(custody_replacements, custody_ops)?;
         let application = &self.application;
@@ -463,6 +777,13 @@ impl TenantStorageSet {
             validate_distinct_keys(&app_state, &custody_state)?;
         }
         let tx = application.node.db.begin_write()?;
+        check_paired_initial_identity_state(
+            &tx,
+            application,
+            custody,
+            application_ops,
+            custody_ops,
+        )?;
         if initialize {
             require_pristine_domain(&tx, application, None)?;
             let binding = serde_json::to_vec(&self.custody.binding)?;
@@ -489,6 +810,160 @@ impl TenantStorageSet {
             "domain transaction committed; access expired before acknowledgment; outcome unknown",
         )
     }
+}
+
+fn initial_identity_put<'a>(
+    operations: &'a [WriteOp],
+    namespace: &str,
+    key: &[u8],
+) -> Result<Option<&'a [u8]>> {
+    let mut result = None;
+    for operation in operations {
+        match operation {
+            WriteOp::Put {
+                namespace: actual,
+                key: actual_key,
+                value,
+            } if actual == namespace && actual_key == key => {
+                ensure!(
+                    result.is_none(),
+                    "duplicate initial bootstrap identity write"
+                );
+                result = Some(value.as_slice());
+            }
+            WriteOp::Delete {
+                namespace: actual,
+                key: actual_key,
+            } if actual == namespace && actual_key == key => {
+                bail!("initial bootstrap identity is write-once");
+            }
+            _ => {}
+        }
+    }
+    Ok(result)
+}
+
+fn validate_paired_initial_identity(application: &[WriteOp], custody: &[WriteOp]) -> Result<()> {
+    let app_deployment = initial_identity_put(application, DEPLOYMENT_NS, DEPLOYMENT_KEY)?;
+    let custody_deployment = initial_identity_put(custody, DEPLOYMENT_NS, DEPLOYMENT_KEY)?;
+    ensure!(
+        app_deployment == custody_deployment,
+        "initial deployment requires an equal paired write"
+    );
+    let manifest = initial_identity_put(application, "engine.bootstrap", b"manifest")?;
+    let digest = initial_identity_put(custody, "raft.meta", b"application_bootstrap_sha256")?;
+    let node_id = initial_identity_put(custody, "raft.meta", b"node_id")?;
+    let group = initial_identity_put(custody, "raft.meta", b"group")?;
+    ensure!(
+        manifest.is_some() == digest.is_some(),
+        "initial bootstrap manifest requires a paired custody digest"
+    );
+    ensure!(
+        node_id.is_some() == group.is_some(),
+        "initial raft node and group require one paired custody publication"
+    );
+    ensure!(
+        manifest.is_none() || node_id.is_some(),
+        "initial bootstrap manifest requires its raft node and group"
+    );
+    ensure!(
+        initial_identity_put(custody, "engine.bootstrap", b"manifest")?.is_none()
+            && initial_identity_put(application, "raft.meta", b"application_bootstrap_sha256")?
+                .is_none()
+            && initial_identity_put(application, "raft.meta", b"node_id")?.is_none()
+            && initial_identity_put(application, "raft.meta", b"group")?.is_none(),
+        "initial bootstrap identity uses the wrong storage domain"
+    );
+    Ok(())
+}
+
+fn initial_identity_present(
+    tx: &kasumi_kv::WriteTransaction,
+    store: &TenantStore,
+    namespace: &str,
+    key: &[u8],
+    max_value_bytes: usize,
+) -> Result<bool> {
+    let state = store.state.read();
+    store.require_access(&state)?;
+    let disk_key = record_key(
+        &store.tenant,
+        namespace,
+        key,
+        state.keys.get(INDEX_KEY).context("index key missing")?,
+    );
+    let table = tx.open_table(RECORDS)?;
+    let Some(value) = table.get(disk_key.as_slice())? else {
+        return Ok(false);
+    };
+    check_encrypted_record_budget(value.value(), namespace.len(), key.len(), max_value_bytes)?;
+    let workspace = u64::try_from(value.value().len())?
+        .checked_mul(2)
+        .and_then(|bytes| bytes.checked_add(8192))
+        .context("initial identity decode workspace overflow")?;
+    let _plaintext = store
+        .scratch_disk()
+        .memory()
+        .clone()
+        .reserve_installed(workspace)
+        .context("initial identity decode admission denied")?;
+    let record = store.decode_record(&disk_key, value.value(), &state)?;
+    ensure!(
+        record.namespace == namespace && record.key == key && record.value.len() <= max_value_bytes,
+        "initial identity row differs from its expected storage key or bound"
+    );
+    store.require_access(&state)?;
+    Ok(true)
+}
+
+fn check_paired_initial_identity_state(
+    tx: &kasumi_kv::WriteTransaction,
+    application: &TenantStore,
+    custody: &TenantStore,
+    application_ops: &[WriteOp],
+    custody_ops: &[WriteOp],
+) -> Result<()> {
+    if initial_identity_put(application_ops, DEPLOYMENT_NS, DEPLOYMENT_KEY)?.is_some() {
+        let app = initial_identity_present(
+            tx,
+            application,
+            DEPLOYMENT_NS,
+            DEPLOYMENT_KEY,
+            MAX_DEPLOYMENT_BINDING_BYTES,
+        )?;
+        let peer = initial_identity_present(
+            tx,
+            custody,
+            DEPLOYMENT_NS,
+            DEPLOYMENT_KEY,
+            MAX_DEPLOYMENT_BINDING_BYTES,
+        )?;
+        ensure!(
+            app == peer,
+            "initial deployment pair is only partially installed"
+        );
+    }
+    let manifest_write =
+        initial_identity_put(application_ops, "engine.bootstrap", b"manifest")?.is_some();
+    let node_write = initial_identity_put(custody_ops, "raft.meta", b"node_id")?.is_some();
+    let group_write = initial_identity_put(custody_ops, "raft.meta", b"group")?.is_some();
+    if manifest_write || node_write || group_write {
+        let app = initial_identity_present(tx, application, "engine.bootstrap", b"manifest", 256)?;
+        let peer = initial_identity_present(
+            tx,
+            custody,
+            "raft.meta",
+            b"application_bootstrap_sha256",
+            256,
+        )?;
+        let node = initial_identity_present(tx, custody, "raft.meta", b"node_id", 32)?;
+        let group = initial_identity_present(tx, custody, "raft.meta", b"group", 4096)?;
+        ensure!(
+            app == peer && node == group && (!app || node),
+            "initial bootstrap and raft identity is only partially installed"
+        );
+    }
+    Ok(())
 }
 
 fn require_pristine_domain(
@@ -593,6 +1068,10 @@ fn validate_distinct_keys(application: &KeyState, custody: &KeyState) -> Result<
 #[cfg(test)]
 #[path = "storage_domains_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "storage_domains/binding_install_tests.rs"]
+mod binding_install_tests;
 
 #[cfg(test)]
 #[path = "storage_existing_tests.rs"]

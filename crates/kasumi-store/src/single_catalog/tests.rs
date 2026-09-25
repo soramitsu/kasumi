@@ -215,7 +215,7 @@ async fn existing_singleton_requires_installed_catalog_and_never_repairs_cached_
     assert!(open(input(node.clone(), Mode::Existing)).await.is_err());
     assert_eq!(contents(&node)?, before);
     let owner = open(input(node.clone(), Mode::Initialize)).await?;
-    let mut catalog = node.catalog(TENANT)?.unwrap();
+    let mut catalog = node.catalog(TENANT)?.unwrap().into_parts().0;
     catalog.catalog_id = Uuid::new_v4();
     node.save_catalog(TENANT, &catalog)?;
     let before = contents(&node)?;
@@ -543,5 +543,41 @@ async fn cancelling_during_singleton_key_preparation_retains_actual_node_until_p
         fixture_scratch.clone(),
     )?;
     assert!(reopened.catalog(TENANT)?.is_none());
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn singleton_initialization_registers_before_waiting_for_native_writer() -> Result<()> {
+    let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let directory = crate::test_utils::private_tempdir()?;
+    let path = directory.path().join("registered-singleton.kv");
+    let disk = crate::test_utils::retry_disk_registry(|| {
+        crate::NodeDisk::fixture_for_path(&path, fixture_memory.clone())
+    })?;
+    let scratch_directory = crate::test_utils::private_tempdir()?;
+    let scratch = crate::ScratchDisk::fixture(scratch_directory.path(), fixture_memory.clone());
+    let node = NodeStore::create_new(&path, crate::test_utils::NODE_STORE_ID, disk, scratch)?;
+    let held = node.db.begin_write()?;
+    let initializing = tokio::spawn(open(input(node.clone(), Mode::Initialize)));
+    let registered = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if fixture_memory.storage_census().snapshot().writers == 1 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .is_ok();
+    drop(held);
+    let opened = initializing.await??;
+    assert!(
+        registered,
+        "singleton writer waited at the native gate without an exact registered child"
+    );
+    opened.shutdown().await.unwrap();
+    drop(opened);
+    node.shutdown().await.unwrap();
+    assert_eq!(fixture_memory.storage_census().snapshot().writers, 0);
     Ok(())
 }

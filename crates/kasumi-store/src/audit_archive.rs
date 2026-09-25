@@ -788,7 +788,7 @@ impl AuditArchiveDestination for S3AuditArchive {
             .destination
             .put(
                 segment.reference.object.object_id,
-                segment.ciphertext.clone(),
+                crate::BackupUpload::received(segment.ciphertext.clone()),
             )
             .await;
         // A lost PUT reply or an identical existing object is resolved by exact

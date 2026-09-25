@@ -206,8 +206,23 @@ async fn strict_authority_requires_every_published_head_without_recreating_it() 
         } else {
             fixture.stores.application()
         };
+        let inject = |operation| {
+            if custody {
+                kasumi_store::test_utils::inject_authenticated_rows_below_facade(
+                    fixture.stores.as_ref(),
+                    &[],
+                    &[operation],
+                )
+            } else {
+                kasumi_store::test_utils::inject_authenticated_rows_below_facade(
+                    fixture.stores.as_ref(),
+                    &[operation],
+                    &[],
+                )
+            }
+        };
         let original = store.get(namespace, key)?.unwrap();
-        store.write_batch(&[WriteOp::delete(namespace, key)])?;
+        inject(WriteOp::delete(namespace, key))?;
         fixture.reject().await?;
         let before = fixture.retained()?;
         assert!(
@@ -215,7 +230,7 @@ async fn strict_authority_requires_every_published_head_without_recreating_it() 
             "partial installation cannot initialize again"
         );
         assert_eq!(fixture.retained()?, before);
-        store.write_batch(&[WriteOp::put(namespace, key, original)])?;
+        inject(WriteOp::put(namespace, key, original))?;
     }
     fixture.close().await;
     Ok(())

@@ -34,6 +34,27 @@ use uuid::Uuid;
 use zeroize::Zeroizing;
 const MAX_CALLS: u32 = 64;
 type GenerationKey = (String, Uuid);
+#[cfg(test)]
+fn trace_owned_stage<T, E: std::fmt::Display>(
+    command_id: Uuid,
+    stage: &'static str,
+    started: std::time::Instant,
+    result: &std::result::Result<T, E>,
+) {
+    let elapsed = started.elapsed();
+    if elapsed >= std::time::Duration::from_secs(5) || result.is_err() {
+        match result {
+            Ok(_) => eprintln!(
+                "target owned stage command={command_id} stage={stage} elapsed_ms={} outcome=ok",
+                elapsed.as_millis()
+            ),
+            Err(error) => eprintln!(
+                "target owned stage command={command_id} stage={stage} elapsed_ms={} error={error:#}",
+                elapsed.as_millis()
+            ),
+        }
+    }
+}
 #[path = "target_call_jobs.rs"]
 mod target_call_jobs;
 use target_call_jobs::TargetCallJobs;
@@ -91,11 +112,21 @@ impl Generation {
     ) -> DrainResult {
         let mut retained = None;
         let mut custody_route_closed = true;
-        if let Some(lease) = &self.lease {
-            lease.close();
-        }
         if let Some(phase) = &self.phase {
-            phase.close();
+            phase.seal_admission();
+        }
+        if let Some((_, database)) = &self.registered_data {
+            database.seal_admission();
+        }
+        if let Some(replica) = &self.replica {
+            replica.database().seal_admission();
+        }
+        // StopLocal's active operation belongs to its fresh request phase;
+        // self.phase is the prior generation phase. Join its detached work
+        // while every storage capability is still available. Cancellation
+        // leaves this generation in the runtime map for the next drain.
+        if let Some(phase) = &self.phase {
+            phase.drain_detached().await;
         }
         if let Some((key, database)) = &self.registered_data {
             match serving::detach_owned_data(registry, key, database) {
@@ -212,6 +243,14 @@ impl Generation {
                     }
                 }
             }
+        }
+        // A retained child may still have a Raft writer. Admission is fenced,
+        // but keep the generation's capability and physical stores for retry.
+        if retained.is_some() {
+            return self.report.outcome(retained);
+        }
+        if let Some(lease) = &self.lease {
+            lease.close();
         }
         if let Some(phase) = &self.phase {
             match phase.shutdown().await {
@@ -534,6 +573,14 @@ impl TargetRecoveryRuntime {
             .transpose()
             .map(Some)
     }
+    /// Fence new target work synchronously before an abandoned node hands this
+    /// whole owner to an asynchronous drain.
+    pub(crate) fn seal_admission(&self) {
+        self.closing.store(true, Ordering::Release);
+        self.call_jobs.close();
+        self.serving_monitor.close();
+    }
+
     /// Inspect an already owned target in the native integration fixture. This
     /// never opens storage, publishes a route, or creates serving authority.
     #[cfg(test)]
@@ -767,9 +814,16 @@ impl TargetRecoveryRuntime {
         let receive = self
             .call_jobs
             .submit(deadline, async move {
-                let mut reply = this
+                #[cfg(test)]
+                let command_id = envelope.request.command_id;
+                let result = this
                     .execute_owned(context, bearer, envelope, admission)
-                    .await?;
+                    .await;
+                #[cfg(test)]
+                if let Err(failure) = &result {
+                    eprintln!("target call child command={command_id} error={failure:#}");
+                }
+                let mut reply = result?;
                 reply.permit = Some(permit);
                 Ok::<_, anyhow::Error>(reply)
             })
@@ -822,7 +876,9 @@ impl TargetRecoveryRuntime {
             .serving_authorities
             .get(&template.authority)
             .context("target issuer missing")?;
-        let (phase, initial_start) = RuntimeTargetPhase::acquire(
+        #[cfg(test)]
+        let started = std::time::Instant::now();
+        let phase = RuntimeTargetPhase::acquire(
             &self.installed,
             &self.journal,
             authority,
@@ -840,7 +896,10 @@ impl TargetRecoveryRuntime {
             &self.marked_first_membership_reads,
             &admission,
         )
-        .await?;
+        .await;
+        #[cfg(test)]
+        trace_owned_stage(request.command_id, "acquire_phase", started, &phase);
+        let (phase, initial_start) = phase?;
         let intent = phase.original().observation().intent.clone();
         ensure!(
             intent.request.tenant == request.tenant,
@@ -855,14 +914,26 @@ impl TargetRecoveryRuntime {
             node.attestation_public_key == self.signer.public_key(),
             "installed target attestation key differs"
         );
-        let (expected_phase, input_hash) = self.input(&phase, &request.step, &admission).await?;
+        #[cfg(test)]
+        let started = std::time::Instant::now();
+        let input = self.input(&phase, &request.step, &admission).await;
+        #[cfg(test)]
+        trace_owned_stage(request.command_id, "validate_input", started, &input);
+        let (expected_phase, input_hash) = input?;
         ensure!(
             intent.request.phase == expected_phase
                 && intent.request.phase_input_sha256 == input_hash,
             "target operation differs from exact committed phase"
         );
         let key = (request.tenant.clone(), intent.request.target_incarnation);
-        self.prune_expired(&admission).await?;
+        #[cfg(test)]
+        let started = std::time::Instant::now();
+        let pruned = self.prune_expired(&admission).await;
+        #[cfg(test)]
+        trace_owned_stage(request.command_id, "prune_expired", started, &pruned);
+        pruned?;
+        #[cfg(test)]
+        let started = std::time::Instant::now();
         let target = admission
             .run(async {
                 let mut all = self.generations.lock().await;
@@ -883,8 +954,16 @@ impl TargetRecoveryRuntime {
                 all.insert(key.clone(), target.clone());
                 Ok(target)
             })
-            .await?;
-        let mut generation = admission.run(async { Ok(target.lock().await) }).await?;
+            .await;
+        #[cfg(test)]
+        trace_owned_stage(request.command_id, "find_generation", started, &target);
+        let target = target?;
+        #[cfg(test)]
+        let started = std::time::Instant::now();
+        let locked = admission.run(async { Ok(target.lock().await) }).await;
+        #[cfg(test)]
+        trace_owned_stage(request.command_id, "lock_generation", started, &locked);
+        let mut generation = locked?;
         if expected_phase == LifecyclePhase::StopLocal {
             let TargetRuntimeStep::Stop(reference) = &request.step else {
                 unreachable!()
@@ -939,27 +1018,64 @@ impl TargetRecoveryRuntime {
             })
             .cloned();
         let phase = if let Some(old) = continuing {
-            phase.shutdown().await?;
+            #[cfg(test)]
+            let started = std::time::Instant::now();
+            let shutdown = phase.shutdown().await;
+            #[cfg(test)]
+            trace_owned_stage(request.command_id, "discard_new_phase", started, &shutdown);
+            shutdown?;
             drop(phase);
             old
         } else {
-            admission
+            #[cfg(test)]
+            eprintln!(
+                "target owned switch command={} previous_phase={} previous_cap={:?} replica={} stores={} group={} custody={} serving={}",
+                request.command_id,
+                generation.phase.is_some(),
+                generation
+                    .phase
+                    .as_ref()
+                    .map(|previous| previous.original_expires_at_ms()),
+                generation.replica.is_some(),
+                generation.stores.is_some(),
+                generation.registered_group.is_some(),
+                generation.custody.is_some(),
+                generation.serving.is_some()
+            );
+            #[cfg(test)]
+            let started = std::time::Instant::now();
+            let closed = admission
                 .run(async {
                     generation
                         .close(&self.cluster, &self.registry)
                         .await
                         .map_err(Into::into)
                 })
-                .await?;
+                .await;
+            #[cfg(test)]
+            trace_owned_stage(
+                request.command_id,
+                "close_previous_generation",
+                started,
+                &closed,
+            );
+            closed?;
             generation.phase = Some(phase.clone());
             phase
         };
-        phase.check_request(&admission, &context, &bearer).await?;
+        #[cfg(test)]
+        let started = std::time::Instant::now();
+        let checked = phase.check_request(&admission, &context, &bearer).await;
+        #[cfg(test)]
+        trace_owned_stage(request.command_id, "check_request", started, &checked);
+        checked?;
         let operation = phase.scope().begin_followup(admission)?;
         self.journal.prepare(&operation, &input_hash)?;
         // From this accepted durable identity onward, any local failure is an
         // unresolved effect. No caller infers abort from absence or an RPC error.
-        let (outcome, evidence) = self
+        #[cfg(test)]
+        let started = std::time::Instant::now();
+        let performed = self
             .perform(
                 &mut generation,
                 &phase,
@@ -971,12 +1087,23 @@ impl TargetRecoveryRuntime {
                 &request,
                 &bearer,
             )
-            .await
-            .map_err(unknown)?;
-        phase
-            .check_operation(&operation, &bearer)
-            .await
-            .map_err(unknown)?;
+            .await;
+        #[cfg(test)]
+        trace_owned_stage(request.command_id, "perform", started, &performed);
+        let (outcome, evidence) = performed.map_err(|failure| {
+            #[cfg(test)]
+            eprintln!(
+                "target perform command={} error={failure:#}",
+                request.command_id
+            );
+            unknown(failure)
+        })?;
+        #[cfg(test)]
+        let started = std::time::Instant::now();
+        let checked = phase.check_operation(&operation, &bearer).await;
+        #[cfg(test)]
+        trace_owned_stage(request.command_id, "check_operation", started, &checked);
+        checked.map_err(unknown)?;
         operation.check().map_err(unknown)?;
         drop(generation);
         let reply = TargetRuntimeReply {
@@ -992,7 +1119,19 @@ impl TargetRecoveryRuntime {
             evidence,
             permit: None,
         };
-        reply.release().await.map_err(unknown)?;
+        #[cfg(test)]
+        let started = std::time::Instant::now();
+        let released = reply.release().await;
+        #[cfg(test)]
+        trace_owned_stage(request.command_id, "release_reply", started, &released);
+        released.map_err(|failure| {
+            #[cfg(test)]
+            eprintln!(
+                "target owned release command={} error={failure:#}",
+                request.command_id
+            );
+            unknown(failure)
+        })?;
         Ok(reply)
     }
     async fn prune_expired(&self, admission: &TargetRequestAdmission) -> Result<()> {
@@ -1742,8 +1881,7 @@ impl TargetRecoveryRuntime {
     pub async fn shutdown(&self) -> DrainResult {
         let mut report = self.shutdown_gate.lock().await;
         let mut retained = None;
-        self.closing.store(true, Ordering::Release);
-        self.call_jobs.close();
+        self.seal_admission();
         // RuntimeWorker returns only after its exact handle joins. Retain its
         // actual JoinError before waiting for any target or admitted call.
         if let Err(error) = self.serving_monitor.drain().await {
@@ -1784,13 +1922,6 @@ impl TargetRecoveryRuntime {
             .values()
             .cloned()
             .collect::<Vec<_>>();
-        for target in &targets {
-            if let Ok(g) = target.try_lock()
-                && let Some(p) = &g.phase
-            {
-                p.close();
-            }
-        }
         for target in targets {
             if let Err(failure) = target
                 .lock()

@@ -835,7 +835,7 @@ async fn encrypted_restore_preserves_original_stage_scope_without_reviving_histo
         .unwrap();
     let audit = common::security_audit(node.clone(), physical.storage.admission.clone()).await;
     let stores = TenantStorageSet::initialize_catalogs_fixture(
-        node,
+        node.clone(),
         context().tenant,
         Arc::new(LocalKeyProvider::new([0x95; 32])),
         Arc::new(LocalKeyProvider::new([0x96; 32])),

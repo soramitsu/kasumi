@@ -12,13 +12,13 @@ impl TenantStore {
     ) -> Result<BackupContents> {
         let _access = AccessGuard(self);
         self.check_access()?;
-        let encrypted = EncryptedBackup::from_bytes(bytes, max_plaintext_bytes)?;
+        let encrypted = EncryptedBackup::from_bytes(bytes, max_plaintext_bytes, self)?;
         ensure!(
             encrypted.id() == expected_id,
             "encrypted object identity mismatch"
         );
         let contents = encrypted
-            .decrypt(&self.tenant, self.provider.clone(), &self.access)
+            .decrypt(&self.tenant, self.provider.clone(), self)
             .await?;
         self.check_access()?;
         Ok(contents)

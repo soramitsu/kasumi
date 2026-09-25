@@ -1,5 +1,8 @@
 use super::*;
-use kasumi_store::{NodeStore, StorageAccess, test_utils::LocalKeyProvider};
+use kasumi_store::{
+    NodeReadPhase, NodeStore, StorageAccess, StorageCensusDisposition, TenantPointReadFailure,
+    test_utils::LocalKeyProvider,
+};
 
 struct Installation {
     storage: crate::test_utils::FixtureStorage,
@@ -73,17 +76,100 @@ impl Installation {
     }
     fn seed_bootstrap(&self) -> anyhow::Result<()> {
         bind_deployment(&self.stores, b"local-v1")?;
+        persist_new(&self.stores, &self.image()?)
+    }
+    fn image(&self) -> anyhow::Result<SnapshotImage> {
         let engine = TenantEngine::new(
             "tenant".into(),
             self.incarnation.to_string(),
             policy(),
             Limits::default(),
         )?;
-        persist_new(
-            &self.stores,
-            &engine.logical_snapshot(self.node.scratch_disk())?,
+        Ok(engine.logical_snapshot(self.node.scratch_disk())?)
+    }
+    fn first_publish(
+        &self,
+        image: &SnapshotImage,
+        manifest_bytes: Vec<u8>,
+        custody_digest: &str,
+        first_chunk: Option<Vec<u8>>,
+    ) -> anyhow::Result<()> {
+        bind_deployment(&self.stores, b"local-v1")?;
+        let mut reader = image.reader();
+        let chunks = image.len().div_ceil(CHUNK as u64);
+        for index in 0..chunks {
+            let mut chunk =
+                vec![0; (image.len() - index * CHUNK as u64).min(CHUNK as u64) as usize];
+            reader.read_exact(&mut chunk)?;
+            if index == 0 {
+                chunk = first_chunk.clone().unwrap_or(chunk);
+            }
+            self.stores.application().write_batch(&[WriteOp::put(
+                NS,
+                index.to_be_bytes(),
+                chunk,
+            )])?;
+        }
+        let [node_id, group] = kasumi_raft::initial_storage_identity(
+            1,
+            &format!(
+                "{}/{}",
+                self.stores.application().tenant(),
+                self.incarnation
+            ),
+        )?;
+        self.stores.write_batch(
+            &[WriteOp::put(NS, b"manifest", manifest_bytes)],
+            &[
+                WriteOp::put(
+                    "raft.meta",
+                    b"application_bootstrap_sha256",
+                    serde_json::to_vec(custody_digest)?,
+                ),
+                node_id,
+                group,
+            ],
         )
     }
+}
+
+fn manifest_for(image: &SnapshotImage) -> Manifest {
+    Manifest {
+        format: 2,
+        bytes: image.len(),
+        chunks: image.len().div_ceil(CHUNK as u64),
+        digest: image.sha256().to_owned(),
+    }
+}
+
+fn assert_bounded_read_failure<T>(result: anyhow::Result<T>) {
+    let error = match result {
+        Ok(_) => panic!("oversized first publication passed a bounded read"),
+        Err(error) => error,
+    };
+    let failure = error
+        .downcast::<TenantPointReadFailure>()
+        .expect("bounded read failure must retain its registered child");
+    assert_eq!(failure.stage(), "record bytes");
+    let reader = failure.into_reader();
+    assert_eq!(reader.phase(), NodeReadPhase::Failed);
+    assert_eq!(reader.finish(), NodeReadPhase::Finished);
+    assert_eq!(reader.retire(), StorageCensusDisposition::Retired);
+}
+
+async fn reject_existing_local_without_repair(fixture: &Installation) -> anyhow::Result<()> {
+    let before = retained(&fixture.stores)?;
+    assert!(
+        open_existing_local(
+            fixture.stores.clone(),
+            fixture.audit.clone(),
+            fixture.incarnation
+        )
+        .await
+        .is_err()
+    );
+    assert_eq!(retained(&fixture.stores)?, before);
+    Ok(())
 }
 
 fn policy() -> Policy {
@@ -114,6 +200,22 @@ fn retained(stores: &TenantStorageSet) -> anyhow::Result<Vec<Option<Vec<u8>>>> {
     Ok(values)
 }
 
+fn assert_rejected<T>(result: anyhow::Result<T>) {
+    let error = match result {
+        Ok(_) => panic!("corrupt bootstrap row was accepted"),
+        Err(error) => error,
+    };
+    if let Ok(failure) = error.downcast::<kasumi_store::TenantPointReadFailure>() {
+        assert_eq!(failure.stage(), "record bytes");
+        let reader = failure.into_reader();
+        assert_eq!(reader.finish(), kasumi_store::NodeReadPhase::Finished);
+        assert_eq!(
+            reader.retire(),
+            kasumi_store::StorageCensusDisposition::Retired
+        );
+    }
+}
+
 #[tokio::test]
 async fn bootstrap_manifest_rejects_alternate_and_oversized_rows_without_repair()
 -> anyhow::Result<()> {
@@ -128,6 +230,12 @@ async fn bootstrap_manifest_rejects_alternate_and_oversized_rows_without_repair(
     assert!(load(store)?.is_some());
     let expected_workspace = recovery_workspace_bytes(&fixture.stores)?;
     assert!(expected_workspace >= manifest.bytes);
+    assert!(load(store)?.is_some());
+    assert_eq!(
+        recovery_workspace_bytes(&fixture.stores)?,
+        expected_workspace
+    );
+    fixture.shutdown().await;
 
     let reordered = format!(
         r#"{{"digest":{},"chunks":{},"bytes":{},"format":{}}}"#,
@@ -142,29 +250,45 @@ async fn bootstrap_manifest_rejects_alternate_and_oversized_rows_without_repair(
     let mut oversized = canonical.clone();
     oversized.resize(MAX_BOOTSTRAP_MANIFEST_BYTES + 1, b' ');
     for altered in [reordered, padded, oversized] {
-        store.write_batch(&[WriteOp::put(NS, b"manifest", altered.clone())])?;
-        assert!(read_current_manifest(store).is_err());
-        assert!(persisted_bootstrap_digest(store).is_err());
-        assert!(load(store).is_err());
-        assert!(recovery_workspace_bytes(&fixture.stores).is_err());
+        let fixture = Installation::new().await?;
+        let image = fixture.image()?;
+        let store = fixture.stores.application();
+        fixture.first_publish(&image, altered.clone(), image.sha256(), None)?;
+        if altered.len() > MAX_BOOTSTRAP_MANIFEST_BYTES {
+            assert_bounded_read_failure(read_current_manifest(store));
+            assert_bounded_read_failure(persisted_bootstrap_digest(store));
+            assert_bounded_read_failure(load(store));
+            assert_bounded_read_failure(recovery_workspace_bytes(&fixture.stores));
+        } else {
+            assert_rejected(read_current_manifest(store));
+            assert_rejected(persisted_bootstrap_digest(store));
+            assert_rejected(load(store));
+            assert_rejected(recovery_workspace_bytes(&fixture.stores));
+        }
         assert_eq!(store.get(NS, b"manifest")?, Some(altered));
+        drop(image);
+        fixture.shutdown().await;
     }
-    store.write_batch(&[WriteOp::put(NS, b"manifest", canonical)])?;
-    assert!(load(store)?.is_some());
-    assert_eq!(
-        recovery_workspace_bytes(&fixture.stores)?,
-        expected_workspace
-    );
-
-    let first_chunk = 0u64.to_be_bytes();
-    let saved_chunk = store.get_bounded(NS, &first_chunk, CHUNK)?.unwrap();
+    let oversized_fixture = Installation::new().await?;
+    let image = oversized_fixture.image()?;
     let oversized_chunk = vec![0; CHUNK + 1];
-    store.write_batch(&[WriteOp::put(NS, first_chunk, oversized_chunk.clone())])?;
-    assert!(load(store).is_err());
-    assert_eq!(store.get(NS, &first_chunk)?, Some(oversized_chunk));
-    store.write_batch(&[WriteOp::put(NS, first_chunk, saved_chunk)])?;
-    assert!(load(store)?.is_some());
-    fixture.shutdown().await;
+    oversized_fixture.first_publish(
+        &image,
+        serde_json::to_vec(&manifest_for(&image))?,
+        image.sha256(),
+        Some(oversized_chunk.clone()),
+    )?;
+    let first_chunk = 0u64.to_be_bytes();
+    assert_bounded_read_failure(load(oversized_fixture.stores.application()));
+    assert_eq!(
+        oversized_fixture
+            .stores
+            .application()
+            .get(NS, &first_chunk)?,
+        Some(oversized_chunk)
+    );
+    drop(image);
+    oversized_fixture.shutdown().await;
     Ok(())
 }
 
@@ -172,34 +296,51 @@ async fn bootstrap_manifest_rejects_alternate_and_oversized_rows_without_repair(
 async fn existing_local_requires_both_local_bindings_and_an_initialized_bootstrap()
 -> anyhow::Result<()> {
     let fixture = Installation::new().await?;
-    for (app, custody) in [
-        (None, None),
-        (Some(b"local-v1".as_slice()), None),
-        (None, Some(b"local-v1".as_slice())),
-        (
-            Some(b"local-v1".as_slice()),
-            Some(b"replicated-v1".as_slice()),
-        ),
-        (Some(b"local-v1".as_slice()), Some(b"local-v1".as_slice())),
-    ] {
-        let op = |value: Option<&[u8]>| match value {
-            Some(value) => WriteOp::put("engine.deployment", b"mode", value),
-            None => WriteOp::delete("engine.deployment", b"mode"),
-        };
-        fixture.stores.write_batch(&[op(app)], &[op(custody)])?;
-        let before = retained(&fixture.stores)?;
-        assert!(
-            open_existing_local(
-                fixture.stores.clone(),
-                fixture.audit.clone(),
-                fixture.incarnation
-            )
-            .await
+    let before = retained(&fixture.stores)?;
+    assert!(
+        open_existing_local(
+            fixture.stores.clone(),
+            fixture.audit.clone(),
+            fixture.incarnation
+        )
+        .await
+        .is_err()
+    );
+    // A live facade can no longer manufacture one-sided or divergent first
+    // installation. These attempts must leave the pristine pair untouched.
+    let app = WriteOp::put("engine.deployment", b"mode", b"local-v1");
+    let custody = WriteOp::put("engine.deployment", b"mode", b"replicated-v1");
+    assert!(
+        fixture
+            .stores
+            .write_batch(std::slice::from_ref(&app), &[])
             .is_err()
-        );
-        assert_eq!(retained(&fixture.stores)?, before);
-        assert!(load(fixture.stores.application())?.is_none());
-    }
+    );
+    assert!(
+        fixture
+            .stores
+            .write_batch(&[], std::slice::from_ref(&app))
+            .is_err()
+    );
+    assert!(fixture.stores.write_batch(&[app], &[custody]).is_err());
+    assert_eq!(retained(&fixture.stores)?, before);
+    assert!(load(fixture.stores.application())?.is_none());
+    fixture.shutdown().await;
+
+    let fixture = Installation::new().await?;
+    bind_deployment(&fixture.stores, b"local-v1")?;
+    let before = retained(&fixture.stores)?;
+    assert!(
+        open_existing_local(
+            fixture.stores.clone(),
+            fixture.audit.clone(),
+            fixture.incarnation
+        )
+        .await
+        .is_err()
+    );
+    assert_eq!(retained(&fixture.stores)?, before);
+    assert!(load(fixture.stores.application())?.is_none());
     fixture.shutdown().await;
     Ok(())
 }
@@ -207,63 +348,49 @@ async fn existing_local_requires_both_local_bindings_and_an_initialized_bootstra
 #[tokio::test]
 async fn existing_local_rejects_corrupt_manifest_body_and_custody_commitment_without_repair()
 -> anyhow::Result<()> {
-    let fixture = Installation::new().await?;
-    fixture.seed_bootstrap()?;
-    let store = fixture.stores.application();
-    let saved_manifest = store.get(NS, b"manifest")?.unwrap();
-    let mut wrong: Manifest = serde_json::from_slice(&saved_manifest)?;
-    wrong.format = 99;
-    for malformed in [b"not-json".to_vec(), serde_json::to_vec(&wrong)?] {
-        store.write_batch(&[WriteOp::put(NS, b"manifest", malformed)])?;
-        let before = retained(&fixture.stores)?;
-        assert!(
-            open_existing_local(
-                fixture.stores.clone(),
-                fixture.audit.clone(),
-                fixture.incarnation
-            )
-            .await
-            .is_err()
-        );
-        assert_eq!(retained(&fixture.stores)?, before);
+    for invalid_format in [false, true] {
+        let fixture = Installation::new().await?;
+        let image = fixture.image()?;
+        let malformed = if invalid_format {
+            let mut wrong = manifest_for(&image);
+            wrong.format = 99;
+            serde_json::to_vec(&wrong)?
+        } else {
+            b"not-json".to_vec()
+        };
+        fixture.first_publish(&image, malformed, image.sha256(), None)?;
+        reject_existing_local_without_repair(&fixture).await?;
+        drop(image);
+        fixture.shutdown().await;
     }
-    store.write_batch(&[WriteOp::put(NS, b"manifest", saved_manifest)])?;
-    let saved_chunk = store.get(NS, &0u64.to_be_bytes())?.unwrap();
-    let mut wrong = saved_chunk.clone();
-    wrong[0] ^= 1;
-    store.write_batch(&[WriteOp::put(NS, 0u64.to_be_bytes(), wrong)])?;
-    let before = retained(&fixture.stores)?;
-    assert!(
-        open_existing_local(
-            fixture.stores.clone(),
-            fixture.audit.clone(),
-            fixture.incarnation
-        )
-        .await
-        .is_err()
-    );
-    assert_eq!(retained(&fixture.stores)?, before);
-    store.write_batch(&[WriteOp::put(NS, 0u64.to_be_bytes(), saved_chunk)])?;
-    fixture
-        .stores
-        .custody()
-        .store()
-        .write_batch(&[WriteOp::put(
-            "raft.meta",
-            b"application_bootstrap_sha256",
-            b"\"wrong\"",
-        )])?;
-    let before = retained(&fixture.stores)?;
-    assert!(
-        open_existing_local(
-            fixture.stores.clone(),
-            fixture.audit.clone(),
-            fixture.incarnation
-        )
-        .await
-        .is_err()
-    );
-    assert_eq!(retained(&fixture.stores)?, before);
+
+    let fixture = Installation::new().await?;
+    let image = fixture.image()?;
+    let mut reader = image.reader();
+    let mut corrupt_chunk = vec![0; image.len().min(CHUNK as u64) as usize];
+    reader.read_exact(&mut corrupt_chunk)?;
+    corrupt_chunk[0] ^= 1;
+    drop(reader);
+    fixture.first_publish(
+        &image,
+        serde_json::to_vec(&manifest_for(&image))?,
+        image.sha256(),
+        Some(corrupt_chunk),
+    )?;
+    reject_existing_local_without_repair(&fixture).await?;
+    drop(image);
+    fixture.shutdown().await;
+
+    let fixture = Installation::new().await?;
+    let image = fixture.image()?;
+    fixture.first_publish(
+        &image,
+        serde_json::to_vec(&manifest_for(&image))?,
+        "wrong",
+        None,
+    )?;
+    reject_existing_local_without_repair(&fixture).await?;
+    drop(image);
     fixture.shutdown().await;
     Ok(())
 }

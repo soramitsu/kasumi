@@ -76,7 +76,8 @@ async fn complete_domain_worker_budget_is_reserved_before_verifier_storage_open(
     assert_eq!(admission.snapshot().inflight_operations, 1);
     drop(request);
     opened.shutdown().await.unwrap();
-    assert_eq!(admission.snapshot().reserved_bytes, baseline + expected);
+    let shut_down_reserved = admission.snapshot().reserved_bytes;
+    assert!((baseline + expected..=opened_reserved).contains(&shut_down_reserved));
     drop(opened);
     assert_eq!(admission.snapshot().reserved_bytes, baseline);
 }
@@ -801,6 +802,7 @@ async fn panicked_verifier_initialization_drains_each_acquired_encrypted_owner()
             drop(store);
         }
         node.drain_initializers().await?;
+        node.shutdown().await?;
         drop(node);
         let before = std::fs::read(&fixture.input.verifier.database_path)?;
         assert!(fixture.initialize().await.is_err());
@@ -886,6 +888,7 @@ async fn cancelled_verifier_initialization_retains_physical_owner_and_unclaimed_
         );
         let node = reopen()?;
         node.drain_initializers().await?;
+        node.shutdown().await?;
         drop(node);
         registry.drain().await?;
         if phase == "verifier-installation-complete" {

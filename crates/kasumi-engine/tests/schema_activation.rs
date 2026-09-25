@@ -1241,7 +1241,11 @@ async fn open(
     physical: &common::PhysicalFixture,
     path: &std::path::Path,
     create: bool,
-) -> (Arc<Database>, Arc<SecurityAudit>) {
+) -> (
+    Arc<Database>,
+    Arc<SecurityAudit>,
+    Arc<kasumi_store::NodeStore>,
+) {
     let node = (if create {
         physical
             .storage
@@ -1259,14 +1263,14 @@ async fn open(
     };
     let store = (if create {
         TenantStore::initialize_catalog_fixture(
-            node,
+            node.clone(),
             "schema".into(),
             Arc::new(LocalKeyProvider::new([0xF1; 32])),
         )
         .await
     } else {
         TenantStore::open_existing_fixture(
-            node,
+            node.clone(),
             "schema".into(),
             Arc::new(LocalKeyProvider::new([0xF1; 32])),
         )
@@ -1294,7 +1298,7 @@ async fn open(
     )
     .await
     .unwrap();
-    (db, audit)
+    (db, audit, node)
 }
 
 #[tokio::test]
@@ -1302,7 +1306,7 @@ async fn encrypted_restart_and_full_restore_preserve_permanent_activation_receip
     let root = kasumi_store::test_utils::private_tempdir().unwrap();
     let path = root.path().join("node.kv");
     let physical = common::PhysicalFixture::new(&path, Default::default());
-    let (db, audit) = open(&physical, &path, true).await;
+    let (db, audit, node) = open(&physical, &path, true).await;
     let names: Vec<_> = (0..32).map(|n| format!("financial_{n}")).collect();
     let refs: Vec<_> = names.iter().map(String::as_str).collect();
     let schema_read = ReadSchema::Named {
@@ -1380,9 +1384,11 @@ async fn encrypted_restart_and_full_restore_preserve_permanent_activation_receip
         .unwrap();
     db.shutdown().await.unwrap();
     audit.shutdown().await.unwrap();
+    node.shutdown().await.unwrap();
     drop(db);
     drop(audit);
-    let (db, audit) = open(&physical, &path, false).await;
+    drop(node);
+    let (db, audit, node) = open(&physical, &path, false).await;
     assert_eq!(
         db.activate_schema(context("owner"), install.clone())
             .await
@@ -1405,8 +1411,10 @@ async fn encrypted_restart_and_full_restore_preserve_permanent_activation_receip
     );
     db.shutdown().await.unwrap();
     audit.shutdown().await.unwrap();
+    node.shutdown().await.unwrap();
     drop(db);
     drop(audit);
+    drop(node);
 
     let node = physical
         .storage
@@ -1475,7 +1483,7 @@ async fn encrypted_restart_and_full_restore_preserve_permanent_activation_receip
 async fn cold_schema_change_rejects_whole_bundle_and_scoped_status_rechecks_authority() {
     let root = kasumi_store::test_utils::private_tempdir().unwrap();
     let physical = common::PhysicalFixture::new(&root.path().join("node.kv"), Default::default());
-    let (db, audit) = open(&physical, &root.path().join("node.kv"), true).await;
+    let (db, audit, node) = open(&physical, &root.path().join("node.kv"), true).await;
     let mut history = definition("history");
     history.write_mode = CollectionWriteMode::AppendOnly;
     history.retention_class = CollectionRetentionClass::ArchivableHistory;
@@ -1639,6 +1647,7 @@ async fn cold_schema_change_rejects_whole_bundle_and_scoped_status_rechecks_auth
     );
     db.shutdown().await.unwrap();
     audit.shutdown().await.unwrap();
+    node.shutdown().await.unwrap();
 }
 
 fn guard_assertions(db: &TenantEngine) -> Vec<ReadAssertion> {
@@ -1783,7 +1792,7 @@ async fn encrypted_schema_lookup_checks_current_fences_without_rewriting_origina
     let root = kasumi_store::test_utils::private_tempdir().unwrap();
     let path = root.path().join("schema-fences.kv");
     let physical = common::PhysicalFixture::new(&path, Default::default());
-    let (db, audit) = open(&physical, &path, true).await;
+    let (db, audit, node) = open(&physical, &path, true).await;
     let mut install = creates(db.engine(), "fenced-initial", &["guards", "journal"]);
     let before = db.engine().generation().unwrap();
     install.read_set = vec![
@@ -1825,9 +1834,11 @@ async fn encrypted_schema_lookup_checks_current_fences_without_rewriting_origina
     drop(before);
     db.shutdown().await.unwrap();
     audit.shutdown().await.unwrap();
+    node.shutdown().await.unwrap();
     drop(db);
     drop(audit);
-    let (db, audit) = open(&physical, &path, false).await;
+    drop(node);
+    let (db, audit, node) = open(&physical, &path, false).await;
     let current = db.engine().generation().unwrap();
     let lookup = ReadSchemaActivation {
         reference: reference.clone(),
@@ -1871,6 +1882,7 @@ async fn encrypted_schema_lookup_checks_current_fences_without_rewriting_origina
     drop(release);
     db.shutdown().await.unwrap();
     audit.shutdown().await.unwrap();
+    node.shutdown().await.unwrap();
 }
 
 #[test]

@@ -458,7 +458,7 @@ impl BackupDestination for CredentialPausedDestination {
         &self,
         session: uuid::Uuid,
         slot: kasumi_store::BackupSessionSlot,
-        bytes: Vec<u8>,
+        bytes: kasumi_store::BackupUpload,
     ) -> anyhow::Result<()> {
         kasumi_store::BackupDestination::session_put(self.inner.as_ref(), session, slot, bytes)
             .await
@@ -477,7 +477,7 @@ impl BackupDestination for CredentialPausedDestination {
             .await
     }
 
-    async fn put(&self, id: uuid::Uuid, bytes: Vec<u8>) -> anyhow::Result<()> {
+    async fn put(&self, id: uuid::Uuid, bytes: kasumi_store::BackupUpload) -> anyhow::Result<()> {
         self.inner.put(id, bytes).await
     }
     async fn get(&self, id: uuid::Uuid, max_bytes: usize) -> anyhow::Result<Vec<u8>> {

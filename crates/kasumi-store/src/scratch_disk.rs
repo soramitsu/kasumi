@@ -676,11 +676,13 @@ mod tests {
             max_bytes: 1 << 20,
             min_free_bytes: 1 << 16,
         };
-        let second = ScratchDisk::open_inner(
-            &config,
-            first.memory().clone(),
-            DeviceSelection::Existing(first.device.share(config.min_free_bytes)),
-        )
+        let second = crate::test_utils::retry_disk_registry(|| {
+            ScratchDisk::open_inner(
+                &config,
+                first.memory().clone(),
+                DeviceSelection::Existing(first.device.share(config.min_free_bytes)),
+            )
+        })
         .unwrap();
         *first.available_override.lock().unwrap() = Some(1 << 17);
         *second.available_override.lock().unwrap() = Some(1 << 17);

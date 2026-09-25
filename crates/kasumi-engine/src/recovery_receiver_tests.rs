@@ -883,6 +883,114 @@ fn established_receiver_routes_around_unknown_start_without_unanimous_reopening(
 }
 
 #[test]
+fn complete_mutation_retry_includes_initialized_leader_without_new_start() {
+    let (mut state, mut operation, attempt) = fixture_state();
+    let current = attempt.intent.clone();
+    let original = TargetRuntimeRequest {
+        tenant: operation.request.tenant.clone(),
+        command_id: current.request.command_id,
+        not_after_ms: attempt.dispatch_not_after_ms,
+        step: TargetRuntimeStep::PrepareComplete(attempt.input.clone()),
+    };
+    for node in [1, 2] {
+        let response = TargetRuntimeResponse {
+            node_id: node,
+            command_id: current.request.command_id,
+            outcome: TargetRuntimeOutcome::Started {
+                origin_sha256: attempt.input.quorum.origin_sha256.clone(),
+            },
+        };
+        let started = retained(
+            &mut state,
+            &operation,
+            Uuid::from_u128(940 + u128::from(node)),
+            RecoveryDispatch::Target {
+                node_id: node,
+                request: Box::new(TargetRuntimeRequest {
+                    step: TargetRuntimeStep::Start(TargetReplicaInput::Completion(
+                        attempt.input.clone(),
+                    )),
+                    ..original.clone()
+                }),
+            },
+            Some(RecoveryDispatchOutcome::Target(Box::new(response))),
+            30 + node,
+        );
+        let progress = operation.voters.get_mut(&node).unwrap();
+        progress.start_attempt = Some(started.phase_id);
+        progress.started = Some(started.phase_id);
+    }
+    assert_eq!(
+        quorum::ready_nodes(&state, &operation, current.request.command_id).unwrap(),
+        vec![1, 2]
+    );
+    assert_eq!(
+        quorum::retry_destination(
+            &state,
+            &operation,
+            current.request.command_id,
+            2,
+            &original.step,
+        )
+        .unwrap(),
+        3
+    );
+    validate_step(&state, &operation, &current, 3, &original, true).unwrap();
+    assert!(
+        quorum::require_eligible_observer(&state, &operation, current.request.command_id, 3)
+            .is_err()
+    );
+
+    let mut missing_initialization = operation.clone();
+    missing_initialization.initialization = None;
+    assert!(
+        validate_step(
+            &state,
+            &missing_initialization,
+            &current,
+            3,
+            &original,
+            true
+        )
+        .is_err()
+    );
+    assert!(
+        quorum::retry_destination(
+            &state,
+            &missing_initialization,
+            current.request.command_id,
+            2,
+            &original.step,
+        )
+        .is_err()
+    );
+
+    let mut missing_materialization = operation.clone();
+    missing_materialization
+        .voters
+        .get_mut(&3)
+        .unwrap()
+        .materialization = None;
+    assert!(
+        validate_step(
+            &state,
+            &missing_materialization,
+            &current,
+            3,
+            &original,
+            true
+        )
+        .is_err()
+    );
+    let mut different_input = original.clone();
+    let TargetRuntimeStep::PrepareComplete(input) = &mut different_input.step else {
+        unreachable!()
+    };
+    input.quorum.origin_sha256 = "00".repeat(32);
+    assert!(validate_step(&state, &operation, &current, 3, &different_input, true).is_err());
+}
+
+#[test]
 fn complete_reducer_rejects_both_original_cap_substitutions_before_inserting_phase() {
     let (mut state, mut operation, attempt) = fixture_state();
     let original_id = operation.completion_preparation_attempt.unwrap();

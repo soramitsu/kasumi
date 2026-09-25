@@ -211,6 +211,7 @@ mod tests {
         node.shutdown().await.unwrap();
         drop(audit);
         drop(store);
+        drop(node);
         assert!(weak.upgrade().is_none());
         let reopened = TenantStore::open_existing_fixture(
             storage
@@ -339,6 +340,7 @@ mod tests {
         node.shutdown().await.unwrap();
         drop(audit);
         drop(store);
+        drop(node);
         assert!(weak.upgrade().is_none());
         let reopened = TenantStore::open_existing_fixture(
             storage

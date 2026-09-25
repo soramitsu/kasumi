@@ -616,16 +616,21 @@ async fn archived_prefixes_keep_logical_reads_unique_indexes_and_dedup_after_res
     );
     db.shutdown().await.unwrap();
     audit.shutdown().await.unwrap();
-    node.shutdown().await.unwrap();
+    assert!(
+        node.shutdown().await.is_err(),
+        "offline archive corruption must retain the failed node owner"
+    );
 }
 
 #[tokio::test]
 async fn chunked_full_backup_restores_cold_history_and_permanent_identity_without_source_objects() {
     // Deliberate offline corruption starts before the next managed census.
     // Never reconcile an owner that already failed during an admitted read.
+    #[track_caller]
     fn external_change(disk: &kasumi_store::NodeDisk, change: impl FnOnce()) {
         assert_eq!(disk.snapshot().phase, kasumi_store::NodeDiskPhase::Open);
-        disk.pause().unwrap();
+        disk.pause()
+            .unwrap_or_else(|error| panic!("{error:#}; remaining owners: {:?}", disk.snapshot()));
         change();
         disk.reconcile(&kasumi_store::CensusCancellation::default())
             .unwrap();
@@ -791,11 +796,16 @@ async fn chunked_full_backup_restores_cold_history_and_permanent_identity_withou
         .await
         .unwrap()
         .unwrap();
-    let full = kasumi_store::EncryptedBackup::from_bytes(&encrypted, 4 << 20)
-        .unwrap()
-        .decrypt_fixture("history", Arc::new(LocalKeyProvider::new([0xD3; 32])))
-        .await
-        .unwrap();
+    let full =
+        kasumi_store::EncryptedBackup::from_bytes(&encrypted, 4 << 20, db.stores().application())
+            .unwrap()
+            .decrypt_fixture(
+                "history",
+                Arc::new(LocalKeyProvider::new([0xD3; 32])),
+                db.stores().application(),
+            )
+            .await
+            .unwrap();
     let full: serde_json::Value = serde_json::from_slice(&full.snapshot).unwrap();
     assert_eq!(full["kind"], "full_database");
     assert!(
@@ -807,9 +817,18 @@ async fn chunked_full_backup_restores_cold_history_and_permanent_identity_withou
     node.shutdown().await.unwrap();
     drop(db);
     drop(audit);
+    drop(backups);
     external_change(&physical.storage.persistent, || {
         std::fs::remove_dir_all(&cold_path).unwrap();
     });
+    let backups = Arc::new(
+        kasumi_store::FilesystemBackupDestination::new_fixture(
+            &backup_path,
+            16 << 20,
+            physical.storage.admission.memory().clone(),
+        )
+        .unwrap(),
+    );
     let node = physical
         .storage
         .create_new(
@@ -913,6 +932,8 @@ async fn chunked_full_backup_restores_cold_history_and_permanent_identity_withou
     node.shutdown().await.unwrap();
     drop(restored);
     drop(restored_audit);
+    drop(restore_source);
+    drop(backups);
 
     // Subsets, unavailable historical keys and corrupt/missing dependencies
     // cannot install either bootstrap or Raft identity.
@@ -943,6 +964,20 @@ async fn chunked_full_backup_restores_cold_history_and_permanent_identity_withou
                 std::fs::remove_file(&dependency_path).unwrap();
             });
         }
+        let backups = Arc::new(
+            kasumi_store::FilesystemBackupDestination::new_fixture(
+                &backup_path,
+                16 << 20,
+                physical.storage.admission.memory().clone(),
+            )
+            .unwrap(),
+        );
+        let restore_source = kasumi_engine::RestoreSource {
+            timeout_ms: 300_000,
+            destination_alias: "recovered".into(),
+            destination: backups.clone(),
+            keys: Arc::new(LocalKeyProvider::new([0xD3; 32])),
+        };
         let node = physical
             .storage
             .create_new(
@@ -1010,6 +1045,13 @@ async fn chunked_full_backup_restores_cold_history_and_permanent_identity_withou
         target.shutdown().await.unwrap();
         audit.shutdown().await.unwrap();
         node.shutdown().await.unwrap();
+        drop(restore_source);
+        drop(backups);
+        drop(reopened);
+        drop(domains);
+        drop(target);
+        drop(audit);
+        drop(node);
         if suffix == "corrupt" {
             external_change(&physical.storage.persistent, || {
                 std::fs::write(&dependency_path, &valid_dependency).unwrap();
@@ -1136,13 +1178,13 @@ impl BackupDestination for PendingDestination {
         &self,
         _session: uuid::Uuid,
         _slot: kasumi_store::BackupSessionSlot,
-        _bytes: Vec<u8>,
+        _bytes: kasumi_store::BackupUpload,
     ) -> anyhow::Result<()> {
         self.entered.notify_one();
         std::future::pending().await
     }
 
-    async fn put(&self, _id: uuid::Uuid, _bytes: Vec<u8>) -> anyhow::Result<()> {
+    async fn put(&self, _id: uuid::Uuid, _bytes: kasumi_store::BackupUpload) -> anyhow::Result<()> {
         self.entered.notify_one();
         std::future::pending().await
     }

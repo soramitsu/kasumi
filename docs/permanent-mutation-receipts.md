@@ -102,8 +102,9 @@ throughput, or hard RSS. No large-count or Rust result is claimed before executi
 
 Persistent physical disk accounting, old namespace reclamation, and final 3 GiB
 resident/index workspace acceptance remain separate release requirements.
-Canonical row bytes exclude index/envelope/redb overhead; the shared encrypted
-scratch governor accounts its own physical work, not persistent database space.
+Canonical row bytes exclude index, envelope, and native KV physical overhead;
+the shared encrypted scratch governor accounts its own physical work, not
+persistent database space.
 
 Source validation for this checkpoint: Rust 1.97.1 rustfmt parsed and formatted
 the changed Rust files, and `git diff --check` passed. Compilation, Clippy, all

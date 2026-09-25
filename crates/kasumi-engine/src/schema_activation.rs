@@ -212,7 +212,7 @@ fn activate(state: &mut TenantState, request: &SchemaChangeSet) -> Result<()> {
 
 /// Shared semantics for explicit single-collection administration and atomic
 /// application activation. Never change document versions or data epochs.
-pub(super) fn prepare_collection(
+pub(crate) fn prepare_collection(
     current: Option<&CollectionState>,
     definition: &CollectionDefinition,
     create: bool,

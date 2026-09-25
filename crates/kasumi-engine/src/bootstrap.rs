@@ -5,7 +5,8 @@ use crate::service::construction::DatabaseConstruction;
 use crate::{Database, SecurityAudit, TenantEngine};
 use kasumi_raft::{BasicNode, Config, RaftTransport};
 use kasumi_store::{
-    BackupDestination, EncryptedBackup, KeyProvider, TenantStorageSet, TenantStore, WriteOp,
+    AdmittedDeploymentBinding, BackupDestination, EncryptedBackup, KeyProvider,
+    TenantStorageReadView, TenantStorageSet, TenantStore, WriteOp,
 };
 use kasumi_types::*;
 use serde::{Deserialize, Serialize};
@@ -48,6 +49,9 @@ const MAX_BOOTSTRAP_MANIFEST_BYTES: usize = 256;
 // database file exclusively; startup must register each returned tenant once.
 static BOOTSTRAP_GATE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
+#[cfg(test)]
+#[path = "bootstrap_cold_file_tests.rs"]
+mod cold_file_tests;
 #[cfg(test)]
 #[path = "bootstrap_existing_replicated_tests.rs"]
 mod existing_replicated_tests;
@@ -177,6 +181,10 @@ pub async fn prepare_replicated_restore(
             None,
         )
         .await?;
+    let identity = kasumi_raft::initial_storage_identity(
+        replica.node_id,
+        &format!("{}/{}", target.tenant(), bootstrap.incarnation),
+    )?;
     deadline.check()?;
     restore_access(&target, &security_audit, &context).await?;
     let (restored, _gate) = publication::Publication {
@@ -190,6 +198,7 @@ pub async fn prepare_replicated_restore(
         restored,
         _gate,
         serde_json::to_vec(&("replicated", &bootstrap))?,
+        identity,
     )
     .await?;
     let engine = restored.engine;
@@ -313,7 +322,7 @@ pub async fn open_replicated(
     config: Config,
     security_audit: Arc<SecurityAudit>,
 ) -> anyhow::Result<Arc<Database>> {
-    let (database, _) = open_replicated_inner(
+    let (database, _, _) = open_replicated_inner(
         node_id,
         stores,
         transport,
@@ -332,6 +341,23 @@ pub async fn open_replicated(
 pub struct OpenedReplica {
     pub database: Arc<Database>,
     pub bootstrap: ReplicatedBootstrap,
+    verified_identity: VerifiedInitialBootstrap,
+}
+
+struct VerifiedInitialBootstrap {
+    // Retain the admitted exact descriptor bytes, not a reconstructed copy.
+    binding: AdmittedDeploymentBinding,
+    snapshot_sha256: String,
+}
+
+impl OpenedReplica {
+    pub fn verified_binding(&self) -> &[u8] {
+        self.verified_identity.binding.as_bytes()
+    }
+
+    pub fn verified_snapshot_sha256(&self) -> &str {
+        &self.verified_identity.snapshot_sha256
+    }
 }
 
 /// Reopen an installed replicated database under an exact non-nil incarnation.
@@ -347,7 +373,7 @@ pub async fn open_existing_replicated(
     config: Config,
     security_audit: Arc<SecurityAudit>,
 ) -> anyhow::Result<OpenedReplica> {
-    let (database, bootstrap) = open_replicated_inner(
+    let (database, bootstrap, verified_identity) = open_replicated_inner(
         node_id,
         stores,
         transport,
@@ -359,6 +385,7 @@ pub async fn open_existing_replicated(
     Ok(OpenedReplica {
         database,
         bootstrap: bootstrap.into_owned(),
+        verified_identity: verified_identity.expect("existing replica has verified identity"),
     })
 }
 
@@ -406,14 +433,14 @@ fn decode_current_target_deployment(
 }
 
 fn installed_replicated_bootstrap(
-    stores: &TenantStorageSet,
+    view: &TenantStorageReadView,
     expected_incarnation: uuid::Uuid,
-) -> anyhow::Result<ReplicatedBootstrap> {
+) -> anyhow::Result<(ReplicatedBootstrap, AdmittedDeploymentBinding)> {
     anyhow::ensure!(
         !expected_incarnation.is_nil(),
         "nil expected replicated incarnation"
     );
-    let bytes = stores
+    let bytes = view
         .deployment_binding()?
         .ok_or_else(|| anyhow::anyhow!("required deployment binding is absent"))?;
     let bootstrap = decode_current_replicated_deployment(bytes.as_bytes())?;
@@ -421,7 +448,7 @@ fn installed_replicated_bootstrap(
         bootstrap.incarnation == expected_incarnation.to_string(),
         "installed replicated genesis differs from expected incarnation"
     );
-    Ok(bootstrap)
+    Ok((bootstrap, bytes))
 }
 
 async fn open_replicated_inner<'a>(
@@ -431,7 +458,11 @@ async fn open_replicated_inner<'a>(
     config: Config,
     security_audit: Arc<SecurityAudit>,
     runtime: ReplicaRuntime<'a>,
-) -> anyhow::Result<(Arc<Database>, Cow<'a, ReplicatedBootstrap>)> {
+) -> anyhow::Result<(
+    Arc<Database>,
+    Cow<'a, ReplicatedBootstrap>,
+    Option<VerifiedInitialBootstrap>,
+)> {
     let construction = DatabaseConstruction::new(stores.clone(), security_audit.clone())?;
     let store = stores.application().clone();
     anyhow::ensure!(
@@ -441,13 +472,20 @@ async fn open_replicated_inner<'a>(
     anyhow::ensure!(node_id > 0, "node ID must be positive");
     let _gate = BOOTSTRAP_GATE.lock().await;
     reject_retired_serving_open(&stores)?;
-    let bootstrap = match runtime {
+    let existing_view = matches!(runtime, ReplicaRuntime::Existing(_))
+        .then(|| stores.read_view())
+        .transpose()?;
+    let (bootstrap, installed_binding) = match runtime {
         ReplicaRuntime::Existing(expected) => {
-            Cow::Owned(installed_replicated_bootstrap(&stores, expected)?)
+            let (bootstrap, binding) = installed_replicated_bootstrap(
+                existing_view.as_ref().expect("existing read view"),
+                expected,
+            )?;
+            (Cow::Owned(bootstrap), Some(binding))
         }
-        ReplicaRuntime::FirstEnrollment(bootstrap) => Cow::Borrowed(bootstrap),
+        ReplicaRuntime::FirstEnrollment(bootstrap) => (Cow::Borrowed(bootstrap), None),
         #[cfg(any(test, feature = "test-utils"))]
-        ReplicaRuntime::FixtureEnrollment(bootstrap) => Cow::Borrowed(bootstrap),
+        ReplicaRuntime::FixtureEnrollment(bootstrap) => (Cow::Borrowed(bootstrap), None),
     };
     // Existing mode validates its descriptor during the single authenticated
     // decode; enrollment validates the independently supplied initial inputs.
@@ -468,7 +506,11 @@ async fn open_replicated_inner<'a>(
             &serde_json::to_vec(&("replicated", bootstrap.as_ref()))?,
         )?;
     }
-    let bytes = match load(&store)? {
+    let loaded = match existing_view.as_ref() {
+        Some(view) => load_at(view, store.scratch_disk())?,
+        None => load(&store)?,
+    };
+    let bytes = match loaded {
         Some(bytes) => bytes,
         None => {
             anyhow::ensure!(
@@ -477,23 +519,51 @@ async fn open_replicated_inner<'a>(
             );
             let engine = bootstrap.genesis.engine(store.tenant(), &bootstrap)?;
             let bytes = engine.logical_snapshot(store.scratch_disk())?;
-            persist_new(&stores, &bytes)?;
+            let identity = kasumi_raft::initial_storage_identity(
+                node_id,
+                &format!("{}/{}", store.tenant(), bootstrap.incarnation),
+            )?;
+            persist_new_checked(&stores, &bytes, identity, || stores.check_access())?;
             bytes
         }
     };
     bootstrap.genesis.verify_image(&store, &bootstrap, &bytes)?;
-    validate_bootstrap_control(&stores, &bytes)?;
+    if let Some(view) = existing_view.as_ref() {
+        validate_bootstrap_control_at(view, &bytes)?;
+    } else {
+        validate_bootstrap_control(&stores, &bytes)?;
+    }
+    let installed_control = existing_view
+        .as_ref()
+        .map(kasumi_raft::ControlLog::installed_identity_at)
+        .transpose()?;
+    let verified_identity = installed_binding.map(|binding| VerifiedInitialBootstrap {
+        binding,
+        // load_at checked the manifest against this frozen image while the
+        // descriptor and custody commitment were held by the same view.
+        snapshot_sha256: bytes.sha256().to_owned(),
+    });
+    drop(existing_view);
     let engine = Arc::new(TenantEngine::from_bootstrap(store.tenant(), &bytes)?);
+    let generation = engine.generation()?;
     anyhow::ensure!(
-        engine.generation()?.state.incarnation == bootstrap.incarnation,
+        generation.state.incarnation == bootstrap.incarnation,
         "replicated incarnation differs from bootstrap"
     );
-    if matches!(runtime, ReplicaRuntime::Existing(_)) {
-        let installed = kasumi_raft::ControlLog::installed(stores.custody().clone())?
+    anyhow::ensure!(
+        canonical_digest(&generation.state.policy)? == canonical_digest(&bootstrap.initial_policy)?,
+        "replicated initial policy differs from bootstrap image"
+    );
+    anyhow::ensure!(
+        canonical_digest(&generation.state.limits)? == canonical_digest(&bootstrap.initial_limits)?,
+        "replicated initial limits differ from bootstrap image"
+    );
+    if let Some(installed) = installed_control {
+        let (installed_node_id, installed_group) = installed
             .ok_or_else(|| anyhow::anyhow!("replicated consensus identity is not initialized"))?;
         anyhow::ensure!(
-            installed.node_id() == node_id
-                && installed.group() == format!("{}/{}", store.tenant(), bootstrap.incarnation),
+            installed_node_id == node_id
+                && installed_group == format!("{}/{}", store.tenant(), bootstrap.incarnation),
             "replicated consensus identity differs from installed configuration"
         );
     }
@@ -516,7 +586,7 @@ async fn open_replicated_inner<'a>(
             },
         )
         .await?;
-    Ok((database, bootstrap))
+    Ok((database, bootstrap, verified_identity))
 }
 
 /// Explicit first creation, never a partition fallback. Only the designated
@@ -568,6 +638,24 @@ struct Manifest {
     digest: String,
 }
 
+/// Compare bounded typed genesis fields without materializing another JSON
+/// copy while the decoded bootstrap image is resident.
+fn canonical_digest<T: Serialize>(value: &T) -> anyhow::Result<[u8; 32]> {
+    struct HashWriter(Sha256);
+    impl Write for HashWriter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.update(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut writer = HashWriter(Sha256::new());
+    serde_json::to_writer(&mut writer, value)?;
+    Ok(writer.0.finalize().into())
+}
+
 fn decode_current_manifest(bytes: &[u8]) -> anyhow::Result<Manifest> {
     anyhow::ensure!(
         bytes.len() <= MAX_BOOTSTRAP_MANIFEST_BYTES,
@@ -597,6 +685,20 @@ fn read_current_manifest(store: &TenantStore) -> anyhow::Result<Option<Manifest>
         .get_bounded(NS, b"manifest", MAX_BOOTSTRAP_MANIFEST_BYTES)?
         .map(|bytes| decode_current_manifest(&bytes))
         .transpose()
+}
+
+fn read_current_manifest_at(view: &TenantStorageReadView) -> anyhow::Result<Option<Manifest>> {
+    view.application_get(NS, b"manifest", MAX_BOOTSTRAP_MANIFEST_BYTES)?
+        .map(|bytes| decode_current_manifest(&bytes))
+        .transpose()
+}
+
+/// Decode the immutable manifest from the same native generation as the
+/// deployment pair and custody commitment held by this view.
+pub fn persisted_bootstrap_digest_at(view: &TenantStorageReadView) -> anyhow::Result<String> {
+    read_current_manifest_at(view)?
+        .map(|manifest| manifest.digest)
+        .ok_or_else(|| anyhow::anyhow!("bootstrap manifest absent"))
 }
 
 /// Read the initial snapshot digest from the current immutable bootstrap row.
@@ -630,6 +732,46 @@ fn load(store: &TenantStore) -> anyhow::Result<Option<SnapshotImage>> {
     Ok(Some(snapshot))
 }
 
+fn load_at(
+    view: &TenantStorageReadView,
+    scratch_disk: &Arc<kasumi_store::ScratchDisk>,
+) -> anyhow::Result<Option<SnapshotImage>> {
+    let Some(manifest) = read_current_manifest_at(view)? else {
+        return Ok(None);
+    };
+    let mut spool = EncryptedSpool::new(scratch_disk, manifest.bytes)?;
+    for i in 0..manifest.chunks {
+        let bytes = view
+            .application_get(NS, &i.to_be_bytes(), CHUNK)?
+            .ok_or_else(|| anyhow::anyhow!("incomplete bootstrap"))?;
+        anyhow::ensure!(
+            bytes.len() == (manifest.bytes - spool.len()).min(CHUNK as u64) as usize,
+            "invalid bootstrap chunk length"
+        );
+        spool.write_all(&bytes)?;
+    }
+    let snapshot = SnapshotImage::freeze(spool)?;
+    anyhow::ensure!(
+        snapshot.sha256() == manifest.digest,
+        "bootstrap digest mismatch"
+    );
+    Ok(Some(snapshot))
+}
+
+fn validate_bootstrap_control_at(
+    view: &TenantStorageReadView,
+    bytes: &SnapshotImage,
+) -> anyhow::Result<()> {
+    let expected = serde_json::to_vec(bytes.sha256())?;
+    anyhow::ensure!(
+        view.custody_get("raft.meta", b"application_bootstrap_sha256", 256)?
+            .as_deref()
+            == Some(expected.as_slice()),
+        "application bootstrap/control identity differs"
+    );
+    Ok(())
+}
+
 fn validate_bootstrap_control(
     stores: &TenantStorageSet,
     bytes: &SnapshotImage,
@@ -648,13 +790,21 @@ fn validate_bootstrap_control(
     Ok(())
 }
 
+#[cfg(test)]
 fn persist_new(stores: &TenantStorageSet, bytes: &SnapshotImage) -> anyhow::Result<()> {
-    persist_new_checked(stores, bytes, || stores.check_access())
+    let engine = TenantEngine::from_bootstrap(stores.application().tenant(), bytes)?;
+    let incarnation = engine.generation()?.state.incarnation.clone();
+    let identity = kasumi_raft::initial_storage_identity(
+        1,
+        &format!("{}/{}", stores.application().tenant(), incarnation),
+    )?;
+    persist_new_checked(stores, bytes, identity, || stores.check_access())
 }
 
 fn persist_new_checked(
     stores: &TenantStorageSet,
     bytes: &SnapshotImage,
+    identity: [WriteOp; 2],
     mut check: impl FnMut() -> anyhow::Result<()>,
 ) -> anyhow::Result<()> {
     check()?;
@@ -688,14 +838,13 @@ fn persist_new_checked(
     };
     let encoded = serde_json::to_vec(&manifest)?;
     check()?;
-    stores.write_batch(
-        &[WriteOp::put(NS, b"manifest", encoded)],
-        &[WriteOp::put(
-            "raft.meta",
-            b"application_bootstrap_sha256",
-            serde_json::to_vec(&manifest.digest)?,
-        )],
-    )?;
+    let mut custody_ops = vec![WriteOp::put(
+        "raft.meta",
+        b"application_bootstrap_sha256",
+        serde_json::to_vec(&manifest.digest)?,
+    )];
+    custody_ops.extend(identity);
+    stores.write_batch(&[WriteOp::put(NS, b"manifest", encoded)], &custody_ops)?;
     check()
 }
 
@@ -838,7 +987,15 @@ async fn open_local_inner(
                 initial_limits,
             )?;
             let bytes = engine.logical_snapshot(store.scratch_disk())?;
-            persist_new(&stores, &bytes)?;
+            let identity = kasumi_raft::initial_storage_identity(
+                1,
+                &format!(
+                    "{}/{}",
+                    store.tenant(),
+                    engine.generation()?.state.incarnation
+                ),
+            )?;
+            persist_new_checked(&stores, &bytes, identity, || stores.check_access())?;
             bytes
         }
     };
@@ -1005,7 +1162,12 @@ pub async fn restore_local(
         cancellation,
         deadline,
     }
-    .persist(restored, _gate, b"local-v1".to_vec())
+    .persist(
+        restored,
+        _gate,
+        b"local-v1".to_vec(),
+        kasumi_raft::initial_storage_identity(1, &format!("{}/{}", target.tenant(), incarnation))?,
+    )
     .await?;
     let database = start_prepared(construction, restored.engine, LocalRuntime::Production).await?;
     database.install_archive_destination(

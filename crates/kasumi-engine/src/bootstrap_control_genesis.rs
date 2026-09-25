@@ -2,6 +2,7 @@
 //! baseline, not an applied Raft entry or a proof of a currently available quorum.
 use super::*;
 use crate::control::{CONTROL_TENANT, ControlPlane, ControlTopology, DeploymentMode};
+use crate::state::schema;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(
@@ -142,6 +143,12 @@ impl ControlGenesis {
                 "Control genesis needs an empty initial state",
             ));
         }
+        if state.limits.max_collections < 2 {
+            return Err(Error::new(
+                ErrorCode::QuotaExceeded,
+                "Control genesis needs both reserved collections",
+            ));
+        }
         let body = serde_json::to_value(&self.topology).map_err(|_| {
             Error::new(
                 ErrorCode::InvalidArgument,
@@ -180,6 +187,11 @@ impl ControlGenesis {
                 archived_documents: imbl::OrdMap::new(),
                 archived_document_bytes: 0,
             },
+        );
+        let enrollment = ControlPlane::enrollment_definition();
+        state.collections.insert(
+            enrollment.name.clone(),
+            schema::prepare_collection(None, &enrollment, true)?,
         );
         if let ControlLifecycleGenesis::Installed {
             command_id,

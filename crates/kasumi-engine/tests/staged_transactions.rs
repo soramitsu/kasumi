@@ -1,7 +1,7 @@
 use kasumi_engine::test_utils::{SnapshotFixture, snapshot_accounted_bytes};
 mod common;
 use common::FixtureEngine;
-use kasumi_store::{TenantStore, test_utils::LocalKeyProvider};
+use kasumi_store::{NodeStore, TenantStore, test_utils::LocalKeyProvider};
 use kasumi_types::*;
 use serde_json::json;
 use std::{collections::BTreeSet, sync::Arc};
@@ -573,6 +573,7 @@ async fn open(
 ) -> (
     Arc<kasumi_engine::Database>,
     Arc<kasumi_engine::SecurityAudit>,
+    Arc<NodeStore>,
 ) {
     let node = (if create {
         physical
@@ -591,14 +592,14 @@ async fn open(
     };
     let store = (if create {
         TenantStore::initialize_catalog_fixture(
-            node,
+            node.clone(),
             "tenant".into(),
             Arc::new(LocalKeyProvider::new([0xB3; 32])),
         )
         .await
     } else {
         TenantStore::open_existing_fixture(
-            node,
+            node.clone(),
             "tenant".into(),
             Arc::new(LocalKeyProvider::new([0xB3; 32])),
         )
@@ -626,7 +627,7 @@ async fn open(
     )
     .await
     .unwrap();
-    (db, audit)
+    (db, audit, node)
 }
 
 #[test]
@@ -644,7 +645,8 @@ fn staged_crash_worker() {
                 &directory.join("persistent/node.kv"),
                 Default::default(),
             );
-            let (db, _audit) = open(&physical, &directory.join("persistent/node.kv"), true).await;
+            let (db, _audit, _node) =
+                open(&physical, &directory.join("persistent/node.kv"), true).await;
             for name in ["docs", "ledger"] {
                 db.administer(
                     context(),
@@ -720,7 +722,7 @@ async fn killed_upload_recovers_encrypted_invisible_chunks_and_finishes_exactly_
         &directory.path().join("persistent/node.kv"),
         Default::default(),
     );
-    let (db, audit) = open(
+    let (db, audit, node) = open(
         &physical,
         &directory.path().join("persistent/node.kv"),
         false,
@@ -757,9 +759,10 @@ async fn killed_upload_recovers_encrypted_invisible_chunks_and_finishes_exactly_
         .unwrap();
     db.shutdown().await.unwrap();
     audit.shutdown().await.unwrap();
+    node.shutdown().await.unwrap();
     drop(db);
     drop(audit);
-    let (db, audit) = open(
+    let (db, audit, node) = open(
         &physical,
         &directory.path().join("persistent/node.kv"),
         false,
@@ -791,6 +794,7 @@ async fn killed_upload_recovers_encrypted_invisible_chunks_and_finishes_exactly_
     drop(generation);
     db.shutdown().await.unwrap();
     audit.shutdown().await.unwrap();
+    node.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -798,7 +802,7 @@ async fn coherent_lease_pages_cover_large_dependencies_and_scans_with_live_write
     let directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let physical =
         common::PhysicalFixture::new(&directory.path().join("node.kv"), Default::default());
-    let (db, audit) = open(&physical, &directory.path().join("node.kv"), true).await;
+    let (db, audit, node) = open(&physical, &directory.path().join("node.kv"), true).await;
     for name in ["docs", "ledger"] {
         db.administer(
             context(),
@@ -1020,6 +1024,7 @@ async fn coherent_lease_pages_cover_large_dependencies_and_scans_with_live_write
         .unwrap();
     db.shutdown().await.unwrap();
     audit.shutdown().await.unwrap();
+    node.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -1027,7 +1032,7 @@ async fn small_lease_budget_shares_large_roots_and_expires_on_retained_version_p
     let directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let physical =
         common::PhysicalFixture::new(&directory.path().join("lease-delta.kv"), Default::default());
-    let (db, audit) = open(&physical, &directory.path().join("lease-delta.kv"), true).await;
+    let (db, audit, node) = open(&physical, &directory.path().join("lease-delta.kv"), true).await;
     db.administer(
         context(),
         Operation::CreateCollection(definition("docs", CollectionWriteMode::Mutable)),
@@ -1129,6 +1134,7 @@ async fn small_lease_budget_shares_large_roots_and_expires_on_retained_version_p
     );
     db.shutdown().await.unwrap();
     audit.shutdown().await.unwrap();
+    node.shutdown().await.unwrap();
 }
 
 #[test]

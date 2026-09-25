@@ -1,5 +1,8 @@
 # Acceptance review: engine, storage and release boundaries
 
+Historical review: the 2026-09-05 source used redb. Its findings remain evidence
+for that source and do not qualify the current native Kasumi key-value engine.
+
 This review inspected the implementation and tests on 2026-09-05. It records
 specific fixes and limits of the evidence, not a production certification.
 

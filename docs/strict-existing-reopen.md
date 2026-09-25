@@ -1,5 +1,8 @@
 # Existing installation reopen
 
+> Historical source checkpoint. The current storage implementation uses the
+> [native Kasumi KV engine](native-kv-goal.md).
+
 `TenantStorageSet::open_existing` requires both catalogs and their authenticated
 custody binding. It unwraps the custody domain and checks the requested exact
 application purpose before opening application keys, then compares the opened

@@ -67,8 +67,18 @@ async fn selected_network_is_in_config_profiles_and_original_control_topology() 
     Ok(())
 }
 
-#[tokio::test]
-async fn initialized_standalone_serves_native_mcp_and_durable_credential_lifecycle() {
+#[test]
+fn initialized_standalone_serves_native_mcp_and_durable_credential_lifecycle() -> Result<()> {
+    super::ownership_tests::run_large_fixture(
+        "standalone native and MCP lifecycle fixture",
+        || async {
+            initialized_standalone_serves_native_mcp_and_durable_credential_lifecycle_impl().await;
+            Ok(())
+        },
+    )
+}
+
+async fn initialized_standalone_serves_native_mcp_and_durable_credential_lifecycle_impl() {
     let root = kasumi_store::test_utils::private_tempdir().unwrap();
     let (installation, storage) = crate::runtime_storage_fixtures::initialize_standalone(
         &root.path().join("kasumi"),
@@ -423,8 +433,15 @@ async fn initialized_standalone_serves_native_mcp_and_durable_credential_lifecyc
     serving.await.unwrap().unwrap();
 }
 
-#[tokio::test]
-async fn offline_maintenance_and_administrator_recovery_require_exclusive_ownership() {
+#[test]
+fn offline_maintenance_and_administrator_recovery_require_exclusive_ownership() -> Result<()> {
+    super::ownership_tests::run_large_fixture("standalone offline maintenance fixture", || async {
+        offline_maintenance_and_administrator_recovery_require_exclusive_ownership_impl().await;
+        Ok(())
+    })
+}
+
+async fn offline_maintenance_and_administrator_recovery_require_exclusive_ownership_impl() {
     let root = kasumi_store::test_utils::private_tempdir().unwrap();
     let (installation, storage) = crate::runtime_storage_fixtures::initialize_standalone(
         &root.path().join("kasumi"),

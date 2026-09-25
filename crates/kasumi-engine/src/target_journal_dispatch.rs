@@ -224,20 +224,16 @@ impl VerifiedInitialMembership {
             voters: self.voters,
             bootstrap_sha256: self.bootstrap_sha256,
         };
-        expected.validate_unbound_storage(stores)?;
-        let mut identity =
-            kasumi_raft::initial_storage_identity(expected.node.node_id, &expected.group)?
-                .into_iter()
-                .collect::<Vec<_>>();
-        identity.push(WriteOp::put(
+        expected.validate_prebind_storage(stores)?;
+        let prebind = WriteOp::put(
             TARGET_PREBIND_NAMESPACE,
             TARGET_PREBIND_KEY,
             serde_json::to_vec(&expected)?,
-        ));
+        );
         stores
             .custody()
             .store()
-            .write_batch(&identity)
+            .write_batch(&[prebind])
             .context("target Raft prebind custody write outcome uncertain")?;
         read_target_first_membership_prebind(stores, &expected)?;
         Ok(expected)
@@ -366,6 +362,10 @@ fn verify_first_membership_values(
 /// `ExistingStatusOnly` cannot be converted into a second Execute permission.
 /// Even `NewlyAccepted` is only a durable reservation, not a child ticket.
 #[derive(Debug)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "the one-use journal candidate moves inline without allocating a separate heap owner after durable acceptance"
+)]
 pub enum InitialDispatchReservation {
     NewlyAccepted(AcceptedInitialDispatchPrebind),
     ExistingStatusOnly,

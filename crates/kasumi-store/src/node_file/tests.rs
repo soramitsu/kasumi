@@ -4,9 +4,13 @@ use crate::{NodeStore, ScratchDisk};
 use kasumi_kv::{Database, TableDefinition};
 use std::{
     fs::{File, OpenOptions},
-    io::Read,
-    os::unix::fs::{FileExt, OpenOptionsExt},
+    io::{self, Read},
+    os::{
+        fd::IntoRawFd,
+        unix::fs::{FileExt, OpenOptionsExt},
+    },
     process::{Child, Command, Stdio},
+    sync::Mutex,
     time::{Duration, Instant},
 };
 
@@ -17,10 +21,101 @@ fn directory() -> tempfile::TempDir {
     crate::test_utils::private_tempdir().unwrap()
 }
 
+// This fixture writes a native payload without a node envelope to check that
+// envelope rejection leaves unrelated bytes unchanged.
+enum RawFileState {
+    Open(File),
+    Drained,
+    UnknownClose { _descriptor: i32, errno: i32 },
+}
+struct RawFileBackend(Mutex<RawFileState>);
+impl RawFileBackend {
+    fn with<T>(&self, operation: impl FnOnce(&File) -> io::Result<T>) -> io::Result<T> {
+        let state = self.0.lock().map_err(|_| io::ErrorKind::Other)?;
+        match &*state {
+            RawFileState::Open(file) => operation(file),
+            RawFileState::Drained | RawFileState::UnknownClose { .. } => {
+                Err(io::ErrorKind::BrokenPipe.into())
+            }
+        }
+    }
+}
+impl Drop for RawFileBackend {
+    fn drop(&mut self) {
+        let state = self
+            .0
+            .get_mut()
+            .unwrap_or_else(|poison| poison.into_inner());
+        // An unclosed fixture must not silently turn a File destructor into a
+        // successful native-close claim. The crash child exits before Drop.
+        if let RawFileState::Open(file) = std::mem::replace(state, RawFileState::Drained) {
+            std::mem::forget(file);
+        }
+    }
+}
+impl kasumi_kv::StorageBackend for RawFileBackend {
+    fn len(&self) -> io::Result<u64> {
+        self.with(|file| Ok(file.metadata()?.len()))
+    }
+    fn read(&self, at: u64, out: &mut [u8]) -> io::Result<()> {
+        self.with(|file| file.read_exact_at(out, at))
+    }
+    fn write(&self, at: u64, bytes: &[u8]) -> io::Result<()> {
+        self.with(|file| file.write_all_at(bytes, at))
+    }
+    fn set_len(&self, length: u64) -> io::Result<()> {
+        self.with(|file| file.set_len(length))
+    }
+    fn sync_data(&self) -> io::Result<()> {
+        self.with(File::sync_data)
+    }
+    fn close(&self) -> kasumi_kv::BackendCloseOutcome {
+        let mut state = match self.0.try_lock() {
+            Ok(state) => state,
+            Err(std::sync::TryLockError::WouldBlock) => {
+                return kasumi_kv::BackendCloseOutcome::not_entered(
+                    io::ErrorKind::WouldBlock.into(),
+                );
+            }
+            Err(std::sync::TryLockError::Poisoned(_)) => {
+                return kasumi_kv::BackendCloseOutcome::not_entered(io::ErrorKind::Other.into());
+            }
+        };
+        match &*state {
+            RawFileState::Drained => return kasumi_kv::BackendCloseOutcome::drained(Ok(())),
+            RawFileState::UnknownClose { errno, .. } => {
+                return kasumi_kv::BackendCloseOutcome::retained(io::Error::from_raw_os_error(
+                    *errno,
+                ));
+            }
+            RawFileState::Open(_) => {}
+        }
+        let RawFileState::Open(file) = std::mem::replace(&mut *state, RawFileState::Drained) else {
+            unreachable!("the open arm was checked under the mutex");
+        };
+        let sync_error = file.sync_data().err();
+        let descriptor = file.into_raw_fd();
+        // SAFETY: into_raw_fd consumed the sole File owner. Never reconstruct
+        // or retry this descriptor, even if close reports an uncertain error.
+        if unsafe { libc::close(descriptor) } != 0 {
+            let errno = io::Error::last_os_error()
+                .raw_os_error()
+                .unwrap_or(libc::EIO);
+            *state = RawFileState::UnknownClose {
+                _descriptor: descriptor,
+                errno,
+            };
+            kasumi_kv::BackendCloseOutcome::retained(io::Error::from_raw_os_error(errno))
+        } else {
+            kasumi_kv::BackendCloseOutcome::drained(sync_error.map_or(Ok(()), Err))
+        }
+    }
+}
+
 fn raw_database(path: &Path) -> Database {
     let file = options().create_new(true).open(path).unwrap();
     Database::builder(crate::test_utils::storage_admission())
-        .create_file(file)
+        .create_strict_with_backend(RawFileBackend(Mutex::new(RawFileState::Open(file))))
         .unwrap()
 }
 
@@ -98,7 +193,7 @@ fn unrelated_clean_and_unclean_old_format_rejection_is_byte_exact() {
         } else {
             let db = raw_database(&path);
             commit_probe(db.begin_write().unwrap());
-            drop(db);
+            db.close().unwrap();
         }
         // These deliberately small test files permit a byte-for-byte witness;
         // production admission reads only the fixed 4096-byte envelope.
@@ -443,7 +538,7 @@ fn validated_descriptor_handoff_never_reopens_a_substituted_path() {
     let disk = owner.disk.clone();
     assert_eq!(disk.snapshot().open_files, 1);
     std::fs::rename(&path, &moved).unwrap();
-    drop(raw_database(&path));
+    raw_database(&path).close().unwrap();
     let unrelated = std::fs::read(&path).unwrap();
     let original = std::fs::read(&moved).unwrap();
 
@@ -585,7 +680,7 @@ fn cleanup_custody_accepts_only_exact_recognized_headers_and_holds_the_inode_loc
         assert_eq!(before, std::fs::read(&path).unwrap());
     }
     let path = directory.path().join("unrelated-cleanup");
-    drop(raw_database(&path));
+    raw_database(&path).close().unwrap();
     let before = std::fs::read(&path).unwrap();
     assert!(NodeStore::claim_cleanup_fixture(&path, ID, fixture_memory.clone()).is_err());
     assert_eq!(before, std::fs::read(&path).unwrap());
@@ -1108,6 +1203,30 @@ fn failed_file_report_blocks_transfer_and_foreign_witnesses_do_not_move_custody(
 #[test]
 fn unknown_native_close_cannot_mint_recovery_witness_or_retry_a_reused_descriptor() {
     use std::os::fd::AsRawFd;
+    // Descriptor reuse is process-global. Run this one case in an isolated
+    // test process so unrelated parallel cases cannot claim the just-closed
+    // integer before the sentinel opens it.
+    if std::env::var_os("KASUMI_NODE_FILE_FD_REUSE_CHILD").is_none() {
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "node_file::tests::unknown_native_close_cannot_mint_recovery_witness_or_retry_a_reused_descriptor",
+                "--test-threads=1",
+            ])
+            .env("KASUMI_NODE_FILE_FD_REUSE_CHILD", "1")
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success()
+                && stdout.contains("running 1 test")
+                && stdout.contains("unknown_native_close_cannot_mint_recovery_witness_or_retry_a_reused_descriptor ... ok"),
+            "isolated descriptor-reuse case failed: stdout={} stderr={}",
+            stdout,
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
     let memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
     let directory = directory();
     let path = directory.path().join("unknown-close");
@@ -1160,7 +1279,10 @@ fn closed_prepared_node_file_cannot_acquire_a_new_descriptor() {
     let memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
     let directory = directory();
     let path = directory.path().join("never-acquired");
-    let disk = NodeDisk::fixture_for_path(&path, memory).unwrap();
+    let disk = crate::test_utils::retry_disk_registry(|| {
+        NodeDisk::fixture_for_path(&path, memory.clone())
+    })
+    .unwrap();
     let owner = NodeFile::retained_prepared(&path, ID, disk);
     let closed = owner.backend().close();
     assert_eq!(

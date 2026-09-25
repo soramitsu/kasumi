@@ -3,6 +3,16 @@
 use super::*;
 use crate::{api::DatabaseRegistry, serving_runtime::RuntimeLease};
 use std::{ops::Bound, time::Duration};
+
+// This only shortens use of the original Control phase. A stalled drain still
+// loses application storage authority at the committed credential expiry.
+const PHASE_DRAIN_RESERVE_MS: u64 = 10_000;
+
+fn phase_close_due(original_expires_at_ms: u64, now_ms: u64, idle: bool) -> bool {
+    idle && now_ms < original_expires_at_ms
+        && original_expires_at_ms - now_ms <= PHASE_DRAIN_RESERVE_MS
+}
+
 impl TargetRecoveryRuntime {
     pub(super) fn start_serving_reconciliation(
         self: &Arc<Self>,
@@ -80,12 +90,35 @@ impl TargetRecoveryRuntime {
                     .custody
                     .as_ref()
                     .is_some_and(|(_, custody)| custody.identity().is_ok())
-                || generation
-                    .phase
-                    .as_ref()
-                    .is_some_and(|phase| phase.scope().invocation().check().is_ok())
             {
                 continue;
+            }
+            let closing_early = generation.phase.as_ref().is_some_and(|phase| {
+                phase
+                    .scope()
+                    .invocation()
+                    .gate()
+                    .admission_time_ms()
+                    .is_ok_and(|now_ms| {
+                        phase_close_due(
+                            phase.original_expires_at_ms(),
+                            now_ms,
+                            phase.scope().is_idle(),
+                        )
+                    })
+            });
+            if generation
+                .phase
+                .as_ref()
+                .is_some_and(|phase| phase.scope().invocation().check().is_ok())
+                && !closing_early
+            {
+                continue;
+            }
+            if closing_early {
+                // No accepted operation or response owns the phase slot. Fence
+                // new admission before the first await in the owned drain.
+                generation.phase.as_ref().unwrap().seal_admission();
             }
             if generation
                 .close(&self.cluster, &self.registry)
@@ -311,6 +344,26 @@ impl TargetRecoveryRuntime {
         g.registered_data = Some((key, database));
         g.serving.as_ref().unwrap().check()?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod proactive_close_tests {
+    use super::*;
+
+    #[test]
+    fn idle_phase_closes_inside_original_cap_without_extending_it() {
+        let cap = 60_000;
+        assert!(!phase_close_due(
+            cap,
+            cap - PHASE_DRAIN_RESERVE_MS - 1,
+            true
+        ));
+        assert!(!phase_close_due(cap, cap - PHASE_DRAIN_RESERVE_MS, false));
+        assert!(phase_close_due(cap, cap - PHASE_DRAIN_RESERVE_MS, true));
+        assert!(phase_close_due(cap, cap - 1, true));
+        assert!(!phase_close_due(cap, cap, true));
+        assert!(!phase_close_due(cap, cap + 1, true));
     }
 }
 /// Remove only the exact owned data handle. Independent source recovery keeps

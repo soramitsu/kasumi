@@ -2975,5 +2975,987 @@ zero drift). It specifies a breaking `AdmittedRecordValue` with a zeroizing
 authenticated plaintext buffer, value-range borrow, same-provider resident
 lease and access-generation checks. It also inventories production callers
 that currently require `Vec`, especially retained audit bytes and staged-row
-adapters. The AEAD heap/workspace bound and compile-driven migration are not
-implemented; no compatibility `Vec` escape was added. G02 remains open.
+adapters. No compatibility `Vec` escape was added. G02 remains open.
+
+The source-pinned G02 AEAD workspace audit is target-only
+(`target/g02-aead-workspace-audit/README.md`, SHA-256
+`c0ee5b48c069739806a154d5233b991a7effa316b97b683301dbb8a245823df6`;
+source manifest SHA-256
+`a9ba7f8e34808cc0ad770b7695a73cd1f6769b028355fc8b2f5712749689151a`).
+The locked AEAD convenience decrypt allocates a ciphertext copy before the
+current decoder copies namespace, key and value, leaving approximately one
+encrypted envelope plus two plaintext-sized buffers co-live on a point read.
+The offline allocator probe corroborates this pinned path and confirms the
+locked detached in-place AEAD core made no heap allocation for a valid or bad
+tag. The audit specifies a preadmitted zeroizing plaintext owner and checked
+framing/AAD workspace; it is not a compiled store cutover or an exact RSS
+bound. G02 plaintext ownership, caller migration and final qualification remain
+open.
+
+The revised registered tenant point-read candidate is also **HOLD and
+unapplied** (`target/g02-point-read-exact-charge/candidate.patch`, SHA-256
+`7dcee4da7fd2a32b3e7e1121370ef563ec82f3bb315735bb28cd3bbbeee4929c`;
+manifest SHA-256
+`2a7bb64597498a82bb98c540a0950d1562a841bf7d431e103214f9fc3022302e`;
+independent review SHA-256
+`36f3fe674d72a6f5fb829b86b8b902af5a388411a0168c511376f351ed11056b`).
+Its source-pinned overlay passes three focused production regressions,
+including zero-budget empty/missing values, 8 MiB headroom for missing/tiny
+reads and the current 32 MiB writer maximum; native credit and bounded-read
+checks, no-feature check, strict store Clippy and formatting also pass. The
+review confirms the exact registered reader is retained on begin/read/admission
+failures and retirement is explicit, but rejects application because the
+actual-length outer reservation still duplicates the native ciphertext
+`AdmittedValue` lease on the same installed provider. A present record can
+therefore be refused despite the sole ciphertext buffer already being funded.
+The review requires a native-lease-only point-row wrapper and a present-row
+capacity-boundary regression. Concurrent uncommitted changes to the registered
+reader's finish path were not in the overlay; no final-source validation or G02
+completion is claimed.
+
+The G01 initial-bootstrap write-once prototype is **HOLD and unapplied**
+(`target/g01-write-once-design/candidate.patch`, SHA-256
+`07b33bf270cd3123c450d77a5f8dcdb2c7f453573f3b2be130c5ade4b16057ca`;
+design SHA-256
+`10037823a2161746bd7b30921d99569680391e0b88b04ec8f7ef065f427ebff1`;
+independent review SHA-256
+`92b755a4daf4ff458cae0c67fd691ef15708566ef167db6733204061b9f9cfbd`).
+The review finds coherent store-facade first installation, exact retry,
+changed-byte/delete rejection and protected namespace retention under one
+native writer transaction. Existing engine, server and Raft adversarial
+fixtures still use now-forbidden public writes; the prototype's copied build
+has stale native KV inputs, and its small fixture does not prove installed
+memory peak for the largest retry. New bootstrap rows may also be appended
+after the manifest, although the current loader ignores undeclared chunks.
+Write-once enforcement alone does not fix the separate multi-snapshot engine
+open and server registration gap. G01 and G02 remain open.
+
+The G01 target-only write-once fixture migration matrix
+(`target/g01-write-once-fixture-migration/MIGRATION.md`, SHA-256
+`2d779bc7daf11236ba6369d4892be93b4f00363be79d3e6fa595ab7dcb5d3b18`)
+maps every identified Raft, engine and server test that would use a forbidden
+post-install write. A paired first-install Raft fixture passes two focused
+tests in an isolated candidate overlay; the server fresh-manifest overlay is
+unrun. Most invalid reads can be tested with malformed first-install rows.
+Orphaned or divergent bindings need an offline raw-KV fault helper after all
+owners drain, while the exact already-open tamper assertions need separate
+test-only coverage. No production or all-features injector was introduced;
+the prototype remains HOLD.
+
+The narrow G02 standalone named-file API deletion is applied on the mandated
+`master` checkout from `target/g02-named-reopen-rebased/candidate.patch`
+(SHA-256 `2e31c8443005f05118138001a414b94cbd4b2d43817ccc61d79314e4cd725942`;
+mixed-preimage manifest SHA-256
+`60217fbface6d1c57c44304ccb73caf7666a95ba4bce4138752f1ad1ff6174c7`;
+independent original-candidate review SHA-256
+`8c5f1dfd8889ee1f35398232b6e69ad04d7c2c74cf77464631aa0643b21f2721`).
+The rebase preserves concurrent comment/format edits and has the reviewed
+candidate's exact three postimage hashes. It removes public path-based
+`FileBackend::open_existing` and `NamedFileIdentity`; installed store callers
+continue to use their separate `NodeDiskFile` envelope. The live applied-source
+native KV suite passes **45/45 unit and 7/7 crash/recovery tests**
+(`target/g02-named-reopen-applied-validation/native-kv-suite.log`, SHA-256
+`8658bc608097eec18802d3cb50531e19fe9f0b50c54e7ce75202046bbe62aaea`,
+exit 0). Its selected six-path pre-run source manifest SHA-256 is
+`e5cc12a0f5e3fcba6b47ed96fd83fd7951da646e2d5d9b06bc911b8fb32fba1e`,
+with zero path drift through the suite and strict all-target/all-feature KV
+Clippy (`strict-clippy.log`, SHA-256
+`0d97c71ffce8cb73df490b25c3a20b723cb907c37387431b2ea9df2f8c75ca40`,
+exit 0); KV formatting and `git diff --check` pass. `create_new(path)` and
+caller-supplied `from_file(File)` still need the complete adversarial
+namespace-owner contract, so G02 and the first release remain open.
+
+The reviewed G02 native-lease-only registered tenant point-read prerequisite
+is applied on the mandated `master` checkout from
+`target/g02-point-read-native-only/candidate.patch` (SHA-256
+`bef2c6a235cdaf471dc4615621c890fa9e477789aa09238e5bcc329eab2f48fa`;
+manifest SHA-256
+`dcc4ef3e80a1ab4ca0a779af7668bd8207cff727b11fc5a4df7fe472ef12adb7`;
+independent review SHA-256
+`db7de528898be655c3937471b2ab64467c86bde8bc56c63f807ba322d548bfb3`).
+The applied three-file patch preserves the concurrent registered-reader finish
+and test changes: exact postimage hashes are store `lib.rs`
+`6715eed9b17ca98276eb764da6399789cec72df0f2ce8ff23546c09edd2e5da8`,
+`storage_opening/reads.rs`
+`27f9cac5380c93dbc68577965175fdf34ecea06f2577168a0b1a252b343001a6`,
+and `storage_opening_tests.rs`
+`6ddb9719ac0ffcee48ada273c6c6b350bd5b494fd433cf224c4cb328029cd0db`.
+The applied-source serial store library passes **440 tests, two ignored, zero
+failed** (`target/g02-point-read-native-only-applied-validation/store-lib.log`,
+SHA-256 `7dbfee5f1402cea490ddeb0f3912bdddd957dff943167b9cf850c9602ca4da5e`,
+exit 0). The same selected 95 tracked-source manifest SHA-256
+`103cd9993f4c758cff53a4cfb95953fa9dfbd8a7f6e47dc0fce02b23b0fa0b09`
+is byte-identical before the suite, after the suite, and after strict
+all-target/all-feature store Clippy (`strict-clippy.log`, SHA-256
+`ecb8a4838d3ffbb82b1409955340186fb516e8dbb2d73c2780f40f419d36459b`,
+exit 0) and no-default-features check (`no-feature-check.log`, SHA-256
+`6cc6d3cb625672758021105692de561c43c9b7e7593ecb27525381675d440fc0`,
+exit 0); package formatting and `git diff --check` pass. The present-row
+headroom regression demonstrates a single native ciphertext lease without the
+former duplicate outer charge, while failed and cancelled reads retain their
+exact registered child. `test-utils` still exposes a separate fixture-only
+direct read path when built with that feature. The current decrypt/parser and
+returned plaintext remain outside installed resident admission, so G02 and
+the first release remain open.
+
+The next G02 native KV API cut is applied from
+`target/g02-filebackend-boundary/candidate.patch` (SHA-256
+`f53b5d877e6ff4b4a363390ac96a8e4341f9b9670b7c2806747bf3861a7abdcb`;
+manifest SHA-256
+`833ed13687ce40bfc9eca442d280b0f5c4eff31569e2a04369853f662b0424bd`;
+independent review SHA-256
+`cb535498f7023db957dc7162d974668709967e9cc55c0b4fcf0827440c5ed8f7`).
+Four guarded postimages match the reviewed candidate exactly. It removes
+public `FileBackend`, `FileBackendOpenError`, and `Builder::create_file`; the
+native file backend exists only as a private `#[cfg(test)]` fixture, with no
+release or all-features compatibility shim. An external all-features negative
+compile probe confirms the deleted APIs are inaccessible. The applied-source
+native KV suite passes **45 unit and seven crash/recovery tests**
+(`target/g02-filebackend-applied-validation/native-kv-all-features.log`, SHA-256
+`19f16bfe3a96eda265e900c088283c2efba822c2abc478f24505ccad2e50be30`,
+exit 0); strict native KV Clippy (`strict-kv-clippy.log`, SHA-256
+`9675d6b654199bb7348549b08869f0fad83d9496526ab65b8b64c8ce16aa83b0`,
+exit 0), formatting and the downstream store no-default-features check
+(`store-no-feature-check.log`, SHA-256
+`e8b3348c0c4f0b36c02e218f874663b878cdd52600c49e63d9b1f5c58eba3457`,
+exit 0) pass on the selected source with no drift at the time of these runs.
+The public `StorageBackend` interface still delegates exact private-root,
+parent, inode, link, durability and close proof to its embedding owner. G02
+namespace custody is not complete.
+
+The first live store unit-test attempt after that API cut **failed to compile**
+because `crates/kasumi-store/src/node_file/tests.rs` still called the deleted
+`Builder::create_file` (`target/g02-filebackend-applied-validation/store-point-headroom.log`,
+SHA-256 `4e9bf648a5fb9b67fa026eccb569fcf84a4425d0c42930ea901995a8e36369fa`,
+exit 101). A concurrent test-only `RawFileBackend` migration removed that
+caller, but initially reported native drain after `drop(File)` without observing
+the close result. The correction is applied from
+`target/g02-raw-fixture-custody/candidate.patch` (SHA-256
+`753b2f6b51d06f5094da47c99fbaf8a79fe596e64ca9a45203dc72e783f61079`;
+manifest SHA-256
+`915682e4380c319c8a08759c8b51089e7013728ed336987f4e2d77ce600c46d0`).
+Its live test-file postimage SHA-256 is
+`441097228b45cf27fede777ca569fd72bf0e1b8d7e9be84b316fd737f2cd6fe9`.
+Clean raw native-format fixture callers now explicitly close, while the crash
+child still exits without close. The applied-source node-file suite passes
+**21 cases, one ignored subprocess helper**
+(`target/g02-raw-fixture-applied-validation/node-file-tests.log`, SHA-256
+`2835eb606a2ebd0d4491bc16ea6742ca2d91a3fd9aebd074e101df7a29e6d1a6`,
+exit 0); strict all-target/all-feature store Clippy (`strict-store-clippy.log`,
+SHA-256 `c2ec84dbf34c6029ee19371afda448452805c1019f0971790c41d5fe4a2516eb`,
+exit 0), formatting and `git diff --check` pass. The selected 95 tracked-input
+manifest SHA-256 `5961582f37447df68f8ee5af161335fcb1d8ad0b21668646d12b17bb7a770d0a`
+is byte-identical before and after those applied checks. The corrected fixture
+is test-only and does not satisfy production namespace custody.
+
+The independently reviewed G02 routine registered-read retirement cut is now
+applied on `master` from `target/g02-routine-read-retirement/candidate.patch`
+(SHA-256 `0a0cc8d0457970652e3adad510deb19b94d1bb9a5515fdc2efb75cc904bfc0d1`;
+manifest `f6cdc7caf7e4b09a4b49547db3ac0dc7173845ca91059a98e05800e730d35da8`;
+independent review `6c2398aca396208bc12b3eb2e63913c540288ba1dd0edf0a4193048fd988bca7`;
+application receipt `736db6836b703ad66fbae236afbcd86fdf98a0c7b8fcf67d045777d1bd962219`).
+All five selected preimages and postimages matched the reviewed manifest.
+Dropping a typed recoverable bound, capacity or output-reservation failure now
+retires its registered read; while the facade is retained, its failure report
+remains available. Unknown I/O, panic and uncertain disposal still retain
+custody. The patch covers retained-facade reconstitution, parent-lock and
+post-close races, and a child-census metadata-skip retry.
+
+The applied-source serial store library passed **448 cases, two ignored, zero
+failed** (`target/g02-routine-read-applied-validation/store-lib.log`, SHA-256
+`316df8a78b526480fb16858fc7b14e6873623ae2e498384c5cf6fe38c1c3b485`).
+The engine oversized-manifest regression passed (`engine-oversized-manifest.log`, SHA-256
+`8d36799e13cdaef88542312dea852ce291c0b883a9db19fd8017eba80cc482d3`),
+as did strict all-target/all-feature store Clippy (`strict-store-clippy.log`,
+SHA-256 `f71fbfaa4b98d204273d62b8692a0e490b80fe8837aef68b16a423507b49b90a`),
+store no-default-features check (`store-no-feature.log`, SHA-256
+`4d796a859a2619e16120216e92ec7cad0e2e9e2dd60d2f2f7bd96d83ba4b5a79`),
+formatting and `git diff --check`. The validation receipt SHA-256 is
+`ded11588b88104a7e058285f3ce730105bd4017802c99e9eebeb747918669751`.
+Its 573-input source pin (`source-before.json`, SHA-256
+`ae9720849247940bbd592ec6d9f29155ee6536ff6eb95d93c4fedb152e312ad8`)
+recorded concurrent drift in five server files during these runs, but none in
+the store or engine inputs. It is therefore component evidence, not a frozen
+workspace gate. A broader exact-parent child-census completion gap is recorded
+in `target/g02-routine-read-retirement-independent-review/BROADER-CENSUS-NOTE.md`
+(SHA-256 `fc3d69975f3f5d5c5bdf039e8088b49183cd8a8e36b364aa5e5fd562f3774ed3`)
+and is addressed by the subsequent guarded cut below. Other G02 release
+criteria remain open.
+
+The reviewed G02 exact-child census completion cut is now applied on `master`
+from `target/g02-child-census-completion/candidate.patch` (SHA-256
+`e6d49a061a93d1978df20a6ef52af20eeb970caef414b1cba3880ddb1f19e53a`;
+manifest `bc17bcdb756f553fe74dbd642a81e8edaf0e05ec491468612cf41fb63802b834`;
+independent review `e413e6f506fdedceddd3658b423c5c13e6a5b7687717c412478f15333cd60cbe`;
+application receipt `6ced0859f02a5bcf44149c683871bf813ce52f00820f3ba6a0216fa4f9631fea`).
+All four selected preimages and postimages matched the reviewed manifest.
+Registered readers and table writers now retain an exact parent-generation
+child count until their census cell and lease retire; a parent-only retry can
+advance disposed children despite losing their typed facades. The deterministic
+contention regression passes, while omitting only the child link reproduces
+premature parent completion.
+
+The applied-source serial store library passes **451 cases, two ignored, zero
+failed** (`target/g02-child-census-applied-validation/store-lib.log`, SHA-256
+`b4cfa698530c7a0de6c9b7abfd58f4764df8423036d662e763228fd00540eabe`).
+Strict all-target/all-feature store Clippy (`strict-store-clippy.log`, SHA-256
+`f0290255eeb897c1cfd79de7d7ed6d44e4f77b2c27e09c1f5f584d5e21a7c5cf`),
+no-default-features check (`store-no-feature.log`, SHA-256
+`45f2f5017ace72f0dae98daf6af71488693f793effc0342a39a1e44f1f152ae5`),
+formatting and `git diff --check` pass. The 1,223-input source pin is
+`target/g02-child-census-applied-validation/source-before.json` (SHA-256
+`77d2ff3f331d2a2e787661198c2f6012e375b565b1c21bc1c3b88ef8f2d0315d`);
+only four engine/server files drifted during validation, none in the store or
+its dependencies. The applied validation receipt SHA-256 is
+`a1c414c018dc57cf3dc2b49bc284572f76972daa165bb9693a81210d82498cb7`.
+The target-only final-source parallel run aborted with an I/O safety violation
+during node-disk tests and remains failed evidence; the final-source serial
+run passed. This is component evidence, not a frozen workspace or G02 pass.
+
+The later G11 current-`master` Python checkpoint passes **191/191** complete
+repository tests under bundled Python 3.12.14, with 38 `scripts/*.py` files
+unchanged across the run. The full log SHA-256 is
+`9418c26a61afab17a17e16563bd85dbf0299bab37bc8cdcda981fa8977d053ea`;
+the source manifest SHA-256 is
+`bf584a44babbbb7d6b0c779e11403a40608f829be49f303d07343dc95ed01fe2`.
+`target/g11-python-current-validation/README.md` records the command and
+scope. Other source edits were concurrent, and this does not qualify native
+assembly, external attempt lineage or final acceptance.
+
+The target-only G03 native generation candidate is
+`target/g03-native-generation-slice/candidate.patch` (SHA-256
+`d7258d99af37fb8bd8502df054a6c31fffd6634c1443be5ee3bf655dd35274d7`;
+manifest SHA-256 `7bb832de2f24391dc81d6f7fdd941fb8c91ab12f7fe85285aeeced25197d3b12`).
+Independent review at `target/g03-native-generation-independent-review/REVIEW.md`
+(SHA-256 `7d19a5d5636c7dc2253c63dc28ecb9427e96750cab875626c7f9f53ffc4a2874`)
+replayed all four exact pre/postimages and keeps the patch **HOLD** for live
+product exposure. Its six focused generation and 51 full native KV library
+tests pass, as do strict KV Clippy, no-feature/downstream store checks and
+formatting. Source authority, paired Raft publication and reclaim remain open;
+this is neither a G03 pass nor native release evidence.
+
+The G02 raw transaction child audit is a target-only **HOLD**, with an
+intentionally empty patch, not an applied fix. Its source-pinned bundle is
+`target/g02-raw-transaction-children/README.md` (SHA-256
+`9fdb3469ff39beac4960f8094bb3113558f457c77ca628a3ceaff42adfbcc7b7`);
+the 20-file manifest SHA-256 is
+`5eb67ece17c6380cb21292a4188d8802d604bf733b74c74a731c02fe95483138`.
+The 41 existing registered-opening and four native retained tests pass, as
+does strict store Clippy. This audit supplies no G02 release qualification.
+
+The successor native retained-read guard cut is applied on `master` from
+`target/g02-kv-retained-read-guards/candidate.patch` (SHA-256
+`1076bea67baf6132ae94a67a2265cee7ff00a21963f2fee845725374d184c9a4`;
+post-manifest SHA-256
+`9e494a6428f59f2e5fce83b3b9a3fb1e51649ea483774565c266c08dcf0f7705`).
+Both selected observed preimages and applied postimages matched. Its baseline
+negative control returned `Settled` with held snapshot descendants; the fixed
+control observes `WaitingForGuards` through table, range and output guards,
+and proves exact-reader disposal and same-file restart. The applied-source KV
+suite passes **48 unit and seven crash/recovery cases** (`applied-master-tests.txt`,
+SHA-256 `fdb025f08fd7b9f82e04ec13cb31449420a45582068f1ff204e941deb3a0cbec`),
+strict all-target/all-feature KV Clippy passes (`applied-master-clippy.txt`,
+SHA-256 `3d2b8858d79eafcd4f7670e6f72aa9514a8e150fc85101e15b05aa514610d400`),
+and formatting and `git diff --check` pass. Store transaction-child adoption,
+write settlement, scratch ownership and release qualification remain open.
+
+The G02 engine point-owner continuation remains target-only **HOLD** at
+`target/g02-engine-point-owner/engine.patch` (SHA-256
+`2c60e7b63ced611fa2fc2d45254bbc9c00a24724793b9fc241df6f6a5a693a70`;
+manifest `9aa6fcbca0a0203eca46c023c28379464860d7031928fe0415788ccf7011cefc`).
+Its 16 preimages and replayed postimages match; it composes with the frozen
+store+Raft point-owner prerequisite and the separate seven-file authority
+library migration. The composed engine library diagnostic count fell from 59
+to two. Both are unresolved owner handoffs: pending tenant audit commands
+still feed a `Vec<u8>` Raft write, and pending service audit ciphertext still
+feeds `PreparedAuditSegment.ciphertext: Vec<u8>`. Library check, strict Clippy
+and focused test attempts stop at those two type errors; they are **not**
+passing test evidence. Formatting passes. G01 bootstrap changes must also be
+rebased before any point-owner cutover can reach `master`.
+The separate service-audit type probe at
+`target/g02-service-audit-owned-segment/README.md` (SHA-256
+`69695059a9c7b6ec75cee62ac7e26af911400cb78e8d8dc94830bce60ce76d17`)
+is intentionally unbuildable: replacing the Vec segment field with a checked
+fresh/admitted owner exposes 13 store-library diagnostics before engine
+compilation. Filesystem and S3 publication, batch-write copies and terminal
+child custody need one vertical cut. Its failed log and three exact pre/post
+images are pinned in `manifest.json` (SHA-256
+`b4666451a0ff633054ba761ef5fa6c7607022c78aeb8b78cfba11527fe733623`).
+
+The 20-file G01 atomic Raft-identity guard is now applied on this `master`
+checkout from `target/g01-raft-identity-guard/candidate.patch` (SHA-256
+`504108086b74707199a597863ca7977cefdcd4efebabd57fcff2d350defb50f9`;
+frozen manifest SHA-256
+`664bae3504233b200505441efb5634e66a6d9a18bc7fe436e38434ebff1520ee`).
+Before application, all 20 live preimages matched; an independent Unix patch
+replay and the immediate applied source pin matched all 20 postimages. The
+guard requires manifest, digest, node and group at first publication in one
+native transaction, rejects ordinary writes/deletes and protected namespace
+replacement, and removes Raft's missing-row fallback. Applied-source focused
+tests pass **16/16 store, 15/15 Raft control, 15/15 engine reopen and three
+server cases at 1/1 each**. Strict all-target/all-feature Clippy for the four
+affected crates, no-default-feature check, formatting and `git diff --check`
+pass. Exact log hashes and the 618-file source pins are in
+`target/g01-applied-validation/receipt.json` (SHA-256
+`84c307df06f8e488a78717fa55df21580790fa9724c5dc296a32da5a4b49f22a`).
+One concurrent test-only server edit is pinned between the first and server
+source manifests; later changes to `rpc_target.rs` and `target_runtime.rs`
+occurred after the strict check. This is narrow component evidence, not a
+frozen final-source workspace pass. G01 physical-fault and transport proof and
+G02 registered read-view/plaintext custody remain open.
+
+The two-file G01 authenticated physical-generation fault fixture is also
+applied on `master` from `target/g01-offline-identity-faults/candidate.patch`
+(SHA-256 `fe99f9bd87d2faba9536133ab6e74c380895d69c8108d9d507a4327c58bde874`;
+manifest SHA-256
+`371849eeb2c6c67f7f314573d90f27852c690931632419c9054167f2503e8705`).
+Both exact preimages, independent patch replay and applied postimages matched.
+The test-only native injector stages a coherent authenticated B descriptor,
+bootstrap image, digest and Raft pair below the public write facade. A pinned
+view keeps A, a fresh view sees B, and full-close reopen rejects A and accepts
+B. Three one-sided node, group and digest faults retain pinned A and reject
+reopen. The applied replicated reopen module passes **11/11**; the store
+physical-view test passes **1/1**. Applied engine strict Clippy, formatting and
+`git diff --check` pass with no source drift across this cohort. Exact source
+and log hashes are in `target/g01-offline-applied-validation/receipt.json`
+(SHA-256 `a366ba051df2f25c2a92161446726206503b6d088f961a263796f84938ec6a6d`).
+This is not a stopped-process raw-file substitution, power-loss proof or
+coherent rollback-resistance result. Full G01 remains open.
+
+The separate G01 stopped-process raw-file characterization is applied on
+`master` from `target/g01-cold-file-substitution/candidate.patch` (SHA-256
+`d751fed438297c42f41989d590217b074e27502ea7fb6de7bf8dd5a62cb578e6`;
+manifest SHA-256 `c2ebdf57263dbba385d124d411a8dcbd0eb455aa5255cc1b98fc31755efb66ac`).
+Both preimages, independent Unix replay and applied postimages matched. Four
+separate OS children seed A, install and serve B, then cold-open after the
+parent restores the saved A `node.kv` bytes while no child is alive. The final
+child rejects an expected B binding but successfully validates and reopens A.
+The applied focused test passes **1/1**; three unrelated engine/server files
+changed during that source-pinned cohort, recorded in
+`target/g01-cold-applied-validation/receipt.json` (SHA-256
+`4a9c62698ad9f20e11bea44096bfcc5dcda4d2d2f590d0b0f3a9a4ebc5a31961`).
+The target-only analysis in `target/g01-cold-file-substitution/ANTI_ROLLBACK.md`
+explains why an internally valid old file cannot be detected without an
+independent monotonic anchor or an explicit installation-storage trust
+assumption. The first-release interpretation has been asked of the user;
+neither rollback rejection nor power-loss durability is claimed here.
+
+The G01 Control-genesis test correction is applied from
+`target/g01-control-genesis-candidate/candidate.patch` (SHA-256
+`b385ae75800e0c3c67563df8fdb271fa2dae76f7c9c626c7e1ff8940c764b377`;
+manifest SHA-256 `da797280c05ce24dd6b56c53f1799b7d114f68165436571f860662250b1f0781`).
+Its one preimage, independent replay and applied postimage matched. Partial
+genesis now expects the atomically published node/group pair, and the
+rejected-reopen digest covers every Raft namespace. The old assertion failed
+alone, while the corrected target-only case and serial bootstrap suite passed.
+On applied `master`, the complete bootstrap module passes **25/25** against a
+stable 621-file pin. Strict all-target/all-feature engine Clippy, package
+formatting and the new Control-enrollment case **1/1** also pass. Two initial
+applied builds and the first strict Clippy run exposed separate concurrent
+Control-genesis/enrollment edits: a missing `schema` import, parent-only
+`prepare_collection` visibility, and a test initializer warning. Their exact
+failed logs and narrow source fixes are preserved in
+`target/g01-control-applied-validation/receipt.json` (SHA-256
+`0ab1e27e48fd107ac3eefdd164550270ec89c442fbf56545567c07dd0aad9018`).
+This repairs the fixture and concurrent compilation, not G01 release acceptance.
+
+The G02 registered-read adoption and scoped-panic correction are applied on
+`master` from `target/g02-registered-read-adoption-panic-revised/registered-read-adoption.patch`
+(SHA-256 `fff077996e9d722d0914a196dffc666a125c2c1a82077afa1943f12f6b53d4ac`).
+All 11 live preimages, independent Unix replay and immediate applied
+postimages matched. The pre-fix panic negative control failed as expected;
+the repaired scoped panic and view-unwind controls passed in the candidate.
+Installed-node paired deployment, catalog, tenant scan and long-lived view
+reads now use registered native children. Applied-source KV tests pass **49
+unit and seven crash/recovery**, the serial store library passes **462** with
+two ignored, and the replicated engine reopen module passes **11/11**.
+Strict KV/store Clippy, affected-package formatting and `git diff --check`
+pass. The workspace format check failed on a concurrent unrelated engine
+fixture edit; its log is preserved. A later redundant explicit import in the
+new read-scope file means 10 of 11 current postimages still match the frozen
+candidate exactly; the import and three unrelated source changes are pinned
+in `target/g02-read-applied-validation/receipt.json` (SHA-256
+`812051bd0307c9a94d274c6b4a9016931a4b92a6e2d505c5fb128c31dd9718d3`).
+The 619-file engine precompile and post-test source pins agree. This is a
+narrow read-child prerequisite, not full G02 acceptance: raw write and scratch
+children, exact view-error report custody, admitted plaintext outputs and the
+Raft/audit owner migration remain open.
+
+The G02 registered catalog-write child is applied on `master` from
+`target/g02-registered-catalog-write/registered-catalog-write.patch` (SHA-256
+`98dc2b71a7a599b9f9b824018654dc6dbe21dc37d111aa69d42163958a1f90bf`;
+manifest SHA-256 `d10f3000d269241f5666b81a53605efb636b41cefe6a40993f1b78d7cfe4555f`).
+All five live preimages, independent Unix replay and immediate applied
+postimages matched. The production `NodeStore::save_catalog` path now admits
+its serialized catalog, registers an exact write child before native begin,
+and settles the child through commit, abort or disposal with its original
+native report. Applied-source focused cases pass **3/3** and the serial store
+library passes **465** with two ignored. Strict store Clippy, package
+formatting, no-default-features library check and `git diff --check` pass; the
+no-default check reports one fixture-only dead-code warning. One unrelated
+server file changed during the full run, while the store source stayed pinned.
+The complete receipt is `target/g02-catalog-write-applied-validation/receipt.json`
+(SHA-256 `eefefa648696776738b9708c11d878b83d8cd08459156719e8c82a2963b21e61`).
+Other raw writes, scratch transactions, typed catalog allocations, plaintext
+outputs and the Raft/audit owner frontier keep G02 open.
+
+The five-file G02 long-lived view report fix is applied from
+`target/g02-long-view-report/candidate.patch` (SHA-256
+`ba76779c331e42da6c63bcd9504b074be7b4e527e8c54f24ca22aede37592eef`;
+manifest SHA-256 `38c62078b910556953be0b8ce18ddd36e1f98fbee5375eafe725c59a1a19ba1a`).
+Five live preimages, composed postimages and independent Unix replay matched;
+both applied focused tests pass. A routine native bound failure now returns
+`NodeScopedReadFailure` with the exact registered reader and original report
+after its long-lived view drops. The first full applied store run passed **467**
+with two ignored, but native KV core changed after its binary was built; that
+drift is explicit in `target/g02-long-view-applied-validation/receipt.json`
+(SHA-256 `3b654ac36e41f25032cfef7be8aac9fe5d7d74a06ae6f3e2df4be9e150766cd9`).
+The later stable combined source passed **470** with two ignored, as recorded
+in the typed-catalog receipt below.
+
+The nine-file typed key-catalog read/open allocation cut is applied from
+`target/g02-catalog-typed-post-view-20260924/candidate.patch` (SHA-256
+`165c3767c9608f3689cde6618105db1af43431b62696144d8f63e1474fbe2bd9`;
+manifest SHA-256 `0dae0e8bf783ab3dfa8409607687f47717cc7d20711d31def26c7e0b9f3cc281`).
+Its preimages, postimages, six dependencies, six logs and independent Unix
+replay matched. A structural pass bounds the key map before typed Serde
+allocation; an installed-memory lease follows the decoded catalog through
+read close and existing-store open. The unchanged-source lease-lifetime
+negative control failed as expected. On stable selected applied store/KV
+source, the serial store library passed **470** with two ignored, native KV
+passed **50 unit and seven crash/recovery** tests, and strict store Clippy,
+package format, no-default-features library check and `git diff --check`
+passed. The no-default check had one fixture-only dead-code warning, corrected
+in the later binding integration. Exact logs and 93 selected source pins are
+in `target/g02-typed-applied-validation/receipt.json` (SHA-256
+`de9d05dce51afaff6fdb4607be0c65163e366c7c8e2bf9a76bb763de643dc720`).
+At that checkpoint the lease did not cover `refresh_lease` catalog clones or
+later catalog growth; G02 remains open.
+
+The seven-file G02 installed missing-binding write cut is applied from
+`target/g02-registered-binding-install/registered-binding-install.patch`
+(SHA-256 `9412f65bada3ca99baf7d1003fa58c181f524d16c9323c370e8dd80da334f9d6`;
+manifest SHA-256 `ec5ae9657bbc52a5a2840244086af19929a0b3129222ebf6d04f1dc558f3ea0a`).
+All seven preimages, overlay and independent replay postimages, log hashes and
+immediate applied postimages matched. The installed path admits serialized
+binding and encrypted envelope buffers before registering its exact writer
+child and native transaction. Four applied controls cover success, pre-effect
+admission refusal, native commit refusal without replay, and post-commit
+access-report retention after facade drop. The prior direct catalog fixture
+reader was then limited to test builds with a one-line `cfg`, clearing its
+production no-default-features warning. Other raw writes remain open.
+
+The one-file native KV key-only tombstone prerequisite is applied from
+`target/g03-key-only-delete-20260924/candidate.patch` (SHA-256
+`c661d7910d3549f1050755355824fe8b161f9aba927d61a5ecf0cc75d00aad66`;
+manifest SHA-256 `4b20a05cafd217b9241d401f12b2ff6ce0f053dff058c67e044707f63e7056d0`).
+Its preimage, postimage and independent replay matched. The unchanged-source
+negative control fails to delete an 8 MiB old value under a 4 KiB workspace
+ceiling; `Table::delete_key` stages a tombstone without reading that value.
+Focused controls cover headroom, old pinned snapshots, pre-effect refusal,
+ordering and crash replay. At that checkpoint the production store delete
+caller still required cutover; G03 generation reclamation remains **HOLD**.
+
+On the combined applied `master` source, native KV passes **54 unit and seven
+crash/recovery** tests, the serial store library passes **474** with two
+ignored, strict all-target/all-feature KV/store Clippy, no-default-features
+checks, workspace formatting and `git diff --check` pass. The selected 96-file
+store/KV source pin is unchanged across these checks. Exact patches, the
+one-line fixture `cfg` follow-up and logs are in
+`target/g02-g03-combined-validation/receipt.json` (SHA-256
+`6be54b3fc5cc0ab59b5139e8e8d86d31da91ba709c1d56bf050a5db060b336c3`).
+These are component results, not final-source release acceptance.
+The first cross-crate replicated engine check on this source then failed **2/3**
+cases at `BindingInstallWriteFailure` while installing paired custody in an
+already active node. The exact failure log and unchanged selected store/KV
+source are pinned in
+`target/g02-g03-combined-validation/engine-replicated-failure.json`
+(SHA-256 `1f85df19af7f393c52d6d5ff157b0f40b80480cd5ab32ac6e498df2180620a86`).
+The original writer report was subsequently recovered: native Commit was
+settled and successful, while disposal was never entered because a transient
+opening-state `try_lock` failed. The failed attempt remains part of the record.
+
+The four-file G02 settled-writer disposal repair is applied from
+`target/g02-binding-engine-regression/candidate.patch` (SHA-256
+`0b9b789da01d69671da77e25167cfff9ac86dbe21226c964d53c10ad7171c0f7`;
+manifest SHA-256 `e061ca65719055b8d42380241091e25ccb94cb87cbcca3db5552afa57f941119`).
+All four live preimages, independent Unix replay and immediate postimages
+matched. A separate deterministic negative control
+(`target/g02-binding-report-diagnostic-20260924/negative-control.patch`,
+SHA-256 `69234561a44b568986300b095153cd6e87d1a9c9d33959ee9b8cb77937d56e77`)
+reproduces the successful-commit/unentered-disposal gap. The fix waits for
+the opening-state witness only after a settled native terminal, releases the
+opening lock before native writer admission, and leaves failed terminals and
+census drain nonblocking. The independent lock-order review is preserved in
+`target/g02-binding-report-diagnostic-20260924/INDEPENDENT_REVIEW.md`.
+Focused binding and opening suites pass **6/6** and **66/66**; the exact serial
+replicated engine suite that failed before passes **3/3** on applied source.
+
+The G03 production store delete caller is applied from
+`target/g03-store-key-delete-20260924/candidate.patch` (SHA-256
+`35fc43d0beabf9b5b6ce0f6bb1fc6f43f35699419b407acf6e601737eb0bdf5e`).
+An old-source control fails when deleting an 8 MiB ciphertext under 4 MiB
+headroom; the new caller stages a key-only tombstone and its test verifies a
+pinned old view plus durable absence after reopen. The G02 refresh clone and
+rotation/rewrap clone cuts are applied from
+`target/g02-catalog-refresh-clone-20260924/candidate.patch` (SHA-256
+`d9cf960260797cea2f4fdc6e8a3108a169b1949837c100ad134200e1f3498ed0`)
+and `target/g02-catalog-mutation-clones-20260924/candidate-on-refresh.patch`
+(SHA-256 `933099cdbc4fc1d200a2815101eda8a9c7c4ca75a68a43aa3e963327bb429801`).
+Their low-headroom controls reject before the independent catalog clone;
+rotation and rewrap transfer its lease into the resident catalog. The three
+patches replay together with four exact combined postimages in
+`target/g02-g03-next-combined-review/manifest.json` (SHA-256
+`9d4037546a6c7af0b841234bca36a3ed2b58a7d395b41f52ebcd18a083a9dd44`).
+
+On the stable combined applied `master` source, the serial store library
+passes **479** with two ignored and the serial replicated engine suite passes
+**3/3**. Strict all-target/all-feature KV/store Clippy, no-default-features
+library checks, workspace formatting and `git diff --check` pass. The
+eight-file source pin, patch and log hashes, including the earlier failed
+engine attempt, are in `target/g02-binding-applied-validation/receipt.json`
+(SHA-256 `ee380a2223e117dae226eb9bb93df8f1067efc4aef34d765a6423eae9fa84839`).
+These are development checkpoints. Other raw and scratch transactions,
+provider/backup/plaintext allocations, generation publication/reclamation
+and all final release gates remain open.
+
+The next applied G02 backup cut admits the catalog cloned by
+`TenantStore::encrypt_backup_with_id` before cloning and retains its lease in
+`EncryptedBackup` through encryption and object lifetime. Its three-file
+candidate is `target/g02-backup-catalog-clone-20260924/candidate-on-mutation.patch`
+(SHA-256 `142b26f9cbfe8c21df0e95410942b74639fde3d4fd637716d323a416a4acfb51`);
+the old-source low-headroom control rejects the previous uncharged clone.
+Exact preimages, independent replay, postimages and candidate logs matched
+before application. On the applied source the full serial store library passes
+**480** runnable cases with two ignored; strict KV/store Clippy, no-default
+library checks, formatting and `git diff --check` pass. The subsequent serial
+engine backup-checkpoint suite fails **1/12** at a post-reopen resident-memory
+assertion: the reopened application and custody stores retain 253,104 more
+bytes than the old fixture expected. Its earlier pre-reopen assertion passes.
+The complete failed run is retained in
+`target/g02-backup-applied-validation/engine-backup-replicated.log` (SHA-256
+`a681234f88a6767475fd4477b38a2c7fcc21251452308c355300f729b7eb97d9`).
+The applied source, patch and validation hashes are frozen in
+`target/g02-backup-applied-validation/receipt.json` (SHA-256
+`f2449f84d64fd8f390317a715075a89814a9c7bc89310eeae502db8391718811`).
+The charge lifecycle is under a separate exact-source diagnostic; no engine
+qualification is claimed yet. Parsed backup manifests, ciphertext copies,
+provider allocations and other G02 paths remain open.
+
+The diagnostic proves the 253,104-byte reopen difference is two retained
+catalog leases: application 122,264 typed bytes plus 4,120 lease bytes, and
+custody 122,600 plus 4,120. Each adds exactly one live reservation and both
+release after the reopened owner drops. The one-file test correction is applied
+from `target/g02-reopen-charge-fixture/candidate.patch` (SHA-256
+`fb80d28ce2b562ced194907a80c1fa1a4d3e09e096555eb9cc3ebdd2d6e4b131`;
+manifest SHA-256 `8395247da609f92ed9d64fcd2610eda93e8835348ec249be37a8fb06240e63f2`).
+Its live preimage, independent replay and exact postimage match. The focused
+applied-source restore case passes **1/1**, and formatting/diff checks pass.
+The complete applied-source serial engine rerun passes **12/12** backup
+checkpoint and **3/3** replicated cases. Strict all-target/all-feature engine
+Clippy passes, alongside the store/KV checks above. The exact post-fixture
+source, patch, manifest and log hashes are in
+`target/g02-backup-applied-validation/receipt-after-fixture.json` (SHA-256
+`d8aebfa4fb88b287bc2f94020867fc746c65a35725f2a0e918df1e34b66a3910`).
+The original failed log remains preserved; these are component results, not
+G02 or release acceptance.
+
+A target-only nine-file G02 backup parse/related-clone candidate is **HOLD** at
+`target/g02-backup-ownership-20260924/candidate.patch` (SHA-256
+`ebc10bb5e4a28b99db10981fd2a92c02372167e40263c0352038a4a7e5655cf4`;
+manifest SHA-256 `ad78ba878010a5911f6a1612efc58e263cb275e58eeff48f676c073531e4a111`).
+Its unchanged-source low-headroom control fails as expected; the overlay's
+backup tests pass **45/45** with one external MinIO case ignored, strict
+store/engine Clippy and no-default checks pass, and the engine chunked history
+case passes **1/1**. The public arbitrary memory-governor parameter can admit
+a parse on a different owner from the target store, so this API is not applied.
+The ciphertext and canonical-header copies are also outside its typed charge;
+a target-store-bound successor is recorded below.
+
+The nine-file exact-owner successor is applied on `master` from
+`target/g02-backup-exact-owner-20260924/candidate.patch` (SHA-256
+`74ebdf02ce9a4379778cc6ab3b36b1806c011a92bbfb043a151763659d111ab4`;
+manifest SHA-256 `4228fdaa59cc24cd60ffb5c07a295c45f53c367fce5cef7512dd7bb05388fb23`).
+All nine live preimages, independent replay postimages and nine candidate log
+hashes matched. `EncryptedBackup::from_bytes` derives typed manifest admission
+from the exact target `TenantStore`; decrypt rejects a foreign memory owner
+before provider or plaintext work. Session verification retains its exact
+store owner. Its overlay backup-filtered store suite passes **45/45** with one
+external MinIO test ignored, engine chunked history passes **1/1**, and strict
+store/engine Clippy, no-default checks and formatting pass. The focused
+applied-source low-headroom/foreign-owner case passes **1/1**. Ciphertext and
+canonical serialization copies and other G02 allocations remain open.
+
+The seven-file registered singleton catalog create cut is also applied from
+`target/g02-singleton-create-writer-20260924/candidate.patch` (SHA-256
+`6b95ea0a5cc348f96d875c705f56432bed5c6265bc17ffca36d5f8ad2bb87b76`;
+source-lock SHA-256 `bd6fa210ef8417c85e4451fb9af24498d7459ec6ecbf5d17f93667fd072340c3`).
+Its old-source held-gate control fails with zero registered writer children;
+the new admitted fresh-only plan registers before waiting, and existing/orphan
+rows cleanly abort without replacing bytes. Seven exact live preimages,
+independent replay postimages and all evidence hashes matched. The overlay
+serial store suite passes **482** runnable cases with two ignored; the
+syntax-only lint fix passes affected tests, strict store Clippy, no-default
+check and formatting. The combined applied-source receipt is
+`target/g02-owner-writer-combined-20260924/receipt.json` (SHA-256
+`4134689336ede30df82896662c1bbe5caf635bebe91ecdacf27d44005eeada87`).
+All 18 selected source hashes remain unchanged from the pre-run pin. The
+serial store library passes **483** runnable cases with two ignored; engine
+backup checkpoint passes **12/12**, replicated **3/3**, and the chunked
+historical backup restore **1/1**. Strict all-target/all-feature KV/store/engine
+Clippy, no-default library checks, formatting and diff checks pass. These are
+combined development gates, not final-source qualification or G02 acceptance.
+
+The one-file parsed-ciphertext copy cut is applied on `master` from
+`target/g02-backup-ciphertext-20260924/candidate.patch` (SHA-256
+`24a22c1cedde6bc361d69721a11dab0cdd55d4de8bfec9a09e58290b0bbb2638`;
+manifest SHA-256 `2ca7d4c44b613ae078d1d260ab2d51ce63fa43a42886f8713f1b9f4c3e17b4c0`).
+The live preimage, independent replay postimage and 11 evidence hashes matched.
+`from_bytes` now admits the exact ciphertext-copy length from its installed
+store owner immediately before copying and retains that lease until the copy
+drops. An 8-MiB low-headroom old-source control fails as expected; the
+isolated backup suite passes **46** runnable cases with one ignored, and the
+chunked history case, strict checks and formatting pass. The applied-source
+new and existing manifest cases each pass **1/1**, and the full workspace
+all-target/all-feature check passes. The live receipt is
+`target/g02-backup-applied-validation/ciphertext-live-receipt.json` (SHA-256
+`e984bbc331c4e586b59dcea7ff8dddf3962d2f72c92b6b74acfec7bf40e36b37`).
+Two interim failures remain preserved: an accidental shared Cargo target
+reused the unchanged-source control binary, then a candidate test still
+expected one rather than two retained parsed-backup leases. Both were
+corrected before the passing suite. Canonical serialization, caller-owned
+input, direct encryption, `to_bytes`, provider/plaintext and session buffers
+remain G02 work; the combined full store/engine rerun is pending.
+
+The first paired-catalog production writer candidate at
+`target/g02-pair-create-writer-20260924` was held after independent review
+found that a foreign `NodeStore` sharing a memory provider passed its owner
+check. The held review is
+`target/g02-pair-create-review-20260924/REVIEW.md`. The exact-owner successor
+at `target/g02-pair-owner-20260924/candidate.patch` (SHA-256
+`901c209e45ac87eb3feefc6e75818c36d8c224ed601eed117d500555e95465b0`;
+manifest SHA-256 `a90e6d814168908091c460ce7a38808ddb75ea2f1cd45231575a5f69cf871274`)
+is applied on `master`. Root independently verified nine log hashes, six live
+preimages, six replay postimages, and all six applied postimages. The guard
+requires the two stores to share the exact `NodeStore`, the registered writer
+opening, the derived custody tenant, and ordered plan hashes before child
+registration. Its unchanged-source foreign-node control fails as expected;
+the isolated serial store library passes **489** tests with two ignored and
+strict checks. The applied-source pair focus passes **24/24**. G02 remains
+open for other allocations and complete source qualification.
+
+The canonical backup-header cut at
+`target/g02-backup-manifest-20260924/candidate.patch` (SHA-256
+`e1012523099ec4c24dcffe938083db763c5c18e8071a15e6ccbfa09fcb8d8255`;
+manifest SHA-256 `a3f7d141873d307525d004f1699b128a624a74ee3d7865c61a439c7410a1a323`)
+is also applied on `master`. Root and an independent reviewer verified the
+exact backup source preimage and replay postimage, patch, README and ten log
+hashes. All five header-serialization call sites use a bounded count pass,
+exact installed-owner reservation, and a capacity-capped write pass whose
+lease outlives its Vec. The three unchanged-source low-headroom controls fail
+as expected; the final isolated backup suite passes **49** runnable cases
+with one ignored, chunked history passes **1/1**, and strict Clippy, type,
+no-default and formatting checks pass. The integrated full store/engine run
+passes on the combined applied source: **493** serial store cases with two
+ignored, **12/12** engine backup checkpoint, **3/3** replication, and **1/1**
+chunked history restore. Strict all-target/all-feature KV/store/engine Clippy,
+no-default library checks, workspace formatting and diff checks pass. The
+receipt is `target/g02-integrated-live-20260924/combined-receipt.json`
+(SHA-256 `9bd6f01b42d578f532fb9f3a4c31bc7785dfe7a7371920096baba2b82a77b5e4`).
+It pins 259 selected KV/store/engine/lock files and eight log hashes; those
+selected bytes stayed unchanged. The broader source pin observed one unrelated
+`kasumi-server/src/local_recovery_tests.rs` edit during validation, recorded
+as before/after hashes rather than hidden. This is a G02 development
+checkpoint, not final-source or release acceptance. Bundle output, direct
+ciphertext, provider/plaintext, and other G02 buffers remain open.
+The next raw-writer audit is target-only at
+`target/g02-transaction-preflight-audit-20260925/README.md` (SHA-256
+`27722a2d0d0ab1ac2a985cfd8e83a5b8be3e8235b345c0d8f8fc9323a7882ce3`).
+Its 11 source hashes identify direct production `begin_write` in ordinary
+batches, namespace replacement, paired-domain publication and signer trust,
+plus the separate scratch-table boundary. Existing catalog/binding writer
+semantics cannot simply replace these. It specifies an exact-owner registered
+record-batch cut and old-source child-before-wait, pre-begin capacity,
+foreign-node and terminal/atomicity controls. No source patch or gate pass is
+claimed from this audit.
+
+The G02 tenant-audit publication continuation remains target-only **HOLD**.
+Its four-file delta is `target/g02-tenant-audit-publication-owner/publication.patch`
+(SHA-256 `eb45da5142abaacf1b9458db86ef857e2da347393a5f3aa1683a08b401e85245`;
+manifest SHA-256 `0f626ebc24e6b710f0f8524744fd2c46ca78c72670278a9dc529f11d1cb7cec9`).
+I independently checked its four base/post hashes and seven pinned logs. It
+removes three audit publication ciphertext copies over the earlier held
+service-owner overlay; 11 archive tests, signed TLS S3 publication, strict
+store Clippy and formatting pass there. The composed engine library still
+fails one real type check: an admitted pending command cannot enter the
+`Vec<u8>` Raft command API. No bridge, live-master application or release
+qualification is claimed.
+
+The eight-file target-only audit-command composition at
+`target/g02-raft-command-composed/composed.patch` (SHA-256
+`8367e2fdcbc1687909e9ca96a2415084ec33b05e5fe8c28505805fef0aa795e1`;
+manifest SHA-256 `99c44295ed8a39cae81b7b221cee94e944d0bac92e14f3ee799d759eff7f9d3f`)
+connects the admitted pending command through the above publication owner to
+`RaftWriteInput`. I checked all eight base/post pins and four logs. The
+natural Raft library check and strict Clippy both stop at the same one E0308:
+`RaftCommand::application` still requires `Vec<u8>`. No conversion stub or
+live-master application exists. The source-pinned design in
+`target/g02-raft-owner-design/README.md`
+maps the OpenRaft log, replication, decode, apply and shutdown owner cut;
+full G02 remains **HOLD**.
+
+The held G03 generation substrate was replayed without modification against
+current `master` in `target/g03-native-generation-rebase-20260924/` (review
+README SHA-256 `dd215049ce63ef5a40eea6779984c362a23423562a84aeb4c81f50cc74a167b0`;
+manifest SHA-256 `f63efb4a06a9d01223be2f5cdeafa9b1ad3165365f8dd4c3c85ec11c1e7f1494`).
+The four source pre/postimages replay exactly and the same patch applies on
+current master. Its composed native library passes **56/56**, strict KV
+Clippy, no-default-features, downstream store check and formatting pass. A
+test-only negative control fails at the intended assertion: after A-to-B
+publication and every old pin's release, A's physical row still exists. The
+prototype remains target-only **HOLD** pending durable bounded reclaim,
+shared native pin custody, source authority, paired Raft cutover, terminal
+transaction ownership and physical headroom qualification.
+
+A later target-only G03 retirement prerequisite is preserved at
+`target/g03-retirement-prereq-20260924/candidate.patch` (SHA-256
+`86342e373f58dc9674ef6e6ebbf22b3ca11eb08e63910a9b33e5dc52b6449fbe`;
+manifest SHA-256 `386785adda2fc4b8256a56f4a835fa346628adcc50cf022f8572769337e3108e`).
+Its five current-master preimages, two dependencies, nine logs and an
+independent Unix replay match. The prototype pins both read views and
+ciphertext guards that outlive their views, and advances a durable retirement
+cursor by at most 64 logical tombstones per step. A gate-bypass control fails
+as expected; target-only native tests pass **63 library and seven
+crash/recovery** with strict Clippy, no-default library check and formatting.
+It is **HOLD**, not applied: the append-only native log still needs bounded
+physical reclamation and headroom, permanent metadata is unbounded, and
+source authority, abandoned stages, paired Raft publication and uncertain
+commit custody remain unresolved. The review is
+`target/g03-retirement-prereq-20260924/README.md` (SHA-256
+`6e86758f1b50a49d3f4f028de8c845f37668b4d3ae5c48672d24622b1c10c89d`).
+
+A further source-pinned physical-reclaim review is **HOLD** at
+`target/g03-physical-reclaim-review/README.md` (SHA-256
+`6448c9b9c2a9b14f39d8ff23b414f237cee0b007b0d0506e5353e4c8dba0cd3c`;
+manifest SHA-256 `41ab4230854289c803bf1464b5a453d9558be20a08aaf79a66d8ad401572f337`).
+A deterministic target-only control completes one unpinned 128-KiB row's
+logical retirement while backend length grows from 141,642 to 142,135 bytes.
+Current native compaction scans and copies the whole live index twice with
+full-live-set shadow headroom, and may start before the 64-row retirement
+loop. Existing headroom, crash-compaction and cursor/reopen controls pass.
+Bounded physical reclaim needs a resumable extent/relocation format; no
+production patch was applied from this review.
+The successor source-bound design is
+`target/g03-reclaim-design-20260924/DESIGN.md` (SHA-256
+`27311c0e17170711d14e69f0ead89e0bc12a12739f0e3ba2531829e9d2d0733f`;
+manifest SHA-256 `aa97047e21c8c108485eddfc7b3723d0025225dcbfe19e42c27e876b967e61e9`).
+It repeats the 141,642-to-142,135-byte negative control on the exact held
+generation overlay, whose native suite passes **63 library and seven crash**
+cases. It specifies a distinct first-release segmented format with bounded
+relocation, durable root/cursor publication, pinned-reader gating and exact
+unlink/parent-sync custody. No production physical-reclaim patch exists; G03
+remains **HOLD**.
+
+The target-only G03 segment-boundary package is
+`target/g03-segment-foundation-20260925/README.md` (SHA-256
+`916800661e5d09e42638d8d32e3de7d178a00db6199130ef5cdd9fdf1a470150`),
+with manifest SHA-256
+`461261993caff407f32dca1d7473e0c5cce7f017f0ef23a8cec1fd952cec2431`
+and test-only negative patch SHA-256
+`9888b5101aa0c06ab9c88d31ac9ce0aaa5605dbf48f928291cb1a5afe8cd40ba`.
+The source-pinned old-format control fails as expected: retiring a 128 KiB
+value beside 16 MiB of unrelated live data makes one `Core::compact()` call
+read **33,554,432** backend bytes, write **33,566,896**, and grow the file
+temporarily by **16,777,304** bytes. A hand-built checksummed contiguous-v2
+image is also accepted by the current reader, failing the required new-format
+rejection. The ordinary native KV suite passes **55** with both controls
+ignored, crash recovery **7/7**, strict KV Clippy and formatting pass, and
+the test-only patch independently replays to the exact overlay postimage.
+The package defines a coherent Core/NodeFile/NodeDisk segmented-format and
+group-owner replacement; no production patch or G03 completion is claimed.
+
+A separate G08 stopped-standalone rotation control is preserved at
+`target/g08-stopped-rotation-20260924/README.md` (SHA-256
+`eb7195d2ea48cb42c1be3a941cd1eba62a02ebd49d682124b1628b17077690dd`).
+Its test-only patch SHA-256 is
+`80f0db0ba9678ed62f89c8fd67b27f2f44dd45b19485c5408aedf36e33293718`.
+After the first durable MCP key rename, the exact-source control fails on
+runtime reopen with Rustls `KeyMismatch`: the certificate, Control MCP pin and
+installed native/admin profile pins are still old. Final failure log SHA-256
+is `af302deafb6aedab4db36c12f99ef44cdf635c9327fdda4d67c63ca31d97b97d`.
+Two earlier lock-contended fixture attempts are retained separately and do
+not support the TLS conclusion. A coherent generation-pointer, journal and
+overlap-pin writer/reader cut is target-only design; G08 remains **HOLD**.
+
+The target-only generation-pointer and registered-journal prototype at
+`target/g08-rotation-production-20260924/overlay` is **HOLD**, not applied.
+Its independent source-pinned review is
+`target/g08-rotation-independent-review-20260924/REVIEW.md` (SHA-256
+`7b58d66bdaf69b8ebd89b07e5c2930adce47d4f2fced25d6df12c80b1fcce658`).
+Five release-blocking defects remain: a same-UID substitution can occur
+between `statat` and `unlinkat` and delete a foreign inode; immediate readback
+can falsely accept a config pointer after parent-sync failure; normal startup
+and credential creation do not fence a pending journal; valid credential
+profiles outside the scanned directory are omitted; and retry can forget a
+failed cleanup parent sync before deleting the journal. A deterministic
+same-UID race negative control reproduces the destructive deletion. The
+earlier hard-exit and quota-denial prototype passes cannot establish these
+properties; no stopped-rotation implementation is qualified.
+The frozen 11-file prototype patch SHA-256 is
+`51f73c3a535b53006ac236e057636889d5c2535c5346ab63d0b738754451c0c9`;
+its `README.md` SHA-256 is
+`3f927550450ea335ccc5f98abb8e38ded8bdf311f716ad64f93a820ad384457d`,
+source-pin SHA-256 is
+`32bda1fed58f14f173485fe9529b31d9b6b2e4e2fd02c9fbacef6319934f99ea`,
+and evidence-hash index SHA-256 is
+`0200ed8d36d5273e6d42e6e700390822290136875a01ff49ce6f65144fc6f3c7`.
+All 11 preimages and target-only replay postimages match, and the patch passes
+`git apply --check` on `master`. The final focused server matrix passes
+**7/7**, ordinary descriptor cleanup **2/2**, formatting and scoped strict
+Clippy pass; ignored exact-race and uncertain-sync controls fail as expected.
+
+The source-pinned successor design is
+`target/g08-rotation-redesign-20260925/DESIGN.md` (SHA-256
+`55b08ac37f0e8a6664c0477d6e534e59cb2c02e2312421ea55b5fc6d0b1681ac`),
+with `manifest.json` SHA-256
+`eac3c32b6434bdfb63af1f3c46b81613e519a8d528aee9928157e8f90b90ee0a`.
+It pins 16 inputs and artifacts on `master` at
+`315cfbd085cc601f2ec066378c7fd7b22afb8144`. The same-UID name-replacement
+negative control is an interface limitation for the current writable namespace;
+the design calls for a separately owned credential manager namespace and
+explicit acceptance controls for the four other durability/authority findings.
+No production patch or G08 completion follows from this design.
+
+An incremental target-only correction to the held G08 rotation prototype is
+`target/g08-pointer-durability-20260925/candidate.patch` (SHA-256
+`3a0cef57122fffcaeeb094c78c253c517238505001b2327869f1dfb8f8320973`),
+with manifest SHA-256
+`9c1e53e70c9f96a309a270fb219579897db286fcd2b06b146753afabbea1c155`
+and README SHA-256
+`8cca7cac6c602380a474d48310eb7ef2de7c4a5a2440c3d6d4711e92c67b5e9b`.
+The old prototype's immediate-readback control fails when rename succeeds but
+parent sync fails. The successor requires successful sync of the verified
+pointer file and parent both after first replacement and on visible-pointer
+retry. Its target-only tests pass five helpers, one injected fault/retry case
+that retains journal/old generation/Control overlap until sync succeeds, and
+two restart cases. Scoped strict Clippy, formatting and independent three-file
+replay pass. The patch depends on the unapplied prototype, so no production
+source or G08 release status changes; four other reviewed blockers remain.
+
+The G02 encrypted-record Put-buffer successor is applied on `master` from
+`target/g02-record-writer-20260924/candidate-successor.patch` (SHA-256
+`10c870f5d8d55a6bd7582f70cd3c018bcb69ab44e290dc039b5dfa4d0f518e47`).
+Its manifest SHA-256 is
+`5453e675df3d721de017abd9de3db6844887ff83dfe48997f16be8c6c9daa99d`;
+root verified both live preimages, six log hashes, independent target-only
+replay, patch and applied postimages. The earlier candidate is superseded.
+The unchanged-source low-headroom controls fail **0/2**, the candidate passes
+**2/2**, and its isolated full serial store suite passes **495** with two
+ignored. The installed NodeDisk memory owner now admits one in-place
+zeroizing encrypted record envelope before allocation; the raw transaction
+still begins before this admission and has no registered writer child. The
+generic encryption helper remains a production audit caller dependency.
+
+The G02 direct/related backup ciphertext-output cut is applied on `master`
+from `target/g02-backup-ciphertext-output-20260925/candidate.patch` (SHA-256
+`58e43bfcfa22fd8daf842110ba2bb5f422e13760092c9ca69d8afb4a061b6a3a`).
+Its manifest SHA-256 is
+`443e46b731537b0a3b096c037315a8e389cc30f9fff8e3c230da6380dbd0b11d`;
+root and independent reviewer checked the exact one-file preimage, nine log
+hashes, replay and applied postimage. Two unchanged-source low-headroom
+controls fail **0/2** and the candidate passes **2/2**. The isolated backup
+suite passes **51** with one external MinIO test ignored; chunked historical
+restore passes **1/1**, strict KV/store/engine Clippy, no-default store check
+and formatting pass. The first isolated engine-history build failed because
+the overlay omitted unchanged vendored OpenRaft docs; the corrected overlay
+passes. This cut admits exact direct/related ciphertext output before AEAD or
+provider work and retains its zeroizing buffer charge. Caller input, typed
+`to_bytes` bundle, plaintext and other buffers remain open.
+
+The first combined applied-source checkpoint for those two cuts pins **259**
+KV/store/engine/lock files at
+`target/g02-writer-backup-applied-20260925/source-before.json` (SHA-256
+`8a41597dbfa257c4d5e3ce91c74f3b29b5772f2046dc678647ed84d78225a703`).
+Both applied focused tests pass **2/2**, and the full serial store suite
+passes **497** with two ignored. The combined engine backup checkpoint passes
+**12/12** and chunked historical restore **1/1**. The first serial replicated
+engine run passes **2/3**: the restore case receives a typed `UnknownOutcome`
+on its first `complete_restore` after leadership changes under concurrent
+backup load. That exact failed log is retained. The named case passes **1/1**
+without the backup load, and the full serial rerun passes **3/3**. Strict
+all-target/all-feature KV/store/engine Clippy, no-default store library check
+with `RUSTFLAGS=-Dwarnings`, workspace formatting and diff checks pass. All
+259 selected source files retain their pre-run hashes. The combined receipt is
+`target/g02-writer-backup-applied-20260925/combined-receipt.json` (SHA-256
+`bd7c4a20a23b148a449499d3689c4fca2b5c7c8e301273fd35aa97003f05600f`).
+It binds the two applied patch hashes and every passing and failed log. This
+is development evidence, not G02 or release acceptance.
+
+The target-only G02 ordinary record-batch writer package at
+`target/g02-record-batch-20260925/README.md` (SHA-256
+`f6d39f55160029e372fce106d7c0cfae742ee9d94032feaf90c7fb936a0c2282`)
+is **HOLD**, not applied. Its ten-file `record-batch.patch` SHA-256 is
+`c7e92a9760a01bbdc7b683c65972552f6a970de61c0d2789467c2bd4a8f96bca`;
+`source-pins.json` SHA-256 is
+`8da643e490d6f809607e4bdac3dfda5e42732ca4eb38a5dc8b8dc247c0a03e17`.
+The patch passes exact-preimage `git apply --check`; final focused writer
+controls pass **5/5**, low-headroom clean abort restores resident bytes, slots
+and child count, and two old-source controls fail as expected. Strict store
+Clippy, formatting and no-default library check pass. The first full serial
+store run failed **29** cases (473 pass, 2 ignored) and exposed an admitted
+envelope retained after a clean abort. The corrected run passes **474** and
+still fails **28** (2 ignored). These failures are retained and classified in
+the README: 21 registered reopen/ownership fixture assumptions, four
+FaultBackend crash tests lacking a registered synthetic owner, two retained-
+read assertion migrations, and one audit file-attempt count. The concrete
+test-only registered owner plan is `fault-owner-design.md` (SHA-256
+`89729626ad88fbe97a5ba9cd96121cd827eca6d124cb4e1c9a2b4ae781abaef8`).
+Neither a raw writer fallback nor graceful shutdown in place of crash
+evidence is accepted. No production source or G02 release status changes.
+
+The G02 serialized backup-bundle cut is applied on `master` from
+`target/g02-backup-bundle-20260925/candidate.patch` (SHA-256
+`f558157a4d557e54a7709f387546cf9968ad139b60f510166781cc9cdfbc50bf`).
+The frozen 15-file manifest is SHA-256
+`b380de26cfa969ee4d18525677fe366ff6f6f96be46e7a9220e596bc3026fe99`;
+the independent narrow approval is
+`target/g02-backup-bundle-independent-review-20260925/REVIEW.md` (SHA-256
+`e26438e6f0178af16faf54c456de69c9e7527767537abc35947d61de30c46189`).
+All 15 live preimages and applied postimages match. Cargo's first applied build
+added the direct `bytes` dependency to `Cargo.lock`; its exact one-line
+supplement is SHA-256
+`8cbae1d83b152c71105c93aa66c0a4ced401db14fb61f739509307b08a4a2289`,
+and the independent lockfile approval is
+`target/g02-bundle-lockfile-independent-review-20260925/VERDICT.md` (SHA-256
+`ff9dcf5858ff256de0a76c4882367a5a9be1b1b23d239e97300d6c59f4b80f89`).
+The lock changed from SHA-256
+`0a249b9e3815690974c9e742ce52cf37aa5c15c53e76b3afc7ac544bef55e49a`
+to `c9f6e057f0e1b71168370694609bf567c0debac56c2039998693ad633fedc657`.
+
+The combined applied-source serial store suite passes **500** cases with two
+ignored; engine backup, history and replicated suites pass **12/12**, **5/5**
+and **3/3**. Strict all-target/all-feature KV/store/engine Clippy, all-target/
+all-feature workspace check, strict no-default store library check, workspace
+formatting and diff check pass. The 259 selected source files retain their
+post-lockfile pin at `target/g02-backup-bundle-applied-20260925/source-after-lockfile.json`
+(SHA-256 `6fa2eb3979fdabbcae2c22720473f76329751e25cc62d019bb6f069ec4ad5052`).
+The full log and artifact hashes are bound by
+`target/g02-backup-bundle-applied-20260925/combined-receipt.json` (SHA-256
+`af0da2a5a59321b770ff035a671df77dd2c352228171396907d3a83ae4032820`).
+This cut admits the serialized bundle Vec and retains its lease through owned
+filesystem/S3 publication. Three production audit/history copy paths still
+enter through uncharged `BackupUpload::Received(Vec<u8>)`; G02 and release
+remain **HOLD**.
+
+The target-only G05 durable-binding audit at
+`target/g05-durable-binding-audit-20260925/README.md` (SHA-256
+`452bcc7d4d63a7a9d03e9600ff388f8bc62af4958e46d7afc9c89e4e12094297`)
+pins 19 live source files and seven artifacts in `manifest.json` (SHA-256
+`0a1575b9fb3a4a7b780fd8327fca701a0eeba110262e08481cb4f71f405f4c0a`).
+Root verified those hashes and the test-only patch apply check. Its one-case
+restart control fails as expected (**0/1**, log SHA-256
+`6f52b636bb4b98ddfcd64d0c1d8695ace797799e630bb0d80e89a2a45cb4ebd2`):
+after an alias is repointed, status for the original UUID follows the new
+destination and returns `NotFound`, though the complete backup remains at its
+original physical root. The index is still in-memory and dormant. There is
+no production G05 patch or acceptance claim.

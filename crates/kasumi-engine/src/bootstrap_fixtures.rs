@@ -58,7 +58,7 @@ pub async fn open_fixture_replicated(
     audit: Arc<SecurityAudit>,
 ) -> anyhow::Result<Arc<Database>> {
     check(&stores)?;
-    let (database, _) = open_replicated_inner(
+    let (database, _, _) = open_replicated_inner(
         node_id,
         stores,
         transport,

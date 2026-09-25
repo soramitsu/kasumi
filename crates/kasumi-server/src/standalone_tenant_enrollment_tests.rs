@@ -99,9 +99,16 @@ fn unrecorded_standalone_template_never_opens_missing_keyrings_or_catalogs() -> 
                 .enable_all()
                 .build()
                 .unwrap()
-                .block_on(Box::pin(
-                    unrecorded_standalone_template_never_opens_missing_keyrings_or_catalogs_impl(),
-                ))
+                .block_on(Box::pin(async {
+                    let outcome =
+                        unrecorded_standalone_template_never_opens_missing_keyrings_or_catalogs_impl()
+                            .await;
+                    // A claimed local operator still has a registered handoff
+                    // task until its acknowledgement is joined. Keep this
+                    // runtime alive through that join.
+                    let drained = drain_operations().await;
+                    outcome.and(drained)
+                }))
         })
         .unwrap()
         .join()
@@ -162,9 +169,13 @@ fn explicitly_enrolled_standalone_tenant_requires_bound_profile_and_survives_res
                 .enable_all()
                 .build()
                 .unwrap()
-                .block_on(Box::pin(
-                    explicitly_enrolled_standalone_tenant_requires_bound_profile_and_survives_restart_impl(),
-                ))
+                .block_on(Box::pin(async {
+                    let outcome =
+                        explicitly_enrolled_standalone_tenant_requires_bound_profile_and_survives_restart_impl()
+                            .await;
+                    let drained = drain_operations().await;
+                    outcome.and(drained)
+                }))
         })
         .unwrap()
         .join()
