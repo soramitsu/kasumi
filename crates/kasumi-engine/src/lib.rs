@@ -78,6 +78,19 @@ pub fn retained_document_bytes(document: &kasumi_types::Document) -> kasumi_type
     state::lease_retention::document_heap(document, usize::MAX)
 }
 mod change_feed_state;
+
+/// Daemon diagnostics carry only fixed drain inventory labels. Retained error
+/// chains may hold provider, path or storage detail and stay in the owner.
+pub(crate) fn drain_components(failure: &kasumi_types::drain::DrainFailure) -> String {
+    let mut names = failure
+        .issues()
+        .iter()
+        .map(|issue| issue.component())
+        .collect::<Vec<_>>();
+    names.sort_unstable();
+    names.dedup();
+    names.join(",")
+}
 #[cfg(any(test, feature = "test-utils"))]
 pub mod test_utils;
 

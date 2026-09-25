@@ -3,20 +3,71 @@ use crate::readiness::{Epoch, FRESHNESS, PROBE_TIMEOUT, Sample};
 use std::time::Duration;
 use tokio::{sync::watch, time::Instant};
 
+/// Fixed, non-sensitive class of one failed readiness sweep. Attached as error
+/// context; the underlying error text is never logged.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SweepFailure {
+    ControlUnavailable,
+    EpochUnavailable,
+    EpochChanged,
+    Stopped,
+    AdmissionReserve,
+    MemoryPressure,
+    RouteInvalid,
+    GenerationUnavailable,
+    ProbeAdmission,
+    ActorProbeFailed,
+    ProbeDeadline,
+}
+impl SweepFailure {
+    pub(crate) fn class(self) -> &'static str {
+        match self {
+            Self::ControlUnavailable => "control_unavailable",
+            Self::EpochUnavailable => "epoch_unavailable",
+            Self::EpochChanged => "epoch_changed",
+            Self::Stopped => "stopped",
+            Self::AdmissionReserve => "admission_reserve",
+            Self::MemoryPressure => "memory_pressure",
+            Self::RouteInvalid => "route_invalid",
+            Self::GenerationUnavailable => "generation_unavailable",
+            Self::ProbeAdmission => "probe_admission",
+            Self::ActorProbeFailed => "actor_probe_failed",
+            Self::ProbeDeadline => "probe_deadline",
+        }
+    }
+}
+impl std::fmt::Display for SweepFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.class())
+    }
+}
+
 impl Administration {
     pub(crate) fn readiness_epoch(&self) -> Result<Epoch> {
-        self.control.check_serving()?;
-        let generation = self.control.engine().generation()?;
+        self.control
+            .check_serving()
+            .context(SweepFailure::ControlUnavailable)?;
+        let generation = self
+            .control
+            .engine()
+            .generation()
+            .context(SweepFailure::ControlUnavailable)?;
         let document = generation
             .state
             .collections
             .get("topology")
             .and_then(|c| c.documents.get("current"))
-            .context("control topology unavailable")?;
+            .context(SweepFailure::ControlUnavailable)?;
         Ok(Epoch {
             topology_version: document.version,
-            installed_routes: self.registry.route_epoch()?,
-            actual_membership: self.registry.membership_epoch()?,
+            installed_routes: self
+                .registry
+                .route_epoch()
+                .context(SweepFailure::EpochUnavailable)?,
+            actual_membership: self
+                .registry
+                .membership_epoch()
+                .context(SweepFailure::EpochUnavailable)?,
         })
     }
 
@@ -37,10 +88,14 @@ impl Administration {
             if *stop.borrow() {
                 return Ok(());
             }
-            if self.readiness_sweep(&mut stop).await.is_err() {
+            if let Err(error) = self.readiness_sweep(&mut stop).await {
                 self.readiness.invalidate();
+                let readiness_error_class = error
+                    .downcast_ref::<SweepFailure>()
+                    .map_or("unclassified", |failure| failure.class());
                 tracing::warn!(
                     event = "readiness_probe_failed",
+                    readiness_error_class,
                     "complete readiness coverage unavailable"
                 );
             }
@@ -58,22 +113,38 @@ impl Administration {
         // Retain one immutable topology document, never the complete generation
         // or all database handles. Charge its heap before retaining its Arc.
         let (epoch, document, _reservation) = {
-            let generation = self.control.engine().generation()?;
+            let generation = self
+                .control
+                .engine()
+                .generation()
+                .context(SweepFailure::ControlUnavailable)?;
             let document = generation
                 .state
                 .collections
                 .get("topology")
                 .and_then(|c| c.documents.get("current"))
-                .context("control topology unavailable")?;
-            let bytes = u64::try_from(kasumi_engine::retained_document_bytes(document)?)?
+                .context(SweepFailure::ControlUnavailable)?;
+            let bytes = kasumi_engine::retained_document_bytes(document)
+                .map_err(anyhow::Error::from)
+                .and_then(|bytes| Ok(u64::try_from(bytes)?))
+                .context(SweepFailure::AdmissionReserve)?
                 .checked_add(128 << 10)
-                .context("readiness workspace overflow")?;
-            let mut reservation = self.admission.reserve(bytes, None)?;
+                .context(SweepFailure::AdmissionReserve)?;
+            let mut reservation = self
+                .admission
+                .reserve(bytes, None)
+                .context(SweepFailure::AdmissionReserve)?;
             reservation.retain(bytes);
             let epoch = Epoch {
                 topology_version: document.version,
-                installed_routes: self.registry.route_epoch()?,
-                actual_membership: self.registry.membership_epoch()?,
+                installed_routes: self
+                    .registry
+                    .route_epoch()
+                    .context(SweepFailure::EpochUnavailable)?,
+                actual_membership: self
+                    .registry
+                    .membership_epoch()
+                    .context(SweepFailure::EpochUnavailable)?,
             };
             (epoch, document.clone(), reservation)
         };
@@ -82,35 +153,34 @@ impl Administration {
             .body
             .get("tenants")
             .and_then(serde_json::Value::as_object)
-            .context("control topology routes unavailable")?;
+            .context(SweepFailure::ControlUnavailable)?;
         let local = |value: &serde_json::Value| -> Result<bool> {
             Ok(value
                 .get("voters")
                 .and_then(serde_json::Value::as_array)
-                .context("control topology voters unavailable")?
+                .context(SweepFailure::RouteInvalid)?
                 .iter()
                 .any(|v| v.as_u64() == Some(local_id)))
         };
         let mut expected = 1usize;
         for (index, value) in routes.values().enumerate() {
             if index % 16 == 0 {
-                ensure!(!*stop.borrow(), "readiness stopped");
+                ensure!(!*stop.borrow(), SweepFailure::Stopped);
                 tokio::task::yield_now().await;
             }
             expected = expected
                 .checked_add(usize::from(local(value)?))
-                .context("local group count overflow")?;
+                .context(SweepFailure::RouteInvalid)?;
         }
-        ensure!(
-            !*stop.borrow() && self.readiness_epoch()? == epoch,
-            "readiness membership changed or stopped"
-        );
+        ensure!(!*stop.borrow(), SweepFailure::Stopped);
+        ensure!(self.readiness_epoch()? == epoch, SweepFailure::EpochChanged);
         let started = Instant::now();
         self.readiness.begin(epoch, expected, started);
         let control_incarnation = self
             .control
             .engine()
-            .generation()?
+            .generation()
+            .context(SweepFailure::ControlUnavailable)?
             .state
             .incarnation
             .clone();
@@ -124,26 +194,25 @@ impl Administration {
         )
         .await?;
         for (index, (tenant, value)) in routes.iter().enumerate() {
-            ensure!(!*stop.borrow(), "readiness stopped");
-            ensure!(
-                self.readiness_epoch()? == epoch,
-                "readiness membership changed"
-            );
+            ensure!(!*stop.borrow(), SweepFailure::Stopped);
+            ensure!(self.readiness_epoch()? == epoch, SweepFailure::EpochChanged);
             if index % 16 == 0 {
                 tokio::task::yield_now().await;
                 let memory = self.admission.snapshot();
                 ensure!(
                     memory.sample_usable && !memory.pressured,
-                    "readiness memory pressure"
+                    SweepFailure::MemoryPressure
                 );
             }
             if !local(value)? {
                 continue;
             }
-            let route = kasumi_engine::control::TenantRoute::deserialize(value)?;
+            let route = kasumi_engine::control::TenantRoute::deserialize(value)
+                .context(SweepFailure::RouteInvalid)?;
             let managed = self
                 .registry
-                .installed_generation(tenant, &route.incarnation)?
+                .installed_generation(tenant, &route.incarnation)
+                .context(SweepFailure::GenerationUnavailable)?
                 .map(SelectedTenant::new);
             self.probe_one(
                 tenant.clone(),
@@ -155,10 +224,8 @@ impl Administration {
             )
             .await?;
         }
-        ensure!(
-            !*stop.borrow() && self.readiness_epoch()? == epoch,
-            "readiness membership changed or stopped"
-        );
+        ensure!(!*stop.borrow(), SweepFailure::Stopped);
+        ensure!(self.readiness_epoch()? == epoch, SweepFailure::EpochChanged);
         self.readiness.finish(epoch);
         Ok(())
     }
@@ -180,7 +247,7 @@ impl Administration {
             && selected.store.check_access().is_ok()
         {
             let local_id = self.config.replication.as_ref().map_or(1, |r| r.node_id);
-            ensure!(!*stop.borrow(), "readiness stopped");
+            ensure!(!*stop.borrow(), SweepFailure::Stopped);
             let database = selected.database.clone();
             self.readiness
                 .probe
@@ -190,17 +257,18 @@ impl Administration {
                         .readiness_probe(local_id, expected_voters)
                         .await
                 })
-                .await?;
+                .await
+                .context(SweepFailure::ProbeAdmission)?;
             let observed = tokio::select! {
                 biased;
-                _ = stop.changed() => anyhow::bail!("readiness stopped"),
+                _ = stop.changed() => anyhow::bail!(SweepFailure::Stopped),
                 observed = tokio::time::timeout(PROBE_TIMEOUT, self.readiness.probe.observe()) => observed,
             };
             use crate::readiness_probe::Outcome;
             quorum = match observed {
                 Ok(Outcome::Healthy) => true,
                 Ok(Outcome::Unhealthy) => false,
-                Ok(Outcome::Failed) => anyhow::bail!("readiness actor probe failed"),
+                Ok(Outcome::Failed) => anyhow::bail!(SweepFailure::ActorProbeFailed),
                 Err(_) => {
                     // A diagnostic timeout does not cancel the actual actor
                     // operation. Revoke the old certificate now and retain the
@@ -220,7 +288,7 @@ impl Administration {
                         _ = stop.changed() => {},
                         _ = self.readiness.probe.observe() => {},
                     }
-                    anyhow::bail!("readiness diagnostic deadline exceeded");
+                    anyhow::bail!(SweepFailure::ProbeDeadline);
                 }
             };
             healthy = quorum
@@ -241,10 +309,7 @@ impl Administration {
                 }
             }
         }
-        ensure!(
-            self.readiness_epoch()? == epoch,
-            "readiness membership changed"
-        );
+        ensure!(self.readiness_epoch()? == epoch, SweepFailure::EpochChanged);
         self.readiness.record(
             Sample {
                 tenant,
@@ -255,5 +320,34 @@ impl Administration {
             valid_until,
         );
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn readiness_sweep_classes_survive_context_without_error_text() {
+        let reserve: Result<()> = Err(anyhow::anyhow!("private admission detail"));
+        let error = reserve.context(SweepFailure::AdmissionReserve).unwrap_err();
+        assert_eq!(
+            error
+                .downcast_ref::<SweepFailure>()
+                .map(|failure| failure.class()),
+            Some("admission_reserve")
+        );
+        let pressured = (|| -> Result<()> {
+            ensure!(false, SweepFailure::MemoryPressure);
+            Ok(())
+        })()
+        .unwrap_err();
+        assert_eq!(
+            pressured.downcast_ref::<SweepFailure>(),
+            Some(&SweepFailure::MemoryPressure)
+        );
+        let deadline =
+            (|| -> Result<()> { anyhow::bail!(SweepFailure::ProbeDeadline) })().unwrap_err();
+        assert_eq!(deadline.to_string(), "probe_deadline");
     }
 }

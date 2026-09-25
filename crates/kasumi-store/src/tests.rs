@@ -719,9 +719,14 @@ async fn a_fresh_probe_covers_every_retained_version_and_revocation_seals_warm_s
     let probes = provider.probe_count();
     store.refresh_lease().await.unwrap();
     assert_eq!(provider.probe_count() - probes, 3);
+    assert_eq!(store.key_lease_failure_class(), None);
     provider.set_minimum_version(2);
     let mut seal = store.seal_notifications();
     assert!(store.refresh_lease().await.is_err());
+    assert_eq!(store.key_lease_failure_class(), Some("provider_error"));
+    // The explicit seal that follows is a consequence, not a second cause.
+    assert!(store.check_access().is_err());
+    assert_eq!(store.key_lease_failure_class(), Some("provider_error"));
     seal.changed().await.unwrap();
     assert!(store.state.read().keys.is_empty());
     assert!(store.get("docs", b"new").is_err());
@@ -742,8 +747,10 @@ async fn sixty_second_suspend_aware_expiry_and_explicit_recovery() {
         fixture(fixture_memory.clone(), fixture_scratch.clone()).await;
     clock.advance(Duration::from_secs(59));
     store.check_access().unwrap();
+    assert_eq!(store.key_lease_failure_class(), None);
     clock.advance(Duration::from_secs(1));
     assert!(store.check_access().is_err());
+    assert_eq!(store.key_lease_failure_class(), Some("lease_expired"));
     assert!(store.state.read().keys.is_empty());
     assert!(
         TenantStore::open_existing_fixture_with_clock(
@@ -757,6 +764,7 @@ async fn sixty_second_suspend_aware_expiry_and_explicit_recovery() {
     );
     store.refresh_lease().await.unwrap();
     store.check_access().unwrap();
+    assert_eq!(store.key_lease_failure_class(), None);
 }
 
 struct DelayedProvider {
@@ -824,7 +832,15 @@ async fn delayed_probe_cannot_extend_a_lease_past_sixty_seconds_from_start() {
     clock.advance(Duration::from_secs(60));
     provider.resume.notify_one();
     assert!(task.await.unwrap().is_err());
+    assert_eq!(
+        store.key_lease_failure_class(),
+        Some("completed_after_expiry")
+    );
     assert!(store.check_access().is_err());
+    assert_eq!(
+        store.key_lease_failure_class(),
+        Some("completed_after_expiry")
+    );
     assert!(store.state.read().keys.is_empty());
 }
 
@@ -860,6 +876,7 @@ async fn a_late_success_cannot_undo_an_explicit_seal() {
     provider.resume.notify_one();
     assert!(task.await.unwrap().is_err());
     assert!(store.check_access().is_err());
+    assert_eq!(store.key_lease_failure_class(), Some("generation_changed"));
 }
 
 #[tokio::test]

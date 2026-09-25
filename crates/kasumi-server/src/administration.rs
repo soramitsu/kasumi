@@ -236,6 +236,14 @@ pub struct Administration {
     // Original configured owners only; canonical recovery targets belong to their runner.
     generations: RwLock<BTreeMap<(String, String), ManagedTenant>>,
     custody_generations: RwLock<BTreeMap<(String, String), Arc<kasumi_engine::RetiredCustody>>>,
+    // Closed original generations whose failed owner drained and left
+    // `generations`; fresh admission of that exact incarnation stays authorized.
+    pending_admission:
+        RwLock<BTreeMap<(String, String), original_serving_runtime::PendingAdmission>>,
+    // Closed original owners whose drain completed before fresh admission. Their
+    // sticky issues were reported when observed; a later daemon drain of the
+    // same retained handle is not a new failure. Weak: never keeps them alive.
+    superseded: original_serving_runtime::Superseded,
     gate: ManagementGate,
     // Closure and enrollment publication take this same synchronous boundary.
     enrollment_closed: std::sync::Mutex<bool>,
@@ -530,6 +538,8 @@ impl Administration {
             destinations,
             generations: RwLock::new(generations),
             custody_generations: RwLock::new(BTreeMap::new()),
+            pending_admission: RwLock::new(BTreeMap::new()),
+            superseded: Default::default(),
             gate: ManagementGate::default(),
             enrollment_closed: std::sync::Mutex::new(false),
             shutdown_failure: tokio::sync::Mutex::new(DrainReport::default()),
@@ -579,6 +589,10 @@ impl Administration {
     #[cfg(test)]
     pub(crate) fn node_for_enrollment_test(&self) -> Arc<NodeStore> {
         self.node.clone()
+    }
+    #[cfg(test)]
+    pub(crate) fn test_has_generation(&self, tenant: &str, incarnation: &str) -> bool {
+        self.generation(tenant, incarnation).is_ok()
     }
     #[cfg(test)]
     pub(crate) fn test_generation(&self, tenant: &str, incarnation: &str) -> Arc<Database> {
@@ -1408,14 +1422,19 @@ impl Administration {
                         .as_deref()
                         .is_none_or(|id| id == route.incarnation)
                 });
-            if original
-                && self
-                    .recover_original(&tenant, &route.incarnation)
-                    .await
-                    .is_err()
+            if original && let Err(error) = self.recover_original(&tenant, &route.incarnation).await
             {
+                // Only fixed classes leave this boundary; the error chain may
+                // carry provider, path or transport detail and is not logged.
+                let recover_stage = error
+                    .downcast_ref::<original_serving_runtime::RecoverStage>()
+                    .map_or("unclassified", |stage| stage.class());
+                let closure_cause = self.record_failed_admission(&tenant, &route.incarnation);
                 tracing::warn!(
                     tenant,
+                    event = "original_tenant_recovery_failed",
+                    recover_stage,
+                    closure_cause,
                     "original tenant remains closed pending fresh admission"
                 );
                 continue;

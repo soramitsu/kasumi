@@ -103,7 +103,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc, Weak,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering},
     },
     time::Duration,
 };
@@ -137,6 +137,28 @@ const CATALOG: TableDefinition<&[u8], &[u8]> = TableDefinition::new("wrapped_key
 const RECORDS: TableDefinition<&[u8], &[u8]> = TableDefinition::new("encrypted_records_v1");
 pub const MAX_KEY_LEASE: Duration = Duration::from_secs(60);
 const PROVIDER_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Fixed, non-sensitive classes of the most recent key-access lease failure.
+/// Provider messages, key names and endpoints never leave the error value.
+const LEASE_FAILURE_CLASSES: [&str; 7] = [
+    "provider_error",
+    "provider_timeout",
+    "completed_after_expiry",
+    "generation_changed",
+    "access_revoked",
+    "refresh_admission",
+    "lease_expired",
+];
+#[derive(Clone, Copy)]
+enum LeaseFailure {
+    ProviderError = 1,
+    ProviderTimeout,
+    CompletedAfterExpiry,
+    GenerationChanged,
+    AccessRevoked,
+    RefreshAdmission,
+    LeaseExpired,
+}
 const MAX_RECORD: usize = 32 * 1024 * 1024;
 const MAX_BATCH: usize = 64 * 1024 * 1024;
 /// A paired deployment writer fits two namespace/key/value triples in one batch.
@@ -1176,6 +1198,8 @@ pub struct TenantStore {
     access_epoch: AtomicU64,
     shutdown_requested: AtomicBool,
     shutdown_signal: watch::Sender<bool>,
+    // Last LeaseFailure discriminant; zero until a lease probe or expiry fails.
+    lease_failure: AtomicU8,
     background: AsyncMutex<BackgroundTasks>,
     audit_placement: Mutex<Option<Arc<TenantAuditPlacement>>>,
     live_trust: Mutex<
@@ -1269,6 +1293,7 @@ impl TenantStore {
             access_epoch: AtomicU64::new(1),
             shutdown_requested: AtomicBool::new(false),
             shutdown_signal,
+            lease_failure: AtomicU8::new(0),
             background: AsyncMutex::new(BackgroundTasks::default()),
             audit_placement: Mutex::new(None),
             live_trust: Mutex::new(BTreeMap::new()),
@@ -1447,11 +1472,40 @@ impl TenantStore {
     }
 
     pub fn check_access(&self) -> Result<()> {
-        if self.valid(&self.state.read()) {
+        let state = self.state.read();
+        if self.valid(&state) {
             return Ok(());
         }
+        // An unsealed lease past its deadline expired without a successful
+        // probe. An explicit seal or shutdown is not a lease failure.
+        if !state.sealed
+            && !self.shutdown_requested.load(Ordering::Acquire)
+            && self.clock.now() >= state.deadline
+        {
+            self.lease_failed(LeaseFailure::LeaseExpired);
+        }
+        drop(state);
         self.seal();
         bail!("tenant is sealed: key-access lease unavailable or expired")
+    }
+
+    fn lease_failed(&self, failure: LeaseFailure) {
+        // Keep the first cause since the last successful probe; a later
+        // expiry of the same episode is its consequence.
+        let _ = self.lease_failure.compare_exchange(
+            0,
+            failure as u8,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+    }
+
+    /// Fixed, non-sensitive class of the first key-access lease failure since
+    /// the last successful probe. Diagnostics only; `check_access` gates access.
+    pub fn key_lease_failure_class(&self) -> Option<&'static str> {
+        usize::from(self.lease_failure.load(Ordering::Acquire))
+            .checked_sub(1)
+            .and_then(|index| LEASE_FAILURE_CLASSES.get(index).copied())
     }
 
     fn valid(&self, state: &KeyState) -> bool {
@@ -1476,7 +1530,9 @@ impl TenantStore {
     pub async fn refresh_lease(&self) -> Result<()> {
         let _access = AccessGuard(self);
         let _refresh = self.refresh.lock().await;
-        self.access.check()?;
+        self.access
+            .check()
+            .inspect_err(|_| self.lease_failed(LeaseFailure::AccessRevoked))?;
         ensure!(
             !self.shutdown_requested.load(Ordering::Acquire),
             "tenant store has shut down"
@@ -1487,7 +1543,8 @@ impl TenantStore {
         // memory core. Fund this independent typed clone before it allocates.
         let catalog = {
             let current = self.catalog.read();
-            AdmittedKeyCatalog::clone_for_refresh(&current, self.scratch_disk().memory().clone())?
+            AdmittedKeyCatalog::clone_for_refresh(&current, self.scratch_disk().memory().clone())
+                .inspect_err(|_| self.lease_failed(LeaseFailure::RefreshAdmission))?
         };
         let refresh = async {
             let mut keys = BTreeMap::new();
@@ -1508,10 +1565,16 @@ impl TenantStore {
         let keys = match result {
             Ok(Ok(keys)) => keys,
             Ok(Err(error)) => {
+                self.lease_failed(if self.access.check().is_err() {
+                    LeaseFailure::AccessRevoked
+                } else {
+                    LeaseFailure::ProviderError
+                });
                 self.seal();
                 return Err(error.context("key-access probe failed"));
             }
             Err(_) => {
+                self.lease_failed(LeaseFailure::ProviderTimeout);
                 self.seal();
                 bail!("key-access probe timed out");
             }
@@ -1520,21 +1583,28 @@ impl TenantStore {
             .checked_add(MAX_KEY_LEASE)
             .context("key-access lease overflow")?;
         let mut state = self.state.write();
-        self.access.check()?;
+        self.access
+            .check()
+            .inspect_err(|_| self.lease_failed(LeaseFailure::AccessRevoked))?;
         ensure!(
             !self.shutdown_requested.load(Ordering::Acquire),
             "tenant store has shut down"
         );
-        ensure!(
-            self.clock.now() < deadline,
-            "key-access probe completed after lease expiry"
-        );
+        if self.clock.now() >= deadline {
+            self.lease_failed(LeaseFailure::CompletedAfterExpiry);
+            bail!("key-access probe completed after lease expiry");
+        }
         self.access_epoch
             .compare_exchange(epoch, epoch & !1, Ordering::AcqRel, Ordering::Acquire)
-            .map_err(|_| anyhow::anyhow!("tenant generation changed during key-access probe"))?;
+            .map_err(|_| {
+                self.lease_failed(LeaseFailure::GenerationChanged);
+                anyhow::anyhow!("tenant generation changed during key-access probe")
+            })?;
         state.keys = keys;
         state.deadline = deadline;
         state.sealed = false;
+        // A completed probe renews access; any later failure is a new episode.
+        self.lease_failure.store(0, Ordering::Release);
         Ok(())
     }
 

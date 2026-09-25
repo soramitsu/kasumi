@@ -254,13 +254,19 @@ impl Drop for TargetReplica {
                             == kasumi_types::drain::DrainCompletion::Retained =>
                     {
                         if !reported_retention {
-                            tracing::error!(%failure, "abandoned target replica drain retained");
+                            tracing::error!(
+                                components = %crate::drain_components(&failure),
+                                "abandoned target replica drain retained"
+                            );
                             reported_retention = true;
                         }
                         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                     }
                     Err(failure) => {
-                        tracing::error!(%failure, "abandoned target replica drain failed");
+                        tracing::error!(
+                            components = %crate::drain_components(&failure),
+                            "abandoned target replica drain failed"
+                        );
                         break;
                     }
                 }

@@ -21,6 +21,8 @@ pub struct DatabaseRegistry {
     approved_nodes: Arc<RwLock<BTreeSet<u64>>>,
     retirement_sources:
         Arc<RwLock<BTreeMap<(String, String), kasumi_engine::InstalledRetirementSource>>>,
+    // Closed original (tenant, incarnation) pairs awaiting fresh admission.
+    pending_admission: Arc<RwLock<BTreeSet<(String, String)>>>,
 }
 
 impl DatabaseRegistry {
@@ -195,6 +197,11 @@ impl DatabaseRegistry {
         self.install_retirement_source(kasumi_engine::InstalledRetirementSource::Serving(
             database.clone(),
         ))?;
+        // The routed fresh generation ends this exact pending admission.
+        self.pending_admission
+            .write()
+            .map_err(|_| Error::new(ErrorCode::Unavailable, "tenant registry unavailable"))?
+            .remove(&(tenant.clone(), generation.state.incarnation.clone()));
         self.advance_route_epoch();
         databases.insert(tenant, database);
         Ok(())
@@ -284,12 +291,56 @@ impl DatabaseRegistry {
             .read()
             .map_err(|_| Error::new(ErrorCode::Unavailable, "tenant registry unavailable"))?
             .get(&context.tenant)
-            .cloned()
-            .ok_or_else(|| Error::new(ErrorCode::Forbidden, "tenant access denied"))?;
+            .cloned();
+        let Some(database) = database else {
+            return Err(self.unrouted(context));
+        };
         context
             .authorization
             .require_database(&database.engine().generation()?.state.incarnation)?;
         Ok(database)
+    }
+
+    /// Mark or clear one installed original generation that closed and awaits
+    /// fresh admission. This never routes, authorizes or reopens a database.
+    pub(crate) fn set_pending_admission(
+        &self,
+        tenant: &str,
+        incarnation: &str,
+        pending: bool,
+    ) -> Result<()> {
+        let mut admitting = self
+            .pending_admission
+            .write()
+            .map_err(|_| Error::new(ErrorCode::Unavailable, "tenant registry unavailable"))?;
+        let key = (tenant.to_owned(), incarnation.to_owned());
+        if pending {
+            admitting.insert(key);
+        } else {
+            admitting.remove(&key);
+        }
+        Ok(())
+    }
+
+    /// An installed original generation closed for fresh admission is a
+    /// retryable outage for a live credential bound to that exact incarnation.
+    /// Unknown tenants, retired sources and every other credential stay denied.
+    fn unrouted(&self, context: &RequestContext) -> Error {
+        let Ok(admitting) = self.pending_admission.read() else {
+            return Error::new(ErrorCode::Unavailable, "tenant registry unavailable");
+        };
+        let recovering = admitting
+            .range((context.tenant.clone(), String::new())..)
+            .take_while(|(tenant, _)| tenant == &context.tenant)
+            .any(|(_, incarnation)| context.authorization.require_database(incarnation).is_ok());
+        if recovering {
+            Error::new(
+                ErrorCode::Unavailable,
+                "tenant is recovering; retry the same request",
+            )
+        } else {
+            Error::new(ErrorCode::Forbidden, "tenant access denied")
+        }
     }
 }
 

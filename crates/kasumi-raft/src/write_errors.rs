@@ -23,10 +23,42 @@ pub fn is_application_write_capacity_denied(error: &anyhow::Error) -> bool {
     )
 }
 
+/// OpenRaft committed and locally applied the entry, then this group lost
+/// access before its result could be released. The effect may be durable:
+/// callers resolve the original command identity; this is never a rollback.
+#[derive(Debug)]
+pub struct PostCommitAccessLost;
+impl std::fmt::Display for PostCommitAccessLost {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("application entry committed before group access was lost")
+    }
+}
+
+/// Recognize only the typed post-commit marker, through any added context.
+pub fn is_post_commit_access_loss(error: &anyhow::Error) -> bool {
+    error.downcast_ref::<PostCommitAccessLost>().is_some()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use openraft::error::{ChangeMembershipError, EmptyMembership, Fatal, ForwardToLeader};
+
+    #[test]
+    fn post_commit_access_loss_is_typed_and_never_inferred_from_text() {
+        let lost = anyhow::anyhow!("tenant is sealed")
+            .context(PostCommitAccessLost)
+            .context("application proposal");
+        assert!(is_post_commit_access_loss(&lost));
+        assert!(!is_application_write_redirect(&lost));
+        assert!(!is_application_write_capacity_denied(&lost));
+        assert!(!is_post_commit_access_loss(&anyhow::anyhow!(
+            "application entry committed before group access was lost"
+        )));
+        let fatal: RaftError<u64, ClientWriteError<u64, BasicNode>> =
+            RaftError::Fatal(Fatal::Panicked);
+        assert!(!is_post_commit_access_loss(&anyhow::Error::new(fatal)));
+    }
 
     #[test]
     fn application_redirect_recognizes_exact_type_through_anyhow_context() {

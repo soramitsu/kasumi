@@ -70,7 +70,10 @@ impl Drop for TargetServingReplica {
             let database = self.database.clone();
             self.shutdown_runtime.spawn(async move {
                 if let Err(failure) = database.shutdown().await {
-                    tracing::error!(%failure, "abandoned target serving replica drain failed");
+                    tracing::error!(
+                        components = %crate::drain_components(&failure),
+                        "abandoned target serving replica drain failed"
+                    );
                 }
             });
         }

@@ -269,6 +269,16 @@ impl ProposalWork {
                     "write leadership changed; resolve or retry with the same idempotency key",
                 )))?)
             }
+            Err(error) if kasumi_raft::is_post_commit_access_loss(&error) => {
+                // The entry committed and applied; only its result release lost
+                // access. That is the documented uncertain outcome, not a failed
+                // custody child. The lost access itself still closes the tenant
+                // through its own gate, and no result data is released here.
+                Ok(serde_json::to_vec(&Err::<WriteReceipt, _>(Error::new(
+                    ErrorCode::UnknownOutcome,
+                    "write committed before access was lost; resolve or retry with the same idempotency key",
+                )))?)
+            }
             outcome => outcome,
         }
     }
@@ -976,6 +986,41 @@ impl Database {
     }
     pub fn check_serving(&self) -> Result<()> {
         self.access()
+    }
+
+    /// Fixed, non-sensitive class of the first failed serving gate, in the same
+    /// order as `access`. Diagnostics only: admission still uses check_serving,
+    /// and this neither seals resident state nor reveals a provider message.
+    pub fn serving_failure_class(&self) -> Option<&'static str> {
+        if self.closing.load(Ordering::Acquire) {
+            return Some("shutting_down");
+        }
+        if self.proposals.check().is_err() {
+            return Some("proposal_work_closed");
+        }
+        if self.store.check_access().is_err() {
+            return Some("key_lease_sealed");
+        }
+        if let Some(class) = self.group.access_failure_class() {
+            return Some(class);
+        }
+        let Ok(generation) = self.engine.generation() else {
+            return Some("engine_sealed");
+        };
+        if generation
+            .state
+            .target_lifecycle
+            .get(&generation.state.incarnation)
+            .is_some_and(|target| target.activation.is_none())
+        {
+            return Some("target_activation_incomplete");
+        }
+        drop(generation);
+        self.store
+            .storage_access()
+            .check_serving()
+            .err()
+            .map(|_| "restore_preparation")
     }
     fn materialization_access(&self) -> Result<()> {
         if self.closing.load(Ordering::Acquire) {

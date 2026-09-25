@@ -551,3 +551,69 @@ async fn synchronous_enrollment_allows_census_before_the_claimant_is_polled() ->
     );
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn panicked_core_closes_group_access_and_drains_complete_for_reopen() -> Result<()> {
+    let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
+    let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
+    let directory = kasumi_store::test_utils::private_tempdir()?;
+    let store = kasumi_store::TenantStorageSet::initialize_catalogs_fixture(
+        kasumi_store::NodeStore::create_new_fixture(
+            directory.path().join("core-fatal.kv"),
+            kasumi_store::test_utils::NODE_STORE_ID,
+            fixture_scratch.memory().clone(),
+            fixture_scratch.clone(),
+        )?,
+        "tenant-a".into(),
+        Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([23; 32])),
+        Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([229; 32])),
+    )
+    .await?;
+    store.write_batch(&[], &crate::initial_storage_identity(1, "tenant-a")?)?;
+    let group = crate::RaftGroup::local(
+        1,
+        "tenant-a".into(),
+        store.clone(),
+        Arc::new(Backend),
+        SnapshotBufferOwner::fixture(),
+    )
+    .await?;
+    group.check_access()?;
+    assert_eq!(group.access_failure_class(), None);
+    // A panicking core cannot publish its Fatal in metrics. Dropping its
+    // task-owned metrics sender must still close access immediately.
+    group
+        .raft()
+        .external_request(|_| panic!("fixture Raft core panic"));
+    tokio::time::timeout(WAIT, async {
+        while group.check_access().is_ok() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await?;
+    assert!(group.raft().metrics().borrow().running_state.is_ok());
+    assert_eq!(group.access_failure_class(), Some("raft_core_failed"));
+    let failure = group.shutdown().await.unwrap_err();
+    assert_eq!(failure.completion(), DrainCompletion::Complete);
+    assert!(
+        failure
+            .issues()
+            .iter()
+            .any(|issue| issue.component() == "OpenRaft runtime")
+    );
+    assert!(group.check_access().is_err());
+    assert!(group.access_failure_class().is_some());
+    drop(group);
+    let reopened = crate::RaftGroup::local(
+        1,
+        "tenant-a".into(),
+        store,
+        Arc::new(Backend),
+        SnapshotBufferOwner::fixture(),
+    )
+    .await?;
+    reopened.check_access()?;
+    reopened.shutdown().await?;
+    Ok(())
+}

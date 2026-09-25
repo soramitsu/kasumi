@@ -3,8 +3,15 @@ use tracing_subscriber::{filter::Targets, layer::SubscriberExt, util::Subscriber
 
 fn targets() -> Targets {
     // Dependencies can trace entire commands/documents. They must remain disabled
-    // even when the host has an unrelated RUST_LOG setting.
-    Targets::new().with_target("kasumi_server", tracing::Level::INFO)
+    // even when the host has an unrelated RUST_LOG setting. OpenRaft formats
+    // storage error chains, so its fatal outcomes surface only through Kasumi's
+    // fixed closure classes. Kasumi's own engine, Raft and store warnings carry
+    // fixed labels and component names, never error chains or tenant data.
+    Targets::new()
+        .with_target("kasumi_server", tracing::Level::INFO)
+        .with_target("kasumi_engine", tracing::Level::WARN)
+        .with_target("kasumi_raft", tracing::Level::WARN)
+        .with_target("kasumi_store", tracing::Level::WARN)
 }
 
 /// Install JSON diagnostics on stderr. CLI result documents remain on stdout.
@@ -91,12 +98,24 @@ mod tests {
             let span = tracing::info_span!("request", token = "secret-span-token");
             let _entered = span.enter();
             tracing::info!(target: "openraft", document = "private-document", "replicated command");
+            tracing::error!(target: "openraft", error = "private-storage-chain", "quit");
+            tracing::info!(target: "kasumi_engine", document = "private-engine", "applied");
             tracing::debug!(token = "private-debug", "debug details");
             tls_reload_failed();
+            tracing::warn!(target: "kasumi_engine", event = "engine_warning", "fixed");
         });
-        let value: serde_json::Value = serde_json::from_slice(&bytes.0.lock().unwrap()).unwrap();
-        assert_eq!(value["fields"]["event"], "tls_reload_failed");
-        let encoded = value.to_string();
-        assert!(!encoded.contains("private-") && !encoded.contains("secret-span-token"));
+        let lines = bytes.0.lock().unwrap().clone();
+        let values = lines
+            .split(|byte| *byte == b'\n')
+            .filter(|line| !line.is_empty())
+            .map(|line| serde_json::from_slice::<serde_json::Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(values.len(), 2);
+        assert_eq!(values[0]["fields"]["event"], "tls_reload_failed");
+        assert_eq!(values[1]["fields"]["event"], "engine_warning");
+        for value in values {
+            let encoded = value.to_string();
+            assert!(!encoded.contains("private-") && !encoded.contains("secret-span-token"));
+        }
     }
 }

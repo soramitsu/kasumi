@@ -168,11 +168,38 @@ Control administrator policy. A copied profile does not renew itself.
 
 Both `kasumid` and `kasumi-authority` install JSON diagnostics on stderr. Command
 results remain on stdout. Production logging includes `kasumi_server` operational
-events at INFO and above, suppresses span fields, and disables dependency and
-DEBUG/TRACE events that can contain command bodies. `RUST_LOG` does not expand
+events at INFO and above and `kasumi_engine`, `kasumi_raft` and `kasumi_store`
+events at WARN and above. It suppresses span fields, and disables dependency and
+DEBUG/TRACE events that can contain command bodies. Kasumi crates log only fixed
+labels and drain component names at WARN, never error chains. OpenRaft stays
+disabled because its fatal and storage errors format arbitrary error chains; its
+failures appear through the fixed classes below. `RUST_LOG` does not expand
 this logging policy. Provider errors are represented by static operational events;
 use the protected audit/maintenance interfaces for exact outcomes. Persist and
 rotate daemon logs using the host's service manager.
+
+An installed original tenant whose serving instance closes is drained and then
+freshly admitted by the 250 ms reconciliation loop. Only an owner whose drain is
+`Retained` keeps the tenant closed. A drain that completed with recorded issues
+is still complete. Its issues are logged once as component names, and the stale
+generation leaves the registry. While fresh admission is pending, a live
+credential bound to that exact incarnation receives `Unavailable` (retry the
+same request). Unknown tenants and other credentials still receive `Forbidden`.
+Each event carries only fixed classes:
+
+| `event` | Fields |
+| --- | --- |
+| `original_tenant_closed` | `closure_cause`: `shutting_down`, `proposal_work_closed`, `key_lease_sealed`, `snapshot_buffer_failed`, `ownership_lost`, `raft_core_failed`, `state_machine_failed`, `engine_sealed`, `target_activation_incomplete`, `restore_preparation`, `unclassified`; `key_lease_class`: `provider_error`, `provider_timeout`, `completed_after_expiry`, `generation_changed`, `access_revoked`, `refresh_admission`, `lease_expired`, `none` |
+| `original_tenant_drain_completed_with_issues` | `components`: drain component names |
+| `original_tenant_recovery_failed` (message `original tenant remains closed pending fresh admission`) | `recover_stage`: `enrollment_mismatch`, `previous_lease_retained`, `previous_detach`, `previous_shutdown_retained`, `custody_open`, `access_lease`, `key_provider`, `storage_open`, `admission_reserve`, `engine_open`, `route_register`, `setup_route_changed`, `publish`, `initialize`, `unclassified`; `closure_cause` |
+| `original_tenant_reopened` | `closure_cause`, `key_lease_class`, `drained_with_issues`, `failed_attempts` |
+| `readiness_probe_failed` | `readiness_error_class`: `control_unavailable`, `epoch_unavailable`, `epoch_changed`, `stopped`, `admission_reserve`, `memory_pressure`, `route_invalid`, `generation_unavailable`, `probe_admission`, `actor_probe_failed`, `probe_deadline`, `unclassified` |
+
+A consensus write that commits and then loses group access before its result
+is released returns `UnknownOutcome`. It no longer fails the proposal child, so
+it does not close the proposal registry. The lost access still closes the tenant
+through its own gate. Daemon shutdown does not report a failure again when a
+superseded owner's complete drain was already logged.
 
 Persistent and scratch storage observations are available only through the same
 protected routes. Health JSON includes `persistent_disk`, with its owner phase,

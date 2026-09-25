@@ -269,3 +269,48 @@ async fn native_pool_replays_uncertain_batches_and_never_moves_historical_pages(
     tasks.pop().unwrap().await.unwrap().unwrap();
     fixture.close().await;
 }
+
+#[test]
+fn closed_original_route_is_retryable_only_for_its_own_incarnation() {
+    let registry = DatabaseRegistry::default();
+    let incarnation = uuid::Uuid::new_v4();
+    let observation = kasumi_clock::EpochClock::system()
+        .unwrap()
+        .observe()
+        .unwrap();
+    let credential = |tenant: &str, incarnation| RequestContext {
+        authorization: kasumi_types::RequestAuthorization::from_verified_credential(
+            observation.utc_ms() + 60_000,
+            &observation,
+            kasumi_types::CredentialResource::Database { incarnation },
+        )
+        .unwrap(),
+        tenant: tenant.into(),
+        principal: "acme-app".into(),
+        scopes: BTreeSet::from([kasumi_types::Action::Read]),
+        request_id: "closed-route".into(),
+    };
+    let code = |context: &RequestContext| registry.database(context).err().unwrap().code;
+    let bound = credential("acme", incarnation);
+    assert_eq!(code(&bound), ErrorCode::Forbidden);
+    registry
+        .set_pending_admission("acme", &incarnation.to_string(), true)
+        .unwrap();
+    assert_eq!(code(&bound), ErrorCode::Unavailable);
+    assert_eq!(
+        status(registry.database(&bound).err().unwrap()).code(),
+        tonic::Code::Unavailable
+    );
+    // Other incarnations, unknown tenants and prefix-sharing names stay denied.
+    for denied in [
+        credential("acme", uuid::Uuid::new_v4()),
+        credential("other", incarnation),
+        credential("acm", incarnation),
+    ] {
+        assert_eq!(code(&denied), ErrorCode::Forbidden);
+    }
+    registry
+        .set_pending_admission("acme", &incarnation.to_string(), false)
+        .unwrap();
+    assert_eq!(code(&bound), ErrorCode::Forbidden);
+}

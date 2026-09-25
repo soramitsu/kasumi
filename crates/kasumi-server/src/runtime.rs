@@ -2021,11 +2021,27 @@ impl NodeRuntime {
                 ),
             );
         }
+        // A closed original owner that fresh admission already drained repeats
+        // its sticky complete report here. That report was observed and logged
+        // when the closure was recovered; only a retained owner is new evidence.
+        let superseded = |outcome: kasumi_types::drain::DrainResult, reported: bool| match outcome {
+            Err(failure)
+                if reported
+                    && failure.completion() == kasumi_types::drain::DrainCompletion::Complete =>
+            {
+                Ok(())
+            }
+            outcome => outcome,
+        };
         for lease in &self.serving_leases {
+            let reported = self
+                .administration
+                .as_ref()
+                .is_some_and(|manager| manager.superseded_lease(lease));
             observe(
                 &mut self.startup_drain,
                 &mut retained,
-                lease.shutdown().await,
+                superseded(lease.shutdown().await, reported),
             );
         }
         if let Some(manager) = &self.administration {
@@ -2057,10 +2073,14 @@ impl NodeRuntime {
                         .record("serving group removal", index, error),
                 ));
             }
+            let reported = self
+                .administration
+                .as_ref()
+                .is_some_and(|manager| manager.superseded_database(&tenant.database));
             observe(
                 &mut self.startup_drain,
                 &mut retained,
-                tenant.database.shutdown().await,
+                superseded(tenant.database.shutdown().await, reported),
             );
         }
         for (index, source) in self.custody_sources.iter().enumerate() {

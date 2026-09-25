@@ -264,10 +264,40 @@ impl Jobs {
 }
 
 #[cfg(any(test, feature = "test-utils"))]
+impl Jobs {
+    fn running(&self) -> usize {
+        let state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+        state
+            .slots
+            .iter()
+            .flatten()
+            .filter(|worker| worker.observed().is_none())
+            .count()
+    }
+}
+
+#[cfg(any(test, feature = "test-utils"))]
 impl super::Database {
     /// Exact lazily retained proposal registry charge for fixture accounting.
     pub fn fixture_proposal_metadata_bytes() -> anyhow::Result<u64> {
         Jobs::required_bytes()
+    }
+
+    /// Admit one real proposal child that fails after admission, as a failed
+    /// consensus write does. The caller receives the documented uncertain
+    /// outcome and this registry closes the tenant exactly as in production.
+    pub async fn fixture_fail_admitted_proposal(&self) -> Result<()> {
+        self.proposals.prepare(&self.admission)?;
+        let call = self
+            .proposals
+            .start_task::<()>(async { anyhow::bail!("fixture proposal child failure") })?;
+        call.wait(Duration::from_secs(5)).await
+    }
+
+    /// Admitted proposal children without a terminal observation. Fixtures use
+    /// this to seal storage beneath an actual in-flight consensus write.
+    pub fn fixture_running_proposals(&self) -> usize {
+        self.proposals.running()
     }
 }
 

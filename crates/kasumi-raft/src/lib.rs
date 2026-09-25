@@ -63,7 +63,10 @@ use std::{
 };
 pub use storage::{LogStore, StateMachine, recovery_snapshot_bytes};
 pub use timing::server_config;
-pub use write_errors::{is_application_write_capacity_denied, is_application_write_redirect};
+pub use write_errors::{
+    PostCommitAccessLost, is_application_write_capacity_denied, is_application_write_redirect,
+    is_post_commit_access_loss,
+};
 
 #[derive(Clone, Debug)]
 pub struct RaftLimits {
@@ -635,7 +638,7 @@ impl RaftGroup {
             .raft
             .client_write(RaftCommand::application(command))
             .await?;
-        self.check_access()?;
+        self.check_access().context(PostCommitAccessLost)?;
         Ok(response.data)
     }
 
@@ -649,7 +652,7 @@ impl RaftGroup {
             .raft
             .client_write(RaftCommand::retirement(command, seed)?)
             .await?;
-        self.check_access()?;
+        self.check_access().context(PostCommitAccessLost)?;
         Ok(response.data)
     }
 
@@ -747,15 +750,37 @@ impl RaftGroup {
             "Raft group has shut down"
         );
         self.store.check_access()?;
-        ensure!(
-            self.raft.metrics().borrow().running_state.is_ok(),
-            "Raft core failed; recovery required"
-        );
+        ensure!(!self.core_ended(), "Raft core failed; recovery required");
         ensure!(
             !self.machine_failed.load(Ordering::Acquire),
             "state machine unavailable; recovery required"
         );
         Ok(())
+    }
+
+    /// A returned core publishes its Fatal in metrics. A panicked core cannot,
+    /// but its task-owned metrics sender is dropped; both end this group.
+    fn core_ended(&self) -> bool {
+        let metrics = self.raft.metrics();
+        metrics.borrow().running_state.is_err() || metrics.has_changed().is_err()
+    }
+
+    /// Fixed, non-sensitive class of the first failed access gate, in the same
+    /// order as `check_access`. Diagnostics only; never an admission decision.
+    pub fn access_failure_class(&self) -> Option<&'static str> {
+        if self.snapshot_buffers.check().is_err() {
+            Some("snapshot_buffer_failed")
+        } else if !self.ownership.load(Ordering::Acquire) {
+            Some("ownership_lost")
+        } else if self.store.check_access().is_err() {
+            Some("key_lease_sealed")
+        } else if self.core_ended() {
+            Some("raft_core_failed")
+        } else if self.machine_failed.load(Ordering::Acquire) {
+            Some("state_machine_failed")
+        } else {
+            None
+        }
     }
 
     pub async fn shutdown(&self) -> kasumi_types::drain::DrainResult {
