@@ -641,6 +641,8 @@ mod tests {
         // genesis image before installing its permanent point-table owners.
         let bootstrap = engine.logical_snapshot(store.scratch_disk()).unwrap();
         let engine = Arc::new(TenantEngine::from_bootstrap(tenant, &bootstrap).unwrap());
+        // Replay requires an explicitly installed local-replica-only cache.
+        crate::test_utils::install_fixture_audit_placement(&store).unwrap();
         engine.install_storage_access(&store).unwrap();
         (directory, engine, store)
     }

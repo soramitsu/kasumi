@@ -71,6 +71,8 @@ impl ProcessFixture {
             )
             .await?
         };
+        // Like a production installer, select the audit placement before any open.
+        crate::test_utils::install_fixture_audit_placement(stores.application())?;
         let audit_provider = Arc::new(LocalKeyProvider::new([33; 32]));
         let audit_store = if create {
             TenantStore::initialize_catalog_fixture(

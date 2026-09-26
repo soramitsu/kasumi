@@ -229,6 +229,8 @@ impl ServingFixture {
                 .await
             }
             .unwrap();
+            crate::test_utils::install_local_replica_audit_placement(stores.application())
+                .unwrap();
             let db = crate::open_replicated(
                 id,
                 stores,

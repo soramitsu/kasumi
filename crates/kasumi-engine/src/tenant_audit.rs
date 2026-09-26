@@ -440,12 +440,8 @@ mod tests {
             self.archive.read(link).await
         }
     }
-    async fn fixture() -> (
-        tempfile::TempDir,
-        Arc<TenantEngine>,
-        Arc<TenantStore>,
-        Arc<UncertainArchive>,
-    ) {
+    /// A fresh fixture store with no tenant audit placement installed.
+    async fn fixture_store() -> (tempfile::TempDir, Arc<TenantStore>) {
         let directory = kasumi_store::test_utils::private_tempdir().unwrap();
         let memory = kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 32);
         kasumi_store::private_files::create_directory(&directory.path().join("persistent"))
@@ -466,6 +462,15 @@ mod tests {
         )
         .await
         .unwrap();
+        (directory, store)
+    }
+    async fn fixture() -> (
+        tempfile::TempDir,
+        Arc<TenantEngine>,
+        Arc<TenantStore>,
+        Arc<UncertainArchive>,
+    ) {
+        let (directory, store) = fixture_store().await;
         let cache = Arc::new(
             FilesystemAuditArchive::open(
                 directory.path().join("persistent/tenant-audit-archives"),
@@ -564,6 +569,81 @@ mod tests {
         })
         .await?
     }
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn replay_without_an_installed_placement_is_unavailable_and_selects_no_default() {
+        let (directory, mut store) = fixture_store().await;
+        let engine = TenantEngine::new(
+            "tenant".into(),
+            uuid::Uuid::new_v4().to_string(),
+            Policy {
+                grants: vec![Grant {
+                    principal: "owner".into(),
+                    collection: None,
+                    actions: [Action::Admin].into_iter().collect(),
+                }],
+                strict_read_audit: false,
+            },
+            Limits::default(),
+        )
+        .unwrap();
+        let cache = directory.path().join("persistent/tenant-audit-archives");
+        for reopen in [false, false, true] {
+            if reopen {
+                // A complete restart without installation is still not a
+                // placement: nothing persisted earlier may select one now.
+                store.shutdown().await.unwrap();
+                let disk = store.scratch_disk().clone();
+                let persistent = store.persistent_disk().clone();
+                drop(store);
+                let node = NodeStore::open_existing(
+                    directory.path().join("persistent/node.kv"),
+                    kasumi_store::test_utils::NODE_STORE_ID,
+                    persistent,
+                    disk,
+                )
+                .unwrap();
+                store = TenantStore::open_existing_fixture(
+                    node,
+                    "tenant".into(),
+                    Arc::new(LocalKeyProvider::new([43; 32])),
+                )
+                .await
+                .unwrap();
+            }
+            let error = engine.install_storage_access(&store).unwrap_err();
+            assert_eq!(error.code, ErrorCode::Unavailable);
+            assert!(engine.snapshot_store.get().is_none());
+            assert_eq!(
+                store
+                    .tenant_audit_archive()
+                    .err()
+                    .unwrap()
+                    .downcast::<Error>()
+                    .unwrap()
+                    .code,
+                ErrorCode::Unavailable
+            );
+            assert!(
+                store
+                    .get("engine.audit.placement", b"identity")
+                    .unwrap()
+                    .is_none()
+            );
+            assert!(!cache.exists(), "replay created a default archive cache");
+        }
+        // The explicit fixture installation is the only way replay proceeds.
+        store.install_fixture_tenant_audit_archive().unwrap();
+        engine.install_storage_access(&store).unwrap();
+        assert!(cache.is_dir());
+        assert!(
+            store
+                .get("engine.audit.placement", b"identity")
+                .unwrap()
+                .is_some()
+        );
+        store.shutdown().await.unwrap();
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn uncertain_publication_keeps_hot_prefix_and_apply_never_recontacts_external_archive() {
         let (_directory, engine, store, archive) = fixture().await;

@@ -1,11 +1,70 @@
 //! Explicit fixture-only codecs and admission accounting helpers. These are
 //! not portable snapshots, storage capabilities, or production restore APIs.
-use crate::TenantEngine;
-pub use crate::bootstrap::fixtures::{
-    open_fixture, open_fixture_replicated, open_fixture_with_incarnation,
-};
-use kasumi_store::SnapshotImage;
-use kasumi_types::{Error, ErrorCode, Result, TenantState};
+use crate::{Database, ReplicatedBootstrap, SecurityAudit, TenantEngine};
+pub use kasumi_store::test_utils::install_fixture_audit_placement;
+use kasumi_store::{SnapshotImage, TenantStorageSet};
+use kasumi_types::{Error, ErrorCode, Limits, Policy, Result, TenantState};
+use std::sync::Arc;
+
+// Replay requires an installed tenant audit placement and never selects one.
+// These fixture entry points make the explicit local-replica-only opt-in that
+// a production installer performs from configuration before bootstrap.
+/// Install the local-replica-only placement that a production installer
+/// selects from configuration for a production-purpose store (Standalone or
+/// Serving) that has no external tenant audit destination.
+pub fn install_local_replica_audit_placement(
+    store: &kasumi_store::TenantStore,
+) -> anyhow::Result<()> {
+    let cache = Arc::new(kasumi_store::FilesystemAuditArchive::open(
+        store.durable_directory()?.join("tenant-audit-archives"),
+        store.persistent_disk().clone(),
+    )?);
+    store.install_tenant_audit_archive(cache.clone(), cache)?;
+    Ok(())
+}
+
+pub async fn open_fixture(
+    stores: Arc<TenantStorageSet>,
+    policy: Policy,
+    limits: Limits,
+    audit: Arc<SecurityAudit>,
+) -> anyhow::Result<Arc<Database>> {
+    install_fixture_audit_placement(stores.application())?;
+    crate::bootstrap::fixtures::open_fixture(stores, policy, limits, audit).await
+}
+
+pub async fn open_fixture_with_incarnation(
+    stores: Arc<TenantStorageSet>,
+    policy: Policy,
+    limits: Limits,
+    audit: Arc<SecurityAudit>,
+    incarnation: uuid::Uuid,
+) -> anyhow::Result<Arc<Database>> {
+    install_fixture_audit_placement(stores.application())?;
+    crate::bootstrap::fixtures::open_fixture_with_incarnation(
+        stores,
+        policy,
+        limits,
+        audit,
+        incarnation,
+    )
+    .await
+}
+
+pub async fn open_fixture_replicated(
+    node_id: u64,
+    stores: Arc<TenantStorageSet>,
+    bootstrap: &ReplicatedBootstrap,
+    transport: Arc<dyn kasumi_raft::RaftTransport>,
+    config: kasumi_raft::Config,
+    audit: Arc<SecurityAudit>,
+) -> anyhow::Result<Arc<Database>> {
+    install_fixture_audit_placement(stores.application())?;
+    crate::bootstrap::fixtures::open_fixture_replicated(
+        node_id, stores, bootstrap, transport, config, audit,
+    )
+    .await
+}
 
 /// Preserve an explicit fixture payload cap while admitting the real core and
 /// its first runtime facade. An unspecified production-derived cap is unchanged.

@@ -85,6 +85,7 @@ async fn audit_maintenance_rejects_foreign_equal_policy_core_and_keeps_exact_poo
         },
         Limits::default(),
     )?;
+    crate::test_utils::install_fixture_audit_placement(&store)?;
     engine.install_storage_access(&store)?;
     let before = admission.snapshot();
     let foreign_before = foreign.snapshot();

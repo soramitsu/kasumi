@@ -332,12 +332,41 @@ pub fn storage_admission() -> std::sync::Arc<dyn kasumi_kv::StorageAdmission> {
     std::sync::Arc::new(FixtureStorageAdmission::default())
 }
 
-/// Explicitly install an independent custody provider for a trusted test store.
+/// Install the explicit local-replica-only tenant audit placement that a
+/// production installer selects from configuration before replay. Fixture
+/// storage uses the fixture placement; a fixture-assembled Control store keeps
+/// its production purpose and opts in through the installed API. A placement
+/// already installed on this store is kept and a different persisted placement
+/// is rejected, never replaced. Every other purpose, and synthetic backends
+/// without a durable directory, install nothing here.
+pub fn install_fixture_audit_placement(store: &crate::TenantStore) -> Result<()> {
+    if store.durable_directory().is_err() || store.audit_placement.lock().is_some() {
+        return Ok(());
+    }
+    match store.storage_access().purpose() {
+        crate::StoragePurpose::LocalFixture => {
+            store.install_fixture_tenant_audit_archive()?;
+        }
+        crate::StoragePurpose::NodeControl => {
+            let cache = std::sync::Arc::new(crate::FilesystemAuditArchive::open(
+                store.durable_directory()?.join("tenant-audit-archives"),
+                store.persistent_disk().clone(),
+            )?);
+            store.install_tenant_audit_archive(cache.clone(), cache)?;
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Explicitly install an independent custody provider for a trusted test store,
+/// and its fixture tenant audit placement (see install_fixture_audit_placement).
 /// Production configuration must supply both providers through TenantStorageSet.
 pub async fn initialize_custody_fixture(
     application: std::sync::Arc<crate::TenantStore>,
     custody_provider: std::sync::Arc<dyn KeyProvider>,
 ) -> Result<std::sync::Arc<crate::TenantStorageSet>> {
+    install_fixture_audit_placement(&application)?;
     let control = crate::TenantStore::initialize_catalog_fixture_with_access(
         application.node.clone(),
         crate::CustodyStore::catalog_name(application.tenant()),
@@ -357,18 +386,27 @@ pub async fn initialize_custody_fixture(
 
 /// Reopen the exact authenticated pair surrounding a borrowed test application.
 /// Missing custody or bindings are errors, including a partially created pair.
+/// The reopened application reinstalls the fixture tenant audit placement; a
+/// different persisted placement fails instead of being replaced.
 pub async fn open_existing_custody_fixture(
     application: std::sync::Arc<crate::TenantStore>,
     custody_provider: std::sync::Arc<dyn KeyProvider>,
 ) -> Result<std::sync::Arc<crate::TenantStorageSet>> {
-    crate::TenantStorageSet::open_existing(
+    let stores = crate::TenantStorageSet::open_existing(
         application.node.clone(),
         application.tenant.clone(),
         application.provider.clone(),
         custody_provider,
         application.access.clone(),
     )
-    .await
+    .await?;
+    match install_fixture_audit_placement(stores.application()) {
+        Ok(()) => Ok(stores),
+        Err(error) => Err(match stores.shutdown().await {
+            Ok(()) => error,
+            Err(failure) => error.context(failure),
+        }),
+    }
 }
 
 /// Assemble explicitly clocked test domains. This helper is unavailable in

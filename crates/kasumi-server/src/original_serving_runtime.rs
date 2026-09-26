@@ -328,6 +328,11 @@ impl Administration {
         let group = format!("{tenant}/{incarnation}");
         let mut registered = false;
         let opened = async {
+            // Replay requires the configured tenant audit placement, installed on
+            // this fresh store exactly as at startup; none is selected by default.
+            self.config
+                .install_tenant_audit_archive(stores.application(), None)
+                .context(RecoverStage::StorageOpen)?;
             let _reservation = self
                 .admission
                 .reserve(kasumi_engine::recovery_workspace_bytes(&stores)?, None)

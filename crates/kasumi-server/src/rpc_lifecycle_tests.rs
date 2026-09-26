@@ -307,6 +307,7 @@ async fn pinned_native_control_signs_actual_quorum_commitments_and_rejects_wrong
         )
         .await
         .unwrap();
+        kasumi_store::test_utils::install_fixture_audit_placement(stores.application()).unwrap();
         let db = kasumi_engine::open_replicated(
             id,
             stores,

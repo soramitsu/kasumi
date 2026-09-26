@@ -51,6 +51,8 @@ impl Installation {
             access.clone(),
         )
         .await?;
+        // Like a production installer, select the audit placement before any open.
+        crate::test_utils::install_local_replica_audit_placement(stores.application())?;
         let audit_store = TenantStore::initialize_catalog(
             node.clone(),
             crate::SECURITY_TENANT.into(),
@@ -485,6 +487,7 @@ async fn existing_local_reopens_the_same_committed_standalone_after_complete_shu
         access,
     )
     .await?;
+    crate::test_utils::install_local_replica_audit_placement(stores.application())?;
     let audit_store = TenantStore::open_existing(
         node,
         crate::SECURITY_TENANT.into(),

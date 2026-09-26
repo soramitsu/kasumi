@@ -842,6 +842,8 @@ async fn encrypted_restore_preserves_original_stage_scope_without_reviving_histo
     )
     .await
     .unwrap();
+    // Restore replays into the target, so select its audit placement first.
+    kasumi_engine::test_utils::install_fixture_audit_placement(stores.application()).unwrap();
     let db = kasumi_engine::restore_local(
         &kasumi_engine::RestoreSource {
             timeout_ms: 60_000,

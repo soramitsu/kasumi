@@ -2680,6 +2680,8 @@ async fn provision_local_fixture_domains(
             .await?;
             pending.stores.push(stores.application().clone());
             pending.stores.push(stores.custody().store().clone());
+            // Replay requires the configured placement, as in production enrollment.
+            config.install_tenant_audit_archive(stores.application(), None)?;
             let opened = match incarnation {
                 Some(incarnation) => {
                     kasumi_engine::open_local_with_incarnation(

@@ -45,6 +45,8 @@ impl Replica {
             Arc::new(LocalKeyProvider::new([32; 32])),
         )
         .await?;
+        // Like a production installer, select the audit placement before any open.
+        crate::test_utils::install_fixture_audit_placement(stores.application())?;
         let audit = Self::audit(node.clone(), false, storage.admission.clone()).await?;
         Ok(Self {
             directory,
@@ -66,6 +68,7 @@ impl Replica {
             Arc::new(LocalKeyProvider::new([32; 32])),
         )
         .await?;
+        crate::test_utils::install_fixture_audit_placement(stores.application())?;
         let audit = Self::audit(node.clone(), true, storage.admission.clone()).await?;
         Ok(Self {
             directory,

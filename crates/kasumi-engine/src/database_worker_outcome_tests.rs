@@ -98,6 +98,9 @@ impl Fixture {
             },
             Limits::default(),
         )?);
+        // Storage access is installed before the custody fixture, so select the
+        // audit placement first, as a production installer does before replay.
+        crate::test_utils::install_fixture_audit_placement(&store)?;
         engine.install_storage_access(&store)?;
         engine.install_audit_maintenance(&admission)?;
         let stores = kasumi_store::test_utils::initialize_custody_fixture(

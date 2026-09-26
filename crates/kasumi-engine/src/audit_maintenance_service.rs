@@ -268,6 +268,7 @@ mod tests {
                 )
                 .unwrap(),
             );
+            store.install_fixture_tenant_audit_archive().unwrap();
             engine.install_storage_access(&store).unwrap();
             engine.install_audit_maintenance(&admission).unwrap();
             let stores = kasumi_store::test_utils::initialize_custody_fixture(

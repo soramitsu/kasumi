@@ -25,6 +25,7 @@ pub use owned::AuditArchivePublicationObserver;
 const MAGIC: &[u8; 8] = b"KASUMIA1";
 const HEADER_LIMIT: usize = 64 << 10;
 const PAYLOAD_LIMIT: usize = MAX_AUDIT_SEGMENT_BYTES - HEADER_LIMIT - 52;
+const PLACEMENT: &str = "engine.audit.placement";
 
 /// Holds at most one segment of encoded records. Each append is all-or-nothing.
 pub struct AuditSegmentBuilder {
@@ -567,10 +568,20 @@ impl TenantAuditPlacement {
         Ok(())
     }
 }
+fn placement_identity(cache: &str, destination: &str) -> Result<Vec<u8>> {
+    let identity = serde_json::to_vec(&(cache, destination))?;
+    ensure!(
+        identity.len() <= 16 << 10,
+        "audit placement identity exceeds limit"
+    );
+    Ok(identity)
+}
+
 impl TenantStore {
-    /// Call before engine replay to install an S3 destination or an explicit
-    /// fixture cache. A persisted destination cannot silently become the default
-    /// filesystem destination after a restart or missing configuration.
+    /// Call before engine replay to install the configured placement: an
+    /// external destination, or an explicit local-replica-only cache. A
+    /// persisted destination cannot silently become the local cache after a
+    /// restart or missing configuration.
     pub fn install_tenant_audit_archive(
         &self,
         cache: Arc<FilesystemAuditArchive>,
@@ -578,11 +589,7 @@ impl TenantStore {
     ) -> Result<Arc<TenantAuditPlacement>> {
         self.check_access()?;
         let mut placement = self.audit_placement.lock();
-        let identity = serde_json::to_vec(&(cache.identity(), destination.identity()))?;
-        ensure!(
-            identity.len() <= 16 << 10,
-            "audit placement identity exceeds limit"
-        );
+        let identity = placement_identity(&cache.identity(), &destination.identity())?;
         if let Some(existing) = placement.as_ref() {
             ensure!(
                 existing.cache.identity() == cache.identity()
@@ -591,40 +598,85 @@ impl TenantStore {
             );
             return Ok(existing.clone());
         }
-        const NS: &str = "engine.audit.placement";
-        match self.get(NS, b"identity")? {
+        match self.get(PLACEMENT, b"identity")? {
             Some(stored) => ensure!(
                 stored == identity,
                 "installed tenant audit placement differs"
             ),
-            None => {
-                self.write_batch(&[crate::WriteOp::put(NS, b"identity", identity.as_slice())])?
-            }
+            None => self.write_batch(&[crate::WriteOp::put(
+                PLACEMENT,
+                b"identity",
+                identity.as_slice(),
+            )])?,
         }
         self.check_access()?;
         let installed = Arc::new(TenantAuditPlacement { cache, destination });
         *placement = Some(installed.clone());
         Ok(installed)
     }
+
+    /// Only an explicitly installed placement is returned. A missing one is
+    /// Unavailable: this never selects a default or writes a placement row.
     pub fn tenant_audit_archive(&self) -> Result<Arc<TenantAuditPlacement>> {
-        if let Some(placement) = self.audit_placement.lock().clone() {
-            self.check_access()?;
-            return Ok(placement);
+        let placement = self.audit_placement.lock().clone();
+        self.check_access()?;
+        placement.ok_or_else(|| {
+            kasumi_types::Error::new(
+                kasumi_types::ErrorCode::Unavailable,
+                "tenant audit placement not installed",
+            )
+            .into()
+        })
+    }
+
+    /// Explicit local-replica-only placement for fixture storage. A different
+    /// live or persisted placement is rejected before the cache is created.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn install_fixture_tenant_audit_archive(&self) -> Result<Arc<TenantAuditPlacement>> {
+        self.check_access()?;
+        ensure!(
+            self.storage_access().purpose().is_local_fixture(),
+            "fixture audit placement requires fixture storage"
+        );
+        let root = self.durable_directory()?.join("tenant-audit-archives");
+        let cache_identity = filesystem_identity(&root);
+        if let Some(existing) = self.audit_placement.lock().clone() {
+            ensure!(
+                existing.cache.identity() == cache_identity
+                    && existing.destination.identity() == cache_identity,
+                "live tenant audit placement differs"
+            );
+            return Ok(existing);
+        }
+        if let Some(stored) = self.get(PLACEMENT, b"identity")? {
+            ensure!(
+                stored == placement_identity(&cache_identity, &cache_identity)?,
+                "installed tenant audit placement differs"
+            );
         }
         let cache = Arc::new(FilesystemAuditArchive::open(
-            self.durable_directory()?.join("tenant-audit-archives"),
+            root,
             self.persistent_disk().clone(),
         )?);
         self.install_tenant_audit_archive(cache.clone(), cache)
     }
 }
 
+fn filesystem_identity(root: &Path) -> String {
+    format!("filesystem:{}", root.display())
+}
+
+#[cfg(test)]
+type PublicationHook = Arc<dyn Fn(&Path) + Send + Sync>;
+
 pub struct FilesystemAuditArchive {
     root: PathBuf,
-    _directory: crate::NodeDiskDirectory,
+    directory: crate::NodeDiskDirectory,
     disk: Arc<NodeDisk>,
     observer: Option<Arc<dyn AuditArchivePublicationObserver>>,
     publication: Arc<std::sync::Mutex<()>>,
+    #[cfg(test)]
+    publication_hook: Option<PublicationHook>,
 }
 impl FilesystemAuditArchive {
     pub fn open(root: impl AsRef<Path>, disk: Arc<NodeDisk>) -> Result<Self> {
@@ -634,17 +686,19 @@ impl FilesystemAuditArchive {
         directory.sync_all()?;
         Ok(Self {
             root: root.to_owned(),
-            _directory: directory.into_managed_owner(),
+            directory: directory.into_managed_owner(),
             disk,
             observer: None,
             publication: Arc::new(std::sync::Mutex::new(())),
+            #[cfg(test)]
+            publication_hook: None,
         })
     }
 
     /// For an already-owned blocking snapshot/apply worker. One bounded object
     /// is read and checked without network I/O or a nested async runtime.
     pub fn read_blocking(&self, link: &AuditArchiveLink) -> Result<Vec<u8>> {
-        read_file(&self.root, &self.disk, link, false)
+        read_file(&self.root, &self.disk, link)
     }
 
     /// Successful return includes file and directory synchronization and an
@@ -657,58 +711,27 @@ impl FilesystemAuditArchive {
                     == segment.reference.object.ciphertext_sha256,
             "invalid prepared audit segment"
         );
-        if let Some(observer) = &self.observer {
-            return self.publish_observed(segment, observer.as_ref());
-        }
         let _publication = self
             .publication
             .lock()
             .map_err(|_| anyhow::anyhow!("archive publication ownership unavailable"))?;
-        let path = self
-            .root
-            .join(format!("{}.audit", segment.reference.object.object_id));
-        if path.try_exists()? {
-            read_file(&self.root, &self.disk, &segment.reference.object, true)?;
-            return Ok(());
-        }
-        let staged = self.root.join(format!(
-            "{}.audit.pending",
-            segment.reference.object.object_id
-        ));
-        let (root, relative) = self.disk.binding(&staged)?;
-        let mut file = if staged.try_exists()? {
-            self.disk.open_file(root, relative)?
-        } else {
-            self.disk
-                .create_file(root, relative, DiskWork::Maintenance)?
-        };
-        let old_length = file.observed_len()?;
-        let new_length = segment.ciphertext.len() as u64;
-        if old_length > new_length {
-            file.shrink(new_length)?;
-        } else {
-            file.reserve_growth(old_length, new_length, DiskWork::Maintenance)?;
-            file.grow_reserved(new_length)?;
-        }
-        file.write_all_at(&segment.ciphertext, 0)?;
-        file.sync_all_and_parent()?;
-        let (root, relative) = self.disk.binding(&path)?;
-        let published = self.disk.publish_file(file, root, relative)?;
-        drop(published);
-        read_file(&self.root, &self.disk, &segment.reference.object, true)?;
-        Ok(())
+        self.publish_owned(segment, self.observer.as_deref())
     }
 }
 
-fn read_file(
-    root: &Path,
-    disk: &Arc<NodeDisk>,
+fn read_file(root: &Path, disk: &Arc<NodeDisk>, link: &AuditArchiveLink) -> Result<Vec<u8>> {
+    let path = root.join(format!("{}.audit", link.object_id));
+    let (root, relative) = disk.binding(&path)?;
+    read_object(&disk.open_file(root, relative)?, link, false)
+}
+
+/// Read and check one complete object through the handle that holds its
+/// enrolled name. Every read verifies that name still binds this inode.
+fn read_object(
+    file: &crate::NodeDiskFile,
     link: &AuditArchiveLink,
     durable: bool,
 ) -> Result<Vec<u8>> {
-    let path = root.join(format!("{}.audit", link.object_id));
-    let (root, relative) = disk.binding(&path)?;
-    let file = disk.open_file(root, relative)?;
     let length = file.observed_len()?;
     ensure!(
         length <= MAX_AUDIT_SEGMENT_BYTES as u64,
@@ -729,7 +752,7 @@ fn read_file(
 #[async_trait]
 impl AuditArchiveDestination for FilesystemAuditArchive {
     fn identity(&self) -> String {
-        format!("filesystem:{}", self.root.display())
+        filesystem_identity(&self.root)
     }
     async fn publish(&self, segment: &PreparedAuditSegment) -> Result<()> {
         segment.reference.validate()?;
@@ -741,10 +764,12 @@ impl AuditArchiveDestination for FilesystemAuditArchive {
         );
         let archive = Self {
             root: self.root.clone(),
-            _directory: self._directory.clone(),
+            directory: self.directory.clone(),
             disk: self.disk.clone(),
             observer: self.observer.clone(),
             publication: self.publication.clone(),
+            #[cfg(test)]
+            publication_hook: self.publication_hook.clone(),
         };
         let segment = PreparedAuditSegment {
             reference: segment.reference.clone(),
@@ -756,7 +781,7 @@ impl AuditArchiveDestination for FilesystemAuditArchive {
         let root = self.root.clone();
         let disk = self.disk.clone();
         let link = link.clone();
-        tokio::task::spawn_blocking(move || read_file(&root, &disk, &link, false)).await?
+        tokio::task::spawn_blocking(move || read_file(&root, &disk, &link)).await?
     }
 }
 
@@ -824,6 +849,23 @@ mod tests {
         fixture_memory: Arc<dyn crate::NodeDiskMemoryAdmission>,
         fixture_scratch: std::sync::Arc<crate::ScratchDisk>,
     ) -> Arc<TenantStore> {
+        tenant_store(
+            directory,
+            "__kasumi_security",
+            create,
+            fixture_memory,
+            fixture_scratch,
+        )
+        .await
+    }
+
+    async fn tenant_store(
+        directory: &Path,
+        tenant: &str,
+        create: bool,
+        fixture_memory: Arc<dyn crate::NodeDiskMemoryAdmission>,
+        fixture_scratch: std::sync::Arc<crate::ScratchDisk>,
+    ) -> Arc<TenantStore> {
         let path = directory.join("audit.kv");
         let node = if create {
             NodeStore::create_new_fixture(
@@ -844,19 +886,346 @@ mod tests {
         (if create {
             TenantStore::initialize_catalog_fixture(
                 node,
-                "__kasumi_security".into(),
+                tenant.into(),
                 Arc::new(LocalKeyProvider::new([73; 32])),
             )
             .await
         } else {
             TenantStore::open_existing_fixture(
                 node,
-                "__kasumi_security".into(),
+                tenant.into(),
                 Arc::new(LocalKeyProvider::new([73; 32])),
             )
             .await
         })
         .unwrap()
+    }
+
+    async fn restart(
+        store: Arc<TenantStore>,
+        directory: &Path,
+        tenant: &str,
+        fixture_memory: Arc<dyn crate::NodeDiskMemoryAdmission>,
+        fixture_scratch: std::sync::Arc<crate::ScratchDisk>,
+    ) -> Arc<TenantStore> {
+        store.shutdown().await.unwrap();
+        store.node.shutdown().await.unwrap();
+        drop(store);
+        tenant_store(directory, tenant, false, fixture_memory, fixture_scratch).await
+    }
+
+    fn assert_placement_unavailable(store: &TenantStore) {
+        let error = store.tenant_audit_archive().err().unwrap();
+        assert_eq!(
+            error.downcast_ref::<kasumi_types::Error>().unwrap().code,
+            kasumi_types::ErrorCode::Unavailable
+        );
+    }
+
+    fn s3_destination(bucket: &str) -> Arc<S3AuditArchive> {
+        let credential: Arc<dyn kasumi_transport::credentials::CredentialSource> = Arc::new(|| {
+            Ok(Zeroizing::new(
+                serde_json::json!({
+                    "access_key_id": "AKIAIOSFODNN7EXAMPLE",
+                    "secret_access_key": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+                    "session_token": null
+                })
+                .to_string(),
+            ))
+        });
+        Arc::new(S3AuditArchive::new(Arc::new(
+            S3BackupDestination::new(crate::S3BackupConfig {
+                endpoint: "https://s3.example.invalid".into(),
+                region: "us-east-1".into(),
+                bucket: bucket.into(),
+                prefix: "audit/v1".into(),
+                credential,
+                ca_pem: None,
+                max_bytes: MAX_AUDIT_SEGMENT_BYTES,
+            })
+            .unwrap(),
+        )))
+    }
+
+    #[tokio::test]
+    async fn missing_placement_is_unavailable_and_never_writes_a_default_across_restart() {
+        let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+        let scratch_directory = crate::test_utils::private_tempdir().unwrap();
+        let fixture_scratch =
+            crate::ScratchDisk::fixture(scratch_directory.path(), fixture_memory.clone());
+        let directory = crate::test_utils::private_tempdir().unwrap();
+        let cache = directory.path().join("tenant-audit-archives");
+        let mut original = tenant_store(
+            directory.path(),
+            "tenant",
+            true,
+            fixture_memory.clone(),
+            fixture_scratch.clone(),
+        )
+        .await;
+        for _ in 0..2 {
+            assert_placement_unavailable(&original);
+            assert!(original.get(PLACEMENT, b"identity").unwrap().is_none());
+            assert!(!cache.exists(), "a missing placement created a cache");
+            original = restart(
+                original,
+                directory.path(),
+                "tenant",
+                fixture_memory.clone(),
+                fixture_scratch.clone(),
+            )
+            .await;
+        }
+        assert_placement_unavailable(&original);
+        assert!(original.get(PLACEMENT, b"identity").unwrap().is_none());
+
+        let installed = original.install_fixture_tenant_audit_archive().unwrap();
+        let identity = filesystem_identity(&cache);
+        assert_eq!(installed.destination_identity(), identity);
+        let row = original.get(PLACEMENT, b"identity").unwrap().unwrap();
+        assert_eq!(row, placement_identity(&identity, &identity).unwrap());
+        assert!(Arc::ptr_eq(
+            &installed,
+            &original.install_fixture_tenant_audit_archive().unwrap()
+        ));
+        // A persisted local-replica-only row is still not an installation.
+        let reopened = restart(
+            original,
+            directory.path(),
+            "tenant",
+            fixture_memory.clone(),
+            fixture_scratch.clone(),
+        )
+        .await;
+        assert_placement_unavailable(&reopened);
+        assert_eq!(reopened.get(PLACEMENT, b"identity").unwrap().unwrap(), row);
+        reopened.install_fixture_tenant_audit_archive().unwrap();
+        assert_eq!(
+            reopened
+                .tenant_audit_archive()
+                .unwrap()
+                .destination_identity(),
+            identity
+        );
+        reopened.shutdown().await.unwrap();
+        reopened.node.shutdown().await.unwrap();
+
+        // Fixture placement is unavailable to every production storage purpose.
+        let other = crate::test_utils::private_tempdir().unwrap();
+        let security = store(other.path(), true, fixture_memory, fixture_scratch).await;
+        assert!(security.install_fixture_tenant_audit_archive().is_err());
+        assert!(security.get(PLACEMENT, b"identity").unwrap().is_none());
+        assert!(!other.path().join("tenant-audit-archives").exists());
+        security.shutdown().await.unwrap();
+        security.node.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn custody_fixtures_install_only_the_explicit_fixture_placement() {
+        let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+        let scratch_directory = crate::test_utils::private_tempdir().unwrap();
+        let fixture_scratch =
+            crate::ScratchDisk::fixture(scratch_directory.path(), fixture_memory.clone());
+        let custody = || Arc::new(LocalKeyProvider::new([241; 32]));
+
+        let local = crate::test_utils::private_tempdir().unwrap();
+        let store = tenant_store(
+            local.path(),
+            "tenant",
+            true,
+            fixture_memory.clone(),
+            fixture_scratch.clone(),
+        )
+        .await;
+        let stores = crate::test_utils::initialize_custody_fixture(store.clone(), custody())
+            .await
+            .unwrap();
+        let identity = filesystem_identity(&local.path().join("tenant-audit-archives"));
+        assert_eq!(
+            store.tenant_audit_archive().unwrap().destination_identity(),
+            identity
+        );
+        stores.shutdown().await.unwrap();
+        store.node.shutdown().await.unwrap();
+
+        // A fixture-assembled Control store keeps its production purpose: the
+        // fixture placement is refused without creating a cache, and only the
+        // custody fixture's explicit local-replica-only opt-in installs one.
+        let control = crate::test_utils::private_tempdir().unwrap();
+        let store = tenant_store(
+            control.path(),
+            "__kasumi_control",
+            true,
+            fixture_memory.clone(),
+            fixture_scratch.clone(),
+        )
+        .await;
+        let cache = control.path().join("tenant-audit-archives");
+        assert!(store.install_fixture_tenant_audit_archive().is_err());
+        assert_placement_unavailable(&store);
+        assert!(store.get(PLACEMENT, b"identity").unwrap().is_none());
+        assert!(!cache.exists());
+        let stores = crate::test_utils::initialize_custody_fixture(store.clone(), custody())
+            .await
+            .unwrap();
+        let identity = filesystem_identity(&cache);
+        assert_eq!(
+            store.tenant_audit_archive().unwrap().destination_identity(),
+            identity
+        );
+        assert_eq!(
+            store.get(PLACEMENT, b"identity").unwrap().unwrap(),
+            placement_identity(&identity, &identity).unwrap()
+        );
+        stores.shutdown().await.unwrap();
+        store.node.shutdown().await.unwrap();
+
+        // A placement installed first is kept, and a reopened fixture set never
+        // replaces its persisted external destination with the local cache.
+        let external = crate::test_utils::private_tempdir().unwrap();
+        let store = tenant_store(
+            external.path(),
+            "tenant",
+            true,
+            fixture_memory.clone(),
+            fixture_scratch.clone(),
+        )
+        .await;
+        let destination = Arc::new(
+            FilesystemAuditArchive::open(
+                external.path().join("installed-external"),
+                store.persistent_disk().clone(),
+            )
+            .unwrap(),
+        );
+        store
+            .install_tenant_audit_archive(
+                Arc::new(
+                    FilesystemAuditArchive::open(
+                        external.path().join("tenant-audit-archives"),
+                        store.persistent_disk().clone(),
+                    )
+                    .unwrap(),
+                ),
+                destination.clone(),
+            )
+            .unwrap();
+        let row = store.get(PLACEMENT, b"identity").unwrap().unwrap();
+        let stores = crate::test_utils::initialize_custody_fixture(store.clone(), custody())
+            .await
+            .unwrap();
+        assert_eq!(
+            store.tenant_audit_archive().unwrap().destination_identity(),
+            destination.identity()
+        );
+        stores.shutdown().await.unwrap();
+        let reopened = restart(
+            store,
+            external.path(),
+            "tenant",
+            fixture_memory.clone(),
+            fixture_scratch.clone(),
+        )
+        .await;
+        assert!(
+            crate::test_utils::open_existing_custody_fixture(reopened.clone(), custody())
+                .await
+                .is_err()
+        );
+        let reopened = restart(
+            reopened,
+            external.path(),
+            "tenant",
+            fixture_memory.clone(),
+            fixture_scratch.clone(),
+        )
+        .await;
+        assert_placement_unavailable(&reopened);
+        assert_eq!(reopened.get(PLACEMENT, b"identity").unwrap().unwrap(), row);
+        reopened.shutdown().await.unwrap();
+        reopened.node.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn persisted_s3_placement_rejects_a_later_filesystem_install_after_restart() {
+        let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+        let scratch_directory = crate::test_utils::private_tempdir().unwrap();
+        let fixture_scratch =
+            crate::ScratchDisk::fixture(scratch_directory.path(), fixture_memory.clone());
+        let directory = crate::test_utils::private_tempdir().unwrap();
+        let store = tenant_store(
+            directory.path(),
+            "tenant",
+            true,
+            fixture_memory.clone(),
+            fixture_scratch.clone(),
+        )
+        .await;
+        let cache = Arc::new(
+            FilesystemAuditArchive::open(
+                directory.path().join("tenant-audit-archives"),
+                store.persistent_disk().clone(),
+            )
+            .unwrap(),
+        );
+        let s3 = s3_destination("audit-bucket");
+        store
+            .install_tenant_audit_archive(cache.clone(), s3.clone())
+            .unwrap();
+        let row = store.get(PLACEMENT, b"identity").unwrap().unwrap();
+        assert_eq!(
+            row,
+            placement_identity(&cache.identity(), &s3.identity()).unwrap()
+        );
+        drop(cache);
+        let store = restart(
+            store,
+            directory.path(),
+            "tenant",
+            fixture_memory.clone(),
+            fixture_scratch.clone(),
+        )
+        .await;
+        // No reinstall: replay cannot start and nothing selects the cache.
+        assert_placement_unavailable(&store);
+        assert_eq!(store.get(PLACEMENT, b"identity").unwrap().unwrap(), row);
+        let cache = Arc::new(
+            FilesystemAuditArchive::open(
+                directory.path().join("tenant-audit-archives"),
+                store.persistent_disk().clone(),
+            )
+            .unwrap(),
+        );
+        assert!(
+            store
+                .install_tenant_audit_archive(cache.clone(), cache.clone())
+                .is_err()
+        );
+        assert!(store.install_fixture_tenant_audit_archive().is_err());
+        assert!(
+            store
+                .install_tenant_audit_archive(cache.clone(), s3_destination("other-bucket"))
+                .is_err()
+        );
+        assert_placement_unavailable(&store);
+        assert_eq!(store.get(PLACEMENT, b"identity").unwrap().unwrap(), row);
+        // Renewable credentials are not identity: the same namespace reinstalls.
+        let placement = store
+            .install_tenant_audit_archive(cache.clone(), s3_destination("audit-bucket"))
+            .unwrap();
+        assert_eq!(placement.destination_identity(), s3.identity());
+        assert!(
+            store
+                .install_tenant_audit_archive(cache.clone(), cache)
+                .is_err(),
+            "a live S3 placement cannot be replaced by its local cache"
+        );
+        assert_eq!(
+            store.tenant_audit_archive().unwrap().destination_identity(),
+            s3.identity()
+        );
+        store.shutdown().await.unwrap();
+        store.node.shutdown().await.unwrap();
     }
 
     #[tokio::test]
@@ -908,10 +1277,16 @@ mod tests {
             fixture_scratch.clone(),
         )
         .await;
+        let row = reopened.get(PLACEMENT, b"identity").unwrap().unwrap();
+        // A missing destination must prevent replay without any fallback.
+        assert_placement_unavailable(&reopened);
         assert!(
-            reopened.tenant_audit_archive().is_err(),
-            "missing destination must prevent replay"
+            reopened
+                .install_tenant_audit_archive(cache.clone(), cache.clone())
+                .is_err()
         );
+        assert_placement_unavailable(&reopened);
+        assert_eq!(reopened.get(PLACEMENT, b"identity").unwrap().unwrap(), row);
         let placement = reopened
             .install_tenant_audit_archive(cache, external.clone())
             .unwrap();

@@ -1486,12 +1486,16 @@ async fn archived_audit_backup_is_self_contained_and_source_unavailable_restore_
     )
     .await
     .unwrap();
-    let domains = kasumi_store::test_utils::initialize_custody_fixture(
-        target.clone(),
+    // Assemble the target domains without any tenant audit placement; the
+    // placement is installed explicitly only after a rejected restore below.
+    let custody = TenantStore::initialize_catalog_fixture(
+        node.clone(),
+        kasumi_store::CustodyStore::catalog_name("checkpoint"),
         Arc::new(LocalKeyProvider::new([241; 32])),
     )
     .await
     .unwrap();
+    let domains = kasumi_store::test_utils::with_domains(target.clone(), custody).unwrap();
     let source = kasumi_engine::RestoreSource {
         destination_alias: "approved".into(),
         destination: missing.clone(),
@@ -1583,6 +1587,34 @@ async fn archived_audit_backup_is_self_contained_and_source_unavailable_restore_
     wrong_store.shutdown().await.unwrap();
     wrong_audit.shutdown().await.unwrap();
     wrong_node.shutdown().await.unwrap();
+    // A healthy source still cannot restore archived audit dependencies into
+    // a target whose placement was never installed: nothing is published and
+    // no default placement is selected.
+    let unplaced = kasumi_engine::restore_local(
+        &source,
+        domains.clone(),
+        common::local_restore_request(context(), proof.checkpoint(), target_incarnation),
+        target_audit.admission().clone(),
+        target_audit.clone(),
+    )
+    .await
+    .err()
+    .unwrap();
+    assert!(
+        unplaced.chain().any(|cause| cause
+            .downcast_ref::<Error>()
+            .is_some_and(|error| error.code == ErrorCode::Unavailable)),
+        "{unplaced:#}"
+    );
+    assert!(target.scan("engine.bootstrap").unwrap().is_empty());
+    assert!(target.scan("engine.audit.placement").unwrap().is_empty());
+    assert!(
+        !target_directory
+            .path()
+            .join("tenant-audit-archives")
+            .exists()
+    );
+    target.install_fixture_tenant_audit_archive().unwrap();
     let restored = kasumi_engine::restore_local(
         &source,
         domains,
@@ -1660,6 +1692,11 @@ async fn archived_audit_backup_is_self_contained_and_source_unavailable_restore_
     )
     .await
     .unwrap();
+    // The custody fixture reinstalled the placement on its reopened domain;
+    // this separately opened store instance installs its own explicitly.
+    reopened_store
+        .install_fixture_tenant_audit_archive()
+        .unwrap();
     assert!(
         kasumi_engine::open_local(
             reopened_domains.clone(),
