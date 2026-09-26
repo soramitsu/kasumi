@@ -145,6 +145,82 @@ fn identity_failure_and_uncertain_file_drop_fence_without_allocating() {
 }
 
 #[test]
+fn owner_check_latches_inode_substitution_until_a_drained_census() {
+    let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let (_directory, config) = installation();
+    let root = config.roots["data"].clone();
+    seed(&config, "file", 32 << 10);
+    let disk = open(config.clone(), fixture_memory.clone());
+    let file = disk.open_file("data", Path::new("file")).unwrap();
+    file.check_owner().unwrap();
+    let before = disk.snapshot();
+    std::fs::rename(root.join("file"), root.join("held")).unwrap();
+    // Same name, length and mode, but a different physical owner.
+    seed(&config, "file", 32 << 10);
+    let (result, allocations) = crate::allocation_tests::measure(|| file.check_owner());
+    assert!(result.is_err());
+    assert_eq!(allocations, 0, "owner check allocated an error payload");
+    assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
+    assert!(!disk.snapshot().filesystem_admission_ready);
+
+    // Negative control: restoring the original inode cannot unlatch the owner.
+    std::fs::remove_file(root.join("file")).unwrap();
+    std::fs::rename(root.join("held"), root.join("file")).unwrap();
+    assert!(file.check_owner().is_err());
+    assert!(file.observed_len().is_err());
+    assert!(file.read_exact_at(&mut [0; 8], 0).is_err());
+    assert!(file.write_all_at(&[1; 8], 0).is_err());
+    assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
+    assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes);
+    assert!(disk.pause().is_err());
+    assert!(disk.reconcile(&CensusCancellation::default()).is_err());
+    assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
+
+    drop(file);
+    disk.reconcile(&CensusCancellation::default()).unwrap();
+    assert_eq!(disk.snapshot().phase, NodeDiskPhase::Open);
+    let reopened = disk.open_file("data", Path::new("file")).unwrap();
+    reopened.check_owner().unwrap();
+    assert_eq!(reopened.observed_len().unwrap(), 32 << 10);
+    drop(reopened);
+    clean(&disk, &["file"]);
+}
+
+#[test]
+fn owner_check_under_uncertain_shared_admission_latches_until_census() {
+    let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let (_directory, config) = installation();
+    seed(&config, "file", 32 << 10);
+    let disk = open(config, fixture_memory.clone());
+    let sibling = disk.device.share(0);
+    let file = disk.open_file("data", Path::new("file")).unwrap();
+    file.check_owner().unwrap();
+    sibling.lock().fail_owner();
+    let (result, allocations) = crate::allocation_tests::measure(|| file.check_owner());
+    assert_eq!(result.unwrap_err().kind(), io::ErrorKind::Other);
+    assert_eq!(allocations, 0);
+    // The KV adapter cannot establish its own health, so it is an owner
+    // failure rather than a retryable wait for the sibling.
+    assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
+
+    // Negative control: the sibling's own reconciliation does not reopen
+    // this latched owner or shared admission.
+    sibling.lock().reconcile_owner();
+    assert!(!sibling.lock().admission_ready());
+    assert!(file.check_owner().is_err());
+    assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
+
+    drop(file);
+    disk.reconcile(&CensusCancellation::default()).unwrap();
+    assert!(sibling.lock().admission_ready());
+    let reopened = disk.open_file("data", Path::new("file")).unwrap();
+    reopened.check_owner().unwrap();
+    drop(reopened);
+    drop(sibling);
+    clean(&disk, &["file"]);
+}
+
+#[test]
 fn explicit_settlement_returns_only_unused_promises_and_requires_exact_extent() {
     let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
     let (_directory, config) = installation();
@@ -266,16 +342,23 @@ fn dropped_unmaterialized_growth_is_retained_until_exclusive_reconciliation() {
     assert!(!stopped.filesystem_admission_ready);
     assert_eq!(stopped.charged_bytes, charged.charged_bytes);
     assert_eq!(stopped.pending_bytes, charged.pending_bytes);
-    let same = crate::test_utils::retry_disk_registry(|| {
+    // A fenced owner is never shared by open, and refusal credits nothing.
+    let refused = crate::test_utils::retry_disk_registry(|| {
         NodeDisk::open(
             &config,
             fixture_memory.clone(),
             &CensusCancellation::default(),
         )
-    })
-    .unwrap();
-    assert!(Arc::ptr_eq(&same, &disk));
-    assert_eq!(same.snapshot().charged_bytes, charged.charged_bytes);
+    });
+    let Err(DiskOpenError::OwnerFenced {
+        phase: NodeDiskPhase::Failed,
+        ..
+    }) = refused
+    else {
+        panic!("open must refuse the fenced owner");
+    };
+    assert_eq!(disk.snapshot().charged_bytes, charged.charged_bytes);
+    assert_eq!(disk.snapshot().pending_bytes, charged.pending_bytes);
     disk.reconcile(&CensusCancellation::default()).unwrap();
     assert_eq!(disk.snapshot().charged_bytes, namespace_charge(&disk));
     assert!(disk.snapshot().filesystem_admission_ready);

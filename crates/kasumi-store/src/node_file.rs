@@ -442,11 +442,16 @@ impl std::fmt::Debug for NodeFile {
 }
 
 impl StorageAdmission for NodeFile {
+    /// A failed check of the owned descriptor is an owner failure: the disk
+    /// stays failed until every owner drains and an accepted census reopens
+    /// it, even if the original inode or shared admission later reappears.
     fn check_owner(&self) -> std::result::Result<(), OwnerFailed> {
         let guard = self.file.read();
-        present(&guard)
-            .and_then(NodeDiskFile::check_owner)
-            .map_err(|_| OwnerFailed)
+        let file = present(&guard).map_err(|_| OwnerFailed)?;
+        file.check_owner().map_err(|_| {
+            self.disk.fail();
+            OwnerFailed
+        })
     }
 
     fn reserve_workspace(

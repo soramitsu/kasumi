@@ -2059,12 +2059,17 @@ impl NodeDiskFile {
     }
 
     /// The installed KV adapter uses this before every physical operation.
-    /// Failure is represented without allocating an error payload.
+    /// Failure is represented without allocating an error payload. Once the
+    /// owner is open, every failure latches the disk: identity substitution,
+    /// an unexpected extent and uncertain shared admission are owner failures
+    /// until drain and an accepted census, never a retryable busy state.
     pub fn check_owner(&self) -> io::Result<()> {
         self.ensure_open()?;
         let budget = self.0.lock_budget()?;
         let file = budget.file.as_ref().ok_or(io::ErrorKind::BrokenPipe)?;
-        self.0.check(file)?;
+        // Verification failures latch inside check. A failed or uncertain
+        // shared admission returns before verification and latches here.
+        self.0.check(file).inspect_err(|_| self.0.disk.fail())?;
         let mut state = self.0.disk.lock_state();
         self.0.check_enrollment(&mut state, &budget)?;
         if file
@@ -2080,6 +2085,7 @@ impl NodeDiskFile {
             return Err(io::ErrorKind::InvalidData.into());
         }
         if state.phase == NodeDiskPhase::Failed || !self.0.disk.device.lock().admission_ready() {
+            self.0.disk.fail_locked(&mut state);
             return Err(io::ErrorKind::Other.into());
         }
         Ok(())

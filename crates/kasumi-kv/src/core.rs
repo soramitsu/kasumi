@@ -1,10 +1,12 @@
 //! Append-only transactional storage with two checksummed commit headers.
 //!
 //! A commit writes and synchronizes its complete frame before publishing its
-//! alternate header. A failed I/O operation fences the instance; reopening
-//! chooses the newest intact header and validates every committed frame. Values
-//! remain on the backend. The resident ordered index contains keys and value
-//! offsets only, and every index node is admitted before allocation.
+//! alternate header. A failed I/O operation, a failed owner check, a poisoned
+//! lock or an unwinding backend or admission callback fences the instance
+//! once; the fence is sticky until close and a strict reopen, which chooses the
+//! newest intact header and validates every committed frame. Values remain on
+//! the backend. The resident ordered index contains keys and value offsets
+//! only, and every index node is admitted before allocation.
 
 use std::any::Any;
 #[cfg(test)]
@@ -25,7 +27,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 #[cfg(test)]
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, TryLockError};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, TryLockError};
 
 // The public tenant API caps plaintext at 32 MiB. This physical limit leaves
 // room for authenticated envelopes and metadata around that plaintext.
@@ -243,6 +245,9 @@ impl fmt::Display for AdmissionError {
 }
 impl std::error::Error for AdmissionError {}
 
+/// Physical-owner admission. An `OwnerFailed` from any call, including
+/// `check_owner`, fences the core, which then calls `owner_failed` exactly
+/// once. `CapacityDenied` is decided before any backend effect and never fences.
 pub trait StorageAdmission: Send + Sync {
     fn check_owner(&self) -> Result<(), OwnerFailed>;
     fn reserve_workspace(&self, bytes: u64) -> Result<Box<dyn ResidentLease>, AdmissionError>;
@@ -290,9 +295,33 @@ impl std::error::Error for CoreError {
         }
     }
 }
+impl CoreError {
+    /// An unwinding commit may have entered any backend effect. The payload
+    /// stays inspectable as the `CorePanic` source of the unknown outcome.
+    fn unknown_commit(panic: CorePanic) -> Self {
+        Self::UnknownCommit(io::Error::other(panic))
+    }
 
-/// Original unwind payload from a direct storage opening. The payload remains
-/// owned and inspectable without requiring it to implement `Sync`.
+    fn panicked(panic: CorePanic) -> Self {
+        Self::Panicked(Box::new(panic))
+    }
+
+    /// Errors that leave the physical owner or a backend effect uncertain.
+    /// Capacity, input, table and close errors are decided before any effect.
+    fn fences_owner(&self) -> bool {
+        matches!(
+            self,
+            Self::Io(_)
+                | Self::Corrupt(_)
+                | Self::OwnerFailed
+                | Self::UnknownCommit(_)
+                | Self::Panicked(_)
+        )
+    }
+}
+
+/// Original unwind payload from a storage operation or opening. The payload
+/// remains owned and inspectable without requiring it to implement `Sync`.
 pub struct CorePanic(Mutex<Box<dyn Any + Send>>);
 
 impl CorePanic {
@@ -317,7 +346,7 @@ impl fmt::Debug for CorePanic {
 
 impl fmt::Display for CorePanic {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("storage opening panicked; original payload retained")
+        f.write_str("storage operation panicked; original payload retained")
     }
 }
 
@@ -1015,7 +1044,6 @@ struct State {
     committed_end: u64,
     compaction_check_end: u64,
     slot: usize,
-    fenced: bool,
     close_entered: bool,
     close_report: Option<CoreCloseReport>,
     closed: bool,
@@ -1026,20 +1054,65 @@ struct Shared {
     admission: Arc<dyn StorageAdmission>,
     index_pool: Arc<IndexChargePool>,
     stopped: AtomicBool,
+    fenced: AtomicBool,
+    fence_panic: OnceLock<CorePanic>,
     snapshots: AtomicUsize,
     owner_id: u64,
 }
 impl Shared {
-    fn check_read_owner(&self, state: &State) -> Result<(), CoreError> {
+    /// Latch owner failure. The admission owner is told exactly once; an
+    /// unwinding callback cannot unlatch the fence and its payload is kept.
+    fn fence(&self) {
+        if self.fenced.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        if let Err(payload) = catch_unwind(AssertUnwindSafe(|| self.admission.owner_failed())) {
+            let _ = self.fence_panic.set(CorePanic::new(payload));
+        }
+    }
+
+    /// A poisoned state lock means an earlier holder unwound with an
+    /// unknown effect. It is an owner failure, never a retryable busy state.
+    fn lock_state(&self) -> Result<MutexGuard<'_, State>, CoreError> {
+        self.state.lock().map_err(|_| {
+            self.fence();
+            CoreError::OwnerFailed
+        })
+    }
+
+    fn check_owner(&self) -> Result<(), CoreError> {
+        if self.fenced.load(Ordering::Acquire) {
+            return Err(CoreError::OwnerFailed);
+        }
+        self.admission.check_owner().map_err(|_| {
+            self.fence();
+            CoreError::OwnerFailed
+        })
+    }
+
+    fn check_open(&self, state: &State) -> Result<(), CoreError> {
         if state.closed || self.stopped.load(Ordering::Acquire) {
             return Err(CoreError::Closed);
         }
-        if state.fenced {
-            return Err(CoreError::OwnerFailed);
+        self.check_owner()
+    }
+
+    /// Run one installed operation under the state lock. An owner-failure
+    /// error or an unwind from a backend or admission callback fences before
+    /// the lock is released, so no later caller can act on an uncertain
+    /// owner. An error returned while unfenced had no committed effect.
+    fn run<T>(
+        &self,
+        unwound: fn(CorePanic) -> CoreError,
+        work: impl FnOnce(&mut State) -> Result<T, CoreError>,
+    ) -> Result<T, CoreError> {
+        let mut state = self.lock_state()?;
+        let result = catch_unwind(AssertUnwindSafe(|| work(&mut state)))
+            .unwrap_or_else(|payload| Err(unwound(CorePanic::new(payload))));
+        if result.as_ref().is_err_and(CoreError::fences_owner) {
+            self.fence();
         }
-        self.admission
-            .check_owner()
-            .map_err(|_| CoreError::OwnerFailed)
+        result
     }
 }
 pub struct Core {
@@ -1084,17 +1157,14 @@ impl ReadSnapshot {
         self.generation
     }
     pub fn table_exists(&self, table: &str) -> Result<bool, CoreError> {
-        let state = self
-            .shared
-            .state
-            .lock()
-            .map_err(|_| CoreError::OwnerFailed)?;
-        self.shared.check_read_owner(&state)?;
-        Ok(state
-            .index
-            .tables
-            .get(table)
-            .is_some_and(|table| table.birth_generation <= self.generation))
+        self.shared.run(CoreError::panicked, |state| {
+            self.shared.check_open(state)?;
+            Ok(state
+                .index
+                .tables
+                .get(table)
+                .is_some_and(|table| table.birth_generation <= self.generation))
+        })
     }
     #[cfg(test)]
     fn next_key(
@@ -1103,30 +1173,27 @@ impl ReadSnapshot {
         start: &[u8],
         after: Option<&[u8]>,
     ) -> Result<Option<Vec<u8>>, CoreError> {
-        let state = self
-            .shared
-            .state
-            .lock()
-            .map_err(|_| CoreError::OwnerFailed)?;
-        self.shared.check_read_owner(&state)?;
-        let Some(table) = state.index.tables.get(table) else {
-            return Ok(None);
-        };
-        if table.birth_generation > self.generation {
-            return Ok(None);
-        }
-        let rows = &table.rows;
-        let lower = match after {
-            Some(after) if after >= start => Excluded(after),
-            _ => Included(start),
-        };
-        Ok(rows
-            .range::<[u8], _>((lower, Unbounded))
-            .find_map(|(key, entry)| {
-                visible(&entry.head, self.generation)
-                    .flatten()
-                    .map(|_| key.clone())
-            }))
+        self.shared.run(CoreError::panicked, |state| {
+            self.shared.check_open(state)?;
+            let Some(table) = state.index.tables.get(table) else {
+                return Ok(None);
+            };
+            if table.birth_generation > self.generation {
+                return Ok(None);
+            }
+            let rows = &table.rows;
+            let lower = match after {
+                Some(after) if after >= start => Excluded(after),
+                _ => Included(start),
+            };
+            Ok(rows
+                .range::<[u8], _>((lower, Unbounded))
+                .find_map(|(key, entry)| {
+                    visible(&entry.head, self.generation)
+                        .flatten()
+                        .map(|_| key.clone())
+                }))
+        })
     }
     pub fn next_key_admitted(
         &self,
@@ -1134,40 +1201,39 @@ impl ReadSnapshot {
         start: &[u8],
         after: Option<&[u8]>,
     ) -> Result<Option<AdmittedValue>, CoreError> {
-        let state = self
-            .shared
-            .state
-            .lock()
-            .map_err(|_| CoreError::OwnerFailed)?;
-        self.shared.check_read_owner(&state)?;
-        let table = state
-            .index
-            .tables
-            .get(table)
-            .ok_or(CoreError::MissingTable)?;
-        if table.birth_generation > self.generation {
-            return Err(CoreError::MissingTable);
-        }
-        let lower = match after {
-            Some(after) if after >= start => Excluded(after),
-            _ => Included(start),
-        };
-        let key = table
-            .rows
-            .range::<[u8], _>((lower, Unbounded))
-            .find_map(|(key, entry)| visible(&entry.head, self.generation).flatten().map(|_| key));
-        match key {
-            None => Ok(None),
-            Some(key) => {
-                let lease = reserve(&self.shared.admission, key.len() as u64)?;
-                let mut bytes = Vec::new();
-                bytes
-                    .try_reserve_exact(key.len())
-                    .map_err(|_| CoreError::CapacityDenied)?;
-                bytes.extend_from_slice(key);
-                Ok(Some(AdmittedValue { bytes, lease }))
+        self.shared.run(CoreError::panicked, |state| {
+            self.shared.check_open(state)?;
+            let table = state
+                .index
+                .tables
+                .get(table)
+                .ok_or(CoreError::MissingTable)?;
+            if table.birth_generation > self.generation {
+                return Err(CoreError::MissingTable);
             }
-        }
+            let lower = match after {
+                Some(after) if after >= start => Excluded(after),
+                _ => Included(start),
+            };
+            let key = table
+                .rows
+                .range::<[u8], _>((lower, Unbounded))
+                .find_map(|(key, entry)| {
+                    visible(&entry.head, self.generation).flatten().map(|_| key)
+                });
+            match key {
+                None => Ok(None),
+                Some(key) => {
+                    let lease = reserve(&self.shared.admission, key.len() as u64)?;
+                    let mut bytes = Vec::new();
+                    bytes
+                        .try_reserve_exact(key.len())
+                        .map_err(|_| CoreError::CapacityDenied)?;
+                    bytes.extend_from_slice(key);
+                    Ok(Some(AdmittedValue { bytes, lease }))
+                }
+            }
+        })
     }
 }
 
@@ -1217,6 +1283,8 @@ impl IndexChargePool {
         })
     }
     fn claim(self: &Arc<Self>, bytes: u64) -> Result<Box<dyn ResidentLease>, CoreError> {
+        // Poison means an admission callback unwound mid-reservation. Every
+        // installed caller runs under `Shared::run`, which fences on this.
         let mut state = self.state.lock().map_err(|_| CoreError::OwnerFailed)?;
         let next_used = state
             .used
@@ -1758,7 +1826,6 @@ impl Core {
                     committed_end: header.end,
                     compaction_check_end: header.end,
                     slot: header.slot,
-                    fenced: false,
                     close_entered: false,
                     close_report: None,
                     closed: false,
@@ -1767,6 +1834,8 @@ impl Core {
                 admission,
                 index_pool,
                 stopped: AtomicBool::new(false),
+                fenced: AtomicBool::new(false),
+                fence_panic: OnceLock::new(),
                 snapshots: AtomicUsize::new(0),
                 owner_id: NEXT_OWNER.fetch_add(1, Ordering::Relaxed),
             }),
@@ -1777,46 +1846,47 @@ impl Core {
         if self.shared.stopped.load(Ordering::Acquire) {
             return Err(CoreError::Closed);
         }
-        let state = self
-            .shared
-            .state
-            .lock()
-            .map_err(|_| CoreError::OwnerFailed)?;
-        self.shared.check_read_owner(&state)?;
-        self.shared.snapshots.fetch_add(1, Ordering::AcqRel);
-        Ok(ReadSnapshot {
-            shared: self.shared.clone(),
-            generation: state.generation,
+        self.shared.run(CoreError::panicked, |state| {
+            self.shared.check_open(state)?;
+            self.shared.snapshots.fetch_add(1, Ordering::AcqRel);
+            Ok(ReadSnapshot {
+                shared: self.shared.clone(),
+                generation: state.generation,
+            })
         })
     }
 
     pub(crate) fn check_read_owner(&self) -> Result<(), CoreError> {
-        let state = self
-            .shared
-            .state
-            .lock()
-            .map_err(|_| CoreError::OwnerFailed)?;
-        self.shared.check_read_owner(&state)
+        self.shared
+            .run(CoreError::panicked, |state| self.shared.check_open(state))
+    }
+
+    /// Whether this instance has latched an owner failure. An error returned
+    /// while unfenced was decided before any effect and left every committed
+    /// value unchanged. Once fenced, every operation reports `OwnerFailed`
+    /// until close; only a strict reopen decides an uncertain outcome.
+    pub fn is_fenced(&self) -> bool {
+        self.shared.fenced.load(Ordering::Acquire)
+    }
+
+    /// The original payload of an admission `owner_failed` callback that
+    /// unwound while this instance was being fenced.
+    pub fn fence_panic(&self) -> Option<&CorePanic> {
+        self.shared.fence_panic.get()
     }
 
     pub fn generation(&self) -> Result<u64, CoreError> {
-        let state = self
-            .shared
-            .state
-            .lock()
-            .map_err(|_| CoreError::OwnerFailed)?;
-        self.shared.check_read_owner(&state)?;
-        Ok(state.generation)
+        self.shared.run(CoreError::panicked, |state| {
+            self.shared.check_open(state)?;
+            Ok(state.generation)
+        })
     }
 
     pub fn committed_end(&self) -> Result<u64, CoreError> {
-        let state = self
-            .shared
-            .state
-            .lock()
-            .map_err(|_| CoreError::OwnerFailed)?;
-        self.shared.check_read_owner(&state)?;
-        Ok(state.committed_end)
+        self.shared.run(CoreError::panicked, |state| {
+            self.shared.check_open(state)?;
+            Ok(state.committed_end)
+        })
     }
 
     /// Reclaim obsolete log records while preserving the selected committed
@@ -1827,19 +1897,10 @@ impl Core {
         if self.shared.stopped.load(Ordering::Acquire) {
             return Err(CoreError::Closed);
         }
-        let mut state = self
-            .shared
-            .state
-            .lock()
-            .map_err(|_| CoreError::OwnerFailed)?;
-        if state.closed || state.fenced || self.shared.stopped.load(Ordering::Acquire) {
-            return Err(CoreError::Closed);
-        }
-        self.shared
-            .admission
-            .check_owner()
-            .map_err(|_| CoreError::OwnerFailed)?;
-        self.compact_locked(&mut state)
+        self.shared.run(CoreError::panicked, |state| {
+            self.shared.check_open(state)?;
+            self.compact_locked(state)
+        })
     }
 
     /// Run bounded maintenance before a write transaction pins its read
@@ -1848,19 +1909,10 @@ impl Core {
         if self.shared.stopped.load(Ordering::Acquire) {
             return Err(CoreError::Closed);
         }
-        let mut state = self
-            .shared
-            .state
-            .lock()
-            .map_err(|_| CoreError::OwnerFailed)?;
-        if state.closed || state.fenced || self.shared.stopped.load(Ordering::Acquire) {
-            return Err(CoreError::Closed);
-        }
-        self.shared
-            .admission
-            .check_owner()
-            .map_err(|_| CoreError::OwnerFailed)?;
-        self.maybe_compact_locked(&mut state)
+        self.shared.run(CoreError::panicked, |state| {
+            self.shared.check_open(state)?;
+            self.maybe_compact_locked(state)
+        })
     }
 
     fn maybe_compact_locked(&self, state: &mut State) -> Result<(), CoreError> {
@@ -1954,8 +2006,7 @@ impl Core {
             return Err(CoreError::Corrupt("shadow relocation overlaps its source"));
         }
         let physical_len = state.backend.len().map_err(|error| {
-            state.fenced = true;
-            self.shared.admission.owner_failed();
+            self.shared.fence();
             CoreError::Io(error)
         })?;
         if front {
@@ -1987,8 +2038,7 @@ impl Core {
         let generation = match result {
             Ok(generation) => generation,
             Err(error) => {
-                state.fenced = true;
-                self.shared.admission.owner_failed();
+                self.shared.fence();
                 return Err(error);
             }
         };
@@ -2017,8 +2067,7 @@ impl Core {
                 .write(((1 - state.slot) * HEADER_BYTES) as u64, &front_header)
                 .and_then(|()| state.backend.sync_data())
             {
-                state.fenced = true;
-                self.shared.admission.owner_failed();
+                self.shared.fence();
                 return Err(CoreError::Io(error));
             }
             // A failed truncate now leaves two valid front headers for reopen.
@@ -2027,13 +2076,11 @@ impl Core {
                 .set_len(target_end)
                 .and_then(|()| state.backend.sync_data())
             {
-                state.fenced = true;
-                self.shared.admission.owner_failed();
+                self.shared.fence();
                 return Err(CoreError::Io(error));
             }
             if self.shared.admission.settle_growth(target_end).is_err() {
-                state.fenced = true;
-                self.shared.admission.owner_failed();
+                self.shared.fence();
                 return Err(CoreError::OwnerFailed);
             }
             state.compaction_check_end = target_end;
@@ -2061,29 +2108,26 @@ impl Core {
         max_value_bytes: usize,
     ) -> Result<Option<AdmittedValue>, CoreError> {
         self.check_snapshot(snapshot)?;
-        let mut state = self
-            .shared
-            .state
-            .lock()
-            .map_err(|_| CoreError::OwnerFailed)?;
-        self.shared.check_read_owner(&state)?;
-        let Some(table) = state.index.tables.get(table) else {
-            return Err(CoreError::MissingTable);
-        };
-        if table.birth_generation > snapshot.generation {
-            return Err(CoreError::MissingTable);
-        }
-        let reference = table
-            .rows
-            .get(key)
-            .and_then(|entry| visible(&entry.head, snapshot.generation))
-            .flatten();
-        match reference {
-            None => Ok(None),
-            Some(reference) => self
-                .read_value_admitted(&mut state, reference, max_value_bytes)
-                .map(Some),
-        }
+        self.shared.run(CoreError::panicked, |state| {
+            self.shared.check_open(state)?;
+            let Some(table) = state.index.tables.get(table) else {
+                return Err(CoreError::MissingTable);
+            };
+            if table.birth_generation > snapshot.generation {
+                return Err(CoreError::MissingTable);
+            }
+            let reference = table
+                .rows
+                .get(key)
+                .and_then(|entry| visible(&entry.head, snapshot.generation))
+                .flatten();
+            match reference {
+                None => Ok(None),
+                Some(reference) => self
+                    .read_value_admitted(state, reference, max_value_bytes)
+                    .map(Some),
+            }
+        })
     }
 
     /// Inspect only the charged snapshot index. No row bytes escape or need
@@ -2095,25 +2139,22 @@ impl Core {
         key: &[u8],
     ) -> Result<bool, CoreError> {
         self.check_snapshot(snapshot)?;
-        let state = self
-            .shared
-            .state
-            .lock()
-            .map_err(|_| CoreError::OwnerFailed)?;
-        self.shared.check_read_owner(&state)?;
-        let table = state
-            .index
-            .tables
-            .get(table)
-            .ok_or(CoreError::MissingTable)?;
-        if table.birth_generation > snapshot.generation {
-            return Err(CoreError::MissingTable);
-        }
-        Ok(table.rows.get(key).is_some_and(|entry| {
-            visible(&entry.head, snapshot.generation)
-                .flatten()
-                .is_some()
-        }))
+        self.shared.run(CoreError::panicked, |state| {
+            self.shared.check_open(state)?;
+            let table = state
+                .index
+                .tables
+                .get(table)
+                .ok_or(CoreError::MissingTable)?;
+            if table.birth_generation > snapshot.generation {
+                return Err(CoreError::MissingTable);
+            }
+            Ok(table.rows.get(key).is_some_and(|entry| {
+                visible(&entry.head, snapshot.generation)
+                    .flatten()
+                    .is_some()
+            }))
+        })
     }
 
     pub fn prefix_exists(
@@ -2123,29 +2164,26 @@ impl Core {
         prefix: &[u8],
     ) -> Result<bool, CoreError> {
         self.check_snapshot(snapshot)?;
-        let state = self
-            .shared
-            .state
-            .lock()
-            .map_err(|_| CoreError::OwnerFailed)?;
-        self.shared.check_read_owner(&state)?;
-        let table = state
-            .index
-            .tables
-            .get(table)
-            .ok_or(CoreError::MissingTable)?;
-        if table.birth_generation > snapshot.generation {
-            return Err(CoreError::MissingTable);
-        }
-        Ok(table
-            .rows
-            .range::<[u8], _>((Included(prefix), Unbounded))
-            .take_while(|(key, _)| key.starts_with(prefix))
-            .any(|(_, entry)| {
-                visible(&entry.head, snapshot.generation)
-                    .flatten()
-                    .is_some()
-            }))
+        self.shared.run(CoreError::panicked, |state| {
+            self.shared.check_open(state)?;
+            let table = state
+                .index
+                .tables
+                .get(table)
+                .ok_or(CoreError::MissingTable)?;
+            if table.birth_generation > snapshot.generation {
+                return Err(CoreError::MissingTable);
+            }
+            Ok(table
+                .rows
+                .range::<[u8], _>((Included(prefix), Unbounded))
+                .take_while(|(key, _)| key.starts_with(prefix))
+                .any(|(_, entry)| {
+                    visible(&entry.head, snapshot.generation)
+                        .flatten()
+                        .is_some()
+                }))
+        })
     }
 
     pub fn next_admitted(
@@ -2157,51 +2195,48 @@ impl Core {
         max_value_bytes: usize,
     ) -> Result<Option<(AdmittedValue, AdmittedValue)>, CoreError> {
         self.check_snapshot(snapshot)?;
-        let mut state = self
-            .shared
-            .state
-            .lock()
-            .map_err(|_| CoreError::OwnerFailed)?;
-        self.shared.check_read_owner(&state)?;
-        let Some(table) = state.index.tables.get(table) else {
-            return Err(CoreError::MissingTable);
-        };
-        if table.birth_generation > snapshot.generation {
-            return Err(CoreError::MissingTable);
-        }
-        let lower = match after {
-            Some(after) if after >= prefix => Excluded(after),
-            _ => Included(prefix),
-        };
-        let mut found = None;
-        for (key, entry) in table.rows.range::<[u8], _>((lower, Unbounded)) {
-            if !key.starts_with(prefix) {
-                break;
+        self.shared.run(CoreError::panicked, |state| {
+            self.shared.check_open(state)?;
+            let Some(table) = state.index.tables.get(table) else {
+                return Err(CoreError::MissingTable);
+            };
+            if table.birth_generation > snapshot.generation {
+                return Err(CoreError::MissingTable);
             }
-            if let Some(reference) = visible(&entry.head, snapshot.generation).flatten() {
-                let key_lease = reserve(&self.shared.admission, key.len() as u64)?;
-                let mut key_bytes = Vec::new();
-                key_bytes
-                    .try_reserve_exact(key.len())
-                    .map_err(|_| CoreError::CapacityDenied)?;
-                key_bytes.extend_from_slice(key);
-                found = Some((
-                    AdmittedValue {
-                        bytes: key_bytes,
-                        lease: key_lease,
-                    },
-                    reference,
-                ));
-                break;
+            let lower = match after {
+                Some(after) if after >= prefix => Excluded(after),
+                _ => Included(prefix),
+            };
+            let mut found = None;
+            for (key, entry) in table.rows.range::<[u8], _>((lower, Unbounded)) {
+                if !key.starts_with(prefix) {
+                    break;
+                }
+                if let Some(reference) = visible(&entry.head, snapshot.generation).flatten() {
+                    let key_lease = reserve(&self.shared.admission, key.len() as u64)?;
+                    let mut key_bytes = Vec::new();
+                    key_bytes
+                        .try_reserve_exact(key.len())
+                        .map_err(|_| CoreError::CapacityDenied)?;
+                    key_bytes.extend_from_slice(key);
+                    found = Some((
+                        AdmittedValue {
+                            bytes: key_bytes,
+                            lease: key_lease,
+                        },
+                        reference,
+                    ));
+                    break;
+                }
             }
-        }
-        match found {
-            None => Ok(None),
-            Some((key, reference)) => Ok(Some((
-                key,
-                self.read_value_admitted(&mut state, reference, max_value_bytes)?,
-            ))),
-        }
+            match found {
+                None => Ok(None),
+                Some((key, reference)) => Ok(Some((
+                    key,
+                    self.read_value_admitted(state, reference, max_value_bytes)?,
+                ))),
+            }
+        })
     }
 
     fn check_snapshot(&self, snapshot: &ReadSnapshot) -> Result<(), CoreError> {
@@ -2217,7 +2252,7 @@ impl Core {
 
     fn read_value_admitted(
         &self,
-        state: &mut State,
+        state: &State,
         reference: ValueRef,
         max_value_bytes: usize,
     ) -> Result<AdmittedValue, CoreError> {
@@ -2225,10 +2260,7 @@ impl Core {
         if len > max_value_bytes {
             return Err(CoreError::InvalidInput("stored value exceeds read bound"));
         }
-        self.shared
-            .admission
-            .check_owner()
-            .map_err(|_| CoreError::OwnerFailed)?;
+        self.shared.check_owner()?;
         let lease = reserve(&self.shared.admission, len as u64)?;
         let mut value = Vec::new();
         value
@@ -2236,13 +2268,11 @@ impl Core {
             .map_err(|_| CoreError::CapacityDenied)?;
         value.resize(len, 0);
         if let Err(error) = state.backend.read(reference.at, &mut value) {
-            state.fenced = true;
-            self.shared.admission.owner_failed();
+            self.shared.fence();
             return Err(CoreError::Io(error));
         }
         if crc32c(&value) != reference.crc {
-            state.fenced = true;
-            self.shared.admission.owner_failed();
+            self.shared.fence();
             return Err(CoreError::Corrupt("committed value checksum differs"));
         }
         Ok(AdmittedValue {
@@ -2252,31 +2282,28 @@ impl Core {
     }
 
     /// Commit a complete batch. A capacity denial before the first backend
-    /// effect rolls back provisional index versions. Any I/O failure fences the
-    /// instance so the caller must reopen to learn the durable outcome.
+    /// effect rolls back provisional index versions and leaves the instance
+    /// unfenced. A failed owner check or admission fences the instance
+    /// without a backend effect. Any I/O failure or unwind after the first
+    /// effect fences it with an unknown outcome; only reopen decides it.
     pub fn commit(&self, operations: &[Operation]) -> Result<(), CoreError> {
         if self.shared.stopped.load(Ordering::Acquire) {
             return Err(CoreError::Closed);
         }
-        let mut state = self
-            .shared
-            .state
-            .lock()
-            .map_err(|_| CoreError::OwnerFailed)?;
-        if state.closed || state.fenced || self.shared.stopped.load(Ordering::Acquire) {
-            return Err(CoreError::Closed);
-        }
-        self.shared
-            .admission
-            .check_owner()
-            .map_err(|_| CoreError::OwnerFailed)?;
+        self.shared.run(CoreError::unknown_commit, |state| {
+            self.shared.check_open(state)?;
+            self.commit_locked(state, operations)
+        })
+    }
+
+    fn commit_locked(&self, state: &mut State, operations: &[Operation]) -> Result<(), CoreError> {
         let payload_len = validate_operations(&state.index, operations, &self.shared.admission)?;
         // A published shadow must return to the front before any user append.
         // If this pre-effect relocation is denied, the shadow remains intact
         // and this commit has made no backend change.
         // Direct Core callers may commit without using the table facade.
         // Facade callers already ran this before pinning their snapshot.
-        self.maybe_compact_locked(&mut state)?;
+        self.maybe_compact_locked(state)?;
         let next_generation = state
             .generation
             .checked_add(1)
@@ -2319,10 +2346,9 @@ impl Core {
             ) {
                 Ok(change) => undo.push(change),
                 Err(error) => {
+                    // An OwnerFailed admission is fenced by the caller before
+                    // the state lock is released; the index is restored first.
                     rollback(&mut state.index, operations, &undo);
-                    if matches!(error, CoreError::OwnerFailed) {
-                        state.fenced = true;
-                    }
                     return Err(error);
                 }
             }
@@ -2334,8 +2360,7 @@ impl Core {
         let physical_len = match state.backend.len() {
             Ok(length) => length,
             Err(error) => {
-                state.fenced = true;
-                self.shared.admission.owner_failed();
+                self.shared.fence();
                 return Err(CoreError::Io(error));
             }
         };
@@ -2346,7 +2371,7 @@ impl Core {
         {
             rollback(&mut state.index, operations, &undo);
             if error == AdmissionError::OwnerFailed {
-                state.fenced = true;
+                self.shared.fence();
             }
             return Err(error.into());
         }
@@ -2375,13 +2400,13 @@ impl Core {
             Ok(())
         })();
         if let Err(error) = result {
-            state.fenced = true;
-            self.shared.admission.owner_failed();
+            self.shared.fence();
             return Err(CoreError::UnknownCommit(error));
         }
+        // No header names this frame yet. Reopen truncates it as an
+        // uncommitted tail, so a settle failure is a known non-publication.
         if self.shared.admission.settle_growth(frame_end).is_err() {
-            state.fenced = true;
-            self.shared.admission.owner_failed();
+            self.shared.fence();
             return Err(CoreError::OwnerFailed);
         }
         let previous_slot = state.slot;
@@ -2403,8 +2428,7 @@ impl Core {
             state.backend.sync_data()
         });
         if let Err(error) = published {
-            state.fenced = true;
-            self.shared.admission.owner_failed();
+            self.shared.fence();
             return Err(CoreError::UnknownCommit(error));
         }
         state.generation = next_generation;
@@ -2436,8 +2460,12 @@ impl Core {
             Err(TryLockError::WouldBlock) => {
                 return BackendCloseOutcome::not_entered(io::ErrorKind::WouldBlock.into());
             }
-            Err(TryLockError::Poisoned(_)) => {
-                return BackendCloseOutcome::retained(io::ErrorKind::Other.into());
+            Err(TryLockError::Poisoned(poisoned)) => {
+                // The unwound holder fenced this owner, but a fenced owner
+                // must still drain. The close fields below are written only
+                // here, so an unwound close stays entered and is not replayed.
+                self.shared.fence();
+                poisoned.into_inner()
             }
         };
         if let Some(report) = state.close_report {
@@ -3052,6 +3080,7 @@ mod tests {
         copy_reservations: AtomicUsize,
         deny_copy_at: AtomicUsize,
         failed: AtomicBool,
+        owner_failures: AtomicUsize,
     }
     struct TestLease {
         used: Arc<AtomicU64>,
@@ -3132,6 +3161,7 @@ mod tests {
             self.check_owner()
         }
         fn owner_failed(&self) {
+            self.owner_failures.fetch_add(1, Ordering::AcqRel);
             self.failed.store(true, Ordering::Release);
         }
     }
@@ -3479,6 +3509,109 @@ mod tests {
         ));
         assert!(matches!(core.generation(), Err(CoreError::OwnerFailed)));
         assert!(matches!(core.committed_end(), Err(CoreError::OwnerFailed)));
+    }
+
+    fn poison(lock: impl FnOnce() + Send + 'static) {
+        let holder = std::thread::spawn(move || {
+            lock();
+            unreachable!("the holder unwinds while the lock is held");
+        });
+        assert!(holder.join().is_err());
+    }
+
+    #[test]
+    fn poisoned_state_lock_fences_once_and_the_owner_still_drains() {
+        let backend = CrashBackend::new();
+        let admission = TestAdmission::unlimited();
+        let core = Core::create_with_backend(backend.clone(), admission.clone()).unwrap();
+        core.commit(&[
+            Operation::create_table("data"),
+            Operation::put("data", b"k", b"acknowledged"),
+        ])
+        .unwrap();
+        let view = core.snapshot().unwrap();
+        let shared = core.shared.clone();
+        poison(move || {
+            let _held = shared.state.lock().unwrap();
+            panic!("injected state holder panic");
+        });
+        assert!(!core.is_fenced());
+        assert!(matches!(
+            core.get_admitted(&view, "data", b"k", 16),
+            Err(CoreError::OwnerFailed)
+        ));
+        assert!(core.is_fenced());
+        assert_eq!(admission.owner_failures.load(Ordering::Acquire), 1);
+        assert!(matches!(
+            view.table_exists("data"),
+            Err(CoreError::OwnerFailed)
+        ));
+        assert!(matches!(
+            core.commit(&[Operation::put("data", b"k", b"lost")]),
+            Err(CoreError::OwnerFailed)
+        ));
+        assert!(matches!(core.compact(), Err(CoreError::OwnerFailed)));
+        assert_eq!(admission.owner_failures.load(Ordering::Acquire), 1);
+        drop(view);
+        // A poisoned lock never makes a fenced owner undrainable.
+        let closed = core.close();
+        assert_eq!(
+            closed.native_disposition(),
+            BackendNativeDisposition::Drained
+        );
+        closed.into_result().unwrap();
+        assert_eq!(backend.close_attempts(), 1);
+        assert_eq!(admission.owner_failures.load(Ordering::Acquire), 1);
+        let reopened =
+            Core::open_with_backend(backend.crash(), TestAdmission::unlimited()).unwrap();
+        let view = reopened.snapshot().unwrap();
+        assert_eq!(
+            reopened.get(&view, "data", b"k", 16).unwrap(),
+            Some(b"acknowledged".to_vec())
+        );
+    }
+
+    #[test]
+    fn poisoned_index_pool_rolls_back_and_fences_the_next_writer() {
+        let backend = CrashBackend::new();
+        let admission = TestAdmission::unlimited();
+        let core = Core::create_with_backend(backend.clone(), admission.clone()).unwrap();
+        core.commit(&[
+            Operation::create_table("data"),
+            Operation::put("data", b"k", b"acknowledged"),
+        ])
+        .unwrap();
+        let length = backend.len().unwrap();
+        let pool = core.shared.index_pool.clone();
+        poison(move || {
+            let _held = pool.state.lock().unwrap();
+            panic!("injected index pool holder panic");
+        });
+        assert!(matches!(
+            core.commit(&[Operation::put("data", b"fresh", b"value")]),
+            Err(CoreError::OwnerFailed)
+        ));
+        assert!(core.is_fenced());
+        assert_eq!(admission.owner_failures.load(Ordering::Acquire), 1);
+        assert_eq!(backend.len().unwrap(), length);
+        assert!(
+            !core.shared.state.lock().unwrap().index.tables["data"]
+                .rows
+                .contains_key(b"fresh".as_slice())
+        );
+        assert!(matches!(core.snapshot(), Err(CoreError::OwnerFailed)));
+        assert_eq!(
+            core.close().native_disposition(),
+            BackendNativeDisposition::Drained
+        );
+        let reopened =
+            Core::open_with_backend(backend.crash(), TestAdmission::unlimited()).unwrap();
+        let view = reopened.snapshot().unwrap();
+        assert_eq!(reopened.get(&view, "data", b"fresh", 16).unwrap(), None);
+        assert_eq!(
+            reopened.get(&view, "data", b"k", 16).unwrap(),
+            Some(b"acknowledged".to_vec())
+        );
     }
 
     #[test]

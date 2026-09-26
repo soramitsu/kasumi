@@ -1299,3 +1299,104 @@ fn closed_prepared_node_file_cannot_acquire_a_new_descriptor() {
     assert!(!path.exists());
     assert_eq!(owner.disk.snapshot().open_files, 0);
 }
+
+fn read_items_key(core: &kasumi_kv::Core) -> Option<Vec<u8>> {
+    let view = core.snapshot().unwrap();
+    core.get_admitted(&view, "items", b"key", 64)
+        .unwrap()
+        .map(|value| value.as_bytes().to_vec())
+}
+
+#[test]
+fn substituted_inode_stays_owner_failed_until_drain_and_census_then_reopens_last_ack() {
+    use kasumi_kv::{BackendNativeDisposition, Core, CoreError, Operation};
+    let memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let directory = directory();
+    let path = directory.path().join("substituted");
+    let moved = directory.path().join("original-inode");
+    let owner = create_node(&path, ID, memory);
+    let disk = owner.disk.clone();
+    let core = Core::create_strict_with_backend(owner.backend(), owner.clone()).unwrap();
+    core.commit(&[
+        Operation::create_table("items"),
+        Operation::put("items", b"key", b"acknowledged"),
+    ])
+    .unwrap();
+    owner.publish_ready().unwrap();
+    let identity = private_files::file_identity(&path).unwrap();
+    let acknowledged = std::fs::read(&path).unwrap();
+
+    // A byte-identical replacement under the installed name is still a
+    // different physical owner.
+    std::fs::rename(&path, &moved).unwrap();
+    let replacement = options().create_new(true).open(&path).unwrap();
+    replacement.write_all_at(&acknowledged, 0).unwrap();
+    replacement.sync_all().unwrap();
+    drop(replacement);
+    assert!(matches!(
+        core.commit(&[Operation::put("items", b"key", b"lost")]),
+        Err(CoreError::OwnerFailed)
+    ));
+    assert!(core.is_fenced());
+    assert_eq!(disk.snapshot().phase, crate::NodeDiskPhase::Failed);
+    assert_eq!(std::fs::read(&moved).unwrap(), acknowledged);
+    assert_eq!(std::fs::read(&path).unwrap(), acknowledged);
+
+    // Negative control: the original inode is back under its name, but
+    // neither the engine nor its physical owner may resume.
+    std::fs::remove_file(&path).unwrap();
+    std::fs::rename(&moved, &path).unwrap();
+    assert_eq!(private_files::file_identity(&path).unwrap(), identity);
+    assert!(matches!(core.snapshot(), Err(CoreError::OwnerFailed)));
+    assert!(matches!(core.generation(), Err(CoreError::OwnerFailed)));
+    assert!(matches!(
+        core.commit(&[Operation::put("items", b"key", b"lost")]),
+        Err(CoreError::OwnerFailed)
+    ));
+    assert!(owner.check_owner().is_err());
+    assert_eq!(disk.snapshot().phase, crate::NodeDiskPhase::Failed);
+    assert!(disk.pause().is_err());
+    assert!(
+        disk.reconcile(&crate::CensusCancellation::default())
+            .is_err()
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), acknowledged);
+
+    // Close drains the exact descriptor but keeps the logical failure.
+    let closed = core.close();
+    assert_eq!(
+        closed.native_disposition(),
+        BackendNativeDisposition::Drained
+    );
+    assert!(closed.into_result().is_err());
+    assert!(matches!(core.snapshot(), Err(CoreError::Closed)));
+    drop(core);
+    drop(owner);
+    // The failed outcome stays in installed custody until the census.
+    assert!(disk.pause().is_err());
+    assert_eq!(disk.snapshot().phase, crate::NodeDiskPhase::Failed);
+    disk.reconcile(&crate::CensusCancellation::default())
+        .unwrap();
+    disk.pause().unwrap();
+    disk.reconcile(&crate::CensusCancellation::default())
+        .unwrap();
+    assert_eq!(disk.snapshot().phase, crate::NodeDiskPhase::Open);
+    assert_eq!(disk.snapshot().open_files, 0);
+    assert_eq!(std::fs::read(&path).unwrap(), acknowledged);
+
+    let owner = NodeFile::open_existing(&path, ID, disk.clone()).unwrap();
+    let reopened = Core::open_with_backend(owner.backend(), owner.clone()).unwrap();
+    assert!(!reopened.is_fenced());
+    assert_eq!(read_items_key(&reopened), Some(b"acknowledged".to_vec()));
+    reopened
+        .commit(&[Operation::put("items", b"key", b"after-census")])
+        .unwrap();
+    assert_eq!(read_items_key(&reopened), Some(b"after-census".to_vec()));
+    let closed = reopened.close();
+    assert_eq!(
+        closed.native_disposition(),
+        BackendNativeDisposition::Drained
+    );
+    closed.into_result().unwrap();
+    assert_eq!(disk.snapshot().phase, crate::NodeDiskPhase::Open);
+}
