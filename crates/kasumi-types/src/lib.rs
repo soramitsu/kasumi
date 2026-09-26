@@ -10,6 +10,9 @@ mod canonical_json;
 pub use canonical_json::CanonicalJsonValue;
 mod canonical_keys;
 pub use canonical_keys::{deserialize_u16_map, deserialize_u64_map};
+pub mod exact_json;
+mod key_retention;
+pub use key_retention::*;
 mod target;
 pub use target::*;
 mod target_completion;
@@ -607,7 +610,10 @@ impl StoredReceipt {
         Ok(())
     }
 }
+/// Replicated and snapshotted audit record. Unknown fields are rejected; there
+/// is no compatibility decoder for another writer's audit shape.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AuditEvent {
     pub event_id: String,
     pub principal: String,
@@ -1015,6 +1021,35 @@ mod tests {
         let mut changed = policy;
         changed["grants"][0]["legacy_grant"] = serde_json::json!(true);
         assert!(serde_json::from_value::<Policy>(changed).is_err());
+    }
+
+    #[test]
+    fn audit_events_reject_unknown_and_missing_fields() {
+        let event = serde_json::json!({
+            "event_id":"event-1",
+            "principal":"admin",
+            "action":"write",
+            "request_id":"request-1",
+            "timestamp_ms":1,
+            "data_revision":2,
+            "outcome":"ok",
+            "collection":"docs"
+        });
+        let decoded = serde_json::from_value::<AuditEvent>(event.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&decoded).unwrap(), event);
+        let mut changed = event.clone();
+        changed["legacy_actor"] = serde_json::json!("admin");
+        assert!(serde_json::from_value::<AuditEvent>(changed.clone()).is_err());
+        let bytes = serde_json::to_vec(&changed).unwrap();
+        assert!(exact_json::decode_exact::<AuditEvent>(&bytes, 1 << 10, "audit event").is_err());
+        let mut missing = event.clone();
+        missing.as_object_mut().unwrap().remove("outcome");
+        assert!(serde_json::from_value::<AuditEvent>(missing).is_err());
+        // Replicated operations and resident state carry the same strict shape.
+        let operation = serde_json::json!({"op":"audit","data":changed});
+        assert!(serde_json::from_value::<Operation>(operation).is_err());
+        let operation = serde_json::json!({"op":"maintenance_audit","data":event});
+        assert!(serde_json::from_value::<Operation>(operation).is_ok());
     }
 
     #[test]
