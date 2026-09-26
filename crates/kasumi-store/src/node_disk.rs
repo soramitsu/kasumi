@@ -29,6 +29,8 @@ mod memory;
 mod namespace;
 mod native_file;
 #[cfg(test)]
+mod reopen_tests;
+#[cfg(test)]
 mod tests;
 pub(crate) use batch::{
     MAX_NAMESPACE_PARTS, NamespaceAdmission, NamespaceClaim, NamespacePart, NamespacePartKind,
@@ -208,6 +210,17 @@ pub struct CensusCancellation {
     checkpoints: std::sync::atomic::AtomicU64,
     #[cfg(test)]
     cancel_at: std::sync::atomic::AtomicU64,
+    #[cfg(test)]
+    pause_at: std::sync::atomic::AtomicU64,
+    #[cfg(test)]
+    pause: Mutex<Option<CensusPause>>,
+}
+/// Test-only rendezvous that holds a census at one checkpoint, with every lock
+/// its caller owns, until the fixture releases or drops `release`.
+#[cfg(test)]
+pub(crate) struct CensusPause {
+    pub(crate) entered: std::sync::mpsc::Sender<()>,
+    pub(crate) release: std::sync::mpsc::Receiver<()>,
 }
 impl CensusCancellation {
     pub fn cancel(&self) {
@@ -217,8 +230,18 @@ impl CensusCancellation {
         #[cfg(test)]
         {
             let at = self.cancel_at.load(Ordering::Relaxed);
-            if at != 0 && self.checkpoints.fetch_add(1, Ordering::Relaxed) + 1 >= at {
-                self.cancel();
+            let pause_at = self.pause_at.load(Ordering::Relaxed);
+            if at != 0 || pause_at != 0 {
+                let checkpoint = self.checkpoints.fetch_add(1, Ordering::Relaxed) + 1;
+                if at != 0 && checkpoint >= at {
+                    self.cancel();
+                }
+                if checkpoint == pause_at
+                    && let Some(pause) = self.pause.lock().unwrap().take()
+                {
+                    let _ = pause.entered.send(());
+                    let _ = pause.release.recv();
+                }
             }
         }
         ensure!(
@@ -365,6 +388,42 @@ struct State {
     live: fixed_map::Banks<Weak<file::FileOwner>>,
     file_custody: file::CustodySlots,
     accounted: fixed_map::Banks<AccountedInode>,
+}
+
+impl State {
+    /// Every holder outside this owner's own custody has retired. Retained
+    /// failed-file custody and an unsettled directory operation are internal:
+    /// only an accepted census closes and retires them.
+    fn external_owners_drained(&self) -> bool {
+        self.open_files == self.file_custody.internal_owners()
+            && self.open_directories == u32::from(self.pending_directory.is_some())
+            && self.open_directory_cursors == 0
+            && self.census_streams.outstanding() == 0
+    }
+
+    fn namespace_witnesses(&self) -> u32 {
+        u32::from(
+            self.namespace_batch
+                .as_ref()
+                .is_some_and(|batch| batch.witness_live),
+        ) + u32::from(
+            self.namespace_claim
+                .as_ref()
+                .is_some_and(|claim| claim.witness_live),
+        )
+    }
+
+    fn fenced(&self) -> DiskOpenError {
+        DiskOpenError::OwnerFenced {
+            phase: self.phase,
+            open_files: self.open_files,
+            open_directories: self.open_directories,
+            cursors: self.open_directory_cursors,
+            census_streams: self.census_streams.outstanding(),
+            namespace_witnesses: self.namespace_witnesses(),
+            retained_attempts: self.file_custody.retained_attempts(),
+        }
+    }
 }
 
 /// An installed owner outlives all service/database handles. The strong registry
@@ -618,17 +677,14 @@ impl NodeDisk {
                 .is_some_and(|installed| installed.roots == config.roots)
         }) {
             let owner = existing.owner()?;
-            disk_memory::require(
-                owner.config == *config,
-                "installed persistent owner has different budgets",
-            )?;
-            disk_memory::require(
-                Arc::ptr_eq(&owner.memory, &memory),
-                "installed persistent owner has different memory admission",
-            )?;
-            for root in owner.roots.values() {
-                root.verify_nonallocating()?;
+            owner.require_installed(config, &memory)?;
+            // A fenced owner is never shared: its holders may still observe
+            // uncertain I/O. Only reopen_fenced clears it after they drain.
+            let state = owner.lock_state();
+            if state.phase != NodeDiskPhase::Open {
+                return Err(state.fenced());
             }
+            drop(state);
             return Ok(owner.clone());
         }
         let requirement = Self::memory_requirements(config)?;
@@ -767,6 +823,79 @@ impl NodeDisk {
         Ok(disk.install(&mut registration))
     }
 
+    /// The single registry path that clears a fenced owner for a new runtime,
+    /// operator or store recovery. It applies `open`'s exact budget, memory
+    /// admission and root identity checks. Every external file, directory,
+    /// cursor, census stream and namespace witness must already have retired:
+    /// a live holder returns `OwnerFenced` at once, without waiting or census.
+    /// Retained failed-file custody is internal and only the census retires
+    /// it, so `pause`'s stricter drain check would make such a fence permanent.
+    /// The registry stays locked through the census, so a concurrent open sees
+    /// `RegistryBusy` or the fence, never a partially counted owner. The same
+    /// owner returns only after a fresh census is accepted. Cancellation, a
+    /// census failure or shared device poison (restart-only) keep it fenced
+    /// with every prior charge and promise; a started census that fails marks
+    /// it Failed. An Open owner already reflects its last accepted census and
+    /// is shared exactly as `open` would share it.
+    pub fn reopen_fenced(
+        config: &NodeDiskConfig,
+        memory: Arc<dyn NodeDiskMemoryAdmission>,
+        cancel: &CensusCancellation,
+    ) -> std::result::Result<Arc<Self>, DiskOpenError> {
+        config.validate()?;
+        cancel.check()?;
+        let installed = registry().try_lock().ok_or(DiskOpenError::RegistryBusy)?;
+        let owner = installed
+            .find(|entry| {
+                entry
+                    .config()
+                    .is_some_and(|installed| installed.roots == config.roots)
+            })
+            .context("no installed persistent owner to reopen")?
+            .owner()?;
+        owner.require_installed(config, &memory)?;
+        disk_memory::require(
+            !owner.state.is_poisoned(),
+            "poisoned persistent ownership requires process restart",
+        )?;
+        let mut state = owner.lock_state();
+        if state.phase == NodeDiskPhase::Open {
+            return Ok(owner.clone());
+        }
+        if state.namespace_witnesses() != 0 || !state.external_owners_drained() {
+            return Err(state.fenced());
+        }
+        disk_memory::require(
+            !owner.device.lock().poisoned(),
+            "shared filesystem promises are poisoned; process restart required",
+        )?;
+        owner.reconcile_locked(&mut state, cancel)?;
+        drop(state);
+        Ok(owner.clone())
+    }
+
+    /// Registered-owner identity shared by `open` and `reopen_fenced`: exact
+    /// budgets, the exact memory admission Arc and unsubstituted roots. This
+    /// performs no allocation, census or phase transition.
+    fn require_installed(
+        &self,
+        config: &NodeDiskConfig,
+        memory: &Arc<dyn NodeDiskMemoryAdmission>,
+    ) -> std::result::Result<(), DiskOpenError> {
+        disk_memory::require(
+            self.config == *config,
+            "installed persistent owner has different budgets",
+        )?;
+        disk_memory::require(
+            Arc::ptr_eq(&self.memory, memory),
+            "installed persistent owner has different memory admission",
+        )?;
+        for root in self.roots.values() {
+            root.verify_nonallocating()?;
+        }
+        Ok(())
+    }
+
     /// Test installations select their file's parent explicitly. This helper is
     /// absent from production builds and retains the real private-path census,
     /// descriptor identity checks and extent budgets. Its device ledger is
@@ -900,6 +1029,12 @@ impl NodeDisk {
             "poisoned persistent ownership requires process restart"
         );
         let mut state = self.lock_state();
+        self.reconcile_locked(&mut state, cancel)
+    }
+
+    /// The drain check, census and publication run under one State guard, so
+    /// no holder can appear between the check and the accepted census.
+    fn reconcile_locked(&self, state: &mut State, cancel: &CensusCancellation) -> Result<()> {
         ensure!(
             state.census_retirement_panic.is_none(),
             "persistent outcome retirement panicked; original panic remains retained"
@@ -912,33 +1047,21 @@ impl NodeDisk {
             state.phase = NodeDiskPhase::Paused;
         }
         ensure!(
-            state
-                .namespace_batch
-                .as_ref()
-                .is_none_or(|batch| !batch.witness_live)
-                && state
-                    .namespace_claim
-                    .as_ref()
-                    .is_none_or(|claim| !claim.witness_live),
+            state.namespace_witnesses() == 0,
             "persistent namespace admission witness is still live"
         );
-        let internal_directories = u32::from(state.pending_directory.is_some());
-        let internal_files = state.file_custody.internal_owners();
         ensure!(
-            state.open_files == internal_files
-                && state.open_directories == internal_directories
-                && state.open_directory_cursors == 0
-                && state.census_streams.outstanding() == 0,
+            state.external_owners_drained(),
             "persistent file or directory owners are still live"
         );
         if let Some(operation) = &mut state.pending_directory
             && let Err(error) = operation.close_resources()
         {
-            self.fail_locked(&mut state);
+            self.fail_locked(state);
             return Err(error.into());
         }
         if let Err(error) = state.file_custody.close_retained() {
-            self.fail_locked(&mut state);
+            self.fail_locked(state);
             return Err(error.into());
         }
         let (_, census_limit) = ledger::map_limits(&self.config)?;

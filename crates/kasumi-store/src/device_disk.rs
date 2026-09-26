@@ -9,6 +9,12 @@ use std::{
 struct State {
     pending: u64,
     owners: List<Owner>,
+    /// Process-restart-only. Set by a panicked promise mutation, an accounting
+    /// overflow, or a registration retired while uncertain or still owning
+    /// promises. No owner census, `reconcile_owner` or fenced NodeDisk reopen
+    /// clears it: the shared aggregate can no longer be proved. Restarting the
+    /// process discards this in-memory registry, and the next installation
+    /// census recounts every promise from the filesystem.
     poisoned: bool,
 }
 impl Default for State {
@@ -41,6 +47,8 @@ type Registry = parking_lot::Mutex<List<RegisteredDevice>>;
 
 /// The registration and shared device each retain their actual resident lease.
 /// A persistent disk keeps its registration through runtime replacement.
+/// One owner's uncertainty clears through that owner's accepted census; shared
+/// device poison clears only on process restart, never on a fenced reopen.
 pub(crate) struct DeviceDisk {
     device: Arc<Device>,
     id: uuid::Uuid,
@@ -220,6 +228,11 @@ impl DevicePromises<'_> {
         !self.state.poisoned && !self.state.owners.iter().any(|owner| owner.uncertain)
     }
 
+    /// Shared poison, unlike one owner's uncertainty, survives every census.
+    pub(crate) fn poisoned(&self) -> bool {
+        self.state.poisoned
+    }
+
     pub(crate) fn fail_owner(&mut self) {
         self.state
             .owners
@@ -288,6 +301,10 @@ mod tests {
         assert!(!reopened.lock().admission_ready());
         reopened.lock().reconcile_owner();
         assert!(!reopened.lock().admission_ready());
+        assert!(
+            reopened.lock().poisoned(),
+            "only process restart clears poison"
+        );
     }
 
     #[test]
@@ -307,6 +324,7 @@ mod tests {
             assert_eq!(*reopened.lock(), if pending { 8192 } else { 0 });
             reopened.lock().reconcile_owner();
             assert!(!reopened.lock().admission_ready());
+            assert!(reopened.lock().poisoned());
         }
     }
 }

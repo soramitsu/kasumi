@@ -58,16 +58,46 @@ const _: () = {
 };
 
 /// Registry contention is returned inline before any resident acquisition.
-/// Other constructor failures preserve their original diagnostic chain.
+/// A fenced installed owner is reported inline, without allocation, census or
+/// charge. Other constructor failures preserve their original diagnostic chain.
 #[derive(Debug)]
 pub enum DiskOpenError {
     RegistryBusy,
+    /// The registered owner is not Open and is never shared in that phase. It
+    /// keeps every charge, promise and root lock; only `NodeDisk::reopen_fenced`
+    /// clears it after its holders drain. Counts are the owner's live file,
+    /// directory, cursor, census-stream and namespace-witness holders and its
+    /// retained failed-file custody when observed.
+    OwnerFenced {
+        phase: crate::NodeDiskPhase,
+        open_files: u32,
+        open_directories: u32,
+        cursors: u32,
+        census_streams: u32,
+        namespace_witnesses: u32,
+        retained_attempts: usize,
+    },
     Failed(anyhow::Error),
 }
 impl std::fmt::Display for DiskOpenError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::RegistryBusy => formatter.write_str("installed disk registry is busy"),
+            Self::OwnerFenced {
+                phase,
+                open_files,
+                open_directories,
+                cursors,
+                census_streams,
+                namespace_witnesses,
+                retained_attempts,
+            } => write!(
+                formatter,
+                "installed persistent owner is fenced ({phase:?}; {open_files} files, \
+                 {open_directories} directories, {cursors} cursors, {census_streams} census \
+                 streams, {namespace_witnesses} namespace witnesses open; {retained_attempts} \
+                 retained file attempts); drain every holder and reopen through a fresh census"
+            ),
             Self::Failed(error) => std::fmt::Display::fmt(error, formatter),
         }
     }
@@ -75,7 +105,7 @@ impl std::fmt::Display for DiskOpenError {
 impl std::error::Error for DiskOpenError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::RegistryBusy => None,
+            Self::RegistryBusy | Self::OwnerFenced { .. } => None,
             Self::Failed(error) => Some(error.as_ref()),
         }
     }
