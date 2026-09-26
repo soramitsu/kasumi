@@ -1847,6 +1847,7 @@ name = "kasumi-kv"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "sha2",
 ]
 
 [[package]]

@@ -10,3 +10,4 @@ description = "Kasumi's append-only transactional byte-key storage core."
 [dependencies]
 
 libc = "0.2"
+sha2.workspace = true
