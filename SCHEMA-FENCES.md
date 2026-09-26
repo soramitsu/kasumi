@@ -1,5 +1,14 @@
 # First-release ordered schema activation fences
 
+> **Historical branch note, not current status.** This note was written on
+> 2026-09-07 on an isolated branch. Later, the release moved to the single
+> `master` checkout, and the 2026-09-24 native KV cutover replaced the redb
+> storage engine that this branch used. Its branch, worktree and revision
+> statements describe that branch only. Its test counts are unfrozen
+> diagnostics, not release evidence. The schema activation contract is
+> documented in [schema activation](docs/schema-activation.md), and current
+> status is in the [release ledger](docs/production-release.md#current-verified-status).
+
 This isolated branch begins at verified d9ef813fe13723e9020d53cae1a91265c6b88ae3. Original /Users/mtakemiya/dev/kasumi remains at clean revision 5174ae1595414829e800605919be72f2f869bb5b; the target-runner worktree remains separately owned.
 
 Required immutable SchemaChangeSet.read_set participates in the exact permanent effect digest. It uses the same bounded ReadAssertion validation and dependency Read authorization as MutationBatch. Fresh ordered activation evaluates it against pre-transition state and leader-stamped time together with schema/data epochs and definition writes. Failed deterministic assertions retain a permanent failed outcome; they do not partially activate definitions.

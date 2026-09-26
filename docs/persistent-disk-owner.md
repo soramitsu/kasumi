@@ -1,13 +1,29 @@
 # Persistent extent owner: source foundation
 
-> Historical design record. The active storage integration is the native
-> Kasumi engine described in [native-kv-goal.md](native-kv-goal.md). Statements
-> below about the production dependency graph predate that cutover.
+> **Historical: redb-era design record (superseded 2026-09-24).** This record
+> describes the `NodeDisk` source foundation between 2026-09-09 and 2026-09-19,
+> when the production dependency graph still used the published redb crate.
+> Every redb statement below is historical. The
+> [native Kasumi KV engine](native-kv-goal.md) cutover removed redb and its
+> vendored fork in `503e9a2`. The separate `4f62863` owner-failure prototype
+> was not itself merged. From `b2876ef` (2026-09-20) until `503e9a2`, the root
+> Cargo patch selected the vendored `redb-4.2.0` admission fork, which carried
+> its own `CapacityDenied` versus `OwnerFailed` distinction. The storage engine
+> is now `kasumi-kv`. The
+> [binding decisions](first-release-goals.md#binding-decisions-2026-09-26) set
+> its storage model and owner contract, including `CapacityDenied` versus
+> sticky `OwnerFailed`.
+> Later source adopted `NodeDisk` as the installed physical owner for
+> production storage. That adoption is tracked in the
+> [release ledger](production-release.md#current-verified-status) and remains
+> open under G02. The wiring and test statements below describe the source of
+> that time, not current behavior.
 
-`NodeDisk` is an unwired storage primitive. No production `NodeStore`, backup,
-archive or daemon constructor uses it yet, and the production dependency graph
-still uses the published redb crate. Neither scratch admission nor the tested
-redb transaction prototype alone supplies persistent disk admission.
+At this checkpoint `NodeDisk` was an unwired storage primitive. No production
+`NodeStore`, backup, archive or daemon constructor used it yet, and the
+production dependency graph still used the published redb crate. Neither
+scratch admission nor the tested redb transaction prototype alone supplied
+persistent disk admission.
 
 An installation provides exact private roots on one filesystem, extent capacity,
 a maintenance reserve, a filesystem free-space floor, and explicit open-file,
@@ -88,9 +104,10 @@ all prior byte/promise charges, marks the file unsettled, and closes both persis
 and shared filesystem admission. Dropping that failed descriptor cannot release
 those charges or reopen admission. Only a complete census after all owners close
 may reconcile the physical result. Precondition rejection for explicit clones or
-unsettled growth changes no file or accounting. This is an isolated primitive;
-production constructors still use their existing backend and the uninstalled redb
-preflight prototype is not qualified by this change.
+unsettled growth changes no file or accounting. At this checkpoint it was an
+isolated primitive: production constructors still used their existing redb
+backend, and this change did not qualify the uninstalled redb preflight
+prototype.
 
 Scratch and persistent owners now use one `DeviceDisk` promise mutex and the
 maximum free-space floor of its installed registrations. The quota transition
@@ -125,15 +142,22 @@ complete drained census. All fixture waits have a finite failure deadline.
 The same cohort passed workspace compilation and formatting with Rust 1.97.1.
 Later integration source still requires its own execution.
 
-Before production integration, the redb owner must cover creation, open/repair,
-ordinary writes, close checkpoints and compaction as well as the admitted
-transaction subset. The separate, uninstalled redb prototype at `4f628637`
-distinguishes `CapacityDenied` from `OwnerFailed` and retains backend failure;
-the production dependency graph does not yet contain that change. Backup/archive publication and
-deletion must hold these exact owners through final directory synchronization;
-S3 objects need their separate installed capacity policy. Runtime configuration,
-health/readiness reporting, durable startup enrollment, cross-platform tests and
-the full upstream redb/fuzz gates all remain open.
+Historical (redb, superseded 2026-09-24): before production integration, the
+redb owner would have had to cover creation, open/repair, ordinary writes,
+close checkpoints and compaction as well as the admitted transaction subset.
+The separate, uninstalled redb prototype at `4f628637` distinguished
+`CapacityDenied` from `OwnerFailed` and retained backend failure. At that
+checkpoint the production dependency graph did not contain that change. From
+`b2876ef` (2026-09-20), the root Cargo patch selected the vendored
+`redb-4.2.0` admission fork. That fork carried its own distinction: a
+`CapacityDenied` result rolled back the transaction without fencing the owner,
+and `OwnerFailed` latched and fenced it. The fork stayed selected until redb
+was removed in `503e9a2`. At the `4f628637` checkpoint, backup and archive
+publication and deletion still had to hold these exact owners through final
+directory synchronization, and S3 objects needed their own installed capacity
+policy. Runtime configuration, health/readiness reporting, durable startup
+enrollment and cross-platform tests were open. The upstream redb and fuzz
+gates were abandoned with redb.
 
 ## Exclusive-open and live-shrink source checkpoint
 
@@ -155,9 +179,10 @@ substitutes a path and verifies the unrelated replacement is never truncated.
 The existing destructor/predecessor regression now requires duplicate acquisition
 to fail while its new owner remains registered and healthy.
 
-Only direct Rust 1.97.1 formatting and Git whitespace checks have run for this
-successor. These cases do not execute redb, wire production disk admission, qualify
-recoverable quota errors, or replace the release's capacity and platform gates.
+At this checkpoint only direct Rust 1.97.1 formatting and Git whitespace checks
+had run for this successor. These cases did not execute redb, wire production
+disk admission, qualify recoverable quota errors, or replace the release's
+capacity and platform gates.
 
 ## Node envelope inspection and publication prerequisite
 
@@ -175,7 +200,8 @@ Three additional real-file regression sources are **UNRUN**:
 - `envelope_inspection_and_publication_reject_inode_and_parent_substitution`
 - `uncertain_envelope_parent_sync_preserves_charges_through_close_and_census`
 
-Only direct Rust 1.97.1 formatting and Git whitespace checks have run. These
-methods prepare the future canonical NodeFile adapter; they add no alternate
-backend, production constructor, or recoverable redb capacity contract. Production
-persistent disk admission remains unwired.
+At this checkpoint only direct Rust 1.97.1 formatting and Git whitespace checks
+had run. These methods prepared the future canonical NodeFile adapter; they
+added no alternate backend, production constructor, or recoverable redb
+capacity contract. Production persistent disk admission was still unwired at
+that time.

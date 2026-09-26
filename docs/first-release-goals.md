@@ -9,7 +9,18 @@ criteria under the existing [release ledger](production-release.md) and
 The 2026-09-24 instruction to implement Kasumi's own key-value engine supersedes
 this document's redb-backed G02 direction. The active replacement criteria are
 in [native KV engine goal](native-kv-goal.md); historical redb checkpoints below
-remain evidence of earlier work, not the target architecture.
+remain evidence of earlier work, not the target architecture. Each paragraph
+below whose result rests on redb code, vendored redb tests or redb vendor
+provenance is labelled historical, including results of the then redb-backed
+store library. Other development checkpoints recorded before the cutover,
+including much of the 2026-09-23
+[integration evidence](evidence/installed-disk-integration-20260923/README.md),
+also ran with redb-backed storage while testing other workstreams. They are
+development history and qualify no current source. The
+[binding decisions of 2026-09-26](#binding-decisions-2026-09-26) set the
+storage model and the other decided release parameters. The
+[release ledger](production-release.md#current-verified-status) records the
+current verified status.
 
 ## Release contract
 
@@ -39,6 +50,118 @@ or switch branches or worktrees. Preserve pending source and historical evidence
 transfer prior work into master before resuming edits or builds. Parallel agents
 must use disjoint file scopes in this same checkout.
 
+## Binding decisions 2026-09-26
+
+The user made these decisions on 2026-09-26. They bind every workstream below.
+They override any conflicting criterion in this document, the
+[release ledger](production-release.md) and the
+[approved plan](first-release-plan.md). Historical records keep their original
+wording.
+
+1. **Location.** Work only on `master` in `/Users/mtakemiya/dev/kasumi`, with
+   no branches and no Git worktrees. Parallel agents share this checkout with
+   disjoint file scopes. Commits stay local and are never pushed.
+2. **Storage engine.** redb stays removed. The storage engine is Kasumi's own
+   `kasumi-kv`.
+3. **Storage model.** Kasumi serves reads from memory: engine state is already
+   resident in persistent maps. Writes are durable: every commit is fsynced
+   before acknowledgement, and group commit is allowed. `kasumi-kv` becomes a
+   segmented append-only log. This model replaces the proposed single-file
+   "format v3" with its copy-on-write paged B-tree. It also replaces the
+   whole-live-set compaction in the
+   [native KV engine goal](native-kv-goal.md).
+   - Sealed segment files are immutable. Their size is bounded, for example
+     between 4 MiB and 64 MiB, and the implementation must choose and justify
+     the bound. Records are checksummed, and the format has a new distinct
+     magic. Old single-file `KASUMI-KV-000001` images and the old node
+     envelope are rejected, with no migration and no fallback.
+   - The in-memory index is resident and charged to the memory owner. Memory
+     is the capacity limit, and exhausting it is a recoverable
+     `CapacityDenied`.
+   - Reclamation is bounded and incremental. It picks a victim segment and
+     copies only that segment's live records forward, in a bounded Maintenance
+     step that uses pre-reserved maintenance capacity. It publishes the result
+     durably and deletes the victim only after pinned readers and snapshots
+     drain. Space is credited only after a confirmed unlink and parent-directory
+     sync. No step ever copies the whole database.
+   - Periodic index checkpoints bound restart replay. Reopen selects the
+     newest intact checkpoint or manifest and fails closed on corruption.
+   - A multi-file NodeDisk group owner provides create-only deterministic
+     segment names, a durable next-segment intent, exact unlink custody,
+     parent sync and census. Archive and journal directories reuse it where
+     sensible.
+   - These contracts are kept: atomic multi-table batches, the 40 MiB value
+     and 96 MiB batch bounds, and retained opening and close custody. A
+     `CapacityDenied` still rolls back the whole transaction before
+     publication. I/O uncertainty or identity substitution still causes sticky
+     `OwnerFailed` fencing, recovered only by drain, a fresh census and strict
+     reopen. Close is explicit and fallible, and the destructor fallback does
+     not allocate.
+4. **HA topology.** `kasumid` supports Control-only processes. They host no
+   tenants, have their own TLS identities and voter placement, and have their
+   own genesis, provisioning and documentation. HA qualification uses nine
+   processes (three data, three Control and three authority) with distinct TLS
+   identities.
+5. **Readiness.** Readiness is coverage-based. A node is ready when every
+   locally hosted group has a fresh probe from the current membership epoch
+   and the node's own services are healthy. Protected observability reports
+   unhealthy groups, but they do not by themselves make the node unready.
+   Bounded background probes replace the 128-group ceiling.
+6. **Offline rollback.** Installation storage is trusted by default, and
+   `SECURITY.md` and the installation documents must say so. An optional
+   anti-rollback witness writes state hashes (node ID, incarnation, durable
+   generation and state digest) to SORA Nexus, starting with the Taira testnet
+   (`taira.sora.org`). The witness is optional in configuration and preferably
+   at compile time. When it is enabled, reopen checks the latest anchored hash
+   and fails closed on rollback. A documented, explicit operator override
+   exists for disaster recovery. Kasumi gets a fresh Taira test account
+   keypair. The existing `kasumi-taira-journal` crate is unrelated: it records
+   Taira deployment operations in Kasumi.
+7. **Infrastructure.** The existing 2-CPU, 16-GiB, 200-GiB ARM64 Lima VM stays
+   as it is. Record capacity shortfalls truthfully instead of resizing it. The
+   user will provide a native x86-64 host later through an SSH alias. Docker is
+   not used on the Mac.
+8. **Adopted defaults.** The user did not object to these defaults:
+   - Backup session operations keep the `destination` field. It must resolve
+     to the row's bound destination, and a mismatch is rejected.
+   - The default tenant audit archive budget is 16 GiB. Configuration is
+     rejected if archive, snapshot and permanent tables together could exceed
+     the 64 GiB Raft snapshot limit.
+   - `ReadRestoreLineage` gets a bounded page cursor of at most 256 entries.
+   - Replication, verifier and authority-member certificates rotate in place
+     with pin overlap. An invalid replacement keeps the previous configuration
+     and reports failure.
+   - For stopped TLS rotation, same-UID local processes are documented as out
+     of scope. A deletion that cannot be confirmed fails closed as
+     cleanup-incomplete.
+   - Installed configuration `incarnation` fields become explicitly required.
+     Request DTO defaults are unchanged, including the 3,600-second default
+     credential lifetime.
+   - Tenant audit archives require explicit placement: an external
+     destination, or an explicit opt-in to local-replica-only storage. The
+     hidden local-only fallback is removed.
+   - A filesystem backup destination is bound by its marker UUID and retained
+     descriptor identity, which survives remounts, not by `st_dev` alone.
+   - Local standalone mode stops serving OAuth protected-resource discovery:
+     `/.well-known/oauth-protected-resource` and `resource_metadata`
+     challenges. Discovery is advertised only with an installed external
+     authorization provider.
+   - A pinned CA is mandatory for every Transit/OpenBao provider, including
+     primaries.
+   - OCI images are assembled reproducibly without Docker and smoke-tested
+     with a container runtime inside the Linux VM.
+   - Frozen qualification runs use a `git archive` export verified against
+     `git ls-tree` of the frozen commit, not a worktree.
+   - `docs/evidence` is export-ignored from the delivered source tarball.
+     Evidence is preserved and archived separately.
+
+These decisions resolve the offline-rollback question under G01 and the
+frozen-run method for G01, G12 and G14. They set the storage model for G02
+and G03, the readiness contract for G10 and the HA process topology for G12.
+They also set the infrastructure baseline for G11 to G13. The decisions change
+no goal's status: every goal remains open until it is implemented and
+qualified.
+
 ## Tracking and completion
 
 There is one active release objective. G01–G14 are its implementation goals, not
@@ -48,13 +171,14 @@ artifacts or operating documentation are usable. Record focused progress and
 source-bound evidence in the release ledger; never turn a source-only change,
 prepared command, historical pass or candidate package into final acceptance.
 
-The later `master` checkpoint adds a G04 cursor bound to both the frozen
+Historical (redb-backed source, superseded 2026-09-24): the later `master`
+checkpoint adds a G04 cursor bound to both the frozen
 snapshot head and preceding page boundary (focused client and protected-TLS
 server tests pass 1/1 each), and a G10 protected durable recovery-status point
 read (standalone TLS test passes 1/1). A later installed three-node protected
 test observes an exact committed `Prepare` point record twice; terminal
-recovery remains pending. The latest G01 exact-byte cutovers pass a full serial
-Raft library **81/81** and authority library **66/66** on source-bound
+recovery remains pending. The then-latest G01 exact-byte cutovers pass a full
+serial Raft library **81/81** and authority library **66/66** on source-bound
 checkpoints; the later key-catalog, host-keyring and signer-trust changes pass
 full serial store library **408/408 runnable cases**, with two ignored.
 Combined workspace check, strict Clippy and formatting pass. The later engine
@@ -63,13 +187,14 @@ clean engine and complete combined qualification remain open. A G09 Control
 effect-marker prerequisite now passes focused marker and receiver tests, but
 its synthetic Control lifecycle fixture and signed first-membership chain
 remain open.
-The latest selected checkpoint-row cutover passes four focused current-byte
+The then-latest selected checkpoint-row cutover passes four focused current-byte
 cases and one physical restart case; strict combined workspace Clippy passes
 on that source. Two serial six-case G09 lifecycle attempts still fail under
 replicated Control leadership changes (4/6 and 5/6), despite each initially
 failed name passing alone. The target envelope/status patch and bootstrap
 manifest revision 2 remain unapplied after independent HOLD reviews. G01 and
 G09 are open; final-source suites and installed fault tests remain pending.
+
 The later one-send Stop fixture rerun passes **2/6**: two exact preparation
 timeouts and two stale-leader phase reads. The approved G01 manifest-only cut
 passes its engine and server focused cases **1/1** each after the native KV
@@ -177,7 +302,9 @@ resident accounting remains open. A later combined workspace
 all-target/all-feature check passes on its unchanged pinned source; source-bound
 logs and reviews are in the integration evidence ledger. Every G01–G14 goal
 remains open.
-G11 declared functional-evidence export and mode-preserving tar readback pass
+
+Historical (redb-backed source, superseded 2026-09-24): G11 declared
+functional-evidence export and mode-preserving tar readback pass
 their 149-test Python checkpoint. Native workflow tar/producer uploads, exact
 Cargo executable and compiled-feature replay, and the downloaded-tar collector
 are applied; after correcting the synthetic package fixture and a feature
@@ -206,8 +333,10 @@ patches, logs and hashes are
 in the [integration evidence](evidence/installed-disk-integration-20260923/README.md).
 Every G01–G14 row below remains open.
 
-The failed-opening recovery revision 8 passed its frozen 46-phase native macOS
-cohort and its 56-file application was verified on this `master` checkout.
+Historical (redb-backed source, superseded 2026-09-24): the failed-opening
+recovery revision 8 and its redb provenance passed the frozen 46-phase
+`native-09` macOS cohort, whose phases included 231 vendored redb cases. Its
+56-file application was verified on the then-current `master` checkout.
 Service/G07 and G10 physical-capacity slices have also been applied, followed
 by a G07 ordering and shutdown correction. The first combined all-target check
 found server integration compile errors; a three-file repair now compiles and
@@ -230,14 +359,15 @@ assertion is corrected, and a separate intermittent lifecycle fixture timeout
 now bounds each real quorum probe; the authority→lifecycle pair passes **2/2 in
 one process**. The full server cohort remains open.
 At that checkpoint, all **122/122** repository Python tests passed on the
-then-applied source. Complete qualification of the latest combined source and native
-multi-platform acceptance remain pending. G02's production redb transaction
-adoption, G05's
-durable backup index and G11's remaining semantic adapters and native assembly
-still require implementation and validation. No row below is closed by these
-scoped results.
+then-applied source. Complete qualification of the then-latest combined source
+and native multi-platform acceptance were pending. G02's production redb
+transaction adoption was open at that checkpoint; it is historical, because the
+2026-09-24 native KV cutover removed redb. G05's durable backup index and G11's
+remaining semantic adapters and native assembly still require implementation
+and validation. No row below is closed by these scoped results.
 
-The later `master` development slice passes pinned all-target/all-feature
+Historical (redb-backed source, superseded 2026-09-24): the later `master`
+development slice passes pinned all-target/all-feature
 workspace checking, strict Clippy, formatting and focused G05/G07/G08/G10 cases;
 the [integration evidence](evidence/installed-disk-integration-20260923/README.md)
 records the exact logs, failures and source scopes. The unchanged 512-row
@@ -311,7 +441,9 @@ passes seven focused server shutdown cases. The retired-custody Raft
 route now derives the original application bootstrap fingerprint from validated
 custody and fences it on custody access. Its new fixture passes, but the
 three-test retired-source module still fails an existing preparation-panic
-deadline, and current peer membership fencing remains open. A reviewed G02
+deadline, and current peer membership fencing remains open.
+Historical (redb-backed G02, superseded 2026-09-24): the redb results in the
+rest of this paragraph describe removed source. A reviewed G02
 direct-header workspace admission slice is applied and passes **233/233**
 serial vendor library cases plus its focused engine/store checks. Vendor
 strict Clippy passes after a narrow equivalent style correction. A reviewed
@@ -322,13 +454,13 @@ remain open. The reviewed registered-reader census is now also applied: its
 full serial store library suite passes 388 runnable cases with two ignored;
 two later panic/credit tests pass the 24-case opening module. Strict all-target
 types/store Clippy passes after the dormant Control backup binding value was
-applied. Production reader adoption remains open.
+applied. Production reader adoption remained open on that source.
 The reviewed fixed catalog input-buffer prerequisite is applied with an
 exact-limit regression; its three focused tests and the full serial store
 library suite pass (393 runnable cases, two ignored), and strict types/store
 Clippy passes. It does not admit redb write transactions. A source audit found
-unleased cache pages and transaction/terminal allocations, so production G02
-writer cutover remains open.
+unleased cache pages and transaction/terminal allocations, so the redb
+production writer cutover stayed open until redb was removed.
 The combined MCP mutation/renewal response-fence regression passes; installed
 process custody still needs qualification. The full serial engine library run
 has one serving-expiry quorum failure among 254 passes and one ignored case;
@@ -336,7 +468,8 @@ a fixture-only correction passes three focused repeats, while the full library
 cohort has not been rerun on that newer source. All release goals
 remain open.
 
-On the later G05 source, the serial store library passes **395/395** runnable
+Historical (redb-backed source, superseded 2026-09-24): on the later G05
+source, the serial store library passes **395/395** runnable
 cases with two ignored, and strict all-target/all-feature store/server Clippy
 passes. The full serial types/engine rerun reaches **261 passed, one failed,
 one ignored** in the engine; its serving-expiry leader fixture passes alone,
@@ -378,15 +511,21 @@ contract; G14 requires the fully populated passing manifest for the final releas
 - Preserve the approved plan, pending MCP work, historical independent-worktree
   evidence and failed attempts. Apply the first-release contract to every
   integration review on the mandated master checkout.
-- Correct the latest frozen checkpoint to eight passing gates, one ownership
-  gate with five failing fixtures, and 22 later unrun gates. Preserve the prior
-  `32825cf` failure as historical evidence and the original `be2667d` run bytes.
+- Correct the record of the `be2667d` frozen checkpoint, the latest at plan
+  time, to eight passing gates, one ownership gate with five failing fixtures,
+  and 22 later unrun gates. Preserve the prior `32825cf` failure as historical
+  evidence and the original `be2667d` run bytes. Later frozen attempts, through
+  the interrupted `6d969f3`, are listed in the
+  [current verified status](production-release.md#current-verified-status).
 - Create private fixture installation directories; leave production permission
   enforcement unchanged. Validate the corrected ownership cases and the retained
   successor cohort on a newly frozen revision with original mandatory cases and
   deadlines. Record exact results, unchanged source and actual process drains.
+  The corrected serving-owner fixtures passed 6/6 in the frozen `f2921f5` and
+  `5233e96` attempts, but no frozen revision has passed the successor cohort.
 
-A reviewed first-release snapshot metadata cutover is now applied. It rejects
+Historical (redb-backed source, superseded 2026-09-24): a reviewed
+first-release snapshot metadata cutover is now applied. It rejects
 noncanonical manifest and coverage JSON, UUID aliases and writer-oversized
 coverage on all identified Raft read paths. Its Raft library test build and
 three new focused boundary cases pass. Its serial library run excluding the
@@ -453,8 +592,12 @@ exit and reopened as A, even after B was installed and served. Supplying B as
 the expected incarnation rejects A; the file alone supplies no fact that B
 ever existed. Exact source pins and the trust-model analysis are in the
 [integration evidence](evidence/installed-disk-integration-20260923/README.md).
-The user's interpretation of offline rollback protection versus trusted
-installation storage is pending; G01 is open either way.
+The user decided this question on 2026-09-26
+([binding decision 6](#binding-decisions-2026-09-26)): installation storage is
+trusted by default, and an optional Taira anti-rollback witness fails reopen
+closed on a detected rollback. When this decision was recorded, neither the
+trust statement in `SECURITY.md` and the installation documents nor the
+witness and its tests existed. G01 remains open.
 
 The related Control-genesis fixture is corrected on `master`: it verifies the
 new atomic Raft identity and checks that a rejected reopen changes none of
@@ -471,8 +614,13 @@ durable atomic batches and snapshots, crash recovery, corruption rejection,
 owner-charged storage and explicit close custody, with all production callers
 cut over and redb removed. The first release rejects older physical formats;
 no migration, fallback reader or dual writer is permitted. Focused, complete
-and final native-source qualification remain open. The redb records below are
-preserved only as historical development evidence, not current G02 criteria.
+and final native-source qualification remain open.
+[Binding decision 3](#binding-decisions-2026-09-26) sets the storage model: a
+segmented append-only log with durable writes, in-memory reads and bounded
+incremental reclamation. The redb records below are preserved only as
+historical development evidence, not current G02 criteria. Each G02 paragraph
+whose result rests on redb code, vendored redb tests or redb vendor provenance
+is labelled historical.
 
 The reviewed G02 registered-read adoption is applied on `master` for
 installed-node paired, catalog, tenant-scan and long-lived view reads. Its
@@ -635,7 +783,8 @@ file-attempt assertion. The first broad run exposed a clean-abort lease leak
 package and registered fault-owner design forbid a raw writer fallback or
 replacing process-exit evidence with graceful shutdown.
 
-The next storage-accounting slice is specified in
+Historical (redb-backed G02, superseded 2026-09-24): the next
+storage-accounting slice is specified in
 [installed storage admission](installed-storage-admission-plan.md). The shared
 memory core, fixed reservation ledger and separately retained runtime facades are
 implemented in master source. Pending changes now require the exact installed
@@ -646,7 +795,9 @@ successors pass. Caller, native and complete release qualification remain open,
 along with directory accounting and every affected parent during namespace
 mutation. The development evidence records the exact scope of each result.
 
-The retained redb prerequisites pass all 134 vendor cases in attempt 132:
+Historical (redb-backed G02, superseded 2026-09-24): this paragraph records
+removed redb source and the storage candidates built on it. The retained redb
+prerequisites pass all 134 vendor cases in attempt 132:
 matching-database witnessed disposal preserves original outcomes while releasing
 the actual settled transaction; fixed cache admission checks actual available
 slots and retains physical growth and rollback uncertainty on refusal. Checked
@@ -720,7 +871,8 @@ complete memory bounds, configured-root and inherited-directory custody, and
 canonical PageNumber decoder migration remain open. No candidate pass closes a
 release goal.
 
-The later cumulative 75-file storage, namespace and file-custody revision 6 is
+Historical (redb-backed G02, superseded 2026-09-24): the later
+cumulative 75-file storage, namespace and file-custody revision 6 is
 now applied to the mandated `master` checkout with all recorded before/after
 hashes and modes verified. Its [immutable qualification bundle](evidence/installed-disk-storage-namespace-custody-20260923-rev6/README.md)
 records strict all-target/all-feature workspace check and Clippy, 336 passing
@@ -731,7 +883,8 @@ prerequisite, not G02 acceptance: production caller migration,
 failed-opening acknowledgement/recovery, complete memory admission and
 configured-root/directory custody remain open.
 
-The reviewed three-file filesystem-backup admission revision 5 is also applied
+Historical (redb-backed source, superseded 2026-09-24): the reviewed
+three-file filesystem-backup admission revision 5 is also applied
 to `master` with its before/after hashes and modes verified. Its
 [source-bound qualification bundle](evidence/installed-disk-filesystem-backup-20260923-rev5/README.md)
 passes locked full-workspace check and strict Clippy, all 343 runnable store
@@ -739,17 +892,19 @@ cases with two inherited ignores, and separate formatting. This admits the
 pending inode and extent before publication but does not complete whole-call
 worker, ciphertext, stack or configured-root custody. G05 remains open.
 
-The canonical redb `PageNumber` freeze 05 and its exact provenance update are
-applied to `master`: all 163 source, policy and evidence paths match the reviewed
+Historical (redb-backed G02, superseded 2026-09-24): the canonical redb
+`PageNumber` freeze 05 and its exact provenance update were applied to
+`master`: all 163 source, policy and evidence paths match the reviewed
 after hashes and modes. The official dependency-patch checker passes against
 the combined source, including locked Cargo metadata and exact package
 selection; its 18 Python regression tests also pass. Prior freeze-05 native
 results remain component evidence, not qualification of this combined checkout.
-The post-application workspace/native cohort and deeper reachable-root and
-resource bounds remain open. No obsolete decoder or compatibility alias is
-retained for the first release.
+Its post-application workspace/native cohort and deeper reachable-root and
+resource bounds were never completed before redb was removed. No obsolete
+decoder or compatibility alias is retained for the first release.
 
-The first combined-checkout native trial is preserved as a
+Historical (redb-backed G02, superseded 2026-09-24): the first
+combined-checkout native trial, on redb-backed source, is preserved as a
 [failed and source-drift-invalidated attempt](evidence/installed-disk-actual-master-20260923/README.md).
 Formatting, all-target/all-feature check, strict Clippy, test compilation and
 46 binary inventories ran, but the unfiltered workspace command stopped at
@@ -763,35 +918,47 @@ full authority and workspace cohorts remain unrun after that correction. Those
 two new production heap allocations also need admission review. At that earlier
 checkpoint, the failed-opening, native-close and private opening-admission
 successor was frozen only as
-a target-only 46-file proposal with reviewed vendor provenance; it had not been
-compiled or applied. Implicit scratch destruction, constructor failures,
-production caller adoption and complete resource bounds keep G02 open.
+a target-only 46-file proposal with reviewed redb vendor provenance; it had not
+been compiled or applied. Implicit scratch destruction, constructor failures,
+production caller adoption and complete resource bounds kept G02 open.
 
-The later two-file registered-opening close prerequisite is now applied with
-exact [integration evidence](evidence/installed-disk-integration-20260923/README.md).
-It seals admission, returns the retained close settlement without consuming the
-owner, and preserves the original failed-close report for the existing explicit
-recovery path. Its isolated overlay passes 16 focused opening and 368 runnable
-store cases, strict store Clippy and formatting. Those results precede the
-latest combined source; production constructor, transaction and reader adoption,
-complete bounds and final qualification remain open.
-The latest production-caller audit confirms that no `NodeStore` yet uses the
-registered owner: its persistent reads, nine commits and Ready publication
-still use the legacy aggregate, while three scratch commits require a separate
-registered owner. The coherent cutover is the entire persistent `NodeStore`,
-including actual read-view lifetime and owned queued writes; no constructor-only
-compatibility route is acceptable.
-The applied registered reader now holds an exact snapshot in the storage
-census and returns admitted owned bytes, but no production read caller uses it.
-The later five-file routine registered-read retirement cut is applied on
-`master` after independent review. Its serial applied-source store library
-passes 448 cases (two ignored), the focused engine regression passes, and
-strict store Clippy, no-default-features and formatting pass. The exact
+Historical (redb-backed G02, superseded 2026-09-24): the later two-file
+registered-opening close prerequisite was applied with exact
+[integration evidence](evidence/installed-disk-integration-20260923/README.md).
+It sealed admission, returned the retained close settlement without consuming
+the owner, and preserved the original failed-close report for the existing
+explicit recovery path. Its isolated overlay passed 16 focused opening and 368
+runnable cases of the then redb-backed store library, strict store Clippy and
+formatting. Those results precede the latest combined source; production
+constructor, transaction and reader adoption, complete bounds and final
+qualification remain open.
+The first production-caller audit of that redb-backed source found that no
+`NodeStore` yet used the registered owner: its persistent reads, nine commits
+and Ready publication still used the legacy aggregate, while three scratch
+commits required a separate registered owner. A later audit of the same era
+found a fourth scratch commit, `EncryptedTableBatch::commit`, for 13 raw
+commit sites. The coherent cutover is the entire persistent `NodeStore`,
+including actual read-view lifetime and owned queued writes; no
+constructor-only compatibility route is acceptable.
+On that redb-backed source the applied registered reader held an exact snapshot
+in the storage census and returned admitted owned bytes, but no production read
+caller used it yet. `RegisteredNodeRead` carried over into native KV in
+`503e9a2`, still without a production read caller; the registered-read
+adoption recorded earlier in this section later moved production reads onto
+it.
+
+On native KV source, the later five-file routine registered-read retirement
+cut is applied on `master` after independent review. Its serial applied-source
+store library passes 448 cases (two ignored), the focused engine regression
+passes, and strict store Clippy, no-default-features and formatting pass.
+The exact
 [integration evidence](evidence/installed-disk-integration-20260923/README.md)
 records the candidate, source pins, logs and concurrent server-only drift.
 The exact-parent gap for disposing child slots was addressed by the next
-reviewed cut; production caller adoption, the breaking admitted plaintext API
-and full G02 qualification remain open.
+reviewed cut. At this cut, production caller adoption, the breaking admitted
+plaintext API and full G02 qualification remained open; the later
+registered-read adoption covers production reads, and the other two remain
+open.
 That four-file child-census cut is applied on `master` with exact pre/postimage
 checks. Its applied-source serial store suite passes 451 cases (two ignored),
 strict Clippy, no-default-features and formatting pass, and its negative control
@@ -968,7 +1135,8 @@ snapshot correction now passes its focused case; a full engine rerun stalled
 in a credential/backup test that passes alone, and was preserved as failed
 evidence. Full qualification remains open.
 
-The later full serial store library passes **395/395** runnable cases, with two
+Historical (redb-backed source, superseded 2026-09-24): the later full
+serial store library passes **395/395** runnable cases, with two
 ignored. The full types/engine rerun reaches **261 passed, one failed, one
 ignored**; the sole serving-fixture timeout passes alone and is now instrumented
 for its next same-process occurrence. Reviewed installed owner/directory
@@ -999,7 +1167,8 @@ finds that the public destination constructor still opens an unmarked writable
 root and has no authenticated installed-owner handoff. Marker publication,
 operation-time verification and filesystem index registration therefore need
 one coordinated fail-closed cutover before any first backup write.
-The source-pinned target-only audit at
+
+On native KV source, the source-pinned target-only audit at
 `target/g05-durable-binding-audit-20260925/README.md` demonstrates the
 remaining restart failure: after an alias is repointed, status for the
 original backup UUID follows the new destination and returns `NotFound`, while
@@ -1300,19 +1469,98 @@ replicated readiness remain open.
 
 ### G11 — Acceptance manifest, infrastructure and dependencies
 
-The current redb source checkpoint is explicitly inventoried with all 109 files,
-the two original removals and 134 exact historical/gate bindings. The original
-provenance remains immutable, and only redb's inventory/review binding plus the
-vendor README support record change. Root adoption review is recorded beside the
-[checkpoint proposal](evidence/redb-current-source-20260922/README.md).
-Attempt 165 passes all 18 existing verifier tests and actual source/Cargo selection
-for seven patched packages on unchanged inventoried inputs; its process group
-drains. The checker is unchanged. This is a component checkpoint, not final-source
-qualification or acceptance of the unpassed upstream, native or release gates.
-After the canonical `PageNumber` and backup applications, the unchanged official
-dependency checker again passes source verification, locked Cargo metadata and
-exact selection of all seven vendored packages on the combined `master` source;
-all 18 checker regressions pass. These development checks do not substitute for
+**Current dependency roster (2026-09-26).** redb is removed, as the
+[native KV engine goal](native-kv-goal.md) requires, and `Cargo.lock` has no
+redb package. The `[patch.crates-io]` table and the workspace exclude list
+name five vendor roots with six packages. `vendor/patch-manifest.json`
+(format 2) inventories all of them:
+
+| Vendor root | Packages | Upstream identity in the manifest |
+| --- | --- | --- |
+| `vendor/openraft-0.9.25` | `openraft` (patched), `openraft-macros` (unpatched) | Review record; no published-crate hash |
+| `vendor/bitmaps-3.2.1` | `bitmaps` (patched) | `published_crate_sha256` |
+| `vendor/lru-0.16.4` | `lru` (patched) | `published_crate_sha256` |
+| `vendor/serde_json-1.0.151` | `serde_json` (patched) | `published_crate_sha256` |
+| `vendor/rmcp-3.2.0` | `rmcp` (patched) | `published_crate_sha256` |
+
+Any G11 statement below that mentions redb or "seven" vendored packages
+describes the redb-era roster and is historical.
+
+**Open dependency-review and provenance items.** A source-only audit on
+2026-09-26, with no Cargo runs, recorded these items as open. Its record does
+not name a commit. It was written at 00:39 JST, when the branch reflog puts
+`master` at `5f49e533`. The record is archived at
+`/Users/mtakemiya/dev/kasumi-release-evidence/claude-20260926/wave-1/W01-4/audit-record/audit-G11.json`
+(SHA256 `085d5e208674da73fe4b6bcf40de020be3613562f3f87ce9434924e0f2080c72`).
+The crate-hash, file-count, lockfile and advisory facts below were then
+re-checked by `tools/verify_g11_audit.py` in the same directory (SHA256
+`c758a7239163f65828d7aeb2358c97438922e5a8ee7654d81c77e9097dd132f0`). It read
+committed `5f49e533` source, the local Cargo registry cache and the local
+advisory database. Its log is `07-g11-audit-recheck.log` there (SHA256
+`fae2ba323e0e845fd422ce9807727bfd6d9ea3beb92a49f0f3744e032453aa1d`). This
+re-check is a development check, not a release gate. The audit's other
+findings are recorded observations that no tool has re-checked.
+
+- *Dependency-review roster defect.* `scripts/run_dependency_review_owned.py`
+  runs every vendored workspace except serde_json with `--all-features`, so
+  any native run fails. On OpenRaft, that flag enables the nightly-only `bt`
+  and `bench` features, which stable Rust 1.97.1 cannot build. It also pulls
+  in `rocksstore` and `sledstore`, which need RocksDB and sled. rmcp's
+  all-targets set includes `test_with_python` and `test_with_js`, which
+  launch `uv` and `node`. OpenRaft's integration tests write `tests/_log`
+  inside the frozen source, which trips the source-inventory check. The
+  functional gate roster in `scripts/release_gate.py` has no OpenRaft
+  upstream suite either; those suites exist only as historical custody
+  evidence (attempts 46–49). The runner needs an explicit reviewed suite list.
+  Suites that need external runtimes or nightly Rust must be recorded as
+  excluded, never counted as passed.
+- *Provenance gap.* `scripts/check_dependency_patches.py` accepts
+  `published_crate_sha256` but never verifies it. No check compares a vendored
+  root with its upstream source. The re-check found that all four cached
+  published crates hash to the manifest's `published_crate_sha256` values.
+  Counting `Cargo.toml` and ignoring packaging and CI metadata, bitmaps
+  changes `src/bitmap.rs` and `src/lib.rs`, and lru changes `src/lib.rs`.
+  serde_json changes four files and adds one, and rmcp changes two files and
+  adds two. OpenRaft, for which the manifest records no published crate hash,
+  changes 24 files and adds 10 against crate 0.9.25. No release tool verifies
+  these facts yet. The
+  serde_json disposition in `docs/dependency-dispositions.md` and
+  `vendor/serde-json-literal-keys.md` still says the corrected source is
+  untested, although the release ledger records a later pass at `13fbbc1`.
+- *Advisory data.* The local advisory database's last commit is dated
+  2026-09-07, which is stale against the 72-hour rule. cargo-audit 0.22.2,
+  run offline on the committed `Cargo.lock` (484 packages), reports nothing,
+  because it skips the six sourceless `[patch.crates-io]` path packages. With
+  those packages given back their crates.io source, it reports only
+  RUSTSEC-2025-0167 and RUSTSEC-2026-0247 (bitmaps) and RUSTSEC-2026-0253
+  (lru). `scripts/dependency_advisory.py` hard-codes the advisory register,
+  and the operator declares its fetch time.
+
+The same audit also recorded these other G11 defects as open:
+
+- Linux emulation goes undetected by the host preflight.
+- Process checks reject fault-injected daemons.
+- The HA topology is forbidden for several domains that need it.
+- Only the repeatable-assembly attempt kind is journaled.
+- Independent-build, OCI image, bundle-composer and operating-limits producers
+  are missing.
+- `DOMAIN_ADAPTERS` is empty.
+
+Historical (redb-era roster, superseded 2026-09-24): the then-current redb
+source checkpoint was explicitly inventoried with all 109 files, the two
+original removals and 134 exact historical/gate bindings. The original
+provenance remained immutable, and only redb's inventory/review binding plus
+the vendor README support record changed. Root adoption review is recorded
+beside the [checkpoint proposal](evidence/redb-current-source-20260922/README.md).
+Attempt 165 passed all 18 existing verifier tests and actual source/Cargo
+selection for the seven then-patched packages on unchanged inventoried inputs;
+its process group drained. The checker was unchanged. This was a component
+checkpoint, not final-source qualification or acceptance of the unpassed
+upstream, native or release gates. After the canonical `PageNumber` and backup
+applications, the unchanged official dependency checker again passed source
+verification, locked Cargo metadata and exact selection of all seven
+then-vendored packages on the combined `master` source; all 18 checker
+regressions passed. These redb-era development checks do not substitute for
 the frozen native, upstream and final-acceptance cohorts.
 
 The six-file revision 3 owned-assembly launcher and verifier bridge are applied
@@ -1329,17 +1577,18 @@ runner revision 2 is applied; its scanner receipt now binds exact stdout,
 stderr and process disposition before parsing. Its focused Python cases pass
 10/10 and complete repository Python discovery passes **129/129** under Python
 3.12.14. The native owned advisory scan, authenticated current advisory fetch
-and runner provenance are still missing. An earlier Git-free scanner probe
-stopped before cargo-audit because redb's old source provenance no longer
-matches the applied G02 patch source. That failed attempt is preserved; the
-corrected provenance and synthetic diagnostic outcome follow.
-The reviewed revision-3 rebind is now applied and the official checker verifies
-all seven vendored packages against locked Cargo selection. Focused checker
-and runner Python tests pass **18/18** and **10/10**, complete Python discovery
-passes **129/129**, and a Git-free synthetic cargo-audit probe detects the
-injected redb advisory on the exact projected lockfile. This is diagnostic
-local evidence only; authenticated current advisory data, native owned runner
-provenance, complete adapters and platform gates remain open.
+and runner provenance are still missing.
+Historical (redb-era roster, superseded 2026-09-24): an earlier Git-free
+scanner probe stopped before cargo-audit because redb's old source provenance
+no longer matched the then-applied G02 patch source. That failed attempt is
+preserved. The reviewed revision-3 rebind was then applied, and the official
+checker verified all seven then-vendored packages against locked Cargo
+selection. Focused checker and runner Python tests passed **18/18** and
+**10/10**, complete Python discovery passed **129/129**, and a Git-free
+synthetic cargo-audit probe detected the injected redb advisory on the exact
+projected lockfile. This was diagnostic local evidence only. Authenticated
+current advisory data, native owned runner provenance, complete adapters and
+platform gates remain open for the current roster.
 The adapter registry remains empty. The launcher has not run a native release
 assembly on the required platforms, and complete semantic domain adapters
 remain open. The [integration evidence](evidence/installed-disk-integration-20260923/README.md)
@@ -1408,6 +1657,10 @@ component check, not final-source G11 acceptance.
   shortened or mismatched evidence; retain every failed attempt.
 - Reserve explicit capacity on the native Linux ARM64 reference deployment and
   provide a native Linux x86-64 runner. Emulation cannot satisfy native acceptance.
+  Under [binding decision 7](#binding-decisions-2026-09-26), the existing
+  2-CPU, 16-GiB, 200-GiB ARM64 Lima VM stays unchanged as that reference.
+  Record its capacity shortfalls instead of resizing it. The user will provide
+  the native x86-64 host.
   Document shared-host limits and operator durability/failure-domain requirements.
 - Qualify memory-safety fixes and every retained dependency patch with upstream
   tests and provenance checks; record explicit remaining-advisory dispositions.
@@ -1458,20 +1711,27 @@ component check, not final-source G11 acceptance.
 
 1. Validate the current authority and full lifecycle successors on master,
    preserving the original deadlines, workload and all failed evidence. The
-   passing vendor/store prerequisites and focused stopped-epoch successor are
-   development evidence, not release acceptance.
+   passing redb-era vendor/store prerequisites and focused stopped-epoch
+   successor are historical development evidence, not release acceptance.
 2. Complete G02's fixed inode backing, managed directory creation/removal and
    physical growth bounds. Adopt retained database/writer ownership at every
    production constructor and transaction, with complete memory admission.
-3. Bound native KV reclamation with reserved maintenance progress, then
-   implement G03's admitted custody/terminal batch writer. Keep the failed large
+3. Build the segmented native KV log of
+   [binding decision 3](#binding-decisions-2026-09-26), with bounded
+   incremental reclamation and reserved maintenance progress. Then implement
+   G03's admitted custody/terminal batch writer. Keep the failed large
    restore and 4,200-command/8,400-audit cases unchanged for validation.
 4. Advance G07's actual child census and production shutdown adapters alongside
    G11's native assembly and semantic acceptance adapters. Preserve and reconcile
    pending MCP changes before final source freezes; complete G04–G10 as their
    prerequisites land.
-5. Freeze the combined implementation, qualify G12 and G13, and verify G14 using
-   the exact packages/images and complete G11 acceptance manifest.
+5. Freeze the combined implementation as a `git archive` export verified
+   against `git ls-tree`, qualify G12 and G13, and verify G14 using the exact
+   packages/images and complete G11 acceptance manifest.
 
-Initial evidence: [latest failed frozen ownership run](evidence/first-release-be2667d-check-20260919/README.md).
-No implementation or qualification goal is marked complete by this planning update.
+Initial plan-time evidence: [failed frozen `be2667d` ownership run](evidence/first-release-be2667d-check-20260919/README.md).
+Later frozen attempts superseded it; the latest frozen first-release cohort
+attempt is the interrupted `6d969f3`.
+The [release ledger](production-release.md#current-verified-status) records the
+current verified status. No implementation or qualification goal is marked
+complete by this planning update.

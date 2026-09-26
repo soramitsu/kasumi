@@ -1,7 +1,12 @@
 # Replicated read barrier investigation
 
-> Historical investigation of the 2026-09-05 storage path. The current
-> implementation uses the [native Kasumi KV engine](native-kv-goal.md).
+> **Historical: 2026-09-05 investigation of redb-backed source (superseded
+> 2026-09-24).** The storage path investigated here used redb write
+> transactions. The [native Kasumi KV engine](native-kv-goal.md) cutover later
+> replaced them, so the redb storage statements below are historical. Its
+> analysis of OpenRaft's read-barrier timing concerns OpenRaft rather than the
+> storage engine. The benchmark failures it discusses remain part of the
+> historical record, and the first release still needs its own capacity results.
 
 The first 1-million-document replicated matrix case failed during balanced
 traffic, at read operation 8. Its original report and host samples remain in

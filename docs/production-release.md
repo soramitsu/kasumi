@@ -4,6 +4,94 @@ This is the active implementation and acceptance ledger for the approved first
 release. An unchecked gate is unfinished. The September 5 baseline and later
 branch evidence remain historical records; they do not certify this integration.
 
+## Current verified status
+
+Updated 2026-09-26. **No source revision is release-qualified.** The table
+lists current `master` and every frozen attempt of the first-release cohort
+chain, newest first. That chain is every attempt that has a
+`first-release-*-check-*` or `first-release-*-interrupted-*` evidence
+directory: fifteen attempts from 2026-09-09 to 2026-09-20. The
+`first-release-*-prepared-*` records are unrun plans, and the two
+`first-release-*-diagnostic-*` records re-examine the `5233e96` and `f2921f5`
+failures; neither kind is an attempt.
+
+All fifteen attempts used the Rust 1.97.1 `aarch64-apple-darwin` toolchain on
+native macOS ARM64, on redb-backed source. The twelve 2026-09-19/20 attempts
+ran from temporary Git worktrees under `kasumi-worktrees/`. The three
+2026-09-09 attempts ran from isolated checkouts under `/tmp`. Worktrees are now
+forbidden, and the 2026-09-24 native KV cutover and all later `master` changes
+have had no frozen run. Gate counts come from each attempt's retained
+`summary.json`, or from its `evidence.json` where the attempt kept no summary.
+The linked READMEs and sections give the details.
+
+| Source | Frozen plan | Outcome | Gates passed / failed / unrun | Evidence |
+| --- | --- | --- | --- | --- |
+| `master` (current head) | None | **Unqualified development source.** It has only focused development checkpoints and no frozen cohort. | Not run | [Development checkpoints](#development-checkpoints) |
+| `6d969f3` (latest frozen first-release cohort attempt) | 47 gates, 252 cases | **Interrupted.** The fifth gate, Raft application-write classification, was stopped with SIGTERM to comply with the main-checkout-only instruction and produced no test result. | 4 / 1 interrupted / 42 | [README](evidence/first-release-6d969f3-interrupted-20260920/README.md), [section](#latest-frozen-combined-checkpoint) |
+| `c681ba3` | 47 gates, 252 cases | **Failed.** The complete store library passed 154 cases and failed 3 allocation assertions. | 17 / 1 / 29 | [README](evidence/first-release-c681ba3-check-20260920/README.md) |
+| `5233e96` | 46 gates, 247 cases | **Failed.** The passes include all six serving-owner fixtures and both retired-source cases. `server-control-genesis` then aborted with a stack overflow in its first case. | 26 / 1 / 19 | [README](evidence/first-release-5233e96-check-20260920/README.md) |
+| `207ae69` | 46 gates, 247 cases | **Failed.** The first compilation gate failed: the shared authority request helper had private child-module visibility. | 0 / 1 / 45 | [README](evidence/first-release-207ae69-check-20260920/README.md) |
+| `f2921f5` | 38 gates, 225 cases | **Failed.** The passes include all six repaired serving-owner fixtures. `server-retired-source` passed 1 case and failed its registration-rejection ownership case with an elapsed deadline. | 16 / 1 / 21 | [README](evidence/first-release-f2921f5-check-20260920/README.md) |
+| `b5001b1` | 36 gates, 155 cases | **Failed.** The MCP gate passed 3 cases and failed 7 new cases that expected lower-case error codes. | 3 / 1 / 32 | [README](evidence/first-release-b5001b1-check-20260920/README.md) |
+| `e9f39b2` | 31 gates, 141 cases | **Failed.** The first compilation gate failed on an ambiguous `Result` alias in a cleanup fixture. | 0 / 1 / 30 | [README](evidence/first-release-e9f39b2-check-20260920/README.md) |
+| `be2667d` | 31 gates, 141 cases | **Failed.** `server-serving-owner` passed 1 case and failed 5 with `operator material must be owner-only`. | 8 / 1 / 22 | [README](evidence/first-release-be2667d-check-20260919/README.md), [section](#preceding-ownership-checkpoint) |
+| `32825cf` | 26 gates, 124 cases | **Failed.** Engine Control genesis passed 4 cases and failed 1 whose fixture selected a permitted storage purpose. | 7 / 1 / 18 | [README](evidence/first-release-32825cf-check-20260919/README.md) |
+| `15e64dd` | 24 gates, 121 cases | **Failed.** Strict store lint failed after the complete store library passed 143 cases. | 3 / 1 / 20 | [README](evidence/first-release-15e64dd-check-20260919/README.md), [section](#historical-checkpoints) |
+| `055a9b6` | 20 gates, 110 cases | **Failed.** The first compilation gate failed on `Analyzer::English` in a query test. | 0 / 1 / 19 | [README](evidence/first-release-055a9b6-check-20260919/README.md), [section](#historical-checkpoints) |
+| `46ae68f` | 4 gates, 44 cases | **Failed.** The first compilation gate failed on unresolved `tracing` uses, ambiguous string inference and 15 Raft snapshot test calls. | 0 / 1 / 3 | [README](evidence/first-release-46ae68f-check-20260919/README.md), [section](#historical-checkpoints) |
+| `3b932ee` | 4 gates, 44 cases | **Failed.** The first compilation gate failed: a new catalog module omitted the `redb::ReadableTable` import. | 0 / 1 / 3 | [README](evidence/first-release-3b932ee-check-20260910/README.md), [section](#historical-checkpoints) |
+| `7a21995` | 4 gates, 32 cases | **Failed.** The complete store library passed 126 cases and failed 1 identity assertion. | 2 / 1 / 1 | [README](evidence/first-release-7a21995-check-20260909/README.md), [section](#historical-checkpoints) |
+| `1ff2fe2` | 2 gates, 0 cases | **Failed.** The first compilation gate failed with ten distinct diagnostics. | 0 / 1 / 1 | [README](evidence/first-release-1ff2fe2-check-20260909/README.md), [section](#historical-checkpoints) |
+
+Frozen runs outside this chain are not in the table, and none qualifies a
+release:
+
+- On 2026-09-08 the `7732c06` macOS functional attempt
+  ([README](evidence/frozen-functional-7732c06-20260908/README.md)) failed. So
+  did four native Linux ARM64 attempts in a Linux validation VM:
+  [`3ee5787`](evidence/frozen-linux-arm64-functional-3ee5787-20260908/README.md),
+  [`8e90ff2`](evidence/frozen-linux-arm64-functional-8e90ff2-20260908/README.md),
+  [`d403c55`](evidence/frozen-linux-arm64-d403c55-terminal-20260908/README.md)
+  and [`3a8d512`](evidence/frozen-linux-arm64-3a8d512-terminal-20260908/README.md).
+- Many 2026-09-08/09 evidence directories, such as the `combined-*` and
+  `followon-*` checks, record focused checks of frozen source. They are
+  scoped diagnostics, not cohort attempts.
+- On 2026-09-23 the source-frozen `native-09` run passed 46 of 46 phases for
+  one redb-era recovery slice on macOS ARM64
+  ([README](evidence/installed-disk-integration-20260923/README.md)). It
+  qualified only that slice. It is kept in the
+  [historical redb section](#historical-redb-backed-g02-superseded-2026-09-24)
+  and was superseded with redb.
+
+What this means for current `master`:
+
+- No successor has passed the 47-gate, 252-case cohort on any source. The
+  repaired private-directory serving-owner fixtures passed 6/6 in `f2921f5`
+  and again in `5233e96`, which also passed both retired-source cases. The
+  two later attempts, `c681ba3` and `6d969f3`, stopped before those gates and
+  left them unrun.
+- The next frozen successor must keep every gate, case, command, order and
+  deadline of the `6d969f3` plan. It must name its one renamed mandatory case
+  explicitly: `node_file::tests::unrelated_clean_and_unclean_redb_rejection_is_byte_exact`
+  is now `node_file::tests::unrelated_clean_and_unclean_old_format_rejection_is_byte_exact`.
+  Because worktrees are forbidden, it runs from a `git archive` export of a
+  committed head, verified against `git ls-tree` of that commit. Its result,
+  including a failure, is recorded in this table.
+- Focused passes in the development sections below come from changing,
+  unfrozen source. They are development checkpoints, not qualification.
+  Many cite logs under the ignored `target/` directory. Such a log is durable
+  evidence only after it has been copied outside the build tree with its hash
+  recorded.
+- redb is removed. The [historical redb section](#historical-redb-backed-g02-superseded-2026-09-24)
+  keeps the redb-backed G02 diagnostics as evidence of superseded source only.
+- The user's [binding decisions of 2026-09-26](first-release-goals.md#binding-decisions-2026-09-26)
+  govern storage, HA topology, readiness, offline rollback, infrastructure and
+  the adopted defaults.
+
+G01–G14 and every final release gate remain open.
+
+## Development checkpoints
+
 The release goal remains active. Existing changes and prior release work are
 preserved through integration in the active checkout. This is the first release:
 superseded APIs and storage formats are replaced directly, without compatibility
@@ -608,78 +696,56 @@ It is not applied; same-UID deletion and the other rotation blockers keep G08
 
 The later stopped-process G01 fixture passes and shows a coherent earlier
 `node.kv` can reopen after all Kasumi processes exit, unless the caller
-provides the later expected identity. The release interpretation of offline
-rollback remains open. The corrected Control-genesis fixture and narrow
+provides the later expected identity. The user's 2026-09-26
+[offline-rollback decision](first-release-goals.md#binding-decisions-2026-09-26)
+treats installation storage as trusted by default and adds an optional
+Taira anti-rollback witness, which is not yet implemented. The corrected
+Control-genesis fixture and narrow
 concurrent compile repairs pass **25/25** applied bootstrap cases, strict
 engine Clippy and package formatting; exact failed attempts and source pins
 are in the [integration bundle](evidence/installed-disk-integration-20260923/README.md).
 
-Earlier master-only development evidence is recorded in the
-[integration bundle](evidence/installed-disk-integration-20260923/README.md).
-The later exact-byte storage, Raft and authority cutovers pass the full serial
-Raft library **81/81** and authority library **66/66** on their recorded source
-checkpoints. The applied node key-catalog, host-keyring, live signer trust,
-verifier installation and checkpoint binding-catalog cutovers pass their
-focused cases. The later full serial store library passes **408/408 runnable
-cases**, with two ignored. All-target/all-feature workspace checking, strict
-Clippy and formatting pass on the combined G01/G09 source. The later full
-engine library has one initial-leader fixture timeout among 273 runnable
-cases; that named test passes alone, so a clean later-source full engine pass
-remains pending.
-The installed protected three-node recovery-status test reads a real committed
-`Prepare` record, but the full recovery still fails before terminal status.
-G01 also retains target lifecycle, checkpoint point/ordinal rows and bootstrap
-manifest readers. The G09 Control TargetCommand marker prerequisite is applied
-with passing focused marker and 13-case receiver tests; its six-case synthetic
-Control fixture is being repaired. The mandatory receiver envelope, historical
-status and first committed Raft-membership proof remain absent. Every G01–G14
-gate remains open.
-The latest applied G01 snapshot readers pass 77/77 serial Raft cases with one
-historically long custody-capacity case filtered. Bounded encrypted scratch
-batching now passes that large case 1/1 in 403.88 seconds, including
-snapshot/reopen identity; the uninstrumented full Raft library suite then
-passes **78/78**. A
-test-only native administrative DTO regression, the local JWT
-missing-claim case, and the five-case same-process standalone staging fixture
-pass. The marker-codec source passes 398 runnable store library tests with two
-ignored. A later G06 archive-reference validation passes 25 types tests and
-nine affected store archive tests; its wider final-source suites remain open.
-The later G04 cursor-anchor client and protected-TLS server cases pass 1/1
-each. G10's protected recovery-status TLS case passes 1/1, but its positive
-replicated observation remains unqualified. The G11 functional-evidence
-export/transport tooling passes its 149-test Python checkpoint. Native
-workflow tar and independent producer-record uploads, exact Cargo executable
-and compiled-feature replay, and the local collector are applied. After
-correcting the synthetic package fixture and a feature-inventory false-pass,
-complete repository Python discovery passes **168/168** again on the later
-G05/G09 source under Python 3.12.14. A reviewed owned-assembly raw tar,
-producer and failure-snapshot transport prerequisite is now applied, with
-**15/15** focused tests and workflow syntax checks passing. Complete Python
-discovery passes **183/183** on that source. A reviewed post-download
-projection then passes **8/8** focused and **191/191** complete Python tests
-on the applied source, but its result is always `unqualified`: physical-host
-and permanent attempt-registry evidence are still missing. Native
-upload/download and semantic adapters remain open. A reviewed G10 assertion
-now checks the actual protected HTTPS membership epoch and all 129 complete,
-fresh groups; its focused installed rerun passes **1/1**. The serial G07 authority library rerun failed **3 of 64** cases:
-two fixture reopen waits incorrectly included a learner or removed voter, and
-target shutdown produced an exact sealed-serving error absent from its strict
-test classifier. The three cases and classifier regression pass focused, and
-the corrected full serial library passes **64/64 in 766.75 seconds** before
-the later G09 journal-format edit. The journal-format source's 13-case
-materialization rerun failed one strict shutdown classifier; its corrected
-named case passes focused and the complete serial authority library passes
-**65/65** on the format-2 source. The full
-engine library on that source failed one backup credential fixture among 267
-runnable cases. The corrected credential timing and strict serving-expiry
-classifier then pass their focused cases; the complete serial engine library
-passes **272/272 runnable cases**, with one ignored, on the later format-2
-target-journal source. The dormant G05 exact
-S3 destination index and G09 Start-owner format pass **5/5** and **2/2** focused
-cases respectively, but neither is wired to its production writer. Exact logs and
-hashes are preserved in the linked integration bundle. None of these
-development results closes G01–G14 or supplies final-source native
-acceptance. The paragraphs below preserve earlier source checkpoints.
+Pre-cutover development checkpoints ran on redb-backed source before
+`503e9a2` removed redb. They include the last pre-cutover master-only serial
+store, Raft, authority and engine library passes, and are preserved under
+[Historical: redb-backed G02](#historical-redb-backed-g02-superseded-2026-09-24).
+
+The [approved completion plan](first-release-plan.md) and
+[fourteen workstream goals](first-release-goals.md) define the remaining work
+and its dependency order. Backward compatibility is forbidden for this first
+release. No goal closes without implementation, final-source validation and
+usable release artifacts or operating documentation.
+
+The [acceptance manifest verifier](release-acceptance-manifest.md) now validates
+the fixed native/domain/artifact roster, complete workload samples, process
+ownership and source identities. It deliberately rejects every domain whose
+semantic adapter remains unimplemented. The applied G11 revision 3 launcher
+tracks its outer runner and nested process groups. The selected-primary adapter
+slice binds the assembly's retained functional receipt to the manifest-selected
+native primary; its [exact application receipt](evidence/installed-disk-integration-20260923/README.md)
+has SHA256 `1b20595a8452a6c0afc3cb6bf869b51aa590b34f9ce3bffd85c4fa9c37556ddd`.
+Full repository Python discovery passes **122/122** on the applied source (log
+`target/installed-disk-validation/g11-dependency-review-runner-application/full-python-discovery.log`).
+The adapter registry remains empty. Complete semantic adapters and required
+native platform runs remain open, so G11 and final release acceptance remain
+open. Physical host observations in [Linux acceptance](linux-acceptance.md) are
+not resource reservations.
+
+## Historical: redb-backed G02 (superseded 2026-09-24)
+
+Until 2026-09-24, G02 targeted a patched, vendored redb. The
+[native KV engine goal](native-kv-goal.md) then replaced it, and redb, its
+vendored fork and its provenance inventory were removed; `Cargo.lock` has no
+redb package. Everything in this section ran on redb-backed source between
+2026-09-20 and 2026-09-24. That covers the vendor redb test counts, the
+cache, page-list, allocator and `PageNumber` changes, the redb provenance
+rebinds and the redb transaction-admission prerequisites. It also covers the
+store, engine, Raft, authority and server results recorded alongside them.
+These records are preserved as evidence of that work. They do not describe
+current storage, qualify `kasumi-kv` or count toward any G01–G14 gate.
+Present-tense limitations inside them describe the source of that time.
+
+### Earlier combined-source checkpoints
 
 The earlier dirty combined source had passing focused canonical replay,
 authenticated HTTP/2 Raft transport, production-only server check, and a
@@ -782,30 +848,77 @@ A fresh complete combined-source run remains pending. The
 [current integration evidence](evidence/installed-disk-integration-20260923/README.md)
 records the exact scopes and open gates. All release goals remain open.
 
-The [approved completion plan](first-release-plan.md) and
-[fourteen workstream goals](first-release-goals.md) define the remaining work
-and its dependency order. Backward compatibility is forbidden for this first
-release. No goal closes without implementation, final-source validation and
-usable release artifacts or operating documentation.
+### Development diagnostics on redb-backed master
 
-The [acceptance manifest verifier](release-acceptance-manifest.md) now validates
-the fixed native/domain/artifact roster, complete workload samples, process
-ownership and source identities. It deliberately rejects every domain whose
-semantic adapter remains unimplemented. The applied G11 revision 3 launcher
-tracks its outer runner and nested process groups. The selected-primary adapter
-slice binds the assembly's retained functional receipt to the manifest-selected
-native primary; its [exact application receipt](evidence/installed-disk-integration-20260923/README.md)
-has SHA256 `1b20595a8452a6c0afc3cb6bf869b51aa590b34f9ce3bffd85c4fa9c37556ddd`.
-Full repository Python discovery passes **122/122** on the applied source (log
-`target/installed-disk-validation/g11-dependency-review-runner-application/full-python-discovery.log`).
-The adapter registry remains empty. Complete semantic adapters and required
-native platform runs remain open, so G11 and final release acceptance remain
-open. Physical host observations in [Linux acceptance](linux-acceptance.md) are
-not resource reservations.
+The last pre-cutover master-only development evidence, all on redb-backed
+source before `503e9a2` removed redb, is recorded in the
+[integration bundle](evidence/installed-disk-integration-20260923/README.md).
+The later exact-byte storage, Raft and authority cutovers pass the full serial
+Raft library **81/81** and authority library **66/66** on their recorded source
+checkpoints. The applied node key-catalog, host-keyring, live signer trust,
+verifier installation and checkpoint binding-catalog cutovers pass their
+focused cases. The later full serial store library passes **408/408 runnable
+cases**, with two ignored. All-target/all-feature workspace checking, strict
+Clippy and formatting pass on the combined G01/G09 source. The later full
+engine library has one initial-leader fixture timeout among 273 runnable
+cases; that named test passes alone, so a clean later-source full engine pass
+remains pending.
+The installed protected three-node recovery-status test reads a real committed
+`Prepare` record, but the full recovery still fails before terminal status.
+G01 also retains target lifecycle, checkpoint point/ordinal rows and bootstrap
+manifest readers. The G09 Control TargetCommand marker prerequisite is applied
+with passing focused marker and 13-case receiver tests; its six-case synthetic
+Control fixture is being repaired. The mandatory receiver envelope, historical
+status and first committed Raft-membership proof remain absent. Every G01–G14
+gate remains open.
+The latest applied G01 snapshot readers pass 77/77 serial Raft cases with one
+historically long custody-capacity case filtered. Bounded encrypted scratch
+batching now passes that large case 1/1 in 403.88 seconds, including
+snapshot/reopen identity; the uninstrumented full Raft library suite then
+passes **78/78**. A
+test-only native administrative DTO regression, the local JWT
+missing-claim case, and the five-case same-process standalone staging fixture
+pass. The marker-codec source passes 398 runnable store library tests with two
+ignored. A later G06 archive-reference validation passes 25 types tests and
+nine affected store archive tests; its wider final-source suites remain open.
+The later G04 cursor-anchor client and protected-TLS server cases pass 1/1
+each. G10's protected recovery-status TLS case passes 1/1, but its positive
+replicated observation remains unqualified. The G11 functional-evidence
+export/transport tooling passes its 149-test Python checkpoint. Native
+workflow tar and independent producer-record uploads, exact Cargo executable
+and compiled-feature replay, and the local collector are applied. After
+correcting the synthetic package fixture and a feature-inventory false-pass,
+complete repository Python discovery passes **168/168** again on the later
+G05/G09 source under Python 3.12.14. A reviewed owned-assembly raw tar,
+producer and failure-snapshot transport prerequisite is now applied, with
+**15/15** focused tests and workflow syntax checks passing. Complete Python
+discovery passes **183/183** on that source. A reviewed post-download
+projection then passes **8/8** focused and **191/191** complete Python tests
+on the applied source, but its result is always `unqualified`: physical-host
+and permanent attempt-registry evidence are still missing. Native
+upload/download and semantic adapters remain open. A reviewed G10 assertion
+now checks the actual protected HTTPS membership epoch and all 129 complete,
+fresh groups; its focused installed rerun passes **1/1**. The serial G07 authority library rerun failed **3 of 64** cases:
+two fixture reopen waits incorrectly included a learner or removed voter, and
+target shutdown produced an exact sealed-serving error absent from its strict
+test classifier. The three cases and classifier regression pass focused, and
+the corrected full serial library passes **64/64 in 766.75 seconds** before
+the later G09 journal-format edit. The journal-format source's 13-case
+materialization rerun failed one strict shutdown classifier; its corrected
+named case passes focused and the complete serial authority library passes
+**65/65** on the format-2 source. The full
+engine library on that source failed one backup credential fixture among 267
+runnable cases. The corrected credential timing and strict serving-expiry
+classifier then pass their focused cases; the complete serial engine library
+passes **272/272 runnable cases**, with one ignored, on the later format-2
+target-journal source. The dormant G05 exact
+S3 destination index and G09 Start-owner format pass **5/5** and **2/2** focused
+cases respectively, but neither is wired to its production writer. Exact logs and
+hashes are preserved in the linked integration bundle. None of these
+development results closes G01–G14 or supplies final-source native
+acceptance.
 
-## Current development diagnostics on master
-
-The latest pending mandatory-memory stack, based on `600c0ca`, requires the
+The then-latest pending mandatory-memory stack, based on `600c0ca`, required the
 installed core and runtime facade before production disk opening. It retains
 actual persistent/scratch/device metadata leases and rejects foreign memory
 owners before storage mutation or Database startup. Superseded constructors and
@@ -1336,11 +1449,13 @@ and all eight preserved executables match their recorded hashes. This is an
 interrupted attempt, not evidence of a Raft assertion failure. The NodeDisk
 allocation correction and Control genesis stack correction remain unqualified.
 
-The release integration is now on master, with its prior public-repository and
-ordered-seek changes preserved. Pending mandatory storage-owner, canonical redb
-and caller changes have been transferred here for continued implementation.
-Transferred source and historical dependency passes do not qualify this combined
-source. G01–G14 remain open.
+After this attempt, the release integration moved to the single `master`
+checkout, keeping its earlier public-repository and ordered-seek changes. The
+pending mandatory storage-owner and caller changes were transferred there. The
+canonical redb changes transferred with them were superseded when the
+2026-09-24 native KV cutover removed redb. Neither the transferred source nor
+any historical dependency pass qualifies current `master`; see
+[current verified status](#current-verified-status). G01–G14 remain open.
 
 ## Preceding combined checkpoint
 
@@ -1356,7 +1471,8 @@ Control genesis stack correction.
 
 The [frozen `5233e96` successor](evidence/first-release-5233e96-check-20260920/README.md)
 passed 26 gates, including proposal/authority custody, all MCP response fences,
-complete store/serving libraries and the corrected retired-source ownership
+complete store/serving libraries, all six serving-owner fixtures and both
+retired-source cases, among them the corrected registration-rejection ownership
 case. The next Control genesis gate aborted with a stack overflow in its first
 case. All 19 later gates were unrun. All 27 dispatched process groups drained;
 source stayed unchanged and 13 preserved executables were rehashed. The original
@@ -1433,9 +1549,11 @@ terminal gate records and failed status establish that the run actually executed
 That original evidence is not rewritten to correct its stale scope text.
 
 This run used source `be2667d804e483dce2b3bcc408ecb7cb7f3ae66a`, tree
-`5cc19f163e7f0b7b53ef53da9dfc998578ba0f20`. Later integration source and pending MCP
-changes are not qualified by it. Persistent NodeDisk admission, recoverable redb
-capacity handling and all final production, platform, live, capacity, performance,
+`5cc19f163e7f0b7b53ef53da9dfc998578ba0f20`. It does not qualify later integration
+source or the then-pending MCP changes. At that source, persistent NodeDisk
+admission and recoverable capacity handling in the then-planned redb engine
+were open. The redb target is superseded by native KV. Native KV capacity
+handling and all final production, platform, live, capacity, performance,
 endurance and artifact gates remain open.
 
 ## Preceding combined checkpoint
@@ -1469,8 +1587,9 @@ new storage regressions passed in `be2667d`. That successor also includes the
 audit outage correction; its five audit gates requiring ten cases were withheld
 after the ownership failure. The 31-gate/141-case plan retains every previous
 command, deadline and required case and binds the successor source/tree. These
-results do not establish installed production disk admission or recoverable redb
-quota handling.
+results do not establish installed production disk admission or recoverable
+storage-quota handling. The redb quota target they refer to is superseded by
+native KV.
 
 ## Contract
 
@@ -1570,21 +1689,31 @@ completion. A scratch-file budget or an application payload limit does not
 account for persistent databases, indexes, WALs, archived objects or retained
 versions. The exact reservation dependency is specified below.
 
-The source-frozen `f650b99` NodeDisk foundation passes store all-target
-compilation and [23 focused ownership/device/scratch tests](evidence/node-disk-f650b99-20260909/README.md).
-It retains closed-file charges, bounds descriptor metadata and shares filesystem
-promises with scratch storage. Production constructors and redb lifecycle paths
-remain unwired; this result does not close persistent capacity acceptance.
+The source-frozen `f650b99` NodeDisk foundation passed store all-target
+compilation and [23 focused ownership/device/scratch tests](evidence/node-disk-f650b99-20260909/README.md)
+on its recorded source. It retained closed-file charges, bounded descriptor
+metadata and shared filesystem promises with scratch storage. At that source,
+production constructors and the redb lifecycle paths were unwired. This
+historical result does not close persistent capacity acceptance for the native
+KV engine.
 
-The separate redb owner-failure prototype `4f62863` passes
+Historical (redb, superseded 2026-09-24): the separate redb owner-failure
+prototype `4f62863` passed
 [20 focused regressions](evidence/redb-owner-failure-4f62863-20260909/README.md),
 including permanent failure fencing and ordinary capacity rollback. Its
 [complete upstream source overlay](evidence/redb-upstream-preparation-20260909/README.md)
-is prepared at `bdde797`. Offline dependency preparation failed on missing cached
+was prepared at `bdde797`. Offline dependency preparation failed on missing cached
 packages and is preserved. [Online metadata preparation](evidence/redb-upstream-metadata-online-20260909/README.md)
 resolved both complete verification graphs without compilation and committed
-their lockfiles at `3a87154`. Pinned tools/harness, full upstream verification,
-fuzzing and production integration remain open.
+their lockfiles at `3a87154`. Its upstream verification and fuzzing were
+abandoned when redb was removed. The prototype commit itself was not merged,
+but from `b2876ef` (2026-09-20) the root Cargo patch selected the vendored
+`redb-4.2.0` admission fork. Until redb was removed in `503e9a2`, that fork
+rolled back a `CapacityDenied` transaction without fencing the owner, and
+latched `OwnerFailed` to fence it. The native KV requirements keep the recoverable
+`CapacityDenied` versus sticky `OwnerFailed` distinction (see the
+[binding decisions](first-release-goals.md#binding-decisions-2026-09-26)); that
+distinction is not yet qualified for native KV.
 
 ## Work ownership
 
@@ -1696,7 +1825,8 @@ Linux `3a8d512` failure and all linked evidence remain preserved.
 
 The following records describe their named sources at the time of each run or
 source review. Present-tense limitations inside these historical records are
-source-specific; the latest combined checkpoint above governs current evidence.
+source-specific; the [current verified status](#current-verified-status) governs
+current evidence.
 Neither branch passes nor source integration replace final release acceptance.
 
 On September 19 the temporary worktrees and build targets from the previous

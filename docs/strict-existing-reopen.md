@@ -1,7 +1,11 @@
 # Existing installation reopen
 
-> Historical source checkpoint. The current storage implementation uses the
-> [native Kasumi KV engine](native-kv-goal.md).
+> **Historical source checkpoint (redb era, superseded 2026-09-24).** This
+> 2026-09-09 checkpoint predates the [native Kasumi KV engine](native-kv-goal.md)
+> cutover, and its storage statements describe redb-backed source. The strict
+> existing-only reopen contract it records is still a first-release
+> requirement. Its test and wiring claims are not current results; current
+> status is in the [release ledger](production-release.md#current-verified-status).
 
 `TenantStorageSet::open_existing` requires both catalogs and their authenticated
 custody binding. It unwraps the custody domain and checks the requested exact
@@ -91,9 +95,10 @@ original deployment bytes, logical state, current membership and new endpoint.
 Calling initialization again must leave that current membership intact.
 No compiler or functional gate has run on this successor source yet.
 
-HA first enrollment and administrative tenant creation still require their
-explicit installation handling. The separate node-file opener review also
-tracks redb writable-open effects on unrelated files; the regressions here
-assert logical row non-mutation on rejection, not arbitrary file-byte
+At this checkpoint, HA first enrollment and administrative tenant creation
+still required their explicit installation handling. The separate node-file
+opener review also tracked redb writable-open effects on unrelated files. That
+concern is historical, because redb has since been removed. The regressions
+here assert logical row non-mutation on rejection, not arbitrary file-byte
 preservation. This checkpoint does not claim all production callers use strict
 reopen or certify the unresolved persistent-disk integration.

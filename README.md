@@ -19,15 +19,22 @@ engine for the first release.
 Kasumi uses its own APIs; it does not implement the Redis protocol. See the
 [standalone installation guide](docs/standalone.md) to run a local server.
 
-**Status:** the first production release is being implemented. The [active release ledger](docs/production-release.md) tracks the remaining implementation and acceptance gates. Kasumi is licensed under [Apache-2.0](LICENSE).
+**Status:** the first production release is being implemented and no source
+revision is release-qualified yet. The [active release ledger](docs/production-release.md)
+records the [current verified status](docs/production-release.md#current-verified-status)
+and tracks the remaining implementation and acceptance gates. The
+[first-release acceptance checklist](docs/release-checklist.md) lists the
+evidence the release still requires. Kasumi is licensed under
+[Apache-2.0](LICENSE).
 
-The original v1 baseline passed software acceptance gates.
-Both macOS and Linux passed 188 workspace tests, strict lint/formatting and live
-service checks. The [measured results](benchmarks/RESULTS.md) cover all 15 required
-cases: 99,000 successful operations at 1, 100 and 1,000 tenants. They preserve
-source and executable identities, earlier failures and shared-host limitations.
-The [acceptance checklist](docs/release-checklist.md) maps every agreed requirement
-to implementation and evidence. No Redis multiplier or production SLA is claimed.
+The September 5, 2026 v1 baseline is a historical prototype, not first-release
+evidence. It stored data in redb, which the first release has replaced with
+`kasumi-kv`. On that historical source, macOS and Linux passed 188 workspace
+tests, strict lint/formatting and live service checks. Its
+[measured results](benchmarks/RESULTS.md) cover all 15 required cases: 99,000
+successful operations at 1, 100 and 1,000 tenants. They preserve source and
+executable identities, earlier failures and shared-host limitations. No Redis
+multiplier or production SLA is claimed.
 New first-release [conditional transaction contracts](docs/transactions.md),
 [large atomic transactions/read leases](docs/large-transactions-plan.md),
 [durable feeds and logical-history archives](docs/history.md),
@@ -37,8 +44,10 @@ New first-release [conditional transaction contracts](docs/transactions.md),
 [credential lifetime fences](docs/credential-lifetime.md),
 [incarnation credentials and restore lineage](docs/credential-resources-lineage.md),
 [exact planned source retirement](docs/planned-retirement.md), and
-[independent custody storage](docs/custody-control.md) extend that recorded baseline. Their regression tests do not replace
-the baseline's full platform and performance gates for the changed source.
+[independent custody storage](docs/custody-control.md) extend that historical
+baseline. Their regression tests are development evidence. The first release
+still needs its own full platform, performance and endurance gates on its final
+source.
 
 ## Deployment contracts
 
