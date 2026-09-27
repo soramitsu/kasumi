@@ -92,6 +92,7 @@ use kasumi_types::drain::{DrainReport, DrainResult};
 pub use keys::{
     GeneratedKey, HistoricalKeyResolver, HistoricalKeySource, HistoricalSourceSecurityDescriptor,
     KeyProvider, SecretKey, TransitConfig, TransitKeyProvider, WrappedKey, WrappingIdentity,
+    source_set_sha256_of,
 };
 pub use storage_domains::{
     AdmittedDeploymentBinding, BindingInstallWriteFailure, BindingInstallWriteRetirement,
