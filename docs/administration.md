@@ -32,6 +32,20 @@ Standalone installations use `kasumid init --mode standalone` instead.
 
 `manage` accepts the closed `ManagementCommand` JSON enum, rejects unknown fields, and prints exact JSON. Ordinary schema, policy, limits, suspension and resume commands use their corresponding native methods. Management is never exposed as an MCP data tool.
 
+## Complete schema inventory
+
+Native `ReadSchema` takes one explicit first-release selector:
+`{"selection":"all"}` returns every installed collection from one barrier-consistent
+generation; `{"selection":"named","collections":["name"]}` permits missing named
+collections, represented as `null`. The retired untagged request is rejected.
+Complete reads reject null entries, exceedance of 128 collections or 8 MiB of
+encoded metadata, and unauthorized collections; they never truncate to a subset.
+The SDK also enforces the caller's `max_rows` bound. Empty inventories still
+require current Admin permission and a durable strict read-audit release.
+Tenant schema administration uses database-purpose credentials for the exact
+tenant incarnation. Installed lifecycle Control credentials cannot substitute
+for those credentials.
+
 ## Routing and outcomes
 
 Each tenant and the control database elect independent leaders. There is no implicit forwarding of bearer tokens or arbitrary client-selected URLs. Configure clients with the approved node-to-endpoint mapping.

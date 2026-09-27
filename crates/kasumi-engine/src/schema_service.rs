@@ -100,6 +100,8 @@ impl Database {
         request: ReadSchema,
     ) -> Result<SchemaSnapshot> {
         self.access()?;
+        self.engine
+            .authorize_discovery(context, Action::Admin, None)?;
         if let ReadSchema::Named { collections } = &request {
             if collections.is_empty() || collections.len() > MAX_SCHEMA_CHANGESET_COLLECTIONS {
                 return Err(Error::new(
@@ -118,15 +120,19 @@ impl Database {
         self.barrier().await?;
         let generation = self.engine.generation()?;
         let collections: BTreeSet<String> = match request {
-            ReadSchema::All => generation.state.collections.keys().cloned().collect(),
+            ReadSchema::All {} => {
+                // Reject before cloning the inventory into the bounded read
+                // workspace; database limits may allow more than one read.
+                if generation.state.collections.len() > MAX_SCHEMA_CHANGESET_COLLECTIONS {
+                    return Err(Error::new(
+                        ErrorCode::ResourceExhausted,
+                        "complete schema inventory exceeds collection bound",
+                    ));
+                }
+                generation.state.collections.keys().cloned().collect()
+            }
             ReadSchema::Named { collections } => collections,
         };
-        if collections.len() > MAX_SCHEMA_CHANGESET_COLLECTIONS {
-            return Err(Error::new(
-                ErrorCode::ResourceExhausted,
-                "complete schema inventory exceeds collection bound",
-            ));
-        }
         // Complete inventory can name collections only after the barrier.
         // Every installed name must be Admin-authorized before the snapshot
         // or any per-collection release event is exposed.
@@ -183,6 +189,17 @@ impl Database {
         }
         drop(generation);
         reservation.retain_workspace();
+        if collections.is_empty() {
+            self.release_event(
+                context,
+                None,
+                snapshot.revision,
+                true,
+                snapshot.policy_epoch,
+                "schema_read",
+            )
+            .await?;
+        }
         for collection in &collections {
             self.release_event(
                 context,

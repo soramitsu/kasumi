@@ -195,7 +195,7 @@ async fn audit_native_tls_fixed_history_and_original_authorization_release_impl(
     let mut sequences = first
         .records
         .iter()
-        .map(|value| value["sequence"].as_u64().unwrap())
+        .map(|record| record.sequence)
         .collect::<Vec<_>>();
     while let Some(next) = cursor {
         let page = admin
@@ -212,11 +212,7 @@ async fn audit_native_tls_fixed_history_and_original_authorization_release_impl(
         assert_eq!(page.stream_id, stream);
         assert_eq!(page.through_sequence, end);
         assert!(serde_json::to_vec(&*page).unwrap().len() <= MAX_SECURITY_AUDIT_PAGE_BYTES);
-        sequences.extend(
-            page.records
-                .iter()
-                .map(|value| value["sequence"].as_u64().unwrap()),
-        );
+        sequences.extend(page.records.iter().map(|record| record.sequence));
         cursor = page.cursor();
     }
     assert_eq!(sequences, (0..end).collect::<Vec<_>>());
@@ -351,6 +347,10 @@ async fn audit_native_tls_fixed_history_and_original_authorization_release_impl(
             stream_id: stream,
             next_sequence: 0,
             through_sequence: page.through_sequence,
+            snapshot_segments: page.snapshot_segments,
+            snapshot_head: page.snapshot_head.clone(),
+            snapshot_tail_sha256: page.snapshot_tail_sha256.clone(),
+            previous_record_sha256: None,
         }),
         limit: 8,
     };

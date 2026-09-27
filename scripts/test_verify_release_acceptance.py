@@ -78,7 +78,7 @@ class AcceptanceTests(unittest.TestCase):
         config = self.value("inputs/admin-client.json", {"endpoint": "https://unit.invalid:9445"})
         policy_request = self.value("inputs/policy-request.json", {
             "tenant": "unit-tenant", "expected_incarnation": incarnation})
-        schema_request = self.value("inputs/schema-request.json", {"collections": ["payments"]})
+        schema_request = self.value("inputs/schema-request.json", {"selection": "all"})
         policy = {"grants": [{"principal": "unit-reader", "collection": "payments", "actions": ["read"]}],
                   "strict_read_audit": True}
         definition = {"name": "payments", "write_mode": "append_only",
@@ -151,6 +151,11 @@ class AcceptanceTests(unittest.TestCase):
             "inputs/wrong-policy-request.json", {"tenant": "other", "expected_incarnation": e["incarnation"]})))
         rejected(lambda w, p, b, e: w.update(schema_request=self.value(
             "inputs/wrong-schema-request.json", {"collections": [{"payments": True}]})))
+        for request in ({"collections": ["payments"]},
+                        {"selection": "named", "collections": ["payments"]},
+                        {"selection": "all", "collections": ["payments"]}):
+            rejected(lambda w, p, b, e: w.update(schema_request=self.value(
+                "inputs/partial-schema-request.json", request)))
         rejected(lambda w, p, b, e: b.update(kasumictl="0" * 64))
         rejected(lambda w, p, b, e: p[0].update(executable=self.file(
             "executables/substitute", b"different executable bytes")))

@@ -1348,6 +1348,18 @@ cleanup, remain **HOLD**.
 
 ### G09 — Distributed/local recovery and exact deletion
 
+Current development evidence as of 2026-09-27: production Start and the distinct
+Initialize consume separate accepted markers and use protected status to resolve
+lost replies while retaining the actual original children. The installed TLS
+case passes **1/1**, target-journal cases **18/18**, and custody cases **4/4**;
+the [release ledger](production-release.md) records their precise scope and
+retained evidence. The subsequent existing full native recovery fixture also
+passes **1/1**, reaching durable Finished and preserving replacement routing and
+activation facts across drain/reopen. Crash/expiry cases, exact deletion and the
+frozen release cohort remain open. The following paragraphs record earlier
+prerequisite checkpoints;
+their descriptions of dormant receiver wiring are historical.
+
 An independent target-owner audit (`target/g09-owner-state-machine-independent-audit/README.md`)
 found that the target journal and Raft apply cursor commit separately. A
 positive Initialize outcome needs an exclusive exact-phase owner and an

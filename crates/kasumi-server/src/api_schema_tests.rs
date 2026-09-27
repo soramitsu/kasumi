@@ -199,7 +199,7 @@ async fn native_schema_activation_is_atomic_scoped_permanent_and_private() {
     assert_eq!(installed.schema_epoch, before.schema_epoch + 1);
     assert!(installed.collections.values().all(Option::is_some));
     let complete = proto::ReadSchemaRequest {
-        request_json: serde_json::to_vec(&kasumi_types::ReadSchema::All).unwrap(),
+        request_json: serde_json::to_vec(&kasumi_types::ReadSchema::All {}).unwrap(),
     };
     assert_eq!(
         admin
@@ -217,9 +217,16 @@ async fn native_schema_activation_is_atomic_scoped_permanent_and_private() {
     let complete: kasumi_types::SchemaSnapshot =
         serde_json::from_slice(&complete.response_json).unwrap();
     assert_eq!(
-        serde_json::to_value(&complete.collections).unwrap(),
-        serde_json::to_value(&installed.collections).unwrap()
+        complete.collections.keys().map(String::as_str).collect::<BTreeSet<_>>(),
+        BTreeSet::from(["balances", "docs", "journal"])
     );
+    assert!(complete.collections.values().all(Option::is_some));
+    for (name, definition) in &installed.collections {
+        assert_eq!(
+            serde_json::to_value(&complete.collections[name]).unwrap(),
+            serde_json::to_value(definition).unwrap()
+        );
+    }
     let replay = admin
         .activate_schema(native(wire(), &token))
         .await

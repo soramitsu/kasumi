@@ -1,0 +1,58 @@
+warning: method `matches_response_id` is never used
+   --> vendor/rmcp-3.2.0/src/model.rs:251:19
+    |
+236 | impl NumberOrString {
+    | ------------------- method in this implementation
+...
+251 |     pub(crate) fn matches_response_id(&self, response_id: &Self) -> bool {
+    |                   ^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `set_client_request_metadata` is never used
+    --> vendor/rmcp-3.2.0/src/service.rs:1032:19
+     |
+ 806 | impl<R: ServiceRole> Peer<R> {
+     | ---------------------------- method in this implementation
+...
+1032 |     pub(crate) fn set_client_request_metadata(&self, metadata: ClientRequestMetadata) {
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: method `is_authorization_required` is never used
+   --> vendor/rmcp-3.2.0/src/transport.rs:275:19
+    |
+249 | impl DynamicTransportError {
+    | -------------------------- method in this implementation
+...
+275 |     pub(crate) fn is_authorization_required(&self) -> bool {
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: `rmcp` (lib) generated 3 warnings
+warning: linker stderr: ld: __eh_frame section too large (max 16MB) to encode dwarf unwind offsets in compact unwind table, performance of exception handling might be affected
+  |
+  = note: `#[warn(linker_messages)]` on by default
+
+warning: `kasumi-server` (lib test) generated 1 warning
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.01s
+     Running unittests src/lib.rs (target/debug/deps/kasumi_server-cc7c9b9a2f2be7df)
+
+running 1 test
+test api::tests::native_schema_activation_is_atomic_scoped_permanent_and_private ... FAILED
+
+failures:
+
+---- api::tests::native_schema_activation_is_atomic_scoped_permanent_and_private stdout ----
+
+thread 'api::tests::native_schema_activation_is_atomic_scoped_permanent_and_private' (46066147) panicked at crates/kasumi-server/src/api_schema_tests.rs:219:5:
+assertion `left == right` failed
+  left: Object {"balances": Object {"archived_document_count": Number(0), "data_epoch": Number(0), "definition": Object {"indexes": Array [], "name": String("balances"), "retention_class": String("operational"), "schema": Object {"properties": Object {"amount": Object {"maximum": Number(90071992547409931234567890.123456789), "type": String("number")}}, "type": String("object")}, "strict_read_audit": Bool(true), "write_mode": String("mutable")}}, "docs": Object {"archived_document_count": Number(0), "data_epoch": Number(0), "definition": Object {"indexes": Array [Object {"fields": Array [Object {"kind": String("number"), "path": String("/n")}], "name": String("n"), "text": Null, "unique": Bool(false)}], "name": String("docs"), "retention_class": String("operational"), "schema": Object {"type": String("object")}, "strict_read_audit": Bool(false), "write_mode": String("mutable")}}, "journal": Object {"archived_document_count": Number(0), "data_epoch": Number(0), "definition": Object {"indexes": Array [], "name": String("journal"), "retention_class": String("operational"), "schema": Object {"properties": Object {"amount": Object {"maximum": Number(90071992547409931234567890.123456789), "type": String("number")}}, "type": String("object")}, "strict_read_audit": Bool(true), "write_mode": String("mutable")}}}
+ right: Object {"balances": Object {"archived_document_count": Number(0), "data_epoch": Number(0), "definition": Object {"indexes": Array [], "name": String("balances"), "retention_class": String("operational"), "schema": Object {"properties": Object {"amount": Object {"maximum": Number(90071992547409931234567890.123456789), "type": String("number")}}, "type": String("object")}, "strict_read_audit": Bool(true), "write_mode": String("mutable")}}, "journal": Object {"archived_document_count": Number(0), "data_epoch": Number(0), "definition": Object {"indexes": Array [], "name": String("journal"), "retention_class": String("operational"), "schema": Object {"properties": Object {"amount": Object {"maximum": Number(90071992547409931234567890.123456789), "type": String("number")}}, "type": String("object")}, "strict_read_audit": Bool(true), "write_mode": String("mutable")}}}
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    api::tests::native_schema_activation_is_atomic_scoped_permanent_and_private
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 260 filtered out; finished in 4.42s
+
+error: test failed, to rerun pass `-p kasumi-server --lib`

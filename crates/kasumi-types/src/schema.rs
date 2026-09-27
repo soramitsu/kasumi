@@ -12,7 +12,7 @@ pub const MAX_SCHEMA_READ_ASSERTIONS: usize = 512;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "selection", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ReadSchema {
-    All,
+    All {},
     Named { collections: BTreeSet<String> },
 }
 

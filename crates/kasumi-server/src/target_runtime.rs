@@ -533,6 +533,32 @@ impl TargetRecoveryRuntime {
         self.fail_next_initial_start_reply
             .store(true, Ordering::Release);
     }
+    #[cfg(test)]
+    pub(crate) fn test_initial_reply_loss_pending(&self) -> bool {
+        self.fail_next_initial_start_reply.load(Ordering::Acquire)
+            || self.fail_next_initialize_reply.load(Ordering::Acquire)
+    }
+    /// A weak identity can compare actual child ownership without keeping a
+    /// dropped child alive or letting allocation reuse hide a replacement.
+    #[cfg(test)]
+    pub(crate) async fn test_replica_identity(
+        &self,
+        tenant: &str,
+        incarnation: Uuid,
+    ) -> Option<std::sync::Weak<kasumi_engine::Database>> {
+        let owner = self
+            .generations
+            .lock()
+            .await
+            .get(&(tenant.to_owned(), incarnation))
+            .cloned()?;
+        owner
+            .lock()
+            .await
+            .replica
+            .as_ref()
+            .map(|replica| Arc::downgrade(replica.database()))
+    }
     /// Observe target child construction without opening or retaining the
     /// generation. Materialization alone must not count as a Raft child.
     #[cfg(test)]

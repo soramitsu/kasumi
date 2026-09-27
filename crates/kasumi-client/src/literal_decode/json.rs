@@ -142,7 +142,7 @@ pub(super) fn schema(
     let values = Object::new(object.raw("collections")?)?;
     object.finish()?;
     let named = match request {
-        ReadSchema::All => None,
+        ReadSchema::All {} => None,
         ReadSchema::Named { collections } => Some(collections),
     };
     if uuid::Uuid::parse_str(&incarnation)

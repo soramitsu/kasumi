@@ -1214,8 +1214,9 @@ impl Fixture {
         self.assert_protected_status_record(configurations, &expected)
             .await;
     }
-    /// Drive installed Control/issuer/target services through one actual
-    /// Start, discard its original reply, and resolve only its retained owner.
+    /// Drive installed Control/issuer/target services through Start and the
+    /// distinct Initialize, discard each actual reply, and resolve their
+    /// original accepted markers while retaining the same owned children.
     pub async fn assert_initial_start_lost_reply_status(&self) {
         let request = self.request.as_ref().unwrap();
         let mut control = self.client().await;
@@ -1239,6 +1240,8 @@ impl Fixture {
                         let receiver = self.targets.iter().find(|target| target.node_id() == *node_id).unwrap();
                         receiver.test_lose_next_initial_start_reply();
                         assert!(self.step(&mut control).await.is_err(), "fixture must lose the real first Start reply");
+                        assert!(!receiver.test_initial_reply_loss_pending(),
+                            "fixture must consume the successful Start reply, not merely observe an unrelated error");
                         let marked = control.read_phase(&RecoveryPhaseRequest {
                             operation_id: request.operation_id, phase_id,
                         }, Duration::from_secs(5)).await.unwrap();
@@ -1250,6 +1253,7 @@ impl Fixture {
                         };
                         assert!(receiver.test_has_replica("acme", self.target).await,
                             "lost Start reply must retain the actual prebound Raft owner");
+                        let original_child = receiver.test_replica_identity("acme", self.target).await.unwrap();
                         assert_eq!(receiver.test_initial_dispatch_status(&identity, original).unwrap(),
                             kasumi_engine::InitialDispatchStatus::AcceptedOnly);
                         assert_eq!(receiver.test_owned_custody_group("acme", self.target).await.unwrap(),
@@ -1307,6 +1311,8 @@ impl Fixture {
                         assert!(target.read_initial_start(&self.control_token, &query).await.is_err(),
                             "resolved Control phase cannot be normalized into current Start authority");
                         assert!(receiver.test_has_replica("acme", self.target).await);
+                        assert!(original_child.ptr_eq(&receiver.test_replica_identity("acme", self.target).await.unwrap()),
+                            "Start status continuation must keep the same actual child");
                         for other in self.targets.iter().filter(|other| other.node_id() != *node_id) {
                             assert!(!other.test_has_replica("acme", self.target).await,
                                 "status continuation must not construct another target child");
@@ -1352,16 +1358,27 @@ impl Fixture {
                         .test_owned_start_identity("acme", self.target)
                         .await
                         .unwrap();
+                    let mut original_children = Vec::new();
                     for target in &self.targets {
                         assert!(
                             target.test_has_replica("acme", self.target).await,
                             "all original voters must be owned before Initialize"
+                        );
+                        original_children.push(
+                            target
+                                .test_replica_identity("acme", self.target)
+                                .await
+                                .unwrap(),
                         );
                     }
                     receiver.test_lose_next_initialize_reply();
                     assert!(
                         self.step(control).await.is_err(),
                         "fixture must discard actual Initialize reply"
+                    );
+                    assert!(
+                        !receiver.test_initial_reply_loss_pending(),
+                        "fixture must consume the successful Initialize reply, not merely observe an unrelated error"
                     );
                     let marked = control
                         .read_phase(
@@ -1494,6 +1511,17 @@ impl Fixture {
                         if matches!(response.outcome, TargetRuntimeOutcome::Initialized { .. }))
                     );
                     assert!(resolved.resolved_revision.is_some());
+                    for (receiver, original) in self.targets.iter().zip(&original_children) {
+                        assert!(
+                            original.ptr_eq(
+                                &receiver
+                                    .test_replica_identity("acme", self.target)
+                                    .await
+                                    .unwrap()
+                            ),
+                            "Initialize and status continuation must keep all original children"
+                        );
+                    }
                     assert!(
                         target
                             .read_initial_membership_history(&self.control_token, &query)

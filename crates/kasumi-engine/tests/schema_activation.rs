@@ -1302,6 +1302,95 @@ async fn open(
 }
 
 #[tokio::test]
+async fn complete_schema_inventory_is_authorized_audited_and_never_truncated() {
+    let root = kasumi_store::test_utils::private_tempdir().unwrap();
+    let path = root.path().join("node.kv");
+    let physical = common::PhysicalFixture::new(&path, Default::default());
+    let (db, audit, _node) = open(&physical, &path, true).await;
+    let mut read_only = context("owner");
+    read_only.scopes = BTreeSet::from([Action::Read]);
+    for denied in [read_only, context("unknown")] {
+        assert_eq!(
+            db.read_schema(&denied, ReadSchema::All {})
+                .await
+                .unwrap_err()
+                .code,
+            ErrorCode::Forbidden
+        );
+    }
+    let empty = db
+        .read_schema(&context("owner"), ReadSchema::All {})
+        .await
+        .unwrap();
+    assert!(empty.collections.is_empty());
+    // Empty inventory is still a strict administrative read with a durable
+    // release event; absence of collections must not suppress that write.
+    assert!(db.engine().generation().unwrap().state.revision > empty.revision);
+
+    let names: Vec<_> = (0..MAX_SCHEMA_CHANGESET_COLLECTIONS)
+        .map(|n| format!("collection_{n}"))
+        .collect();
+    let refs: Vec<_> = names.iter().map(String::as_str).collect();
+    db.activate_schema(context("owner"), creates(db.engine(), "all-limit", &refs))
+        .await
+        .unwrap();
+    let complete = db
+        .read_schema(&context("owner"), ReadSchema::All {})
+        .await
+        .unwrap();
+    assert_eq!(complete.collections.len(), MAX_SCHEMA_CHANGESET_COLLECTIONS);
+    assert!(complete.collections.values().all(Option::is_some));
+    let mut scoped_policy = policy();
+    scoped_policy.grants.push(Grant {
+        principal: "scoped".into(),
+        collection: Some("collection_0".into()),
+        actions: BTreeSet::from([Action::Admin]),
+    });
+    db.administer(context("owner"), Operation::SetPolicy(scoped_policy))
+        .await
+        .unwrap();
+    assert_eq!(
+        db.read_schema(&context("scoped"), ReadSchema::All {})
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::Forbidden
+    );
+    db.read_schema(
+        &context("scoped"),
+        ReadSchema::Named {
+            collections: BTreeSet::from(["collection_0".into()]),
+        },
+    )
+    .await
+    .unwrap();
+    db.administer(
+        context("owner"),
+        Operation::SetLimits(Limits {
+            max_collections: MAX_SCHEMA_CHANGESET_COLLECTIONS + 1,
+            ..Limits::default()
+        }),
+    )
+    .await
+    .unwrap();
+    db.activate_schema(
+        context("owner"),
+        creates(db.engine(), "beyond-limit", &["extra"]),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        db.read_schema(&context("owner"), ReadSchema::All {})
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::ResourceExhausted
+    );
+    db.shutdown().await.unwrap();
+    audit.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn encrypted_restart_and_full_restore_preserve_permanent_activation_receipts() {
     let root = kasumi_store::test_utils::private_tempdir().unwrap();
     let path = root.path().join("node.kv");
@@ -1335,7 +1424,7 @@ async fn encrypted_restart_and_full_restore_preserve_permanent_activation_receip
             .is_some_and(|schema| schema.data_epoch == 0 && schema.archived_document_count == 0)
     }));
     let complete = db
-        .read_schema(&context("owner"), ReadSchema::All)
+        .read_schema(&context("owner"), ReadSchema::All {})
         .await
         .unwrap();
     assert_eq!(complete.collections.len(), names.len());

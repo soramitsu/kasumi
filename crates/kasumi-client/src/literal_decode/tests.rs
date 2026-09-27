@@ -755,7 +755,7 @@ fn complete_schema_read_decodes_extra_installed_names_and_rejects_null_or_over_b
     let call = options.admit().unwrap();
     let prepared = Prepared {
         input: vec![],
-        kind: Kind::Schema(ReadSchema::All),
+        kind: Kind::Schema(ReadSchema::All {}),
         path: "",
         _owner: call.clone(),
     };

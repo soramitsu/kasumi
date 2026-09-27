@@ -158,11 +158,7 @@ async fn page(operation: &str, profile_path: &Path, input: &Path, output: &Path)
                     serde_json::from_value(attempt.original.clone())?;
                 if request.cursor.is_none() {
                     let status = client.security_audit_status(&profile.bearer()?).await?;
-                    request.cursor = Some(SecurityAuditCursor {
-                        stream_id: status.position.stream_id,
-                        next_sequence: 0,
-                        through_sequence: status.position.next_sequence,
-                    });
+                    request.cursor = Some(status.snapshot_cursor());
                 }
                 serde_json::to_value(request)?
             }

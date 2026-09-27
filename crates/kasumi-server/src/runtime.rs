@@ -5690,17 +5690,17 @@ mod lifecycle_tests {
         fixture_stage!("recovery targets installed");
         if protected_prepare_only || initial_start_only {
             // A separate installed three-node point-status acceptance case:
-            // observe Prepare or resolve one lost Start through the actual
-            // owned child, without claiming terminal recovery or Initialize.
+            // observe Prepare or resolve lost Start and Initialize replies
+            // through the actual owned children. Terminal recovery is separate.
             if protected_prepare_only {
                 fixture_stage!("checking protected Prepare status");
                 fixture_operation(|| recovery.assert_protected_prepare_status(&configurations))
                     .await;
                 fixture_stage!("protected Prepare status checked");
             } else {
-                fixture_stage!("checking lost initial Start reply status");
+                fixture_stage!("checking lost Start and Initialize reply status");
                 fixture_operation(|| recovery.assert_initial_start_lost_reply_status()).await;
-                fixture_stage!("lost initial Start reply status checked");
+                fixture_stage!("lost Start and Initialize reply status checked");
             }
             fixture_operation(|| recovery.close_targets()).await;
             for stop in &stops {

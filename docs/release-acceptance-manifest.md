@@ -313,9 +313,9 @@ of supplied evidence. The installed-domain runner must still prove original
 dispatch order and input-byte custody, own the native TLS endpoint and process
 lifetimes, bind the pinned intent to reviewed release configuration, and retain
 the native receipts before an adapter can register. No live tenant, grant, or
-schema readback is claimed by the synthetic tests. `ReadSchema` returns only
-requested collection definitions; a claim that no additional collections exist
-requires a separate native collection-list observation.
+schema readback is claimed by the synthetic tests. Admission requires
+`ReadSchema {"selection":"all"}` and the exact complete collection set; named
+reads and the retired untagged request cannot establish inventory admission.
 
 Before enabling any domain adapter, implement and review its actual runner,
 fixed executable/argument/configuration/artifact contract, and semantic parser.

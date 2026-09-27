@@ -526,11 +526,49 @@ consumes its accepted candidate through `bind_initialize`, requires the
 continuously owned original Start child, initializes the prebound group and
 records the first-membership observation after fresh Control reads. Protected
 membership-history status and the coordinator's existing-attempt continuation
-are wired in source. These later source paths have no new passing validation
-claim in this merge ledger. A missing child, expired original dispatch or
+are wired in source. At that merge checkpoint, these later paths had no new
+passing validation claim. A missing child, expired original dispatch or
 resolved phase grants no new startup permission; recovery after those conditions
 still requires a separately designed authority contract. G09 and full recovery
 acceptance remain open.
+
+The **2026-09-27 development checkpoint** verifies the combined installed
+Start/Initialize path. `cargo test --locked -p kasumi-server --lib
+three_runtime_nodes_resolve_lost_start_and_initialize_over_protected_tls` passes
+**1/1** in 66.43 seconds. The test proves that both deliberate failure hooks
+consume actual successful replies, so an unrelated error cannot satisfy the
+lost-reply assertion. Weak database identities prove that status continuation
+retains the same actual Start child and that Initialize and its continuation
+retain all three original children. The distinct accepted phase/attempt markers,
+unchanged Start prebind, real committed/applied first membership, fresh Control
+reads, credential/substitution/replay denials and resolved-phase refusal are all
+exercised over pinned mutual TLS. No repeated `BeginEffect` or `Execute` is
+issued by the coordinator's existing-attempt continuation.
+
+The same current source passes the target-journal subset **18/18** in 6.64
+seconds and the Start/Initialize custody subset **4/4** in 0.12 seconds. The
+first current-source build exposed unrelated audit DTO drift; the CLI now uses
+the current status-derived snapshot cursor, and its test reads typed records
+and retains every current cursor anchor. Raw development logs and source hashes
+are retained in
+[the checkpoint record](evidence/g09-initial-membership-development-20260927/README.md).
+The audit TLS/CLI regression passes **1/1** in 82.86 seconds. The shared complete
+schema inventory gate passes **1/1**, and native schema activation passes
+**1/1** after correcting its All-versus-Named expectation; the original failure
+is retained separately.
+
+The subsequent existing full native recovery fixture,
+`three_runtime_nodes_replicate_with_control_quorum_over_audited_pinned_mtls`,
+passes **1/1** in 316.48 seconds. It reaches durable `Finished`, checks source
+retirement/fencing, completed target activation and confirmations, publishes the
+replacement route, reads the restored document, rejects the source context,
+drains and reopens the runtimes from their original bootstrap, and preserves
+the exact activation facts. Conservative uncertain replies resolve within the
+original recovery deadline. The fixture permits at most one precisely identified
+completed abandoned-call drain diagnostic, while forbidding any retained owner.
+This is local development evidence, not process-crash acceptance at every phase,
+expired initial-phase authority, exact deletion, nine-process HA or a release
+cohort. G09 remains open.
 
 The following independent G01/G02 checkpoints record registered storage and
 allocation progress, along with the still-held G03, G05 and G08 work.

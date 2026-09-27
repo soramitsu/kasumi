@@ -886,12 +886,9 @@ def check_native_admin_readback(root, witness, processes, binaries, expected):
             "native policy request targets another database")
     schema_request_path = reference(root, witness["schema_request"])
     schema_request = read_json(schema_request_path)
-    exact(schema_request, {"collections"}, "native schema request")
-    requested = schema_request["collections"]
-    require(isinstance(requested, list) and len(requested) == len(collections)
-            and all(isinstance(name, str) for name in requested)
-            and set(requested) == set(collections),
-            "native schema request does not cover exact pinned collections")
+    exact(schema_request, {"selection"}, "native schema request")
+    require(schema_request["selection"] == "all",
+            "native schema admission requires complete installed inventory")
 
     owned = unique(processes, "id", "native admin processes")
     process_ids = [witness[field] for field in ("policy_before", "schema", "policy_after")]
