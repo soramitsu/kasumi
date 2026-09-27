@@ -233,6 +233,15 @@ pub struct RecoveryRecord {
     pub materialization_intent: Option<Uuid>,
     #[serde(deserialize_with = "crate::require_explicit_option")]
     pub initialization: Option<Uuid>,
+    /// The single possibly dispatched initial membership operation.
+    #[serde(deserialize_with = "crate::require_explicit_option")]
+    pub initialization_attempt: Option<Uuid>,
+    /// Exact original Start outcomes frozen with the Initialize BeginEffect.
+    #[serde(deserialize_with = "crate::deserialize_u64_map")]
+    pub initialization_starts: BTreeMap<u64, Uuid>,
+    /// Exact signed original-node association for the current inspection intent.
+    #[serde(deserialize_with = "crate::require_explicit_option")]
+    pub initialization_association: Option<Uuid>,
     #[serde(deserialize_with = "crate::require_explicit_option")]
     pub completion_intent: Option<Uuid>,
     #[serde(deserialize_with = "crate::require_explicit_option")]
@@ -314,6 +323,10 @@ pub enum RecoveryDispatchOutcome {
     Target(Box<TargetRuntimeResponse>),
     /// Exact point reference to a separately retained positive inspection.
     CompletionResolution {
+        inspection_phase: Uuid,
+    },
+    /// Positive original first membership observed under fresh read-only authority.
+    InitialMembershipObserved {
         inspection_phase: Uuid,
     },
     /// Positive original preparation observed by exact retry or fresh read-only status.
@@ -516,6 +529,32 @@ impl RecoveryRecord {
             "active completion predecessor lacks its original intent",
         )?;
         self.request.validate()?;
+        require_recovery(
+            self.initialization_association.is_none_or(|id| {
+                !id.is_nil()
+                    && self
+                        .initialization_attempt
+                        .is_some_and(|attempt| attempt != id)
+            }),
+            "initial membership association lacks its original attempt",
+        )?;
+        require_recovery(
+            match self.initialization_attempt {
+                Some(id) => {
+                    !id.is_nil()
+                        && self
+                            .initialization_starts
+                            .keys()
+                            .eq(self.request.target_nodes.keys())
+                        && self
+                            .initialization_starts
+                            .values()
+                            .all(|start| !start.is_nil() && *start != id)
+                }
+                None => self.initialization_starts.is_empty(),
+            },
+            "initialization history lacks its exact original Start references",
+        )?;
         validate_name(&self.original_principal)?;
         require_recovery(
             self.request_sha256 == self.request.digest()?

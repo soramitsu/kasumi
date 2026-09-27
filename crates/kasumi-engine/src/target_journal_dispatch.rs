@@ -677,6 +677,16 @@ impl TargetJournal {
         stores: &TenantStorageSet,
     ) -> Result<ResolvedInitialMembershipHistory> {
         let accepted = self.authenticate_initial_dispatch(control, marked, identity, request)?;
+        self.resolve_authenticated_initial_history(accepted, identity, request, stores)
+    }
+
+    fn resolve_authenticated_initial_history(
+        &self,
+        accepted: TargetFirstMembershipPrebind,
+        identity: &TargetInitialDispatchIdentity,
+        request: &TargetRuntimeRequest,
+        stores: &TenantStorageSet,
+    ) -> Result<ResolvedInitialMembershipHistory> {
         let expected_prebind = if matches!(request.step, TargetRuntimeStep::Initialize(_)) {
             self.initialized_start_prebind(&accepted, Some(stores))?
         } else {
@@ -710,7 +720,18 @@ impl TargetJournal {
             observation.root == self.installed.root,
             "historical Control root differs from installed journal"
         );
-        let lifecycle = &observation.intent;
+        self.authenticate_initial_dispatch_bytes(&observation.intent, marked, identity, request)
+    }
+
+    // Historical bytes are compared only after an independently authenticated
+    // original or fresh inspection commitment selected this exact input.
+    fn authenticate_initial_dispatch_bytes(
+        &self,
+        lifecycle: &LifecycleIntent,
+        marked: &RecoveryPhaseRecord,
+        identity: &TargetInitialDispatchIdentity,
+        request: &TargetRuntimeRequest,
+    ) -> Result<TargetFirstMembershipPrebind> {
         identity.validate_marked_phase(
             &self.installed.root,
             self.installed.node.node_id,
@@ -888,5 +909,110 @@ impl TargetJournal {
         Ok(InitialDispatchReservation::NewlyAccepted(
             row.prebind(&readback)?,
         ))
+    }
+}
+
+impl TargetJournal {
+    /// Authenticate the historical Start accepted by this installed node under
+    /// independently read current Control originals. The returned prebind is
+    /// historical data only: this method cannot mint a Start/Initialize permit.
+    fn require_initial_inspection_control(
+        &self,
+        current: &VerifiedControlIntent,
+        input: &kasumi_types::TargetInitialMembershipStatusInput,
+    ) -> Result<()> {
+        let observation = current.observation();
+        ensure!(
+            observation.root == self.installed.root,
+            "initial inspection differs from installed current Control root"
+        );
+        let origin = &input
+            .quorum
+            .materialized
+            .values()
+            .next()
+            .context("initial inspection materializations absent")?
+            .fact
+            .origin;
+        input.validate(origin, &observation.intent)?;
+        ensure!(
+            observation.intent.request.phase_input_sha256 == input.digest()?,
+            "initial inspection differs from authenticated current historical input"
+        );
+        Ok(())
+    }
+    fn initial_inspection_start_prebind(
+        &self,
+        current: &VerifiedControlIntent,
+        input: &kasumi_types::TargetInitialMembershipStatusInput,
+        stores: &TenantStorageSet,
+    ) -> Result<TargetFirstMembershipPrebind> {
+        self.require_initial_inspection_control(current, input)?;
+        let start = input
+            .starts
+            .get(&self.installed.node.node_id)
+            .context("initial inspection original Start absent")?;
+        let RecoveryDispatch::Target { request, .. } = &start.input else {
+            anyhow::bail!("initial inspection Start route differs")
+        };
+        let accepted = kasumi_types::TargetInitialMembershipStatusInput::accepted_phase(start)?;
+        let identity = kasumi_types::TargetInitialMembershipStatusInput::dispatch_identity(start)?;
+        let expected = self.authenticate_initial_dispatch_bytes(
+            &input.original_intent,
+            &accepted,
+            &identity,
+            request,
+        )?;
+        read_target_first_membership_prebind(stores, &expected)?;
+        Ok(expected)
+    }
+    pub fn authenticate_initial_inspection_start(
+        &self,
+        current: &VerifiedControlIntent,
+        input: &kasumi_types::TargetInitialMembershipStatusInput,
+        stores: &TenantStorageSet,
+    ) -> Result<()> {
+        self.initial_inspection_start_prebind(current, input, stores)?;
+        Ok(())
+    }
+    /// Corroborate the exact locally accepted Start on any installed voter.
+    /// This is independent of the designated node's Initialize association.
+    pub fn resolve_initial_inspection_start_history(
+        &self,
+        current: &VerifiedControlIntent,
+        input: &kasumi_types::TargetInitialMembershipStatusInput,
+        stores: &TenantStorageSet,
+    ) -> Result<TargetFirstMembershipHistory> {
+        let _guard = self
+            .mutation
+            .lock()
+            .map_err(|_| anyhow::anyhow!("target journal poisoned"))?;
+        let expected = self.initial_inspection_start_prebind(current, input, stores)?;
+        read_target_first_membership_history(stores, &expected)
+    }
+    /// Historical association under a distinct current read-only commitment.
+    /// This never authenticates the expired original as a live capability.
+    pub fn resolve_initial_membership_inspection(
+        &self,
+        current: &VerifiedControlIntent,
+        input: &kasumi_types::TargetInitialMembershipStatusInput,
+        stores: &TenantStorageSet,
+    ) -> Result<ResolvedInitialMembershipHistory> {
+        let _guard = self
+            .mutation
+            .lock()
+            .map_err(|_| anyhow::anyhow!("target journal poisoned"))?;
+        self.require_initial_inspection_control(current, input)?;
+        let RecoveryDispatch::Target { request, .. } = &input.initialize.input else {
+            anyhow::bail!("initial inspection original Initialize absent")
+        };
+        let identity = input.identity()?;
+        let accepted = self.authenticate_initial_dispatch_bytes(
+            &input.original_intent,
+            &input.initialize,
+            &identity,
+            request,
+        )?;
+        self.resolve_authenticated_initial_history(accepted, &identity, request, stores)
     }
 }

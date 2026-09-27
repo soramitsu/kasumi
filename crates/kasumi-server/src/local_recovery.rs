@@ -1121,7 +1121,10 @@ impl Operator {
                 .await?;
             let source = kasumi_engine::RestoreSource {
                 destination_alias: request.destination.clone(),
-                destination: self.config.backup_destinations[&request.destination].open(self.store().persistent_disk().clone())?,
+                destination: self.config.backup_destinations[&request.destination].open(
+                    self.store().persistent_disk().clone(),
+                    Some(&crate::backup_destination_installation::InstalledOwner::Standalone(&self.installed_owner)),
+                )?,
                 keys: request.source_keys.provider(Arc::new(crate::runtime::file_secret))?,
                 timeout_ms: request.phase_timeout_ms,
             };
@@ -1153,7 +1156,10 @@ impl Operator {
                 if !initialized && alias == &request.destination {
                     continue;
                 }
-                database.install_archive_destination(alias.clone(), destination.open(self.store().persistent_disk().clone())?)?;
+                database.install_archive_destination(alias.clone(), destination.open(
+                    self.store().persistent_disk().clone(),
+                    Some(&crate::backup_destination_installation::InstalledOwner::Standalone(&self.installed_owner)),
+                )?)?;
             }
             Ok::<_, anyhow::Error>(())
         })();

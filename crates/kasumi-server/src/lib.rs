@@ -8,6 +8,7 @@ pub mod authority_client;
 mod authority_node_enrollment;
 pub mod authority_runtime;
 mod backup_cli;
+mod backup_destination_installation;
 pub mod cluster;
 mod control_genesis;
 mod data_node_enrollment;

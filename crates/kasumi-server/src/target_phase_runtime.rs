@@ -639,3 +639,92 @@ impl RuntimeTargetPhase {
         Ok(())
     }
 }
+
+/// Read the original immutable cause through installed current Control channels.
+/// The active operation supplies the fresh inspection authority and deadline;
+/// expired Start/Initialize caps remain historical inputs only.
+pub(crate) async fn observe_initial_inspection_from_control(
+    configured: &super::target_runtime_config::TargetRecoveryConfig,
+    context: &RequestContext,
+    bearer: &Zeroizing<String>,
+    input: &kasumi_types::TargetInitialMembershipStatusInput,
+    current: &VerifiedControlIntent,
+    admission: &TargetRequestAdmission,
+) -> Result<VerifiedControlIntent> {
+    admission.require_context(context)?;
+    context.authorization.check_live()?;
+    context
+        .authorization
+        .require_control(&configured.control_root.control_incarnation.to_string())?;
+    ensure!(
+        context.tenant == "__kasumi_control" && context.scopes.contains(&Action::Admin),
+        "initial inspection requires current installed Control Admin"
+    );
+    input.digest()?;
+    let connections = configured.control_connections()?;
+    let credential = bearer.clone();
+    let mut control = KasumiLifecyclePool::new(
+        connections.clone(),
+        ControlTrust::install(configured.control_root.clone())?,
+        Arc::new(move || Ok(credential.clone())),
+    )?;
+    let verified = admission
+        .run(async {
+            Ok(control
+                .observe_intent(
+                    current.observation().intent.request.command_id,
+                    admission.remaining_response()?,
+                )
+                .await?)
+        })
+        .await?;
+    ensure!(
+        verified.observation().root == configured.control_root
+            && verified.observation().intent == current.observation().intent
+            && verified.observation().intent.request.phase
+                == LifecyclePhase::InspectInitialMembership
+            && verified.observation().intent.request.phase_input_sha256 == input.digest()?,
+        "initial inspection current lifecycle differs from authenticated Control read"
+    );
+    let node = input
+        .original_intent
+        .request
+        .target_nodes
+        .get(&configured.node.node_id)
+        .context("initial inspection original target node absent")?;
+    ensure!(
+        node.node_id == configured.node.node_id
+            && node.verifier == configured.node.verifier
+            && node.principal == configured.node.principal
+            && node.certificate_sha256 == configured.node.certificate_sha256,
+        "initial inspection original installed node differs"
+    );
+    let credential = bearer.clone();
+    let mut recovery =
+        KasumiRecoveryPool::new(connections, Arc::new(move || Ok(credential.clone())))?;
+    for expected in input
+        .starts
+        .values()
+        .chain(std::iter::once(&input.initialize))
+    {
+        let current = admission
+            .run(async {
+                Ok(recovery
+                    .read_phase(
+                        &RecoveryPhaseRequest {
+                            operation_id: expected.operation_id,
+                            phase_id: expected.phase_id,
+                        },
+                        admission.remaining_response()?,
+                    )
+                    .await?)
+            })
+            .await?;
+        ensure!(
+            &current == expected,
+            "initial inspection original phase differs from current Control read"
+        );
+    }
+    admission.check()?;
+    Ok(verified)
+}

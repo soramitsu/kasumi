@@ -535,6 +535,8 @@ impl Database {
         )?;
         if let Some(id) = operation.pending_phase {
             let pending = recovery::phase(state, operation, id)?;
+            let initial_read_route =
+                recovery::initial_inspection::retry_destination(state, operation, pending, now)?;
             let exact_activation_resolution = matches!(
                 &pending.input,
                 RecoveryDispatch::Authority(command)
@@ -542,11 +544,26 @@ impl Database {
                         && now >= command.not_after_ms
                         && matches!(command.action, AuthorityAction::ActivateCommitted { .. })
             );
-            if !pending.effect_attempts.is_empty() && !exact_activation_resolution {
+            if !pending.effect_attempts.is_empty()
+                && !exact_activation_resolution
+                && initial_read_route.is_none()
+                && !recovery::initial_inspection::may_inspect_pending(
+                    state, operation, pending, now,
+                )?
+            {
                 return Err(error(
                     ErrorCode::UnknownOutcome,
                     "resolve the exact begun recovery effect from positive retained evidence",
                 ));
+            }
+            if let Some(node_id) = initial_read_route {
+                let RecoveryDispatch::Target { request, .. } = &pending.input else {
+                    unreachable!()
+                };
+                return Ok(Some(RecoveryDispatch::Target {
+                    node_id,
+                    request: request.clone(),
+                }));
             }
             if matches!(pending.input, RecoveryDispatch::PublishRoute(_))
                 && now >= recovery::dispatch_limit(operation, pending)?
@@ -615,7 +632,16 @@ impl Database {
                         | TargetRuntimeStep::Initialize(_)
                             if operation.phase == RecoveryPhase::Initialize =>
                         {
-                            LifecyclePhase::Initialize
+                            recovery::initial_inspection::fresh_phase(operation)
+                        }
+                        TargetRuntimeStep::Start(TargetReplicaInput::InitialMembershipStatus(
+                            _,
+                        ))
+                        | TargetRuntimeStep::InspectInitialMembership(_)
+                        | TargetRuntimeStep::InspectInitialAssociation(_)
+                            if operation.phase == RecoveryPhase::Initialize =>
+                        {
+                            LifecyclePhase::InspectInitialMembership
                         }
                         TargetRuntimeStep::Start(_)
                         | TargetRuntimeStep::Complete(_)
@@ -814,6 +840,16 @@ impl Database {
                 } else {
                     match current {
                         Some(current)
+                            if kind == LifecyclePhase::Initialize
+                                && current.request.phase
+                                    == LifecyclePhase::InspectInitialMembership
+                                && now < current.original_credential_expires_at_ms =>
+                        {
+                            recovery::initial_inspection::next(
+                                state, operation, current, now, expires,
+                            )?
+                        }
+                        Some(current)
                             if kind == LifecyclePhase::Complete
                                 && matches!(
                                     current.request.phase,
@@ -944,7 +980,11 @@ impl Database {
                             operation,
                             phase_id,
                             state.policy_epoch,
-                            kind,
+                            if kind == LifecyclePhase::Initialize {
+                                recovery::initial_inspection::fresh_phase(operation)
+                            } else {
+                                kind
+                            },
                         )?)),
                     }
                 }

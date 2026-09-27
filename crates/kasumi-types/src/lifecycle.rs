@@ -121,6 +121,8 @@ pub enum LifecyclePhase {
     Activate,
     /// Fresh control authority to inspect committed target facts only.
     InspectTarget,
+    /// Fresh read-only authority over exact accepted Start and Initialize history.
+    InspectInitialMembership,
     /// Fresh read-only authority for a positively persisted original reservation.
     InspectCompletionAttempt,
     /// Fresh read-only authority for an exact positively persisted resolver fact.

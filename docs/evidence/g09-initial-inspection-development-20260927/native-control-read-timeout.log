@@ -1,0 +1,125 @@
+warning: method `matches_response_id` is never used
+   --> vendor/rmcp-3.2.0/src/model.rs:251:19
+    |
+236 | impl NumberOrString {
+    | ------------------- method in this implementation
+...
+251 |     pub(crate) fn matches_response_id(&self, response_id: &Self) -> bool {
+    |                   ^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `set_client_request_metadata` is never used
+    --> vendor/rmcp-3.2.0/src/service.rs:1032:19
+     |
+ 806 | impl<R: ServiceRole> Peer<R> {
+     | ---------------------------- method in this implementation
+...
+1032 |     pub(crate) fn set_client_request_metadata(&self, metadata: ClientRequestMetadata) {
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: method `is_authorization_required` is never used
+   --> vendor/rmcp-3.2.0/src/transport.rs:275:19
+    |
+249 | impl DynamicTransportError {
+    | -------------------------- method in this implementation
+...
+275 |     pub(crate) fn is_authorization_required(&self) -> bool {
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: `rmcp` (lib) generated 3 warnings
+   Compiling kasumi-server v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-server)
+warning: linker stderr: ld: __eh_frame section too large (max 16MB) to encode dwarf unwind offsets in compact unwind table, performance of exception handling might be affected
+  |
+  = note: `#[warn(linker_messages)]` on by default
+
+warning: `kasumi-server` (lib test) generated 1 warning
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 56.05s
+     Running unittests src/lib.rs (target/debug/deps/kasumi_server-cc7c9b9a2f2be7df)
+
+running 1 test
+[replicated fixture +41ns] waiting for lifecycle gate
+[replicated fixture +3.908208ms] acquired lifecycle gate
+[replicated fixture +295.470291ms] prepared cluster storage
+[replicated fixture +320.907916ms] binding mock KMS listener
+[replicated fixture +321.162416ms] bound mock KMS listener
+[replicated fixture +409.97825ms] generated 3 node identities
+[replicated fixture +416.580916ms] creating recovery fixture
+[replicated fixture +6.49336825s] recovery fixture ready
+[replicated fixture +6.494590541s] configuring node 0
+[replicated fixture +6.494923958s] node 0: configuring recovery credentials
+[replicated fixture +7.031588s] node 0: recovery credentials configured
+[replicated fixture +7.034920916s] node 0: enrolling storage
+[replicated fixture +10.603111583s] node 0: storage enrolled
+[replicated fixture +10.623563875s] configuring node 1
+[replicated fixture +10.62406325s] node 1: configuring recovery credentials
+[replicated fixture +11.102787458s] node 1: recovery credentials configured
+[replicated fixture +11.103704291s] node 1: enrolling storage
+[replicated fixture +14.209751125s] node 1: storage enrolled
+[replicated fixture +14.209891333s] configuring node 2
+[replicated fixture +14.210150791s] node 2: configuring recovery credentials
+[replicated fixture +14.628952s] node 2: recovery credentials configured
+[replicated fixture +14.6290395s] node 2: enrolling storage
+[replicated fixture +21.230140291s] node 2: storage enrolled
+[replicated fixture +21.230251541s] all node configurations ready
+[replicated fixture +21.230415s] creating recovery request context
+[replicated fixture +21.259132333s] request context ready
+[replicated fixture +21.259281125s] node 0: opening runtime
+[replicated fixture +21.763343375s] node 0: runtime opened
+[replicated fixture +21.763556916s] node 0: server spawned
+[replicated fixture +21.763627333s] node 1: opening runtime
+[replicated fixture +22.282170166s] node 1: runtime opened
+[replicated fixture +22.2842095s] node 1: server spawned
+[replicated fixture +22.284334458s] node 2: opening runtime
+[replicated fixture +23.065375833s] node 2: runtime opened
+[replicated fixture +23.065507541s] node 2: server spawned
+[replicated fixture +23.065546166s] waiting for tenant registries
+[replicated fixture +28.369575875s] tenant registries ready
+[replicated fixture +28.387016666s] waiting for data leader
+[replicated fixture +28.387179791s] data leader selected: node 0
+[replicated fixture +28.387268666s] creating docs collection
+[replicated fixture +29.2056185s] docs collection created
+[replicated fixture +29.211745s] writing initial document
+[replicated fixture +31.882909208s] initial document write resolved
+[replicated fixture +31.883299916s] waiting for document replication
+[replicated fixture +31.88333725s] document replicated
+[replicated fixture +31.883366958s] suspending source database
+[replicated fixture +33.731322708s] source suspend accepted
+[replicated fixture +33.735382916s] starting backup
+[replicated fixture +40.38857975s] backup command completed
+[replicated fixture +40.392764416s] waiting for suspend replication
+[replicated fixture +40.398033791s] suspend replicated
+[replicated fixture +40.398142375s] verifying backup checkpoint
+[replicated fixture +43.860103166s] backup checkpoint verification returned
+[replicated fixture +43.86019975s] installing recovery targets
+[replicated fixture +44.831274333s] recovery targets installed
+[replicated fixture +44.831330666s] checking expired Initialize after owned target restart
+test runtime::lifecycle_tests::three_runtime_nodes_inspect_expired_initialize_after_owned_target_restart has been running for over 60 seconds
+target owned switch command=ee12249c-8e16-4965-a560-cce32d684e21 previous_phase=false previous_cap=None replica=false stores=false group=false custody=false serving=false
+target owned stage command=ee12249c-8e16-4965-a560-cce32d684e21 stage=perform elapsed_ms=5752 outcome=ok
+target owned switch command=ee12249c-8e16-4965-a560-cce32d684e21 previous_phase=false previous_cap=None replica=false stores=false group=false custody=false serving=false
+target owned switch command=ee12249c-8e16-4965-a560-cce32d684e21 previous_phase=false previous_cap=None replica=false stores=false group=false custody=false serving=false
+target owned stage command=ee12249c-8e16-4965-a560-cce32d684e21 stage=perform elapsed_ms=5178 outcome=ok
+target owned switch command=da015447-11ee-4e01-a422-39f6e1ce014d previous_phase=true previous_cap=Some(1790478148834) replica=false stores=true group=false custody=false serving=false
+target owned switch command=da015447-11ee-4e01-a422-39f6e1ce014d previous_phase=true previous_cap=Some(1790478148834) replica=false stores=true group=false custody=false serving=false
+target owned stage command=da015447-11ee-4e01-a422-39f6e1ce014d stage=release_reply elapsed_ms=6322 outcome=ok
+kasumi-engine read quorum unavailable: cause=has to forward request to: Some(1), Some(BasicNode { addr: "https://localhost:53607" }); metrics=Ref { inner: RwLockReadGuard(PhantomData<std::sync::poison::rwlock::RwLockReadGuard<'_, openraft::metrics::raft_metrics::RaftMetrics<u64, openraft::node::BasicNode>>>, RaftMetrics { running_state: Ok(()), id: 2, current_term: 1, vote: Vote { leader_id: LeaderId { term: 1, node_id: 1 }, committed: true }, last_log_index: Some(30), last_applied: Some(LogId { leader_id: LeaderId { term: 1, node_id: 1 }, index: 29 }), snapshot: None, purged: None, state: Follower, current_leader: Some(1), millis_since_quorum_ack: None, membership_config: StoredMembership { log_id: Some(LogId { leader_id: LeaderId { term: 0, node_id: 0 }, index: 0 }), membership: Membership { configs: [{1, 2, 3}], nodes: {1: BasicNode { addr: "https://localhost:53607" }, 2: BasicNode { addr: "https://localhost:53611" }, 3: BasicNode { addr: "https://localhost:53615" }} } }, replication: None }), has_changed: true }
+kasumi-engine read quorum unavailable: cause=has to forward request to: Some(1), Some(BasicNode { addr: "https://localhost:53607" }); metrics=Ref { inner: RwLockReadGuard(PhantomData<std::sync::poison::rwlock::RwLockReadGuard<'_, openraft::metrics::raft_metrics::RaftMetrics<u64, openraft::node::BasicNode>>>, RaftMetrics { running_state: Ok(()), id: 3, current_term: 1, vote: Vote { leader_id: LeaderId { term: 1, node_id: 1 }, committed: true }, last_log_index: Some(30), last_applied: Some(LogId { leader_id: LeaderId { term: 1, node_id: 1 }, index: 29 }), snapshot: None, purged: None, state: Follower, current_leader: Some(1), millis_since_quorum_ack: None, membership_config: StoredMembership { log_id: Some(LogId { leader_id: LeaderId { term: 0, node_id: 0 }, index: 0 }), membership: Membership { configs: [{1, 2, 3}], nodes: {1: BasicNode { addr: "https://localhost:53607" }, 2: BasicNode { addr: "https://localhost:53611" }, 3: BasicNode { addr: "https://localhost:53615" }} } }, replication: None }), has_changed: true }
+target owned stage command=da015447-11ee-4e01-a422-39f6e1ce014d stage=acquire_phase elapsed_ms=5375 outcome=ok
+target owned switch command=da015447-11ee-4e01-a422-39f6e1ce014d previous_phase=false previous_cap=None replica=false stores=false group=false custody=false serving=false
+kasumi-engine read quorum unavailable: cause=has to forward request to: Some(1), Some(BasicNode { addr: "https://localhost:53607" }); metrics=Ref { inner: RwLockReadGuard(PhantomData<std::sync::poison::rwlock::RwLockReadGuard<'_, openraft::metrics::raft_metrics::RaftMetrics<u64, openraft::node::BasicNode>>>, RaftMetrics { running_state: Ok(()), id: 2, current_term: 1, vote: Vote { leader_id: LeaderId { term: 1, node_id: 1 }, committed: true }, last_log_index: Some(32), last_applied: Some(LogId { leader_id: LeaderId { term: 1, node_id: 1 }, index: 32 }), snapshot: None, purged: None, state: Follower, current_leader: Some(1), millis_since_quorum_ack: None, membership_config: StoredMembership { log_id: Some(LogId { leader_id: LeaderId { term: 0, node_id: 0 }, index: 0 }), membership: Membership { configs: [{1, 2, 3}], nodes: {1: BasicNode { addr: "https://localhost:53607" }, 2: BasicNode { addr: "https://localhost:53611" }, 3: BasicNode { addr: "https://localhost:53615" }} } }, replication: None }), has_changed: true }
+kasumi-engine read quorum unavailable: cause=has to forward request to: Some(1), Some(BasicNode { addr: "https://localhost:53607" }); metrics=Ref { inner: RwLockReadGuard(PhantomData<std::sync::poison::rwlock::RwLockReadGuard<'_, openraft::metrics::raft_metrics::RaftMetrics<u64, openraft::node::BasicNode>>>, RaftMetrics { running_state: Ok
+thread 'runtime::lifecycle_tests::three_runtime_nodes_inspect_expired_initialize_after_owned_target_restart' (46440412) panicked at crates/kasumi-server/src/runtime_recovery_tests.rs:2104:30:
+called `Result::unwrap()` on an `Err` value: Transport(Status { code: DeadlineExceeded, message: "installed recovery operation deadline elapsed", source: None })
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+(()), id: 3, current_term: 1, vote: Vote { leader_id: LeaderId { term: 1, node_id: 1 }, committed: true }, last_log_index: Some(32), last_applied: Some(LogId { leader_id: LeaderId { term: 1, node_id: 1 }, index: 32 }), snapshot: None, purged: None, state: Follower, current_leader: Some(1), millis_since_quorum_ack: None, membership_config: StoredMembership { log_id: Some(LogId { leader_id: LeaderId { term: 0, node_id: 0 }, index: 0 }), membership: Membership { configs: [{1, 2, 3}], nodes: {1: BasicNode { addr: "https://localhost:53607" }, 2: BasicNode { addr: "https://localhost:53611" }, 3: BasicNode { addr: "https://localhost:53615" }} } }, replication: None }), has_changed: true }
+test runtime::lifecycle_tests::three_runtime_nodes_inspect_expired_initialize_after_owned_target_restart ... FAILED
+
+failures:
+
+failures:
+    runtime::lifecycle_tests::three_runtime_nodes_inspect_expired_initialize_after_owned_target_restart
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 261 filtered out; finished in 183.49s
+
+error: test failed, to rerun pass `-p kasumi-server --lib`

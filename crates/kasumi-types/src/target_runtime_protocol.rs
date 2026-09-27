@@ -58,8 +58,24 @@ impl TargetInitialDispatchIdentity {
         lifecycle: &LifecycleIntent,
         phase: &RecoveryPhaseRecord,
     ) -> Result<()> {
-        self.validate_for(node_id, request)?;
         installed_root.validate()?;
+        ensure!(
+            lifecycle.control_incarnation == installed_root.control_incarnation,
+            "marked recovery Control incarnation differs from installed root"
+        );
+        self.validate_marked_intent(node_id, request, lifecycle, phase)
+    }
+
+    /// Structural matching only; callers independently authenticate the installed
+    /// Control root. This method cannot create a current or historical capability.
+    pub fn validate_marked_intent(
+        &self,
+        node_id: u64,
+        request: &TargetRuntimeRequest,
+        lifecycle: &LifecycleIntent,
+        phase: &RecoveryPhaseRecord,
+    ) -> Result<()> {
+        self.validate_for(node_id, request)?;
         lifecycle.request.validate()?;
         phase.validate()?;
         let RecoveryDispatch::Target {
@@ -91,7 +107,6 @@ impl TargetInitialDispatchIdentity {
                 && marker.input_sha256 == self.input_sha256
                 && marker.begun_revision > phase.prepared_revision
                 && phase.principal == lifecycle.original_principal
-                && lifecycle.control_incarnation == installed_root.control_incarnation
                 && lifecycle.request.phase == LifecyclePhase::Initialize
                 && lifecycle.request.command_id == request.command_id
                 && lifecycle.request.tenant == request.tenant
@@ -296,6 +311,8 @@ pub enum TargetRuntimeStep {
     ConfirmInspection(Box<SignedTargetInspection>),
     Inspect(Box<TargetInspectionInput>),
     InspectCompletionAttempt(Box<TargetCompletionAttemptStatusInput>),
+    InspectInitialAssociation(Box<TargetInitialMembershipStatusInput>),
+    InspectInitialMembership(Box<SignedTargetInitialMembershipAssociation>),
     InspectCompletionResolution(Box<TargetCompletionTerminalStatusInput>),
     Stop(TargetStopReference),
 }
@@ -354,6 +371,12 @@ impl TargetRuntimeRequest {
             TargetRuntimeStep::Inspect(input) => {
                 input.digest()?;
             }
+            TargetRuntimeStep::InspectInitialAssociation(input) => {
+                input.digest()?;
+            }
+            TargetRuntimeStep::InspectInitialMembership(association) => {
+                association.observation.validate()?;
+            }
             TargetRuntimeStep::InspectCompletionAttempt(input) => {
                 input.digest()?;
             }
@@ -395,6 +418,8 @@ pub enum TargetRuntimeOutcome {
     Activated(Box<SignedTargetActivation>),
     Inspected(Box<SignedTargetInspection>),
     CompletionAttemptStatus(Box<SignedTargetCompletionAttemptStatus>),
+    InitialMembershipAssociation(Box<SignedTargetInitialMembershipAssociation>),
+    InitialMembershipStatus(Box<SignedTargetInitialMembershipStatus>),
     CompletionTerminalStatus(Box<SignedTargetCompletionTerminalStatus>),
     Stopped(Box<SignedLocalTargetCleanup>),
 }

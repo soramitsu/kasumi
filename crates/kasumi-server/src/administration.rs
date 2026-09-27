@@ -34,6 +34,7 @@ pub enum DestinationConfig {
     Filesystem {
         directory: PathBuf,
         max_bytes: usize,
+        namespace_binding: kasumi_types::BackupNamespaceBinding,
     },
     S3 {
         endpoint: String,
@@ -51,9 +52,18 @@ impl DestinationConfig {
             Self::Filesystem {
                 directory,
                 max_bytes,
+                namespace_binding,
             } => {
-                ensure!(directory.is_absolute(), "backup directory must be absolute");
+                validate_filesystem_location(directory)?;
                 bounded(*max_bytes)?;
+                namespace_binding.validate()?;
+                ensure!(
+                    matches!(
+                        namespace_binding,
+                        kasumi_types::BackupNamespaceBinding::Filesystem { .. }
+                    ),
+                    "filesystem destination requires an exact filesystem namespace binding"
+                );
             }
             Self::S3 {
                 endpoint,
@@ -64,24 +74,14 @@ impl DestinationConfig {
                 ca_certificate,
                 max_bytes,
             } => {
-                crate::runtime::origin(endpoint)?;
-                for value in [region, bucket] {
-                    ensure!(
-                        crate::runtime::valid_transit_path(value) && !value.contains('/'),
-                        "invalid S3 segment"
-                    );
-                }
-                ensure!(
-                    prefix.is_empty() || crate::runtime::valid_transit_path(prefix),
-                    "invalid S3 prefix"
-                );
-                ensure!(
-                    credentials_file.is_absolute(),
-                    "S3 credential file must be absolute"
-                );
-                if let Some(path) = ca_certificate {
-                    ensure!(path.is_absolute(), "S3 CA path must be absolute");
-                }
+                validate_s3_location(
+                    endpoint,
+                    region,
+                    bucket,
+                    prefix,
+                    credentials_file,
+                    ca_certificate.as_deref(),
+                )?;
                 bounded(*max_bytes)?;
             }
         }
@@ -90,17 +90,25 @@ impl DestinationConfig {
     pub(crate) fn open(
         &self,
         persistent_disk: Arc<kasumi_store::NodeDisk>,
+        owner: Option<&crate::backup_destination_installation::InstalledOwner<'_>>,
     ) -> Result<Arc<dyn BackupDestination>> {
         self.validate()?;
         Ok(match self {
             Self::Filesystem {
                 directory,
                 max_bytes,
-            } => Arc::new(FilesystemBackupDestination::new(
-                directory,
-                *max_bytes,
-                persistent_disk,
-            )?),
+                namespace_binding,
+            } => {
+                owner
+                    .context("filesystem backup requires a retained installed owner")?
+                    .require_binding(&persistent_disk, namespace_binding)?;
+                Arc::new(FilesystemBackupDestination::open_enrolled(
+                    directory,
+                    *max_bytes,
+                    persistent_disk,
+                    namespace_binding,
+                )?)
+            }
             Self::S3 {
                 endpoint,
                 region,
@@ -126,7 +134,39 @@ impl DestinationConfig {
         })
     }
 }
-fn bounded(bytes: usize) -> Result<()> {
+pub(crate) fn validate_filesystem_location(directory: &std::path::Path) -> Result<()> {
+    ensure!(directory.is_absolute(), "backup directory must be absolute");
+    Ok(())
+}
+pub(crate) fn validate_s3_location(
+    endpoint: &str,
+    region: &str,
+    bucket: &str,
+    prefix: &str,
+    credentials_file: &std::path::Path,
+    ca_certificate: Option<&std::path::Path>,
+) -> Result<()> {
+    crate::runtime::origin(endpoint)?;
+    for value in [region, bucket] {
+        ensure!(
+            crate::runtime::valid_transit_path(value) && !value.contains('/'),
+            "invalid S3 segment"
+        );
+    }
+    ensure!(
+        prefix.is_empty() || crate::runtime::valid_transit_path(prefix),
+        "invalid S3 prefix"
+    );
+    ensure!(
+        credentials_file.is_absolute(),
+        "S3 credential file must be absolute"
+    );
+    if let Some(path) = ca_certificate {
+        ensure!(path.is_absolute(), "S3 CA path must be absolute");
+    }
+    Ok(())
+}
+pub(crate) fn bounded(bytes: usize) -> Result<()> {
     ensure!(
         bytes > 0 && bytes <= kasumi_store::MAX_BACKUP_BUNDLE_BYTES,
         "backup destination limit must be within the encrypted bundle format limit"
@@ -1814,11 +1854,27 @@ mod tests {
         let destination = DestinationConfig::Filesystem {
             directory: "relative".into(),
             max_bytes: 100,
+            // Shape-only negative fixture; never an enrolled namespace.
+            namespace_binding: kasumi_types::BackupNamespaceBinding::Filesystem {
+                installation_id: uuid::Uuid::nil(),
+                origin_node_id: 0,
+                namespace_id: uuid::Uuid::nil(),
+                device: 0,
+                inode: 0,
+            },
         };
         assert!(destination.validate().is_err());
         let destination = DestinationConfig::Filesystem {
             directory: "/tmp/backups".into(),
             max_bytes: 0,
+            // Shape-only negative fixture; never an enrolled namespace.
+            namespace_binding: kasumi_types::BackupNamespaceBinding::Filesystem {
+                installation_id: uuid::Uuid::nil(),
+                origin_node_id: 0,
+                namespace_id: uuid::Uuid::nil(),
+                device: 0,
+                inode: 0,
+            },
         };
         assert!(destination.validate().is_err());
     }

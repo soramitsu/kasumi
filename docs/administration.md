@@ -56,17 +56,39 @@ Native data errors may carry `kasumi-leader-node-id`; MCP tool errors may carry 
 
 ## Backups and keys
 
-Configure destination names in the server JSON, for example:
+Filesystem destinations require explicit enrollment while the installation is
+stopped. The configured accounting root and destination parent must already
+exist; the destination itself must be absent. Choose and retain one new UUID in
+an enrollment request (the UUID below is illustrative):
 
 ```json
-"backup_destinations": {
-  "nightly": {
-    "kind": "filesystem",
-    "directory": "/var/lib/kasumi/backups",
-    "max_bytes": 33554432
-  }
+{
+  "format": 1,
+  "destination": "nightly",
+  "directory": "/var/lib/kasumi/backups/nightly",
+  "max_bytes": 33554432,
+  "namespace_id": "5daa40b0-d0a4-4ad3-bec1-83ed5880e75a"
 }
 ```
+
+Run `kasumid enroll-backup-destination CONFIGURATION REQUEST_JSON NEW_RECEIPT_JSON`.
+The fresh receipt belongs in a private operator directory outside the installed
+persistent and scratch accounting roots.
+It opens the original standalone installation owner or the installed encrypted
+HA signer verifier, enrolls the marker through that owner's `NodeDisk`, and
+captures its actual namespace binding. It never initializes verifier trust or
+rewrites the runtime configuration. Install the receipt's `configuration` object
+under its `destination` key in `backup_destinations`. Keep the original receipt.
+If receipt publication is uncertain, retry the unchanged request to a fresh
+receipt path; a different owner or UUID cannot adopt the original directory.
+
+The `namespace_binding` field is mandatory. Normal startup and local recovery
+require that exact marker and the same retained installed owner; missing,
+foreign, malformed, copied or changed markers fail unchanged. Existing unmarked
+directories are never adopted or migrated. First standalone initialization
+enrolls `backups/local` below its accounting root and writes the captured binding
+into its new configuration. Filesystem enrollment does not complete the separate
+G05 Control session binding and UUID routing work.
 
 S3 destinations use `kind: "s3"`, an HTTPS `endpoint`, `region`, `bucket`, `prefix`, `max_bytes`, one absolute `credentials_file` path and nullable `ca_certificate`. The private credential file contains one JSON object with `access_key_id`, `secret_access_key`, and nullable `session_token`; all fields are reloaded together for each signed request. The adapter requires TLS 1.3, signs requests with SigV4, and refuses redirects. Filesystem and S3 publication are create-only. The destination byte limit bounds individual encrypted objects. Publication and verification use bounded encrypted chunks and streaming records. Decoded database state and indexes still consume their configured resident capacity; final capacity acceptance must measure those allocations and maintenance workspace together.
 

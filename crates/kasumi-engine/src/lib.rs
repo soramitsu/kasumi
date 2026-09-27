@@ -33,6 +33,9 @@ mod target_invocation;
 mod target_signer;
 pub use backup_proof::VerifiedBackupCheckpoint;
 pub use service::target_activation_service::VerifiedTargetActivation;
+pub use service::target_initial_membership_service::{
+    VerifiedTargetInitialMembershipAssociation, VerifiedTargetInitialMembershipStatus,
+};
 pub use service::target_inspection_service::VerifiedTargetInspection;
 pub use service::target_receiver_service::VerifiedTargetReceiver;
 pub use service::target_service::VerifiedTargetCompletion;

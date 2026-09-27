@@ -19,6 +19,8 @@ mod target;
 pub use target::*;
 mod target_completion;
 pub use target_completion::*;
+mod target_initial_membership_status;
+pub use target_initial_membership_status::*;
 mod target_completion_status;
 pub use target_completion_status::*;
 mod target_terminal_status;

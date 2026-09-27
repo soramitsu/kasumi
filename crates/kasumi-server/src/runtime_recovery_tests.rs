@@ -115,6 +115,8 @@ fn recovery_target_step(step: &TargetRuntimeStep) -> &'static str {
         TargetRuntimeStep::ConfirmActivation(_) => "ConfirmActivation",
         TargetRuntimeStep::ConfirmInspection(_) => "ConfirmInspection",
         TargetRuntimeStep::Inspect(_) => "Inspect",
+        TargetRuntimeStep::InspectInitialAssociation(_) => "InspectInitialAssociation",
+        TargetRuntimeStep::InspectInitialMembership(_) => "InspectInitialMembership",
         TargetRuntimeStep::InspectCompletionAttempt(_) => "InspectCompletionAttempt",
         TargetRuntimeStep::InspectCompletionResolution(_) => "InspectCompletionResolution",
         TargetRuntimeStep::Stop(_) => "Stop",
@@ -160,6 +162,7 @@ pub(super) struct Handles {
     cluster: Arc<ClusterNetwork>,
     audit: Arc<SecurityAudit>,
     trusts: BTreeMap<String, kasumi_serving::AuthorityTrust>,
+    verifier: Option<Arc<crate::signer_runtime::InstalledSignerVerifier>>,
 }
 impl Handles {
     pub fn capture(runtime: &NodeRuntime) -> Self {
@@ -168,6 +171,7 @@ impl Handles {
             cluster: runtime.cluster.clone().unwrap(),
             audit: runtime.audit.clone(),
             trusts: runtime.authority_trusts.clone(),
+            verifier: runtime.signer_verifier.clone(),
         }
     }
 }
@@ -199,6 +203,7 @@ pub(super) struct Fixture {
     pub target_token: String,
     control_token: String,
     target_configs: Vec<RuntimeConfig>,
+    source_destinations: BTreeMap<String, Arc<dyn kasumi_store::BackupDestination>>,
     targets: Vec<Arc<TargetRecoveryRuntime>>,
     target_stops: Vec<watch::Sender<bool>>,
     target_tasks: Vec<tokio::task::JoinHandle<Result<()>>>,
@@ -624,6 +629,7 @@ impl Fixture {
                 target_token,
                 control_token,
                 target_configs: Vec::new(),
+                source_destinations: BTreeMap::new(),
                 targets: Vec::new(),
                 target_stops: Vec::new(),
                 target_tasks: Vec::new(),
@@ -843,6 +849,22 @@ impl Fixture {
             assert_eq!(controls.len(), 3);
             self.control_observers = controls.iter().map(Arc::downgrade).collect();
             self.source_observer = Arc::downgrade(source);
+            let source_node = source.raft_group().raft().metrics().borrow().id;
+            let source_index = usize::try_from(source_node - 1).unwrap();
+            // This fixture shares one physical disk. All materializers use the
+            // original source's real enrolled namespace and retained installed
+            // verifier; another node's identity cannot reopen that namespace.
+            self.source_destinations = crate::backup_destination_installation::open_destinations(
+                &configurations[source_index].backup_destinations,
+                handles[source_index]
+                    .audit
+                    .store()
+                    .persistent_disk()
+                    .clone(),
+                None,
+                handles[source_index].verifier.as_deref(),
+            )
+            .unwrap();
             self.control_dispatch_node = controls[control_leader]
                 .raft_group()
                 .raft()
@@ -892,6 +914,8 @@ impl Fixture {
                     },
                 );
                 let mut config = base.clone();
+                config.backup_destinations =
+                    configurations[source_index].backup_destinations.clone();
                 let target_key = |name: &str| {
                     let mut key = base.tenants[0].keys.clone();
                     key.transit_mut().unwrap().key_name = format!("target-{}-{name}", index + 1);
@@ -1152,18 +1176,7 @@ impl Fixture {
                 handles[index].audit.admission().clone(),
                 handles[index].audit.clone(),
                 handles[index].cluster.clone(),
-                config
-                    .backup_destinations
-                    .iter()
-                    .map(|(alias, destination)| {
-                        (
-                            alias.clone(),
-                            destination
-                                .open(handles[index].audit.store().persistent_disk().clone())
-                                .unwrap(),
-                        )
-                    })
-                    .collect(),
+                self.source_destinations.clone(),
                 handles[index].registry.clone(),
             )
             .await
@@ -1666,6 +1679,31 @@ impl Fixture {
                 )
             })
     }
+    async fn inspection_phase(
+        &self,
+        client: &mut kasumi_client::KasumiRecoveryPool,
+        phase_id: Uuid,
+    ) -> RecoveryPhaseRecord {
+        client
+            .read_phase(
+                &RecoveryPhaseRequest {
+                    operation_id: self.request.as_ref().unwrap().operation_id,
+                    phase_id,
+                },
+                // Match the installed-pool read budget used by status. This
+                // immutable observation can cross leader changes; it grants no
+                // additional execution time or permission to repeat an effect.
+                Duration::from_secs(20),
+            )
+            .await
+            .unwrap_or_else(|error| {
+                panic!(
+                    "Control initial-inspection phase read failed: {}; phase={phase_id}; {}",
+                    recovery_step_error(&error),
+                    self.control_failure_context()
+                )
+            })
+    }
     async fn step(
         &self,
         client: &mut kasumi_client::KasumiRecoveryPool,
@@ -1738,7 +1776,11 @@ impl Fixture {
         drop(survivors);
         drop(controls);
     }
-    pub async fn recover(&self, networks: &[Arc<ClusterNetwork>]) {
+    pub async fn recover(
+        &self,
+        networks: &[Arc<ClusterNetwork>],
+        resumed_initial_inspection: bool,
+    ) {
         let request = self.request.as_ref().unwrap();
         let mut client = self.client().await;
         // Independently bound source and target credentials cannot administer Control.
@@ -1756,6 +1798,28 @@ impl Fixture {
         );
         let started = client.start(request, Duration::from_secs(5)).await.unwrap();
         assert_eq!(started.request, *request);
+        if resumed_initial_inspection {
+            assert_eq!(started.phase, RecoveryPhase::Complete);
+            let retained = client
+                .read_phase(
+                    &RecoveryPhaseRequest {
+                        operation_id: started.request.operation_id,
+                        phase_id: started
+                            .initialization
+                            .expect("positive initial inspection required"),
+                    },
+                    Duration::from_secs(5),
+                )
+                .await
+                .unwrap();
+            assert!(
+                matches!(retained.outcome, Some(RecoveryDispatchOutcome::Target(response))
+                if matches!(response.outcome, TargetRuntimeOutcome::InitialMembershipStatus(_))),
+                "continuation must begin from the typed inspection result"
+            );
+        } else {
+            assert!(started.initialization.is_none());
+        }
         assert_eq!(
             client
                 .start(request, Duration::from_secs(5))
@@ -1946,7 +2010,9 @@ impl Fixture {
                 self.control_failure_context()
             );
         }
-        assert!(observed_one_materialization && isolated && restored);
+        assert!(
+            (resumed_initial_inspection || observed_one_materialization) && isolated && restored
+        );
     }
     pub async fn databases(&self) -> Vec<Arc<kasumi_engine::Database>> {
         let mut databases = Vec::new();
@@ -2043,5 +2109,392 @@ impl Fixture {
         for node in self.issuer_nodes.drain(..) {
             node.shutdown().await.unwrap();
         }
+    }
+}
+
+impl Fixture {
+    /// Actual owner shutdown and reopen, followed by real original dispatch
+    /// expiry. This is restart evidence, not an operating-system crash test.
+    pub async fn assert_expired_initialize_after_target_restart(
+        &mut self,
+        handles: &[Handles],
+        observer_node: u64,
+    ) {
+        let mut control = self.client().await;
+        let _ = control
+            .start(self.request.as_ref().unwrap(), Duration::from_secs(5))
+            .await;
+        let (marked, original_prebinds, old_children, original_history) = tokio::time::timeout(
+            Duration::from_secs(180),
+            fixture_operation(|| async {
+                for _ in 0..80 {
+                    let record = self
+                        .status(&mut control, "restart Initialize progress")
+                        .await;
+                    if let Some(phase_id) = record.pending_phase {
+                        let phase = self.inspection_phase(&mut control, phase_id).await;
+                        if let RecoveryDispatch::Target { node_id, request } = &phase.input
+                            && matches!(request.step, TargetRuntimeStep::Initialize(_))
+                        {
+                            let mut prebinds = Vec::new();
+                            let mut children = Vec::new();
+                            for target in &self.targets {
+                                let db = target
+                                    .test_owned_database("acme", self.target)
+                                    .await
+                                    .unwrap();
+                                let bytes = db
+                                    .stores()
+                                    .custody()
+                                    .store()
+                                    .get_bounded(
+                                        kasumi_raft::TARGET_PREBIND_NAMESPACE,
+                                        kasumi_raft::TARGET_PREBIND_KEY,
+                                        256 << 10,
+                                    )
+                                    .unwrap()
+                                    .unwrap();
+                                prebinds.push(
+                                    serde_json::from_slice::<
+                                        kasumi_raft::TargetFirstMembershipPrebind,
+                                    >(&bytes)
+                                    .unwrap(),
+                                );
+                                children.push(Arc::downgrade(&db));
+                            }
+                            let receiver = &self.targets[*node_id as usize - 1];
+                            receiver.test_lose_next_initialize_reply();
+                            assert!(self.step(&mut control).await.is_err());
+                            assert!(
+                                !receiver.test_initial_reply_loss_pending(),
+                                "must discard actual successful Initialize reply"
+                            );
+                            let marked = self.inspection_phase(&mut control, phase_id).await;
+                            let db = receiver
+                                .test_owned_database("acme", self.target)
+                                .await
+                                .unwrap();
+                            let history = kasumi_raft::read_target_first_membership_history(
+                                db.stores(),
+                                &prebinds[*node_id as usize - 1],
+                            )
+                            .unwrap();
+                            let fact = (
+                                history.first_fact_sha256().to_owned(),
+                                history.first_log_id().index,
+                            );
+                            assert!(marked.outcome.is_none());
+                            return (marked, prebinds, children, fact);
+                        }
+                    }
+                    let _ = self.step(&mut control).await;
+                }
+                panic!("restart fixture did not reach original Initialize");
+            }),
+        )
+        .await
+        .expect("original Initialize deadline elapsed");
+        let RecoveryDispatch::Target {
+            node_id,
+            request: original,
+        } = &marked.input
+        else {
+            unreachable!()
+        };
+        let node_id = *node_id;
+        let identity = TargetInitialMembershipStatusInput::dispatch_identity(&marked).unwrap();
+        let original_query = TargetInitialMembershipHistoryRequest {
+            target_incarnation: self.target,
+            request: (**original).clone(),
+            identity: identity.clone(),
+        };
+        let before = self.status(&mut control, "retained Initialize cause").await;
+        assert_eq!(before.initialization_attempt, Some(marked.phase_id));
+        assert_eq!(before.initialization_starts.len(), 3);
+        let original_starts = before.initialization_starts.clone();
+
+        for stop in self.target_stops.drain(..) {
+            stop.send_replace(true);
+        }
+        for task in self.target_tasks.drain(..) {
+            tokio::time::timeout(Duration::from_secs(15), task)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+        }
+        for target in &self.targets {
+            target.shutdown().await.unwrap();
+        }
+        self.targets.clear();
+        assert!(
+            old_children.iter().all(|child| child.upgrade().is_none()),
+            "all original Start owners must actually be gone before reopening"
+        );
+        let mut sockets = Vec::new();
+        for address in &self.native_addresses {
+            sockets.push(TcpListener::bind(address).await.unwrap());
+        }
+        self.open_targets(handles, sockets).await;
+        for target in &self.targets {
+            assert!(
+                !target.test_has_replica("acme", self.target).await,
+                "journal reopening alone must not recreate a pending child"
+            );
+        }
+        let index = node_id as usize - 1;
+        let connection = kasumi_client::KasumiClientConfig {
+            endpoint: format!("https://localhost:{}", self.native_addresses[index].port()),
+            identity: self.files[0].load().unwrap(),
+            trusted_ca_pem: read_bounded(&self.ca, 1 << 20).unwrap(),
+            server_certificate_pins: BTreeSet::from([self.files[index]
+                .load()
+                .unwrap()
+                .certificate_pin()]),
+        };
+        let mut client = kasumi_client::KasumiTargetClient::connect(
+            &connection,
+            kasumi_serving::ControlTrust::install(self.root.clone()).unwrap(),
+            kasumi_serving::AuthorityTrust::install(self.manifest.clone()).unwrap(),
+            node_id,
+        )
+        .await
+        .unwrap();
+        assert!(
+            client
+                .read_initial_membership_history(&self.control_token, &original_query)
+                .await
+                .is_err(),
+            "replacement runtime cannot claim the original live Start owner"
+        );
+        let clock = kasumi_clock::EpochClock::system().unwrap();
+        let now = clock.now_ms().unwrap();
+        if now < original.not_after_ms {
+            eprintln!(
+                "waiting for original immutable Initialize cap: {} ms",
+                original.not_after_ms - now
+            );
+            tokio::time::sleep(Duration::from_millis(original.not_after_ms - now + 1)).await;
+        }
+        assert!(clock.now_ms().unwrap() >= original.not_after_ms);
+        let credential = Zeroizing::new(self.control_token.clone());
+        let mut lifecycle = kasumi_client::KasumiLifecyclePool::new(
+            self.target_configs[0]
+                .target_recovery
+                .as_ref()
+                .unwrap()
+                .control_connections()
+                .unwrap(),
+            kasumi_serving::ControlTrust::install(self.root.clone()).unwrap(),
+            Arc::new(move || Ok(credential.clone())),
+        )
+        .unwrap();
+        assert!(
+            lifecycle
+                .observe_intent(original.command_id, Duration::from_secs(5))
+                .await
+                .is_err(),
+            "expired original lifecycle must remain unavailable as current signed authority"
+        );
+        let mut inspection_routes: BTreeMap<Uuid, (TargetRuntimeRequest, BTreeSet<u64>)> =
+            BTreeMap::new();
+        let resolved = tokio::time::timeout(
+            Duration::from_secs(180),
+            fixture_operation(|| async {
+                for _ in 0..100 {
+                    let record = self.status(&mut control, "fresh initial inspection").await;
+                    if record.initialization.is_some() {
+                        return record;
+                    }
+                    if let Some(phase_id) = record.pending_phase {
+                        let phase = self.inspection_phase(&mut control, phase_id).await;
+                        if let RecoveryDispatch::Target { node_id: route, request } = &phase.input
+                            && matches!(request.step, TargetRuntimeStep::InspectInitialMembership(_)) {
+                            let (original_request, routes) = inspection_routes.entry(request.command_id)
+                                .or_insert_with(|| ((**request).clone(), BTreeSet::new()));
+                            assert_eq!(original_request, request.as_ref(),
+                                "leader routing cannot change the exact inspection packet or cap");
+                            routes.insert(*route);
+                        }
+                        if matches!(&phase.input, RecoveryDispatch::Target { request, .. }
+                        if matches!(request.step, TargetRuntimeStep::InspectInitialAssociation(_) | TargetRuntimeStep::InspectInitialMembership(_)))
+                        {
+                            // Elect an actual installed child under the fresh read-only
+                            // phase. The original designated node can remain a follower
+                            // and attest only its permanent local association.
+                            let observer = self.targets[observer_node as usize - 1]
+                                .test_owned_database("acme", self.target).await.unwrap();
+                            let original_child = self.targets[index]
+                                .test_owned_database("acme", self.target).await.unwrap();
+                            tokio::time::timeout(Duration::from_secs(20), async {
+                                let mut next_election = std::time::Instant::now();
+                                loop {
+                                    if observer.raft_group().raft().metrics().borrow().current_leader
+                                        != Some(observer_node)
+                                        && std::time::Instant::now() >= next_election {
+                                        observer.raft_group().raft().trigger().elect().await.unwrap();
+                                        next_election = std::time::Instant::now() + Duration::from_secs(2);
+                                    }
+                                    if observer.raft_group().linearizable_barrier().await.is_ok()
+                                        && observer.raft_group().raft().metrics().borrow().current_leader
+                                            == Some(observer_node)
+                                        && original_child.raft_group().raft().metrics().borrow().current_leader
+                                            == Some(observer_node) {
+                                        break;
+                                    }
+                                    tokio::time::sleep(Duration::from_millis(100)).await;
+                                }
+                            }).await.expect("installed inspection observer did not become current leader");
+                        }
+                    }
+                    if let Err(error) = self.step(&mut control).await {
+                        eprintln!(
+                            "initial inspection pending: {}",
+                            recovery_step_error(&error)
+                        );
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                    }
+                }
+                panic!("fresh initial membership inspection did not resolve");
+            }),
+        )
+        .await
+        .expect("fresh initial membership inspection deadline elapsed");
+        assert_eq!(resolved.initialization_attempt, Some(marked.phase_id));
+        assert_eq!(resolved.initialization_starts, original_starts);
+        let original_after = self.inspection_phase(&mut control, marked.phase_id).await;
+        assert_eq!(original_after.effect_attempts, marked.effect_attempts);
+        assert_eq!(original_after.input, marked.input);
+        assert_eq!(
+            TargetInitialMembershipStatusInput::accepted_phase(&original_after).unwrap(),
+            marked
+        );
+        let inspection_phase = resolved.initialization.unwrap();
+        assert!(
+            matches!(original_after.outcome, Some(RecoveryDispatchOutcome::InitialMembershipObserved { inspection_phase: actual })
+            if actual == inspection_phase)
+        );
+        let observed = self.inspection_phase(&mut control, inspection_phase).await;
+        if let RecoveryDispatch::Target {
+            node_id: route,
+            request,
+        } = &observed.input
+        {
+            let (original_request, routes) = inspection_routes
+                .entry(request.command_id)
+                .or_insert_with(|| ((**request).clone(), BTreeSet::new()));
+            assert_eq!(
+                original_request,
+                request.as_ref(),
+                "resolved inspection must preserve its exact routed packet and cap"
+            );
+            routes.insert(*route);
+        }
+        let Some(RecoveryDispatchOutcome::Target(response)) = &observed.outcome else {
+            panic!("typed initial inspection outcome absent")
+        };
+        let TargetRuntimeOutcome::InitialMembershipStatus(signed) = &response.outcome else {
+            panic!("inspection fabricated Initialize outcome")
+        };
+        kasumi_serving::verify_target_initial_membership_status(&signed.observation.input, signed)
+            .unwrap();
+        assert_eq!(signed.observation.input.identity().unwrap(), identity);
+        assert_eq!(signed.observation.observer_node_id, observer_node);
+        eprintln!(
+            "initial membership inspection observed by node {observer_node}; original association node {node_id}"
+        );
+        assert_eq!(
+            signed.observation.association.observation.original_node_id,
+            node_id
+        );
+        assert_eq!(
+            signed
+                .observation
+                .association
+                .observation
+                .input
+                .identity()
+                .unwrap(),
+            identity
+        );
+        assert_eq!(
+            signed.observation.association.observation.status_intent,
+            signed.observation.status_intent
+        );
+        if observer_node != node_id {
+            let (packet, routes) = inspection_routes
+                .get(&signed.observation.status_intent.request.command_id)
+                .expect("retained exact inspection routing evidence");
+            assert_eq!(
+                routes,
+                &BTreeSet::from([node_id, observer_node]),
+                "same inspection must visit original follower and legitimate other leader"
+            );
+            assert_eq!(
+                packet.command_id,
+                signed.observation.status_intent.request.command_id
+            );
+            assert_ne!(
+                signed.observation.observer_node_id, node_id,
+                "the positive inspection must come from a different legitimate leader"
+            );
+        }
+        assert!(
+            clock.now_ms().unwrap()
+                >= signed
+                    .observation
+                    .input
+                    .original_intent
+                    .original_credential_expires_at_ms,
+            "the original lifecycle authorization must actually be expired"
+        );
+        assert_eq!(
+            (
+                &signed.observation.first_fact_sha256,
+                signed.observation.first_log_index
+            ),
+            (&original_history.0, original_history.1)
+        );
+        for ((target, prior), old_child) in self
+            .targets
+            .iter()
+            .zip(&original_prebinds)
+            .zip(&old_children)
+        {
+            let db = target
+                .test_owned_database("acme", self.target)
+                .await
+                .unwrap();
+            assert!(!old_child.ptr_eq(&Arc::downgrade(&db)));
+            assert!(old_child.upgrade().is_none());
+            kasumi_raft::read_target_first_membership_prebind(db.stores(), prior).unwrap();
+            assert!(
+                !target
+                    .test_replica_has_initial_start_owner("acme", self.target)
+                    .await,
+                "new inspection child must not acquire the original Start owner"
+            );
+            assert!(
+                db.stores()
+                    .application()
+                    .storage_access()
+                    .check_consensus_proposal()
+                    .is_err(),
+                "inspection cannot propose a fresh membership or application mutation"
+            );
+        }
+        assert!(
+            client
+                .read_initial_membership_history(&self.control_token, &original_query)
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            self.targets[index]
+                .test_initial_dispatch_status(&identity, original)
+                .unwrap(),
+            kasumi_engine::InitialDispatchStatus::AcceptedOnly
+        );
+        assert_eq!(resolved.phase, RecoveryPhase::Complete);
     }
 }

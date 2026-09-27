@@ -1,0 +1,102 @@
+(lldb) command source -s 0 '/tmp/kasumi-overflow-disassembly.lldb'
+Executing commands in '/tmp/kasumi-overflow-disassembly.lldb'.
+(lldb) target create target/debug/deps/kasumi_server-cc7c9b9a2f2be7df
+Current executable set to '/Users/takemiyamakoto/dev/kasumi/target/debug/deps/kasumi_server-cc7c9b9a2f2be7df' (arm64).
+(lldb) disassemble -n _RNCNCNvNtCs2NON4o19Eza_13kasumi_server20target_phase_runtime37observe_initial_dispatch_from_control0s_0B7_ -c 12
+kasumi_server-cc7c9b9a2f2be7df`kasumi_server::target_phase_runtime::observe_initial_dispatch_from_control::{closure#0}::{closure#1}:
+kasumi_server-cc7c9b9a2f2be7df[0x101680800] <+0>:  stp    x28, x27, [sp, #-0x20]!
+kasumi_server-cc7c9b9a2f2be7df[0x101680804] <+4>:  stp    x29, x30, [sp, #0x10]
+kasumi_server-cc7c9b9a2f2be7df[0x101680808] <+8>:  add    x29, sp, #0x10
+kasumi_server-cc7c9b9a2f2be7df[0x10168080c] <+12>: sub    sp, sp, #0x1, lsl #12     ; =0x1000 
+kasumi_server-cc7c9b9a2f2be7df[0x101680810] <+16>: str    xzr, [sp]
+kasumi_server-cc7c9b9a2f2be7df[0x101680814] <+20>: sub    sp, sp, #0x1, lsl #12     ; =0x1000 
+kasumi_server-cc7c9b9a2f2be7df[0x101680818] <+24>: str    xzr, [sp]
+kasumi_server-cc7c9b9a2f2be7df[0x10168081c] <+28>: sub    sp, sp, #0x1, lsl #12     ; =0x1000 
+kasumi_server-cc7c9b9a2f2be7df[0x101680820] <+32>: str    xzr, [sp]
+kasumi_server-cc7c9b9a2f2be7df[0x101680824] <+36>: sub    sp, sp, #0x1, lsl #12     ; =0x1000 
+kasumi_server-cc7c9b9a2f2be7df[0x101680828] <+40>: str    xzr, [sp]
+kasumi_server-cc7c9b9a2f2be7df[0x10168082c] <+44>: sub    sp, sp, #0x550
+(lldb) disassemble -n _RNCINvMs_NtCsafLTv8dO7JV_13kasumi_engine13backup_verifyNtB7_20VerificationDeadline3runINtNtCsgtPOCBgevO_4core6result6ResultNtNtCs1YcEg0rgL8T_14kasumi_serving7control21VerifiedControlIntentNtCskj6my0ant4w_6anyhow5ErrorENCNCNvNtCs2NON4o19Eza_13kasumi_server20target_phase_runtime37observe_initial_dispatch_from_control0s_0E0B3C_ -c 12
+kasumi_server-cc7c9b9a2f2be7df`<kasumi_engine::backup_verify::VerificationDeadline>::run::<core::result::Result<kasumi_serving::control::VerifiedControlIntent, anyhow::Error>, kasumi_server::target_phase_runtime::observe_initial_dispatch_from_control::{closure#0}::{closure#1}>::{closure#0}:
+kasumi_server-cc7c9b9a2f2be7df[0x100b3b2b4] <+0>:  stp    x28, x27, [sp, #-0x20]!
+kasumi_server-cc7c9b9a2f2be7df[0x100b3b2b8] <+4>:  stp    x29, x30, [sp, #0x10]
+kasumi_server-cc7c9b9a2f2be7df[0x100b3b2bc] <+8>:  add    x29, sp, #0x10
+kasumi_server-cc7c9b9a2f2be7df[0x100b3b2c0] <+12>: sub    x9, sp, #0x6, lsl #12     ; =0x6000 
+kasumi_server-cc7c9b9a2f2be7df[0x100b3b2c4] <+16>: sub    sp, sp, #0x1, lsl #12     ; =0x1000 
+kasumi_server-cc7c9b9a2f2be7df[0x100b3b2c8] <+20>: str    xzr, [sp]
+kasumi_server-cc7c9b9a2f2be7df[0x100b3b2cc] <+24>: cmp    sp, x9
+kasumi_server-cc7c9b9a2f2be7df[0x100b3b2d0] <+28>: b.ne   0x100b3b2c4               ; <+16> at backup_verify.rs
+kasumi_server-cc7c9b9a2f2be7df[0x100b3b2d4] <+32>: sub    sp, sp, #0x370
+kasumi_server-cc7c9b9a2f2be7df[0x100b3b2d8] <+36>: add    x9, sp, #0x5, lsl #12     ; =0x5000 
+kasumi_server-cc7c9b9a2f2be7df[0x100b3b2dc] <+40>: add    x9, x9, #0xe58
+kasumi_server-cc7c9b9a2f2be7df[0x100b3b2e0] <+44>: str    x9, [sp, #0x38]
+(lldb) disassemble -n _RNCINvMs0_NtCsafLTv8dO7JV_13kasumi_engine17target_invocationNtB8_22TargetRequestAdmission3runNtNtCs1YcEg0rgL8T_14kasumi_serving7control21VerifiedControlIntentNCNCNvNtCs2NON4o19Eza_13kasumi_server20target_phase_runtime37observe_initial_dispatch_from_control0s_0E0B2E_ -c 12
+kasumi_server-cc7c9b9a2f2be7df`<kasumi_engine::target_invocation::TargetRequestAdmission>::run::<kasumi_serving::control::VerifiedControlIntent, kasumi_server::target_phase_runtime::observe_initial_dispatch_from_control::{closure#0}::{closure#1}>::{closure#0}:
+kasumi_server-cc7c9b9a2f2be7df[0x10024f078] <+0>:  stp    x28, x27, [sp, #-0x20]!
+kasumi_server-cc7c9b9a2f2be7df[0x10024f07c] <+4>:  stp    x29, x30, [sp, #0x10]
+kasumi_server-cc7c9b9a2f2be7df[0x10024f080] <+8>:  add    x29, sp, #0x10
+kasumi_server-cc7c9b9a2f2be7df[0x10024f084] <+12>: sub    x9, sp, #0x10, lsl #12    ; =0x10000 
+kasumi_server-cc7c9b9a2f2be7df[0x10024f088] <+16>: sub    sp, sp, #0x1, lsl #12     ; =0x1000 
+kasumi_server-cc7c9b9a2f2be7df[0x10024f08c] <+20>: str    xzr, [sp]
+kasumi_server-cc7c9b9a2f2be7df[0x10024f090] <+24>: cmp    sp, x9
+kasumi_server-cc7c9b9a2f2be7df[0x10024f094] <+28>: b.ne   0x10024f088               ; <+16> at target_invocation.rs
+kasumi_server-cc7c9b9a2f2be7df[0x10024f098] <+32>: sub    sp, sp, #0x630
+kasumi_server-cc7c9b9a2f2be7df[0x10024f09c] <+36>: str    xzr, [sp]
+kasumi_server-cc7c9b9a2f2be7df[0x10024f0a0] <+40>: add    x9, sp, #0xf, lsl #12     ; =0xf000 
+kasumi_server-cc7c9b9a2f2be7df[0x10024f0a4] <+44>: add    x9, x9, #0xbb0
+(lldb) disassemble -n _RNCNvNtCs2NON4o19Eza_13kasumi_server20target_phase_runtime37observe_initial_dispatch_from_control0B5_ -c 12
+kasumi_server-cc7c9b9a2f2be7df`kasumi_server::target_phase_runtime::observe_initial_dispatch_from_control::{closure#0}:
+kasumi_server-cc7c9b9a2f2be7df[0x10168a330] <+0>:  stp    x28, x27, [sp, #-0x20]!
+kasumi_server-cc7c9b9a2f2be7df[0x10168a334] <+4>:  stp    x29, x30, [sp, #0x10]
+kasumi_server-cc7c9b9a2f2be7df[0x10168a338] <+8>:  add    x29, sp, #0x10
+kasumi_server-cc7c9b9a2f2be7df[0x10168a33c] <+12>: sub    x9, sp, #0x15, lsl #12    ; =0x15000 
+kasumi_server-cc7c9b9a2f2be7df[0x10168a340] <+16>: sub    sp, sp, #0x1, lsl #12     ; =0x1000 
+kasumi_server-cc7c9b9a2f2be7df[0x10168a344] <+20>: str    xzr, [sp]
+kasumi_server-cc7c9b9a2f2be7df[0x10168a348] <+24>: cmp    sp, x9
+kasumi_server-cc7c9b9a2f2be7df[0x10168a34c] <+28>: b.ne   0x10168a340               ; <+16> at keys.rs
+kasumi_server-cc7c9b9a2f2be7df[0x10168a350] <+32>: sub    sp, sp, #0x7d0
+kasumi_server-cc7c9b9a2f2be7df[0x10168a354] <+36>: str    xzr, [sp]
+kasumi_server-cc7c9b9a2f2be7df[0x10168a358] <+40>: add    x9, sp, #0x14, lsl #12    ; =0x14000 
+kasumi_server-cc7c9b9a2f2be7df[0x10168a35c] <+44>: add    x9, x9, #0xfb0
+(lldb) disassemble -n _RNCNvMs1_NtCs2NON4o19Eza_13kasumi_server14target_runtimeNtB7_21TargetRecoveryRuntime7perform0B9_ -c 12
+kasumi_server-cc7c9b9a2f2be7df`<kasumi_server::target_runtime::TargetRecoveryRuntime>::perform::{closure#0}:
+kasumi_server-cc7c9b9a2f2be7df[0x1008592fc] <+0>:  stp    x28, x27, [sp, #-0x20]!
+kasumi_server-cc7c9b9a2f2be7df[0x100859300] <+4>:  stp    x29, x30, [sp, #0x10]
+kasumi_server-cc7c9b9a2f2be7df[0x100859304] <+8>:  add    x29, sp, #0x10
+kasumi_server-cc7c9b9a2f2be7df[0x100859308] <+12>: sub    x9, sp, #0xb3, lsl #12    ; =0xb3000 
+kasumi_server-cc7c9b9a2f2be7df[0x10085930c] <+16>: sub    sp, sp, #0x1, lsl #12     ; =0x1000 
+kasumi_server-cc7c9b9a2f2be7df[0x100859310] <+20>: str    xzr, [sp]
+kasumi_server-cc7c9b9a2f2be7df[0x100859314] <+24>: cmp    sp, x9
+kasumi_server-cc7c9b9a2f2be7df[0x100859318] <+28>: b.ne   0x10085930c               ; <+16> at target_runtime.rs
+kasumi_server-cc7c9b9a2f2be7df[0x10085931c] <+32>: sub    sp, sp, #0xa20
+kasumi_server-cc7c9b9a2f2be7df[0x100859320] <+36>: str    xzr, [sp]
+kasumi_server-cc7c9b9a2f2be7df[0x100859324] <+40>: add    x9, sp, #0xb3, lsl #12    ; =0xb3000 
+kasumi_server-cc7c9b9a2f2be7df[0x100859328] <+44>: add    x9, x9, #0x640
+(lldb) disassemble -n _RNCNvMs1_NtCs2NON4o19Eza_13kasumi_server14target_runtimeNtB7_21TargetRecoveryRuntime13execute_owned0B9_ -c 12
+kasumi_server-cc7c9b9a2f2be7df`<kasumi_server::target_runtime::TargetRecoveryRuntime>::execute_owned::{closure#0}:
+kasumi_server-cc7c9b9a2f2be7df[0x1008468f8] <+0>:  stp    x28, x27, [sp, #-0x20]!
+kasumi_server-cc7c9b9a2f2be7df[0x1008468fc] <+4>:  stp    x29, x30, [sp, #0x10]
+kasumi_server-cc7c9b9a2f2be7df[0x100846900] <+8>:  add    x29, sp, #0x10
+kasumi_server-cc7c9b9a2f2be7df[0x100846904] <+12>: sub    x9, sp, #0x54, lsl #12    ; =0x54000 
+kasumi_server-cc7c9b9a2f2be7df[0x100846908] <+16>: sub    sp, sp, #0x1, lsl #12     ; =0x1000 
+kasumi_server-cc7c9b9a2f2be7df[0x10084690c] <+20>: str    xzr, [sp]
+kasumi_server-cc7c9b9a2f2be7df[0x100846910] <+24>: cmp    sp, x9
+kasumi_server-cc7c9b9a2f2be7df[0x100846914] <+28>: b.ne   0x100846908               ; <+16> at target_runtime.rs
+kasumi_server-cc7c9b9a2f2be7df[0x100846918] <+32>: sub    sp, sp, #0x500
+kasumi_server-cc7c9b9a2f2be7df[0x10084691c] <+36>: str    xzr, [sp]
+kasumi_server-cc7c9b9a2f2be7df[0x100846920] <+40>: add    x9, sp, #0x52, lsl #12    ; =0x52000 
+kasumi_server-cc7c9b9a2f2be7df[0x100846924] <+44>: add    x9, x9, #0xb90
+(lldb) disassemble -n _RNCNCNvMs1_NtCs2NON4o19Eza_13kasumi_server14target_runtimeNtB9_21TargetRecoveryRuntime7execute00Bb_ -c 12
+kasumi_server-cc7c9b9a2f2be7df`<kasumi_server::target_runtime::TargetRecoveryRuntime>::execute::{closure#0}::{closure#0}:
+kasumi_server-cc7c9b9a2f2be7df[0x100843480] <+0>:  stp    x28, x27, [sp, #-0x20]!
+kasumi_server-cc7c9b9a2f2be7df[0x100843484] <+4>:  stp    x29, x30, [sp, #0x10]
+kasumi_server-cc7c9b9a2f2be7df[0x100843488] <+8>:  add    x29, sp, #0x10
+kasumi_server-cc7c9b9a2f2be7df[0x10084348c] <+12>: sub    x9, sp, #0x15, lsl #12    ; =0x15000 
+kasumi_server-cc7c9b9a2f2be7df[0x100843490] <+16>: sub    sp, sp, #0x1, lsl #12     ; =0x1000 
+kasumi_server-cc7c9b9a2f2be7df[0x100843494] <+20>: str    xzr, [sp]
+kasumi_server-cc7c9b9a2f2be7df[0x100843498] <+24>: cmp    sp, x9
+kasumi_server-cc7c9b9a2f2be7df[0x10084349c] <+28>: b.ne   0x100843490               ; <+16> at target_runtime.rs
+kasumi_server-cc7c9b9a2f2be7df[0x1008434a0] <+32>: sub    sp, sp, #0x2a0
+kasumi_server-cc7c9b9a2f2be7df[0x1008434a4] <+36>: add    x9, sp, #0x14, lsl #12    ; =0x14000 
+kasumi_server-cc7c9b9a2f2be7df[0x1008434a8] <+40>: add    x9, x9, #0x6f8
+kasumi_server-cc7c9b9a2f2be7df[0x1008434ac] <+44>: str    x9, [sp, #0x98]

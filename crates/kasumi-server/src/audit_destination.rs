@@ -1,6 +1,5 @@
 //! Installed archive locations. The canonical segment bound is always 8 MiB;
 //! expandable retained-byte capacity belongs to the audit retention budget.
-use crate::administration::DestinationConfig;
 use anyhow::Result;
 use kasumi_store::{AuditArchiveDestination, FilesystemAuditArchive, S3AuditArchive};
 use serde::{Deserialize, Serialize};
@@ -22,13 +21,11 @@ pub enum AuditDestinationConfig {
     },
 }
 impl AuditDestinationConfig {
-    fn bounded_destination(&self) -> DestinationConfig {
-        let max_bytes = kasumi_types::MAX_AUDIT_SEGMENT_BYTES;
+    pub(crate) fn validate(&self) -> Result<()> {
         match self {
-            Self::Filesystem { directory } => DestinationConfig::Filesystem {
-                directory: directory.clone(),
-                max_bytes,
-            },
+            Self::Filesystem { directory } => {
+                crate::administration::validate_filesystem_location(directory)
+            }
             Self::S3 {
                 endpoint,
                 region,
@@ -36,19 +33,15 @@ impl AuditDestinationConfig {
                 prefix,
                 credentials_file,
                 ca_certificate,
-            } => DestinationConfig::S3 {
-                endpoint: endpoint.clone(),
-                region: region.clone(),
-                bucket: bucket.clone(),
-                prefix: prefix.clone(),
-                credentials_file: credentials_file.clone(),
-                ca_certificate: ca_certificate.clone(),
-                max_bytes,
-            },
+            } => crate::administration::validate_s3_location(
+                endpoint,
+                region,
+                bucket,
+                prefix,
+                credentials_file,
+                ca_certificate.as_deref(),
+            ),
         }
-    }
-    pub(crate) fn validate(&self) -> Result<()> {
-        self.bounded_destination().validate()
     }
     pub(crate) fn open(
         &self,

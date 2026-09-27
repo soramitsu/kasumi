@@ -1038,7 +1038,9 @@ fn target_route_wait(
                 | TargetRuntimeStep::ResolveComplete(_)
                 | TargetRuntimeStep::Inspect(_)
         );
-    if established {
+    let initial_inspection = head.phase == RecoveryPhase::Initialize
+        && matches!(request.step, TargetRuntimeStep::InspectInitialMembership(_));
+    if established || initial_inspection {
         // RecoveryStart validates exactly three installed voters. Leave time for
         // their routes and the final current-Control response/phase commit.
         remaining / 5

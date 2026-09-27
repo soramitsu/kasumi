@@ -16,6 +16,17 @@ pub async fn command(arguments: &[String]) -> Result<bool> {
         return Ok(true);
     }
     match arguments {
+        [command, configuration, request, output] if command == "enroll-backup-destination" => {
+            crate::backup_destination_installation::command(
+                Path::new(configuration),
+                Path::new(request),
+                Path::new(output),
+            )
+            .await?;
+            println!(
+                "Captured the enrolled backup destination binding; install the receipt's configuration explicitly before startup."
+            );
+        }
         [command, action, configuration, input] if command == "tenant" => {
             let result = match action.as_str() {
                 "stage" => {

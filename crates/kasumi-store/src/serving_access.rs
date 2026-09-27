@@ -177,6 +177,7 @@ impl StorageAccess {
                     phase,
                     kasumi_types::LifecyclePhase::Activate
                         | kasumi_types::LifecyclePhase::InspectTarget
+                        | kasumi_types::LifecyclePhase::InspectInitialMembership
                         | kasumi_types::LifecyclePhase::InspectCompletionAttempt
                         | kasumi_types::LifecyclePhase::InspectCompletionResolution
                         | kasumi_types::LifecyclePhase::ResolveComplete
@@ -318,6 +319,7 @@ impl StorageAccess {
                 !matches!(
                     gate.current()?.commitment().intent.request.phase,
                     kasumi_types::LifecyclePhase::InspectTarget
+                        | kasumi_types::LifecyclePhase::InspectInitialMembership
                         | kasumi_types::LifecyclePhase::InspectCompletionAttempt
                         | kasumi_types::LifecyclePhase::InspectCompletionResolution
                 ),

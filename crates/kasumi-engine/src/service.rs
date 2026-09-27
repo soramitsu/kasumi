@@ -63,6 +63,8 @@ mod snapshot_leases;
 mod staged_reads;
 #[path = "target_activation_service.rs"]
 pub(crate) mod target_activation_service;
+#[path = "target_initial_membership_service.rs"]
+pub(crate) mod target_initial_membership_service;
 #[path = "target_inspection_service.rs"]
 pub(crate) mod target_inspection_service;
 #[path = "target_receiver_service.rs"]

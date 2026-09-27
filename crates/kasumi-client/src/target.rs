@@ -300,6 +300,32 @@ impl KasumiTargetClient {
                 verify_target_inspection(input, signed)?;
             }
             (
+                TargetRuntimeStep::InspectInitialAssociation(input),
+                TargetRuntimeOutcome::InitialMembershipAssociation(signed),
+            ) => {
+                ensure!(
+                    signed.observation.status_intent == *intent
+                        && signed.observation.original_node_id == self.node_id,
+                    "initial association current phase or original node differs"
+                );
+                verify_target_initial_membership_association(input, signed)?;
+            }
+            (
+                TargetRuntimeStep::InspectInitialMembership(association),
+                TargetRuntimeOutcome::InitialMembershipStatus(signed),
+            ) => {
+                ensure!(
+                    signed.observation.status_intent == *intent
+                        && signed.observation.observer_node_id == self.node_id,
+                    "initial membership status current phase differs"
+                );
+                ensure!(
+                    &signed.observation.association == association.as_ref(),
+                    "initial membership association changed"
+                );
+                verify_target_initial_membership_status(&association.observation.input, signed)?;
+            }
+            (
                 TargetRuntimeStep::InspectCompletionAttempt(input),
                 TargetRuntimeOutcome::CompletionAttemptStatus(signed),
             ) => {
@@ -384,6 +410,9 @@ fn validate_request_phase(
         TargetRuntimeStep::Start(TargetReplicaInput::ResolutionBudget { input, .. }) => {
             (LifecyclePhase::MaintainTarget, Some(input.digest()?))
         }
+        TargetRuntimeStep::Start(TargetReplicaInput::InitialMembershipStatus(i)) => {
+            (LifecyclePhase::InspectInitialMembership, Some(i.digest()?))
+        }
         TargetRuntimeStep::Start(TargetReplicaInput::Inspection(i)) => {
             (LifecyclePhase::InspectTarget, Some(i.digest()?))
         }
@@ -423,6 +452,24 @@ fn validate_request_phase(
             (
                 LifecyclePhase::InspectTarget,
                 Some(signed.observation.input.digest()?),
+            )
+        }
+        TargetRuntimeStep::InspectInitialAssociation(input) => (
+            LifecyclePhase::InspectInitialMembership,
+            Some(input.digest()?),
+        ),
+        TargetRuntimeStep::InspectInitialMembership(association) => {
+            verify_target_initial_membership_association(
+                &association.observation.input,
+                association,
+            )?;
+            ensure!(
+                association.observation.status_intent == *intent,
+                "initial association current intent differs"
+            );
+            (
+                LifecyclePhase::InspectInitialMembership,
+                Some(association.observation.input.digest()?),
             )
         }
         TargetRuntimeStep::Inspect(i) => (LifecyclePhase::InspectTarget, Some(i.digest()?)),

@@ -570,6 +570,54 @@ This is local development evidence, not process-crash acceptance at every phase,
 expired initial-phase authority, exact deletion, nine-process HA or a release
 cohort. G09 remains open.
 
+The subsequent **initial membership inspection checkpoint** adds a current
+first-release read-only phase for an expired, possibly committed original
+Initialize. Control freezes the separate original Initialize marker and exact
+three positive Start references at BeginEffect. Fresh installed Control and
+issuer authority commit the complete historical-input digest; expired original
+ObserveIntent authorization stays expired. The target authenticates the exact
+accepted journal association and observes the original first-membership fact
+through the actual reopened quorum. Replacement children gain no original Start
+owner and cannot propose new membership or application changes. A positive
+signed observation resolves the original through a typed causal link, never a
+synthetic Initialized execution reply or repeated original effect.
+
+`three_runtime_nodes_inspect_expired_initialize_after_owned_target_restart`
+passes **1/1 in 453.44 seconds** on the scoped development source. It discards a
+real successful Initialize reply, physically drains and reopens target owners,
+waits for the actual original cap, and passes the new inspection boundary before
+continuing through Finished, source retirement, activation, restored data and
+ordinary serving reopen. Finished is observed at 414.58 seconds; original node
+owners complete after sequential join waits of 139.34 ms, 7.42 ms and 3.20 ms,
+followed by Weak-owner disappearance.
+The retained TLS inventories must finish joining before physical owner release.
+The existing drain policy may cancel and then join overdue tasks, so this proves
+completed ownership drain, not universally graceful shutdown.
+
+The final current-source regressions also pass: inspection reducers **6/6** in
+1.38 seconds, target journal **18/18** in 4.39 seconds, and the original lost
+Start/Initialize continuous-owner case **1/1** in 81.91 seconds. Together with
+the new native case this is **26 distinct cases across four commands**; scoped
+formatting and diff checks pass.
+
+The [new checkpoint record](evidence/g09-initial-inspection-development-20260927/README.md)
+retains every earlier failure separately: expired original ObserveIntent was
+correctly rejected; the limited restart-to-Complete case passed; one extended
+run reached Finished but exceeded the old 15-second fixture drain wait; later
+attempts exposed a five-second immutable phase-read budget and a stale fixture
+assertion that reread sealed source serving state. The fixture wait now derives
+35 seconds from two configured ten-second listener budgets plus bounded owner
+cleanup. Phase observations use the existing status read budget, and source
+identity assertions use the exact incarnation captured before backup. No
+production authority, dispatch cap or drain behavior was relaxed.
+
+This remains controlled target shutdown/reopen, not OS process-crash acceptance.
+Positive inspection currently requires the original designated Initialize voter
+to be the actual reopened quorum leader. Independent original-association
+resolution under another legitimate leader, the full pending-phase crash matrix,
+exact deletion, nine-process HA and a frozen qualified release remain open.
+G09 is not qualified by this development checkpoint.
+
 The following independent G01/G02 checkpoints record registered storage and
 allocation progress, along with the still-held G03, G05 and G08 work.
 

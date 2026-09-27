@@ -1147,11 +1147,12 @@ impl NodeRuntime {
                 .map(|r| r.peers.iter().map(|p| p.node_id).collect())
                 .unwrap_or_else(|| BTreeSet::from([1])),
         )?;
-        let destinations = config
-            .backup_destinations
-            .iter()
-            .map(|(name, destination)| Ok((name.clone(), destination.open(persistent_disk.clone())?)))
-            .collect::<Result<BTreeMap<_, _>>>()?;
+        let destinations = crate::backup_destination_installation::open_destinations(
+            &config.backup_destinations,
+            persistent_disk.clone(),
+            pending.standalone_owner.as_deref(),
+            signer_verifier.as_deref(),
+        )?;
         // Validate all TLS/credential material and bind all sockets before a
         // durable bootstrap can be created. No listener serves until `serve`.
         let mcp_identity = config.mcp.tls.load()?;
@@ -4098,13 +4099,6 @@ mod lifecycle_tests {
             .timeout(Duration::from_secs(5))
             .build()
             .unwrap();
-        config.backup_destinations.insert(
-            "primary".into(),
-            crate::administration::DestinationConfig::Filesystem {
-                directory: dir.path().join("data/backups"),
-                max_bytes: 32 << 20,
-            },
-        );
         // Preserve this fixture's former backup work budget alongside the
         // charged audit KV escrow and its equal protected maintenance lane.
         let former_total = config.admission.resolved_fixture_total_bytes().unwrap();
@@ -4267,18 +4261,9 @@ mod lifecycle_tests {
                     .administer(context.clone(), Operation::Suspend(true))
                     .await
                     .unwrap();
-                let backup = manager
-                    .execute_for_test(
-                        context.clone(),
-                        M::Backup {
-                            session_id: uuid::Uuid::new_v4(),
-                            destination: "primary".into(),
-                        },
-                    )
-                    .await
-                    .unwrap();
-                let backup_id =
-                    uuid::Uuid::parse_str(backup["backup_id"].as_str().unwrap()).unwrap();
+                // Filesystem backups require an actual installed owner. The
+                // installed standalone local_recovery tests cover backup and
+                // verification; this LocalFixture covers runtime/key rotation.
                 manager
                     .execute_for_test(context.clone(), M::RotateDataKey)
                     .await
@@ -4287,15 +4272,11 @@ mod lifecycle_tests {
                     .execute_for_test(context.clone(), M::RewrapKeys)
                     .await
                     .unwrap();
-                database
-                    .verify_backup_checkpoint_named(context.clone(), "primary", backup_id)
-                    .await
-                    .unwrap();
                 assert!(
                     serde_json::from_value::<M>(serde_json::json!({
                         "operation": "prepare_restore",
                         "destination": "primary",
-                        "backup_id": backup_id,
+                        "backup_id": uuid::Uuid::new_v4(),
                         "incarnation": uuid::Uuid::new_v4()
                     }))
                     .is_err(),
@@ -4404,11 +4385,19 @@ mod lifecycle_tests {
     }
     #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
     async fn three_runtime_nodes_report_committed_recovery_prepare_over_protected_tls() {
-        replicated_runtime_fixture_inner(false, None, false, true, false).await;
+        replicated_runtime_fixture_inner(false, None, false, true, false, None).await;
     }
     #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
     async fn three_runtime_nodes_resolve_lost_start_and_initialize_over_protected_tls() {
-        replicated_runtime_fixture_inner(false, None, false, false, true).await;
+        replicated_runtime_fixture_inner(false, None, false, false, true, None).await;
+    }
+    #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+    async fn three_runtime_nodes_inspect_expired_initialize_after_owned_target_restart() {
+        replicated_runtime_fixture_inner(false, None, false, false, false, Some(1)).await;
+    }
+    #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+    async fn three_runtime_nodes_inspect_expired_initialize_on_another_elected_leader() {
+        replicated_runtime_fixture_inner(false, None, false, false, false, Some(2)).await;
     }
     #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
     async fn runtime_catches_up_spare_and_replaces_three_voters_through_admin_control() {
@@ -4442,6 +4431,7 @@ mod lifecycle_tests {
             false,
             false,
             false,
+            None,
         ))
     }
 
@@ -4461,12 +4451,20 @@ mod lifecycle_tests {
         Box::pin(make())
     }
 
+    fn fixture_node_drain_timeout() -> Duration {
+        // ListenerInventory drains connections, then HTTP/2 stream owners, each
+        // with its configured finite budget. Leave a separate bounded window
+        // for the runtime's actual Raft/storage/audit owners after those joins.
+        ListenerLimits::default().drain_timeout.saturating_mul(2) + Duration::from_secs(15)
+    }
+
     async fn replicated_runtime_fixture_inner(
         with_spare: bool,
         bootstrap_fault: Option<BootstrapFault>,
         fenced_source: bool,
         protected_prepare_only: bool,
         initial_start_only: bool,
+        restart_initial_inspection: Option<u64>,
     ) {
         #[cfg(test)]
         let fixture_started = std::time::Instant::now();
@@ -4674,13 +4672,6 @@ mod lifecycle_tests {
                 settings.endpoint = kms_endpoint.clone();
                 settings.ca_certificate = Some(mock_files.certificate.clone());
             }
-            config.backup_destinations.insert(
-                "primary".into(),
-                crate::administration::DestinationConfig::Filesystem {
-                    directory: dir.path().join("persistent/backups"),
-                    max_bytes: 32 << 20,
-                },
-            );
             if node == 2 {
                 match bootstrap_fault {
                     Some(BootstrapFault::ControlPolicy) => {
@@ -4700,6 +4691,20 @@ mod lifecycle_tests {
                 fixture_stage!("node {node}: configuring recovery credentials");
                 fixture_operation(|| recovery.configure(&mut config, node)).await;
                 fixture_stage!("node {node}: recovery credentials configured");
+                let destination = fixture_operation(|| {
+                    crate::backup_destination_installation::enroll_with_storage(
+                        config.clone(),
+                        crate::backup_destination_installation::EnrollmentRequest {
+                            format: 1,
+                            destination: "primary".into(),
+                            directory: dir.path().join(format!("persistent/backups-node-{}", node + 1)),
+                            max_bytes: 32 << 20,
+                            namespace_id: Uuid::new_v4(),
+                        },
+                        storage.clone(),
+                    )
+                }).await.unwrap();
+                config.backup_destinations.insert("primary".into(), destination.configuration);
                 if fenced_source && node == 0 {
                     // Keep a distinct application credential path so a failed
                     // key-provider construction is observable on the reopen.
@@ -5537,7 +5542,7 @@ mod lifecycle_tests {
                 stop.send_replace(true);
             }
             for task in tasks {
-                tokio::time::timeout(Duration::from_secs(15), task)
+                tokio::time::timeout(fixture_node_drain_timeout(), task)
                     .await
                     .unwrap()
                     .unwrap()
@@ -5688,6 +5693,14 @@ mod lifecycle_tests {
             )
             .await;
         fixture_stage!("recovery targets installed");
+        if let Some(observer) = restart_initial_inspection {
+            fixture_stage!("checking expired Initialize after owned target restart");
+            fixture_operation(|| {
+                recovery.assert_expired_initialize_after_target_restart(&recovery_handles, observer)
+            })
+            .await;
+            fixture_stage!("expired Initialize after owned target restart checked");
+        }
         if protected_prepare_only || initial_start_only {
             // A separate installed three-node point-status acceptance case:
             // observe Prepare or resolve lost Start and Initialize replies
@@ -5707,7 +5720,7 @@ mod lifecycle_tests {
                 stop.send_replace(true);
             }
             for task in tasks {
-                tokio::time::timeout(Duration::from_secs(15), task)
+                tokio::time::timeout(fixture_node_drain_timeout(), task)
                     .await
                     .unwrap()
                     .unwrap()
@@ -5741,16 +5754,14 @@ mod lifecycle_tests {
             fixture_stage!("retained source status completed");
             assert_eq!(
                 retained_source_response["incarnation"],
-                databases[leader]
-                    .engine()
-                    .generation()
-                    .unwrap()
-                    .state
-                    .incarnation
+                source_incarnation.to_string()
             );
             source_release.check_release().unwrap();
             fixture_stage!("starting recovery");
-            fixture_operation(|| recovery.recover(&cluster_networks)).await;
+            fixture_operation(|| {
+                recovery.recover(&cluster_networks, restart_initial_inspection.is_some())
+            })
+            .await;
             fixture_stage!("recovery completed");
             fixture_operation(|| recovery.assert_protected_status(&configurations)).await;
             // Keep the exact pre-activation database selection and request clock.
@@ -5891,12 +5902,17 @@ mod lifecycle_tests {
         for stop in &stops {
             stop.send_replace(true);
         }
-        for task in tasks {
-            tokio::time::timeout(Duration::from_secs(15), task)
+        for (index, task) in tasks.into_iter().enumerate() {
+            let draining = std::time::Instant::now();
+            tokio::time::timeout(fixture_node_drain_timeout(), task)
                 .await
                 .unwrap()
                 .unwrap()
                 .unwrap();
+            fixture_stage!(
+                "original node {index} owners joined in {:?}",
+                draining.elapsed()
+            );
         }
         for database in databases {
             assert!(database.engine().generation().is_err());
@@ -6203,7 +6219,7 @@ mod lifecycle_tests {
             stop.send_replace(true);
         }
         for task in second_tasks {
-            tokio::time::timeout(Duration::from_secs(15), task)
+            tokio::time::timeout(fixture_node_drain_timeout(), task)
                 .await
                 .unwrap()
                 .unwrap()

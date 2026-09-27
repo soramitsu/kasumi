@@ -183,7 +183,6 @@ pub(crate) struct InstalledSignerVerifier {
     node: Arc<NodeStore>,
     store: Arc<TenantStore>,
     // Captured from the checked encrypted installation record, never config.
-    #[allow(dead_code, reason = "retained for G05 installed destination handoff")]
     installed_identity: TrustVerifierIdentity,
     owners: BTreeMap<String, Arc<LiveSignerTrust>>,
     administrator: Arc<ScopedSignerAdministrator>,
@@ -192,7 +191,6 @@ pub(crate) struct InstalledSignerVerifier {
 impl InstalledSignerVerifier {
     /// Only the live verifier on this exact installed disk may supply the
     /// replicated physical owner to destination opening.
-    #[allow(dead_code, reason = "retained for G05 installed destination handoff")]
     pub(crate) fn identity_for(
         &self,
         disk: &Arc<kasumi_store::NodeDisk>,

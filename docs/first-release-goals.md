@@ -1355,8 +1355,14 @@ case passes **1/1**, target-journal cases **18/18**, and custody cases **4/4**;
 the [release ledger](production-release.md) records their precise scope and
 retained evidence. The subsequent existing full native recovery fixture also
 passes **1/1**, reaching durable Finished and preserving replacement routing and
-activation facts across drain/reopen. Crash/expiry cases, exact deletion and the
-frozen release cohort remain open. The following paragraphs record earlier
+activation facts across drain/reopen. A subsequent explicit read-only initial
+membership inspection passes **1/1 in 453.44 seconds** through actual target
+shutdown/reopen, original phase expiry, fresh signed causal resolution, Finished
+and ordinary serving reopen. Original execution markers and caps remain unchanged;
+replacement children cannot initialize or propose application changes. This is
+local development evidence. OS process crashes at all pending boundaries,
+non-designated leader inspection, nine-process HA, exact deletion and the frozen
+release cohort remain open. The following paragraphs record earlier
 prerequisite checkpoints;
 their descriptions of dormant receiver wiring are historical.
 

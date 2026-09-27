@@ -1201,11 +1201,25 @@ async fn initialize_owned(
         config.database_id = installation.database_id;
         config.scratch_disk.directory = directory.join("scratch");
         config.persistent_disk = persistent_config.clone();
+        // First installation owns the original initialization record and lock.
+        // Enroll a fresh child below the accounting root and retain its actual
+        // observed marker identity in the published configuration.
+        let backup_directory = directory.join("backups/local");
+        let backup = kasumi_store::FilesystemBackupDestination::enroll(
+            &backup_directory,
+            kasumi_store::MAX_BACKUP_BUNDLE_BYTES,
+            persistent_disk.clone(),
+            &TrustVerifierIdentity { installation_id, node_id: STANDALONE_ORIGIN_NODE_ID },
+            Uuid::new_v4(),
+        )?;
+        let namespace_binding = kasumi_store::BackupDestination::namespace_binding(&backup)?;
+        drop(backup);
         config.backup_destinations = std::collections::BTreeMap::from([(
             "local".into(),
             crate::administration::DestinationConfig::Filesystem {
-                directory: directory.join("backups"),
+                directory: backup_directory,
                 max_bytes: kasumi_store::MAX_BACKUP_BUNDLE_BYTES,
+                namespace_binding,
             },
         )]);
         config.auth = AuthConfig {

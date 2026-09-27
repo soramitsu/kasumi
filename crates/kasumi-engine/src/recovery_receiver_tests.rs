@@ -17,14 +17,20 @@ fn retained(
             LifecyclePhase::Materialize | LifecyclePhase::ResumeMaterialize => {
                 RecoveryPhase::Materialize
             }
-            LifecyclePhase::Initialize => RecoveryPhase::Initialize,
+            LifecyclePhase::Initialize | LifecyclePhase::InspectInitialMembership => {
+                RecoveryPhase::Initialize
+            }
             _ => RecoveryPhase::Complete,
         },
         RecoveryDispatch::Target { request, .. } => match request.step {
             TargetRuntimeStep::Materialize(_) | TargetRuntimeStep::ResumeMaterialization(_) => {
                 RecoveryPhase::Materialize
             }
-            TargetRuntimeStep::Initialize(_) => RecoveryPhase::Initialize,
+            TargetRuntimeStep::Initialize(_)
+            | TargetRuntimeStep::Start(TargetReplicaInput::Quorum(_))
+            | TargetRuntimeStep::Start(TargetReplicaInput::InitialMembershipStatus(_))
+            | TargetRuntimeStep::InspectInitialAssociation(_)
+            | TargetRuntimeStep::InspectInitialMembership(_) => RecoveryPhase::Initialize,
             _ => RecoveryPhase::Complete,
         },
         _ => RecoveryPhase::Complete,
@@ -219,6 +225,9 @@ fn fixture_state() -> (TenantState, RecoveryRecord, TargetCompletionAttempt) {
         current_intent: None,
         materialization_intent: Some(r.command_id),
         initialization: None,
+        initialization_attempt: None,
+        initialization_starts: BTreeMap::new(),
+        initialization_association: None,
         completion_intent: Some(attempt.intent.request.command_id),
         completion_predecessor: None,
         completion_preparation_attempt: Some(Uuid::from_u128(610)),
@@ -324,6 +333,843 @@ fn fixture_state() -> (TenantState, RecoveryRecord, TargetCompletionAttempt) {
     );
     operation.pending_phase = Some(first.phase_id);
     (state, operation, attempt)
+}
+
+// These are deterministic reducer fixtures, not native process-crash evidence.
+mod initial_membership_inspection_tests {
+    use super::*;
+    use crate::state::recovery::{self, initial_inspection as inspection};
+
+    fn pending() -> (
+        TenantState,
+        RecoveryRecord,
+        TargetInitialMembershipStatusInput,
+    ) {
+        let (mut state, mut operation, _) = fixture_state();
+        let id = operation.initialization.take().unwrap();
+        let mut initialize = phase(&state, &operation, id).unwrap().clone();
+        let RecoveryDispatch::Target { request, .. } = &initialize.input else {
+            unreachable!()
+        };
+        let command_id = request.command_id;
+        let TargetRuntimeStep::Initialize(quorum) = &request.step else {
+            unreachable!()
+        };
+        let quorum = quorum.clone();
+        operation.phase = RecoveryPhase::Initialize;
+        operation.current_intent = Some(command_id);
+        operation.pending_phase = Some(id);
+        operation.last_phase = Some(id);
+        operation.initialization_attempt = Some(id);
+        operation.completion_intent = None;
+        operation.completion_preparation_attempt = None;
+        for node in 1..=3 {
+            let start_id = Uuid::from_u128(2000 + node as u128);
+            let start = retained(
+                &mut state,
+                &operation,
+                start_id,
+                RecoveryDispatch::Target {
+                    node_id: node,
+                    request: Box::new(TargetRuntimeRequest {
+                        tenant: operation.request.tenant.clone(),
+                        command_id,
+                        not_after_ms: 490,
+                        step: TargetRuntimeStep::Start(TargetReplicaInput::Quorum(quorum.clone())),
+                    }),
+                },
+                Some(RecoveryDispatchOutcome::Target(Box::new(
+                    TargetRuntimeResponse {
+                        node_id: node,
+                        command_id,
+                        outcome: TargetRuntimeOutcome::Started {
+                            origin_sha256: quorum.origin_sha256.clone(),
+                        },
+                    },
+                ))),
+                20 + node,
+            );
+            operation.initialization_starts.insert(node, start_id);
+            operation.voters.get_mut(&node).unwrap().started = Some(start_id);
+            initialize.previous_phase = Some(start.phase_id);
+        }
+        initialize.sequence = 30;
+        initialize.prepared_revision = 30;
+        initialize
+            .effect_attempts
+            .get_mut(&RecoveryEffect::TargetCommand)
+            .unwrap()
+            .begun_revision = 31;
+        initialize.outcome = None;
+        initialize.resolved_revision = None;
+        initialize.validate().unwrap();
+        state
+            .recovery_control
+            .phases
+            .insert(id.to_string(), initialize);
+        let input = inspection::status_input(&state, &operation).unwrap();
+        inspection::validate_progress(&state, &operation).unwrap();
+        (state, operation, input)
+    }
+
+    fn association(
+        input: &TargetInitialMembershipStatusInput,
+        current: &LifecycleIntent,
+    ) -> SignedTargetInitialMembershipAssociation {
+        let observation = TargetInitialMembershipAssociationObservation {
+            input: input.clone(),
+            status_intent: current.clone(),
+            first_fact_sha256: "ab".repeat(32),
+            first_log_index: 1,
+            original_node_id: 1,
+        };
+        SignedTargetInitialMembershipAssociation {
+            signature: fixture::sign(
+                &observation,
+                "kasumi.target-initial-membership-association-observation.v1",
+                1,
+            ),
+            observation,
+        }
+    }
+
+    fn associated() -> (
+        TenantState,
+        RecoveryRecord,
+        LifecycleIntent,
+        SignedTargetInitialMembershipAssociation,
+    ) {
+        let (mut state, mut operation, input) = pending();
+        let current = fixture::intent(
+            &origin(&state, &operation).unwrap(),
+            LifecyclePhase::InspectInitialMembership,
+            input.digest().unwrap(),
+            40,
+            1000,
+            3000,
+        );
+        control(&mut state, &operation, current.clone());
+        operation.current_intent = Some(current.request.command_id);
+        operation.pending_phase = None;
+        for node in 1..=3 {
+            let dispatch = inspection::next(&state, &operation, &current, 1100, 3000).unwrap();
+            let record = retained(
+                &mut state,
+                &operation,
+                Uuid::from_u128(2400 + node as u128),
+                dispatch,
+                Some(RecoveryDispatchOutcome::Target(Box::new(
+                    TargetRuntimeResponse {
+                        node_id: node,
+                        command_id: current.request.command_id,
+                        outcome: TargetRuntimeOutcome::Started {
+                            origin_sha256: input.quorum.origin_sha256.clone(),
+                        },
+                    },
+                ))),
+                45 + node,
+            );
+            operation.voters.get_mut(&node).unwrap().started = Some(record.phase_id);
+        }
+        let signed = association(&input, &current);
+        let dispatch = inspection::next(&state, &operation, &current, 1100, 3000).unwrap();
+        let record = retained(
+            &mut state,
+            &operation,
+            Uuid::from_u128(2490),
+            dispatch,
+            Some(RecoveryDispatchOutcome::Target(Box::new(
+                TargetRuntimeResponse {
+                    node_id: 1,
+                    command_id: current.request.command_id,
+                    outcome: TargetRuntimeOutcome::InitialMembershipAssociation(Box::new(
+                        signed.clone(),
+                    )),
+                },
+            ))),
+            50,
+        );
+        operation.initialization_association = Some(record.phase_id);
+        inspection::validate_progress(&state, &operation).unwrap();
+        (state, operation, current, signed)
+    }
+
+    fn authorization(state: &TenantState, now: u64) -> recovery::RecoveryAuthorization {
+        recovery::RecoveryAuthorization {
+            context: RequestContext {
+                tenant: state.tenant.clone(),
+                principal: "operator".into(),
+                scopes: BTreeSet::from([Action::Admin]),
+                request_id: "initial-inspection".into(),
+                authorization: RequestAuthorization::service_identity(),
+            },
+            policy_epoch: state.policy_epoch,
+            admitted_at_ms: now,
+            expires_at_ms: 3000,
+        }
+    }
+
+    #[test]
+    fn initial_begin_effect_freezes_one_attempt_and_three_original_start_references() {
+        let (mut state, mut operation, input) = pending();
+        operation.initialization_attempt = None;
+        operation.initialization_starts.clear();
+        state
+            .recovery_control
+            .phases
+            .get_mut(&input.initialize.phase_id.to_string())
+            .unwrap()
+            .effect_attempts
+            .clear();
+        state.recovery_control.operations.insert(
+            operation.request.operation_id.to_string(),
+            operation.clone(),
+        );
+        state.revision = 101;
+        let attempt_id = Uuid::new_v4();
+        let command = recovery::RecoveryCommand {
+            authorization: authorization(&state, 200),
+            mutation: recovery::RecoveryMutation::BeginEffect {
+                operation_id: operation.request.operation_id,
+                phase_id: input.initialize.phase_id,
+                effect: RecoveryEffect::TargetCommand,
+                attempt_id,
+                expected_input_sha256: input.initialize.input_sha256.clone(),
+            },
+        };
+        let marked = recovery::apply(&mut state, &command).unwrap();
+        assert_eq!(
+            marked.initialization_attempt,
+            Some(input.initialize.phase_id)
+        );
+        for (node, original) in input.starts {
+            assert_eq!(marked.initialization_starts[&node], original.phase_id);
+        }
+        let frozen = inspection::status_input(&state, &marked).unwrap();
+        assert_eq!(frozen.identity().unwrap().attempt_id, attempt_id);
+        let previous = state.recovery_control.clone();
+        assert!(recovery::apply(&mut state, &command).is_err());
+        assert_eq!(state.recovery_control, previous);
+    }
+
+    #[test]
+    fn expired_begun_initialize_admits_only_exact_fresh_inspection() {
+        let (state, operation, input) = pending();
+        assert!(
+            !inspection::may_inspect_pending(&state, &operation, &input.initialize, 499).unwrap()
+        );
+        assert!(
+            inspection::may_inspect_pending(&state, &operation, &input.initialize, 500).unwrap()
+        );
+        for (now, kind, pass) in [
+            (499, LifecyclePhase::InspectInitialMembership, false),
+            (500, LifecyclePhase::Initialize, false),
+            (500, LifecyclePhase::InspectInitialMembership, true),
+        ] {
+            let mut candidate = state.clone();
+            candidate.revision = 101;
+            candidate.recovery_control.operations.insert(
+                operation.request.operation_id.to_string(),
+                operation.clone(),
+            );
+            let id = Uuid::new_v4();
+            let intent =
+                recovery::expected_intent(&candidate, &operation, id, state.policy_epoch, kind)
+                    .unwrap();
+            let command = recovery::RecoveryCommand {
+                authorization: authorization(&candidate, now),
+                mutation: recovery::RecoveryMutation::Prepare {
+                    operation_id: operation.request.operation_id,
+                    phase_id: id,
+                    expected_sequence: operation.next_phase_sequence,
+                    expected_pending: operation.pending_phase,
+                    input: Box::new(RecoveryDispatch::ControlIntent(Box::new(intent))),
+                },
+            };
+            let result = recovery::apply(&mut candidate, &command);
+            assert_eq!(result.is_ok(), pass, "{result:?}");
+            assert_eq!(
+                phase(&candidate, &operation, input.initialize.phase_id).unwrap(),
+                &input.initialize
+            );
+            if pass {
+                let continued = result.unwrap();
+                assert_eq!(
+                    continued.initialization_attempt,
+                    operation.initialization_attempt
+                );
+                assert_eq!(
+                    continued.initialization_starts,
+                    operation.initialization_starts
+                );
+                assert_eq!(continued.pending_phase, Some(id));
+            }
+        }
+    }
+
+    #[test]
+    fn expired_marked_initial_inspection_admits_only_fresh_inspection_of_same_original() {
+        for startup in [true, false] {
+            let (mut state, mut operation, input) = pending();
+            let original = input.initialize.clone();
+            let current = fixture::intent(
+                &origin(&state, &operation).unwrap(),
+                LifecyclePhase::InspectInitialMembership,
+                input.digest().unwrap(),
+                40,
+                1000,
+                3000,
+            );
+            control(&mut state, &operation, current.clone());
+            operation.current_intent = Some(current.request.command_id);
+            let step = if startup {
+                TargetRuntimeStep::Start(TargetReplicaInput::InitialMembershipStatus(Box::new(
+                    input.clone(),
+                )))
+            } else {
+                TargetRuntimeStep::InspectInitialAssociation(Box::new(input.clone()))
+            };
+            let pending_id = Uuid::new_v4();
+            let mut marked = retained(
+                &mut state,
+                &operation,
+                pending_id,
+                RecoveryDispatch::Target {
+                    node_id: 1,
+                    request: Box::new(TargetRuntimeRequest {
+                        tenant: operation.request.tenant.clone(),
+                        command_id: current.request.command_id,
+                        not_after_ms: 1500,
+                        step,
+                    }),
+                },
+                None,
+                50,
+            );
+            marked.effect_attempts.insert(
+                RecoveryEffect::TargetCommand,
+                RecoveryEffectAttempt {
+                    attempt_id: Uuid::new_v4(),
+                    input_sha256: marked.input_sha256.clone(),
+                    admitted_at_ms: 1100,
+                    begun_revision: 51,
+                },
+            );
+            marked.validate().unwrap();
+            state
+                .recovery_control
+                .phases
+                .insert(pending_id.to_string(), marked.clone());
+            operation.pending_phase = Some(pending_id);
+            operation.last_phase = Some(pending_id);
+            state.revision = 101;
+            state.recovery_control.operations.insert(
+                operation.request.operation_id.to_string(),
+                operation.clone(),
+            );
+            assert!(!inspection::may_inspect_pending(&state, &operation, &marked, 1499).unwrap());
+            assert!(inspection::may_inspect_pending(&state, &operation, &marked, 1500).unwrap());
+            for kind in [
+                LifecyclePhase::Initialize,
+                LifecyclePhase::InspectInitialMembership,
+            ] {
+                let mut candidate = state.clone();
+                let phase_id = Uuid::new_v4();
+                let intent = recovery::expected_intent(
+                    &candidate,
+                    &operation,
+                    phase_id,
+                    state.policy_epoch,
+                    kind,
+                )
+                .unwrap();
+                let command = recovery::RecoveryCommand {
+                    authorization: authorization(&candidate, 1500),
+                    mutation: recovery::RecoveryMutation::Prepare {
+                        operation_id: operation.request.operation_id,
+                        phase_id,
+                        expected_sequence: operation.next_phase_sequence,
+                        expected_pending: Some(pending_id),
+                        input: Box::new(RecoveryDispatch::ControlIntent(Box::new(intent))),
+                    },
+                };
+                let result = recovery::apply(&mut candidate, &command);
+                assert_eq!(
+                    result.is_ok(),
+                    kind == LifecyclePhase::InspectInitialMembership,
+                    "{result:?}"
+                );
+                assert_eq!(phase(&candidate, &operation, pending_id).unwrap(), &marked);
+                assert_eq!(
+                    phase(&candidate, &operation, original.phase_id).unwrap(),
+                    &original
+                );
+            }
+            let mut substituted = marked.clone();
+            let RecoveryDispatch::Target { request, .. } = &mut substituted.input else {
+                unreachable!()
+            };
+            let substituted_input = match &mut request.step {
+                TargetRuntimeStep::Start(TargetReplicaInput::InitialMembershipStatus(input))
+                | TargetRuntimeStep::InspectInitialAssociation(input) => input,
+                _ => unreachable!(),
+            };
+            substituted_input
+                .initialize
+                .effect_attempts
+                .get_mut(&RecoveryEffect::TargetCommand)
+                .unwrap()
+                .attempt_id = Uuid::new_v4();
+            substituted.input_sha256 = staged_digest(&substituted.input).unwrap().0;
+            substituted
+                .effect_attempts
+                .get_mut(&RecoveryEffect::TargetCommand)
+                .unwrap()
+                .input_sha256 = substituted.input_sha256.clone();
+            substituted.validate().unwrap();
+            assert!(
+                inspection::may_inspect_pending(&state, &operation, &substituted, 1500).is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn initial_inspection_starts_three_voters_and_resolves_original_by_typed_causal_link() {
+        let (mut state, mut operation, input) = pending();
+        let original = input.initialize.clone();
+        let current = fixture::intent(
+            &origin(&state, &operation).unwrap(),
+            LifecyclePhase::InspectInitialMembership,
+            input.digest().unwrap(),
+            40,
+            1000,
+            3000,
+        );
+        control(&mut state, &operation, current.clone());
+        operation.current_intent = Some(current.request.command_id);
+        operation.pending_phase = None;
+        for node in 1..=3 {
+            let dispatch = inspection::next(&state, &operation, &current, 1100, 3000).unwrap();
+            let RecoveryDispatch::Target { node_id, request } = &dispatch else {
+                unreachable!()
+            };
+            assert_eq!(*node_id, node);
+            assert!(matches!(
+                request.step,
+                TargetRuntimeStep::Start(TargetReplicaInput::InitialMembershipStatus(_))
+            ));
+            inspection::validate_step(&state, &operation, &current, node, request, true).unwrap();
+            let response = TargetRuntimeResponse {
+                node_id: node,
+                command_id: current.request.command_id,
+                outcome: TargetRuntimeOutcome::Started {
+                    origin_sha256: input.quorum.origin_sha256.clone(),
+                },
+            };
+            let started = retained(
+                &mut state,
+                &operation,
+                Uuid::from_u128(2100 + node as u128),
+                dispatch,
+                Some(RecoveryDispatchOutcome::Target(Box::new(response.clone()))),
+                45 + node,
+            );
+            inspection::validate_outcome(&state, &operation, &started, &response).unwrap();
+            operation.voters.get_mut(&node).unwrap().started = Some(started.phase_id);
+            assert_eq!(inspection::status_input(&state, &operation).unwrap(), input);
+        }
+        let dispatch = inspection::next(&state, &operation, &current, 1100, 3000).unwrap();
+        let RecoveryDispatch::Target { node_id, request } = &dispatch else {
+            unreachable!()
+        };
+        assert_eq!(*node_id, 1);
+        assert!(matches!(
+            request.step,
+            TargetRuntimeStep::InspectInitialAssociation(_)
+        ));
+        inspection::validate_step(&state, &operation, &current, 1, request, true).unwrap();
+        assert!(inspection::validate_step(&state, &operation, &current, 2, request, true).is_err());
+        let association = association(&input, &current);
+        let response = TargetRuntimeResponse {
+            node_id: 1,
+            command_id: current.request.command_id,
+            outcome: TargetRuntimeOutcome::InitialMembershipAssociation(Box::new(
+                association.clone(),
+            )),
+        };
+        let associated = retained(
+            &mut state,
+            &operation,
+            Uuid::from_u128(2190),
+            dispatch,
+            Some(RecoveryDispatchOutcome::Target(Box::new(response.clone()))),
+            50,
+        );
+        inspection::validate_outcome(&state, &operation, &associated, &response).unwrap();
+        operation.initialization_association = Some(associated.phase_id);
+        inspection::validate_progress(&state, &operation).unwrap();
+        let first = inspection::next(&state, &operation, &current, 1100, 3000).unwrap();
+        let RecoveryDispatch::Target { node_id, request } = &first else {
+            unreachable!()
+        };
+        assert_eq!(*node_id, 1);
+        assert!(matches!(
+            request.step,
+            TargetRuntimeStep::InspectInitialMembership(_)
+        ));
+        inspection::validate_step(&state, &operation, &current, 2, request, true).unwrap();
+        let dispatch = RecoveryDispatch::Target {
+            node_id: 2,
+            request: request.clone(),
+        };
+        let observation = TargetInitialMembershipStatusObservation {
+            association,
+            input: input.clone(),
+            status_intent: current.clone(),
+            first_fact_sha256: "ab".repeat(32),
+            first_log_index: 1,
+            applied_log_index: 4,
+            committed_log_index: 4,
+            observer_node_id: 2,
+            observed_term: 2,
+        };
+        let signed = SignedTargetInitialMembershipStatus {
+            signature: fixture::sign(
+                &observation,
+                "kasumi.target-initial-membership-status-observation.v1",
+                2,
+            ),
+            observation,
+        };
+        let response = TargetRuntimeResponse {
+            node_id: 2,
+            command_id: current.request.command_id,
+            outcome: TargetRuntimeOutcome::InitialMembershipStatus(Box::new(signed)),
+        };
+        let observed = retained(
+            &mut state,
+            &operation,
+            Uuid::from_u128(2200),
+            dispatch,
+            Some(RecoveryDispatchOutcome::Target(Box::new(response.clone()))),
+            52,
+        );
+        inspection::validate_outcome(&state, &operation, &observed, &response).unwrap();
+        state.revision = 53;
+        inspection::resolve_original(&mut state, &operation, &observed).unwrap();
+        operation.initialization = Some(observed.phase_id);
+        quorum::established(&state, &operation).unwrap();
+        let resolved = phase(&state, &operation, original.phase_id).unwrap();
+        assert_eq!(resolved.input, original.input);
+        assert_eq!(resolved.effect_attempts, original.effect_attempts);
+        assert_eq!(
+            resolved.original_credential_expires_at_ms,
+            original.original_credential_expires_at_ms
+        );
+        assert_eq!(
+            resolved.outcome,
+            Some(RecoveryDispatchOutcome::InitialMembershipObserved {
+                inspection_phase: observed.phase_id
+            })
+        );
+        assert_eq!(inspection::status_input(&state, &operation).unwrap(), input);
+        assert!(inspection::resolve_original(&mut state, &operation, &observed).is_err());
+        let mut changed = state.clone();
+        changed
+            .recovery_control
+            .phases
+            .get_mut(&original.phase_id.to_string())
+            .unwrap()
+            .resolved_revision = Some(54);
+        assert!(quorum::established(&changed, &operation).is_err());
+    }
+
+    #[test]
+    fn initial_inspection_rejects_missing_or_substituted_original_evidence() {
+        let (state, operation, input) = pending();
+        for change in 0..4 {
+            let mut changed = input.clone();
+            match change {
+                0 => {
+                    changed.starts.remove(&3);
+                }
+                1 => {
+                    changed.starts.get_mut(&1).unwrap().effect_attempts.clear();
+                }
+                2 => {
+                    changed
+                        .initialize
+                        .effect_attempts
+                        .get_mut(&RecoveryEffect::TargetCommand)
+                        .unwrap()
+                        .attempt_id = Uuid::new_v4();
+                }
+                _ => {
+                    changed.initialize.input_sha256 = "cd".repeat(32);
+                }
+            }
+            let current = fixture::intent(
+                &origin(&state, &operation).unwrap(),
+                LifecyclePhase::InspectInitialMembership,
+                input.digest().unwrap(),
+                40,
+                1000,
+                3000,
+            );
+            let request = TargetRuntimeRequest {
+                tenant: operation.request.tenant.clone(),
+                command_id: current.request.command_id,
+                not_after_ms: 1500,
+                step: TargetRuntimeStep::InspectInitialAssociation(Box::new(changed)),
+            };
+            assert!(
+                inspection::validate_step(&state, &operation, &current, 1, &request, false)
+                    .is_err()
+            );
+        }
+        assert!(
+            serde_json::from_value::<SignedTargetInitialMembershipStatus>(
+                serde_json::json!({"absent":true})
+            )
+            .is_err()
+        );
+        let original = state
+            .lifecycle_control
+            .as_ref()
+            .unwrap()
+            .intents
+            .get(&input.original_intent.request.command_id)
+            .unwrap();
+        let RecoveryDispatch::Target { node_id, request } = &input.initialize.input else {
+            unreachable!()
+        };
+        assert!(
+            quorum::validate_quorum_step(
+                &state,
+                &operation,
+                original,
+                *node_id,
+                &request.step,
+                RecoveryPhase::Initialize,
+                true
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn initial_inspection_head_requires_current_explicit_history_fields() {
+        let (mut state, operation, _) = pending();
+        for field in [
+            "initialization_attempt",
+            "initialization_starts",
+            "initialization_association",
+        ] {
+            let mut encoded = serde_json::to_value(&operation).unwrap();
+            encoded.as_object_mut().unwrap().remove(field);
+            assert!(serde_json::from_value::<RecoveryRecord>(encoded).is_err());
+        }
+        state.recovery_control.operations.insert(
+            operation.request.operation_id.to_string(),
+            operation.clone(),
+        );
+        for substitute_starts in [false, true] {
+            let mut incoming = state.clone();
+            let changed = incoming
+                .recovery_control
+                .operations
+                .get_mut(&operation.request.operation_id.to_string())
+                .unwrap();
+            if substitute_starts {
+                changed.initialization_starts.insert(1, Uuid::new_v4());
+            } else {
+                changed.initialization_attempt = Some(Uuid::new_v4());
+            }
+            let rejected = recovery::validate_successor(&state, &incoming).unwrap_err();
+            assert!(
+                rejected.message.contains("snapshot substituted"),
+                "{rejected}"
+            );
+        }
+        let mut missing = operation;
+        missing.initialization_starts.remove(&3);
+        assert!(missing.validate().is_err());
+    }
+
+    #[test]
+    fn initial_inspection_requires_retained_exact_current_association_before_final_read() {
+        let (state, operation, current, _) = associated();
+        let RecoveryDispatch::Target { request, .. } =
+            inspection::next(&state, &operation, &current, 1100, 3000).unwrap()
+        else {
+            unreachable!()
+        };
+        for change in 0..5 {
+            let mut candidate = state.clone();
+            let mut head = operation.clone();
+            let mut request = request.clone();
+            match change {
+                0 => {
+                    head.initialization_association = None;
+                }
+                1 => {
+                    candidate
+                        .recovery_control
+                        .phases
+                        .remove(&operation.initialization_association.unwrap().to_string());
+                }
+                2 => {
+                    let TargetRuntimeStep::InspectInitialMembership(association) =
+                        &mut request.step
+                    else {
+                        unreachable!()
+                    };
+                    association.observation.first_fact_sha256 = "cd".repeat(32);
+                    association.signature = fixture::sign(
+                        &association.observation,
+                        "kasumi.target-initial-membership-association-observation.v1",
+                        1,
+                    );
+                }
+                3 => {
+                    let TargetRuntimeStep::InspectInitialMembership(association) =
+                        &mut request.step
+                    else {
+                        unreachable!()
+                    };
+                    association.observation.status_intent.request.command_id = Uuid::new_v4();
+                    association.signature = fixture::sign(
+                        &association.observation,
+                        "kasumi.target-initial-membership-association-observation.v1",
+                        1,
+                    );
+                }
+                _ => {
+                    head.voters.get_mut(&2).unwrap().started = None;
+                }
+            }
+            assert!(
+                inspection::validate_step(&candidate, &head, &current, 2, &request, true).is_err(),
+                "{change}"
+            );
+        }
+        let mut head = operation;
+        head.initialization_association = Some(Uuid::new_v4());
+        assert!(inspection::validate_progress(&state, &head).is_err());
+    }
+
+    #[test]
+    fn initial_inspection_rotates_read_only_routes_with_exact_original_packet_and_cap() {
+        let (mut state, mut operation, current, _) = associated();
+        let dispatch = inspection::next(&state, &operation, &current, 1100, 3000).unwrap();
+        let mut pending = retained(
+            &mut state,
+            &operation,
+            Uuid::from_u128(2500),
+            dispatch,
+            None,
+            60,
+        );
+        pending.effect_attempts.insert(
+            RecoveryEffect::TargetCommand,
+            RecoveryEffectAttempt {
+                attempt_id: Uuid::new_v4(),
+                input_sha256: pending.input_sha256.clone(),
+                admitted_at_ms: 1100,
+                begun_revision: 61,
+            },
+        );
+        state
+            .recovery_control
+            .phases
+            .insert(pending.phase_id.to_string(), pending.clone());
+        operation.pending_phase = Some(pending.phase_id);
+        operation.last_phase = Some(pending.phase_id);
+        operation.next_phase_sequence = pending.sequence + 1;
+        state.revision = 100;
+        state.recovery_control.operations.insert(
+            operation.request.operation_id.to_string(),
+            operation.clone(),
+        );
+        assert_eq!(
+            inspection::retry_destination(&state, &operation, &pending, 1150).unwrap(),
+            Some(2)
+        );
+        let RecoveryDispatch::Target { request, .. } = &pending.input else {
+            unreachable!()
+        };
+        assert_eq!(
+            inspection::retry_destination(&state, &operation, &pending, request.not_after_ms)
+                .unwrap(),
+            None
+        );
+        for change in 0..4 {
+            let mut request = request.clone();
+            let node_id = if change == 3 { 9 } else { 2 };
+            if change == 1 {
+                request.not_after_ms += 1;
+            }
+            if change == 2 {
+                let TargetRuntimeStep::InspectInitialMembership(association) = &mut request.step
+                else {
+                    unreachable!()
+                };
+                association.observation.first_fact_sha256 = "cd".repeat(32);
+            }
+            let next = RecoveryDispatch::Target { node_id, request };
+            let command = recovery::RecoveryCommand {
+                authorization: authorization(&state, 1150),
+                mutation: recovery::RecoveryMutation::Prepare {
+                    operation_id: operation.request.operation_id,
+                    phase_id: Uuid::new_v4(),
+                    expected_sequence: operation.next_phase_sequence,
+                    expected_pending: operation.pending_phase,
+                    input: Box::new(next),
+                },
+            };
+            let mut candidate = state.clone();
+            let result = recovery::apply(&mut candidate, &command);
+            assert_eq!(result.is_ok(), change == 0, "{change}: {result:?}");
+            assert_eq!(
+                phase(&candidate, &operation, pending.phase_id).unwrap(),
+                &pending
+            );
+        }
+    }
+
+    #[test]
+    fn initial_association_head_resets_only_after_later_accepted_inspection_intent() {
+        let (mut state, operation, _, signed) = associated();
+        state.recovery_control.operations.insert(
+            operation.request.operation_id.to_string(),
+            operation.clone(),
+        );
+        let mut erased = state.clone();
+        erased
+            .recovery_control
+            .operations
+            .get_mut(&operation.request.operation_id.to_string())
+            .unwrap()
+            .initialization_association = None;
+        assert!(recovery::validate_successor(&state, &erased).is_err());
+        let mut incoming = state.clone();
+        let mut next = operation.clone();
+        let fresh = fixture::intent(
+            &origin(&state, &operation).unwrap(),
+            LifecyclePhase::InspectInitialMembership,
+            signed.observation.input.digest().unwrap(),
+            80,
+            3100,
+            5000,
+        );
+        control(&mut incoming, &next, fresh.clone());
+        next.current_intent = Some(fresh.request.command_id);
+        next.initialization_association = None;
+        inspection::validate_progress(&incoming, &next).unwrap();
+        inspection::validate_successor(&state, &incoming, &operation, &next).unwrap();
+        next.initialization_association = operation.initialization_association;
+        assert!(inspection::validate_progress(&incoming, &next).is_err());
+    }
 }
 fn observe(
     state: &mut TenantState,

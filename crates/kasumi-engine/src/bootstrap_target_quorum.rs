@@ -40,6 +40,11 @@ impl Drop for ClosePhaseOnDrop {
     }
 }
 impl TargetReplica {
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn test_has_initial_start_owner(&self) -> bool {
+        self.initial_start.is_some() && self.initial_start_owner.is_some()
+    }
+
     pub(crate) fn initial_start_prebind(
         &self,
     ) -> anyhow::Result<&kasumi_raft::TargetFirstMembershipPrebind> {
@@ -302,6 +307,7 @@ pub async fn open_target_replica(
                 | LifecyclePhase::ResolveComplete
                 | LifecyclePhase::MaintainTarget
                 | LifecyclePhase::Activate
+                | LifecyclePhase::InspectInitialMembership
                 | LifecyclePhase::InspectTarget
                 | LifecyclePhase::InspectCompletionAttempt
                 | LifecyclePhase::InspectCompletionResolution
@@ -380,6 +386,9 @@ pub async fn open_target_replica(
                             .clone();
                         origin.accepts_phase(&intent, phase)?;
                         match &requested_input {
+                            TargetReplicaInput::InitialMembershipStatus(input) => {
+                                input.validate(&origin, &intent)?;
+                            }
                             TargetReplicaInput::Inspection(inspection) => {
                                 inspection.validate(&origin, &intent)?;
                             }
@@ -411,6 +420,7 @@ pub async fn open_target_replica(
                                 && (matches!(
                                     phase,
                                     LifecyclePhase::Activate
+                                        | LifecyclePhase::InspectInitialMembership
                                         | LifecyclePhase::InspectTarget
                                         | LifecyclePhase::InspectCompletionAttempt
                                         | LifecyclePhase::InspectCompletionResolution

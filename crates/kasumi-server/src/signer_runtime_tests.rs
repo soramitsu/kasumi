@@ -102,6 +102,64 @@ async fn checked_replicated_installation_identity_requires_its_live_exact_disk()
     assert!(installed.identity_for(&disk).is_err());
 }
 
+#[tokio::test]
+async fn filesystem_backup_open_requires_original_encrypted_verifier_owner() {
+    use kasumi_store::{BackupDestination, FilesystemBackupDestination};
+    let fixture = Fixture::new();
+    fixture.initialize().await.unwrap();
+    InitializeSignerVerifier::drain_initializations()
+        .await
+        .unwrap();
+    let disk = fixture.persistent().unwrap();
+    let owner = fixture.open().await.unwrap();
+    let identity = owner.identity_for(&disk).unwrap();
+    let root = fixture
+        .input
+        .verifier
+        .database_path
+        .with_file_name("backups");
+    let enrolled = FilesystemBackupDestination::enroll(
+        &root,
+        1 << 20,
+        disk.clone(),
+        &identity,
+        Uuid::new_v4(),
+    )
+    .unwrap();
+    let binding = enrolled.namespace_binding().unwrap();
+    drop(enrolled);
+    let configured = crate::administration::DestinationConfig::Filesystem {
+        directory: root.clone(),
+        max_bytes: 1 << 20,
+        namespace_binding: binding.clone(),
+    };
+    let actual_owner = crate::backup_destination_installation::InstalledOwner::Replicated(&owner);
+    let opened = configured.open(disk.clone(), Some(&actual_owner)).unwrap();
+    assert_eq!(opened.namespace_binding().unwrap(), binding);
+    drop(opened);
+    let mut foreign = configured.clone();
+    let crate::administration::DestinationConfig::Filesystem {
+        namespace_binding:
+            kasumi_types::BackupNamespaceBinding::Filesystem {
+                installation_id, ..
+            },
+        ..
+    } = &mut foreign
+    else {
+        unreachable!()
+    };
+    *installation_id = Uuid::new_v4();
+    let marker = std::fs::read(root.join("kasumi-backup.marker")).unwrap();
+    assert!(foreign.open(disk.clone(), Some(&actual_owner)).is_err());
+    assert!(configured.open(disk.clone(), None).is_err());
+    owner.shutdown().await.unwrap();
+    assert!(configured.open(disk, Some(&actual_owner)).is_err());
+    assert_eq!(
+        std::fs::read(root.join("kasumi-backup.marker")).unwrap(),
+        marker
+    );
+}
+
 struct Fixture {
     storage: crate::runtime_memory::RuntimeStorage,
     _directory: tempfile::TempDir,

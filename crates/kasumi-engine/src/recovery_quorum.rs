@@ -107,6 +107,11 @@ pub(crate) fn validate_quorum_step(
                 && actual == &input
                 && operation.voters.keys().next() == Some(&node_id) =>
         {
+            if admission && operation.initialization_attempt.is_some() {
+                return Err(conflict(
+                    "Initialize already has its single original dispatch marker",
+                ));
+            }
             if admission && !all_started(state, operation, current.request.command_id)? {
                 return Err(conflict(
                     "initialization requires every target started under this exact phase",
@@ -162,6 +167,23 @@ pub(crate) fn established(state: &TenantState, operation: &RecoveryRecord) -> Re
             "established target initialization evidence differs",
         ));
     };
+    if matches!(
+        response.outcome,
+        TargetRuntimeOutcome::InitialMembershipStatus(_)
+    ) {
+        initial_inspection::validate_outcome(state, operation, retained, response)?;
+        let original_id = operation
+            .initialization_attempt
+            .ok_or_else(|| conflict("observed initialization lacks original attempt"))?;
+        let original = phase(state, operation, original_id)?;
+        if !matches!(original.outcome, Some(RecoveryDispatchOutcome::InitialMembershipObserved { inspection_phase }) if inspection_phase == retained.phase_id)
+        {
+            return Err(conflict(
+                "observed initialization lacks exact causal original link",
+            ));
+        }
+        return initial_inspection::validate_link(state, operation, original, retained.phase_id);
+    }
     let (TargetRuntimeStep::Initialize(input), TargetRuntimeOutcome::Initialized { origin_sha256 }) =
         (&request.step, &response.outcome)
     else {
@@ -182,6 +204,7 @@ pub(crate) fn established_start(step: &TargetRuntimeStep) -> bool {
         step,
         TargetRuntimeStep::Start(
             TargetReplicaInput::Completion(_)
+                | TargetReplicaInput::InitialMembershipStatus(_)
                 | TargetReplicaInput::CompletionAttemptStatus(_)
                 | TargetReplicaInput::CompletionTerminalStatus(_)
                 | TargetReplicaInput::CompletionResolution(_)

@@ -1,0 +1,49 @@
+    Checking indexmap v2.14.1
+   Compiling serde_json v1.0.151 (/Users/takemiyamakoto/dev/kasumi/vendor/serde_json-1.0.151)
+   Compiling ring v0.17.14
+    Checking uuid v1.26.0
+    Checking axum-core v0.5.6
+    Checking tokio-stream v0.1.19
+    Checking tempfile v3.27.0
+   Compiling getrandom v0.4.3
+    Checking x509-parser v0.18.1
+    Checking chrono v0.4.45
+    Checking tracing-futures v0.2.5
+    Checking h2 v0.4.19
+    Checking tower v0.5.3
+    Checking serde_yaml_ng v0.10.0
+   Compiling prost-build v0.14.4
+    Checking hyper v1.11.1
+    Checking openraft v0.9.25 (/Users/takemiyamakoto/dev/kasumi/vendor/openraft-0.9.25/openraft)
+    Checking kasumi-types v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-types)
+   Compiling rustls v0.23.43
+    Checking lindera-dictionary v5.3.0
+    Checking tantivy-query-grammar v0.26.0
+    Checking jsonschema-value v0.52.1
+    Checking referencing v0.52.1
+   Compiling tonic-prost-build v0.14.6
+    Checking axum v0.8.9
+    Checking tower-http v0.6.11
+   Compiling kasumi-client v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-client)
+   Compiling rustls-webpki v0.103.15
+    Checking hyper-util v0.1.20
+    Checking jsonschema v0.52.1
+    Checking tantivy v0.26.1
+   Compiling ureq v3.4.0
+    Checking hyper-timeout v0.5.2
+    Checking tokio-rustls v0.26.5
+   Compiling lindera-ipadic v5.3.0
+    Checking tonic v0.14.6
+    Checking hyper-rustls v0.27.9
+    Checking reqwest v0.12.28
+    Checking kasumi-transport v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-transport)
+    Checking tonic-prost v0.14.6
+    Checking kasumi-serving v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-serving)
+    Checking kasumi-store v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-store)
+    Checking kasumi-raft v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-raft)
+    Checking lindera v5.3.0
+    Checking lindera-analysis v5.3.0
+    Checking lindera-tantivy v5.0.1
+    Checking kasumi-query v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-query)
+    Checking kasumi-engine v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-engine)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 21.47s
