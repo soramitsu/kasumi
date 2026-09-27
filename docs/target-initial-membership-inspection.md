@@ -80,7 +80,8 @@ for the original local association.
 
 An actual shutdown/reopen fixture is distinct from operating-system process
 crash qualification. The nine-process HA topology, phase-boundary crash matrix,
-immutable release qualification remain separate acceptance gates. The current
-other-leader native development fixture must pass before this source design is
-counted as executed evidence; retained earlier designated-leader results describe
-their own source checkpoints.
+immutable release qualification remain separate acceptance gates. The
+[other-leader native development fixture](evidence/g09-initial-inspection-leader-development-20260927/README.md)
+passes through Finished, actual owner drain and ordinary serving reopen in
+479.01 seconds. Retained earlier designated-leader results describe their own
+source checkpoints; neither result is a frozen release qualification.

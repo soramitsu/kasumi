@@ -612,11 +612,43 @@ identity assertions use the exact incarnation captured before backup. No
 production authority, dispatch cap or drain behavior was relaxed.
 
 This remains controlled target shutdown/reopen, not OS process-crash acceptance.
-Positive inspection currently requires the original designated Initialize voter
+At that checkpoint, positive inspection required the original designated Initialize voter
 to be the actual reopened quorum leader. Independent original-association
 resolution under another legitimate leader, the full pending-phase crash matrix,
 exact deletion, nine-process HA and a frozen qualified release remain open.
 G09 is not qualified by this development checkpoint.
+
+The subsequent **other-leader inspection checkpoint** separates the original
+node's fresh signed Initialize-to-Start association from the current leader's
+linearizable observation of the same first fact. The required Control
+association head and causal revision checks preserve exact originals; read
+routing carries the identical packet and cap across installed started nodes.
+No original execution marker, child authority or deadline is recreated.
+
+`three_runtime_nodes_inspect_expired_initialize_on_another_elected_leader`
+passes **1/1 in 479.01 seconds** on the recorded development executable. At
+209.49 seconds, actual elected node 2 supplies the positive observation tied to
+node 1's original association. The same run reaches Finished at 428.94 seconds,
+verifies source retirement and activation, joins the original owners and passes
+ordinary serving reopen. The new reducers pass **9/9** and the journal
+regressions **18/18**. The original lost Start/Initialize case passes **1/1 in
+75.92 seconds** on the identical server executable, for **29 distinct cases
+across four test commands**. Default production server compilation also passes after
+the separately required installed-owner filesystem destination cutover.
+
+The [other-leader record](evidence/g09-initial-inspection-leader-development-20260927/README.md)
+retains the first native stack-overflow failure, causal disassembly, the boxed
+future repair (about 208 KiB less across the two measured frames), and exact
+source/binary hashes. The passing test uses the normal worker stack. The
+42-file captured source inventory remained identical when HEAD changed
+externally during execution from `aa2343538` to `065e5719a`; that observation
+does not qualify either commit as an immutable release.
+
+The original designated custodian must still be reachable to retrieve its fresh
+association. Permanent loss before retrieval, the pending-phase OS crash
+matrix, nine-process HA, exact deletion and frozen release qualification remain
+open. The new native evidence proves controlled service/child shutdown and
+reopen under a different elected leader; **G09 remains unqualified**.
 
 The following independent G01/G02 checkpoints record registered storage and
 allocation progress, along with the still-held G03, G05 and G08 work.

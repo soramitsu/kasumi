@@ -5,6 +5,11 @@ target/
 # Local benchmark checkout links
 /*-native-???????
 
+# Default local benchmark output; reviewed result cohorts remain tracked
+/kasumi-benchmark.json
+/benchmarks/results/network-loopback-*.json
+*.json.tmp
+
 # Local credentials and deployment configuration
 .env
 .env.*
@@ -32,12 +37,34 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 .venv/
+venv/
+
+# Dependencies used by JavaScript integration fixtures
+node_modules/
+
+# Local tool caches and environment state
+.cache/
+.direnv/
+
+# Coverage and profiling output
+.coverage
+.coverage.*
+htmlcov/
+/coverage/
+*.profraw
+*.profdata
+
+# Ad hoc root logs; docs/evidence and benchmarks/results retain reviewed logs
+/*.log
 
 # Local scratch and editor files
 /tmp/
 .DS_Store
-/.idea/
-/.vscode/
+._*
+Thumbs.db
+Desktop.ini
+.idea/
+.vscode/
 *.swp
 *.swo
 *~

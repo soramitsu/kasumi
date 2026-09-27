@@ -1,0 +1,18 @@
+Observed HEAD after final native regression: 065e5719a693313275a7a6ccf31c4b58db9ee826
+No Git commit or reset was performed by this subtask.
+
+ M ../../../.gitignore
+ M README.md
+ M ../../first-release-goals.md
+ M ../../production-release.md
+ M ../../target-initial-membership-inspection.md
+?? boxed-perform-final.disassembly.txt
+?? diff-check.log
+?? lost-start-initialize-final.binary.sha256
+?? lost-start-initialize-final.log
+?? native-other-leader-final.binary.sha256
+?? native-other-leader-final.log
+?? observed-head-change.json
+?? scoped-format-check.log
+?? source-after-head-change.verification.log
+?? source-after-native.verification.log

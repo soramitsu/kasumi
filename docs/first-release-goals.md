@@ -1360,9 +1360,16 @@ membership inspection passes **1/1 in 453.44 seconds** through actual target
 shutdown/reopen, original phase expiry, fresh signed causal resolution, Finished
 and ordinary serving reopen. Original execution markers and caps remain unchanged;
 replacement children cannot initialize or propose application changes. This is
-local development evidence. OS process crashes at all pending boundaries,
-non-designated leader inspection, nine-process HA, exact deletion and the frozen
-release cohort remain open. The following paragraphs record earlier
+local development evidence. A later other-leader case passes **1/1 in 479.01
+seconds** through the same Finished/drain/reopen boundary: original node 1
+authenticates its exact local association and elected node 2 corroborates the
+same first fact under current read-only authority. Original markers, deadlines
+and causal identities remain unchanged. Its reducers pass **9/9** and journal
+regressions **18/18**; source/binary hashes and the repaired default-stack failure
+are retained in the [other-leader evidence](evidence/g09-initial-inspection-leader-development-20260927/README.md).
+Availability of the original custodian before fresh association retrieval,
+OS process crashes at all pending boundaries, nine-process HA, exact deletion
+and the frozen release cohort remain open. The following paragraphs record earlier
 prerequisite checkpoints;
 their descriptions of dormant receiver wiring are historical.
 
