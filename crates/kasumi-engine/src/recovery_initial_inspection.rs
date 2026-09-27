@@ -119,66 +119,37 @@ pub(crate) fn is_step(step: &TargetRuntimeStep) -> bool {
     matches!(
         step,
         TargetRuntimeStep::Start(TargetReplicaInput::InitialMembershipStatus(_))
-            | TargetRuntimeStep::InspectInitialAssociation(_)
             | TargetRuntimeStep::InspectInitialMembership(_)
     )
 }
-
-/// Historical association records remain valid after a fresh Control intent
-/// replaces the bounded scheduling head. Each intent admits exactly one.
-fn association_record<'a>(
-    state: &'a TenantState,
+fn started_nodes(
+    state: &TenantState,
     operation: &RecoveryRecord,
-    current: &LifecycleIntent,
-) -> Result<(
-    &'a RecoveryPhaseRecord,
-    &'a SignedTargetInitialMembershipAssociation,
-)> {
-    let mut result = None;
-    for retained in state.recovery_control.phases.values() {
-        if retained.operation_id != operation.request.operation_id {
-            continue;
-        }
-        let (
-            RecoveryDispatch::Target { node_id, request },
-            Some(RecoveryDispatchOutcome::Target(response)),
-        ) = (&retained.input, &retained.outcome)
-        else {
-            continue;
-        };
-        let (
-            TargetRuntimeStep::InspectInitialAssociation(input),
-            TargetRuntimeOutcome::InitialMembershipAssociation(signed),
-        ) = (&request.step, &response.outcome)
-        else {
-            continue;
-        };
-        if request.command_id != current.request.command_id {
-            continue;
-        }
-        if result.is_some()
-            || response.command_id != request.command_id
-            || response.node_id != *node_id
-            || *node_id != input.node_id()?
-            || retained.phase != RecoveryPhase::Initialize
-            || retained
-                .resolved_revision
-                .is_none_or(|revision| revision <= retained.prepared_revision)
-            || retained.prepared_revision <= current.revision
-            || signed.observation.status_intent != *current
-            || **input != status_input(state, operation)?
-        {
-            return Err(conflict(
-                "retained initial membership association identity or cardinality differs",
-            ));
-        }
-        kasumi_serving::verify_target_initial_membership_association(input, signed)
-            .map_err(|_| conflict("retained initial membership association proof differs"))?;
-        result = Some((retained, signed.as_ref()));
-    }
-    result.ok_or_else(|| conflict("current initial membership association absent"))
+    command: Uuid,
+) -> Result<Vec<u64>> {
+    operation
+        .voters
+        .keys()
+        .filter_map(|node| match started_for(state, operation, *node, command) {
+            Ok(true) => Some(Ok(*node)),
+            Ok(false) => None,
+            Err(error) => Some(Err(error)),
+        })
+        .collect()
 }
-
+fn attempted_start(
+    state: &TenantState,
+    operation: &RecoveryRecord,
+    command: Uuid,
+    node: u64,
+) -> bool {
+    state.recovery_control.phases.values().any(|phase| phase.operation_id == operation.request.operation_id
+        && matches!(&phase.input, RecoveryDispatch::Target { node_id, request }
+            if *node_id == node && request.command_id == command
+            && matches!(request.step, TargetRuntimeStep::Start(TargetReplicaInput::InitialMembershipStatus(_)))))
+}
+/// Both variants only open/read under a fresh inspection phase. Routing keeps
+/// the exact packet and absolute cap and never repeats original Initialize.
 pub(crate) fn route_retry(
     pending: &RecoveryPhaseRecord,
     input: &RecoveryDispatch,
@@ -187,10 +158,8 @@ pub(crate) fn route_retry(
     matches!((&pending.input, input),
         (RecoveryDispatch::Target { node_id: old, request: original }, RecoveryDispatch::Target { node_id: new, request: next })
         if pending.phase == RecoveryPhase::Initialize && pending.outcome.is_none()
-            && old != new && original == next && now < original.not_after_ms
-            && matches!(original.step, TargetRuntimeStep::InspectInitialMembership(_)))
+            && old != new && original == next && now < original.not_after_ms && is_step(&original.step))
 }
-
 pub(crate) fn retry_destination(
     state: &TenantState,
     operation: &RecoveryRecord,
@@ -203,7 +172,7 @@ pub(crate) fn retry_destination(
     if pending.phase != RecoveryPhase::Initialize
         || pending.outcome.is_some()
         || now >= request.not_after_ms
-        || !matches!(request.step, TargetRuntimeStep::InspectInitialMembership(_))
+        || !is_step(&request.step)
     {
         return Ok(None);
     }
@@ -212,51 +181,44 @@ pub(crate) fn retry_destination(
         operation,
         operation
             .current_intent
-            .ok_or_else(|| conflict("initial inspection current intent absent"))?,
+            .ok_or_else(|| conflict("inspection current intent absent"))?,
     )?;
     if request.command_id != current.request.command_id {
-        return Err(conflict("initial inspection retry is not current"));
+        return Err(conflict("inspection retry is not current"));
     }
-    validate_step(state, operation, current, *node_id, request, true)?;
-    let next = operation
-        .voters
-        .keys()
+    validate_step(state, operation, current, *node_id, request, false)?;
+    let candidates = if matches!(request.step, TargetRuntimeStep::Start(_)) {
+        operation
+            .voters
+            .keys()
+            .copied()
+            .filter(|node| !attempted_start(state, operation, request.command_id, *node))
+            .collect()
+    } else {
+        started_nodes(state, operation, request.command_id)?
+    };
+    Ok(candidates
+        .iter()
         .copied()
         .find(|node| node > node_id)
-        .or_else(|| operation.voters.keys().next().copied())
-        .filter(|node| node != node_id)
-        .ok_or_else(|| conflict("another started initial membership observer is absent"))?;
-    Ok(Some(next))
+        .or_else(|| candidates.first().copied())
+        .filter(|node| node != node_id))
 }
-
 pub(crate) fn validate_frozen_phase(
     state: &TenantState,
     operation: &RecoveryRecord,
     retained: &RecoveryPhaseRecord,
 ) -> Result<()> {
     let RecoveryDispatch::Target { node_id, request } = &retained.input else {
-        return Err(conflict("initial inspection frozen target absent"));
+        return Err(conflict("inspection frozen target absent"));
     };
     let current = state
         .lifecycle_control
         .as_ref()
         .and_then(|control| control.intents.get(&request.command_id))
-        .ok_or_else(|| conflict("initial inspection frozen Control intent absent"))?;
-    validate_step(state, operation, current, *node_id, request, false)?;
-    if matches!(request.step, TargetRuntimeStep::InspectInitialMembership(_)) {
-        let (association, _) = association_record(state, operation, current)?;
-        if association
-            .resolved_revision
-            .is_none_or(|revision| revision >= retained.prepared_revision)
-        {
-            return Err(conflict(
-                "initial membership read precedes retained association",
-            ));
-        }
-    }
-    Ok(())
+        .ok_or_else(|| conflict("inspection frozen Control intent absent"))?;
+    validate_step(state, operation, current, *node_id, request, false)
 }
-
 pub(crate) fn validate_step(
     state: &TenantState,
     operation: &RecoveryRecord,
@@ -267,24 +229,11 @@ pub(crate) fn validate_step(
 ) -> Result<()> {
     let input = match &request.step {
         TargetRuntimeStep::Start(TargetReplicaInput::InitialMembershipStatus(input))
-        | TargetRuntimeStep::InspectInitialAssociation(input) => input.as_ref(),
-        TargetRuntimeStep::InspectInitialMembership(association) => {
-            let (retained, selected) = association_record(state, operation, current)?;
-            if selected != association.as_ref()
-                || (admission && operation.initialization_association != Some(retained.phase_id))
-            {
-                return Err(conflict(
-                    "initial membership inspection changed retained association",
-                ));
-            }
-            &association.observation.input
-        }
+        | TargetRuntimeStep::InspectInitialMembership(input) => input.as_ref(),
         _ => return Err(conflict("initial membership inspection step differs")),
     };
     if input != &status_input(state, operation)? {
-        return Err(conflict(
-            "initial membership inspection changed original dispatch",
-        ));
+        return Err(conflict("inspection changed original accepted dispatch"));
     }
     input.validate(&origin(state, operation)?, current)?;
     let original = original(state, operation)?;
@@ -295,45 +244,29 @@ pub(crate) fn validate_step(
             .ok_or_else(|| conflict("original Initialize marker absent"))?
             .begun_revision
     {
-        return Err(conflict(
-            "inspection Control phase precedes original Initialize marker",
-        ));
+        return Err(conflict("inspection precedes original Initialize marker"));
     }
-    let startup = matches!(request.step, TargetRuntimeStep::Start(_));
-    if !operation.voters.contains_key(&node)
-        || (matches!(
-            request.step,
-            TargetRuntimeStep::InspectInitialAssociation(_)
-        ) && node != input.node_id()?)
-    {
-        return Err(conflict(
-            "initial membership association or observer route differs",
-        ));
+    if !operation.voters.contains_key(&node) {
+        return Err(conflict("inspection route is not an installed voter"));
     }
     if admission {
-        if startup && started_for(state, operation, node, current.request.command_id)? {
-            return Err(conflict(
-                "inspection voter already started under exact current phase",
-            ));
-        }
-        if !startup && !quorum::all_started(state, operation, current.request.command_id)? {
-            return Err(conflict(
-                "initial membership inspection requires all three current Start acknowledgements",
-            ));
-        }
-        if matches!(
-            request.step,
-            TargetRuntimeStep::InspectInitialAssociation(_)
-        ) && operation.initialization_association.is_some()
-        {
-            return Err(conflict(
-                "current inspection already retained its original-node association",
-            ));
+        if matches!(request.step, TargetRuntimeStep::Start(_)) {
+            if started_for(state, operation, node, current.request.command_id)? {
+                return Err(conflict(
+                    "inspection voter already started under current phase",
+                ));
+            }
+        } else {
+            let nodes = started_nodes(state, operation, current.request.command_id)?;
+            if nodes.len() < 2 || !nodes.contains(&node) {
+                return Err(conflict(
+                    "inspection needs two original installed members and a started observer",
+                ));
+            }
         }
     }
     Ok(())
 }
-
 pub(crate) fn next(
     state: &TenantState,
     operation: &RecoveryRecord,
@@ -342,28 +275,26 @@ pub(crate) fn next(
     expires: u64,
 ) -> Result<RecoveryDispatch> {
     let input = status_input(state, operation)?;
-    let mut destination = None;
-    for node in operation.voters.keys() {
-        if !started_for(state, operation, *node, current.request.command_id)? {
-            destination = Some(*node);
-            break;
-        }
-    }
-    let (node_id, step) = if let Some(node) = destination {
+    let nodes = started_nodes(state, operation, current.request.command_id)?;
+    let (node_id, step) = if nodes.len() >= 2 {
+        (
+            nodes[0],
+            TargetRuntimeStep::InspectInitialMembership(Box::new(input)),
+        )
+    } else {
+        let node = operation
+            .voters
+            .keys()
+            .copied()
+            .find(|node| !attempted_start(state, operation, current.request.command_id, *node))
+            .ok_or_else(|| {
+                conflict(
+                    "inspection has no available original quorum; wait for current phase expiry",
+                )
+            })?;
         (
             node,
             TargetRuntimeStep::Start(TargetReplicaInput::InitialMembershipStatus(Box::new(input))),
-        )
-    } else if operation.initialization_association.is_none() {
-        (
-            input.node_id()?,
-            TargetRuntimeStep::InspectInitialAssociation(Box::new(input)),
-        )
-    } else {
-        let (_, association) = association_record(state, operation, current)?;
-        (
-            input.node_id()?,
-            TargetRuntimeStep::InspectInitialMembership(Box::new(association.clone())),
         )
     };
     Ok(RecoveryDispatch::Target {
@@ -380,7 +311,6 @@ pub(crate) fn next(
         }),
     })
 }
-
 pub(crate) fn validate_outcome(
     state: &TenantState,
     operation: &RecoveryRecord,
@@ -388,9 +318,7 @@ pub(crate) fn validate_outcome(
     response: &TargetRuntimeResponse,
 ) -> Result<()> {
     let RecoveryDispatch::Target { node_id, request } = &prepared.input else {
-        return Err(conflict(
-            "initial membership inspection is not a target phase",
-        ));
+        return Err(conflict("inspection target phase absent"));
     };
     let current = state
         .lifecycle_control
@@ -403,9 +331,7 @@ pub(crate) fn validate_outcome(
         || response.node_id != *node_id
         || prepared.prepared_revision <= current.revision
     {
-        return Err(conflict(
-            "initial membership inspection response route differs",
-        ));
+        return Err(conflict("inspection response route differs"));
     }
     match (&request.step, &response.outcome) {
         (
@@ -413,45 +339,55 @@ pub(crate) fn validate_outcome(
             TargetRuntimeOutcome::Started { origin_sha256 },
         ) if *origin_sha256 == input.quorum().origin_sha256 => {}
         (
-            TargetRuntimeStep::InspectInitialAssociation(input),
-            TargetRuntimeOutcome::InitialMembershipAssociation(signed),
-        ) => {
-            kasumi_serving::verify_target_initial_membership_association(input, signed).map_err(
-                |_| {
-                    conflict("initial membership association signature or original history differs")
-                },
-            )?;
-            if signed.observation.status_intent != *current
-                || signed.observation.original_node_id != *node_id
-            {
-                return Err(conflict(
-                    "initial membership association current identity differs",
-                ));
-            }
-        }
-        (
-            TargetRuntimeStep::InspectInitialMembership(association),
+            TargetRuntimeStep::InspectInitialMembership(input),
             TargetRuntimeOutcome::InitialMembershipStatus(signed),
         ) => {
-            let input = &association.observation.input;
             kasumi_serving::verify_target_initial_membership_status(input, signed).map_err(
-                |_| conflict("initial membership inspection signature or original history differs"),
+                |_| conflict("inspection signature or committed original cause differs"),
             )?;
-            let (retained, _) = association_record(state, operation, current)?;
-            if signed.observation.association != **association
-                || signed.observation.status_intent != *current
+            if signed.observation.status_intent != *current
                 || signed.observation.observer_node_id != *node_id
-                || retained
-                    .resolved_revision
-                    .is_none_or(|revision| revision >= prepared.prepared_revision)
                 || prepared.prepared_revision <= original(state, operation)?.prepared_revision
             {
                 return Err(conflict(
-                    "initial membership inspection current identity or association order differs",
+                    "inspection current identity or original cause order differs",
+                ));
+            }
+            let started = state.recovery_control.phases.values().filter_map(|phase| {
+                let (RecoveryDispatch::Target { node_id, request }, Some(RecoveryDispatchOutcome::Target(response))) = (&phase.input, &phase.outcome) else { return None };
+                if phase.operation_id == operation.request.operation_id && phase.phase == RecoveryPhase::Initialize
+                    && phase.prepared_revision > current.revision
+                    && phase.resolved_revision.is_some_and(|revision| revision < prepared.prepared_revision)
+                    && request.command_id == current.request.command_id
+                    && matches!(&request.step, TargetRuntimeStep::Start(TargetReplicaInput::InitialMembershipStatus(start)) if start.as_ref() == input.as_ref())
+                    && response.node_id == *node_id && response.command_id == request.command_id
+                    && matches!(&response.outcome, TargetRuntimeOutcome::Started { origin_sha256 } if origin_sha256 == &input.quorum.origin_sha256) {
+                    Some(*node_id)
+                } else { None }
+            }).collect::<std::collections::BTreeSet<_>>();
+            if started.len() < 2
+                || !started.contains(node_id)
+                || !started
+                    .iter()
+                    .all(|node| operation.voters.contains_key(node))
+            {
+                return Err(conflict(
+                    "initial inspection lacks causally prior current original-quorum starts",
+                ));
+            }
+            let installed = state
+                .lifecycle_control
+                .as_ref()
+                .ok_or_else(|| conflict("Control installation absent"))?;
+            if signed.observation.association.association.control_root
+                != installed.installation.root
+            {
+                return Err(conflict(
+                    "committed initialization association Control root differs",
                 ));
             }
         }
-        _ => return Err(conflict("initial membership inspection outcome differs")),
+        _ => return Err(conflict("inspection outcome differs")),
     }
     Ok(())
 }
@@ -510,20 +446,8 @@ pub(crate) fn resolve_original(
 
 pub(crate) fn validate_progress(state: &TenantState, operation: &RecoveryRecord) -> Result<()> {
     if operation.initialization_attempt.is_some() {
-        let input = status_input(state, operation)?;
-        for start in input.starts.values() {
-            if start
-                .resolved_revision
-                .is_none_or(|revision| revision >= input.initialize.prepared_revision)
-            {
-                return Err(conflict(
-                    "original Initialize precedes successful Start evidence",
-                ));
-            }
-        }
+        status_input(state, operation)?;
     }
-    let latest = latest_inspection(state, operation)?;
-    let mut associations = BTreeMap::new();
     let mut requests = BTreeMap::new();
     for retained in state
         .recovery_control
@@ -534,86 +458,25 @@ pub(crate) fn validate_progress(state: &TenantState, operation: &RecoveryRecord)
         let RecoveryDispatch::Target { request, .. } = &retained.input else {
             continue;
         };
-        if matches!(
-            request.step,
-            TargetRuntimeStep::InspectInitialAssociation(_)
-        ) && matches!(&retained.outcome, Some(RecoveryDispatchOutcome::Target(response))
-                if matches!(response.outcome, TargetRuntimeOutcome::InitialMembershipAssociation(_)))
-            && associations
-                .insert(request.command_id, retained.phase_id)
-                .is_some()
-        {
-            return Err(conflict(
-                "inspection intent has more than one retained association",
-            ));
-        }
         if matches!(request.step, TargetRuntimeStep::InspectInitialMembership(_)) {
             let digest = staged_digest(request)?.0;
             if requests
                 .insert(request.command_id, digest.clone())
-                .is_some_and(|prior| prior != digest)
+                .is_some_and(|old| old != digest)
             {
                 return Err(conflict(
-                    "initial inspection route retry changed original request or cap",
+                    "inspection retry changed original request or absolute cap",
                 ));
             }
         }
     }
-    let expected = latest.and_then(|phase| associations.get(&phase.phase_id).copied());
-    if operation.initialization_association != expected {
-        return Err(conflict(
-            "initial association head differs from latest accepted inspection",
-        ));
-    }
-    if let Some(phase) = latest
-        && expected.is_some()
-    {
-        association_record(state, operation, intent(state, operation, phase.phase_id)?)?;
-    }
     Ok(())
 }
-
-fn latest_inspection<'a>(
-    state: &'a TenantState,
-    operation: &RecoveryRecord,
-) -> Result<Option<&'a RecoveryPhaseRecord>> {
-    let latest = state.recovery_control.phases.values()
-        .filter(|phase| phase.operation_id == operation.request.operation_id
-            && matches!((&phase.input, &phase.outcome),
-                (RecoveryDispatch::ControlIntent(request), Some(RecoveryDispatchOutcome::ControlIntent(_)))
-                    if request.phase == LifecyclePhase::InspectInitialMembership))
-        .max_by_key(|phase| phase.sequence);
-    if let Some(phase) = latest {
-        let current = intent(state, operation, phase.phase_id)?;
-        status_input(state, operation)?.validate(&origin(state, operation)?, current)?;
-    }
-    Ok(latest)
-}
-
 pub(crate) fn validate_successor(
-    previous: &TenantState,
+    _previous: &TenantState,
     incoming: &TenantState,
-    old: &RecoveryRecord,
+    _old: &RecoveryRecord,
     new: &RecoveryRecord,
 ) -> Result<()> {
-    if let Some(old_id) = old.initialization_association
-        && new.initialization_association != Some(old_id)
-    {
-        let old_association = phase(previous, old, old_id)?;
-        let newer = latest_inspection(incoming, new)?.ok_or_else(|| {
-            conflict("snapshot removed association without a new inspection intent")
-        })?;
-        if newer.sequence <= old_association.sequence
-            || newer.prepared_revision
-                <= old_association
-                    .resolved_revision
-                    .ok_or_else(|| conflict("original association was not resolved"))?
-        {
-            return Err(conflict(
-                "snapshot substituted association without a later accepted inspection",
-            ));
-        }
-        validate_progress(incoming, new)?;
-    }
-    Ok(())
+    validate_progress(incoming, new)
 }

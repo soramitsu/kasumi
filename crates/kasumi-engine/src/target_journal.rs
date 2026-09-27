@@ -32,6 +32,7 @@ mod initial_start;
 pub use dispatch::{
     AcceptedInitialDispatchPrebind, InitialDispatchReservation, InitialDispatchStatus,
     InitialInitializePermit, ResolvedInitialMembershipHistory, VerifiedInitialMembership,
+    VerifiedTargetInitializationAssociation,
 };
 pub use initial_start::ResolvedInitialStart;
 #[path = "target_projection.rs"]

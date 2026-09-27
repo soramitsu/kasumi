@@ -54,6 +54,9 @@ impl StateMachineBackend for RestoreFailureBackend {
     ) -> Result<crate::AppliedResponse> {
         self.current.apply(context, bytes)
     }
+    fn apply_metadata(&self, _position: &crate::AppliedEntryContext) -> anyhow::Result<()> {
+        Ok(())
+    }
     fn capture_snapshot(&self) -> Result<crate::CapturedSnapshot> {
         self.current.capture_snapshot()
     }

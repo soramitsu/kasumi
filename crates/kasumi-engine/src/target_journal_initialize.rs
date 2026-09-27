@@ -29,7 +29,11 @@ pub struct InitialInitializePermit {
     custody_owner: target_initial_intent::InitializeOwner,
 }
 impl InitialInitializePermit {
-    pub(crate) fn consume(self, owner: &TargetReplica, operation: &TargetOperation) -> Result<()> {
+    pub(crate) fn consume(
+        self,
+        owner: &TargetReplica,
+        operation: &TargetOperation,
+    ) -> Result<Self> {
         owner.require_initial_start(&self.association.start)?;
         require_operation(
             operation,
@@ -46,7 +50,147 @@ impl InitialInitializePermit {
             status == target_initial_intent::InitializeIntentStatus::OwnedWithoutAppliedProof,
             "Initialize custody owner absent"
         );
+        Ok(self)
+    }
+
+    pub(crate) fn applied(self, owner: &TargetReplica, operation: &TargetOperation) -> Result<()> {
+        owner.require_initial_start(&self.association.start)?;
+        require_operation(
+            operation,
+            &self.association.initialize,
+            &self.lifecycle,
+            &self.request,
+        )?;
+        read_target_first_membership_history(owner.database().stores(), &self.association.start)?;
         Ok(())
+    }
+}
+
+/// Bounded original execution proof. Its lifetime retains the actual child;
+/// journal rows alone cannot construct it or renew the original phase.
+pub struct VerifiedTargetInitializationAssociation<'a> {
+    owner: &'a TargetReplica,
+    journal: Arc<TargetJournal>,
+    control: VerifiedControlIntent,
+    permit: InitialInitializePermit,
+    marked: RecoveryPhaseRecord,
+    association: kasumi_types::TargetInitializationAssociation,
+    _reservation: crate::admission::Reservation,
+}
+impl InitialInitializePermit {
+    pub fn prove<'a>(
+        self,
+        owner: &'a TargetReplica,
+        journal: Arc<TargetJournal>,
+        control: VerifiedControlIntent,
+        marked: RecoveryPhaseRecord,
+        operation: &TargetOperation,
+    ) -> Result<VerifiedTargetInitializationAssociation<'a>> {
+        let permit = self.consume(owner, operation)?;
+        let reservation = journal.admission.reserve(4 << 20, None)?;
+        let association =
+            journal.original_initialization_cause(owner, operation, &permit, &control, &marked)?;
+        let proof = VerifiedTargetInitializationAssociation {
+            owner,
+            journal,
+            control,
+            permit,
+            marked,
+            association,
+            _reservation: reservation,
+        };
+        proof.release(operation)?;
+        Ok(proof)
+    }
+}
+impl VerifiedTargetInitializationAssociation<'_> {
+    pub fn association(&self) -> &kasumi_types::TargetInitializationAssociation {
+        &self.association
+    }
+    pub fn release(&self, operation: &TargetOperation) -> Result<()> {
+        ensure!(
+            self.journal.original_initialization_cause(
+                self.owner,
+                operation,
+                &self.permit,
+                &self.control,
+                &self.marked
+            )? == self.association,
+            "original initialization cause changed before publication"
+        );
+        Ok(())
+    }
+    pub async fn commit(
+        self,
+        signed: &kasumi_types::SignedTargetInitializationAssociation,
+        operation: &TargetOperation,
+    ) -> Result<()> {
+        self.release(operation)?;
+        ensure!(
+            signed.association == self.association,
+            "signed initialization cause differs from original owned proof"
+        );
+        kasumi_serving::verify_target_initialization_association(signed)?;
+        ensure!(
+            kasumi_raft::read_initialization_association(self.owner.database().stores())?.is_none(),
+            "initialization association already committed; original effect cannot repeat"
+        );
+        self.owner
+            .initialize(operation, self.permit, signed)
+            .await?;
+        Ok(())
+    }
+}
+impl TargetJournal {
+    fn original_initialization_cause(
+        &self,
+        owner: &TargetReplica,
+        operation: &TargetOperation,
+        permit: &InitialInitializePermit,
+        control: &VerifiedControlIntent,
+        marked: &RecoveryPhaseRecord,
+    ) -> Result<kasumi_types::TargetInitializationAssociation> {
+        owner.require_initial_start(&permit.association.start)?;
+        require_operation(
+            operation,
+            &permit.association.initialize,
+            &permit.lifecycle,
+            &permit.request,
+        )?;
+        let _guard = self
+            .mutation
+            .lock()
+            .map_err(|_| anyhow::anyhow!("target journal poisoned"))?;
+        let accepted = self.authenticate_initial_dispatch(
+            control,
+            marked,
+            &permit.association.initialize.dispatch,
+            &permit.request,
+        )?;
+        ensure!(
+            accepted == permit.association.initialize
+                && control.observation().intent == permit.lifecycle,
+            "original initialization proof changed accepted Control packet"
+        );
+        let start = self.initialized_start_prebind(&accepted, Some(owner.database().stores()))?;
+        ensure!(
+            start == permit.association.start,
+            "original initialized child association changed"
+        );
+        let row = self.accepted_prebind_record(&start)?;
+        let TargetRuntimeStep::Initialize(quorum) = &permit.request.step else {
+            anyhow::bail!("original Initialize request absent")
+        };
+        let cause = kasumi_types::TargetInitializationAssociation {
+            control_root: accepted.control_root,
+            original_intent: permit.lifecycle.clone(),
+            quorum: quorum.clone(),
+            start: row.phase,
+            initialize: marked.clone(),
+        };
+        cause.validate()?;
+        owner.require_initial_start(&start)?;
+        Ok(cause)
     }
 }
 
@@ -169,7 +313,7 @@ impl VerifiedInitialMembership {
 }
 
 impl TargetJournal {
-    fn accepted_prebind_record(
+    pub(super) fn accepted_prebind_record(
         &self,
         expected: &TargetFirstMembershipPrebind,
     ) -> Result<AcceptedInitialDispatch> {

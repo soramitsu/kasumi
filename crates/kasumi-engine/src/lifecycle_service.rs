@@ -12,6 +12,43 @@ pub struct LifecycleSigner {
     key: Ed25519KeyPair,
 }
 impl LifecycleSigner {
+    pub async fn sign_topology(&self, proof: &super::control_topology_service::VerifiedControlTopology)
+        -> Result<SignedControlTopology> {
+        proof.release().await?;
+        if self.root != proof.observation().root {
+            return Err(Error::new(ErrorCode::Forbidden, "Control topology signer differs"));
+        }
+        let observation = proof.observation().clone();
+        let signature = hex::encode(self.key.sign(&serde_json::to_vec(
+            &("kasumi.control-topology.v1", &observation)).map_err(encoding)?).as_ref());
+        proof.release().await?;
+        Ok(SignedControlTopology { observation, signature })
+    }
+
+    pub async fn sign_topology_release(&self,
+        proof: &super::control_topology_service::VerifiedControlTopology,
+        request: &ReleaseControlTopology) -> Result<SignedControlTopologyRelease> {
+        proof.release().await?;
+        let trust = kasumi_serving::ControlTrust::install(self.root.clone()).map_err(encoding)?;
+        trust.verify_topology(&request.original).map_err(encoding)?;
+        let original = &request.original.observation;
+        let current = proof.observation();
+        if request.request_id.is_nil() || current.root != self.root
+            || current.request != original.request || current.caller != original.caller
+            || current.policy_epoch != original.policy_epoch || current.term != original.term
+            || current.leader_node_id != original.leader_node_id || current.voters != original.voters
+            || current.topology != original.topology || current.revision < original.revision
+            || current.not_after_ms != original.not_after_ms {
+            return Err(Error::new(ErrorCode::Forbidden, "Control routing release binding differs"));
+        }
+        let release = ControlTopologyRelease { request_id: request.request_id,
+            original_sha256: kasumi_serving::digest(&request.original).map_err(encoding)?,
+            revision: current.revision, not_after_ms: original.not_after_ms };
+        let signature = hex::encode(self.key.sign(&serde_json::to_vec(
+            &("kasumi.control-topology-release.v1", &release)).map_err(encoding)?).as_ref());
+        proof.release().await?;
+        Ok(SignedControlTopologyRelease { release, signature })
+    }
     pub fn from_pkcs8(root: ControlSigningRoot, bytes: &[u8]) -> anyhow::Result<Self> {
         root.validate()?;
         let key = Ed25519KeyPair::from_pkcs8(bytes)

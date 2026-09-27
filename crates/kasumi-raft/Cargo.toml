@@ -19,6 +19,7 @@ tokio.workspace = true
 uuid.workspace = true
 kasumi-store.workspace = true
 kasumi-types.workspace = true
+kasumi-serving.workspace = true
 sha2.workspace = true
 hex.workspace = true
 openraft = { version = "=0.9.25", features = ["serde", "storage-v2"] }

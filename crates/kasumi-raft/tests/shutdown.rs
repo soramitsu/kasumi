@@ -33,6 +33,10 @@ impl StateMachineBackend for PausedSnapshot {
         self.inner.apply(position, command)
     }
 
+    fn apply_metadata(&self, _position: &kasumi_raft::AppliedEntryContext) -> anyhow::Result<()> {
+        Ok(())
+    }
+
     fn capture_snapshot(&self) -> Result<kasumi_raft::CapturedSnapshot> {
         if let Some(entered) = self.entered.lock().unwrap().take() {
             let _ = entered.send(());

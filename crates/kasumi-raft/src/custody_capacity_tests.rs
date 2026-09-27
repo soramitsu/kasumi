@@ -41,7 +41,8 @@ async fn permanent_custody_exceeds_former_count_and_snapshot_ceilings_and_reopen
     let disk = FaultBackend::new();
     let (domains, _, _, mut log) = fixture(disk.clone(), true, fixture_scratch.clone()).await?;
     log.blocking_append([
-        openraft::Entry {
+        crate::Entry {
+            initialization: None,
             log_id: id(0),
             payload: openraft::EntryPayload::Membership(openraft::Membership::new(
                 vec![BTreeSet::from([1])],

@@ -115,7 +115,6 @@ fn recovery_target_step(step: &TargetRuntimeStep) -> &'static str {
         TargetRuntimeStep::ConfirmActivation(_) => "ConfirmActivation",
         TargetRuntimeStep::ConfirmInspection(_) => "ConfirmInspection",
         TargetRuntimeStep::Inspect(_) => "Inspect",
-        TargetRuntimeStep::InspectInitialAssociation(_) => "InspectInitialAssociation",
         TargetRuntimeStep::InspectInitialMembership(_) => "InspectInitialMembership",
         TargetRuntimeStep::InspectCompletionAttempt(_) => "InspectCompletionAttempt",
         TargetRuntimeStep::InspectCompletionResolution(_) => "InspectCompletionResolution",
@@ -1168,45 +1167,54 @@ impl Fixture {
     }
     async fn open_targets(&mut self, handles: &[Handles], sockets: Vec<TcpListener>) {
         for (index, socket) in sockets.into_iter().enumerate() {
-            let config = &self.target_configs[index];
-            let target = TargetRecoveryRuntime::open(
-                config.clone(),
-                handles[index].trusts.clone(),
-                Arc::new(file_secret),
-                handles[index].audit.admission().clone(),
-                handles[index].audit.clone(),
-                handles[index].cluster.clone(),
-                self.source_destinations.clone(),
-                handles[index].registry.clone(),
-            )
-            .await
-            .unwrap();
-            let router = tonic::service::Routes::new(
-                crate::rpc::NativeTargetRecovery::new(
-                    target.clone(),
-                    self.authenticator(handles[index].audit.clone()).await,
-                )
-                .service(),
-            )
-            .into_axum_router();
-            let (stop, stopped) = watch::channel(false);
-            self.target_tasks.push(tokio::spawn(tls::serve_tls(
-                socket,
-                kasumi_transport::server_config(
-                    &self.files[index].load().unwrap(),
-                    ClientAuthentication::Required {
-                        trusted_ca_pem: &std::fs::read(&self.ca).unwrap(),
-                    },
-                )
-                .unwrap(),
-                router,
-                ListenerLimits::default(),
-                handles[index].audit.clone(),
-                stopped,
-            )));
-            self.target_stops.push(stop);
+            let target = self.open_target(handles, index, socket).await;
             self.targets.push(target);
         }
+    }
+    async fn open_target(
+        &mut self,
+        handles: &[Handles],
+        index: usize,
+        socket: TcpListener,
+    ) -> Arc<TargetRecoveryRuntime> {
+        let config = &self.target_configs[index];
+        let target = TargetRecoveryRuntime::open(
+            config.clone(),
+            handles[index].trusts.clone(),
+            Arc::new(file_secret),
+            handles[index].audit.admission().clone(),
+            handles[index].audit.clone(),
+            handles[index].cluster.clone(),
+            self.source_destinations.clone(),
+            handles[index].registry.clone(),
+        )
+        .await
+        .unwrap();
+        let router = tonic::service::Routes::new(
+            crate::rpc::NativeTargetRecovery::new(
+                target.clone(),
+                self.authenticator(handles[index].audit.clone()).await,
+            )
+            .service(),
+        )
+        .into_axum_router();
+        let (stop, stopped) = watch::channel(false);
+        self.target_tasks.push(tokio::spawn(tls::serve_tls(
+            socket,
+            kasumi_transport::server_config(
+                &self.files[index].load().unwrap(),
+                ClientAuthentication::Required {
+                    trusted_ca_pem: &std::fs::read(&self.ca).unwrap(),
+                },
+            )
+            .unwrap(),
+            router,
+            ListenerLimits::default(),
+            handles[index].audit.clone(),
+            stopped,
+        )));
+        self.target_stops.push(stop);
+        target
     }
     async fn client(&self) -> kasumi_client::KasumiRecoveryPool {
         self.client_with_credential(&self.control_token)
@@ -1341,6 +1349,95 @@ impl Fixture {
             panic!("initial Start was not reached in 64 exact phases");
         })).await.expect("installed lost-Start fixture exceeded its deadline");
     }
+    async fn assert_initialization_snapshot_retention(
+        &self,
+        expected: &kasumi_raft::CommittedInitializationAssociation,
+    ) {
+        for target in &self.targets {
+            let database = target
+                .test_owned_database("acme", self.target)
+                .await
+                .unwrap();
+            tokio::time::timeout(Duration::from_secs(10), async {
+                loop {
+                    if kasumi_raft::read_initialization_association(database.stores())
+                        .unwrap()
+                        .as_ref()
+                        == Some(expected)
+                    {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .expect("original association did not apply on installed target");
+            database
+                .raft_group()
+                .raft()
+                .trigger()
+                .snapshot()
+                .await
+                .unwrap();
+            database
+                .raft_group()
+                .raft()
+                .wait(Some(Duration::from_secs(15)))
+                .metrics(
+                    |metrics| {
+                        metrics
+                            .snapshot
+                            .is_some_and(|id| id.index >= expected.position.index)
+                    },
+                    "initial cause snapshot coverage",
+                )
+                .await
+                .unwrap();
+            database
+                .raft_group()
+                .raft()
+                .trigger()
+                .purge_log(expected.position.index)
+                .await
+                .unwrap();
+            database
+                .raft_group()
+                .raft()
+                .wait(Some(Duration::from_secs(15)))
+                .metrics(
+                    |metrics| {
+                        metrics
+                            .purged
+                            .is_some_and(|id| id.index >= expected.position.index)
+                    },
+                    "initial cause purge coverage",
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                kasumi_raft::read_initialization_association(database.stores())
+                    .unwrap()
+                    .as_ref(),
+                Some(expected)
+            );
+            assert!(
+                database
+                    .stores()
+                    .custody()
+                    .store()
+                    .get_bounded(
+                        "raft.headers",
+                        &expected.position.index.to_be_bytes(),
+                        256 << 10
+                    )
+                    .unwrap()
+                    .is_none()
+            );
+        }
+        eprintln!(
+            "all three actual target snapshots retain exact committed cause after its Raft log headers are purged"
+        );
+    }
     async fn assert_initialize_lost_reply_status(
         &self,
         control: &mut kasumi_client::KasumiRecoveryPool,
@@ -1425,6 +1522,29 @@ impl Fixture {
                         original_start,
                         "Initialize must preserve original Start prebind"
                     );
+                    let database = receiver
+                        .test_owned_database("acme", self.target)
+                        .await
+                        .unwrap();
+                    kasumi_raft::verify_initialization_association_storage_negatives(
+                        database.stores(),
+                    )
+                    .unwrap();
+                    let cause = kasumi_raft::read_initialization_association(database.stores())
+                        .unwrap()
+                        .unwrap();
+                    assert_eq!(cause.signed.association.initialize, marked);
+                    assert_eq!(
+                        TargetInitialMembershipStatusInput::dispatch_identity(
+                            &cause.signed.association.start
+                        )
+                        .unwrap(),
+                        original_start
+                    );
+                    eprintln!(
+                        "committed initialization metadata rejects five storage corruptions and missing/downgraded/uncovered snapshot causes"
+                    );
+                    drop(database);
                     let index = *node_id as usize - 1;
                     let connection = kasumi_client::KasumiClientConfig {
                         endpoint: format!(
@@ -1524,6 +1644,8 @@ impl Fixture {
                         if matches!(response.outcome, TargetRuntimeOutcome::Initialized { .. }))
                     );
                     assert!(resolved.resolved_revision.is_some());
+                    fixture_operation(|| self.assert_initialization_snapshot_retention(&cause))
+                        .await;
                     for (receiver, original) in self.targets.iter().zip(&original_children) {
                         assert!(
                             original.ptr_eq(
@@ -2120,80 +2242,115 @@ impl Fixture {
         handles: &[Handles],
         observer_node: u64,
     ) {
+        let original_unavailable = observer_node != 1;
         let mut control = self.client().await;
         let _ = control
             .start(self.request.as_ref().unwrap(), Duration::from_secs(5))
             .await;
-        let (marked, original_prebinds, old_children, original_history) = tokio::time::timeout(
-            Duration::from_secs(180),
-            fixture_operation(|| async {
-                for _ in 0..80 {
-                    let record = self
-                        .status(&mut control, "restart Initialize progress")
-                        .await;
-                    if let Some(phase_id) = record.pending_phase {
-                        let phase = self.inspection_phase(&mut control, phase_id).await;
-                        if let RecoveryDispatch::Target { node_id, request } = &phase.input
-                            && matches!(request.step, TargetRuntimeStep::Initialize(_))
-                        {
-                            let mut prebinds = Vec::new();
-                            let mut children = Vec::new();
-                            for target in &self.targets {
-                                let db = target
+        let (marked, original_prebinds, old_children, original_history, original_association) =
+            tokio::time::timeout(
+                Duration::from_secs(180),
+                fixture_operation(|| async {
+                    for _ in 0..80 {
+                        let record = self
+                            .status(&mut control, "restart Initialize progress")
+                            .await;
+                        if let Some(phase_id) = record.pending_phase {
+                            let phase = self.inspection_phase(&mut control, phase_id).await;
+                            if let RecoveryDispatch::Target { node_id, request } = &phase.input
+                                && matches!(request.step, TargetRuntimeStep::Initialize(_))
+                            {
+                                let mut prebinds = Vec::new();
+                                let mut children = Vec::new();
+                                for target in &self.targets {
+                                    let db = target
+                                        .test_owned_database("acme", self.target)
+                                        .await
+                                        .unwrap();
+                                    let bytes = db
+                                        .stores()
+                                        .custody()
+                                        .store()
+                                        .get_bounded(
+                                            kasumi_raft::TARGET_PREBIND_NAMESPACE,
+                                            kasumi_raft::TARGET_PREBIND_KEY,
+                                            256 << 10,
+                                        )
+                                        .unwrap()
+                                        .unwrap();
+                                    prebinds.push(
+                                        serde_json::from_slice::<
+                                            kasumi_raft::TargetFirstMembershipPrebind,
+                                        >(&bytes)
+                                        .unwrap(),
+                                    );
+                                    children.push(Arc::downgrade(&db));
+                                }
+                                let receiver = &self.targets[*node_id as usize - 1];
+                                receiver.test_lose_next_initialize_reply();
+                                assert!(self.step(&mut control).await.is_err());
+                                assert!(
+                                    !receiver.test_initial_reply_loss_pending(),
+                                    "must discard actual successful Initialize reply"
+                                );
+                                let marked = self.inspection_phase(&mut control, phase_id).await;
+                                let db = receiver
                                     .test_owned_database("acme", self.target)
                                     .await
                                     .unwrap();
-                                let bytes = db
-                                    .stores()
-                                    .custody()
-                                    .store()
-                                    .get_bounded(
-                                        kasumi_raft::TARGET_PREBIND_NAMESPACE,
-                                        kasumi_raft::TARGET_PREBIND_KEY,
-                                        256 << 10,
-                                    )
-                                    .unwrap()
-                                    .unwrap();
-                                prebinds.push(
-                                    serde_json::from_slice::<
-                                        kasumi_raft::TargetFirstMembershipPrebind,
-                                    >(&bytes)
-                                    .unwrap(),
-                                );
-                                children.push(Arc::downgrade(&db));
-                            }
-                            let receiver = &self.targets[*node_id as usize - 1];
-                            receiver.test_lose_next_initialize_reply();
-                            assert!(self.step(&mut control).await.is_err());
-                            assert!(
-                                !receiver.test_initial_reply_loss_pending(),
-                                "must discard actual successful Initialize reply"
-                            );
-                            let marked = self.inspection_phase(&mut control, phase_id).await;
-                            let db = receiver
-                                .test_owned_database("acme", self.target)
-                                .await
+                                let history = kasumi_raft::read_target_first_membership_history(
+                                    db.stores(),
+                                    &prebinds[*node_id as usize - 1],
+                                )
                                 .unwrap();
-                            let history = kasumi_raft::read_target_first_membership_history(
-                                db.stores(),
-                                &prebinds[*node_id as usize - 1],
-                            )
-                            .unwrap();
-                            let fact = (
-                                history.first_fact_sha256().to_owned(),
-                                history.first_log_id().index,
-                            );
-                            assert!(marked.outcome.is_none());
-                            return (marked, prebinds, children, fact);
+                                let fact = (
+                                    history.first_fact_sha256().to_owned(),
+                                    history.first_log_id().index,
+                                );
+                                assert!(marked.outcome.is_none());
+                                let committed =
+                                    kasumi_raft::read_initialization_association(db.stores())
+                                        .unwrap()
+                                        .unwrap();
+                                assert_eq!(committed.signed.association.initialize, marked);
+                                // Every remaining original member must retain the same actual
+                                // committed cause before the designated node goes away.
+                                for target in &self.targets {
+                                    let child = target
+                                        .test_owned_database("acme", self.target)
+                                        .await
+                                        .unwrap();
+                                    tokio::time::timeout(Duration::from_secs(10), async {
+                                        loop {
+                                            if kasumi_raft::read_initialization_association(
+                                                child.stores(),
+                                            )
+                                            .unwrap()
+                                            .as_ref()
+                                                == Some(&committed)
+                                            {
+                                                break;
+                                            }
+                                            tokio::time::sleep(Duration::from_millis(25)).await;
+                                        }
+                                    })
+                                    .await
+                                    .unwrap();
+                                }
+                                fixture_operation(|| {
+                                    self.assert_initialization_snapshot_retention(&committed)
+                                })
+                                .await;
+                                return (marked, prebinds, children, fact, committed);
+                            }
                         }
+                        let _ = self.step(&mut control).await;
                     }
-                    let _ = self.step(&mut control).await;
-                }
-                panic!("restart fixture did not reach original Initialize");
-            }),
-        )
-        .await
-        .expect("original Initialize deadline elapsed");
+                    panic!("restart fixture did not reach original Initialize");
+                }),
+            )
+            .await
+            .expect("original Initialize deadline elapsed");
         let RecoveryDispatch::Target {
             node_id,
             request: original,
@@ -2226,16 +2383,31 @@ impl Fixture {
         for target in &self.targets {
             target.shutdown().await.unwrap();
         }
-        self.targets.clear();
+        let closed_targets = std::mem::take(&mut self.targets);
         assert!(
             old_children.iter().all(|child| child.upgrade().is_none()),
             "all original Start owners must actually be gone before reopening"
         );
-        let mut sockets = Vec::new();
-        for address in &self.native_addresses {
-            sockets.push(TcpListener::bind(address).await.unwrap());
+        for (index, closed) in closed_targets.into_iter().enumerate() {
+            if original_unavailable && index == 0 {
+                // Preserve only the already shut-down runtime object in the
+                // fixture index. It has no listener, child, task or Raft owner.
+                self.targets.push(closed);
+            } else {
+                let socket = TcpListener::bind(self.native_addresses[index])
+                    .await
+                    .unwrap();
+                let target = self.open_target(handles, index, socket).await;
+                self.targets.push(target);
+            }
         }
-        self.open_targets(handles, sockets).await;
+        if original_unavailable {
+            assert!(
+                tokio::net::TcpStream::connect(self.native_addresses[0])
+                    .await
+                    .is_err()
+            );
+        }
         for target in &self.targets {
             assert!(
                 !target.test_has_replica("acme", self.target).await,
@@ -2252,21 +2424,29 @@ impl Fixture {
                 .unwrap()
                 .certificate_pin()]),
         };
-        let mut client = kasumi_client::KasumiTargetClient::connect(
-            &connection,
-            kasumi_serving::ControlTrust::install(self.root.clone()).unwrap(),
-            kasumi_serving::AuthorityTrust::install(self.manifest.clone()).unwrap(),
-            node_id,
-        )
-        .await
-        .unwrap();
-        assert!(
-            client
-                .read_initial_membership_history(&self.control_token, &original_query)
+        let mut client = if original_unavailable {
+            None
+        } else {
+            Some(
+                kasumi_client::KasumiTargetClient::connect(
+                    &connection,
+                    kasumi_serving::ControlTrust::install(self.root.clone()).unwrap(),
+                    kasumi_serving::AuthorityTrust::install(self.manifest.clone()).unwrap(),
+                    node_id,
+                )
                 .await
-                .is_err(),
-            "replacement runtime cannot claim the original live Start owner"
-        );
+                .unwrap(),
+            )
+        };
+        if let Some(client) = &mut client {
+            assert!(
+                client
+                    .read_initial_membership_history(&self.control_token, &original_query)
+                    .await
+                    .is_err(),
+                "replacement runtime cannot claim original live Start owner"
+            );
+        }
         let clock = kasumi_clock::EpochClock::system().unwrap();
         let now = clock.now_ms().unwrap();
         if now < original.not_after_ms {
@@ -2308,43 +2488,82 @@ impl Fixture {
                     }
                     if let Some(phase_id) = record.pending_phase {
                         let phase = self.inspection_phase(&mut control, phase_id).await;
-                        if let RecoveryDispatch::Target { node_id: route, request } = &phase.input
-                            && matches!(request.step, TargetRuntimeStep::InspectInitialMembership(_)) {
-                            let (original_request, routes) = inspection_routes.entry(request.command_id)
+                        if let RecoveryDispatch::Target {
+                            node_id: route,
+                            request,
+                        } = &phase.input
+                            && matches!(
+                                request.step,
+                                TargetRuntimeStep::InspectInitialMembership(_)
+                            )
+                        {
+                            let (original_request, routes) = inspection_routes
+                                .entry(request.command_id)
                                 .or_insert_with(|| ((**request).clone(), BTreeSet::new()));
-                            assert_eq!(original_request, request.as_ref(),
-                                "leader routing cannot change the exact inspection packet or cap");
+                            assert_eq!(
+                                original_request,
+                                request.as_ref(),
+                                "leader routing cannot change the exact inspection packet or cap"
+                            );
                             routes.insert(*route);
                         }
                         if matches!(&phase.input, RecoveryDispatch::Target { request, .. }
-                        if matches!(request.step, TargetRuntimeStep::InspectInitialAssociation(_) | TargetRuntimeStep::InspectInitialMembership(_)))
+                        if matches!(request.step, TargetRuntimeStep::InspectInitialMembership(_)))
                         {
-                            // Elect an actual installed child under the fresh read-only
-                            // phase. The original designated node can remain a follower
-                            // and attest only its permanent local association.
+                            // Elect an actual installed child under fresh read-only
+                            // authority. For other-leader acceptance node1 stays down.
                             let observer = self.targets[observer_node as usize - 1]
-                                .test_owned_database("acme", self.target).await.unwrap();
-                            let original_child = self.targets[index]
-                                .test_owned_database("acme", self.target).await.unwrap();
+                                .test_owned_database("acme", self.target)
+                                .await
+                                .unwrap();
+                            if original_unavailable {
+                                assert!(
+                                    tokio::net::TcpStream::connect(self.native_addresses[0])
+                                        .await
+                                        .is_err()
+                                );
+                                assert!(
+                                    !self.targets[0].test_has_replica("acme", self.target).await
+                                );
+                            }
                             tokio::time::timeout(Duration::from_secs(20), async {
                                 let mut next_election = std::time::Instant::now();
                                 loop {
-                                    if observer.raft_group().raft().metrics().borrow().current_leader
+                                    if observer
+                                        .raft_group()
+                                        .raft()
+                                        .metrics()
+                                        .borrow()
+                                        .current_leader
                                         != Some(observer_node)
-                                        && std::time::Instant::now() >= next_election {
-                                        observer.raft_group().raft().trigger().elect().await.unwrap();
-                                        next_election = std::time::Instant::now() + Duration::from_secs(2);
+                                        && std::time::Instant::now() >= next_election
+                                    {
+                                        observer
+                                            .raft_group()
+                                            .raft()
+                                            .trigger()
+                                            .elect()
+                                            .await
+                                            .unwrap();
+                                        next_election =
+                                            std::time::Instant::now() + Duration::from_secs(2);
                                     }
                                     if observer.raft_group().linearizable_barrier().await.is_ok()
-                                        && observer.raft_group().raft().metrics().borrow().current_leader
+                                        && observer
+                                            .raft_group()
+                                            .raft()
+                                            .metrics()
+                                            .borrow()
+                                            .current_leader
                                             == Some(observer_node)
-                                        && original_child.raft_group().raft().metrics().borrow().current_leader
-                                            == Some(observer_node) {
+                                    {
                                         break;
                                     }
                                     tokio::time::sleep(Duration::from_millis(100)).await;
                                 }
-                            }).await.expect("installed inspection observer did not become current leader");
+                            })
+                            .await
+                            .expect("installed inspection observer did not become current leader");
                         }
                     }
                     if let Err(error) = self.step(&mut control).await {
@@ -2403,23 +2622,23 @@ impl Fixture {
         eprintln!(
             "initial membership inspection observed by node {observer_node}; original association node {node_id}"
         );
+        assert_eq!(signed.observation.association, original_association.signed);
         assert_eq!(
-            signed.observation.association.observation.original_node_id,
-            node_id
+            signed.observation.association_position,
+            original_association.position
         );
         assert_eq!(
             signed
                 .observation
                 .association
-                .observation
-                .input
-                .identity()
+                .association
+                .node_id()
                 .unwrap(),
-            identity
+            node_id
         );
         assert_eq!(
-            signed.observation.association.observation.status_intent,
-            signed.observation.status_intent
+            signed.observation.association.association.initialize,
+            marked
         );
         if observer_node != node_id {
             let (packet, routes) = inspection_routes
@@ -2427,8 +2646,8 @@ impl Fixture {
                 .expect("retained exact inspection routing evidence");
             assert_eq!(
                 routes,
-                &BTreeSet::from([node_id, observer_node]),
-                "same inspection must visit original follower and legitimate other leader"
+                &BTreeSet::from([observer_node]),
+                "inspection must reach current leader while original target is unavailable"
             );
             assert_eq!(
                 packet.command_id,
@@ -2461,10 +2680,10 @@ impl Fixture {
             .zip(&original_prebinds)
             .zip(&old_children)
         {
-            let db = target
-                .test_owned_database("acme", self.target)
-                .await
-                .unwrap();
+            let Some(db) = target.test_owned_database("acme", self.target).await else {
+                assert!(old_child.upgrade().is_none());
+                continue;
+            };
             assert!(!old_child.ptr_eq(&Arc::downgrade(&db)));
             assert!(old_child.upgrade().is_none());
             kasumi_raft::read_target_first_membership_prebind(db.stores(), prior).unwrap();
@@ -2483,18 +2702,35 @@ impl Fixture {
                 "inspection cannot propose a fresh membership or application mutation"
             );
         }
-        assert!(
-            client
-                .read_initial_membership_history(&self.control_token, &original_query)
-                .await
-                .is_err()
-        );
-        assert_eq!(
-            self.targets[index]
-                .test_initial_dispatch_status(&identity, original)
-                .unwrap(),
-            kasumi_engine::InitialDispatchStatus::AcceptedOnly
-        );
+        if let Some(client) = &mut client {
+            assert!(
+                client
+                    .read_initial_membership_history(&self.control_token, &original_query)
+                    .await
+                    .is_err()
+            );
+            assert_eq!(
+                self.targets[index]
+                    .test_initial_dispatch_status(&identity, original)
+                    .unwrap(),
+                kasumi_engine::InitialDispatchStatus::AcceptedOnly
+            );
+        }
+        if original_unavailable {
+            assert!(
+                tokio::net::TcpStream::connect(self.native_addresses[0])
+                    .await
+                    .is_err()
+            );
+            assert!(!self.targets[0].test_has_replica("acme", self.target).await);
+            eprintln!(
+                "positive original-cause inspection completed with node1 actually shut down and unchanged 2/3 quorum"
+            );
+            // Subsequent full recovery is a separate boundary. Restore node1
+            // only after the positive observation and all absence assertions.
+            let socket = TcpListener::bind(self.native_addresses[0]).await.unwrap();
+            self.targets[0] = self.open_target(handles, 0, socket).await;
+        }
         assert_eq!(resolved.phase, RecoveryPhase::Complete);
     }
 }

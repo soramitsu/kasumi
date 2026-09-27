@@ -222,6 +222,35 @@ impl kasumi_raft::StateMachineBackend for TenantEngine {
             retirement,
         })
     }
+    fn apply_metadata(&self, position: &kasumi_raft::AppliedEntryContext) -> anyhow::Result<()> {
+        let _guard = self
+            .apply_lock
+            .lock()
+            .map_err(|_| anyhow::anyhow!("tenant apply lock poisoned"))?;
+        let revision = self
+            .revision_base
+            .checked_add(position.log_id.index)
+            .ok_or_else(|| anyhow::anyhow!("consensus metadata revision overflow"))?;
+        let previous = self.generation()?;
+        // Reopen replays the durable prefix before reaching the current cursor.
+        // Metadata has no application effect and may never lower that cursor.
+        if revision <= previous.state.revision {
+            return Ok(());
+        }
+        let mut state = previous.state.clone();
+        state.revision = revision;
+        self.publish_generation(Some(Arc::new(Generation {
+            state,
+            receipts: previous.receipts.clone(),
+            backup_bindings: previous.backup_bindings.clone(),
+            terminals: previous.terminals.clone(),
+            target_resolutions: previous.target_resolutions.clone(),
+            indexes: previous.indexes.clone(),
+            snapshot_accounting: previous.snapshot_accounting.clone(),
+            _read_reservations: vec![],
+        })));
+        Ok(())
+    }
     fn capture_snapshot(&self) -> anyhow::Result<kasumi_raft::CapturedSnapshot> {
         let generation = self.generation()?;
         let retirement = custody_snapshot::retired(&generation.state)?;

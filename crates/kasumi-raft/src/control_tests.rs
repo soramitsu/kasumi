@@ -144,6 +144,7 @@ pub(crate) fn seed() -> Result<(Command, RetirementLogSeed)> {
 pub(crate) fn retirement_entry() -> Result<Entry<TypeConfig>> {
     let (command, seed) = seed()?;
     Ok(Entry {
+        initialization: None,
         log_id: id(1),
         payload: EntryPayload::Normal(RaftCommand::retirement(
             serde_json::to_vec(&command)?,
@@ -197,6 +198,7 @@ fn retirement_reserves_permanent_bytes_before_a_positive_seed_can_commit() -> Re
 }
 pub(crate) fn ordinary(index: u64) -> Entry<TypeConfig> {
     Entry {
+        initialization: None,
         log_id: id(index),
         payload: EntryPayload::Normal(RaftCommand::application(
             b"municipal-sensitive-payload".to_vec(),
@@ -877,6 +879,7 @@ fn membership(index: u64) -> Entry<TypeConfig> {
 
 fn membership_with_address(index: u64, address: &str) -> Entry<TypeConfig> {
     Entry {
+        initialization: None,
         log_id: id(index),
         payload: EntryPayload::Membership(Membership::new(
             vec![BTreeSet::from([1])],
@@ -1059,6 +1062,7 @@ async fn prebound_first_membership_association_survives_later_apply_purge_and_re
         serde_json::to_vec(&prebind)?,
     )])?;
     let first = Entry {
+        initialization: None,
         log_id: id(0),
         payload: EntryPayload::Membership(Membership::new(
             vec![BTreeSet::from([1, 2, 3])],
@@ -1375,6 +1379,7 @@ async fn exhausted_seed_completion_budget_cannot_promote_a_committed_candidate()
     log.blocking_append([
         membership(0),
         Entry {
+            initialization: None,
             log_id: id(1),
             payload: EntryPayload::Normal(RaftCommand::retirement(
                 serde_json::to_vec(&command)?,
@@ -1408,6 +1413,7 @@ async fn failed_or_already_applied_without_boundary_cannot_be_reinterpreted_as_r
     log.blocking_append([
         membership(0),
         Entry {
+            initialization: None,
             log_id: id(1),
             payload: EntryPayload::Normal(RaftCommand::retirement(
                 serde_json::to_vec(&command)?,

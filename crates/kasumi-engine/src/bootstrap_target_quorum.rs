@@ -147,13 +147,14 @@ impl TargetReplica {
     /// Only the designated member may initialize, after all three actual native
     /// materialization signatures have been verified. Existing membership must
     /// equal the installed peers; this does not reconfigure a live group.
-    pub async fn initialize(
+    pub(crate) async fn initialize(
         &self,
         operation: &TargetOperation,
         permit: crate::InitialInitializePermit,
+        association: &kasumi_types::SignedTargetInitializationAssociation,
     ) -> anyhow::Result<()> {
         self.check(operation, LifecyclePhase::Initialize)?;
-        permit.consume(self, operation)?;
+        let permit = permit.consume(self, operation)?;
         let group = self.database.raft_group();
         let id = group.raft().metrics().borrow().id;
         anyhow::ensure!(
@@ -179,12 +180,13 @@ impl TargetReplica {
             // cancellation does not establish failure or authorize cleanup.
             operation
                 .run(
-                    group.initialize(
+                    group.initialize_target(
                         self.bootstrap
                             .voters
                             .iter()
                             .map(|(id, peer)| (*id, BasicNode::new(&peer.address)))
                             .collect(),
+                        association,
                     ),
                 )
                 .await
@@ -235,7 +237,15 @@ impl TargetReplica {
                         .is_some_and(|peer| peer.address == node.addr)),
             "target membership does not match initialized placement"
         );
-        self.check(operation, LifecyclePhase::Initialize)
+        self.check(operation, LifecyclePhase::Initialize)?;
+        permit.applied(self, operation)?;
+        let retained = kasumi_raft::read_initialization_association(self.database.stores())?
+            .ok_or_else(|| anyhow::anyhow!("first membership lacks atomic original cause"))?;
+        anyhow::ensure!(
+            retained.signed == *association,
+            "applied first membership cause differs"
+        );
+        Ok(())
     }
 }
 impl Drop for TargetReplica {

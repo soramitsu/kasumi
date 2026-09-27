@@ -1,0 +1,71 @@
+    Updating crates.io index
+ Downloading crates ...
+  Downloaded diff v0.1.13
+  Downloaded clap_derive v4.6.7
+  Downloaded clap v4.6.7
+  Downloaded clap_lex v1.1.1
+  Downloaded async-entry v0.3.3
+  Downloaded byte-unit v5.2.6
+  Downloaded clap_builder v4.6.7
+  Downloaded pretty_assertions v1.4.1
+  Downloaded yansi v1.0.1
+   Compiling unicode-ident v1.0.26
+   Compiling serde_core v1.0.229
+   Compiling libc v0.2.189
+   Compiling zerocopy v0.8.57
+   Compiling cfg-if v1.0.5
+   Compiling futures-sink v0.3.34
+   Compiling num-traits v0.2.19
+   Compiling serde v1.0.229
+   Compiling syn v1.0.109
+   Compiling serde_json v1.0.151
+   Compiling clap_lex v1.1.1
+   Compiling yansi v1.0.1
+   Compiling diff v0.1.13
+   Compiling futures-channel v0.3.34
+   Compiling proc-macro2 v1.0.107
+   Compiling clap_builder v4.6.7
+   Compiling pretty_assertions v1.4.1
+   Compiling quote v1.0.47
+   Compiling getrandom v0.2.17
+   Compiling rust_decimal v1.43.0
+   Compiling chrono v0.4.45
+   Compiling rand_core v0.6.4
+   Compiling syn v3.0.6
+   Compiling syn v2.0.119
+   Compiling byte-unit v5.2.6
+   Compiling ppv-lite86 v0.2.21
+   Compiling rand_chacha v0.3.1
+   Compiling async-entry v0.3.3
+   Compiling futures-macro v0.3.34
+   Compiling serde_derive v1.0.229
+   Compiling clap_derive v4.6.7
+   Compiling tokio-macros v2.7.2
+   Compiling rand v0.8.8
+   Compiling tracing-attributes v0.1.31
+   Compiling pin-project-internal v1.1.13
+   Compiling derive_more-impl v1.0.0
+   Compiling thiserror-impl v1.0.69
+   Compiling openraft-macros v0.9.25 (/Users/takemiyamakoto/dev/kasumi/vendor/openraft-0.9.25/macros)
+   Compiling tokio v1.53.1
+   Compiling futures-util v0.3.34
+   Compiling thiserror v1.0.69
+   Compiling pin-project v1.1.13
+   Compiling tracing v0.1.44
+   Compiling clap v4.6.7
+   Compiling derive_more v1.0.0
+   Compiling tracing-futures v0.2.5
+   Compiling anyerror v0.1.13
+   Compiling futures-executor v0.3.34
+   Compiling validit v0.2.6
+   Compiling futures v0.3.34
+   Compiling openraft v0.9.25 (/Users/takemiyamakoto/dev/kasumi/vendor/openraft-0.9.25/openraft)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 21.74s
+     Running unittests src/lib.rs (target/debug/deps/openraft-0f7d56f10aafc774)
+
+running 2 tests
+test engine::tests::initialize_test::test_initialize_single_node ... ok
+test engine::tests::initialize_test::test_initialize ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 215 filtered out; finished in 0.00s
+

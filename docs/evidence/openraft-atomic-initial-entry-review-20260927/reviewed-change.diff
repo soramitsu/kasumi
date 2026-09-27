@@ -1,0 +1,145 @@
+diff --git a/vendor/openraft-0.9.25/openraft/src/core/raft_core.rs b/vendor/openraft-0.9.25/openraft/src/core/raft_core.rs
+index 0395122b..182c99fb 100644
+--- a/vendor/openraft-0.9.25/openraft/src/core/raft_core.rs
++++ b/vendor/openraft-0.9.25/openraft/src/core/raft_core.rs
+@@ -1,3 +1,4 @@
++use crate::entry::RaftPayload;
+ use std::borrow::Borrow;
+ use std::collections::BTreeMap;
+ use std::fmt::Debug;
+@@ -687,23 +688,23 @@ where
+     #[tracing::instrument(level = "debug", skip(self, tx))]
+     pub(crate) fn handle_initialize(
+         &mut self,
+-        member_nodes: BTreeMap<C::NodeId, C::Node>,
++        entry: C::Entry,
+         tx: ResultSender<C, (), InitializeError<C::NodeId, C::Node>>,
+     ) {
+-        tracing::debug!(member_nodes = debug(&member_nodes), "{}", func_name!());
++        let Some(membership) = entry.get_membership() else {
++            let _ = tx.send(Err(InitializeError::InvalidInitialEntry));
++            return;
++        };
+ 
+         if let Err(capacity) = self.auxiliary_tasks.available(AuxiliaryTaskKind::VoteRound) {
+             let _ = tx.send(Err(InitializeError::TaskCapacity(capacity)));
+             return;
+         }
+-        let peers = member_nodes.keys().filter(|id| *id != &self.id).count();
++        let peers = membership.nodes().filter(|(id, _)| *id != &self.id).count();
+         if let Err(capacity) = self.replication_tasks.available(peers.saturating_mul(2)) {
+             let _ = tx.send(Err(InitializeError::TaskCapacity(capacity)));
+             return;
+         }
+-        let membership = Membership::from(member_nodes);
+-
+-        let entry = C::Entry::new_membership(LogId::default(), membership);
+         let res = self.engine.initialize(entry);
+         self.engine.output.push_command(Command::Respond {
+             when: None,
+@@ -1344,14 +1345,14 @@ where
+                     self.write_entry(C::Entry::from_app_data(app_data), Some(tx));
+                 }
+             }
+-            RaftMsg::Initialize { members, tx } => {
++            RaftMsg::Initialize { entry, tx } => {
+                 tracing::info!(
+-                    members = debug(&members),
++                    entry = debug(&entry),
+                     "received RaftMsg::Initialize: {}",
+                     func_name!()
+                 );
+ 
+-                self.handle_initialize(members, tx);
++                self.handle_initialize(entry, tx);
+             }
+             RaftMsg::ChangeMembership {
+                 changes,
+diff --git a/vendor/openraft-0.9.25/openraft/src/core/raft_msg/mod.rs b/vendor/openraft-0.9.25/openraft/src/core/raft_msg/mod.rs
+index f60cd2dd..1b39bf05 100644
+--- a/vendor/openraft-0.9.25/openraft/src/core/raft_msg/mod.rs
++++ b/vendor/openraft-0.9.25/openraft/src/core/raft_msg/mod.rs
+@@ -1,4 +1,3 @@
+-use std::collections::BTreeMap;
+ 
+ use crate::core::raft_msg::external_command::ExternalCommand;
+ use crate::error::CheckIsLeaderError;
+@@ -79,7 +78,7 @@ where C: RaftTypeConfig
+     },
+ 
+     Initialize {
+-        members: BTreeMap<C::NodeId, C::Node>,
++        entry: C::Entry,
+         tx: ResultSender<C, (), InitializeError<C::NodeId, C::Node>>,
+     },
+ 
+@@ -119,8 +118,8 @@ where C: RaftTypeConfig
+             }
+             RaftMsg::ClientWriteRequest { .. } => "ClientWriteRequest".to_string(),
+             RaftMsg::CheckIsLeaderRequest { .. } => "CheckIsLeaderRequest".to_string(),
+-            RaftMsg::Initialize { members, .. } => {
+-                format!("Initialize: {:?}", members)
++            RaftMsg::Initialize { entry, .. } => {
++                format!("Initialize: {:?}", entry)
+             }
+             RaftMsg::ChangeMembership {
+                 changes: members,
+diff --git a/vendor/openraft-0.9.25/openraft/src/error.rs b/vendor/openraft-0.9.25/openraft/src/error.rs
+index cc033ffc..3b937529 100644
+--- a/vendor/openraft-0.9.25/openraft/src/error.rs
++++ b/vendor/openraft-0.9.25/openraft/src/error.rs
+@@ -484,6 +484,9 @@ where
+     NID: NodeId,
+     N: Node,
+ {
++    #[error("initialization requires a membership entry")]
++    InvalidInitialEntry,
++
+     #[error(transparent)]
+     NotAllowed(#[from] NotAllowed<NID>),
+ 
+diff --git a/vendor/openraft-0.9.25/openraft/src/raft/mod.rs b/vendor/openraft-0.9.25/openraft/src/raft/mod.rs
+index bc391520..94b2f743 100644
+--- a/vendor/openraft-0.9.25/openraft/src/raft/mod.rs
++++ b/vendor/openraft-0.9.25/openraft/src/raft/mod.rs
+@@ -23,6 +23,8 @@ mod shutdown_test;
+ pub mod trigger;
+ 
+ use std::collections::BTreeMap;
++use crate::entry::{RaftEntry, RaftPayload};
++use crate::Membership;
+ use std::error::Error;
+ 
+ pub(crate) use self::external_request::BoxCoreFn;
+@@ -844,16 +846,22 @@ where
+     where
+         T: IntoNodes<C::NodeId, C::Node> + Debug,
+     {
++        let entry = C::Entry::new_membership(LogId::default(), Membership::from(members.into_nodes()));
++        self.initialize_with_entry(entry).await
++    }
++
++    /// Initialize with a typed first membership entry, retaining application-defined
++    /// metadata atomically with membership. It remains subject to the same pristine
++    /// log/vote and local-voter checks; the engine assigns the first log identity.
++    pub async fn initialize_with_entry(
++        &self,
++        entry: C::Entry,
++    ) -> Result<(), RaftError<C::NodeId, InitializeError<C::NodeId, C::Node>>> {
++        if entry.get_membership().is_none() {
++            return Err(RaftError::APIError(InitializeError::InvalidInitialEntry));
++        }
+         let (tx, rx) = C::AsyncRuntime::oneshot();
+-        self.inner
+-            .call_core(
+-                RaftMsg::Initialize {
+-                    members: members.into_nodes(),
+-                    tx,
+-                },
+-                rx,
+-            )
+-            .await
++        self.inner.call_core(RaftMsg::Initialize { entry, tx }, rx).await
+     }
+ 
+     /// Returns Ok() with the latest known matched log id if it should quit waiting: leader change,

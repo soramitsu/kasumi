@@ -3,11 +3,10 @@
 //! and historical receipts cannot construct this authorization.
 use super::*;
 
-pub struct ControlAdministrativeFence {
+pub(super) struct ControlQuorumFence {
     database: Arc<Database>,
     context: RequestContext,
     installation: LifecycleInstallation,
-    partition: ControlAuthorityPartition,
     policy_epoch: u64,
     term: u64,
     node_id: u64,
@@ -18,16 +17,15 @@ pub struct ControlAdministrativeFence {
     _slot: tokio::sync::OwnedSemaphorePermit,
     _reservation: Reservation,
 }
-impl ControlAdministrativeFence {
+impl ControlQuorumFence {
     pub fn context(&self) -> &RequestContext {
         &self.context
     }
     pub fn installation(&self) -> &LifecycleInstallation {
         &self.installation
     }
-    pub fn partition(&self) -> &ControlAuthorityPartition {
-        &self.partition
-    }
+    pub(super) fn term(&self) -> u64 { self.term }
+    pub(super) fn policy_epoch(&self) -> u64 { self.policy_epoch }
     pub fn local_node_id(&self) -> u64 {
         self.node_id
     }
@@ -113,6 +111,23 @@ impl ControlAdministrativeFence {
         Ok(())
     }
 }
+/// Exact issuer scope layered over the same current Control quorum fence used
+/// by routing reads. Neither boundary infers an issuer partition from topology.
+pub struct ControlAdministrativeFence {
+    quorum: Arc<ControlQuorumFence>,
+    partition: ControlAuthorityPartition,
+}
+impl ControlAdministrativeFence {
+    pub fn context(&self) -> &RequestContext { self.quorum.context() }
+    pub fn installation(&self) -> &LifecycleInstallation { self.quorum.installation() }
+    pub fn partition(&self) -> &ControlAuthorityPartition { &self.partition }
+    pub fn local_node_id(&self) -> u64 { self.quorum.local_node_id() }
+    pub fn members(&self) -> impl Iterator<Item = u64> + '_ { self.quorum.members() }
+    pub fn voters(&self) -> impl Iterator<Item = u64> + '_ { self.quorum.voters() }
+    pub fn check(&self) -> Result<()> { self.quorum.check() }
+    pub async fn release(&self) -> Result<()> { self.quorum.release().await }
+}
+
 struct ReleaseAttempt<'a> {
     closed: &'a AtomicBool,
     completed: bool,
@@ -136,6 +151,18 @@ impl Database {
         context: RequestContext,
         partition: ControlAuthorityPartition,
     ) -> Result<Arc<ControlAdministrativeFence>> {
+        partition.validate()?;
+        let quorum = self.authorize_control_quorum(context).await?;
+        if quorum.installation.partitions.get(&partition.key()) != Some(&partition) {
+            return Err(Error::new(ErrorCode::Forbidden,
+                "issuer partition differs from current Control installation"));
+        }
+        Ok(Arc::new(ControlAdministrativeFence { quorum, partition }))
+    }
+
+    pub(super) async fn authorize_control_quorum(
+        self: &Arc<Self>, context: RequestContext,
+    ) -> Result<Arc<ControlQuorumFence>> {
         context.authorization.check_live()?;
         if context.authorization.expires_at_ms().is_none() {
             return Err(Error::new(
@@ -143,7 +170,6 @@ impl Database {
                 "Control administration requires a finite verified credential",
             ));
         }
-        partition.validate()?;
         let cancellation = QueryCancellation::default();
         let work = self.work.begin(cancellation.clone())?;
         let slot = self.query_slots.clone().try_acquire_owned().map_err(|_| {
@@ -160,12 +186,6 @@ impl Database {
             .lifecycle_control
             .as_ref()
             .ok_or_else(|| changed("current Control installation absent"))?;
-        if control.installation.partitions.get(&partition.key()) != Some(&partition) {
-            return Err(Error::new(
-                ErrorCode::Forbidden,
-                "issuer partition differs from current Control installation",
-            ));
-        }
         // Only bounded installation metadata is copied. The tenant generation
         // and document roots are released before this owned observation escapes.
         let membership_bytes = metrics
@@ -200,11 +220,10 @@ impl Database {
             return Err(changed("stable current Control quorum required"));
         }
         reservation.retain_workspace();
-        let fence = Arc::new(ControlAdministrativeFence {
+        let fence = Arc::new(ControlQuorumFence {
             database: self.clone(),
             context,
             installation,
-            partition,
             policy_epoch,
             term,
             node_id: metrics.id,

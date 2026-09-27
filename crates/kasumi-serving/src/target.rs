@@ -538,33 +538,6 @@ pub fn verify_target_completion_terminal_status(
     })
 }
 
-/// Positive history under a fresh read-only phase. This attestation grants no
-/// original execution authority and cannot authorize another Initialize.
-pub fn verify_target_initial_membership_association(
-    expected: &kasumi_types::TargetInitialMembershipStatusInput,
-    signed: &kasumi_types::SignedTargetInitialMembershipAssociation,
-) -> Result<()> {
-    signed.observation.validate()?;
-    ensure!(
-        &signed.observation.input == expected,
-        "initial membership association input differs"
-    );
-    let origin = signed.observation.origin()?;
-    verify_target_materializations(origin, &expected.quorum.materialized)?;
-    let node = origin
-        .materialization
-        .request
-        .target_nodes
-        .get(&signed.observation.original_node_id)
-        .ok_or_else(|| anyhow::anyhow!("initial membership original node is not installed"))?;
-    verify(
-        &node.attestation_public_key,
-        "kasumi.target-initial-membership-association-observation.v1",
-        &signed.observation,
-        &signed.signature,
-    )
-}
-
 pub fn verify_target_initial_membership_status(
     expected: &kasumi_types::TargetInitialMembershipStatusInput,
     signed: &kasumi_types::SignedTargetInitialMembershipStatus,
@@ -574,7 +547,7 @@ pub fn verify_target_initial_membership_status(
         &signed.observation.input == expected,
         "initial membership status input differs"
     );
-    verify_target_initial_membership_association(expected, &signed.observation.association)?;
+    verify_target_initialization_association(&signed.observation.association)?;
     let origin = signed.observation.origin()?;
     verify_target_materializations(origin, &expected.quorum.materialized)?;
     let node = origin
@@ -587,6 +560,29 @@ pub fn verify_target_initial_membership_status(
         &node.attestation_public_key,
         "kasumi.target-initial-membership-status-observation.v1",
         &signed.observation,
+        &signed.signature,
+    )
+}
+
+/// An original installed target signer attests its actual accepted execution
+/// cause. This verifies immutable history only, never current phase authority.
+pub fn verify_target_initialization_association(
+    signed: &kasumi_types::SignedTargetInitializationAssociation,
+) -> Result<()> {
+    let cause = &signed.association;
+    cause.validate()?;
+    let origin = cause.origin()?;
+    verify_target_materializations(origin, &cause.quorum.materialized)?;
+    let node = origin
+        .materialization
+        .request
+        .target_nodes
+        .get(&cause.node_id()?)
+        .ok_or_else(|| anyhow::anyhow!("original initialization signer not installed"))?;
+    verify(
+        &node.attestation_public_key,
+        "kasumi.target-initialization-association.v1",
+        cause,
         &signed.signature,
     )
 }

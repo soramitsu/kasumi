@@ -638,7 +638,6 @@ impl Database {
                             _,
                         ))
                         | TargetRuntimeStep::InspectInitialMembership(_)
-                        | TargetRuntimeStep::InspectInitialAssociation(_)
                             if operation.phase == RecoveryPhase::Initialize =>
                         {
                             LifecyclePhase::InspectInitialMembership

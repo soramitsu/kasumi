@@ -24,10 +24,11 @@ impl VerifiedTargetInitialMembershipStatus {
                 operation,
                 &self.journal,
                 &self.control,
-                &self.observation.association,
+                &self.observation.input,
             )
             .await?;
-        if fresh.association != self.observation.association
+        if fresh.association_position != self.observation.association_position
+            || fresh.association != self.observation.association
             || fresh.input != self.observation.input
             || fresh.status_intent != self.observation.status_intent
             || fresh.first_fact_sha256 != self.observation.first_fact_sha256
@@ -40,32 +41,6 @@ impl VerifiedTargetInitialMembershipStatus {
             return Err(unknown(
                 "initial membership inspection changed before release",
             ));
-        }
-        self.release.check(operation).map_err(unknown)
-    }
-}
-pub struct VerifiedTargetInitialMembershipAssociation {
-    database: Arc<Database>,
-    journal: Arc<TargetJournal>,
-    control: VerifiedControlIntent,
-    observation: TargetInitialMembershipAssociationObservation,
-    release: TargetReleaseFence,
-    _reservation: Reservation,
-}
-impl VerifiedTargetInitialMembershipAssociation {
-    pub fn observation(&self) -> &TargetInitialMembershipAssociationObservation {
-        &self.observation
-    }
-    pub async fn release(&self, operation: &TargetOperation) -> Result<()> {
-        self.release.check(operation).map_err(unknown)?;
-        let fresh = self.database.observe_initial_association(
-            operation,
-            &self.journal,
-            &self.control,
-            &self.observation.input,
-        )?;
-        if fresh != self.observation {
-            return Err(unknown("initial association changed before release"));
         }
         self.release.check(operation).map_err(unknown)
     }
@@ -107,75 +82,14 @@ impl Database {
             .map_err(unknown)?;
         Ok(intent)
     }
-    fn observe_initial_association(
-        &self,
-        operation: &TargetOperation,
-        journal: &TargetJournal,
-        control: &VerifiedControlIntent,
-        input: &TargetInitialMembershipStatusInput,
-    ) -> Result<TargetInitialMembershipAssociationObservation> {
-        let intent = self.initial_inspection_context(operation, journal, control, input)?;
-        let node = self.group.raft().metrics().borrow().id;
-        if node != input.node_id()? {
-            return Err(denied(
-                "initial association requires original designated node",
-            ));
-        }
-        // This is an authenticated permanent local association only. It does
-        // not assert current leadership or quorum, and cannot issue a permit.
-        let history = journal
-            .resolve_initial_membership_inspection(control, input, self.stores())
-            .map_err(unknown)?;
-        let observation = TargetInitialMembershipAssociationObservation {
-            input: input.clone(),
-            status_intent: intent,
-            first_fact_sha256: history.local().first_fact_sha256().into(),
-            first_log_index: history.local().first_log_id().index,
-            original_node_id: node,
-        };
-        observation.validate()?;
-        self.target_phase_access(operation, LifecyclePhase::InspectInitialMembership)?;
-        Ok(observation)
-    }
-    pub async fn inspect_initial_association(
-        self: &Arc<Self>,
-        operation: &TargetOperation,
-        journal: Arc<TargetJournal>,
-        control: VerifiedControlIntent,
-        input: TargetInitialMembershipStatusInput,
-    ) -> Result<VerifiedTargetInitialMembershipAssociation> {
-        let reservation = self
-            .admission()
-            .reserve(4 << 20, Some(operation.token.clone()))?;
-        let observation =
-            self.observe_initial_association(operation, &journal, &control, &input)?;
-        let proof = VerifiedTargetInitialMembershipAssociation {
-            database: self.clone(),
-            journal,
-            control,
-            observation,
-            release: operation.release_fence(),
-            _reservation: reservation,
-        };
-        proof.release(operation).await?;
-        Ok(proof)
-    }
     async fn observe_initial_membership(
         self: &Arc<Self>,
         operation: &TargetOperation,
         journal: &TargetJournal,
         control: &VerifiedControlIntent,
-        association: &SignedTargetInitialMembershipAssociation,
+        input: &TargetInitialMembershipStatusInput,
     ) -> Result<TargetInitialMembershipStatusObservation> {
-        let input = &association.observation.input;
         let intent = self.initial_inspection_context(operation, journal, control, input)?;
-        kasumi_serving::verify_target_initial_membership_association(input, association)
-            .map_err(denied)?;
-        if association.observation.status_intent != intent {
-            return Err(denied(
-                "initial association belongs to another inspection intent",
-            ));
-        }
         let voters = input
             .quorum
             .materialized
@@ -211,15 +125,26 @@ impl Database {
             .resolve_initial_inspection_start_history(control, input, self.stores())
             .map_err(unknown)?;
         let local = &history;
-        if local.first_fact_sha256() != association.observation.first_fact_sha256
-            || local.first_log_id().index != association.observation.first_log_index
+        let committed = kasumi_raft::read_initialization_association(self.stores())
+            .map_err(unknown)?
+            .ok_or_else(|| {
+                unknown("first membership has no committed original initialization cause")
+            })?;
+        let association = committed.signed;
+        association
+            .association
+            .matches_inspection(input)
+            .map_err(unknown)?;
+        if association.association.control_root != control.observation().root
+            || local.first_log_id().index != committed.position.index
         {
             return Err(unknown(
-                "current leader first fact differs from original association",
+                "current quorum cause differs from original installed history",
             ));
         }
         let observation = TargetInitialMembershipStatusObservation {
-            association: association.clone(),
+            association,
+            association_position: committed.position,
             input: input.clone(),
             status_intent: intent,
             first_fact_sha256: local.first_fact_sha256().into(),
@@ -238,13 +163,13 @@ impl Database {
         operation: &TargetOperation,
         journal: Arc<TargetJournal>,
         control: VerifiedControlIntent,
-        association: SignedTargetInitialMembershipAssociation,
+        input: TargetInitialMembershipStatusInput,
     ) -> Result<VerifiedTargetInitialMembershipStatus> {
         let reservation = self
             .admission()
             .reserve(4 << 20, Some(operation.token.clone()))?;
         let observation = self
-            .observe_initial_membership(operation, &journal, &control, &association)
+            .observe_initial_membership(operation, &journal, &control, &input)
             .await?;
         let proof = VerifiedTargetInitialMembershipStatus {
             database: self.clone(),

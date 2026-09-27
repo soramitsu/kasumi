@@ -1,3 +1,4 @@
+use crate::entry::RaftPayload;
 use std::borrow::Borrow;
 use std::collections::BTreeMap;
 use std::fmt::Debug;
@@ -687,23 +688,23 @@ where
     #[tracing::instrument(level = "debug", skip(self, tx))]
     pub(crate) fn handle_initialize(
         &mut self,
-        member_nodes: BTreeMap<C::NodeId, C::Node>,
+        entry: C::Entry,
         tx: ResultSender<C, (), InitializeError<C::NodeId, C::Node>>,
     ) {
-        tracing::debug!(member_nodes = debug(&member_nodes), "{}", func_name!());
+        let Some(membership) = entry.get_membership() else {
+            let _ = tx.send(Err(InitializeError::InvalidInitialEntry));
+            return;
+        };
 
         if let Err(capacity) = self.auxiliary_tasks.available(AuxiliaryTaskKind::VoteRound) {
             let _ = tx.send(Err(InitializeError::TaskCapacity(capacity)));
             return;
         }
-        let peers = member_nodes.keys().filter(|id| *id != &self.id).count();
+        let peers = membership.nodes().filter(|(id, _)| *id != &self.id).count();
         if let Err(capacity) = self.replication_tasks.available(peers.saturating_mul(2)) {
             let _ = tx.send(Err(InitializeError::TaskCapacity(capacity)));
             return;
         }
-        let membership = Membership::from(member_nodes);
-
-        let entry = C::Entry::new_membership(LogId::default(), membership);
         let res = self.engine.initialize(entry);
         self.engine.output.push_command(Command::Respond {
             when: None,
@@ -1344,14 +1345,14 @@ where
                     self.write_entry(C::Entry::from_app_data(app_data), Some(tx));
                 }
             }
-            RaftMsg::Initialize { members, tx } => {
+            RaftMsg::Initialize { entry, tx } => {
                 tracing::info!(
-                    members = debug(&members),
+                    entry = debug(&entry),
                     "received RaftMsg::Initialize: {}",
                     func_name!()
                 );
 
-                self.handle_initialize(members, tx);
+                self.handle_initialize(entry, tx);
             }
             RaftMsg::ChangeMembership {
                 changes,

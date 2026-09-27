@@ -484,6 +484,9 @@ where
     NID: NodeId,
     N: Node,
 {
+    #[error("initialization requires a membership entry")]
+    InvalidInitialEntry,
+
     #[error(transparent)]
     NotAllowed(#[from] NotAllowed<NID>),
 

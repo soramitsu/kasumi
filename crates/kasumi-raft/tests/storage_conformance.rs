@@ -1,9 +1,10 @@
+use kasumi_raft::Entry;
 mod common;
 
 use anyhow::Result;
 use kasumi_raft::{LogStore, SnapshotBuffer, StateMachine, TypeConfig};
 use openraft::{
-    Entry, EntryPayload, LogId, RaftLogReader, RaftSnapshotBuilder, StorageError, StorageIOError,
+    EntryPayload, LogId, RaftLogReader, RaftSnapshotBuilder, StorageError, StorageIOError,
     Vote,
     storage::{RaftLogStorage, RaftLogStorageExt, RaftStateMachine},
     testing::{StoreBuilder, Suite},
@@ -62,6 +63,7 @@ fn openraft_storage_conformance_suite() -> Result<()> {
 
 fn entry(index: u64, data: &[u8]) -> Entry<TypeConfig> {
     Entry {
+        initialization: None,
         log_id: LogId::new(openraft::CommittedLeaderId::new(3, 1), index),
         payload: EntryPayload::Normal(kasumi_raft::RaftCommand::application(data.to_vec())),
     }

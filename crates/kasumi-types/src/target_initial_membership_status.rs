@@ -142,46 +142,11 @@ impl TargetInitialMembershipStatusInput {
         )
     }
 }
-/// Original designated node's immutable association, observed under current
-/// read-only authority. This attests local history, never present leadership.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct TargetInitialMembershipAssociationObservation {
-    pub input: TargetInitialMembershipStatusInput,
-    pub status_intent: LifecycleIntent,
-    pub first_fact_sha256: String,
-    pub first_log_index: u64,
-    pub original_node_id: u64,
-}
-impl TargetInitialMembershipAssociationObservation {
-    pub fn origin(&self) -> Result<&TargetOrigin> {
-        self.input
-            .quorum
-            .materialized
-            .values()
-            .next()
-            .map(|materialized| &materialized.fact.origin)
-            .ok_or_else(|| invalid("initial membership association materializations absent"))
-    }
-    pub fn validate(&self) -> Result<()> {
-        self.input.validate(self.origin()?, &self.status_intent)?;
-        validate_sha256(&self.first_fact_sha256)?;
-        require(
-            self.original_node_id == self.input.node_id()?,
-            "initial membership association is not from original designated node",
-        )
-    }
-}
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SignedTargetInitialMembershipAssociation {
-    pub observation: TargetInitialMembershipAssociationObservation,
-    pub signature: String,
-}
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TargetInitialMembershipStatusObservation {
-    pub association: SignedTargetInitialMembershipAssociation,
+    pub association: SignedTargetInitializationAssociation,
+    pub association_position: TargetInitialMembershipPosition,
     pub input: TargetInitialMembershipStatusInput,
     pub status_intent: LifecycleIntent,
     pub first_fact_sha256: String,
@@ -204,12 +169,14 @@ impl TargetInitialMembershipStatusObservation {
     pub fn validate(&self) -> Result<()> {
         self.input.validate(self.origin()?, &self.status_intent)?;
         validate_sha256(&self.first_fact_sha256)?;
-        self.association.observation.validate()?;
+        self.association
+            .association
+            .matches_inspection(&self.input)?;
+        self.association_position.validate()?;
         require(
-            self.input == self.association.observation.input
-                && self.status_intent == self.association.observation.status_intent
-                && self.first_fact_sha256 == self.association.observation.first_fact_sha256
-                && self.first_log_index == self.association.observation.first_log_index
+            self.association_position.index == self.first_log_index
+                && self.association_position.index <= self.applied_log_index
+                && self.association_position.command_sha256 == staged_digest(&self.association)?.0
                 && self.input.starts.contains_key(&self.observer_node_id)
                 && self.observed_term > 0
                 && self.first_log_index <= self.applied_log_index

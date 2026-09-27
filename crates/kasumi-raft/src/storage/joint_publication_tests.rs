@@ -117,6 +117,9 @@ impl StateMachineBackend for JointBackend {
     fn apply(&self, _: &crate::AppliedEntryContext, _: &[u8]) -> Result<crate::AppliedResponse> {
         anyhow::bail!("joint fixture accepts only snapshot installation")
     }
+    fn apply_metadata(&self, _position: &crate::AppliedEntryContext) -> anyhow::Result<()> {
+        Ok(())
+    }
     fn capture_snapshot(&self) -> Result<crate::CapturedSnapshot> {
         let tag = self
             .current

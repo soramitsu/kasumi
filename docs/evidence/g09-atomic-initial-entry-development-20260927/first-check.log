@@ -1,0 +1,112 @@
+    Checking kasumi-types v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-types)
+    Checking openraft v0.9.25 (/Users/takemiyamakoto/dev/kasumi/vendor/openraft-0.9.25/openraft)
+warning: method `matches_response_id` is never used
+   --> vendor/rmcp-3.2.0/src/model.rs:251:19
+    |
+236 | impl NumberOrString {
+    | ------------------- method in this implementation
+...
+251 |     pub(crate) fn matches_response_id(&self, response_id: &Self) -> bool {
+    |                   ^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `set_client_request_metadata` is never used
+    --> vendor/rmcp-3.2.0/src/service.rs:1032:19
+     |
+ 806 | impl<R: ServiceRole> Peer<R> {
+     | ---------------------------- method in this implementation
+...
+1032 |     pub(crate) fn set_client_request_metadata(&self, metadata: ClientRequestMetadata) {
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: method `is_authorization_required` is never used
+   --> vendor/rmcp-3.2.0/src/transport.rs:275:19
+    |
+249 | impl DynamicTransportError {
+    | -------------------------- method in this implementation
+...
+275 |     pub(crate) fn is_authorization_required(&self) -> bool {
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: `rmcp` (lib) generated 3 warnings
+error[E0433]: cannot find type `Membership` in this scope
+   --> vendor/openraft-0.9.25/openraft/src/raft/mod.rs:847:64
+    |
+847 |         let entry = C::Entry::new_membership(LogId::default(), Membership::from(members.into_nodes()));
+    |                                                                ^^^^^^^^^^ use of undeclared type `Membership`
+    |
+help: consider importing this struct through its public re-export
+    |
+ 25 + use crate::Membership;
+    |
+
+error[E0599]: no associated function or constant named `new_membership` found for associated type `<C as RaftTypeConfig>::Entry` in the current scope
+   --> vendor/openraft-0.9.25/openraft/src/raft/mod.rs:847:31
+    |
+847 |         let entry = C::Entry::new_membership(LogId::default(), Membership::from(members.into_nodes()));
+    |                               ^^^^^^^^^^^^^^ associated function or constant not found in `<C as RaftTypeConfig>::Entry`
+    |
+    = help: items from traits can only be used if the trait is in scope
+help: there is a method `get_membership` with a similar name, but with different arguments
+   --> vendor/openraft-0.9.25/openraft/src/entry/traits.rs:23:5
+    |
+ 23 |     fn get_membership(&self) -> Option<&Membership<NID, N>>;
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+help: trait `RaftEntry` which provides `new_membership` is implemented but not in scope; perhaps you want to import it
+    |
+ 11 + use crate::entry::traits::RaftEntry;
+    |
+
+error[E0599]: no method named `get_membership` found for associated type `<C as RaftTypeConfig>::Entry` in the current scope
+   --> vendor/openraft-0.9.25/openraft/src/raft/mod.rs:858:18
+    |
+858 |         if entry.get_membership().is_none() {
+    |                  ^^^^^^^^^^^^^^ method not found in `<C as RaftTypeConfig>::Entry`
+    |
+   ::: vendor/openraft-0.9.25/openraft/src/entry/traits.rs:23:8
+    |
+ 23 |     fn get_membership(&self) -> Option<&Membership<NID, N>>;
+    |        -------------- the method is available for `<C as RaftTypeConfig>::Entry` here
+    |
+    = help: items from traits can only be used if the trait is in scope
+help: trait `RaftPayload` which provides `get_membership` is implemented but not in scope; perhaps you want to import it
+    |
+ 11 + use crate::entry::traits::RaftPayload;
+    |
+
+error[E0599]: no method named `get_membership` found for associated type `<C as RaftTypeConfig>::Entry` in the current scope
+   --> vendor/openraft-0.9.25/openraft/src/core/raft_core.rs:693:38
+    |
+693 |         let Some(membership) = entry.get_membership() else {
+    |                                      ^^^^^^^^^^^^^^ method not found in `<C as RaftTypeConfig>::Entry`
+    |
+   ::: vendor/openraft-0.9.25/openraft/src/entry/traits.rs:23:8
+    |
+ 23 |     fn get_membership(&self) -> Option<&Membership<NID, N>>;
+    |        -------------- the method is available for `<C as RaftTypeConfig>::Entry` here
+    |
+    = help: items from traits can only be used if the trait is in scope
+help: trait `RaftPayload` which provides `get_membership` is implemented but not in scope; perhaps you want to import it
+    |
+  1 + use crate::entry::traits::RaftPayload;
+    |
+
+error[E0308]: mismatched types
+   --> vendor/openraft-0.9.25/openraft/src/core/raft_core.rs:702:64
+    |
+222 | impl<C, N, LS, SM> RaftCore<C, N, LS, SM>
+    |      - expected this type parameter
+...
+702 |         let peers = membership.nodes().filter(|(id, _)| *id != &self.id).count();
+    |                                                                ^^^^^^^^ expected type parameter `C`, found `&<C as RaftTypeConfig>::NodeId`
+    |
+    = note: expected type parameter `C`
+                    found reference `&<C as RaftTypeConfig>::NodeId`
+
+    Checking kasumi-serving v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-serving)
+    Checking kasumi-query v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-query)
+Some errors have detailed explanations: E0308, E0433, E0599.
+For more information about an error, try `rustc --explain E0308`.
+error: could not compile `openraft` (lib) due to 5 previous errors
+warning: build failed, waiting for other jobs to finish...

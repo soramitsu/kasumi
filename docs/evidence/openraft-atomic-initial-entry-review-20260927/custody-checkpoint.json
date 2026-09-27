@@ -1,0 +1,53 @@
+{
+  "created_utc": "2026-09-27T05:44:04.245767+00:00",
+  "observed_tests": [
+    {
+      "path": "docs/evidence/g09-atomic-initial-entry-development-20260927/openraft-current-unit.log",
+      "sha256": "6fe20ac08fe7621a949cda6cc06b797852b1d32693e29b726e101f72736298cc"
+    },
+    {
+      "path": "docs/evidence/g09-atomic-initial-entry-development-20260927/openraft-current-api-membership.log",
+      "sha256": "0ef9cf8aad7af13900edd853126ce590835fb9440c37568a19c6594dc818e793"
+    },
+    {
+      "path": "docs/evidence/g09-atomic-initial-entry-development-20260927/native-lost-replies-first.log",
+      "sha256": "f285f52f12e2b963ed416774c5717bd6272c7d9c9bb86e48c88d6a66519e5bf1"
+    },
+    {
+      "path": "docs/evidence/g09-atomic-initial-entry-development-20260927/native-node1-down-first.log",
+      "sha256": "a0fc8b90c78fae9c38ccac35fddf86ea9973a3afa6d3119f6b4665023b6f48ab"
+    },
+    {
+      "path": "docs/evidence/g09-atomic-initial-entry-development-20260927/journal-atomic-negatives.log",
+      "sha256": "a92aac86c5afa2f6b9379868a17891d8ad37aa31035f6ab86ea692b2bc02bf5f"
+    }
+  ],
+  "observed_upstream_cases": {
+    "client_api": 13,
+    "library": 219,
+    "life_cycle": 23,
+    "membership": 41
+  },
+  "predecessor": {
+    "inventory_path": "docs/evidence/openraft-canonical-20260920/49-frozen-fallible-transfer-clippy/after-source.json",
+    "inventory_sha256": "70cce233f67865044d8550bd613c7696abfbe0b47f7fa0d436199a9a709bffa6",
+    "kind": "openraft-checkpoint",
+    "path": "docs/evidence/openraft-canonical-20260920/custody-checkpoint.json",
+    "sha256": "372a5cdb30571a154997e2dfcfd98d27e1c876c4aefcc58a05ed50695fe26323"
+  },
+  "qualification": "independent-source-review-and-recorded-development-tests-only",
+  "release_qualified": false,
+  "remaining": [
+    "full frozen upstream feature/platform cohort",
+    "all Kasumi final-source gates",
+    "actual OS-process crash matrix",
+    "nine-process HA acceptance",
+    "24-hour soak"
+  ],
+  "reviewed_change_sha256": "914797a34e4e4299ddc5b6ebfdeaeeb2a2b8eee033f75e380c9ddf16647939fe",
+  "reviewed_delta_sha256": "8d416386182a4fcda86f8ef8465c2c600417cfd3c8518fe7c11caaa4600b7a7e",
+  "source_bytes": 2641869,
+  "source_files": 600,
+  "source_inventory": "source-inventory.json",
+  "source_inventory_sha256": "6c0825d9d08e442f1a867206012ee65a29e8ea94d0422720d271062ed3116b24"
+}

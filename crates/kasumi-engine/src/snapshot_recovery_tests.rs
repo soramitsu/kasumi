@@ -129,7 +129,6 @@ fn coordinator() -> TenantState {
         initialization: None,
         initialization_attempt: None,
         initialization_starts: BTreeMap::new(),
-        initialization_association: None,
         completion_intent: None,
         completion_predecessor: None,
         completion_preparation_attempt: None,

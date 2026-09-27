@@ -4396,7 +4396,7 @@ mod lifecycle_tests {
         replicated_runtime_fixture_inner(false, None, false, false, false, Some(1)).await;
     }
     #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
-    async fn three_runtime_nodes_inspect_expired_initialize_on_another_elected_leader() {
+    async fn three_runtime_nodes_inspect_expired_initialize_with_original_node_unavailable() {
         replicated_runtime_fixture_inner(false, None, false, false, false, Some(2)).await;
     }
     #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
@@ -4697,14 +4697,20 @@ mod lifecycle_tests {
                         crate::backup_destination_installation::EnrollmentRequest {
                             format: 1,
                             destination: "primary".into(),
-                            directory: dir.path().join(format!("persistent/backups-node-{}", node + 1)),
+                            directory: dir
+                                .path()
+                                .join(format!("persistent/backups-node-{}", node + 1)),
                             max_bytes: 32 << 20,
                             namespace_id: Uuid::new_v4(),
                         },
                         storage.clone(),
                     )
-                }).await.unwrap();
-                config.backup_destinations.insert("primary".into(), destination.configuration);
+                })
+                .await
+                .unwrap();
+                config
+                    .backup_destinations
+                    .insert("primary".into(), destination.configuration);
                 if fenced_source && node == 0 {
                     // Keep a distinct application credential path so a failed
                     // key-provider construction is observable on the reopen.

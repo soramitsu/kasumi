@@ -1367,10 +1367,32 @@ same first fact under current read-only authority. Original markers, deadlines
 and causal identities remain unchanged. Its reducers pass **9/9** and journal
 regressions **18/18**; source/binary hashes and the repaired default-stack failure
 are retained in the [other-leader evidence](evidence/g09-initial-inspection-leader-development-20260927/README.md).
-Availability of the original custodian before fresh association retrieval,
-OS process crashes at all pending boundaries, nine-process HA, exact deletion
-and the frozen release cohort remain open. The following paragraphs record earlier
-prerequisite checkpoints;
+That historical checkpoint requires the original custodian for fresh association
+retrieval. The subsequent [replicated-cause source cutover](evidence/g09-replicated-initial-association-development-20260927/README.md)
+removes that RPC and commits the original accepted cause as bounded Raft metadata.
+Its 9 reducer, 18 journal and 2 snapshot format/install cases pass; native lost replies
+plus actual metadata corruption and three-target snapshot/purge checks pass in
+75.25 seconds. The exact-current node1-unavailable fixture passes **1/1 in
+480.22 seconds**, including positive expired-cause inspection by node2 while
+node1 stays down, then Finished, original-owner joins and ordinary serving reopen.
+Its 563 captured source files and executable remain unchanged; the same-executable
+lost-reply/metadata regression passes in 80.83 seconds. The
+first-membership-before-association-commit window remains
+UnknownOutcome. OS process crashes at all pending boundaries, nine-process HA,
+exact deletion and frozen release qualification remain open.
+The subsequent [atomic first-entry checkpoint](evidence/g09-atomic-initial-entry-development-20260927/README.md)
+removes the separate cause write: the original owned Initialize signs before
+proposal, and first membership, cause and cursor apply atomically. Missing,
+invalid and substituted causes are rejected before append. Its current journal
+suite passes **19/19**, reducers **9/9** and three Raft format/snapshot cases pass.
+Protected TLS lost replies pass in **72.47 seconds**; the same binary passes original-node-down
+expiry, Finished, owner drain and serving reopen in **473.72 seconds**. All 993 captured
+source files match through that run. Current upstream production-feature units
+pass **219/219** and API/lifecycle/membership **77/77**. These remain development results;
+OS-process crashes, the complete phase matrix and nine-process HA are unqualified.
+The currently shared data/Control topology requires an explicit product split
+before a genuine separate three-plus-three-plus-three process gate can pass.
+The following paragraphs record earlier prerequisite checkpoints;
 their descriptions of dormant receiver wiring are historical.
 
 An independent target-owner audit (`target/g09-owner-state-machine-independent-audit/README.md`)

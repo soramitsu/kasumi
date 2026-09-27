@@ -1,12 +1,13 @@
 //! Independently encrypted consensus metadata. A durable local commit cursor is
 //! recovery input, not fresh quorum or administrative release authority.
+use crate::Entry;
 use crate::{BasicNode, LogId, RetirementLogSeed, TypeConfig, command::sha256};
 use anyhow::{Context, Result, ensure};
 use kasumi_store::{
     CustodyStore, StoragePurpose, TenantStorageReadView, TenantStorageSet, TenantStore, WriteOp,
 };
 use kasumi_types::{ControlSigningRoot, NodeIdentity, TargetInitialDispatchIdentity};
-use openraft::{Entry, EntryPayload, Membership, StoredMembership, Vote};
+use openraft::{EntryPayload, Membership, StoredMembership, Vote};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -160,7 +161,7 @@ impl TargetFirstMembershipPrebind {
         Ok(())
     }
 
-    fn validate_custody(&self, custody: &CustodyStore) -> Result<()> {
+    pub(crate) fn validate_custody(&self, custody: &CustodyStore) -> Result<()> {
         self.validate()?;
         ensure!(
             load::<u64>(custody.store(), META, b"node_id")? == Some(self.node.node_id)
@@ -242,6 +243,7 @@ pub fn read_target_first_membership_history(
     let first =
         first_applied_membership(store)?.context("target first applied membership absent")?;
     local_first_association_write(custody, Some(&first), None)?;
+    crate::initialization_association::load_state(custody, Some(&first))?;
     if let Some(active) =
         load::<LogHeader>(store, HEADERS, &first.header.log_id.index.to_be_bytes())?
     {
@@ -343,6 +345,8 @@ pub(crate) struct LogHeader {
     pub log_id: LogId<u64>,
     pub entry_sha256: String,
     pub payload: HeaderPayload,
+    #[serde(deserialize_with = "required_initialization")]
+    pub initialization: Option<Vec<u8>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -379,6 +383,7 @@ impl LogHeader {
                         Self {
                             log_id: entry.log_id,
                             entry_sha256: sha256(encoded),
+                            initialization: entry.initialization.clone(),
                             payload: HeaderPayload::Custody { command_sha256 },
                         },
                         None,
@@ -400,6 +405,7 @@ impl LogHeader {
             Self {
                 log_id: entry.log_id,
                 entry_sha256: sha256(encoded),
+                initialization: entry.initialization.clone(),
                 payload,
             },
             seed,
@@ -407,6 +413,14 @@ impl LogHeader {
     }
     pub(crate) fn validate(&self) -> Result<()> {
         kasumi_types::validate_sha256(&self.entry_sha256)?;
+        if let Some(bytes) = &self.initialization {
+            ensure!(
+                matches!(self.payload, HeaderPayload::Membership(_))
+                    && self.log_id == LogId::default(),
+                "initialization cause must be attached to the first membership entry"
+            );
+            crate::initialization_association::decode(bytes)?;
+        }
         match &self.payload {
             HeaderPayload::Application { command_sha256 }
             | HeaderPayload::Custody { command_sha256 } => {
@@ -550,6 +564,7 @@ impl FirstAppliedMembership {
             "first applied membership has no voter"
         );
         let entry = Entry::<TypeConfig> {
+            initialization: self.header.initialization.clone(),
             log_id: self.header.log_id,
             payload: EntryPayload::Membership(membership.clone()),
         };
@@ -1084,6 +1099,7 @@ pub(crate) fn persist_applied(
     }
     let previous = load::<AppliedCursor>(store, META, b"applied")?;
     let existing_first = first_applied_membership(store)?;
+    crate::initialization_association::load_state(domains.custody(), existing_first.as_ref())?;
     local_first_association_write(domains.custody(), existing_first.as_ref(), None)?;
     let previous_membership = previous.as_ref().and_then(|cursor| match cursor {
         AppliedCursor::Entry(position) => *position.membership.log_id(),
@@ -1140,6 +1156,10 @@ pub(crate) fn persist_applied(
     };
     let mut writes = vec![applied_write(context)?];
     if let Some(fact) = new_first {
+        writes.extend(crate::initialization_association::initial_writes(
+            domains.custody(),
+            &fact,
+        )?);
         if let Some(association) =
             local_first_association_write(domains.custody(), None, Some(&fact))?
         {
@@ -1256,3 +1276,9 @@ pub(crate) fn apply_custody(
 #[cfg(test)]
 #[path = "control_tests.rs"]
 pub(crate) mod tests;
+
+fn required_initialization<'de, D: serde::Deserializer<'de>>(
+    decoder: D,
+) -> Result<Option<Vec<u8>>, D::Error> {
+    serde::Deserialize::deserialize(decoder)
+}

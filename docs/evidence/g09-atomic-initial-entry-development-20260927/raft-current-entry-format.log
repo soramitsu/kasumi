@@ -1,0 +1,6 @@
+
+running 1 test
+test entry::tests::current_entry_requires_explicit_initialization_field_and_rejects_retired_command ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 90 filtered out; finished in 0.02s
+

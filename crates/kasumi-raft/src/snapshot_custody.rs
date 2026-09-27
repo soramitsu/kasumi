@@ -1,6 +1,7 @@
 //! Portable closed retirement input carried by Raft snapshots. Publication
 //! rebinds it to the receiver's custody catalog; it never copies another node's
 //! key authority or grants current administrative access.
+use crate::Entry;
 use crate::control::{
     self, AppliedCursor, LogHeader, META, RetainedSeed, RetiredBoundary, SEEDS, load,
 };
@@ -9,7 +10,7 @@ use crate::{
 };
 use anyhow::{Context, Result, ensure};
 use kasumi_store::{CustodyStore, TenantStore, WriteOp};
-use openraft::{Entry, EntryPayload, SnapshotMeta};
+use openraft::{EntryPayload, SnapshotMeta};
 use serde::{Deserialize, Serialize};
 
 const MAX_SNAPSHOT_CUSTODY_BYTES: usize = 2 << 20;
@@ -152,6 +153,7 @@ impl SnapshotRetirement {
         self.header.validate()?;
         let seed = RetirementLogSeed::decode(&self.seed)?;
         let entry: Entry<TypeConfig> = Entry {
+            initialization: None,
             log_id: self.header.log_id,
             payload: EntryPayload::Normal(RaftCommand::retirement(
                 seed.reconstructed_command()?,
@@ -283,6 +285,7 @@ pub(crate) fn installation_writes(
     meta: &SnapshotMeta<u64, BasicNode>,
     retirement: Option<&SnapshotRetirement>,
     first_membership: Option<&control::FirstAppliedMembership>,
+    initialization_association: Option<&crate::initialization_association::AssociationState>,
     backend_sha256: &str,
     snapshot_sha256: &str,
 ) -> Result<Installation> {
@@ -292,6 +295,12 @@ pub(crate) fn installation_writes(
     let mut writes = Vec::new();
     let mut records = None;
     control::validate_snapshot_first_membership(meta, first_membership)?;
+    writes.extend(crate::initialization_association::snapshot_writes(
+        custody,
+        meta,
+        first_membership,
+        initialization_association,
+    )?);
     let existing_first = control::first_applied_membership(control)?;
     match (existing_first.as_ref(), first_membership) {
         (Some(existing), Some(incoming)) => ensure!(
@@ -465,8 +474,15 @@ pub(crate) fn check_published(
     snapshot_sha256: &str,
     retirement: Option<&SnapshotRetirement>,
     first_membership: Option<&control::FirstAppliedMembership>,
+    initialization_association: Option<&crate::initialization_association::AssociationState>,
 ) -> Result<()> {
     control::validate_snapshot_first_membership(meta, first_membership)?;
+    crate::initialization_association::check_published(
+        custody,
+        meta,
+        first_membership,
+        initialization_association,
+    )?;
     let local_first = control::first_applied_membership(custody.store())?;
     match (local_first.as_ref(), first_membership) {
         (Some(local), Some(embedded)) => ensure!(

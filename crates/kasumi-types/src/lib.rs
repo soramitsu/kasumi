@@ -1,5 +1,8 @@
 //! Transport-independent, exact JSON contracts shared by every Kasumi interface.
 pub mod drain;
+pub mod control_topology;
+mod control_topology_protocol;
+pub use control_topology_protocol::*;
 mod ordered_seek;
 pub use ordered_seek::*;
 mod security_audit;
@@ -19,6 +22,8 @@ mod target;
 pub use target::*;
 mod target_completion;
 pub use target_completion::*;
+mod target_initialization_association;
+pub use target_initialization_association::*;
 mod target_initial_membership_status;
 pub use target_initial_membership_status::*;
 mod target_completion_status;

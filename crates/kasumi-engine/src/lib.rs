@@ -1,5 +1,6 @@
 //! Deterministic tenant state and the common authorized service layer.
 pub use service::control_administration::ControlAdministrativeFence;
+pub use service::control_topology_service::VerifiedControlTopology;
 pub use service::lifecycle_service::{
     LifecycleSigner, VerifiedLifecycleChange, VerifiedLifecycleIntent,
 };
@@ -33,9 +34,7 @@ mod target_invocation;
 mod target_signer;
 pub use backup_proof::VerifiedBackupCheckpoint;
 pub use service::target_activation_service::VerifiedTargetActivation;
-pub use service::target_initial_membership_service::{
-    VerifiedTargetInitialMembershipAssociation, VerifiedTargetInitialMembershipStatus,
-};
+pub use service::target_initial_membership_service::VerifiedTargetInitialMembershipStatus;
 pub use service::target_inspection_service::VerifiedTargetInspection;
 pub use service::target_receiver_service::VerifiedTargetReceiver;
 pub use service::target_service::VerifiedTargetCompletion;
@@ -123,7 +122,7 @@ pub use target_journal::{
     InitialInitializePermit, MaterializationFile, MaterializationNode,
     ResolvedInitialMembershipHistory, ResolvedInitialStart, TargetJournal,
     TargetJournalInstallation, TargetJournalIntent, VerifiedInitialMembership,
-    VerifiedTargetServingProjection,
+    VerifiedTargetInitializationAssociation, VerifiedTargetServingProjection,
 };
 
 pub use bootstrap::target_serving::{TargetServingReplica, open_serving_target};

@@ -63,6 +63,9 @@ impl StateMachineBackend for ClosedBackend {
     fn apply(&self, _: &AppliedEntryContext, _: &[u8]) -> Result<crate::AppliedResponse> {
         anyhow::bail!("metadata test cannot apply payload")
     }
+    fn apply_metadata(&self, _position: &crate::AppliedEntryContext) -> anyhow::Result<()> {
+        Ok(())
+    }
     fn capture_snapshot(&self) -> Result<crate::CapturedSnapshot> {
         let retirement = self.0.lock().unwrap().clone();
         Ok(crate::CapturedSnapshot::new(

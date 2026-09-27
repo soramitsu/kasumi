@@ -125,6 +125,9 @@ impl StateMachineBackend for BytesBackend {
         *self.0.lock().unwrap() = bytes.to_vec();
         Ok(crate::AppliedResponse::application(bytes.to_vec()))
     }
+    fn apply_metadata(&self, _position: &crate::AppliedEntryContext) -> anyhow::Result<()> {
+        Ok(())
+    }
     fn capture_snapshot(&self) -> Result<crate::CapturedSnapshot> {
         let data = self.0.lock().unwrap().clone();
         Ok(crate::CapturedSnapshot::new(None, move |writer| {
@@ -213,6 +216,9 @@ async fn applied_metadata_does_not_block_runtime_while_snapshot_capture_holds_st
             bytes: &[u8],
         ) -> Result<crate::AppliedResponse> {
             Ok(crate::AppliedResponse::application(bytes.to_vec()))
+        }
+        fn apply_metadata(&self, _position: &crate::AppliedEntryContext) -> anyhow::Result<()> {
+            Ok(())
         }
         fn capture_snapshot(&self) -> Result<crate::CapturedSnapshot> {
             self.entered
@@ -303,6 +309,7 @@ fn envelope(bytes: Vec<u8>, fixture_scratch: Arc<kasumi_store::ScratchDisk>) -> 
         backend: kasumi_store::SnapshotImage::from_bytes(&fixture_scratch.clone(), &bytes).unwrap(),
         retirement: None,
         first_membership: None,
+        initialization_association: None,
     }
 }
 
@@ -397,6 +404,7 @@ async fn first_membership_snapshot_install_reopen_and_substitution_are_bound() -
         std::collections::BTreeMap::from([(1, BasicNode::new("first"))]),
     );
     let first_entry = Entry::<TypeConfig> {
+        initialization: None,
         log_id: first_id,
         payload: EntryPayload::Membership(first_membership),
     };
@@ -413,6 +421,8 @@ async fn first_membership_snapshot_install_reopen_and_substitution_are_bound() -
         later_membership,
     );
     snapshot.first_membership = Some(first_fact.clone());
+    snapshot.initialization_association =
+        Some(crate::initialization_association::AssociationState::Ordinary {});
     let encoded = snapshot.encode(64 << 20)?;
     let decoded = SnapshotEnvelope::decode(encoded.disk(), &mut encoded.reader(), 64 << 20)?;
     assert_eq!(decoded.first_membership, Some(first_fact.clone()));
@@ -437,6 +447,7 @@ async fn first_membership_snapshot_install_reopen_and_substitution_are_bound() -
     );
 
     let substituted = Entry::<TypeConfig> {
+        initialization: None,
         log_id: first_id,
         payload: EntryPayload::Membership(openraft::Membership::new(
             vec![std::collections::BTreeSet::from([1])],
@@ -713,6 +724,7 @@ async fn eight_mib_command_uses_compact_log_record_and_replays_after_reopen() ->
         )?;
         let mut log = LogStore::open(domains, 1).await?;
         let entry = Entry::<TypeConfig> {
+            initialization: None,
             log_id: LogId::new(openraft::CommittedLeaderId::new(1, 1), 0),
             payload: EntryPayload::Normal(crate::RaftCommand::application(bytes.clone())),
         };
@@ -775,6 +787,9 @@ async fn snapshot_materialization_releases_applied_lock_and_keeps_captured_root(
         ) -> Result<crate::AppliedResponse> {
             *self.bytes.lock().unwrap() = bytes.to_vec();
             Ok(crate::AppliedResponse::application(bytes.to_vec()))
+        }
+        fn apply_metadata(&self, _position: &crate::AppliedEntryContext) -> anyhow::Result<()> {
+            Ok(())
         }
         fn capture_snapshot(&self) -> Result<crate::CapturedSnapshot> {
             let bytes = self.bytes.lock().unwrap().clone();
