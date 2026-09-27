@@ -1,0 +1,10 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.33s
+     Running tests/life_cycle/main.rs (target/debug/deps/life_cycle-02d993864599bf3a)
+
+running 3 tests
+test t10_initialization::initialize_err_target_not_include_target ... ok
+test t10_initialization::initialize_err_not_allowed ... ok
+test t10_initialization::initialization ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 20 filtered out; finished in 0.06s
+

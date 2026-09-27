@@ -311,8 +311,7 @@ pub enum TargetRuntimeStep {
     ConfirmInspection(Box<SignedTargetInspection>),
     Inspect(Box<TargetInspectionInput>),
     InspectCompletionAttempt(Box<TargetCompletionAttemptStatusInput>),
-    InspectInitialAssociation(Box<TargetInitialMembershipStatusInput>),
-    InspectInitialMembership(Box<SignedTargetInitialMembershipAssociation>),
+    InspectInitialMembership(Box<TargetInitialMembershipStatusInput>),
     InspectCompletionResolution(Box<TargetCompletionTerminalStatusInput>),
     Stop(TargetStopReference),
 }
@@ -371,11 +370,8 @@ impl TargetRuntimeRequest {
             TargetRuntimeStep::Inspect(input) => {
                 input.digest()?;
             }
-            TargetRuntimeStep::InspectInitialAssociation(input) => {
+            TargetRuntimeStep::InspectInitialMembership(input) => {
                 input.digest()?;
-            }
-            TargetRuntimeStep::InspectInitialMembership(association) => {
-                association.observation.validate()?;
             }
             TargetRuntimeStep::InspectCompletionAttempt(input) => {
                 input.digest()?;
@@ -418,7 +414,6 @@ pub enum TargetRuntimeOutcome {
     Activated(Box<SignedTargetActivation>),
     Inspected(Box<SignedTargetInspection>),
     CompletionAttemptStatus(Box<SignedTargetCompletionAttemptStatus>),
-    InitialMembershipAssociation(Box<SignedTargetInitialMembershipAssociation>),
     InitialMembershipStatus(Box<SignedTargetInitialMembershipStatus>),
     CompletionTerminalStatus(Box<SignedTargetCompletionTerminalStatus>),
     Stopped(Box<SignedLocalTargetCleanup>),

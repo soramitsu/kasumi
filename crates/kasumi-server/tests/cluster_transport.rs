@@ -57,6 +57,9 @@ impl StateMachineBackend for Backend {
         self.0.lock().unwrap().insert(index, command.to_vec());
         Ok(kasumi_raft::AppliedResponse::application(command.to_vec()))
     }
+    fn apply_metadata(&self, _position: &kasumi_raft::AppliedEntryContext) -> Result<()> {
+        Ok(())
+    }
     fn capture_snapshot(&self) -> Result<kasumi_raft::CapturedSnapshot> {
         let data = self.0.lock().unwrap().clone();
         Ok(kasumi_raft::CapturedSnapshot::new(None, move |writer| {

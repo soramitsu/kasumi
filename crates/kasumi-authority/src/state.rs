@@ -989,6 +989,19 @@ impl StateMachineBackend for Backend {
         };
         Ok(AppliedResponse::application(bytes))
     }
+    fn apply_metadata(&self, position: &AppliedEntryContext) -> Result<()> {
+        let _lock = self
+            .mutation
+            .lock()
+            .map_err(|_| anyhow::anyhow!("authority state poisoned"))?;
+        let mut meta = self.meta()?;
+        if position.log_id.index > meta.revision {
+            meta.revision = position.log_id.index;
+            self.store
+                .write_batch(&[WriteOp::put(NS, META, serde_json::to_vec(&meta)?)])?;
+        }
+        Ok(())
+    }
     fn capture_snapshot(&self) -> Result<kasumi_raft::CapturedSnapshot> {
         let _lock = self
             .mutation

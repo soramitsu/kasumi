@@ -329,7 +329,6 @@ impl Generation {
     }
 }
 enum ResponseEvidence {
-    InitialAssociation(Box<kasumi_engine::VerifiedTargetInitialMembershipAssociation>),
     InitialInspection(Box<kasumi_engine::VerifiedTargetInitialMembershipStatus>),
     Receiver(Box<kasumi_engine::VerifiedTargetReceiver>),
     Materialized(Box<kasumi_engine::VerifiedTargetMaterialization>),
@@ -360,18 +359,6 @@ impl TargetRuntimeReply {
             .check_operation(&self.operation, &self.bearer)
             .await?;
         match &self.evidence {
-            ResponseEvidence::InitialAssociation(proof) => {
-                observe_initial_inspection_from_control(
-                    &self.runtime.installed,
-                    self.operation.context(),
-                    &self.bearer,
-                    &proof.observation().input,
-                    self.phase.original(),
-                    self.operation.admission(),
-                )
-                .await?;
-                proof.release(&self.operation).await?;
-            }
             ResponseEvidence::InitialInspection(proof) => {
                 observe_initial_inspection_from_control(
                     &self.runtime.installed,
@@ -1347,22 +1334,8 @@ impl TargetRecoveryRuntime {
                     signed.observation.input.digest()?,
                 )
             }
-            TargetRuntimeStep::InspectInitialAssociation(input) => {
+            TargetRuntimeStep::InspectInitialMembership(input) => {
                 (LifecyclePhase::InspectInitialMembership, input.digest()?)
-            }
-            TargetRuntimeStep::InspectInitialMembership(association) => {
-                verify_target_initial_membership_association(
-                    &association.observation.input,
-                    association,
-                )?;
-                ensure!(
-                    association.observation.status_intent == phase.original().observation().intent,
-                    "initial association current phase differs"
-                );
-                (
-                    LifecyclePhase::InspectInitialMembership,
-                    association.observation.input.digest()?,
-                )
             }
             TargetRuntimeStep::Inspect(i) => (LifecyclePhase::InspectTarget, i.digest()?),
             TargetRuntimeStep::InspectCompletionAttempt(i) => {
@@ -1640,13 +1613,8 @@ impl TargetRecoveryRuntime {
             TargetRuntimeStep::ConfirmInspection(signed) => {
                 TargetReplicaInput::Inspection(Box::new(signed.observation.input.clone()))
             }
-            TargetRuntimeStep::InspectInitialAssociation(input) => {
+            TargetRuntimeStep::InspectInitialMembership(input) => {
                 TargetReplicaInput::InitialMembershipStatus(input.clone())
-            }
-            TargetRuntimeStep::InspectInitialMembership(association) => {
-                TargetReplicaInput::InitialMembershipStatus(Box::new(
-                    association.observation.input.clone(),
-                ))
             }
             TargetRuntimeStep::Inspect(i) => TargetReplicaInput::Inspection(i.clone()),
             TargetRuntimeStep::InspectCompletionAttempt(i) => {
@@ -1772,7 +1740,6 @@ impl TargetRecoveryRuntime {
                 let permit = initial_candidate
                     .context("accepted Initialize candidate absent")?
                     .bind_initialize(&self.journal, op, replica)?;
-                replica.initialize(op, permit).await?;
                 let identity = initial_dispatch.context("Initialize dispatch identity absent")?;
                 let (original, marked) = observe_initial_dispatch_from_control(
                     &self.installed,
@@ -1786,6 +1753,17 @@ impl TargetRecoveryRuntime {
                     &self.marked_first_membership_reads,
                 )
                 .await?;
+                let association = permit.prove(
+                    replica,
+                    self.journal.clone(),
+                    original.clone(),
+                    marked.clone(),
+                    op,
+                )?;
+                let signed = self
+                    .signer
+                    .sign_initialization_association(&association, op)?;
+                association.commit(&signed, op).await?;
                 self.journal
                     .record_initial_membership_history(
                         &original, &marked, identity, request, &stores,
@@ -1822,15 +1800,6 @@ impl TargetRecoveryRuntime {
                     )),
                     ResponseEvidence::Receiver(Box::new(proof)),
                 ))
-            }
-            TargetRuntimeStep::InspectInitialAssociation(input) => {
-                self.perform_initial_association(
-                    replica.database(),
-                    op,
-                    inspection_control.context("initial inspection current Control absent")?,
-                    input,
-                )
-                .await
             }
             TargetRuntimeStep::InspectInitialMembership(input) => {
                 self.perform_initial_membership_inspection(
@@ -1960,35 +1929,12 @@ impl TargetRecoveryRuntime {
     // execution frame. In particular, Initialize must not pay the stack cost
     // of two independent read-only proof paths while it polls authority TLS.
     #[inline(never)]
-    fn perform_initial_association<'a>(
-        &'a self,
-        database: &'a Arc<kasumi_engine::Database>,
-        op: &'a TargetOperation,
-        control: kasumi_serving::VerifiedControlIntent,
-        input: &'a kasumi_types::TargetInitialMembershipStatusInput,
-    ) -> impl std::future::Future<Output = Result<(TargetRuntimeOutcome, ResponseEvidence)>> + 'a
-    {
-        Box::pin(async move {
-            let proof = database
-                .inspect_initial_association(op, self.journal.clone(), control, input.clone())
-                .await?;
-            let signed = self
-                .signer
-                .sign_initial_membership_association(&proof, op)
-                .await?;
-            Ok((
-                TargetRuntimeOutcome::InitialMembershipAssociation(Box::new(signed)),
-                ResponseEvidence::InitialAssociation(Box::new(proof)),
-            ))
-        })
-    }
-    #[inline(never)]
     fn perform_initial_membership_inspection<'a>(
         &'a self,
         database: &'a Arc<kasumi_engine::Database>,
         op: &'a TargetOperation,
         control: kasumi_serving::VerifiedControlIntent,
-        input: &'a kasumi_types::SignedTargetInitialMembershipAssociation,
+        input: &'a kasumi_types::TargetInitialMembershipStatusInput,
     ) -> impl std::future::Future<Output = Result<(TargetRuntimeOutcome, ResponseEvidence)>> + 'a
     {
         Box::pin(async move {

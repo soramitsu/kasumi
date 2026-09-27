@@ -239,9 +239,6 @@ pub struct RecoveryRecord {
     /// Exact original Start outcomes frozen with the Initialize BeginEffect.
     #[serde(deserialize_with = "crate::deserialize_u64_map")]
     pub initialization_starts: BTreeMap<u64, Uuid>,
-    /// Exact signed original-node association for the current inspection intent.
-    #[serde(deserialize_with = "crate::require_explicit_option")]
-    pub initialization_association: Option<Uuid>,
     #[serde(deserialize_with = "crate::require_explicit_option")]
     pub completion_intent: Option<Uuid>,
     #[serde(deserialize_with = "crate::require_explicit_option")]
@@ -529,15 +526,6 @@ impl RecoveryRecord {
             "active completion predecessor lacks its original intent",
         )?;
         self.request.validate()?;
-        require_recovery(
-            self.initialization_association.is_none_or(|id| {
-                !id.is_nil()
-                    && self
-                        .initialization_attempt
-                        .is_some_and(|attempt| attempt != id)
-            }),
-            "initial membership association lacks its original attempt",
-        )?;
         require_recovery(
             match self.initialization_attempt {
                 Some(id) => {

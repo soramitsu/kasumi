@@ -1,0 +1,11 @@
+{
+  "changed": [
+    "crates/kasumi-engine/src/target_journal_open_tests.rs",
+    "crates/kasumi-raft/src/entry.rs"
+  ],
+  "scope": "rustfmt of cfg(test) assertions only; native candidate remained byte-identical through native run",
+  "files": {
+    "crates/kasumi-engine/src/target_journal_open_tests.rs": "71789ae90f9f9358db54f85a6a75db7df072ace93aa52daaf69fb1e36d31af9f",
+    "crates/kasumi-raft/src/entry.rs": "7a7172ec7dd11233c42d6e6f5915a237c8658b5ecab015e0025f5de89591069b"
+  }
+}

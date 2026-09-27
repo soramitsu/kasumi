@@ -60,7 +60,7 @@ The complete 600-file workspace is retained; Cargo selects `openraft` from its
 `openraft/` package and `openraft-macros` from the sibling `macros/` package.
 The fork retains actual runtime children, incoming snapshot owners and original
 shutdown failures across cancellation, and exposes the membership observer used
-by readiness. Its bytes and permissions match the preserved
+by readiness. Its historical bytes and permissions matched the preserved
 [final custody checkpoint](../docs/evidence/openraft-canonical-20260920/custody-checkpoint.json)
 and final-49 inventory SHA-256
 `70cce233f67865044d8550bd613c7696abfbe0b47f7fa0d436199a9a709bffa6`.
@@ -69,6 +69,19 @@ upstream ignore rules omit that lockfile. Stage/package the recorded lockfile
 explicitly; do not recreate it during verification. The
 [custody evidence](../docs/evidence/openraft-canonical-20260920/README.md) qualifies
 that upstream checkpoint, not the integrated Kasumi release.
+
+The later G09 atomic-initialization development cutover changes four OpenRaft
+source files to preserve an application-defined first membership entry through
+initialization. Its source archive and focused library/API evidence are retained
+in [the atomic-entry lane](../docs/evidence/g09-atomic-initial-entry-development-20260927/README.md).
+The old custody inventory above does not qualify these new bytes. The
+[independent source review](../docs/evidence/openraft-atomic-initial-entry-review-20260927/README.md)
+records the exact four-file change and deliberately advances the 600-file source
+inventory. It preserves the old manifest/checkpoint and explicitly remains a
+development dependency checkpoint. Its recorded 296 upstream cases and scoped
+Kasumi cases do not replace the remaining frozen upstream, platform, fault or
+integrated release gates. No release qualification is asserted by this source
+inventory update.
 
 ## Verification
 

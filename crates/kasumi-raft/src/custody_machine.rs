@@ -1,5 +1,6 @@
 //! Closed state machine for the existing retired source quorum. It owns only the
 //! independently keyed custody store and never constructs an application backend.
+use crate::Entry;
 use crate::control::{self, AppliedCursor, AppliedEntryContext, META, load};
 use crate::lifetime::{StorageHandle, StorageLease};
 use crate::storage::{SnapshotCoverage, SnapshotEnvelope, SnapshotKind, as_snapshot};
@@ -7,7 +8,7 @@ use crate::{BasicNode, LogId, SnapshotBuffer, TypeConfig};
 use anyhow::{Context, Result, ensure};
 use kasumi_store::{CustodyStore, WriteOp};
 use openraft::{
-    Entry, EntryPayload, OptionalSend, RaftSnapshotBuilder, Snapshot, SnapshotMeta, StorageError,
+    EntryPayload, OptionalSend, RaftSnapshotBuilder, Snapshot, SnapshotMeta, StorageError,
     StorageIOError, StoredMembership, storage::RaftStateMachine,
 };
 use std::sync::{
@@ -54,6 +55,10 @@ pub(crate) fn capture(custody: &CustodyStore) -> Result<SnapshotEnvelope> {
         meta,
         backend: kasumi_store::SnapshotImage::from_bytes(custody.store().scratch_disk(), &[])?,
         retirement,
+        initialization_association: crate::initialization_association::load_state(
+            custody,
+            first_membership.as_ref(),
+        )?,
         first_membership,
     })
 }
@@ -92,6 +97,7 @@ pub(crate) fn publish(
         &snapshot.meta,
         Some(retirement),
         snapshot.first_membership.as_ref(),
+        snapshot.initialization_association.as_ref(),
         &backend_digest,
         &digest,
     )?;
@@ -138,6 +144,7 @@ pub(crate) fn load_snapshot(
         &coverage.snapshot_sha256,
         snapshot.retirement.as_ref(),
         snapshot.first_membership.as_ref(),
+        snapshot.initialization_association.as_ref(),
     )?;
     ensure!(
         snapshot.retirement.is_some(),
@@ -414,6 +421,7 @@ mod tests {
 
     fn membership() -> Entry<TypeConfig> {
         Entry {
+            initialization: None,
             log_id: id(0),
             payload: EntryPayload::Membership(openraft::Membership::new(
                 vec![BTreeSet::from([1])],
@@ -478,6 +486,7 @@ mod tests {
         let initial = control::custody_state(domains.custody())?;
         let command = rotation(&initial.origin.request);
         log.blocking_append([Entry {
+            initialization: None,
             log_id: id(2),
             payload: EntryPayload::Normal(crate::RaftCommand::custody(&command)?),
         }])
@@ -546,6 +555,7 @@ mod tests {
         let state = control::custody_state(domains.custody())?;
         let command = rotation(&state.origin.request);
         log.blocking_append([Entry {
+            initialization: None,
             log_id: id(2),
             payload: EntryPayload::Normal(crate::RaftCommand::custody(&command)?),
         }])
@@ -658,6 +668,7 @@ mod tests {
         let retirement = retirement_entry()?;
         let voters = BTreeSet::from([1, 2, 3]);
         let members = Entry {
+            initialization: None,
             log_id: id(0),
             payload: EntryPayload::Membership(openraft::Membership::new(
                 vec![voters.clone()],
@@ -738,6 +749,7 @@ mod tests {
         let initial = control::custody_state(domains.custody())?;
         let command = rotation(&initial.origin.request);
         log.blocking_append([Entry {
+            initialization: None,
             log_id: id(2),
             payload: EntryPayload::Normal(crate::RaftCommand::custody(&command)?),
         }])
@@ -847,6 +859,7 @@ mod tests {
                 .request,
         );
         log.blocking_append([Entry {
+            initialization: None,
             log_id: id(2),
             payload: EntryPayload::Normal(crate::RaftCommand::custody(&command)?),
         }])
@@ -942,6 +955,7 @@ mod tests {
         assert!(crate::ControlLog::open(domains.custody().clone(), 1, group())?.recover_retired()?);
         let command = rotation(&control::custody_state(domains.custody())?.origin.request);
         log.blocking_append([Entry {
+            initialization: None,
             log_id: id(2),
             payload: EntryPayload::Normal(crate::RaftCommand::custody(&command)?),
         }])

@@ -644,11 +644,57 @@ source/binary hashes. The passing test uses the normal worker stack. The
 externally during execution from `aa2343538` to `065e5719a`; that observation
 does not qualify either commit as an immutable release.
 
-The original designated custodian must still be reachable to retrieve its fresh
-association. Permanent loss before retrieval, the pending-phase OS crash
+That recorded checkpoint still requires the original designated custodian to
+retrieve its fresh association. Permanent loss before retrieval, the pending-phase OS crash
 matrix, nine-process HA, exact deletion and frozen release qualification remain
 open. The new native evidence proves controlled service/child shutdown and
 reopen under a different elected leader; **G09 remains unqualified**.
+
+The next first-release source cutover replaces that interim original-node RPC
+with a bounded quorum-committed original initialization cause. Original execution
+owns the signer proof; fresh current-leader inspection reads immutable consensus
+metadata, using two available members of the unchanged installed quorum. Pending
+first membership before association commitment remains UnknownOutcome. Explicit
+snapshot state/anchor checks reject missing, downgraded and substituted metadata;
+consensus-only apply advances the logical snapshot cursor without application effects.
+The [current development lane](evidence/g09-replicated-initial-association-development-20260927/README.md)
+records reducer **9/9**, journal **18/18**, snapshot format/install gates **2/2**,
+and native lost Start/Initialize plus actual metadata corruption and snapshot/purge
+checks **1/1 in 75.25 seconds**. Production server check passes in 38.12 seconds.
+The exact-current node1-unavailable fixture passes **1/1 in 480.22 seconds**.
+Node2 resolves the expired original cause at 178.45 seconds while node1's target
+runtime/listener remain shut down, after all three targets snapshotted and purged
+the original metadata entry. Node1 is restored only after this positive read.
+The same run reaches Finished at 434.41 seconds, joins original owners at
+437.62 seconds (84.783 ms / 3.583 µs / 1.125 µs), and completes ordinary serving
+reopen. Its executable and all 563 captured source files remain identical through
+the run. The same-executable lost Start/Initialize plus metadata/snapshot regression
+passes **1/1 in 80.83 seconds**, bringing this lane to 31 distinct cases across
+six focused test commands.
+These checks do not qualify G09 or an immutable release.
+
+The next [atomic first-entry development checkpoint](evidence/g09-atomic-initial-entry-development-20260927/README.md)
+retires that separate cause command and its target Pending state. The actual
+original owner signs accepted Start/Initialize authority before proposal; a typed
+first membership entry carries it through a narrow OpenRaft initializer. The
+first fact, exact signed cause and cursor are retained in one custody transaction.
+Preappend negatives reject missing, invalidly signed and substituted causes.
+Snapshots and purge retain the same immutable entry. Fresh inspection grants no
+execution authority or write path, and absent committed initialization remains
+UnknownOutcome.
+
+The journal suite passes **19/19**, inspection reducers **9/9**, and three Raft
+format/snapshot cases pass. Native lost replies pass **1/1 in 72.47 seconds**;
+the same executable passes expired original authority with node1 unavailable,
+positive unchanged two-of-three inspection, Finished, owner drain and serving
+reopen **1/1 in 473.72 seconds**. Its 993 captured source files remain identical
+through the latter run. Two subsequent test-only formatting deltas are retained
+separately. Upstream production-feature library tests pass **219/219** and
+API/lifecycle/membership tests pass **77/77**. The four changed vendor files still
+need a reviewed successor inventory and remaining upstream/release qualification;
+the original vendor seal is preserved as history. This is neither OS-process
+crash acceptance nor nine-process HA or G09/release qualification.
+
 
 The following independent G01/G02 checkpoints record registered storage and
 allocation progress, along with the still-held G03, G05 and G08 work.

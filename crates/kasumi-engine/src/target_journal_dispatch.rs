@@ -20,7 +20,7 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 #[path = "target_journal_initialize.rs"]
 mod initialize;
-pub use initialize::InitialInitializePermit;
+pub use initialize::{InitialInitializePermit, VerifiedTargetInitializationAssociation};
 
 /// A complete immutable local admission record. Keeping the frozen phase and
 /// lifecycle intent makes startup validation independent of a live Control read.
@@ -677,6 +677,20 @@ impl TargetJournal {
         stores: &TenantStorageSet,
     ) -> Result<ResolvedInitialMembershipHistory> {
         let accepted = self.authenticate_initial_dispatch(control, marked, identity, request)?;
+        if matches!(request.step, TargetRuntimeStep::Initialize(_)) {
+            let retained = kasumi_raft::read_initialization_association(stores)?.context(
+                "first membership exists but original initialization cause is not committed",
+            )?;
+            let start = self.initialized_start_prebind(&accepted, Some(stores))?;
+            let start_row = self.accepted_prebind_record(&start)?;
+            ensure!(
+                retained.signed.association.control_root == control.observation().root
+                    && retained.signed.association.original_intent == control.observation().intent
+                    && retained.signed.association.initialize == *marked
+                    && retained.signed.association.start == start_row.phase,
+                "committed initialization cause differs from original accepted packet"
+            );
+        }
         self.resolve_authenticated_initial_history(accepted, identity, request, stores)
     }
 
@@ -989,30 +1003,5 @@ impl TargetJournal {
             .map_err(|_| anyhow::anyhow!("target journal poisoned"))?;
         let expected = self.initial_inspection_start_prebind(current, input, stores)?;
         read_target_first_membership_history(stores, &expected)
-    }
-    /// Historical association under a distinct current read-only commitment.
-    /// This never authenticates the expired original as a live capability.
-    pub fn resolve_initial_membership_inspection(
-        &self,
-        current: &VerifiedControlIntent,
-        input: &kasumi_types::TargetInitialMembershipStatusInput,
-        stores: &TenantStorageSet,
-    ) -> Result<ResolvedInitialMembershipHistory> {
-        let _guard = self
-            .mutation
-            .lock()
-            .map_err(|_| anyhow::anyhow!("target journal poisoned"))?;
-        self.require_initial_inspection_control(current, input)?;
-        let RecoveryDispatch::Target { request, .. } = &input.initialize.input else {
-            anyhow::bail!("initial inspection original Initialize absent")
-        };
-        let identity = input.identity()?;
-        let accepted = self.authenticate_initial_dispatch_bytes(
-            &input.original_intent,
-            &input.initialize,
-            &identity,
-            request,
-        )?;
-        self.resolve_authenticated_initial_history(accepted, &identity, request, stores)
     }
 }

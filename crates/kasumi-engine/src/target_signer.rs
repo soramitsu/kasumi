@@ -10,45 +10,39 @@ pub struct TargetSigner {
     key: Ed25519KeyPair,
 }
 impl TargetSigner {
-    pub async fn sign_initial_membership_association(
+    pub fn sign_initialization_association(
         &self,
-        proof: &crate::VerifiedTargetInitialMembershipAssociation,
+        proof: &crate::VerifiedTargetInitializationAssociation<'_>,
         operation: &TargetOperation,
-    ) -> Result<SignedTargetInitialMembershipAssociation> {
-        proof.release(operation).await?;
-        let observation = proof.observation().clone();
-        self.check(observation.origin()?, operation).map_err(|_| {
+    ) -> Result<SignedTargetInitializationAssociation> {
+        let denied = |_| {
             Error::new(
                 ErrorCode::Forbidden,
-                "installed initial membership association signer differs",
+                "original initialization signing authority unavailable",
             )
-        })?;
-        if observation.original_node_id != self.node.node_id {
+        };
+        proof.release(operation).map_err(denied)?;
+        let association = proof.association().clone();
+        self.check(association.origin()?, operation)
+            .map_err(denied)?;
+        if association.node_id()? != self.node.node_id {
             return Err(Error::new(
                 ErrorCode::Forbidden,
-                "initial association signer is not original designated node",
+                "initialization signer is not original designated node",
             ));
         }
-        let bytes = serde_json::to_vec(&(
-            "kasumi.target-initial-membership-association-observation.v1",
-            &observation,
-        ))
-        .map_err(|_| {
-            Error::new(
-                ErrorCode::Unavailable,
-                "initial membership association encoding failed",
-            )
-        })?;
+        let bytes =
+            serde_json::to_vec(&("kasumi.target-initialization-association.v1", &association))
+                .map_err(|_| {
+                    Error::new(
+                        ErrorCode::Unavailable,
+                        "initialization cause encoding failed",
+                    )
+                })?;
         let signature = hex::encode(self.key.sign(&bytes).as_ref());
-        proof.release(operation).await?;
-        self.check(observation.origin()?, operation).map_err(|_| {
-            Error::new(
-                ErrorCode::Unavailable,
-                "initial membership association signer changed during release",
-            )
-        })?;
-        Ok(SignedTargetInitialMembershipAssociation {
-            observation,
+        proof.release(operation).map_err(denied)?;
+        Ok(SignedTargetInitializationAssociation {
+            association,
             signature,
         })
     }

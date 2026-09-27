@@ -1,23 +1,22 @@
 //! Fixture-only publication of an actual committed/applied first membership.
 //! This feature is unavailable in normal production builds.
+use crate::Entry;
 use crate::{
     AppliedEntryContext, BasicNode, LogId, LogStore, TargetFirstMembershipPrebind, TypeConfig,
 };
 use anyhow::Result;
 use kasumi_store::TenantStorageSet;
 use openraft::storage::{RaftLogStorage, RaftLogStorageExt};
-use openraft::{Entry, EntryPayload, Membership, StoredMembership};
+use openraft::{EntryPayload, Membership, StoredMembership};
 use std::{collections::BTreeMap, sync::Arc};
 
 pub async fn publish_committed_first_membership(
     stores: Arc<TenantStorageSet>,
     expected: &TargetFirstMembershipPrebind,
+    cause: Option<&kasumi_types::SignedTargetInitializationAssociation>,
 ) -> Result<LogId<u64>> {
     expected.validate_unapplied_storage(&stores)?;
-    let log_id = LogId::new(
-        openraft::CommittedLeaderId::new(3, expected.node.node_id),
-        0,
-    );
+    let log_id = LogId::default();
     let membership = Membership::new(
         vec![expected.voters.keys().copied().collect()],
         expected
@@ -27,6 +26,7 @@ pub async fn publish_committed_first_membership(
             .collect::<BTreeMap<_, _>>(),
     );
     let entry = Entry::<TypeConfig> {
+        initialization: cause.map(serde_json::to_vec).transpose()?,
         log_id,
         payload: EntryPayload::Membership(membership.clone()),
     };

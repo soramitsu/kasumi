@@ -8,6 +8,8 @@ mod backup_producer_jobs;
 pub(crate) mod construction;
 #[path = "control_administration.rs"]
 pub(crate) mod control_administration;
+#[path = "control_topology_service.rs"]
+pub(crate) mod control_topology_service;
 #[cfg(test)]
 #[path = "database_worker_outcome_tests.rs"]
 mod database_worker_outcome_tests;

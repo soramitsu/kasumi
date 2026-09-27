@@ -1,3 +1,4 @@
+use crate::Entry;
 use crate::command::sha256;
 use crate::control::{AppliedEntryContext, HEADERS, HeaderPayload, LogHeader, RetainedSeed, SEEDS};
 use crate::lifetime::{StorageHandle, StorageLease};
@@ -8,8 +9,8 @@ use anyhow::{Context, Result, ensure};
 use kasumi_store::{EncryptedSpool, SnapshotImage};
 use kasumi_store::{TenantStorageSet, TenantStore, WriteOp};
 use openraft::{
-    Entry, EntryPayload, LogId, LogState, OptionalSend, RaftLogReader, RaftSnapshotBuilder,
-    Snapshot, SnapshotMeta, StorageError, StorageIOError, StoredMembership, Vote,
+    EntryPayload, LogId, LogState, OptionalSend, RaftLogReader, RaftSnapshotBuilder, Snapshot,
+    SnapshotMeta, StorageError, StorageIOError, StoredMembership, Vote,
     storage::{LogFlushed, RaftLogStorage, RaftStateMachine},
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -294,10 +295,12 @@ impl RaftLogReader<TypeConfig> for LogStore {
                     ensure!(header.log_id == id, "raft cached log ID mismatch");
                     let entry = match &header.payload {
                         HeaderPayload::Blank => Entry {
+                            initialization: None,
                             log_id: id,
                             payload: EntryPayload::Blank,
                         },
                         HeaderPayload::Membership(membership) => Entry {
+                            initialization: header.initialization.clone(),
                             log_id: id,
                             payload: EntryPayload::Membership(membership.clone()),
                         },
@@ -407,6 +410,7 @@ impl RaftLogStorage<TypeConfig> for LogStore {
         let writes = entries
             .iter()
             .map(|entry| {
+                crate::initialization_association::validate_entry(self.domains.custody(), entry)?;
                 let encoded = encode_entry(entry)?;
                 let (header, seed) = LogHeader::build(entry, &encoded)?;
                 header.validate()?;
@@ -598,6 +602,7 @@ impl RaftLogStorage<TypeConfig> for LogStore {
                 .map_err(|_| anyhow::anyhow!("raft index lock poisoned"))?;
             let first = crate::control::first_applied_membership(domains.custody().store())?;
             crate::control::local_first_association_write(domains.custody(), first.as_ref(), None)?;
+            crate::initialization_association::load_state(domains.custody(), first.as_ref())?;
             let retired = crate::control::retired_boundary(domains.custody())?.is_some();
             let ids = index
                 .range(..=log_id.index)
@@ -656,6 +661,8 @@ pub(crate) struct SnapshotEnvelope {
     pub(crate) backend: SnapshotImage,
     pub(crate) retirement: Option<crate::snapshot_custody::SnapshotRetirement>,
     pub(crate) first_membership: Option<crate::control::FirstAppliedMembership>,
+    pub(crate) initialization_association:
+        Option<crate::initialization_association::AssociationState>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -780,6 +787,7 @@ fn validate_snapshot_coverage(
         &manifest.sha256,
         snapshot.retirement.as_ref(),
         snapshot.first_membership.as_ref(),
+        snapshot.initialization_association.as_ref(),
     )?;
     Ok(())
 }
@@ -919,6 +927,7 @@ fn publish_snapshot(
         &snapshot.meta,
         snapshot.retirement.as_ref(),
         snapshot.first_membership.as_ref(),
+        snapshot.initialization_association.as_ref(),
         &coverage.backend_sha256,
         &coverage.snapshot_sha256,
     )?;
@@ -1055,6 +1064,10 @@ impl StateMachine {
                 first.as_ref(),
                 None,
             )?;
+            crate::initialization_association::load_state(
+                captured_domains.custody(),
+                first.as_ref(),
+            )?;
             cleanup_snapshots(&captured, limit)?;
             if let Some(snapshot) = load_snapshot(&captured, limit)? {
                 validate_snapshot_coverage(&captured_domains, &snapshot, limit)?;
@@ -1118,6 +1131,7 @@ struct LogicalSnapshot {
     backend: crate::CapturedSnapshot,
     retirement: Option<crate::snapshot_custody::SnapshotRetirement>,
     first_membership: Option<crate::control::FirstAppliedMembership>,
+    initialization_association: Option<crate::initialization_association::AssociationState>,
 }
 pub struct SnapshotBuilder {
     machine: StateMachine,
@@ -1212,6 +1226,7 @@ impl RaftSnapshotBuilder<TypeConfig> for SnapshotBuilder {
                 })?,
                 retirement: logical.retirement.clone(),
                 first_membership: logical.first_membership.clone(),
+                initialization_association: logical.initialization_association.clone(),
             };
             let snapshot = as_snapshot(&captured, limit, &snapshot_buffers)?;
             let mut pending =
@@ -1296,10 +1311,18 @@ impl RaftStateMachine<TypeConfig> for StateMachine {
                     retirement_seed,
                 };
                 let response = match entry.payload {
-                    EntryPayload::Blank => crate::AppliedResponse::application(Vec::new()),
+                    EntryPayload::Blank => {
+                        if crate::control::retired_boundary(machine.domains.custody())?.is_none() {
+                            machine.backend.apply_metadata(&position)?;
+                        }
+                        crate::AppliedResponse::application(Vec::new())
+                    }
                     EntryPayload::Membership(membership) => {
                         state.membership = StoredMembership::new(Some(entry.log_id), membership);
                         position.membership = state.membership.clone();
+                        if crate::control::retired_boundary(machine.domains.custody())?.is_none() {
+                            machine.backend.apply_metadata(&position)?;
+                        }
                         crate::AppliedResponse::application(Vec::new())
                     }
                     EntryPayload::Normal(command) => {
@@ -1369,6 +1392,10 @@ impl RaftStateMachine<TypeConfig> for StateMachine {
                 meta,
                 backend: captured,
                 retirement,
+                initialization_association: crate::initialization_association::load_state(
+                    machine.domains.custody(),
+                    first_membership.as_ref(),
+                )?,
                 first_membership,
             })
         })

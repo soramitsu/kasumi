@@ -25,6 +25,9 @@ impl kasumi_raft::StateMachineBackend for Backend {
     ) -> anyhow::Result<kasumi_raft::AppliedResponse> {
         Ok(kasumi_raft::AppliedResponse::application(bytes.to_vec()))
     }
+    fn apply_metadata(&self, _position: &kasumi_raft::AppliedEntryContext) -> anyhow::Result<()> {
+        Ok(())
+    }
     fn capture_snapshot(&self) -> anyhow::Result<kasumi_raft::CapturedSnapshot> {
         Ok(kasumi_raft::CapturedSnapshot::new(None, |_| Ok(())))
     }

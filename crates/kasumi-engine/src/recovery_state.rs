@@ -473,7 +473,6 @@ pub(crate) fn apply(state: &mut TenantState, command: &RecoveryCommand) -> Resul
             initialization: None,
             initialization_attempt: None,
             initialization_starts: BTreeMap::new(),
-            initialization_association: None,
             completion_intent: None,
             completion_predecessor: None,
             completion_preparation_attempt: None,
@@ -597,7 +596,6 @@ pub(crate) fn apply(state: &mut TenantState, command: &RecoveryCommand) -> Resul
                                 TargetReplicaInput::InitialMembershipStatus(_),
                             )
                             | TargetRuntimeStep::InspectInitialMembership(_)
-                            | TargetRuntimeStep::InspectInitialAssociation(_)
                                 if operation.phase == RecoveryPhase::Initialize =>
                             {
                                 Some(LifecyclePhase::InspectInitialMembership)
@@ -1914,9 +1912,6 @@ fn advance(
             if request.phase == LifecyclePhase::Materialize {
                 operation.materialization_intent = Some(prepared.phase_id);
             }
-            if request.phase == LifecyclePhase::InspectInitialMembership {
-                operation.initialization_association = None;
-            }
         }
         (RecoveryDispatch::Target { node_id, .. }, RecoveryDispatchOutcome::Target(response)) => {
             let voter = operation
@@ -1983,9 +1978,6 @@ fn advance(
                 }
                 TargetRuntimeOutcome::Started { .. } => {
                     voter.started = Some(prepared.phase_id);
-                }
-                TargetRuntimeOutcome::InitialMembershipAssociation(_) => {
-                    operation.initialization_association = Some(prepared.phase_id);
                 }
                 TargetRuntimeOutcome::Initialized { .. }
                 | TargetRuntimeOutcome::InitialMembershipStatus(_) => {

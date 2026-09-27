@@ -1,4 +1,3 @@
-use std::collections::BTreeMap;
 
 use crate::core::raft_msg::external_command::ExternalCommand;
 use crate::error::CheckIsLeaderError;
@@ -79,7 +78,7 @@ where C: RaftTypeConfig
     },
 
     Initialize {
-        members: BTreeMap<C::NodeId, C::Node>,
+        entry: C::Entry,
         tx: ResultSender<C, (), InitializeError<C::NodeId, C::Node>>,
     },
 
@@ -119,8 +118,8 @@ where C: RaftTypeConfig
             }
             RaftMsg::ClientWriteRequest { .. } => "ClientWriteRequest".to_string(),
             RaftMsg::CheckIsLeaderRequest { .. } => "CheckIsLeaderRequest".to_string(),
-            RaftMsg::Initialize { members, .. } => {
-                format!("Initialize: {:?}", members)
+            RaftMsg::Initialize { entry, .. } => {
+                format!("Initialize: {:?}", entry)
             }
             RaftMsg::ChangeMembership {
                 changes: members,

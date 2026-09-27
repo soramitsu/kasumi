@@ -1,0 +1,23 @@
+
+running 9 tests
+
+thread 'state::recovery::receiver::tests::initial_membership_inspection_tests::initial_inspection_head_requires_current_explicit_history_fields' (47011797) panicked at crates/kasumi-engine/src/recovery_receiver_tests.rs:909:13:
+Corruption: recovery phase reference missing
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test state::recovery::receiver::tests::initial_membership_inspection_tests::initial_inspection_head_requires_current_explicit_history_fields ... FAILED
+test state::recovery::receiver::tests::initial_membership_inspection_tests::initial_begin_effect_freezes_one_attempt_and_three_original_start_references ... ok
+test state::recovery::receiver::tests::initial_membership_inspection_tests::initial_inspection_rejects_missing_or_substituted_original_evidence ... ok
+test state::recovery::receiver::tests::initial_membership_inspection_tests::expired_begun_initialize_admits_only_exact_fresh_inspection ... ok
+test state::recovery::receiver::tests::initial_membership_inspection_tests::initial_inspection_rotates_read_only_routes_with_exact_original_packet_and_cap ... ok
+test state::recovery::receiver::tests::initial_membership_inspection_tests::initial_inspection_requires_two_started_original_members ... ok
+test state::recovery::receiver::tests::initial_membership_inspection_tests::expired_marked_initial_inspection_admits_only_fresh_inspection_of_same_original ... ok
+test state::recovery::receiver::tests::initial_membership_inspection_tests::initial_inspection_starts_two_voters_and_resolves_original_by_typed_causal_link ... ok
+test state::recovery::receiver::tests::initial_membership_inspection_tests::committed_original_cause_rejects_wrong_signer_identity_and_commit_coverage ... ok
+
+failures:
+
+failures:
+    state::recovery::receiver::tests::initial_membership_inspection_tests::initial_inspection_head_requires_current_explicit_history_fields
+
+test result: FAILED. 8 passed; 1 failed; 0 ignored; 0 measured; 318 filtered out; finished in 1.51s
+

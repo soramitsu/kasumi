@@ -617,6 +617,55 @@ fn signed_initial_dispatch(
     Ok((lifecycle, phase, request))
 }
 
+// Storage/journal unit fixture only: signed cause is explicitly built from its
+// accepted phase fixture. It grants no live InitialInitializePermit or child.
+fn fixture_initial_cause(
+    f: &Fixture,
+    lifecycle: &LifecycleIntent,
+    start: &kasumi_types::RecoveryPhaseRecord,
+    request: &kasumi_types::TargetRuntimeRequest,
+) -> Result<kasumi_types::SignedTargetInitializationAssociation> {
+    use kasumi_types::*;
+    let TargetRuntimeStep::Start(TargetReplicaInput::Quorum(quorum)) = &request.step else {
+        anyhow::bail!("fixture cause needs original Start")
+    };
+    let mut initialize = start.clone();
+    initialize.phase_id = Uuid::new_v4();
+    initialize.sequence += 1;
+    initialize.previous_phase = Some(start.phase_id);
+    initialize.prepared_revision = 3;
+    let mut packet = request.clone();
+    packet.step = TargetRuntimeStep::Initialize(quorum.clone());
+    initialize.input = RecoveryDispatch::Target {
+        node_id: 1,
+        request: Box::new(packet),
+    };
+    initialize.input_sha256 = staged_digest(&initialize.input)?.0;
+    let marker = initialize
+        .effect_attempts
+        .get_mut(&RecoveryEffect::TargetCommand)
+        .unwrap();
+    marker.attempt_id = Uuid::new_v4();
+    marker.input_sha256 = initialize.input_sha256.clone();
+    marker.begun_revision = 4;
+    let association = TargetInitializationAssociation {
+        control_root: f.installed.root.clone(),
+        original_intent: lifecycle.clone(),
+        quorum: quorum.clone(),
+        start: start.clone(),
+        initialize,
+    };
+    association.validate()?;
+    Ok(SignedTargetInitializationAssociation {
+        signature: crate::target_completion_machine::tests::sign(
+            &association,
+            "kasumi.target-initialization-association.v1",
+            1,
+        ),
+        association,
+    })
+}
+
 #[tokio::test]
 async fn accepted_dispatch_derives_only_exact_signed_initial_membership() -> Result<()> {
     use super::dispatch::InitialDispatchReservation as Decision;
@@ -922,8 +971,13 @@ async fn historical_initial_membership_requires_exact_control_journal_and_applie
     let first = kasumi_raft::historical_test_utils::publish_committed_first_membership(
         stores.clone(),
         &expected,
+        Some(&fixture_initial_cause(&f, &lifecycle, &phase, &request)?),
     )
     .await?;
+    assert!(
+        kasumi_raft::read_initialization_association(&stores)?.is_some(),
+        "target first membership must atomically retain its original cause"
+    );
     let resolved = journal
         .resolve_initial_membership_history(&control, &phase, &identity, &request, &stores)?;
     assert_eq!(resolved.identity(), &identity);
@@ -1024,6 +1078,7 @@ async fn first_membership_terminal_requires_history_and_uses_original_reserved_c
     let first = kasumi_raft::historical_test_utils::publish_committed_first_membership(
         stores.clone(),
         &expected,
+        Some(&fixture_initial_cause(&f, &lifecycle, &phase, &request)?),
     )
     .await?;
     let before: Metadata = decode_current(&before)?;
@@ -1089,6 +1144,7 @@ async fn first_membership_terminal_rejects_substitution_missing_custody_and_torn
     kasumi_raft::historical_test_utils::publish_committed_first_membership(
         stores.clone(),
         &expected,
+        Some(&fixture_initial_cause(&f, &lifecycle, &phase, &request)?),
     )
     .await?;
     journal.record_initial_membership_history(&control, &phase, &identity, &request, &stores)?;
@@ -1665,5 +1721,61 @@ async fn terminal_reserve_failure_never_writes_an_accepted_dispatch() -> Result<
             .is_none()
     );
     journal.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn target_first_entry_rejects_missing_invalid_and_substituted_original_cause() -> Result<()> {
+    use super::dispatch::InitialDispatchReservation as Decision;
+    use kasumi_types::*;
+    let f = Fixture::new().await?;
+    let journal = f.create()?;
+    let (lifecycle, phase, request) = signed_initial_dispatch(&f, false)?;
+    let Decision::NewlyAccepted(candidate) =
+        journal.reserve_initial_dispatch(&f.installed.root, &phase, &lifecycle, &request)?
+    else {
+        anyhow::bail!("candidate absent")
+    };
+    let candidate = candidate.verify_initial_membership(1, LifecyclePhase::Initialize)?;
+    let (stores, _) = target_prebind_stores(&f, &lifecycle, candidate.bootstrap_sha256()).await?;
+    let expected = candidate.persist_target_raft_prebind(&journal, &stores)?;
+    let valid = fixture_initial_cause(&f, &lifecycle, &phase, &request)?;
+    let mut bad_signature = valid.clone();
+    bad_signature.signature = "00".repeat(64);
+    let mut replaced = valid.clone();
+    replaced.association.start.phase_id = Uuid::new_v4();
+    replaced.signature = crate::target_completion_machine::tests::sign(
+        &replaced.association,
+        "kasumi.target-initialization-association.v1",
+        1,
+    );
+    replaced.association.validate()?;
+    for cause in [None, Some(&bad_signature), Some(&replaced)] {
+        let before = stores.custody().store().scan("raft.meta")?;
+        assert!(
+            kasumi_raft::historical_test_utils::publish_committed_first_membership(
+                stores.clone(),
+                &expected,
+                cause
+            )
+            .await
+            .is_err(),
+            "invalid first cause admitted"
+        );
+        assert_eq!(stores.custody().store().scan("raft.meta")?, before);
+        assert!(stores.custody().store().scan("raft.headers")?.is_empty());
+        assert!(kasumi_raft::read_initialization_association(&stores)?.is_none());
+    }
+    let first = kasumi_raft::historical_test_utils::publish_committed_first_membership(
+        stores.clone(),
+        &expected,
+        Some(&valid),
+    )
+    .await?;
+    let retained = kasumi_raft::read_initialization_association(&stores)?.unwrap();
+    assert_eq!(retained.signed, valid);
+    assert_eq!(first.index, retained.position.index);
+    assert_eq!(first.index, 0);
+    stores.shutdown().await?;
     Ok(())
 }

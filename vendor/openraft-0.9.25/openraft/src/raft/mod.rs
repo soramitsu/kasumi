@@ -23,6 +23,8 @@ mod shutdown_test;
 pub mod trigger;
 
 use std::collections::BTreeMap;
+use crate::entry::{RaftEntry, RaftPayload};
+use crate::Membership;
 use std::error::Error;
 
 pub(crate) use self::external_request::BoxCoreFn;
@@ -844,16 +846,22 @@ where
     where
         T: IntoNodes<C::NodeId, C::Node> + Debug,
     {
+        let entry = C::Entry::new_membership(LogId::default(), Membership::from(members.into_nodes()));
+        self.initialize_with_entry(entry).await
+    }
+
+    /// Initialize with a typed first membership entry, retaining application-defined
+    /// metadata atomically with membership. It remains subject to the same pristine
+    /// log/vote and local-voter checks; the engine assigns the first log identity.
+    pub async fn initialize_with_entry(
+        &self,
+        entry: C::Entry,
+    ) -> Result<(), RaftError<C::NodeId, InitializeError<C::NodeId, C::Node>>> {
+        if entry.get_membership().is_none() {
+            return Err(RaftError::APIError(InitializeError::InvalidInitialEntry));
+        }
         let (tx, rx) = C::AsyncRuntime::oneshot();
-        self.inner
-            .call_core(
-                RaftMsg::Initialize {
-                    members: members.into_nodes(),
-                    tx,
-                },
-                rx,
-            )
-            .await
+        self.inner.call_core(RaftMsg::Initialize { entry, tx }, rx).await
     }
 
     /// Returns Ok() with the latest known matched log id if it should quit waiting: leader change,

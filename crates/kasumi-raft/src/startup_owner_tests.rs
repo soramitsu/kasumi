@@ -192,6 +192,9 @@ impl crate::StateMachineBackend for Backend {
     ) -> Result<crate::AppliedResponse> {
         Ok(crate::AppliedResponse::application(bytes.to_vec()))
     }
+    fn apply_metadata(&self, _position: &crate::AppliedEntryContext) -> anyhow::Result<()> {
+        Ok(())
+    }
     fn capture_snapshot(&self) -> Result<crate::CapturedSnapshot> {
         Ok(crate::CapturedSnapshot::new(None, |_| Ok(())))
     }

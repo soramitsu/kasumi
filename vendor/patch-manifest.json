@@ -2640,9 +2640,9 @@
           "sha256": "3ba809382665c5a5454df9d701a723bbb565b278ce9d970de379403e89adcef4"
         },
         "openraft/src/core/raft_core.rs": {
-          "bytes": 75206,
+          "bytes": 75154,
           "mode": "0o644",
-          "sha256": "b13dc47370be3cfe79193f744fc2c1910f55b256c5c1aba48172b2e8eaefcbe3"
+          "sha256": "e5303a0a285cc20ceb2d3a55f05f030bea055b648ec1a92b38c0604b29e9195c"
         },
         "openraft/src/core/raft_msg/external_command.rs": {
           "bytes": 1997,
@@ -2650,9 +2650,9 @@
           "sha256": "973fd4cff44d140940512d985ce52816af06b488add062432f13ea40359da4cf"
         },
         "openraft/src/core/raft_msg/mod.rs": {
-          "bytes": 4331,
+          "bytes": 4273,
           "mode": "0o644",
-          "sha256": "5859a02abc9175568e2cf2ac062277444e5215f074f28e7703ea1da4f48518a9"
+          "sha256": "4874f5ee6ed8d0a32db55f348406de7ba701db58fa10f5c627d9e89dc784d753"
         },
         "openraft/src/core/replication_state.rs": {
           "bytes": 795,
@@ -3170,9 +3170,9 @@
           "sha256": "443dc754444444232fa03a4ef819e7cc8dc422ba876307b8e16df01ff9b45fa7"
         },
         "openraft/src/error.rs": {
-          "bytes": 32511,
+          "bytes": 32596,
           "mode": "0o644",
-          "sha256": "090e07c2e4d2f09c68c024843e4c0df5bafc10a487f972d38667b8cdf7491a2a"
+          "sha256": "95c37acd2db4ad7f55ced5abcb3beace75e2f5683f76d048ee4a3b4006ba67bf"
         },
         "openraft/src/error/decompose.rs": {
           "bytes": 3430,
@@ -3530,9 +3530,9 @@
           "sha256": "feb675aa79f477ea6887a9182178a0e47c7869d708e28e6448913bfa6c093942"
         },
         "openraft/src/raft/mod.rs": {
-          "bytes": 41648,
+          "bytes": 42275,
           "mode": "0o644",
-          "sha256": "48ff6a5b6a07f10c1bd926cc3eedc588de767575d5efb1579ea1cfdc0d3108eb"
+          "sha256": "bb624d6065f9ad1f3fcac32e9067bbebb876cdf0cabf464d7f8769042ae01e83"
         },
         "openraft/src/raft/raft_inner.rs": {
           "bytes": 10420,
@@ -4486,19 +4486,19 @@
       ],
       "path": "vendor/openraft-0.9.25",
       "review": {
-        "inventory_path": "docs/evidence/openraft-canonical-20260920/49-frozen-fallible-transfer-clippy/after-source.json",
-        "inventory_sha256": "70cce233f67865044d8550bd613c7696abfbe0b47f7fa0d436199a9a709bffa6",
+        "inventory_path": "docs/evidence/openraft-atomic-initial-entry-review-20260927/source-inventory.json",
+        "inventory_sha256": "6c0825d9d08e442f1a867206012ee65a29e8ea94d0422720d271062ed3116b24",
         "kind": "openraft-checkpoint",
-        "path": "docs/evidence/openraft-canonical-20260920/custody-checkpoint.json",
-        "sha256": "372a5cdb30571a154997e2dfcfd98d27e1c876c4aefcc58a05ed50695fe26323"
+        "path": "docs/evidence/openraft-atomic-initial-entry-review-20260927/custody-checkpoint.json",
+        "sha256": "b71c4bb1941037b9ff1c473e49ea49de7db9b84b62d416750d9d4873183a6b6b"
       }
     }
   ],
   "support_files": {
     "README.md": {
-      "bytes": 6014,
+      "bytes": 6950,
       "mode": "0o644",
-      "sha256": "61531f9918d4f11122a2dc94e63ef681d6aa62658e740f17ac86a121d66c5b9a"
+      "sha256": "793b6db9e99b573708214e261323a8e50363998b5450c6dbc4adbf00f7fa394b"
     },
     "rmcp-terminal-ownership.md": {
       "bytes": 5241,

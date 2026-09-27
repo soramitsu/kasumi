@@ -1,0 +1,108 @@
+ Downloading crates ...
+  Downloaded symlink v0.1.0
+  Downloaded tracing-appender v0.2.5
+   Compiling serde_core v1.0.229
+   Compiling crossbeam-utils v0.8.23
+   Compiling regex-syntax v0.8.11
+   Compiling tracing v0.1.44
+   Compiling log v0.4.34
+   Compiling thiserror-impl v2.0.20
+   Compiling thread_local v1.1.10
+   Compiling smallvec v1.16.1
+   Compiling nu-ansi-term v0.50.3
+   Compiling symlink v0.1.0
+   Compiling time v0.3.55
+   Compiling tests v0.9.25 (/Users/takemiyamakoto/dev/kasumi/vendor/openraft-0.9.25/tests)
+   Compiling thiserror v2.0.20
+   Compiling tracing-log v0.2.0
+   Compiling tracing-futures v0.2.5
+   Compiling crossbeam-channel v0.5.17
+   Compiling regex-automata v0.4.18
+   Compiling serde v1.0.229
+   Compiling serde_json v1.0.151
+   Compiling anyerror v0.1.13
+   Compiling matchers v0.2.0
+   Compiling validit v0.2.6
+   Compiling tracing-subscriber v0.3.23
+   Compiling openraft v0.9.25 (/Users/takemiyamakoto/dev/kasumi/vendor/openraft-0.9.25/openraft)
+   Compiling tracing-appender v0.2.5
+   Compiling openraft-memstore v0.9.25 (/Users/takemiyamakoto/dev/kasumi/vendor/openraft-0.9.25/memstore)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 25.47s
+     Running unittests src/main.rs (target/debug/deps/tests-79092ce2cd08e378)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/append_entries/main.rs (target/debug/deps/append_entries-dd5d0d5f64f3a00e)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+     Running tests/client_api/main.rs (target/debug/deps/client_api-8e1911df67e65991)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 13 filtered out; finished in 0.00s
+
+     Running tests/elect/main.rs (target/debug/deps/elect-6b93be8a1b17b115)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+     Running tests/life_cycle/main.rs (target/debug/deps/life_cycle-02d993864599bf3a)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 23 filtered out; finished in 0.00s
+
+     Running tests/log_store/main.rs (target/debug/deps/log_store-dafab0fd56ac1cf1)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+     Running tests/management/main.rs (target/debug/deps/management-cd0e89b2b153f3b0)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+     Running tests/membership/main.rs (target/debug/deps/membership-b8e0a3e89d046149)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 41 filtered out; finished in 0.00s
+
+     Running tests/metrics/main.rs (target/debug/deps/metrics-e33c7318cc80e230)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.00s
+
+     Running tests/replication/main.rs (target/debug/deps/replication-d2a92108b3ce4172)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.01s
+
+     Running tests/snapshot_building/main.rs (target/debug/deps/snapshot_building-75cb7c08707566ea)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.00s
+
+     Running tests/snapshot_streaming/main.rs (target/debug/deps/snapshot_streaming-c3a5a5440ccd438e)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 14 filtered out; finished in 0.00s
+
+     Running tests/state_machine/main.rs (target/debug/deps/state_machine-effe550b918601a4)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+

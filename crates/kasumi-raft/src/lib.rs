@@ -3,6 +3,8 @@
 
 mod command;
 mod control;
+mod entry;
+pub use entry::Entry;
 #[cfg(test)]
 mod custody_capacity_tests;
 mod custody_command;
@@ -15,6 +17,12 @@ mod custody_tables;
 mod domains;
 #[cfg(any(test, feature = "test-utils"))]
 pub mod historical_test_utils;
+mod initialization_association;
+#[cfg(any(test, feature = "test-utils"))]
+pub use initialization_association::verify_initialization_association_storage_negatives;
+pub use initialization_association::{
+    CommittedInitializationAssociation, read_initialization_association,
+};
 mod lifetime;
 mod network;
 mod quorum;
@@ -90,6 +98,7 @@ pub struct RaftGroupConfig {
 openraft::declare_raft_types!(
     pub TypeConfig:
         D = RaftCommand,
+        Entry = Entry<TypeConfig>,
         R = Vec<u8>,
         NodeId = u64,
         Node = BasicNode,
@@ -205,6 +214,9 @@ pub trait PreparedStateMachineRestore {
 
 pub trait StateMachineBackend: Send + Sync + 'static {
     fn apply(&self, position: &AppliedEntryContext, command: &[u8]) -> Result<AppliedResponse>;
+    /// Advance the logical snapshot cursor for consensus-only entries without
+    /// decoding an application command or manufacturing an application effect.
+    fn apply_metadata(&self, position: &AppliedEntryContext) -> Result<()>;
     fn capture_snapshot(&self) -> Result<CapturedSnapshot>;
     fn snapshot(&self, writer: &mut dyn std::io::Write) -> Result<Option<RetiredSnapshotState>> {
         let captured = self.capture_snapshot()?;
@@ -256,6 +268,9 @@ impl StateMachineBackend for OwnedBackend {
     }
     fn apply(&self, position: &AppliedEntryContext, command: &[u8]) -> Result<AppliedResponse> {
         self.inner.apply(position, command)
+    }
+    fn apply_metadata(&self, position: &AppliedEntryContext) -> Result<()> {
+        self.inner.apply_metadata(position)
     }
     fn capture_snapshot(&self) -> Result<CapturedSnapshot> {
         self.inner.capture_snapshot()
@@ -640,6 +655,29 @@ impl RaftGroup {
             .await?;
         self.check_access().context(PostCommitAccessLost)?;
         Ok(response.data)
+    }
+
+    /// Submit the one original membership entry with its signed accepted cause.
+    /// Cancellation never grants authority to submit another initialization.
+    pub async fn initialize_target(
+        &self,
+        members: BTreeMap<u64, BasicNode>,
+        association: &kasumi_types::SignedTargetInitializationAssociation,
+    ) -> Result<()> {
+        self.check_proposal()?;
+        let bytes = serde_json::to_vec(association)?;
+        initialization_association::decode(&bytes)?;
+        ensure!(!members.is_empty(), "membership cannot be empty");
+        let entry = Entry::<TypeConfig> {
+            log_id: LogId::default(),
+            payload: openraft::EntryPayload::Membership(openraft::Membership::from(members)),
+            initialization: Some(bytes),
+        };
+        self.raft
+            .initialize_with_entry(entry)
+            .await
+            .context("initialize target membership and cause")?;
+        Ok(())
     }
 
     pub async fn write_retirement(

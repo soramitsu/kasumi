@@ -71,6 +71,9 @@ impl StateMachineBackend for Backend {
         data.insert(index, command.to_vec());
         Ok(kasumi_raft::AppliedResponse::application(command.to_vec()))
     }
+    fn apply_metadata(&self, _position: &kasumi_raft::AppliedEntryContext) -> anyhow::Result<()> {
+        Ok(())
+    }
     fn capture_snapshot(&self) -> Result<kasumi_raft::CapturedSnapshot> {
         ensure!(
             !self.fail_snapshot.load(Ordering::Acquire),

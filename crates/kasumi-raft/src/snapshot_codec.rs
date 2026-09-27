@@ -24,6 +24,8 @@ struct Header {
     meta: openraft::SnapshotMeta<u64, crate::BasicNode>,
     retirement: Option<crate::snapshot_custody::SnapshotRetirement>,
     first_membership: Option<crate::control::FirstAppliedMembership>,
+    #[serde(deserialize_with = "kasumi_types::require_explicit_option")]
+    initialization_association: Option<crate::initialization_association::AssociationState>,
 }
 fn frame(writer: &mut dyn Write, tag: u8, bytes: &[u8], digest: &mut Sha256) -> Result<()> {
     let mut header = [0; 9];
@@ -41,6 +43,11 @@ impl SnapshotEnvelope {
     }
     fn encode_records(&self, limit: u64, check_metadata: bool) -> Result<SnapshotImage> {
         if check_metadata {
+            crate::initialization_association::validate_snapshot(
+                &self.meta,
+                self.first_membership.as_ref(),
+                self.initialization_association.as_ref(),
+            )?;
             crate::control::validate_snapshot_first_membership(
                 &self.meta,
                 self.first_membership.as_ref(),
@@ -53,6 +60,7 @@ impl SnapshotEnvelope {
                 meta: self.meta.clone(),
                 retirement: self.retirement.clone(),
                 first_membership: self.first_membership.clone(),
+                initialization_association: self.initialization_association.clone(),
             })?;
             ensure!(
                 header.len() <= MAX_METADATA,
@@ -221,6 +229,11 @@ impl SnapshotEnvelope {
             previous_tag = tag[0];
         }
         let mut header = header.context("snapshot metadata absent")?;
+        crate::initialization_association::validate_snapshot(
+            &header.meta,
+            header.first_membership.as_ref(),
+            header.initialization_association.as_ref(),
+        )?;
         crate::control::validate_snapshot_first_membership(
             &header.meta,
             header.first_membership.as_ref(),
@@ -243,6 +256,7 @@ impl SnapshotEnvelope {
             meta: header.meta,
             retirement: header.retirement,
             first_membership: header.first_membership,
+            initialization_association: header.initialization_association,
             backend: SnapshotImage::freeze(spool)?,
         })
     }
@@ -268,4 +282,31 @@ pub(crate) fn unvalidated_snapshot(
             &crate::SnapshotBufferOwner::fixture(),
         )?),
     })
+}
+
+#[cfg(test)]
+mod initial_association_format_tests {
+    use super::*;
+    #[test]
+    fn snapshot_header_requires_explicit_initial_association_state() {
+        let header = Header {
+            version: 2,
+            kind: SnapshotKind::Application,
+            meta: openraft::SnapshotMeta {
+                last_log_id: None,
+                last_membership: openraft::StoredMembership::default(),
+                snapshot_id: uuid::Uuid::new_v4().to_string(),
+            },
+            retirement: None,
+            first_membership: None,
+            initialization_association: None,
+        };
+        let mut encoded = serde_json::to_value(&header).unwrap();
+        assert!(serde_json::from_value::<Header>(encoded.clone()).is_ok());
+        encoded
+            .as_object_mut()
+            .unwrap()
+            .remove("initialization_association");
+        assert!(serde_json::from_value::<Header>(encoded).is_err());
+    }
 }
