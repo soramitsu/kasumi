@@ -4,6 +4,8 @@ mod ordered_seek;
 pub use ordered_seek::*;
 mod security_audit;
 pub use security_audit::*;
+mod tenant_audit;
+pub use tenant_audit::*;
 mod audit;
 pub use audit::*;
 mod canonical_json;
@@ -612,7 +614,7 @@ impl StoredReceipt {
 }
 /// Replicated and snapshotted audit record. Unknown fields are rejected; there
 /// is no compatibility decoder for another writer's audit shape.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AuditEvent {
     pub event_id: String,
@@ -620,8 +622,10 @@ pub struct AuditEvent {
     pub action: String,
     pub request_id: String,
     pub timestamp_ms: u64,
+    #[serde(deserialize_with = "require_explicit_option")]
     pub data_revision: Option<u64>,
     pub outcome: String,
+    #[serde(deserialize_with = "require_explicit_option")]
     pub collection: Option<String>,
 }
 
@@ -1042,9 +1046,14 @@ mod tests {
         assert!(serde_json::from_value::<AuditEvent>(changed.clone()).is_err());
         let bytes = serde_json::to_vec(&changed).unwrap();
         assert!(exact_json::decode_exact::<AuditEvent>(&bytes, 1 << 10, "audit event").is_err());
-        let mut missing = event.clone();
-        missing.as_object_mut().unwrap().remove("outcome");
-        assert!(serde_json::from_value::<AuditEvent>(missing).is_err());
+        for field in ["outcome", "data_revision", "collection"] {
+            let mut missing = event.clone();
+            missing.as_object_mut().unwrap().remove(field);
+            assert!(
+                serde_json::from_value::<AuditEvent>(missing).is_err(),
+                "{field}"
+            );
+        }
         // Replicated operations and resident state carry the same strict shape.
         let operation = serde_json::json!({"op":"audit","data":changed});
         assert!(serde_json::from_value::<Operation>(operation).is_err());

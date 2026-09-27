@@ -3,7 +3,9 @@ use crate::admission::{WorkFence, WorkRegistration};
 use anyhow::{Context, Result, ensure};
 use kasumi_query::QueryCancellation;
 use kasumi_store::{TenantStore, WriteOp};
-use kasumi_types::AuditRetentionBudget;
+use kasumi_types::{AuditRetentionBudget, SecurityAuditRecord};
+/// The closed event shapes are shared wire types; these paths remain stable.
+pub use kasumi_types::{SecurityEvent, SecurityEventKind, SecurityOutcome, TransportAuditMetadata};
 #[path = "security_audit_jobs.rs"]
 mod jobs;
 #[path = "security_audit_retention.rs"]
@@ -12,83 +14,11 @@ mod retention;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
-    net::SocketAddr,
     sync::{Arc, LazyLock, Mutex, Weak},
     time::{SystemTime, UNIX_EPOCH},
 };
 
 pub const SECURITY_TENANT: &str = "__kasumi_security";
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SecurityEventKind {
-    NodeStarted,
-    NodeStopping,
-    AuthenticationSucceeded,
-    AuthenticationDenied,
-    TransportAuthenticated,
-    TransportDenied,
-    AccessDenied,
-    TenantSealed,
-    KeyAdministration,
-    Administration,
-    Membership,
-    Backup,
-    Restore,
-    ControlCommitmentObserved {
-        control_incarnation: String,
-        command_id: String,
-        commitment_sha256: String,
-        control_policy_epoch: u64,
-        committed_revision: u64,
-    },
-    RetirementObserved {
-        source_incarnation: String,
-        retirement_id: String,
-        request_digest: String,
-        source_revision: u64,
-        custody_policy_epoch: u64,
-    },
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SecurityOutcome {
-    Succeeded,
-    Denied,
-    Failed,
-    Started,
-    Unknown,
-}
-
-/// Closed metadata fields cannot carry document bodies, query values or tokens.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SecurityEvent {
-    pub kind: SecurityEventKind,
-    pub principal: Option<String>,
-    pub tenant: Option<String>,
-    pub request_id: String,
-    pub outcome: SecurityOutcome,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct TransportAuditMetadata {
-    pub peer_address: SocketAddr,
-    pub certificate_pin: Option<String>,
-    pub observed_at_ms: u64,
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct StoredSecurityEvent {
-    format: u32,
-    sequence: u64,
-    timestamp_ms: u64,
-    event: SecurityEvent,
-    transport: Option<TransportAuditMetadata>,
-}
 
 /// Share one writer across all databases and authentication adapters on a node.
 /// Its reserved store must use a wrapping key distinct from customer tenants.
@@ -123,6 +53,9 @@ static LIVE_WRITERS: LazyLock<Mutex<HashMap<usize, Weak<AuditWriter>>>> =
 
 struct AuditSequence {
     head: retention::Head,
+    /// Exact stored bytes digest of the last hot record, which fixes the end
+    /// of every export captured at this head.
+    hot_tail_sha256: Option<String>,
     failed: bool,
     failures: u64,
     last_failure: Option<String>,
@@ -251,10 +184,12 @@ impl SecurityAudit {
             AuditOpen::Initialize => retention::Head::initialize(&store, &destination.identity())?,
             AuditOpen::Existing => retention::Head::open(&store, &destination.identity(), &budget)?,
         };
+        let hot_tail_sha256 = head.hot_tail_sha256(&store)?;
         let writer = Arc::new(AuditWriter {
             store,
             sequence: Mutex::new(AuditSequence {
                 head,
+                hot_tail_sha256,
                 failed: false,
                 failures: 0,
                 last_failure: None,
@@ -360,59 +295,9 @@ impl SecurityAudit {
                 .unwrap();
             panic!("injected real blocking audit record panic");
         }
-        for value in [
-            event.principal.as_deref(),
-            event.tenant.as_deref(),
-            Some(&event.request_id),
-        ]
-        .into_iter()
-        .flatten()
-        {
-            kasumi_types::validate_name(value)?;
-        }
-        if let SecurityEventKind::ControlCommitmentObserved {
-            control_incarnation,
-            command_id,
-            commitment_sha256,
-            committed_revision,
-            ..
-        } = &event.kind
-        {
-            ensure!(
-                !uuid::Uuid::parse_str(control_incarnation)?.is_nil()
-                    && !uuid::Uuid::parse_str(command_id)?.is_nil()
-                    && *committed_revision > 0,
-                "invalid control observation identity"
-            );
-            kasumi_types::validate_sha256(commitment_sha256)?;
-        }
-        if let SecurityEventKind::RetirementObserved {
-            source_incarnation,
-            retirement_id,
-            request_digest,
-            source_revision,
-            custody_policy_epoch,
-        } = &event.kind
-        {
-            kasumi_types::validate_name(source_incarnation)?;
-            kasumi_types::validate_name(retirement_id)?;
-            kasumi_types::validate_sha256(request_digest)?;
-            ensure!(
-                *source_revision > 0 && *custody_policy_epoch > 0,
-                "invalid retirement observation position"
-            );
-        }
-        if let Some(pin) = transport
-            .as_ref()
-            .and_then(|metadata| metadata.certificate_pin.as_ref())
-        {
-            ensure!(
-                pin.len() == 64
-                    && pin
-                        .bytes()
-                        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
-                "invalid transport audit certificate pin"
-            );
+        event.validate()?;
+        if let Some(metadata) = &transport {
+            metadata.validate()?;
         }
         let mut sequence = self
             .writer
@@ -425,8 +310,8 @@ impl SecurityAudit {
         );
         let timestamp_ms =
             u64::try_from(SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis())?;
-        let entry = StoredSecurityEvent {
-            format: 1,
+        let entry = SecurityAuditRecord {
+            format: kasumi_types::SECURITY_AUDIT_RECORD_FORMAT,
             sequence: sequence.head.position.next_sequence,
             timestamp_ms,
             event,
@@ -437,6 +322,7 @@ impl SecurityAudit {
             encoded.len() <= kasumi_types::MAX_AUDIT_EVENT_BYTES,
             "security audit event exceeds record limit"
         );
+        let tail = kasumi_types::audit_record_sha256(&encoded);
         let mut updated = sequence.head.clone();
         updated.position.next_sequence = updated
             .position
@@ -472,6 +358,7 @@ impl SecurityAudit {
             );
         }
         sequence.head = updated;
+        sequence.hot_tail_sha256 = Some(tail);
         if sequence.head.position.hot_bytes >= self.writer.budget.starts_at() {
             self.writer.wake.notify_one();
         }

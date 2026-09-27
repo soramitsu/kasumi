@@ -294,6 +294,25 @@ impl NodeBindingWriteReport<'_> {
     pub fn confirmed(&self) -> bool {
         self.committed_and_disposed() && self.state.post_commit.success()
     }
+    /// The native batch was refused for capacity before publication, while
+    /// staging or at commit. The writer was rolled back whole, its gate was
+    /// released and disposed, and the opening stays open. The caller may
+    /// acknowledge this child and return the typed denial.
+    pub fn is_capacity_denied(&self) -> bool {
+        settled_capacity_denial(
+            self.state.phase,
+            &self.state.begin,
+            &self.state.body,
+            &self.state.outer,
+            self.terminal(),
+            |error| {
+                matches!(
+                    error,
+                    BindingInstallBodyError::Table(error) if error.is_capacity_denied()
+                )
+            },
+        )
+    }
 }
 
 impl RegisteredNodeOpening {

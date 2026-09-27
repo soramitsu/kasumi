@@ -722,6 +722,9 @@ impl FaultyObjectRead {
 }
 #[async_trait::async_trait]
 impl BackupDestination for FaultyObjectRead {
+    fn namespace_binding(&self) -> anyhow::Result<kasumi_types::BackupNamespaceBinding> {
+        self.inner.namespace_binding()
+    }
     async fn put(&self, id: uuid::Uuid, bytes: kasumi_store::BackupUpload) -> anyhow::Result<()> {
         self.inner.put(id, bytes).await
     }
@@ -885,6 +888,9 @@ struct PausedRead {
 }
 #[async_trait::async_trait]
 impl BackupDestination for PausedRead {
+    fn namespace_binding(&self) -> anyhow::Result<kasumi_types::BackupNamespaceBinding> {
+        self.destination.namespace_binding()
+    }
     async fn session_put(
         &self,
         session: uuid::Uuid,
@@ -1039,6 +1045,9 @@ struct SessionFault {
 }
 #[async_trait::async_trait]
 impl BackupDestination for SessionFault {
+    fn namespace_binding(&self) -> anyhow::Result<kasumi_types::BackupNamespaceBinding> {
+        self.inner.namespace_binding()
+    }
     async fn put(&self, id: uuid::Uuid, bytes: kasumi_store::BackupUpload) -> anyhow::Result<()> {
         self.inner.put(id, bytes).await
     }

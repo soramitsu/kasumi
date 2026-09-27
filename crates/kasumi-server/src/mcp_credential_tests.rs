@@ -60,6 +60,11 @@ impl ReleaseGate {
     }
 }
 
+/// Holds a tool call after its result tree is charged and before its encoded
+/// SDK body is charged, so a test can take the remaining admission headroom.
+#[derive(Clone)]
+pub(crate) struct BodyChargeGate(pub(crate) Arc<ReleaseGate>);
+
 struct ManualClock {
     base_ms: u64,
     elapsed_ms: AtomicU64,
@@ -92,6 +97,8 @@ struct Fixture {
     registry: DatabaseRegistry,
     security: Arc<kasumi_engine::SecurityAudit>,
     admission: Arc<kasumi_engine::admission::NodeAdmission>,
+    // The admission ledger's total reservation cap.
+    budget: u64,
     node: Arc<NodeStore>,
     _directory: tempfile::TempDir,
 }
@@ -103,13 +110,29 @@ impl Fixture {
         let signer = private.join("signer.json");
         initialize_signer(&signer).unwrap();
         let mut config = kasumi_engine::admission::AdmissionConfig {
-            max_inflight_bytes: Some(128 << 20),
+            max_inflight_bytes: Some(256 << 20),
             ..Default::default()
         };
         let bookkeeping =
             kasumi_engine::admission::NodeAdmission::required_bookkeeping_bytes(&config).unwrap();
-        config.max_inflight_bytes = Some(bookkeeping.checked_add(128 << 20).unwrap());
-        let physical = crate::runtime_storage_fixtures::physical(&private, config).unwrap();
+        config.max_inflight_bytes = Some(bookkeeping.checked_add(256 << 20).unwrap());
+        // Plan the disk metadata into the cap as FixtureStorage::open does, so
+        // tests know the whole ledger budget.
+        let (persistent, scratch) =
+            kasumi_engine::test_utils::fixture_disk_configs(&private).unwrap();
+        let config = kasumi_engine::test_utils::isolated_disk_config_with_metadata(
+            config,
+            &persistent,
+            &scratch,
+        )
+        .unwrap();
+        let budget = config.max_inflight_bytes.unwrap();
+        let physical = kasumi_engine::test_utils::FixtureStorage::with_admission(
+            &persistent,
+            &scratch,
+            kasumi_engine::admission::NodeAdmission::new(config).unwrap(),
+        )
+        .unwrap();
         let admission = physical.admission.clone();
         let node = physical
             .create_new(
@@ -217,9 +240,43 @@ impl Fixture {
             registry,
             security,
             admission,
+            budget,
             node,
             _directory: directory,
         }
+    }
+    /// The fixed workspace every database response fence retains.
+    fn response_workspace(&self) -> u64 {
+        let before = self.admission.snapshot().reserved_bytes;
+        let fence = self.database.response_fence(&Self::context()).unwrap();
+        let workspace = self.admission.snapshot().reserved_bytes - before;
+        drop(fence);
+        assert_eq!(self.admission.snapshot().reserved_bytes, before);
+        workspace
+    }
+    /// Take every admission byte except `headroom` with one resident charge.
+    fn reserve_all_but(&self, headroom: u64) -> kasumi_engine::admission::Reservation {
+        let available = self.budget - self.admission.snapshot().reserved_bytes;
+        assert!(available >= headroom, "fixture budget is below {headroom}");
+        self.admission
+            .reserve_resident(available - headroom)
+            .unwrap()
+    }
+    async fn put(&self, key: &str, documents: impl IntoIterator<Item = (String, Value)>) {
+        let operations = documents
+            .into_iter()
+            .map(|(id, body)| json!({"op":"put", "collection":"docs", "id":id, "body":body, "expected":{"kind":"absent"}}))
+            .collect::<Vec<_>>();
+        self.database
+            .mutate(
+                Self::context(),
+                serde_json::from_value(
+                    json!({"idempotency_key":key, "read_set":[], "operations":operations}),
+                )
+                .unwrap(),
+            )
+            .await
+            .unwrap();
     }
     fn context() -> RequestContext {
         RequestContext {
@@ -995,5 +1052,240 @@ async fn sdk_terminal_transport_failure_preserves_dispatched_mutation_uncertaint
             );
         }
     }
+    fixture.close().await;
+}
+
+#[tokio::test]
+async fn small_integer_query_is_refused_before_its_value_tree_under_a_tight_budget() {
+    let fixture = Fixture::new().await;
+    let issued = fixture.issue();
+    // About one million integers: two bytes each as JSON, but a Value slot
+    // and a heap text block each once decoded. Documents stay below the
+    // 20,000-node validation limit; one full page holds a thousand of them.
+    for batch in 0..4 {
+        fixture
+            .put(
+                &format!("zeros-{batch}"),
+                (0..250).map(|index| {
+                    (
+                        format!("zeros-{batch}-{index}"),
+                        json!({"values":vec![0u8; 1000]}),
+                    )
+                }),
+            )
+            .await;
+    }
+    let query = json!({"collection":"docs", "allow_scan":true, "limit":1000});
+    let direct = fixture
+        .database
+        .query(
+            &Fixture::context(),
+            serde_json::from_value(query.clone()).unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(direct.rows.len(), 1000);
+    let encoded = encode_json(&direct).unwrap();
+    drop(direct);
+    let tree = value_tree_bytes(&encoded).unwrap();
+    assert!(tree > 24 * encoded.len() as u64);
+
+    let baseline = fixture.admission.snapshot();
+    let workspace = fixture.response_workspace();
+    // Query execution reserves about 38 MiB beside the fixed response
+    // workspace. The headroom keeps room for that and several times the
+    // encoded result, but misses the decoded tree by 12 MiB.
+    let headroom = workspace + tree - (12 << 20);
+    assert!(headroom > workspace + (40 << 20) + 4 * encoded.len() as u64);
+    let filler = fixture.reserve_all_but(headroom);
+    let call = || {
+        request(
+            &issued.token,
+            "tools/call",
+            json!({"name":"kasumi_query", "arguments":query}),
+        )
+    };
+    let (status, body) = decoded(fixture.router().oneshot(call()).await.unwrap()).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["result"]["isError"], json!(true));
+    assert_eq!(
+        body["result"]["structuredContent"]["error"],
+        json!({
+            "code":"RESOURCE_EXHAUSTED",
+            "message":"MCP tool result tree exceeds the response workspace budget",
+        })
+    );
+    let refused = fixture.admission.snapshot();
+    assert!(refused.reserved_bytes <= fixture.budget);
+    assert_eq!(refused.reserved_bytes, fixture.budget - headroom);
+    assert_eq!(refused.inflight_operations, baseline.inflight_operations);
+
+    // The refusal is the tree charge alone: with the headroom back, the same
+    // call releases the whole result and then returns every charge.
+    drop(filler);
+    let (status, body) = decoded(fixture.router().oneshot(call()).await.unwrap()).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["result"]["isError"], json!(false));
+    assert_eq!(
+        body["result"]["structuredContent"],
+        decode_output(&encoded).unwrap()
+    );
+    let released = fixture.admission.snapshot();
+    assert_eq!(released.reserved_bytes, baseline.reserved_bytes);
+    assert_eq!(released.live_reservations, baseline.live_reservations);
+    fixture.close().await;
+}
+
+#[tokio::test]
+async fn refused_body_charge_after_dispatch_is_unknown_outcome_resolved_by_receipt() {
+    let fixture = Fixture::new().await;
+    let issued = fixture.issue();
+    let baseline = fixture.admission.snapshot().reserved_bytes;
+    let gate = ReleaseGate::new();
+    let arguments = json!({
+        "read_set":[], "idempotency_key":"uncharged-mcp-mutation",
+        "operations":[{"op":"put", "collection":"docs", "id":"charged", "body":{"value":"committed once"}, "expected":{"kind":"absent"}}],
+    });
+    let mut pending_request = request(
+        &issued.token,
+        "tools/call",
+        json!({"name":"kasumi_mutate", "arguments":arguments.clone()}),
+    );
+    pending_request
+        .extensions_mut()
+        .insert(BodyChargeGate(gate.clone()));
+    let running = tokio::spawn(fixture.router().oneshot(pending_request));
+    gate.entered().await;
+    let receipt = fixture
+        .database
+        .operation_receipt(&Fixture::context(), "uncharged-mcp-mutation")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(receipt.outcome.is_ok());
+    let committed = fixture
+        .database
+        .get(&Fixture::context(), "docs", "charged")
+        .await
+        .unwrap();
+    assert_eq!(committed.body, json!({"value":"committed once"}));
+    // The committed result tree is charged. Nothing is left for its body,
+    // nor for a tool error body in its place.
+    let held = fixture.admission.snapshot().reserved_bytes;
+    assert!(held > baseline);
+    let filler = fixture.reserve_all_but(0);
+    gate.release();
+    let (status, body) = decoded(running.await.unwrap().unwrap()).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(body, json!({"error":"UNKNOWN_OUTCOME"}));
+    // The withheld response returned its fence charges; only the filler stays.
+    assert_eq!(
+        fixture.admission.snapshot().reserved_bytes,
+        baseline + fixture.budget - held
+    );
+    drop(filler);
+    assert_eq!(fixture.admission.snapshot().reserved_bytes, baseline);
+
+    // The same credential resolves the original identity; a retry of the
+    // identical batch returns the original outcome without a second write.
+    let (status, body) = decoded(
+        fixture
+            .router()
+            .oneshot(request(
+                &issued.token,
+                "tools/call",
+                json!({
+                    "name":"kasumi_receipt",
+                    "arguments":{"idempotency_key":"uncharged-mcp-mutation"},
+                }),
+            ))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        body["result"]["structuredContent"],
+        serde_json::to_value(&receipt).unwrap()
+    );
+    let (status, body) = decoded(
+        fixture
+            .router()
+            .oneshot(request(
+                &issued.token,
+                "tools/call",
+                json!({"name":"kasumi_mutate", "arguments":arguments}),
+            ))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        body["result"]["structuredContent"],
+        serde_json::to_value(receipt.outcome.unwrap()).unwrap()
+    );
+    assert_eq!(
+        fixture
+            .database
+            .get(&Fixture::context(), "docs", "charged")
+            .await
+            .unwrap(),
+        committed
+    );
+    assert_eq!(fixture.admission.snapshot().reserved_bytes, baseline);
+    fixture.close().await;
+}
+
+#[tokio::test]
+async fn exact_response_charges_are_retained_until_http_release() {
+    let fixture = Fixture::new().await;
+    let issued = fixture.issue();
+    fixture
+        .put(
+            "held-document",
+            [("held".to_owned(), json!({"values":vec![7u8; 4096]}))],
+        )
+        .await;
+    let document = fixture
+        .database
+        .get(&Fixture::context(), "docs", "held")
+        .await
+        .unwrap();
+    let tree = value_tree_bytes(&encode_json(&document).unwrap()).unwrap();
+    let baseline = fixture.admission.snapshot();
+    let workspace = fixture.response_workspace();
+    let gate = ReleaseGate::new();
+    let mut pending_request = request(
+        &issued.token,
+        "tools/call",
+        json!({"name":"kasumi_get", "arguments":{"collection":"docs", "id":"held"}}),
+    );
+    pending_request.extensions_mut().insert(gate.clone());
+    let running = tokio::spawn(fixture.router().oneshot(pending_request));
+    gate.entered().await;
+    let held = fixture.admission.snapshot();
+    gate.release();
+    let response = running.await.unwrap().unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), MAX_RESPONSE_BYTES)
+        .await
+        .unwrap();
+    let decoded: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        decoded["result"]["structuredContent"],
+        serde_json::to_value(&document).unwrap()
+    );
+    // One retained ledger entry holds the fixed workspace, the decoded tree
+    // and the SDK body derived from the exact envelope until HTTP release.
+    assert_eq!(
+        held.reserved_bytes - baseline.reserved_bytes,
+        workspace + tree + encoded_body_bytes(body.len())
+    );
+    assert_eq!(held.live_reservations, baseline.live_reservations + 1);
+    assert_eq!(held.inflight_operations, baseline.inflight_operations);
+    let released = fixture.admission.snapshot();
+    assert_eq!(released.reserved_bytes, baseline.reserved_bytes);
+    assert_eq!(released.live_reservations, baseline.live_reservations);
     fixture.close().await;
 }

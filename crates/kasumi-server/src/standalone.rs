@@ -40,6 +40,17 @@ struct Installation {
 }
 
 const STANDALONE_ORIGIN_NODE_ID: u64 = 1;
+const MAX_INSTALLATION: usize = 16 << 10;
+
+/// Installed markers are admitted only as the current writer's exact bytes. An
+/// equivalent respelling fails owner acquisition and is never rewritten.
+fn decode_installation(bytes: &[u8]) -> Result<Installation> {
+    kasumi_types::exact_json::decode_exact(
+        bytes,
+        MAX_INSTALLATION,
+        "standalone installation marker",
+    )
+}
 
 /// Verified installed identity held together with the exact enrolled disk and
 /// its exclusive lock. A configured path or tenant UUID cannot construct this.
@@ -199,21 +210,21 @@ pub(crate) fn claim(
         lock.observed_len()? == 0,
         "installation lock contains unexpected data"
     );
-    let installed: Installation = serde_json::from_slice(&read_installed_file(
+    let installed = decode_installation(&read_installed_file(
         &open_installed_file(
             &config.persistent_disk,
             disk,
             &directory.join("installation.json"),
         )?,
-        16 << 10,
+        MAX_INSTALLATION,
     )?)?;
-    let prepared: Installation = serde_json::from_slice(&read_installed_file(
+    let prepared = decode_installation(&read_installed_file(
         &open_installed_file(
             &config.persistent_disk,
             disk,
             &directory.join("initialization.json"),
         )?,
-        16 << 10,
+        MAX_INSTALLATION,
     )?)?;
     ensure!(
         prepared == installed
@@ -1139,7 +1150,7 @@ async fn initialize_owned(
             &persistent_disk,
             &data.join("initialization.json"),
             &serde_json::to_vec(&installation)?,
-            16 << 10,
+            MAX_INSTALLATION,
         )?;
 
         for domain in [
@@ -1375,7 +1386,7 @@ async fn initialize_owned(
         &persistent_disk,
         &data.join("installation.json"),
         &serde_json::to_vec(&installation)?,
-        16 << 10,
+        MAX_INSTALLATION,
     )?;
     Ok(InitializedInstallation {
         configuration,

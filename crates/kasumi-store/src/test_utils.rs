@@ -102,6 +102,18 @@ pub fn retry_disk_registry<T>(
     }
 }
 
+/// The installed device registry binds each filesystem device to the first
+/// memory admission registered for it, for the life of the process. Tests that
+/// open installed owners share this one admission. A test that makes one of
+/// their registrations uncertain affects every installed owner on that device.
+#[cfg(test)]
+pub(crate) fn installed_device_memory() -> std::sync::Arc<TestDiskMemory> {
+    static MEMORY: std::sync::OnceLock<std::sync::Arc<TestDiskMemory>> = std::sync::OnceLock::new();
+    MEMORY
+        .get_or_init(|| TestDiskMemory::new(256 << 20, 4096))
+        .clone()
+}
+
 /// Explicit bounded memory owner for physical-disk fixtures. It performs the
 /// same mandatory resident acquisition and owns every accepted lease until Drop;
 /// no production constructor selects this governor implicitly.
@@ -690,7 +702,32 @@ impl crate::FilesystemAuditArchive {
     }
 }
 
+/// Fixture owner marked into test backup roots. It is never an installed
+/// identity; production roots are marked only by `enroll`.
+pub const BACKUP_DESTINATION_OWNER: kasumi_types::TrustVerifierIdentity =
+    kasumi_types::TrustVerifierIdentity {
+        installation_id: uuid::Uuid::from_u128(0x7d3e_61a0_52c4_4f19_9b1e_0c55_28d6_a3f4),
+        node_id: 1,
+    };
+
 impl crate::FilesystemBackupDestination {
+    /// The former raw constructor, now a fixture only: it creates or adopts the
+    /// root and marks an unmarked one with `BACKUP_DESTINATION_OWNER`, so every
+    /// operation still runs through the enrolled verification path.
+    pub fn new(
+        root: impl AsRef<std::path::Path>,
+        max_bytes: usize,
+        disk: std::sync::Arc<crate::NodeDisk>,
+    ) -> anyhow::Result<Self> {
+        ensure!(max_bytes > 0, "backup byte limit must be positive");
+        let root = crate::backup_sessions::filesystem::EnrolledRoot::fixture(
+            root.as_ref(),
+            disk,
+            &BACKUP_DESTINATION_OWNER,
+        )?;
+        Ok(Self::from_enrolled(root, max_bytes))
+    }
+
     pub fn new_fixture(
         root: impl AsRef<std::path::Path>,
         max_bytes: usize,
@@ -736,7 +773,8 @@ mod fixture_directory_tests {
         let after = disk.snapshot();
         assert_eq!(after.phase, crate::NodeDiskPhase::Open);
         assert_eq!(after.open_files, before.open_files);
-        assert_eq!(after.persistent_files, before.persistent_files);
+        // The backup root is enrolled with its fixed marker file.
+        assert_eq!(after.persistent_files, before.persistent_files + 1);
         assert_eq!(
             after.persistent_directories,
             before.persistent_directories + 2

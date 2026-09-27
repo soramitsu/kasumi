@@ -7,9 +7,12 @@ use std::{
     path::{Path, PathBuf},
 };
 
+#[path = "backup_enrollment.rs"]
+pub(crate) mod enrollment;
 #[path = "backup_session_terminal.rs"]
 mod terminal;
 use crate::node_disk::{NamespaceAdmission, NamespacePart, NamespacePartKind};
+pub(crate) use enrollment::EnrolledRoot;
 use terminal::Terminal;
 pub(crate) const TERMINAL_IO_BUFFER_BYTES: usize =
     terminal::IO_CHUNK_BYTES + 2 * terminal::HEADER_BYTES;
@@ -124,10 +127,7 @@ impl Directory {
             return Ok(None);
         };
         let length = file.observed_len()?;
-        ensure!(
-            length <= limit as u64,
-            "invalid or oversized backup session object"
-        );
+        ensure!(length <= limit as u64, "invalid or oversized backup object");
         let mut bytes = vec![0; usize::try_from(length)?];
         file.read_exact_at(&mut bytes, 0)?;
         #[cfg(test)]
@@ -266,6 +266,14 @@ impl Directory {
         let published = self.1.publish_file(file, root, relative)?;
         published.sync_all_and_parent()?;
         Ok(())
+    }
+
+    /// Read one published backup through this retained directory, with the
+    /// same durable readback as a session object. A named backup must exist.
+    pub(crate) fn get_backup(&self, id: Uuid, limit: usize) -> Result<Vec<u8>> {
+        ensure!(!id.is_nil(), "nil backup object");
+        self.read(&format!("{id}.kasumi"), limit)?
+            .context("backup object is missing")
     }
 
     pub fn put(&self, session_id: Uuid, slot: BackupSessionSlot, bytes: &[u8]) -> Result<()> {
@@ -835,3 +843,7 @@ mod session_admission_tests;
 #[cfg(test)]
 #[path = "backup_file_admission_tests.rs"]
 mod file_admission_tests;
+
+#[cfg(test)]
+#[path = "backup_enrollment_tests.rs"]
+mod enrollment_tests;

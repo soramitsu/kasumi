@@ -1166,6 +1166,9 @@ async fn scoped_feed_advances_through_filtered_commit_tail_and_emits_only_real_d
 
 #[async_trait::async_trait]
 impl BackupDestination for PendingDestination {
+    fn namespace_binding(&self) -> anyhow::Result<kasumi_types::BackupNamespaceBinding> {
+        anyhow::bail!("pending test destination has no physical namespace")
+    }
     async fn session_get(
         &self,
         _session: uuid::Uuid,

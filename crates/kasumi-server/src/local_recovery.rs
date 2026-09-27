@@ -178,12 +178,11 @@ enum GenerationRecord {
     Stopped { operation_id: Uuid },
 }
 
-fn decode<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T> {
-    ensure!(
-        bytes.len() <= MAX_RECORD,
-        "local recovery record exceeds its work limit"
-    );
-    Ok(serde_json::from_slice(bytes)?)
+/// Every local recovery record, marker and generation outcome is admitted only
+/// as the current writer's exact bytes. A respelled journal fails the stopped
+/// operation closed; no resume, stop or status call rewrites it as current.
+fn decode<T: serde::de::DeserializeOwned + Serialize>(bytes: &[u8]) -> Result<T> {
+    kasumi_types::exact_json::decode_exact(bytes, MAX_RECORD, "local recovery record")
 }
 fn encoded<T: Serialize>(value: &T) -> Result<Vec<u8>> {
     let bytes = serde_json::to_vec(value)?;

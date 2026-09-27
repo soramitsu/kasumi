@@ -2,6 +2,7 @@
 //! it never repairs a partial installation or reacquires a grant to finish one.
 use anyhow::{Context, Result, ensure};
 use kasumi_store::{TenantStore, WriteOp};
+use kasumi_types::exact_json::decode_exact;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
@@ -9,6 +10,7 @@ use uuid::Uuid;
 
 const NS: &str = "node.enrollment";
 const MAX_INPUT: usize = 2 << 20;
+const MAX_HEAD: usize = 4096;
 pub(crate) fn required(config: &crate::runtime::RuntimeConfig) -> bool {
     config.mode == crate::runtime::DeploymentMode::Replicated
         || crate::standalone::requires_provisioned(config)
@@ -35,6 +37,11 @@ pub(crate) enum Input {
     },
 }
 impl Input {
+    /// The retained input is digest-bound and must also be the current writer's
+    /// exact bytes; an equivalent spelling never completes or reopens enrollment.
+    fn decode(bytes: &[u8]) -> Result<Self> {
+        decode_exact(bytes, MAX_INPUT, "node enrollment input")
+    }
     fn identity(&self) -> (Kind, Uuid) {
         match self {
             Self::Data { configuration } => (Kind::Data, configuration.database_id),
@@ -50,6 +57,11 @@ struct Head {
     database_id: Uuid,
     input_sha256: String,
     complete: bool,
+}
+
+/// A respelled head is refused, never completed or rewritten as current bytes.
+fn decode_head(bytes: &[u8]) -> Result<Head> {
+    decode_exact(bytes, MAX_HEAD, "node enrollment head")
 }
 
 pub(crate) struct Enrollment {
@@ -101,9 +113,9 @@ impl Enrollment {
         grant.check()
     }
     pub(crate) fn complete(self, store: &TenantStore) -> Result<()> {
-        let retained: Head = serde_json::from_slice(
+        let retained = decode_head(
             &store
-                .get_bounded(NS, b"head", 4096)?
+                .get_bounded(NS, b"head", MAX_HEAD)?
                 .context("node enrollment head absent")?,
         )?;
         ensure!(
@@ -117,7 +129,7 @@ impl Enrollment {
             hex::encode(Sha256::digest(&input)) == self.head.input_sha256,
             "node enrollment input changed"
         );
-        let decoded: Input = serde_json::from_slice(&input)?;
+        let decoded = Input::decode(&input)?;
         require_genesis_tenants(store, &decoded, &self.head.input_sha256)?;
         let mut head = self.head;
         head.complete = true;
@@ -131,8 +143,8 @@ pub(crate) fn require_complete(
     kind: Kind,
 ) -> Result<()> {
     let view = store.read_view()?;
-    let head: Head =
-        serde_json::from_slice(&view.get(NS, b"head", 4096)?.context(
+    let head =
+        decode_head(&view.get(NS, b"head", MAX_HEAD)?.context(
             "node enrollment is absent or incomplete; explicit provisioning is required",
         )?)?;
     ensure!(
@@ -150,7 +162,7 @@ pub(crate) fn require_complete(
         hex::encode(Sha256::digest(&bytes)) == head.input_sha256,
         "node enrollment input digest differs"
     );
-    let input: Input = serde_json::from_slice(&bytes)?;
+    let input = Input::decode(&bytes)?;
     ensure!(
         input.identity() == (kind, database_id),
         "node enrollment input identity differs"

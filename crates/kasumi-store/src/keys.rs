@@ -1,4 +1,7 @@
-use std::fmt;
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fmt,
+};
 
 use anyhow::{Context, Result, bail, ensure};
 use async_trait::async_trait;
@@ -384,7 +387,9 @@ pub struct WrappingIdentity {
 }
 
 impl WrappingIdentity {
-    fn constructed(provider: &str, key_ref: &str) -> Result<Self> {
+    /// Names a wrapping resource and grants no key access. Resolver entries
+    /// are still made only from constructed providers.
+    pub fn new(provider: &str, key_ref: &str) -> Result<Self> {
         ensure!(
             !provider.is_empty()
                 && provider.len() <= 16
@@ -400,7 +405,7 @@ impl WrappingIdentity {
 
     fn wrapped(key: &WrappedKey) -> Result<Self> {
         ensure!(key.version > 0, "invalid historical wrapping version");
-        Self::constructed(&key.provider, &key.key_ref)
+        Self::new(&key.provider, &key.key_ref)
     }
 
     pub fn provider(&self) -> &str {
@@ -437,7 +442,7 @@ impl HistoricalKeySource {
         provider: std::sync::Arc<dyn HistoricalUnwrapper>,
     ) -> Result<Self> {
         let (kind, key_ref) = descriptor.dispatch_identity();
-        let identity = WrappingIdentity::constructed(kind, key_ref)?;
+        let identity = WrappingIdentity::new(kind, key_ref)?;
         Ok(Self {
             identity,
             descriptor,
@@ -479,48 +484,136 @@ impl HistoricalKeySource {
     }
 }
 
+const HISTORICAL_SOURCE_SET_DOMAIN: &[u8] = b"kasumi.historical-source-set.v1\0";
+
+/// Canonical digest of a committed historical source set, computable from
+/// configuration or a journal without opening any provider. A count prefix is
+/// followed by each descriptor's exact JSON encoding, length framed, in set
+/// order, so installation order cannot change it. Credentials and paths are
+/// not descriptor fields: a token refresh or keyring move keeps the digest,
+/// while a key resource, origin, namespace, mount, derivation or pinned CA
+/// change alters it.
+pub fn source_set_sha256_of(
+    descriptors: &BTreeSet<HistoricalSourceSecurityDescriptor>,
+) -> [u8; 32] {
+    let mut digest = Sha256::new();
+    digest.update(HISTORICAL_SOURCE_SET_DOMAIN);
+    digest.update((descriptors.len() as u64).to_be_bytes());
+    for descriptor in descriptors {
+        // Strings, options, booleans and fixed arrays always encode.
+        let encoded = serde_json::to_vec(descriptor).expect("historical source descriptor JSON");
+        digest.update((encoded.len() as u64).to_be_bytes());
+        digest.update(&encoded);
+    }
+    digest.finalize().into()
+}
+
 /// Immutable, exact unwrap dispatch for installed historical providers.
 /// A missing identity or a failed selected provider is terminal: no current
 /// primary fallback and no decryption trials against other providers occur.
+/// An installed primary is one more exact entry, selected only for ciphertext
+/// wrapped under its own identity.
 pub struct HistoricalKeyResolver {
-    sources: std::collections::BTreeMap<WrappingIdentity, std::sync::Arc<dyn HistoricalUnwrapper>>,
-    descriptors: std::collections::BTreeSet<HistoricalSourceSecurityDescriptor>,
+    sources: BTreeMap<WrappingIdentity, std::sync::Arc<dyn HistoricalUnwrapper>>,
+    primary: Option<HistoricalSourceSecurityDescriptor>,
+    historical: BTreeSet<HistoricalSourceSecurityDescriptor>,
 }
 
 impl HistoricalKeyResolver {
-    /// First-release installed source-set bound, separate from retention page size.
+    /// First-release installed source-set bound, separate from retention page
+    /// size. An installed primary counts toward it.
     pub const MAX_SOURCES: usize = 64;
 
+    /// Historical sources only, such as the committed source set of a recovery.
     pub fn new(sources: Vec<HistoricalKeySource>) -> Result<Self> {
+        Self::install(None, sources)
+    }
+
+    /// Installs the writable primary's read-only unwrap capability beside the
+    /// historical sources, for the store's own persisted ciphertext. It is not
+    /// a fallback for other identities, and a historical source equal to it is
+    /// rejected rather than merged. The historical list may be empty.
+    pub fn with_primary(
+        primary: HistoricalKeySource,
+        historical: Vec<HistoricalKeySource>,
+    ) -> Result<Self> {
+        Self::install(Some(primary), historical)
+    }
+
+    fn install(
+        primary: Option<HistoricalKeySource>,
+        historical: Vec<HistoricalKeySource>,
+    ) -> Result<Self> {
         ensure!(
-            (1..=Self::MAX_SOURCES).contains(&sources.len()),
+            (1..=Self::MAX_SOURCES).contains(&(historical.len() + usize::from(primary.is_some()))),
             "historical wrapping source count outside first-release bounds"
         );
-        let mut installed = std::collections::BTreeMap::new();
-        let mut descriptors = std::collections::BTreeSet::new();
-        for source in sources {
+        let mut sources = BTreeMap::new();
+        let primary = primary.map(|source| {
+            sources.insert(source.identity.clone(), source.provider);
+            (source.identity, source.descriptor)
+        });
+        let mut installed = BTreeSet::new();
+        for source in historical {
+            if let Some((identity, descriptor)) = &primary {
+                ensure!(
+                    source.identity != *identity && source.descriptor != *descriptor,
+                    "historical wrapping source duplicates the installed primary"
+                );
+            }
             ensure!(
-                !installed.contains_key(&source.identity),
+                !sources.contains_key(&source.identity),
                 "duplicate or ambiguous historical wrapping identity"
             );
             ensure!(
-                descriptors.insert(source.descriptor),
+                installed.insert(source.descriptor),
                 "duplicate historical source security descriptor"
             );
-            installed.insert(source.identity, source.provider);
+            sources.insert(source.identity, source.provider);
         }
         Ok(Self {
-            sources: installed,
-            descriptors,
+            sources,
+            primary: primary.map(|(_, descriptor)| descriptor),
+            historical: installed,
         })
     }
 
+    /// Every dispatchable identity, including an installed primary.
     pub fn identities(&self) -> impl Iterator<Item = &WrappingIdentity> {
         self.sources.keys()
     }
 
+    /// Every installed descriptor: the primary, if any, then the historical set.
     pub fn descriptors(&self) -> impl Iterator<Item = &HistoricalSourceSecurityDescriptor> {
-        self.descriptors.iter()
+        self.primary.iter().chain(&self.historical)
+    }
+
+    pub fn primary_descriptor(&self) -> Option<&HistoricalSourceSecurityDescriptor> {
+        self.primary.as_ref()
+    }
+
+    /// The historical source set, excluding any installed primary.
+    pub fn historical_descriptors(&self) -> &BTreeSet<HistoricalSourceSecurityDescriptor> {
+        &self.historical
+    }
+
+    /// Digest of the historical source set; an installed primary is excluded.
+    pub fn source_set_sha256(&self) -> [u8; 32] {
+        source_set_sha256_of(&self.historical)
+    }
+
+    /// Requires the historical source set to equal a committed set exactly.
+    /// A subset, superset or changed descriptor is a binding failure; an
+    /// installed primary is not part of the comparison.
+    pub fn require_descriptors(
+        &self,
+        expected: &BTreeSet<HistoricalSourceSecurityDescriptor>,
+    ) -> Result<()> {
+        ensure!(
+            self.historical == *expected,
+            "installed historical wrapping sources differ from the committed source set"
+        );
+        Ok(())
     }
 
     pub async fn unwrap_key(&self, tenant: &str, wrapped: &WrappedKey) -> Result<SecretKey> {
@@ -1299,5 +1392,569 @@ mod historical_source_descriptor_tests {
         let other =
             FileKeyProvider::initialize(&directory.join("other.json"), "application").unwrap();
         assert_ne!(original, HistoricalSourceSecurityDescriptor::file(&other));
+    }
+}
+
+#[cfg(test)]
+mod historical_source_set_tests {
+    use super::*;
+    use crate::{FileKeyProvider, private_files, test_utils::LocalKeyProvider};
+    use kasumi_transport::credentials::FileCredentialSource;
+    use std::sync::Arc;
+
+    fn fixture(seed: u8) -> Arc<LocalKeyProvider> {
+        Arc::new(LocalKeyProvider::new([seed; 32]))
+    }
+
+    fn source(provider: &Arc<LocalKeyProvider>) -> HistoricalKeySource {
+        HistoricalKeySource::fixture(provider.clone())
+    }
+
+    fn must_fail<T>(result: Result<T>) -> String {
+        match result {
+            Ok(_) => panic!("accepted a rejected historical source set"),
+            Err(error) => format!("{error:#}"),
+        }
+    }
+
+    fn ca_pem() -> Vec<u8> {
+        rcgen::generate_simple_self_signed(vec!["localhost".into()])
+            .unwrap()
+            .cert
+            .pem()
+            .into_bytes()
+    }
+
+    type ConfigChange = fn(&mut TransitConfig);
+
+    fn transit_config(ca: &[u8], token: &std::path::Path) -> TransitConfig {
+        TransitConfig {
+            endpoint: "https://EXAMPLE.com:443".into(),
+            mount: "teams/transit".into(),
+            key_name: "archive".into(),
+            credential: Arc::new(FileCredentialSource::new(token).unwrap()),
+            namespace: Some("team".into()),
+            ca_pem: Some(ca.to_vec()),
+            derived: true,
+        }
+    }
+
+    fn transit_source(config: TransitConfig) -> HistoricalKeySource {
+        HistoricalKeySource::transit(Arc::new(TransitKeyProvider::new(config).unwrap())).unwrap()
+    }
+
+    fn transit_set_sha256(config: TransitConfig) -> [u8; 32] {
+        HistoricalKeyResolver::new(vec![transit_source(config)])
+            .unwrap()
+            .source_set_sha256()
+    }
+
+    #[test]
+    fn source_set_digest_is_domain_separated_count_prefixed_and_framed() {
+        let file = HistoricalSourceSecurityDescriptor::File {
+            key_ref: "keyring-a".into(),
+        };
+        let transit = HistoricalSourceSecurityDescriptor::Transit {
+            key_ref: "https://example.com/|team|transit|archive".into(),
+            canonical_origin: "https://example.com".into(),
+            namespace: None,
+            mount: "transit".into(),
+            key_name: "archive".into(),
+            derived: true,
+            ca_trust_sha256: [7; 32],
+        };
+        // Written independently of the Serialize derive: variant tags, field
+        // order, the null namespace and the numeric CA array are the format.
+        let literals = [
+            r#"{"kind":"file","key_ref":"keyring-a"}"#.to_owned(),
+            format!(
+                concat!(
+                    r#"{{"kind":"transit","key_ref":"https://example.com/|team|transit|archive","#,
+                    r#""canonical_origin":"https://example.com","namespace":null,"#,
+                    r#""mount":"transit","key_name":"archive","derived":true,"#,
+                    r#""ca_trust_sha256":[{}]}}"#
+                ),
+                ["7"; 32].join(",")
+            ),
+        ];
+        let mut expected = Sha256::new();
+        expected.update(b"kasumi.historical-source-set.v1\0");
+        expected.update(2u64.to_be_bytes());
+        for literal in &literals {
+            expected.update((literal.len() as u64).to_be_bytes());
+            expected.update(literal.as_bytes());
+        }
+        let expected: [u8; 32] = expected.finalize().into();
+        // Set order, never argument order.
+        assert_eq!(
+            source_set_sha256_of(&BTreeSet::from([transit.clone(), file.clone()])),
+            expected
+        );
+        assert_eq!(
+            source_set_sha256_of(&BTreeSet::from([file.clone(), transit.clone()])),
+            expected
+        );
+
+        let mut empty = Sha256::new();
+        empty.update(b"kasumi.historical-source-set.v1\0");
+        empty.update(0u64.to_be_bytes());
+        let empty: [u8; 32] = empty.finalize().into();
+        assert_eq!(source_set_sha256_of(&BTreeSet::new()), empty);
+
+        // Neither the empty set, a member alone nor the pair collide.
+        let digests = BTreeSet::from([
+            expected,
+            empty,
+            source_set_sha256_of(&BTreeSet::from([file])),
+            source_set_sha256_of(&BTreeSet::from([transit])),
+        ]);
+        assert_eq!(digests.len(), 4);
+    }
+
+    #[test]
+    fn resolver_digest_is_order_independent_and_excludes_the_primary() {
+        let (primary, first, second) = (fixture(71), fixture(72), fixture(73));
+        let forward = HistoricalKeyResolver::new(vec![source(&first), source(&second)]).unwrap();
+        let reverse = HistoricalKeyResolver::new(vec![source(&second), source(&first)]).unwrap();
+        let committed = forward.historical_descriptors().clone();
+        assert_eq!(committed.len(), 2);
+        assert_eq!(forward.source_set_sha256(), reverse.source_set_sha256());
+        assert_eq!(
+            forward.source_set_sha256(),
+            source_set_sha256_of(&committed)
+        );
+        assert!(forward.primary_descriptor().is_none());
+        assert_eq!(
+            forward.descriptors().cloned().collect::<BTreeSet<_>>(),
+            committed
+        );
+        reverse.require_descriptors(&committed).unwrap();
+
+        let installed = HistoricalKeyResolver::with_primary(
+            source(&primary),
+            vec![source(&second), source(&first)],
+        )
+        .unwrap();
+        let primary_descriptor = source(&primary).descriptor().clone();
+        assert_eq!(installed.source_set_sha256(), forward.source_set_sha256());
+        installed.require_descriptors(&committed).unwrap();
+        assert_eq!(installed.primary_descriptor(), Some(&primary_descriptor));
+        assert!(
+            !installed
+                .historical_descriptors()
+                .contains(&primary_descriptor)
+        );
+        assert_eq!(installed.descriptors().next(), Some(&primary_descriptor));
+        assert_eq!(installed.descriptors().count(), 3);
+        assert_eq!(installed.identities().count(), 3);
+
+        // The same sources with the primary listed as historical are a
+        // different committed set.
+        let promoted =
+            HistoricalKeyResolver::new(vec![source(&primary), source(&first), source(&second)])
+                .unwrap();
+        assert_ne!(promoted.source_set_sha256(), installed.source_set_sha256());
+        assert!(
+            installed
+                .require_descriptors(promoted.historical_descriptors())
+                .is_err()
+        );
+        assert!(promoted.require_descriptors(&committed).is_err());
+
+        // A primary alone commits the empty historical set.
+        let alone = HistoricalKeyResolver::with_primary(source(&primary), Vec::new()).unwrap();
+        assert_eq!(
+            alone.source_set_sha256(),
+            source_set_sha256_of(&BTreeSet::new())
+        );
+        alone.require_descriptors(&BTreeSet::new()).unwrap();
+        assert!(alone.require_descriptors(&committed).is_err());
+
+        // Exact equality: a subset or a superset is a binding failure.
+        let subset = BTreeSet::from([source(&first).descriptor().clone()]);
+        let error = must_fail(installed.require_descriptors(&subset));
+        assert!(error.contains("committed source set"), "{error}");
+        let mut superset = committed.clone();
+        superset.insert(source(&fixture(74)).descriptor().clone());
+        assert!(installed.require_descriptors(&superset).is_err());
+    }
+
+    #[test]
+    fn source_set_digest_tracks_every_security_descriptor_field() {
+        let descriptor =
+            |key_ref: &str,
+             origin: &str,
+             namespace: Option<&str>,
+             mount: &str,
+             key_name: &str,
+             derived: bool,
+             ca: u8| HistoricalSourceSecurityDescriptor::Transit {
+                key_ref: key_ref.into(),
+                canonical_origin: origin.into(),
+                namespace: namespace.map(Into::into),
+                mount: mount.into(),
+                key_name: key_name.into(),
+                derived,
+                ca_trust_sha256: [ca; 32],
+            };
+        let origin = "https://example.com";
+        let base = descriptor("resource", origin, Some("team"), "transit", "key", true, 1);
+        let changed = [
+            descriptor("changed", origin, Some("team"), "transit", "key", true, 1),
+            descriptor(
+                "resource",
+                "https://other",
+                Some("team"),
+                "transit",
+                "key",
+                true,
+                1,
+            ),
+            descriptor("resource", origin, Some("other"), "transit", "key", true, 1),
+            descriptor("resource", origin, None, "transit", "key", true, 1),
+            descriptor("resource", origin, Some("team"), "other", "key", true, 1),
+            descriptor(
+                "resource",
+                origin,
+                Some("team"),
+                "transit",
+                "other",
+                true,
+                1,
+            ),
+            descriptor("resource", origin, Some("team"), "transit", "key", false, 1),
+            descriptor("resource", origin, Some("team"), "transit", "key", true, 2),
+            HistoricalSourceSecurityDescriptor::File {
+                key_ref: "resource".into(),
+            },
+        ];
+        let neighbour = HistoricalSourceSecurityDescriptor::File {
+            key_ref: "neighbour".into(),
+        };
+        let alone = |d: &HistoricalSourceSecurityDescriptor| {
+            source_set_sha256_of(&BTreeSet::from([d.clone()]))
+        };
+        let beside = |d: &HistoricalSourceSecurityDescriptor| {
+            source_set_sha256_of(&BTreeSet::from([neighbour.clone(), d.clone()]))
+        };
+        assert_eq!(alone(&base), alone(&base.clone()));
+        let mut digests = BTreeSet::from([alone(&base), beside(&base)]);
+        for change in &changed {
+            assert!(digests.insert(alone(change)), "{change:?} kept the digest");
+            assert!(digests.insert(beside(change)), "{change:?} kept the digest");
+        }
+    }
+
+    #[test]
+    fn transit_source_set_ignores_credentials_but_tracks_resource_and_trust() {
+        let root = crate::test_utils::private_tempdir().unwrap();
+        let token = root.path().join("token");
+        std::fs::write(&token, "old-token").unwrap();
+        let ca = ca_pem();
+        let original = transit_set_sha256(transit_config(&ca, &token));
+
+        // Token file content and location, and the origin's spelling, are
+        // not security properties of the source.
+        std::fs::write(&token, "new-token").unwrap();
+        assert_eq!(transit_set_sha256(transit_config(&ca, &token)), original);
+        let moved = root.path().join("moved-token");
+        std::fs::write(&moved, "moved-token").unwrap();
+        let mut respelled = transit_config(&ca, &moved);
+        respelled.endpoint = "https://example.com".into();
+        assert_eq!(transit_set_sha256(respelled), original);
+
+        let changes: [(&str, ConfigChange); 6] = [
+            ("origin", |c| c.endpoint = "https://other.example".into()),
+            ("port", |c| c.endpoint = "https://example.com:8200".into()),
+            ("namespace", |c| c.namespace = None),
+            ("mount", |c| c.mount = "transit".into()),
+            ("key name", |c| c.key_name = "other".into()),
+            ("derivation", |c| c.derived = false),
+        ];
+        for (field, change) in changes {
+            let mut config = transit_config(&ca, &token);
+            change(&mut config);
+            assert_ne!(
+                transit_set_sha256(config),
+                original,
+                "{field} kept the digest"
+            );
+        }
+        assert_ne!(
+            transit_set_sha256(transit_config(&ca_pem(), &token)),
+            original,
+            "pinned CA change kept the digest"
+        );
+    }
+
+    #[tokio::test]
+    async fn file_source_set_survives_restart_move_and_rotation_but_not_replacement() {
+        let root = crate::test_utils::private_tempdir().unwrap();
+        let directory = root.path().join("keys");
+        private_files::create_directory(&directory).unwrap();
+        let primary_path = directory.join("primary.json");
+        let archive_path = directory.join("archive.json");
+        let primary = Arc::new(FileKeyProvider::initialize(&primary_path, "application").unwrap());
+        let archive = Arc::new(FileKeyProvider::initialize(&archive_path, "application").unwrap());
+        let current = primary.generate_key("tenant").await.unwrap();
+        let old = archive.generate_key("tenant").await.unwrap();
+        let installed = HistoricalKeyResolver::with_primary(
+            HistoricalKeySource::file(primary).unwrap(),
+            vec![HistoricalKeySource::file(archive).unwrap()],
+        )
+        .unwrap();
+        let committed = installed.historical_descriptors().clone();
+        let digest = installed.source_set_sha256();
+        drop(installed);
+
+        // Restart after the archive keyring moved and the primary rotated.
+        let moved_path = directory.join("moved-archive.json");
+        std::fs::rename(&archive_path, &moved_path).unwrap();
+        let primary = Arc::new(FileKeyProvider::open(&primary_path).unwrap());
+        assert_eq!(primary.rotate().unwrap(), 2);
+        let archive = Arc::new(FileKeyProvider::open(&moved_path).unwrap());
+        let reopened = HistoricalKeyResolver::with_primary(
+            HistoricalKeySource::file(primary.clone()).unwrap(),
+            vec![HistoricalKeySource::file(archive.clone()).unwrap()],
+        )
+        .unwrap();
+        assert_eq!(reopened.source_set_sha256(), digest);
+        reopened.require_descriptors(&committed).unwrap();
+        for key in [&current, &old] {
+            assert_eq!(
+                reopened
+                    .unwrap_key("tenant", &key.wrapped)
+                    .await
+                    .unwrap()
+                    .as_bytes(),
+                key.plaintext.as_bytes()
+            );
+        }
+
+        // A replacement keyring at the original path is another source.
+        let replacement =
+            Arc::new(FileKeyProvider::initialize(&archive_path, "application").unwrap());
+        let replaced = HistoricalKeyResolver::with_primary(
+            HistoricalKeySource::file(primary.clone()).unwrap(),
+            vec![HistoricalKeySource::file(replacement).unwrap()],
+        )
+        .unwrap();
+        assert_ne!(replaced.source_set_sha256(), digest);
+        assert!(replaced.require_descriptors(&committed).is_err());
+        let error = must_fail(replaced.unwrap_key("tenant", &old.wrapped).await);
+        assert!(error.contains("not installed"), "{error}");
+
+        // Swapping the primary and historical roles changes the committed set.
+        let swapped = HistoricalKeyResolver::with_primary(
+            HistoricalKeySource::file(archive).unwrap(),
+            vec![HistoricalKeySource::file(primary).unwrap()],
+        )
+        .unwrap();
+        assert_ne!(swapped.source_set_sha256(), digest);
+        assert!(swapped.require_descriptors(&committed).is_err());
+    }
+
+    #[test]
+    fn with_primary_rejects_a_historical_source_equal_to_the_primary() {
+        let primary = fixture(81);
+        let historical = fixture(82);
+        for duplicate in [primary.clone(), fixture(81)] {
+            let error = must_fail(HistoricalKeyResolver::with_primary(
+                source(&primary),
+                vec![source(&historical), HistoricalKeySource::fixture(duplicate)],
+            ));
+            assert!(error.contains("installed primary"), "{error}");
+        }
+        assert!(
+            HistoricalKeyResolver::with_primary(
+                source(&primary),
+                vec![source(&historical), source(&fixture(82))],
+            )
+            .is_err()
+        );
+
+        let root = crate::test_utils::private_tempdir().unwrap();
+        let directory = root.path().join("keys");
+        private_files::create_directory(&directory).unwrap();
+        let path = directory.join("application.json");
+        let keyring = Arc::new(FileKeyProvider::initialize(&path, "application").unwrap());
+        let alias = directory.join("alias.json");
+        private_files::create(&alias, &private_files::read(&path, 1 << 20).unwrap()).unwrap();
+        for duplicate in [path, alias] {
+            let error = must_fail(HistoricalKeyResolver::with_primary(
+                HistoricalKeySource::file(keyring.clone()).unwrap(),
+                vec![
+                    HistoricalKeySource::file(Arc::new(FileKeyProvider::open(duplicate).unwrap()))
+                        .unwrap(),
+                ],
+            ));
+            assert!(error.contains("installed primary"), "{error}");
+        }
+
+        // The same Transit resource is ambiguous with the primary even under
+        // another derivation mode, pinned CA or credential.
+        let token = root.path().join("token");
+        std::fs::write(&token, "token").unwrap();
+        let ca = ca_pem();
+        let changes: [ConfigChange; 3] =
+            [|_| {}, |c| c.derived = false, |c| c.ca_pem = Some(ca_pem())];
+        for change in changes {
+            let mut config = transit_config(&ca, &token);
+            change(&mut config);
+            let error = must_fail(HistoricalKeyResolver::with_primary(
+                transit_source(transit_config(&ca, &token)),
+                vec![transit_source(config)],
+            ));
+            assert!(error.contains("installed primary"), "{error}");
+        }
+        let mut other = transit_config(&ca, &token);
+        other.key_name = "other".into();
+        let resolver = HistoricalKeyResolver::with_primary(
+            transit_source(transit_config(&ca, &token)),
+            vec![transit_source(other)],
+        )
+        .unwrap();
+        assert_eq!(resolver.identities().count(), 2);
+    }
+
+    #[tokio::test]
+    async fn primary_entry_is_exact_dispatch_with_one_probe_per_identity() {
+        let (primary, first, second, absent) = (fixture(91), fixture(92), fixture(93), fixture(94));
+        let current = primary.generate_key("tenant").await.unwrap();
+        let first_key = first.generate_key("tenant").await.unwrap();
+        let second_key = second.generate_key("tenant").await.unwrap();
+        let absent_key = absent.generate_key("tenant").await.unwrap();
+        let resolver = HistoricalKeyResolver::with_primary(
+            source(&primary),
+            vec![source(&first), source(&second)],
+        )
+        .unwrap();
+        let probes = || {
+            [
+                primary.probe_count(),
+                first.probe_count(),
+                second.probe_count(),
+                absent.probe_count(),
+            ]
+        };
+
+        let read_only: &dyn KeyProvider = &resolver;
+        assert!(read_only.generate_key("tenant").await.is_err());
+        assert!(
+            read_only
+                .rewrap_key("tenant", &current.wrapped)
+                .await
+                .is_err()
+        );
+        assert_eq!(probes(), [0, 0, 0, 0]);
+
+        for (key, expected) in [
+            (&current, [1, 0, 0, 0]),
+            (&first_key, [1, 1, 0, 0]),
+            (&second_key, [1, 1, 1, 0]),
+        ] {
+            assert_eq!(
+                resolver
+                    .unwrap_key("tenant", &key.wrapped)
+                    .await
+                    .unwrap()
+                    .as_bytes(),
+                key.plaintext.as_bytes()
+            );
+            assert_eq!(probes(), expected);
+        }
+
+        // An uninstalled identity probes nothing, not even the primary.
+        let error = must_fail(resolver.unwrap_key("tenant", &absent_key.wrapped).await);
+        assert!(error.contains("not installed"), "{error}");
+        assert_eq!(probes(), [1, 1, 1, 0]);
+
+        // A failed primary is terminal for its own ciphertext.
+        primary.revoke();
+        assert!(
+            resolver
+                .unwrap_key("tenant", &current.wrapped)
+                .await
+                .is_err()
+        );
+        assert_eq!(probes(), [2, 1, 1, 0]);
+
+        // A failed historical source never falls back to the primary.
+        primary.allow();
+        first.revoke();
+        assert!(
+            resolver
+                .unwrap_key("tenant", &first_key.wrapped)
+                .await
+                .is_err()
+        );
+        assert_eq!(probes(), [2, 2, 1, 0]);
+
+        // A context mismatch under the primary identity reaches only it.
+        assert!(
+            resolver
+                .unwrap_key("other-tenant", &current.wrapped)
+                .await
+                .is_err()
+        );
+        assert_eq!(probes(), [3, 2, 1, 0]);
+        assert_eq!(
+            resolver
+                .unwrap_key("tenant", &current.wrapped)
+                .await
+                .unwrap()
+                .as_bytes(),
+            current.plaintext.as_bytes()
+        );
+        assert_eq!(probes(), [4, 2, 1, 0]);
+    }
+
+    #[test]
+    fn source_cap_counts_the_primary() {
+        let max = HistoricalKeyResolver::MAX_SOURCES;
+        let providers = (0..=max).map(|n| fixture(n as u8)).collect::<Vec<_>>();
+        let sources =
+            |range: std::ops::Range<usize>| providers[range].iter().map(source).collect::<Vec<_>>();
+        assert_eq!(
+            HistoricalKeyResolver::new(sources(0..max))
+                .unwrap()
+                .identities()
+                .count(),
+            max
+        );
+        let full =
+            HistoricalKeyResolver::with_primary(source(&providers[max]), sources(0..max - 1))
+                .unwrap();
+        assert_eq!(full.identities().count(), max);
+        assert_eq!(full.historical_descriptors().len(), max - 1);
+        let error = must_fail(HistoricalKeyResolver::with_primary(
+            source(&providers[max]),
+            sources(0..max),
+        ));
+        assert!(error.contains("count outside"), "{error}");
+        assert!(HistoricalKeyResolver::new(sources(0..max + 1)).is_err());
+        assert!(HistoricalKeyResolver::new(Vec::new()).is_err());
+        HistoricalKeyResolver::with_primary(source(&providers[0]), Vec::new()).unwrap();
+    }
+
+    #[test]
+    fn public_wrapping_identity_keeps_first_release_bounds() {
+        let provider = fixture(95);
+        assert_eq!(
+            &WrappingIdentity::new("test-only", provider.key_ref()).unwrap(),
+            source(&provider).identity()
+        );
+        let identity = WrappingIdentity::new(&"p".repeat(16), &"k".repeat(2048)).unwrap();
+        assert_eq!(identity.provider().len(), 16);
+        assert_eq!(identity.key_ref().len(), 2048);
+        let (long_provider, long_key_ref) = ("p".repeat(17), "k".repeat(2049));
+        for (provider, key_ref) in [
+            ("", "key"),
+            (long_provider.as_str(), "key"),
+            ("file", ""),
+            ("file", long_key_ref.as_str()),
+        ] {
+            assert!(WrappingIdentity::new(provider, key_ref).is_err());
+        }
     }
 }

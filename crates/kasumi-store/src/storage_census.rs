@@ -22,6 +22,10 @@ pub enum StorageOwnerKind {
     Database,
     Reader,
     Writer,
+    /// One multi-file NodeDisk owner of a segmented log: its root, directory
+    /// and bounded descriptor cache, including failed-close owners it keeps.
+    /// It may be a database's exact child.
+    SegmentGroup,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StorageOwnerId {
@@ -47,6 +51,7 @@ pub struct StorageCensusSnapshot {
     pub databases: usize,
     pub readers: usize,
     pub writers: usize,
+    pub segment_groups: usize,
     pub servicing: usize,
     pub retained_panics: usize,
     pub fenced: bool,
@@ -239,6 +244,7 @@ impl StorageCensus {
             StorageOwnerKind::Database => snapshot.databases += 1,
             StorageOwnerKind::Reader => snapshot.readers += 1,
             StorageOwnerKind::Writer => snapshot.writers += 1,
+            StorageOwnerKind::SegmentGroup => snapshot.segment_groups += 1,
         }
         if matches!(
             metadata.cell,

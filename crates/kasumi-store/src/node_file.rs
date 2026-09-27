@@ -17,6 +17,12 @@ use std::{
 };
 use uuid::Uuid;
 
+// The multi-file owner of the segmented log. The single-file envelope below
+// stays wired into `RegisteredNodeOpening` until the segmented cutover
+// replaces it with this group, so only tests exercise the group for now.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) mod segment_group;
+
 const HEADER_BYTES: usize = 4096;
 const CHECKSUM_AT: usize = HEADER_BYTES - 32;
 const MAGIC: &[u8; 16] = b"KASUMI-NODE-0002";

@@ -307,6 +307,11 @@ impl<'a> BackupSessionObjects<'a> {
 }
 #[async_trait::async_trait]
 impl BackupDestination for BackupSessionObjects<'_> {
+    /// A session view shares its destination's one physical namespace and its
+    /// blocking verification.
+    fn namespace_binding(&self) -> Result<BackupNamespaceBinding> {
+        self.destination.namespace_binding()
+    }
     async fn put(&self, id: Uuid, encrypted: BackupUpload) -> Result<()> {
         self.destination
             .session_put(self.session, BackupSessionSlot::Object(id), encrypted)

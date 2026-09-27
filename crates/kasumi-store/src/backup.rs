@@ -11,10 +11,7 @@ use reqwest::{
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::{
-    path::{Path, PathBuf},
-    sync::Arc,
-};
+use std::{path::Path, sync::Arc};
 use uuid::Uuid;
 use zeroize::{Zeroize, Zeroizing};
 
@@ -672,6 +669,14 @@ fn manifest_bytes(
 
 #[async_trait]
 pub trait BackupDestination: Send + Sync {
+    /// The exact physical namespace, verified when called. Session claims and
+    /// the installed index name this value, never a display alias or path.
+    ///
+    /// A filesystem destination verifies its retained root descriptor and
+    /// complete enrolled path with blocking filesystem calls under the NodeDisk
+    /// state lock. Async callers invoke this from a blocking context such as
+    /// `tokio::task::spawn_blocking`, never directly on a runtime worker.
+    fn namespace_binding(&self) -> Result<kasumi_types::BackupNamespaceBinding>;
     /// Publishing is create-only: an existing backup must never be overwritten.
     async fn put(&self, id: Uuid, encrypted: BackupUpload) -> Result<()>;
     /// Enforce the caller's expected object bound before allocation and while
@@ -710,37 +715,115 @@ pub trait BackupDestination: Send + Sync {
     }
 }
 
+/// An enrolled filesystem destination. `enroll` is the only path that creates
+/// a root; `open_enrolled` never creates, marks or repairs one. The marker is
+/// verified on open, and every operation re-verifies the retained root
+/// descriptor and its enrolled path before and after its effect.
+#[cfg_attr(
+    not(feature = "test-utils"),
+    doc = r#"
+Production builds have no raw constructor that could create or adopt an
+unmarked root. The enrolled opening compiles:
+
+```no_run
+fn open(
+    disk: std::sync::Arc<kasumi_store::NodeDisk>,
+    binding: &kasumi_types::BackupNamespaceBinding,
+) -> anyhow::Result<kasumi_store::FilesystemBackupDestination> {
+    kasumi_store::FilesystemBackupDestination::open_enrolled("/backups", 1, disk, binding)
+}
+```
+
+while the test fixtures are absent:
+
+```compile_fail
+fn open(
+    disk: std::sync::Arc<kasumi_store::NodeDisk>,
+    _binding: &kasumi_types::BackupNamespaceBinding,
+) -> anyhow::Result<kasumi_store::FilesystemBackupDestination> {
+    kasumi_store::FilesystemBackupDestination::new("/backups", 1, disk)
+}
+```
+
+```compile_fail
+fn open(
+    memory: std::sync::Arc<dyn kasumi_store::NodeDiskMemoryAdmission>,
+    _binding: &kasumi_types::BackupNamespaceBinding,
+) -> anyhow::Result<kasumi_store::FilesystemBackupDestination> {
+    kasumi_store::FilesystemBackupDestination::new_fixture("/backups", 1, memory)
+}
+```
+"#
+)]
 pub struct FilesystemBackupDestination {
-    root: PathBuf,
-    disk: Arc<crate::NodeDisk>,
-    sessions: Arc<crate::backup_sessions::filesystem::Directory>,
+    root: Arc<crate::backup_sessions::filesystem::EnrolledRoot>,
     max_bytes: usize,
 }
 impl FilesystemBackupDestination {
-    pub fn new(
+    /// Create an absent root, whose parent must already be enrolled, and its
+    /// owner-bound marker; or complete this owner's interrupted enrollment of
+    /// the same `namespace_id`. Ancestors are never created here.
+    pub fn enroll(
         root: impl AsRef<Path>,
         max_bytes: usize,
         disk: Arc<crate::NodeDisk>,
+        owner: &kasumi_types::TrustVerifierIdentity,
+        namespace_id: Uuid,
     ) -> Result<Self> {
         ensure!(max_bytes > 0, "backup byte limit must be positive");
-        let root = root.as_ref().to_owned();
-        let sessions = Arc::new(
-            crate::backup_sessions::filesystem::Directory::open_or_create(&root, disk.clone())?,
-        );
-        Ok(Self {
-            root,
+        let root = crate::backup_sessions::filesystem::EnrolledRoot::enroll(
+            root.as_ref(),
             disk,
-            sessions,
-            max_bytes,
-        })
+            owner,
+            namespace_id,
+        )?;
+        Ok(Self::from_enrolled(root, max_bytes))
     }
-    fn path(&self, id: Uuid) -> PathBuf {
-        self.root.join(format!("{id}.kasumi"))
+
+    /// Open only a root whose marker is exactly the installed `binding`.
+    /// Unmarked, foreign, corrupt and copied markers are rejected unchanged.
+    pub fn open_enrolled(
+        root: impl AsRef<Path>,
+        max_bytes: usize,
+        disk: Arc<crate::NodeDisk>,
+        binding: &kasumi_types::BackupNamespaceBinding,
+    ) -> Result<Self> {
+        ensure!(max_bytes > 0, "backup byte limit must be positive");
+        let root =
+            crate::backup_sessions::filesystem::EnrolledRoot::open(root.as_ref(), disk, binding)?;
+        Ok(Self::from_enrolled(root, max_bytes))
+    }
+
+    pub(crate) fn from_enrolled(
+        root: crate::backup_sessions::filesystem::EnrolledRoot,
+        max_bytes: usize,
+    ) -> Self {
+        Self {
+            root: Arc::new(root),
+            max_bytes,
+        }
+    }
+
+    pub(crate) fn root_path(&self) -> &Path {
+        self.root.path()
+    }
+
+    async fn verified<T: Send + 'static>(
+        &self,
+        operation: impl FnOnce(&crate::backup_sessions::filesystem::Directory) -> Result<T>
+        + Send
+        + 'static,
+    ) -> Result<T> {
+        let root = self.root.clone();
+        tokio::task::spawn_blocking(move || root.run(operation)).await?
     }
 }
 
 #[async_trait]
 impl BackupDestination for FilesystemBackupDestination {
+    fn namespace_binding(&self) -> Result<kasumi_types::BackupNamespaceBinding> {
+        self.root.binding()
+    }
     async fn session_put(
         &self,
         session: Uuid,
@@ -751,8 +834,8 @@ impl BackupDestination for FilesystemBackupDestination {
             encrypted.len() <= self.max_bytes,
             "backup exceeds destination byte limit"
         );
-        let root = self.sessions.clone();
-        tokio::task::spawn_blocking(move || root.put(session, slot, &encrypted)).await?
+        self.verified(move |root| root.put(session, slot, &encrypted))
+            .await
     }
     async fn session_get(
         &self,
@@ -760,18 +843,17 @@ impl BackupDestination for FilesystemBackupDestination {
         slot: crate::BackupSessionSlot,
         max_bytes: usize,
     ) -> Result<Option<Vec<u8>>> {
-        let root = self.sessions.clone();
         let limit = max_bytes.min(self.max_bytes);
-        tokio::task::spawn_blocking(move || root.get(session, slot, limit)).await?
+        self.verified(move |root| root.get(session, slot, limit))
+            .await
     }
     async fn session_objects(
         &self,
         aborted: &crate::VerifiedBackupAbort,
         limit: usize,
     ) -> Result<crate::BackupSessionObjectPage> {
-        let root = self.sessions.clone();
         let proof = aborted.clone();
-        tokio::task::spawn_blocking(move || root.list(&proof, limit)).await?
+        self.verified(move |root| root.list(&proof, limit)).await
     }
     async fn session_delete(
         &self,
@@ -782,38 +864,24 @@ impl BackupDestination for FilesystemBackupDestination {
             objects.len() <= crate::MAX_SESSION_GC_OBJECTS,
             "backup cleanup exceeds page limit"
         );
-        let root = self.sessions.clone();
         let proof = aborted.clone();
         let objects = objects.to_vec();
-        tokio::task::spawn_blocking(move || root.delete(&proof, &objects)).await?
+        self.verified(move |root| root.delete(&proof, &objects))
+            .await
     }
     async fn put(&self, id: Uuid, encrypted: BackupUpload) -> Result<()> {
         ensure!(
             encrypted.len() <= self.max_bytes,
             "backup exceeds destination byte limit"
         );
-        let root = self.sessions.clone();
-        tokio::task::spawn_blocking(move || root.put_backup(id, &encrypted)).await?
+        self.verified(move |root| root.put_backup(id, &encrypted))
+            .await
     }
 
+    // The retained root resolves the object; no caller path is reopened.
     async fn get(&self, id: Uuid, max_bytes: usize) -> Result<Vec<u8>> {
-        let path = self.path(id);
-        let disk = self.disk.clone();
         let limit = self.max_bytes.min(max_bytes);
-        tokio::task::spawn_blocking(move || -> Result<Vec<u8>> {
-            let (root, relative) = disk.binding(&path)?;
-            let file = disk.open_file(root, relative)?;
-            let length = file.observed_len()?;
-            ensure!(
-                length <= limit as u64,
-                "backup exceeds destination byte limit"
-            );
-            let mut result = vec![0; usize::try_from(length)?];
-            file.read_exact_at(&mut result, 0)?;
-            file.sync_all_and_parent()?;
-            Ok(result)
-        })
-        .await?
+        self.verified(move |root| root.get_backup(id, limit)).await
     }
 }
 
@@ -882,18 +950,6 @@ impl S3BackupDestination {
             "s3:{}:{}:{}:{}",
             self.endpoint, self.region, self.bucket, self.prefix
         )
-    }
-    /// Physical session identity excludes renewable credentials and trust files.
-    /// The constructor validates that every installed destination can yield it.
-    pub fn namespace_binding(&self) -> Result<kasumi_types::BackupNamespaceBinding> {
-        let binding = kasumi_types::BackupNamespaceBinding::S3 {
-            https_origin: self.endpoint.as_str().to_owned(),
-            region: self.region.clone(),
-            bucket: self.bucket.clone(),
-            prefix: self.prefix.clone(),
-        };
-        binding.validate()?;
-        Ok(binding)
     }
     pub fn new(config: S3BackupConfig) -> Result<Self> {
         ensure!(
@@ -1056,6 +1112,18 @@ fn hmac(key: &[u8], bytes: &[u8]) -> [u8; 32] {
 
 #[async_trait]
 impl BackupDestination for S3BackupDestination {
+    /// Physical session identity excludes renewable credentials and trust files.
+    /// The constructor validates that every installed destination can yield it.
+    fn namespace_binding(&self) -> Result<kasumi_types::BackupNamespaceBinding> {
+        let binding = kasumi_types::BackupNamespaceBinding::S3 {
+            https_origin: self.endpoint.as_str().to_owned(),
+            region: self.region.clone(),
+            bucket: self.bucket.clone(),
+            prefix: self.prefix.clone(),
+        };
+        binding.validate()?;
+        Ok(binding)
+    }
     async fn session_put(
         &self,
         session: Uuid,
@@ -1269,6 +1337,9 @@ mod tests {
 
         #[async_trait]
         impl BackupDestination for PausedUpload {
+            fn namespace_binding(&self) -> Result<kasumi_types::BackupNamespaceBinding> {
+                anyhow::bail!("paused upload has no physical namespace")
+            }
             async fn put(&self, _id: Uuid, upload: BackupUpload) -> Result<()> {
                 self.entered.notify_one();
                 std::future::pending::<()>().await;
@@ -1980,7 +2051,7 @@ mod tests {
                 .await
                 .is_err()
         );
-        std::fs::write(destination.path(id), [0; 6]).unwrap();
+        std::fs::write(dir.path().join(format!("{id}.kasumi")), [0; 6]).unwrap();
         assert!(destination.get(id, 16 << 20).await.is_err());
         for bytes in [b"".as_slice(), b"KASUMIB1", b"KASUMIB1\xff\xff\xff\xff"] {
             assert!(EncryptedBackup::from_bytes(bytes, 1024, &store).is_err());

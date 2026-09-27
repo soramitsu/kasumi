@@ -1,14 +1,11 @@
 //! Fixed first-release filesystem backup marker bytes.
 //!
 //! This codec does not prove installation, directory custody, or source
-//! authority. An installer must compare its decoded value with an authenticated
-//! pending/committed record and a retained verified directory before use.
-#![allow(
-    dead_code,
-    reason = "marker codec is dormant until admitted installation and Control claim are integrated"
-)]
+//! authority. Enrollment compares a decoded value with the expected owner and
+//! namespace and with the retained directory it was read through; the caller
+//! must still compare the resulting binding with its authenticated record.
 
-use kasumi_types::TrustVerifierIdentity;
+use kasumi_types::{BackupNamespaceBinding, TrustVerifierIdentity};
 use sha2::{Digest, Sha256};
 use std::io;
 use uuid::Uuid;
@@ -35,12 +32,8 @@ impl Marker {
         device: u64,
         inode: u64,
     ) -> io::Result<Self> {
-        if owner.validate().is_err()
-            || namespace_id.get_version() != Some(uuid::Version::Random)
-            || namespace_id.get_variant() != uuid::Variant::RFC4122
-            || device == 0
-            || inode == 0
-        {
+        validate_identity(&owner, namespace_id)?;
+        if device == 0 || inode == 0 {
             return Err(io::ErrorKind::InvalidInput.into());
         }
         Ok(Self {
@@ -49,6 +42,54 @@ impl Marker {
             device,
             inode,
         })
+    }
+
+    /// The expected marker for an exact installed binding. S3 has no marker.
+    pub(crate) fn from_binding(binding: &BackupNamespaceBinding) -> io::Result<Self> {
+        let BackupNamespaceBinding::Filesystem {
+            installation_id,
+            origin_node_id,
+            namespace_id,
+            device,
+            inode,
+        } = binding
+        else {
+            return Err(io::ErrorKind::InvalidInput.into());
+        };
+        Self::new(
+            TrustVerifierIdentity {
+                installation_id: *installation_id,
+                node_id: *origin_node_id,
+            },
+            *namespace_id,
+            *device,
+            *inode,
+        )
+    }
+
+    /// The durable binding is exactly the marker contents. `device` and `inode`
+    /// record the enrollment observation; a remount may renumber `st_dev`, so
+    /// no open compares it with a live descriptor.
+    pub(crate) fn binding(&self) -> BackupNamespaceBinding {
+        BackupNamespaceBinding::Filesystem {
+            installation_id: self.owner.installation_id,
+            origin_node_id: self.owner.node_id,
+            namespace_id: self.namespace_id,
+            device: self.device,
+            inode: self.inode,
+        }
+    }
+
+    pub(crate) fn owner(&self) -> &TrustVerifierIdentity {
+        &self.owner
+    }
+
+    pub(crate) fn namespace_id(&self) -> Uuid {
+        self.namespace_id
+    }
+
+    pub(crate) fn inode(&self) -> u64 {
+        self.inode
     }
 
     /// Exact 100-byte marker. The digest detects corruption, not forgery.
@@ -90,6 +131,20 @@ impl Marker {
         }
         Ok(marker)
     }
+}
+
+/// Enrollment validates its caller identity before any namespace effect.
+pub(crate) fn validate_identity(
+    owner: &TrustVerifierIdentity,
+    namespace_id: Uuid,
+) -> io::Result<()> {
+    if owner.validate().is_err()
+        || namespace_id.get_version() != Some(uuid::Version::Random)
+        || namespace_id.get_variant() != uuid::Variant::RFC4122
+    {
+        return Err(io::ErrorKind::InvalidInput.into());
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -152,6 +207,53 @@ mod tests {
         wrong_declared_length[11] -= 1;
         resign(&mut wrong_declared_length);
         assert!(Marker::decode(&wrong_declared_length).is_err());
+    }
+
+    #[test]
+    fn filesystem_binding_is_exactly_the_marker_and_s3_has_none() {
+        let marker = marker();
+        let binding = marker.binding();
+        binding.validate().unwrap();
+        assert_eq!(
+            binding,
+            BackupNamespaceBinding::Filesystem {
+                installation_id: marker.owner().installation_id,
+                origin_node_id: 7,
+                namespace_id: marker.namespace_id(),
+                device: 0x0102_0304_0506_0708,
+                inode: marker.inode(),
+            }
+        );
+        assert_eq!(Marker::from_binding(&binding).unwrap(), marker);
+        assert!(
+            Marker::from_binding(&BackupNamespaceBinding::S3 {
+                https_origin: "https://s3.example/".into(),
+                region: "ap-northeast-1".into(),
+                bucket: "backups".into(),
+                prefix: String::new(),
+            })
+            .is_err()
+        );
+        for (owner, namespace_id) in [
+            (
+                TrustVerifierIdentity {
+                    installation_id: Uuid::nil(),
+                    node_id: 7,
+                },
+                marker.namespace_id(),
+            ),
+            (
+                TrustVerifierIdentity {
+                    node_id: 0,
+                    ..marker.owner().clone()
+                },
+                marker.namespace_id(),
+            ),
+            (marker.owner().clone(), Uuid::nil()),
+            (marker.owner().clone(), Uuid::from_u128(1)),
+        ] {
+            assert!(validate_identity(&owner, namespace_id).is_err());
+        }
     }
 
     #[test]

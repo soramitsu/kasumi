@@ -43,7 +43,7 @@ use std::{
 #[path = "mcp_credential_tests.rs"]
 mod credential_tests;
 #[cfg(test)]
-pub(crate) use credential_tests::ReleaseGate;
+pub(crate) use credential_tests::{BodyChargeGate, ReleaseGate};
 
 #[cfg(test)]
 fn release_gate_slot() -> Arc<Mutex<Option<Arc<ReleaseGate>>>> {
@@ -128,6 +128,9 @@ struct Verified {
     context: RequestContext,
     mutation_dispatched: Arc<AtomicBool>,
     response_fence: Arc<Mutex<Option<kasumi_engine::ResponseFence<'static>>>>,
+    // A tool reply that could not be charged. The HTTP boundary replaces the
+    // SDK body with a fixed-size rejection carrying this error.
+    withheld: Arc<Mutex<Option<Error>>>,
 }
 impl Verified {
     fn new(context: RequestContext) -> Self {
@@ -135,6 +138,7 @@ impl Verified {
             context,
             mutation_dispatched: Arc::new(AtomicBool::new(false)),
             response_fence: Arc::new(Mutex::new(None)),
+            withheld: Arc::new(Mutex::new(None)),
         }
     }
     fn release_error(&self, error: Error) -> Error {
@@ -172,6 +176,48 @@ impl Verified {
             .lock()
             .map_err(|_| Error::new(ErrorCode::Unavailable, "MCP request ownership unavailable"))?;
         Ok(retained.take())
+    }
+    fn has_response_fence(&self) -> kasumi_types::Result<bool> {
+        let retained = self
+            .response_fence
+            .lock()
+            .map_err(|_| Error::new(ErrorCode::Unavailable, "MCP request ownership unavailable"))?;
+        Ok(retained.is_some())
+    }
+    /// Charge response materialization to the retained database fence before
+    /// allocating it. The charge lasts until HTTP release drops the fence.
+    fn retain_response_bytes(
+        &self,
+        bytes: u64,
+        exhausted: &'static str,
+    ) -> kasumi_types::Result<()> {
+        let mut retained = self
+            .response_fence
+            .lock()
+            .map_err(|_| Error::new(ErrorCode::Unavailable, "MCP request ownership unavailable"))?;
+        let fence = retained.as_mut().ok_or_else(|| {
+            Error::new(ErrorCode::Unavailable, "MCP response workspace unavailable")
+        })?;
+        fence.retain_response_bytes(bytes).map_err(|error| {
+            if error.code == ErrorCode::ResourceExhausted {
+                Error::new(ErrorCode::ResourceExhausted, exhausted)
+            } else {
+                error
+            }
+        })
+    }
+    fn withhold(&self, error: Error) {
+        // A poisoned slot still withholds; the boundary reports it unavailable.
+        if let Ok(mut withheld) = self.withheld.lock() {
+            *withheld = Some(error);
+        }
+    }
+    fn take_withheld(&self) -> kasumi_types::Result<Option<Error>> {
+        let mut withheld = self
+            .withheld
+            .lock()
+            .map_err(|_| Error::new(ErrorCode::Unavailable, "MCP request ownership unavailable"))?;
+        Ok(withheld.take())
     }
 }
 #[derive(Clone)]
@@ -231,6 +277,12 @@ async fn authenticate(State(state): State<HttpAuth>, mut request: Request, next:
                 Ok(fence) => fence,
                 Err(error) => return rejected(&state, invocation.release_error(error)),
             };
+            match invocation.take_withheld() {
+                Ok(None) => {}
+                Ok(Some(error)) | Err(error) => {
+                    return rejected(&state, invocation.release_error(error));
+                }
+            }
             if response
                 .extensions()
                 .get::<TerminalTransportFailure>()
@@ -459,21 +511,217 @@ fn arguments<T: serde::de::DeserializeOwned>(value: Value) -> kasumi_types::Resu
     serde_json::from_value(value)
         .map_err(|_| Error::new(ErrorCode::InvalidArgument, "invalid tool arguments"))
 }
-fn output(value: &impl Serialize) -> kasumi_types::Result<Value> {
+fn output(invocation: &Verified, value: &impl Serialize) -> kasumi_types::Result<Value> {
     // Bound the structured data before constructing the final protocol envelope.
     let bytes = encode_json(value)?;
-    serde_json::from_slice(&bytes)
+    // Small scalars take far more memory as a Value tree than as JSON text.
+    // Charge the whole tree before decoding any of it.
+    invocation.retain_response_bytes(
+        value_tree_bytes(&bytes)?,
+        "MCP tool result tree exceeds the response workspace budget",
+    )?;
+    decode_output(&bytes)
+}
+fn decode_output(bytes: &[u8]) -> kasumi_types::Result<Value> {
+    serde_json::from_slice(bytes)
         .map_err(|_| Error::new(ErrorCode::Corruption, "tool result encoding failed"))
+}
+
+// Value tree charges are workspace estimates, not allocator accounting. Each
+// heap block is rounded up to the allocation quantum and carries one more
+// quantum for its header and small size-class slack.
+const HEAP_QUANTUM: u64 = 16;
+// serde_json refuses deeper nesting, so no decodable output exceeds it.
+const MAX_TREE_DEPTH: usize = 128;
+const VALUE_BYTES: u64 = std::mem::size_of::<Value>() as u64;
+// std's B-tree nodes hold at most 11 entries and 12 edges beside a parent
+// link and lengths. Every node except the root holds at least 5 entries.
+const MAP_NODE_BYTES: u64 = (11 * (std::mem::size_of::<String>() + std::mem::size_of::<Value>())
+    + 12 * std::mem::size_of::<usize>()
+    + 16) as u64;
+
+fn heap_block(bytes: u64) -> u64 {
+    bytes
+        .div_ceil(HEAP_QUANTUM)
+        .saturating_add(1)
+        .saturating_mul(HEAP_QUANTUM)
+}
+
+/// Upper bound of the memory `serde_json::from_slice::<Value>` holds while it
+/// decodes `bytes`: the returned tree plus its transient parse buffers. This
+/// is one allocation-free pass over already bounded output. Output it cannot
+/// delimit fails like undecodable output; anything it accepts but serde_json
+/// rejects is still refused by the decode that follows the charge.
+fn value_tree_bytes(bytes: &[u8]) -> kasumi_types::Result<u64> {
+    #[derive(Clone, Copy, PartialEq)]
+    enum Next {
+        Value,
+        ValueOrClose,
+        Key,
+        KeyOrClose,
+        Colon,
+        CommaOrClose,
+        End,
+    }
+    let malformed = || Error::new(ErrorCode::Corruption, "tool result encoding failed");
+    // Each open container: (is an object, entries so far).
+    let mut open = [(false, 0u64); MAX_TREE_DEPTH];
+    let mut depth = 0;
+    let mut next = Next::Value;
+    // The root Value is returned inline; everything else is a heap block.
+    let mut total = VALUE_BYTES;
+    let mut longest_token = 0u64;
+    let mut largest_array = 0u64;
+    let mut index = 0;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if matches!(byte, b' ' | b'\t' | b'\n' | b'\r') {
+            index += 1;
+            continue;
+        }
+        let mut completed = false;
+        match (next, byte) {
+            (Next::ValueOrClose | Next::CommaOrClose, b']') if depth > 0 && !open[depth - 1].0 => {
+                depth -= 1;
+                let elements = open[depth].1;
+                if elements > 0 {
+                    // Vec::push grows from four slots by doubling.
+                    let capacity = elements.next_power_of_two().max(4);
+                    total = total.saturating_add(heap_block(capacity.saturating_mul(VALUE_BYTES)));
+                    largest_array = largest_array.max(capacity);
+                }
+                index += 1;
+                completed = true;
+            }
+            (Next::KeyOrClose | Next::CommaOrClose, b'}') if depth > 0 && open[depth - 1].0 => {
+                depth -= 1;
+                let entries = open[depth].1;
+                if entries > 0 {
+                    total = total.saturating_add(
+                        (entries / 5 + 1).saturating_mul(heap_block(MAP_NODE_BYTES)),
+                    );
+                }
+                index += 1;
+                completed = true;
+            }
+            (Next::Value | Next::ValueOrClose, b'[' | b'{') => {
+                if depth == MAX_TREE_DEPTH {
+                    return Err(malformed());
+                }
+                let object = byte == b'{';
+                open[depth] = (object, 0);
+                depth += 1;
+                next = if object {
+                    Next::KeyOrClose
+                } else {
+                    Next::ValueOrClose
+                };
+                index += 1;
+            }
+            (Next::Value | Next::ValueOrClose | Next::Key | Next::KeyOrClose, b'"') => {
+                let mut end = index + 1;
+                loop {
+                    match bytes.get(end) {
+                        Some(b'"') => break,
+                        Some(b'\\') => end += 2,
+                        Some(_) => end += 1,
+                        None => return Err(malformed()),
+                    }
+                }
+                // Decoded text is never longer than its escaped form. An
+                // empty String does not allocate.
+                let length = (end - index - 1) as u64;
+                if length > 0 {
+                    total = total.saturating_add(heap_block(length));
+                }
+                longest_token = longest_token.max(length);
+                index = end + 1;
+                if matches!(next, Next::Key | Next::KeyOrClose) {
+                    open[depth - 1].1 += 1;
+                    next = Next::Colon;
+                } else {
+                    completed = true;
+                }
+            }
+            (Next::Value | Next::ValueOrClose, b'-' | b'0'..=b'9') => {
+                let end = bytes[index..]
+                    .iter()
+                    .position(|byte| {
+                        !matches!(byte, b'0'..=b'9' | b'-' | b'+' | b'.' | b'e' | b'E')
+                    })
+                    .map_or(bytes.len(), |length| index + length);
+                // Arbitrary-precision numbers keep their text: integers as
+                // exact digits, others in a doubling parse buffer of 16+ bytes.
+                let length = (end - index) as u64;
+                total = total.saturating_add(heap_block(length.saturating_mul(2).max(16)));
+                longest_token = longest_token.max(length);
+                index = end;
+                completed = true;
+            }
+            (Next::Value | Next::ValueOrClose, b't' | b'f' | b'n') => {
+                let literal: &[u8] = match byte {
+                    b't' => b"true",
+                    b'f' => b"false",
+                    _ => b"null",
+                };
+                if !bytes[index..].starts_with(literal) {
+                    return Err(malformed());
+                }
+                index += literal.len();
+                completed = true;
+            }
+            (Next::Colon, b':') => {
+                next = Next::Value;
+                index += 1;
+            }
+            (Next::CommaOrClose, b',') => {
+                next = if open[depth - 1].0 {
+                    Next::Key
+                } else {
+                    Next::Value
+                };
+                index += 1;
+            }
+            _ => return Err(malformed()),
+        }
+        if completed {
+            if depth == 0 {
+                next = Next::End;
+            } else {
+                if !open[depth - 1].0 {
+                    open[depth - 1].1 += 1;
+                }
+                next = Next::CommaOrClose;
+            }
+        }
+    }
+    if next != Next::End {
+        return Err(malformed());
+    }
+    // One at a time during decoding: the escape scratch buffer, two number
+    // parse buffers, and the buffer a growing array replaces.
+    let transient = heap_block(longest_token.saturating_mul(2))
+        .saturating_add(heap_block(longest_token.saturating_mul(2).max(16)).saturating_mul(2))
+        .saturating_add(heap_block((largest_array / 2).saturating_mul(VALUE_BYTES)));
+    Ok(total.saturating_add(transient))
+}
+
+/// rmcp encodes a counted envelope with `serde_json::to_vec`: a buffer that
+/// starts at 128 bytes and doubles. Its final allocation stays below twice
+/// the envelope, and the buffer replaced by its last growth below the envelope.
+fn encoded_body_bytes(envelope: usize) -> u64 {
+    heap_block((envelope as u64).saturating_mul(3).max(128))
 }
 
 // Count the exact JSON-RPC envelope, including escaped request IDs, without
 // allocating a second output buffer. An inbound ID is already bounded by the
-// HTTP request limit; a large ID reduces the available result budget.
+// HTTP request limit; a large ID reduces the available result budget. Returns
+// the result with its exact encoded envelope length.
 fn bounded_tool_result(
     value: Value,
     is_error: bool,
     id: &RequestId,
-) -> kasumi_types::Result<CallToolResult> {
+) -> kasumi_types::Result<(CallToolResult, usize)> {
     let mut result = if is_error {
         CallToolResult::error(Vec::new())
     } else {
@@ -516,7 +764,7 @@ fn bounded_tool_result(
             "MCP response cannot be encoded within its byte limit",
         ));
     }
-    Ok(result)
+    Ok((result, counter.bytes))
 }
 
 impl KasumiMcp {
@@ -531,30 +779,34 @@ impl KasumiMcp {
         match name {
             "kasumi_collections" => {
                 let _: EmptyArguments = arguments(args)?;
-                output(&db.collections(&context).await?)
+                output(invocation, &db.collections(&context).await?)
             }
             "kasumi_get" => {
                 let args: GetArguments = arguments(args)?;
                 validate_name(&args.collection)?;
                 validate_name(&args.id)?;
-                output(&db.get(&context, &args.collection, &args.id).await?)
+                output(
+                    invocation,
+                    &db.get(&context, &args.collection, &args.id).await?,
+                )
             }
             "kasumi_query" => {
                 let args: QueryRequest = arguments(args)?;
-                output(&db.query(&context, args).await?)
+                output(invocation, &db.query(&context, args).await?)
             }
             "kasumi_mutate" => {
                 let args: MutationBatch = arguments(args)?;
                 invocation
                     .mutation_dispatched
                     .store(true, Ordering::Release);
-                output(&db.mutate(context, args).await?)
+                output(invocation, &db.mutate(context, args).await?)
                     .map_err(|error| invocation.release_error(error))
             }
             "kasumi_receipt" => {
                 let args: ReceiptArguments = arguments(args)?;
                 validate_name(&args.idempotency_key)?;
                 output(
+                    invocation,
                     &db.operation_receipt(&context, &args.idempotency_key)
                         .await?,
                 )
@@ -629,6 +881,12 @@ impl ServerHandler for KasumiMcp {
         let invocation = verified(&context)?;
         let identity = invocation.context.clone();
         let args = Value::Object(request.arguments.unwrap_or_default());
+        #[cfg(test)]
+        let body_charge_gate = context
+            .extensions
+            .get::<axum::http::request::Parts>()
+            .and_then(|parts| parts.extensions.get::<BodyChargeGate>())
+            .cloned();
         let result = async {
             let db = self
                 .auth
@@ -644,8 +902,20 @@ impl ServerHandler for KasumiMcp {
             let value = self.execute(&db, &request.name, &invocation, args).await?;
             // Current MCP supports structured output directly. A text copy
             // would escape large JSON again and can triple its wire size.
-            bounded_tool_result(value, false, &response_id)
-                .map_err(|error| invocation.release_error(error))
+            let (result, envelope) = bounded_tool_result(value, false, &response_id)
+                .map_err(|error| invocation.release_error(error))?;
+            #[cfg(test)]
+            if let Some(gate) = &body_charge_gate {
+                gate.0.wait().await;
+            }
+            // The SDK encodes the counted envelope after this handler returns.
+            invocation
+                .retain_response_bytes(
+                    encoded_body_bytes(envelope),
+                    "MCP response body exceeds the response workspace budget",
+                )
+                .map_err(|error| invocation.release_error(error))?;
+            Ok(result)
         }
         .await;
         // Preserve coverage for any adapter-originated execution rejection;
@@ -655,12 +925,31 @@ impl ServerHandler for KasumiMcp {
             Ok(response) => response,
             Err(error) => {
                 let leader_node_id = self.registry.leader_hint(&identity, &error);
-                bounded_tool_result(
+                let (result, envelope) = bounded_tool_result(
                     json!({"error":error,"leader_node_id":leader_node_id}),
                     true,
                     &response_id,
                 )
-                .map_err(|_| ErrorData::internal_error("MCP error response exceeds limit", None))?
+                .map_err(|_| ErrorData::internal_error("MCP error response exceeds limit", None))?;
+                // Without a database fence, the request failed before database
+                // admission: like an SDK protocol error, its reply is a bounded
+                // error plus the request's own ID. Otherwise charge the body,
+                // or withhold the reply behind a fixed-size HTTP rejection.
+                let charged = invocation.has_response_fence().and_then(|fenced| {
+                    if fenced {
+                        invocation.retain_response_bytes(
+                            encoded_body_bytes(envelope),
+                            "MCP error body exceeds the response workspace budget",
+                        )
+                    } else {
+                        Ok(())
+                    }
+                });
+                if let Err(error) = charged {
+                    invocation.withhold(error);
+                    return Err(ErrorData::internal_error("MCP response withheld", None));
+                }
+                result
             }
         }
         .into())
@@ -756,7 +1045,7 @@ mod response_tests {
             .len()
                 > MAX_RESPONSE_BYTES
         );
-        let result = bounded_tool_result(value.clone(), false, &id).unwrap();
+        let (result, envelope) = bounded_tool_result(value.clone(), false, &id).unwrap();
         assert!(result.content.is_empty());
         let bytes = serde_json::to_vec(&JsonRpcResponse {
             jsonrpc: JsonRpcVersion2_0,
@@ -764,6 +1053,7 @@ mod response_tests {
             result,
         })
         .unwrap();
+        assert_eq!(bytes.len(), envelope);
         assert!(bytes.len() <= MAX_RESPONSE_BYTES);
         let decoded: Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(decoded["result"]["structuredContent"], value);
@@ -785,11 +1075,13 @@ mod response_tests {
             version: 1,
             body: body.clone(),
         };
-        let value = output(&document).unwrap();
+        let encoded = encode_json(&document).unwrap();
+        assert!(value_tree_bytes(&encoded).unwrap() > encoded.len() as u64);
+        let value = decode_output(&encoded).unwrap();
         assert_eq!(value["body"], body);
         let typed: kasumi_types::Document = arguments(value.clone()).unwrap();
         assert_eq!(typed, document);
-        let response = bounded_tool_result(value, false, &RequestId::Number(1)).unwrap();
+        let (response, _) = bounded_tool_result(value, false, &RequestId::Number(1)).unwrap();
         let encoded = serde_json::to_vec(&response).unwrap();
         let observed: Value = serde_json::from_slice(&encoded).unwrap();
         assert_eq!(observed["structuredContent"]["body"], body);
@@ -803,7 +1095,7 @@ mod response_tests {
             bounded_tool_result(value, false, &id).unwrap_err().code,
             ErrorCode::ResourceExhausted
         );
-        let result = bounded_tool_result(
+        let (result, envelope) = bounded_tool_result(
             json!({"error":{"code":"RESOURCE_EXHAUSTED","message":"bounded"}}),
             true,
             &id,
@@ -811,15 +1103,88 @@ mod response_tests {
         .unwrap();
         assert!(result.content.is_empty());
         assert_eq!(result.is_error, Some(true));
-        assert!(
-            serde_json::to_vec(&JsonRpcResponse {
-                jsonrpc: JsonRpcVersion2_0,
-                id,
-                result
-            })
-            .unwrap()
-            .len()
-                <= MAX_RESPONSE_BYTES
+        let bytes = serde_json::to_vec(&JsonRpcResponse {
+            jsonrpc: JsonRpcVersion2_0,
+            id,
+            result,
+        })
+        .unwrap();
+        assert_eq!(bytes.len(), envelope);
+        assert!(bytes.len() <= MAX_RESPONSE_BYTES);
+        // The SDK body charge covers its doubling buffer and the one replaced.
+        assert!(encoded_body_bytes(envelope) >= 3 * envelope as u64);
+        assert!(encoded_body_bytes(0) >= 128);
+    }
+
+    #[test]
+    fn value_tree_bound_charges_small_scalars_far_beyond_their_encoding() {
+        let integers = encode_json(&vec![0u8; 1 << 20]).unwrap();
+        let bound = value_tree_bytes(&integers).unwrap();
+        // Every integer owns one Value slot and one heap text block.
+        assert!(bound >= (1 << 20) * (VALUE_BYTES + HEAP_QUANTUM));
+        assert!(bound > 32 * integers.len() as u64);
+        // Each map entry lives in a B-tree node, not only in its text.
+        let map = br#"{"a":1}"#;
+        assert!(value_tree_bytes(map).unwrap() >= MAP_NODE_BYTES + VALUE_BYTES);
+        // Empty containers and strings allocate nothing beyond the root.
+        assert!(value_tree_bytes(br#"[]"#).unwrap() < value_tree_bytes(br#"[0]"#).unwrap());
+        assert!(value_tree_bytes(br#""""#).unwrap() < value_tree_bytes(br#""a""#).unwrap());
+    }
+
+    #[test]
+    fn value_tree_bound_accepts_decodable_output_and_rejects_malformed_output() {
+        let nested = format!(
+            "{}0{}",
+            "[".repeat(MAX_TREE_DEPTH - 1),
+            "]".repeat(MAX_TREE_DEPTH - 1)
         );
+        for accepted in [
+            "null",
+            " true ",
+            "false",
+            "-0.5e+10",
+            "90071992547409931234567890",
+            r#""quoted \" \\ \u0041""#,
+            r#"{"":{},"a":[],"b":[1,{"c":null}],"$serde_json::private::Number":"7"}"#,
+            "[ 1 , [ 2 ] , { \"k\" : \"v\" } ]",
+            nested.as_str(),
+        ] {
+            let bytes = accepted.as_bytes();
+            serde_json::from_slice::<Value>(bytes).unwrap();
+            assert!(
+                value_tree_bytes(bytes).unwrap() >= VALUE_BYTES,
+                "{accepted}"
+            );
+        }
+        let too_deep = format!(
+            "{}{}",
+            "[".repeat(MAX_TREE_DEPTH + 1),
+            "]".repeat(MAX_TREE_DEPTH + 1)
+        );
+        for rejected in [
+            "",
+            "[",
+            "]",
+            "[1,]",
+            "[1 2]",
+            r#"{"a"}"#,
+            r#"{"a":1,}"#,
+            r#"{1:2}"#,
+            r#"{"a":1]"#,
+            r#"["a"}"#,
+            r#""unterminated"#,
+            "tru",
+            "nul",
+            "1 2",
+            "{} {}",
+            too_deep.as_str(),
+        ] {
+            assert!(serde_json::from_slice::<Value>(rejected.as_bytes()).is_err());
+            assert_eq!(
+                value_tree_bytes(rejected.as_bytes()).unwrap_err().code,
+                ErrorCode::Corruption,
+                "{rejected}"
+            );
+        }
     }
 }

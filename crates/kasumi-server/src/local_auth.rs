@@ -6,7 +6,7 @@ use kasumi_clock::EpochClock;
 use kasumi_store::{TenantStore, WriteOp, private_files};
 use kasumi_types::{
     Action, CreateCredential, CredentialLiveness, CredentialStatus, Error, ErrorCode,
-    IssuedCredential, RenewCredential,
+    IssuedCredential, RenewCredential, exact_json::decode_exact,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -21,6 +21,7 @@ const FAMILIES: &str = "local-credential-families";
 const ISSUANCES: &str = "local-credential-issuances";
 const EVENTS: &str = "local-credential-events";
 const MAX_SIGNERS: usize = 1 << 20;
+const MAX_RECORD: usize = 16 << 10;
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -39,7 +40,13 @@ impl Drop for Signers {
 }
 impl Signers {
     fn read(path: &Path) -> Result<Self> {
-        let signers: Self = serde_json::from_slice(&private_files::read(path, MAX_SIGNERS)?)?;
+        // Only the current writer's exact bytes select signing material; an
+        // equivalent respelling is refused rather than rewritten by rotation.
+        let signers: Self = decode_exact(
+            &private_files::read(path, MAX_SIGNERS)?,
+            MAX_SIGNERS,
+            "local signing installation",
+        )?;
         ensure!(
             signers.format == 1
                 && !signers.id.is_nil()
@@ -181,12 +188,20 @@ impl LocalCredentials {
     pub fn status(&self, family: Uuid) -> Result<CredentialStatus> {
         let bytes = self
             .store
-            .get(FAMILIES, family.as_bytes())?
+            .get_bounded(FAMILIES, family.as_bytes(), MAX_RECORD)?
             .ok_or_else(|| Error::new(ErrorCode::NotFound, "credential family not found"))?;
-        Ok(serde_json::from_slice(&bytes)?)
+        Self::family(&bytes)
+    }
+    /// Permanent credential rows are admitted only as the current writer's exact
+    /// bytes. An equivalent or default-omitting spelling fails closed.
+    fn family(bytes: &[u8]) -> Result<CredentialStatus> {
+        decode_exact(bytes, MAX_RECORD, "credential family record")
     }
     fn issuance_key(family: Uuid, issuance: Uuid) -> Vec<u8> {
         [family.as_bytes().as_slice(), issuance.as_bytes().as_slice()].concat()
+    }
+    fn issuance(bytes: &[u8]) -> Result<Issuance> {
+        decode_exact(bytes, MAX_RECORD, "credential issuance record")
     }
     fn token(&self, status: &CredentialStatus, issuance: &Issuance) -> Result<IssuedCredential> {
         ensure!(
@@ -236,11 +251,11 @@ impl LocalCredentials {
             .mutation
             .lock()
             .map_err(|_| anyhow::anyhow!("credential writer poisoned"))?;
-        if let Some(bytes) = self
-            .store
-            .get(FAMILIES, specification.family_id.as_bytes())?
+        if let Some(bytes) =
+            self.store
+                .get_bounded(FAMILIES, specification.family_id.as_bytes(), MAX_RECORD)?
         {
-            let status: CredentialStatus = serde_json::from_slice(&bytes)?;
+            let status = Self::family(&bytes)?;
             ensure!(
                 status.specification == specification,
                 Error::new(
@@ -250,12 +265,13 @@ impl LocalCredentials {
             );
             let issuance = self
                 .store
-                .get(
+                .get_bounded(
                     ISSUANCES,
                     &Self::issuance_key(specification.family_id, specification.family_id),
+                    MAX_RECORD,
                 )?
                 .context("credential issuance missing")?;
-            return self.token(&status, &serde_json::from_slice(&issuance)?);
+            return self.token(&status, &Self::issuance(&issuance)?);
         }
         let now = self.clock.now_ms()?;
         let issued_at = now / 1000;
@@ -284,12 +300,12 @@ impl LocalCredentials {
             WriteOp::put(
                 FAMILIES,
                 status.specification.family_id.as_bytes(),
-                serde_json::to_vec(&status)?,
+                encoded(&status)?,
             ),
             WriteOp::put(
                 ISSUANCES,
                 Self::issuance_key(issuance.family_id, issuance.issuance_id),
-                serde_json::to_vec(&issuance)?,
+                encoded(&issuance)?,
             ),
             WriteOp::put(
                 EVENTS,
@@ -317,8 +333,10 @@ impl LocalCredentials {
             Error::new(ErrorCode::Unauthorized, "credential family revoked")
         );
         let key = Self::issuance_key(request.family_id, request.renewal_id);
-        if let Some(bytes) = self.store.get(ISSUANCES, &key)? {
-            return self.token(&status, &serde_json::from_slice(&bytes)?);
+        if let Some(bytes) = self.store.get_bounded(ISSUANCES, &key, MAX_RECORD)? {
+            // A retained renewal is replayed only from its exact original row;
+            // an alternate spelling is refused and never replaced by a new issuance.
+            return self.token(&status, &Self::issuance(&bytes)?);
         }
         let now = self.clock.now_ms()?;
         let issued_at = now / 1000;
@@ -339,7 +357,7 @@ impl LocalCredentials {
             at_ms: now,
         };
         self.store.write_batch(&[
-            WriteOp::put(ISSUANCES, key, serde_json::to_vec(&issuance)?),
+            WriteOp::put(ISSUANCES, key, encoded(&issuance)?),
             WriteOp::put(
                 EVENTS,
                 Uuid::new_v4().as_bytes(),
@@ -366,7 +384,7 @@ impl LocalCredentials {
             at_ms: now,
         };
         self.store.write_batch(&[
-            WriteOp::put(FAMILIES, family.as_bytes(), serde_json::to_vec(&status)?),
+            WriteOp::put(FAMILIES, family.as_bytes(), encoded(&status)?),
             WriteOp::put(
                 EVENTS,
                 Uuid::new_v4().as_bytes(),
@@ -416,6 +434,15 @@ impl CredentialLiveness for FamilyGuard {
     fn family_id(&self) -> Option<Uuid> {
         Some(self.family)
     }
+}
+/// Never commit a credential row that its exact reader would refuse.
+fn encoded<T: Serialize>(value: &T) -> Result<Vec<u8>> {
+    let bytes = serde_json::to_vec(value)?;
+    ensure!(
+        bytes.len() <= MAX_RECORD,
+        "credential record exceeds its work limit"
+    );
+    Ok(bytes)
 }
 fn scopes(scopes: &std::collections::BTreeSet<Action>) -> String {
     scopes
@@ -592,6 +619,272 @@ mod tests {
             LocalCredentials::open(store, signer, config.issuer, config.audience).unwrap();
         assert_eq!(reopened.status(issued.family_id).unwrap(), revoked);
         assert!(reopened.create(specification, "initializer").is_err());
+        node.shutdown().await.unwrap();
+    }
+
+    /// Equivalent spellings the current writer never produces. Serde alone
+    /// admits each of them as the original value.
+    fn respelled(current: &[u8]) -> [Vec<u8>; 2] {
+        let spaced = std::str::from_utf8(current)
+            .unwrap()
+            .replacen(':', ": ", 1)
+            .into_bytes();
+        let reordered =
+            serde_json::to_vec(&serde_json::from_slice::<serde_json::Value>(current).unwrap())
+                .unwrap();
+        assert_ne!(reordered, current);
+        [spaced, reordered]
+    }
+
+    type Rows = Vec<(Vec<u8>, Vec<u8>)>;
+    fn rows(store: &TenantStore) -> [Rows; 3] {
+        [FAMILIES, ISSUANCES, EVENTS].map(|namespace| {
+            let mut rows = Vec::new();
+            store
+                .visit(namespace, MAX_RECORD, |key, value| {
+                    rows.push((key.to_vec(), value.to_vec()));
+                    Ok(())
+                })
+                .unwrap();
+            rows
+        })
+    }
+
+    fn refused(error: anyhow::Error, name: &str) {
+        assert!(
+            format!("{error:#}").contains(&format!("noncanonical {name}")),
+            "{error:#}"
+        );
+    }
+
+    #[tokio::test]
+    async fn noncanonical_credential_rows_and_signers_fail_closed_across_restart() {
+        let root = kasumi_store::test_utils::private_tempdir().unwrap();
+        let private = root.path().join("operator");
+        private_files::create_directory(&private).unwrap();
+        let signer = private.join("signer.json");
+        initialize_signer(&signer).unwrap();
+        let keys = Arc::new(
+            FileKeyProvider::initialize(&private.join("security.json"), "security").unwrap(),
+        );
+        let physical =
+            crate::runtime_storage_fixtures::physical(root.path(), Default::default()).unwrap();
+        let database = root.path().join("persistent/database");
+        let node = physical
+            .create_new(&database, kasumi_store::test_utils::NODE_STORE_ID)
+            .unwrap();
+        let store = TenantStore::initialize_catalog(
+            node.clone(),
+            kasumi_engine::SECURITY_TENANT.into(),
+            keys.clone(),
+            StorageAccess::security_audit(),
+        )
+        .await
+        .unwrap();
+        let open = |store: &Arc<TenantStore>| {
+            LocalCredentials::open(
+                store.clone(),
+                signer.clone(),
+                "https://localhost/local".into(),
+                "https://localhost/kasumi".into(),
+            )
+        };
+        let manager = open(&store).unwrap();
+        let specification = CreateCredential {
+            family_id: Uuid::new_v4(),
+            principal: "administrator".into(),
+            tenant: "tenant-a".into(),
+            resource: kasumi_types::CredentialResource::Database {
+                incarnation: Uuid::new_v4(),
+            },
+            scopes: BTreeSet::from([Action::Read, Action::Admin]),
+            lifetime_seconds: 3600,
+        };
+        let family = specification.family_id;
+        let issued = manager
+            .create(specification.clone(), "initializer")
+            .unwrap();
+        let renewal = RenewCredential {
+            family_id: family,
+            renewal_id: Uuid::new_v4(),
+        };
+        let renewed = manager.renew(&renewal, "administrator").unwrap();
+        let fresh = || RenewCredential {
+            family_id: family,
+            renewal_id: Uuid::new_v4(),
+        };
+
+        // A retained Issuance row replays only from its exact original bytes. An
+        // alternate row is refused and never replaced by another issuance.
+        for (key, retry) in [
+            (LocalCredentials::issuance_key(family, family), None),
+            (
+                LocalCredentials::issuance_key(family, renewal.renewal_id),
+                Some(&renewal),
+            ),
+        ] {
+            let current = store.get(ISSUANCES, &key).unwrap().unwrap();
+            for alternate in respelled(&current) {
+                let admitted: Issuance = serde_json::from_slice(&alternate).unwrap();
+                assert_eq!(serde_json::to_vec(&admitted).unwrap(), current);
+                store
+                    .write_batch(&[WriteOp::put(ISSUANCES, key.clone(), alternate.clone())])
+                    .unwrap();
+                let before = rows(&store);
+                let error = match retry {
+                    Some(renewal) => manager.renew(renewal, "administrator").err().unwrap(),
+                    None => manager
+                        .create(specification.clone(), "initializer")
+                        .err()
+                        .unwrap(),
+                };
+                refused(error, "credential issuance record");
+                assert_eq!(rows(&store), before);
+                assert_eq!(store.get(ISSUANCES, &key).unwrap().unwrap(), alternate);
+            }
+            store
+                .write_batch(&[WriteOp::put(ISSUANCES, key, current)])
+                .unwrap();
+        }
+        assert_eq!(
+            manager.renew(&renewal, "administrator").unwrap().token,
+            renewed.token
+        );
+        assert_eq!(
+            manager
+                .create(specification.clone(), "initializer")
+                .unwrap()
+                .token,
+            issued.token
+        );
+
+        // Serde's default would silently restore the omitted lifetime. The row
+        // fails every reader closed, including across a node restart.
+        let current = store.get(FAMILIES, family.as_bytes()).unwrap().unwrap();
+        let text = std::str::from_utf8(&current).unwrap();
+        let omitted = text
+            .replacen(",\"lifetime_seconds\":3600", "", 1)
+            .into_bytes();
+        assert_ne!(omitted, current);
+        let status = manager.status(family).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<CredentialStatus>(&omitted).unwrap(),
+            status
+        );
+        let resource = status.specification.resource.clone();
+        let mut alternates = respelled(&current).to_vec();
+        alternates.push(omitted.clone());
+        for alternate in alternates {
+            store
+                .write_batch(&[WriteOp::put(FAMILIES, family.as_bytes(), alternate)])
+                .unwrap();
+            let before = rows(&store);
+            refused(
+                manager.status(family).unwrap_err(),
+                "credential family record",
+            );
+            refused(
+                manager.renew(&fresh(), "administrator").err().unwrap(),
+                "credential family record",
+            );
+            refused(
+                manager
+                    .create(specification.clone(), "initializer")
+                    .err()
+                    .unwrap(),
+                "credential family record",
+            );
+            refused(
+                manager.revoke(family, "administrator").unwrap_err(),
+                "credential family record",
+            );
+            assert!(
+                manager
+                    .guard(
+                        family,
+                        "administrator",
+                        "tenant-a",
+                        "kasumi:read kasumi:admin",
+                        &resource
+                    )
+                    .is_err()
+            );
+            assert_eq!(rows(&store), before);
+        }
+        drop(manager);
+        store.shutdown().await.unwrap();
+        drop(store);
+        node.shutdown().await.unwrap();
+        drop(node);
+        let node = physical
+            .open_existing(&database, kasumi_store::test_utils::NODE_STORE_ID)
+            .unwrap();
+        let store = TenantStore::open_existing(
+            node.clone(),
+            kasumi_engine::SECURITY_TENANT.into(),
+            keys.clone(),
+            StorageAccess::security_audit(),
+        )
+        .await
+        .unwrap();
+        let manager = open(&store).unwrap();
+        let before = rows(&store);
+        refused(
+            manager.status(family).unwrap_err(),
+            "credential family record",
+        );
+        refused(
+            manager.renew(&fresh(), "administrator").err().unwrap(),
+            "credential family record",
+        );
+        assert_eq!(rows(&store), before);
+        assert_eq!(
+            store.get(FAMILIES, family.as_bytes()).unwrap().unwrap(),
+            omitted
+        );
+        store
+            .write_batch(&[WriteOp::put(FAMILIES, family.as_bytes(), current)])
+            .unwrap();
+        assert_eq!(manager.status(family).unwrap(), status);
+        assert_eq!(
+            manager.renew(&renewal, "administrator").unwrap().token,
+            renewed.token
+        );
+
+        // An alternate signing installation neither starts the issuer, signs a
+        // renewal, publishes verification keys, nor is rewritten by rotation.
+        let current = private_files::read(&signer, MAX_SIGNERS).unwrap();
+        for alternate in respelled(&current) {
+            private_files::replace(&signer, &alternate).unwrap();
+            let before = rows(&store);
+            refused(open(&store).err().unwrap(), "local signing installation");
+            refused(
+                manager.renew(&fresh(), "administrator").err().unwrap(),
+                "local signing installation",
+            );
+            refused(
+                trusted_keys(&signer).unwrap_err(),
+                "local signing installation",
+            );
+            refused(
+                rotate_signer(&signer).unwrap_err(),
+                "local signing installation",
+            );
+            assert_eq!(rows(&store), before);
+            assert_eq!(
+                private_files::read(&signer, MAX_SIGNERS)
+                    .unwrap()
+                    .as_slice(),
+                alternate.as_slice()
+            );
+        }
+        private_files::replace(&signer, &current).unwrap();
+        drop(open(&store).unwrap());
+        assert_eq!(rotate_signer(&signer).unwrap(), 2);
+        manager.renew(&fresh(), "administrator").unwrap();
+        drop(manager);
+        store.shutdown().await.unwrap();
+        drop(store);
         node.shutdown().await.unwrap();
     }
 }

@@ -48,6 +48,7 @@ const FORMAT_VERSION: u32 = 2;
 const INDEX_ENTRY_CHARGE: u64 = 256;
 const TABLE_CHARGE: u64 = 512;
 const INDEX_POOL_CHUNK: u64 = 64 << 10;
+const INDEX_POOL_SLOT: u64 = 2 * std::mem::size_of::<(u64, Box<dyn ResidentLease>)>() as u64;
 const COMPACTION_CHECK_BYTES: u64 = 1 << 20;
 static NEXT_OWNER: AtomicU64 = AtomicU64::new(1);
 
@@ -308,7 +309,7 @@ impl CoreError {
 
     /// Errors that leave the physical owner or a backend effect uncertain.
     /// Capacity, input, table and close errors are decided before any effect.
-    fn fences_owner(&self) -> bool {
+    pub(crate) fn fences_owner(&self) -> bool {
         matches!(
             self,
             Self::Io(_)
@@ -956,29 +957,31 @@ impl StorageBackend for InMemoryBackend {
     }
 }
 
+/// One operation of a durable batch. Rows of one table share a single table
+/// name allocation, so materializing a batch allocates per table, not per row.
 #[derive(Clone, Debug)]
 pub enum Operation {
     CreateTable {
-        table: String,
+        table: Arc<str>,
     },
     Put {
-        table: String,
+        table: Arc<str>,
         key: Vec<u8>,
         value: Vec<u8>,
     },
     Delete {
-        table: String,
+        table: Arc<str>,
         key: Vec<u8>,
     },
 }
 impl Operation {
-    pub fn create_table(table: impl Into<String>) -> Self {
+    pub fn create_table(table: impl Into<Arc<str>>) -> Self {
         Self::CreateTable {
             table: table.into(),
         }
     }
     pub fn put(
-        table: impl Into<String>,
+        table: impl Into<Arc<str>>,
         key: impl Into<Vec<u8>>,
         value: impl Into<Vec<u8>>,
     ) -> Self {
@@ -988,7 +991,7 @@ impl Operation {
             value: value.into(),
         }
     }
-    pub fn delete(table: impl Into<String>, key: impl Into<Vec<u8>>) -> Self {
+    pub fn delete(table: impl Into<Arc<str>>, key: impl Into<Vec<u8>>) -> Self {
         Self::Delete {
             table: table.into(),
             key: key.into(),
@@ -1293,17 +1296,20 @@ impl IndexChargePool {
         if next_used > state.reserved {
             let deficit = next_used - state.reserved;
             let desired = deficit.max(INDEX_POOL_CHUNK);
+            // Each chunk also admits its slot in the lease vector, whose
+            // capacity may double, before that vector grows.
+            let (charge, lease) = match reserve(&self.admission, desired + INDEX_POOL_SLOT) {
+                Ok(lease) => (desired, lease),
+                Err(CoreError::CapacityDenied) if desired > deficit => (
+                    deficit,
+                    reserve(&self.admission, deficit + INDEX_POOL_SLOT)?,
+                ),
+                Err(error) => return Err(error),
+            };
             state
                 .leases
                 .try_reserve(1)
                 .map_err(|_| CoreError::CapacityDenied)?;
-            let (charge, lease) = match reserve(&self.admission, desired) {
-                Ok(lease) => (desired, lease),
-                Err(CoreError::CapacityDenied) if desired > deficit => {
-                    (deficit, reserve(&self.admission, deficit)?)
-                }
-                Err(error) => return Err(error),
-            };
             state.reserved = state
                 .reserved
                 .checked_add(charge)
@@ -1873,6 +1879,35 @@ impl Core {
     /// unwound while this instance was being fenced.
     pub fn fence_panic(&self) -> Option<&CorePanic> {
         self.shared.fence_panic.get()
+    }
+
+    /// Latch an owner failure observed by a facade outside a core call.
+    pub(crate) fn fence(&self) {
+        self.shared.fence();
+    }
+
+    /// Confirm the physical owner for a facade decision that has no backend
+    /// effect of its own. A failure or unwind fences like any core operation.
+    pub(crate) fn check_owner(&self) -> Result<(), CoreError> {
+        self.shared
+            .run(CoreError::panicked, |_| self.shared.check_owner())
+    }
+
+    /// Admit facade workspace through this instance, so an owner failure
+    /// reported by the admission fences it. A denial never fences.
+    pub(crate) fn reserve_workspace(
+        &self,
+        bytes: u64,
+    ) -> Result<Box<dyn ResidentLease>, CoreError> {
+        if self.shared.fenced.load(Ordering::Acquire) {
+            return Err(CoreError::OwnerFailed);
+        }
+        let result = catch_unwind(AssertUnwindSafe(|| reserve(&self.shared.admission, bytes)))
+            .unwrap_or_else(|payload| Err(CoreError::panicked(CorePanic::new(payload))));
+        if result.as_ref().is_err_and(CoreError::fences_owner) {
+            self.shared.fence();
+        }
+        result
     }
 
     pub fn generation(&self) -> Result<u64, CoreError> {
@@ -4473,7 +4508,7 @@ mod tests {
         assert_eq!(core.committed_end().unwrap(), end);
         assert_eq!(
             admission.used.load(Ordering::Acquire),
-            table_charge(1).unwrap()
+            table_charge(1).unwrap() + INDEX_POOL_SLOT
         );
     }
 

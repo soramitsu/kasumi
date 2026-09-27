@@ -246,3 +246,129 @@ async fn explicit_tenant_dispatch_and_prepared_outcome_never_restore_creation_pe
     store.shutdown().await.unwrap();
     Ok(())
 }
+
+/// Equivalent spellings the current writer never produces. Serde alone admits
+/// each of them as the original value.
+fn respelled(current: &[u8]) -> Result<[Vec<u8>; 2]> {
+    let spaced = std::str::from_utf8(current)?
+        .replacen(':', ": ", 1)
+        .into_bytes();
+    let reordered = serde_json::to_vec(&serde_json::from_slice::<serde_json::Value>(current)?)?;
+    ensure!(
+        reordered != current,
+        "fixture record already has sorted keys"
+    );
+    Ok([spaced, reordered])
+}
+
+async fn reopen(node: &Arc<NodeStore>) -> Result<Arc<TenantStore>> {
+    TenantStore::open_existing(
+        node.clone(),
+        kasumi_engine::SECURITY_TENANT.into(),
+        Arc::new(LocalKeyProvider::new([73; 32])),
+        StorageAccess::security_audit(),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn noncanonical_enrollment_records_fail_closed_across_restart_without_rewrite() -> Result<()>
+{
+    let (_directory, node, mut store, input) = fixture().await?;
+    let (_, id) = input.identity();
+    let Input::Data { configuration } = &input else {
+        unreachable!()
+    };
+    let tenant = configuration.tenants[0].tenant.clone();
+    let tenant_key = format!("tenant/{tenant}");
+    let enrollment = Enrollment::begin(&store, &input)?;
+    record_genesis(&enrollment, &store, &input)?;
+    let head = store.get(NS, b"head")?.unwrap();
+    let current_input = store.get(NS, b"input")?.unwrap();
+    let genesis = store.get(NS, tenant_key.as_bytes())?.unwrap();
+
+    // Completion never adopts a respelled head as its own original outcome.
+    let begun = records(&store)?;
+    for alternate in respelled(&head)? {
+        let admitted: Head = serde_json::from_slice(&alternate)?;
+        assert!(admitted == enrollment.head);
+        store.write_batch(&[WriteOp::put(NS, b"head", alternate)])?;
+        let before = records(&store)?;
+        let error = Enrollment {
+            head: enrollment.head.clone(),
+        }
+        .complete(&store)
+        .unwrap_err();
+        assert_eq!(format!("{error:#}"), "noncanonical node enrollment head");
+        assert_eq!(records(&store)?, before);
+        store.write_batch(&[WriteOp::put(NS, b"head", head.clone())])?;
+    }
+    assert_eq!(records(&store)?, begun);
+    enrollment.complete(&store)?;
+    let head = store.get(NS, b"head")?.unwrap();
+    let completed = records(&store)?;
+
+    let mut cases = Vec::new();
+    for alternate in respelled(&head)? {
+        cases.push((
+            vec![WriteOp::put(NS, b"head", alternate)],
+            "noncanonical node enrollment head",
+        ));
+    }
+    for alternate in respelled(&genesis)? {
+        cases.push((
+            vec![WriteOp::put(NS, tenant_key.as_bytes(), alternate)],
+            "noncanonical tenant enrollment record",
+        ));
+    }
+    // The input is digest-bound. Rebind a current-writer head to each alternate
+    // input so that only the exact-byte admission can refuse it. An omitted
+    // default may be refused as noncanonical or as an invalid input.
+    let omitted = std::str::from_utf8(&current_input)?
+        .replacen(",\"startup_principal\":null", "", 1)
+        .into_bytes();
+    assert_ne!(omitted, current_input);
+    let [spaced, reordered] = respelled(&current_input)?;
+    for (alternate, refused) in [
+        (spaced, "noncanonical node enrollment input"),
+        (reordered, "noncanonical node enrollment input"),
+        (omitted, "node enrollment input"),
+    ] {
+        let mut rebound = decode_head(&head)?;
+        rebound.input_sha256 = hex::encode(Sha256::digest(&alternate));
+        cases.push((
+            vec![
+                WriteOp::put(NS, b"input", alternate),
+                WriteOp::put(NS, b"head", serde_json::to_vec(&rebound)?),
+            ],
+            refused,
+        ));
+    }
+    for (change, refused) in cases {
+        store.write_batch(&change)?;
+        store.shutdown().await.unwrap();
+        drop(store);
+        store = reopen(&node).await?;
+        let before = records(&store)?;
+        let error = require_complete(&store, id, Kind::Data).unwrap_err();
+        assert!(format!("{error:#}").contains(refused), "{error:#}");
+        assert!(Enrollment::begin(&store, &input).is_err());
+        if refused.contains("tenant") {
+            assert!(tenant_record(&store, &tenant).is_err());
+        }
+        assert_eq!(records(&store)?, before);
+        // Current-writer bytes restart the completed enrollment unchanged.
+        store.write_batch(&[
+            WriteOp::put(NS, b"head", head.clone()),
+            WriteOp::put(NS, b"input", current_input.clone()),
+            WriteOp::put(NS, tenant_key.as_bytes(), genesis.clone()),
+        ])?;
+        store.shutdown().await.unwrap();
+        drop(store);
+        store = reopen(&node).await?;
+        require_complete(&store, id, Kind::Data)?;
+        assert_eq!(records(&store)?, completed);
+    }
+    store.shutdown().await.unwrap();
+    Ok(())
+}

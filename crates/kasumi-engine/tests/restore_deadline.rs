@@ -18,6 +18,9 @@ struct PendingSource {
 }
 #[async_trait::async_trait]
 impl BackupDestination for PendingSource {
+    fn namespace_binding(&self) -> anyhow::Result<kasumi_types::BackupNamespaceBinding> {
+        anyhow::bail!("pending test source has no physical namespace")
+    }
     async fn session_get(
         &self,
         _session: uuid::Uuid,

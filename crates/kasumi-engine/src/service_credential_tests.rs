@@ -45,9 +45,10 @@ impl CredentialFixture {
             scopes: BTreeSet::from([Action::Read, Action::Write, Action::Admin]),
             request_id: "expiry-test".into(),
         };
-        let store = TenantStore::initialize_catalog_fixture(node.clone(), context.tenant.clone(), provider)
-            .await
-            .unwrap();
+        let store =
+            TenantStore::initialize_catalog_fixture(node.clone(), context.tenant.clone(), provider)
+                .await
+                .unwrap();
         let policy = Policy {
             grants: vec![Grant {
                 principal: context.principal.clone(),
@@ -454,6 +455,9 @@ struct CredentialPausedDestination {
 }
 #[async_trait::async_trait]
 impl BackupDestination for CredentialPausedDestination {
+    fn namespace_binding(&self) -> anyhow::Result<kasumi_types::BackupNamespaceBinding> {
+        kasumi_store::BackupDestination::namespace_binding(self.inner.as_ref())
+    }
     async fn session_put(
         &self,
         session: uuid::Uuid,

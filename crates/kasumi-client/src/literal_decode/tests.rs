@@ -3,6 +3,7 @@ use crate::{ClientDecodeLimits, ClientResources};
 use kasumi_types::{
     ChangeEvent, ChangeFeedCursor, ChangeFeedStart, CollectionDefinition, CollectionRetentionClass,
     CollectionWriteMode, Document, Mutation, Precondition, SchemaChange, SchemaCollection,
+    SecurityAuditRecord, SecurityEvent, SecurityEventKind, SecurityOutcome,
 };
 use prost::Message;
 use serde_json::{Value, json};
@@ -370,23 +371,113 @@ fn change_feed_schema_and_audit_construct_values_from_literal_spans() {
             .schema,
         expected
     );
-    let audit = SecurityAuditPage {
-        stream_id: uuid::Uuid::new_v4(),
-        through_sequence: 1,
-        next_sequence: 1,
-        records: vec![json!({"sequence":0,"body":expected})],
-    };
-    let prepared = Prepared {
+    let audit = audit_page(1);
+    let decoded: SecurityAuditPage = decode(&raw(&audit), &audit_request(1, &call), &call).unwrap();
+    assert_eq!(decoded, audit);
+}
+fn audit_record(sequence: u64) -> SecurityAuditRecord {
+    SecurityAuditRecord {
+        format: kasumi_types::SECURITY_AUDIT_RECORD_FORMAT,
+        sequence,
+        timestamp_ms: 1_700_000_000_000 + sequence,
+        event: SecurityEvent {
+            kind: SecurityEventKind::AccessDenied,
+            principal: Some("principal".into()),
+            tenant: Some("tenant-a".into()),
+            request_id: format!("request-{sequence}"),
+            outcome: SecurityOutcome::Denied,
+        },
+        transport: None,
+    }
+}
+fn audit_page(count: u64) -> SecurityAuditPage {
+    let records = (0..count).map(audit_record).collect::<Vec<_>>();
+    SecurityAuditPage {
+        stream_id: uuid::Uuid::from_u128(11),
+        through_sequence: count + 1,
+        next_sequence: count,
+        snapshot_segments: 0,
+        snapshot_head: None,
+        snapshot_tail_sha256: Some(audit_record(count).sha256().unwrap()),
+        previous_record_sha256: records.last().map(|record| record.sha256().unwrap()),
+        records,
+    }
+}
+fn audit_request(limit: u16, call: &Call) -> Prepared {
+    Prepared {
         input: vec![],
         kind: Kind::Audit(SecurityAuditExportRequest {
             cursor: None,
-            limit: 1,
+            limit,
         }),
         path: "",
         _owner: call.clone(),
-    };
-    let decoded: SecurityAuditPage = decode(&raw(&audit), &prepared, &call).unwrap();
-    assert_eq!(decoded.records, audit.records);
+    }
+}
+#[test]
+fn security_audit_pages_accept_only_exact_typed_bounded_records() {
+    let call = read_options().admit().unwrap();
+    let page = audit_page(2);
+    let prepared = audit_request(2, &call);
+    let decoded: SecurityAuditPage = decode(&raw(&page), &prepared, &call).unwrap();
+    assert_eq!(decoded, page);
+    let mut value = serde_json::to_value(&page).unwrap();
+    // An untyped document-bearing row is never a service audit record.
+    let mut untyped = value.clone();
+    untyped["records"][1] = json!({"sequence":1,"body":body()});
+    assert!(decode::<SecurityAuditPage>(&raw(&untyped), &prepared, &call).is_err());
+    let mut unknown = value.clone();
+    unknown["records"][1]["event"]["document"] = json!({"secret":true});
+    assert!(decode::<SecurityAuditPage>(&raw(&unknown), &prepared, &call).is_err());
+    let mut implicit = value.clone();
+    implicit["records"][1]
+        .as_object_mut()
+        .unwrap()
+        .remove("transport");
+    assert!(decode::<SecurityAuditPage>(&raw(&implicit), &prepared, &call).is_err());
+    for field in [
+        "snapshot_head",
+        "snapshot_tail_sha256",
+        "previous_record_sha256",
+        "snapshot_segments",
+    ] {
+        let mut missing = value.clone();
+        missing.as_object_mut().unwrap().remove(field);
+        assert!(
+            decode::<SecurityAuditPage>(&raw(&missing), &prepared, &call).is_err(),
+            "{field}"
+        );
+    }
+    // Another spelling of the anchored last record is not its exact encoding.
+    let exact = raw(&page);
+    let record = raw(&page.records[1]);
+    let position = exact
+        .windows(record.len())
+        .position(|window| window == record.as_slice())
+        .unwrap();
+    let mut spelled = exact[..position].to_vec();
+    spelled.extend_from_slice(b"{ ");
+    spelled.extend_from_slice(&exact[position + 1..]);
+    assert_eq!(
+        serde_json::from_slice::<SecurityAuditPage>(&spelled).unwrap(),
+        page
+    );
+    assert!(decode::<SecurityAuditPage>(&spelled, &prepared, &call).is_err());
+    // A row larger than one durable audit event is rejected before decoding.
+    value["records"][1]["event"]["request_id"] =
+        json!("r".repeat(kasumi_types::MAX_AUDIT_EVENT_BYTES));
+    assert!(decode::<SecurityAuditPage>(&raw(&value), &prepared, &call).is_err());
+    // More rows than the request admitted are rejected while scanning.
+    let mut extra = audit_page(3);
+    extra.through_sequence = 4;
+    assert!(decode::<SecurityAuditPage>(&raw(&extra), &prepared, &call).is_err());
+    // A page that completes its range must end at the captured hot tail.
+    let mut complete = audit_page(2);
+    complete.through_sequence = 2;
+    complete.snapshot_tail_sha256 = complete.previous_record_sha256.clone();
+    decode::<SecurityAuditPage>(&raw(&complete), &prepared, &call).unwrap();
+    complete.snapshot_tail_sha256 = Some(audit_record(0).sha256().unwrap());
+    assert!(decode::<SecurityAuditPage>(&raw(&complete), &prepared, &call).is_err());
 }
 #[tokio::test]
 async fn canonical_intent_helpers_preserve_body_predicates_schema_and_exact_digest() {

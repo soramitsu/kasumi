@@ -559,7 +559,9 @@ pub struct ResponseFence<'a> {
     read_admission: Option<(Vec<ReadAssertion>, Reservation)>,
     schema_admission: Option<(Vec<ReadAssertion>, Reservation)>,
     snapshot_lease: Option<Arc<crate::state::lease_retention::LeaseHandle>>,
-    _workspace: Reservation,
+    // One retained ledger charge: the fixed workspace plus every adapter
+    // materialization charge, released together when this fence drops.
+    workspace: Reservation,
 }
 
 enum ResponseDatabase<'a> {
@@ -618,7 +620,25 @@ impl<'a> ResponseFence<'a> {
             read_admission: None,
             schema_admission: None,
             snapshot_lease: None,
-            _workspace: workspace,
+            workspace,
+        })
+    }
+
+    /// Charge adapter response materialization that the fixed workspace does
+    /// not bound, such as a decoded JSON tree or an encoded protocol body.
+    /// Charge before allocating. A refused charge leaves the fence unchanged;
+    /// an accepted one stays retained until the fence drops.
+    pub fn retain_response_bytes(&mut self, bytes: u64) -> Result<()> {
+        self.cancellation.check()?;
+        self.workspace.reserve_additional(bytes).map_err(|error| {
+            if error.code == ErrorCode::ResourceExhausted {
+                Error::new(
+                    ErrorCode::ResourceExhausted,
+                    "response workspace budget exhausted",
+                )
+            } else {
+                error
+            }
         })
     }
 
@@ -2899,5 +2919,49 @@ mod tests {
         drop(output);
         draining.await;
         assert_eq!(crate::test_utils::reserved_payload_bytes(&admission), 0);
+    }
+
+    #[tokio::test]
+    async fn response_fence_retains_adapter_charges_in_its_entry_until_drop() {
+        let fixture = CredentialFixture::new().await;
+        let before = fixture.db.admission().snapshot();
+        let mut fence = fixture.db.owned_response_fence(&fixture.context).unwrap();
+        let fixed = fixture.db.admission().snapshot();
+        assert!(fixed.reserved_bytes > before.reserved_bytes);
+        fence.retain_response_bytes(4096).unwrap();
+        fence.retain_response_bytes(1 << 20).unwrap();
+        let charged = fixture.db.admission().snapshot();
+        assert_eq!(
+            charged.reserved_bytes,
+            fixed.reserved_bytes + 4096 + (1 << 20)
+        );
+        // Adapter charges join the fence's retained entry: no ledger entry or
+        // operation slot of their own, and nothing to leak on a later error.
+        assert_eq!(charged.live_reservations, fixed.live_reservations);
+        assert_eq!(charged.inflight_operations, before.inflight_operations);
+        // A charge beyond the node budget is refused before any allocation
+        // and leaves the retained charge unchanged.
+        let refused = fence.retain_response_bytes(u64::MAX / 2).unwrap_err();
+        assert_eq!(refused.code, ErrorCode::ResourceExhausted);
+        assert_eq!(
+            fixture.db.admission().snapshot().reserved_bytes,
+            charged.reserved_bytes
+        );
+        fence.check().unwrap();
+        // Pressure-cancelled responses take no further materialization.
+        fence.cancellation.cancel();
+        assert_eq!(
+            fence.retain_response_bytes(1).unwrap_err().code,
+            ErrorCode::ResourceExhausted
+        );
+        assert_eq!(
+            fixture.db.admission().snapshot().reserved_bytes,
+            charged.reserved_bytes
+        );
+        drop(fence);
+        let released = fixture.db.admission().snapshot();
+        assert_eq!(released.reserved_bytes, before.reserved_bytes);
+        assert_eq!(released.live_reservations, before.live_reservations);
+        fixture.close().await;
     }
 }

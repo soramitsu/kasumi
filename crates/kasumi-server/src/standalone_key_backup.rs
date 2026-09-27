@@ -115,7 +115,7 @@ pub(crate) fn create(config: &RuntimeConfig, output: &Path) -> Result<()> {
     ] {
         manifest.files.push(copy(role, &source, file, output)?);
     }
-    let bytes = serde_json::to_vec_pretty(&manifest)?;
+    let bytes = serde_json::to_vec(&manifest)?;
     ensure!(
         bytes.len() <= MAX_MANIFEST,
         "operator backup manifest work budget exceeded"
@@ -145,7 +145,10 @@ fn copy(role: &str, source: &Path, file: &str, output: &Path) -> Result<Entry> {
 pub fn verify(directory: &Path) -> Result<Verification> {
     private_files::check_directory(directory)?;
     let bytes = private_files::read(&directory.join("manifest.json"), MAX_MANIFEST)?;
-    let manifest: Manifest = serde_json::from_slice(&bytes)?;
+    // The retained digest names these exact bytes; a respelled inventory is
+    // refused before any listed file is examined.
+    let manifest: Manifest =
+        kasumi_types::exact_json::decode_exact(&bytes, MAX_MANIFEST, "operator backup manifest")?;
     let (keys, generations) = validate_files(directory, &manifest)?;
     Ok(Verification {
         manifest_sha256: hex::encode(Sha256::digest(bytes.as_slice())),
@@ -246,6 +249,11 @@ mod tests {
     }
 
     async fn relocated_installed_keys_are_copied_and_inventory_detects_corruption_impl() {
+        // Operator calls publish through the process-wide startup registry. Join
+        // them before this fixture's runtime ends so no handoff is cancelled.
+        let _serial = crate::standalone::ownership_tests::drain_serial()
+            .lock()
+            .await;
         let root = kasumi_store::test_utils::private_tempdir().unwrap();
         let (installed, storage) = crate::runtime_storage_fixtures::initialize_standalone(
             &root.path().join("kasumi"),
@@ -311,6 +319,35 @@ mod tests {
             verify(&output).unwrap().manifest_sha256,
             verified.manifest_sha256
         );
+        // The retained digest names the current writer's exact inventory. The
+        // former pretty-printed spelling and any reordering are refused.
+        let manifest_path = output.join("manifest.json");
+        let current = private_files::read(&manifest_path, MAX_MANIFEST).unwrap();
+        assert_eq!(serde_json::to_vec(&manifest).unwrap(), current.as_slice());
+        let pretty = serde_json::to_vec_pretty(&manifest).unwrap();
+        let reordered =
+            serde_json::to_vec(&serde_json::from_slice::<serde_json::Value>(&current).unwrap())
+                .unwrap();
+        for alternate in [pretty, reordered] {
+            assert_ne!(alternate, current.as_slice());
+            private_files::replace(&manifest_path, &alternate).unwrap();
+            let error = verify(&output).unwrap_err();
+            assert_eq!(
+                format!("{error:#}"),
+                "noncanonical operator backup manifest"
+            );
+            assert_eq!(
+                private_files::read(&manifest_path, MAX_MANIFEST)
+                    .unwrap()
+                    .as_slice(),
+                alternate.as_slice()
+            );
+        }
+        private_files::replace(&manifest_path, &current).unwrap();
+        assert_eq!(
+            verify(&output).unwrap().manifest_sha256,
+            verified.manifest_sha256
+        );
         assert!(
             crate::standalone::backup_operator_keys_with_storage(
                 &installed.configuration,
@@ -324,5 +361,6 @@ mod tests {
             verify(&output).unwrap().manifest_sha256,
             verified.manifest_sha256
         );
+        crate::standalone::drain_operations().await.unwrap();
     }
 }

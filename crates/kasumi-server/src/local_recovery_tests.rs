@@ -1445,3 +1445,162 @@ async fn failed_restored_generation_startup_retains_alternate_node_through_cance
             .unwrap();
     runtime.shutdown().await.unwrap();
 }
+
+type Rows = Vec<(Vec<u8>, Vec<u8>)>;
+fn recovery_rows(store: &TenantStore) -> [Rows; 5] {
+    [PHASES, OPERATIONS, GENERATIONS, ACTIVE, INSTALLATION].map(|namespace| {
+        let mut rows = Vec::new();
+        store
+            .visit(namespace, MAX_RECORD, |key, value| {
+                rows.push((key.to_vec(), value.to_vec()));
+                Ok(())
+            })
+            .unwrap();
+        rows
+    })
+}
+
+#[test]
+fn respelled_local_recovery_journal_is_refused_with_its_generation_untouched() {
+    std::thread::Builder::new()
+        .name("local recovery exact journal fixture".into())
+        .stack_size(16 << 20)
+        .spawn(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(Box::pin(
+                    respelled_local_recovery_journal_is_refused_with_its_generation_untouched_impl(
+                    ),
+                ));
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+async fn respelled_local_recovery_journal_is_refused_with_its_generation_untouched_impl() {
+    let root = kasumi_store::test_utils::private_tempdir().unwrap();
+    let (configuration, request, _, storage) = backup(root.path()).await;
+    let operation = request.operation_id;
+    // The dispatch commits its journal, target reservation and pending owner in
+    // one batch. The stopped process then restarts with an altered journal.
+    start_with_storage(&configuration, request.clone(), storage.clone())
+        .await
+        .unwrap();
+    let mut operator = Operator::open(&configuration, storage.clone())
+        .await
+        .unwrap();
+    let target = directory(&operator.config, request.target_incarnation).unwrap();
+    let current = operator
+        .store()
+        .get(OPERATIONS, operation.as_bytes())
+        .unwrap()
+        .unwrap();
+    let reserved = operator
+        .store()
+        .get(GENERATIONS, request.target_incarnation.as_bytes())
+        .unwrap()
+        .unwrap();
+    crate::startup_owner::finish(&mut operator).await.unwrap();
+    drop(operator);
+    let spaced = std::str::from_utf8(&current)
+        .unwrap()
+        .replacen(':', ": ", 1)
+        .into_bytes();
+    let reordered =
+        serde_json::to_vec(&serde_json::from_slice::<serde_json::Value>(&current).unwrap())
+            .unwrap();
+    for alternate in [spaced, reordered] {
+        // Serde alone admits the alternate as the original journal.
+        let admitted: Journal = serde_json::from_slice(&alternate).unwrap();
+        assert_eq!(encoded(&admitted).unwrap(), current);
+        assert_ne!(alternate, current);
+        let mut operator = Operator::open(&configuration, storage.clone())
+            .await
+            .unwrap();
+        operator
+            .store()
+            .write_batch(&[WriteOp::put(
+                OPERATIONS,
+                operation.as_bytes(),
+                alternate.clone(),
+            )])
+            .unwrap();
+        let before = recovery_rows(operator.store());
+        crate::startup_owner::finish(&mut operator).await.unwrap();
+        drop(operator);
+        let refusals = [
+            status_with_storage(&configuration, operation, storage.clone())
+                .await
+                .unwrap_err(),
+            resume_with_storage(&configuration, operation, storage.clone())
+                .await
+                .unwrap_err(),
+            stop_with_storage(&configuration, operation, storage.clone())
+                .await
+                .unwrap_err(),
+            start_with_storage(&configuration, request.clone(), storage.clone())
+                .await
+                .unwrap_err(),
+        ];
+        for error in refusals {
+            assert!(
+                format!("{error:#}").contains("noncanonical local recovery record"),
+                "{error:#}"
+            );
+        }
+        drain_operations().await.unwrap();
+        let mut operator = Operator::open(&configuration, storage.clone())
+            .await
+            .unwrap();
+        // Nothing was rewritten, activated, stopped or materialized.
+        assert_eq!(recovery_rows(operator.store()), before);
+        assert_eq!(
+            operator
+                .store()
+                .get(OPERATIONS, operation.as_bytes())
+                .unwrap()
+                .unwrap(),
+            alternate
+        );
+        assert_eq!(
+            operator
+                .store()
+                .get(GENERATIONS, request.target_incarnation.as_bytes())
+                .unwrap()
+                .unwrap(),
+            reserved
+        );
+        assert!(
+            active_generation(&operator.config, operator.store(), &request.tenant)
+                .unwrap()
+                .is_none()
+        );
+        assert!(!target.try_exists().unwrap());
+        operator
+            .store()
+            .write_batch(&[WriteOp::put(
+                OPERATIONS,
+                operation.as_bytes(),
+                current.clone(),
+            )])
+            .unwrap();
+        crate::startup_owner::finish(&mut operator).await.unwrap();
+        drop(operator);
+    }
+    // The current writer's journal restarts and its original operation proceeds.
+    let status = status_with_storage(&configuration, operation, storage.clone())
+        .await
+        .unwrap();
+    assert_eq!(status.phase, LocalRecoveryPhase::Materialize);
+    assert_eq!(
+        stop_with_storage(&configuration, operation, storage.clone())
+            .await
+            .unwrap()
+            .phase,
+        LocalRecoveryPhase::Stopped
+    );
+    drain_operations().await.unwrap();
+}

@@ -2,10 +2,12 @@
 //! values, are encrypted in an anonymous spool; the ordered key index is resident.
 use crate::{EncryptedSpool, ScratchDisk};
 use anyhow::{Result, ensure};
-use kasumi_kv::{AdmissionError, OwnerFailed, StorageAdmission, StorageBackend, TableDefinition};
+use kasumi_kv::{
+    AdmissionError, BackendNativeDisposition, OwnerFailed, StorageAdmission, StorageBackend,
+    TableDefinition,
+};
 use kasumi_types::drain::{DrainCompletion, DrainResult};
 use std::io::{self, Read, Seek, SeekFrom, Write};
-use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::{Arc, Mutex};
 const TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("staged");
 
@@ -166,15 +168,12 @@ impl Drop for ScratchTableDatabase {
         let Some(database) = self.database.take() else {
             return;
         };
-        // This is the last table or batch owner. A retained result, including
-        // an unexpected unwind, cannot authorize implicit descriptor destruction
-        // or return its scratch charge. Keep the exact physical owner alive.
-        let drained = match catch_unwind(AssertUnwindSafe(|| database.close())) {
-            Ok(Ok(())) => true,
-            Ok(Err(failure)) => failure.completion() == DrainCompletion::Complete,
-            Err(_) => false,
-        };
-        if drained {
+        // This is the last table or batch owner. The destructor records no
+        // report and allocates nothing. Only positively observed native drain
+        // retires the descriptor, key and buffers before the scratch charge;
+        // any other outcome, including an earlier failed explicit close, keeps
+        // the exact spool and its charge alive for the process lifetime.
+        if database.close_native_for_drop() == BackendNativeDisposition::Drained {
             drop(database);
         } else {
             std::mem::forget(database);
@@ -279,8 +278,15 @@ impl EncryptedTable {
             disk,
             max_disk_bytes,
         )?))));
-        let database =
-            kasumi_kv::Database::builder(owner.clone()).create_with_backend(Backend(owner))?;
+        Self::create(owner)
+    }
+
+    /// A scratch table is created only on its own fresh spool. Strict creation
+    /// rejects an existing extent instead of adopting its frames, and the
+    /// engine closes the rejected spool before reporting.
+    fn create(owner: Arc<Owner>) -> Result<Self> {
+        let database = kasumi_kv::Database::builder(owner.clone())
+            .create_strict_with_backend(Backend(owner))?;
         Self::initialize(database)
     }
 

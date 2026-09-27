@@ -147,7 +147,7 @@ pub(crate) fn tenant_record(store: &TenantStore, tenant: &str) -> Result<Option<
     let Some(bytes) = store.get_bounded(NS, tenant_key(tenant)?.as_bytes(), MAX_INPUT)? else {
         return Ok(None);
     };
-    let record: TenantRecord = serde_json::from_slice(&bytes)?;
+    let record: TenantRecord = decode_exact(&bytes, MAX_INPUT, "tenant enrollment record")?;
     record.validate(tenant)?;
     Ok(Some(record))
 }

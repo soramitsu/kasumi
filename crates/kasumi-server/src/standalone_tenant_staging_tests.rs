@@ -355,6 +355,130 @@ async fn interrupted_key_creation_impl() -> Result<()> {
 }
 
 #[test]
+fn respelled_staging_record_fails_closed_without_rewrite() -> Result<()> {
+    run_large_staging_fixture(
+        "standalone exact staging record fixture",
+        respelled_staging_record_impl,
+    )
+}
+
+async fn respelled_staging_record_impl() -> Result<()> {
+    let directory = kasumi_store::test_utils::private_tempdir()?;
+    let (installed, storage) = crate::runtime_storage_fixtures::initialize_standalone(
+        &directory.path().join("installed"),
+        "tenant-a",
+    )
+    .await?;
+    let config = RuntimeConfig::load(&installed.configuration)?;
+    let request = request(&config);
+    // Stop after the durable keyring receipt, before configuration publication.
+    let pause = Arc::new(Pause {
+        fail: true,
+        ..Default::default()
+    });
+    pauses()
+        .lock()
+        .unwrap()
+        .insert((config.database_id, "files-ready"), pause.clone());
+    let _release_pause = ReleasePauseOnDrop(pause.clone());
+    let configuration = installed.configuration.clone();
+    let invocation = request.clone();
+    let worker_storage = storage.clone();
+    let worker = tokio::spawn(async move {
+        stage_tenant_with_storage(&configuration, invocation, worker_storage).await
+    });
+    entered(&pause).await;
+    pause.release.notify_one();
+    assert!(worker.await?.is_err());
+    let before_configuration = private_files::read(&installed.configuration, 2 << 20)?;
+    let record_key = key(request.operation_id);
+    let mut owner = OperatorState::open(&config, storage.clone()).await?;
+    let read = |owner: &OperatorState| -> Result<Vec<u8>> {
+        owner
+            .audit
+            .store()
+            .get_bounded(NS, record_key.as_bytes(), MAX_RECORD)?
+            .context("staging record absent")
+    };
+    let current = owner.finish(read(&owner)).await?;
+    drop(owner);
+    let spaced = std::str::from_utf8(&current)?
+        .replacen(':', ": ", 1)
+        .into_bytes();
+    let reordered = serde_json::to_vec(&serde_json::from_slice::<serde_json::Value>(&current)?)?;
+    for alternate in [spaced, reordered] {
+        ensure!(alternate != current);
+        // Serde alone admits the alternate as the original receipt.
+        let admitted: Record = serde_json::from_slice(&alternate)?;
+        ensure!(serde_json::to_vec(&admitted)? == current);
+        let mut owner = OperatorState::open(&config, storage.clone()).await?;
+        let replaced = owner
+            .audit
+            .store()
+            .write_batch(&[kasumi_store::WriteOp::put(
+                NS,
+                record_key.as_bytes(),
+                alternate.clone(),
+            )]);
+        owner.finish(replaced).await?;
+        drop(owner);
+        for error in [
+            tenant_stage_status_with_storage(
+                &installed.configuration,
+                request.operation_id,
+                storage.clone(),
+            )
+            .await
+            .unwrap_err(),
+            stage_tenant_with_storage(&installed.configuration, request.clone(), storage.clone())
+                .await
+                .unwrap_err(),
+        ] {
+            assert!(
+                format!("{error:#}").contains("noncanonical tenant staging record"),
+                "{error:#}"
+            );
+        }
+        // The refused receipt is neither published, failed nor rewritten.
+        let mut owner = OperatorState::open(&config, storage.clone()).await?;
+        let retained = read(&owner);
+        let restored = owner
+            .audit
+            .store()
+            .write_batch(&[kasumi_store::WriteOp::put(
+                NS,
+                record_key.as_bytes(),
+                current.clone(),
+            )]);
+        owner.finish(restored).await?;
+        drop(owner);
+        assert_eq!(retained?, alternate);
+        assert_eq!(
+            private_files::read(&installed.configuration, 2 << 20)?.as_slice(),
+            before_configuration.as_slice()
+        );
+    }
+    // The current writer's receipt restarts and completes its original operation.
+    assert_eq!(
+        tenant_stage_status_with_storage(
+            &installed.configuration,
+            request.operation_id,
+            storage.clone()
+        )
+        .await?
+        .state,
+        "files_ready"
+    );
+    assert_eq!(
+        stage_tenant_with_storage(&installed.configuration, request, storage.clone())
+            .await?
+            .state,
+        "completed"
+    );
+    Ok(())
+}
+
+#[test]
 fn early_result_error_releases_local_operator_before_runtime_drop() -> Result<()> {
     // Keep the physical installation alive until the fixture thread has joined
     // its retained owner. The async body exits before that same-runtime drain.

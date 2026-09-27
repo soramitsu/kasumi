@@ -1,10 +1,15 @@
 //! Exact physical lookup for installed backup destinations. This table is not
 //! a Control claim, source-authority proof, or permission to write a session.
-//! Filesystem destinations cannot enter until their installed marker is bound.
-use crate::{BackupDestination, S3BackupDestination};
+//! A filesystem destination enters only with the binding read back from its
+//! enrolled marker; an S3 destination only with its validated adapter tuple.
+use crate::{BackupDestination, FilesystemBackupDestination, S3BackupDestination};
 use anyhow::{Context, Result, ensure};
 use kasumi_types::BackupNamespaceBinding;
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 /// Bounds installed physical identities independently of alias cardinality.
 pub const MAX_EXACT_BACKUP_DESTINATIONS: usize = 256;
@@ -19,9 +24,15 @@ fn prefix_contains(parent: &str, child: &str) -> bool {
             .is_some_and(|suffix| suffix.starts_with('/'))
 }
 
+/// Component-wise containment, so `/backups/a` never contains `/backups/ab`.
+fn root_contains(parent: &Path, child: &Path) -> bool {
+    child.starts_with(parent)
+}
+
 #[derive(Default)]
 pub struct ExactBackupDestinationIndex {
     by_binding: BTreeMap<BackupNamespaceBinding, Arc<dyn BackupDestination>>,
+    filesystem_roots: BTreeMap<BackupNamespaceBinding, PathBuf>,
 }
 
 impl ExactBackupDestinationIndex {
@@ -63,10 +74,62 @@ impl ExactBackupDestinationIndex {
             )
         });
         ensure!(!collision, "S3 object namespace already installed");
+        self.insert(binding, destination, None)
+    }
+
+    /// Admit only a binding verified from an enrolled marker at install time.
+    /// One marker namespace is one destination: a second root carrying the
+    /// same namespace UUID is a copy, never another alias. Nested roots could
+    /// address each other's session grammar and are rejected like S3 prefixes.
+    /// The verification is blocking filesystem work; see
+    /// [`BackupDestination::namespace_binding`].
+    pub fn install_filesystem(
+        &mut self,
+        destination: Arc<FilesystemBackupDestination>,
+    ) -> Result<BackupNamespaceBinding> {
+        let binding = destination.namespace_binding()?;
+        let BackupNamespaceBinding::Filesystem { namespace_id, .. } = &binding else {
+            anyhow::bail!("filesystem destination returned a non-filesystem binding");
+        };
+        let duplicate = self.by_binding.keys().any(|existing| {
+            matches!(
+                existing,
+                BackupNamespaceBinding::Filesystem {
+                    namespace_id: installed,
+                    ..
+                } if installed == namespace_id
+            )
+        });
+        ensure!(!duplicate, "filesystem backup namespace already installed");
+        let root = destination.root_path();
+        ensure!(
+            !self
+                .filesystem_roots
+                .values()
+                .any(|installed| root_contains(installed, root) || root_contains(root, installed)),
+            "filesystem backup root overlaps an installed root"
+        );
+        let root = root.to_owned();
+        self.insert(binding, destination, Some(root))
+    }
+
+    fn insert(
+        &mut self,
+        binding: BackupNamespaceBinding,
+        destination: Arc<dyn BackupDestination>,
+        root: Option<PathBuf>,
+    ) -> Result<BackupNamespaceBinding> {
+        ensure!(
+            !self.by_binding.contains_key(&binding),
+            "physical backup destination already installed"
+        );
         ensure!(
             self.by_binding.len() < MAX_EXACT_BACKUP_DESTINATIONS,
             "physical backup destination index is full"
         );
+        if let Some(root) = root {
+            self.filesystem_roots.insert(binding.clone(), root);
+        }
         self.by_binding.insert(binding.clone(), destination);
         Ok(binding)
     }
@@ -219,6 +282,89 @@ mod tests {
                 .install_s3(destination("capture/a", "parent"))
                 .is_err()
         );
+    }
+
+    fn enroll(disk: &Arc<crate::NodeDisk>, path: &Path) -> Result<FilesystemBackupDestination> {
+        FilesystemBackupDestination::enroll(
+            path,
+            1 << 20,
+            disk.clone(),
+            &kasumi_types::TrustVerifierIdentity {
+                installation_id: uuid::Uuid::from_u128(0x6b2d_0f3a_91c7_4e58_a2d4_7c19_e05b_3f86),
+                node_id: 3,
+            },
+            uuid::Uuid::new_v4(),
+        )
+    }
+
+    fn enrolled(disk: &Arc<crate::NodeDisk>, path: &Path) -> Arc<FilesystemBackupDestination> {
+        Arc::new(enroll(disk, path).unwrap())
+    }
+
+    /// The test fixture marks a root without checking its ancestry, so it can
+    /// produce the nested roots that enrollment itself refuses.
+    fn nested_fixture(
+        disk: &Arc<crate::NodeDisk>,
+        path: &Path,
+    ) -> Arc<FilesystemBackupDestination> {
+        Arc::new(FilesystemBackupDestination::new(path, 1 << 20, disk.clone()).unwrap())
+    }
+
+    #[test]
+    fn filesystem_namespaces_install_once_without_overlapping_roots() {
+        let temporary = crate::test_utils::private_tempdir().unwrap();
+        let memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+        let disk = crate::test_utils::retry_disk_registry(|| {
+            crate::NodeDisk::fixture_for_path(temporary.path().join("unused"), memory.clone())
+        })
+        .unwrap();
+        let root = temporary.path();
+        let mut index = ExactBackupDestinationIndex::new();
+        let first = enrolled(&disk, &root.join("a"));
+        let binding = index.install_filesystem(first.clone()).unwrap();
+        assert!(matches!(binding, BackupNamespaceBinding::Filesystem { .. }));
+        let expected: Arc<dyn BackupDestination> = first;
+        assert!(Arc::ptr_eq(&index.resolve(&binding).unwrap(), &expected));
+        // Another instance of the one enrolled root is never another alias.
+        let again = Arc::new(
+            FilesystemBackupDestination::open_enrolled(
+                root.join("a"),
+                1 << 20,
+                disk.clone(),
+                &binding,
+            )
+            .unwrap(),
+        );
+        assert!(index.install_filesystem(again).is_err());
+        // A nested root could address the other's session grammar. Enrollment
+        // refuses one before any effect; the index independently rejects one
+        // in either order.
+        assert!(enroll(&disk, &root.join("a/nested")).is_err());
+        assert!(!root.join("a/nested").exists());
+        assert!(
+            index
+                .install_filesystem(nested_fixture(&disk, &root.join("a/nested")))
+                .is_err()
+        );
+        let outer = enrolled(&disk, &root.join("b"));
+        let inner = nested_fixture(&disk, &root.join("b/inner"));
+        let mut reverse = ExactBackupDestinationIndex::new();
+        reverse.install_filesystem(inner).unwrap();
+        assert!(reverse.install_filesystem(outer).is_err());
+        // Component-wise containment keeps a sibling with a shared prefix.
+        let sibling = index
+            .install_filesystem(enrolled(&disk, &root.join("ab")))
+            .unwrap();
+        assert_ne!(sibling, binding);
+        // Physical kinds share one bounded table without colliding.
+        index.install_s3(destination("capture/a", "first")).unwrap();
+        // A substituted root cannot yield a binding to install.
+        let late = enrolled(&disk, &root.join("late"));
+        std::fs::rename(root.join("late"), root.join("late-moved")).unwrap();
+        crate::private_files::create_directory(&root.join("late")).unwrap();
+        assert!(index.install_filesystem(late).is_err());
+        assert_eq!(disk.snapshot().phase, crate::NodeDiskPhase::Failed);
+        assert!(Arc::ptr_eq(&index.resolve(&binding).unwrap(), &expected));
     }
 
     #[test]

@@ -1,9 +1,9 @@
 //! Private audit requests stay on this installed, pinned administrative endpoint.
 use crate::{ClientError, KasumiAdminClient, authorized, encode, proto};
 use kasumi_types::{
-    MAX_SECURITY_AUDIT_PAGE_BYTES, SecurityAuditArchivePage, SecurityAuditArchivePageRequest,
-    SecurityAuditArchiveVerification, SecurityAuditExportRequest, SecurityAuditPage,
-    SecurityAuditStatus, SecurityAuditStatusRequest, SecurityAuditVerifyRequest,
+    AuditCapacity, AuditRetentionBudget, MAX_SECURITY_AUDIT_PAGE_BYTES, SecurityAuditArchivePage,
+    SecurityAuditArchivePageRequest, SecurityAuditArchiveVerification, SecurityAuditExportRequest,
+    SecurityAuditPage, SecurityAuditStatus, SecurityAuditStatusRequest, SecurityAuditVerifyRequest,
 };
 use serde::{Serialize, de::DeserializeOwned};
 
@@ -46,6 +46,11 @@ fn decode<T: DeserializeOwned>(
     }
     Ok(serde_json::from_slice(&response.response_json)?)
 }
+/// Status and capacity share one derivation from the installed budget; a
+/// response whose thresholds or usage that budget cannot hold is rejected.
+pub(crate) fn validate_capacity(capacity: &AuditCapacity) -> Result<(), ClientError> {
+    capacity.validate().map_err(invalid)
+}
 pub(crate) fn validate_page(
     input: &SecurityAuditExportRequest,
     page: &SecurityAuditPage,
@@ -54,22 +59,43 @@ pub(crate) fn validate_page(
         .cursor
         .as_ref()
         .map_or(0, |cursor| cursor.next_sequence);
-    if page.stream_id.is_nil()
-        || page.next_sequence > page.through_sequence
+    // The page's own anchors must form a valid continuation even when
+    // complete; a completed range must end at its captured hot tail.
+    if page.resumed().validate().is_err()
         || page.next_sequence.checked_sub(first) != Some(page.records.len() as u64)
         || page.records.len() > usize::from(input.limit)
         || (first < page.through_sequence && page.records.is_empty())
         || input.cursor.as_ref().is_some_and(|cursor| {
-            cursor.stream_id != page.stream_id || cursor.through_sequence != page.through_sequence
+            cursor.stream_id != page.stream_id
+                || cursor.through_sequence != page.through_sequence
+                || cursor.snapshot_segments != page.snapshot_segments
+                || cursor.snapshot_head != page.snapshot_head
+                || cursor.snapshot_tail_sha256 != page.snapshot_tail_sha256
         })
-        || page.records.iter().enumerate().any(|(offset, record)| {
-            record.get("sequence").and_then(serde_json::Value::as_u64)
-                != first.checked_add(offset as u64)
-        })
+        || page
+            .records
+            .iter()
+            .enumerate()
+            .any(|(offset, record)| Some(record.sequence) != first.checked_add(offset as u64))
     {
         return Err(invalid(
-            "audit page changed its original stream, range or sequence",
+            "audit page changed its original stream, range, snapshot or sequence",
         ));
+    }
+    for record in &page.records {
+        record.validate().map_err(invalid)?;
+    }
+    // The next cursor is anchored to the exact last record returned here; an
+    // empty page must return its request's anchor unchanged.
+    let anchor = match page.records.last() {
+        Some(last) => Some(last.sha256().map_err(invalid)?),
+        None => input
+            .cursor
+            .as_ref()
+            .and_then(|cursor| cursor.previous_record_sha256.clone()),
+    };
+    if page.previous_record_sha256 != anchor {
+        return Err(invalid("audit page anchor differs from its last record"));
     }
     Ok(())
 }
@@ -141,13 +167,14 @@ impl KasumiAdminClient {
             .await?
             .into_inner();
         let status: SecurityAuditStatus = decode(response)?;
-        status.position.validate().map_err(invalid)?;
-        status.budget.validate().map_err(invalid)?;
-        if (status.archive_segments == 0) != status.position.archive_head.is_none()
-            || (status.archive_segments == 0) != (status.archived_bytes == 0)
-        {
-            return Err(invalid("audit status archive count differs from its roots"));
-        }
+        // Its position, archive counts and hot tail fix the first cursor.
+        status.validate().map_err(invalid)?;
+        validate_capacity(&AuditCapacity::new(
+            &status.position,
+            &status.budget,
+            AuditRetentionBudget::MAINTENANCE_BYTES,
+            None,
+        ))?;
         Ok(status)
     }
     pub async fn security_audit_archives(
@@ -194,7 +221,9 @@ impl KasumiAdminClient {
 mod tests {
     use super::*;
     use kasumi_types::{
-        AuditArchiveKeyDependency, AuditArchiveLink, AuditArchiveReference, SecurityAuditCursor,
+        AuditArchiveKeyDependency, AuditArchiveLink, AuditArchiveReference, AuditRetentionState,
+        SECURITY_AUDIT_RECORD_FORMAT, SecurityAuditCursor, SecurityAuditRecord, SecurityEvent,
+        SecurityEventKind, SecurityOutcome,
     };
 
     fn archive(
@@ -274,6 +303,31 @@ mod tests {
         );
     }
 
+    fn record(sequence: u64) -> SecurityAuditRecord {
+        SecurityAuditRecord {
+            format: SECURITY_AUDIT_RECORD_FORMAT,
+            sequence,
+            timestamp_ms: 1_700_000_000_000 + sequence,
+            event: SecurityEvent {
+                kind: SecurityEventKind::AccessDenied,
+                principal: Some("principal".into()),
+                tenant: Some("tenant-a".into()),
+                request_id: format!("request-{sequence}"),
+                outcome: SecurityOutcome::Denied,
+            },
+            transport: None,
+        }
+    }
+
+    fn head() -> AuditArchiveLink {
+        AuditArchiveLink {
+            object_id: uuid::Uuid::from_u128(77),
+            first_sequence: 0,
+            next_sequence: 40,
+            ciphertext_sha256: "c".repeat(64),
+        }
+    }
+
     #[test]
     fn rejects_historical_restart_holes_empty_progress_and_oversize() {
         let stream_id = uuid::Uuid::new_v4();
@@ -282,6 +336,10 @@ mod tests {
                 stream_id,
                 next_sequence: 42,
                 through_sequence: 44,
+                snapshot_segments: 1,
+                snapshot_head: Some(head()),
+                snapshot_tail_sha256: Some(record(43).sha256().unwrap()),
+                previous_record_sha256: Some(record(41).sha256().unwrap()),
             }),
             limit: 2,
         };
@@ -289,7 +347,11 @@ mod tests {
             stream_id,
             next_sequence: 43,
             through_sequence: 44,
-            records: vec![serde_json::json!({"sequence":42})],
+            snapshot_segments: 1,
+            snapshot_head: Some(head()),
+            snapshot_tail_sha256: Some(record(43).sha256().unwrap()),
+            previous_record_sha256: Some(record(42).sha256().unwrap()),
+            records: vec![record(42)],
         };
         validate_page(&input, &page).unwrap();
         page.through_sequence = 45;
@@ -298,7 +360,7 @@ mod tests {
         page.stream_id = uuid::Uuid::new_v4();
         assert!(validate_page(&input, &page).is_err());
         page.stream_id = stream_id;
-        page.records[0]["sequence"] = serde_json::json!(43);
+        page.records[0].sequence = 43;
         assert!(validate_page(&input, &page).is_err());
         page.records.clear();
         page.next_sequence = 42;
@@ -306,6 +368,208 @@ mod tests {
         assert!(
             decode::<SecurityAuditStatus>(proto::SecurityAuditJsonResponse {
                 response_json: vec![b' '; MAX_SECURITY_AUDIT_PAGE_BYTES + 1]
+            })
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn record_pages_bind_snapshot_anchor_and_exact_last_record() {
+        let stream_id = uuid::Uuid::new_v4();
+        let initial = SecurityAuditExportRequest {
+            cursor: None,
+            limit: 2,
+        };
+        let first = SecurityAuditPage {
+            stream_id,
+            next_sequence: 2,
+            through_sequence: 50,
+            snapshot_segments: 1,
+            snapshot_head: Some(head()),
+            snapshot_tail_sha256: Some(record(49).sha256().unwrap()),
+            previous_record_sha256: Some(record(1).sha256().unwrap()),
+            records: vec![record(0), record(1)],
+        };
+        validate_page(&initial, &first).unwrap();
+        let cursor = first.cursor().unwrap();
+        cursor.validate().unwrap();
+        let continuation = SecurityAuditExportRequest {
+            cursor: Some(cursor.clone()),
+            limit: 2,
+        };
+        let second = SecurityAuditPage {
+            next_sequence: 4,
+            previous_record_sha256: Some(record(3).sha256().unwrap()),
+            records: vec![record(2), record(3)],
+            ..first.clone()
+        };
+        validate_page(&continuation, &second).unwrap();
+        // The returned anchor must digest the exact last record returned.
+        let mut changed = second.clone();
+        changed.previous_record_sha256 = Some(record(2).sha256().unwrap());
+        assert!(validate_page(&continuation, &changed).is_err());
+        let mut changed = second.clone();
+        changed.records[1].timestamp_ms += 1;
+        assert!(validate_page(&continuation, &changed).is_err());
+        // A continuation keeps the snapshot it was issued with.
+        let mut changed = second.clone();
+        changed.snapshot_segments = 2;
+        changed.snapshot_head.as_mut().unwrap().next_sequence = 45;
+        assert!(validate_page(&continuation, &changed).is_err());
+        let mut changed = second.clone();
+        changed.snapshot_head.as_mut().unwrap().object_id = uuid::Uuid::new_v4();
+        assert!(validate_page(&continuation, &changed).is_err());
+        // It also keeps the hot tail captured with that snapshot.
+        let mut changed = second.clone();
+        changed.snapshot_tail_sha256 = Some(record(48).sha256().unwrap());
+        assert!(validate_page(&continuation, &changed).is_err());
+        let mut changed = first.clone();
+        changed.snapshot_tail_sha256 = None;
+        assert!(validate_page(&initial, &changed).is_err());
+        // Page anchors must themselves form a valid continuation.
+        let mut changed = first.clone();
+        changed.snapshot_head = None;
+        assert!(validate_page(&initial, &changed).is_err());
+        let mut changed = first.clone();
+        changed.snapshot_head.as_mut().unwrap().next_sequence = 51;
+        assert!(validate_page(&initial, &changed).is_err());
+        // Typed records must pass their own closed metadata validation.
+        let mut changed = second.clone();
+        changed.records[0].format = 2;
+        assert!(validate_page(&continuation, &changed).is_err());
+        let mut changed = second.clone();
+        changed.records[0].event.request_id.clear();
+        assert!(validate_page(&continuation, &changed).is_err());
+        // A completed range returns no records and keeps its request anchor.
+        let complete = SecurityAuditExportRequest {
+            cursor: Some(SecurityAuditCursor {
+                next_sequence: 50,
+                previous_record_sha256: Some(record(49).sha256().unwrap()),
+                ..cursor.clone()
+            }),
+            limit: 2,
+        };
+        let empty = SecurityAuditPage {
+            next_sequence: 50,
+            previous_record_sha256: Some(record(49).sha256().unwrap()),
+            records: vec![],
+            ..first.clone()
+        };
+        validate_page(&complete, &empty).unwrap();
+        assert!(empty.cursor().is_none());
+        let mut changed = empty;
+        changed.previous_record_sha256 = Some(record(48).sha256().unwrap());
+        assert!(validate_page(&complete, &changed).is_err());
+        // The page that returns the last record must return the exact tail.
+        let last = SecurityAuditExportRequest {
+            cursor: Some(SecurityAuditCursor {
+                next_sequence: 48,
+                previous_record_sha256: Some(record(47).sha256().unwrap()),
+                ..cursor
+            }),
+            limit: 2,
+        };
+        let mut end = SecurityAuditPage {
+            next_sequence: 50,
+            previous_record_sha256: Some(record(49).sha256().unwrap()),
+            records: vec![record(48), record(49)],
+            ..first.clone()
+        };
+        validate_page(&last, &end).unwrap();
+        end.records[1].event.request_id.push('x');
+        end.previous_record_sha256 = Some(end.records[1].sha256().unwrap());
+        assert!(validate_page(&last, &end).is_err());
+    }
+
+    #[test]
+    fn status_hot_tail_fixes_the_first_cursor() {
+        let budget = kasumi_types::AuditRetentionBudget::default();
+        let mut position = AuditRetentionState::empty(uuid::Uuid::new_v4());
+        position.next_sequence = 3;
+        position.hot_bytes = 300;
+        let status = SecurityAuditStatus {
+            position: position.clone(),
+            budget,
+            archived_bytes: 0,
+            archive_segments: 0,
+            draining: false,
+            persistence_failed: false,
+            maintenance_failures: 0,
+            last_failure: None,
+            hot_tail_sha256: Some(record(2).sha256().unwrap()),
+        };
+        status.validate().unwrap();
+        let cursor = status.snapshot_cursor();
+        cursor.validate().unwrap();
+        assert_eq!(cursor.snapshot_tail_sha256, status.hot_tail_sha256);
+        for changed in [
+            SecurityAuditStatus {
+                hot_tail_sha256: None,
+                ..status.clone()
+            },
+            SecurityAuditStatus {
+                archive_segments: 1,
+                ..status.clone()
+            },
+        ] {
+            assert!(changed.validate().is_err());
+        }
+        let mut missing = serde_json::to_value(&status).unwrap();
+        missing.as_object_mut().unwrap().remove("hot_tail_sha256");
+        assert!(
+            decode::<SecurityAuditStatus>(proto::SecurityAuditJsonResponse {
+                response_json: serde_json::to_vec(&missing).unwrap(),
+            })
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn capacity_thresholds_and_usage_must_match_the_installed_budget() {
+        let budget = kasumi_types::AuditRetentionBudget::default();
+        let mut position = AuditRetentionState::empty(uuid::Uuid::new_v4());
+        position.hot_bytes = budget.starts_at() + 1;
+        let capacity = AuditCapacity::new(
+            &position,
+            &budget,
+            kasumi_types::AuditRetentionBudget::MAINTENANCE_BYTES,
+            None,
+        );
+        validate_capacity(&capacity).unwrap();
+        let encoded = serde_json::to_vec(&capacity).unwrap();
+        let decoded: AuditCapacity = decode(proto::SecurityAuditJsonResponse {
+            response_json: encoded,
+        })
+        .unwrap();
+        assert_eq!(decoded, capacity);
+        for changed in [
+            AuditCapacity {
+                starts_at_bytes: capacity.starts_at_bytes + 1,
+                ..capacity.clone()
+            },
+            AuditCapacity {
+                drains_to_bytes: capacity.drains_to_bytes - 1,
+                ..capacity.clone()
+            },
+            AuditCapacity {
+                archive_backlog_bytes: 0,
+                ..capacity.clone()
+            },
+            AuditCapacity {
+                hot_bytes: capacity.hot_budget_bytes + 1,
+                ..capacity.clone()
+            },
+        ] {
+            assert!(validate_capacity(&changed).is_err());
+        }
+        let mut missing = serde_json::to_value(&capacity).unwrap();
+        missing
+            .as_object_mut()
+            .unwrap()
+            .remove("pending_publication");
+        assert!(
+            decode::<AuditCapacity>(proto::SecurityAuditJsonResponse {
+                response_json: serde_json::to_vec(&missing).unwrap(),
             })
             .is_err()
         );

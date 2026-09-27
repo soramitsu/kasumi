@@ -669,3 +669,132 @@ async fn offline_maintenance_and_administrator_recovery_require_exclusive_owners
     stop.send_replace(true);
     serving.await.unwrap().unwrap();
 }
+
+/// Replace one owned installed marker through the managed namespace, modelling
+/// a stopped installation whose marker was altered outside Kasumi.
+fn substitute_marker(
+    config: &RuntimeConfig,
+    storage: &crate::runtime_memory::RuntimeStorage,
+    path: &Path,
+    bytes: &[u8],
+) -> Result<()> {
+    let disk = crate::persistent_disk::open(&config.persistent_disk, storage)?;
+    disk.delete_file(open_installed_file(&config.persistent_disk, &disk, path)?)?;
+    create_installed_file(
+        &config.persistent_disk,
+        &disk,
+        path,
+        bytes,
+        MAX_INSTALLATION,
+    )?;
+    Ok(())
+}
+
+/// Equivalent spellings the current writer never produces. Serde alone admits
+/// each of them as the original value.
+fn respelled(current: &[u8]) -> Result<[Vec<u8>; 2]> {
+    let spaced = std::str::from_utf8(current)?
+        .replacen(':', ": ", 1)
+        .into_bytes();
+    let reordered = serde_json::to_vec(&serde_json::from_slice::<serde_json::Value>(current)?)?;
+    ensure!(
+        reordered != current,
+        "fixture record already has sorted keys"
+    );
+    Ok([spaced, reordered])
+}
+
+#[test]
+fn respelled_installed_markers_and_signers_fail_stopped_owner_acquisition() -> Result<()> {
+    super::ownership_tests::run_large_fixture(
+        "standalone exact installed marker fixture",
+        respelled_installed_markers_and_signers_fail_stopped_owner_acquisition_impl,
+    )
+}
+
+async fn respelled_installed_markers_and_signers_fail_stopped_owner_acquisition_impl() -> Result<()>
+{
+    // Operator calls publish through the process-wide startup registry. Join
+    // them before this fixture's runtime ends so no handoff is cancelled.
+    let _serial = super::ownership_tests::drain_serial().lock().await;
+    let root = kasumi_store::test_utils::private_tempdir()?;
+    let (installation, storage) = crate::runtime_storage_fixtures::initialize_standalone(
+        &root.path().join("kasumi"),
+        "tenant",
+    )
+    .await?;
+    let config = RuntimeConfig::load(&installation.configuration)?;
+    let data = config
+        .database_path
+        .parent()
+        .context("database parent")?
+        .to_owned();
+    let acquire = || -> Result<()> {
+        let disk = crate::persistent_disk::open(&config.persistent_disk, &storage)?;
+        claim(&config, &disk)?.context("standalone owner")?;
+        Ok(())
+    };
+    acquire()?;
+    for name in ["installation.json", "initialization.json"] {
+        let path = data.join(name);
+        let current = std::fs::read(&path)?;
+        for alternate in respelled(&current)? {
+            ensure!(decode_installation(&alternate).is_err());
+            ensure!(
+                serde_json::to_vec(&serde_json::from_slice::<Installation>(&alternate)?)?
+                    == current
+            );
+            substitute_marker(&config, &storage, &path, &alternate)?;
+            let error = acquire().unwrap_err();
+            assert_eq!(
+                format!("{error:#}"),
+                "noncanonical standalone installation marker"
+            );
+            let Err(error) = OperatorState::open(&config, storage.clone()).await else {
+                panic!("a respelled {name} acquired the stopped installation");
+            };
+            assert!(
+                format!("{error:#}").contains("noncanonical standalone installation marker"),
+                "{error:#}"
+            );
+            // Refusal never rewrites the marker as the current writer's bytes.
+            assert_eq!(std::fs::read(&path)?, alternate);
+            substitute_marker(&config, &storage, &path, &current)?;
+        }
+        acquire()?;
+        OperatorState::open(&config, storage.clone())
+            .await?
+            .finish(Ok(()))
+            .await?;
+    }
+
+    let AuthKeySource::Local { signer_file } = &config.auth.source else {
+        anyhow::bail!("standalone installation has no local signer");
+    };
+    let current = private_files::read(signer_file, 1 << 20)?;
+    for alternate in respelled(&current)? {
+        private_files::replace(signer_file, &alternate)?;
+        let Err(error) = OperatorState::open(&config, storage.clone()).await else {
+            panic!("a respelled signing installation started the issuer");
+        };
+        assert!(
+            format!("{error:#}").contains("noncanonical local signing installation"),
+            "{error:#}"
+        );
+        assert!(
+            rotate_signing_key_with_storage(&installation.configuration, storage.clone())
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            private_files::read(signer_file, 1 << 20)?.as_slice(),
+            alternate.as_slice()
+        );
+    }
+    private_files::replace(signer_file, &current)?;
+    assert_eq!(
+        rotate_signing_key_with_storage(&installation.configuration, storage.clone()).await?,
+        2
+    );
+    drain_operations().await
+}

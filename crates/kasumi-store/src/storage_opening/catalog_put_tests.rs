@@ -4,7 +4,12 @@ use crate::{
     storage_opening::write_plan,
     test_utils::{TestDiskMemory, private_tempdir, retry_disk_registry},
 };
-use std::{path::Path, sync::Arc};
+use std::{
+    path::{Path, PathBuf},
+    process::{Child, Command, Stdio},
+    sync::Arc,
+    time::{Duration, Instant},
+};
 use uuid::Uuid;
 
 const ID: Uuid = Uuid::from_u128(0x38a5_c9c5_6a88_41f0_a1a3_a723_fe68_4535);
@@ -513,4 +518,214 @@ async fn paired_catalog_terminal_refusal_retains_one_child_and_original_outcome(
         assert_eq!(terminal.operation(), Some(WriteTerminalOperation::Commit));
     }
     assert_eq!(retained.retire(), StorageCensusDisposition::Retained);
+}
+
+fn catalog_named(tenant: &str, ciphertext: String) -> crate::KeyCatalog {
+    let mut catalog = catalog_for_registered_write();
+    catalog.tenant = tenant.into();
+    for key in catalog.keys.values_mut() {
+        key.ciphertext = ciphertext.clone();
+    }
+    catalog
+}
+
+/// Larger than any filesystem allocation unit, so its frame must grow the
+/// database file beyond the extent it already owns.
+fn replacement_catalog() -> crate::KeyCatalog {
+    catalog_named("catalog-writer", "r".repeat(64 << 10))
+}
+
+fn second_catalog() -> crate::KeyCatalog {
+    catalog_named("second-tenant", "opaque".into())
+}
+
+/// A fixture disk whose foreground extent budget is small enough to fill.
+fn quota_disk(path: &Path, memory: &Arc<TestDiskMemory>) -> Arc<NodeDisk> {
+    let mut config = NodeDisk::fixture_config(path).unwrap();
+    config.max_bytes = 64 << 20;
+    config.maintenance_reserve_bytes = 1 << 20;
+    retry_disk_registry(|| {
+        NodeDisk::open_fixture(
+            &config,
+            memory.clone(),
+            &crate::CensusCancellation::default(),
+        )
+    })
+    .unwrap()
+}
+
+/// Settle one sparse file over the whole remaining foreground budget, so any
+/// further database growth is refused before an effect.
+fn fill_foreground(disk: &Arc<NodeDisk>) -> crate::NodeDiskFile {
+    let filler = disk
+        .create_file(
+            "fixture",
+            Path::new("capacity-filler"),
+            crate::DiskWork::Foreground,
+        )
+        .unwrap();
+    let snapshot = disk.snapshot();
+    let mut length =
+        (snapshot.max_bytes - snapshot.maintenance_reserve_bytes - snapshot.charged_bytes) / 4096
+            * 4096;
+    while let Err(error) = filler.reserve_growth(0, length, crate::DiskWork::Foreground) {
+        assert_eq!(error.kind(), io::ErrorKind::StorageFull);
+        length -= 4096;
+    }
+    filler.grow_reserved(length).unwrap();
+    filler.sync_all().unwrap();
+    filler.settle_growth(length).unwrap();
+    filler
+}
+
+const CAPACITY_CHILD_PATH: &str = "KASUMI_CATALOG_CAPACITY_CHILD_PATH";
+
+struct OwnedChild(Child);
+impl Drop for OwnedChild {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+fn run_capacity_child(path: &Path) {
+    let log_path = path.with_extension("capacity-child.log");
+    // The log shares the installed root, whose census admits only private
+    // regular files.
+    let log = std::os::unix::fs::OpenOptionsExt::mode(
+        std::fs::OpenOptions::new().write(true).create_new(true),
+        0o600,
+    )
+    .open(&log_path)
+    .unwrap();
+    let mut child = OwnedChild(
+        Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "storage_opening::catalog_put::tests::catalog_capacity_child",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env(CAPACITY_CHILD_PATH, path)
+            .stdout(Stdio::from(log.try_clone().unwrap()))
+            .stderr(Stdio::from(log))
+            .spawn()
+            .unwrap(),
+    );
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let status = loop {
+        match child.0.try_wait().unwrap() {
+            Some(status) => break Some(status),
+            None if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(10)),
+            None => break None,
+        }
+    };
+    if status.is_some_and(|status| status.code() == Some(77)) {
+        return;
+    }
+    drop(child);
+    panic!(
+        "catalog capacity child failed: {status:?}; log={}",
+        String::from_utf8_lossy(&std::fs::read(&log_path).unwrap_or_default())
+    );
+}
+
+/// Installed NodeDisk custody: the old catalog commits, the disk fills, and a
+/// replacement is refused for capacity at commit. The refusal settles: the
+/// census child retires, charges and file length are unchanged and the
+/// opening stays open, so a later put commits once space is freed. The
+/// process then exits without closing anything.
+#[test]
+#[ignore = "subprocess helper; invoked with an owned temporary path"]
+fn catalog_capacity_child() {
+    let Some(path) = std::env::var_os(CAPACITY_CHILD_PATH) else {
+        return;
+    };
+    let path = PathBuf::from(path);
+    let memory = TestDiskMemory::new(256 << 20, 4096);
+    let disk = quota_disk(&path, &memory);
+    let opening =
+        RegisteredNodeOpening::prepare(&path, ID, disk.clone(), NodeOpeningMode::Create).unwrap();
+    assert_eq!(opening.open(), NodeOpeningPhase::Open);
+    let tables = opening.queue_node_tables().unwrap();
+    assert_eq!(tables.run(), NodeWriterPhase::Finished);
+    opening.publish_ready_after_tables(&tables).unwrap();
+    assert_eq!(tables.retire(), StorageCensusDisposition::Retired);
+    let provider: Arc<dyn NodeDiskMemoryAdmission> = memory.clone();
+    let put = |catalog: &crate::KeyCatalog| {
+        let plan =
+            write_plan::AdmittedCatalogPut::prepare(&catalog.tenant, catalog, provider.clone())
+                .unwrap();
+        let writer = opening.queue_catalog_put(plan).unwrap();
+        assert_eq!(writer.run(), NodeWriterPhase::Finished);
+        writer
+    };
+    let writer = put(&catalog_for_registered_write());
+    assert!(writer.report().committed_and_disposed());
+    assert_eq!(writer.retire(), StorageCensusDisposition::Retired);
+
+    let filler = fill_foreground(&disk);
+    let charged = disk.snapshot().charged_bytes;
+    let length = std::fs::metadata(&path).unwrap().len();
+    let writer = put(&replacement_catalog());
+    {
+        let report = writer.report();
+        assert!(report.is_capacity_denied());
+        assert!(!report.committed_and_disposed());
+        assert!(matches!(
+            report.body(),
+            TerminalObservation::Returned(Ok(()))
+        ));
+        let terminal = report.terminal().unwrap();
+        assert_eq!(terminal.operation(), Some(WriteTerminalOperation::Commit));
+        assert_eq!(
+            terminal.settlement(),
+            kasumi_kv::WriteTerminalSettlement::Settled
+        );
+        assert!(terminal.is_capacity_denied());
+        assert!(terminal.disposal_complete());
+    }
+    assert_eq!(writer.retire(), StorageCensusDisposition::Retired);
+    assert_eq!(memory.storage_census().snapshot().writers, 0);
+    assert_eq!(disk.snapshot().charged_bytes, charged);
+    assert_eq!(std::fs::metadata(&path).unwrap().len(), length);
+    assert_eq!(
+        opening.report().engine().settlement(),
+        DatabaseOpenSettlement::Ready
+    );
+
+    disk.delete_file(filler).unwrap();
+    let writer = put(&second_catalog());
+    assert!(writer.report().committed_and_disposed());
+    assert_eq!(writer.retire(), StorageCensusDisposition::Retired);
+    std::process::exit(77);
+}
+
+#[test]
+fn installed_catalog_capacity_denial_keeps_opening_open_and_reopens_old_catalog() {
+    let directory = private_tempdir().unwrap();
+    let path = directory.path().join("catalog-capacity.kv");
+    run_capacity_child(&path);
+
+    let memory = TestDiskMemory::new(256 << 20, 4096);
+    let opening =
+        RegisteredNodeOpening::prepare(&path, ID, disk(&path, &memory), NodeOpeningMode::Existing)
+            .unwrap();
+    assert_eq!(opening.open(), NodeOpeningPhase::Open);
+    {
+        let read = opening.begin_store_read().unwrap();
+        let catalogs = read.open_table(crate::CATALOG).unwrap();
+        for catalog in [catalog_for_registered_write(), second_catalog()] {
+            assert_eq!(
+                catalogs
+                    .get(crate::tenant_hash(&catalog.tenant).as_slice())
+                    .unwrap()
+                    .unwrap()
+                    .value(),
+                serde_json::to_vec(&catalog).unwrap().as_slice()
+            );
+        }
+    }
+    assert_eq!(opening.close().unwrap(), DatabaseOpenSettlement::Closed);
+    assert_eq!(opening.retire(), StorageCensusDisposition::Retired);
 }

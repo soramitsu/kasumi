@@ -118,6 +118,31 @@ fn transaction_failure(report: &kasumi_kv::WriteTerminalReport<'_>) -> bool {
         || observed_failure(report.rollback())
         || observed_failure(report.disposal())
 }
+/// A writer refused for capacity before publication, while staging (its body
+/// failed with a denial and aborted) or at commit. The native writer was
+/// rolled back whole, its gate was released and disposed, and the opening
+/// stays open; the caller may acknowledge the child and return the denial.
+fn settled_capacity_denial<E>(
+    phase: NodeWriterPhase,
+    begin: &Observation<kasumi_kv::TransactionError>,
+    body: &Observation<E>,
+    outer: &Observation<std::convert::Infallible>,
+    terminal: Option<kasumi_kv::WriteTerminalReport<'_>>,
+    body_denied: impl Fn(&E) -> bool,
+) -> bool {
+    let Some(terminal) = terminal else {
+        return false;
+    };
+    let staged = matches!(body, Observation::Returned(Err(error)) if body_denied(error))
+        && terminal.operation() == Some(WriteTerminalOperation::Abort)
+        && matches!(terminal.terminal(), TerminalObservation::Returned(Ok(())));
+    let committed = body.success() && terminal.is_capacity_denied();
+    phase == NodeWriterPhase::Finished
+        && begin.success()
+        && outer.success()
+        && terminal.disposal_complete()
+        && (staged || committed)
+}
 impl OpeningState {
     fn transfer_failed(&mut self) -> FailedOpeningRecovery {
         if self.failed_transfer.is_some() {
@@ -166,7 +191,6 @@ impl OpeningState {
             || observed_failure(report.partial_close())
             || observed_failure(report.failed_disposal())
             || observed_failure(self.failed_recovery.borrow())
-            || report.bootstrap().as_ref().is_some_and(transaction_failure)
             || report.database_close().is_some_and(|close| {
                 observed_failure(close.shutdown())
                     || observed_failure(close.backend())
@@ -910,6 +934,24 @@ impl NodeTablesReport<'_> {
             .transaction
             .as_ref()
             .map(RetainedWriteTransaction::report)
+    }
+    /// The table creation was refused for capacity before publication. The
+    /// writer was rolled back whole and disposed; the opening stays open.
+    pub fn is_capacity_denied(&self) -> bool {
+        settled_capacity_denial(
+            self.state.phase,
+            &self.state.begin,
+            &self.state.body,
+            &self.state.outer,
+            self.terminal(),
+            |error| {
+                matches!(
+                    error,
+                    NodeTablesBodyError::Catalog(error) | NodeTablesBodyError::Records(error)
+                        if error.is_capacity_denied()
+                )
+            },
+        )
     }
 }
 

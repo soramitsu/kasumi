@@ -3,6 +3,11 @@ use kasumi_types::*;
 #[derive(Clone, Copy)]
 pub(super) enum AuditOperation {
     Status,
+    #[expect(
+        dead_code,
+        reason = "routed once kasumi.proto gains the SecurityAuditCapacity RPC"
+    )]
+    Capacity,
     Export,
     Archives,
     Verify,
@@ -94,6 +99,11 @@ impl NativeAdmin {
                     let value = tokio::task::spawn_blocking(move || audit.status()).await??;
                     encode_json(&value)?
                 }
+                AuditOperation::Capacity => {
+                    let _: SecurityAuditCapacityRequest = decode_json(&payload)?;
+                    let value = tokio::task::spawn_blocking(move || audit.capacity()).await??;
+                    encode_json(&value)?
+                }
                 AuditOperation::Export => {
                     let request: SecurityAuditExportRequest = decode_json(&payload)?;
                     request.validate()?;
@@ -101,13 +111,17 @@ impl NativeAdmin {
                         let state = audit.status()?;
                         anyhow::ensure!(
                             cursor.stream_id == state.position.stream_id
-                                && cursor.through_sequence <= state.position.next_sequence,
+                                && cursor.through_sequence <= state.position.next_sequence
+                                && cursor.snapshot_segments <= state.archive_segments,
                             kasumi_types::Error::new(
                                 ErrorCode::InvalidArgument,
                                 "audit cursor belongs to another stream or future range"
                             )
                         );
                     }
+                    // The engine checks the cursor's snapshot head, snapshot tail
+                    // and previous record digest against durable history before
+                    // it returns any record.
                     encode_json(&audit.export_page(request.cursor, request.limit).await?)?
                 }
                 AuditOperation::Archives => {

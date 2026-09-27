@@ -372,3 +372,58 @@ async fn native_commit_refusal_retains_original_terminal_and_never_replays() -> 
     assert_eq!(retained.retire(), StorageCensusDisposition::Retained);
     Ok(())
 }
+
+#[tokio::test]
+async fn staged_binding_capacity_denial_settles_and_a_later_binding_put_commits() -> Result<()> {
+    let pair = uninstalled().await?;
+    let before = pair.memory.snapshot();
+    let writer = pair.node.db.queue_registered_binding_put(
+        plan(&pair)?,
+        pair.app.clone(),
+        pair.custody.clone(),
+    )?;
+    // Leave room for the table type check but not for the staged envelope
+    // row, so the writer's first capacity denial lands while staging.
+    let queued = pair.memory.snapshot();
+    let headroom = 1 << 10;
+    let fill = pair.memory.clone().reserve_installed(
+        (256u64 << 20)
+            - queued.bookkeeping_bytes
+            - queued.used_bytes
+            - headroom
+            - TestDiskMemory::required_reservation_bytes(0)?,
+    )?;
+    assert_eq!(writer.run(), NodeWriterPhase::Finished);
+    {
+        let report = writer.report();
+        assert!(report.is_capacity_denied());
+        assert!(!report.committed_and_disposed());
+        assert!(matches!(
+            report.body(),
+            TerminalObservation::Returned(Err(BindingInstallBodyError::Table(error)))
+                if error.is_capacity_denied()
+        ));
+        let terminal = report.terminal().unwrap();
+        assert_eq!(terminal.operation(), Some(WriteTerminalOperation::Abort));
+        assert_eq!(terminal.settlement(), WriteTerminalSettlement::Settled);
+        assert!(terminal.disposal_complete());
+    }
+    assert_eq!(writer.retire(), StorageCensusDisposition::Retired);
+    assert_eq!(pair.memory.storage_census().snapshot().writers, 0);
+    drop(fill);
+    assert_eq!(pair.memory.snapshot().used_bytes, before.used_bytes);
+
+    // The opening stayed open: the same binding now commits.
+    let writer = pair.node.db.queue_registered_binding_put(
+        plan(&pair)?,
+        pair.app.clone(),
+        pair.custody.clone(),
+    )?;
+    assert_eq!(writer.run(), NodeWriterPhase::Finished);
+    assert!(writer.report().confirmed());
+    assert!(!writer.report().is_capacity_denied());
+    assert_eq!(writer.retire(), StorageCensusDisposition::Retired);
+    pair.node.shutdown().await?;
+    assert_eq!(pair.memory.storage_census().snapshot().databases, 0);
+    Ok(())
+}

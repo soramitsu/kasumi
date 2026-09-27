@@ -159,7 +159,9 @@ fn load(owner: &OperatorState, operation: Uuid) -> Result<Option<Record>> {
         .audit
         .store()
         .get_bounded(NS, key(operation).as_bytes(), MAX_RECORD)?
-        .map(|bytes| serde_json::from_slice(&bytes).map_err(Into::into))
+        .map(|bytes| {
+            kasumi_types::exact_json::decode_exact(&bytes, MAX_RECORD, "tenant staging record")
+        })
         .transpose()
 }
 fn save(owner: &OperatorState, record: &Record) -> Result<()> {
@@ -181,14 +183,14 @@ fn installation(owner: &OperatorState) -> Result<Uuid> {
     let identity = owner
         .installed_owner
         .identity_for(owner.node.persistent_disk())?;
-    let installed: Installation = serde_json::from_slice(&private_files::read(
+    let installed = decode_installation(&private_files::read(
         &owner
             .config
             .database_path
             .parent()
             .context("database parent missing")?
             .join("installation.json"),
-        16 << 10,
+        MAX_INSTALLATION,
     )?)?;
     ensure!(
         installed.format == 4

@@ -45,6 +45,92 @@ impl AuditRetentionBudget {
     pub fn drains_to(&self) -> u64 {
         self.hot_bytes / 2
     }
+    /// Hot bytes above the drain target, only once maintenance is due: at the
+    /// start threshold, or while an earlier crossing is still draining.
+    pub fn archive_backlog_bytes(&self, hot_bytes: u64, draining: bool) -> u64 {
+        if draining || hot_bytes >= self.starts_at() {
+            hot_bytes.saturating_sub(self.drains_to())
+        } else {
+            0
+        }
+    }
+}
+
+/// Retention budgets and the committed position they bound. Service and tenant
+/// streams report the same shape; every threshold is derived from the budget.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct AuditCapacity {
+    pub hot_budget_bytes: u64,
+    pub hot_bytes: u64,
+    pub starts_at_bytes: u64,
+    pub drains_to_bytes: u64,
+    pub draining: bool,
+    pub archive_budget_bytes: u64,
+    pub archive_bytes: u64,
+    pub archive_segments: u64,
+    pub archive_backlog_bytes: u64,
+    pub max_segment_bytes: u64,
+    pub maintenance_reserved_bytes: u64,
+    /// Exact object persisted locally before publication and not yet a root.
+    #[serde(deserialize_with = "crate::require_explicit_option")]
+    pub pending_publication: Option<AuditArchiveLink>,
+}
+
+impl AuditCapacity {
+    pub fn new(
+        position: &AuditRetentionState,
+        budget: &AuditRetentionBudget,
+        maintenance_reserved_bytes: u64,
+        pending_publication: Option<AuditArchiveLink>,
+    ) -> Self {
+        Self {
+            hot_budget_bytes: budget.hot_bytes,
+            hot_bytes: position.hot_bytes,
+            starts_at_bytes: budget.starts_at(),
+            drains_to_bytes: budget.drains_to(),
+            draining: position.draining,
+            archive_budget_bytes: budget.archive_bytes,
+            archive_bytes: position.archive_bytes,
+            archive_segments: position.archive_segments,
+            archive_backlog_bytes: budget
+                .archive_backlog_bytes(position.hot_bytes, position.draining),
+            max_segment_bytes: MAX_AUDIT_SEGMENT_BYTES as u64,
+            maintenance_reserved_bytes,
+            pending_publication,
+        }
+    }
+
+    pub fn budget(&self) -> AuditRetentionBudget {
+        AuditRetentionBudget {
+            hot_bytes: self.hot_budget_bytes,
+            archive_bytes: self.archive_budget_bytes,
+        }
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        let budget = self.budget();
+        budget.validate()?;
+        if self.starts_at_bytes != budget.starts_at()
+            || self.drains_to_bytes != budget.drains_to()
+            || self.hot_bytes > self.hot_budget_bytes
+            || self.archive_bytes > self.archive_budget_bytes
+            || (self.archive_segments == 0) != (self.archive_bytes == 0)
+            || self.archive_backlog_bytes
+                != budget.archive_backlog_bytes(self.hot_bytes, self.draining)
+            || self.max_segment_bytes != MAX_AUDIT_SEGMENT_BYTES as u64
+            || self.maintenance_reserved_bytes < AuditRetentionBudget::MAINTENANCE_BYTES
+        {
+            return Err(Error::new(
+                ErrorCode::InvalidArgument,
+                "audit capacity differs from its retention budget",
+            ));
+        }
+        if let Some(pending) = &self.pending_publication {
+            pending.validate()?;
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -54,6 +140,18 @@ pub struct AuditArchiveLink {
     pub first_sequence: u64,
     pub next_sequence: u64,
     pub ciphertext_sha256: String,
+}
+
+impl AuditArchiveLink {
+    pub fn validate(&self) -> Result<()> {
+        if self.object_id.is_nil() || self.first_sequence >= self.next_sequence {
+            return Err(Error::new(
+                ErrorCode::InvalidArgument,
+                "invalid audit archive link",
+            ));
+        }
+        validate_sha256(&self.ciphertext_sha256)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -70,6 +168,7 @@ pub struct AuditArchiveKeyDependency {
 pub struct AuditArchiveReference {
     pub stream_id: Uuid,
     pub object: AuditArchiveLink,
+    #[serde(deserialize_with = "crate::require_explicit_option")]
     pub previous: Option<AuditArchiveLink>,
     pub record_count: u64,
     pub plaintext_bytes: u64,
@@ -135,6 +234,7 @@ pub struct AuditRetentionState {
     pub archive_bytes: u64,
     pub archive_segments: u64,
     pub draining: bool,
+    #[serde(deserialize_with = "crate::require_explicit_option")]
     pub archive_head: Option<AuditArchiveReference>,
 }
 
@@ -187,12 +287,13 @@ impl AuditRetentionState {
 
 #[cfg(test)]
 mod tests {
-    use super::{AuditArchiveKeyDependency, AuditArchiveLink, AuditArchiveReference};
+    use super::{
+        AuditArchiveKeyDependency, AuditArchiveLink, AuditArchiveReference, AuditRetentionState,
+    };
     use uuid::Uuid;
 
-    #[test]
-    fn archive_key_dependency_requires_a_real_wrapping_version() {
-        let mut reference = AuditArchiveReference {
+    fn reference() -> AuditArchiveReference {
+        AuditArchiveReference {
             stream_id: Uuid::from_u128(1),
             object: AuditArchiveLink {
                 object_id: Uuid::from_u128(2),
@@ -210,10 +311,48 @@ mod tests {
                 version: 1,
                 wrapped_key_sha256: "0".repeat(64),
             },
-        };
+        }
+    }
+
+    #[test]
+    fn archive_key_dependency_requires_a_real_wrapping_version() {
+        let mut reference = reference();
         reference.validate().unwrap();
         reference.key.version = 0;
         assert!(reference.validate().is_err());
+    }
+
+    #[test]
+    fn nullable_chain_fields_must_be_present_explicitly() {
+        let root = serde_json::to_value(reference()).unwrap();
+        assert!(root["previous"].is_null());
+        serde_json::from_value::<AuditArchiveReference>(root.clone()).unwrap();
+        let mut missing = root;
+        missing.as_object_mut().unwrap().remove("previous");
+        assert!(serde_json::from_value::<AuditArchiveReference>(missing).is_err());
+
+        let mut state = AuditRetentionState::empty(Uuid::from_u128(1));
+        let empty = serde_json::to_value(&state).unwrap();
+        assert!(empty["archive_head"].is_null());
+        assert_eq!(
+            serde_json::from_value::<AuditRetentionState>(empty.clone()).unwrap(),
+            state
+        );
+        let mut missing = empty;
+        missing.as_object_mut().unwrap().remove("archive_head");
+        assert!(serde_json::from_value::<AuditRetentionState>(missing).is_err());
+
+        state.archive_head = Some(reference());
+        state.next_sequence = 1;
+        state.pruned_before = 1;
+        state.archive_bytes = 2;
+        state.archive_segments = 1;
+        state.validate().unwrap();
+        assert_eq!(
+            serde_json::from_value::<AuditRetentionState>(serde_json::to_value(&state).unwrap())
+                .unwrap(),
+            state
+        );
     }
 
     #[test]

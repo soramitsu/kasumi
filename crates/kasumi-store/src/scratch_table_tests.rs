@@ -380,6 +380,190 @@ fn explicit_scratch_close_retains_original_physical_failure_on_retry() {
 }
 
 #[test]
+fn strict_create_rejects_a_non_empty_spool_instead_of_adopting_its_frames() {
+    let memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let directory = crate::test_utils::private_tempdir().unwrap();
+    let disk = ScratchDisk::isolated_fixture(directory.path(), 16 << 20, memory);
+    let (owner, backend) = owner(&disk, 8 << 20);
+    // Plant a valid committed image whose table and key would be readable if
+    // creation fell back to opening an existing extent.
+    let planted = kasumi_kv::Database::builder(owner.clone())
+        .create_strict_with_backend(backend)
+        .unwrap();
+    let tx = planted.begin_write().unwrap();
+    tx.open_table(TABLE)
+        .unwrap()
+        .insert(b"planted".as_slice(), b"frame".as_slice())
+        .unwrap();
+    tx.commit().unwrap();
+    assert!(!owner.0.lock().unwrap().as_ref().unwrap().is_empty());
+    assert_eq!(disk.snapshot().live_files, 1);
+    let error = EncryptedTable::create(owner.clone()).err().unwrap();
+    let database = error.downcast_ref::<kasumi_kv::DatabaseError>().unwrap();
+    assert!(matches!(
+        database.0,
+        kasumi_kv::StorageError::Core(kasumi_kv::CoreError::InvalidInput(
+            "new backend is not empty"
+        ))
+    ));
+    // The rejected spool is observed closed before the error is returned.
+    assert!(owner.0.lock().unwrap().is_none());
+    assert!(owner.check_owner().is_err());
+    assert_eq!(disk.snapshot().live_files, 0);
+    assert_eq!(disk.snapshot().charged_bytes, 0);
+    drop(planted);
+}
+
+struct CountCloses {
+    backend: Backend,
+    closes: Arc<AtomicUsize>,
+}
+
+impl StorageBackend for CountCloses {
+    fn len(&self) -> io::Result<u64> {
+        self.backend.len()
+    }
+    fn read(&self, offset: u64, out: &mut [u8]) -> io::Result<()> {
+        self.backend.read(offset, out)
+    }
+    fn set_len(&self, length: u64) -> io::Result<()> {
+        self.backend.set_len(length)
+    }
+    fn sync_data(&self) -> io::Result<()> {
+        self.backend.sync_data()
+    }
+    fn write(&self, offset: u64, bytes: &[u8]) -> io::Result<()> {
+        self.backend.write(offset, bytes)
+    }
+    fn close(&self) -> kasumi_kv::BackendCloseOutcome {
+        self.closes.fetch_add(1, Ordering::SeqCst);
+        self.backend.close()
+    }
+}
+
+fn counted_table(disk: &Arc<ScratchDisk>) -> (EncryptedTable, Arc<Owner>, Arc<AtomicUsize>) {
+    let (owner, backend) = owner(disk, 8 << 20);
+    let closes = Arc::new(AtomicUsize::new(0));
+    let database = kasumi_kv::Database::builder(owner.clone())
+        .create_strict_with_backend(CountCloses {
+            backend,
+            closes: closes.clone(),
+        })
+        .unwrap();
+    let table = EncryptedTable::initialize(database).unwrap();
+    table.insert(b"identity", b"value").unwrap();
+    (table, owner, closes)
+}
+
+fn spool_address(owner: &Owner) -> *const EncryptedSpool {
+    std::ptr::from_ref(owner.0.lock().unwrap().as_ref().unwrap())
+}
+
+#[test]
+fn dropping_a_drained_table_closes_natively_once_without_allocating() {
+    let memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let directory = crate::test_utils::private_tempdir().unwrap();
+    let disk = ScratchDisk::isolated_fixture(directory.path(), 16 << 20, memory);
+    let (table, owner, closes) = counted_table(&disk);
+    assert_eq!(table.get(b"identity").unwrap(), Some(b"value".to_vec()));
+    assert!(disk.snapshot().charged_bytes > 0);
+    let ((), allocations) = measure(|| drop(table));
+    assert_eq!(allocations, 0);
+    assert_eq!(closes.load(Ordering::SeqCst), 1);
+    assert!(owner.0.lock().unwrap().is_none());
+    assert_eq!(disk.snapshot().live_files, 0);
+    assert_eq!(disk.snapshot().charged_bytes, 0);
+}
+
+#[test]
+fn dropping_an_explicitly_closed_table_never_reenters_native_close() {
+    let memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let directory = crate::test_utils::private_tempdir().unwrap();
+    let disk = ScratchDisk::isolated_fixture(directory.path(), 16 << 20, memory);
+    let (table, owner, closes) = counted_table(&disk);
+    table.close().unwrap();
+    assert_eq!(closes.load(Ordering::SeqCst), 1);
+    assert!(owner.0.lock().unwrap().is_none());
+    assert_eq!(disk.snapshot().charged_bytes, 0);
+    let ((), allocations) = measure(|| drop(table));
+    assert_eq!(allocations, 0);
+    assert_eq!(closes.load(Ordering::SeqCst), 1);
+    assert_eq!(disk.snapshot().live_files, 0);
+}
+
+#[test]
+fn dropping_a_failed_table_keeps_spool_and_charge_without_allocating() {
+    let memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let directory = crate::test_utils::private_tempdir().unwrap();
+    let disk = ScratchDisk::isolated_fixture(directory.path(), 16 << 20, memory);
+    let (table, owner, closes) = counted_table(&disk);
+    let address = spool_address(&owner);
+    let charged = disk.snapshot().charged_bytes;
+    assert!(charged > 0);
+    // The physical owner fails after acceptance; the destructor's single
+    // native close cannot synchronize and therefore cannot prove drain.
+    owner.owner_failed();
+    let ((), allocations) = measure(|| drop(table));
+    assert_eq!(allocations, 0);
+    assert_eq!(closes.load(Ordering::SeqCst), 1);
+    assert_eq!(spool_address(&owner), address);
+    assert_eq!(disk.snapshot().live_files, 1);
+    assert_eq!(disk.snapshot().charged_bytes, charged);
+    // The forgotten engine still owns the exact spool, so releasing this
+    // last test handle cannot run an unobserved descriptor close or credit.
+    drop(owner);
+    assert_eq!(disk.snapshot().live_files, 1);
+    assert_eq!(disk.snapshot().charged_bytes, charged);
+}
+
+#[test]
+fn failed_explicit_close_keeps_charge_and_drop_never_reenters_close() {
+    let memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let directory = crate::test_utils::private_tempdir().unwrap();
+    let disk = ScratchDisk::isolated_fixture(directory.path(), 16 << 20, memory);
+    let (table, owner, closes) = counted_table(&disk);
+    let address = spool_address(&owner);
+    let charged = disk.snapshot().charged_bytes;
+    owner.owner_failed();
+    let first = table.close().unwrap_err();
+    let second = table.close().unwrap_err();
+    assert_eq!(first.completion(), DrainCompletion::Retained);
+    assert!(Arc::ptr_eq(&first.issues()[0], &second.issues()[0]));
+    assert_eq!(closes.load(Ordering::SeqCst), 1);
+    assert_eq!(disk.snapshot().charged_bytes, charged);
+    let ((), allocations) = measure(|| drop(table));
+    assert_eq!(allocations, 0);
+    assert_eq!(closes.load(Ordering::SeqCst), 1);
+    assert_eq!(spool_address(&owner), address);
+    assert_eq!(disk.snapshot().live_files, 1);
+    assert_eq!(disk.snapshot().charged_bytes, charged);
+    drop(owner);
+    assert_eq!(disk.snapshot().live_files, 1);
+    assert_eq!(disk.snapshot().charged_bytes, charged);
+}
+
+#[test]
+fn dropping_a_table_under_a_live_transaction_never_enters_close_or_returns_credit() {
+    let memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let directory = crate::test_utils::private_tempdir().unwrap();
+    let disk = ScratchDisk::isolated_fixture(directory.path(), 16 << 20, memory);
+    let (table, owner, closes) = counted_table(&disk);
+    let address = spool_address(&owner);
+    let charged = disk.snapshot().charged_bytes;
+    let read = table.owner.database().begin_read().unwrap();
+    let ((), allocations) = measure(|| drop(table));
+    assert_eq!(allocations, 0);
+    assert_eq!(closes.load(Ordering::SeqCst), 0);
+    // A handle ending after the last owner is gone cannot revive a close.
+    drop(read);
+    assert_eq!(closes.load(Ordering::SeqCst), 0);
+    assert_eq!(spool_address(&owner), address);
+    assert!(owner.check_owner().is_ok());
+    assert_eq!(disk.snapshot().live_files, 1);
+    assert_eq!(disk.snapshot().charged_bytes, charged);
+}
+
+#[test]
 fn actual_spool_close_reports_native_drain_before_retiring_adapter_owner() {
     let memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
     let directory = crate::test_utils::private_tempdir().unwrap();

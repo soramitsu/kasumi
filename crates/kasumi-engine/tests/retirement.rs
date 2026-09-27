@@ -649,6 +649,9 @@ struct CountedDestination {
 }
 #[async_trait::async_trait]
 impl kasumi_store::BackupDestination for CountedDestination {
+    fn namespace_binding(&self) -> anyhow::Result<kasumi_types::BackupNamespaceBinding> {
+        kasumi_store::BackupDestination::namespace_binding(self.inner.as_ref())
+    }
     async fn session_put(
         &self,
         session: uuid::Uuid,
@@ -809,6 +812,9 @@ struct PausedRetirementDestination {
 }
 #[async_trait::async_trait]
 impl kasumi_store::BackupDestination for PausedRetirementDestination {
+    fn namespace_binding(&self) -> anyhow::Result<kasumi_types::BackupNamespaceBinding> {
+        kasumi_store::BackupDestination::namespace_binding(self.inner.as_ref())
+    }
     async fn session_put(
         &self,
         session: uuid::Uuid,

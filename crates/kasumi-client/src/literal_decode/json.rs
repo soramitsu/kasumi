@@ -9,9 +9,9 @@ use crate::{
 };
 use kasumi_types::{
     ChangeEvent, ChangeFeedCursor, ChangeFeedPage, ChangeFeedStart, CollectionDefinition, Document,
-    Limits, MAX_SCHEMA_CHANGESET_COLLECTIONS, Policy, PolicyLimitsSnapshot, ReadChangeFeed,
-    ReadPolicyLimits, ReadSchema, SchemaCollection, SchemaSnapshot, SecurityAuditExportRequest,
-    SecurityAuditPage,
+    Limits, MAX_AUDIT_EVENT_BYTES, MAX_SCHEMA_CHANGESET_COLLECTIONS, Policy, PolicyLimitsSnapshot,
+    ReadChangeFeed, ReadPolicyLimits, ReadSchema, SchemaCollection, SchemaSnapshot,
+    SecurityAuditExportRequest, SecurityAuditPage, SecurityAuditRecord,
 };
 use serde::{
     Deserialize,
@@ -384,6 +384,10 @@ pub(super) fn audit(
     let stream_id = object.field("stream_id")?;
     let through_sequence = object.field("through_sequence")?;
     let next_sequence = object.field("next_sequence")?;
+    let snapshot_segments = object.field("snapshot_segments")?;
+    let snapshot_head = object.field("snapshot_head")?;
+    let snapshot_tail_sha256 = object.field("snapshot_tail_sha256")?;
+    let previous_record_sha256 = object.field("previous_record_sha256")?;
     let rows = array(
         object.raw("records")?,
         usize::from(request.limit).min(call.limits.max_rows),
@@ -391,12 +395,26 @@ pub(super) fn audit(
     object.finish()?;
     let mut records = Vec::with_capacity(rows.len());
     for row in rows {
-        records.push(tokens::literal(row.get().as_bytes(), call)?);
+        call.check()?;
+        // Closed metadata only. The page anchor digests the exact stored bytes,
+        // so another spelling of a record is rejected rather than normalized.
+        let bytes = row.get().as_bytes();
+        if bytes.len() > MAX_AUDIT_EVENT_BYTES {
+            return Err(invalid("service audit record exceeds its byte limit"));
+        }
+        let record: SecurityAuditRecord = serde_json::from_slice(bytes)?;
+        kasumi_types::exact_json::require_current_writer_bytes(bytes, &record, "audit record")
+            .map_err(|_| invalid("service audit record is not its exact current encoding"))?;
+        records.push(record);
     }
     let page = SecurityAuditPage {
         stream_id,
         through_sequence,
         next_sequence,
+        snapshot_segments,
+        snapshot_head,
+        snapshot_tail_sha256,
+        previous_record_sha256,
         records,
     };
     crate::security_audit::validate_page(request, &page)?;

@@ -2,7 +2,9 @@
 //!
 //! Values are read from the backend on demand. Read transactions pin only the
 //! immutable key index; a writer stages its bounded changes until one durable
-//! core commit publishes them together.
+//! core commit publishes them together. The first capacity denial rolls a
+//! writer back whole and releases its writer gate; an owner failure keeps the
+//! writer, its staged batch and the gate for retained custody.
 
 use crate::core::{
     AdmittedValue, BackendCloseEntry, BackendCloseOutcome, BackendNativeDisposition, Core,
@@ -13,13 +15,29 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::io;
 use std::marker::PhantomData;
+use std::mem::size_of;
 use std::ops::{Bound, RangeFrom};
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 
 const TABLE_TYPES: &str = "__kasumi_kv_table_types";
 const MAX_TABLE_VALUE_BYTES: usize = MAX_VALUE_BYTES;
+/// One staged row occupies a key and a value slot in its table's B-tree.
+const STAGED_ROW_SLOT: usize = size_of::<Vec<u8>>() + size_of::<Option<Vec<u8>>>();
+/// A B-tree node holds at most eleven rows and every node except the root
+/// keeps at least five, so a row's share of leaf and internal nodes stays
+/// below three slots. The key and value are charged at their exact lengths.
+const STAGED_ROW_OVERHEAD: usize = 4 * STAGED_ROW_SLOT;
+/// A table's first staged row also admits that table's root nodes and its
+/// slot in the per-table map. The shared name is charged at its length.
+const STAGED_TABLE_OVERHEAD: usize = 2048;
+/// Staged rows draw on admitted chunks rather than one owner reservation per
+/// row. A smaller exact reservation is tried when a whole chunk is denied.
+const STAGING_CHUNK: usize = 64 << 10;
+/// Each chunk also admits its slot in the lease vector, whose capacity may
+/// double, before that vector grows.
+const STAGING_LEASE_SLOT: usize = 2 * size_of::<Box<dyn ResidentLease>>();
 
 pub struct RetainedBackendOwner(Option<Arc<dyn std::any::Any + Send + Sync>>);
 
@@ -83,6 +101,23 @@ impl std::error::Error for StorageError {
                 Some(error)
             }
             Self::Core(error) => Some(error),
+        }
+    }
+}
+
+impl StorageError {
+    /// A capacity denial decided before any backend effect. A writer that
+    /// returns one has been rolled back whole and released its writer gate.
+    pub fn is_capacity_denied(&self) -> bool {
+        matches!(self, Self::Core(CoreError::CapacityDenied))
+    }
+
+    /// Errors that leave the physical owner or a backend effect uncertain.
+    fn fences_owner(&self) -> bool {
+        match self {
+            Self::Io(_) | Self::UnknownCommit(_) | Self::RetainedOwner { .. } => true,
+            Self::Core(error) => error.fences_owner(),
+            Self::DatabaseClosed => false,
         }
     }
 }
@@ -164,6 +199,14 @@ impl std::error::Error for TableError {
             Self::Storage(error) => Some(error),
             _ => None,
         }
+    }
+}
+
+impl TableError {
+    /// A capacity denial decided before any backend effect. See
+    /// [`StorageError::is_capacity_denied`].
+    pub fn is_capacity_denied(&self) -> bool {
+        matches!(self, Self::Storage(error) if error.is_capacity_denied())
     }
 }
 
@@ -357,15 +400,67 @@ fn check_key_bound<K: TableCodec>(key: K::Input<'_>) -> Result<(), TableError> {
     Ok(())
 }
 
-fn admit_clone(
-    admission: &Arc<dyn StorageAdmission>,
-    bytes: &[u8],
-) -> Result<LeasedBytes, TableError> {
+fn admit_clone(core: &Core, bytes: &[u8]) -> Result<LeasedBytes, TableError> {
     let charge = bytes.len().saturating_add(128);
-    let lease = admission
-        .reserve_workspace(charge as u64)
-        .map_err(CoreError::from)?;
+    let lease = core.reserve_workspace(charge as u64)?;
     Ok((bytes.to_vec(), lease))
+}
+
+/// Checked staging charge of one row: its exact key and value bytes plus
+/// its share of the staged B-tree.
+fn staged_row_charge(key_len: usize, value_len: usize) -> Result<usize, TableError> {
+    key_len
+        .checked_add(value_len)
+        .and_then(|bytes| bytes.checked_add(STAGED_ROW_OVERHEAD))
+        .ok_or_else(|| CoreError::CapacityDenied.into())
+}
+
+/// Commit workspace beyond the rows, which move from staging uncopied: the
+/// operation vector, the shared type-table name, and each created table's
+/// type row.
+fn materialization_charge(
+    operations: usize,
+    created: &BTreeMap<Arc<str>, [u8; 2]>,
+) -> Result<u64, CoreError> {
+    let mut bytes = operations.checked_mul(size_of::<Operation>());
+    if !created.is_empty() {
+        bytes = bytes.and_then(|bytes| bytes.checked_add(shared_name_charge(TABLE_TYPES.len())));
+        for name in created.keys() {
+            bytes = bytes
+                .and_then(|bytes| bytes.checked_add(name.len()))
+                .and_then(|bytes| bytes.checked_add(size_of::<[u8; 2]>()));
+        }
+    }
+    bytes
+        .and_then(|bytes| u64::try_from(bytes).ok())
+        .ok_or(CoreError::CapacityDenied)
+}
+
+/// An `Arc<str>` allocation: its two reference counts and the name bytes.
+const fn shared_name_charge(len: usize) -> usize {
+    2 * size_of::<AtomicUsize>() + len
+}
+
+fn lock(staged: &Mutex<Pending>) -> MutexGuard<'_, Pending> {
+    staged
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Run one staging step of a writer and settle its failure: the first
+/// capacity denial rolls the whole transaction back, and an owner failure
+/// keeps it retained. The discarded batch drops after the lock is released.
+fn staged_step<T>(
+    core: &Core,
+    staged: &Mutex<Pending>,
+    step: impl FnOnce() -> Result<T, TableError>,
+) -> Result<T, TableError> {
+    let result = step();
+    if let Err(error) = &result {
+        let discarded = lock(staged).settle(core, error);
+        drop(discarded);
+    }
+    result
 }
 
 pub struct Builder {
@@ -586,8 +681,7 @@ impl Database {
         Ok(WriteTransaction {
             inner: self.inner.clone(),
             snapshot,
-            staged: Arc::new(Mutex::new(Pending::default())),
-            lease: Some(lease),
+            staged: Arc::new(Mutex::new(Pending::new(lease))),
             terminal: false,
         })
     }
@@ -699,7 +793,7 @@ impl ReadTransaction {
         Ok(ReadOnlyTable {
             inner: self.inner.clone(),
             snapshot: self.snapshot.clone(),
-            name: definition.name().to_owned(),
+            name: Arc::from(definition.name()),
             _codec: PhantomData,
         })
     }
@@ -738,42 +832,151 @@ impl ReadTransaction {
     }
 }
 
+/// Staged rows by table. A `None` value is a tombstone.
+type StagedRows = BTreeMap<Arc<str>, BTreeMap<Vec<u8>, Option<Vec<u8>>>>;
+
+/// Where a writer's staged batch stands. Only a capacity denial settles a
+/// writer before publication; an uncertain owner keeps it retained.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Staging {
+    Active,
+    /// The first capacity denial dropped the whole batch, its leases and the
+    /// writer gate. Every later call repeats that denial without an effect.
+    RolledBack,
+    /// An owner failure or uncertain I/O fenced the core. The batch, its
+    /// leases and the writer gate stay with the transaction.
+    Failed,
+    /// Commit, abort or drop has taken the batch.
+    Terminal,
+}
+
+/// Admitted staging memory. Rows consume logical credit from chunks, and
+/// every chunk stays leased until the whole batch leaves the transaction.
 #[derive(Default)]
-struct Pending {
-    created: BTreeMap<String, [u8; 2]>,
-    writes: BTreeMap<String, BTreeMap<Vec<u8>, Option<Vec<u8>>>>,
+struct StagingCredit {
     leases: Vec<Box<dyn ResidentLease>>,
-    bytes: usize,
-    terminal: bool,
+    reserved: usize,
+    used: usize,
+}
+
+/// A batch taken out of its transaction. Fields drop in order: the staged
+/// rows before the credit that admitted them, and the writer gate last.
+struct Discarded {
+    _created: BTreeMap<Arc<str>, [u8; 2]>,
+    _writes: StagedRows,
+    _credit: StagingCredit,
+    _writer: Option<WriterLease>,
+}
+
+struct Pending {
+    created: BTreeMap<Arc<str>, [u8; 2]>,
+    writes: StagedRows,
+    credit: StagingCredit,
+    // The writer gate is held here rather than by the transaction facade, so
+    // a rollback from any table handle releases it immediately.
+    writer: Option<WriterLease>,
+    staging: Staging,
 }
 
 impl Pending {
-    fn ensure_active(&self) -> Result<(), TableError> {
-        if self.terminal {
-            Err(TableError::Storage(StorageError::DatabaseClosed))
-        } else {
-            Ok(())
+    fn new(writer: WriterLease) -> Self {
+        Self {
+            created: BTreeMap::new(),
+            writes: BTreeMap::new(),
+            credit: StagingCredit::default(),
+            writer: Some(writer),
+            staging: Staging::Active,
         }
     }
 
-    fn reserve(
-        &mut self,
-        admission: &Arc<dyn StorageAdmission>,
-        bytes: usize,
-    ) -> Result<(), TableError> {
-        let total = self
-            .bytes
-            .checked_add(bytes)
-            .ok_or(CoreError::CapacityDenied)?;
-        if total > MAX_BATCH_BYTES {
-            return Err(CoreError::CapacityDenied.into());
+    fn ensure_active(&self) -> Result<(), TableError> {
+        match self.staging {
+            Staging::Active => Ok(()),
+            Staging::RolledBack => Err(CoreError::CapacityDenied.into()),
+            Staging::Failed => Err(CoreError::OwnerFailed.into()),
+            Staging::Terminal => Err(TableError::Storage(StorageError::DatabaseClosed)),
         }
-        let lease = admission
-            .reserve_workspace(bytes as u64)
-            .map_err(CoreError::from)?;
-        self.bytes = total;
-        self.leases.push(lease);
+    }
+
+    /// Admit `bytes` more staged memory. The staged batch as a whole stays
+    /// within the physical batch bound.
+    fn reserve(&mut self, core: &Core, bytes: usize) -> Result<(), TableError> {
+        let used = self
+            .credit
+            .used
+            .checked_add(bytes)
+            .filter(|used| *used <= MAX_BATCH_BYTES)
+            .ok_or(CoreError::CapacityDenied)?;
+        if used > self.credit.reserved {
+            let deficit = used - self.credit.reserved;
+            let desired = deficit.max(STAGING_CHUNK);
+            let (credit, lease) =
+                match core.reserve_workspace((desired + STAGING_LEASE_SLOT) as u64) {
+                    Ok(lease) => (desired, lease),
+                    Err(CoreError::CapacityDenied) if desired > deficit => (
+                        deficit,
+                        core.reserve_workspace((deficit + STAGING_LEASE_SLOT) as u64)?,
+                    ),
+                    Err(error) => return Err(error.into()),
+                };
+            self.credit
+                .leases
+                .try_reserve(1)
+                .map_err(|_| CoreError::CapacityDenied)?;
+            self.credit.leases.push(lease);
+            self.credit.reserved += credit;
+        }
+        self.credit.used = used;
         Ok(())
+    }
+
+    /// Admit one staged row, and on a table's first row that table's own
+    /// staging structure and shared name.
+    fn reserve_row(&mut self, core: &Core, table: &str, row: usize) -> Result<(), TableError> {
+        let charge = if self.writes.contains_key(table) {
+            Some(row)
+        } else {
+            row.checked_add(STAGED_TABLE_OVERHEAD)
+                .and_then(|bytes| bytes.checked_add(shared_name_charge(table.len())))
+        };
+        self.reserve(core, charge.ok_or(CoreError::CapacityDenied)?)
+    }
+
+    fn stage(&mut self, table: &Arc<str>, key: Vec<u8>, value: Option<Vec<u8>>) {
+        self.writes
+            .entry(table.clone())
+            .or_default()
+            .insert(key, value);
+    }
+
+    fn discard(&mut self) -> Discarded {
+        Discarded {
+            _created: std::mem::take(&mut self.created),
+            _writes: std::mem::take(&mut self.writes),
+            _credit: std::mem::take(&mut self.credit),
+            _writer: self.writer.take(),
+        }
+    }
+
+    /// Settle a failed staging step of an active writer. An owner failure or
+    /// uncertain I/O fences the core and keeps the batch and writer gate. The
+    /// first capacity denial otherwise rolls the whole batch back before any
+    /// effect and releases the gate. Other errors leave the writer active.
+    fn settle(&mut self, core: &Core, error: &TableError) -> Option<Discarded> {
+        if self.staging != Staging::Active {
+            return None;
+        }
+        let fences = matches!(error, TableError::Storage(error) if error.fences_owner());
+        if core.is_fenced() || fences {
+            core.fence();
+            self.staging = Staging::Failed;
+            None
+        } else if error.is_capacity_denied() {
+            self.staging = Staging::RolledBack;
+            Some(self.discard())
+        } else {
+            None
+        }
     }
 }
 
@@ -781,13 +984,19 @@ pub struct WriteTransaction {
     inner: Arc<DatabaseInner>,
     snapshot: Arc<ReadSnapshot>,
     staged: Arc<Mutex<Pending>>,
-    lease: Option<WriterLease>,
     terminal: bool,
 }
 
 impl WriteTransaction {
     pub fn belongs_to(&self, database: &Database) -> bool {
         Arc::ptr_eq(&self.inner, &database.inner)
+    }
+
+    /// Whether this transaction still holds the database's writer gate. A
+    /// terminal that released it has settled: it published, or it was
+    /// rejected before any effect.
+    pub(crate) fn holds_writer(&self) -> bool {
+        lock(&self.staged).writer.is_some()
     }
 
     pub fn open_table<K: TableCodec, V: TableCodec>(
@@ -798,91 +1007,137 @@ impl WriteTransaction {
         if name == TABLE_TYPES || name.is_empty() || name.len() > 128 {
             return Err(TableError::TypeMismatch(name.to_owned()));
         }
-        let mut pending = self
-            .staged
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        pending.ensure_active()?;
-        self.inner.core.check_read_owner()?;
-        if let Some(tags) = pending.created.get(name) {
-            if *tags != definition.tags() {
-                return Err(TableError::TypeMismatch(name.to_owned()));
+        let name: Arc<str> = Arc::from(name);
+        staged_step(&self.inner.core, &self.staged, || {
+            let mut pending = lock(&self.staged);
+            pending.ensure_active()?;
+            self.inner.core.check_read_owner()?;
+            if let Some(tags) = pending.created.get(&*name) {
+                if *tags != definition.tags() {
+                    return Err(TableError::TypeMismatch(name.to_string()));
+                }
+            } else if self.snapshot.table_exists(&name)? {
+                check_table_type(&self.inner.core, &self.snapshot, definition)?;
+            } else {
+                pending.reserve(&self.inner.core, name.len().saturating_add(512))?;
+                pending.created.insert(name.clone(), definition.tags());
             }
-        } else if self.snapshot.table_exists(name)? {
-            check_table_type(&self.inner.core, &self.snapshot, definition)?;
-        } else {
-            pending.reserve(&self.inner.admission, name.len().saturating_add(512))?;
-            pending.created.insert(name.to_owned(), definition.tags());
-        }
+            Ok(())
+        })?;
         Ok(Table {
             inner: self.inner.clone(),
             snapshot: self.snapshot.clone(),
             staged: self.staged.clone(),
-            name: name.to_owned(),
+            name,
             _codec: PhantomData,
         })
     }
 
     /// Mark terminal before entering the durable commit. A failed or panicked
-    /// retained call cannot replay the same batch.
+    /// retained call cannot replay the same batch. A rejection decided while
+    /// the core stays unfenced had no effect and releases the writer gate; an
+    /// owner failure or unknown outcome keeps the gate with this transaction.
     pub(crate) fn commit_inner(&mut self) -> Result<(), CoreError> {
         if self.terminal {
             return Err(CoreError::Closed);
         }
         self.terminal = true;
-        let mut pending = self
-            .staged
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        pending.terminal = true;
+        let mut pending = lock(&self.staged);
+        match pending.staging {
+            Staging::Active => {}
+            // Rolled back before publication: repeat the original denial.
+            Staging::RolledBack => return Err(CoreError::CapacityDenied),
+            Staging::Failed => return Err(CoreError::OwnerFailed),
+            Staging::Terminal => return Err(CoreError::Closed),
+        }
+        pending.staging = Staging::Terminal;
         let created = std::mem::take(&mut pending.created);
         let writes = std::mem::take(&mut pending.writes);
-        let leases = std::mem::take(&mut pending.leases);
+        let credit = std::mem::take(&mut pending.credit);
         drop(pending);
 
+        let result = self.publish(created, writes);
+        // Every staged row has dropped with its operation by now.
+        drop(credit);
+        let uncertain = result
+            .as_ref()
+            .is_err_and(|error| self.inner.core.is_fenced() || error.fences_owner());
+        if uncertain {
+            self.inner.core.fence();
+        } else {
+            let writer = lock(&self.staged).writer.take();
+            drop(writer);
+        }
+        result
+    }
+
+    /// Materialize the staged batch as one admitted operation vector and
+    /// commit it. Rows move into their operations without copying, and each
+    /// table's name is shared by its rows. The vector is admitted before it
+    /// is allocated and drops before its lease; a denial has no effect.
+    fn publish(
+        &self,
+        created: BTreeMap<Arc<str>, [u8; 2]>,
+        writes: StagedRows,
+    ) -> Result<(), CoreError> {
+        let create_types = !created.is_empty() && !self.snapshot.table_exists(TABLE_TYPES)?;
+        let rows = writes
+            .values()
+            .try_fold(0usize, |rows, table| rows.checked_add(table.len()))
+            .ok_or(CoreError::CapacityDenied)?;
+        let count = created
+            .len()
+            .checked_mul(2)
+            .and_then(|count| count.checked_add(rows))
+            .and_then(|count| count.checked_add(usize::from(create_types)))
+            .ok_or(CoreError::CapacityDenied)?;
+        if count == 0 {
+            return self.inner.core.check_owner();
+        }
+        let _workspace = self
+            .inner
+            .core
+            .reserve_workspace(materialization_charge(count, &created)?)?;
         let mut operations = Vec::new();
-        if !created.is_empty() && !self.snapshot.table_exists(TABLE_TYPES)? {
-            operations.push(Operation::CreateTable {
-                table: TABLE_TYPES.to_owned(),
-            });
+        operations
+            .try_reserve_exact(count)
+            .map_err(|_| CoreError::CapacityDenied)?;
+        if !created.is_empty() {
+            let types: Arc<str> = Arc::from(TABLE_TYPES);
+            if create_types {
+                operations.push(Operation::CreateTable {
+                    table: types.clone(),
+                });
+            }
+            for (name, tags) in created {
+                let key = name.as_bytes().to_vec();
+                operations.push(Operation::CreateTable { table: name });
+                operations.push(Operation::Put {
+                    table: types.clone(),
+                    key,
+                    value: tags.to_vec(),
+                });
+            }
         }
-        for (name, tags) in created {
-            operations.push(Operation::CreateTable {
-                table: name.clone(),
-            });
-            operations.push(Operation::Put {
-                table: TABLE_TYPES.to_owned(),
-                key: name.into_bytes(),
-                value: tags.to_vec(),
-            });
-        }
-        for (table, entries) in writes {
-            for (key, value) in entries {
-                match value {
-                    Some(value) => operations.push(Operation::Put {
+        for (table, rows) in writes {
+            for (key, value) in rows {
+                operations.push(match value {
+                    Some(value) => Operation::Put {
                         table: table.clone(),
                         key,
                         value,
-                    }),
-                    None => operations.push(Operation::Delete {
+                    },
+                    None => Operation::Delete {
                         table: table.clone(),
                         key,
-                    }),
-                }
+                    },
+                });
             }
         }
-        let result = if operations.is_empty() {
-            self.inner
-                .admission
-                .check_owner()
-                .map_err(|_| CoreError::OwnerFailed)
-        } else {
-            self.inner.core.commit(&operations)
-        };
-        drop(leases);
-        result?;
-        drop(self.lease.take());
-        Ok(())
+        debug_assert_eq!(operations.len(), count);
+        let result = self.inner.core.commit(&operations);
+        drop(operations);
+        result
     }
 
     pub(crate) fn abort_inner(&mut self) -> Result<(), CoreError> {
@@ -890,28 +1145,22 @@ impl WriteTransaction {
             return Err(CoreError::Closed);
         }
         self.terminal = true;
-        let mut pending = self
-            .staged
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        pending.terminal = true;
+        let mut pending = lock(&self.staged);
+        match pending.staging {
+            Staging::Active => {}
+            // The first capacity denial already discarded the batch and
+            // released the writer gate; there is nothing left to abort.
+            Staging::RolledBack => return Ok(()),
+            Staging::Failed => return Err(CoreError::OwnerFailed),
+            Staging::Terminal => return Err(CoreError::Closed),
+        }
+        pending.staging = Staging::Terminal;
         drop(pending);
         // A failed physical owner makes even a requested abort uncertain. The
         // retained transaction keeps its writer lease and original staging.
-        self.inner
-            .admission
-            .check_owner()
-            .map_err(|_| CoreError::OwnerFailed)?;
-        let mut pending = self
-            .staged
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        pending.created.clear();
-        pending.writes.clear();
-        pending.leases.clear();
-        pending.bytes = 0;
-        drop(pending);
-        drop(self.lease.take());
+        self.inner.core.check_owner()?;
+        let discarded = lock(&self.staged).discard();
+        drop(discarded);
         Ok(())
     }
 
@@ -924,6 +1173,21 @@ impl WriteTransaction {
     }
 }
 
+impl Drop for WriteTransaction {
+    /// The writer gate never outlives its transaction, even while a table
+    /// handle keeps the staged batch reachable. An unfinished batch is
+    /// discarded with it and never published.
+    fn drop(&mut self) {
+        let mut pending = lock(&self.staged);
+        if pending.staging == Staging::Active {
+            pending.staging = Staging::Terminal;
+        }
+        let discarded = pending.discard();
+        drop(pending);
+        drop(discarded);
+    }
+}
+
 fn current_bytes(
     inner: &DatabaseInner,
     snapshot: &ReadSnapshot,
@@ -931,9 +1195,7 @@ fn current_bytes(
     table: &str,
     key: &[u8],
 ) -> Result<Option<LeasedBytes>, TableError> {
-    let pending = staged
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let pending = lock(staged);
     pending.ensure_active()?;
     inner.core.check_read_owner()?;
     if let Some(entry) = pending
@@ -943,7 +1205,7 @@ fn current_bytes(
     {
         return entry
             .as_deref()
-            .map(|value| admit_clone(&inner.admission, value))
+            .map(|value| admit_clone(&inner.core, value))
             .transpose();
     }
     let newly_created = pending.created.contains_key(table);
@@ -965,22 +1227,28 @@ pub struct Table<K: TableCodec, V: TableCodec> {
     inner: Arc<DatabaseInner>,
     snapshot: Arc<ReadSnapshot>,
     staged: Arc<Mutex<Pending>>,
-    name: String,
+    name: Arc<str>,
     _codec: PhantomData<fn() -> (K, V)>,
 }
 
 impl<K: TableCodec, V: TableCodec> Table<K, V> {
+    fn step<T>(&self, step: impl FnOnce() -> Result<T, TableError>) -> Result<T, TableError> {
+        staged_step(&self.inner.core, &self.staged, step)
+    }
+
     pub fn get(&self, key: K::Input<'_>) -> Result<Option<AccessGuard<V>>, TableError> {
         check_key_bound::<K>(key)?;
-        current_bytes(
-            &self.inner,
-            &self.snapshot,
-            &self.staged,
-            &self.name,
-            &K::encode(key),
-        )?
-        .map(|parts| AccessGuard::decode_parts(parts, &self.snapshot))
-        .transpose()
+        self.step(|| {
+            current_bytes(
+                &self.inner,
+                &self.snapshot,
+                &self.staged,
+                &self.name,
+                &K::encode(key),
+            )?
+            .map(|parts| AccessGuard::decode_parts(parts, &self.snapshot))
+            .transpose()
+        })
     }
 
     pub fn insert(
@@ -988,112 +1256,83 @@ impl<K: TableCodec, V: TableCodec> Table<K, V> {
         key: K::Input<'_>,
         value: V::Input<'_>,
     ) -> Result<Option<AccessGuard<V>>, TableError> {
-        let charge = K::encoded_len(key)
-            .saturating_add(V::encoded_len(value))
-            .saturating_add(256);
-        {
-            let mut pending = self
-                .staged
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
+        self.step(|| {
+            let charge = staged_row_charge(K::encoded_len(key), V::encoded_len(value))?;
+            {
+                let mut pending = lock(&self.staged);
+                pending.ensure_active()?;
+                pending.reserve_row(&self.inner.core, &self.name, charge)?;
+            }
+            let key = K::encode(key);
+            let old = current_bytes(&self.inner, &self.snapshot, &self.staged, &self.name, &key)?
+                .map(|parts| AccessGuard::decode_parts(parts, &self.snapshot))
+                .transpose()?;
+            let mut pending = lock(&self.staged);
             pending.ensure_active()?;
-            pending.reserve(&self.inner.admission, charge)?;
-        }
-        let key = K::encode(key);
-        let old = current_bytes(&self.inner, &self.snapshot, &self.staged, &self.name, &key)?
-            .map(|parts| AccessGuard::decode_parts(parts, &self.snapshot))
-            .transpose()?;
-        let mut pending = self
-            .staged
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        pending.ensure_active()?;
-        pending
-            .writes
-            .entry(self.name.clone())
-            .or_default()
-            .insert(key, Some(V::encode(value)));
-        Ok(old)
+            pending.stage(&self.name, key, Some(V::encode(value)));
+            Ok(old)
+        })
     }
 
     pub fn remove(&mut self, key: K::Input<'_>) -> Result<Option<AccessGuard<V>>, TableError> {
-        {
-            let mut pending = self
-                .staged
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
+        self.step(|| {
+            let charge = staged_row_charge(K::encoded_len(key), 0)?;
+            {
+                let mut pending = lock(&self.staged);
+                pending.ensure_active()?;
+                pending.reserve_row(&self.inner.core, &self.name, charge)?;
+            }
+            let key = K::encode(key);
+            let old = current_bytes(&self.inner, &self.snapshot, &self.staged, &self.name, &key)?
+                .map(|parts| AccessGuard::decode_parts(parts, &self.snapshot))
+                .transpose()?;
+            let mut pending = lock(&self.staged);
             pending.ensure_active()?;
-            pending.reserve(
-                &self.inner.admission,
-                K::encoded_len(key).saturating_add(256),
-            )?;
-        }
-        let key = K::encode(key);
-        let old = current_bytes(&self.inner, &self.snapshot, &self.staged, &self.name, &key)?
-            .map(|parts| AccessGuard::decode_parts(parts, &self.snapshot))
-            .transpose()?;
-        let mut pending = self
-            .staged
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        pending.ensure_active()?;
-        pending
-            .writes
-            .entry(self.name.clone())
-            .or_default()
-            .insert(key, None);
-        Ok(old)
+            pending.stage(&self.name, key, None);
+            Ok(old)
+        })
     }
 
     /// Stage a tombstone without reading or admitting the prior value. This
     /// is idempotent for an absent key; the caller does not receive old bytes.
     pub fn delete_key(&mut self, key: K::Input<'_>) -> Result<(), TableError> {
         check_key_bound::<K>(key)?;
-        self.inner.core.check_read_owner()?;
-        let mut pending = self
-            .staged
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        pending.ensure_active()?;
-        pending.reserve(
-            &self.inner.admission,
-            K::encoded_len(key).saturating_add(256),
-        )?;
-        pending
-            .writes
-            .entry(self.name.clone())
-            .or_default()
-            .insert(K::encode(key), None);
-        Ok(())
+        self.step(|| {
+            let charge = staged_row_charge(K::encoded_len(key), 0)?;
+            self.inner.core.check_read_owner()?;
+            let mut pending = lock(&self.staged);
+            pending.ensure_active()?;
+            pending.reserve_row(&self.inner.core, &self.name, charge)?;
+            pending.stage(&self.name, K::encode(key), None);
+            Ok(())
+        })
     }
 
     pub fn range(&self, range: RangeFrom<K::Input<'_>>) -> Result<TableRange<K, V>, TableError> {
         check_key_bound::<K>(range.start)?;
-        self.staged
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .ensure_active()?;
-        TableRange::new(
-            self.inner.clone(),
-            self.snapshot.clone(),
-            Some(self.staged.clone()),
-            self.name.clone(),
-            K::encode(range.start),
-        )
+        self.step(|| {
+            lock(&self.staged).ensure_active()?;
+            TableRange::new(
+                self.inner.clone(),
+                self.snapshot.clone(),
+                Some(self.staged.clone()),
+                self.name.clone(),
+                K::encode(range.start),
+            )
+        })
     }
 
     pub fn iter(&self) -> Result<TableRange<K, V>, TableError> {
-        self.staged
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .ensure_active()?;
-        TableRange::new(
-            self.inner.clone(),
-            self.snapshot.clone(),
-            Some(self.staged.clone()),
-            self.name.clone(),
-            Vec::new(),
-        )
+        self.step(|| {
+            lock(&self.staged).ensure_active()?;
+            TableRange::new(
+                self.inner.clone(),
+                self.snapshot.clone(),
+                Some(self.staged.clone()),
+                self.name.clone(),
+                Vec::new(),
+            )
+        })
     }
 
     pub fn retain_in(
@@ -1104,19 +1343,14 @@ impl<K: TableCodec, V: TableCodec> Table<K, V> {
         for entry in self.range(range)? {
             let (key, value) = entry?;
             if !keep(key.value(), value.value()) {
-                let key_len = K::encoded_owned_len(&key.value);
-                let mut pending = self
-                    .staged
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner());
-                pending.ensure_active()?;
-                pending.reserve(&self.inner.admission, key_len.saturating_add(256))?;
-                let encoded = K::encode_owned(&key.value);
-                pending
-                    .writes
-                    .entry(self.name.clone())
-                    .or_default()
-                    .insert(encoded, None);
+                self.step(|| {
+                    let charge = staged_row_charge(K::encoded_owned_len(&key.value), 0)?;
+                    let mut pending = lock(&self.staged);
+                    pending.ensure_active()?;
+                    pending.reserve_row(&self.inner.core, &self.name, charge)?;
+                    pending.stage(&self.name, K::encode_owned(&key.value), None);
+                    Ok(())
+                })?;
             }
         }
         Ok(())
@@ -1126,7 +1360,7 @@ impl<K: TableCodec, V: TableCodec> Table<K, V> {
 pub struct ReadOnlyTable<K: TableCodec, V: TableCodec> {
     inner: Arc<DatabaseInner>,
     snapshot: Arc<ReadSnapshot>,
-    name: String,
+    name: Arc<str>,
     _codec: PhantomData<fn() -> (K, V)>,
 }
 
@@ -1177,7 +1411,7 @@ pub struct TableRange<K: TableCodec, V: TableCodec> {
     inner: Arc<DatabaseInner>,
     snapshot: Arc<ReadSnapshot>,
     staged: Option<Arc<Mutex<Pending>>>,
-    table: String,
+    table: Arc<str>,
     start: Vec<u8>,
     after: Option<Vec<u8>>,
     _range_lease: Box<dyn ResidentLease>,
@@ -1191,15 +1425,12 @@ impl<K: TableCodec, V: TableCodec> TableRange<K, V> {
         inner: Arc<DatabaseInner>,
         snapshot: Arc<ReadSnapshot>,
         staged: Option<Arc<Mutex<Pending>>>,
-        table: String,
+        table: Arc<str>,
         start: Vec<u8>,
     ) -> Result<Self, TableError> {
         inner.core.check_read_owner()?;
         let charge = start.len().saturating_add(table.len()).saturating_add(256);
-        let lease = inner
-            .admission
-            .reserve_workspace(charge as u64)
-            .map_err(CoreError::from)?;
+        let lease = inner.core.reserve_workspace(charge as u64)?;
         Ok(Self {
             inner,
             snapshot,
@@ -1217,13 +1448,10 @@ impl<K: TableCodec, V: TableCodec> TableRange<K, V> {
     fn next_entry(&mut self) -> Result<Option<TableRow<K, V>>, TableError> {
         loop {
             self.inner.core.check_read_owner()?;
-            let new_table = self.staged.as_ref().is_some_and(|staged| {
-                staged
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .created
-                    .contains_key(&self.table)
-            });
+            let new_table = self
+                .staged
+                .as_ref()
+                .is_some_and(|staged| lock(staged).created.contains_key(&*self.table));
             let base_key = if new_table {
                 None
             } else {
@@ -1232,9 +1460,7 @@ impl<K: TableCodec, V: TableCodec> TableRange<K, V> {
                     .map(AdmittedValue::into_parts)
             };
             let (staged_key, staged_value) = if let Some(staged) = &self.staged {
-                let pending = staged
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                let pending = lock(staged);
                 pending.ensure_active()?;
                 let start = match self.after.as_deref() {
                     Some(after) if after >= self.start.as_slice() => Bound::Excluded(after),
@@ -1242,13 +1468,13 @@ impl<K: TableCodec, V: TableCodec> TableRange<K, V> {
                 };
                 pending
                     .writes
-                    .get(&self.table)
+                    .get(&*self.table)
                     .and_then(|writes| writes.range::<[u8], _>((start, Bound::Unbounded)).next())
                     .map(|(key, value)| -> Result<_, TableError> {
-                        let key = admit_clone(&self.inner.admission, key)?;
+                        let key = admit_clone(&self.inner.core, key)?;
                         let value = value
                             .as_deref()
-                            .map(|value| admit_clone(&self.inner.admission, value))
+                            .map(|value| admit_clone(&self.inner.core, value))
                             .transpose()?;
                         Ok((Some(key), Some(value)))
                     })
@@ -1265,7 +1491,7 @@ impl<K: TableCodec, V: TableCodec> TableRange<K, V> {
                 (Some(base), Some(staged)) if base.0 == staged.0 => (base, staged_value),
                 (Some(_), Some(staged)) => (staged, staged_value),
             };
-            let (cursor, cursor_lease) = admit_clone(&self.inner.admission, &key.0)?;
+            let (cursor, cursor_lease) = admit_clone(&self.inner.core, &key.0)?;
             self.after = Some(cursor);
             self.cursor_lease = Some(cursor_lease);
             let value = match staged_for_key {
@@ -1299,6 +1525,12 @@ impl<K: TableCodec, V: TableCodec> Iterator for TableRange<K, V> {
                 None
             }
             Err(error) => {
+                // A writer's overlay range settles its transaction like any
+                // other staging step; a snapshot range has no writer.
+                if let Some(staged) = &self.staged {
+                    let discarded = lock(staged).settle(&self.inner.core, &error);
+                    drop(discarded);
+                }
                 self.done = true;
                 Some(Err(error))
             }
@@ -1700,9 +1932,29 @@ mod tests {
             )))
         ));
         admission.limit.store(u64::MAX, Ordering::Release);
-        assert_eq!(table.get(b"key").unwrap().unwrap().value(), b"value");
+        // The denial rolled the whole writer back: later calls repeat it and
+        // the commit publishes nothing, even with capacity available again.
+        assert!(
+            table
+                .get(b"key")
+                .is_err_and(|error| error.is_capacity_denied())
+        );
         drop(table);
-        write.abort().unwrap();
+        assert!(
+            write
+                .commit()
+                .is_err_and(|error| error.0.is_capacity_denied())
+        );
+        let read = database.begin_read().unwrap();
+        assert_eq!(
+            read.open_table(BYTES)
+                .unwrap()
+                .get(b"key")
+                .unwrap()
+                .unwrap()
+                .value(),
+            b"value"
+        );
     }
 
     #[test]

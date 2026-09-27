@@ -123,6 +123,27 @@ impl WriteTerminalReport<'_> {
     pub fn disposal_complete(&self) -> bool {
         self.owner.disposal.succeeded()
     }
+
+    /// The original error of a commit that settled without any effect. The
+    /// batch was rejected or rolled back whole before publication and the
+    /// writer gate was released. A retained or uncertain failure, or an
+    /// unwind, is never reported here.
+    pub fn rejected_no_effect(&self) -> Option<&StorageError> {
+        match &self.owner.terminal {
+            Attempt::Done(Err(WriteTerminalError::Commit(CommitError(error))))
+                if self.owner.settlement == WriteTerminalSettlement::Settled =>
+            {
+                Some(error)
+            }
+            _ => None,
+        }
+    }
+
+    /// A settled commit refused for capacity before any effect.
+    pub fn is_capacity_denied(&self) -> bool {
+        self.rejected_no_effect()
+            .is_some_and(StorageError::is_capacity_denied)
+    }
 }
 
 impl WriteTransaction {
@@ -160,9 +181,7 @@ impl RetainedWriteTransaction {
                     .commit_inner()
                     .map_err(|error| WriteTerminalError::Commit(error.into()))
             });
-            if self.terminal.succeeded() {
-                self.settlement = WriteTerminalSettlement::Settled;
-            }
+            self.settle_returned();
         }
         self.report()
     }
@@ -177,11 +196,23 @@ impl RetainedWriteTransaction {
                     .abort_inner()
                     .map_err(|error| WriteTerminalError::Abort(error.into()))
             });
-            if self.terminal.succeeded() {
-                self.settlement = WriteTerminalSettlement::Settled;
-            }
+            self.settle_returned();
         }
         self.report()
+    }
+
+    /// A terminal that returned with the writer gate released has settled:
+    /// it published, or it was rejected before any effect. A terminal that
+    /// kept the gate, or unwound, stays retained with its transaction.
+    fn settle_returned(&mut self) {
+        if matches!(self.terminal, Attempt::Done(_))
+            && self
+                .transaction
+                .as_ref()
+                .is_some_and(|transaction| !transaction.holds_writer())
+        {
+            self.settlement = WriteTerminalSettlement::Settled;
+        }
     }
 
     pub fn dispose_settled(&mut self, database: &RetainedDatabase) -> WriteTerminalReport<'_> {
@@ -786,10 +817,6 @@ impl DatabaseOpenReport<'_> {
 
     pub fn opening(&self) -> TerminalObservation<'_, DatabaseError> {
         self.owner.opening.view()
-    }
-
-    pub fn bootstrap(&self) -> Option<WriteTerminalReport<'_>> {
-        None
     }
 
     pub fn database_close(&self) -> Option<DatabaseCloseReport<'_>> {

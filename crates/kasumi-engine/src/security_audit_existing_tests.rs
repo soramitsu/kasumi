@@ -187,9 +187,15 @@ async fn missing_empty_or_nonempty_audit_head_never_recreates_a_stream() -> Resu
     Ok(())
 }
 
+/// The same JSON value in another spelling; only exact admission rejects it.
+fn alternate(bytes: &[u8]) -> Vec<u8> {
+    let mut changed = b"{ ".to_vec();
+    changed.extend_from_slice(&bytes[1..]);
+    changed
+}
 #[tokio::test]
 async fn corrupt_audit_head_hot_gap_and_pending_pair_fail_without_logical_mutation() -> Result<()> {
-    for corruption in 0..6 {
+    for corruption in 0..9 {
         let installation = Installation::new()?;
         let store = installation.store(true).await?;
         let audit = installation.initialize(store.clone())?;
@@ -223,6 +229,23 @@ async fn corrupt_audit_head_hot_gap_and_pending_pair_fail_without_logical_mutati
                 let bytes = store.get("security.audit", &0u64.to_be_bytes())?.unwrap();
                 let mut record: serde_json::Value = serde_json::from_slice(&bytes)?;
                 record["sequence"] = 1.into();
+                WriteOp::put(
+                    "security.audit",
+                    0u64.to_be_bytes(),
+                    serde_json::to_vec(&record)?,
+                )
+            }
+            // Equivalent spellings are never normalized into the installed head.
+            6 => WriteOp::put("security.audit.meta", b"head", alternate(&head)),
+            7 => {
+                let bytes = store.get("security.audit", &0u64.to_be_bytes())?.unwrap();
+                WriteOp::put("security.audit", 0u64.to_be_bytes(), alternate(&bytes))
+            }
+            // An untyped hot row is not a service audit record.
+            8 => {
+                let bytes = store.get("security.audit", &0u64.to_be_bytes())?.unwrap();
+                let mut record: serde_json::Value = serde_json::from_slice(&bytes)?;
+                record["event"]["body"] = serde_json::json!({"document": true});
                 WriteOp::put(
                     "security.audit",
                     0u64.to_be_bytes(),
