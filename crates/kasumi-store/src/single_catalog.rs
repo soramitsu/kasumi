@@ -374,29 +374,29 @@ fn save_new_catalog(store: &TenantStore) -> Result<()> {
         provider.clone(),
     )?;
     drop(catalog);
+    let payload_bytes = u64::try_from(plan.bytes().len())?;
     store.access.check()?;
     let writer = store.node.db.queue_registered_catalog_put(plan)?;
     let _ = writer.run();
-    let (committed, rejection) = {
+    let (committed, rejection, denied) = {
         let report = writer.report();
         (
             report.committed_and_disposed(),
             report.clean_freshness_rejection(),
+            StorageCapacityDenied::settled(
+                CapacityDeniedWrite::KeyCatalog,
+                payload_bytes,
+                report.is_capacity_denied(),
+                report.terminal(),
+            ),
         )
     };
-    if !committed && rejection.is_none() {
+    if !committed && rejection.is_none() && denied.is_none() {
         return Err(NodeCatalogWriteFailure { writer }.into());
     }
-    let id = writer.id();
-    let disposition = writer.retire();
-    if disposition != StorageCensusDisposition::Retired {
-        return Err(NodeCatalogWriteRetirement {
-            provider,
-            id,
-            disposition,
-        }
-        .into());
-    }
+    // A denial published nothing: the catalog stays absent and a later
+    // initialization may install it once space is freed.
+    retire_catalog_writer(provider, writer, denied)?;
     if let Some(message) = rejection {
         anyhow::bail!(message);
     }

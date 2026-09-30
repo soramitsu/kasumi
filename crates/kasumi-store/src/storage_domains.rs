@@ -170,6 +170,7 @@ impl StorageBinding {
 
 /// A missing-binding installation keeps the exact registered native writer,
 /// its charged input, and any post-commit access failure or panic inspectable.
+/// A settled capacity denial is returned as `StorageCapacityDenied` instead.
 pub struct BindingInstallWriteFailure {
     writer: RegisteredBindingPut,
 }
@@ -627,24 +628,46 @@ impl TenantStorageSet {
         };
         if let Some(plan) = pending {
             let provider = application.node.persistent_disk().memory().clone();
+            let payload_bytes = u64::try_from(plan.envelope().len())?;
             let writer = application.node.db.queue_registered_binding_put(
                 plan,
                 application.clone(),
                 custody.clone(),
             )?;
             let _ = writer.run();
-            if !writer.report().confirmed() {
+            let (confirmed, denied) = {
+                let report = writer.report();
+                (
+                    report.confirmed(),
+                    StorageCapacityDenied::settled(
+                        CapacityDeniedWrite::DomainBinding,
+                        payload_bytes,
+                        report.is_capacity_denied(),
+                        report.terminal(),
+                    ),
+                )
+            };
+            if !confirmed && denied.is_none() {
                 return Err(BindingInstallWriteFailure { writer }.into());
             }
+            // A denial published nothing: the binding stays absent and this
+            // same installation may be retried once space is freed.
             let id = writer.id();
             let disposition = writer.retire();
-            if disposition != StorageCensusDisposition::Retired {
-                return Err(BindingInstallWriteRetirement {
+            let retirement = (disposition != StorageCensusDisposition::Retired).then_some(
+                BindingInstallWriteRetirement {
                     provider,
                     id,
                     disposition,
+                },
+            );
+            match (denied, retirement) {
+                (None, None) => {}
+                (None, Some(retirement)) => return Err(retirement.into()),
+                (Some(denied), None) => return Err(denied.into()),
+                (Some(denied), Some(retirement)) => {
+                    return Err(anyhow::Error::new(denied).context(retirement));
                 }
-                .into());
             }
         }
         drop(_custody_mutation);
@@ -1072,6 +1095,10 @@ mod tests;
 #[cfg(test)]
 #[path = "storage_domains/binding_install_tests.rs"]
 mod binding_install_tests;
+
+#[cfg(test)]
+#[path = "storage_domains/capacity_denial_tests.rs"]
+mod capacity_denial_tests;
 
 #[cfg(test)]
 #[path = "storage_existing_tests.rs"]

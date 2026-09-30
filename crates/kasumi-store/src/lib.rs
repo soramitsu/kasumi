@@ -491,8 +491,9 @@ impl std::error::Error for NodeCatalogReadRetirement {
     }
 }
 
-/// A catalog mutation that did not prove a committed and disposed native
-/// writer retains its exact child, admitted input, and original observations.
+/// A catalog mutation that proved neither a committed and disposed native
+/// writer nor a settled capacity denial retains its exact child, admitted
+/// input, and original observations.
 pub struct NodeCatalogWriteFailure {
     writer: RegisteredCatalogPut,
 }
@@ -565,6 +566,115 @@ impl std::fmt::Display for NodeCatalogWriteRetirement {
     }
 }
 impl std::error::Error for NodeCatalogWriteRetirement {}
+
+/// Where an installed owner refused a registered write for capacity.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CapacityDenialStage {
+    /// A staged mutation was refused and the writer aborted before commit.
+    Staging,
+    /// The commit was refused before publication.
+    Commit,
+}
+
+/// The registered store write that an installed owner refused for capacity.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CapacityDeniedWrite {
+    KeyCatalog,
+    DomainBinding,
+}
+
+/// A registered catalog or binding write refused for capacity before
+/// publication. The native batch was rolled back whole, its writer gate was
+/// released and disposed, and the opening stays open: nothing was published,
+/// so the caller may retry the same write once space is freed. Owner failures
+/// and unknown outcomes never produce this value; they keep their exact writer.
+/// The owner does not report which budget refused or how many bytes remained,
+/// so only the refused write's admitted payload size is carried. When census
+/// retirement of the settled writer waits, this denial is the source of the
+/// returned retirement, which keeps the exact child identity.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StorageCapacityDenied {
+    write: CapacityDeniedWrite,
+    stage: CapacityDenialStage,
+    payload_bytes: u64,
+}
+impl StorageCapacityDenied {
+    /// Classify a writer report that proved a settled, no-effect denial.
+    fn settled(
+        write: CapacityDeniedWrite,
+        payload_bytes: u64,
+        denied: bool,
+        terminal: Option<kasumi_kv::WriteTerminalReport<'_>>,
+    ) -> Option<Self> {
+        if !denied {
+            return None;
+        }
+        let stage = match terminal?.operation()? {
+            kasumi_kv::WriteTerminalOperation::Abort => CapacityDenialStage::Staging,
+            kasumi_kv::WriteTerminalOperation::Commit => CapacityDenialStage::Commit,
+        };
+        Some(Self {
+            write,
+            stage,
+            payload_bytes,
+        })
+    }
+
+    pub fn write(&self) -> CapacityDeniedWrite {
+        self.write
+    }
+    pub fn stage(&self) -> CapacityDenialStage {
+        self.stage
+    }
+    /// Admitted payload bytes of the refused row (catalog JSON or encrypted
+    /// binding envelope), excluding keys and engine framing.
+    pub fn payload_bytes(&self) -> u64 {
+        self.payload_bytes
+    }
+}
+impl std::fmt::Display for StorageCapacityDenied {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let write = match self.write {
+            CapacityDeniedWrite::KeyCatalog => "key catalog",
+            CapacityDeniedWrite::DomainBinding => "storage domain binding",
+        };
+        let stage = match self.stage {
+            CapacityDenialStage::Staging => "staging",
+            CapacityDenialStage::Commit => "commit",
+        };
+        write!(
+            f,
+            "{write} write of {} payload bytes refused for storage capacity at {stage}; \
+             nothing was published",
+            self.payload_bytes
+        )
+    }
+}
+impl std::error::Error for StorageCapacityDenied {}
+
+/// Retire a catalog writer whose outcome is proved: its commit, a clean
+/// freshness rejection, or a settled capacity denial. A waiting retirement
+/// keeps the exact census identity, with any denial as its source.
+fn retire_catalog_writer(
+    provider: Arc<dyn NodeDiskMemoryAdmission>,
+    writer: RegisteredCatalogPut,
+    denied: Option<StorageCapacityDenied>,
+) -> Result<()> {
+    let id = writer.id();
+    let disposition = writer.retire();
+    let retirement =
+        (disposition != StorageCensusDisposition::Retired).then_some(NodeCatalogWriteRetirement {
+            provider,
+            id,
+            disposition,
+        });
+    match (denied, retirement) {
+        (None, None) => Ok(()),
+        (None, Some(retirement)) => Err(retirement.into()),
+        (Some(denied), None) => Err(denied.into()),
+        (Some(denied), Some(retirement)) => Err(anyhow::Error::new(denied).context(retirement)),
+    }
+}
 
 /// A failed point read keeps its exact registered child and original read or
 /// close observation. The census retains it after this facade is dropped.
@@ -1096,23 +1206,25 @@ impl NodeStore {
             catalog,
             provider.clone(),
         )?;
+        let payload_bytes = u64::try_from(plan.bytes().len())?;
         let writer = self.db.queue_registered_catalog_put(plan)?;
         let _ = writer.run();
-        let committed = writer.report().committed_and_disposed();
-        if !committed {
+        let (committed, denied) = {
+            let report = writer.report();
+            (
+                report.committed_and_disposed(),
+                StorageCapacityDenied::settled(
+                    CapacityDeniedWrite::KeyCatalog,
+                    payload_bytes,
+                    report.is_capacity_denied(),
+                    report.terminal(),
+                ),
+            )
+        };
+        if !committed && denied.is_none() {
             return Err(NodeCatalogWriteFailure { writer }.into());
         }
-        let id = writer.id();
-        let disposition = writer.retire();
-        if disposition != StorageCensusDisposition::Retired {
-            return Err(NodeCatalogWriteRetirement {
-                provider,
-                id,
-                disposition,
-            }
-            .into());
-        }
-        Ok(())
+        retire_catalog_writer(provider, writer, denied)
     }
 }
 

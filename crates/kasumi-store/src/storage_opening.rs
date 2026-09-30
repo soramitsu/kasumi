@@ -87,7 +87,8 @@ struct OpeningState {
     engine: RetainedDatabaseOpening,
     phase: NodeOpeningPhase,
     // The first accepted table request owns the only create publication proof.
-    // A failed registration may release its reservation before any request exists.
+    // A failed registration may release its reservation before any request exists,
+    // and a settled capacity denial releases it after that request published nothing.
     tables_reserved: bool,
     tables_request: Option<StorageOwnerId>,
     existing_tables_verified: bool,
@@ -757,6 +758,24 @@ impl WriterState {
                 .as_ref()
                 .is_some_and(|transaction| transaction_failure(&transaction.report()))
     }
+    fn capacity_denied(&self) -> bool {
+        settled_capacity_denial(
+            self.phase,
+            &self.begin,
+            &self.body,
+            &self.outer,
+            self.transaction
+                .as_ref()
+                .map(RetainedWriteTransaction::report),
+            |error| {
+                matches!(
+                    error,
+                    NodeTablesBodyError::Catalog(error) | NodeTablesBodyError::Records(error)
+                        if error.is_capacity_denied()
+                )
+            },
+        )
+    }
 }
 struct NodeTablesRequest {
     database: StorageRegistration<DatabaseOwner>,
@@ -891,6 +910,18 @@ impl RegisteredNodeTables {
                     .store(true, Ordering::Release);
             }
         }
+        if state.capacity_denied() {
+            // The whole batch rolled back before publication and the writer
+            // was disposed. Release this request's create reservation so the
+            // open database can queue table creation again. The denied request
+            // itself can never publish Ready: that proof needs its own commit.
+            // Writer then database is the same lock order as execute.
+            let mut database = request.database.owner().state.lock();
+            if database.tables_request == Some(self.id()) {
+                database.tables_reserved = false;
+                database.tables_request = None;
+            }
+        }
         state.phase
     }
     pub fn id(&self) -> StorageOwnerId {
@@ -936,22 +967,10 @@ impl NodeTablesReport<'_> {
             .map(RetainedWriteTransaction::report)
     }
     /// The table creation was refused for capacity before publication. The
-    /// writer was rolled back whole and disposed; the opening stays open.
+    /// writer was rolled back whole and disposed; the opening stays open and
+    /// a Create-mode opening may queue table creation again.
     pub fn is_capacity_denied(&self) -> bool {
-        settled_capacity_denial(
-            self.state.phase,
-            &self.state.begin,
-            &self.state.body,
-            &self.state.outer,
-            self.terminal(),
-            |error| {
-                matches!(
-                    error,
-                    NodeTablesBodyError::Catalog(error) | NodeTablesBodyError::Records(error)
-                        if error.is_capacity_denied()
-                )
-            },
-        )
+        self.state.capacity_denied()
     }
 }
 

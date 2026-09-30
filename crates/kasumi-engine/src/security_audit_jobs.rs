@@ -17,8 +17,44 @@ struct Job {
     _reservation: crate::admission::Reservation,
 }
 
+/// Who owns a job's error once its caller has gone. A read rejection stays an
+/// ordinary response that nobody claimed. An admitted mutation has no other
+/// owner for its failure, so an unclaimed error becomes terminal evidence.
+#[derive(Clone, Copy)]
+enum JobEffect {
+    Read,
+    Mutation(&'static str),
+}
+
+/// The caller's end of one job's reply. Dropped before its reply is taken, it
+/// closes the channel and takes any reply already sent. Exactly one side, this
+/// guard or the job whose send then fails, observes an abandoned outcome.
+struct Reply<T> {
+    receiver: tokio::sync::oneshot::Receiver<Result<T>>,
+    audit: SecurityAudit,
+    effect: JobEffect,
+    id: usize,
+}
+impl<T> Drop for Reply<T> {
+    fn drop(&mut self) {
+        self.receiver.close();
+        if let Ok(outcome) = self.receiver.try_recv() {
+            self.audit.abandoned(self.effect, self.id, outcome);
+        }
+    }
+}
+
 #[cfg(test)]
 pub(super) struct RecordFault {
+    pub entered: tokio::sync::oneshot::Sender<()>,
+    pub release: std::sync::mpsc::Receiver<()>,
+    /// Panic in the actual blocking child, or continue the original record.
+    pub panic: bool,
+}
+
+/// Holds the next retained read job inside its blocking child until released.
+#[cfg(any(test, feature = "test-utils"))]
+pub(super) struct ReadPause {
     pub entered: tokio::sync::oneshot::Sender<()>,
     pub release: std::sync::mpsc::Receiver<()>,
 }
@@ -58,14 +94,46 @@ impl SecurityAudit {
         }
     }
 
+    /// An unclaimed mutation error is recorded once; a failure that is already
+    /// retained terminal evidence keeps its original issue.
+    fn abandoned<T>(&self, effect: JobEffect, id: usize, outcome: Result<T>) {
+        if let (JobEffect::Mutation(component), Err(error)) = (effect, outcome)
+            && error.downcast_ref::<DrainFailure>().is_none()
+        {
+            self.record_terminal(component, id, error);
+        }
+    }
+
+    /// A retained job whose error is an ordinary response, including after its
+    /// caller has gone: reads and verification never seal the writer by failing.
     pub(super) async fn run_owned<T, F, R>(&self, run: R) -> Result<T>
     where
         T: Send + 'static,
         F: Future<Output = Result<T>> + Send + 'static,
         R: FnOnce(AuditWork, usize) -> F + Send + 'static,
     {
-        let (send, receive) = tokio::sync::oneshot::channel();
-        {
+        self.dispatch(JobEffect::Read, run).await
+    }
+
+    /// A retained job that changes durable audit state. Its error, when no
+    /// caller claims it, is recorded as terminal evidence for `component`.
+    pub(super) async fn run_mutation<T, F, R>(&self, component: &'static str, run: R) -> Result<T>
+    where
+        T: Send + 'static,
+        F: Future<Output = Result<T>> + Send + 'static,
+        R: FnOnce(AuditWork, usize) -> F + Send + 'static,
+    {
+        self.dispatch(JobEffect::Mutation(component), run).await
+    }
+
+    async fn dispatch<T, F, R>(&self, effect: JobEffect, run: R) -> Result<T>
+    where
+        T: Send + 'static,
+        F: Future<Output = Result<T>> + Send + 'static,
+        R: FnOnce(AuditWork, usize) -> F + Send + 'static,
+    {
+        let (send, receiver) = tokio::sync::oneshot::channel();
+        let id = {
             // Registration and the shutdown census share this lock. WorkFence
             // admission is checked inside it, after reaping actual outcomes.
             let mut jobs = self.writer.jobs.lock().await;
@@ -87,16 +155,27 @@ impl SecurityAudit {
             jobs.next = id.checked_add(1).context("audit job identity exhausted")?;
             // No await between dispatch and retained registration. The caller
             // only awaits the reply; abandoning it never cancels accepted work.
+            let audit = self.clone();
             jobs.handles.push(Job {
                 id,
                 handle: tokio::spawn(async move {
-                    let outcome = run(work, id).await;
-                    let _ = send.send(outcome);
+                    if let Err(outcome) = send.send(run(work, id).await) {
+                        audit.abandoned(effect, id, outcome);
+                    }
                 }),
                 _reservation: reservation,
             });
-        }
-        receive.await.context("audit job stopped before replying")?
+            id
+        };
+        let mut reply = Reply {
+            receiver,
+            audit: self.clone(),
+            effect,
+            id,
+        };
+        (&mut reply.receiver)
+            .await
+            .context("audit job stopped before replying")?
     }
 
     pub(super) async fn drain_jobs(&self) {

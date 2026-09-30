@@ -54,7 +54,8 @@ pub use custody_group::{CustodyRaftGroup, CustodyView};
 use kasumi_store::TenantStorageSet;
 use lifetime::StorageDrain;
 pub use network::{
-    InProcessRouter, RaftTransport, RpcPayloadTooLarge, RpcRequest, RpcResponse, dispatch_rpc,
+    InProcessRouter, RaftTransport, ReadIndexError, ReadIndexResponse, RpcPayloadTooLarge,
+    RpcRequest, RpcResponse, dispatch_rpc,
 };
 pub use openraft::{
     BasicNode, Config, LogId, MembershipObserver, SnapshotMeta, SnapshotPolicy, StoredMembership,
@@ -240,9 +241,34 @@ pub trait StateMachineBackend: Send + Sync + 'static {
     fn close_application(&self);
 }
 
+/// The membership a readiness probe certifies for the local node, in addition
+/// to a leader-confirmed observation of an applied, nonjoint configuration.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ReadinessRole {
+    /// The local node votes; `Some` also requires exactly this voter set.
+    Voter(Option<BTreeSet<u64>>),
+    /// The local node is a Control group voter or learner.
+    ControlMember,
+}
+
+/// Installed readiness callers still name the expected voter set directly.
+/// This maps them to the voter role until they select `ControlMember`.
+impl From<Option<BTreeSet<u64>>> for ReadinessRole {
+    fn from(expected_voters: Option<BTreeSet<u64>>) -> Self {
+        Self::Voter(expected_voters)
+    }
+}
+
+/// One readiness observation stays below the installed probe's one-second
+/// diagnostic timeout, so a lost quorum is reported as unhealthy, not stalled.
+const READINESS_OBSERVATION_DEADLINE: Duration = Duration::from_millis(750);
+
 #[derive(Clone)]
 pub struct RaftGroup {
     raft: Raft,
+    id: u64,
+    group: String,
+    transport: Arc<dyn RaftTransport>,
     machine_failed: Arc<AtomicBool>,
     storage_drain: StorageDrain,
     snapshot_buffers: Arc<SnapshotBufferOwner>,
@@ -449,7 +475,7 @@ impl RaftGroup {
             let raft = Raft::new(
                 id,
                 config,
-                network::NetworkFactory::new(id, group, transport),
+                network::NetworkFactory::new(id, group.clone(), transport.clone()),
                 log,
                 machine,
             )
@@ -466,6 +492,9 @@ impl RaftGroup {
         };
         Ok(Self {
             raft,
+            id,
+            group,
+            transport,
             machine_failed,
             storage_drain,
             snapshot_buffers,
@@ -569,30 +598,31 @@ impl RaftGroup {
     /// One complete readiness operation. The installed caller retains this
     /// future through diagnostic timeouts and stops; there is deliberately no
     /// timeout that abandons a queued SDK actor request or applied-state waiter.
+    /// Followers and learners are observed through the leader's read index.
     pub async fn readiness_probe(
         &self,
         local_id: u64,
-        expected_voters: Option<BTreeSet<u64>>,
+        role: impl Into<ReadinessRole>,
     ) -> Result<bool> {
-        use openraft::error::{Fatal, RaftError};
+        use openraft::error::Fatal;
+        let role = role.into();
         if self.check_access().is_err() {
             return Ok(false);
         }
         let term = self.raft.metrics().borrow().current_term;
-        let applied = match self.raft.ensure_linearizable().await {
+        let applied = match self.observe_within(READINESS_OBSERVATION_DEADLINE).await {
             Ok(applied) => applied,
-            // These are ordinary observations of a follower, a lost quorum or
-            // a stopped group, not infrastructure failures of the probe owner.
-            Err(RaftError::APIError(_)) | Err(RaftError::Fatal(Fatal::Stopped)) => {
-                return Ok(false);
-            }
-            Err(error) => return Err(error.into()),
+            // A lost quorum, an unreachable or changed leader, a seal or a
+            // stopped group is an ordinary observation, not an infrastructure
+            // failure of the probe owner.
+            Err(error) if !failed_core(&error) => return Ok(false),
+            Err(error) => return Err(error),
         };
         if self.check_access().is_err() || self.raft.metrics().borrow().current_term != term {
             return Ok(false);
         }
         let result = self
-            .readiness_membership_matches(applied, local_id, expected_voters)
+            .readiness_membership_matches(applied, local_id, role)
             .await;
         match result {
             Err(error) if matches!(error.downcast_ref::<Fatal<u64>>(), Some(Fatal::Stopped)) => {
@@ -611,24 +641,55 @@ impl RaftGroup {
         &self,
         applied: Option<LogId<u64>>,
         local_id: u64,
-        expected_voters: Option<BTreeSet<u64>>,
+        role: ReadinessRole,
     ) -> Result<bool> {
         Ok(self
             .raft
             .with_raft_state(move |state| {
                 let membership = state.membership_state.effective();
                 let configurations = membership.membership().get_joint_config();
+                let member = match &role {
+                    ReadinessRole::Voter(expected) => {
+                        configurations.first().is_some_and(|voters| {
+                            voters.contains(&local_id)
+                                && expected.as_ref().is_none_or(|expected| voters == expected)
+                        })
+                    }
+                    ReadinessRole::ControlMember => {
+                        membership.membership().get_node(&local_id).is_some()
+                    }
+                };
                 membership
                     .log_id()
                     .as_ref()
                     .is_some_and(|log| applied.as_ref().is_some_and(|applied| applied >= log))
                     && configurations.len() == 1
-                    && configurations[0].contains(&local_id)
-                    && expected_voters
-                        .as_ref()
-                        .is_none_or(|expected| &configurations[0] == expected)
+                    && member
             })
             .await?)
+    }
+
+    /// Read-only observation barrier for any current member, including
+    /// followers and learners: see `quorum::observation_barrier`. It grants no
+    /// write authority; `write` and `linearizable_barrier` stay leader-only.
+    pub async fn observation_barrier(&self) -> Result<Option<LogId<u64>>> {
+        self.observe_within(quorum::BARRIER_DEADLINE).await
+    }
+
+    async fn observe_within(&self, within: Duration) -> Result<Option<LogId<u64>>> {
+        quorum::observation_barrier(
+            &self.raft,
+            quorum::ReadIndexRoute {
+                local: self.id,
+                group: &self.group,
+                transport: self.transport.as_ref(),
+            },
+            || self.check_access(),
+            self.store.custody().store(),
+            Some(self.store.application()),
+            within,
+        )
+        .await
     }
 
     pub fn storage_domains(&self) -> &Arc<TenantStorageSet> {
@@ -839,6 +900,17 @@ impl RaftGroup {
         self.ownership.store(false, Ordering::Release);
         report.complete()
     }
+}
+
+/// An SDK fatal other than a stop, from either a leader round or a follower's
+/// application wait. Every other barrier failure is an unhealthy observation.
+fn failed_core(error: &anyhow::Error) -> bool {
+    use openraft::error::{Fatal, RaftError};
+    let fatal = match error.downcast_ref::<ReadIndexError>() {
+        Some(RaftError::Fatal(fatal)) => Some(fatal),
+        _ => error.downcast_ref::<Fatal<u64>>(),
+    };
+    fatal.is_some_and(|fatal| !matches!(fatal, Fatal::Stopped))
 }
 
 mod local_applied;

@@ -50,7 +50,30 @@ const TABLE_CHARGE: u64 = 512;
 const INDEX_POOL_CHUNK: u64 = 64 << 10;
 const INDEX_POOL_SLOT: u64 = 2 * std::mem::size_of::<(u64, Box<dyn ResidentLease>)>() as u64;
 const COMPACTION_CHECK_BYTES: u64 = 1 << 20;
+/// Maintenance copies live records through one resident extent buffer.
+pub const MAINTENANCE_EXTENT_BYTES: usize = 64 << 10;
+/// Bounded metadata pages a maintenance step may copy on write.
+const MAINTENANCE_METADATA_BYTES: usize = 16 * 4096;
+/// Resident maintenance workspace admitted once when a core is constructed.
+/// Maintenance never admits workspace of its own, so it cannot be starved of
+/// memory by foreground readers and writers of the same owner.
+pub const MAINTENANCE_RESIDENT_BYTES: u64 =
+    (MAINTENANCE_EXTENT_BYTES + MAINTENANCE_METADATA_BYTES) as u64;
+/// Most keys one key-only page may return.
+pub const MAX_KEY_PAGE: usize = 256;
 static NEXT_OWNER: AtomicU64 = AtomicU64::new(1);
+
+/// Which reserve a backend growth may draw on. The physical owner keeps a
+/// replication reserve that foreground work cannot reach and a maintenance
+/// reserve that only maintenance can reach, so saturated foreground writers
+/// never stop replication or the maintenance that frees space.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WorkClass {
+    Foreground,
+    Replication,
+    /// Selected only by maintenance under the owner's exclusive permit.
+    Maintenance,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BackendNativeDisposition {
@@ -234,12 +257,15 @@ impl std::error::Error for OwnerFailed {}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AdmissionError {
     CapacityDenied,
+    /// Another worker holds the owner's exclusive maintenance permit.
+    Busy,
     OwnerFailed,
 }
 impl fmt::Display for AdmissionError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::CapacityDenied => f.write_str("storage capacity denied"),
+            Self::Busy => f.write_str("storage maintenance permit is held"),
             Self::OwnerFailed => f.write_str("storage owner failed"),
         }
     }
@@ -248,12 +274,24 @@ impl std::error::Error for AdmissionError {}
 
 /// Physical-owner admission. An `OwnerFailed` from any call, including
 /// `check_owner`, fences the core, which then calls `owner_failed` exactly
-/// once. `CapacityDenied` is decided before any backend effect and never fences.
+/// once. `CapacityDenied` and `Busy` are decided before any backend effect
+/// and never fence.
 pub trait StorageAdmission: Send + Sync {
     fn check_owner(&self) -> Result<(), OwnerFailed>;
     fn reserve_workspace(&self, bytes: u64) -> Result<Box<dyn ResidentLease>, AdmissionError>;
-    fn reserve_growth(&self, current: u64, requested: u64) -> Result<(), AdmissionError>;
+    /// Admit growth from `current` to `requested` bytes against the reserve
+    /// ceiling of `work`. A denial has no effect.
+    fn reserve_growth(
+        &self,
+        current: u64,
+        requested: u64,
+        work: WorkClass,
+    ) -> Result<(), AdmissionError>;
     fn settle_growth(&self, actual: u64) -> Result<(), OwnerFailed>;
+    /// The owner's exclusive, non-blocking maintenance permit, held until the
+    /// returned guard drops. Maintenance growth is admitted only under it. A
+    /// second concurrent caller gets `Busy` without any effect.
+    fn maintenance_permit(&self) -> Result<Box<dyn ResidentLease>, AdmissionError>;
     fn owner_failed(&self);
 }
 
@@ -262,6 +300,9 @@ pub enum CoreError {
     Io(io::Error),
     Corrupt(&'static str),
     CapacityDenied,
+    /// Maintenance was refused before any effect: another worker holds the
+    /// owner's exclusive maintenance permit.
+    MaintenanceBusy,
     OwnerFailed,
     Closed,
     InvalidInput(&'static str),
@@ -276,6 +317,7 @@ impl fmt::Display for CoreError {
             Self::Io(error) => write!(f, "storage I/O: {error}"),
             Self::Corrupt(reason) => write!(f, "corrupt committed storage: {reason}"),
             Self::CapacityDenied => f.write_str("storage capacity denied"),
+            Self::MaintenanceBusy => f.write_str("storage maintenance permit is held"),
             Self::OwnerFailed => f.write_str("storage owner failed"),
             Self::Closed => f.write_str("database closed"),
             Self::InvalidInput(reason) => write!(f, "invalid storage input: {reason}"),
@@ -308,7 +350,8 @@ impl CoreError {
     }
 
     /// Errors that leave the physical owner or a backend effect uncertain.
-    /// Capacity, input, table and close errors are decided before any effect.
+    /// Capacity, busy, input, table and close errors are decided before any
+    /// effect.
     pub(crate) fn fences_owner(&self) -> bool {
         matches!(
             self,
@@ -500,6 +543,7 @@ impl From<AdmissionError> for CoreError {
     fn from(error: AdmissionError) -> Self {
         match error {
             AdmissionError::CapacityDenied => Self::CapacityDenied,
+            AdmissionError::Busy => Self::MaintenanceBusy,
             AdmissionError::OwnerFailed => Self::OwnerFailed,
         }
     }
@@ -1038,9 +1082,32 @@ impl Index {
     }
 }
 
+/// Resident maintenance workspace, admitted before any backend effect of a
+/// constructor and held for the life of the core. Its extent buffer drops
+/// before the lease that covers it.
+struct MaintenanceWorkspace {
+    extent: Box<[u8]>,
+    _lease: Box<dyn ResidentLease>,
+}
+impl MaintenanceWorkspace {
+    fn admit(admission: &Arc<dyn StorageAdmission>) -> Result<Self, CoreError> {
+        let lease = reserve(admission, MAINTENANCE_RESIDENT_BYTES)?;
+        let mut extent = Vec::new();
+        extent
+            .try_reserve_exact(MAINTENANCE_EXTENT_BYTES)
+            .map_err(|_| CoreError::CapacityDenied)?;
+        extent.resize(MAINTENANCE_EXTENT_BYTES, 0);
+        Ok(Self {
+            extent: extent.into_boxed_slice(),
+            _lease: lease,
+        })
+    }
+}
+
 struct State {
     backend: Box<dyn StorageBackend>,
     index: Index,
+    maintenance: MaintenanceWorkspace,
     generation: u64,
     base: u64,
     first_generation: u64,

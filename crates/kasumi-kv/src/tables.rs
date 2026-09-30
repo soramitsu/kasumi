@@ -2215,6 +2215,44 @@ mod tests {
     }
 
     #[test]
+    fn retain_in_stops_at_the_end_of_its_prefix_without_reading_later_values() {
+        let admission = Arc::new(WorkspaceCeiling::new());
+        let database = Database::builder(admission.clone())
+            .create_with_backend(MemoryBackend::default())
+            .unwrap();
+        let write = database.begin_write().unwrap();
+        {
+            let mut table = write.open_table(BYTES).unwrap();
+            table.insert(b"app/1", b"one").unwrap();
+            table.insert(b"app/2", b"two").unwrap();
+            table
+                .insert(b"peer/large", vec![0x3c; 8 << 20].as_slice())
+                .unwrap();
+        }
+        write.commit().unwrap();
+        // Staging chunks and the prefix rows fit; the 8 MiB value past the
+        // prefix does not. A scan past the prefix end is a capacity denial.
+        admission.limit.store(1 << 20, Ordering::Release);
+        let write = database.begin_write().unwrap();
+        {
+            let mut table = write.open_table(BYTES).unwrap();
+            table
+                .retain_in(&b"app/"[..].., |key, _| !key.starts_with(b"app/"))
+                .unwrap();
+        }
+        write.commit().unwrap();
+        admission.limit.store(u64::MAX, Ordering::Release);
+        let read = database.begin_read().unwrap();
+        let table = read.open_table(BYTES).unwrap();
+        assert!(table.get(b"app/1").unwrap().is_none());
+        assert!(table.get(b"app/2").unwrap().is_none());
+        assert_eq!(
+            table.get(b"peer/large").unwrap().unwrap().value().len(),
+            8 << 20
+        );
+    }
+
+    #[test]
     fn closing_wakes_a_writer_waiting_behind_an_active_writer() {
         let database = Arc::new(database(MemoryBackend::default()));
         let first = database.begin_write().unwrap();

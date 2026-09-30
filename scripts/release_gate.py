@@ -7,6 +7,7 @@ The output directory is exclusive and keeps failed/partial runs for inspection.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime
 import hashlib
 import json
@@ -14,6 +15,7 @@ import os
 from pathlib import Path, PurePosixPath
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tarfile
@@ -22,6 +24,46 @@ import gate_process
 
 TOOLCHAIN = "1.97.1"
 FORBIDDEN_FIXTURE_FEATURES = frozenset({"test-utils", "embedded-fixture", "loopback-fixture"})
+
+_SERDE_JSON = ("--manifest-path", "vendor/serde_json-1.0.151/Cargo.toml")
+_RMCP = ("--manifest-path", "vendor/rmcp-3.2.0/Cargo.toml")
+_OPENRAFT = ("--manifest-path", "vendor/openraft-0.9.25/Cargo.toml")
+_OPENRAFT_FEATURES = "serde,storage-v2,single-term-leader,generic-snapshot-data"
+
+# Upstream suites of every reviewed vendor fork, as (gate, Cargo subcommand,
+# selection, trailing arguments). The pinned toolchain, --locked, jobs and
+# JSON encoding (except for Clippy) are added by functional_gates. The OpenRaft
+# rows repeat the custody commands retained by
+# docs/evidence/openraft-canonical-20260920 attempts 46-49.
+VENDOR_SUITES = (
+    ("bitmaps", "test", ("--manifest-path", "vendor/bitmaps-3.2.1/Cargo.toml"), ()),
+    ("lru", "test", ("--manifest-path", "vendor/lru-0.16.4/Cargo.toml"), ()),
+    ("serde-json-default", "test", _SERDE_JSON, ()),
+    ("serde-json-number", "test", _SERDE_JSON + ("--features", "arbitrary_precision"), ()),
+    ("serde-json-raw", "test", _SERDE_JSON + ("--features", "raw_value"), ()),
+    ("serde-json-combined", "test", _SERDE_JSON + (
+        "--features", "arbitrary_precision,raw_value,float_roundtrip,preserve_order"), ()),
+    ("rmcp-terminal-ownership", "test", _RMCP + (
+        "--features", "transport-streamable-http-server", "--lib"), ("terminal_stateless_tests",)),
+    ("rmcp-upstream-protocol", "test", _RMCP + (
+        "--features", "client,transport-streamable-http-server,reqwest",
+        "--test", "test_streamable_http_json_response", "--test", "test_streamable_http_standard_headers",
+        "--test", "test_streamable_http_protocol_version", "--test", "test_stateless_protocol_version",
+        "--test", "test_protocol_version_negotiation", "--test", "test_server_discover"), ()),
+    ("openraft-units", "test", _OPENRAFT + ("-p", "openraft", "--lib", "--features", _OPENRAFT_FEATURES), ()),
+    ("openraft-integration", "test", _OPENRAFT + (
+        "-p", "tests", "--test", "life_cycle", "--test", "client_api",
+        "--test", "membership", "--test", "snapshot_streaming"), ()),
+    ("openraft-singlethreaded", "check", _OPENRAFT + (
+        "-p", "openraft", "--all-targets", "--features", "singlethreaded," + _OPENRAFT_FEATURES), ()),
+    ("openraft-clippy", "clippy", _OPENRAFT + (
+        "-p", "openraft", "--all-targets", "--features", _OPENRAFT_FEATURES), ("--", "-D", "warnings")),
+)
+
+# Test output that an upstream suite writes inside its own package. After the
+# gate's process group drains, it is moved out of the frozen source; any other
+# gate that creates it, like any other write, invalidates the run.
+GENERATED_OUTPUTS = {"openraft-integration": "vendor/openraft-0.9.25/tests/_log"}
 
 
 def sha256(path):
@@ -276,23 +318,9 @@ def functional_gates(jobs, python_executable):
         ("format", cargo + ["fmt", "--all", "--", "--check"]),
         ("python", [python_executable, "-m", "unittest", "discover", "-s", "scripts", "-p", "test_*.py", "-v"]),
         ("dependency-patches", [python_executable, "scripts/check_dependency_patches.py"]),
-        ("bitmaps", cargo + ["test", "--manifest-path", "vendor/bitmaps-3.2.1/Cargo.toml"] + locked + encoded),
-        ("lru", cargo + ["test", "--manifest-path", "vendor/lru-0.16.4/Cargo.toml"] + locked + encoded),
-        ("serde-json-default", cargo + ["test", "--manifest-path", "vendor/serde_json-1.0.151/Cargo.toml"] + locked + encoded),
-        ("serde-json-number", cargo + ["test", "--manifest-path", "vendor/serde_json-1.0.151/Cargo.toml",
-         "--features", "arbitrary_precision"] + locked + encoded),
-        ("serde-json-raw", cargo + ["test", "--manifest-path", "vendor/serde_json-1.0.151/Cargo.toml",
-         "--features", "raw_value"] + locked + encoded),
-        ("serde-json-combined", cargo + ["test", "--manifest-path", "vendor/serde_json-1.0.151/Cargo.toml",
-         "--features", "arbitrary_precision,raw_value,float_roundtrip,preserve_order"] + locked + encoded),
-        ("rmcp-terminal-ownership", cargo + ["test", "--manifest-path", "vendor/rmcp-3.2.0/Cargo.toml",
-         "--features", "transport-streamable-http-server", "--lib"] + locked + encoded
-         + ["terminal_stateless_tests"]),
-        ("rmcp-upstream-protocol", cargo + ["test", "--manifest-path", "vendor/rmcp-3.2.0/Cargo.toml",
-         "--features", "client,transport-streamable-http-server,reqwest",
-         "--test", "test_streamable_http_json_response", "--test", "test_streamable_http_standard_headers",
-         "--test", "test_streamable_http_protocol_version", "--test", "test_stateless_protocol_version",
-         "--test", "test_protocol_version_negotiation", "--test", "test_server_discover"] + locked + encoded),
+        *((name, cargo + [subcommand, *selection] + locked
+           + ([] if subcommand == "clippy" else encoded) + list(trailing))
+          for name, subcommand, selection, trailing in VENDOR_SUITES),
         ("workspace", cargo + ["test", "--workspace", "--all-features", "--all-targets", "--no-fail-fast"]
          + locked + encoded + ["--", "--test-threads=2"]),
         ("workspace-docs", cargo + ["test", "--workspace", "--all-features", "--doc", "--no-fail-fast"]
@@ -326,6 +354,100 @@ def validate_production_artifacts(name, result):
             for package in result["compiled_packages"].values()):
         result["fixture_feature_violation"] = True
         result["exit_code"] = 1
+
+
+def generated_output_paths(name):
+    """Return a gate's declared source output and its retained evidence paths."""
+    relative = GENERATED_OUTPUTS[name]
+    retained = "generated/" + name + "/" + PurePosixPath(relative).name
+    return {"source": relative, "path": retained, "files": retained + "-files.json"}
+
+
+def _sync_directory(path):
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def retain_generated_outputs(name, source, output):
+    """Move the gate's declared, drained test output out of the frozen source.
+
+    Call only after the gate's process group drained. The directory is renamed,
+    never copied or merged, into a new generated/<gate>/ evidence directory and
+    its hashed inventory is retained. A declared output created by any other
+    gate, a linked or non-directory output, or a linked parent is rejected in
+    place. Every other write remains for the caller's source comparison.
+    """
+    retained = []
+    for gate, relative in GENERATED_OUTPUTS.items():
+        path = Path(source)
+        for part in PurePosixPath(relative).parts:
+            path = path / part
+            if path.is_symlink():
+                raise ValueError("generated gate output path contains a symbolic link: " + relative)
+        if not os.path.lexists(path):
+            continue
+        if gate != name:
+            raise ValueError("gate wrote another gate's declared output: " + relative)
+        if not stat.S_ISDIR(os.lstat(path).st_mode):
+            raise ValueError("generated gate output is not an owned directory: " + relative)
+        paths = generated_output_paths(name)
+        (Path(output) / "generated").mkdir(exist_ok=True)
+        directory = Path(output) / "generated" / name
+        directory.mkdir()
+        os.rename(path, Path(output) / paths["path"])
+        _sync_directory(path.parent)
+        _sync_directory(directory)
+        write_json(Path(output) / paths["files"], inventory(Path(output) / paths["path"]))
+        retained.append({**paths, "files_sha256": sha256(Path(output) / paths["files"])})
+    return retained
+
+
+def dispatch_gates(gates, source, output, environment, timeout_seconds, record, original):
+    """Run gates in order and set the terminal status only after the last one.
+
+    A gate may change the frozen source only through its declared generated
+    output. Changed inputs, uncertain process custody or cancellation stop
+    dispatch after the drained gate's evidence is recorded.
+    """
+    for relative in GENERATED_OUTPUTS.values():
+        if os.path.lexists(Path(source) / relative) or any(
+                path == relative or path.startswith(relative + "/") for path in original):
+            raise ValueError("frozen source contains a generated gate output: " + relative)
+    for name, command in gates:
+        print("Running " + name + " (" + str(Path(output) / (name + ".log")) + ")", flush=True)
+        result = run_gate(name, command, source, output, environment, timeout_seconds)
+        if name in ("production-features", "network-features") and re.search(r"kasumi-[^\n]*\btest-utils\b", (Path(output) / result["log"]).read_text()):
+            result["fixture_feature_violation"] = True
+            result["exit_code"] = 1
+        validate_production_artifacts(name, result)
+        record["gates"].append(result)
+        result["generated_outputs"] = retain_generated_outputs(name, source, output)
+        if inventory(source) != original:
+            raise RuntimeError("a gate changed frozen source inputs; results are invalid")
+        write_json(Path(output) / "evidence.json", record)
+        if not result["process_cleanup"]["drained"] or result["process_cleanup"]["errors"]:
+            raise RuntimeError("gate process custody is uncertain; no later gate was dispatched")
+        if result["received_signals"]:
+            raise KeyboardInterrupt("functional run cancelled after owned gate cleanup")
+    record["status"] = "passed" if all(g["exit_code"] == 0 for g in record["gates"]) else "failed"
+
+
+@contextlib.contextmanager
+def terminal_record(record, output):
+    """Persist a failed or interrupted status for any error, then re-raise it."""
+    try:
+        yield record
+    except BaseException as error:
+        record["status"] = "interrupted" if isinstance(error, KeyboardInterrupt) else "failed"
+        record["runner_error"] = str(error)
+        record["runner_error_notes"] = getattr(error, "__notes__", [])
+        raise
+    finally:
+        record["finished_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        write_json(Path(output) / "evidence.json", record)
 
 
 def verify_runner_inputs(source):
@@ -382,7 +504,7 @@ def main():
         "status": "running", "gates": [],
     }
     write_json(output / "evidence.json", record)
-    try:
+    with terminal_record(record, output):
         (output / "tools").mkdir()
         shutil.copyfile(sys.executable, output / record["python_executable"]["artifact"])
         if sha256(output / record["python_executable"]["artifact"]) != record["python_executable"]["sha256"]:
@@ -403,30 +525,8 @@ def main():
                            PYTHONDONTWRITEBYTECODE="1", SOURCE_DATE_EPOCH=git("show", "-s", "--format=%ct", commit))
         record["build_environment"] = {name: environment.get(name) for name in
                                        ["RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS", "CC", "CXX", "AR", "SOURCE_DATE_EPOCH"]}
-        for name, command in functional_gates(args.jobs, record["python_executable"]["path"]):
-            print("Running " + name + " (" + str(output / (name + ".log")) + ")", flush=True)
-            result = run_gate(name, command, source, output, environment, args.gate_timeout_seconds)
-            if name in ("production-features", "network-features") and re.search(r"kasumi-[^\n]*\btest-utils\b", (output / result["log"]).read_text()):
-                result["fixture_feature_violation"] = True
-                result["exit_code"] = 1
-            validate_production_artifacts(name, result)
-            record["gates"].append(result)
-            if inventory(source) != original:
-                raise RuntimeError("a gate changed frozen source inputs; results are invalid")
-            write_json(output / "evidence.json", record)
-            if not result["process_cleanup"]["drained"] or result["process_cleanup"]["errors"]:
-                raise RuntimeError("gate process custody is uncertain; no later gate was dispatched")
-            if result["received_signals"]:
-                raise KeyboardInterrupt("functional run cancelled after owned gate cleanup")
-        record["status"] = "passed" if all(g["exit_code"] == 0 for g in record["gates"]) else "failed"
-    except BaseException as error:
-        record["status"] = "interrupted" if isinstance(error, KeyboardInterrupt) else "failed"
-        record["runner_error"] = str(error)
-        record["runner_error_notes"] = getattr(error, "__notes__", [])
-        raise
-    finally:
-        record["finished_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
-        write_json(output / "evidence.json", record)
+        dispatch_gates(functional_gates(args.jobs, record["python_executable"]["path"]), source, output,
+                       environment, args.gate_timeout_seconds, record, original)
     print("Functional gate result: " + record["status"], flush=True)
     return 0 if record["status"] == "passed" else 1
 
