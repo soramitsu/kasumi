@@ -1,5 +1,13 @@
 # Native Kasumi key-value engine goal
 
+Storage update, 2026-09-30: the active
+[disk-backed cache goals](disk-backed-cache-goals.md) require a large cache
+that retains the complete working database while it fits and supports eviction
+and disk-backed reads above the bound. The native key directory must become
+disk-backed with bounded page caching; durable writes, encrypted storage and
+ownership contracts remain required. Historical checkpoints below do not
+establish completion of that redesign.
+
 Status: active. The 2026-09-24 direction replaces the planned redb-backed G02
 implementation. Kasumi will own its durable key-value engine in Rust and remove
 the redb dependency and vendored fork. This change must preserve the public

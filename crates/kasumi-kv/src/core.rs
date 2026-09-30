@@ -29,6 +29,8 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, TryLockError};
 
+use crate::cache::{CacheConfig, CacheLoadError, CacheStats, NativeCache};
+
 // The public tenant API caps plaintext at 32 MiB. This physical limit leaves
 // room for authenticated envelopes and metadata around that plaintext.
 pub const MAX_VALUE_BYTES: usize = 40 << 20;
@@ -1041,6 +1043,8 @@ impl Index {
 struct State {
     backend: Box<dyn StorageBackend>,
     index: Index,
+    value_cache: NativeCache,
+    cache_warmup: CacheWarmupState,
     generation: u64,
     base: u64,
     first_generation: u64,
@@ -1125,6 +1129,50 @@ pub struct Core {
 pub struct ReadSnapshot {
     shared: Arc<Shared>,
     generation: u64,
+}
+
+/// Progress of one bounded pass over the currently committed native values.
+/// A completed pass is fully resident only when every value stayed cached.
+/// This describes native bytes, not the engine's decoded document/index cache.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CacheWarmup {
+    pub visited: usize,
+    pub scan_complete: bool,
+    pub fully_resident: bool,
+}
+
+#[derive(Default)]
+struct CacheWarmupState {
+    generation: Option<u64>,
+    after: Option<CacheWarmupKey>,
+    complete: bool,
+    retained_all: bool,
+    initial_evictions: u64,
+}
+
+struct CacheWarmupKey {
+    table: String,
+    key: Vec<u8>,
+    _lease: Box<dyn ResidentLease>,
+}
+
+fn next_warm_value<'a>(
+    index: &'a Index,
+    after: Option<&CacheWarmupKey>,
+) -> Option<(&'a str, &'a [u8], ValueRef)> {
+    let tables_from = after.map_or(Unbounded, |after| Included(after.table.as_str()));
+    for (name, table) in index.tables.range::<str, _>((tables_from, Unbounded)) {
+        let keys_from = match after {
+            Some(after) if name == &after.table => Excluded(after.key.as_slice()),
+            _ => Unbounded,
+        };
+        for (key, entry) in table.rows.range::<[u8], _>((keys_from, Unbounded)) {
+            if let Some(reference) = entry.head.as_ref().and_then(|head| head.value) {
+                return Some((name, key, reference));
+            }
+        }
+    }
+    None
 }
 
 /// Owned backend bytes with the exact output allocation kept admitted until
@@ -1826,6 +1874,8 @@ impl Core {
                 state: Mutex::new(State {
                     backend,
                     index,
+                    value_cache: NativeCache::new(CacheConfig { byte_limit: 0 }, admission.clone()),
+                    cache_warmup: CacheWarmupState::default(),
                     generation: header.generation,
                     base: header.base,
                     first_generation: header.first_generation,
@@ -1917,6 +1967,113 @@ impl Core {
         })
     }
 
+    /// Configure the native immutable-byte cache within this core's existing
+    /// storage admission owner. The embedding owner chooses its share of the
+    /// installed memory budget; native constructors do not invent one.
+    pub fn configure_value_cache(&self, config: CacheConfig) -> Result<(), CoreError> {
+        self.shared.run(CoreError::panicked, |state| {
+            self.shared.check_open(state)?;
+            state.value_cache.set_byte_limit(config.byte_limit)?;
+            state.cache_warmup = CacheWarmupState::default();
+            Ok(())
+        })
+    }
+
+    pub fn value_cache_stats(&self) -> Result<CacheStats, CoreError> {
+        self.shared.run(CoreError::panicked, |state| {
+            self.shared.check_open(state)?;
+            Ok(state.value_cache.stats())
+        })
+    }
+
+    /// Warm at most `max_values` committed native values. The cursor retains
+    /// only one admitted table/key, never an all-key list. A write restarts the
+    /// pass at its new generation. Capacity pressure skips cache insertion but
+    /// does not turn durable data into a capacity-denied database.
+    pub fn warm_value_cache(&self, max_values: usize) -> Result<CacheWarmup, CoreError> {
+        if max_values == 0 {
+            return Err(CoreError::InvalidInput(
+                "cache warm-up step must be nonzero",
+            ));
+        }
+        self.shared.run(CoreError::panicked, |state| {
+            self.shared.check_open(state)?;
+            if state.value_cache.config().byte_limit == 0 {
+                return Ok(CacheWarmup {
+                    visited: 0,
+                    scan_complete: true,
+                    fully_resident: false,
+                });
+            }
+            if state.cache_warmup.generation != Some(state.generation) {
+                state.cache_warmup = CacheWarmupState {
+                    generation: Some(state.generation),
+                    retained_all: true,
+                    initial_evictions: state.value_cache.stats().evictions,
+                    ..CacheWarmupState::default()
+                };
+            }
+            let mut visited = 0;
+            while !state.cache_warmup.complete && visited < max_values {
+                let Some((table, key, reference)) =
+                    next_warm_value(&state.index, state.cache_warmup.after.as_ref())
+                else {
+                    state.cache_warmup.complete = true;
+                    state.cache_warmup.after = None;
+                    break;
+                };
+                let cursor_bytes = table.len()
+                    + key.len()
+                    + std::mem::size_of::<CacheWarmupKey>()
+                    + 4 * std::mem::size_of::<usize>();
+                let lease = reserve(&self.shared.admission, cursor_bytes as u64)?;
+                let mut next_table = String::new();
+                next_table
+                    .try_reserve_exact(table.len())
+                    .map_err(|_| CoreError::CapacityDenied)?;
+                next_table.push_str(table);
+                let mut next_key = Vec::new();
+                next_key
+                    .try_reserve_exact(key.len())
+                    .map_err(|_| CoreError::CapacityDenied)?;
+                next_key.extend_from_slice(key);
+                let result = state
+                    .value_cache
+                    .load(reference.at, reference.len as usize, |out| {
+                        read_checked_value(&*state.backend, reference, out)
+                    });
+                match result {
+                    Ok(_) => {}
+                    Err(CacheLoadError::Admission(AdmissionError::CapacityDenied)) => {
+                        state.cache_warmup.retained_all = false;
+                    }
+                    Err(CacheLoadError::Admission(error)) => return Err(error.into()),
+                    Err(CacheLoadError::Load(error)) => return Err(error),
+                }
+                state.cache_warmup.retained_all &= state.value_cache.contains(reference.at);
+                state.cache_warmup.after = Some(CacheWarmupKey {
+                    table: next_table,
+                    key: next_key,
+                    _lease: lease,
+                });
+                visited += 1;
+            }
+            if !state.cache_warmup.complete
+                && next_warm_value(&state.index, state.cache_warmup.after.as_ref()).is_none()
+            {
+                state.cache_warmup.complete = true;
+                state.cache_warmup.after = None;
+            }
+            Ok(CacheWarmup {
+                visited,
+                scan_complete: state.cache_warmup.complete,
+                fully_resident: state.cache_warmup.complete
+                    && state.cache_warmup.retained_all
+                    && state.value_cache.stats().evictions == state.cache_warmup.initial_evictions,
+            })
+        })
+    }
+
     pub fn committed_end(&self) -> Result<u64, CoreError> {
         self.shared.run(CoreError::panicked, |state| {
             self.shared.check_open(state)?;
@@ -1991,7 +2148,7 @@ impl Core {
             ));
         }
         if state.needs_gc {
-            prune_all(&mut state.index);
+            prune_all(&mut state.index, &mut state.value_cache);
             state.needs_gc = false;
         }
         let layout = compact_layout(&state.index)?;
@@ -2287,7 +2444,7 @@ impl Core {
 
     fn read_value_admitted(
         &self,
-        state: &State,
+        state: &mut State,
         reference: ValueRef,
         max_value_bytes: usize,
     ) -> Result<AdmittedValue, CoreError> {
@@ -2302,13 +2459,28 @@ impl Core {
             .try_reserve_exact(len)
             .map_err(|_| CoreError::CapacityDenied)?;
         value.resize(len, 0);
-        if let Err(error) = state.backend.read(reference.at, &mut value) {
-            self.shared.fence();
-            return Err(CoreError::Io(error));
-        }
-        if crc32c(&value) != reference.crc {
-            self.shared.fence();
-            return Err(CoreError::Corrupt("committed value checksum differs"));
+        if state.value_cache.config().byte_limit == 0 {
+            read_checked_value(&*state.backend, reference, &mut value)?;
+        } else {
+            let cached = state.value_cache.load(reference.at, len, |out| {
+                read_checked_value(&*state.backend, reference, out)
+            });
+            match cached {
+                Ok(cached) => {
+                    if cached.as_bytes().len() != len || crc32c(cached.as_bytes()) != reference.crc
+                    {
+                        return Err(CoreError::Corrupt("cached value identity differs"));
+                    }
+                    value.copy_from_slice(cached.as_bytes());
+                }
+                // The caller's output is already admitted. Optional cache
+                // storage must not make an otherwise admissible read fail.
+                Err(CacheLoadError::Admission(AdmissionError::CapacityDenied)) => {
+                    read_checked_value(&*state.backend, reference, &mut value)?;
+                }
+                Err(CacheLoadError::Admission(error)) => return Err(error.into()),
+                Err(CacheLoadError::Load(error)) => return Err(error),
+            }
         }
         Ok(AdmittedValue {
             bytes: value,
@@ -2392,6 +2564,36 @@ impl Core {
                 .ok_or(CoreError::InvalidInput("backend length overflow"))?;
         }
         debug_assert_eq!(value_cursor, frame_end);
+        // Cache candidate bytes before any backend effect. The state mutex
+        // and committed generation prevent readers from seeing provisional
+        // values. A denied write may reuse these offsets, so every later
+        // candidate invalidates the previous entry at its exact offset first.
+        if state.value_cache.config().byte_limit != 0 {
+            let mut cursor = frame_start + FRAME_BYTES as u64;
+            for operation in operations {
+                let (table, key, value) = operation_parts(operation);
+                let at = cursor + OP_BYTES as u64 + table.len() as u64 + key.len() as u64;
+                if matches!(operation, Operation::Put { .. }) {
+                    state.value_cache.remove(at);
+                    let cached = state.value_cache.load(at, value.len(), |out| {
+                        out.copy_from_slice(value);
+                        Ok::<_, CoreError>(())
+                    });
+                    match cached {
+                        Ok(_) | Err(CacheLoadError::Admission(AdmissionError::CapacityDenied)) => {}
+                        Err(CacheLoadError::Admission(error)) => {
+                            rollback(&mut state.index, operations, &undo);
+                            return Err(error.into());
+                        }
+                        Err(CacheLoadError::Load(error)) => {
+                            rollback(&mut state.index, operations, &undo);
+                            return Err(error);
+                        }
+                    }
+                }
+                cursor = at + value.len() as u64;
+            }
+        }
         let physical_len = match state.backend.len() {
             Ok(length) => length,
             Err(error) => {
@@ -2471,10 +2673,10 @@ impl Core {
         state.slot = next_slot;
         if self.shared.snapshots.load(Ordering::Acquire) == 0 {
             if state.needs_gc {
-                prune_all(&mut state.index);
+                prune_all(&mut state.index, &mut state.value_cache);
                 state.needs_gc = false;
             } else {
-                prune_touched(&mut state.index, operations);
+                prune_touched(&mut state.index, operations, &mut state.value_cache);
             }
         } else {
             state.needs_gc = true;
@@ -2519,6 +2721,8 @@ impl Core {
             state.close_report = Some(CoreCloseReport::capture(&outcome));
             if outcome.native_disposition() == BackendNativeDisposition::Drained {
                 state.closed = true;
+                state.value_cache.clear();
+                state.cache_warmup = CacheWarmupState::default();
             }
         }
         outcome
@@ -2527,6 +2731,18 @@ impl Core {
     pub fn admission(&self) -> Arc<dyn StorageAdmission> {
         self.shared.admission.clone()
     }
+}
+
+fn read_checked_value(
+    backend: &dyn StorageBackend,
+    reference: ValueRef,
+    out: &mut [u8],
+) -> Result<(), CoreError> {
+    backend.read(reference.at, out)?;
+    if crc32c(out) != reference.crc {
+        return Err(CoreError::Corrupt("committed value checksum differs"));
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy)]
@@ -2634,14 +2850,20 @@ fn rollback(index: &mut Index, operations: &[Operation], undo: &[Undo]) {
     }
 }
 
-fn prune_entry(entry: &mut Entry) -> bool {
+fn prune_entry(entry: &mut Entry, cache: &mut NativeCache) -> bool {
     let Some(head) = entry.head.as_mut() else {
         return true;
     };
-    head.previous = None;
+    let mut retired = head.previous.take();
+    while let Some(mut version) = retired {
+        if let Some(reference) = version.value {
+            cache.remove(reference.at);
+        }
+        retired = version.previous.take();
+    }
     head.value.is_none()
 }
-fn prune_touched(index: &mut Index, operations: &[Operation]) {
+fn prune_touched(index: &mut Index, operations: &[Operation], cache: &mut NativeCache) {
     for operation in operations {
         let key = match operation {
             Operation::Put { key, .. } | Operation::Delete { key, .. } => key,
@@ -2650,15 +2872,18 @@ fn prune_touched(index: &mut Index, operations: &[Operation]) {
         let Some(table) = index.tables.get_mut(operation.table()) else {
             continue;
         };
-        let remove = table.rows.get_mut(key.as_slice()).is_some_and(prune_entry);
+        let remove = table
+            .rows
+            .get_mut(key.as_slice())
+            .is_some_and(|entry| prune_entry(entry, cache));
         if remove {
             table.rows.remove(key.as_slice());
         }
     }
 }
-fn prune_all(index: &mut Index) {
+fn prune_all(index: &mut Index, cache: &mut NativeCache) {
     for table in index.tables.values_mut() {
-        table.rows.retain(|_, entry| !prune_entry(entry));
+        table.rows.retain(|_, entry| !prune_entry(entry, cache));
     }
 }
 
@@ -2835,6 +3060,7 @@ fn write_compact_snapshot(
             if value_crc.finish() != source.crc {
                 return Err(CoreError::Corrupt("committed value checksum differs"));
             }
+            state.value_cache.relocate(source.at, value_at);
             head.value = Some(ValueRef {
                 at: value_at,
                 len: source.len,
@@ -3204,6 +3430,7 @@ mod tests {
     struct CrashState {
         volatile: Vec<u8>,
         durable: Vec<u8>,
+        reads: usize,
         sync_fault: Option<(usize, bool)>,
         fail_next_read: bool,
         fail_next_len: bool,
@@ -3220,6 +3447,7 @@ mod tests {
             Self(Arc::new(Mutex::new(CrashState {
                 volatile: Vec::new(),
                 durable: Vec::new(),
+                reads: 0,
                 sync_fault: None,
                 fail_next_read: false,
                 fail_next_len: false,
@@ -3235,6 +3463,7 @@ mod tests {
             Self(Arc::new(Mutex::new(CrashState {
                 volatile: durable.clone(),
                 durable,
+                reads: 0,
                 sync_fault: None,
                 fail_next_read: false,
                 fail_next_len: false,
@@ -3250,6 +3479,9 @@ mod tests {
         }
         fn fail_next_read(&self) {
             self.0.lock().unwrap().fail_next_read = true;
+        }
+        fn reads(&self) -> usize {
+            self.0.lock().unwrap().reads
         }
         fn fail_next_len(&self) {
             self.0.lock().unwrap().fail_next_len = true;
@@ -3297,6 +3529,7 @@ mod tests {
         }
         fn read(&self, at: u64, out: &mut [u8]) -> io::Result<()> {
             let mut state = self.0.lock().unwrap();
+            state.reads += 1;
             if state.fail_next_read {
                 state.fail_next_read = false;
                 return Err(io::Error::other("injected value read failure"));
@@ -3366,6 +3599,257 @@ mod tests {
         let backend = CrashBackend::new();
         let core = Core::create_with_backend(backend.clone(), TestAdmission::unlimited()).unwrap();
         (core, backend)
+    }
+
+    #[test]
+    fn cache_keeps_every_fitting_committed_value_without_disk_reads() {
+        let (core, backend) = new_core();
+        core.configure_value_cache(CacheConfig {
+            byte_limit: 128 << 10,
+        })
+        .unwrap();
+        core.commit(&[Operation::create_table("accounts")]).unwrap();
+        for id in 0..80_u64 {
+            core.commit(&[Operation::put(
+                "accounts",
+                id.to_be_bytes(),
+                vec![id as u8; 512],
+            )])
+            .unwrap();
+        }
+        let before = backend.reads();
+        let snapshot = core.snapshot().unwrap();
+        for _ in 0..3 {
+            for id in 0..80_u64 {
+                let value = core
+                    .get_admitted(&snapshot, "accounts", &id.to_be_bytes(), 512)
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(value.as_bytes(), vec![id as u8; 512]);
+            }
+        }
+        assert_eq!(backend.reads(), before);
+        let stats = core.value_cache_stats().unwrap();
+        assert_eq!(stats.entries, 80);
+        assert_eq!(stats.evictions, 0);
+        assert!(stats.resident_bytes <= 128 << 10);
+    }
+
+    #[test]
+    fn cache_hits_keep_owner_checks_snapshot_versions_and_read_bounds() {
+        let backend = CrashBackend::new();
+        let admission = TestAdmission::unlimited();
+        let core = Core::create_with_backend(backend.clone(), admission.clone()).unwrap();
+        core.configure_value_cache(CacheConfig {
+            byte_limit: 32 << 10,
+        })
+        .unwrap();
+        core.commit(&[
+            Operation::create_table("t"),
+            Operation::put("t", b"k", b"old"),
+        ])
+        .unwrap();
+        let old = core.snapshot().unwrap();
+        core.commit(&[Operation::put("t", b"k", b"new")]).unwrap();
+        let current = core.snapshot().unwrap();
+        let before = backend.reads();
+        assert_eq!(core.get(&old, "t", b"k", 3).unwrap().unwrap(), b"old");
+        assert_eq!(core.get(&current, "t", b"k", 3).unwrap().unwrap(), b"new");
+        assert!(matches!(
+            core.get(&current, "t", b"k", 2),
+            Err(CoreError::InvalidInput(_))
+        ));
+        assert_eq!(backend.reads(), before);
+        admission.failed.store(true, Ordering::Release);
+        assert!(matches!(
+            core.get(&current, "t", b"k", 3),
+            Err(CoreError::OwnerFailed)
+        ));
+        assert!(core.is_fenced());
+        assert_eq!(backend.reads(), before);
+    }
+
+    #[test]
+    fn cache_reopen_warms_in_bounded_steps_then_serves_only_memory() {
+        let (core, backend) = new_core();
+        core.commit(&[Operation::create_table("a"), Operation::create_table("b")])
+            .unwrap();
+        for id in 0..17_u64 {
+            core.commit(&[Operation::put(
+                if id < 9 { "a" } else { "b" },
+                id.to_be_bytes(),
+                vec![id as u8; 128],
+            )])
+            .unwrap();
+        }
+        core.close().into_result().unwrap();
+        let backend = backend.crash();
+        let core = Core::open_with_backend(backend.clone(), TestAdmission::unlimited()).unwrap();
+        core.configure_value_cache(CacheConfig {
+            byte_limit: 64 << 10,
+        })
+        .unwrap();
+        let mut visited = 0;
+        loop {
+            let progress = core.warm_value_cache(3).unwrap();
+            assert!(progress.visited <= 3);
+            visited += progress.visited;
+            if progress.scan_complete {
+                assert!(progress.fully_resident);
+                break;
+            }
+        }
+        assert_eq!(visited, 17);
+        let before = backend.reads();
+        let snapshot = core.snapshot().unwrap();
+        for id in 0..17_u64 {
+            assert_eq!(
+                core.get(
+                    &snapshot,
+                    if id < 9 { "a" } else { "b" },
+                    &id.to_be_bytes(),
+                    128
+                )
+                .unwrap()
+                .unwrap(),
+                vec![id as u8; 128]
+            );
+        }
+        assert_eq!(backend.reads(), before);
+    }
+
+    #[test]
+    fn cache_pressure_keeps_durable_values_and_returns_to_full_residency() {
+        let (core, backend) = new_core();
+        core.configure_value_cache(CacheConfig {
+            byte_limit: 8 << 10,
+        })
+        .unwrap();
+        core.commit(&[Operation::create_table("t")]).unwrap();
+        for id in 0..64_u64 {
+            core.commit(&[Operation::put("t", id.to_be_bytes(), vec![id as u8; 512])])
+                .unwrap();
+            assert!(core.value_cache_stats().unwrap().resident_bytes <= 8 << 10);
+        }
+        assert!(core.value_cache_stats().unwrap().entries < 64);
+        let snapshot = core.snapshot().unwrap();
+        for id in 0..64_u64 {
+            assert_eq!(
+                core.get(&snapshot, "t", &id.to_be_bytes(), 512)
+                    .unwrap()
+                    .unwrap(),
+                vec![id as u8; 512]
+            );
+        }
+        drop(snapshot);
+        core.configure_value_cache(CacheConfig {
+            byte_limit: 128 << 10,
+        })
+        .unwrap();
+        loop {
+            let progress = core.warm_value_cache(7).unwrap();
+            if progress.scan_complete {
+                assert!(progress.fully_resident);
+                break;
+            }
+        }
+        let before = backend.reads();
+        let snapshot = core.snapshot().unwrap();
+        for id in 0..64_u64 {
+            core.get_admitted(&snapshot, "t", &id.to_be_bytes(), 512)
+                .unwrap()
+                .unwrap();
+        }
+        assert_eq!(backend.reads(), before);
+    }
+
+    #[test]
+    fn cache_never_serves_a_denied_or_uncertain_commit() {
+        let backend = CrashBackend::new();
+        let admission = TestAdmission::unlimited();
+        let core = Core::create_with_backend(backend.clone(), admission.clone()).unwrap();
+        core.configure_value_cache(CacheConfig {
+            byte_limit: 32 << 10,
+        })
+        .unwrap();
+        core.commit(&[
+            Operation::create_table("t"),
+            Operation::put("t", b"k", b"old"),
+        ])
+        .unwrap();
+        let old = core.snapshot().unwrap();
+        admission
+            .growth_limit
+            .store(core.committed_end().unwrap(), Ordering::Release);
+        assert!(matches!(
+            core.commit(&[Operation::put("t", b"k", b"bad")]),
+            Err(CoreError::CapacityDenied)
+        ));
+        assert_eq!(core.get(&old, "t", b"k", 3).unwrap().unwrap(), b"old");
+        admission.growth_limit.store(u64::MAX, Ordering::Release);
+        core.commit(&[Operation::put("t", b"k", b"new")]).unwrap();
+        let current = core.snapshot().unwrap();
+        assert_eq!(core.get(&current, "t", b"k", 3).unwrap().unwrap(), b"new");
+        backend.fail_sync(1, false);
+        assert!(matches!(
+            core.commit(&[Operation::put("t", b"k", b"lost")]),
+            Err(CoreError::UnknownCommit(_))
+        ));
+        assert!(matches!(
+            core.get(&current, "t", b"k", 4),
+            Err(CoreError::OwnerFailed)
+        ));
+        let reopened =
+            Core::open_with_backend(backend.crash(), TestAdmission::unlimited()).unwrap();
+        assert_eq!(
+            reopened
+                .get(&reopened.snapshot().unwrap(), "t", b"k", 4)
+                .unwrap()
+                .unwrap(),
+            b"new"
+        );
+    }
+
+    #[test]
+    fn cache_compaction_preserves_hot_values_and_invalidates_reused_offsets() {
+        let (core, backend) = new_core();
+        core.configure_value_cache(CacheConfig {
+            byte_limit: 64 << 10,
+        })
+        .unwrap();
+        core.commit(&[
+            Operation::create_table("t"),
+            Operation::put("t", b"other", b"kept"),
+        ])
+        .unwrap();
+        for id in 0..32_u8 {
+            core.commit(&[Operation::put("t", b"k", vec![id; 256])])
+                .unwrap();
+        }
+        assert_eq!(core.value_cache_stats().unwrap().entries, 2);
+        let old_end = core.committed_end().unwrap();
+        core.compact().unwrap();
+        assert!(core.committed_end().unwrap() < old_end);
+        let before = backend.reads();
+        let snapshot = core.snapshot().unwrap();
+        assert_eq!(
+            core.get(&snapshot, "t", b"k", 256).unwrap().unwrap(),
+            vec![31; 256]
+        );
+        assert_eq!(
+            core.get(&snapshot, "t", b"other", 4).unwrap().unwrap(),
+            b"kept"
+        );
+        assert_eq!(backend.reads(), before);
+        drop(snapshot);
+        core.commit(&[Operation::put("t", b"later", b"after relocation")])
+            .unwrap();
+        assert_eq!(
+            core.get(&core.snapshot().unwrap(), "t", b"later", 32)
+                .unwrap()
+                .unwrap(),
+            b"after relocation"
+        );
     }
 
     #[test]

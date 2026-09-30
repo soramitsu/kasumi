@@ -6,6 +6,8 @@
 //! writer back whole and releases its writer gate; an owner failure keeps the
 //! writer, its staged batch and the gate for retained custody.
 
+use crate::cache::{CacheConfig, CacheStats};
+use crate::core::CacheWarmup;
 use crate::core::{
     AdmittedValue, BackendCloseEntry, BackendCloseOutcome, BackendNativeDisposition, Core,
     CoreError, MAX_BATCH_BYTES, MAX_KEY_BYTES, MAX_VALUE_BYTES, Operation, ReadSnapshot,
@@ -632,6 +634,26 @@ impl Database {
 
     pub(crate) fn admission(&self) -> Arc<dyn StorageAdmission> {
         self.inner.admission.clone()
+    }
+
+    /// Set this native store's cache share of the embedding memory budget.
+    pub fn configure_value_cache(&self, config: CacheConfig) -> Result<(), StorageError> {
+        self.inner
+            .core
+            .configure_value_cache(config)
+            .map_err(Into::into)
+    }
+
+    pub fn value_cache_stats(&self) -> Result<CacheStats, StorageError> {
+        self.inner.core.value_cache_stats().map_err(Into::into)
+    }
+
+    /// Perform one bounded startup/refill step without materializing all keys.
+    pub fn warm_value_cache(&self, max_values: usize) -> Result<CacheWarmup, StorageError> {
+        self.inner
+            .core
+            .warm_value_cache(max_values)
+            .map_err(Into::into)
     }
 
     pub fn transaction_admission(&self) -> DatabaseTransactionAdmission {

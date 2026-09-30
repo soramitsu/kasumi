@@ -1,0 +1,78 @@
+   Compiling kasumi-clock v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-clock)
+   Compiling kasumi-types v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-types)
+   Compiling kasumi-serving v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-serving)
+   Compiling kasumi-client v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-client)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.50s
+     Running unittests src/lib.rs (target/debug/deps/kasumi_client-adc9aa0f837ab822)
+
+running 67 tests
+test data_pool::snapshot_error_tests::bounded_snapshot_errors_preserve_only_approved_retry_codes ... ok
+test authority_pool::tests::authorization_and_proof_errors_are_not_failover_signals ... ok
+test installed_pool::tests::authority_and_response_failures_do_not_change_routes ... ok
+test installed_pool::tests::suspend_and_clock_regression_cannot_extend_an_invocation ... ok
+test authorization_tests::bearer_wire_value_is_unchanged_while_debug_is_redacted ... ok
+test authority_pool::tests::unresolved_command_has_the_authority_unknown_outcome_detail ... ok
+test authority_pool::tests::unresolved_lifecycle_has_the_authority_unknown_outcome_detail ... ok
+test installed_pool::tests::ambiguous_resume_never_redispatches_but_connection_failure_can_select_another_member ... ok
+test installed_pool::tests::leader_probe_fails_over_without_a_second_resume_or_a_new_credential ... ok
+test lifecycle_pool::tests::policy_change_resolution_preserves_original_revision_and_completion_inputs ... ok
+test installed_pool::tests::receipt_resolution_selects_leader_then_resolves_without_redispatch_or_renewal ... ok
+test installed_pool::tests::failover_keeps_one_credential_and_original_request_until_the_next_invocation ... ok
+test lifecycle_pool::tests::installation_receipt_requires_original_identity_input_and_revision ... ok
+test lifecycle::topology::tests::future_signed_server_time_cannot_extend_the_request_lifetime ... ok
+test installed_pool::tests::uninstalled_origins_and_missing_pins_are_rejected_before_credentials_are_loaded ... ok
+test literal_decode::tests::cancelled_canonical_input_retains_reservation_until_worker_exit ... ok
+test lifecycle::topology::tests::shorter_server_deadline_and_elapsed_regression_fail_closed ... ok
+test literal_decode::tests::numeric_request_lexemes_do_not_consume_literal_string_key_limits ... ok
+test lifecycle::topology::tests::delayed_reply_and_clones_preserve_original_elapsed_expiry ... ok
+test literal_decode::tests::numeric_lexeme_and_request_clone_work_are_admitted_before_construction ... ok
+test literal_decode::tests::change_feed_retention_gap_binds_original_position_and_checked_range ... ok
+test literal_decode::tests::query_budget_is_aggregate_across_rows_and_ignored_wire_is_rejected ... ok
+test mutation_receipt::tests::duplicate_protobuf_version_entries_survive_raw_wire_and_fail_both_receipt_paths ... ok
+test mutation_receipt::tests::former_map_wire_is_not_a_first_release_receipt ... ok
+test literal_decode::tests::complete_schema_read_decodes_extra_installed_names_and_rejects_null_or_over_budget ... ok
+test mutation_receipt::tests::non_mutation_write_replies_use_the_same_strict_row_decoder ... ok
+test literal_decode::tests::change_feed_schema_and_audit_construct_values_from_literal_spans ... ok
+test mutation_receipt::tests::rejected_and_absent_receipts_are_distinct_and_malformed_pairs_fail ... ok
+test literal_decode::tests::schema_read_rejects_impossible_schema_and_collection_epochs ... ok
+test literal_decode::tests::change_feed_after_image_requires_exact_commit_version_and_identity ... ok
+test mutation_receipt::tests::retained_outcome_requires_the_exact_body_read_set_preconditions_and_key ... ok
+test literal_decode::tests::policy_limits_readback_rejects_foreign_or_extended_identity ... ok
+test lifecycle::topology::tests::actual_request_caller_and_installed_root_are_independently_bound ... ok
+test security_audit::tests::capacity_thresholds_and_usage_must_match_the_installed_budget ... ok
+test security_audit::tests::archive_cursor_binds_snapshot_head_and_page_boundary ... ok
+test mutation_receipt::tests::committed_reply_and_retained_outcome_require_exact_canonical_ordered_targets ... ok
+test literal_decode::tests::ordinary_query_preserves_literal_keys_numbers_and_original_page_revision ... ok
+test security_audit::tests::status_hot_tail_fixes_the_first_cursor ... ok
+test snapshot_decode::request::tests::map_workspace_sums_live_parents_and_releases_on_success_and_error ... ok
+test security_audit::tests::rejects_historical_restart_holes_empty_progress_and_oversize ... ok
+test snapshot_decode::request::tests::map_workspace_admission_precedes_sorting_body ... ok
+test snapshot_decode::request::tests::canonical_wrapper_admission_bounds_actual_sorting_workspace ... ok
+test security_audit::tests::record_pages_bind_snapshot_anchor_and_exact_last_record ... ok
+test literal_decode::tests::ordered_seek_rejects_spoofed_metadata_duplicate_fields_and_over_budget_rows ... ok
+test snapshot_decode::tests::bounded_snapshot_requires_exact_trusted_leader_time_witness ... ok
+test snapshot_decode::tests::outbound_borrowed_walk_and_nil_scope_fail_before_encoding_growth ... ok
+test literal_decode::tests::canonical_intent_helpers_preserve_body_predicates_schema_and_exact_digest ... ok
+test literal_decode::tests::ordered_seek_literal_values_exact_source_and_audit_only_revision_continuation ... ok
+test snapshot_decode::tests::shared_response_retains_exact_original_reservation ... ok
+test snapshot_decode::tests::literal_marker_keys_and_nested_payloads_round_trip_as_ordinary_documents ... ok
+test snapshot_decode::tokens::tests::scans_ignored_duplicate_and_shallow_tokens_before_serde ... ok
+test snapshot_decode::transport::tests::bounded_envelope_rejects_duplicate_and_noncanonical_fields ... ok
+test snapshot_decode::transport::tests::framing_rejects_declared_size_compression_and_second_message_before_forwarding ... ok
+test snapshot_decode::tests::exact_points_scope_order_and_revision_are_checked_before_values ... ok
+test snapshot_decode::tests::transport_error_retains_code_without_peer_message_details_or_metadata ... ok
+test snapshot_decode::tests::query_rows_cannot_advance_beyond_their_collection_epoch ... ok
+test literal_decode::tests::change_feed_events_bind_scope_and_commit_metadata_without_rejecting_filtered_gaps ... ok
+test snapshot_decode::transport::tests::oversized_initial_status_headers_are_removed_before_tonic_can_decode_them ... ok
+test staged_status::tests::rejects_foreign_status_scope_and_missing_original_identity ... ok
+test profile::tests::database_profile_rejects_untrusted_endpoints_purpose_and_secret_files ... ok
+test profile::tests::exact_private_profile_bytes_bind_identity_and_refresh_the_bearer ... ok
+test snapshot_decode::tests::parser_error_payload_drops_before_worker_admission_is_released ... ok
+test profile::tests::profile_loader_rejects_retired_shape_and_unsafe_files ... ok
+test literal_decode::tests::security_audit_pages_accept_only_exact_typed_bounded_records ... ok
+test installed_pool::tests::stalled_dispatch_expires_without_credential_reload_or_second_resume ... ok
+test installed_pool::tests::absent_receipt_after_ambiguity_never_authorizes_another_effect ... ok
+test snapshot_decode::tests::cancelled_and_panicking_decoder_keeps_charge_until_actual_worker_exit ... ok
+
+test result: ok. 67 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.01s
+

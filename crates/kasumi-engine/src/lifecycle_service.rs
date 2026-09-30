@@ -12,40 +12,74 @@ pub struct LifecycleSigner {
     key: Ed25519KeyPair,
 }
 impl LifecycleSigner {
-    pub async fn sign_topology(&self, proof: &super::control_topology_service::VerifiedControlTopology)
-        -> Result<SignedControlTopology> {
+    pub async fn sign_topology(
+        &self,
+        proof: &super::control_topology_service::VerifiedControlTopology,
+    ) -> Result<SignedControlTopology> {
         proof.release().await?;
         if self.root != proof.observation().root {
-            return Err(Error::new(ErrorCode::Forbidden, "Control topology signer differs"));
+            return Err(Error::new(
+                ErrorCode::Forbidden,
+                "Control topology signer differs",
+            ));
         }
         let observation = proof.observation().clone();
-        let signature = hex::encode(self.key.sign(&serde_json::to_vec(
-            &("kasumi.control-topology.v1", &observation)).map_err(encoding)?).as_ref());
+        let signature = hex::encode(
+            self.key
+                .sign(
+                    &serde_json::to_vec(&("kasumi.control-topology.v1", &observation))
+                        .map_err(encoding)?,
+                )
+                .as_ref(),
+        );
         proof.release().await?;
-        Ok(SignedControlTopology { observation, signature })
+        Ok(SignedControlTopology {
+            observation,
+            signature,
+        })
     }
 
-    pub async fn sign_topology_release(&self,
+    pub async fn sign_topology_release(
+        &self,
         proof: &super::control_topology_service::VerifiedControlTopology,
-        request: &ReleaseControlTopology) -> Result<SignedControlTopologyRelease> {
+        request: &ReleaseControlTopology,
+    ) -> Result<SignedControlTopologyRelease> {
         proof.release().await?;
         let trust = kasumi_serving::ControlTrust::install(self.root.clone()).map_err(encoding)?;
         trust.verify_topology(&request.original).map_err(encoding)?;
         let original = &request.original.observation;
         let current = proof.observation();
-        if request.request_id.is_nil() || current.root != self.root
-            || current.request != original.request || current.caller != original.caller
-            || current.policy_epoch != original.policy_epoch || current.term != original.term
-            || current.leader_node_id != original.leader_node_id || current.voters != original.voters
-            || current.topology != original.topology || current.revision < original.revision
-            || current.not_after_ms != original.not_after_ms {
-            return Err(Error::new(ErrorCode::Forbidden, "Control routing release binding differs"));
+        if request.request_id.is_nil()
+            || current.root != self.root
+            || current.request != original.request
+            || current.caller != original.caller
+            || current.policy_epoch != original.policy_epoch
+            || current.term != original.term
+            || current.leader_node_id != original.leader_node_id
+            || current.voters != original.voters
+            || current.topology != original.topology
+            || current.revision < original.revision
+            || current.not_after_ms != original.not_after_ms
+        {
+            return Err(Error::new(
+                ErrorCode::Forbidden,
+                "Control routing release binding differs",
+            ));
         }
-        let release = ControlTopologyRelease { request_id: request.request_id,
+        let release = ControlTopologyRelease {
+            request_id: request.request_id,
             original_sha256: kasumi_serving::digest(&request.original).map_err(encoding)?,
-            revision: current.revision, not_after_ms: original.not_after_ms };
-        let signature = hex::encode(self.key.sign(&serde_json::to_vec(
-            &("kasumi.control-topology-release.v1", &release)).map_err(encoding)?).as_ref());
+            revision: current.revision,
+            not_after_ms: original.not_after_ms,
+        };
+        let signature = hex::encode(
+            self.key
+                .sign(
+                    &serde_json::to_vec(&("kasumi.control-topology-release.v1", &release))
+                        .map_err(encoding)?,
+                )
+                .as_ref(),
+        );
         proof.release().await?;
         Ok(SignedControlTopologyRelease { release, signature })
     }
@@ -215,9 +249,20 @@ impl Database {
             .map_err(unknown)
     }
     pub(super) async fn lifecycle_barrier(&self, context: &RequestContext) -> Result<u64> {
+        self.control_observation_barrier(
+            context,
+            super::control_administration::ControlObservationAccess::Administration,
+        )
+        .await
+    }
+    pub(super) async fn control_observation_barrier(
+        &self,
+        context: &RequestContext,
+        access: super::control_administration::ControlObservationAccess,
+    ) -> Result<u64> {
         context.authorization.check_live()?;
         self.access()?;
-        self.engine.authorize(context, None, Action::Admin)?;
+        access.authorize(self, context)?;
         let state = self.engine.generation()?;
         if state.state.tenant != "__kasumi_control" {
             return Err(Error::new(
@@ -240,7 +285,7 @@ impl Database {
             ));
         }
         context.authorization.check_live()?;
-        self.engine.authorize(context, None, Action::Admin)?;
+        access.authorize(self, context)?;
         Ok(metrics.current_term)
     }
     pub(super) fn lifecycle_now(&self) -> Result<u64> {

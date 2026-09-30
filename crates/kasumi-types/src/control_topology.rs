@@ -30,7 +30,7 @@ pub struct TenantRoute {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ControlTopology {
-    #[serde(deserialize_with = "kasumi_types::deserialize_u64_map")]
+    #[serde(deserialize_with = "crate::deserialize_u64_map")]
     pub nodes: BTreeMap<u64, ControlNode>,
     pub tenants: BTreeMap<String, TenantRoute>,
 }
@@ -83,7 +83,11 @@ impl ControlTopology {
         }
         for (tenant, route) in &self.tenants {
             validate_name(tenant)?;
-            if tenant.starts_with("__kasumi_") || uuid::Uuid::parse_str(&route.incarnation).is_err()
+            let incarnation = uuid::Uuid::parse_str(&route.incarnation)
+                .map_err(|_| invalid("invalid tenant incarnation"))?;
+            if tenant.starts_with("__kasumi_")
+                || incarnation.is_nil()
+                || incarnation.to_string() != route.incarnation
             {
                 return Err(invalid("reserved tenant name or invalid incarnation"));
             }
@@ -112,3 +116,6 @@ impl ControlTopology {
     }
 }
 
+#[cfg(test)]
+#[path = "control_topology_tests.rs"]
+mod tests;

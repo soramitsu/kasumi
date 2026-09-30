@@ -1787,6 +1787,7 @@ dependencies = [
  "prost",
  "prost-build",
  "protoc-bin-vendored",
+ "ring",
  "serde",
  "serde_json",
  "sha2",

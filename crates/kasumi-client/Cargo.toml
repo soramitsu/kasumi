@@ -38,3 +38,4 @@ protoc-bin-vendored = "3"
 
 [dev-dependencies]
 tempfile.workspace = true
+ring = "0.17"

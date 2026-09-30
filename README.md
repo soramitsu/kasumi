@@ -16,6 +16,11 @@ The durable key-value format is implemented in the [`kasumi-kv`](crates/kasumi-k
 crate. Its [active goal](docs/native-kv-goal.md) tracks validation of the new
 engine for the first release.
 
+The [storage redesign goals](docs/disk-backed-cache-goals.md) target a large
+cache that keeps the whole working database in memory while it fits, then uses
+disk-backed reads above the configured bound. That redesign is not implemented
+or qualified; the resident-data limits described below still apply to current code.
+
 Kasumi uses its own APIs; it does not implement the Redis protocol. See the
 [standalone installation guide](docs/standalone.md) to run a local server.
 

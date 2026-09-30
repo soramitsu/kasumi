@@ -125,6 +125,11 @@ impl ElapsedDeadline {
         Ok(child)
     }
     pub fn check(&self) -> anyhow::Result<()> {
+        self.remaining().map(|_| ())
+    }
+    /// Remaining time from this proof's original suspend-aware anchor. Sampling
+    /// cannot renew expiry; regression or expiry seals every shared copy.
+    pub fn remaining(&self) -> anyhow::Result<Duration> {
         let mut last = self
             .last_seen
             .lock()
@@ -135,7 +140,7 @@ impl ElapsedDeadline {
             anyhow::bail!("elapsed deadline expired or clock regressed");
         }
         *last = Some(now);
-        Ok(())
+        Ok(self.deadline - now)
     }
 }
 
@@ -298,5 +303,34 @@ mod tests {
         let second = EpochClock::system().unwrap();
         assert!(Arc::ptr_eq(&first, &second));
         assert!(second.now_ms().unwrap() >= original.utc_ms());
+    }
+    #[test]
+    fn remaining_time_consumes_original_deadline_and_seals_shared_copies() {
+        let mono = Arc::new(Mono(AtomicU64::new(0)));
+        let clock = EpochClock::new(mono.clone(), Arc::new(Wall(AtomicU64::new(1000)))).unwrap();
+        let original = clock.observe().unwrap().until(1500).unwrap();
+        assert_eq!(original.remaining().unwrap(), Duration::from_millis(500));
+        let copy = original.clone();
+        mono.0.store(450_000_000, Ordering::SeqCst);
+        assert_eq!(copy.remaining().unwrap(), Duration::from_millis(50));
+        mono.0.store(500_000_000, Ordering::SeqCst);
+        assert!(copy.remaining().is_err());
+        mono.0.store(499_000_000, Ordering::SeqCst);
+        assert!(original.remaining().is_err());
+    }
+
+    #[test]
+    fn pre_expiry_regression_terminally_seals_all_deadline_copies() {
+        let mono = Arc::new(Mono(AtomicU64::new(0)));
+        let clock = EpochClock::new(mono.clone(), Arc::new(Wall(AtomicU64::new(1000)))).unwrap();
+        let original = clock.observe().unwrap().until(1500).unwrap();
+        let copy = original.clone();
+        mono.0.store(100_000_000, Ordering::SeqCst);
+        assert_eq!(original.remaining().unwrap(), Duration::from_millis(400));
+        mono.0.store(99_000_000, Ordering::SeqCst);
+        assert!(copy.remaining().is_err());
+        mono.0.store(101_000_000, Ordering::SeqCst);
+        assert!(original.check().is_err());
+        assert!(copy.remaining().is_err());
     }
 }

@@ -1,0 +1,82 @@
+[
+  {
+    "path": "Cargo.lock",
+    "bytes": 119571,
+    "sha256": "71d89a07792aa816779832c9d0ca811611eed77e142a95b0a731f347d172beff"
+  },
+  {
+    "path": "crates/kasumi-client/Cargo.toml",
+    "bytes": 1012,
+    "sha256": "fbd87bc362c9d3e5ef52d347e710b73ebb20b5f28d13b5b63bdc501910482e5f"
+  },
+  {
+    "path": "crates/kasumi-client/proto/kasumi.proto",
+    "bytes": 12970,
+    "sha256": "18274d8c8b00da3a0868b6012c5f96806fc12b71bb3eab60fa37131ecb30aa5a"
+  },
+  {
+    "path": "crates/kasumi-client/src/lib.rs",
+    "bytes": 21891,
+    "sha256": "dc6763013875854dba19ba7209893ef56f20ed528fd1133cfd78913ea4cf0cd3"
+  },
+  {
+    "path": "crates/kasumi-client/src/lifecycle.rs",
+    "bytes": 5132,
+    "sha256": "ad2bde11208f204c686a670df016a95b103aadbe5427b7a07af1991da91d4d5b"
+  },
+  {
+    "path": "crates/kasumi-client/src/control_topology.rs",
+    "bytes": 6643,
+    "sha256": "554f988829295a838e67cd2bafa7b385aae30f379dae6905cb57c78a30550d35"
+  },
+  {
+    "path": "crates/kasumi-client/src/control_topology_tests.rs",
+    "bytes": 6762,
+    "sha256": "0840165efbe9654dab86b1f5205750eb9bd294649d20344029382be0291517e5"
+  },
+  {
+    "path": "crates/kasumi-server/src/rpc_lifecycle.rs",
+    "bytes": 7953,
+    "sha256": "369c50bd297b6a37febce7990cc029f14b7384ba7c66cadff27262bc7888dea7"
+  },
+  {
+    "path": "crates/kasumi-server/src/rpc_control_topology.rs",
+    "bytes": 4209,
+    "sha256": "b687ed1f8510029864a61239fa76d7d2db08743db1694708322196f4429319ee"
+  },
+  {
+    "path": "crates/kasumi-server/src/rpc_lifecycle_tests.rs",
+    "bytes": 44008,
+    "sha256": "e04291c4d75f15143816477675bebdbaa7768befe9ae62cc53ce361416b4710b"
+  },
+  {
+    "path": "crates/kasumi-engine/src/control_administration.rs",
+    "bytes": 10721,
+    "sha256": "6d6e9ae8579c49e3970fd31a3832385e4bc87181ecb5d2245079fe4b75af9086"
+  },
+  {
+    "path": "crates/kasumi-engine/src/control_topology_service.rs",
+    "bytes": 8100,
+    "sha256": "bb3f469651e6da3e34e6d42560521957babf6f2e862a39601411b94fe07c6457"
+  },
+  {
+    "path": "crates/kasumi-engine/src/lifecycle_service.rs",
+    "bytes": 23407,
+    "sha256": "4ea5d039fea1ee64c9e5e3b1147b28cbb43d085a59f9d4276882a7fab72772ae"
+  },
+  {
+    "path": "crates/kasumi-engine/tests/lifecycle.rs",
+    "bytes": 49344,
+    "sha256": "2e764cf19531889249952ec248dcb0a3f3bd109dd8adf39331be751d90f3ff48"
+  },
+  {
+    "path": "crates/kasumi-clock/src/lib.rs",
+    "bytes": 12392,
+    "sha256": "4c889640ffe102864b48d2095ae226595017f888b85d175021211caaba6c2f50"
+  },
+  {
+    "path": "docs/control-topology-development.md",
+    "bytes": 2697,
+    "sha256": "ba35547b5aba6ffa28e1d843c1a16e644ce881febfcc943b82abc1ceda1d7693"
+  }
+]

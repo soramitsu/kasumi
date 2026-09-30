@@ -1,0 +1,39 @@
+   Compiling percent-encoding v2.3.2
+   Compiling syn v3.0.5
+   Compiling syn v2.0.119
+   Compiling serde_json v1.0.151 (/Users/takemiyamakoto/dev/kasumi/vendor/serde_json-1.0.151)
+   Compiling form_urlencoded v1.2.2
+   Compiling zerovec-derive v0.11.6
+   Compiling displaydoc v0.2.7
+   Compiling serde_derive v1.0.229
+   Compiling thiserror-impl v2.0.20
+   Compiling synstructure v0.13.2
+   Compiling zerofrom-derive v0.1.7
+   Compiling yoke-derive v0.8.2
+   Compiling thiserror v2.0.20
+   Compiling zerofrom v0.1.8
+   Compiling serde v1.0.229
+   Compiling yoke v0.8.3
+   Compiling zerovec v0.11.8
+   Compiling zerotrie v0.2.5
+   Compiling tinystr v0.8.4
+   Compiling potential_utf v0.1.6
+   Compiling icu_collections v2.3.0
+   Compiling icu_locale_core v2.3.0
+   Compiling icu_provider v2.3.1
+   Compiling icu_properties v2.3.0
+   Compiling icu_normalizer v2.3.0
+   Compiling idna_adapter v1.2.2
+   Compiling idna v1.1.0
+   Compiling url v2.5.8
+   Compiling kasumi-types v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-types)
+error[E0433]: cannot find module or crate `kasumi_types` in this scope
+  --> crates/kasumi-types/src/control_topology.rs:33:32
+   |
+33 |     #[serde(deserialize_with = "kasumi_types::deserialize_u64_map")]
+   |                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ use of unresolved module or unlinked crate `kasumi_types`
+   |
+   = help: if you wanted to use a crate named `kasumi_types`, use `cargo add kasumi_types` to add it to your `Cargo.toml`
+
+For more information about this error, try `rustc --explain E0433`.
+error: could not compile `kasumi-types` (lib test) due to 1 previous error

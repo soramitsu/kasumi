@@ -1,0 +1,32 @@
+[
+  {
+    "path": "scripts/process_ha_owned.py",
+    "sha256": "67c9b4074915be33b56046f627373fe79e7250a18b08dbb090aaf1e0d1479ed5",
+    "bytes": 11286,
+    "mode": 420
+  },
+  {
+    "path": "scripts/process_ha_topology.py",
+    "sha256": "1127c7e409b99cc21afe0ea3666ee7f0b858d30bd801b52c858184a91797e719",
+    "bytes": 9557,
+    "mode": 420
+  },
+  {
+    "path": "scripts/test_process_ha.py",
+    "sha256": "8e2430b0cb4e616f8428d9e8835e64bbd500b177b97a49b16ca5f13ae660db2c",
+    "bytes": 12650,
+    "mode": 420
+  },
+  {
+    "path": "scripts/gate_process.py",
+    "sha256": "a0c2942685c271330bf72852870e7c3ecbd64fc09430888e0507f325b626a584",
+    "bytes": 16840,
+    "mode": 420
+  },
+  {
+    "path": "docs/process-ha-development.md",
+    "sha256": "20f2e5d27065542d53a068827c277c2388afad096e5de1762180de36c5148076",
+    "bytes": 4041,
+    "mode": 420
+  }
+]

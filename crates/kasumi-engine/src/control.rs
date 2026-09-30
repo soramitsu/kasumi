@@ -3,9 +3,7 @@
 use crate::Database;
 use kasumi_types::*;
 use serde_json::json;
-use std::{
-    sync::Arc,
-};
+use std::sync::Arc;
 
 pub const CONTROL_TENANT: &str = "__kasumi_control";
 const COLLECTION: &str = "topology";

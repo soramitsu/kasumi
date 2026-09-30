@@ -4,6 +4,12 @@ This is the active implementation and acceptance ledger for the approved first
 release. An unchecked gate is unfinished. The September 5 baseline and later
 branch evidence remain historical records; they do not certify this integration.
 
+The [2026-09-30 disk-backed cache goals](disk-backed-cache-goals.md) update G02's
+storage target: retain the full working database in a large cache while it fits,
+then use bounded eviction and disk-backed reads. Writes stay durable in both
+modes. This supersedes the earlier RAM-limited database capacity assumption;
+implementation and qualification of the new goals remain open.
+
 ## Current verified status
 
 Updated 2026-09-26. **No source revision is release-qualified.** The table

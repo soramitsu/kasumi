@@ -34,7 +34,7 @@ pub use retirement_pool::KasumiRetirementPool;
 mod recovery;
 pub use recovery::KasumiRecoveryClient;
 mod lifecycle;
-pub use lifecycle::KasumiLifecycleClient;
+pub use lifecycle::{CurrentControlTopology, CurrentControlTopologyRelease, KasumiLifecycleClient};
 mod authority;
 mod authority_pool;
 mod control_signer;

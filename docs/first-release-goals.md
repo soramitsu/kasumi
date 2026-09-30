@@ -52,8 +52,15 @@ must use disjoint file scopes in this same checkout.
 
 ## Binding decisions 2026-09-26
 
-The user made these decisions on 2026-09-26. They bind every workstream below.
-They override any conflicting criterion in this document, the
+Storage update, 2026-09-30: the user's
+[disk-backed cache goals](disk-backed-cache-goals.md) supersede decision 3's
+full-resident-only capacity model and permanently resident key directory.
+Keep the whole working database in a large cache while it fits; use eviction
+and disk-backed reads only under capacity pressure. Writes remain durable in
+both modes. Other decisions and historical evidence remain in force.
+
+Subject to the 2026-09-30 storage update above, the user made these decisions
+on 2026-09-26 and they bind every workstream below. They override any conflicting criterion in this document, the
 [release ledger](production-release.md) and the
 [approved plan](first-release-plan.md). Historical records keep their original
 wording.
@@ -615,9 +622,12 @@ owner-charged storage and explicit close custody, with all production callers
 cut over and redb removed. The first release rejects older physical formats;
 no migration, fallback reader or dual writer is permitted. Focused, complete
 and final native-source qualification remain open.
-[Binding decision 3](#binding-decisions-2026-09-26) sets the storage model: a
-segmented append-only log with durable writes, in-memory reads and bounded
-incremental reclamation. The redb records below are preserved only as
+[The 2026-09-30 cache goals](disk-backed-cache-goals.md) set the residency
+target: keep all data and indexes in memory while they fit, then serve misses
+from disk within bounded cache and workspace budgets. Durable writes and
+bounded incremental reclamation remain required; the native key directory and
+query indexes must also support disk-backed lookup. The redb records below are
+preserved only as
 historical development evidence, not current G02 criteria. Each G02 paragraph
 whose result rests on redb code, vendored redb tests or redb vendor provenance
 is labelled historical.
@@ -1764,8 +1774,10 @@ component check, not final-source G11 acceptance.
    physical growth bounds. Adopt retained database/writer ownership at every
    production constructor and transaction, with complete memory admission.
 3. Build the segmented native KV log of
-   [binding decision 3](#binding-decisions-2026-09-26), with bounded
-   incremental reclamation and reserved maintenance progress. Then implement
+   [binding decision 3](#binding-decisions-2026-09-26), integrating the
+   [2026-09-30 disk-backed cache goals](disk-backed-cache-goals.md), bounded
+   disk lookup, incremental reclamation and reserved maintenance progress. Then
+   implement
    G03's admitted custody/terminal batch writer. Keep the failed large
    restore and 4,200-command/8,400-audit cases unchanged for validation.
 4. Advance G07's actual child census and production shutdown adapters alongside

@@ -1,0 +1,52 @@
+{
+  "capturedAt": "2026-09-27T09:49:49.074648+00:00",
+  "baseGitCommit": "7c0c4ef1373ace1cef8222e3be4b6396b45ccfcc",
+  "scope": "Source captured after scoped development tests. Not a full build/release closure.",
+  "files": [
+    {
+      "path": "crates/kasumi-types/src/control_topology.rs",
+      "bytes": 4407,
+      "sha256": "3c91b657f76ebedd410815b922637376ff1b1edfe678223a21c1d4ddc387e98f"
+    },
+    {
+      "path": "crates/kasumi-types/src/control_topology_protocol.rs",
+      "bytes": 3858,
+      "sha256": "aa7ac52a901213742aaa8a8eacaee00123f856fb687625a597fa53be07cd2184"
+    },
+    {
+      "path": "crates/kasumi-types/src/control_topology_tests.rs",
+      "bytes": 6357,
+      "sha256": "15b35f750ee88ee23e4533d2f997723c3409c4344e4e2a021b29eda6088bda99"
+    },
+    {
+      "path": "crates/kasumi-serving/src/control.rs",
+      "bytes": 8773,
+      "sha256": "171d629b71a579c1178640e5ad0d02500bb71aa6bfff77f14ef94893d1d660f2"
+    },
+    {
+      "path": "crates/kasumi-serving/src/control_topology_tests.rs",
+      "bytes": 7342,
+      "sha256": "5cf30ed1f91d32a2ddde521467a9d6d041fed2a050a5461e22aef195c2701989"
+    },
+    {
+      "path": "crates/kasumi-engine/src/control_topology_service.rs",
+      "bytes": 7023,
+      "sha256": "35f67946fded23a70a5ee9fb9a69dbcf72469feffc7134c980be117f7a594116"
+    },
+    {
+      "path": "crates/kasumi-engine/src/control_administration.rs",
+      "bytes": 9630,
+      "sha256": "80a9855e77415e362c223ac2420f588850e7efdfe02ecb3558888129a96b9a9d"
+    },
+    {
+      "path": "crates/kasumi-engine/src/lifecycle_service.rs",
+      "bytes": 22596,
+      "sha256": "d609cabfe58269c6cee6f523a9d15f48f3462d76e96ddfdabfdc265252d2393f"
+    },
+    {
+      "path": "crates/kasumi-engine/tests/lifecycle.rs",
+      "bytes": 49344,
+      "sha256": "2e764cf19531889249952ec248dcb0a3f3bd109dd8adf39331be751d90f3ff48"
+    }
+  ]
+}

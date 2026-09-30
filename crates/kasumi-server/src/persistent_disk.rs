@@ -332,8 +332,11 @@ mod tests {
                 max_bytes: 1 << 20,
                 // Shape-only negative fixture; never an enrolled namespace.
                 namespace_binding: kasumi_types::BackupNamespaceBinding::Filesystem {
-                    installation_id: uuid::Uuid::nil(), origin_node_id: 0,
-                    namespace_id: uuid::Uuid::nil(), device: 0, inode: 0,
+                    installation_id: uuid::Uuid::nil(),
+                    origin_node_id: 0,
+                    namespace_id: uuid::Uuid::nil(),
+                    device: 0,
+                    inode: 0,
                 },
             },
         );

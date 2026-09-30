@@ -1,0 +1,12 @@
+   Compiling kasumi-client v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-client)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.54s
+     Running unittests src/lib.rs (target/debug/deps/kasumi_client-adc9aa0f837ab822)
+
+running 4 tests
+test lifecycle::topology::tests::future_signed_server_time_cannot_extend_the_request_lifetime ... ok
+test lifecycle::topology::tests::shorter_server_deadline_and_elapsed_regression_fail_closed ... ok
+test lifecycle::topology::tests::delayed_reply_and_clones_preserve_original_elapsed_expiry ... ok
+test lifecycle::topology::tests::actual_request_caller_and_installed_root_are_independently_bound ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 63 filtered out; finished in 0.00s
+

@@ -1,0 +1,473 @@
+   Compiling kasumi-types v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-types)
+   Compiling kasumi-client v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-client)
+   Compiling kasumi-serving v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-serving)
+error[E0107]: type alias takes 1 generic argument but 2 generic arguments were supplied
+  --> crates/kasumi-client/src/control_topology.rs:84:10
+   |
+84 |     ) -> Result<CurrentControlTopology, ClientError> {
+   |          ^^^^^^                       ------------- help: remove the unnecessary generic argument
+   |          |
+   |          expected 1 generic argument
+   |
+note: type alias defined here, with 1 generic parameter: `T`
+  --> crates/kasumi-types/src/lib.rs:67:10
+   |
+67 | pub type Result<T> = std::result::Result<T, Error>;
+   |          ^^^^^^ -
+
+error[E0277]: `?` couldn't convert the error to `kasumi_types::Error`
+  --> crates/kasumi-client/src/control_topology.rs:90:27
+   |
+90 |         request.validate()?;
+   |                 ----------^ the trait `From<anyhow::Error>` is not implemented for `kasumi_types::Error`
+   |                 |
+   |                 this can't be annotated with `?` because it has type `Result<_, anyhow::Error>`
+   |
+   = note: the question mark operation (`?`) implicitly performs a conversion on the error value using the `From` trait
+
+error[E0107]: type alias takes 1 generic argument but 2 generic arguments were supplied
+   --> crates/kasumi-client/src/control_topology.rs:168:10
+    |
+168 |     ) -> Result<ControlTopologyCaller, ClientError> {
+    |          ^^^^^^                      ------------- help: remove the unnecessary generic argument
+    |          |
+    |          expected 1 generic argument
+    |
+note: type alias defined here, with 1 generic parameter: `T`
+   --> crates/kasumi-types/src/lib.rs:67:10
+    |
+ 67 | pub type Result<T> = std::result::Result<T, Error>;
+    |          ^^^^^^ -
+
+error[E0277]: `?` couldn't convert the error to `kasumi_types::Error`
+  --> crates/kasumi-client/src/control_topology.rs:95:47
+   |
+95 |                 request_json: encode(&request)?,
+   |                               ----------------^ the trait `From<ClientError>` is not implemented for `kasumi_types::Error`
+   |                               |
+   |                               this can't be annotated with `?` because it has type `Result<_, ClientError>`
+   |
+note: `ClientError` needs to implement `Into<kasumi_types::Error>`
+  --> crates/kasumi-client/src/lib.rs:89:1
+   |
+89 | pub enum ClientError {
+   | ^^^^^^^^^^^^^^^^^^^^
+   = note: the question mark operation (`?`) implicitly performs a conversion on the error value using the `From` trait
+
+error[E0277]: `?` couldn't convert the error to `kasumi_types::Error`
+  --> crates/kasumi-client/src/control_topology.rs:97:10
+   |
+92 |           let wire = self.authorized(
+   |  _________________________-
+93 | |             bearer,
+94 | |             proto::ControlJsonRequest {
+95 | |                 request_json: encode(&request)?,
+96 | |             },
+97 | |         )?;
+   | |         -^ the trait `From<ClientError>` is not implemented for `kasumi_types::Error`
+   | |_________|
+   |           this can't be annotated with `?` because it has type `Result<_, ClientError>`
+   |
+note: `ClientError` needs to implement `Into<kasumi_types::Error>`
+  --> crates/kasumi-client/src/lib.rs:89:1
+   |
+89 | pub enum ClientError {
+   | ^^^^^^^^^^^^^^^^^^^^
+   = note: the question mark operation (`?`) implicitly performs a conversion on the error value using the `From` trait
+
+error[E0277]: `?` couldn't convert the error to `kasumi_types::Error`
+  --> crates/kasumi-client/src/control_topology.rs:98:42
+   |
+98 |         let anchor = EpochClock::system()?.observe()?;
+   |                      --------------------^ the trait `From<anyhow::Error>` is not implemented for `kasumi_types::Error`
+   |                      |
+   |                      this can't be annotated with `?` because it has type `Result<_, anyhow::Error>`
+   |
+   = note: the question mark operation (`?`) implicitly performs a conversion on the error value using the `From` trait
+
+error[E0277]: `?` couldn't convert the error to `kasumi_types::Error`
+  --> crates/kasumi-client/src/control_topology.rs:98:53
+   |
+98 |         let anchor = EpochClock::system()?.observe()?;
+   |                                            ---------^ the trait `From<anyhow::Error>` is not implemented for `kasumi_types::Error`
+   |                                            |
+   |                                            this can't be annotated with `?` because it has type `Result<_, anyhow::Error>`
+   |
+   = note: the question mark operation (`?`) implicitly performs a conversion on the error value using the `From` trait
+
+error[E0277]: `?` couldn't convert the error to `kasumi_types::Error`
+   --> crates/kasumi-client/src/control_topology.rs:104:91
+    |
+ 99 |           let response = tokio::time::timeout(
+    |  ________________________-
+100 | |             Duration::from_millis(maximum_lifetime_ms),
+101 | |             self.inner.observe_topology(wire),
+102 | |         )
+103 | |         .await
+    | |______________- this has type `Result<_, tokio::time::error::Elapsed>`
+104 |           .map_err(|_| tonic::Status::deadline_exceeded("Control topology request expired"))??
+    |            ---------------------------------------------------------------------------------^ the trait `From<tonic::Status>` is not implemented for `kasumi_types::Error`
+    |            |
+    |            this can't be annotated with `?` because it has type `Result<_, tonic::Status>`
+    |
+    = note: the question mark operation (`?`) implicitly performs a conversion on the error value using the `From` trait
+
+error[E0277]: `?` couldn't convert the error to `kasumi_types::Error`
+   --> crates/kasumi-client/src/control_topology.rs:104:92
+    |
+ 99 |           let response = tokio::time::timeout(
+    |  ________________________-
+100 | |             Duration::from_millis(maximum_lifetime_ms),
+101 | |             self.inner.observe_topology(wire),
+...   |
+104 | |         .map_err(|_| tonic::Status::deadline_exceeded("Control topology request expired"))??
+    | |                                                                                           -^ the trait `From<tonic::Status>` is not implemented for `kasumi_types::Error`
+    | |___________________________________________________________________________________________|
+    |                                                                                             this can't be annotated with `?` because it has type `Result<_, tonic::Status>`
+    |
+    = note: the question mark operation (`?`) implicitly performs a conversion on the error value using the `From` trait
+
+error[E0308]: mismatched types
+   --> crates/kasumi-client/src/control_topology.rs:107:24
+    |
+107 |               return Err(ClientError::InvalidResponse(
+    |  ____________________---_^
+    | |                    |
+    | |                    arguments to this enum variant are incorrect
+108 | |                 "Control topology response too large",
+109 | |             ));
+    | |_____________^ expected `Error`, found `ClientError`
+    |
+help: the type constructed contains `ClientError` due to the type of the argument passed
+   --> crates/kasumi-client/src/control_topology.rs:107:20
+    |
+107 |                return Err(ClientError::InvalidResponse(
+    |   ____________________^   -
+    |  |________________________|
+108 | ||                 "Control topology response too large",
+109 | ||             ));
+    | ||_____________-^
+    | |______________|
+    |                this argument influences the type of `Err`
+note: tuple variant defined here
+   --> /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/result.rs:566:4
+
+error[E0277]: `?` couldn't convert the error to `kasumi_types::Error`
+   --> crates/kasumi-client/src/control_topology.rs:111:69
+    |
+111 |         let signed = serde_json::from_slice(&response.response_json)?;
+    |                      -----------------------------------------------^ the trait `From<serde_json::Error>` is not implemented for `kasumi_types::Error`
+    |                      |
+    |                      this can't be annotated with `?` because it has type `Result<_, serde_json::Error>`
+    |
+    = note: the question mark operation (`?`) implicitly performs a conversion on the error value using the `From` trait
+
+error[E0107]: type alias takes 1 generic argument but 2 generic arguments were supplied
+  --> crates/kasumi-client/src/control_topology.rs:33:10
+   |
+33 |     ) -> Result<Self, ClientError> {
+   |          ^^^^^^     ------------- help: remove the unnecessary generic argument
+   |          |
+   |          expected 1 generic argument
+   |
+note: type alias defined here, with 1 generic parameter: `T`
+  --> crates/kasumi-types/src/lib.rs:67:10
+   |
+67 | pub type Result<T> = std::result::Result<T, Error>;
+   |          ^^^^^^ -
+
+error[E0107]: type alias takes 1 generic argument but 2 generic arguments were supplied
+   --> crates/kasumi-client/src/control_topology.rs:121:10
+    |
+121 |     ) -> Result<CurrentControlTopologyRelease, ClientError> {
+    |          ^^^^^^ expected 1 generic argument  ------------- help: remove the unnecessary generic argument
+    |
+note: type alias defined here, with 1 generic parameter: `T`
+   --> crates/kasumi-types/src/lib.rs:67:10
+    |
+ 67 | pub type Result<T> = std::result::Result<T, Error>;
+    |          ^^^^^^ -
+
+error[E0277]: `?` couldn't convert the error to `kasumi_types::Error`
+   --> crates/kasumi-client/src/control_topology.rs:122:25
+    |
+122 |         original.check()?;
+    |                  -------^ the trait `From<anyhow::Error>` is not implemented for `kasumi_types::Error`
+    |                  |
+    |                  this can't be annotated with `?` because it has type `Result<_, anyhow::Error>`
+    |
+    = note: the question mark operation (`?`) implicitly performs a conversion on the error value using the `From` trait
+
+error[E0308]: mismatched types
+   --> crates/kasumi-client/src/control_topology.rs:127:24
+    |
+127 |               return Err(ClientError::InvalidResponse(
+    |  ____________________---_^
+    | |                    |
+    | |                    arguments to this enum variant are incorrect
+128 | |                 "Control topology release caller differs",
+129 | |             ));
+    | |_____________^ expected `Error`, found `ClientError`
+    |
+help: the type constructed contains `ClientError` due to the type of the argument passed
+   --> crates/kasumi-client/src/control_topology.rs:127:20
+    |
+127 |                return Err(ClientError::InvalidResponse(
+    |   ____________________^   -
+    |  |________________________|
+128 | ||                 "Control topology release caller differs",
+129 | ||             ));
+    | ||_____________-^
+    | |______________|
+    |                this argument influences the type of `Err`
+note: tuple variant defined here
+   --> /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/result.rs:566:4
+
+error[E0277]: `?` couldn't convert the error to `kasumi_types::Error`
+   --> crates/kasumi-client/src/control_topology.rs:138:47
+    |
+138 |                 request_json: encode(&request)?,
+    |                               ----------------^ the trait `From<ClientError>` is not implemented for `kasumi_types::Error`
+    |                               |
+    |                               this can't be annotated with `?` because it has type `Result<_, ClientError>`
+    |
+note: `ClientError` needs to implement `Into<kasumi_types::Error>`
+   --> crates/kasumi-client/src/lib.rs:89:1
+    |
+ 89 | pub enum ClientError {
+    | ^^^^^^^^^^^^^^^^^^^^
+    = note: the question mark operation (`?`) implicitly performs a conversion on the error value using the `From` trait
+
+error[E0277]: `?` couldn't convert the error to `kasumi_types::Error`
+   --> crates/kasumi-client/src/control_topology.rs:140:10
+    |
+135 |           let wire = self.authorized(
+    |  _________________________-
+136 | |             bearer,
+137 | |             proto::ControlJsonRequest {
+138 | |                 request_json: encode(&request)?,
+139 | |             },
+140 | |         )?;
+    | |         -^ the trait `From<ClientError>` is not implemented for `kasumi_types::Error`
+    | |_________|
+    |           this can't be annotated with `?` because it has type `Result<_, ClientError>`
+    |
+note: `ClientError` needs to implement `Into<kasumi_types::Error>`
+   --> crates/kasumi-client/src/lib.rs:89:1
+    |
+ 89 | pub enum ClientError {
+    | ^^^^^^^^^^^^^^^^^^^^
+    = note: the question mark operation (`?`) implicitly performs a conversion on the error value using the `From` trait
+
+error[E0277]: `?` couldn't convert the error to `kasumi_types::Error`
+   --> crates/kasumi-client/src/control_topology.rs:146:91
+    |
+141 |           let response = tokio::time::timeout(
+    |  ________________________-
+142 | |             Duration::from_millis(MAX_CONTROL_TOPOLOGY_LIFETIME_MS),
+143 | |             self.inner.release_topology(wire),
+144 | |         )
+145 | |         .await
+    | |______________- this has type `Result<_, tokio::time::error::Elapsed>`
+146 |           .map_err(|_| tonic::Status::deadline_exceeded("Control topology release expired"))??
+    |            ---------------------------------------------------------------------------------^ the trait `From<tonic::Status>` is not implemented for `kasumi_types::Error`
+    |            |
+    |            this can't be annotated with `?` because it has type `Result<_, tonic::Status>`
+    |
+    = note: the question mark operation (`?`) implicitly performs a conversion on the error value using the `From` trait
+
+error[E0277]: `?` couldn't convert the error to `kasumi_types::Error`
+   --> crates/kasumi-client/src/control_topology.rs:146:92
+    |
+141 |           let response = tokio::time::timeout(
+    |  ________________________-
+142 | |             Duration::from_millis(MAX_CONTROL_TOPOLOGY_LIFETIME_MS),
+143 | |             self.inner.release_topology(wire),
+...   |
+146 | |         .map_err(|_| tonic::Status::deadline_exceeded("Control topology release expired"))??
+    | |                                                                                           -^ the trait `From<tonic::Status>` is not implemented for `kasumi_types::Error`
+    | |___________________________________________________________________________________________|
+    |                                                                                             this can't be annotated with `?` because it has type `Result<_, tonic::Status>`
+    |
+    = note: the question mark operation (`?`) implicitly performs a conversion on the error value using the `From` trait
+
+error[E0277]: `?` couldn't convert the error to `kasumi_types::Error`
+   --> crates/kasumi-client/src/control_topology.rs:148:25
+    |
+148 |         original.check()?;
+    |                  -------^ the trait `From<anyhow::Error>` is not implemented for `kasumi_types::Error`
+    |                  |
+    |                  this can't be annotated with `?` because it has type `Result<_, anyhow::Error>`
+    |
+    = note: the question mark operation (`?`) implicitly performs a conversion on the error value using the `From` trait
+
+error[E0308]: mismatched types
+   --> crates/kasumi-client/src/control_topology.rs:150:24
+    |
+150 |               return Err(ClientError::InvalidResponse(
+    |  ____________________---_^
+    | |                    |
+    | |                    arguments to this enum variant are incorrect
+151 | |                 "Control topology release too large",
+152 | |             ));
+    | |_____________^ expected `Error`, found `ClientError`
+    |
+help: the type constructed contains `ClientError` due to the type of the argument passed
+   --> crates/kasumi-client/src/control_topology.rs:150:20
+    |
+150 |                return Err(ClientError::InvalidResponse(
+    |   ____________________^   -
+    |  |________________________|
+151 | ||                 "Control topology release too large",
+152 | ||             ));
+    | ||_____________-^
+    | |______________|
+    |                this argument influences the type of `Err`
+note: tuple variant defined here
+   --> /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/result.rs:566:4
+
+error[E0277]: `?` couldn't convert the error to `kasumi_types::Error`
+   --> crates/kasumi-client/src/control_topology.rs:154:69
+    |
+154 |         let signed = serde_json::from_slice(&response.response_json)?;
+    |                      -----------------------------------------------^ the trait `From<serde_json::Error>` is not implemented for `kasumi_types::Error`
+    |                      |
+    |                      this can't be annotated with `?` because it has type `Result<_, serde_json::Error>`
+    |
+    = note: the question mark operation (`?`) implicitly performs a conversion on the error value using the `From` trait
+
+error[E0277]: `?` couldn't convert the error to `kasumi_types::Error`
+   --> crates/kasumi-client/src/control_topology.rs:156:84
+    |
+156 |             .verify_topology_release(&original.signed, request.request_id, &signed)?;
+    |              ----------------------------------------------------------------------^ the trait `From<anyhow::Error>` is not implemented for `kasumi_types::Error`
+    |              |
+    |              this can't be annotated with `?` because it has type `Result<_, anyhow::Error>`
+    |
+    = note: the question mark operation (`?`) implicitly performs a conversion on the error value using the `From` trait
+
+error[E0277]: `?` couldn't convert the error to `kasumi_types::Error`
+   --> crates/kasumi-client/src/control_topology.rs:157:25
+    |
+157 |         original.check()?;
+    |                  -------^ the trait `From<anyhow::Error>` is not implemented for `kasumi_types::Error`
+    |                  |
+    |                  this can't be annotated with `?` because it has type `Result<_, anyhow::Error>`
+    |
+    = note: the question mark operation (`?`) implicitly performs a conversion on the error value using the `From` trait
+
+error[E0107]: type alias takes 1 generic argument but 2 generic arguments were supplied
+  --> crates/kasumi-client/src/control_topology_tests.rs:87:50
+   |
+87 |     fn admit(&self, anchor: ClockObservation) -> Result<CurrentControlTopology, ClientError> {
+   |                                                  ^^^^^^                       ------------- help: remove the unnecessary generic argument
+   |                                                  |
+   |                                                  expected 1 generic argument
+   |
+note: type alias defined here, with 1 generic parameter: `T`
+  --> crates/kasumi-types/src/lib.rs:67:10
+   |
+67 | pub type Result<T> = std::result::Result<T, Error>;
+   |          ^^^^^^ -
+
+error[E0277]: `?` couldn't convert the error to `kasumi_types::Error`
+  --> crates/kasumi-client/src/control_topology.rs:34:39
+   |
+34 |         trust.verify_topology(&signed)?;
+   |               ------------------------^ the trait `From<anyhow::Error>` is not implemented for `kasumi_types::Error`
+   |               |
+   |               this can't be annotated with `?` because it has type `Result<_, anyhow::Error>`
+   |
+   = note: the question mark operation (`?`) implicitly performs a conversion on the error value using the `From` trait
+
+error[E0308]: mismatched types
+  --> crates/kasumi-client/src/control_topology.rs:37:24
+   |
+37 |               return Err(ClientError::InvalidResponse(
+   |  ____________________---_^
+   | |                    |
+   | |                    arguments to this enum variant are incorrect
+38 | |                 "Control topology request or caller differs",
+39 | |             ));
+   | |_____________^ expected `Error`, found `ClientError`
+   |
+help: the type constructed contains `ClientError` due to the type of the argument passed
+  --> crates/kasumi-client/src/control_topology.rs:37:20
+   |
+37 |                return Err(ClientError::InvalidResponse(
+   |   ____________________^   -
+   |  |________________________|
+38 | ||                 "Control topology request or caller differs",
+39 | ||             ));
+   | ||_____________-^
+   | |______________|
+   |                this argument influences the type of `Err`
+note: tuple variant defined here
+  --> /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/result.rs:566:4
+
+error[E0277]: `?` couldn't convert the error to `kasumi_types::Error`
+  --> crates/kasumi-client/src/control_topology.rs:48:15
+   |
+46 |               .ok_or(ClientError::InvalidResponse(
+   |  ______________-
+47 | |                 "Control topology deadline overflow",
+48 | |             ))?;
+   | |              -^ the trait `From<ClientError>` is not implemented for `kasumi_types::Error`
+   | |______________|
+   |                this can't be annotated with `?` because it has type `Result<_, ClientError>`
+   |
+note: `ClientError` needs to implement `Into<kasumi_types::Error>`
+  --> crates/kasumi-client/src/lib.rs:89:1
+   |
+89 | pub enum ClientError {
+   | ^^^^^^^^^^^^^^^^^^^^
+   = note: the question mark operation (`?`) implicitly performs a conversion on the error value using the `From` trait
+
+error[E0277]: `?` couldn't convert the error to `kasumi_types::Error`
+  --> crates/kasumi-client/src/control_topology.rs:49:79
+   |
+49 |         let deadline = anchor.until(local_limit.min(observation.not_after_ms))?;
+   |                               ------------------------------------------------^ the trait `From<anyhow::Error>` is not implemented for `kasumi_types::Error`
+   |                               |
+   |                               this can't be annotated with `?` because it has type `Result<_, anyhow::Error>`
+   |
+   = note: the question mark operation (`?`) implicitly performs a conversion on the error value using the `From` trait
+
+error[E0277]: `?` couldn't convert the error to `kasumi_types::Error`
+  --> crates/kasumi-client/src/control_topology.rs:51:22
+   |
+51 |         value.check()?;
+   |               -------^ the trait `From<anyhow::Error>` is not implemented for `kasumi_types::Error`
+   |               |
+   |               this can't be annotated with `?` because it has type `Result<_, anyhow::Error>`
+   |
+   = note: the question mark operation (`?`) implicitly performs a conversion on the error value using the `From` trait
+
+error[E0277]: `?` couldn't convert the error to `kasumi_types::Error`
+   --> crates/kasumi-client/src/control_topology.rs:170:36
+    |
+170 |         self.authorized(bearer, ())?;
+    |              ----------------------^ the trait `From<ClientError>` is not implemented for `kasumi_types::Error`
+    |              |
+    |              this can't be annotated with `?` because it has type `Result<_, ClientError>`
+    |
+note: `ClientError` needs to implement `Into<kasumi_types::Error>`
+   --> crates/kasumi-client/src/lib.rs:89:1
+    |
+ 89 | pub enum ClientError {
+    | ^^^^^^^^^^^^^^^^^^^^
+    = note: the question mark operation (`?`) implicitly performs a conversion on the error value using the `From` trait
+
+error[E0277]: `?` couldn't convert the error to `kasumi_types::Error`
+   --> crates/kasumi-client/src/control_topology.rs:176:26
+    |
+176 |         caller.validate()?;
+    |                ----------^ the trait `From<anyhow::Error>` is not implemented for `kasumi_types::Error`
+    |                |
+    |                this can't be annotated with `?` because it has type `Result<_, anyhow::Error>`
+    |
+    = note: the question mark operation (`?`) implicitly performs a conversion on the error value using the `From` trait
+
+Some errors have detailed explanations: E0107, E0277, E0308.
+For more information about an error, try `rustc --explain E0107`.
+error: could not compile `kasumi-client` (lib test) due to 32 previous errors

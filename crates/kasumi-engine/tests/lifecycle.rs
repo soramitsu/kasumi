@@ -577,6 +577,100 @@ fn policy(principal: &str) -> Policy {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn control_topology_read_and_release_require_current_native_quorum_and_original_route() {
+    let mut f = Fixture::new().await;
+    let db = f.leader().await;
+    let caller = ControlTopologyCaller {
+        principal: "owner".into(),
+        certificate_sha256: "21".repeat(32),
+        credential_sha256: "32".repeat(32),
+    };
+    let request = ReadControlTopology {
+        request_id: Uuid::new_v4(),
+        control_incarnation: f.installation.root.control_incarnation,
+        maximum_lifetime_ms: 5_000,
+    };
+    let proof = db
+        .observe_control_topology(f.context("owner"), request.clone(), caller.clone())
+        .await
+        .unwrap();
+    let signed = f.signer.sign_topology(&proof).await.unwrap();
+    let trust = ControlTrust::install(f.installation.root.clone()).unwrap();
+    trust.verify_topology(&signed).unwrap();
+    assert_eq!(signed.observation.request, request);
+    assert_eq!(signed.observation.voters, BTreeSet::from([1, 2, 3]));
+    assert_eq!(
+        signed.observation.leader_node_id,
+        db.raft_group().raft().metrics().borrow().id
+    );
+    let release_request = ReleaseControlTopology {
+        request_id: Uuid::new_v4(),
+        original: signed.clone(),
+    };
+    let released = db
+        .release_control_topology(f.context("owner"), &release_request, caller.clone(), &trust)
+        .await
+        .unwrap();
+    let release = f
+        .signer
+        .sign_topology_release(&released, &release_request)
+        .await
+        .unwrap();
+    trust
+        .verify_topology_release(&signed, release_request.request_id, &release)
+        .unwrap();
+    assert_eq!(
+        release.release.not_after_ms,
+        signed.observation.not_after_ms
+    );
+
+    let mut other_caller = caller.clone();
+    other_caller.credential_sha256 = "43".repeat(32);
+    assert!(
+        db.release_control_topology(f.context("owner"), &release_request, other_caller, &trust)
+            .await
+            .is_err()
+    );
+    assert!(
+        db.observe_control_topology(f.context("intruder"), request.clone(), caller.clone())
+            .await
+            .is_err()
+    );
+    let mut wrong_request = request;
+    wrong_request.control_incarnation = Uuid::new_v4();
+    assert!(
+        db.observe_control_topology(f.context("owner"), wrong_request, caller.clone())
+            .await
+            .is_err()
+    );
+
+    let mut changed = signed.observation.topology.topology.clone();
+    changed.nodes.get_mut(&1).unwrap().endpoint = "https://replacement.example".into();
+    kasumi_engine::control::ControlPlane::new(db.clone())
+        .unwrap()
+        .replace_topology(
+            f.context("owner"),
+            changed,
+            Precondition::Version(signed.observation.topology.version),
+            Uuid::new_v4().to_string(),
+        )
+        .await
+        .unwrap();
+    assert!(proof.release().await.is_err());
+    assert!(f.signer.sign_topology(&proof).await.is_err());
+    assert!(released.release().await.is_err());
+    assert!(
+        db.release_control_topology(f.context("owner"), &release_request, caller, &trust)
+            .await
+            .is_err()
+    );
+    drop(released);
+    drop(proof);
+    drop(db);
+    f.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn replicated_control_intent_is_exact_original_expiry_bound_current_quorum_and_permanent_after_reopen()
  {
     let mut f = Fixture::new().await;

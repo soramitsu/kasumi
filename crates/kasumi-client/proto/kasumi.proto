@@ -184,6 +184,8 @@ service KasumiLifecycleControl {
   rpc ObserveIntent(ControlIntentReference) returns (ControlJsonResponse);
   rpc ObserveChange(ControlChangeReference) returns (ControlJsonResponse);
   rpc ReadStatus(ControlJsonRequest) returns (ControlJsonResponse);
+  rpc ObserveTopology(ControlJsonRequest) returns (ControlJsonResponse);
+  rpc ReleaseTopology(ControlJsonRequest) returns (ControlJsonResponse);
 }
 message ControlJsonRequest { bytes request_json = 1; }
 message ControlJsonResponse { bytes response_json = 1; }
