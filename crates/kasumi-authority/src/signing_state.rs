@@ -1,5 +1,23 @@
 use super::*;
 
+// Created and consumed while the caller holds Backend::mutation. The private
+// action carries the exact validated input and, for a stage, its complete
+// frozen roster. It cannot be reused after the applied generation changes.
+pub(super) struct PreparedSigningTransition<'a>(PreparedSigningAction<'a>);
+enum PreparedSigningAction<'a> {
+    AuthorizeControl,
+    Roster(&'a AuthorityMaintenanceCommand),
+    Stage {
+        operation_id: Uuid,
+        certificate: &'a SigningCertificate,
+        roster: SignerVerifierRoster,
+    },
+    Activate {
+        operation_id: Uuid,
+        stage_operation_id: Uuid,
+    },
+}
+
 impl Backend {
     pub fn signing_observation(&self) -> Result<(AuthoritySigningHead, u64, u64)> {
         let _lock = self
@@ -27,25 +45,31 @@ impl Backend {
         );
         Ok(head)
     }
-    pub(super) fn validate_signing_transition(
+    pub(super) fn prepare_signing_transition<'a>(
         &self,
         meta: &Meta,
-        command: &AuthorityMaintenanceCommand,
-    ) -> Result<()> {
+        command: &'a AuthorityMaintenanceCommand,
+    ) -> Result<PreparedSigningTransition<'a>> {
         let head = &meta.signing;
         head.validate()?;
-        match &command.action {
+        let action = match &command.action {
             AuthorityMaintenanceAction::AuthorizeControlSigner { directive } => {
-                return self.validate_control_signer_directive(meta, directive);
+                self.validate_control_signer_directive(meta, directive)?;
+                PreparedSigningAction::AuthorizeControl
             }
             AuthorityMaintenanceAction::EnrollSignerVerifier { .. }
             | AuthorityMaintenanceAction::AdmitControlVerifiers { .. } => {
-                return self.validate_roster_transition(meta, command);
+                self.validate_roster_transition(meta, command)?;
+                PreparedSigningAction::Roster(command)
             }
             AuthorityMaintenanceAction::StageSignerGeneration { certificate } => {
-                self.freeze_signer_roster(meta)?;
-                certificate.verify(&head.initial.identity.domain)?;
-                ensure!(
+                // Preserve the rejection order: physical coverage is checked
+                // before the certificate's installed domain or successor.
+                let roster = self.freeze_signer_roster(meta)?;
+                certificate
+                    .verify(&head.initial.identity.domain)
+                    .map_err(reject_conflict)?;
+                reject_unless!(
                     head.staged.is_none()
                         && head.retirement.is_none()
                         && head.active.identity.generation.checked_add(1)
@@ -53,78 +77,84 @@ impl Backend {
                         && head.active.identity.public_key != certificate.identity.public_key,
                     "global signer stage requires an unoccupied exact successor and completed prior retirement"
                 );
+                PreparedSigningAction::Stage {
+                    operation_id: command.operation_id,
+                    certificate,
+                    roster,
+                }
             }
             AuthorityMaintenanceAction::ActivateSignerGeneration {
                 stage_operation_id,
                 certificate_sha256,
             } => {
-                let staged = head.staged.as_ref().context("global signer stage absent")?;
-                ensure!(
+                let staged = head
+                    .staged
+                    .as_ref()
+                    .ok_or_else(|| reject_conflict("global signer stage absent"))?;
+                reject_unless!(
                     staged.operation_id == *stage_operation_id
                         && staged.certificate.digest()? == *certificate_sha256,
                     "global activation differs from exact staged operation"
                 );
+                PreparedSigningAction::Activate {
+                    operation_id: command.operation_id,
+                    stage_operation_id: *stage_operation_id,
+                }
             }
-            _ => anyhow::bail!("not a global signer transition"),
-        }
-        Ok(())
+            _ => reject_bail!("not a global signer transition"),
+        };
+        Ok(PreparedSigningTransition(action))
     }
     pub(super) fn apply_signing_transition(
         &self,
         meta: &mut Meta,
-        command: &AuthorityMaintenanceCommand,
+        prepared: PreparedSigningTransition<'_>,
         revision: u64,
         additions: &mut Vec<(String, Record)>,
     ) -> Result<()> {
-        self.validate_signing_transition(meta, command)?;
-        if matches!(
-            &command.action,
-            AuthorityMaintenanceAction::AuthorizeControlSigner { .. }
-        ) {
-            meta.operational.revision = revision;
-            return Ok(());
-        }
-        if matches!(
-            &command.action,
-            AuthorityMaintenanceAction::EnrollSignerVerifier { .. }
-                | AuthorityMaintenanceAction::AdmitControlVerifiers { .. }
-        ) {
-            return self.apply_roster_transition(meta, command, revision, additions);
-        }
-        let roster = self.freeze_signer_roster(meta)?;
-        if matches!(
-            command.action,
-            AuthorityMaintenanceAction::StageSignerGeneration { .. }
-        ) {
-            Self::retain_signer_roster(meta, command.operation_id, revision, &roster, additions)?;
-        }
-        let head = &mut meta.signing;
-        match &command.action {
-            AuthorityMaintenanceAction::StageSignerGeneration { certificate } => {
-                head.staged = Some(AuthoritySignerStage {
+        match prepared.0 {
+            PreparedSigningAction::AuthorizeControl => {
+                meta.operational.revision = revision;
+                return Ok(());
+            }
+            PreparedSigningAction::Roster(command) => {
+                return self.apply_roster_transition(meta, command, revision, additions);
+            }
+            PreparedSigningAction::Stage {
+                operation_id,
+                certificate,
+                roster,
+            } => {
+                Self::retain_signer_roster(meta, operation_id, revision, &roster, additions)?;
+                meta.signing.staged = Some(AuthoritySignerStage {
                     roster,
-                    operation_id: command.operation_id,
+                    operation_id,
                     revision,
                     certificate: certificate.clone(),
                 });
             }
-            AuthorityMaintenanceAction::ActivateSignerGeneration {
-                stage_operation_id, ..
+            PreparedSigningAction::Activate {
+                operation_id,
+                stage_operation_id,
             } => {
+                // Activation still checks current physical coverage at its
+                // original apply boundary. A failure here is an outer error,
+                // not a new permanent semantic rejection.
+                self.freeze_signer_roster(meta)?;
+                let head = &mut meta.signing;
                 let staged = head.staged.take().context("global stage disappeared")?;
                 head.retirement = Some(AuthoritySignerRetirement {
                     roster: staged.roster,
-                    stage_operation_id: *stage_operation_id,
-                    activation_operation_id: command.operation_id,
+                    stage_operation_id,
+                    activation_operation_id: operation_id,
                     activation_revision: revision,
                     previous: head.active.clone(),
                 });
                 head.active = staged.certificate;
             }
-            _ => anyhow::bail!("not a global signer transition"),
         }
-        head.revision = revision;
-        head.validate()
+        meta.signing.revision = revision;
+        meta.signing.validate()
     }
     pub(super) fn validate_signing_snapshot(&self, snapshot: &Snapshot) -> Result<()> {
         self.validate_control_signer_snapshot(snapshot)?;

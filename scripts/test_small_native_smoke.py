@@ -105,6 +105,9 @@ class SmokeTests(unittest.TestCase):
                 policy = root / "directory-policy.json"
                 policy.write_bytes(b'{"extent_bytes":1048576,"max_entries":32768}\n')
                 runner.args.directory_policy = policy
+                allocation = root / "file-allocation-policy.json"
+                allocation.write_bytes(b'{"maximum_extra_extent_bytes":1048576}\n')
+                runner.args.file_allocation_policy = allocation
                 runner.args.build_evidence = report
                 runner.args.binaries = incoming
                 def source_command(name, command):
@@ -131,6 +134,8 @@ class SmokeTests(unittest.TestCase):
                         self.assertEqual(runner.record["build_overall_status"], "failed")
                         self.assertEqual((output / "provenance/directory-policy.json").read_bytes(), policy.read_bytes())
                         self.assertEqual(runner.record["directory_policy"]["sha256"], hashlib.sha256(policy.read_bytes()).hexdigest())
+                        self.assertEqual((output / "provenance/file-allocation-policy.json").read_bytes(), allocation.read_bytes())
+                        self.assertEqual(runner.record["file_allocation_policy"]["sha256"], hashlib.sha256(allocation.read_bytes()).hexdigest())
                         self.assertEqual((output / "provenance/build-evidence.json").read_bytes(), report.read_bytes())
                         for binary, path in runner.binaries.items():
                             self.assertEqual(path.parent, output / "binaries")
@@ -243,6 +248,25 @@ class SmokeTests(unittest.TestCase):
     def runner(self, root):
         return smoke.Runner(SimpleNamespace(output=root, stop_timeout=1, command_timeout=1,
                                             ready_timeout=1, execution_description="pure mocked tests"))
+
+    def test_required_file_allocation_policy_is_exact_strict_and_accepts_explicit_zero(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "allocation.json"
+            for allowance in (0, 1048576):
+                raw = ('{ "maximum_extra_extent_bytes": ' + str(allowance) + ' }\n').encode()
+                path.write_bytes(raw)
+                copied, policy = smoke.load_file_allocation_policy(path)
+                self.assertEqual(copied, raw)
+                self.assertEqual(policy, {"maximum_extra_extent_bytes": allowance})
+            for invalid in [b'{}', b'{"maximum_extra_extent_bytes":true}',
+                            b'{"maximum_extra_extent_bytes":-1}',
+                            b'{"maximum_extra_extent_bytes":9223372036854775808}',
+                            b'{"maximum_extra_extent_bytes":1,"legacy_default":true}',
+                            b'{"maximum_extra_extent_bytes":1,"maximum_extra_extent_bytes":2}',
+                            b' ' * 4097]:
+                path.write_bytes(invalid)
+                with self.assertRaises((ValueError, AssertionError, RuntimeError)):
+                    smoke.load_file_allocation_policy(path)
 
     def test_timeout_retains_failure_logs_and_drains_only_the_owned_process_group(self):
         with tempfile.TemporaryDirectory() as directory:

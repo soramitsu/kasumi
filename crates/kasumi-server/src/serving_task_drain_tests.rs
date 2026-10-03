@@ -70,12 +70,18 @@ async fn cancelled_serving_drain_retains_joined_panic_and_exact_pending_owner() 
         .unwrap_err();
     assert_eq!(failure.completion(), DrainCompletion::Complete);
     assert_eq!(failure.issues().len(), 1);
-    assert!(Arc::ptr_eq(&issue, &failure.issues()[0]));
+    assert!(kasumi_types::drain::DrainIssueRef::ptr_eq(
+        &issue,
+        &failure.issues()[0]
+    ));
     assert!(pending.is_finished());
     assert!(weak.upgrade().is_none());
     assert!(tasks.listeners.is_empty());
     let repeated = tasks.shutdown().await.unwrap_err();
-    assert!(Arc::ptr_eq(&issue, &repeated.issues()[0]));
+    assert!(kasumi_types::drain::DrainIssueRef::ptr_eq(
+        &issue,
+        &repeated.issues()[0]
+    ));
     assert_eq!(tasks.failed_tasks.len(), 1);
     let reopened = physical
         .open_existing(&path, kasumi_store::test_utils::NODE_STORE_ID)
@@ -245,7 +251,7 @@ async fn serving_drain_keeps_every_panic_abort_and_returned_error() {
     assert_eq!(tasks.failed_tasks[&returned_id], returned.instance());
     let repeated = tasks.shutdown().await.unwrap_err();
     for (first, again) in failure.issues().iter().zip(repeated.issues()) {
-        assert!(Arc::ptr_eq(first, again));
+        assert!(kasumi_types::drain::DrainIssueRef::ptr_eq(first, again));
     }
     assert_eq!(tasks.failed_tasks.len(), 3);
 }
@@ -376,7 +382,10 @@ async fn aborted_listener_retains_http1_and_http2_requests_until_exact_nested_jo
             .unwrap()
             .unwrap_err();
         assert_eq!(failure.completion(), DrainCompletion::Complete);
-        assert!(Arc::ptr_eq(&issue, &failure.issues()[0]));
+        assert!(kasumi_types::drain::DrainIssueRef::ptr_eq(
+            &issue,
+            &failure.issues()[0]
+        ));
         assert_eq!(
             tokio::time::timeout(Duration::from_secs(5), response)
                 .await

@@ -1,0 +1,52 @@
+   Compiling kasumi-kv v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-kv)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.63s
+     Running unittests src/lib.rs (target/disk-backed-cache/debug/deps/kasumi_kv-e84af9029e220a8f)
+
+running 10 tests
+test core::tests::constructor_retries_the_same_owner_after_proven_no_close_entry ... FAILED
+test core::tests::constructor_retains_uncertain_close_and_does_not_repeat_it ... ok
+test core::tests::snapshot_limit_denial_does_not_leak_close_count_or_fence ... ok
+test core::tests::poisoned_state_fences_once_and_still_drains_exact_backend ... ok
+test core::tests::close_waits_for_snapshot_clones_and_retries_only_not_entered ... ok
+test core::tests::cache_hit_still_obeys_owner_and_read_bound ... ok
+test core::tests::strict_create_rejects_existing_group_and_open_requires_exact_incarnation ... ok
+test core::tests::snapshot_belongs_to_exact_owner_even_with_same_group_id ... ok
+test core::tests::lower_bound_iteration_is_not_a_prefix_scan ... ok
+test core::tests::snapshot_root_survives_overwrite_delete_and_later_table_birth ... ok
+
+successes:
+
+---- core::tests::poisoned_state_fences_once_and_still_drains_exact_backend stdout ----
+
+thread 'core::tests::poisoned_state_fences_once_and_still_drains_exact_backend' (2135828) panicked at crates/kasumi-kv/src/core_tests.rs:114:93:
+state holder
+
+
+successes:
+    core::tests::cache_hit_still_obeys_owner_and_read_bound
+    core::tests::close_waits_for_snapshot_clones_and_retries_only_not_entered
+    core::tests::constructor_retains_uncertain_close_and_does_not_repeat_it
+    core::tests::lower_bound_iteration_is_not_a_prefix_scan
+    core::tests::poisoned_state_fences_once_and_still_drains_exact_backend
+    core::tests::snapshot_belongs_to_exact_owner_even_with_same_group_id
+    core::tests::snapshot_limit_denial_does_not_leak_close_count_or_fence
+    core::tests::snapshot_root_survives_overwrite_delete_and_later_table_birth
+    core::tests::strict_create_rejects_existing_group_and_open_requires_exact_incarnation
+
+failures:
+
+---- core::tests::constructor_retries_the_same_owner_after_proven_no_close_entry stdout ----
+
+thread 'core::tests::constructor_retries_the_same_owner_after_proven_no_close_entry' (2135826) panicked at crates/kasumi-kv/src/core_tests.rs:156:5:
+assertion `left == right` failed
+  left: 2
+ right: 1
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    core::tests::constructor_retries_the_same_owner_after_proven_no_close_entry
+
+test result: FAILED. 9 passed; 1 failed; 0 ignored; 0 measured; 359 filtered out; finished in 0.16s
+
+error: test failed, to rerun pass `-p kasumi-kv --lib`

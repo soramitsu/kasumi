@@ -26,12 +26,19 @@ pub(crate) async fn create(
             .provider(Arc::new(crate::runtime::file_secret))?;
         let disk = storage.open_scratch(scratch)?;
         crate::persistent_disk::validate(persistent, scratch, [path])?;
-        let node = NodeStore::create_new(
-            path,
-            database_id,
-            crate::persistent_disk::open(persistent, storage)?,
-            disk,
-        )?;
+        let node = {
+            let native_arg_0 = path;
+            let native_arg_1 = database_id;
+            let native_arg_2 = crate::persistent_disk::open(persistent, storage)?;
+            let native_arg_3 = disk;
+            NodeStore::create_new(
+                native_arg_0,
+                native_arg_1,
+                native_arg_2.clone(),
+                native_arg_3,
+                native_arg_2.native_storage_config(),
+            )
+        }?;
         pending.owned_nodes.push(node.clone());
         #[cfg(test)]
         crate::startup_preparation::checkpoint(database_id, "node-provision-node");
@@ -83,6 +90,7 @@ mod tests {
             directory: directory.path().join("scratch"),
             max_bytes: 64 << 20,
             min_free_bytes: 0,
+            native_cache_bytes: 8 << 20,
         };
         let persistent = crate::persistent_disk::fixture_config(&directory.path().join("data"));
         let path = directory.path().join("data/node.kv");
@@ -109,12 +117,19 @@ mod tests {
             b"original owner".to_vec(),
         )])?;
         assert!(
-            NodeStore::open_existing(
-                &path,
-                database_id,
-                storage.open_persistent(&persistent)?,
-                storage.open_scratch(&scratch)?
-            )
+            {
+                let native_arg_0 = &path;
+                let native_arg_1 = database_id;
+                let native_arg_2 = storage.open_persistent(&persistent)?;
+                let native_arg_3 = storage.open_scratch(&scratch)?;
+                NodeStore::open_existing(
+                    native_arg_0,
+                    native_arg_1,
+                    native_arg_2.clone(),
+                    native_arg_3,
+                    native_arg_2.native_storage_config(),
+                )
+            }
             .is_err()
         );
         assert!(
@@ -134,23 +149,37 @@ mod tests {
         drop(audit);
         // Audit shutdown cannot release the independently retained physical node.
         assert!(
-            NodeStore::open_existing(
-                &path,
-                database_id,
-                storage.open_persistent(&persistent)?,
-                storage.open_scratch(&scratch)?
-            )
+            {
+                let native_arg_0 = &path;
+                let native_arg_1 = database_id;
+                let native_arg_2 = storage.open_persistent(&persistent)?;
+                let native_arg_3 = storage.open_scratch(&scratch)?;
+                NodeStore::open_existing(
+                    native_arg_0,
+                    native_arg_1,
+                    native_arg_2.clone(),
+                    native_arg_3,
+                    native_arg_2.native_storage_config(),
+                )
+            }
             .is_err()
         );
         node.shutdown().await?;
         node.shutdown().await?;
         drop(node);
-        let node = NodeStore::open_existing(
-            &path,
-            database_id,
-            storage.open_persistent(&persistent)?,
-            storage.open_scratch(&scratch)?,
-        )?;
+        let node = {
+            let native_arg_0 = &path;
+            let native_arg_1 = database_id;
+            let native_arg_2 = storage.open_persistent(&persistent)?;
+            let native_arg_3 = storage.open_scratch(&scratch)?;
+            NodeStore::open_existing(
+                native_arg_0,
+                native_arg_1,
+                native_arg_2.clone(),
+                native_arg_3,
+                native_arg_2.native_storage_config(),
+            )
+        }?;
         let store = TenantStore::open_existing(
             node.clone(),
             kasumi_engine::SECURITY_TENANT.into(),

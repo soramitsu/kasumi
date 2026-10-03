@@ -281,7 +281,8 @@ impl TenantEngine {
         &self,
         position: &kasumi_raft::AppliedEntryContext,
         bytes: &[u8],
-    ) -> anyhow::Result<kasumi_raft::AppliedResponse> {
+        publisher: &mut dyn kasumi_raft::ApplyPublisher,
+    ) -> anyhow::Result<()> {
         let maintenance = self
             .audit_maintenance
             .lock()
@@ -308,11 +309,8 @@ impl TenantEngine {
             "audit prune has retirement custody seed"
         );
         let (reference, ciphertext) = decode(bytes)?;
-        let _guard = self
-            .apply_lock
-            .lock()
-            .map_err(|_| anyhow::anyhow!("tenant apply lock poisoned"))?;
-        let previous = self.generation()?;
+        let apply = ApplyOwner::lock(self, || anyhow::anyhow!("tenant apply lock poisoned"))?;
+        let previous = apply.current();
         let revision = self
             .revision_base
             .checked_add(position.log_id.index)
@@ -382,6 +380,7 @@ impl TenantEngine {
         };
         // Retirement freezes application state, including its authenticated
         // closure digest. A delayed maintenance command cannot mutate that image.
+        let response = kasumi_raft::AppliedResponse::application(serde_json::to_vec(&outcome)?);
         if !previous.state.retired {
             let accounting = previous.snapshot_accounting.updated(
                 &previous.state,
@@ -393,7 +392,7 @@ impl TenantEngine {
                 accounting.fits(&next)?,
                 "audit pruning metadata exceeds tenant capacity"
             );
-            self.publish_generation(Some(Arc::new(Generation {
+            let candidate = Arc::new(Generation {
                 terminals: previous.terminals.clone(),
                 target_resolutions: previous.target_resolutions.clone(),
                 state: next,
@@ -401,13 +400,19 @@ impl TenantEngine {
                 receipts: previous.receipts.clone(),
                 backup_bindings: previous.backup_bindings.clone(),
                 snapshot_accounting: accounting,
+                application_selection: std::sync::OnceLock::new(),
                 _read_reservations: vec![],
-            })));
+            });
+            self.publish_prepared_generation(
+                apply.accept(candidate, ChangedIds::new())?,
+                response,
+                Some(position),
+                publisher,
+            )
+        } else {
+            publisher.commit(response, &[])?;
+            Ok(())
         }
-        Ok(kasumi_raft::AppliedResponse {
-            data: serde_json::to_vec(&outcome)?,
-            retirement: None,
-        })
     }
 }
 
@@ -443,7 +448,11 @@ mod tests {
     /// A fresh fixture store with no tenant audit placement installed.
     async fn fixture_store() -> (tempfile::TempDir, Arc<TenantStore>) {
         let directory = kasumi_store::test_utils::private_tempdir().unwrap();
-        let memory = kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 32);
+        // The 40-slot fixture exhausted slots at 54,875,251 used bytes. Allow
+        // bounded overlap of installed node/archive owners, replacement tables,
+        // transactions and cache leases without raising the 64 MiB cap. This is
+        // fixture headroom, not a measured minimum or provider qualification.
+        let memory = kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 128);
         kasumi_store::private_files::create_directory(&directory.path().join("persistent"))
             .unwrap();
         let disk =
@@ -564,7 +573,9 @@ mod tests {
                 command_sha256: hex::encode(Sha256::digest(&command)),
                 retirement_seed: None,
             };
-            let result = engine.apply_audit_prune(&position, &command)?;
+            let result = crate::test_utils::capture_application(|publisher| {
+                engine.apply_audit_prune(&position, &command, publisher)
+            })?;
             Ok(serde_json::from_slice(&result.data)?)
         })
         .await?
@@ -594,12 +605,14 @@ mod tests {
                 store.shutdown().await.unwrap();
                 let disk = store.scratch_disk().clone();
                 let persistent = store.persistent_disk().clone();
+                let storage = persistent.native_storage_config();
                 drop(store);
                 let node = NodeStore::open_existing(
                     directory.path().join("persistent/node.kv"),
                     kasumi_store::test_utils::NODE_STORE_ID,
                     persistent,
                     disk,
+                    storage,
                 )
                 .unwrap();
                 store = TenantStore::open_existing_fixture(
@@ -642,6 +655,114 @@ mod tests {
                 .is_some()
         );
         store.shutdown().await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn failed_prune_publication_keeps_selected_prefix_and_replays_staged_archive()
+    -> anyhow::Result<()> {
+        let (_directory, engine, store, _archive) = fixture().await;
+        let command = prepare(engine.clone()).await?.unwrap();
+        let applying = engine.clone();
+        tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+            let previous = applying.generation()?;
+            let position = kasumi_raft::AppliedEntryContext {
+                log_id: kasumi_raft::LogId::new(openraft::CommittedLeaderId::new(1, 1), 51),
+                previous: None,
+                membership: Default::default(),
+                command_sha256: hex::encode(Sha256::digest(&command)),
+                retirement_seed: None,
+            };
+            struct Refuse<'a> {
+                engine: &'a TenantEngine,
+                previous: &'a Arc<Generation>,
+                response: Option<kasumi_raft::AppliedResponse>,
+            }
+            impl kasumi_raft::ApplyPublisher for Refuse<'_> {
+                fn with_completion(
+                    &mut self,
+                    _: &kasumi_raft::CompletionIdentity,
+                    _: &mut dyn kasumi_raft::CompletionAction,
+                ) -> std::result::Result<(), kasumi_raft::CompletionCallError> {
+                    Err(kasumi_raft::CompletionCallError::Unsupported)
+                }
+
+                fn commit_with_selection<'call>(
+                    &mut self,
+                    _: kasumi_raft::AppliedResponse,
+                    _: &[kasumi_store::WriteOp],
+                    _: &mut dyn kasumi_raft::SelectionPreparer,
+                    _: kasumi_raft::PublicationChallenge<'call>,
+                ) -> std::result::Result<
+                    kasumi_raft::JointPublicationReceipt<'call>,
+                    kasumi_raft::PublishCallError,
+                > {
+                    panic!("response-only fixture must not publish a selected source")
+                }
+
+                fn commit(
+                    &mut self,
+                    response: kasumi_raft::AppliedResponse,
+                    writes: &[kasumi_store::WriteOp],
+                ) -> std::result::Result<(), kasumi_raft::PublishCallError> {
+                    assert!(writes.is_empty());
+                    assert!(Arc::ptr_eq(
+                        &self.engine.generation().unwrap(),
+                        self.previous
+                    ));
+                    assert!(self.response.replace(response).is_none());
+                    Err(kasumi_raft::PublishCallError::Failed)
+                }
+            }
+            let mut refused = Refuse {
+                engine: &applying,
+                previous: &previous,
+                response: None,
+            };
+            let failure = kasumi_raft::StateMachineBackend::apply_with_publisher(
+                applying.as_ref(),
+                &position,
+                kasumi_raft::AppliedInput::Command(&command),
+                &mut refused,
+            )
+            .unwrap_err();
+            assert_eq!(
+                failure.downcast_ref::<kasumi_raft::PublishCallError>(),
+                Some(&kasumi_raft::PublishCallError::Failed)
+            );
+            assert!(Arc::ptr_eq(&applying.generation()?, &previous));
+            let (reference, ciphertext) = decode(&command)?;
+            let staged = applying
+                .snapshot_store
+                .get()
+                .unwrap()
+                .tenant_audit_archive()?
+                .cache()
+                .read_blocking(&reference.object)?;
+            assert_eq!(staged, ciphertext);
+            let response = crate::test_utils::capture_application(|publisher| {
+                kasumi_raft::StateMachineBackend::apply_with_publisher(
+                    applying.as_ref(),
+                    &position,
+                    kasumi_raft::AppliedInput::Command(&command),
+                    publisher,
+                )
+            })?;
+            assert_eq!(response.data, refused.response.unwrap().data);
+            let outcome: Result<()> = serde_json::from_slice(&response.data)?;
+            outcome?;
+            let current = applying.generation()?;
+            assert_eq!(current.state.revision, 51);
+            assert_eq!(
+                current.state.audit_retention.archive_head.as_ref(),
+                Some(&reference)
+            );
+            assert_eq!(previous.state.revision, 50);
+            assert_eq!(previous.state.audit_retention.archive_segments, 0);
+            Ok(())
+        })
+        .await??;
+        store.shutdown().await?;
+        Ok(())
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -733,6 +854,7 @@ mod tests {
         drop(engine);
         let disk = store.scratch_disk().clone();
         let persistent = store.persistent_disk().clone();
+        let storage = persistent.native_storage_config();
         drop(store);
 
         let node = NodeStore::open_existing(
@@ -740,6 +862,7 @@ mod tests {
             kasumi_store::test_utils::NODE_STORE_ID,
             persistent,
             disk,
+            storage,
         )
         .unwrap();
         let store = TenantStore::open_existing_fixture(

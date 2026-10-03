@@ -16,7 +16,7 @@ impl crate::PreparedStateMachineRestore for RestoreFailureCandidate<'_> {
     fn retirement(&self) -> Option<crate::RetiredSnapshotState> {
         None
     }
-    fn application_replacements(&self) -> Vec<(&str, &kasumi_store::EncryptedTable)> {
+    fn application_replacements(&self) -> Vec<kasumi_store::NamespaceReplacement<'_>> {
         vec![]
     }
     fn application_writes(&self) -> &[WriteOp] {
@@ -47,15 +47,14 @@ impl StateMachineBackend for RestoreFailureBackend {
     fn close_application(&self) {
         self.current.close_application();
     }
-    fn apply(
+    fn apply_with_publisher(
         &self,
-        context: &crate::AppliedEntryContext,
-        bytes: &[u8],
-    ) -> Result<crate::AppliedResponse> {
-        self.current.apply(context, bytes)
-    }
-    fn apply_metadata(&self, _position: &crate::AppliedEntryContext) -> anyhow::Result<()> {
-        Ok(())
+        position: &crate::AppliedEntryContext,
+        input: crate::AppliedInput<'_>,
+        publisher: &mut dyn crate::ApplyPublisher,
+    ) -> Result<()> {
+        self.current
+            .apply_with_publisher(position, input, publisher)
     }
     fn capture_snapshot(&self) -> Result<crate::CapturedSnapshot> {
         self.current.capture_snapshot()

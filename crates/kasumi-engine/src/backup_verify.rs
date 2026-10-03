@@ -13,6 +13,9 @@ use std::{
 };
 #[path = "backup_history_work.rs"]
 mod history_work;
+#[path = "backup_phase.rs"]
+mod phase;
+pub(crate) use phase::VerificationPhase;
 
 pub(crate) struct VerificationWork {
     _permit: tokio::sync::OwnedSemaphorePermit,
@@ -177,8 +180,10 @@ impl VerificationDeadline {
             // charge before the work registration permits shutdown to drain.
             _resources: Resources,
         }
+        let phase = VerificationPhase::start("verification.blocking_wait", Some(self));
         let output = self
             .run(tokio::task::spawn_blocking(move || {
+                let phase = VerificationPhase::start("verification.blocking_worker", Some(self));
                 let resources = Resources {
                     _reservation: reservation,
                     _registration: registration,
@@ -195,12 +200,18 @@ impl VerificationDeadline {
                     }
                     Ok(result)
                 })();
+                if value.is_ok() {
+                    phase.complete();
+                }
                 Output {
                     value,
                     _resources: resources,
                 }
             }))
             .await??;
+        if output.value.is_ok() {
+            phase.complete();
+        }
         output.value
     }
 }
@@ -388,6 +399,7 @@ pub(crate) async fn verify(
     deadline: VerificationDeadline,
     capture: Option<ResidentCapture>,
 ) -> anyhow::Result<VerifiedBackup> {
+    let phase = VerificationPhase::start("verify.manifest", Some(deadline));
     reader.check_access().await?;
     // Bound the envelope before trusting its declared resident size.
     let reservation = admission.reserve(
@@ -432,6 +444,8 @@ pub(crate) async fn verify(
         reader.cancellation(),
     )?);
     let ownership = reader.work_registration();
+    phase.complete();
+    let phase = VerificationPhase::start("verify.page_chain", Some(deadline));
     // Walk the authenticated reverse page chain into an encrypted fixed-slot
     // spool. Reversing it needs one page of workspace, independent of backup size.
     let page_budget = manifest
@@ -474,6 +488,8 @@ pub(crate) async fn verify(
         reference.is_none(),
         "backup page chain has trailing ancestors"
     );
+    phase.complete();
+    let phase = VerificationPhase::start("verify.resident_chunks", Some(deadline));
     let mut spool = if capture.is_some() {
         None
     } else {
@@ -539,6 +555,8 @@ pub(crate) async fn verify(
             && hex::encode(digest.finalize()) == manifest.resident_sha256,
         "full backup resident stream differs"
     );
+    phase.complete();
+    let phase = VerificationPhase::start("verify.snapshot_wait", Some(deadline));
     let semantic_work = ownership.clone();
     let semantic_reservation = reservation.clone();
     let semantic_admission = admission.clone();
@@ -550,10 +568,12 @@ pub(crate) async fn verify(
             move || match capture {
                 Some(capture) => Ok((VerifiedState::Captured(capture.generation), None)),
                 None => {
+                    let phase = VerificationPhase::start("verify.snapshot_freeze", Some(deadline));
                     let bytes =
                         kasumi_store::SnapshotImage::freeze(spool.ok_or_else(|| {
                             anyhow::anyhow!("historical backup staging missing")
                         })?)?;
+                    phase.complete();
                     let disk = bytes
                         .len()
                         .checked_mul(8)
@@ -569,12 +589,21 @@ pub(crate) async fn verify(
                         }
                         Ok(())
                     };
+                    let phase =
+                        VerificationPhase::start("verify.structural_inspection", Some(deadline));
                     let layout =
                         crate::snapshot_index::StagedSnapshot::inspect(&bytes, &mut check)?;
+                    phase::snapshot_layout(&layout);
+                    phase.complete();
+                    let phase =
+                        VerificationPhase::start("verify.semantic_admission", Some(deadline));
                     // Retain the complete index/cache floor while admitting
                     // the measured peak record work before any DTO decode.
                     semantic_reservation
                         .handoff_workspace(&semantic_admission, layout.index_workspace()?)?;
+                    phase.complete();
+                    let phase =
+                        VerificationPhase::start("verify.application_validation", Some(deadline));
                     let validated =
                         crate::state::snapshot_validation::ValidatedApplicationSnapshot::validate(
                             bytes.clone(),
@@ -585,12 +614,15 @@ pub(crate) async fn verify(
                         validated.index().summary() == layout,
                         "backup differs from admitted typed framing"
                     );
+                    phase.complete();
                     let state = VerifiedState::Indexed(Box::new(validated));
                     Ok((state, Some(bytes)))
                 }
             },
         )
         .await?;
+    phase.complete();
+    let phase = VerificationPhase::start("verify.state_authorization", Some(deadline));
     let state = Arc::new(state);
     reader.authorize_state(state.metadata()).await?;
     anyhow::ensure!(
@@ -605,6 +637,8 @@ pub(crate) async fn verify(
         "Control state cannot be an application backup"
     );
     state.authorize_source(&source_purpose, &source_purpose)?;
+    phase.complete();
+    let phase = VerificationPhase::start("verify.history_dependencies", Some(deadline));
     for archive in state.records(11, None)? {
         let crate::snapshot_codec::Record::Archive(_, archive) = archive? else {
             unreachable!()
@@ -734,6 +768,8 @@ pub(crate) async fn verify(
                 .await?;
         }
     }
+    phase.complete();
+    let phase = VerificationPhase::start("verify.audit_dependencies", Some(deadline));
     let retention = &state.metadata().audit_retention;
     let mut expected = retention
         .archive_head
@@ -784,6 +820,8 @@ pub(crate) async fn verify(
         archive_bytes == retention.archive_bytes && archive_records == retention.archive_segments,
         "backup audit graph incomplete"
     );
+    phase.complete();
+    let phase = VerificationPhase::start("verify.final_access", Some(deadline));
     reader.check_access().await?;
     let checkpoint = FullBackupCheckpoint {
         tenant: manifest.tenant,
@@ -795,6 +833,7 @@ pub(crate) async fn verify(
         key_lineage_digest: key_catalogs.finish(),
     };
     checkpoint.validate()?;
+    phase.complete();
     Ok(VerifiedBackup {
         source_purpose,
         state: Arc::try_unwrap(state).map_err(|_| {

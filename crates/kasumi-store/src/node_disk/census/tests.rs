@@ -42,6 +42,25 @@ fn root_set(config: &NodeDiskConfig) -> (BTreeMap<String, Root>, Vec<File>, u64)
     (roots, locks, unit)
 }
 
+// Native stat fields differ in width between the supported Unix targets.
+#[allow(clippy::unnecessary_cast)]
+fn descriptor_identity(fd: std::os::fd::RawFd) -> io::Result<Identity> {
+    let mut stat: libc::stat = unsafe { std::mem::zeroed() };
+    if unsafe { libc::fstat(fd, &mut stat) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(Identity(stat.st_dev as u64, stat.st_ino as u64))
+}
+
+fn retired_descriptor_no_longer_names(fd: std::os::fd::RawFd, expected: Identity) {
+    match descriptor_identity(fd) {
+        // These cursor directories are fixture-unique. A parallel test may
+        // reuse a closed integer, but cannot own this private directory inode.
+        Ok(actual) => assert_ne!(actual, expected),
+        Err(error) => assert_eq!(error.raw_os_error(), Some(libc::EBADF)),
+    }
+}
+
 #[test]
 fn original_tiny_file_population_reconciles_without_reducing_admission() {
     let (root, config, memory) = fixture();
@@ -116,10 +135,11 @@ fn full_file_and_directory_geometry_progresses_without_reopening_streams() {
         pending += 1;
         let pointer = session.stack[0].entries.unwrap();
         let fd = unsafe { libc::dirfd(pointer.as_ptr()) };
-        if let Some((old_pointer, old_fd)) = root_stream {
-            assert_eq!((pointer, fd), (old_pointer, old_fd));
+        let identity = descriptor_identity(fd).unwrap();
+        if let Some((old_pointer, old_fd, old_identity)) = root_stream {
+            assert_eq!((pointer, fd, identity), (old_pointer, old_fd, old_identity));
         }
-        root_stream = Some((pointer, fd));
+        root_stream = Some((pointer, fd, identity));
         assert!(unsafe { libc::fcntl(fd, libc::F_GETFD) } >= 0);
     }
     assert_eq!(pending, 5);
@@ -127,10 +147,8 @@ fn full_file_and_directory_geometry_progresses_without_reopening_streams() {
     let totals = session.finish().unwrap();
     assert_eq!((totals.files, totals.directories), (8, 9));
     assert_eq!(streams.outstanding(), 0);
-    assert_eq!(
-        unsafe { libc::fcntl(root_stream.unwrap().1, libc::F_GETFD) },
-        -1
-    );
+    let (_, fd, identity) = root_stream.unwrap();
+    retired_descriptor_no_longer_names(fd, identity);
     banks.commit_stage();
     assert_eq!(banks.len(), 17);
 }
@@ -201,11 +219,12 @@ fn cancellation_between_steps_closes_actual_stream_and_resets_partial_spare() {
     assert_eq!(session.advance(), Progress::Pending);
     assert_eq!(streams.outstanding(), 1);
     let fd = unsafe { libc::dirfd(session.stack[0].entries.unwrap().as_ptr()) };
+    let identity = descriptor_identity(fd).unwrap();
     cancel.cancel();
     assert_eq!(session.advance(), Progress::Failed);
     assert_eq!(session.advance(), Progress::Failed);
     assert_eq!(streams.outstanding(), 0);
-    assert_eq!(unsafe { libc::fcntl(fd, libc::F_GETFD) }, -1);
+    retired_descriptor_no_longer_names(fd, identity);
     assert_eq!(session.scan.accounted.len(), 0);
     assert!(format!("{:#}", session.finish().unwrap_err()).contains("cancelled"));
     assert_eq!(banks.len(), 0);
@@ -453,8 +472,10 @@ fn uncertain_initial_close_retains_registered_outcome_and_resources_through_erro
         drop(installed);
         // The production constructor finds the pre-effect registration without
         // acquiring new memory or silently retrying the failed native resource.
-        let error = NodeDisk::open_fixture(&config, memory.clone(), &CensusCancellation::default())
-            .unwrap_err();
+        let error = retry_disk_registry(|| {
+            NodeDisk::open_fixture(&config, memory.clone(), &CensusCancellation::default())
+        })
+        .unwrap_err();
         let crate::DiskOpenError::Failed(error) = error else {
             panic!("lost retained failure");
         };
@@ -470,6 +491,8 @@ fn uncertain_initial_close_retains_registered_outcome_and_resources_through_erro
 
 #[test]
 fn ordinary_initial_failure_retires_descriptors_before_admission_credit() {
+    use std::{io::Read, os::fd::OwnedFd, os::unix::net::UnixStream};
+
     let (_root, config, memory) = fixture();
     let mut installed = super::super::registry().lock();
     let (identity, _unit, allocation) = registered_preparation(&config, &memory, &mut installed);
@@ -479,15 +502,35 @@ fn ordinary_initial_failure_retires_descriptors_before_admission_credit() {
         committed: false,
     };
     let prepared = registration.prepared();
-    let fds = prepared
+    // Exercise the exact File fields' destruction order with distinct kernel
+    // objects. A descriptor integer may be reused by another parallel test,
+    // even for the same shared ancestor inode; its later F_GETFD is not proof
+    // that this owner retained it. A socket peer observes the original object
+    // independently of integer reuse. Real directory-lock custody is covered
+    // by the retained-initial-close test above and the operational owner tests.
+    let mut peers = Vec::with_capacity(prepared.roots.len() + prepared.ancestor_locks.len());
+    for file in prepared
         .roots
-        .values()
-        .map(|root| root.file.as_raw_fd())
-        .chain(prepared.ancestor_locks.iter().map(AsRawFd::as_raw_fd))
-        .collect::<Vec<_>>();
+        .values_mut()
+        .map(|root| &mut root.file)
+        .chain(prepared.ancestor_locks.iter_mut())
+    {
+        let (peer, owned) = UnixStream::pair().unwrap();
+        peer.set_nonblocking(true).unwrap();
+        *file = File::from(OwnedFd::from(owned));
+        peers.push(peer);
+    }
+    assert!(!peers.is_empty());
+    for peer in &mut peers {
+        assert_eq!(
+            peer.read(&mut [0; 1]).unwrap_err().kind(),
+            io::ErrorKind::WouldBlock,
+            "retirement sentinel must still have its exact File owner"
+        );
+    }
     struct ObserveRetirement {
         lease: Option<crate::DiskMemoryLease>,
-        fds: Vec<i32>,
+        peers: Vec<UnixStream>,
         observed: Arc<std::sync::atomic::AtomicBool>,
         allocation: Arc<crate::allocation_tests::DeallocationObservation>,
     }
@@ -497,11 +540,11 @@ fn ordinary_initial_failure_retires_descriptors_before_admission_credit() {
                 self.allocation.finished(),
                 "actual registry backing still live at owner credit retirement"
             );
-            for fd in &self.fds {
+            for peer in &mut self.peers {
                 assert_eq!(
-                    unsafe { libc::fcntl(*fd, libc::F_GETFD) },
-                    -1,
-                    "descriptor still owned at lease retirement"
+                    peer.read(&mut [0; 1]).unwrap(),
+                    0,
+                    "exact File resource still owned at lease retirement"
                 );
             }
             self.observed
@@ -516,7 +559,7 @@ fn ordinary_initial_failure_retires_descriptors_before_admission_credit() {
     let lease = std::mem::replace(&mut prepared.charge, crate::DiskMemoryLease::new(()));
     prepared.charge = crate::DiskMemoryLease::new(ObserveRetirement {
         lease: Some(lease),
-        fds,
+        peers,
         observed: observed.clone(),
         allocation: deallocation.clone(),
     });

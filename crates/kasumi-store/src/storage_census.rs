@@ -17,6 +17,11 @@ use std::{
 };
 type Panic = Box<dyn Any + Send>;
 
+#[path = "storage_census_source.rs"]
+mod source;
+pub(crate) use source::{SourceCellClaim, SourceCensusExchange};
+use source::{SourceClass, SourceSlot};
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StorageOwnerKind {
     Database,
@@ -26,6 +31,8 @@ pub enum StorageOwnerKind {
     /// and bounded descriptor cache, including failed-close owners it keeps.
     /// It may be a database's exact child.
     SegmentGroup,
+    /// Fixed registered control for the source publication pool.
+    SourcePool,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StorageOwnerId {
@@ -44,6 +51,8 @@ pub enum StorageCensusPanicPhase {
     Drive,
     PayloadDisposal,
     LeaseRetirement,
+    SourceHoldRetirement,
+    SourceControlRetirement,
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct StorageCensusSnapshot {
@@ -52,6 +61,11 @@ pub struct StorageCensusSnapshot {
     pub readers: usize,
     pub writers: usize,
     pub segment_groups: usize,
+    pub source_pools: usize,
+    pub source_reserved: usize,
+    pub source_active: usize,
+    pub source_history: usize,
+    pub source_replacements: usize,
     pub servicing: usize,
     pub retained_panics: usize,
     pub fenced: bool,
@@ -100,6 +114,11 @@ enum Cell {
     },
     Disposing,
     RetiringLease,
+    SourceControl {
+        servicing: bool,
+    },
+    SourceReserved,
+    RetiringSourceHold,
     Retained,
 }
 struct Metadata {
@@ -109,6 +128,7 @@ struct Metadata {
     parent: Option<StorageOwnerId>,
     cell: Cell,
     lease: Option<DiskMemoryLease>,
+    source: Option<SourceSlot>,
 }
 struct OriginalPanic {
     generation: u64,
@@ -124,9 +144,16 @@ const PANICKED: u8 = 3;
 const PAYLOAD_DISPOSED: u8 = 4;
 const LEASE_RETIRED: u8 = 5;
 const UNEXPECTED_SHARED: u8 = 6;
+const SOURCE_HOLD_RETIRED: u8 = 7;
 struct Slot {
     metadata: Mutex<Metadata>,
     pending: AtomicU8,
+    source_completion: AtomicU8,
+    // Published only after actual source Hold/lease/cell retirement and the
+    // parent decrement. Per-slot generations increase; later reuse cannot
+    // erase an earlier positive outcome still awaited by its unique claim.
+    source_retired_generation: AtomicU64,
+    source_control: Mutex<source::SourceControlState>,
     // An exact parent's cell cannot retire while any child cell or lease lives.
     children: AtomicUsize,
     // Once installed, an original panic makes the cell permanently retained;
@@ -163,11 +190,15 @@ impl StorageCensus {
                 parent: None,
                 cell: Cell::Vacant,
                 lease: None,
+                source: None,
             });
             drop(metadata.lock().unwrap());
             slot.write(Slot {
                 metadata,
                 pending: AtomicU8::new(NONE),
+                source_completion: AtomicU8::new(source::EXCHANGE_NONE),
+                source_retired_generation: AtomicU64::new(0),
+                source_control: Mutex::new(source::SourceControlState::new()),
                 children: AtomicUsize::new(0),
                 panic: OnceLock::new(),
                 unexpected_shared: OnceLock::new(),
@@ -245,8 +276,18 @@ impl StorageCensus {
             StorageOwnerKind::Reader => snapshot.readers += 1,
             StorageOwnerKind::Writer => snapshot.writers += 1,
             StorageOwnerKind::SegmentGroup => snapshot.segment_groups += 1,
+            StorageOwnerKind::SourcePool => snapshot.source_pools += 1,
         }
-        if matches!(
+        if let Some(source) = &metadata.source {
+            match source.class {
+                SourceClass::ProtectedVacant => snapshot.source_reserved += 1,
+                SourceClass::ProtectedActive => snapshot.source_active += 1,
+                SourceClass::OrdinaryHistory => snapshot.source_history += 1,
+                SourceClass::ReplacementHeld => snapshot.source_replacements += 1,
+                SourceClass::Releasing => {}
+            }
+        }
+        let servicing = matches!(
             metadata.cell,
             Cell::Constructing
                 | Cell::Disposing
@@ -255,7 +296,13 @@ impl StorageCensus {
                     servicing: true,
                     ..
                 }
-        ) {
+        );
+        let servicing = servicing
+            || matches!(
+                metadata.cell,
+                Cell::RetiringSourceHold | Cell::SourceControl { servicing: true }
+            );
+        if servicing {
             snapshot.servicing += 1;
         }
         if slot.panic.get().is_some() {
@@ -273,7 +320,7 @@ impl StorageCensus {
         self.slots.len()
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-utils"))]
     pub(crate) fn with_owner_metadata_held_for_test<R>(
         &self,
         id: StorageOwnerId,
@@ -368,6 +415,9 @@ impl StorageCensus {
         drop(metadata);
         self.register_inner(provider, backing_bytes, Some(parent.id), construct)
     }
+    pub(crate) fn registration_request_bytes<T: StoragePayload>(backing: u64) -> io::Result<u64> {
+        disk_memory::add(disk_memory::arc::<T>()?, backing)
+    }
     fn register_inner<T: StoragePayload>(
         &self,
         provider: Arc<dyn NodeDiskMemoryAdmission>,
@@ -375,13 +425,16 @@ impl StorageCensus {
         parent: Option<StorageOwnerId>,
         construct: impl FnOnce() -> T,
     ) -> io::Result<StorageRegistration<T>> {
+        if T::KIND == StorageOwnerKind::SourcePool {
+            return Err(io::ErrorKind::InvalidInput.into());
+        }
         self.require_provider(&provider)?;
         if self.fenced.load(Ordering::Acquire) {
             return Err(io::ErrorKind::BrokenPipe.into());
         }
         let lease = provider
             .clone()
-            .reserve_installed(disk_memory::add(disk_memory::arc::<T>()?, backing_bytes)?)?;
+            .reserve_installed(Self::registration_request_bytes::<T>(backing_bytes)?)?;
         for (index, slot) in self.slots.iter().enumerate() {
             let Ok(mut metadata) = slot.metadata.try_lock() else {
                 continue;
@@ -410,6 +463,7 @@ impl StorageCensus {
             metadata.kind = T::KIND;
             metadata.parent = parent;
             metadata.lease = Some(lease);
+            debug_assert!(metadata.source.is_none());
             metadata.cell = Cell::Constructing;
             // Effect-free construction/publication is the only allocation held
             // under this short metadata guard. Storage dispatch happens later.
@@ -468,9 +522,11 @@ impl StorageCensus {
                 let Ok(metadata) = slot.metadata.try_lock() else {
                     continue;
                 };
-                if metadata.parent != Some(parent)
-                    || !matches!(metadata.cell, Cell::Disposing | Cell::RetiringLease)
-                {
+                let payload_disposed =
+                    matches!(metadata.cell, Cell::Disposing | Cell::RetiringLease);
+                let payload_disposed =
+                    payload_disposed || matches!(metadata.cell, Cell::RetiringSourceHold);
+                if metadata.parent != Some(parent) || !payload_disposed {
                     continue;
                 }
                 StorageOwnerId {
@@ -483,6 +539,18 @@ impl StorageCensus {
     }
     /// One actual owner; all post-effect bookkeeping uses try_lock. When busy,
     /// the original completion remains in this fixed slot for a later call.
+    /// Read-only terminal observation for a token already minted after actual
+    /// native completion. This grants no retirement or acknowledgment authority.
+    pub(crate) fn retirement_is_terminal(&self, id: StorageOwnerId) -> bool {
+        self.fenced.load(Ordering::Acquire)
+            || self.slots.get(id.index).is_some_and(|slot| {
+                slot.panic
+                    .get()
+                    .is_some_and(|panic| panic.generation == id.generation)
+                    || slot.pending.load(Ordering::Acquire) == UNEXPECTED_SHARED
+            })
+    }
+
     pub fn drain_owner(&self, id: StorageOwnerId) -> StorageCensusDisposition {
         let Some(slot) = self.slots.get(id.index) else {
             return StorageCensusDisposition::Stale;
@@ -502,6 +570,9 @@ impl StorageCensus {
                 return StorageCensusDisposition::Stale;
             }
             let pending = slot.pending.load(Ordering::Acquire);
+            if source::exchange_blocks(slot, &metadata) {
+                return StorageCensusDisposition::Retained;
+            }
             if self.fenced.load(Ordering::Acquire)
                 || pending == PANICKED
                 || pending == UNEXPECTED_SHARED
@@ -509,6 +580,10 @@ impl StorageCensus {
                 return StorageCensusDisposition::Retained;
             }
             match &mut metadata.cell {
+                Cell::SourceControl { .. } => {
+                    drop(metadata);
+                    return self.drain_source_control(id);
+                }
                 Cell::Active { owner, servicing } => {
                     if *servicing {
                         if pending == NONE {
@@ -598,6 +673,10 @@ impl StorageCensus {
                     if pending != LEASE_RETIRED {
                         return StorageCensusDisposition::Retained;
                     }
+                    if metadata.source.is_some() {
+                        drop(metadata);
+                        return self.finish_source_payload(id);
+                    }
                     slot.pending.store(NONE, Ordering::Release);
                     metadata.cell = Cell::Vacant;
                     if let Some(parent) = metadata.parent.take() {
@@ -608,6 +687,11 @@ impl StorageCensus {
                     }
                     return StorageCensusDisposition::Retired;
                 }
+                Cell::RetiringSourceHold => {
+                    drop(metadata);
+                    return self.finish_source_hold(id);
+                }
+                Cell::SourceReserved => return StorageCensusDisposition::Retained,
                 Cell::Constructing | Cell::Retained | Cell::Vacant => {
                     return StorageCensusDisposition::Retained;
                 }
@@ -677,3 +761,7 @@ impl<T> StorageRegistration<T> {
 #[cfg(test)]
 #[path = "storage_census_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "storage_census_source_tests.rs"]
+mod source_tests;

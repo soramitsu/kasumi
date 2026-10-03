@@ -1,0 +1,25 @@
+
+running 8 tests
+
+thread 'startup_owner::tests::cancelled_finish_keeps_joined_panic_and_exact_unfinished_worker' (4594487) panicked at crates/kasumi-server/src/startup_owner.rs:449:41:
+injected actual worker panic
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'startup_owner::tests::completed_worker_panic_reports_original_join_error_without_retry' (4594490) panicked at crates/kasumi-server/src/startup_owner.rs:449:41:
+injected actual worker panic
+test startup_owner::tests::buffered_startup_ticket_drain_is_joinable_after_result_receiver_cancellation ... ok
+startup owner drain: DrainFailure { completion: Retained, issues: [DrainIssue { component: "candidate", instance: 0, error: injected drain failure }] }
+test startup_owner::tests::claimed_startup_runtime_is_never_closed_by_the_initializer_registry ... ok
+test startup_owner::tests::buffered_failed_open_requires_an_actual_recipient_before_forgetting_its_error ... ok
+test startup_owner::tests::rejected_actual_recipient_handoff_retains_owner_until_cancelled_drain_is_joined ... ok
+test startup_owner::tests::cancelled_drain_preserves_joined_failure_before_another_pending_owner ... ok
+startup owner drain: DrainFailure { completion: Complete, issues: [DrainIssue { component: "joined worker", instance: 0, error: task 3 panicked with message "injected actual worker panic" }] }
+startup owner drain: DrainFailure { completion: Complete, issues: [DrainIssue { component: "joined worker", instance: 0, error: task 3 panicked with message "injected actual worker panic" }] }
+startup owner drain: DrainFailure { completion: Complete, issues: [DrainIssue { component: "joined worker", instance: 1, error: task 8 panicked with message "injected actual worker panic" }] }
+test startup_owner::tests::cancelled_finish_keeps_joined_panic_and_exact_unfinished_worker ... ok
+test startup_owner::tests::completed_worker_panic_reports_original_join_error_without_retry ... ok
+startup owner drain: DrainFailure { completion: Complete, issues: [DrainIssue { component: "candidate", instance: 0, error: injected drain failure }] }
+test startup_owner::tests::cancelled_waiter_retains_open_work_and_failed_drain_until_actual_completion ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 266 filtered out; finished in 1.09s
+

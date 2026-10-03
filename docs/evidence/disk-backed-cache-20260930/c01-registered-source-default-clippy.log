@@ -1,0 +1,505 @@
+Command: cargo clippy --locked --offline -p kasumi-store --lib -- -D warnings
+CARGO_TARGET_DIR=target/disk-backed-cache
+    Checking kasumi-clock v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-clock)
+    Checking kasumi-types v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-types)
+    Checking kasumi-serving v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-serving)
+    Checking kasumi-store v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-store)
+error: variant `Fresh` is never constructed
+  --> crates/kasumi-store/src/source_metadata.rs:42:5
+   |
+41 | enum Binding {
+   |      ------- variant in this enum
+42 |     Fresh,
+   |     ^^^^^
+   |
+   = note: `Binding` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+   = note: `-D dead-code` implied by `-D warnings`
+   = help: to override `-D warnings` add `#[expect(dead_code)]` or `#[allow(dead_code)]`
+
+error: associated function `new` is never used
+  --> crates/kasumi-store/src/source_metadata.rs:51:14
+   |
+50 | impl BindStatus {
+   | --------------- associated function in this implementation
+51 |     const fn new() -> Self {
+   |              ^^^
+
+error: associated function `new` is never used
+   --> crates/kasumi-store/src/source_metadata.rs:144:25
+    |
+143 | impl<E> MetadataAttempt<E> {
+    | -------------------------- associated function in this implementation
+144 |     pub(crate) const fn new() -> Self {
+    |                         ^^^
+
+error: fields `request` and `provider` are never read
+   --> crates/kasumi-store/src/source_metadata.rs:192:5
+    |
+187 | pub(crate) struct MetadataPreparation {
+    |                   ------------------- fields in this struct
+...
+192 |     request: Option<(SourceMetadataPurpose, u64)>,
+    |     ^^^^^^^
+193 |     provider: Option<Arc<dyn NodeDiskMemoryAdmission>>,
+    |     ^^^^^^^^
+
+error: multiple associated items are never used
+   --> crates/kasumi-store/src/source_metadata.rs:196:25
+    |
+195 | impl MetadataPreparation {
+    | ------------------------ associated items in this implementation
+196 |     pub(crate) const fn new() -> Self {
+    |                         ^^^
+...
+206 |     pub(crate) fn acquire(
+    |                   ^^^^^^^
+...
+227 |     pub(crate) fn ready(&self) -> bool {
+    |                   ^^^^^
+...
+230 |     pub(crate) fn matches_for(
+    |                   ^^^^^^^^^^^
+...
+242 |     pub(crate) fn ready_for(
+    |                   ^^^^^^^^^
+...
+250 |     pub(crate) fn take_for(
+    |                   ^^^^^^^^
+...
+265 |     pub(crate) fn original(&self) -> TerminalObservation<'_, io::Error> {
+    |                   ^^^^^^^^
+...
+268 |     pub(crate) fn protocol(&self) -> Option<SourceMetadataCallError> {
+    |                   ^^^^^^^^
+...
+284 |     pub(crate) fn cleanup(&self) -> TerminalObservation<'_, std::convert::Infallible> {
+    |                   ^^^^^^^
+
+error: method `same` is never used
+  --> crates/kasumi-store/src/source_metadata_bank.rs:31:8
+   |
+30 | impl BankRef {
+   | ------------ method in this implementation
+31 |     fn same(&self, other: &Self) -> bool {
+   |        ^^^^
+
+error: field `serial` is never read
+  --> crates/kasumi-store/src/source_metadata_bank.rs:56:5
+   |
+54 | struct BankState {
+   |        --------- field in this struct
+55 |     phase: BankPhase,
+56 |     serial: u64,
+   |     ^^^^^^
+
+error: fields `provider`, `pool`, and `quote` are never read
+  --> crates/kasumi-store/src/source_metadata_bank.rs:61:5
+   |
+60 | struct Bank {
+   |        ---- fields in this struct
+61 |     provider: Arc<dyn NodeDiskMemoryAdmission>,
+   |     ^^^^^^^^
+62 |     pool: StorageOwnerId,
+   |     ^^^^
+63 |     quote: Quote,
+   |     ^^^^^
+
+error: fields `fixed`, `lane`, `report`, and `payload` are never read
+  --> crates/kasumi-store/src/source_metadata_bank.rs:71:5
+   |
+70 | struct Quote {
+   |        ----- fields in this struct
+71 |     fixed: u64,
+   |     ^^^^^
+72 |     lane: u64,
+   |     ^^^^
+73 |     report: u64,
+   |     ^^^^^^
+74 |     payload: u64,
+   |     ^^^^^^^
+   |
+   = note: `Quote` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+
+error: associated function `new` is never used
+  --> crates/kasumi-store/src/source_metadata_bank.rs:77:8
+   |
+76 | impl Quote {
+   | ---------- associated function in this implementation
+77 |     fn new() -> io::Result<Self> {
+   |        ^^^
+
+error: associated items `requests`, `install`, `hold`, and `checkout` are never used
+   --> crates/kasumi-store/src/source_metadata_bank.rs:105:19
+    |
+ 99 | impl StoreSourceMetadataBank {
+    | ---------------------------- associated items in this implementation
+...
+105 |     pub(crate) fn requests() -> io::Result<[u64; 3]> {
+    |                   ^^^^^^^^
+...
+111 |     pub(crate) fn install(
+    |                   ^^^^^^^
+...
+160 |     pub(crate) fn hold(&self) -> SourceMetadataBankHold {
+    |                   ^^^^
+...
+165 |     pub(crate) fn checkout(&self, lane_index: usize) -> io::Result<SourceMetadataAccount> {
+    |                   ^^^^^^^^
+
+error: field `bank` is never read
+   --> crates/kasumi-store/src/source_metadata_bank.rs:243:5
+    |
+242 | pub(crate) struct SourceMetadataBankHold {
+    |                   ---------------------- field in this struct
+243 |     bank: BankRef,
+    |     ^^^^
+    |
+    = note: `SourceMetadataBankHold` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+
+error: methods `belongs_to_pool` and `require_provider` are never used
+   --> crates/kasumi-store/src/source_metadata_bank.rs:246:19
+    |
+245 | impl SourceMetadataBankHold {
+    | --------------------------- methods in this implementation
+246 |     pub(crate) fn belongs_to_pool(&self, pool: StorageOwnerId) -> bool {
+    |                   ^^^^^^^^^^^^^^^
+...
+249 |     pub(crate) fn require_provider(
+    |                   ^^^^^^^^^^^^^^^^
+
+error: method `same_bank` is never used
+   --> crates/kasumi-store/src/source_metadata_bank.rs:273:19
+    |
+272 | impl SourceMetadataWitness {
+    | -------------------------- method in this implementation
+273 |     pub(crate) fn same_bank(&self, hold: &SourceMetadataBankHold) -> bool {
+    |                   ^^^^^^^^^
+
+error: variant `Active` is never constructed
+   --> crates/kasumi-store/src/source_metadata_bank.rs:305:5
+    |
+304 | enum AccountPhase {
+    |      ------------ variant in this enum
+305 |     Active,
+    |     ^^^^^^
+    |
+    = note: `AccountPhase` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+
+error: variant `Publication` is never constructed
+   --> crates/kasumi-store/src/source_metadata_bank.rs:311:5
+    |
+310 | enum Origin {
+    |      ------ variant in this enum
+311 |     Publication,
+    |     ^^^^^^^^^^^
+
+error: field `issued` is never read
+   --> crates/kasumi-store/src/source_metadata_bank.rs:316:5
+    |
+314 | struct AccountState {
+    |        ------------ field in this struct
+315 |     phase: AccountPhase,
+316 |     issued: [bool; 2],
+    |     ^^^^^^
+
+error: struct `ChildCredit` is never constructed
+   --> crates/kasumi-store/src/source_metadata_bank.rs:326:8
+    |
+326 | struct ChildCredit {
+    |        ^^^^^^^^^^^
+
+error: methods `right_index`, `witness`, `child`, `report_grant`, `payload_grant`, and `history` are never used
+   --> crates/kasumi-store/src/source_metadata_bank.rs:389:19
+    |
+380 | impl SourceMetadataAccount {
+    | -------------------------- methods in this implementation
+...
+389 |     pub(crate) fn right_index(&self) -> usize {
+    |                   ^^^^^^^^^^^
+...
+392 |     pub(crate) fn witness(&self) -> SourceMetadataWitness {
+    |                   ^^^^^^^
+...
+400 |     fn child(&self, purpose: usize) -> io::Result<DiskMemoryLease> {
+    |        ^^^^^
+...
+417 |     pub(crate) fn report_grant(&self) -> io::Result<SourceReportGrant> {
+    |                   ^^^^^^^^^^^^
+...
+424 |     pub(crate) fn payload_grant(&self) -> io::Result<SourcePayloadGrant> {
+    |                   ^^^^^^^^^^^^^
+...
+441 |     pub(crate) fn history(&self) -> io::Result<SourceMetadataHistory> {
+    |                   ^^^^^^^
+
+error: fields `lease`, `provider`, and `bytes` are never read
+   --> crates/kasumi-store/src/source_metadata_bank.rs:463:5
+    |
+462 | pub(crate) struct SourceReportGrant {
+    |                   ----------------- fields in this struct
+463 |     lease: DiskMemoryLease,
+    |     ^^^^^
+464 |     provider: Arc<dyn NodeDiskMemoryAdmission>,
+    |     ^^^^^^^^
+465 |     bytes: u64,
+    |     ^^^^^
+
+error: methods `require` and `into_lease` are never used
+   --> crates/kasumi-store/src/source_metadata_bank.rs:468:19
+    |
+467 | impl SourceReportGrant {
+    | ---------------------- methods in this implementation
+468 |     pub(crate) fn require(
+    |                   ^^^^^^^
+...
+479 |     pub(crate) fn into_lease(self) -> DiskMemoryLease {
+    |                   ^^^^^^^^^^
+
+error: fields `lease`, `witness`, and `bytes` are never read
+   --> crates/kasumi-store/src/source_metadata_bank.rs:484:5
+    |
+483 | pub(crate) struct SourcePayloadGrant {
+    |                   ------------------ fields in this struct
+484 |     lease: DiskMemoryLease,
+    |     ^^^^^
+485 |     witness: SourceMetadataWitness,
+    |     ^^^^^^^
+486 |     bytes: u64,
+    |     ^^^^^
+
+error: methods `require`, `require_hold`, and `into_parts` are never used
+   --> crates/kasumi-store/src/source_metadata_bank.rs:489:19
+    |
+488 | impl SourcePayloadGrant {
+    | ----------------------- methods in this implementation
+489 |     pub(crate) fn require(
+    |                   ^^^^^^^
+...
+500 |     pub(crate) fn require_hold(&self, hold: &SourceMetadataBankHold) -> io::Result<()> {
+    |                   ^^^^^^^^^^^^
+...
+507 |     pub(crate) fn into_parts(self) -> (DiskMemoryLease, SourceMetadataWitness) {
+    |                   ^^^^^^^^^^
+
+error: variant `Queued` is never constructed
+   --> crates/kasumi-store/src/source_metadata_bank.rs:514:5
+    |
+513 | enum HistoryPhase {
+    |      ------------ variant in this enum
+514 |     Queued,
+    |     ^^^^^^
+    |
+    = note: `HistoryPhase` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+
+error: methods `prepare` and `ready` are never used
+   --> crates/kasumi-store/src/source_metadata_bank.rs:527:19
+    |
+526 | impl SourceMetadataHistory {
+    | -------------------------- methods in this implementation
+527 |     pub(crate) fn prepare(&mut self) {
+    |                   ^^^^^^^
+...
+559 |     pub(crate) fn ready(&self) -> bool {
+    |                   ^^^^^
+
+error: method `id` is never used
+  --> crates/kasumi-store/src/storage_census_source.rs:52:19
+   |
+51 | impl SourceCellClaim {
+   | -------------------- method in this implementation
+52 |     pub(crate) fn id(&self) -> StorageOwnerId {
+   |                   ^^
+
+error: method `mark_native_entered` is never used
+  --> crates/kasumi-store/src/storage_census_source.rs:65:19
+   |
+64 | impl SourceCensusExchange {
+   | ------------------------- method in this implementation
+65 |     pub(crate) fn mark_native_entered(&self, census: &StorageCensus) -> io::Result<()> {
+   |                   ^^^^^^^^^^^^^^^^^^^
+
+error: methods `require_source_available`, `source_add_child`, `require_source_parent`, `claim_source_right`, and `register_source_child` are never used
+   --> crates/kasumi-store/src/storage_census_source.rs:99:8
+    |
+ 79 | impl StorageCensus {
+    | ------------------ methods in this implementation
+...
+ 99 |     fn require_source_available(
+    |        ^^^^^^^^^^^^^^^^^^^^^^^^
+...
+109 |     fn source_add_child(&self, parent: StorageOwnerId) -> io::Result<()> {
+    |        ^^^^^^^^^^^^^^^^
+...
+118 |     fn require_source_parent(
+    |        ^^^^^^^^^^^^^^^^^^^^^
+...
+166 |     pub(crate) fn claim_source_right(
+    |                   ^^^^^^^^^^^^^^^^^^
+...
+232 |     pub(crate) fn register_source_child<T: StoragePayload>(
+    |                   ^^^^^^^^^^^^^^^^^^^^^
+
+error: method `begin_source_exchange` is never used
+ --> crates/kasumi-store/src/storage_census_exchange.rs:6:19
+  |
+3 | impl StorageCensus {
+  | ------------------ method in this implementation
+...
+6 |     pub(crate) fn begin_source_exchange(
+  |                   ^^^^^^^^^^^^^^^^^^^^^
+
+error: struct `SourceControlClaim` is never constructed
+  --> crates/kasumi-store/src/storage_census_source_control.rs:10:19
+   |
+10 | pub(crate) struct SourceControlClaim {
+   |                   ^^^^^^^^^^^^^^^^^^
+
+error: method `id` is never used
+  --> crates/kasumi-store/src/storage_census_source_control.rs:15:19
+   |
+14 | impl SourceControlClaim {
+   | ----------------------- method in this implementation
+15 |     pub(crate) fn id(&self) -> StorageOwnerId {
+   |                   ^^
+
+error: field `generation` is never read
+  --> crates/kasumi-store/src/storage_census_source_control.rs:20:5
+   |
+19 | pub(in super::super) struct SourceControlState {
+   |                             ------------------ field in this struct
+20 |     generation: u64,
+   |     ^^^^^^^^^^
+
+error: struct `SourceControlObservation` is never constructed
+  --> crates/kasumi-store/src/storage_census_source_control.rs:35:19
+   |
+35 | pub(crate) struct SourceControlObservation<'a> {
+   |                   ^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: methods `original`, `protocol`, and `cleanup` are never used
+  --> crates/kasumi-store/src/storage_census_source_control.rs:39:19
+   |
+38 | impl SourceControlObservation<'_> {
+   | --------------------------------- methods in this implementation
+39 |     pub(crate) fn original(&self) -> TerminalObservation<'_, io::Error> {
+   |                   ^^^^^^^^
+...
+45 |     pub(crate) fn protocol(&self) -> Option<SourceMetadataCallError> {
+   |                   ^^^^^^^^
+...
+51 |     pub(crate) fn cleanup(&self) -> TerminalObservation<'_, Infallible> {
+   |                   ^^^^^^^
+
+error: methods `claim_source_control`, `register_source_control`, `source_control_observation`, and `acknowledge_source_control` are never used
+   --> crates/kasumi-store/src/storage_census_source_control.rs:80:19
+    |
+ 59 | impl StorageCensus {
+    | ------------------ methods in this implementation
+...
+ 80 |     pub(crate) fn claim_source_control<P: StoragePayload>(
+    |                   ^^^^^^^^^^^^^^^^^^^^
+...
+138 |     pub(crate) fn register_source_control<T: StoragePayload>(
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^
+...
+249 |     pub(crate) fn source_control_observation(
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+281 |     pub(crate) fn acknowledge_source_control(&self, id: StorageOwnerId) -> io::Result<()> {
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: variants `Registered`, `Installing`, `Ready`, and `Retained` are never constructed
+  --> crates/kasumi-store/src/storage_opening/reads/source_pool.rs:21:5
+   |
+20 | pub enum SourcePoolPhase {
+   |          --------------- variants in this enum
+21 |     Registered,
+   |     ^^^^^^^^^^
+22 |     Installing,
+   |     ^^^^^^^^^^
+23 |     Ready,
+   |     ^^^^^
+...
+26 |     Retained,
+   |     ^^^^^^^^
+   |
+   = note: `SourcePoolPhase` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+
+error: field `replacement_hold` is never read
+   --> crates/kasumi-store/src/storage_opening/reads/source_pool.rs:175:5
+    |
+166 | pub(super) struct SourceReaderState {
+    |                   ----------------- field in this struct
+...
+175 |     replacement_hold: Option<SourceMetadataBankHold>,
+    |     ^^^^^^^^^^^^^^^^
+
+error: unnecessary closure used to substitute value for `Option::None`
+  --> crates/kasumi-store/src/source_metadata.rs:58:21
+   |
+58 |           let error = self.rejected.or_else(|| {
+   |  _____________________^
+59 | |             if !same {
+60 | |                 Some(SourceMetadataCallError::ForeignProvider)
+61 | |             } else if !matches!(self.binding, Binding::Fresh) {
+...  |
+66 | |         });
+   | |__________^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#unnecessary_lazy_evaluations
+   = note: `-D clippy::unnecessary-lazy-evaluations` implied by `-D warnings`
+   = help: to override `-D warnings` add `#[allow(clippy::unnecessary_lazy_evaluations)]`
+help: use `or` instead
+   |
+58 ~         let error = self.rejected.or({
+59 +             if !same {
+60 +                 Some(SourceMetadataCallError::ForeignProvider)
+61 +             } else if !matches!(self.binding, Binding::Fresh) {
+62 +                 Some(SourceMetadataCallError::AlreadyEntered)
+63 +             } else {
+64 +                 None
+65 +             }
+66 ~         });
+   |
+
+error: using `map_err` over `inspect_err`
+   --> crates/kasumi-store/src/storage_census_source_control.rs:167:60
+    |
+167 |             let mut state = self.source_control_lock(slot).map_err(|error| {
+    |                                                            ^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#manual_inspect
+    = note: `-D clippy::manual-inspect` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::manual_inspect)]`
+help: try
+    |
+167 ~             let mut state = self.source_control_lock(slot).inspect_err(|error| {
+168 ~                 slot.pending.store(CONTROL_RETURNED, Ordering::Release);
+    |
+
+error: this `if` statement can be collapsed
+   --> crates/kasumi-store/src/storage_opening/reads/source_pool.rs:427:5
+    |
+427 | /     if !source.native_entered {
+428 | |         if let Some(exchange) = &mut source.exchange {
+429 | |             source.cancellation.retry_success();
+430 | |             source.cancellation.run(|| {
+...   |
+453 | |     }
+    | |_____^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#collapsible_if
+    = note: `-D clippy::collapsible-if` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::collapsible_if)]`
+help: collapse nested if block
+    |
+427 ~     if !source.native_entered
+428 ~         && let Some(exchange) = &mut source.exchange {
+429 |             source.cancellation.retry_success();
+...
+451 |             }
+452 ~         }
+    |
+
+error: could not compile `kasumi-store` (lib) due to 40 previous errors
+Runner: 30.84s; exit=101; matching=830/830

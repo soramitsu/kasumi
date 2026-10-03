@@ -1,0 +1,294 @@
+Command: cargo test --locked --offline --config profile.test.package.kasumi-kv.opt-level=3 --config profile.test.package.sha2.opt-level=3 -p kasumi-kv -p kasumi-store -p kasumi-query -p kasumi-raft -p kasumi-engine -p kasumi-authority --all-features --lib --no-fail-fast -- primary_ordered_edits_ incremental_abort logical_index_catalog_source_ primary_query_adapter_ query_candidate_and_output_loans_are_explicit_scans selected_primary_cache_ --nocapture
+ISOLATED_SOURCE=/tmp/kasumi-source-cohort-validation-v1
+CARGO_TARGET_DIR=/Users/takemiyamakoto/dev/kasumi/target/disk-backed-cache
+warning: field `database` is never read
+  --> crates/kasumi-store/src/storage_opening/publication.rs:58:5
+   |
+55 | struct PublicationRequest {
+   |        ------------------ field in this struct
+...
+58 |     database: StorageRegistration<DatabaseOwner>,
+   |     ^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `kasumi-store` (lib) generated 1 warning
+warning: method `last_sm_seq` is never used
+  --> vendor/openraft-0.9.25/openraft/src/engine/engine_output.rs:35:19
+   |
+24 | / impl<C> EngineOutput<C>
+25 | | where
+26 | |     C: RaftTypeConfig,
+   | |______________________- method in this implementation
+...
+35 |       pub(crate) fn last_sm_seq(&self) -> CommandSeq {
+   |                     ^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `accept_vote` is never used
+  --> vendor/openraft-0.9.25/openraft/src/engine/handler/vote_handler/mod.rs:58:19
+   |
+45 | / impl<C> VoteHandler<'_, C>
+46 | | where
+47 | |     C: RaftTypeConfig,
+   | |______________________- method in this implementation
+...
+58 |       pub(crate) fn accept_vote<T, E, F>(
+   |                     ^^^^^^^^^^^
+
+   Compiling kasumi-query v0.1.0 (/private/tmp/kasumi-source-cohort-validation-v1/crates/kasumi-query)
+warning: `openraft` (lib) generated 2 warnings
+warning: field `0` is never read
+  --> crates/kasumi-raft/src/owned_prepared_restore.rs:25:33
+   |
+25 | struct CandidateRetirementPanic(std::sync::Mutex<Box<dyn std::any::Any + Send>>);
+   |        ------------------------ ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |        |
+   |        field in this struct
+   |
+   = help: consider removing this field
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `prepared_snapshot_publication` is never used
+   --> crates/kasumi-raft/src/custody_machine.rs:235:19
+    |
+135 | impl CustodyMachine {
+    | ------------------- method in this implementation
+...
+235 |     pub(crate) fn prepared_snapshot_publication(
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: method `publish` is never used
+   --> crates/kasumi-raft/src/custody_snapshot_preparation.rs:298:19
+    |
+188 | impl PreparedCustodySnapshotPublication {
+    | --------------------------------------- method in this implementation
+...
+298 |     pub(crate) fn publish(&mut self, control: &OwnedControlGuard) -> Result<()> {
+    |                   ^^^^^^^
+
+warning: field `0` is never read
+   --> crates/kasumi-raft/src/custody_snapshot_preparation.rs:382:32
+    |
+382 | struct SnapshotRetirementPanic(std::sync::Mutex<Box<dyn std::any::Any + Send>>);
+    |        ----------------------- ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |        |
+    |        field in this struct
+    |
+    = help: consider removing this field
+
+warning: field `0` is never read
+   --> crates/kasumi-raft/src/lifetime.rs:249:17
+    |
+249 |     Application(StorageHandle<kasumi_store::TenantStorageSet>),
+    |     ----------- ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |     |
+    |     field in this variant
+    |
+help: consider changing the field to be of unit type to suppress this warning while preserving the field numbering, or remove the field
+    |
+249 -     Application(StorageHandle<kasumi_store::TenantStorageSet>),
+249 +     Application(()),
+    |
+
+warning: field `0` is never read
+   --> crates/kasumi-raft/src/lifetime.rs:250:13
+    |
+250 |     Custody(StorageHandle<kasumi_store::CustodyStore>),
+    |     ------- ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |     |
+    |     field in this variant
+    |
+help: consider changing the field to be of unit type to suppress this warning while preserving the field numbering, or remove the field
+    |
+250 -     Custody(StorageHandle<kasumi_store::CustodyStore>),
+250 +     Custody(()),
+    |
+
+warning: associated function `new` is never used
+  --> crates/kasumi-raft/src/snapshot_buffer/prepared_child.rs:84:8
+   |
+83 | impl PreparedChild {
+   | ------------------ associated function in this implementation
+84 |     fn new(body: PreparedSnapshotBody) -> Self {
+   |        ^^^
+
+warning: field `0` is never read
+   --> crates/kasumi-raft/src/snapshot_buffer/prepared_child.rs:307:19
+    |
+307 | struct ChildPanic(Mutex<Box<dyn std::any::Any + Send>>);
+    |        ---------- ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |        |
+    |        field in this struct
+    |
+    = help: consider removing this field
+
+warning: methods `begin_prepared_body` and `cancel_body` are never used
+   --> crates/kasumi-raft/src/snapshot_buffer/prepared_child.rs:406:19
+    |
+320 | impl SnapshotBuffer {
+    | ------------------- methods in this implementation
+...
+406 |     pub(crate) fn begin_prepared_body(
+    |                   ^^^^^^^^^^^^^^^^^^^
+...
+470 |     pub(crate) async fn cancel_body(&mut self) -> DrainResult {
+    |                         ^^^^^^^^^^^
+
+warning: method `prepare_engine_publication` is never used
+    --> crates/kasumi-raft/src/storage.rs:1121:19
+     |
+1083 | impl PendingSnapshot {
+     | -------------------- method in this implementation
+...
+1121 |     pub(crate) fn prepare_engine_publication<'backend>(
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: enum `SnapshotPublicationPhase` is never used
+    --> crates/kasumi-raft/src/storage.rs:1175:6
+     |
+1175 | enum SnapshotPublicationPhase {
+     |      ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: struct `PreparedEngineSnapshotPublication` is never constructed
+    --> crates/kasumi-raft/src/storage.rs:1181:19
+     |
+1181 | pub(crate) struct PreparedEngineSnapshotPublication<'backend> {
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: methods `source` and `publish` are never used
+    --> crates/kasumi-raft/src/storage.rs:1191:19
+     |
+1190 | impl PreparedEngineSnapshotPublication<'_> {
+     | ------------------------------------------ methods in this implementation
+1191 |     pub(crate) fn source(&self) -> &crate::PreparedSnapshotSourceEnvelope {
+     |                   ^^^^^^
+...
+1194 |     pub(crate) fn publish(&mut self, domains: &TenantStorageSet) -> Result<()> {
+     |                   ^^^^^^^
+
+warning: method `context` is never used
+   --> crates/kasumi-raft/src/storage/snapshot_conflict.rs:403:19
+    |
+134 | impl PreparedSnapshotConflict {
+    | ----------------------------- method in this implementation
+...
+403 |     pub(crate) fn context(&self) -> &SnapshotAcceptanceContext<u64> {
+    |                   ^^^^^^^
+
+warning: method `source` is never used
+   --> crates/kasumi-raft/src/storage/owned_snapshot_body.rs:328:19
+    |
+ 59 | impl PreparedApplicationSnapshot {
+    | -------------------------------- method in this implementation
+...
+328 |     pub(crate) fn source(&self) -> Option<&crate::PreparedSnapshotSourceEnvelope> {
+    |                   ^^^^^^
+
+warning: field `0` is never read
+   --> crates/kasumi-raft/src/storage/owned_snapshot_body.rs:770:32
+    |
+770 | struct SnapshotRetirementPanic(std::sync::Mutex<Box<dyn std::any::Any + Send>>);
+    |        ----------------------- ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |        |
+    |        field in this struct
+    |
+    = help: consider removing this field
+
+warning: methods `log` and `expected` are never used
+   --> crates/kasumi-raft/src/storage/snapshot_seed.rs:461:19
+    |
+132 | impl SnapshotSeed {
+    | ----------------- methods in this implementation
+...
+461 |     pub(crate) fn log(&self) -> &LogStore {
+    |                   ^^^
+...
+464 |     pub(crate) fn expected(&self) -> &SnapshotMeta<u64, BasicNode> {
+    |                   ^^^^^^^^
+
+warning: methods `fixture_install_snapshot` and `prepared_snapshot_publication` are never used
+   --> crates/kasumi-raft/src/custody_machine.rs:139:25
+    |
+135 | impl CustodyMachine {
+    | ------------------- methods in this implementation
+...
+139 |     pub(crate) async fn fixture_install_snapshot(
+    |                         ^^^^^^^^^^^^^^^^^^^^^^^^
+...
+235 |     pub(crate) fn prepared_snapshot_publication(
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `kasumi-raft` (lib) generated 17 warnings
+warning: `kasumi-raft` (lib test) generated 7 warnings (6 duplicates)
+warning: `kasumi-store` (lib test) generated 1 warning (1 duplicate)
+   Compiling kasumi-engine v0.1.0 (/private/tmp/kasumi-source-cohort-validation-v1/crates/kasumi-engine)
+warning: methods `prepare` and `prepare_kind` are never used
+   --> crates/kasumi-engine/src/application_sources.rs:760:19
+    |
+652 | impl SourceRootsRef {
+    | ------------------- methods in this implementation
+...
+760 |     pub(crate) fn prepare(&self) -> Result<RootPreparation> {
+    |                   ^^^^^^^
+...
+799 |     fn prepare_kind(&self, canonical: bool) -> Result<RootPreparation> {
+    |        ^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `kasumi-engine` (lib) generated 1 warning
+   Compiling kasumi-authority v0.1.0 (/private/tmp/kasumi-source-cohort-validation-v1/crates/kasumi-authority)
+warning: unused imports: `EditedCollection` and `OrderedEditFailure`
+   --> crates/kasumi-engine/src/primary_stage_cow.rs:451:26
+    |
+451 | pub(crate) use ordered::{EditedCollection, OrderedEditFailure, PendingOrderedEdits};
+    |                          ^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused imports: `AcceptedPublicationInventory` and `CollectionPublication`
+   --> crates/kasumi-engine/src/primary_projection.rs:208:5
+    |
+208 |     AcceptedPublicationInventory, CollectionAction, CollectionPublication, DocumentChange,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^                    ^^^^^^^^^^^^^^^^^^^^^
+
+error[E0061]: this method takes 5 arguments but 4 arguments were supplied
+   --> crates/kasumi-engine/src/document_source_tests.rs:292:25
+    |
+292 |             code(source.with_record::<()>(id, Some(expected), &token(), |_| {
+    |                         ^^^^^^^^^^^^^^^^^                     -------- argument #3 of type `ReadIntent` is missing
+    |
+note: method defined here
+   --> crates/kasumi-query/src/document_source.rs:147:8
+    |
+147 |     fn with_record<T>(
+    |        ^^^^^^^^^^^
+help: provide the argument
+    |
+292 |             code(source.with_record::<()>(id, Some(expected), /* ReadIntent */, &token(), |_| {
+    |                                                               +++++++++++++++++
+
+error[E0061]: this method takes 5 arguments but 4 arguments were supplied
+   --> crates/kasumi-engine/src/document_source_tests.rs:318:21
+    |
+318 |         code(source.with_record::<()>("a", None, &cancelled, |_| {
+    |                     ^^^^^^^^^^^^^^^^^            ---------- argument #3 of type `ReadIntent` is missing
+    |
+note: method defined here
+   --> crates/kasumi-query/src/document_source.rs:147:8
+    |
+147 |     fn with_record<T>(
+    |        ^^^^^^^^^^^
+help: provide the argument
+    |
+318 |         code(source.with_record::<()>("a", None, /* ReadIntent */, &cancelled, |_| {
+    |                                                  +++++++++++++++++
+
+For more information about this error, try `rustc --explain E0061`.
+warning: `kasumi-engine` (lib test) generated 2 warnings
+error: could not compile `kasumi-engine` (lib test) due to 2 previous errors; 2 warnings emitted
+Runner: 63.22s; exit=101; matching=1641/1641

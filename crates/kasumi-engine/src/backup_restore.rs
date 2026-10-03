@@ -4,7 +4,7 @@ use super::*;
 use crate::{
     admission::NodeAdmission,
     backup_format::*,
-    backup_verify::{BackupReader, VerificationDeadline, VerifiedBackup},
+    backup_verify::{BackupReader, VerificationDeadline, VerificationPhase, VerifiedBackup},
 };
 #[path = "target_restore_authorization.rs"]
 mod authorization;
@@ -66,7 +66,8 @@ impl VerifiedBackup {
         // Its worker transfers that charge only after dropping those indexes.
         let materialization = self._reservation.clone();
         let retained_materialization = materialization.clone();
-        deadline
+        let phase = VerificationPhase::start("restore.genesis_wait", Some(deadline));
+        let result = deadline
             .blocking(materialization, self._registration.clone(), move || {
                 let crate::backup_verify::VerifiedState::Indexed(source) = self.state else {
                     anyhow::bail!("restore requires independently verified indexed state");
@@ -94,7 +95,9 @@ impl VerifiedBackup {
                     registration: self._registration,
                 })
             })
-            .await
+            .await?;
+        phase.complete();
+        Ok(result)
     }
 }
 
@@ -292,6 +295,7 @@ pub(super) async fn load_authorized(
     }
     let bound_checkpoint = authorization.bound_checkpoint(target, backup_id)?;
     authorization.check_access(target, audit).await?;
+    let phase = VerificationPhase::start("restore.session_verification", Some(deadline));
     let session = deadline
         .run(kasumi_store::verify_backup_session(
             source.destination.as_ref(),
@@ -301,6 +305,7 @@ pub(super) async fn load_authorized(
         ))
         .await??
         .ok_or_else(|| anyhow::anyhow!("backup session missing"))?;
+    phase.complete();
     if let RestoreAuthorization::Local(request) = &authorization {
         anyhow::ensure!(
             session.source_purpose() == &request.source_purpose,
@@ -328,10 +333,12 @@ pub(super) async fn load_authorized(
         work,
         token,
     };
+    let phase = VerificationPhase::start("restore.graph_verification", Some(deadline));
     let verified = Box::pin(crate::backup_verify::verify(
         &reader, backup_id, admission, deadline, None,
     ))
     .await?;
+    phase.complete();
     if let Some(expected) = &reader.bound_checkpoint {
         anyhow::ensure!(
             &verified.checkpoint == expected,
@@ -353,6 +360,7 @@ pub(super) async fn load_authorized(
     let relocation_reservation = reservation.clone();
     let relocation_admission = admission.clone();
     let relocation_cancellation = reader.cancellation();
+    let phase = VerificationPhase::start("restore.relocation_wait", Some(deadline));
     let (state, bytes) = deadline
         .blocking(reservation.clone(), registration.clone(), move || {
             drop(bytes.ok_or_else(|| anyhow::anyhow!("restore snapshot image missing"))?);
@@ -383,7 +391,10 @@ pub(super) async fn load_authorized(
             Ok((state, bytes))
         })
         .await?;
+    phase.complete();
+    let phase = VerificationPhase::start("restore.final_access", Some(deadline));
     reader.check_access().await?;
+    phase.complete();
     Ok(VerifiedBackup {
         source_purpose,
         state: crate::backup_verify::VerifiedState::Indexed(Box::new(state)),

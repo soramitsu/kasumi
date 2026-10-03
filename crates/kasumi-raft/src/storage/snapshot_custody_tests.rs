@@ -60,10 +60,17 @@ impl StateMachineBackend for ClosedBackend {
     fn close_application(&self) {
         *self.0.lock().unwrap() = None;
     }
-    fn apply(&self, _: &AppliedEntryContext, _: &[u8]) -> Result<crate::AppliedResponse> {
-        anyhow::bail!("metadata test cannot apply payload")
-    }
-    fn apply_metadata(&self, _position: &crate::AppliedEntryContext) -> anyhow::Result<()> {
+    fn apply_with_publisher(
+        &self,
+        _: &crate::AppliedEntryContext,
+        input: crate::AppliedInput<'_>,
+        publisher: &mut dyn crate::ApplyPublisher,
+    ) -> Result<()> {
+        ensure!(
+            matches!(input, crate::AppliedInput::Metadata),
+            "metadata test cannot apply payload"
+        );
+        publisher.commit(crate::AppliedResponse::application(Vec::new()), &[])?;
         Ok(())
     }
     fn capture_snapshot(&self) -> Result<crate::CapturedSnapshot> {
@@ -637,122 +644,101 @@ async fn retirement_projection_writer_and_reader_share_the_two_megabyte_boundary
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
     let scratch_directory = kasumi_store::test_utils::private_tempdir()?;
     let scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
-    let mut snapshot = accepted_snapshot(scratch.clone()).await?;
-    let (domains, _, _, _) = fixture(FaultBackend::new(), true, scratch).await?;
-    let membership = |address: String| {
-        StoredMembership::new(
-            None,
-            openraft::Membership::from(std::collections::BTreeMap::from([(
-                1u64,
-                BasicNode::new(address),
-            )])),
-        )
+    let (source, _, _, mut log) = fixture(FaultBackend::new(), true, scratch.clone()).await?;
+    let first = Entry {
+        initialization: None,
+        log_id: id(0),
+        payload: EntryPayload::Membership(openraft::Membership::new(
+            vec![std::collections::BTreeSet::from([1])],
+            std::collections::BTreeMap::from([(1, BasicNode::new("local"))]),
+        )),
     };
-    snapshot.meta.last_membership = membership(String::new());
-    let base_projection = serde_json::to_vec(&serde_json::json!({
-        "meta": &snapshot.meta,
-        "snapshot_sha256": "0".repeat(64),
-        "retirement": snapshot.retirement.as_ref().context("retirement absent")?,
-    }))?;
-    let address_len = crate::snapshot_custody::MAX_PROJECTION_BYTES
-        .checked_sub(base_projection.len())
-        .context("base projection exceeds record budget")?;
-    snapshot.meta.last_membership = membership("x".repeat(address_len));
-    let encoded = snapshot.encode(64 << 20)?.read_bounded(64 << 20)?;
-    let header_len = usize::try_from(u64::from_be_bytes(encoded[9..17].try_into()?))?;
-    assert!(
-        header_len <= 2 << 20,
-        "transport must admit boundary projection"
-    );
-    persist_snapshot(&domains, &encoded, 64 << 20, &snapshot)?;
+    log.blocking_append([first.clone(), retirement_entry()?])
+        .await?;
+    log.save_committed(Some(id(1))).await?;
+    crate::custody_machine::tests::apply_membership(&source, &first, None)?;
+    assert!(ControlLog::open(source.custody().clone(), 1, group())?.recover_retired()?);
+    let mut snapshot = crate::custody_machine::capture(source.custody())?;
+    snapshot.kind = SnapshotKind::Application;
+    snapshot.backend = kasumi_store::SnapshotImage::from_bytes(
+        &scratch,
+        &serde_json::to_vec(
+            &snapshot
+                .retirement
+                .as_ref()
+                .context("retirement absent")?
+                .state,
+        )?,
+    )?;
+    let disk = FaultBackend::new();
+    let (domains, _, _, _) = fixture(disk.clone(), true, scratch).await?;
+    let encoded = snapshot.encode(64 << 20)?;
+    persist_snapshot(
+        &domains,
+        &encoded.read_bounded(64 << 20)?,
+        64 << 20,
+        &snapshot,
+    )?;
+    validate_snapshot_coverage(&domains, &snapshot, 64 << 20)?;
     let manifest = domains
         .application()
-        .get("raft.snapshot", b"current")?
+        .get(SNAPSHOT, b"current")?
         .context("current manifest absent")?;
     let projection = domains
         .custody()
         .store()
         .get(META, b"snapshot_retirement")?
         .context("projection absent")?;
-    assert_eq!(
-        projection.len(),
-        crate::snapshot_custody::MAX_PROJECTION_BYTES
-    );
+
+    // The projection and transport header each have a 2 MiB bound, but their
+    // fields differ. Exercise the projection's private writer/reader directly
+    // instead of requiring a maximum projection to fit a transport header.
+    let oversized = crate::snapshot_custody::projection_tests::verify_boundary(
+        domains.custody().store(),
+        &snapshot,
+    )?;
     validate_snapshot_coverage(&domains, &snapshot, 64 << 20)?;
-
-    let reordered = serde_json::to_vec(&serde_json::from_slice::<serde_json::Value>(&projection)?)?;
-    assert_eq!(reordered.len(), projection.len());
-    assert_ne!(reordered, projection);
-    domains.custody().store().write_batch(&[WriteOp::put(
-        META,
-        b"snapshot_retirement",
-        reordered,
-    )])?;
-    let error = validate_snapshot_coverage(&domains, &snapshot, 64 << 20).unwrap_err();
-    assert!(
-        error
-            .to_string()
-            .contains("noncanonical snapshot retirement projection")
-    );
-
-    let mut alias: serde_json::Value = serde_json::from_slice(&projection)?;
-    alias["meta"]["snapshot_id"] = serde_json::Value::String(
-        uuid::Uuid::parse_str(&snapshot.meta.snapshot_id)?
-            .simple()
-            .to_string(),
-    );
-    domains.custody().store().write_batch(&[WriteOp::put(
-        META,
-        b"snapshot_retirement",
-        serde_json::to_vec(&alias)?,
-    )])?;
-    let error = validate_snapshot_coverage(&domains, &snapshot, 64 << 20).unwrap_err();
-    assert!(
-        error
-            .to_string()
-            .contains("invalid snapshot retirement projection identity")
-    );
-    domains.custody().store().write_batch(&[WriteOp::put(
-        META,
-        b"snapshot_retirement",
-        projection.clone(),
-    )])?;
-    validate_snapshot_coverage(&domains, &snapshot, 64 << 20)?;
-
-    let mut snapshot_keys_before = Vec::new();
+    let mut snapshot_rows_before = Vec::new();
     domains
         .application()
         .read_view()?
-        .visit(SNAPSHOT, SNAPSHOT_CHUNK_BYTES, |key, _| {
-            snapshot_keys_before.push(key.to_vec());
+        .visit(SNAPSHOT, SNAPSHOT_CHUNK_BYTES, |key, bytes| {
+            snapshot_rows_before.push((key.to_vec(), bytes.to_vec()));
             Ok(())
         })?;
     assert!(domains.application().get(SNAPSHOT, b"pending")?.is_none());
-    let mut oversized = snapshot.clone();
-    oversized.meta.last_membership = membership("x".repeat(address_len + 1));
-    let oversized_bytes = oversized.encode(64 << 20)?.read_bounded(64 << 20)?;
-    let error = persist_snapshot(&domains, &oversized_bytes, 64 << 20, &oversized)
+    let operations_before = disk.operations();
+    // Directly isolate stage_snapshot's metadata preflight using the already
+    // valid baseline image. The synthetic oversized metadata is not encoded or
+    // presented as a valid incoming transport; refusal must precede any image
+    // cleanup, pending manifest, or chunk effect, regardless of its image bytes.
+    let error = stage_snapshot(&domains, &encoded, 64 << 20, &oversized)
         .err()
-        .context("oversized projection was published")?;
+        .context("oversized projection reached staging")?;
     assert!(
         error
             .to_string()
             .contains("snapshot retirement projection exceeds byte limit")
     );
     assert_eq!(
-        domains.application().get("raft.snapshot", b"current")?,
+        disk.operations(),
+        operations_before,
+        "preflight entered backend I/O"
+    );
+    assert_eq!(
+        domains.application().get(SNAPSHOT, b"current")?,
         Some(manifest)
     );
     assert!(domains.application().get(SNAPSHOT, b"pending")?.is_none());
-    let mut snapshot_keys_after = Vec::new();
+    let mut snapshot_rows_after = Vec::new();
     domains
         .application()
         .read_view()?
-        .visit(SNAPSHOT, SNAPSHOT_CHUNK_BYTES, |key, _| {
-            snapshot_keys_after.push(key.to_vec());
+        .visit(SNAPSHOT, SNAPSHOT_CHUNK_BYTES, |key, bytes| {
+            snapshot_rows_after.push((key.to_vec(), bytes.to_vec()));
             Ok(())
         })?;
-    assert_eq!(snapshot_keys_after, snapshot_keys_before);
+    assert_eq!(snapshot_rows_after, snapshot_rows_before);
     assert_eq!(
         domains
             .custody()

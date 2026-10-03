@@ -46,8 +46,12 @@ fn definition() -> CollectionDefinition {
     }
 }
 fn engine(strict: bool, limits: Limits) -> FixtureEngine {
+    // CreateCollection retains an encrypted terminal group; the first mutation
+    // initializes a separate receipt group. The native setup overlap needs a
+    // 33rd reservation (also covered by mutation_apply_tests). Match that
+    // fixture's bounded slot allowance while retaining the 64 MiB byte cap.
     FixtureEngine::new(
-        kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 32),
+        kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 64),
         "tenant-a".into(),
         "incarnation-a".into(),
         policy(strict),
@@ -955,10 +959,9 @@ fn batch_failure_leaves_no_partial_document_or_index_effects() {
     assert_eq!(state.state.logical_bytes, 0);
     assert!(state.state.collections["people"].documents.is_empty());
     assert_eq!(state.state.audits.back().unwrap().outcome, "rejected");
+    let request = query();
     assert!(
-        state
-            .indexes
-            .execute(&state.state.collections, &query(), &state.state.limits)
+        kasumi_engine::test_utils::fixture_query(&state, &request, &mut common::query_memory())
             .unwrap()
             .rows
             .is_empty()
@@ -1059,22 +1062,14 @@ fn unique_index_swap_is_atomic_and_old_generation_remains_coherent() {
         value: json!("a"),
     };
     assert_eq!(
-        previous
-            .indexes
-            .execute(
-                &previous.state.collections,
-                &request,
-                &previous.state.limits
-            )
+        kasumi_engine::test_utils::fixture_query(&previous, &request, &mut common::query_memory())
             .unwrap()
             .rows[0]
             .id,
         "a"
     );
     assert_eq!(
-        current
-            .indexes
-            .execute(&current.state.collections, &request, &current.state.limits)
+        kasumi_engine::test_utils::fixture_query(&current, &request, &mut common::query_memory())
             .unwrap()
             .rows[0]
             .id,
@@ -1297,7 +1292,7 @@ async fn actual_raft_writes_queries_and_snapshot_pagination() {
     .await
     .unwrap();
     let mut next = query();
-    next.cursor = first.cursor;
+    next.cursor = first.cursor.clone();
     let second = db.query(&context("owner"), next).await.unwrap();
     assert_eq!(second.revision, first.revision);
     assert_eq!(second.rows[0].body["email"], "b");
@@ -1526,9 +1521,9 @@ async fn shared_get_uses_the_same_audit_and_authorization_and_keeps_historical_v
         .await
         .unwrap();
     let generation = db.engine().generation().unwrap();
-    assert!(Arc::ptr_eq(
-        &shared,
-        &generation.state.collections["people"].documents["a"]
+    assert!(std::ptr::eq(
+        shared.as_ref(),
+        generation.state.collections["people"].documents["a"].as_ref()
     ));
     let read_audit = generation.state.audits.back().unwrap();
     assert_eq!(read_audit.action, "read");
@@ -1554,9 +1549,9 @@ async fn shared_get_uses_the_same_audit_and_authorization_and_keeps_historical_v
         .unwrap();
     assert_eq!(shared.body["email"], "before");
     assert_eq!(current.body["email"], "after");
-    assert!(!Arc::ptr_eq(&shared, &current));
-    let mut detached = current.clone();
-    Arc::make_mut(&mut detached).body["email"] = json!("client-only");
+    assert!(!std::ptr::eq(shared.as_ref(), current.as_ref()));
+    let mut detached = Document::clone(current.as_ref());
+    detached.body["email"] = json!("client-only");
     assert_eq!(current.body["email"], "after");
     assert_eq!(
         db.get(&context("owner"), "people", "a").await.unwrap().body["email"],
@@ -1686,7 +1681,7 @@ async fn strict_empty_discovery_is_audited_and_failed_audit_persistence_blocks_r
                     && candidate.instance() == issue.instance()
             })
             .unwrap();
-        assert!(Arc::ptr_eq(issue, again));
+        assert!(kasumi_types::drain::DrainIssueRef::ptr_eq(issue, again));
         assert_eq!(issue.instance(), 0);
     }
     let expected = openraft::StorageError::<u64>::from_io_error(

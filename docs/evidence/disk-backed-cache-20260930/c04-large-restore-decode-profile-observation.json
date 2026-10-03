@@ -1,0 +1,30 @@
+{
+  "phase": "public_restore.decode",
+  "pid": 24775,
+  "verified_process_chain": [
+    24775,
+    24739,
+    [
+      24736,
+      "/Users/takemiyamakoto/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo test --locked --offline --config profile.test.package.kasumi-kv.opt-level=3 --config profile.test.package.sha2.opt-level=3 -p kasumi-kv -p kasumi-store -p kasumi-raft -p kasumi-engine --all-features --lib --no-fail-fast -- public_restore_admits_resident_state_without_charging_permanent_stream_as_ram --nocapture"
+    ],
+    [
+      13892,
+      "/opt/homebrew/Cellar/python@3.14/3.14.8/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python /tmp/kasumi-admitted-output-check-v3.py c04-large-restore-decode-profile engine cargo test --locked --offline --config profile.test.package.kasumi-kv.opt-level=3 --config profile.test.package.sha2.opt-level=3 -p kasumi-kv -p kasumi-store -p kasumi-raft -p kasumi-engine --all-features --lib --no-fail-fast -- public_restore_admits_resident_state_without_charging_permanent_stream_as_ram --nocapture"
+    ]
+  ],
+  "sample_sha256": "8f58f5644156705b8cb3bd6670e73285e9843b69785ced006159b7c2fd21ba5c",
+  "diagnostic_only": true,
+  "host_observation": {
+    "load_averages": [
+      177.44,
+      161.54,
+      138.57
+    ],
+    "swap_used_mib": 38469.44,
+    "swap_total_mib": 39936.0,
+    "not_attributable_to_kasumi": true
+  },
+  "decode_completed_batches": 6,
+  "result": "restore decode exceeded unchanged60000ms deadline"
+}

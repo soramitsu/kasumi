@@ -1,0 +1,19 @@
+Command: cargo test --manifest-path vendor/openraft-0.9.25/openraft/Cargo.toml --locked --offline --features serde,storage-v2 --lib -- storage::capacity::tests source_capacity_refusal_does_not_consume_log_ids actual_internal_noop_refusal --test-threads=1 --nocapture
+ISOLATED_SOURCE=/tmp/kasumi-source-cohort-validation-v1
+CARGO_TARGET_DIR=/Users/takemiyamakoto/dev/kasumi/target/disk-backed-cache
+   Compiling openraft v0.9.25 (/private/tmp/kasumi-source-cohort-validation-v1/vendor/openraft-0.9.25/openraft)
+error[E0063]: missing field `capacity_shutdown` in initializer of `RaftInner<_>`
+  --> openraft/src/raft/shutdown_test.rs:94:17
+   |
+94 |     let inner = RaftInner {
+   |                 ^^^^^^^^^ missing `capacity_shutdown`
+
+error[E0063]: missing field `capacity_shutdown` in initializer of `RaftInner<_>`
+  --> openraft/src/raft/incoming_snapshot_test.rs:94:25
+   |
+94 |         inner: Arc::new(RaftInner {
+   |                         ^^^^^^^^^ missing `capacity_shutdown`
+
+For more information about this error, try `rustc --explain E0063`.
+error: could not compile `openraft` (lib test) due to 2 previous errors
+Runner: 10.89s; exit=101; matching=1573/1573

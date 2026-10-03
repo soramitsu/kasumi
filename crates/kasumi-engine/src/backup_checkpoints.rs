@@ -222,7 +222,15 @@ impl Database {
             .await;
         let result = self.audit_result(&context, result).await;
         if publication_admitted {
-            result.map_err(|_| {
+            result.map_err(|_original| {
+                // Preserve the public uncertainty response. Fixture diagnostics
+                // retain the rejected phase before that response erases it.
+                #[cfg(test)]
+                eprintln!(
+                    "backup publication original failure before proof release: {_original:?}; raft metrics: {:?}; retained apply: {:?}",
+                    self.group.raft().metrics().borrow(),
+                    crate::test_utils::retained_apply_diagnostic(&self.group),
+                );
                 Error::new(
                     ErrorCode::UnknownOutcome,
                     "backup publication was admitted but complete proof release failed; immutable artifacts may exist and no verified proof was released",

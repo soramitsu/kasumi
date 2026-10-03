@@ -1,0 +1,19 @@
+Command: cargo test -p kasumi-types --test canonical_json --features serde_json/preserve_order --locked --offline --config profile.test.package.kasumi-kv.opt-level=3 --config profile.test.package.sha2.opt-level=3
+CARGO_TARGET_DIR=target/disk-backed-cache
+   Compiling serde_json v1.0.151 (/Users/takemiyamakoto/dev/kasumi/vendor/serde_json-1.0.151)
+   Compiling kasumi-types v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-types)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 32.89s
+     Running tests/canonical_json.rs (target/disk-backed-cache/debug/deps/canonical_json-327baadbec9c1153)
+
+running 7 tests
+test typed_maps_and_enclosing_field_order_are_explicit ... ok
+test not_before_is_an_exact_native_read_assertion_and_changes_the_request_digest ... ok
+test literal_json_has_one_explicit_byte_contract ... ok
+test archive_plaintext_and_document_references_share_the_same_encoding ... ok
+test schema_activation_identity_preserves_typed_field_order ... ok
+test mutation_replay_and_staging_manifest_are_feature_independent ... ok
+test bounded_writer_failure_does_not_require_an_encoded_payload_copy ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+Runner: 33.02s; exit=0; matching=752/752

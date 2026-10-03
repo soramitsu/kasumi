@@ -1,0 +1,78 @@
+Command: cargo test --locked --offline --config profile.test.package.kasumi-kv.opt-level=3 --config profile.test.package.sha2.opt-level=3 -p kasumi-kv -p kasumi-store -p kasumi-raft --all-features --lib -- prepared_point plaintext_get_workspace paired_read_quote routine_early_missing_or_wrong_typed_table_stays_retained_after_real_disposal selected_application
+CARGO_TARGET_DIR=target/disk-backed-cache
+   Compiling hyper v1.11.1
+   Compiling tower v0.5.3
+   Compiling tokio-rustls v0.26.5
+   Compiling kasumi-kv v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-kv)
+   Compiling kasumi-types v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-types)
+   Compiling tracing-futures v0.2.5
+   Compiling rcgen v0.14.10
+   Compiling openraft v0.9.25 (/Users/takemiyamakoto/dev/kasumi/vendor/openraft-0.9.25/openraft)
+   Compiling tower-http v0.6.11
+   Compiling hyper-util v0.1.20
+   Compiling hyper-timeout v0.5.2
+   Compiling hyper-rustls v0.27.9
+   Compiling axum v0.8.9
+   Compiling reqwest v0.12.28
+   Compiling tonic v0.14.6
+   Compiling kasumi-serving v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-serving)
+   Compiling kasumi-transport v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-transport)
+   Compiling kasumi-store v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-store)
+error[E0433]: cannot find module or crate `io` in this scope
+  --> crates/kasumi-store/src/storage_domains/prepared_point_read.rs:37:6
+   |
+37 | ) -> io::Result<PointBufferLayout> {
+   |      ^^ use of unresolved module or unlinked crate `io`
+   |
+   = help: if you wanted to use a crate named `io`, use `cargo add io` to add it to your `Cargo.toml`
+   = note: module `crate::spool::claim::io` exists but is inaccessible
+help: a builtin type with a similar name exists
+   |
+37 - ) -> io::Result<PointBufferLayout> {
+37 + ) -> i8::Result<PointBufferLayout> {
+   |
+help: consider importing this module
+   |
+ 4 + use std::io;
+   |
+
+error[E0433]: cannot find module or crate `io` in this scope
+  --> crates/kasumi-store/src/storage_domains/prepared_point_read.rs:39:20
+   |
+39 |         return Err(io::ErrorKind::InvalidInput.into());
+   |                    ^^ use of unresolved module or unlinked crate `io`
+   |
+   = help: if you wanted to use a crate named `io`, use `cargo add io` to add it to your `Cargo.toml`
+help: consider importing this enum
+   |
+ 4 + use std::io::ErrorKind;
+   |
+help: if you import `ErrorKind`, refer to it directly
+   |
+39 -         return Err(io::ErrorKind::InvalidInput.into());
+39 +         return Err(ErrorKind::InvalidInput.into());
+   |
+
+error[E0433]: cannot find module or crate `io` in this scope
+  --> crates/kasumi-store/src/storage_domains/prepared_point_read.rs:37:6
+   |
+37 | ) -> io::Result<PointBufferLayout> {
+   |      ^^ use of unresolved module or unlinked crate `io`
+   |
+   = help: if you wanted to use a crate named `io`, use `cargo add io` to add it to your `Cargo.toml`
+   = note: module `crate::file_keys::workspace::tests::io` exists but is inaccessible
+help: a builtin type with a similar name exists
+   |
+37 - ) -> io::Result<PointBufferLayout> {
+37 + ) -> i8::Result<PointBufferLayout> {
+   |
+help: consider importing this module
+   |
+ 4 + use std::io;
+   |
+
+For more information about this error, try `rustc --explain E0433`.
+error: could not compile `kasumi-store` (lib) due to 2 previous errors
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `kasumi-store` (lib test) due to 2 previous errors
+Runner: 92.38s; exit=101; matching=852/852

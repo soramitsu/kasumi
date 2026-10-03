@@ -1,0 +1,68 @@
+   Compiling kasumi-query v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-query)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 14.14s
+     Running unittests src/lib.rs (target/disk-backed-cache/debug/deps/kasumi_query-5bd12014ca76650d)
+
+running 47 tests
+test document_source_tests::source_identity_includes_owner_type_and_all_scope_fields ... ok
+test cancellation::tests::cancellation_during_sort_stops_comparisons ... ok
+test tests::average_is_half_even_at_requested_scale_including_negative_ties ... ok
+test document_source_tests::borrowed_projection_wire_accounting_matches_owned_rows_before_clone ... ok
+test document_source_tests::expected_version_is_checked_before_archived_hydration_dispatch ... ok
+test tests::aggregate_validation_and_empty_collection_are_data_independent ... ok
+test document_source_tests::cancellation_after_source_read_prevents_lending_or_next_read ... ok
+test document_source_tests::lending_rejects_wrong_output_version_and_unhydrated_archive ... ok
+test document_source_tests::canceled_completed_loan_and_missing_selected_version_discard_partial_results ... ok
+test document_source_tests::lending_source_error_retains_the_original_owner ... ok
+test document_source_tests::fixture_headers_are_exclusive_and_deduplicate_verified_hydration ... ok
+test document_source_tests::lending_rejects_foreign_indexes_before_read_and_owner_switches_across_loans ... ok
+test document_source_tests::lending_scan_sort_projection_and_aggregate_reload_exact_versions_without_truncation ... ok
+test tests::candidate_group_and_response_budgets_fail_closed ... ok
+test tests::decimal_sort_range_and_sum_preserve_more_than_f64_precision ... ok
+test tests::engine_owns_pagination_and_query_does_not_truncate_snapshot ... ok
+test tests::declared_indexes_and_explicit_scan_admission_are_enforced ... ok
+test tests::generation_validator_never_substitutes_for_changed_or_foreign_schema ... ok
+test tests::incremental_unique_indexes_allow_atomic_swaps_and_reject_conflicts ... ok
+test cancellation::tests::sort_matches_reference_with_duplicates ... ok
+test tests::json_pointer_escapes_and_invalid_pointers ... ok
+test tests::oversized_text_is_rejected_during_document_validation ... ok
+test tests::missing_null_empty_array_and_projection_remain_distinct ... ok
+test tests::groups_distinguish_absent_and_null_and_skip_empty_numeric_inputs ... ok
+test tests::invalid_queries_fail_without_hits_and_json_recursion_is_bounded ... ok
+test tests::schemas_never_resolve_remote_or_file_resources_or_rebase_fragments ... ok
+test tests::shared_document_representation_preserves_snapshot_bytes_and_historical_values ... ok
+test tests::generation_validators_survive_cache_eviction_without_recompiling_or_retaining_plaintext ... ok
+test tests::schema_202012_local_refs_and_exact_numeric_constraints ... ok
+test tests::indexed_boolean_filters_match_independent_reference_evaluator ... ok
+test tests::unique_indexes_are_compound_exact_and_sparse_only_for_missing ... ok
+test tests::cooperative_cancellation_discards_partial_index_scan_sort_and_projection_results ... ok
+test tests::validator_cache_does_not_retain_tenant_plaintext_after_generation_drop ... ok
+test tests::generation_validator_preserves_document_shape_typed_index_and_text_limits ... ok
+test tests::text_planned_postings_are_bounded_even_when_intersection_has_no_hits ... ok
+test tests::english_terms_stem_but_prefix_uses_surface_tokens_and_phrase_has_positions ... ok
+test tests::unicode_nfkc_and_case_normalization_and_ranked_results ... ok
+test tests::japanese_lindera_terms_phrases_and_fuzzy_typos ... ok
+test tests::cooperative_cancellation_stops_text_postings_and_term_expansion ... ok
+test tests::fuzzy_distance_and_expansion_limits_are_enforced ... ok
+test tests::unrelated_document_fields_reuse_text_reader_and_definition_change_rebuilds ... ok
+test tests::text_generation_is_immutable_and_reader_is_ready_when_published ... ok
+test tests::text_writer_rejects_stale_branches_without_damaging_published_reader ... ok
+test tests::incremental_text_updates_reuse_index_and_preserve_every_old_snapshot ... ok
+test ordered_seek::tests::bounded_named_tuple_seek_examines_only_page_and_lookahead_at_volume ... FAILED
+test ordered_seek::tests::boundaries_request_replay_and_index_requirements_fail_without_scanning ... ok
+test tests::incremental_postings_match_rebuild_and_share_unchanged_roots ... ok
+
+failures:
+
+---- ordered_seek::tests::bounded_named_tuple_seek_examines_only_page_and_lookahead_at_volume stdout ----
+
+thread 'ordered_seek::tests::bounded_named_tuple_seek_examines_only_page_and_lookahead_at_volume' (6578762) panicked at crates/kasumi-query/src/ordered_seek.rs:360:14:
+called `Result::unwrap()` on an `Err` value: Error { code: ResourceExhausted, message: "query work cancelled" }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    ordered_seek::tests::bounded_named_tuple_seek_examines_only_page_and_lookahead_at_volume
+
+test result: FAILED. 46 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.08s
+
+error: test failed, to rerun pass `-p kasumi-query --lib`

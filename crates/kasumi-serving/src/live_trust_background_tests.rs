@@ -139,7 +139,10 @@ async fn cancelled_multiworker_drain_keeps_original_failure_and_seals_registrati
     release.send(()).unwrap();
     let result = live.drain_background_work().await.unwrap_err();
     assert_eq!(result.completion(), DrainCompletion::Complete);
-    assert!(Arc::ptr_eq(&first.issues()[0], &result.issues()[0]));
+    assert!(kasumi_types::drain::DrainIssueRef::ptr_eq(
+        &first.issues()[0],
+        &result.issues()[0]
+    ));
     assert_eq!(live.state.lock().unwrap().work_report.issues().len(), 1);
 }
 #[tokio::test]

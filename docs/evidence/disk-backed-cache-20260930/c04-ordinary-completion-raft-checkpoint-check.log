@@ -1,0 +1,9 @@
+Command: cargo check --locked --offline --config profile.test.package.kasumi-kv.opt-level=3 --config profile.test.package.sha2.opt-level=3 -p kasumi-raft --all-features --all-targets
+CARGO_TARGET_DIR=target/disk-backed-cache
+    Checking kasumi-types v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-types)
+    Checking kasumi-transport v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-transport)
+    Checking kasumi-serving v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-serving)
+    Checking kasumi-store v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-store)
+    Checking kasumi-raft v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-raft)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 16.17s
+Runner: 16.25s; exit=0; matching=842/842

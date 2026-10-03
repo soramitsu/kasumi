@@ -1,5 +1,5 @@
 //! Bounded, enrolled directory reads. No mutation or implicit adoption.
-use super::super::{AccountedFile, CensusCancellation, extent};
+use super::super::{AccountedFile, CensusCancellation, extent, file_extent};
 use super::*;
 use std::{
     ffi::CStr,
@@ -341,7 +341,14 @@ impl NodeDiskDirectoryCursor {
                         census::regular_nonallocating(&metadata, parent.identity.0)?;
                         // Same enrollment predicate as exclusive file open:
                         // stable EOF alone cannot detect sparse materialization.
-                        let (bytes, pending) = extent(&metadata, disk.unit)?;
+                        let (bytes, pending) = if entry.settled {
+                            file_extent(&metadata, disk.unit, disk.config.file_allocation_policy)?
+                        } else {
+                            // An unfinished growth reservation may exceed the
+                            // current EOF. Its existing charge is the ceiling;
+                            // this read cannot settle or refund that promise.
+                            extent(&metadata, disk.unit)?
+                        };
                         if metadata.len() != entry.actual_len
                             || entry.actual_len > entry.reserved_len
                             || bytes > entry.bytes
@@ -354,6 +361,15 @@ impl NodeDiskDirectoryCursor {
                                         metadata.len(),
                                     ))
                         {
+                            #[cfg(feature = "test-utils")]
+                            super::super::file::report_enrollment_mismatch(
+                                "directory-cursor",
+                                identity,
+                                state.accounted.get(&identity),
+                                &AccountedFile::durable(binding, bytes, pending, metadata.len()),
+                                &metadata,
+                                disk.unit,
+                            );
                             return Err(io::ErrorKind::InvalidData.into());
                         }
                         NodeDiskEntryKind::File

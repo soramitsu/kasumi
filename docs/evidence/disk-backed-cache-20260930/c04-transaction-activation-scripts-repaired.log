@@ -1,0 +1,16 @@
+Command: python3 -m unittest discover -s scripts -p test_*.py
+CARGO_TARGET_DIR=target/disk-backed-cache
+.................................................running raw-1
+running local-1
+running replicated-1
+running text-1
+running network-1
+/private/var/folders/7l/w31n0ppj4zg874c4szhllss00000gn/T/kasumi-matrix-test-0mmhlw5u/results/capacity.json
+.............................................................................................................................................................................................................................................
+----------------------------------------------------------------------
+Ran 286 tests in 66.048s
+
+OK
+/private/var/folders/7l/w31n0ppj4zg874c4szhllss00000gn/T/kasumi-matrix-test-0mmhlw5u/results/matrix.json
+Native functional acceptance host recorded
+Runner: 66.32s; exit=0; matching=45/45

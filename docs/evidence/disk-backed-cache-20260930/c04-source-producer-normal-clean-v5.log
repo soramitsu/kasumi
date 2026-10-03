@@ -1,0 +1,7 @@
+Command: cargo check --locked --offline -p kasumi-kv -p kasumi-store -p kasumi-raft -p kasumi-engine --lib
+CARGO_TARGET_DIR=target/disk-backed-cache
+    Checking kasumi-store v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-store)
+    Checking kasumi-raft v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-raft)
+    Checking kasumi-engine v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-engine)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 16.20s
+Runner: 16.37s; exit=0; matching=1546/1546

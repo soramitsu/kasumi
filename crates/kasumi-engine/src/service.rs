@@ -1,4 +1,5 @@
 use crate::admission::{CancelOnDrop, NodeAdmission, Reservation, WorkFence, WorkRegistration};
+use crate::output::{AdmittedOutput, OUTPUT_CHARGE_BYTES};
 use crate::{SecurityAudit, SecurityEvent, SecurityEventKind, SecurityOutcome, TenantEngine};
 #[path = "audit_maintenance_service.rs"]
 mod audit_maintenance_service;
@@ -17,13 +18,15 @@ mod database_worker_outcome_tests;
 mod database_workers;
 #[path = "ordered_seek_service.rs"]
 mod ordered_seek_service;
+#[path = "proposal_input.rs"]
+pub(crate) mod proposal_input;
 #[path = "proposal_jobs.rs"]
 mod proposal_jobs;
 #[cfg(test)]
 #[path = "service_allocation_tests.rs"]
 mod service_allocation_tests;
 use kasumi_clock::{LeaseClock, SystemLeaseClock};
-use kasumi_query::QueryCancellation;
+use kasumi_query::{DocumentSource, QueryCancellation, QueryMemory, ReadFailure, Record};
 use kasumi_raft::RaftGroup;
 use kasumi_store::{BackupDestination, TenantStorageSet, TenantStore};
 use kasumi_types::drain::{DrainCompletion, DrainFailure, DrainReport, DrainResult};
@@ -43,6 +46,8 @@ mod full_backup;
 mod history_export;
 #[path = "history_reads.rs"]
 mod history_reads;
+#[path = "point_read.rs"]
+mod point_read;
 pub use custody_service::{CustodyResponseFence, RetiredCustody};
 #[path = "lifecycle_service.rs"]
 pub(crate) mod lifecycle_service;
@@ -137,7 +142,14 @@ struct ProposalWork {
 }
 
 impl ProposalWork {
-    async fn run(&mut self, mut command: Command, max_bytes: usize) -> anyhow::Result<Vec<u8>> {
+    async fn run(
+        &mut self,
+        mut input: proposal_input::ProposalCommand,
+        max_bytes: usize,
+    ) -> anyhow::Result<Vec<u8>> {
+        // This owner keeps the original payload before its optional topology
+        // grant through every await, return and unwind. Raft receives a new Vec.
+        let command = &mut input.command;
         // The background proposal owns this gate; caller timeout/cancellation
         // cannot let later commands overtake an unresolved write. Time is
         // sampled only after the previous write has finished.
@@ -235,7 +247,7 @@ impl ProposalWork {
         }) {
             return Ok(serde_json::to_vec(&Err::<WriteReceipt, _>(error))?);
         }
-        let bytes = serde_json::to_vec(&command)?;
+        let bytes = serde_json::to_vec(command)?;
         anyhow::ensure!(
             bytes.len() <= max_bytes,
             "command exceeds proposal byte budget"
@@ -244,8 +256,8 @@ impl ProposalWork {
         {
             let engine = &self.source_engine;
             let seed = kasumi_raft::RetirementLogSeed::prepare(
-                &command,
-                engine.retirement_replay_state(&command)?,
+                command,
+                engine.retirement_replay_state(command)?,
             )?;
             if let Err(error) = seed.reserve_success_capacity() {
                 return Ok(serde_json::to_vec(&Err::<WriteReceipt, _>(error))?);
@@ -341,14 +353,15 @@ struct QueryWork {
     request: QueryRequest,
     cancellation: QueryCancellation,
     _permit: tokio::sync::OwnedSemaphorePermit,
-    reservation: Option<Reservation>,
+    memory: QueryMemory<Reservation>,
     // Registration must outlive every captured input, including on unwinding.
     registration: Arc<WorkRegistration>,
 }
 
 struct QueryOutput {
     response: Result<QueryResponse>,
-    reservation: Reservation,
+    request: QueryRequest,
+    memory: QueryMemory<Reservation>,
     // A completed task can retain its output after its caller disconnects.
     // Shutdown must also wait for that output and its reservation to drop.
     _registration: Arc<WorkRegistration>,
@@ -356,19 +369,136 @@ struct QueryOutput {
 
 impl QueryWork {
     fn run(mut self) -> QueryOutput {
-        let response = self.generation.indexes.execute_with_cancellation(
-            &self.generation.state.collections,
-            &self.request,
-            &self.generation.state.limits,
-            &self.cancellation,
-        );
-        let output = QueryOutput {
+        let response = self
+            .generation
+            .document_source(&self.request.collection)
+            .and_then(|source| {
+                self.generation
+                    .indexes
+                    .execute_with_cancellation(
+                        &source,
+                        &self.request,
+                        &self.generation.state.limits,
+                        &self.cancellation,
+                        &mut self.memory,
+                    )
+                    .map_err(ReadFailure::into_query_error)
+            });
+        QueryOutput {
             response,
-            reservation: self.reservation.take().expect("query workspace reserved"),
+            request: self.request,
+            memory: self.memory,
             _registration: self.registration.clone(),
-        };
-        drop(self);
-        output
+        }
+    }
+}
+
+// Public release audits must keep the completed payload and its charge ahead
+// of the worker registration. The public method removes only the registration
+// when it hands the admitted payload to its caller.
+struct RegisteredOutput<T> {
+    response: AdmittedOutput<T>,
+    _registration: Arc<WorkRegistration>,
+}
+
+struct QueryInput {
+    request: QueryRequest,
+    memory: QueryMemory<Reservation>,
+}
+
+struct SnapshotInput {
+    request: ReadSnapshotRequest,
+    memory: QueryMemory<Reservation>,
+}
+
+// Both fresh output and cursor continuations keep their inputs and response
+// before the physical charges through every fallible asynchronous release.
+struct QueryResultOwner {
+    request: QueryRequest,
+    response: Arc<QueryResponse>,
+    memory: Option<QueryMemory<Reservation>>,
+    reservation: Option<Arc<Reservation>>,
+    // A continuation's page and request keep their independent charge through
+    // every final release check, even if the outgoing page is dropped first.
+    page_charge: Option<Arc<Reservation>>,
+    _registration: Arc<WorkRegistration>,
+}
+
+impl QueryResultOwner {
+    fn clone_page(
+        &mut self,
+        rows: std::ops::Range<usize>,
+        cancellation: &QueryCancellation,
+    ) -> Result<QueryResponse> {
+        cancellation.check()?;
+        let bytes = kasumi_query::query_response_clone_bytes(&self.response, rows.clone())?;
+        let response = &self.response;
+        self.memory
+            .as_mut()
+            .expect("query page keeps its operation ledger")
+            .scope(|memory| {
+                memory.reserve(bytes)?;
+                let page = QueryResponse {
+                    revision: response.revision,
+                    rows: response.rows[rows].to_vec(),
+                    aggregates: response.aggregates.clone(),
+                    cursor: None,
+                };
+                cancellation.check()?;
+                Ok((page, bytes))
+            })
+    }
+
+    fn cursor_reservation(&mut self) -> Result<Arc<Reservation>> {
+        if self.reservation.is_none() {
+            let memory = self
+                .memory
+                .as_mut()
+                .expect("fresh cursor keeps its operation ledger");
+            memory.reserve(OUTPUT_CHARGE_BYTES)?;
+            let mut reservation = self
+                .memory
+                .take()
+                .expect("fresh cursor keeps its operation ledger")
+                .into_workspace();
+            reservation.retain_workspace();
+            self.reservation = Some(Arc::new(reservation));
+        }
+        Ok(self
+            .reservation
+            .as_ref()
+            .expect("retained cursor charge")
+            .clone())
+    }
+
+    fn prepare_page_handoff(&mut self) -> Result<()> {
+        if self.reservation.is_some() && self.memory.is_some() {
+            // A completed continuation releases its operation slot before the
+            // strict audit, while its page and request retain their own bytes.
+            self.memory
+                .as_mut()
+                .expect("continuation keeps its page ledger")
+                .reserve(OUTPUT_CHARGE_BYTES)?;
+            let mut reservation = self
+                .memory
+                .take()
+                .expect("continuation keeps its page ledger")
+                .into_workspace();
+            reservation.retain_workspace();
+            self.page_charge = Some(Arc::new(reservation));
+        }
+        drop(self.cursor_reservation()?);
+        Ok(())
+    }
+
+    fn take_page_charge(&self) -> Arc<Reservation> {
+        // Keep an owner copy until the request has dropped. A final release
+        // failure can destroy the outgoing page before QueryResultOwner.
+        self.page_charge
+            .as_ref()
+            .or(self.reservation.as_ref())
+            .expect("prepared output charge")
+            .clone()
     }
 }
 
@@ -377,91 +507,170 @@ struct SnapshotWork {
     request: ReadSnapshotRequest,
     cancellation: QueryCancellation,
     _permit: tokio::sync::OwnedSemaphorePermit,
-    reservation: Reservation,
+    memory: QueryMemory<Reservation>,
     registration: Arc<WorkRegistration>,
 }
 struct SnapshotOutput {
     response: Result<SnapshotReadResponse>,
-    reservation: Reservation,
+    memory: QueryMemory<Reservation>,
     _registration: Arc<WorkRegistration>,
 }
+impl SnapshotOutput {
+    fn into_admitted(mut self) -> Result<RegisteredOutput<SnapshotReadResponse>> {
+        self.response.as_ref().map_err(|error| error.clone())?;
+        self.memory.reserve(OUTPUT_CHARGE_BYTES)?;
+        let mut reservation = self.memory.into_workspace();
+        reservation.retain_workspace();
+        let charge = Arc::new(reservation);
+        Ok(RegisteredOutput {
+            response: AdmittedOutput::new(
+                self.response.expect("checked snapshot response"),
+                charge,
+            ),
+            _registration: self._registration,
+        })
+    }
+}
 impl SnapshotWork {
-    fn run(self) -> SnapshotOutput {
+    fn run(mut self) -> SnapshotOutput {
         let response = self.evaluate();
         SnapshotOutput {
             response,
-            reservation: self.reservation,
+            memory: self.memory,
             _registration: self.registration,
         }
     }
 
-    fn evaluate(&self) -> Result<SnapshotReadResponse> {
+    fn evaluate(&mut self) -> Result<SnapshotReadResponse> {
         let state = &self.generation.state;
-        let mut result = SnapshotReadResponse {
-            revision: state.revision,
-            incarnation: state.incarnation.clone(),
-            policy_epoch: state.policy_epoch,
-            schema_epoch: state.schema_epoch,
-            collection_epochs: BTreeMap::new(),
-            trusted_leader_time_ms: None,
-            documents: Vec::new(),
-            queries: Vec::new(),
-        };
-        for key in &self.request.documents {
-            self.cancellation.check()?;
-            let collection = &state.collections[&key.collection];
-            let document = collection.documents.get(&key.id);
-            // Check output capacity before cloning a potentially large body.
-            if crate::accounting::encoded_len(&result)?
-                .saturating_add(document.map_or(Ok(0), crate::accounting::encoded_len)?)
-                > state.limits.max_result_bytes
-            {
-                return Err(Error::new(
-                    ErrorCode::ResourceExhausted,
-                    "snapshot result exceeds byte limit",
-                ));
-            }
-            result.documents.push(SnapshotDocument {
-                key: key.clone(),
-                document: document.map(|document| document.as_ref().clone()),
-            });
-        }
-        for query in &self.request.queries {
-            self.cancellation.check()?;
-            let mut response = self.generation.indexes.execute_with_cancellation(
-                &state.collections,
-                query,
-                &state.limits,
-                &self.cancellation,
+        let generation = &self.generation;
+        let request = &self.request;
+        let cancellation = &self.cancellation;
+        self.memory.scope(|memory| {
+            let baseline = memory.live_bytes();
+            // These are provisional output allowances, independent of the
+            // separately retained source generation and archive chunk charges.
+            let metadata_bytes = request.queries.iter().try_fold(
+                512u64
+                    .checked_add(state.incarnation.len() as u64)
+                    .ok_or_else(query_workspace_overflow)?,
+                |bytes, query| {
+                    bytes
+                        .checked_add(query.collection.len() as u64)
+                        .and_then(|bytes| bytes.checked_add(256))
+                        .ok_or_else(query_workspace_overflow)
+                },
             )?;
-            if response.rows.len() > query.limit {
-                return Err(Error::new(
-                    ErrorCode::ResourceExhausted,
-                    "snapshot query exceeds complete row limit",
-                ));
+            memory.reserve(metadata_bytes)?;
+            let mut result = SnapshotReadResponse {
+                revision: state.revision,
+                incarnation: state.incarnation.clone(),
+                policy_epoch: state.policy_epoch,
+                schema_epoch: state.schema_epoch,
+                collection_epochs: BTreeMap::new(),
+                trusted_leader_time_ms: None,
+                documents: Vec::new(),
+                queries: Vec::new(),
+            };
+            for key in &request.documents {
+                cancellation.check()?;
+                let source = generation.document_source(&key.collection)?;
+                source
+                    .with_record(&key.id, None, cancellation, |record| {
+                        let document = match record {
+                            Some(Record::Live(document)) => Some(document),
+                            Some(Record::Archived(_)) => {
+                                return Err(Error::new(
+                                    ErrorCode::Unavailable,
+                                    "snapshot archived content requires bounded hydration",
+                                ));
+                            }
+                            None => None,
+                        };
+                        // Check output capacity before cloning a potentially large body.
+                        if crate::accounting::encoded_len(&result)?
+                            .saturating_add(document.map_or(Ok(0), crate::accounting::encoded_len)?)
+                            > state.limits.max_result_bytes
+                        {
+                            return Err(Error::new(
+                                ErrorCode::ResourceExhausted,
+                                "snapshot result exceeds byte limit",
+                            ));
+                        }
+                        memory.reserve(snapshot_point_workspace(key, document)?)?;
+                        result.documents.push(SnapshotDocument {
+                            key: key.clone(),
+                            document: document.cloned(),
+                        });
+                        Ok(())
+                    })
+                    .map_err(ReadFailure::into_query_error)?;
             }
-            response.revision = state.revision;
-            result.collection_epochs.insert(
-                query.collection.clone(),
-                state.collections[&query.collection].data_epoch,
-            );
-            result.queries.push(response);
+            for query in &request.queries {
+                cancellation.check()?;
+                let source = generation.document_source(&query.collection)?;
+                let mut response = generation
+                    .indexes
+                    .execute_with_cancellation(&source, query, &state.limits, cancellation, memory)
+                    .map_err(ReadFailure::into_query_error)?;
+                if response.rows.len() > query.limit {
+                    return Err(Error::new(
+                        ErrorCode::ResourceExhausted,
+                        "snapshot query exceeds complete row limit",
+                    ));
+                }
+                response.revision = state.revision;
+                result.collection_epochs.insert(
+                    query.collection.clone(),
+                    state.collections[&query.collection].data_epoch,
+                );
+                result.queries.push(response);
+                if crate::accounting::encoded_len(&result)? > state.limits.max_result_bytes {
+                    return Err(Error::new(
+                        ErrorCode::ResourceExhausted,
+                        "snapshot result exceeds byte limit",
+                    ));
+                }
+            }
             if crate::accounting::encoded_len(&result)? > state.limits.max_result_bytes {
                 return Err(Error::new(
                     ErrorCode::ResourceExhausted,
                     "snapshot result exceeds byte limit",
                 ));
             }
-        }
-        if crate::accounting::encoded_len(&result)? > state.limits.max_result_bytes {
-            return Err(Error::new(
-                ErrorCode::ResourceExhausted,
-                "snapshot result exceeds byte limit",
-            ));
-        }
-        self.cancellation.check()?;
-        Ok(result)
+            cancellation.check()?;
+            let retained = memory.live_bytes() - baseline;
+            Ok((result, retained))
+        })
     }
+}
+
+fn query_workspace_overflow() -> Error {
+    Error::new(
+        ErrorCode::ResourceExhausted,
+        "query workspace byte overflow",
+    )
+}
+
+fn snapshot_point_workspace(key: &DocumentKey, document: Option<&Document>) -> Result<u64> {
+    let body = document
+        .map(|document| crate::state::lease_retention::document_heap(document, usize::MAX))
+        .transpose()?
+        .unwrap_or(0) as u64;
+    body.checked_add(key.collection.len() as u64)
+        .and_then(|bytes| bytes.checked_add(key.id.len() as u64))
+        .and_then(|bytes| bytes.checked_add(256))
+        .ok_or_else(query_workspace_overflow)
+}
+
+// Request clones are a provisional encoded-size allowance. They remain a
+// logical baseline when later query allocations grow beyond the prepaid floor.
+fn query_input_workspace<T: serde::Serialize>(request: &T, copies: u64) -> Result<u64> {
+    (crate::accounting::encoded_len(request)? as u64)
+        .checked_mul(3)
+        .and_then(|bytes| bytes.checked_mul(copies))
+        .and_then(|bytes| bytes.checked_add(512))
+        .ok_or_else(query_workspace_overflow)
 }
 
 #[cfg(test)]
@@ -472,18 +681,18 @@ struct BoundedReadPause {
 }
 
 fn attach_trusted_leader_time(
-    mut response: SnapshotReadResponse,
+    response: &mut SnapshotReadResponse,
     now: u64,
     max_result_bytes: usize,
-) -> Result<SnapshotReadResponse> {
+) -> Result<()> {
     response.trusted_leader_time_ms = Some(now);
-    if crate::accounting::encoded_len(&response)? > max_result_bytes {
+    if crate::accounting::encoded_len(response)? > max_result_bytes {
         return Err(Error::new(
             ErrorCode::ResourceExhausted,
             "bounded snapshot result exceeds byte limit",
         ));
     }
-    Ok(response)
+    Ok(())
 }
 
 /// Every adapter calls this service; it cannot read a map without access and consistency gates.
@@ -896,6 +1105,7 @@ impl Database {
             self.custody_detached.store(true, Ordering::Release);
         }
         self.seal_admission();
+        self.engine.seal_application_source_consumers();
         self.background_stop.send_replace(true);
         self.audit_worker_wake.notify_one();
         {
@@ -1492,21 +1702,41 @@ impl Database {
             .map(|proof| proof.backup_id())
     }
 
+    pub(crate) async fn mutate_topology(
+        &self,
+        context: RequestContext,
+        input: proposal_input::OperationInput,
+    ) -> Result<WriteReceipt> {
+        let result = self.submit_input(context.clone(), input).await;
+        self.audit_write_result(&context, result).await
+    }
+
     async fn submit(&self, context: RequestContext, operation: Operation) -> Result<WriteReceipt> {
+        self.submit_input(context, proposal_input::OperationInput::ordinary(operation))
+            .await
+    }
+
+    async fn submit_input(
+        &self,
+        context: RequestContext,
+        input: proposal_input::OperationInput,
+    ) -> Result<WriteReceipt> {
+        input.check_admission(self.admission())?;
+        let operation = &input.operation;
         context.authorization.check_live()?;
         self.materialization_access()?;
-        self.engine.check_operation_access(&operation)?;
-        let restore_completion = matches!(&operation, Operation::MaintenanceAudit(event) if event.action == "restore" && event.outcome == "completed");
+        self.engine.check_operation_access(operation)?;
+        let restore_completion = matches!(operation, Operation::MaintenanceAudit(event) if event.action == "restore" && event.outcome == "completed");
         if context.tenant != self.engine.generation()?.state.tenant {
             return Err(Error::new(ErrorCode::Forbidden, "tenant access denied"));
         }
-        let staged_read = self.staged_operation_read(&context, &operation).await?;
+        let staged_read = self.staged_operation_read(&context, operation).await?;
         let preflight = self.engine.generation()?;
         let stage_state = staged_read
             .as_ref()
             .map_or(&preflight.state, |read| &read.state);
         // Authorization repeats during ordered apply, so queued operations cannot bypass policy changes.
-        match &operation {
+        match operation {
             Operation::ActivateSchema(request) => crate::state::schema::authorize(
                 &self.engine.generation()?.state,
                 &context,
@@ -1558,7 +1788,7 @@ impl Database {
         let has_text = |definition: &CollectionDefinition| {
             definition.indexes.iter().any(|index| index.text.is_some())
         };
-        let needs_writer = match &operation {
+        let needs_writer = match operation {
             Operation::ActivateSchema(request) => request
                 .changes
                 .iter()
@@ -1590,7 +1820,7 @@ impl Database {
         // RSS; this is an admission estimate, not exact allocator accounting.
         let staged_workspace = if matches!(operation, Operation::PublishHistoryArchive(_)) {
             MAX_ARCHIVE_SOURCE_BYTES.saturating_mul(3)
-        } else if let Operation::FinalizeStaged(reference) = &operation {
+        } else if let Operation::FinalizeStaged(reference) = operation {
             let stage = crate::state::staging::lookup(stage_state, &context, reference)?;
             if stage.is_active() {
                 stage
@@ -1610,7 +1840,7 @@ impl Database {
         } else {
             0
         };
-        let max_command_payload = match &operation {
+        let max_command_payload = match operation {
             Operation::ActivateSchema(_) => MAX_SCHEMA_CHANGESET_BYTES,
             // Permanent receipt replay is ordered before today's tenant batch
             // admission. Retain the immutable request envelope so lowering a
@@ -1636,15 +1866,10 @@ impl Database {
         self.proposals.prepare(self.admission())?;
         let reservation = self.admission().reserve(command_budget, None)?;
         let release_context = context.clone();
-        let command = Command {
-            context,
-            // Budget the longest possible stamp before the worker replaces it
-            // with trusted admission time. Time must not expand a queued input
-            // beyond a limit that preflight already accepted.
-            timestamp_ms: u64::MAX,
-            operation,
-        };
-        let bytes = serde_json::to_vec(&command)
+        // Transfer the actual input and its exact optional grant together;
+        // even an unpolled/refused proposal future has one ordered owner.
+        let command = input.into_command(context);
+        let bytes = serde_json::to_vec(&command.command)
             .map_err(|_| Error::new(ErrorCode::InvalidArgument, "command encoding failed"))?;
         let max_bytes = max_command_payload.saturating_add(64 << 10);
         if bytes.len() > max_bytes {
@@ -1710,52 +1935,24 @@ impl Database {
         self.audit_write_result(context, result).await
     }
 
-    pub async fn get(
-        &self,
-        context: &RequestContext,
-        collection: &str,
-        id: &str,
-    ) -> Result<Document> {
-        let result = self
-            .read_document(context, collection, id, |document| {
-                document.as_ref().clone()
-            })
-            .await;
-        self.audit_result(context, result).await
-    }
-
-    /// Return an immutable document handle without cloning its JSON body. The
-    /// same authorization, consistency, key lease and read-audit gates apply.
-    /// A retained handle is previously released plaintext owned by the trusted
-    /// embedding application; revocation cannot recall it.
-    pub async fn get_shared(
-        &self,
-        context: &RequestContext,
-        collection: &str,
-        id: &str,
-    ) -> Result<Arc<Document>> {
-        let result = self
-            .read_document(context, collection, id, Arc::clone)
-            .await;
-        self.audit_result(context, result).await
-    }
-
     /// Read all requested documents and complete bounded queries from exactly
     /// one authorized generation. Returned assertions can fence a later batch.
     pub async fn read_snapshot(
         &self,
         context: &RequestContext,
         request: ReadSnapshotRequest,
-    ) -> Result<SnapshotReadResponse> {
+    ) -> Result<AdmittedOutput<SnapshotReadResponse>> {
         let result = self.read_snapshot_inner(context, request).await;
-        self.audit_result(context, result).await
+        self.audit_result(context, result)
+            .await
+            .map(|output| output.response)
     }
 
     async fn read_snapshot_inner(
         &self,
         context: &RequestContext,
         request: ReadSnapshotRequest,
-    ) -> Result<SnapshotReadResponse> {
+    ) -> Result<RegisteredOutput<SnapshotReadResponse>> {
         self.access()?;
         if request.documents.len() > 256
             || request.queries.len() > 16
@@ -1807,17 +2004,26 @@ impl Database {
         let cancellation = QueryCancellation::default();
         let _cancel_on_drop = CancelOnDrop(cancellation.clone());
         let registration = Arc::new(self.work.begin(cancellation.clone())?);
-        let workspace = snapshot_workspace(&self.engine.generation()?.state.limits, &request);
+        let workspace = snapshot_workspace(&self.engine.generation()?.state.limits, &request)?;
         let reservation = self
             .admission()
             .reserve(workspace, Some(cancellation.clone()))?;
+        drop(keys);
+        let mut input = SnapshotInput {
+            request,
+            memory: QueryMemory::empty(reservation),
+        };
+        input
+            .memory
+            .reserve(query_input_workspace(&input.request, 1)?)?;
+        let request = &input.request;
         tokio::select! {
             result = self.barrier() => result?,
             _ = cancelled(&cancellation) => return Err(cancelled_error()),
         }
         let generation = self.engine.generation()?;
         let state = &generation.state;
-        if snapshot_workspace(&state.limits, &request) > workspace {
+        if snapshot_workspace(&state.limits, request)? > workspace {
             return Err(Error::new(
                 ErrorCode::ResourceExhausted,
                 "snapshot limits changed during admission",
@@ -1855,35 +2061,32 @@ impl Database {
                 "query concurrency limit reached",
             )
         })?;
-        let work = SnapshotWork {
-            generation: self
-                .hydrate_history(
-                    generation.clone(),
-                    &request.documents,
-                    &request.queries,
-                    &cancellation,
-                )
-                .await?,
-            request,
+        let mut work = SnapshotWork {
+            generation: generation.clone(),
+            request: input.request,
             cancellation: cancellation.clone(),
             _permit: permit,
-            reservation,
+            memory: input.memory,
             registration,
         };
+        work.generation = self
+            .hydrate_history(
+                work.generation.clone(),
+                &work.request.documents,
+                &work.request.queries,
+                &cancellation,
+                &mut work.memory,
+            )
+            .await?;
         let worker = tokio::task::spawn_blocking(move || work.run());
-        let SnapshotOutput {
-            response,
-            mut reservation,
-            _registration,
-        } = tokio::select! {
+        let mut output = tokio::select! {
             result = tokio::time::timeout(Duration::from_secs(5), worker) => result
                 .map_err(|_| Error::new(ErrorCode::ResourceExhausted, "snapshot deadline exceeded"))?
                 .map_err(|_| Error::new(ErrorCode::Unavailable, "snapshot worker failed"))?,
             _ = cancelled(&cancellation) => return Err(cancelled_error()),
         };
-        let mut response = response?;
+        let response = output.response.as_mut().map_err(|error| error.clone())?;
         let max_result_bytes = state.limits.max_result_bytes;
-        reservation.retain(max_result_bytes.saturating_mul(3) as u64);
         drop(generation);
         if let Some(bounds) = time_bounds {
             #[cfg(test)]
@@ -1955,8 +2158,10 @@ impl Database {
                     ));
                 }
             }
-            response = attach_trusted_leader_time(response, now, max_result_bytes)?;
+            attach_trusted_leader_time(response, now, max_result_bytes)?;
         }
+        let output = output.into_admitted()?;
+        let response = &output.response;
         for (collection, strict) in &release_collections {
             self.release(
                 context,
@@ -1979,54 +2184,7 @@ impl Database {
                 response.policy_epoch,
             )?;
         }
-        Ok(response)
-    }
-
-    async fn read_document<T>(
-        &self,
-        context: &RequestContext,
-        collection: &str,
-        id: &str,
-        select: impl FnOnce(&Arc<Document>) -> T,
-    ) -> Result<T> {
-        self.access()?;
-        self.engine
-            .authorize(context, Some(collection), Action::Read)?;
-        let mut reservation = self.admission().reserve(
-            self.engine
-                .generation()?
-                .state
-                .limits
-                .max_document_bytes
-                .saturating_mul(3) as u64,
-            None,
-        )?;
-        self.barrier().await?;
-        self.engine
-            .authorize(context, Some(collection), Action::Read)?;
-        let generation = self.engine.generation()?;
-        let cancellation = QueryCancellation::default();
-        let _cancel_on_drop = CancelOnDrop(cancellation.clone());
-        let _registration = self.work.begin(cancellation.clone())?;
-        let mut history = history_reads::HistoryReadCache::new();
-        let document = self
-            .history_document(&generation, collection, id, &cancellation, &mut history)
-            .await?
-            .ok_or_else(|| Error::new(ErrorCode::NotFound, "document not found"))?;
-        // Both shared and owned variants prepare their result before auditing and
-        // the final access release. Owned callers keep the original API contract.
-        let document = select(&document);
-        let revision = generation.state.revision;
-        let policy_epoch = generation.state.policy_epoch;
-        let strict = generation.state.policy.strict_read_audit
-            || generation.state.collections[collection]
-                .definition
-                .strict_read_audit;
-        drop(generation);
-        reservation.retain_workspace();
-        self.release(context, collection, revision, strict, policy_epoch)
-            .await?;
-        Ok(document)
+        Ok(output)
     }
 
     async fn release(
@@ -2232,33 +2390,43 @@ impl Database {
         &self,
         context: &RequestContext,
         request: QueryRequest,
-    ) -> Result<QueryResponse> {
+    ) -> Result<AdmittedOutput<QueryResponse>> {
         let result = self.query_inner(context, request).await;
-        self.audit_result(context, result).await
+        self.audit_result(context, result)
+            .await
+            .map(|output| output.response)
     }
 
     async fn query_inner(
         &self,
         context: &RequestContext,
         request: QueryRequest,
-    ) -> Result<QueryResponse> {
+    ) -> Result<RegisteredOutput<QueryResponse>> {
         self.access()?;
         self.engine
             .authorize(context, Some(&request.collection), Action::Read)?;
         let cancellation = QueryCancellation::default();
         let _cancel_on_drop = CancelOnDrop(cancellation.clone());
         let registration = Arc::new(self.work.begin(cancellation.clone())?);
-        let workspace = query_workspace(&self.engine.generation()?.state.limits, &request);
-        let mut pending_reservation = Some(
-            self.admission()
-                .reserve(workspace, Some(cancellation.clone()))?,
-        );
+        let workspace = query_workspace(&self.engine.generation()?.state.limits, &request)?;
+        let mut input = QueryInput {
+            request,
+            memory: QueryMemory::empty(
+                self.admission()
+                    .reserve(workspace, Some(cancellation.clone()))?,
+            ),
+        };
+        input
+            .memory
+            .reserve(query_input_workspace(&input.request, 3)?)?;
+        let request = &input.request;
         let mut normalized = request.clone();
         normalized.cursor = None;
         let digest = hex::encode(Sha256::digest(
             serde_json::to_vec(&normalized)
                 .map_err(|_| Error::new(ErrorCode::InvalidArgument, "query encoding failed"))?,
         ));
+        drop(normalized);
         // Continuations retain old data but must establish current authority on a serving leader.
         tokio::select! {
             result = self.barrier() => result?,
@@ -2268,7 +2436,7 @@ impl Database {
             .authorize(context, Some(&request.collection), Action::Read)?;
         let generation = self.engine.generation()?;
         let state = &generation.state;
-        if query_workspace(&state.limits, &request) > workspace {
+        if query_workspace(&state.limits, request)? > workspace {
             return Err(Error::new(
                 ErrorCode::ResourceExhausted,
                 "query limits changed during admission; retry",
@@ -2289,9 +2457,7 @@ impl Database {
         let policy_epoch = state.policy_epoch;
         let incarnation = state.incarnation.clone();
         let ttl = Duration::from_millis(state.limits.cursor_ttl_ms);
-        let mut _continuation_admission = None;
-        let (full, reservation, offset, created) = if let Some(token) = &request.cursor {
-            _continuation_admission = pending_reservation.take();
+        let (mut full, offset, created) = if let Some(token) = &request.cursor {
             let cursors = self
                 .cursors
                 .lock()
@@ -2312,71 +2478,80 @@ impl Database {
                 ));
             }
             (
-                cursor.response.clone(),
-                cursor.reservation.clone(),
+                QueryResultOwner {
+                    request: input.request,
+                    response: cursor.response.clone(),
+                    memory: Some(input.memory),
+                    reservation: Some(cursor.reservation.clone()),
+                    page_charge: None,
+                    _registration: registration.clone(),
+                },
                 cursor.offset,
                 cursor.created,
             )
         } else {
-            let reservation = pending_reservation
-                .take()
-                .expect("query admission reservation");
             let permit = self.query_slots.clone().try_acquire_owned().map_err(|_| {
                 Error::new(
                     ErrorCode::ResourceExhausted,
                     "query concurrency limit reached",
                 )
             })?;
-            let work = QueryWork {
-                generation: self
-                    .hydrate_history(
-                        generation.clone(),
-                        &[],
-                        std::slice::from_ref(&request),
-                        &cancellation,
-                    )
-                    .await?,
-                request: request.clone(),
+            let mut work = QueryWork {
+                generation: generation.clone(),
+                request: input.request,
                 cancellation: cancellation.clone(),
                 _permit: permit,
-                reservation: Some(reservation),
+                memory: input.memory,
                 registration: registration.clone(),
             };
+            work.generation = self
+                .hydrate_history(
+                    work.generation.clone(),
+                    &[],
+                    std::slice::from_ref(&work.request),
+                    &cancellation,
+                    &mut work.memory,
+                )
+                .await?;
             let worker = tokio::task::spawn_blocking(move || work.run());
-            let QueryOutput {
-                response,
-                mut reservation,
-                _registration,
-            } = tokio::select! {
+            let mut output = tokio::select! {
                 result = tokio::time::timeout(Duration::from_secs(5), worker) => result
                     .map_err(|_| Error::new(ErrorCode::ResourceExhausted, "query deadline exceeded"))?
                     .map_err(|_| Error::new(ErrorCode::Unavailable, "query worker failed"))?,
                 _ = cancelled(&cancellation) => return Err(cancelled_error()),
             };
-            let mut response = response?;
-            response.revision = state.revision;
-            // Keep the full output allowance (not only serialized bytes) while a
-            // cursor owns this result; release the worker operation slot now.
-            reservation.retain(state.limits.max_result_bytes.saturating_mul(3) as u64);
+            output
+                .response
+                .as_mut()
+                .map_err(|error| error.clone())?
+                .revision = state.revision;
             (
-                Arc::new(response),
-                Arc::new(reservation),
+                QueryResultOwner {
+                    request: output.request,
+                    response: Arc::new(output.response.expect("checked query response")),
+                    memory: Some(output.memory),
+                    reservation: None,
+                    page_charge: None,
+                    _registration: output._registration,
+                },
                 0,
                 self.clock.now(),
             )
         };
         let max_cursors = state.limits.max_cursors;
         let max_cursor_bytes = state.limits.max_cursor_bytes;
-        let page_end = offset.saturating_add(request.limit).min(full.rows.len());
-        let mut page = QueryResponse {
-            revision: full.revision,
-            rows: full.rows[offset..page_end].to_vec(),
-            aggregates: full.aggregates.clone(),
-            cursor: None,
-        };
+        let page_end = offset
+            .saturating_add(full.request.limit)
+            .min(full.response.rows.len());
+        let mut page = full.clone_page(offset..page_end, &cancellation)?;
+        // Each completed page releases its operation slot before a strict
+        // read needs to submit its audit, while retaining every admitted byte.
+        // Continuations retain a page charge independent of the full cursor.
+        full.prepare_page_handoff()?;
+        let request = &full.request;
         drop(generation);
         tokio::select! {
-            result = self.release(context, &request.collection, full.revision, strict, policy_epoch) => result?,
+            result = self.release(context, &request.collection, full.response.revision, strict, policy_epoch) => result?,
             _ = cancelled(&cancellation) => return Err(cancelled_error()),
         }
         cancellation.check()?;
@@ -2395,15 +2570,8 @@ impl Database {
                 && c.policy_epoch == policy_epoch
                 && c.term == term
         });
-        if page_end < full.rows.len() {
-            let bytes = serde_json::to_vec(&*full)
-                .map_err(|_| {
-                    Error::new(
-                        ErrorCode::ResourceExhausted,
-                        "query response cannot be retained",
-                    )
-                })?
-                .len();
+        if page_end < full.response.rows.len() {
+            let bytes = crate::accounting::encoded_len(&*full.response)?;
             let replaced = request.cursor.as_ref().and_then(|token| cursors.get(token));
             let retained_bytes: usize = cursors.values().map(|cursor| cursor.bytes).sum();
             if cursors
@@ -2420,6 +2588,7 @@ impl Database {
                     "cursor memory budget exhausted",
                 ));
             }
+            let reservation = full.cursor_reservation()?;
             let token = uuid::Uuid::new_v4().to_string();
             cursors.insert(
                 token.clone(),
@@ -2430,7 +2599,7 @@ impl Database {
                     policy_epoch,
                     created,
                     ttl,
-                    response: full,
+                    response: full.response.clone(),
                     reservation,
                     offset: page_end,
                     bytes,
@@ -2439,10 +2608,16 @@ impl Database {
             );
             page.cursor = Some(token);
         }
-        if let Some(token) = request.cursor {
-            cursors.remove(&token);
+        let request = &full.request;
+        if let Some(token) = &request.cursor {
+            cursors.remove(token);
         }
         drop(cursors);
+        let output = RegisteredOutput {
+            response: AdmittedOutput::new(page, full.take_page_charge()),
+            _registration: full._registration.clone(),
+        };
+        let request = &full.request;
         self.access()?;
         self.admission().check_release(&cancellation)?;
         self.work.release(&cancellation, || {
@@ -2464,7 +2639,7 @@ impl Database {
                 Action::Read,
                 policy_epoch,
             )?;
-            Ok(page)
+            Ok(output)
         })
     }
 }
@@ -2486,37 +2661,26 @@ fn cancelled_error() -> Error {
     Error::new(ErrorCode::ResourceExhausted, "query work cancelled")
 }
 
-fn query_workspace(limits: &Limits, request: &QueryRequest) -> u64 {
-    if request.cursor.is_some() {
-        return limits.max_result_bytes.saturating_mul(2) as u64;
-    }
-    // Full output, page copy, candidate IDs/sort keys, group accumulators.
-    limits
-        .max_result_bytes
-        .saturating_mul(3)
-        .saturating_add(
-            limits
-                .max_query_candidates
-                .saturating_mul(128usize.saturating_add(request.sort.len().saturating_mul(64))),
-        )
-        .saturating_add(
-            limits.max_query_groups.saturating_mul(
-                128usize.saturating_add(request.aggregates.len().saturating_mul(96)),
-            ),
-        ) as u64
+fn query_workspace(limits: &Limits, request: &QueryRequest) -> Result<u64> {
+    kasumi_query::query_workspace_estimate(limits, request)
 }
 
-fn snapshot_workspace(limits: &Limits, request: &ReadSnapshotRequest) -> u64 {
+fn snapshot_workspace(limits: &Limits, request: &ReadSnapshotRequest) -> Result<u64> {
     // Queries run sequentially: reserve one maximum query workspace, plus the
     // retained combined result and one document clone through final release.
     request
         .queries
         .iter()
-        .map(|query| query_workspace(limits, query))
-        .max()
-        .unwrap_or(0)
-        .saturating_add(limits.max_result_bytes.saturating_mul(3) as u64)
-        .saturating_add(limits.max_document_bytes.saturating_mul(3) as u64)
+        .try_fold(0, |maximum, query| {
+            query_workspace(limits, query).map(|bytes| maximum.max(bytes))
+        })?
+        .checked_add(
+            (limits.max_result_bytes as u64)
+                .checked_mul(3)
+                .ok_or_else(query_workspace_overflow)?,
+        )
+        .and_then(|bytes| bytes.checked_add((limits.max_document_bytes as u64).checked_mul(3)?))
+        .ok_or_else(query_workspace_overflow)
 }
 
 fn credential_acknowledgement(error: Error) -> Error {
@@ -2537,8 +2701,13 @@ mod tests {
     include!("service_schema_tests.rs");
     include!("service_credential_tests.rs");
     include!("service_proposal_tests.rs");
+    include!("service_topology_input_tests.rs");
     include!("service_mutation_receipt_tests.rs");
     include!("service_serving_tests.rs");
+    include!("service_query_workspace_tests.rs");
+    include!("service_query_pagination_memory_tests.rs");
+    include!("service_change_feed_memory_tests.rs");
+    include!("service_point_memory_tests.rs");
     include!("service_retirement_tests.rs");
     include!("service_custody_tests.rs");
     use super::*;
@@ -2853,21 +3022,19 @@ mod tests {
             queries: Vec::new(),
         };
         let plain_bytes = crate::accounting::encoded_len(&response).unwrap();
-        let witnessed = attach_trusted_leader_time(response.clone(), u64::MAX, usize::MAX).unwrap();
+        let mut witnessed = response.clone();
+        attach_trusted_leader_time(&mut witnessed, u64::MAX, usize::MAX).unwrap();
         let witnessed_bytes = crate::accounting::encoded_len(&witnessed).unwrap();
         assert!(witnessed_bytes > plain_bytes);
         assert_eq!(
-            attach_trusted_leader_time(response.clone(), u64::MAX, plain_bytes)
+            attach_trusted_leader_time(&mut response.clone(), u64::MAX, plain_bytes)
                 .unwrap_err()
                 .code,
             ErrorCode::ResourceExhausted
         );
-        assert_eq!(
-            attach_trusted_leader_time(response, u64::MAX, witnessed_bytes)
-                .unwrap()
-                .trusted_leader_time_ms,
-            Some(u64::MAX)
-        );
+        let mut response = response;
+        attach_trusted_leader_time(&mut response, u64::MAX, witnessed_bytes).unwrap();
+        assert_eq!(response.trusted_leader_time_ms, Some(u64::MAX));
     }
 
     #[tokio::test]
@@ -2902,7 +3069,7 @@ mod tests {
             .unwrap(),
             cancellation,
             _permit: slots.clone().try_acquire_owned().unwrap(),
-            reservation: Some(admission.reserve(1024, None).unwrap()),
+            memory: QueryMemory::new(admission.reserve(1024, None).unwrap(), 0).unwrap(),
             registration,
         };
         fence.seal();
@@ -2969,3 +3136,9 @@ mod tests {
         fixture.close().await;
     }
 }
+
+// Component qualification only; production wiring requires the exact per-Database
+// source-worker registry and shutdown drain described in this module.
+#[cfg(test)]
+#[path = "query_source_work.rs"]
+mod query_source_work;

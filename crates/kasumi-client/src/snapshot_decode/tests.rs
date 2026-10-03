@@ -383,3 +383,54 @@ fn query_rows_cannot_advance_beyond_their_collection_epoch() {
     assert_eq!(decoded.queries[0].rows[0].version, 2);
     assert_eq!(decoded.collection_epochs["docs"], 2);
 }
+
+#[test]
+fn shared_document_bridge_retains_real_decode_owner_and_drains_after_last_clone() {
+    let mut options = options();
+    options.resources = ClientResources::new(options.limits.accounted_bytes().unwrap(), 1).unwrap();
+    let call = options.admit().unwrap();
+    let raw = br#"{"amount":90071992547409931234567890.123456789,"nested":{"items":[true,null,"value"]},"$serde_json::private::Number":"literal key"}"#;
+    tokens::admit(raw, &call).unwrap();
+    let value = AdmittedResponse::new(
+        kasumi_types::Document {
+            id: "one".into(),
+            version: 7,
+            body: tokens::literal(raw, &call).unwrap(),
+        },
+        &call,
+    );
+    let original = value.clone();
+    let expected = serde_json::to_vec(&*value).unwrap();
+    let initial = options.resources.usage();
+    assert_eq!(initial.live_owners, 1);
+    let shared = value.into_shared_document();
+    assert!(std::ptr::eq(&*original, shared.as_ref()));
+    assert_eq!(options.resources.usage(), initial);
+    assert_eq!(serde_json::to_vec(&shared).unwrap(), expected);
+    let clone = shared.clone();
+    assert!(std::ptr::eq(shared.as_ref(), clone.as_ref()));
+    // Completion/cancellation does not detach the released immutable payload's
+    // charge or make another decode slot available while it is still held.
+    drop(call.waiter());
+    assert!(call.check().is_err());
+    drop(call);
+    drop(original);
+    drop(shared);
+    assert!(options.admit().is_err());
+    assert_eq!(options.resources.usage(), initial);
+    std::thread::spawn(move || {
+        assert_eq!(clone.id, "one");
+        assert_eq!(clone.version, 7);
+        assert_eq!(
+            clone.body["amount"].to_string(),
+            "90071992547409931234567890.123456789"
+        );
+        assert_eq!(clone.body["$serde_json::private::Number"], "literal key");
+        drop(clone);
+    })
+    .join()
+    .unwrap();
+    assert_eq!(options.resources.usage(), ClientResourceUsage::default());
+    drop(options.admit().unwrap());
+    assert_eq!(options.resources.usage(), ClientResourceUsage::default());
+}

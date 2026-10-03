@@ -1,0 +1,34 @@
+{
+  "scope": "local raw-file diagnostic only; no NodeDisk qualification or universal filesystem bound",
+  "write_shape": "8192-byte header then 128 sequential 16384-byte pages; fsync after each write",
+  "runs": [
+    {
+      "run": 1,
+      "pages": 128,
+      "events": 0,
+      "maximum_extra": 0,
+      "first_events": []
+    },
+    {
+      "run": 2,
+      "pages": 128,
+      "events": 0,
+      "maximum_extra": 0,
+      "first_events": []
+    },
+    {
+      "run": 3,
+      "pages": 128,
+      "events": 0,
+      "maximum_extra": 0,
+      "first_events": []
+    },
+    {
+      "run": 4,
+      "pages": 128,
+      "events": 0,
+      "maximum_extra": 0,
+      "first_events": []
+    }
+  ]
+}

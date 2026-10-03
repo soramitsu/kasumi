@@ -141,12 +141,15 @@ pub async fn command(arguments: &[String]) -> Result<bool> {
             directory,
             policy_flag,
             policy,
+            allocation_flag,
+            allocation,
             network_flag,
             network,
         ] if command == "init"
             && mode_flag == "--mode"
             && mode == "standalone"
             && policy_flag == "--directory-policy"
+            && allocation_flag == "--file-allocation-policy"
             && network_flag == "--network" =>
         {
             println!(
@@ -156,6 +159,7 @@ pub async fn command(arguments: &[String]) -> Result<bool> {
                         Path::new(directory),
                         "default",
                         directory_policy(Path::new(policy))?,
+                        file_allocation_policy(Path::new(allocation))?,
                         standalone_network(Path::new(network))?
                     )
                     .await?
@@ -169,6 +173,8 @@ pub async fn command(arguments: &[String]) -> Result<bool> {
             directory,
             policy_flag,
             policy,
+            allocation_flag,
+            allocation,
             network_flag,
             network,
             tenant_flag,
@@ -177,6 +183,7 @@ pub async fn command(arguments: &[String]) -> Result<bool> {
             && mode_flag == "--mode"
             && mode == "standalone"
             && policy_flag == "--directory-policy"
+            && allocation_flag == "--file-allocation-policy"
             && network_flag == "--network"
             && tenant_flag == "--tenant" =>
         {
@@ -187,6 +194,7 @@ pub async fn command(arguments: &[String]) -> Result<bool> {
                         Path::new(directory),
                         tenant,
                         directory_policy(Path::new(policy))?,
+                        file_allocation_policy(Path::new(allocation))?,
                         standalone_network(Path::new(network))?
                     )
                     .await?
@@ -369,6 +377,23 @@ pub fn directory_policy(path: &Path) -> Result<kasumi_store::DirectoryPolicy> {
     Ok(policy)
 }
 
+/// Read the caller's explicit per-file physical allowance before installation.
+/// This finite bound must be qualified for the selected filesystem.
+pub fn file_allocation_policy(path: &Path) -> Result<kasumi_store::FileAllocationPolicy> {
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)?
+        .take(4097)
+        .read_to_end(&mut bytes)?;
+    anyhow::ensure!(
+        bytes.len() <= 4096,
+        "file allocation policy exceeds size limit"
+    );
+    let policy: kasumi_store::FileAllocationPolicy = serde_json::from_slice(&bytes)?;
+    policy.validate()?;
+    Ok(policy)
+}
+
 /// Read the complete selected loopback identity before creating installation files.
 pub fn standalone_network(path: &Path) -> Result<StandaloneNetwork> {
     use std::io::Read;
@@ -436,5 +461,77 @@ mod directory_policy_tests {
         std::fs::write(&path, vec![b' '; 4097]).unwrap();
         assert!(directory_policy(&path).is_err());
         assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 1);
+    }
+}
+
+#[cfg(test)]
+mod file_allocation_policy_tests {
+    use super::*;
+
+    #[test]
+    fn explicit_allowance_is_bounded_strict_and_preserves_zero_or_selected_bytes() {
+        let directory = kasumi_store::test_utils::private_tempdir().unwrap();
+        let path = directory.path().join("allocation.json");
+        for allowance in [0, 1048576] {
+            std::fs::write(
+                &path,
+                format!("{{\"maximum_extra_extent_bytes\":{allowance}}}"),
+            )
+            .unwrap();
+            assert_eq!(
+                file_allocation_policy(&path)
+                    .unwrap()
+                    .maximum_extra_extent_bytes,
+                allowance
+            );
+        }
+        for bytes in [
+            br#"{}"#.as_slice(),
+            br#"{"maximum_extra_extent_bytes":true}"#.as_slice(),
+            br#"{"maximum_extra_extent_bytes":-1}"#.as_slice(),
+            br#"{"maximum_extra_extent_bytes":9223372036854775808}"#.as_slice(),
+            br#"{"maximum_extra_extent_bytes":1,"legacy_default":true}"#.as_slice(),
+            br#"{"maximum_extra_extent_bytes":1,"maximum_extra_extent_bytes":2}"#.as_slice(),
+        ] {
+            std::fs::write(&path, bytes).unwrap();
+            assert!(file_allocation_policy(&path).is_err());
+        }
+        std::fs::write(&path, vec![b' '; 4097]).unwrap();
+        assert!(file_allocation_policy(&path).is_err());
+        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn init_without_explicit_file_allowance_cannot_create_an_installation() {
+        std::thread::Builder::new()
+            .name("CLI missing file allocation policy fixture".into())
+            .stack_size(16 << 20)
+            .spawn(|| {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap()
+                    .block_on(Box::pin(init_without_file_allowance_impl()))
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    async fn init_without_file_allowance_impl() {
+        let directory = kasumi_store::test_utils::private_tempdir().unwrap();
+        let target = directory.path().join("new-installation");
+        let arguments = [
+            "init".into(),
+            "--mode".into(),
+            "standalone".into(),
+            target.to_string_lossy().into_owned(),
+            "--directory-policy".into(),
+            "unused-directory-policy.json".into(),
+            "--network".into(),
+            "unused-network.json".into(),
+        ];
+        assert!(!command(&arguments).await.unwrap());
+        assert!(!target.exists());
     }
 }

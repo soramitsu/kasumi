@@ -1,0 +1,152 @@
+Command: cargo test --locked --offline --config profile.test.package.kasumi-kv.opt-level=3 --config profile.test.package.sha2.opt-level=3 -p kasumi-kv -p kasumi-store -p kasumi-raft -p kasumi-engine --all-features --lib --no-fail-fast -- non_application_capacity source_actor_startup snapshot_certificate_ snapshot_prepared_gate_vote_progress selected_sources_real_local_startup_publishes_entry_and_drains_surviving_generation selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_identity selected_sources_covered_capture_cannot_settle_after_serving_handoff --nocapture
+ISOLATED_SOURCE=/tmp/kasumi-source-cohort-validation-v1
+CARGO_TARGET_DIR=/Users/takemiyamakoto/dev/kasumi/target/disk-backed-cache
+   Compiling openraft v0.9.25 (/private/tmp/kasumi-source-cohort-validation-v1/vendor/openraft-0.9.25/openraft)
+   Compiling kasumi-raft v0.1.0 (/private/tmp/kasumi-source-cohort-validation-v1/crates/kasumi-raft)
+error[E0599]: no method named `finish` found for struct `kasumi_store::TenantStorageReadView` in the current scope
+   --> crates/kasumi-raft/src/selected_application/snapshot_source_envelope_tests.rs:138:14
+    |
+138 |         view.finish(Ok(()))?;
+    |              ^^^^^^ method not found in `kasumi_store::TenantStorageReadView`
+
+error[E0599]: no method named `finish` found for struct `kasumi_store::TenantStorageReadView` in the current scope
+   --> crates/kasumi-raft/src/selected_application/snapshot_source_envelope_tests.rs:191:10
+    |
+191 |     view.finish(Ok(()))?;
+    |          ^^^^^^ method not found in `kasumi_store::TenantStorageReadView`
+
+error[E0308]: mismatched types
+   --> crates/kasumi-raft/src/selected_application/snapshot_source_envelope_tests.rs:276:41
+    |
+276 |     log.fixture_blocking_append([first, entry(1)]).await?;
+    |                                         ^^^^^^^^ expected `Entry<TypeConfig>`, found `AppliedEntryContext`
+    |
+    = note: expected struct `entry::Entry<TypeConfig>`
+               found struct `control::AppliedEntryContext`
+
+warning: variant `SnapshotPublication` is never constructed
+  --> crates/kasumi-raft/src/selected_application/plan.rs:35:5
+   |
+30 | enum AppliedOrigin {
+   |      ------------- variant in this enum
+...
+35 |     SnapshotPublication,
+   |     ^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `AppliedOrigin` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `observe_snapshot_writes` is never used
+   --> crates/kasumi-raft/src/selected_application/control_memory.rs:274:19
+    |
+263 | impl ControlMemory {
+    | ------------------ method in this implementation
+...
+274 |     pub(super) fn observe_snapshot_writes(
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: associated functions `for_publication` and `at` are never used
+  --> crates/kasumi-raft/src/selected_application/snapshot_source_envelope.rs:22:19
+   |
+17 | impl PreparedSnapshotSourceEnvelope {
+   | ----------------------------------- associated functions in this implementation
+...
+22 |     pub(crate) fn for_publication(
+   |                   ^^^^^^^^^^^^^^^
+...
+38 |     fn at(
+   |        ^^
+
+warning: function `write_effect` is never used
+   --> crates/kasumi-raft/src/selected_application/snapshot_source_envelope.rs:194:4
+    |
+194 | fn write_effect<'a>(
+    |    ^^^^^^^^^^^^
+
+warning: function `prospective_bound` is never used
+   --> crates/kasumi-raft/src/selected_application/snapshot_source_envelope.rs:212:4
+    |
+212 | fn prospective_bound(
+    |    ^^^^^^^^^^^^^^^^^
+
+warning: function `prospective_record` is never used
+   --> crates/kasumi-raft/src/selected_application/snapshot_source_envelope.rs:238:4
+    |
+238 | fn prospective_record<'a>(
+    |    ^^^^^^^^^^^^^^^^^^
+
+warning: method `source_capacity_seed` is never used
+   --> crates/kasumi-raft/src/snapshot_custody.rs:102:19
+    |
+ 99 | impl SnapshotRetirement {
+    | ----------------------- method in this implementation
+...
+102 |     pub(crate) fn source_capacity_seed(&self) -> &[u8] {
+    |                   ^^^^^^^^^^^^^^^^^^^^
+
+warning: method `prepare_engine_publication` is never used
+    --> crates/kasumi-raft/src/storage.rs:1081:19
+     |
+1050 | impl PendingSnapshot {
+     | -------------------- method in this implementation
+...
+1081 |     pub(crate) fn prepare_engine_publication<'backend>(
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: enum `SnapshotPublicationPhase` is never used
+    --> crates/kasumi-raft/src/storage.rs:1135:6
+     |
+1135 | enum SnapshotPublicationPhase {
+     |      ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: struct `PreparedEngineSnapshotPublication` is never constructed
+    --> crates/kasumi-raft/src/storage.rs:1141:19
+     |
+1141 | pub(crate) struct PreparedEngineSnapshotPublication<'backend> {
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: methods `source` and `publish` are never used
+    --> crates/kasumi-raft/src/storage.rs:1151:19
+     |
+1150 | impl PreparedEngineSnapshotPublication<'_> {
+     | ------------------------------------------ methods in this implementation
+1151 |     pub(crate) fn source(&self) -> &crate::PreparedSnapshotSourceEnvelope {
+     |                   ^^^^^^
+...
+1154 |     pub(crate) fn publish(&mut self, domains: &TenantStorageSet) -> Result<()> {
+     |                   ^^^^^^^
+
+warning: associated items `required_bytes` and `lock_owned` are never used
+  --> crates/kasumi-raft/src/storage/control_gate.rs:33:25
+   |
+27 | impl ControlGate {
+   | ---------------- associated items in this implementation
+...
+33 |     pub(crate) const fn required_bytes() -> u64 {
+   |                         ^^^^^^^^^^^^^^
+...
+64 |     pub(crate) fn lock_owned(self: &Arc<Self>) -> Result<OwnedControlGuard, Poisoned> {
+   |                   ^^^^^^^^^^
+
+warning: struct `OwnedControlGuard` is never constructed
+   --> crates/kasumi-raft/src/storage/control_gate.rs:102:19
+    |
+102 | pub(crate) struct OwnedControlGuard {
+    |                   ^^^^^^^^^^^^^^^^^
+
+warning: method `require_gate` is never used
+   --> crates/kasumi-raft/src/storage/control_gate.rs:109:19
+    |
+106 | impl OwnedControlGuard {
+    | ---------------------- method in this implementation
+...
+109 |     pub(crate) fn require_gate(&self, gate: &Arc<ControlGate>) -> anyhow::Result<()> {
+    |                   ^^^^^^^^^^^^
+
+   Compiling kasumi-engine v0.1.0 (/private/tmp/kasumi-source-cohort-validation-v1/crates/kasumi-engine)
+Some errors have detailed explanations: E0308, E0599.
+For more information about an error, try `rustc --explain E0308`.
+error: could not compile `kasumi-raft` (lib test) due to 3 previous errors
+warning: build failed, waiting for other jobs to finish...
+warning: `kasumi-raft` (lib) generated 14 warnings
+Runner: 108.31s; exit=101; matching=1573/1573

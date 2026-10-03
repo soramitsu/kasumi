@@ -1,0 +1,7 @@
+bac36a7b0a47c746ebaeb2ef1ee2f03727cecd1547de47365c9834004923ad88  crates/kasumi-kv/src/cache.rs
+89c1768745e84ad548db24d5351d995591dd8f3d1418a2e0a18ce28208f65f44  crates/kasumi-kv/src/core.rs
+b3fb4a767dcfbd8dd438634080716f4538c1cdb84793d2b1ff1d4fd241c41092  crates/kasumi-kv/src/directory.rs
+17d8137756618ca0492bbb655e44c25c17ebdcd924c658dfe20aedd70f2a0450  crates/kasumi-kv/src/lib.rs
+145cdab1ef7f7ef5e26d749d1bf68af0bbe5a748c9a4fe7010a1c27966bbf9c9  crates/kasumi-kv/src/tables.rs
+7c1a75569f99f352c9d6cdc1be6803297843f5048b409f06f6574df9f81bd561  crates/kasumi-kv/src/retained.rs
+acec5a3f49109720671abdcf4abfedbc658898820ea3a24141aeb1cfd938e63f  crates/kasumi-kv/tests/crash_recovery.rs

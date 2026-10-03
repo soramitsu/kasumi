@@ -1,6 +1,7 @@
 //! Permanent ordinary mutation outcomes, selected by one applied generation.
 //! No expiry or resident lifetime map exists. Point reads use short transactions;
 //! a row beyond the selected ordinal cannot prove that its command was applied.
+use crate::namespace_installation::PreparedRows;
 use crate::staged_terminal::AppliedIdentity;
 #[cfg(any(test, feature = "test-utils"))]
 use crate::staged_terminal::AppliedOrigin;
@@ -333,6 +334,20 @@ pub(crate) struct Builder {
     table: Arc<EncryptedTable>,
     head: MutationReceiptHead,
 }
+// Fixed phase labels correlate real receipt work with the fixture lease log.
+#[cfg(any(test, feature = "test-utils"))]
+fn observe_staging(phase: &'static str, ordinal: Option<u64>, succeeded: Option<bool>) {
+    if std::env::var_os("KASUMI_TEST_METADATA_LEASE_TRACE").as_deref()
+        != Some(std::ffi::OsStr::new("1"))
+    {
+        return;
+    }
+    use std::io::Write as _;
+    let _ = writeln!(
+        std::io::stderr().lock(),
+        "receipt_staging phase={phase} ordinal={ordinal:?} succeeded={succeeded:?}",
+    );
+}
 impl Builder {
     pub(crate) fn new(
         disk: &Arc<ScratchDisk>,
@@ -340,12 +355,19 @@ impl Builder {
         tenant: &str,
         origin: &str,
     ) -> Result<Self> {
+        #[cfg(any(test, feature = "test-utils"))]
+        observe_staging("setup_entered", None, None);
+        let table = EncryptedTable::new(disk, limit, disk.native_cache_config());
+        #[cfg(any(test, feature = "test-utils"))]
+        observe_staging("setup_returned", None, Some(table.is_ok()));
         Ok(Self {
-            table: Arc::new(EncryptedTable::new(disk, limit)?),
+            table: Arc::new(table?),
             head: MutationReceiptHead::empty(tenant, origin)?,
         })
     }
     pub(crate) fn push(&mut self, row: &Row, state: &TenantState) -> Result<()> {
+        #[cfg(any(test, feature = "test-utils"))]
+        observe_staging("row_entered", Some(row.ordinal), None);
         row.validate(state)?;
         ensure!(
             self.table.get(&id_key(&row.key))?.is_none(),
@@ -356,10 +378,16 @@ impl Builder {
             key: row.key.clone(),
             sha256: row.sha256()?,
         };
+        #[cfg(any(test, feature = "test-utils"))]
+        observe_staging("point_write_entered", Some(row.ordinal), None);
         self.table
             .insert(&id_key(&row.key), &serde_json::to_vec(row)?)?;
+        #[cfg(any(test, feature = "test-utils"))]
+        observe_staging("ordinal_write_entered", Some(row.ordinal), None);
         self.table
             .insert(&ordinal_key(row.ordinal), &serde_json::to_vec(&index)?)?;
+        #[cfg(any(test, feature = "test-utils"))]
+        observe_staging("row_returned", Some(row.ordinal), Some(true));
         Ok(())
     }
     pub(crate) fn finish(self, expected: &MutationReceiptHead) -> Result<View> {
@@ -398,16 +426,16 @@ pub(crate) fn advance(head: &mut MutationReceiptHead, row: &Row) -> Result<()> {
 /// catalog writes with the enclosing checkpoint/applied cursor before publishing
 /// `view`. Dropping this object leaves only encrypted temporary staging.
 pub(crate) struct Installation {
-    replacement: Option<Arc<EncryptedTable>>,
+    replacement: Option<PreparedRows>,
     namespace: String,
     writes: Vec<WriteOp>,
     pub(crate) view: View,
 }
 impl Installation {
-    pub(crate) fn replacements(&self) -> Vec<(&str, &EncryptedTable)> {
+    pub(crate) fn replacements(&self) -> Vec<kasumi_store::NamespaceReplacement<'_>> {
         self.replacement
             .as_ref()
-            .map(|table| vec![(self.namespace.as_str(), table.as_ref())])
+            .map(|rows| vec![rows.replacement(&self.namespace)])
             .unwrap_or_default()
     }
     pub(crate) fn writes(&self) -> &[WriteOp] {
@@ -487,11 +515,8 @@ impl View {
             });
         }
         let replacement = match self.source.as_deref() {
-            Some(Source::Staged(table)) => table.clone(),
-            None if self.head.count == 0 => Arc::new(EncryptedTable::new(
-                store.scratch_disk(),
-                scratch_limit(state.limits.max_mutation_receipt_bytes)?,
-            )?),
+            Some(Source::Staged(table)) => PreparedRows::Staged(table.clone()),
+            None if self.head.count == 0 => PreparedRows::Empty,
             _ => anyhow::bail!("namespace installation requires verified staged rows"),
         };
         let binding = NamespaceBinding {
@@ -601,7 +626,9 @@ impl Pending {
     pub(crate) fn head(&self) -> &MutationReceiptHead {
         &self.head
     }
-    pub(crate) fn persist(self) -> Result<View> {
+    /// Preserve immutable row/index pairs before selecting the returned view.
+    /// An exact replay may reuse this durable prefix after publication fails.
+    pub(crate) fn stage(self) -> Result<View> {
         if self.rows.is_empty() {
             return Ok(self.previous);
         }
@@ -649,14 +676,26 @@ impl Pending {
                     .all(|row| matches!(row.applied.origin, AppliedOrigin::Fixture)) =>
             {
                 for row in &self.rows {
-                    table.insert(&id_key(&row.key), &serde_json::to_vec(row)?)?;
-                    table.insert(
-                        &ordinal_key(row.ordinal),
-                        &serde_json::to_vec(&Ordinal {
-                            key: row.key.clone(),
-                            sha256: row.sha256()?,
-                        })?,
-                    )?;
+                    let id = id_key(&row.key);
+                    let ordinal = ordinal_key(row.ordinal);
+                    let bytes = serde_json::to_vec(row)?;
+                    let index = serde_json::to_vec(&Ordinal {
+                        key: row.key.clone(),
+                        sha256: row.sha256()?,
+                    })?;
+                    match (source.get(&id)?, source.get(&ordinal)?) {
+                        (Some(old_row), Some(old_index)) => ensure!(
+                            old_row == bytes && old_index == index,
+                            "future receipt row differs from exact original command replay"
+                        ),
+                        (None, None) => {
+                            let mut pair = table.begin_batch()?;
+                            pair.insert(&id, &bytes)?;
+                            pair.insert(&ordinal, &index)?;
+                            pair.commit()?;
+                        }
+                        _ => anyhow::bail!("partially published receipt row/index"),
+                    }
                 }
             }
             Source::Staged(_) => {
@@ -686,6 +725,7 @@ impl View {
         let table = Arc::new(EncryptedTable::new(
             disk,
             scratch_limit(state.limits.max_mutation_receipt_bytes)?,
+            disk.native_cache_config(),
         )?);
         Ok(Self {
             source: Some(Arc::new(Source::Staged(table))),

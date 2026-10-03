@@ -1,0 +1,71 @@
+Command: cargo test -p kasumi-server --all-features --doc --locked --offline --config profile.test.package.kasumi-kv.opt-level=3 --config profile.test.package.sha2.opt-level=3 native_data_service -- --test-threads=1
+CARGO_TARGET_DIR=target/disk-backed-cache
+warning: variant `Mutation` is never constructed
+  --> crates/kasumi-engine/src/security_audit_jobs.rs:26:5
+   |
+24 | enum JobEffect {
+   |      --------- variant in this enum
+25 |     Read,
+26 |     Mutation(&'static str),
+   |     ^^^^^^^^
+   |
+   = note: `JobEffect` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: struct `ReadPause` is never constructed
+  --> crates/kasumi-engine/src/security_audit_jobs.rs:57:19
+   |
+57 | pub(super) struct ReadPause {
+   |                   ^^^^^^^^^
+
+warning: method `run_mutation` is never used
+   --> crates/kasumi-engine/src/security_audit_jobs.rs:120:25
+    |
+ 62 | impl SecurityAudit {
+    | ------------------ method in this implementation
+...
+120 |     pub(super) async fn run_mutation<T, F, R>(&self, component: &'static str, run: R) -> Result<T>
+    |                         ^^^^^^^^^^^^
+
+warning: method `matches_response_id` is never used
+   --> vendor/rmcp-3.2.0/src/model.rs:251:19
+    |
+236 | impl NumberOrString {
+    | ------------------- method in this implementation
+...
+251 |     pub(crate) fn matches_response_id(&self, response_id: &Self) -> bool {
+    |                   ^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `set_client_request_metadata` is never used
+    --> vendor/rmcp-3.2.0/src/service.rs:1032:19
+     |
+ 806 | impl<R: ServiceRole> Peer<R> {
+     | ---------------------------- method in this implementation
+...
+1032 |     pub(crate) fn set_client_request_metadata(&self, metadata: ClientRequestMetadata) {
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: method `is_authorization_required` is never used
+   --> vendor/rmcp-3.2.0/src/transport.rs:275:19
+    |
+249 | impl DynamicTransportError {
+    | -------------------------- method in this implementation
+...
+275 |     pub(crate) fn is_authorization_required(&self) -> bool {
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: `kasumi-engine` (lib) generated 3 warnings
+warning: `rmcp` (lib) generated 3 warnings
+   Compiling kasumi-server v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-server)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2m 56s
+   Doc-tests kasumi_server
+
+running 2 tests
+test crates/kasumi-server/src/rpc.rs - rpc::native_data_service (line 140) - compile fail ... ok
+test crates/kasumi-server/src/rpc.rs - rpc::native_data_service (line 146) - compile fail ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.85s
+
+Runner: 182.35s; exit=0; matching=698/698

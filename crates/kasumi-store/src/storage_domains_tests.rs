@@ -315,7 +315,7 @@ async fn every_interrupted_domain_transaction_recovers_whole_old_or_whole_new() 
     let fixture_scratch =
         crate::ScratchDisk::fixture(scratch_directory.path(), fixture_memory.clone());
     let original = FaultBackend::new();
-    let stores = initialize_pair_fixture(NodeStore::open_with_backend(
+    let stores = initialize_pair_fixture(NodeStore::create_with_backend(
         original.clone(),
         crate::test_utils::storage_admission(),
         fixture_scratch.clone(),
@@ -377,7 +377,7 @@ async fn post_commit_domain_expiry_reports_uncertainty_and_retains_complete_writ
     let fixture_scratch =
         crate::ScratchDisk::fixture(scratch_directory.path(), fixture_memory.clone());
     let disk = FaultBackend::new();
-    let node = NodeStore::open_with_backend(
+    let node = NodeStore::create_with_backend(
         disk.clone(),
         crate::test_utils::storage_admission(),
         fixture_scratch.clone(),
@@ -405,6 +405,81 @@ async fn post_commit_domain_expiry_reports_uncertainty_and_retains_complete_writ
             &[WriteOp::put("control", b"entry", b"new")],
         )
         .unwrap_err();
+    assert!(error.to_string().contains("outcome unknown"));
+    assert!(stores.application().check_access().is_err());
+    let recovered = disk.crash();
+    drop(stores);
+    let reopened = existing_pair_fixture(NodeStore::open_with_backend(
+        recovered,
+        crate::test_utils::storage_admission(),
+        fixture_scratch.clone(),
+    )?)
+    .await?;
+    assert_eq!(
+        reopened.application().get("data", b"entry")?.unwrap(),
+        b"new"
+    );
+    assert_eq!(
+        reopened
+            .custody()
+            .store()
+            .get("control", b"entry")?
+            .unwrap(),
+        b"new"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn typed_domain_expiry_is_minted_only_after_actual_complete_commit() -> Result<()> {
+    let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = crate::test_utils::private_tempdir().unwrap();
+    let fixture_scratch =
+        crate::ScratchDisk::fixture(scratch_directory.path(), fixture_memory.clone());
+    let disk = FaultBackend::new();
+    let node = NodeStore::create_with_backend(
+        disk.clone(),
+        crate::test_utils::storage_admission(),
+        fixture_scratch.clone(),
+    )?;
+    let clock = Arc::new(ManualClock::new());
+    let app = TenantStore::initialize_catalog_fixture_with_clock(
+        node.clone(),
+        "tenant".into(),
+        Arc::new(LocalKeyProvider::new([11; 32])),
+        clock.clone(),
+    )
+    .await?;
+    let custody = TenantStore::initialize_catalog_fixture_with_clock(
+        node,
+        CustodyStore::catalog_name("tenant"),
+        Arc::new(LocalKeyProvider::new([12; 32])),
+        Arc::new(ManualClock::new()),
+    )
+    .await?;
+    let stores = TenantStorageSet::install(app, custody)?;
+    assert!(
+        stores
+            .write_batch_replacing_outcome(
+                &[WriteOp::put("", b"entry", b"invalid")],
+                &[],
+                &[],
+                &[],
+            )
+            .is_err(),
+        "precommit rejection must remain an unproven original error"
+    );
+    disk.advance_clock_on_next_sync(clock, MAX_KEY_LEASE);
+    let outcome = stores.write_batch_replacing_outcome(
+        &[WriteOp::put("data", b"entry", b"new")],
+        &[WriteOp::put("control", b"entry", b"new")],
+        &[],
+        &[],
+    )?;
+    let DomainPublicationOutcome::CommittedAccessDenied(denied) = outcome else {
+        panic!("post-commit expiry must not authorize acknowledgment");
+    };
+    let error = denied.into_error();
     assert!(error.to_string().contains("outcome unknown"));
     assert!(stores.application().check_access().is_err());
     let recovered = disk.crash();
@@ -952,29 +1027,78 @@ async fn initial_bootstrap_identity_is_atomic_write_once_with_exact_retry() -> R
         Some(b"\"tenant/group\"".to_vec())
     );
 
-    let replacement = EncryptedTable::new(&scratch, 8 << 20)?;
+    for namespace in ["engine.bootstrap", DEPLOYMENT_NS, "raft.meta"] {
+        assert!(
+            app.replace_namespaces(&[NamespaceReplacement::empty(namespace)], &[])
+                .is_err()
+        );
+        assert!(
+            custody
+                .replace_namespaces(&[NamespaceReplacement::empty(namespace)], &[])
+                .is_err()
+        );
+        assert!(
+            stores
+                .write_batch_replacing(&[], &[], &[NamespaceReplacement::empty(namespace)], &[])
+                .is_err()
+        );
+        assert!(
+            stores
+                .write_batch_replacing(&[], &[], &[], &[NamespaceReplacement::empty(namespace)])
+                .is_err()
+        );
+    }
+    let replacement = EncryptedTable::new(&scratch, 8 << 20, scratch.native_cache_config())?;
     custody.write_batch(&[WriteOp::put("raft.meta", b"mutable", b"old")])?;
     assert!(
-        app.replace_namespaces(&[("engine.bootstrap", &replacement)], &[])
-            .is_err()
+        app.replace_namespaces(
+            &[NamespaceReplacement::from_table(
+                "engine.bootstrap",
+                &replacement
+            )],
+            &[]
+        )
+        .is_err()
     );
     assert!(
-        app.replace_namespaces(&[(DEPLOYMENT_NS, &replacement)], &[])
-            .is_err()
+        app.replace_namespaces(
+            &[NamespaceReplacement::from_table(
+                DEPLOYMENT_NS,
+                &replacement
+            )],
+            &[]
+        )
+        .is_err()
     );
     assert!(
         custody
-            .replace_namespaces(&[("raft.meta", &replacement)], &[])
+            .replace_namespaces(
+                &[NamespaceReplacement::from_table("raft.meta", &replacement)],
+                &[]
+            )
             .is_err()
     );
     assert!(
         stores
-            .write_batch_replacing(&[], &[], &[("engine.bootstrap", &replacement)], &[])
+            .write_batch_replacing(
+                &[],
+                &[],
+                &[NamespaceReplacement::from_table(
+                    "engine.bootstrap",
+                    &replacement
+                )],
+                &[]
+            )
             .is_err()
     );
     assert!(
         stores
-            .write_batch_replacing(&[], &[], &[], &[("raft.meta", &replacement)])
+            .write_batch_replacing(
+                &[],
+                &[],
+                &[],
+                &[NamespaceReplacement::from_table("raft.meta", &replacement)]
+            )
             .is_err()
     );
     assert_eq!(
@@ -990,21 +1114,36 @@ async fn initial_bootstrap_identity_is_atomic_write_once_with_exact_retry() -> R
         Some(b"digest-a".to_vec())
     );
     assert_eq!(custody.get("raft.meta", b"mutable")?, Some(b"old".to_vec()));
-    let forbidden_manifest = EncryptedTable::new(&scratch, 8 << 20)?;
+    let forbidden_manifest = EncryptedTable::new(&scratch, 8 << 20, scratch.native_cache_config())?;
     forbidden_manifest.insert(b"manifest", b"manifest-b")?;
     assert!(
-        app.replace_namespaces(&[("engine.bootstrap", &forbidden_manifest)], &[])
-            .is_err()
+        app.replace_namespaces(
+            &[NamespaceReplacement::from_table(
+                "engine.bootstrap",
+                &forbidden_manifest
+            )],
+            &[]
+        )
+        .is_err()
     );
-    let forbidden_digest = EncryptedTable::new(&scratch, 8 << 20)?;
+    let forbidden_digest = EncryptedTable::new(&scratch, 8 << 20, scratch.native_cache_config())?;
     forbidden_digest.insert(b"application_bootstrap_sha256", b"digest-b")?;
     assert!(
         custody
-            .replace_namespaces(&[("raft.meta", &forbidden_digest)], &[])
+            .replace_namespaces(
+                &[NamespaceReplacement::from_table(
+                    "raft.meta",
+                    &forbidden_digest
+                )],
+                &[]
+            )
             .is_err()
     );
     custody.write_batch(&[WriteOp::put("ordinary", b"replaceable", b"old")])?;
-    custody.replace_namespaces(&[("ordinary", &replacement)], &[])?;
+    custody.replace_namespaces(
+        &[NamespaceReplacement::from_table("ordinary", &replacement)],
+        &[],
+    )?;
     assert!(custody.get("ordinary", b"replaceable")?.is_none());
     inject_initial_identity_rows(&stores, &[], &[WriteOp::delete("raft.meta", b"group")])?;
     assert!(
@@ -1185,5 +1324,91 @@ async fn paired_deployment_read_rejects_oversized_envelope_before_key_id_parse()
     drop(table);
     drop(tx);
     stores.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn empty_namespace_replacements_roll_back_both_domains_when_real_source_is_closed()
+-> Result<()> {
+    let memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = crate::test_utils::private_tempdir()?;
+    let scratch = ScratchDisk::fixture(scratch_directory.path(), memory.clone());
+    let directory = crate::test_utils::private_tempdir()?;
+    let node = NodeStore::create_new_fixture(
+        directory.path().join("namespace-rollback.kv"),
+        crate::test_utils::NODE_STORE_ID,
+        memory,
+        scratch.clone(),
+    )?;
+    let stores = initialize_pair_fixture(node).await?;
+    let app = stores.application();
+    let custody = stores.custody().store();
+    stores.write_batch(
+        &[
+            WriteOp::put("data", b"old", b"application"),
+            WriteOp::put("meta", b"position", b"old"),
+        ],
+        &[
+            WriteOp::put("data", b"old", b"custody"),
+            WriteOp::put("meta", b"position", b"old"),
+        ],
+    )?;
+    let pinned_app = app.read_view()?;
+    let pinned_custody = custody.read_view()?;
+    let closed = EncryptedTable::new(&scratch, 8 << 20, scratch.native_cache_config())?;
+    closed.insert(b"new", b"unpublished")?;
+    closed.close().unwrap();
+    // App deletion and metadata are already staged when the custody source's
+    // real native read fails. No facade-level injected error skips this path.
+    let error = stores
+        .write_batch_replacing(
+            &[WriteOp::put("meta", b"position", b"attempted")],
+            &[WriteOp::put("meta", b"position", b"attempted")],
+            &[NamespaceReplacement::empty("data")],
+            &[NamespaceReplacement::from_table("data", &closed)],
+        )
+        .unwrap_err();
+    assert!(
+        matches!(
+            error.downcast_ref::<kasumi_kv::TransactionError>(),
+            Some(kasumi_kv::TransactionError(
+                kasumi_kv::StorageError::DatabaseClosed
+            ))
+        ),
+        "replacement must reach the closed native source: {error:#}"
+    );
+    assert_eq!(app.get("data", b"old")?, Some(b"application".to_vec()));
+    assert_eq!(custody.get("data", b"old")?, Some(b"custody".to_vec()));
+    assert!(custody.get("data", b"new")?.is_none());
+    assert_eq!(app.get("meta", b"position")?, Some(b"old".to_vec()));
+    assert_eq!(custody.get("meta", b"position")?, Some(b"old".to_vec()));
+
+    // The same stores can then commit both empty namespaces and their bindings.
+    stores.write_batch_replacing(
+        &[WriteOp::put("meta", b"position", b"new")],
+        &[WriteOp::put("meta", b"position", b"new")],
+        &[NamespaceReplacement::empty("data")],
+        &[NamespaceReplacement::empty("data")],
+    )?;
+    assert!(app.get("data", b"old")?.is_none());
+    assert!(custody.get("data", b"old")?.is_none());
+    assert_eq!(app.get("meta", b"position")?, Some(b"new".to_vec()));
+    assert_eq!(custody.get("meta", b"position")?, Some(b"new".to_vec()));
+    assert_eq!(
+        pinned_app.get("data", b"old", 1024)?,
+        Some(b"application".to_vec())
+    );
+    assert_eq!(
+        pinned_custody.get("data", b"old", 1024)?,
+        Some(b"custody".to_vec())
+    );
+    assert_eq!(
+        pinned_app.get("meta", b"position", 1024)?,
+        Some(b"old".to_vec())
+    );
+    assert_eq!(
+        pinned_custody.get("meta", b"position", 1024)?,
+        Some(b"old".to_vec())
+    );
     Ok(())
 }

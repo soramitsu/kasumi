@@ -1,0 +1,31 @@
+   Compiling kasumi-kv v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-kv)
+   Compiling kasumi-store v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-store)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 48.20s
+     Running unittests src/lib.rs (target/disk-backed-cache/debug/deps/kasumi_store-9e76b1ecb60de376)
+
+running 22 tests
+test node_file::segment_group::tests::crash_child ... ignored, subprocess helper; invoked with an owned temporary path
+test node_file::segment_group::tests::names_have_exactly_the_kv_group_spelling ... ok
+test node_file::segment_group::directory_arena_tests::directory_names_are_canonical_and_kind_bound ... ok
+test node_file::segment_group::tests::ready_publication_rewrites_only_the_first_sector ... ok
+test node_file::segment_group::tests::journal_owned_empty_root_is_initialized_only_when_exact ... ok
+test node_file::segment_group::tests::failed_descriptor_close_keeps_the_exact_owner_and_blocks_the_census ... ok
+test node_file::segment_group::tests::native_entry_visitor_does_not_replay_callbacks_after_a_namespace_race ... ok
+test node_file::segment_group::tests::admitted_growth_pins_the_newest_segment_and_capacity_denial_has_no_effect ... ok
+test node_file::segment_group::tests::foreign_runtime_entry_fences_the_listing ... ok
+test node_file::segment_group::tests::offsets_follow_the_envelope_and_enforce_the_group_contract ... ok
+test node_file::segment_group::tests::failed_parent_sync_and_unconfirmed_unlink_fence_and_keep_every_charge ... ok
+test node_file::segment_group::tests::interrupted_create_reopens_as_an_empty_file_finished_by_the_next_mutation ... ok
+test node_file::segment_group::tests::created_group_reopens_only_after_verifying_every_envelope ... ok
+test node_file::segment_group::tests::shared_native_backend_serves_every_file_kind_and_root_slot ... ok
+test node_file::segment_group::tests::unlink_confirmed_before_the_garbage_update_is_idempotent_after_restart ... ok
+test node_file::segment_group::directory_arena_tests::directory_arenas_reopen_through_the_bounded_descriptor_cache ... ok
+test node_file::segment_group::tests::native_entry_visitor_stops_once_and_retires_its_cursor_without_fencing ... ok
+test node_file::segment_group::tests::cleanup_claims_only_recognized_groups_and_resumes_after_an_interrupted_delete ... ok
+test node_file::segment_group::tests::census_equals_extents_after_crash_child_restart ... ok
+test node_file::segment_group::tests::previous_formats_and_foreign_files_are_rejected_before_any_mutation ... ok
+test node_file::segment_group::tests::registered_group_is_one_census_owner_until_its_failed_owners_are_accepted ... ok
+test node_file::segment_group::tests::more_than_768_segments_reopen_and_evict_within_the_descriptor_budget ... ok
+
+test result: ok. 21 passed; 0 failed; 1 ignored; 0 measured; 558 filtered out; finished in 45.58s
+

@@ -103,8 +103,9 @@ async fn physical_reopen(
     let node = NodeStore::open_existing(
         &config.database_path,
         config.database_id,
-        disk,
+        disk.clone(),
         storage.open_scratch(&config.scratch_disk)?,
+        disk.native_storage_config(),
     )?;
     node.shutdown().await?;
     drop(node);
@@ -120,8 +121,9 @@ fn physical_reopen_rejected(
         NodeStore::open_existing(
             &config.database_path,
             config.database_id,
-            disk,
+            disk.clone(),
             storage.open_scratch(&config.scratch_disk).unwrap(),
+            disk.native_storage_config()
         )
         .is_err()
     );
@@ -225,6 +227,7 @@ async fn cancelled_initialization_impl() -> Result<()> {
         &directory,
         "documents",
         kasumi_store::DirectoryPolicy::fixture(),
+        kasumi_store::FileAllocationPolicy::fixture(),
         StandaloneNetwork::fixture(),
         storage.clone(),
     ));
@@ -349,6 +352,7 @@ async fn early_initialization_audit_error_impl() -> Result<()> {
             &directory,
             "documents",
             kasumi_store::DirectoryPolicy::fixture(),
+            kasumi_store::FileAllocationPolicy::fixture(),
             StandaloneNetwork::fixture(),
             storage.clone()
         )
@@ -363,12 +367,19 @@ async fn early_initialization_audit_error_impl() -> Result<()> {
         16 << 10,
     )?)?;
     let (persistent, scratch) = crate::runtime_storage_fixtures::standalone_disks(&directory)?;
-    let node = NodeStore::open_existing(
-        &prepared.database_path,
-        prepared.database_id,
-        storage.open_persistent(&persistent)?,
-        storage.open_scratch(&scratch)?,
-    )?;
+    let node = {
+        let native_path = &prepared.database_path;
+        let native_id = prepared.database_id;
+        let native_disk = storage.open_persistent(&persistent)?;
+        let native_scratch_disk = storage.open_scratch(&scratch)?;
+        NodeStore::open_existing(
+            native_path,
+            native_id,
+            native_disk.clone(),
+            native_scratch_disk,
+            native_disk.native_storage_config(),
+        )
+    }?;
     node.shutdown().await?;
     drop(node);
     Ok(())

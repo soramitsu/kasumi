@@ -1,0 +1,40 @@
+{
+  "created_utc": "2026-10-03T05:32:11.659378+00:00",
+  "observed_tests": [
+    {
+      "failed": 0,
+      "passed": 251,
+      "path": "upstream-library.log",
+      "runner_seconds": 1.24,
+      "sha256": "ef265dec68f270285ab8bf5608e02fd47b7bcb0a85ab82c28f4d4682f9fad66d",
+      "source_pins": "upstream-library-selected.sha256",
+      "source_pins_sha256": "957f7567a78e5239f3d14624fb0e09a48f20fc00f527b60c9addaa0df11c169c",
+      "stable_source_pins": 1757,
+      "test_seconds": 1.02
+    }
+  ],
+  "predecessor": {
+    "inventory_path": "docs/evidence/openraft-atomic-initial-entry-review-20260927/source-inventory.json",
+    "inventory_sha256": "6c0825d9d08e442f1a867206012ee65a29e8ea94d0422720d271062ed3116b24",
+    "kind": "openraft-checkpoint",
+    "path": "docs/evidence/openraft-atomic-initial-entry-review-20260927/custody-checkpoint.json",
+    "sha256": "b71c4bb1941037b9ff1c473e49ea49de7db9b84b62d416750d9d4873183a6b6b"
+  },
+  "qualification": "reviewed-source-and-scoped-development-regressions-only",
+  "release_qualified": false,
+  "remaining": [
+    "complete frozen upstream feature/platform cohort",
+    "all Kasumi final-source gates",
+    "actual OS-process crash matrix",
+    "nine-process HA acceptance",
+    "24-hour soak"
+  ],
+  "reviewed_added_files": 11,
+  "reviewed_delta_sha256": "99629af5f23e9b74bdf997cc6124d598e00b48a44d651b5c1c6f686103ddd6ce",
+  "reviewed_existing_diff_sha256": "2f72ac62535fded7085f4652dcc7749e2a0a2d846982f4c13b7f3f0cf41287dd",
+  "reviewed_existing_files": 42,
+  "source_bytes": 2835714,
+  "source_files": 611,
+  "source_inventory": "source-inventory.json",
+  "source_inventory_sha256": "e03be08505aaa7ec783511a0f2fa5fdd6c65664f87ef15ac134e02107e04b724"
+}

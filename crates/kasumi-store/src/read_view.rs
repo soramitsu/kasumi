@@ -1,5 +1,37 @@
 //! Read transactions pin immutable encrypted pages, never a tenant's plaintext.
 use super::*;
+mod point_retirement;
+pub use point_retirement::PointRetirementFailure;
+pub(crate) use point_retirement::retire_point_backing;
+mod prepared_points;
+pub use prepared_points::{
+    PreparedTenantReadPoints, PreparedTenantReadSource, PreparedTenantReadSourceLoan,
+    PreparedTenantReadWorkspace,
+};
+/// A complete namespace replacement, published atomically with binding metadata.
+///
+/// An explicit empty replacement removes every current record in the namespace.
+/// Omitting a namespace from the replacement list leaves its records unchanged.
+#[derive(Clone, Copy)]
+pub struct NamespaceReplacement<'a> {
+    namespace: &'a str,
+    source: Option<&'a EncryptedTable>,
+}
+impl<'a> NamespaceReplacement<'a> {
+    pub fn empty(namespace: &'a str) -> Self {
+        Self {
+            namespace,
+            source: None,
+        }
+    }
+    pub fn from_table(namespace: &'a str, source: &'a EncryptedTable) -> Self {
+        Self {
+            namespace,
+            source: Some(source),
+        }
+    }
+}
+
 /// A stable database root with access rechecked for every decrypted record.
 pub struct TenantReadView {
     store: Arc<TenantStore>,
@@ -18,6 +50,62 @@ impl ViewTransaction {
         }
         Ok(Self::Registered(node.begin_registered_read()?))
     }
+    pub(crate) fn prepare_point_read(
+        &self,
+        max_value_bytes: usize,
+    ) -> Result<kasumi_kv::PreparedPointRead> {
+        match self {
+            Self::Registered(reader) => reader
+                .prepare_point_read(max_value_bytes)
+                .map_err(|error| self.preserve_report(error.into())),
+            #[cfg(any(test, feature = "test-utils"))]
+            Self::Fixture(transaction) => transaction
+                .prepare_point_read(max_value_bytes)
+                .map_err(Into::into),
+        }
+    }
+
+    pub(crate) fn record_length_prepared(
+        &self,
+        key: &[u8],
+        workspace: &mut kasumi_kv::PreparedPointRead,
+    ) -> Result<Option<usize>> {
+        match self {
+            Self::Registered(reader) => reader
+                .record_length_prepared(key, workspace)
+                .map_err(|error| self.preserve_report(error.into())),
+            #[cfg(any(test, feature = "test-utils"))]
+            Self::Fixture(transaction) => transaction
+                .point_length_prepared(RECORDS.name(), key, workspace)
+                .map_err(Into::into),
+        }
+    }
+
+    pub(crate) fn record_bytes_prepared<'workspace>(
+        &self,
+        key: &[u8],
+        max_value_bytes: usize,
+        workspace: &'workspace mut kasumi_kv::PreparedPointRead,
+    ) -> Result<Option<&'workspace [u8]>> {
+        match self {
+            Self::Registered(reader) => reader
+                .record_bytes_prepared(key, max_value_bytes, workspace)
+                .map_err(|error| self.preserve_report(error.into())),
+            #[cfg(any(test, feature = "test-utils"))]
+            Self::Fixture(transaction) => transaction
+                .get_bytes_prepared(RECORDS.name(), key, max_value_bytes, workspace)
+                .map_err(Into::into),
+        }
+    }
+
+    pub(crate) fn fork(&self, node: &NodeStore) -> Result<Self> {
+        match self {
+            Self::Registered(reader) => node.fork_registered_read(reader).map(Self::Registered),
+            #[cfg(any(test, feature = "test-utils"))]
+            Self::Fixture(transaction) => transaction.fork().map(Self::Fixture).map_err(Into::into),
+        }
+    }
+
     pub(crate) fn close(self, node: &NodeStore) -> Result<()> {
         match self {
             Self::Registered(reader) => node.settle_registered_read(reader, Ok(())),
@@ -72,7 +160,7 @@ impl TenantStore {
     /// the blocking operation through actual completion.
     pub fn replace_namespaces(
         &self,
-        replacements: &[(&str, &EncryptedTable)],
+        replacements: &[NamespaceReplacement<'_>],
         operations: &[WriteOp],
     ) -> Result<()> {
         validate_replacements(replacements, operations)?;
@@ -124,6 +212,31 @@ impl TenantReadView {
             .expect("live view transaction")
             .close(&self.store.node)
     }
+    /// Independently retain this exact selected root while rechecking current
+    /// tenant access. The child has its own registered failure/close state.
+    pub fn fork(&self) -> Result<Self> {
+        let _access = AccessGuard(&self.store);
+        self.store.check_access()?;
+        let transaction = self
+            .transaction
+            .as_ref()
+            .expect("live view transaction")
+            .fork(&self.store.node)?;
+        if let Err(error) = self.store.check_access() {
+            return match transaction {
+                ViewTransaction::Registered(reader) => {
+                    self.store.node.settle_registered_read(reader, Err(error))
+                }
+                #[cfg(any(test, feature = "test-utils"))]
+                ViewTransaction::Fixture(_) => Err(error),
+            };
+        }
+        Ok(Self {
+            store: self.store.clone(),
+            transaction: Some(transaction),
+        })
+    }
+
     pub fn registered_reader_id(&self) -> Option<StorageOwnerId> {
         self.transaction
             .as_ref()
@@ -154,77 +267,170 @@ impl TenantReadView {
         max_value_bytes: usize,
         mut visitor: impl FnMut(&[u8], &[u8]) -> Result<()>,
     ) -> Result<()> {
-        ensure!(
-            max_value_bytes <= MAX_RECORD,
-            "view record bound exceeds store limit"
-        );
-        let store = &self.store;
-        let _access = AccessGuard(store);
-        validate_record(namespace, &[], 0)?;
-        let prefix = {
-            let state = store.state.read();
-            store.require_access(&state)?;
-            namespace_prefix(
-                &store.tenant,
-                namespace,
-                state.keys.get(INDEX_KEY).context("index key missing")?,
-            )
-        };
-        let mut visit_one = |key: &[u8], envelope: &[u8]| -> Result<()> {
-            let record = {
-                let state = store.state.read();
-                store.require_access(&state)?;
-                check_encrypted_record_budget(envelope, namespace.len(), 4096, max_value_bytes)?;
-                let record = store.decode_record(key, envelope, &state)?;
-                ensure!(
-                    record.namespace == namespace && record.value.len() <= max_value_bytes,
-                    "view record namespace or size differs"
-                );
-                record
-            };
-            visitor(&record.key, &record.value)?;
-            store.check_access()?;
-            Ok(())
-        };
-        match self.transaction.as_ref().expect("live view transaction") {
-            ViewTransaction::Registered(reader) => {
-                let state = store.state.read();
-                let encrypted_limit =
-                    encrypted_record_limit(namespace.len(), 4096, max_value_bytes, &state)?;
-                drop(state);
-                let mut cursor: Option<AdmittedReadBytes> = None;
-                while let Some(row) = reader
-                    .next_record(
-                        &prefix,
-                        cursor.as_ref().map(AdmittedReadBytes::as_bytes),
-                        encrypted_limit,
-                    )
-                    .map_err(|error| {
-                        self.transaction
-                            .as_ref()
-                            .expect("live view transaction")
-                            .preserve_report(error.into())
-                    })?
-                {
-                    visit_one(row.key(), row.value())?;
-                    cursor = Some(row.into_key());
-                }
-            }
-            #[cfg(any(test, feature = "test-utils"))]
-            ViewTransaction::Fixture(tx) => {
-                let table = tx.open_table(RECORDS)?;
-                for entry in table.range(prefix.as_slice()..)? {
-                    let (key, value) = entry?;
-                    if !key.value().starts_with(&prefix) {
-                        break;
-                    }
-                    visit_one(key.value(), value.value())?;
-                }
-            }
-        }
-        store.check_access()
+        visit_at(
+            &self.store,
+            self.transaction.as_ref().expect("live view transaction"),
+            namespace,
+            max_value_bytes,
+            &mut (),
+            |_, _| Ok(()),
+            |_, key, value| visitor(key, value),
+        )
     }
 }
+
+// One canonical authenticated iterator for single and paired ordinary views.
+// The caller's real workspace remains borrowed through pre-decode admission and
+// visitation; this never creates a source pool, reader, or parallel sample.
+pub(crate) fn visit_at<W>(
+    store: &TenantStore,
+    transaction: &ViewTransaction,
+    namespace: &str,
+    max_value_bytes: usize,
+    workspace: &mut W,
+    mut prepare: impl FnMut(&mut W, &[u8]) -> Result<()>,
+    mut visitor: impl FnMut(&mut W, &[u8], &[u8]) -> Result<()>,
+) -> Result<()> {
+    ensure!(
+        max_value_bytes <= MAX_RECORD,
+        "view record bound exceeds store limit"
+    );
+    let _access = AccessGuard(store);
+    validate_record(namespace, &[], 0)?;
+    let prefix = {
+        let state = store.state.read();
+        store.require_access(&state)?;
+        namespace_prefix(
+            &store.tenant,
+            namespace,
+            state.keys.get(INDEX_KEY).context("index key missing")?,
+        )
+    };
+    let mut visit_one = |key: &[u8], envelope: &[u8]| -> Result<()> {
+        {
+            let state = store.state.read();
+            store.require_access(&state)?;
+            check_encrypted_record_budget(envelope, namespace.len(), 4096, max_value_bytes)?;
+        }
+        prepare(workspace, envelope)?;
+        let record = {
+            let state = store.state.read();
+            store.require_access(&state)?;
+            check_encrypted_record_budget(envelope, namespace.len(), 4096, max_value_bytes)?;
+            let record = store.decode_record(key, envelope, &state)?;
+            ensure!(
+                record.namespace == namespace && record.value.len() <= max_value_bytes,
+                "view record namespace or size differs"
+            );
+            record
+        };
+        visitor(workspace, &record.key, &record.value)?;
+        store.check_access()?;
+        Ok(())
+    };
+    match transaction {
+        ViewTransaction::Registered(reader) => {
+            let state = store.state.read();
+            let encrypted_limit =
+                encrypted_record_limit(namespace.len(), 4096, max_value_bytes, &state)?;
+            drop(state);
+            let mut cursor: Option<AdmittedReadBytes> = None;
+            while let Some(row) = reader
+                .next_record(
+                    &prefix,
+                    cursor.as_ref().map(AdmittedReadBytes::as_bytes),
+                    encrypted_limit,
+                )
+                .map_err(|error| transaction.preserve_report(error.into()))?
+            {
+                visit_one(row.key(), row.value())?;
+                cursor = Some(row.into_key());
+            }
+        }
+        #[cfg(any(test, feature = "test-utils"))]
+        ViewTransaction::Fixture(tx) => {
+            let table = tx.open_table(RECORDS)?;
+            for entry in table.range(prefix.as_slice()..)? {
+                let (key, value) = entry?;
+                if !key.value().starts_with(&prefix) {
+                    break;
+                }
+                visit_one(key.value(), value.value())?;
+            }
+        }
+    }
+    store.check_access()
+}
+
+/// Conservative plaintext workspace for one bounded `TenantReadView::get`,
+/// `TenantStorageReadView::application_get` or `custody_get` call.
+///
+/// All lengths are bytes; tenant means the actual encrypted domain catalog
+/// tenant (including the custody prefix for custody reads). The caller must fund
+/// this quote in its actual operation before the read, separately from native
+/// encrypted output/cache/census charges.
+/// It covers the physical-key/AAD construction, AEAD copy, decoded fields and the
+/// returned value's backing until that value is destroyed. It neither acquires
+/// admission nor attaches a lease to the returned Vec. Caller scratch, retained
+/// inputs, decoded JSON/DTOs, diagnostic backtraces, arbitrary provider/error
+/// payloads and native memory are not included. Access, authorization and the
+/// read's value bound still apply.
+///
+/// The quote uses checked power-of-two backing envelopes plus the existing Store
+/// allocation policy allowance for every bounded allocation/reallocation request.
+/// This is a conservative supported-allocator policy, not an exact RSS bound.
+/// Keep the real decode allocation census in sync with changes to this path.
+pub fn plaintext_get_workspace_bytes(
+    tenant_bytes: usize,
+    namespace_bytes: usize,
+    key_bytes: usize,
+    max_value_bytes: usize,
+) -> std::io::Result<u64> {
+    use crate::disk_memory::{ALLOCATION_ALLOWANCE, add, mul, overflow};
+    if !(1..=1024).contains(&tenant_bytes)
+        || !(1..=1024).contains(&namespace_bytes)
+        || key_bytes > 4096
+        || max_value_bytes > MAX_RECORD
+    {
+        return Err(overflow());
+    }
+    let length = |value: usize| u64::try_from(value).map_err(|_| overflow());
+    let rounded = |value: u64| value.checked_next_power_of_two().ok_or_else(overflow);
+    // check_encrypted_record_budget admits at most P bytes of framed plaintext.
+    // Untrusted authenticated partitions may put nearly all P in namespace/key;
+    // the expected name lengths alone cannot bound their owned decoded copies.
+    let plaintext = add(
+        add(
+            add(length(max_value_bytes)?, length(namespace_bytes)?)?,
+            length(key_bytes)?,
+        )?,
+        12,
+    )?;
+    let aad = add(
+        add(b"kasumi.encrypted-record.v1".len() as u64, 8)?,
+        add(length(tenant_bytes)?, 96)?,
+    )?;
+    // Each HMAC key Vec requests 32 + 64 + 128 bytes as it grows. AAD has at
+    // most four allocation requests and their total backing is below 4*A.
+    // These cumulative envelopes also cover old/new backing during reallocation.
+    let keys = mul(2, rounded(256)?)?;
+    let aad = rounded(mul(4, aad)?)?;
+    // Pinned aead 0.5.2 uses Vec::from(ciphertext[24..]), retaining the tag's
+    // 16 bytes of backing after successful in-place truncation.
+    let decrypted = rounded(add(plaintext, 16)?)?;
+    let decoded = mul(3, rounded(plaintext)?)?;
+    let backing = add(add(keys, aad)?, add(decrypted, decoded)?)?;
+    // Two three-request physical keys + four AAD requests + AEAD + three
+    // decoded fields = fourteen. Two more cover bounded local error wrapping.
+    // Diagnostic backtraces and original external errors/panics remain under
+    // their separate census owner; the quote does not bound diagnostic capture.
+    add(
+        backing,
+        mul(PLAINTEXT_GET_ALLOCATION_REQUESTS, ALLOCATION_ALLOWANCE)?,
+    )
+}
+
+const PLAINTEXT_GET_ALLOCATION_REQUESTS: u64 = 16;
 
 pub(crate) fn get_at(
     store: &TenantStore,
@@ -259,16 +465,16 @@ fn get_at_body(
         key,
         state.keys.get(INDEX_KEY).context("index key missing")?,
     );
-    let decode = |envelope: &[u8]| -> Result<Vec<u8>> {
-        check_encrypted_record_budget(envelope, namespace.len(), key.len(), max_value_bytes)?;
-        let mut record = store.decode_record(&disk_key, envelope, &state)?;
-        ensure!(
-            record.namespace == namespace
-                && record.key == key
-                && record.value.len() <= max_value_bytes,
-            "view record identity or size differs"
-        );
-        Ok(std::mem::take(&mut record.value))
+    let decode = |envelope: &[u8]| {
+        decode_get_record(
+            store,
+            &disk_key,
+            envelope,
+            &state,
+            namespace,
+            key,
+            max_value_bytes,
+        )
     };
     let result = match transaction {
         ViewTransaction::Registered(reader) => {
@@ -294,6 +500,30 @@ fn get_at_body(
     Ok(result)
 }
 
+// The same plaintext boundary is used by real reads and allocator qualification.
+// Native encrypted output is acquired separately before entering this function.
+fn decode_get_record(
+    store: &TenantStore,
+    disk_key: &[u8],
+    envelope: &[u8],
+    state: &KeyState,
+    namespace: &str,
+    key: &[u8],
+    max_value_bytes: usize,
+) -> Result<Vec<u8>> {
+    check_encrypted_record_budget(envelope, namespace.len(), key.len(), max_value_bytes)?;
+    let mut record = store.decode_record(disk_key, envelope, state)?;
+    ensure!(
+        record.namespace == namespace && record.key == key && record.value.len() <= max_value_bytes,
+        "view record identity or size differs"
+    );
+    Ok(std::mem::take(&mut record.value))
+}
+
+#[cfg(test)]
+#[path = "read_view_workspace_tests.rs"]
+mod workspace_tests;
+
 impl Drop for TenantReadView {
     fn drop(&mut self) {
         if let Some(transaction) = self.transaction.take() {
@@ -303,18 +533,19 @@ impl Drop for TenantReadView {
 }
 
 pub(crate) fn validate_replacements(
-    replacements: &[(&str, &EncryptedTable)],
+    replacements: &[NamespaceReplacement<'_>],
     operations: &[WriteOp],
 ) -> Result<()> {
     validate_batch(&[operations])?;
     let mut names = std::collections::BTreeSet::new();
-    for (namespace, _) in replacements {
+    for replacement in replacements {
+        let namespace = replacement.namespace;
         validate_record(namespace, &[], 0)?;
         ensure!(
             !is_initial_identity_namespace(namespace),
             "initial identity namespace cannot be replaced"
         );
-        ensure!(names.insert(*namespace), "duplicate replacement namespace");
+        ensure!(names.insert(namespace), "duplicate replacement namespace");
     }
     for operation in operations {
         let namespace = match operation {
@@ -331,9 +562,10 @@ pub(crate) fn validate_replacements(
 pub(crate) fn replace_domain(
     tx: &kasumi_kv::WriteTransaction,
     store: &TenantStore,
-    replacements: &[(&str, &EncryptedTable)],
+    replacements: &[NamespaceReplacement<'_>],
 ) -> Result<()> {
-    for (namespace, source) in replacements {
+    for replacement in replacements {
+        let namespace = replacement.namespace;
         ensure!(
             !is_initial_identity_namespace(namespace),
             "initial identity namespace cannot be replaced"
@@ -346,27 +578,36 @@ pub(crate) fn replace_domain(
         };
         {
             let mut table = tx.open_table(RECORDS)?;
-            table.retain_in(prefix.as_slice().., |key, _| !key.starts_with(&prefix))?;
+            table.retain_prefix(prefix.as_slice(), |_, _| false)?;
         }
-        let mut count = 0u64;
-        source.visit(|key, value| {
-            ensure!(
-                !is_write_once_identity(namespace, key),
-                "initial bootstrap identity cannot be replaced"
-            );
-            count = count
-                .checked_add(1)
-                .context("replacement record count overflow")?;
-            // Drop key-state guards after each bounded record so a large import
-            // does not block normal provider renewal for its entire duration.
-            let state = store.state.read();
-            store.require_access(&state)?;
-            let catalog = store.catalog.read();
-            let operation = WriteOp::put(*namespace, key, value);
-            validate_batch(&[std::slice::from_ref(&operation)])?;
-            write_domain(tx, store, &state, &catalog, &[operation])
-        })?;
+        if let Some(source) = replacement.source {
+            let mut count = 0u64;
+            source.visit(|key, value| {
+                ensure!(
+                    !is_write_once_identity(namespace, key),
+                    "initial bootstrap identity cannot be replaced"
+                );
+                count = count
+                    .checked_add(1)
+                    .context("replacement record count overflow")?;
+                // Drop key-state guards after each bounded record so a large import
+                // does not block normal provider renewal for its entire duration.
+                let state = store.state.read();
+                store.require_access(&state)?;
+                let catalog = store.catalog.read();
+                let operation = WriteOp::put(namespace, key, value);
+                validate_batch(&[std::slice::from_ref(&operation)])?;
+                write_domain(tx, store, &state, &catalog, &[operation])
+            })?;
+        }
         store.check_access()?;
     }
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "read_view_fork_tests.rs"]
+mod fork_tests;
+
+#[path = "read_view/source_publication.rs"]
+mod source_publication;

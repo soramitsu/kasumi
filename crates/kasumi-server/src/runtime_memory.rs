@@ -146,8 +146,12 @@ impl RuntimeStorage {
         roots: BTreeMap<String, PathBuf>,
     ) -> NodeDiskConfig {
         Self::fixture_disk_profile(
-            crate::persistent_disk::initial_config(roots, kasumi_store::DirectoryPolicy::fixture())
-                .unwrap(),
+            crate::persistent_disk::initial_config(
+                roots,
+                kasumi_store::DirectoryPolicy::fixture(),
+                kasumi_store::FileAllocationPolicy::fixture(),
+            )
+            .unwrap(),
         )
     }
     // Used only when generating a brand-new installation. Existing RuntimeConfig
@@ -156,8 +160,13 @@ impl RuntimeStorage {
         &self,
         roots: BTreeMap<String, PathBuf>,
         directory_policy: kasumi_store::DirectoryPolicy,
+        file_allocation_policy: kasumi_store::FileAllocationPolicy,
     ) -> Result<NodeDiskConfig> {
-        let config = crate::persistent_disk::initial_config(roots, directory_policy)?;
+        let config = crate::persistent_disk::initial_config(
+            roots,
+            directory_policy,
+            file_allocation_policy,
+        )?;
         Ok(match self.factory {
             DiskFactory::Installed => config,
             #[cfg(test)]

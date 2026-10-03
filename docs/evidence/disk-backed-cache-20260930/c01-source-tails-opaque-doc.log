@@ -1,0 +1,11 @@
+Command: cargo test -p kasumi-types --all-features --doc --locked --offline --config profile.test.package.kasumi-kv.opt-level=3 --config profile.test.package.sha2.opt-level=3 -- --test-threads=1 drain::DrainIssueRef
+CARGO_TARGET_DIR=target/disk-backed-cache
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.27s
+   Doc-tests kasumi_types
+
+running 1 test
+test crates/kasumi-types/src/drain.rs - drain::DrainIssueRef (line 48) - compile fail ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.39s
+
+Runner: 3.92s; exit=0; matching=768/768

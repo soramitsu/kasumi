@@ -8,27 +8,61 @@ pub mod core;
 pub mod retained;
 pub mod tables;
 
-// Segmented-log format components. `Core` still owns the contiguous format
-// until the segmented core replaces it, so only tests exercise them for now.
+#[cfg(test)]
+use crate as cache_types;
+#[cfg(test)]
+mod cache_test;
+
+// Canonical segmented storage, immutable directories and bounded caches.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) mod arena;
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) mod checked_group;
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) mod checkpoint;
 #[cfg_attr(not(test), allow(dead_code))]
-pub(crate) mod group;
+pub(crate) mod directory;
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) mod disk_state;
+#[cfg_attr(not(test), allow(dead_code))]
+pub mod group;
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) mod page_cache;
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) mod reclaim;
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) mod root;
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) mod segment;
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) mod snapshot_pins;
 
+mod source_read_requests;
+pub use source_read_requests::{PointReadRequests, ProtectedReadRequests};
+
+mod cache_admission;
 pub use cache::{CacheConfig, CacheLoadError, CacheStats, CachedBytes, NativeCache};
+pub use cache_admission::{CacheMemoryLease, CacheMemoryQuote, CacheMemoryReservation};
 pub use core::{
     AdmissionError, AdmittedValue, BackendCloseEntry, BackendCloseOutcome,
-    BackendNativeDisposition, CacheWarmup, Core, CoreError, CoreOpenFailure, CorePanic, MAX_BATCH_BYTES,
-    MAX_KEY_BYTES, MAX_TABLE_BYTES, MAX_VALUE_BYTES, Operation, OwnerFailed, ReadSnapshot,
-    ResidentLease, StorageAdmission, StorageBackend,
+    BackendNativeDisposition, CacheWarmup, CacheWarmupState, CacheWarmupStatus, CommittedPosition,
+    Core, CoreError, CoreOpenFailure, CorePanic, MAX_BATCH_BYTES, MAX_KEY_BYTES, MAX_TABLE_BYTES,
+    MAX_VALUE_BYTES, Operation, OwnerFailed, PreparedPointRead, ReadSnapshot, ResidentLease,
+    StorageAdmission,
+};
+pub use group::{
+    ExistingFileSpace, FileKind, FileSpaceRange, GroupFile, ROOT_FILE_NAME, SegmentGroupBackend,
+    TransactionReserveError, TransactionSpacePlan,
 };
 pub use retained::*;
+pub use root::{
+    ROOT_SLOT_BYTES, RootSlot, TRANSACTION_SPACE_ROOTS_HEAP_BYTES, validate_transaction_space_roots,
+};
 pub use tables::*;
 
 pub mod backends {
-    pub use crate::core::InMemoryBackend;
+    pub use crate::group::InMemoryGroup;
 }
+
+mod resident_allocation;
+pub use resident_allocation::ResidentAllocation;

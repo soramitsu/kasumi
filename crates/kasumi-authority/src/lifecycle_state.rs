@@ -70,6 +70,7 @@ impl Backend {
         &self,
         position: &AppliedEntryContext,
         prepared: PreparedLifecycle,
+        publication_writes: &mut Vec<WriteOp>,
     ) -> Result<kasumi_types::Result<LifecycleAuthorityReceipt>> {
         let mut meta = self.meta()?;
         if let Err(error) = prepared
@@ -200,7 +201,7 @@ impl Backend {
         writes.push(WriteOp::put(NS, reference.key()?.as_bytes(), bytes));
         meta.revision = position.log_id.index;
         writes.push(WriteOp::put(NS, META, serde_json::to_vec(&meta)?));
-        self.store.write_batch(&writes)?;
+        *publication_writes = writes;
         Ok(Ok(receipt))
     }
     pub fn lifecycle_lease_view(

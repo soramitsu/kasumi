@@ -1,0 +1,36 @@
+   Compiling kasumi-kv v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-kv)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.96s
+     Running unittests src/lib.rs (target/disk-backed-cache/debug/deps/kasumi_kv-e84af9029e220a8f)
+
+running 28 tests
+test segment::maintenance::tests::complete_metadata_preflight_rejects_late_invalid_inputs_without_effects ... ok
+test segment::maintenance::tests::directory_only_batches_bind_an_exact_root_without_a_logical_write ... ok
+test segment::maintenance::tests::ordinary_abort_rejects_noncanonical_or_extra_records_without_erasing_evidence ... ok
+test segment::maintenance::tests::a_bad_later_source_is_detected_before_any_batch_append ... ok
+test segment::maintenance::tests::force_roll_keeps_capacity_and_cannot_interrupt_a_prepared_batch ... ok
+test segment::maintenance::tests::prior_segment_format_is_rejected_without_conversion ... ok
+test segment::maintenance::tests::abort_rejects_fewer_records_wrong_batch_or_a_publication_at_the_exact_end ... ok
+test segment::maintenance::tests::abort_binds_synced_normal_and_maintenance_bytes_to_the_prepared_digest ... ok
+test segment::maintenance::tests::root_only_replay_rejects_bad_value_bytes_and_operation_counts ... ok
+test segment::maintenance::tests::force_roll_effect_failures_fence_and_reopen_preserves_prior_commit ... ok
+test segment::maintenance::tests::corrupt_source_fences_without_appending_or_erasing_evidence ... ok
+test segment::maintenance::tests::replay_rejects_maintenance_user_mixes_and_repeated_directory_markers ... ok
+test segment::maintenance::tests::relocation_preserves_original_logical_version_and_source_bytes ... ok
+test segment::maintenance::tests::maintenance_count_and_encoded_bytes_have_exact_preflight_bounds ... ok
+test segment::maintenance::tests::checksum_valid_maintenance_metadata_must_be_canonical ... ok
+test segment::maintenance::tests::a_leaf_batch_crosses_segments_but_publishes_one_root_and_preserves_every_version ... ok
+test segment::maintenance::tests::a_cross_segment_batch_aborts_with_its_exact_count_and_can_retry ... ok
+test segment::maintenance::tests::root_only_replay_enforces_maintenance_and_exact_abort_count_caps ... ok
+test segment::tests::known_private_failure_can_abort_and_resume_without_reusing_batch_sequence ... ok
+test segment::tests::prepared_workspace_depends_on_location_count_not_borrowed_value_size ... ok
+test segment::maintenance::tests::maintenance_prepare_and_commit_faults_reopen_at_a_complete_boundary ... ok
+test segment::maintenance::tests::source_change_during_copy_cannot_produce_a_prepared_commit ... ok
+test segment::maintenance::tests::relocation_and_abort_stream_long_values_through_fixed_windows ... ok
+test segment::tests::prepared_workspace_covers_exact_locations_and_streams_maximum_keys ... ok
+test segment::maintenance::tests::batched_copy_and_publication_faults_recover_only_complete_batches ... ok
+test disk_state::tests::compact::regular_large_write_and_leaf_relocation_fit_fixed_native_workspace ... ok
+test segment::maintenance::tests::ordinary_large_and_cross_segment_batches_abort_with_fixed_read_windows ... ok
+test segment::maintenance::tests::root_only_replay_checks_every_operation_without_retaining_key_records ... ok
+
+test result: ok. 28 passed; 0 failed; 0 ignored; 0 measured; 310 filtered out; finished in 9.06s
+

@@ -3,7 +3,7 @@
 //! This type proves framing and structural references, never application semantics.
 use crate::snapshot_codec::{Record, RecordPosition, StreamSummary};
 use anyhow::{Result, ensure};
-use kasumi_store::{EncryptedTable, SnapshotImage};
+use kasumi_store::{EncryptedTable, EncryptedTableBatch, SnapshotImage};
 use std::io::{Read, Seek, SeekFrom};
 
 type Key = (u8, String, String);
@@ -47,14 +47,41 @@ impl StagedSnapshot {
         mut check: impl FnMut() -> Result<()>,
     ) -> Result<Self> {
         check()?;
-        let index = EncryptedTable::new(image.disk(), max_index_disk_bytes)?;
+        let phase = crate::backup_verify::VerificationPhase::start("snapshot.index_setup", None);
+        let index = EncryptedTable::new(
+            image.disk(),
+            max_index_disk_bytes,
+            image.disk().native_cache_config(),
+        )?;
+        phase.complete();
         let mut counts = [0u64; KINDS];
         let mut spans = [None; KINDS];
         let mut previous_change_item = None;
         let mut group: Option<(u8, String, u64, u64, u64)> = None;
+        let mut pending = PendingIndex::new(&index);
         let summary = crate::snapshot_codec::visit(&mut image.reader(), |position, record| {
             check()?;
             let key = record.order();
+            let kind_changed = group
+                .as_ref()
+                .is_some_and(|(kind, _, _, _, _)| *kind != key.0);
+            if group
+                .as_ref()
+                .is_some_and(|(kind, primary, _, _, _)| *kind != key.0 || primary != &key.1)
+            {
+                write_group(
+                    &mut pending,
+                    group.take().expect("present group"),
+                    &mut check,
+                )?;
+            }
+            // The canonical stream groups records in increasing kind order. Every
+            // structural dependency below points to an earlier kind (header,
+            // collection, stage, change, recovery operation or phase), so make
+            // that kind's bounded batches visible before any dependent lookup.
+            if kind_changed {
+                pending.flush(&mut check)?;
+            }
             match &record {
                 Record::Document(collection, _) | Record::Archived(collection, _, _) => {
                     require(&index, &(2, collection.clone(), String::new()))?;
@@ -138,12 +165,6 @@ impl StagedSnapshot {
                 .map(|(first, _)| first)
                 .unwrap_or(position.offset - crate::snapshot_codec::FRAME_HEADER_BYTES as u64);
             spans[kind] = Some((first, end));
-            if group
-                .as_ref()
-                .is_some_and(|(kind, primary, _, _, _)| *kind != key.0 || primary != &key.1)
-            {
-                write_group(&index, group.take().expect("present group"))?;
-            }
             let group = group.get_or_insert((
                 key.0,
                 key.1.clone(),
@@ -159,16 +180,18 @@ impl StagedSnapshot {
             let mut location = [0u8; 16];
             location[..8].copy_from_slice(&position.offset.to_be_bytes());
             location[8..].copy_from_slice(&position.bytes.to_be_bytes());
-            index.insert(&serde_json::to_vec(&key)?, &location)?;
+            pending.insert(&serde_json::to_vec(&key)?, &location, &mut check)?;
             check()
         })?;
         if let Some(group) = group {
-            write_group(&index, group)?;
+            write_group(&mut pending, group, &mut check)?;
         }
         ensure!(
             summary.bytes == image.len(),
             "snapshot image length differs"
         );
+        pending.flush(&mut check)?;
+        drop(pending);
         check()?;
         Ok(Self {
             image,
@@ -305,13 +328,89 @@ impl Iterator for RecordCursor {
     }
 }
 
+/// At most one existing bounded native staging transaction is retained. Its
+/// destructor aborts the pending rows on framing, reference or caller failure;
+/// already committed batches are still confined to this unpublished index.
+struct PendingIndex<'a> {
+    index: &'a EncryptedTable,
+    batch: Option<EncryptedTableBatch>,
+    bytes: usize,
+    entries: usize,
+}
+impl<'a> PendingIndex<'a> {
+    fn new(index: &'a EncryptedTable) -> Self {
+        Self {
+            index,
+            batch: None,
+            bytes: 0,
+            entries: 0,
+        }
+    }
+    fn insert(
+        &mut self,
+        key: &[u8],
+        value: &[u8],
+        check: &mut impl FnMut() -> Result<()>,
+    ) -> Result<()> {
+        check()?;
+        let bytes = key
+            .len()
+            .checked_add(value.len())
+            .ok_or_else(|| anyhow::anyhow!("snapshot index entry byte overflow"))?;
+        ensure!(
+            bytes <= EncryptedTableBatch::MAX_BYTES,
+            "snapshot index entry exceeds batch bound"
+        );
+        if self.entries == EncryptedTableBatch::MAX_ENTRIES
+            || self
+                .bytes
+                .checked_add(bytes)
+                .is_none_or(|n| n > EncryptedTableBatch::MAX_BYTES)
+        {
+            self.flush(check)?;
+        }
+        if self.batch.is_none() {
+            self.batch = Some(self.index.begin_batch()?);
+        }
+        self.batch
+            .as_mut()
+            .expect("pending index batch")
+            .insert(key, value)?;
+        self.entries += 1;
+        self.bytes += bytes;
+        Ok(())
+    }
+    fn flush(&mut self, check: &mut impl FnMut() -> Result<()>) -> Result<()> {
+        if self.batch.is_some() {
+            check()?;
+            let phase =
+                crate::backup_verify::VerificationPhase::start("snapshot.index_batch", None);
+            tracing::debug!(
+                target: "kasumi_engine::restore_phase",
+                event = "snapshot_index_batch",
+                entries = self.entries as u64,
+                bytes = self.bytes as u64,
+                "restore structural index batch"
+            );
+            self.batch.take().expect("pending index batch").commit()?;
+            phase.complete();
+            self.bytes = 0;
+            self.entries = 0;
+            check()?;
+        }
+        Ok(())
+    }
+}
+
 fn write_group(
-    index: &EncryptedTable,
+    pending: &mut PendingIndex<'_>,
     (kind, primary, start, end, count): (u8, String, u64, u64, u64),
+    check: &mut impl FnMut() -> Result<()>,
 ) -> Result<()> {
-    index.insert(
+    pending.insert(
         &serde_json::to_vec(&(255u8, kind, primary))?,
         &serde_json::to_vec(&(start, end, count))?,
+        check,
     )
 }
 
@@ -367,3 +466,7 @@ fn read_record(image: &SnapshotImage, position: RecordPosition) -> Result<Record
     );
     Ok(record)
 }
+
+#[cfg(test)]
+#[path = "snapshot_index_tests.rs"]
+mod tests;

@@ -1,0 +1,28 @@
+   Compiling kasumi-kv v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-kv)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 49.02s
+     Running unittests src/lib.rs (target/disk-backed-cache/debug/deps/kasumi_kv-e84af9029e220a8f)
+
+running 19 tests
+test checked_group::tests::visitor_expiry_stops_before_another_callback ... ok
+test checked_group::tests::expiry_before_a_streamed_entry_prevents_its_callback ... ok
+test root::tests::census_preserves_callback_error_only_when_its_sentinel_returns ... ok
+test checked_group::tests::expiry_during_any_successful_backend_call_rejects_its_result ... ok
+test checked_group::tests::backend_failure_is_preserved_even_when_its_owner_expires ... ok
+test checked_group::tests::expired_owner_never_enters_any_backend_call ... ok
+test page_cache::tests::fallback_uses_existing_output_and_never_installs_bad_pages ... ok
+test page_cache::tests::admitted_table_only_reader_records_page_retention_denial ... ok
+test root::tests::empty_initialization_is_mirrored_and_cannot_run_twice ... ok
+test segment::tests::prepared_workspace_covers_geometric_record_capacity_and_maximum_keys ... ok
+test disk_state::tests::cache_hits_still_enforce_owner_and_snapshot_scope ... ok
+test root::tests::retired_root_slots_are_rejected_even_beside_current_root ... ok
+test disk_state::tests::durable_multi_table_commit_preserves_old_roots_and_ordered_prefixes ... ok
+test directory::tests::generation_warming_retains_final_split_pages_and_skips_private_orphans ... ok
+test disk_state::tests::every_commit_effect_recovers_one_complete_root_or_the_previous_root ... ok
+test disk_state::tests::pressure_keeps_one_bound_and_refills_when_budget_grows ... ok
+test disk_state::tests::capacity_denial_after_prepare_aborts_and_allows_retry ... ok
+test disk_state::tests::reopen_and_reads_do_not_rebuild_a_resident_map_for_data_above_admitted_memory ... ok
+test disk_state::tests::fitting_writes_are_immediately_resident_and_reopen_warms_without_misses has been running for over 60 seconds
+test disk_state::tests::fitting_writes_are_immediately_resident_and_reopen_warms_without_misses ... ok
+
+test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 216 filtered out; finished in 86.73s
+

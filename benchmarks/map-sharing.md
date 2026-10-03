@@ -37,9 +37,23 @@ Kasumi consequently stores resident documents in `Arc<Document>`. Updated
 hash-map nodes copy handles; unchanged document bodies remain shared. Serde's Arc
 representation preserves the previous snapshot JSON bytes, with dedicated tests
 for exact numbers, byte equality, reconstruction, and historical immutability.
-`Database::get_shared` exposes an immutable handle through the same authorization,
-consistency, key-access, and audit gates as `get`. The original `get` still returns
-an owned document and prepares its clone before final authorized release.
+The current `Database::get_shared` API returns an immutable
+`kasumi_types::SharedDocument` through the same authorization, consistency,
+key-access and audit gates as `get`. Its clones retain the same document and
+memory-admission owner, including archive decoding custody for cold reads;
+callers can borrow the document but cannot extract its raw Arc. `get` returns
+`AdmittedOutput<Document>` and admits its owned clone before final authorized
+release. Deep-copying a borrowed document or allocating a serialized result is
+separate caller-owned work.
+
+Completed reads release operation counts and work registrations before returning.
+Held results may outlive database shutdown while retaining their memory charge;
+previously released plaintext cannot be recalled by key or credential revocation.
+The point-output ownership changes and SDK shared-owner bridge pass the selected
+checks recorded in the [evidence ledger](../docs/evidence/disk-backed-cache-20260930/README.md).
+The historical experiment above predates these changes and does not measure
+their performance or establish complete retained-source accounting. The
+hot-source floor and archive-decoder allowances remain provisional.
 
 Future engine benchmarks report shared embedded reads and owned embedded reads
 separately. The ratios above must not be reported as a durable-database speedup or

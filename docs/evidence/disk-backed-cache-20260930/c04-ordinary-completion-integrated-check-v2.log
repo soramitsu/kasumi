@@ -1,0 +1,71 @@
+Command: cargo check --locked --offline --config profile.test.package.kasumi-kv.opt-level=3 --config profile.test.package.sha2.opt-level=3 -p kasumi-engine -p kasumi-raft -p kasumi-authority --all-features --all-targets
+CARGO_TARGET_DIR=target/disk-backed-cache
+    Checking kasumi-engine v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-engine)
+warning: variant `Mutation` is never constructed
+  --> crates/kasumi-engine/src/security_audit_jobs.rs:26:5
+   |
+24 | enum JobEffect {
+   |      --------- variant in this enum
+25 |     Read,
+26 |     Mutation(&'static str),
+   |     ^^^^^^^^
+   |
+   = note: `JobEffect` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: struct `ReadPause` is never constructed
+  --> crates/kasumi-engine/src/security_audit_jobs.rs:57:19
+   |
+57 | pub(super) struct ReadPause {
+   |                   ^^^^^^^^^
+
+warning: method `run_mutation` is never used
+   --> crates/kasumi-engine/src/security_audit_jobs.rs:120:25
+    |
+ 62 | impl SecurityAudit {
+    | ------------------ method in this implementation
+...
+120 |     pub(super) async fn run_mutation<T, F, R>(&self, component: &'static str, run: R) -> Result<T>
+    |                         ^^^^^^^^^^^^
+
+warning: `kasumi-engine` (lib) generated 3 warnings
+    Checking kasumi-authority v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-authority)
+error[E0277]: `kasumi_raft::AppliedResponse` doesn't implement `Debug`
+   --> crates/kasumi-engine/src/application_source_completion_tests.rs:264:10
+    |
+264 |         .expect_err("real after-backend unwind acknowledged");
+    |          ^^^^^^^^^^ the trait `Debug` is not implemented for `kasumi_raft::AppliedResponse`
+    |
+note: required by a bound in `std::result::Result::<T, E>::expect_err`
+   --> /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/result.rs:1293:4
+
+error[E0277]: `kasumi_raft::AppliedResponse` doesn't implement `Debug`
+   --> crates/kasumi-engine/src/application_source_completion_tests.rs:662:18
+    |
+662 |                 .expect_err("faulted actual ordinary invocation acknowledged");
+    |                  ^^^^^^^^^^ the trait `Debug` is not implemented for `kasumi_raft::AppliedResponse`
+    |
+note: required by a bound in `std::result::Result::<T, E>::expect_err`
+   --> /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/result.rs:1293:4
+
+error[E0277]: `kasumi_raft::AppliedResponse` doesn't implement `Debug`
+   --> crates/kasumi-engine/src/application_source_completion_tests.rs:723:18
+    |
+723 |                 .expect_err("terminal ordinary owner reset");
+    |                  ^^^^^^^^^^ the trait `Debug` is not implemented for `kasumi_raft::AppliedResponse`
+    |
+note: required by a bound in `std::result::Result::<T, E>::expect_err`
+   --> /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/result.rs:1293:4
+
+error[E0277]: `kasumi_raft::AppliedResponse` doesn't implement `Debug`
+   --> crates/kasumi-engine/src/application_source_completion_tests.rs:964:14
+    |
+964 |             .expect_err("real capture wake panic acknowledged");
+    |              ^^^^^^^^^^ the trait `Debug` is not implemented for `kasumi_raft::AppliedResponse`
+    |
+note: required by a bound in `std::result::Result::<T, E>::expect_err`
+   --> /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/result.rs:1293:4
+
+For more information about this error, try `rustc --explain E0277`.
+error: could not compile `kasumi-engine` (lib test) due to 4 previous errors
+Runner: 54.35s; exit=101; matching=845/845

@@ -44,8 +44,7 @@ where
     pub(in crate::raft) id: C::NodeId,
     pub(in crate::raft) config: Arc<Config>,
     pub(in crate::raft) runtime_config: Arc<RuntimeConfig>,
-    pub(in crate::raft) membership_observer:
-        Arc<crate::membership_observer::MembershipObserverSlot>,
+    pub(in crate::raft) membership_observer: Arc<crate::membership_observer::MembershipObserverSlot>,
     pub(in crate::raft) tick_handle: TickHandle<C>,
     pub(in crate::raft) replication_tasks: Arc<crate::replication::tasks::Registry<C>>,
     pub(crate) auxiliary_tasks: Arc<crate::core::auxiliary::Registry<C>>,
@@ -63,6 +62,8 @@ where
 
     /// The ongoing snapshot transmission.
     pub(in crate::raft) snapshot: Mutex<Option<crate::network::snapshot_transport::Streaming<C>>>,
+    pub(in crate::raft) snapshot_install: Arc<Mutex<()>>,
+    pub(in crate::raft) pending_snapshot: Arc<crate::core::sm::pending_snapshot::PendingSnapshot<C>>,
 }
 
 impl<C> RaftInner<C>
@@ -74,39 +75,26 @@ where
         let send_res = self.tx_api.send(mes);
 
         if let Err(e) = send_res {
-            let fatal = self
-                .get_core_stopped_error("sending RaftMsg to RaftCore", Some(e.0.summary()))
-                .await;
+            let fatal = self.get_core_stopped_error("sending RaftMsg to RaftCore", Some(e.0.summary())).await;
             return Err(fatal);
         }
         Ok(())
     }
 
     /// Receive a message from RaftCore, return error if RaftCore has stopped.
-    pub(crate) async fn recv_msg<T, E>(
-        &self,
-        rx: impl Future<Output = Result<T, E>>,
-    ) -> Result<T, Fatal<C::NodeId>>
+    pub(crate) async fn recv_msg<T, E>(&self, rx: impl Future<Output = Result<T, E>>) -> Result<T, Fatal<C::NodeId>>
     where
         T: OptionalSend,
         E: OptionalSend,
     {
         let recv_res = rx.await;
-        tracing::debug!(
-            "{} receives result is error: {:?}",
-            func_name!(),
-            recv_res.is_err()
-        );
+        tracing::debug!("{} receives result is error: {:?}", func_name!(), recv_res.is_err());
 
         match recv_res {
             Ok(x) => Ok(x),
             Err(_) => {
-                let fatal = self
-                    .get_core_stopped_error_bounded(
-                        "receiving rx from RaftCore",
-                        None::<&'static str>,
-                    )
-                    .await;
+                let fatal =
+                    self.get_core_stopped_error_bounded("receiving rx from RaftCore", None::<&'static str>).await;
                 tracing::error!(error = debug(&fatal), "error when {}", func_name!());
                 Err(fatal)
             }
@@ -133,17 +121,12 @@ where
         self.send_msg(mes).await?;
 
         let recv_res = rx.await;
-        tracing::debug!(
-            "call_core receives result is error: {:?}",
-            recv_res.is_err()
-        );
+        tracing::debug!("call_core receives result is error: {:?}", recv_res.is_err());
 
         match recv_res {
             Ok(x) => x.map_err(|e| RaftError::APIError(e)),
             Err(_) => {
-                let fatal = self
-                    .get_core_stopped_error_bounded("receiving rx from RaftCore", sum)
-                    .await;
+                let fatal = self.get_core_stopped_error_bounded("receiving rx from RaftCore", sum).await;
                 tracing::error!(error = debug(&fatal), "core_call fatal error");
                 Err(RaftError::Fatal(fatal))
             }
@@ -161,9 +144,7 @@ where
         let send_res = self.tx_api.send(RaftMsg::ExternalCommand { cmd });
 
         if send_res.is_err() {
-            let fatal = self
-                .get_core_stopped_error("sending external command to RaftCore", Some(cmd_desc))
-                .await;
+            let fatal = self.get_core_stopped_error("sending external command to RaftCore", Some(cmd_desc)).await;
             return Err(fatal);
         }
         Ok(())

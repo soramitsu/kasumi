@@ -5,7 +5,7 @@ use kasumi_types::{Action, BackupBindingClaim, BackupNamespaceBinding, Grant, Li
 use sha2::Digest as _;
 use std::collections::{BTreeMap, BTreeSet};
 
-fn state() -> TenantState {
+pub(crate) fn state() -> TenantState {
     let incarnation = uuid::Uuid::from_u128(99).to_string();
     let mut state = crate::TenantEngine::new(
         crate::control::CONTROL_TENANT.into(),
@@ -58,7 +58,7 @@ fn state() -> TenantState {
     });
     state
 }
-fn row(state: &TenantState, bytes: &[u8], session_id: uuid::Uuid) -> Row {
+pub(crate) fn row(state: &TenantState, bytes: &[u8], session_id: uuid::Uuid) -> Row {
     let claim = BackupBindingClaim {
         session_id,
         tenant: "tenant-a".into(),

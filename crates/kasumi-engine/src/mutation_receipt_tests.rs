@@ -1,6 +1,72 @@
 use super::*;
 use kasumi_store::{NodeStore, test_utils::LocalKeyProvider};
 use std::collections::BTreeSet;
+
+#[test]
+fn fixture_staging_reuses_only_complete_exact_pairs() -> Result<()> {
+    let scratch = crate::codec_fixture::ScratchScope::new(
+        kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 64),
+    )?;
+    let initial = state();
+    let mut identity = applied(1);
+    identity.origin = AppliedOrigin::Fixture;
+    let old = View::empty(&initial.tenant, &initial.incarnation)?
+        .fixture_owner(&scratch.disk, &initial)?;
+    let (_, pending) = commit(&initial, &old, "fixture-replay", &identity);
+    let row = pending.rows[0].clone();
+    let future = pending.stage()?;
+    assert!(old.get(&row.key)?.is_none());
+    let (_, exact) = commit(&initial, &old, "fixture-replay", &identity);
+    assert_eq!(exact.stage()?.head(), future.head());
+    let mut different = identity.clone();
+    different.command_sha256 = "ef".repeat(32);
+    let (_, wrong) = commit(&initial, &old, "fixture-replay", &different);
+    assert!(
+        wrong
+            .stage()
+            .unwrap_err()
+            .to_string()
+            .contains("exact original command replay")
+    );
+    assert!(old.get(&row.key)?.is_none());
+    assert_eq!(future.row(1)?.sha256()?, row.sha256()?);
+    drop(future);
+    drop(old);
+
+    for only_index in [false, true] {
+        let old = View::empty(&initial.tenant, &initial.incarnation)?
+            .fixture_owner(&scratch.disk, &initial)?;
+        let (_, pending) = commit(&initial, &old, "fixture-partial", &identity);
+        let row = &pending.rows[0];
+        let Source::Staged(table) = old.source.as_deref().unwrap() else {
+            unreachable!("fixture owns staged rows");
+        };
+        let id = id_key(&row.key);
+        let ordinal = ordinal_key(row.ordinal);
+        if only_index {
+            table.insert(
+                &ordinal,
+                &serde_json::to_vec(&Ordinal {
+                    key: row.key.clone(),
+                    sha256: row.sha256()?,
+                })?,
+            )?;
+        } else {
+            table.insert(&id, &serde_json::to_vec(row)?)?;
+        }
+        let before = (table.get(&id)?, table.get(&ordinal)?);
+        assert!(
+            pending
+                .stage()
+                .unwrap_err()
+                .to_string()
+                .contains("partially published receipt row/index")
+        );
+        assert_eq!((table.get(&id)?, table.get(&ordinal)?), before);
+        assert_eq!(old.head().count, 0);
+    }
+    Ok(())
+}
 fn state() -> TenantState {
     crate::TenantEngine::new(
         "tenant".into(),
@@ -67,7 +133,11 @@ fn commit(
 }
 async fn durable() -> (tempfile::TempDir, Arc<TenantStore>, TenantState, View) {
     let directory = kasumi_store::test_utils::private_tempdir().unwrap();
-    let memory = kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 32);
+    // The 32-slot fixture exhausted slots at 54,004,507 used bytes. Allow
+    // bounded overlap of installed owners, replacement tables, transactions
+    // and cache leases without raising the 64 MiB cap. This is fixture
+    // headroom, not a measured minimum or provider qualification.
+    let memory = kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 128);
     kasumi_store::private_files::create_directory(&directory.path().join("persistent")).unwrap();
     let disk = ScratchDisk::fixture(directory.path().join("scratch"), memory.clone());
     let node = NodeStore::create_new_fixture(
@@ -100,7 +170,7 @@ async fn selected_physical_rows_require_current_writer_bytes_without_repair() ->
     let (_directory, store, initial, old) = durable().await;
     let key = identity("owner", "selected-writer-bytes")?;
     let (state, pending) = commit(&initial, &old, "selected-writer-bytes", &applied(1));
-    let selected = pending.persist()?;
+    let selected = pending.stage()?;
     let checkpoint = "51".repeat(32);
     store.write_batch(&selected.checkpoint_writes(&state, &checkpoint)?)?;
     let point_key = id_key(&key);
@@ -242,12 +312,12 @@ async fn durable_future_row_is_invisible_and_only_exact_original_replay_can_reus
     let (next, pending) = commit(&state, &old, "first", &identity);
     // Storage has committed, but the caller has not published the new Generation
     // or its applied cursor. The old logical view still observes absence.
-    let committed_rows = pending.persist().unwrap();
+    let committed_rows = pending.stage().unwrap();
     assert!(old.get(&key).unwrap().is_none());
     assert_eq!(next.mutation_receipt_head.count, 1);
     assert_eq!(committed_rows.head().count, 1);
     let (_, replay) = commit(&state, &old, "first", &identity);
-    let exact = replay.persist().unwrap();
+    let exact = replay.stage().unwrap();
     assert_eq!(exact.head(), committed_rows.head());
     assert_eq!(exact.get(&key).unwrap().unwrap().applied, identity);
     let mut changed = identity.clone();
@@ -255,7 +325,7 @@ async fn durable_future_row_is_invisible_and_only_exact_original_replay_can_reus
     let (_, substituted) = commit(&state, &old, "first", &changed);
     assert!(
         substituted
-            .persist()
+            .stage()
             .unwrap_err()
             .to_string()
             .contains("exact original command replay")
@@ -272,7 +342,7 @@ async fn encrypted_reopen_keeps_unapplied_receipt_rows_hidden_until_exact_replay
     let identity = applied(1);
     let key = self::identity("owner", "unapplied").unwrap();
     let (_, pending) = commit(&initial, &old, "unapplied", &identity);
-    let durable_future = pending.persist().unwrap();
+    let durable_future = pending.stage().unwrap();
     let expected = durable_future.row(1).unwrap().sha256().unwrap();
     assert!(old.get(&key).unwrap().is_none());
     drop(durable_future);
@@ -304,10 +374,10 @@ async fn encrypted_reopen_keeps_unapplied_receipt_rows_hidden_until_exact_replay
     let mut conflicting = identity.clone();
     conflicting.command_sha256 = "ef".repeat(32);
     let (_, wrong) = commit(&initial, &reopened.view, "unapplied", &conflicting);
-    assert!(wrong.persist().is_err());
+    assert!(wrong.stage().is_err());
     assert!(reopened.view.get(&key).unwrap().is_none());
     let (_, exact) = commit(&initial, &reopened.view, "unapplied", &identity);
-    let selected = exact.persist().unwrap();
+    let selected = exact.stage().unwrap();
     assert_eq!(
         selected.get(&key).unwrap().unwrap().sha256().unwrap(),
         expected
@@ -322,9 +392,9 @@ async fn encrypted_reopen_keeps_unapplied_receipt_rows_hidden_until_exact_replay
 async fn snapshot_namespace_binding_selects_exact_prefix_and_preserves_older_live_views() {
     let (_directory, store, initial, old) = durable().await;
     let (first_state, first) = commit(&initial, &old, "first", &applied(1));
-    let first = first.persist().unwrap();
+    let first = first.stage().unwrap();
     let (second_state, second) = commit(&first_state, &first, "second", &applied(2));
-    let second = second.persist().unwrap();
+    let second = second.stage().unwrap();
     let checkpoint = "20".repeat(32);
     store
         .write_batch(&first.checkpoint_writes(&first_state, &checkpoint).unwrap())
@@ -345,7 +415,7 @@ async fn snapshot_namespace_binding_selects_exact_prefix_and_preserves_older_liv
             .is_none()
     );
     let (_, replay) = commit(&first_state, &reopened.view, "second", &applied(2));
-    assert_eq!(replay.persist().unwrap().head(), second.head());
+    assert_eq!(replay.stage().unwrap().head(), second.head());
     let replaced = staged
         .prepare_install(&store, &first_state, &"30".repeat(32), false)
         .unwrap();
@@ -368,7 +438,7 @@ async fn snapshot_namespace_binding_selects_exact_prefix_and_preserves_older_liv
 async fn point_decode_admission_precedes_even_future_row_allocation() {
     let (_directory, store, initial, old) = durable().await;
     let (_, pending) = commit(&initial, &old, "future", &applied(1));
-    let _future = pending.persist().unwrap();
+    let _future = pending.stage().unwrap();
     let mut called = false;
     let error = old
         .get_charged(&identity("owner", "future").unwrap(), |bytes| {

@@ -1,0 +1,44 @@
+Command: cargo test --locked --offline --config profile.test.package.kasumi-kv.opt-level=3 --config profile.test.package.sha2.opt-level=3 -p kasumi-kv -p kasumi-store -p kasumi-raft -p kasumi-engine --all-features --lib --no-fail-fast -- source_cohort_ source_constructor_ source_lane_growth_ source_capacity_ready_owner_ control_memory constructor_envelope planning_session_tests selected_sources_actual_entry_hands_point_backing_to_capture_and_queue_cancellation --nocapture
+ISOLATED_SOURCE=/tmp/kasumi-source-cohort-validation-v1
+CARGO_TARGET_DIR=/Users/takemiyamakoto/dev/kasumi/target/disk-backed-cache
+   Compiling kasumi-raft v0.1.0 (/private/tmp/kasumi-source-cohort-validation-v1/crates/kasumi-raft)
+   Compiling kasumi-engine v0.1.0 (/private/tmp/kasumi-source-cohort-validation-v1/crates/kasumi-engine)
+warning: unused import: `PreparedSelectionPlan`
+ --> crates/kasumi-engine/src/primary_projection_publication_tests.rs:4:19
+  |
+4 | use kasumi_raft::{PreparedSelectionPlan, SelectionPreparer};
+  |                   ^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+error[E0050]: method `prepare` has 3 parameters but the declaration in trait `kasumi_raft::SelectionPreparer::prepare` has 2
+   --> crates/kasumi-engine/src/application_sources_tests.rs:423:21
+    |
+423 | /                     &mut self,
+424 | |                     _: &PreparedSelectionPlan,
+425 | |                     _points: kasumi_store::PreparedTenantPointWorkspace,
+    | |_______________________________________________________________________^ expected 2 parameters, found 3
+    |
+    = note: `prepare` from trait: `fn(&mut Self, &mut AppliedSelectionPlanner<'_>) -> std::result::Result<(), anyhow::Error>`
+help: remove the extra parameter to match the trait
+    |
+424 -                     _: &PreparedSelectionPlan,
+425 -                     _points: kasumi_store::PreparedTenantPointWorkspace,
+424 +                     _: &PreparedSelectionPlan,
+    |
+
+error[E0277]: `kasumi_raft::AppliedResponse` doesn't implement `Debug`
+   --> crates/kasumi-engine/src/application_source_cohort_tests.rs:764:16
+    |
+764 |         result.unwrap_err()
+    |                ^^^^^^^^^^ the trait `Debug` is not implemented for `kasumi_raft::AppliedResponse`
+    |
+note: required by a bound in `std::result::Result::<T, E>::unwrap_err`
+   --> /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/result.rs:1324:4
+
+Some errors have detailed explanations: E0050, E0277.
+For more information about an error, try `rustc --explain E0050`.
+warning: `kasumi-engine` (lib test) generated 1 warning
+error: could not compile `kasumi-engine` (lib test) due to 2 previous errors; 1 warning emitted
+warning: build failed, waiting for other jobs to finish...
+Runner: 40.45s; exit=101; matching=1563/1563

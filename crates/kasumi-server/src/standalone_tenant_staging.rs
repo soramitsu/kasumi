@@ -27,11 +27,11 @@ impl StageTenantRequest {
             !self.tenant.starts_with("kasumi.") && !self.tenant.starts_with("__kasumi_"),
             "reserved tenant cannot be staged"
         );
-        kasumi_engine::TenantEngine::new(
-            self.tenant.clone(),
-            self.incarnation.to_string(),
-            self.initial_policy.clone(),
-            self.initial_limits.clone(),
+        kasumi_engine::validate_genesis_inputs(
+            &self.tenant,
+            &self.incarnation.to_string(),
+            &self.initial_policy,
+            &self.initial_limits,
         )?;
         Ok(())
     }

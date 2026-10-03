@@ -125,6 +125,7 @@ async fn failed_profile_publication_drains_owners_and_never_marks_partial_instal
         &directory,
         "documents",
         kasumi_store::DirectoryPolicy::fixture(),
+        kasumi_store::FileAllocationPolicy::fixture(),
         StandaloneNetwork::fixture(),
         InitializationOptions {
             obstruct_profile_publication: true,
@@ -162,8 +163,9 @@ async fn failed_profile_publication_drains_owners_and_never_marks_partial_instal
     let node = NodeStore::open_existing(
         directory.join("data/node.kv"),
         prepared.database_id,
-        disk,
+        disk.clone(),
         storage.open_scratch(&scratch)?,
+        disk.native_storage_config(),
     )?;
     node.shutdown().await?;
     drop(node);
@@ -172,6 +174,7 @@ async fn failed_profile_publication_drains_owners_and_never_marks_partial_instal
             &directory,
             "documents",
             kasumi_store::DirectoryPolicy::fixture(),
+            kasumi_store::FileAllocationPolicy::fixture(),
             StandaloneNetwork::fixture(),
             storage
         )

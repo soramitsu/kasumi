@@ -18,7 +18,7 @@ use serde::{
     de::{MapAccess, Visitor},
 };
 use serde_json::value::RawValue;
-use std::{collections::BTreeMap, fmt, sync::Arc};
+use std::{collections::BTreeMap, fmt};
 
 pub(super) struct Object<'a>(BTreeMap<String, &'a RawValue>);
 impl<'de> Deserialize<'de> for Object<'de> {
@@ -347,8 +347,7 @@ pub(super) fn feed(
                 let document = if raw.get() == "null" {
                     None
                 } else {
-                    let document = feed_document(raw, call, &id, event_revision)?;
-                    Some(Arc::new(document))
+                    Some(feed_document(raw, call, &id, event_revision)?)
                 };
                 previous = sequence;
                 events.push(ChangeEvent {

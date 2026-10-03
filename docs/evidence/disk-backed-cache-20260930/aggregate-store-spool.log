@@ -1,0 +1,31 @@
+
+running 19 tests
+test spool::native_close_tests::original_sync_error_retains_open_spool_without_claiming_native_drain ... 
+thread 'spool::native_close_tests::sync_unwind_fences_owner_and_preserves_original_payload_without_native_entry' (4285082) panicked at crates/kasumi-store/src/spool_native_close_tests.rs:152:43:
+Box<dyn Any>
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+ok
+test spool::native_close_tests::uncertain_native_close_retains_one_attempt_and_fences_scratch_owner ... ok
+test spool::native_close_tests::sync_unwind_fences_owner_and_preserves_original_payload_without_native_entry ... ok
+
+thread 'spool::native_close_tests::native_close_unwind_retains_original_payload_and_never_retries_number' (4285079) panicked at crates/kasumi-store/src/spool_native_close_tests.rs:117:13:
+Box<dyn Any>
+test spool::native_close_tests::retained_spool_retires_actual_descriptor_before_releasing_its_charge ... ok
+test spool::native_close_tests::native_close_unwind_retains_original_payload_and_never_retries_number ... ok
+test spool::tests::corrupted_or_reordered_blocks_fail_authentication ... ok
+test spool::native_close_tests::unknown_native_close_keeps_charge_after_aggregate_owner_drop ... ok
+test scratch_table::tests::failed_bootstrap_closes_the_exact_spool_before_returning ... ok
+test scratch_disk::tests::concurrent_spools_cannot_each_spend_the_aggregate_budget ... ok
+test scratch_table::tests::actual_spool_close_reports_native_drain_before_retiring_adapter_owner ... ok
+test spool::tests::unused_reservation_and_denied_growth_preserve_authenticated_physical_extent ... ok
+test spool::retained_spool::tests::file_key_and_each_buffer_retire_before_extent_credit_is_reusable ... ok
+test spool::retained_spool::tests::group_root_and_data_files_are_independently_encrypted_anonymous_spools ... ok
+test spool::tests::encrypted_spool_seek_overwrite_and_bounds ... ok
+test spool::retained_spool::tests::actual_final_sync_panic_reaches_database_with_same_payload_and_spool_still_present ... ok
+test spool::retained_spool::tests::original_sync_error_moves_once_to_database_while_spool_and_charge_stay_owned ... ok
+test scratch_table::tests::strict_create_rejects_a_non_empty_spool_instead_of_adopting_its_frames ... ok
+test scratch_table::tests::dropping_a_failed_table_keeps_spool_and_charge_without_allocating ... ok
+test spool::tests::interleaved_record_appends_preserve_admission_and_authentication ... ok
+
+test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 585 filtered out; finished in 7.02s
+

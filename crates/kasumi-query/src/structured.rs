@@ -1,9 +1,12 @@
-use crate::QueryCancellation;
 use crate::scalar::{Scalar, exhausted, indexed_values, invalid, scalar, validate_pointer};
+use crate::{
+    CollectionRecords, DocumentChanges, DocumentSource, QueryCancellation, ReadResult, Record,
+    document_source,
+};
 use imbl::{OrdMap, OrdSet};
 use kasumi_types::*;
 use serde_json::Value;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 pub(crate) type IdSet = OrdSet<String>;
 
@@ -27,36 +30,24 @@ pub(crate) struct UniqueIndex {
     pub(crate) entries: OrdMap<Vec<Scalar>, String>,
 }
 
+pub(crate) fn record_value<'a>(record: Record<'a>, path: &str) -> Option<&'a Value> {
+    match record {
+        Record::Live(document) => document.body.pointer(path),
+        Record::Archived(document) => document.indexed_fields.get(path),
+    }
+}
 impl UniqueIndex {
-    fn insert_archived(&mut self, name: &str, id: &str, document: &ArchivedDocument) -> Result<()> {
+    fn key(&self, record: Record<'_>) -> Result<Option<Vec<Scalar>>> {
         let key = self
             .fields
             .iter()
-            .map(|field| scalar(document.indexed_fields.get(&field.path), Some(field.kind)))
+            .map(|field| scalar(record_value(record, &field.path), Some(field.kind)))
             .collect::<Result<Vec<_>>>()?;
-        if !key.contains(&Scalar::Missing) && self.entries.insert(key, id.into()).is_some() {
-            return Err(Error::new(
-                ErrorCode::Conflict,
-                format!("unique index {name} conflicts"),
-            ));
-        }
-        Ok(())
+        Ok((!key.contains(&Scalar::Missing)).then_some(key))
     }
-    fn key(&self, document: &Document) -> Result<Option<Vec<Scalar>>> {
-        let key = self
-            .fields
-            .iter()
-            .map(|field| scalar(document.body.pointer(&field.path), Some(field.kind)))
-            .collect::<Result<Vec<_>>>()?;
-        if key.contains(&Scalar::Missing) {
-            Ok(None)
-        } else {
-            Ok(Some(key))
-        }
-    }
-    fn insert(&mut self, name: &str, document: &Document) -> Result<()> {
-        if let Some(key) = self.key(document)?
-            && self.entries.insert(key, document.id.clone()).is_some()
+    fn insert(&mut self, name: &str, id: &str, record: Record<'_>) -> Result<()> {
+        if let Some(key) = self.key(record)?
+            && self.entries.insert(key, id.to_owned()).is_some()
         {
             return Err(Error::new(
                 ErrorCode::Conflict,
@@ -68,28 +59,24 @@ impl UniqueIndex {
 }
 
 impl Structured {
-    pub fn update(
-        &self,
-        old: &CollectionState,
-        new: &CollectionState,
-        changed: &BTreeSet<String>,
-    ) -> Result<Self> {
+    pub fn update<D: DocumentChanges + ?Sized>(&self, changes: &D) -> ReadResult<Self, D::Failure> {
         let mut next = self.clone();
-        next.unique = self.unique_delta(old, new, changed)?;
-        for id in changed {
-            let previous = old.documents.get(id);
-            let current = new.documents.get(id);
+        next.unique = self.unique_delta(changes)?;
+        changes.visit_changes(|delta| {
+            let previous = delta.old;
+            let current = delta.new;
+            let id = delta.id;
             if previous.is_none() && current.is_none() {
-                continue;
+                return Ok(());
             }
             if current.is_none() {
                 next.ids.remove(id);
             } else if previous.is_none() {
-                next.ids.insert(id.clone());
+                next.ids.insert(id.to_owned());
             }
             for (path, index) in &mut next.fields {
-                let old_value = previous.and_then(|document| document.body.pointer(path));
-                let new_value = current.and_then(|document| document.body.pointer(path));
+                let old_value = previous.and_then(|record| record_value(record, path));
+                let new_value = current.and_then(|record| record_value(record, path));
                 if previous.is_some() && current.is_some() && old_value == new_value {
                     continue;
                 }
@@ -106,49 +93,59 @@ impl Structured {
                 }
                 if current.is_some() {
                     if new_value.is_some() {
-                        index.present.insert(id.clone());
+                        index.present.insert(id.to_owned());
                     }
                     for key in indexed_values(new_value, index.kind)? {
-                        index.entries.entry(key).or_default().insert(id.clone());
+                        index.entries.entry(key).or_default().insert(id.to_owned());
                     }
                 }
             }
-        }
+            Ok(())
+        })?;
         Ok(next)
     }
-
-    fn unique_delta(
+    fn unique_delta<D: DocumentChanges + ?Sized>(
         &self,
-        old: &CollectionState,
-        new: &CollectionState,
-        changed: &BTreeSet<String>,
-    ) -> Result<BTreeMap<String, UniqueIndex>> {
+        changes: &D,
+    ) -> ReadResult<BTreeMap<String, UniqueIndex>, D::Failure> {
         let mut unique = self.unique.clone();
-        for (name, index) in &mut unique {
-            // Remove the entire batch first, so atomic unique-key swaps work.
-            for id in changed {
-                if let Some(document) = old.documents.get(id)
-                    && let Some(key) = index.key(document)?
-                {
-                    index.entries.remove(&key);
+        // Remove every old mapping across the batch before adding any new one.
+        // Private COW roots are discarded on rejection; published roots stay intact.
+        changes.visit_changes(|delta| {
+            if let Some(old) = delta.old {
+                for index in unique.values_mut() {
+                    if let Some(key) = index.key(old)? {
+                        if index
+                            .entries
+                            .get(&key)
+                            .is_none_or(|owner| owner != delta.id)
+                        {
+                            return Err(Error::new(
+                                ErrorCode::Corruption,
+                                "old unique mapping differs from delta",
+                            ));
+                        }
+                        index.entries.remove(&key);
+                    }
                 }
             }
-            for id in changed {
-                if let Some(document) = new.documents.get(id) {
-                    index.insert(name, document)?;
+            Ok(())
+        })?;
+        changes.visit_changes(|delta| {
+            if let Some(new) = delta.new {
+                for (name, index) in &mut unique {
+                    index.insert(name, delta.id, new)?;
                 }
             }
-        }
+            Ok(())
+        })?;
         Ok(unique)
     }
-
-    pub fn validate_unique_changes(
+    pub fn validate_unique_changes<D: DocumentChanges + ?Sized>(
         &self,
-        old: &CollectionState,
-        new: &CollectionState,
-        changed: &BTreeSet<String>,
-    ) -> Result<()> {
-        self.unique_delta(old, new, changed).map(|_| ())
+        changes: &D,
+    ) -> ReadResult<(), D::Failure> {
+        self.unique_delta(changes).map(|_| ())
     }
 
     /// Validate independently of hits, so empty collections and short-circuiting
@@ -202,9 +199,37 @@ impl Structured {
         }
     }
 
-    pub fn build(collection: &CollectionState) -> Result<Self> {
+    fn empty_unique(definition: &CollectionDefinition) -> BTreeMap<String, UniqueIndex> {
+        definition
+            .indexes
+            .iter()
+            .filter(|index| index.unique)
+            .map(|index| {
+                (
+                    index.name.clone(),
+                    UniqueIndex {
+                        fields: index.fields.clone(),
+                        entries: OrdMap::new(),
+                    },
+                )
+            })
+            .collect()
+    }
+    pub(crate) fn build_unique<R: CollectionRecords + ?Sized>(
+        source: &R,
+    ) -> ReadResult<BTreeMap<String, UniqueIndex>, R::Failure> {
+        let mut unique = Self::empty_unique(source.definition());
+        source.visit_records(|id, record| {
+            for (name, index) in &mut unique {
+                index.insert(name, id, record)?;
+            }
+            Ok(())
+        })?;
+        Ok(unique)
+    }
+    pub fn build<R: CollectionRecords + ?Sized>(source: &R) -> ReadResult<Self, R::Failure> {
         let mut fields = BTreeMap::new();
-        for index in &collection.definition.indexes {
+        for index in &source.definition().indexes {
             for field in &index.fields {
                 fields
                     .entry(field.path.clone())
@@ -216,49 +241,23 @@ impl Structured {
             }
         }
         let mut ids = IdSet::new();
-        for (id, document) in &collection.documents {
-            ids.insert(id.clone());
+        let mut unique = Self::empty_unique(source.definition());
+        source.visit_records(|id, record| {
+            ids.insert(id.to_owned());
             for (path, index) in &mut fields {
-                let value = document.body.pointer(path);
+                let value = record_value(record, path);
                 if value.is_some() {
-                    index.present.insert(id.clone());
+                    index.present.insert(id.to_owned());
                 }
                 for key in indexed_values(value, index.kind)? {
-                    index.entries.entry(key).or_default().insert(id.clone());
+                    index.entries.entry(key).or_default().insert(id.to_owned());
                 }
             }
-        }
-        let mut unique = BTreeMap::new();
-        for (id, document) in &collection.archived_documents {
-            ids.insert(id.clone());
-            for (path, index) in &mut fields {
-                let value = document.indexed_fields.get(path);
-                if value.is_some() {
-                    index.present.insert(id.clone());
-                }
-                for key in indexed_values(value, index.kind)? {
-                    index.entries.entry(key).or_default().insert(id.clone());
-                }
+            for (name, index) in &mut unique {
+                index.insert(name, id, record)?;
             }
-        }
-        for definition in collection
-            .definition
-            .indexes
-            .iter()
-            .filter(|index| index.unique)
-        {
-            let mut index = UniqueIndex {
-                fields: definition.fields.clone(),
-                entries: OrdMap::new(),
-            };
-            for document in collection.documents.values() {
-                index.insert(&definition.name, document)?;
-            }
-            for (id, document) in &collection.archived_documents {
-                index.insert_archived(&definition.name, id, document)?;
-            }
-            unique.insert(definition.name.clone(), index);
-        }
+            Ok(())
+        })?;
         Ok(Self {
             fields,
             ids,
@@ -278,15 +277,15 @@ impl Structured {
         }
     }
 
-    pub fn candidates(
+    pub fn candidates<S: DocumentSource + ?Sized>(
         &self,
-        collection: &CollectionState,
+        source: &S,
         predicate: &Predicate,
         universe: &IdSet,
         allow_scan: bool,
         cap: usize,
         cancellation: &QueryCancellation,
-    ) -> Result<IdSet> {
+    ) -> ReadResult<IdSet, S::Failure> {
         cancellation.check()?;
         match predicate {
             Predicate::All => {
@@ -296,7 +295,7 @@ impl Structured {
             Predicate::And { predicates } => {
                 if predicates.is_empty() {
                     return self.candidates(
-                        collection,
+                        source,
                         &Predicate::All,
                         universe,
                         allow_scan,
@@ -305,7 +304,7 @@ impl Structured {
                     );
                 }
                 let mut candidates = self.candidates(
-                    collection,
+                    source,
                     &predicates[0],
                     universe,
                     allow_scan,
@@ -314,7 +313,7 @@ impl Structured {
                 )?;
                 for predicate in &predicates[1..] {
                     candidates = self.candidates(
-                        collection,
+                        source,
                         predicate,
                         &candidates,
                         allow_scan,
@@ -327,14 +326,9 @@ impl Structured {
             Predicate::Or { predicates } => {
                 let mut candidates = IdSet::new();
                 for predicate in predicates {
-                    for id in self.candidates(
-                        collection,
-                        predicate,
-                        universe,
-                        allow_scan,
-                        cap,
-                        cancellation,
-                    )? {
+                    for id in
+                        self.candidates(source, predicate, universe, allow_scan, cap, cancellation)?
+                    {
                         cancellation.check()?;
                         candidates.insert(id);
                     }
@@ -344,14 +338,8 @@ impl Structured {
             }
             Predicate::Not { predicate } => {
                 check_size(universe.len(), cap)?;
-                let excluded = self.candidates(
-                    collection,
-                    predicate,
-                    universe,
-                    allow_scan,
-                    cap,
-                    cancellation,
-                )?;
+                let excluded =
+                    self.candidates(source, predicate, universe, allow_scan, cap, cancellation)?;
                 let mut candidates = IdSet::new();
                 for id in universe {
                     cancellation.check()?;
@@ -419,7 +407,8 @@ impl Structured {
                             if matches!(key, Scalar::Missing | Scalar::Null) {
                                 return Err(invalid(
                                     "ordered comparison requires a non-null scalar",
-                                ));
+                                )
+                                .into());
                             }
                             use std::ops::Bound::{Excluded, Included, Unbounded};
                             let bounds = match comparison {
@@ -441,20 +430,20 @@ impl Structured {
                     Ok(candidates)
                 } else {
                     check_size(universe.len(), cap)?;
-                    universe
-                        .iter()
-                        .filter_map(|id| {
-                            if let Err(error) = cancellation.check() {
-                                return Some(Err(error));
-                            }
-                            let document = &collection.documents[id];
-                            match evaluate_leaf(predicate, &document.body, None, cancellation) {
-                                Ok(true) => Some(Ok(id.clone())),
-                                Ok(false) => None,
-                                Err(error) => Some(Err(error)),
-                            }
-                        })
-                        .collect()
+                    let mut selected = IdSet::new();
+                    for id in universe {
+                        let matched = document_source::with_live(
+                            source,
+                            id,
+                            None,
+                            cancellation,
+                            |document| evaluate_leaf(predicate, &document.body, None, cancellation),
+                        )?;
+                        if matched {
+                            selected.insert(id.clone());
+                        }
+                    }
+                    Ok(selected)
                 }
             }
         }

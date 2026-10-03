@@ -1,0 +1,11 @@
+Command: env KASUMI_TEST_FILE_CLOSE_TRACE=1 /Users/takemiyamakoto/dev/kasumi/target/disk-backed-cache/debug/deps/kasumi_store-4ef75ebdc018c368 --exact prepared_publication::tests::actual_encrypted_store_image_exceeds_ordinary_byte_bound --nocapture
+ISOLATED_SOURCE=/tmp/kasumi-source-cohort-validation-v1
+CARGO_TARGET_DIR=/Users/takemiyamakoto/dev/kasumi/target/disk-backed-cache
+
+running 1 test
+test prepared_publication::tests::actual_encrypted_store_image_exceeds_ordinary_byte_bound has been running for over 60 seconds
+test prepared_publication::tests::actual_encrypted_store_image_exceeds_ordinary_byte_bound ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 766 filtered out; finished in 286.98s
+
+Runner: 286.99s; exit=0; matching=1665/1665

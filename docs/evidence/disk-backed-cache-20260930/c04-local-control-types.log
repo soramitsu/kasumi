@@ -1,0 +1,21 @@
+Command: cargo test -p kasumi-types --all-features --lib --locked --offline --config profile.test.package.kasumi-kv.opt-level=3 --config profile.test.package.sha2.opt-level=3 -- --test-threads=1 control_topology::memory::tests:: control_topology::workspace::tests:: control_topology::tests::
+CARGO_TARGET_DIR=target/disk-backed-cache
+   Compiling kasumi-types v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-types)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 22.87s
+     Running unittests src/lib.rs (target/disk-backed-cache/debug/deps/kasumi_types-2fcc510c27a884b7)
+
+running 10 tests
+test control_topology::memory::tests::checked_topology_math_refuses_unrepresentable_allocations ... ok
+test control_topology::tests::borrowed_missing_route_still_validates_the_unchanged_global_topology ... ok
+test control_topology::tests::borrowed_single_route_preserves_global_checks_quota_and_error_precedence ... ok
+test control_topology::tests::borrowed_voter_override_preserves_clone_edit_errors_and_original_topology ... ok
+test control_topology::tests::replicated_topology_requires_distinct_tls_nodes_domains_and_exact_voters ... ok
+test control_topology::tests::tenant_incarnation_has_one_non_nil_canonical_uuid ... ok
+test control_topology::tests::topology_json_uses_canonical_distinct_numeric_node_keys_and_closed_fields ... ok
+test control_topology::tests::topology_observation_binds_distinct_control_voters_identity_and_bounded_lifetime ... ok
+test control_topology::workspace::tests::endpoint_host_census_preserves_special_parser_delimiters ... ok
+test control_topology::workspace::tests::endpoint_quote_checks_every_size_before_wrapping ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 54 filtered out; finished in 0.01s
+
+Runner: 22.98s; exit=0; matching=722/722

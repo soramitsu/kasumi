@@ -526,6 +526,11 @@ impl NodeDiskDirectory {
         if !entry.settled {
             return Err(io::ErrorKind::InvalidData.into());
         }
+        // Even a zero-file claim retains this exact parent until explicit
+        // settlement. Its scalar witness need not keep a directory handle.
+        if entry.transaction_claimed {
+            return Err(io::ErrorKind::WouldBlock.into());
+        }
         if entry.children != 0 {
             return Err(io::ErrorKind::DirectoryNotEmpty.into());
         }
@@ -1103,6 +1108,8 @@ fn record_child(disk: &NodeDisk, state: &mut State) -> io::Result<()> {
         len: metadata.len(),
         children: 0,
         live_handles: 1,
+        transaction_children: 0,
+        transaction_claimed: false,
     };
     assert!(
         state

@@ -373,7 +373,7 @@ pub async fn open_target_replica(
             ),
             TargetReplicaStartup::Established => None,
         };
-        let (engine, bootstrap) = owned
+        let (engine, bootstrap, bytes) = owned
             .run(
                 owned
                     .deadline
@@ -491,7 +491,7 @@ pub async fn open_target_replica(
                         engine.install_storage_access(material.application())?;
                         engine.verify_bootstrap_dependencies_checked(|| verification.check())?;
                         authority.check_target(material.application(), phase)?;
-                        Ok((engine, bootstrap))
+                        Ok((engine, bootstrap, bytes))
                     }),
             )
             .await?;
@@ -513,7 +513,7 @@ pub async fn open_target_replica(
                 let expected = membership.persist_target_raft_prebind(&journal, &stores)?;
                 owned.check()?;
                 let database = construction
-                    .start_target_prebound(engine, transport, raft_config, expected.clone())
+                    .start_target_prebound(engine, &bytes, transport, raft_config, expected.clone())
                     .await?;
                 (database, Some(expected))
             }
@@ -521,6 +521,7 @@ pub async fn open_target_replica(
                 let database = construction
                     .start_replicated(
                         engine,
+                        &bytes,
                         config.node_id,
                         format!(
                             "{}/{}",

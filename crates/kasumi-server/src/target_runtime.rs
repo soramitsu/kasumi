@@ -452,6 +452,9 @@ pub struct TargetRecoveryRuntime {
     recovery_health: std::sync::Mutex<serving::RecoveryHealth>,
     registry: crate::api::DatabaseRegistry,
     serving_monitor: crate::runtime_worker::RuntimeWorker,
+    // Reconciliation may prepare generations before the parent startup ticket
+    // is claimed; their cache workers remain dormant until this gate opens.
+    cache_warming_ready: AtomicBool,
     shutdown_gate: Mutex<DrainReport>,
     config: RuntimeConfig,
     authority_trusts: BTreeMap<String, AuthorityTrust>,
@@ -735,6 +738,7 @@ impl TargetRecoveryRuntime {
             )?,
             audit.store().persistent_disk().clone(),
             audit.store().scratch_disk().clone(),
+            audit.store().persistent_disk().native_storage_config(),
         )?;
         let access = StorageAccess::target_journal(&installed.control_root, &installed.node)?;
         let store = TenantStore::open_existing(
@@ -783,6 +787,7 @@ impl TargetRecoveryRuntime {
             recovery_health: std::sync::Mutex::new(serving::RecoveryHealth::new()),
             registry,
             serving_monitor: Default::default(),
+            cache_warming_ready: AtomicBool::new(false),
             shutdown_gate: Mutex::new(DrainReport::default()),
             config,
             authority_trusts,
@@ -809,7 +814,12 @@ impl TargetRecoveryRuntime {
             #[cfg(test)]
             fail_next_initialize_reply: AtomicBool::new(false),
         });
-        if let Err(error) = runtime.start_serving_reconciliation(&monitor_budget) {
+        let workers = crate::startup_preparation::capture("target runtime workers", async {
+            runtime.journal_node.prepare_cache_warming().await?;
+            runtime.start_serving_reconciliation(&monitor_budget)
+        })
+        .await;
+        if let Err(error) = workers {
             // The actual unpublished target remains owned while its journal and
             // any started monitor drain, even if the outer request loses its reply.
             struct FailedMonitor(Arc<TargetRecoveryRuntime>);
@@ -829,6 +839,33 @@ impl TargetRecoveryRuntime {
         }
         Ok(runtime)
     }
+    /// Called only by the parent runtime's synchronous acknowledged handoff.
+    pub(crate) fn activate_cache_warming(&self) -> Result<()> {
+        ensure!(
+            !self.closing.load(Ordering::Acquire),
+            "target runtime closing"
+        );
+        self.journal_node.activate_cache_warming()?;
+        self.cache_warming_ready.store(true, Ordering::Release);
+        self.serving_monitor.wake().notify_one();
+        Ok(())
+    }
+
+    fn activate_generation_cache(&self, generation: &Generation) -> Result<()> {
+        if self.cache_warming_ready.load(Ordering::Acquire) {
+            ensure!(
+                !self.closing.load(Ordering::Acquire),
+                "target runtime closing"
+            );
+            generation
+                .node
+                .as_ref()
+                .context("target node absent")?
+                .activate_cache_warming()?;
+        }
+        Ok(())
+    }
+
     pub fn control_root(&self) -> &ControlSigningRoot {
         &self.installed.control_root
     }
@@ -1467,11 +1504,18 @@ impl TargetRecoveryRuntime {
                     self.journal.materialization_file_id(&key.0, key.1)?,
                     self.audit.store().persistent_disk().clone(),
                     scratch,
+                    self.audit.store().persistent_disk().native_storage_config(),
                 )?);
                 g.fresh_catalogs = false;
             }
             op.check()?;
         }
+        // The retained Generation owns the node before preparation can yield.
+        // Retry a prior admission denial even if node acquisition already
+        // succeeded. Only serving/custody publication activates this worker.
+        op.check()?;
+        g.node.as_ref().unwrap().prepare_cache_warming().await?;
+        op.check()?;
         if g.stores.is_none() {
             op.check()?;
             let app = template
@@ -1990,9 +2034,11 @@ impl TargetRecoveryRuntime {
                 &path,
                 self.generation_file_id(key)?,
                 self.audit.store().persistent_disk().clone(),
+                self.audit.store().persistent_disk().native_storage_config(),
             )?;
             ensure!(
-                kasumi_store::private_files::file_identity(&path)? == *node.identity(),
+                kasumi_store::private_files::directory_identity(&path)?
+                    == node.directory_identity()?,
                 "target cleanup path changed after ownership"
             );
             op.check()?;
@@ -2147,8 +2193,8 @@ fn target_file_exists(path: &Path) -> Result<bool> {
     match std::fs::symlink_metadata(path) {
         Ok(metadata) => {
             ensure!(
-                metadata.is_file() && !metadata.file_type().is_symlink(),
-                "target file is not a regular installed path"
+                metadata.is_dir() && !metadata.file_type().is_symlink(),
+                "target group is not an installed directory"
             );
             Ok(true)
         }
@@ -2167,9 +2213,9 @@ fn target_absence_from_installed_disk(
     path: &Path,
 ) -> Result<()> {
     let (root, relative) = config.binding(path)?;
-    match disk.open_file(root, relative) {
-        Ok(mut file) => {
-            file.close()?;
+    match disk.open_directory(root, relative) {
+        Ok(directory) => {
+            drop(directory);
             anyhow::bail!("target storage remains under installed root")
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {

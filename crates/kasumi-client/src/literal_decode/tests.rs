@@ -305,11 +305,11 @@ fn change_feed_schema_and_audit_construct_values_from_literal_spans() {
             commit_event_count: 1,
             collection: "docs".into(),
             id: "a".into(),
-            document: Some(Arc::new(Document {
+            document: Some(Document {
                 id: "a".into(),
                 version: 4,
                 body: expected.clone(),
-            })),
+            }),
         }],
         next: ChangeFeedCursor {
             tenant: "tenant".into(),

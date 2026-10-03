@@ -328,11 +328,15 @@ async fn exact_live_generation_rejects_historical_and_reused_key_forgery() {
     assert!(trust.administer(&f.context(), stage_reused).is_err());
     assert!(old_fence.check().is_err());
     f.store.shutdown().await.unwrap();
-    let raw = std::fs::read(f.directory.path().join("trust.kv")).unwrap();
-    assert!(
-        !raw.windows(f.domain.manifest_sha256.len())
-            .any(|bytes| bytes == f.domain.manifest_sha256.as_bytes())
-    );
+    for path in crate::test_utils::node_group_files(&f.directory.path().join("trust.kv")) {
+        let raw = std::fs::read(&path).unwrap();
+        assert!(
+            !raw.windows(f.domain.manifest_sha256.len())
+                .any(|bytes| bytes == f.domain.manifest_sha256.as_bytes()),
+            "plaintext signing domain in {}",
+            path.display()
+        );
+    }
 }
 
 #[tokio::test]
@@ -996,7 +1000,10 @@ async fn failed_worker_outcome_survives_facade_drop_and_blocks_silent_cache_repl
     );
     let reopened = f.open();
     let repeated = retained.drain().await.unwrap_err();
-    assert!(Arc::ptr_eq(&error.issues()[0], &repeated.issues()[0]));
+    assert!(kasumi_types::drain::DrainIssueRef::ptr_eq(
+        &error.issues()[0],
+        &repeated.issues()[0]
+    ));
     reopened.close();
     reopened.drain_background_work().await.unwrap();
     drop(retained);

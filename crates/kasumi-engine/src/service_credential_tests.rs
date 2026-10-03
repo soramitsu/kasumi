@@ -8,6 +8,9 @@ struct CredentialFixture {
 }
 impl CredentialFixture {
     async fn new() -> Self {
+        Self::new_for_tenant("credential-expiry").await
+    }
+    async fn new_for_tenant(tenant: &str) -> Self {
         let directory = kasumi_store::test_utils::private_tempdir().unwrap();
         let (persistent_config, scratch_config) =
             crate::test_utils::fixture_disk_configs(directory.path()).unwrap();
@@ -40,7 +43,7 @@ impl CredentialFixture {
         .unwrap();
         let context = RequestContext {
             authorization: RequestAuthorization::service_identity(),
-            tenant: "credential-expiry".into(),
+            tenant: tenant.into(),
             principal: "owner".into(),
             scopes: BTreeSet::from([Action::Read, Action::Write, Action::Admin]),
             request_id: "expiry-test".into(),
@@ -112,6 +115,8 @@ impl CredentialFixture {
         let incarnation = uuid::Uuid::parse_str(&generation.state.incarnation).unwrap();
         let resource = if generation.state.retired {
             CredentialResource::Custody { incarnation }
+        } else if generation.tenant() == crate::control::CONTROL_TENANT {
+            CredentialResource::Control { incarnation }
         } else {
             CredentialResource::Database { incarnation }
         };

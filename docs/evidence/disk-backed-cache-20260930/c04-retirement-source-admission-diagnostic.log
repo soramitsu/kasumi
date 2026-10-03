@@ -1,0 +1,68 @@
+Command: cargo test --locked --offline --config profile.test.package.kasumi-kv.opt-level=3 --config profile.test.package.sha2.opt-level=3 -p kasumi-engine --all-features --test retirement -- --nocapture exact_retirement_seals_source_once_and_retains_proof_after_encrypted_restart
+CARGO_TARGET_DIR=target/disk-backed-cache
+   Compiling kasumi-kv v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-kv)
+   Compiling kasumi-store v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-store)
+   Compiling kasumi-raft v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-raft)
+   Compiling kasumi-engine v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-engine)
+warning: variant `Mutation` is never constructed
+  --> crates/kasumi-engine/src/security_audit_jobs.rs:26:5
+   |
+24 | enum JobEffect {
+   |      --------- variant in this enum
+25 |     Read,
+26 |     Mutation(&'static str),
+   |     ^^^^^^^^
+   |
+   = note: `JobEffect` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: struct `ReadPause` is never constructed
+  --> crates/kasumi-engine/src/security_audit_jobs.rs:57:19
+   |
+57 | pub(super) struct ReadPause {
+   |                   ^^^^^^^^^
+
+warning: method `run_mutation` is never used
+   --> crates/kasumi-engine/src/security_audit_jobs.rs:120:25
+    |
+ 62 | impl SecurityAudit {
+    | ------------------ method in this implementation
+...
+120 |     pub(super) async fn run_mutation<T, F, R>(&self, component: &'static str, run: R) -> Result<T>
+    |                         ^^^^^^^^^^^^
+
+warning: `kasumi-engine` (lib) generated 3 warnings
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 20.96s
+     Running tests/retirement.rs (target/disk-backed-cache/debug/deps/retirement-7992b5404b7c9b1b)
+
+running 1 test
+SOURCE_ADMISSION_DENIED requested=8192 charged=559351738 total=Some(559359930) max=588277056 resident=47693824 high=68719476736 live=35 slots=4096 protected=0 protected_slots=0 cache_headroom=(67108864, 64) headroom_fits=false usable=true pressured=false free=true operations=2 operation_limit=64 origins(bytes,count)[operation,other,audit,scoped,cache,source]=[(495783936, 4), (61118554, 26), (0, 0), (0, 0), (0, 0), (19744, 5)]
+SOURCE_PREPARE_DENIED phase=cell requested=8192 canonical=true planned=true root_preparation=456 cell=1240
+RETIREMENT_ARCHIVE_ORIGINAL_APPLY: ApplyPublicationFailure {
+    violation: None,
+    publication: Some(
+        Error {
+            code: ResourceExhausted,
+            message: "document source retention budget exhausted",
+        },
+    ),
+    backend: Some(
+        Failed,
+    ),
+}
+RETIREMENT_ARCHIVE_RAFT: RaftMetrics { running_state: Err(StorageError(IO { source: StorageIOError { subject: Store, verb: Write, source: std::io::error::Error: Raft apply failed; original failure retained, backtrace: None } })), id: 1, current_term: 1, vote: Vote { leader_id: LeaderId { term: 1, node_id: 1 }, committed: true }, last_log_index: Some(5), last_applied: Some(LogId { leader_id: LeaderId { term: 1, node_id: 1 }, index: 4 }), snapshot: None, purged: None, state: Shutdown, current_leader: Some(1), millis_since_quorum_ack: Some(0), membership_config: StoredMembership { log_id: Some(LogId { leader_id: LeaderId { term: 0, node_id: 0 }, index: 0 }), membership: Membership { configs: [{1}], nodes: {1: BasicNode { addr: "local" }} } }, replication: None }
+
+thread 'exact_retirement_seals_source_once_and_retains_proof_after_encrypted_restart' (17746803) panicked at crates/kasumi-engine/tests/retirement.rs:295:13:
+archive_history failed before retirement: Error { code: UnknownOutcome, message: "write task failed; resolve or retry with the same idempotency key" }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test exact_retirement_seals_source_once_and_retains_proof_after_encrypted_restart ... FAILED
+
+failures:
+
+failures:
+    exact_retirement_seals_source_once_and_retains_proof_after_encrypted_restart
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 9 filtered out; finished in 6.19s
+
+error: test failed, to rerun pass `-p kasumi-engine --test retirement`
+Runner: 27.23s; exit=101; matching=839/839

@@ -5,6 +5,13 @@ use kasumi_types::*;
 use serde_json::json;
 use std::sync::Arc;
 
+#[path = "control_topology_memory.rs"]
+mod memory;
+pub use memory::LocalTopologyFailure;
+#[path = "control_selection.rs"]
+mod selection;
+pub use selection::LocalControlSelection;
+
 pub const CONTROL_TENANT: &str = "__kasumi_control";
 const COLLECTION: &str = "topology";
 const DOCUMENT: &str = "current";
@@ -27,6 +34,15 @@ impl ControlPlane {
     }
     pub fn database(&self) -> &Arc<Database> {
         &self.database
+    }
+
+    /// Decode and validate this replica's local topology under its installed
+    /// admission. This trusted management observation performs no quorum barrier
+    /// or read audit and does not validate reserved-schema installation.
+    pub fn local_topology(
+        database: &Database,
+    ) -> anyhow::Result<crate::AdmittedOutput<VersionedTopology>> {
+        memory::local_topology(database)
     }
 
     /// Create the reserved schema once, through consensus. Existing schemas are
@@ -208,8 +224,9 @@ impl ControlPlane {
             Err(error) if error.code == ErrorCode::NotFound => return Ok(None),
             Err(error) => return Err(error),
         };
-        let topology: ControlTopology = serde_json::from_value(document.body)
-            .map_err(|_| Error::new(ErrorCode::Corruption, "invalid control topology"))?;
+        let topology: ControlTopology =
+            <ControlTopology as serde::Deserialize>::deserialize(&document.body)
+                .map_err(|_| Error::new(ErrorCode::Corruption, "invalid control topology"))?;
         topology
             .validate()
             .map_err(|_| Error::new(ErrorCode::Corruption, "invalid control placement"))?;
@@ -230,33 +247,17 @@ impl ControlPlane {
         self.database
             .engine()
             .authorize(&context, None, Action::Admin)?;
-        topology.validate()?;
-        if matches!(expected, Precondition::Any) {
-            return Err(Error::new(
-                ErrorCode::InvalidArgument,
-                "control updates require an explicit CAS precondition",
-            ));
-        }
-        self.database
-            .mutate(
-                context,
-                MutationBatch {
-                    read_set: Vec::new(),
-                    idempotency_key,
-                    operations: vec![Mutation::Put {
-                        collection: COLLECTION.into(),
-                        id: DOCUMENT.into(),
-                        body: serde_json::to_value(topology).map_err(|_| {
-                            Error::new(
-                                ErrorCode::InvalidArgument,
-                                "control topology encoding failed",
-                            )
-                        })?,
-                        expected,
-                    }],
-                },
-            )
-            .await
+        // The synchronous factory consumes and destroys the source DTO before
+        // the first possible Pending. Its newly allocated JSON has a separate
+        // exact owner which travels into the actual proposal child.
+        let input = crate::service::proposal_input::OperationInput::topology(
+            self.database.admission(),
+            topology,
+            expected,
+            &idempotency_key,
+        )?;
+        drop(idempotency_key);
+        self.database.mutate_topology(context, input).await
     }
 }
 

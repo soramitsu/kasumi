@@ -1,0 +1,35 @@
+Command: cargo test --manifest-path vendor/ownedbytes-0.9.0/Cargo.toml --locked --offline
+ISOLATED_SOURCE=/tmp/kasumi-source-cohort-validation-v1
+CARGO_TARGET_DIR=/Users/takemiyamakoto/dev/kasumi/target/disk-backed-cache
+    Blocking waiting for file lock on build directory
+   Compiling stable_deref_trait v1.2.0
+   Compiling ownedbytes v0.9.0 (/private/tmp/kasumi-source-cohort-validation-v1/vendor/ownedbytes-0.9.0)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 20s
+     Running unittests src/lib.rs (/Users/takemiyamakoto/dev/kasumi/target/disk-backed-cache/debug/deps/ownedbytes-a588efb700b11625)
+
+running 15 tests
+test lifetime_owner_tests::lifetime_owner_and_controls_retire_during_original_data_panic ... ok
+test lifetime_owner_tests::lifetime_owner_erased_control_is_deallocated_before_original_credit_drop ... ok
+test lifetime_owner_tests::lifetime_owner_outlives_retained_error_payload ... ok
+test lifetime_owner_tests::lifetime_owner_survives_every_view_operation ... ok
+test tests::test_owned_bytes_debug ... ok
+test tests::test_owned_bytes_read ... ok
+test tests::test_owned_bytes_read_incomplete ... ok
+test tests::test_owned_bytes_read_right_at_the_end ... ok
+test tests::test_owned_bytes_read_to_end ... ok
+test tests::test_owned_bytes_read_u64 ... ok
+test tests::test_owned_bytes_read_u8 ... ok
+test tests::test_owned_bytes_split ... ok
+test tests::test_owned_bytes_split_boundary ... ok
+test tests::test_split_off ... ok
+test lifetime_owner_tests::lifetime_owner_survives_concurrent_final_data_destructor ... ok
+
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+   Doc-tests ownedbytes
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+Runner: 81.00s; exit=0; matching=1748/1748

@@ -69,6 +69,71 @@ fn position(record: &TargetResolutionRecord) -> kasumi_raft::AppliedEntryContext
         retirement_seed: None,
     }
 }
+
+pub(crate) fn linked_sealed_successor_rows() -> (TenantState, [Row; 2]) {
+    let origin = fixture::origin();
+    let mut state = state(&origin);
+    let first = seal(&mut state);
+    let first = Row::ordered(
+        &state.target_resolution_head,
+        first.clone(),
+        &position(&first),
+    )
+    .unwrap();
+    advance(&mut state.target_resolution_head, &first).unwrap();
+    let TargetResolutionRecord::Completion(sealed) = &first.record else {
+        unreachable!()
+    };
+    let successor = fixture::attempt(
+        &origin,
+        Some(sealed.sealed_reference().unwrap()),
+        5,
+        4,
+        600,
+        800,
+    );
+    let (input, mut intent) = fixture::resolution(&successor, 6);
+    intent.accepted_at_ms = 750;
+    let mut machine = CompletionMachine {
+        origin: &origin,
+        head: state.target_completion_head.as_mut().unwrap(),
+        completion: None,
+        terminal_bytes: state.target_resolution_head.encoded_bytes,
+        maximum_bytes: state.limits.max_target_resolution_bytes,
+    };
+    machine.prepare(successor, Some(sealed), None).unwrap();
+    let second = machine
+        .resolve(input, fixture::applied(intent, 800, 6), None)
+        .unwrap();
+    state.revision = second.revision;
+    let second = TargetResolutionRecord::Completion(Box::new(second));
+    let second = Row::ordered(
+        &state.target_resolution_head,
+        second.clone(),
+        &position(&second),
+    )
+    .unwrap();
+    advance(&mut state.target_resolution_head, &second).unwrap();
+    let rows = [first, second];
+    let mut causal = CausalHead::default();
+    for row in &rows {
+        row.validate(&state).unwrap();
+        validate_causal(&state, row, &mut causal, |key| {
+            Ok(rows.iter().find(|candidate| candidate.key == key).cloned())
+        })
+        .unwrap();
+    }
+    validate_causal_current(&state, &causal, |key| {
+        Ok(rows.iter().find(|candidate| candidate.key == key).cloned())
+    })
+    .unwrap();
+    validate_current(&state, |key| {
+        Ok(rows.iter().find(|candidate| candidate.key == key).cloned())
+    })
+    .unwrap();
+    (state, rows)
+}
+
 async fn durable() -> (tempfile::TempDir, Arc<TenantStore>, TenantState, View) {
     let directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let memory = kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 32);
@@ -112,7 +177,7 @@ async fn selected_physical_rows_require_current_writer_bytes_without_repair() ->
         &position(&record),
         TARGET_COMPLETION_RESERVE_BYTES,
     )?
-    .persist()?;
+    .stage()?;
     let checkpoint = "51".repeat(32);
     store.write_batch(&selected.checkpoint_writes(&state, &checkpoint)?)?;
     let point_key = id_key(&key);
@@ -257,7 +322,7 @@ async fn exact_target_terminal_prefix_hides_unpublished_rows_and_rejects_changed
         TARGET_COMPLETION_RESERVE_BYTES,
     )
     .unwrap();
-    let advanced = pending.persist().unwrap();
+    let advanced = pending.stage().unwrap();
     assert!(selected.get(&record.key()).unwrap().is_none());
     let TargetResolutionRecord::Completion(fact) = &record else {
         unreachable!()
@@ -300,7 +365,7 @@ async fn exact_target_terminal_prefix_hides_unpublished_rows_and_rejects_changed
         TARGET_COMPLETION_RESERVE_BYTES,
     )
     .unwrap()
-    .persist()
+    .stage()
     .unwrap();
     assert_eq!(replay.head(), advanced.head());
 
@@ -319,7 +384,7 @@ async fn exact_target_terminal_prefix_hides_unpublished_rows_and_rejects_changed
         TARGET_COMPLETION_RESERVE_BYTES,
     )
     .unwrap();
-    assert!(different.persist().is_err());
+    assert!(different.stage().is_err());
 }
 
 #[test]
@@ -377,7 +442,7 @@ async fn target_snapshot_catalog_reopens_only_its_exact_committed_prefix() {
         TARGET_COMPLETION_RESERVE_BYTES,
     )
     .unwrap()
-    .persist()
+    .stage()
     .unwrap();
     let row = advanced.row(1).unwrap();
     let mut staged = Builder::new(
@@ -414,7 +479,7 @@ async fn target_snapshot_catalog_reopens_only_its_exact_committed_prefix() {
 #[test]
 fn every_historical_terminal_requires_its_exact_earlier_seal() {
     let scratch = crate::codec_fixture::ScratchScope::new(
-        kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 32),
+        kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 64),
     )
     .unwrap();
     let disk = &scratch.disk;
@@ -447,6 +512,113 @@ fn every_historical_terminal_requires_its_exact_earlier_seal() {
     row.validate(&state).unwrap();
     let mut builder = Builder::new(disk, 8 << 20, &state.tenant, &state.incarnation).unwrap();
     assert!(builder.push(&row, &state).is_err());
+}
+
+#[test]
+fn builder_preserves_linked_seals_for_one_incarnation() {
+    let scratch = crate::codec_fixture::ScratchScope::new(
+        kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 64),
+    )
+    .unwrap();
+    let disk = &scratch.disk;
+    let (state, rows) = linked_sealed_successor_rows();
+    let mut builder = Builder::new(disk, 8 << 20, &state.tenant, &state.incarnation).unwrap();
+    for row in &rows {
+        builder.push(row, &state).unwrap();
+    }
+    // Even a correctly framed next ordinal cannot replace an immutable
+    // identity while the mutable per-incarnation cursor advances.
+    let duplicate = Row::ordered(
+        &state.target_resolution_head,
+        rows[0].record.clone(),
+        &position(&rows[0].record),
+    )
+    .unwrap();
+    duplicate.validate(&state).unwrap();
+    let error = builder.push(&duplicate, &state).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("duplicate target terminal point identity"),
+        "{error:#}"
+    );
+    let view = builder.finish(&state).unwrap();
+    view.validate_state(&state).unwrap();
+    assert_eq!(view.head(), &state.target_resolution_head);
+    for row in &rows {
+        assert_eq!(view.get(&row.key).unwrap().as_ref(), Some(row));
+        assert_eq!(&view.row(row.ordinal).unwrap(), row);
+    }
+    drop(view);
+    assert_eq!(disk.snapshot().live_files, 0);
+    assert_eq!(disk.snapshot().charged_bytes, 0);
+}
+
+#[test]
+fn builder_rejects_missing_or_wrong_successor_predecessor() {
+    let scratch = crate::codec_fixture::ScratchScope::new(
+        kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 64),
+    )
+    .unwrap();
+    let disk = &scratch.disk;
+    let (state, rows) = linked_sealed_successor_rows();
+    for missing in [true, false] {
+        let mut record = rows[1].record.clone();
+        let TargetResolutionRecord::Completion(fact) = &mut record else {
+            unreachable!()
+        };
+        if missing {
+            fact.input.attempt.input.predecessor = None;
+        } else {
+            fact.input
+                .attempt
+                .input
+                .predecessor
+                .as_mut()
+                .unwrap()
+                .fact_sha256 = "ab".repeat(32);
+        }
+        // Recompute all embedded digests so only the causal relationship is
+        // wrong; typed validity and the authenticated ordinal prefix remain.
+        fact.input.attempt.intent.request.phase_input_sha256 =
+            fact.input.attempt.input.digest().unwrap();
+        fact.input.attempt.intent.request_sha256 =
+            staged_digest(&fact.input.attempt.intent.request).unwrap().0;
+        fact.resolution_intent.request.phase_input_sha256 = fact.input.digest().unwrap();
+        fact.resolution_intent.request_sha256 =
+            staged_digest(&fact.resolution_intent.request).unwrap().0;
+        fact.validate().unwrap();
+        let mut prefix =
+            TargetResolutionPrefixHead::empty(&state.tenant, &state.incarnation).unwrap();
+        advance(&mut prefix, &rows[0]).unwrap();
+        let row = Row::ordered(&prefix, record.clone(), &position(&record)).unwrap();
+        row.validate(&state).unwrap();
+        let mut builder = Builder::new(disk, 8 << 20, &state.tenant, &state.incarnation).unwrap();
+        builder.push(&rows[0], &state).unwrap();
+        let error = builder.push(&row, &state).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("exact ordered sealed predecessor"),
+            "{error:#}"
+        );
+        // Failed causal validation publishes no identity, ordinal or head.
+        assert_eq!(builder.head, prefix);
+        assert!(builder.table.get(&id_key(&row.key)).unwrap().is_none());
+        assert!(
+            builder
+                .table
+                .get(&ordinal_key(row.ordinal))
+                .unwrap()
+                .is_none()
+        );
+        builder.push(&rows[1], &state).unwrap();
+        let view = builder.finish(&state).unwrap();
+        view.validate_state(&state).unwrap();
+        drop(view);
+        assert_eq!(disk.snapshot().live_files, 0);
+        assert_eq!(disk.snapshot().charged_bytes, 0);
+    }
 }
 
 #[test]

@@ -1,0 +1,117 @@
+Command: cargo test --locked --offline --config profile.test.package.kasumi-kv.opt-level=3 --config profile.test.package.sha2.opt-level=3 -p kasumi-kv -p kasumi-store -p kasumi-raft -p kasumi-engine -p kasumi-authority --all-features --lib --no-fail-fast -- canonical_control_ owned_backend_mutation_ owned_prepared_restore_ validation_baseline_actual_prepared_restore validation_baseline_failed_publish_retires_candidate_before_apply_owner validation_baseline_sealed_and_poisoned_owners_refuse_before_decode non_application_capacity source_actor_startup --nocapture
+ISOLATED_SOURCE=/tmp/kasumi-source-cohort-validation-v1
+CARGO_TARGET_DIR=/Users/takemiyamakoto/dev/kasumi/target/disk-backed-cache
+   Compiling rustls v0.23.43
+   Compiling rustix v1.1.4
+   Compiling prost-derive v0.14.4
+   Compiling prettyplease v0.2.37
+   Compiling pulldown-cmark v0.13.4
+   Compiling unicase v2.9.0
+   Compiling regex-syntax v0.8.11
+   Compiling foldhash v0.1.5
+   Compiling indexmap v2.14.1
+   Compiling fixedbitset v0.5.7
+   Compiling multimap v0.10.1
+   Compiling openraft v0.9.25 (/private/tmp/kasumi-source-cohort-validation-v1/vendor/openraft-0.9.25/openraft)
+   Compiling protoc-bin-vendored-linux-s390_64 v3.2.0
+   Compiling protoc-bin-vendored-macos-x86_64 v3.2.0
+   Compiling protoc-bin-vendored-linux-x86_32 v3.2.0
+   Compiling protoc-bin-vendored-linux-x86_64 v3.2.0
+   Compiling hashbrown v0.15.5
+   Compiling protoc-bin-vendored-linux-ppcle_64 v3.2.0
+   Compiling protoc-bin-vendored-macos-aarch_64 v3.2.0
+   Compiling protoc-bin-vendored-win32 v3.2.0
+   Compiling protoc-bin-vendored-linux-aarch_64 v3.2.0
+   Compiling prost v0.14.4
+   Compiling protoc-bin-vendored v3.2.0
+   Compiling tonic-build v0.14.6
+   Compiling petgraph v0.8.3
+   Compiling xattr v1.6.1
+   Compiling tempfile v3.27.0
+   Compiling prost-types v0.14.4
+   Compiling pulldown-cmark-to-cmark v22.0.1
+   Compiling tar v0.4.46
+   Compiling regex-automata v0.4.18
+   Compiling regex v1.13.1
+   Compiling prost-build v0.14.4
+   Compiling tokio-rustls v0.26.5
+   Compiling ureq v3.4.0
+   Compiling tonic v0.14.6
+   Compiling hyper-rustls v0.27.9
+   Compiling tonic-prost-build v0.14.6
+   Compiling reqwest v0.12.28
+   Compiling kasumi-client v0.1.0 (/private/tmp/kasumi-source-cohort-validation-v1/crates/kasumi-client)
+   Compiling lindera-dictionary v5.3.0
+   Compiling kasumi-transport v0.1.0 (/private/tmp/kasumi-source-cohort-validation-v1/crates/kasumi-transport)
+   Compiling tonic-prost v0.14.6
+   Compiling lindera-ipadic v5.3.0
+   Compiling kasumi-store v0.1.0 (/private/tmp/kasumi-source-cohort-validation-v1/crates/kasumi-store)
+   Compiling kasumi-raft v0.1.0 (/private/tmp/kasumi-source-cohort-validation-v1/crates/kasumi-raft)
+error[E0599]: no method named `prepare_restore` found for struct `StorageHandle<dyn StateMachineBackend>` in the current scope
+    --> crates/kasumi-raft/src/storage.rs:1783:18
+     |
+1780 |                let prepared = machine
+     |   ____________________________-
+     |  |____________________________|
+1781 | ||                 .backend
+     | ||________________________- method `prepare_restore` is available on `&StorageHandle<(dyn StateMachineBackend + 'static)>`
+1782 | |                  .clone()
+1783 | |                  .prepare_restore(&context, &mut envelope.backend.reader())?;
+     | |                  -^^^^^^^^^^^^^^^ method not found in `StorageHandle<dyn StateMachineBackend>`
+     | |__________________|
+     |
+     |
+    ::: crates/kasumi-raft/src/lib.rs:298:15
+     |
+ 298 |            self: Arc<Self>,
+     |                  --------- the method might not be found because of this arbitrary self type
+     |
+    ::: crates/kasumi-raft/src/lifetime.rs:35:1
+     |
+  35 |    pub(crate) struct StorageHandle<T: ?Sized>(Arc<StorageOwner<T>>);
+     |    ------------------------------------------ method `prepare_restore` not found for this struct
+
+   Compiling lindera v5.3.0
+error[E0599]: no method named `prepare_restore` found for struct `StorageHandle<dyn StateMachineBackend>` in the current scope
+    --> crates/kasumi-raft/src/storage.rs:1316:22
+     |
+1314 |                   let prepared = target
+     |                                  ------
+     |                                  |
+     |  ________________________________method `prepare_restore` is available on `&StorageHandle<dyn StateMachineBackend>`
+     | |
+1315 | |                     .clone()
+1316 | |                     .prepare_restore(&context, &mut snapshot.backend.reader())?;
+     | |                     -^^^^^^^^^^^^^^^ method not found in `StorageHandle<dyn StateMachineBackend>`
+     | |_____________________|
+     |
+     |
+    ::: crates/kasumi-raft/src/lib.rs:298:15
+     |
+ 298 |           self: Arc<Self>,
+     |                 --------- the method might not be found because of this arbitrary self type
+     |
+    ::: crates/kasumi-raft/src/lifetime.rs:35:1
+     |
+  35 |   pub(crate) struct StorageHandle<T: ?Sized>(Arc<StorageOwner<T>>);
+     |   ------------------------------------------ method `prepare_restore` not found for this struct
+
+   Compiling lindera-analysis v5.3.0
+error[E0277]: `kasumi_store::TenantStore` doesn't implement `std::fmt::Debug`
+  --> crates/kasumi-raft/src/storage/control_gate.rs:22:5
+   |
+16 | #[derive(Debug, Default)]
+   |          ----- in this derive macro expansion
+...
+22 |     _store: Option<Arc<kasumi_store::TenantStore>>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the trait `std::fmt::Debug` is not implemented for `kasumi_store::TenantStore`
+   |
+help: the trait `std::fmt::Debug` is implemented for `std::option::Option<T>`
+  --> /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/option.rs:591:15
+
+   Compiling lindera-tantivy v5.0.1
+Some errors have detailed explanations: E0277, E0599.
+For more information about an error, try `rustc --explain E0277`.
+error: could not compile `kasumi-raft` (lib) due to 3 previous errors
+warning: build failed, waiting for other jobs to finish...
+Runner: 50.90s; exit=101; matching=1576/1576

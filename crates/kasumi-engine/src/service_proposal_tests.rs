@@ -114,7 +114,7 @@ async fn cancelled_database_shutdown_joins_actual_proposal_panic_before_raft_shu
         repeated
             .issues()
             .iter()
-            .any(|issue| Arc::ptr_eq(actual, issue))
+            .any(|issue| kasumi_types::drain::DrainIssueRef::ptr_eq(actual, issue))
     );
     fixture.audit.shutdown().await.unwrap();
 }

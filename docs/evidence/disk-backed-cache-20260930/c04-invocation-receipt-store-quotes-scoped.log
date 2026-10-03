@@ -1,0 +1,14 @@
+Command: cargo test --locked --offline --config profile.test.package.kasumi-kv.opt-level=3 --config profile.test.package.sha2.opt-level=3 -p kasumi-store --all-features --lib storage_domains::read_memory_quote::tests -- --nocapture
+CARGO_TARGET_DIR=target/disk-backed-cache
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.10s
+     Running unittests src/lib.rs (target/disk-backed-cache/debug/deps/kasumi_store-98be0c6afb7030c8)
+
+running 4 tests
+test storage_domains::read_memory_quote::tests::provider_without_own_quote_refuses_without_guessing_or_allocating ... ok
+test storage_domains::read_memory_quote::tests::paired_read_quote_has_no_allocations_or_admission_and_matches_reader_retention ... ok
+test storage_domains::read_memory_quote::tests::paired_read_quote_key_id_ceiling_is_owned_and_stale_growth_is_rejected ... ok
+test storage_domains::read_memory_quote::tests::paired_read_quote_covers_real_encrypted_get_requested_allocations ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 671 filtered out; finished in 2.09s
+
+Runner: 3.78s; exit=0; matching=806/806

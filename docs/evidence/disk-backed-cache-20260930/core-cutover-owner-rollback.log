@@ -1,0 +1,499 @@
+   Compiling kasumi-kv v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-kv)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.57s
+     Running tests/owner_fencing.rs (target/disk-backed-cache/debug/deps/owner_fencing-080d49128c77bb70)
+
+running 9 tests
+test owner_failure_after_prepare_fences_and_restart_truncates_the_unpublished_records ... FAILED
+test unwinding_owner_failed_callback_cannot_unlatch_the_fence ... ok
+test failed_read_owner_check_is_sticky_for_every_snapshot_and_writer ... ok
+test poisoned_close_is_fenced_and_never_replays_native_close ... ok
+test unfenced_capacity_denial_has_no_effect_and_leaves_the_owner_usable ... ok
+test panicking_length_and_value_read_fence_once_and_keep_their_payloads ... ok
+test failed_pre_commit_owner_calls_fence_once_without_any_backend_effect ... ok
+test panic_at_every_commit_effect_fences_once_and_reopens_a_whole_generation ... ok
+test panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value ... ok
+
+successes:
+
+---- unwinding_owner_failed_callback_cannot_unlatch_the_fence stdout ----
+
+thread 'unwinding_owner_failed_callback_cannot_unlatch_the_fence' (2263322) panicked at crates/kasumi-kv/tests/owner_fencing.rs:73:13:
+injected owner_failed panic
+
+---- poisoned_close_is_fenced_and_never_replays_native_close stdout ----
+
+thread 'poisoned_close_is_fenced_and_never_replays_native_close' (2263320) panicked at crates/kasumi-kv/tests/owner_fencing.rs:242:13:
+injected close panic
+
+---- panicking_length_and_value_read_fence_once_and_keep_their_payloads stdout ----
+
+thread 'panicking_length_and_value_read_fence_once_and_keep_their_payloads' (2263319) panicked at crates/kasumi-kv/tests/owner_fencing.rs:206:13:
+injected length panic
+
+thread 'panicking_length_and_value_read_fence_once_and_keep_their_payloads' (2263319) panicked at crates/kasumi-kv/tests/owner_fencing.rs:178:13:
+injected read panic
+
+---- panic_at_every_commit_effect_fences_once_and_reopens_a_whole_generation stdout ----
+
+thread 'panic_at_every_commit_effect_fences_once_and_reopens_a_whole_generation' (2263317) panicked at crates/kasumi-kv/tests/owner_fencing.rs:166:13:
+injected effect panic
+
+thread 'panic_at_every_commit_effect_fences_once_and_reopens_a_whole_generation' (2263317) panicked at crates/kasumi-kv/tests/owner_fencing.rs:170:13:
+injected effect panic
+
+thread 'panic_at_every_commit_effect_fences_once_and_reopens_a_whole_generation' (2263317) panicked at crates/kasumi-kv/tests/owner_fencing.rs:166:13:
+injected effect panic
+
+thread 'panic_at_every_commit_effect_fences_once_and_reopens_a_whole_generation' (2263317) panicked at crates/kasumi-kv/tests/owner_fencing.rs:170:13:
+injected effect panic
+
+thread 'panic_at_every_commit_effect_fences_once_and_reopens_a_whole_generation' (2263317) panicked at crates/kasumi-kv/tests/owner_fencing.rs:166:13:
+injected effect panic
+
+thread 'panic_at_every_commit_effect_fences_once_and_reopens_a_whole_generation' (2263317) panicked at crates/kasumi-kv/tests/owner_fencing.rs:170:13:
+injected effect panic
+
+thread 'panic_at_every_commit_effect_fences_once_and_reopens_a_whole_generation' (2263317) panicked at crates/kasumi-kv/tests/owner_fencing.rs:166:13:
+injected effect panic
+
+thread 'panic_at_every_commit_effect_fences_once_and_reopens_a_whole_generation' (2263317) panicked at crates/kasumi-kv/tests/owner_fencing.rs:170:13:
+injected effect panic
+
+thread 'panic_at_every_commit_effect_fences_once_and_reopens_a_whole_generation' (2263317) panicked at crates/kasumi-kv/tests/owner_fencing.rs:166:13:
+injected effect panic
+
+thread 'panic_at_every_commit_effect_fences_once_and_reopens_a_whole_generation' (2263317) panicked at crates/kasumi-kv/tests/owner_fencing.rs:170:13:
+injected effect panic
+
+thread 'panic_at_every_commit_effect_fences_once_and_reopens_a_whole_generation' (2263317) panicked at crates/kasumi-kv/tests/owner_fencing.rs:166:13:
+injected effect panic
+
+thread 'panic_at_every_commit_effect_fences_once_and_reopens_a_whole_generation' (2263317) panicked at crates/kasumi-kv/tests/owner_fencing.rs:170:13:
+injected effect panic
+
+thread 'panic_at_every_commit_effect_fences_once_and_reopens_a_whole_generation' (2263317) panicked at crates/kasumi-kv/tests/owner_fencing.rs:166:13:
+injected effect panic
+
+thread 'panic_at_every_commit_effect_fences_once_and_reopens_a_whole_generation' (2263317) panicked at crates/kasumi-kv/tests/owner_fencing.rs:170:13:
+injected effect panic
+
+thread 'panic_at_every_commit_effect_fences_once_and_reopens_a_whole_generation' (2263317) panicked at crates/kasumi-kv/tests/owner_fencing.rs:166:13:
+injected effect panic
+
+thread 'panic_at_every_commit_effect_fences_once_and_reopens_a_whole_generation' (2263317) panicked at crates/kasumi-kv/tests/owner_fencing.rs:170:13:
+injected effect panic
+
+thread 'panic_at_every_commit_effect_fences_once_and_reopens_a_whole_generation' (2263317) panicked at crates/kasumi-kv/tests/owner_fencing.rs:166:13:
+injected effect panic
+
+thread 'panic_at_every_commit_effect_fences_once_and_reopens_a_whole_generation' (2263317) panicked at crates/kasumi-kv/tests/owner_fencing.rs:170:13:
+injected effect panic
+
+thread 'panic_at_every_commit_effect_fences_once_and_reopens_a_whole_generation' (2263317) panicked at crates/kasumi-kv/tests/owner_fencing.rs:166:13:
+injected effect panic
+
+thread 'panic_at_every_commit_effect_fences_once_and_reopens_a_whole_generation' (2263317) panicked at crates/kasumi-kv/tests/owner_fencing.rs:170:13:
+injected effect panic
+
+thread 'panic_at_every_commit_effect_fences_once_and_reopens_a_whole_generation' (2263317) panicked at crates/kasumi-kv/tests/owner_fencing.rs:166:13:
+injected effect panic
+
+thread 'panic_at_every_commit_effect_fences_once_and_reopens_a_whole_generation' (2263317) panicked at crates/kasumi-kv/tests/owner_fencing.rs:170:13:
+injected effect panic
+
+thread 'panic_at_every_commit_effect_fences_once_and_reopens_a_whole_generation' (2263317) panicked at crates/kasumi-kv/tests/owner_fencing.rs:166:13:
+injected effect panic
+
+thread 'panic_at_every_commit_effect_fences_once_and_reopens_a_whole_generation' (2263317) panicked at crates/kasumi-kv/tests/owner_fencing.rs:170:13:
+injected effect panic
+
+thread 'panic_at_every_commit_effect_fences_once_and_reopens_a_whole_generation' (2263317) panicked at crates/kasumi-kv/tests/owner_fencing.rs:166:13:
+injected effect panic
+
+thread 'panic_at_every_commit_effect_fences_once_and_reopens_a_whole_generation' (2263317) panicked at crates/kasumi-kv/tests/owner_fencing.rs:170:13:
+injected effect panic
+
+---- panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value stdout ----
+
+thread 'panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value' (2263318) panicked at crates/kasumi-kv/tests/owner_fencing.rs:166:13:
+injected effect panic
+
+thread 'panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value' (2263318) panicked at crates/kasumi-kv/tests/owner_fencing.rs:170:13:
+injected effect panic
+
+thread 'panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value' (2263318) panicked at crates/kasumi-kv/tests/owner_fencing.rs:166:13:
+injected effect panic
+
+thread 'panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value' (2263318) panicked at crates/kasumi-kv/tests/owner_fencing.rs:170:13:
+injected effect panic
+
+thread 'panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value' (2263318) panicked at crates/kasumi-kv/tests/owner_fencing.rs:166:13:
+injected effect panic
+
+thread 'panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value' (2263318) panicked at crates/kasumi-kv/tests/owner_fencing.rs:170:13:
+injected effect panic
+
+thread 'panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value' (2263318) panicked at crates/kasumi-kv/tests/owner_fencing.rs:166:13:
+injected effect panic
+
+thread 'panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value' (2263318) panicked at crates/kasumi-kv/tests/owner_fencing.rs:170:13:
+injected effect panic
+
+thread 'panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value' (2263318) panicked at crates/kasumi-kv/tests/owner_fencing.rs:166:13:
+injected effect panic
+
+thread 'panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value' (2263318) panicked at crates/kasumi-kv/tests/owner_fencing.rs:170:13:
+injected effect panic
+
+thread 'panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value' (2263318) panicked at crates/kasumi-kv/tests/owner_fencing.rs:166:13:
+injected effect panic
+
+thread 'panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value' (2263318) panicked at crates/kasumi-kv/tests/owner_fencing.rs:170:13:
+injected effect panic
+
+thread 'panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value' (2263318) panicked at crates/kasumi-kv/tests/owner_fencing.rs:166:13:
+injected effect panic
+
+thread 'panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value' (2263318) panicked at crates/kasumi-kv/tests/owner_fencing.rs:170:13:
+injected effect panic
+
+thread 'panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value' (2263318) panicked at crates/kasumi-kv/tests/owner_fencing.rs:166:13:
+injected effect panic
+
+thread 'panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value' (2263318) panicked at crates/kasumi-kv/tests/owner_fencing.rs:170:13:
+injected effect panic
+
+thread 'panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value' (2263318) panicked at crates/kasumi-kv/tests/owner_fencing.rs:166:13:
+injected effect panic
+
+thread 'panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value' (2263318) panicked at crates/kasumi-kv/tests/owner_fencing.rs:170:13:
+injected effect panic
+
+thread 'panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value' (2263318) panicked at crates/kasumi-kv/tests/owner_fencing.rs:166:13:
+injected effect panic
+
+thread 'panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value' (2263318) panicked at crates/kasumi-kv/tests/owner_fencing.rs:170:13:
+injected effect panic
+
+thread 'panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value' (2263318) panicked at crates/kasumi-kv/tests/owner_fencing.rs:166:13:
+injected effect panic
+
+thread 'panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value' (2263318) panicked at crates/kasumi-kv/tests/owner_fencing.rs:170:13:
+injected effect panic
+
+thread 'panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value' (2263318) panicked at crates/kasumi-kv/tests/owner_fencing.rs:166:13:
+injected effect panic
+
+thread 'panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value' (2263318) panicked at crates/kasumi-kv/tests/owner_fencing.rs:170:13:
+injected effect panic
+
+thread 'panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value' (2263318) panicked at crates/kasumi-kv/tests/owner_fencing.rs:166:13:
+injected effect panic
+
+thread 'panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value' (2263318) panicked at crates/kasumi-kv/tests/owner_fencing.rs:170:13:
+injected effect panic
+
+thread 'panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value' (2263318) panicked at crates/kasumi-kv/tests/owner_fencing.rs:166:13:
+injected effect panic
+
+thread 'panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value' (2263318) panicked at crates/kasumi-kv/tests/owner_fencing.rs:170:13:
+injected effect panic
+
+thread 'panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value' (2263318) panicked at crates/kasumi-kv/tests/owner_fencing.rs:166:13:
+injected effect panic
+
+thread 'panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value' (2263318) panicked at crates/kasumi-kv/tests/owner_fencing.rs:170:13:
+injected effect panic
+
+thread 'panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value' (2263318) panicked at crates/kasumi-kv/tests/owner_fencing.rs:166:13:
+injected effect panic
+
+thread 'panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value' (2263318) panicked at crates/kasumi-kv/tests/owner_fencing.rs:170:13:
+injected effect panic
+
+thread 'panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value' (2263318) panicked at crates/kasumi-kv/tests/owner_fencing.rs:166:13:
+injected effect panic
+
+thread 'panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value' (2263318) panicked at crates/kasumi-kv/tests/owner_fencing.rs:170:13:
+injected effect panic
+
+thread 'panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value' (2263318) panicked at crates/kasumi-kv/tests/owner_fencing.rs:166:13:
+injected effect panic
+
+thread 'panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value' (2263318) panicked at crates/kasumi-kv/tests/owner_fencing.rs:170:13:
+injected effect panic
+
+thread 'panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value' (2263318) panicked at crates/kasumi-kv/tests/owner_fencing.rs:166:13:
+injected effect panic
+
+thread 'panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value' (2263318) panicked at crates/kasumi-kv/tests/owner_fencing.rs:170:13:
+injected effect panic
+
+thread 'panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value' (2263318) panicked at crates/kasumi-kv/tests/owner_fencing.rs:166:13:
+injected effect panic
+
+thread 'panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value' (2263318) panicked at crates/kasumi-kv/tests/owner_fencing.rs:170:13:
+injected effect panic
+
+thread 'panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value' (2263318) panicked at crates/kasumi-kv/tests/owner_fencing.rs:166:13:
+injected effect panic
+
+thread 'panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value' (2263318) panicked at crates/kasumi-kv/tests/owner_fencing.rs:170:13:
+injected effect panic
+
+thread 'panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value' (2263318) panicked at crates/kasumi-kv/tests/owner_fencing.rs:166:13:
+injected effect panic
+
+thread 'panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value' (2263318) panicked at crates/kasumi-kv/tests/owner_fencing.rs:170:13:
+injected effect panic
+
+thread 'panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value' (2263318) panicked at crates/kasumi-kv/tests/owner_fencing.rs:166:13:
+injected effect panic
+
+thread 'panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value' (2263318) panicked at crates/kasumi-kv/tests/owner_fencing.rs:170:13:
+injected effect panic
+
+thread 'panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value' (2263318) panicked at crates/kasumi-kv/tests/owner_fencing.rs:166:13:
+injected effect panic
+
+thread 'panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value' (2263318) panicked at crates/kasumi-kv/tests/owner_fencing.rs:170:13:
+injected effect panic
+
+thread 'panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value' (2263318) panicked at crates/kasumi-kv/tests/owner_fencing.rs:166:13:
+injected effect panic
+
+thread 'panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value' (2263318) panicked at crates/kasumi-kv/tests/owner_fencing.rs:170:13:
+injected effect panic
+
+thread 'panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value' (2263318) panicked at crates/kasumi-kv/tests/owner_fencing.rs:166:13:
+injected effect panic
+
+thread 'panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value' (2263318) panicked at crates/kasumi-kv/tests/owner_fencing.rs:170:13:
+injected effect panic
+
+thread 'panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value' (2263318) panicked at crates/kasumi-kv/tests/owner_fencing.rs:166:13:
+injected effect panic
+
+thread 'panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value' (2263318) panicked at crates/kasumi-kv/tests/owner_fencing.rs:170:13:
+injected effect panic
+
+thread 'panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value' (2263318) panicked at crates/kasumi-kv/tests/owner_fencing.rs:166:13:
+injected effect panic
+
+thread 'panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value' (2263318) panicked at crates/kasumi-kv/tests/owner_fencing.rs:170:13:
+injected effect panic
+
+thread 'panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value' (2263318) panicked at crates/kasumi-kv/tests/owner_fencing.rs:166:13:
+injected effect panic
+
+thread 'panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value' (2263318) panicked at crates/kasumi-kv/tests/owner_fencing.rs:170:13:
+injected effect panic
+
+thread 'panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value' (2263318) panicked at crates/kasumi-kv/tests/owner_fencing.rs:166:13:
+injected effect panic
+
+thread 'panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value' (2263318) panicked at crates/kasumi-kv/tests/owner_fencing.rs:170:13:
+injected effect panic
+
+thread 'panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value' (2263318) panicked at crates/kasumi-kv/tests/owner_fencing.rs:166:13:
+injected effect panic
+
+thread 'panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value' (2263318) panicked at crates/kasumi-kv/tests/owner_fencing.rs:170:13:
+injected effect panic
+
+thread 'panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value' (2263318) panicked at crates/kasumi-kv/tests/owner_fencing.rs:166:13:
+injected effect panic
+
+thread 'panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value' (2263318) panicked at crates/kasumi-kv/tests/owner_fencing.rs:170:13:
+injected effect panic
+
+thread 'panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value' (2263318) panicked at crates/kasumi-kv/tests/owner_fencing.rs:166:13:
+injected effect panic
+
+thread 'panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value' (2263318) panicked at crates/kasumi-kv/tests/owner_fencing.rs:170:13:
+injected effect panic
+
+thread 'panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value' (2263318) panicked at crates/kasumi-kv/tests/owner_fencing.rs:166:13:
+injected effect panic
+
+thread 'panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value' (2263318) panicked at crates/kasumi-kv/tests/owner_fencing.rs:170:13:
+injected effect panic
+
+thread 'panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value' (2263318) panicked at crates/kasumi-kv/tests/owner_fencing.rs:166:13:
+injected effect panic
+
+thread 'panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value' (2263318) panicked at crates/kasumi-kv/tests/owner_fencing.rs:170:13:
+injected effect panic
+
+thread 'panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value' (2263318) panicked at crates/kasumi-kv/tests/owner_fencing.rs:166:13:
+injected effect panic
+
+thread 'panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value' (2263318) panicked at crates/kasumi-kv/tests/owner_fencing.rs:170:13:
+injected effect panic
+
+thread 'panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value' (2263318) panicked at crates/kasumi-kv/tests/owner_fencing.rs:166:13:
+injected effect panic
+
+thread 'panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value' (2263318) panicked at crates/kasumi-kv/tests/owner_fencing.rs:170:13:
+injected effect panic
+
+thread 'panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value' (2263318) panicked at crates/kasumi-kv/tests/owner_fencing.rs:166:13:
+injected effect panic
+
+thread 'panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value' (2263318) panicked at crates/kasumi-kv/tests/owner_fencing.rs:170:13:
+injected effect panic
+
+thread 'panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value' (2263318) panicked at crates/kasumi-kv/tests/owner_fencing.rs:166:13:
+injected effect panic
+
+thread 'panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value' (2263318) panicked at crates/kasumi-kv/tests/owner_fencing.rs:170:13:
+injected effect panic
+
+thread 'panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value' (2263318) panicked at crates/kasumi-kv/tests/owner_fencing.rs:166:13:
+injected effect panic
+
+thread 'panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value' (2263318) panicked at crates/kasumi-kv/tests/owner_fencing.rs:170:13:
+injected effect panic
+
+thread 'panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value' (2263318) panicked at crates/kasumi-kv/tests/owner_fencing.rs:166:13:
+injected effect panic
+
+thread 'panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value' (2263318) panicked at crates/kasumi-kv/tests/owner_fencing.rs:170:13:
+injected effect panic
+
+thread 'panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value' (2263318) panicked at crates/kasumi-kv/tests/owner_fencing.rs:166:13:
+injected effect panic
+
+thread 'panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value' (2263318) panicked at crates/kasumi-kv/tests/owner_fencing.rs:170:13:
+injected effect panic
+
+thread 'panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value' (2263318) panicked at crates/kasumi-kv/tests/owner_fencing.rs:166:13:
+injected effect panic
+
+thread 'panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value' (2263318) panicked at crates/kasumi-kv/tests/owner_fencing.rs:170:13:
+injected effect panic
+
+thread 'panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value' (2263318) panicked at crates/kasumi-kv/tests/owner_fencing.rs:166:13:
+injected effect panic
+
+thread 'panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value' (2263318) panicked at crates/kasumi-kv/tests/owner_fencing.rs:170:13:
+injected effect panic
+
+thread 'panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value' (2263318) panicked at crates/kasumi-kv/tests/owner_fencing.rs:166:13:
+injected effect panic
+
+thread 'panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value' (2263318) panicked at crates/kasumi-kv/tests/owner_fencing.rs:170:13:
+injected effect panic
+
+thread 'panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value' (2263318) panicked at crates/kasumi-kv/tests/owner_fencing.rs:166:13:
+injected effect panic
+
+thread 'panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value' (2263318) panicked at crates/kasumi-kv/tests/owner_fencing.rs:170:13:
+injected effect panic
+
+thread 'panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value' (2263318) panicked at crates/kasumi-kv/tests/owner_fencing.rs:166:13:
+injected effect panic
+
+thread 'panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value' (2263318) panicked at crates/kasumi-kv/tests/owner_fencing.rs:170:13:
+injected effect panic
+
+thread 'panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value' (2263318) panicked at crates/kasumi-kv/tests/owner_fencing.rs:166:13:
+injected effect panic
+
+thread 'panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value' (2263318) panicked at crates/kasumi-kv/tests/owner_fencing.rs:170:13:
+injected effect panic
+
+thread 'panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value' (2263318) panicked at crates/kasumi-kv/tests/owner_fencing.rs:166:13:
+injected effect panic
+
+thread 'panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value' (2263318) panicked at crates/kasumi-kv/tests/owner_fencing.rs:170:13:
+injected effect panic
+
+thread 'panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value' (2263318) panicked at crates/kasumi-kv/tests/owner_fencing.rs:166:13:
+injected effect panic
+
+thread 'panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value' (2263318) panicked at crates/kasumi-kv/tests/owner_fencing.rs:170:13:
+injected effect panic
+
+thread 'panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value' (2263318) panicked at crates/kasumi-kv/tests/owner_fencing.rs:166:13:
+injected effect panic
+
+thread 'panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value' (2263318) panicked at crates/kasumi-kv/tests/owner_fencing.rs:170:13:
+injected effect panic
+
+thread 'panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value' (2263318) panicked at crates/kasumi-kv/tests/owner_fencing.rs:166:13:
+injected effect panic
+
+thread 'panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value' (2263318) panicked at crates/kasumi-kv/tests/owner_fencing.rs:170:13:
+injected effect panic
+
+
+successes:
+    failed_pre_commit_owner_calls_fence_once_without_any_backend_effect
+    failed_read_owner_check_is_sticky_for_every_snapshot_and_writer
+    panic_at_every_commit_effect_fences_once_and_reopens_a_whole_generation
+    panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value
+    panicking_length_and_value_read_fence_once_and_keep_their_payloads
+    poisoned_close_is_fenced_and_never_replays_native_close
+    unfenced_capacity_denial_has_no_effect_and_leaves_the_owner_usable
+    unwinding_owner_failed_callback_cannot_unlatch_the_fence
+
+failures:
+
+---- owner_failure_after_prepare_fences_and_restart_truncates_the_unpublished_records stdout ----
+
+thread 'owner_failure_after_prepare_fences_and_restart_truncates_the_unpublished_records' (2263316) panicked at crates/kasumi-kv/tests/owner_fencing.rs:458:5:
+assertion failed: matches!(core.commit(&[Operation::put("items", b"key", NEW)]),
+    Err(CoreError::OwnerFailed))
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    owner_failure_after_prepare_fences_and_restart_truncates_the_unpublished_records
+
+test result: FAILED. 8 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 57.59s
+
+error: test failed, to rerun pass `-p kasumi-kv --test owner_fencing`
+     Running tests/transaction_rollback.rs (target/disk-backed-cache/debug/deps/transaction_rollback-dc57123eba679fb3)
+
+running 8 tests
+test commit_workspace_denial_settles_a_retained_writer_and_the_next_writer_commits ... FAILED
+test staging_owner_failure_keeps_the_batch_and_writer_gate_retained ... ok
+test table_handle_never_keeps_the_writer_gate_after_its_transaction_drops ... ok
+test rejected_commit_input_settles_and_releases_the_writer ... ok
+test denied_table_creation_and_overlay_range_roll_back_their_writers ... ok
+test abort_after_a_staging_rollback_settles_and_disposes ... ok
+test denied_second_of_three_inserts_rolls_back_the_whole_writer ... ok
+test group_sync_failure_keeps_the_writer_retained_until_reopen_decides ... ok
+
+successes:
+
+successes:
+    abort_after_a_staging_rollback_settles_and_disposes
+    denied_second_of_three_inserts_rolls_back_the_whole_writer
+    denied_table_creation_and_overlay_range_roll_back_their_writers
+    group_sync_failure_keeps_the_writer_retained_until_reopen_decides
+    rejected_commit_input_settles_and_releases_the_writer
+    staging_owner_failure_keeps_the_batch_and_writer_gate_retained
+    table_handle_never_keeps_the_writer_gate_after_its_transaction_drops
+
+failures:
+
+---- commit_workspace_denial_settles_a_retained_writer_and_the_next_writer_commits stdout ----
+
+thread 'commit_workspace_denial_settles_a_retained_writer_and_the_next_writer_commits' (2273265) panicked at crates/kasumi-kv/tests/transaction_rollback.rs:440:5:
+assertion `left == right` failed
+  left: 176488
+ right: 176136
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    commit_workspace_denial_settles_a_retained_writer_and_the_next_writer_commits
+
+test result: FAILED. 7 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.21s
+
+error: test failed, to rerun pass `-p kasumi-kv --test transaction_rollback`
+error: 2 targets failed:
+    `-p kasumi-kv --test owner_fencing`
+    `-p kasumi-kv --test transaction_rollback`

@@ -1,0 +1,5 @@
+   Compiling kasumi-kv v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-kv)
+   Compiling kasumi-store v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-store)
+error: failed to write query cache to `/Users/takemiyamakoto/dev/kasumi/target/disk-backed-cache/debug/incremental/kasumi_store-1qp9vqdlmlevj/s-hmrwnk5w1v-1o8gjc3-working/query-cache.bin`: No space left on device (os error 28)
+
+error: could not compile `kasumi-store` (lib test) due to 1 previous error

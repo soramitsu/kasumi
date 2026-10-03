@@ -24,6 +24,7 @@ class OwnedRunnerTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory(prefix="owned-assembly-unit-")
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name).resolve(strict=True)
+        attempt_index.create(self.root, "owned-unit-journal", "owned-unit-host", acceptance.REFERENCE)
         self.source = self.root / "source"
         (self.source / "scripts").mkdir(parents=True)
         self.script = self.source / owned.RUNNER

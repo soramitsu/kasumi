@@ -2,8 +2,8 @@
 //! cannot silently replace signer, partition membership or an accepted command.
 use crate::runtime::{DeploymentMode, read_private_file};
 use anyhow::{Result, ensure};
-use kasumi_engine::LifecycleSigner;
-use kasumi_types::{LifecycleInstallation, TenantState};
+use kasumi_engine::{LifecycleInstallationMetadata, LifecycleSigner};
+use kasumi_types::LifecycleInstallation;
 use serde::{Deserialize, Serialize};
 use std::{path::PathBuf, sync::Arc};
 use uuid::Uuid;
@@ -52,10 +52,10 @@ impl LifecycleRuntimeConfig {
 /// Followers inspect only their actual applied installation; this is a local
 /// readiness prerequisite, never a fabricated current-quorum proof.
 pub(crate) fn applied(
-    state: &TenantState,
+    installation: Option<LifecycleInstallationMetadata<'_>>,
     configured: Option<&LifecycleRuntimeConfig>,
 ) -> Result<bool> {
-    match (&state.lifecycle_control, configured) {
+    match (installation, configured) {
         (None, None) => Ok(true),
         (None, Some(_)) => Ok(false),
         (Some(_), None) => {
@@ -64,7 +64,7 @@ pub(crate) fn applied(
         (Some(current), Some(configured)) => {
             ensure!(
                 current.installation_command_id == configured.command_id
-                    && current.installation == configured.installation,
+                    && current.installation == &configured.installation,
                 "configured lifecycle installation differs from committed control state"
             );
             Ok(true)
@@ -72,11 +72,11 @@ pub(crate) fn applied(
     }
 }
 pub(crate) fn require_applied(
-    state: &TenantState,
+    installation: Option<LifecycleInstallationMetadata<'_>>,
     configured: Option<&LifecycleRuntimeConfig>,
 ) -> Result<()> {
     ensure!(
-        applied(state, configured)?,
+        applied(installation, configured)?,
         "installed lifecycle Control state is missing"
     );
     Ok(())
@@ -87,7 +87,11 @@ mod tests {
     #[test]
     fn lifecycle_startup_requires_explicit_configuration() {
         let mut value = serde_json::to_value(
-            crate::runtime::example_config(kasumi_store::DirectoryPolicy::fixture()).unwrap(),
+            crate::runtime::example_config(
+                kasumi_store::DirectoryPolicy::fixture(),
+                kasumi_store::FileAllocationPolicy::fixture(),
+            )
+            .unwrap(),
         )
         .unwrap();
         assert!(serde_json::from_value::<crate::runtime::RuntimeConfig>(value.clone()).is_ok());

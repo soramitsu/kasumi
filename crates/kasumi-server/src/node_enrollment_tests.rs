@@ -3,8 +3,11 @@ use kasumi_store::{NodeStore, StorageAccess, test_utils::LocalKeyProvider};
 
 async fn fixture() -> Result<(tempfile::TempDir, Arc<NodeStore>, Arc<TenantStore>, Input)> {
     let directory = kasumi_store::test_utils::private_tempdir()?;
-    let mut configuration =
-        crate::runtime::example_config(kasumi_store::DirectoryPolicy::fixture()).unwrap();
+    let mut configuration = crate::runtime::example_config(
+        kasumi_store::DirectoryPolicy::fixture(),
+        kasumi_store::FileAllocationPolicy::fixture(),
+    )
+    .unwrap();
     configuration.admission = Default::default();
     configuration.persistent_disk =
         crate::persistent_disk::fixture_config(&directory.path().join("data"));
@@ -17,12 +20,19 @@ async fn fixture() -> Result<(tempfile::TempDir, Arc<NodeStore>, Arc<TenantStore
         .database_path = directory.path().join("data/trust.kv");
     let storage = crate::runtime_storage_fixtures::configure(&mut configuration)?;
     let _admission = storage.facade(storage.policy())?;
-    let node = NodeStore::create_new(
-        &configuration.database_path,
-        configuration.database_id,
-        storage.open_persistent(&configuration.persistent_disk)?,
-        storage.open_scratch(&configuration.scratch_disk)?,
-    )?;
+    let node = {
+        let native_path = &configuration.database_path;
+        let native_id = configuration.database_id;
+        let native_disk = storage.open_persistent(&configuration.persistent_disk)?;
+        let native_scratch_disk = storage.open_scratch(&configuration.scratch_disk)?;
+        NodeStore::create_new(
+            native_path,
+            native_id,
+            native_disk.clone(),
+            native_scratch_disk,
+            native_disk.native_storage_config(),
+        )
+    }?;
     let store = TenantStore::initialize_catalog(
         node.clone(),
         kasumi_engine::SECURITY_TENANT.into(),

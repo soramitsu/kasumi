@@ -406,15 +406,10 @@ impl Fixture {
                     .storage
                     .open_persistent(&cluster.persistent)
                     .unwrap();
-                let audit_node = NodeStore::create_new(
-                    directory.join(format!("persistent/issuer-audit-{id}.kv")),
-                    Uuid::new_v4(),
-                    disk.clone(),
-                    cluster
+                let audit_node = NodeStore::create_new(directory.join(format!("persistent/issuer-audit-{id}.kv")), Uuid::new_v4(), disk.clone(), cluster
                         .storage
                         .open_scratch(&cluster.issuer_scratch[index][0])
-                        .unwrap(),
-                )
+                        .unwrap(), disk.native_storage_config())
                 .unwrap();
                 issuer_nodes.push(audit_node.clone());
                 let audit = SecurityAudit::initialize(
@@ -432,15 +427,10 @@ impl Fixture {
                     admission.clone(),
                 )
                 .unwrap();
-                let node = NodeStore::create_new(
-                    directory.join(format!("persistent/issuer-{id}.kv")),
-                    Uuid::new_v4(),
-                    disk,
-                    cluster
+                let node = NodeStore::create_new(directory.join(format!("persistent/issuer-{id}.kv")), Uuid::new_v4(), disk.clone(), cluster
                         .storage
                         .open_scratch(&cluster.issuer_scratch[index][1])
-                        .unwrap(),
-                )
+                        .unwrap(), disk.native_storage_config())
                 .unwrap();
                 issuer_nodes.push(node.clone());
                 let stores = TenantStorageSet::initialize_catalogs(

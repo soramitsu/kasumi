@@ -27,6 +27,8 @@ mod fixed_map;
 mod ledger;
 mod memory;
 mod namespace;
+mod transaction;
+pub(crate) use transaction::TransactionSpace;
 mod native_file;
 #[cfg(test)]
 mod reopen_tests;
@@ -41,10 +43,10 @@ pub use directory::{
     NodeDiskDirectoryEntry, NodeDiskDirectoryFailure, NodeDiskDirectoryOperation,
     NodeDiskDirectoryOperationKind, NodeDiskDirectoryOperationStep, NodeDiskEntryKind,
 };
+#[cfg(test)]
+pub(crate) use file::FailedFileWitness;
 pub use file::NodeDiskFile;
-pub(crate) use file::{
-    FailedCloseReport, FailedFileTransfer, FailedFileWitness, NodeDiskCloseOutcome,
-};
+pub(crate) use file::{FailedCloseReport, FailedFileTransfer, NodeDiskCloseOutcome};
 use ledger::AccountedInode;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -53,6 +55,9 @@ pub struct NodeDiskConfig {
     /// Exact private, non-overlapping persistent roots on one filesystem.
     pub roots: BTreeMap<String, PathBuf>,
     pub max_bytes: u64,
+    /// Explicit native database cache and descriptor ceilings. Actual live
+    /// allocations remain subject to this installed owner's shared admission.
+    pub native_storage: crate::NodeStorageConfig,
     pub maintenance_reserve_bytes: u64,
     pub min_free_bytes: u64,
     /// Simultaneous file owners. Each owner retains at most two descriptors.
@@ -61,6 +66,9 @@ pub struct NodeDiskConfig {
     pub max_open_directories: u32,
     /// Explicit per-directory namespace admission. No implicit filesystem bound.
     pub directory_policy: DirectoryPolicy,
+    /// Standing physical allowance for every regular inode, including closed
+    /// files. Installation must qualify the configured filesystem bound.
+    pub file_allocation_policy: FileAllocationPolicy,
     /// Independent persistent regular-file cardinality, including closed files.
     pub max_persistent_files: u64,
     /// Persistent subdirectories, excluding the explicitly configured roots.
@@ -109,9 +117,48 @@ impl DirectoryPolicy {
     }
 }
 
+/// Required first-release bound on regular-file allocation above rounded EOF.
+/// The allowance is rounded to the installed filesystem unit, charged before
+/// creation or growth, and retained through close and census. It is a filesystem
+/// qualification assumption, not a portable guarantee supplied by this type.
+/// Explicit zero asserts that allocation never exceeds rounded EOF.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FileAllocationPolicy {
+    pub maximum_extra_extent_bytes: u64,
+}
+impl FileAllocationPolicy {
+    pub fn new(maximum_extra_extent_bytes: u64) -> Result<Self> {
+        let policy = Self {
+            maximum_extra_extent_bytes,
+        };
+        policy.validate()?;
+        Ok(policy)
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        ensure!(
+            self.maximum_extra_extent_bytes <= i64::MAX as u64,
+            "regular-file allocation allowance is invalid"
+        );
+        Ok(())
+    }
+
+    /// Explicit local fixture allowance; not an implicit production policy or
+    /// a claim that every filesystem operation fits this amount.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn fixture() -> Self {
+        Self {
+            maximum_extra_extent_bytes: 1 << 20,
+        }
+    }
+}
+
 impl NodeDiskConfig {
     pub fn validate(&self) -> Result<()> {
         self.directory_policy.validate()?;
+        self.file_allocation_policy.validate()?;
+        self.native_storage.validate()?;
         ensure!(!self.roots.is_empty(), "persistent disk roots are empty");
         ensure!(
             self.max_bytes > 0 && self.max_bytes <= i64::MAX as u64,
@@ -328,6 +375,8 @@ impl NamespaceBinding {
 
 /// The admitted physical identity survives descriptor close. Reservations and
 /// observed extents update this existing entry without allocating during I/O.
+/// `bytes` includes the standing regular-file allowance even after close;
+/// `pending` records the part not represented by allocated physical blocks.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct AccountedFile {
     binding: NamespaceBinding,
@@ -364,6 +413,8 @@ struct AccountedDirectory {
     len: u64,
     children: u64,
     live_handles: u32,
+    transaction_children: u64,
+    transaction_claimed: bool,
 }
 
 struct State {
@@ -383,6 +434,9 @@ struct State {
     namespace_batch: Option<batch::BatchRecord>,
     namespace_claim: Option<batch::ClaimRecord>,
     namespace_batch_generation: u64,
+    transaction_files: u64,
+    transaction_descriptors: u32,
+    transaction_witnesses: u32,
     directory_bytes: u64,
     directories: u64,
     live: fixed_map::Banks<Weak<file::FileOwner>>,
@@ -399,6 +453,7 @@ impl State {
             && self.open_directories == u32::from(self.pending_directory.is_some())
             && self.open_directory_cursors == 0
             && self.census_streams.outstanding() == 0
+            && self.transaction_witnesses == 0
     }
 
     fn namespace_witnesses(&self) -> u32 {
@@ -406,11 +461,12 @@ impl State {
             self.namespace_batch
                 .as_ref()
                 .is_some_and(|batch| batch.witness_live),
-        ) + u32::from(
-            self.namespace_claim
-                .as_ref()
-                .is_some_and(|claim| claim.witness_live),
-        )
+        ) + self.transaction_witnesses
+            + u32::from(
+                self.namespace_claim
+                    .as_ref()
+                    .is_some_and(|claim| claim.witness_live),
+            )
     }
 
     fn fenced(&self) -> DiskOpenError {
@@ -627,6 +683,10 @@ impl ProvisionalOwner<NodeDisk> {
 }
 
 impl NodeDisk {
+    pub fn native_storage_config(&self) -> crate::NodeStorageConfig {
+        self.config.native_storage
+    }
+
     pub(crate) fn binding<'owner, 'path>(
         &'owner self,
         path: &'path std::path::Path,
@@ -783,6 +843,9 @@ impl NodeDisk {
                 namespace_batch: None,
                 namespace_claim: None,
                 namespace_batch_generation: 0,
+                transaction_files: 0,
+                transaction_descriptors: 0,
+                transaction_witnesses: 0,
                 directory_bytes: totals.directory_bytes,
                 directories: totals.directories,
                 live,
@@ -960,11 +1023,13 @@ impl NodeDisk {
         Ok(NodeDiskConfig {
             roots: BTreeMap::from([("fixture".into(), root.to_owned())]),
             max_bytes: 256 << 30,
+            native_storage: crate::test_utils::node_storage_config(),
             maintenance_reserve_bytes: 1 << 30,
             min_free_bytes: 0,
             max_open_files: 256,
             max_open_directories: 256,
             directory_policy: DirectoryPolicy::fixture(),
+            file_allocation_policy: FileAllocationPolicy::fixture(),
             max_persistent_files: 16_384,
             max_persistent_subdirectories: 16_384,
             census_work_per_step: 16_384,
@@ -1128,6 +1193,8 @@ impl NodeDisk {
             drop(state.pending_directory.take());
             drop(state.namespace_batch.take());
             state.namespace_claim = None;
+            state.transaction_files = 0;
+            state.transaction_descriptors = 0;
         }));
         if let Err(payload) = retired {
             // This inline slot is part of State's preadmitted geometry. The
@@ -1246,6 +1313,8 @@ fn rounded(len: u64, unit: u64) -> io::Result<u64> {
         .ok_or_else(|| exhausted("persistent rounded extent overflow"))
 }
 
+/// Raw observed extent, independent of the configured standing allowance. This
+/// remains available for recording a physical overrun before owner fencing.
 fn extent(metadata: &std::fs::Metadata, unit: u64) -> io::Result<(u64, u64)> {
     let allocated = metadata
         .blocks()
@@ -1253,6 +1322,43 @@ fn extent(metadata: &std::fs::Metadata, unit: u64) -> io::Result<(u64, u64)> {
         .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidData))?;
     let bytes = rounded(metadata.len().max(allocated), unit)?;
     Ok((bytes, bytes - allocated))
+}
+
+/// Standing charge for an exact logical limit. Live growth uses reserved EOF;
+/// durable enrollment and settlement use actual EOF. The extra allowance is
+/// not released merely because a descriptor closes or allocation materializes.
+fn file_ceiling(logical_len: u64, unit: u64, policy: FileAllocationPolicy) -> io::Result<u64> {
+    rounded(logical_len, unit)?
+        .checked_add(rounded(policy.maximum_extra_extent_bytes, unit)?)
+        .ok_or_else(|| exhausted("persistent file allocation ceiling overflow"))
+}
+
+/// Canonical durable accounting. Keep this separate from raw `extent`: a live
+/// owner must first retain evidence of any allocation beyond its admitted
+/// ceiling before fencing, rather than lose it through this rejection path.
+fn file_extent(
+    metadata: &std::fs::Metadata,
+    unit: u64,
+    policy: FileAllocationPolicy,
+) -> io::Result<(u64, u64)> {
+    let allocated = metadata
+        .blocks()
+        .checked_mul(512)
+        .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidData))?;
+    file_extent_from_parts(metadata.len(), allocated, unit, policy)
+}
+
+fn file_extent_from_parts(
+    logical_len: u64,
+    allocated: u64,
+    unit: u64,
+    policy: FileAllocationPolicy,
+) -> io::Result<(u64, u64)> {
+    let bytes = file_ceiling(logical_len, unit, policy)?;
+    let pending = bytes
+        .checked_sub(allocated)
+        .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidData))?;
+    Ok((bytes, pending))
 }
 
 fn filesystem_stat(directory: &File) -> io::Result<libc::statvfs> {

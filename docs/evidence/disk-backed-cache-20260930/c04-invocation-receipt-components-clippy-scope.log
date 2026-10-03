@@ -1,0 +1,5 @@
+Command: cargo clippy --locked --offline -p kasumi-kv -p kasumi-query -p kasumi-store -p kasumi-raft --all-features --all-targets -- -D warnings
+CARGO_TARGET_DIR=target/disk-backed-cache
+    Checking kasumi-store v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-store)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1m 23s
+Runner: 83.46s; exit=0; matching=806/806

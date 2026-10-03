@@ -144,6 +144,7 @@ class OwnedAssemblyIntegrationTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory(prefix="owned-assembly-integration-")
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name).resolve(strict=True)
+        attempt_index.create(self.root, "owned-integration-journal", "owned-integration-host", acceptance.REFERENCE)
         self.evidence = self.root / "evidence"
         self.source = self.evidence / "source"
         (self.source / "scripts").mkdir(parents=True)

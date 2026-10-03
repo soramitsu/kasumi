@@ -173,3 +173,186 @@ fn topology_observation_binds_distinct_control_voters_identity_and_bounded_lifet
     unverified.root.public_key = "68".repeat(32);
     unverified.validate().unwrap();
 }
+
+fn cloned_voter_override(
+    topology: &ControlTopology,
+    tenant: &str,
+    voters: &BTreeSet<u64>,
+) -> Result<()> {
+    let mut candidate = topology.clone();
+    if let Some(route) = candidate.tenants.get_mut(tenant) {
+        route.voters = voters.clone();
+    }
+    candidate.validate()
+}
+
+#[test]
+fn borrowed_voter_override_preserves_clone_edit_errors_and_original_topology() {
+    let candidates = [
+        BTreeSet::from([1, 2, 3]),
+        BTreeSet::from([1, 2]),
+        BTreeSet::from([1, 2, 4]),
+        BTreeSet::from([1]),
+    ];
+    for mutation in 0..6 {
+        let mut value = topology();
+        match mutation {
+            0 => {}
+            1 => value.tenants.get_mut("bpng").unwrap().mode = DeploymentMode::Local,
+            2 => value.nodes.get_mut(&2).unwrap().failure_domain = "rack-1".into(),
+            3 => {
+                value.tenants.get_mut("bpng").unwrap().incarnation = "bad".into();
+            }
+            4 => {
+                let mut route = value.tenants["bpng"].clone();
+                route.voters.clear();
+                value.tenants.insert("another-tenant".into(), route);
+            }
+            _ => value.nodes.get_mut(&1).unwrap().endpoint = "not a URL".into(),
+        }
+        let original = value.clone();
+        for voters in &candidates {
+            assert_eq!(
+                value.validate_voter_override("bpng", voters),
+                cloned_voter_override(&value, "bpng", voters),
+                "mutation {mutation}, voters {voters:?}",
+            );
+            assert_eq!(
+                value, original,
+                "validation must not change the selected topology"
+            );
+        }
+    }
+    let value = topology();
+    assert_eq!(
+        value.validate_voter_override("bpng", &candidates[0]),
+        Ok(())
+    );
+    for (voters, message) in [
+        (&candidates[1], "deployment voter count is invalid"),
+        (
+            &candidates[2],
+            "tenant placement references an unapproved node",
+        ),
+    ] {
+        assert_eq!(
+            value.validate_voter_override("bpng", voters),
+            Err(Error::new(ErrorCode::InvalidArgument, message)),
+        );
+    }
+}
+
+#[test]
+fn borrowed_missing_route_still_validates_the_unchanged_global_topology() {
+    let voters = BTreeSet::from([999]);
+    let mut value = topology();
+    // Missing input names are not inserted or validated, even if not valid names.
+    for tenant in ["absent", "", "__kasumi_reserved", "bad\nname"] {
+        assert_eq!(value.validate_voter_override(tenant, &voters), Ok(()));
+        assert_eq!(
+            value.validate_voter_override(tenant, &voters),
+            cloned_voter_override(&value, tenant, &voters),
+        );
+    }
+    value.nodes.get_mut(&2).unwrap().certificate_pins = value.nodes[&1].certificate_pins.clone();
+    assert_eq!(
+        value.validate_voter_override("absent", &voters),
+        Err(Error::new(
+            ErrorCode::InvalidArgument,
+            "certificate pin must identify exactly one node",
+        )),
+    );
+    assert_eq!(
+        value.validate_voter_override("absent", &voters),
+        cloned_voter_override(&value, "absent", &voters),
+    );
+    value = topology();
+    value.tenants.get_mut("bpng").unwrap().voters.clear();
+    assert_eq!(
+        value.validate_voter_override("absent", &voters),
+        Err(Error::new(
+            ErrorCode::InvalidArgument,
+            "deployment voter count is invalid"
+        )),
+    );
+}
+
+#[test]
+fn borrowed_single_route_preserves_global_checks_quota_and_error_precedence() {
+    for mutation in 0..9 {
+        let mut value = topology();
+        let mut tenant = "bpng";
+        let mut route = value.tenants.remove(tenant).unwrap();
+        let (code, message) = match mutation {
+            0 => {
+                assert_eq!(
+                    ControlTopology::validate_single_route(&value.nodes, tenant, &route),
+                    Ok(())
+                );
+                continue;
+            }
+            1 => {
+                route.incarnation = "bad".into();
+                tenant = "";
+                (
+                    ErrorCode::InvalidArgument,
+                    "name must contain 1–256 bytes without control characters",
+                )
+            }
+            2 => {
+                route.incarnation = "bad".into();
+                tenant = "__kasumi_reserved";
+                (ErrorCode::InvalidArgument, "invalid tenant incarnation")
+            }
+            3 => {
+                route.voters.clear();
+                tenant = "__kasumi_reserved";
+                (
+                    ErrorCode::InvalidArgument,
+                    "reserved tenant name or invalid incarnation",
+                )
+            }
+            4 => {
+                value.nodes.get_mut(&1).unwrap().endpoint = "not a URL".into();
+                tenant = "";
+                (ErrorCode::InvalidArgument, "invalid node endpoint")
+            }
+            5 => {
+                value.nodes.get_mut(&1).unwrap().endpoint = "http://node.invalid".into();
+                value.nodes.get_mut(&1).unwrap().failure_domain.clear();
+                (
+                    ErrorCode::InvalidArgument,
+                    "node requires a TLS endpoint and approved certificate pins",
+                )
+            }
+            6 => {
+                value.nodes.get_mut(&1).unwrap().failure_domain.clear();
+                value.nodes.get_mut(&1).unwrap().certificate_pins = BTreeSet::from(["bad".into()]);
+                (
+                    ErrorCode::InvalidArgument,
+                    "name must contain 1–256 bytes without control characters",
+                )
+            }
+            7 => {
+                value.nodes.get_mut(&2).unwrap().failure_domain = "rack-1".into();
+                (
+                    ErrorCode::InvalidArgument,
+                    "tenant voters must occupy independent failure domains",
+                )
+            }
+            _ => {
+                let mut invalid = value.nodes[&1].clone();
+                invalid.endpoint = "not a URL".into();
+                value.nodes = (0..=MAX_NODES)
+                    .map(|id| (id as u64, invalid.clone()))
+                    .collect();
+                (ErrorCode::QuotaExceeded, "control topology limit exceeded")
+            }
+        };
+        let expected = Err(Error::new(code, message));
+        let borrowed = ControlTopology::validate_single_route(&value.nodes, tenant, &route);
+        value.tenants.insert(tenant.to_owned(), route);
+        assert_eq!(borrowed, value.validate(), "mutation {mutation}");
+        assert_eq!(borrowed, expected, "mutation {mutation}");
+    }
+}

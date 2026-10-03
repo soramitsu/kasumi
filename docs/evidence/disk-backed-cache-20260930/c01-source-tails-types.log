@@ -1,0 +1,14 @@
+Command: cargo test -p kasumi-types --all-features --lib --locked --offline --config profile.test.package.kasumi-kv.opt-level=3 --config profile.test.package.sha2.opt-level=3 -- --test-threads=1 drain::tests::
+CARGO_TARGET_DIR=target/disk-backed-cache
+    Blocking waiting for file lock on package cache
+   Compiling kasumi-types v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-types)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 28.06s
+     Running unittests src/lib.rs (target/disk-backed-cache/debug/deps/kasumi_types-2fcc510c27a884b7)
+
+running 2 tests
+test drain::tests::parent_merge_keeps_distinct_owners_and_explicit_remaining_ownership ... ok
+test drain::tests::retries_retain_original_error_and_one_issue_per_owned_slot ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 62 filtered out; finished in 0.00s
+
+Runner: 28.18s; exit=0; matching=768/768

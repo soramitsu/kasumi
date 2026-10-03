@@ -21,9 +21,7 @@ use crate::error::Fatal;
 use crate::metrics::{RaftDataMetrics, RaftServerMetrics};
 use crate::network::snapshot_transport::{Chunked, SnapshotTransport, Streaming};
 use crate::raft::InstallSnapshotRequest;
-use crate::{
-    Config, RaftMetrics, RaftTypeConfig, SnapshotMeta, StoredMembership, TokioRuntime, Vote,
-};
+use crate::{Config, RaftMetrics, RaftTypeConfig, SnapshotMeta, StoredMembership, TokioRuntime, Vote};
 
 #[derive(Debug, Clone, Copy, Default, Eq, PartialEq, Ord, PartialOrd)]
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
@@ -53,11 +51,7 @@ impl Drop for Data {
     }
 }
 impl AsyncRead for Data {
-    fn poll_read(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &mut ReadBuf<'_>,
-    ) -> Poll<io::Result<()>> {
+    fn poll_read(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<io::Result<()>> {
         Pin::new(&mut self.bytes).poll_read(cx, buf)
     }
 }
@@ -70,11 +64,7 @@ impl AsyncSeek for Data {
     }
 }
 impl AsyncWrite for Data {
-    fn poll_write(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        bytes: &[u8],
-    ) -> Poll<io::Result<usize>> {
+    fn poll_write(mut self: Pin<&mut Self>, cx: &mut Context<'_>, bytes: &[u8]) -> Poll<io::Result<usize>> {
         if self.fail_write {
             return Poll::Ready(Err(io::Error::other("original incoming write failure")));
         }
@@ -116,10 +106,10 @@ fn raft(streaming: Option<Streaming<TestConfig>>) -> Raft<TestConfig> {
             rx_data_metrics: watch::channel(RaftDataMetrics::default()).1,
             rx_server_metrics: watch::channel(RaftServerMetrics::default()).1,
             tx_shutdown: Mutex::new(None),
-            core_state: Mutex::new(CoreState::Running(tokio::spawn(async {
-                Err(Fatal::Stopped)
-            }))),
+            core_state: Mutex::new(CoreState::Running(tokio::spawn(async { Err(Fatal::Stopped) }))),
             snapshot: Mutex::new(streaming),
+            snapshot_install: Arc::new(Mutex::new(())),
+            pending_snapshot: crate::core::sm::pending_snapshot::PendingSnapshot::new(),
         }),
     }
 }
@@ -176,11 +166,7 @@ fn stream(
 async fn cancelled_raft_shutdown_keeps_incoming_owner_until_actual_child_joins() {
     let (stream, release, dropped, _) = stream(false, false);
     let raft = raft(Some(stream));
-    assert!(
-        tokio::time::timeout(Duration::from_millis(20), raft.shutdown())
-            .await
-            .is_err()
-    );
+    assert!(tokio::time::timeout(Duration::from_millis(20), raft.shutdown()).await.is_err());
     assert!(!dropped.load(Ordering::Acquire));
     assert!(raft.inner.snapshot.lock().await.is_some());
     release.send(()).unwrap();
@@ -196,11 +182,7 @@ async fn receive_and_close_failures_retain_independent_original_errors_and_owner
     stream.receive(request(false)).await.unwrap_err();
     let receive = stream.shutdown_error().unwrap();
     let raft = raft(Some(stream));
-    assert!(
-        tokio::time::timeout(Duration::from_millis(20), raft.shutdown())
-            .await
-            .is_err()
-    );
+    assert!(tokio::time::timeout(Duration::from_millis(20), raft.shutdown()).await.is_err());
     release.send(()).unwrap();
     let first = raft.shutdown().await.unwrap_err();
     let errors = first.incoming_snapshot().unwrap();
@@ -229,12 +211,7 @@ async fn receive_and_close_failures_retain_independent_original_errors_and_owner
     ));
     assert!(Arc::ptr_eq(
         errors.close_io.as_ref().unwrap(),
-        again
-            .incoming_snapshot()
-            .unwrap()
-            .close_io
-            .as_ref()
-            .unwrap()
+        again.incoming_snapshot().unwrap().close_io.as_ref().unwrap()
     ));
     assert!(!dropped.load(Ordering::Acquire));
     assert!(raft.inner.snapshot.lock().await.is_some());
@@ -254,10 +231,7 @@ async fn cancelled_final_chunk_keeps_stream_until_successful_close_then_transfer
     assert!(cell.is_some());
     assert!(!dropped.load(Ordering::Acquire));
     release.send(()).unwrap();
-    let snapshot = Chunked::receive_snapshot(&mut cell, &raft, request(true))
-        .await
-        .unwrap()
-        .unwrap();
+    let snapshot = Chunked::receive_snapshot(&mut cell, &raft, request(true)).await.unwrap().unwrap();
     assert!(cell.is_none());
     assert_eq!(snapshot.snapshot.bytes.get_ref(), &[1, 2, 3]);
     assert!(!dropped.load(Ordering::Acquire));
@@ -276,20 +250,12 @@ async fn failed_stream_cannot_be_overwritten_by_replacement() {
     let mut next = request(false);
     next.meta.snapshot_id = "replacement".into();
     release.send(()).unwrap();
-    Chunked::receive_snapshot(&mut cell, &raft, next)
-        .await
-        .unwrap_err();
+    Chunked::receive_snapshot(&mut cell, &raft, next).await.unwrap_err();
     assert!(!dropped.load(Ordering::Acquire));
     assert_eq!(cell.as_ref().unwrap().snapshot_id(), "stream");
     assert!(Arc::ptr_eq(
         original.receive_io.as_ref().unwrap(),
-        cell.as_ref()
-            .unwrap()
-            .shutdown_error()
-            .unwrap()
-            .receive_io
-            .as_ref()
-            .unwrap()
+        cell.as_ref().unwrap().shutdown_error().unwrap().receive_io.as_ref().unwrap()
     ));
     raft.shutdown().await.unwrap();
 }
@@ -370,20 +336,11 @@ async fn unwound_incoming_rpc_notifies_live_core_and_preserves_owner() {
     assert!(caller.await.unwrap_err().is_panic());
     assert!(matches!(
         rx.try_recv().unwrap(),
-        crate::core::notify::Notify::IncomingSnapshotFailed {
-            error: Fatal::Panicked
-        }
+        crate::core::notify::Notify::IncomingSnapshotFailed { error: Fatal::Panicked }
     ));
     assert!(rx.try_recv().is_err());
     assert!(!dropped.load(Ordering::Acquire));
-    assert!(
-        raft.shutdown()
-            .await
-            .unwrap_err()
-            .incoming_snapshot()
-            .unwrap()
-            .poll_panicked
-    );
+    assert!(raft.shutdown().await.unwrap_err().incoming_snapshot().unwrap().poll_panicked);
 }
 
 #[tokio::test]
@@ -394,11 +351,7 @@ async fn premature_data_transfer_returns_same_pending_owner_without_unwinding() 
         Ok(_) => panic!("pending data must not transfer"),
     };
     assert!(!dropped.load(Ordering::Acquire));
-    assert!(
-        tokio::time::timeout(Duration::from_millis(20), owner.close())
-            .await
-            .is_err()
-    );
+    assert!(tokio::time::timeout(Duration::from_millis(20), owner.close()).await.is_err());
     release.send(()).unwrap();
     owner.close().await;
     let data = match owner.into_snapshot_data() {

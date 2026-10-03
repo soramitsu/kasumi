@@ -12,6 +12,7 @@ fn installed_markers_share_the_lock_owner_and_release_only_after_managed_delete(
     let initial = disk.snapshot();
     let lock_path = directory.path().join("installation.lock");
     let lock = create_installed_file(&config, &disk, &lock_path, &[], 0)?;
+    let with_lock = disk.snapshot();
     assert!(private_files::ExclusiveLock::acquire(&lock_path).is_err());
     let marker_path = directory.path().join("initialization.json");
     let marker = create_installed_file(&config, &disk, &marker_path, b"durable marker", 128)?;
@@ -28,7 +29,8 @@ fn installed_markers_share_the_lock_owner_and_release_only_after_managed_delete(
     let marker = open_installed_file(&config, &disk, &marker_path)?;
     disk.delete_file(marker)?;
     assert!(!marker_path.exists());
-    assert_eq!(disk.snapshot().charged_bytes, initial.charged_bytes);
+    // The empty lock retains its standing physical allocation allowance.
+    assert_eq!(disk.snapshot().charged_bytes, with_lock.charged_bytes);
     assert_eq!(
         disk.snapshot().persistent_files,
         initial.persistent_files + 1
@@ -41,7 +43,11 @@ fn installed_markers_share_the_lock_owner_and_release_only_after_managed_delete(
 #[test]
 fn installed_marker_pair_cannot_recreate_a_missing_installation_lock() -> Result<()> {
     let directory = kasumi_store::test_utils::private_tempdir()?;
-    let mut config = example_config(kasumi_store::DirectoryPolicy::fixture()).unwrap();
+    let mut config = example_config(
+        kasumi_store::DirectoryPolicy::fixture(),
+        kasumi_store::FileAllocationPolicy::fixture(),
+    )
+    .unwrap();
     config.mode = DeploymentMode::Standalone;
     config.database_path = directory.path().join("node.kv");
     config.persistent_disk = crate::persistent_disk::fixture_config(directory.path());

@@ -1,0 +1,32 @@
+Command: cargo test --locked --offline --config profile.test.package.kasumi-kv.opt-level=3 --config profile.test.package.sha2.opt-level=3 -p kasumi-engine --all-features --lib state::restore_budget_tests::restored_identity_metadata_is_validated_before_bootstrap_persistence -- --exact --nocapture
+CARGO_TARGET_DIR=target/disk-backed-cache
+   Compiling serde_json v1.0.151 (/Users/takemiyamakoto/dev/kasumi/vendor/serde_json-1.0.151)
+   Compiling tokio v1.53.1
+   Compiling tracing v0.1.44
+   Compiling base64 v0.23.1
+   Compiling tracing-futures v0.2.5
+   Compiling ureq-proto v0.6.1
+   Compiling ureq v3.4.0
+   Compiling lindera-dictionary v5.3.0
+   Compiling lindera-ipadic v5.3.0
+   Compiling kasumi-types v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-types)
+   Compiling tantivy-query-grammar v0.26.0
+   Compiling referencing v0.52.1
+   Compiling jsonschema-value v0.52.1
+   Compiling jsonschema v0.52.1
+   Compiling tantivy v0.26.1
+   Compiling tokio-util v0.7.19
+   Compiling tokio-rustls v0.26.5
+   Compiling tokio-stream v0.1.19
+   Compiling openraft v0.9.25 (/Users/takemiyamakoto/dev/kasumi/vendor/openraft-0.9.25/openraft)
+   Compiling h2 v0.4.19
+   Compiling tower v0.5.3
+   Compiling tower-http v0.6.11
+   Compiling hyper v1.11.1
+   Compiling hyper-util v0.1.20
+   Compiling hyper-timeout v0.5.2
+   Compiling hyper-rustls v0.27.9
+   Compiling reqwest v0.12.28
+   Compiling tonic v0.14.6
+   Compiling kasumi-transport v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-transport)
+Runner: 38.79s; exit=-2; matching=862/862

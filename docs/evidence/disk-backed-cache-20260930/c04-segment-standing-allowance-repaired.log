@@ -1,0 +1,14 @@
+Command: cargo test -p kasumi-store --all-features --lib --locked --offline --config profile.test.package.kasumi-kv.opt-level=3 --config profile.test.package.sha2.opt-level=3 -- --test-threads=1 admitted_growth_pins_the_newest_segment_and_capacity_denial_has_no_effect
+CARGO_TARGET_DIR=target/disk-backed-cache
+   Compiling kasumi-types v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-types)
+   Compiling kasumi-serving v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-serving)
+   Compiling kasumi-store v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-store)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 45s
+     Running unittests src/lib.rs (target/disk-backed-cache/debug/deps/kasumi_store-98be0c6afb7030c8)
+
+running 1 test
+test node_file::segment_group::tests::admitted_growth_pins_the_newest_segment_and_capacity_denial_has_no_effect ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 664 filtered out; finished in 0.14s
+
+Runner: 106.05s; exit=0; matching=768/768

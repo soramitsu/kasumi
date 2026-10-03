@@ -1,0 +1,40 @@
+
+running 13 tests
+test signer_runtime::tests::runtime_verifier_rejects_legacy_file_and_symlink_before_worker_admission ... ok
+
+thread 'signer_runtime::tests::panicked_verifier_initialization_drains_each_acquired_encrypted_owner' (4998887) panicked at crates/kasumi-server/src/startup_preparation.rs:78:13:
+verifier-storage-node
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'signer_runtime::tests::cancelled_verifier_initialization_retains_physical_owner_and_unclaimed_panic' (4998879) panicked at crates/kasumi-server/src/startup_preparation.rs:78:13:
+verifier-storage-catalog
+test signer_runtime::tests::initialization_rejects_noninitial_and_mismatched_domains_without_publishing ... ok
+test signer_runtime::tests::complete_domain_worker_budget_is_reserved_before_verifier_storage_open ... ok
+test signer_runtime::tests::renewal_shutdown_keeps_its_handle_through_cancelled_join_and_verifier_reopen ... ok
+test signer_runtime::tests::verifier_shutdown_joins_renewal_after_setup_owner_is_dropped ... ok
+test signer_runtime::tests::checked_replicated_installation_identity_requires_its_live_exact_disk ... ok
+test signer_runtime::tests::operational_source_is_private_bounded_and_cannot_substitute_installed_trust ... ok
+
+thread 'signer_runtime::tests::panicked_verifier_initialization_drains_each_acquired_encrypted_owner' (4998887) panicked at crates/kasumi-server/src/startup_preparation.rs:78:13:
+verifier-storage-catalog
+
+thread 'signer_runtime::tests::cancelled_verifier_initialization_retains_physical_owner_and_unclaimed_panic' (4998879) panicked at crates/kasumi-server/src/startup_preparation.rs:78:13:
+verifier-installation-complete
+test signer_runtime::tests::cancelled_verifier_initialization_retains_physical_owner_and_unclaimed_panic ... ok
+test signer_runtime::tests::explicit_encrypted_verifier_initialization_never_bootstraps_runtime_trust ... ok
+test signer_runtime::tests::filesystem_backup_open_requires_original_encrypted_verifier_owner ... ok
+test signer_runtime::tests::partial_verifier_is_never_adopted_and_corrupt_complete_head_is_never_reseeded ... ok
+test signer_runtime::tests::completed_verifier_installation_requires_current_writer_bytes_without_repair ... ok
+
+thread 'signer_runtime::tests::panicked_verifier_initialization_drains_each_acquired_encrypted_owner' (4998887) panicked at crates/kasumi-server/src/startup_preparation.rs:78:13:
+verifier-installation-store
+
+thread 'signer_runtime::tests::panicked_verifier_initialization_drains_each_acquired_encrypted_owner' (4998887) panicked at crates/kasumi-server/src/startup_preparation.rs:78:13:
+verifier-installation-domains
+
+thread 'signer_runtime::tests::panicked_verifier_initialization_drains_each_acquired_encrypted_owner' (4998887) panicked at crates/kasumi-server/src/startup_preparation.rs:78:13:
+verifier-installation-complete
+test signer_runtime::tests::panicked_verifier_initialization_drains_each_acquired_encrypted_owner ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 264 filtered out; finished in 4.84s
+

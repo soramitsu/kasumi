@@ -1,0 +1,113 @@
+   Compiling sha2 v0.10.9
+   Compiling kasumi-types v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-types)
+   Compiling kasumi-transport v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-transport)
+   Compiling kasumi-kv v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-kv)
+   Compiling kasumi-serving v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-serving)
+   Compiling kasumi-query v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-query)
+   Compiling kasumi-store v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-store)
+warning: unused import: `FailedFileWitness`
+  --> crates/kasumi-store/src/node_disk.rs:46:44
+   |
+46 |     FailedCloseReport, FailedFileTransfer, FailedFileWitness, NodeDiskCloseOutcome,
+   |                                            ^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: associated function `register` is never used
+   --> crates/kasumi-store/src/node_file/segment_group.rs:510:19
+    |
+432 | impl NodeSegmentGroup {
+    | --------------------- associated function in this implementation
+...
+510 |     pub(crate) fn register(
+    |                   ^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `close_entered` is never read
+  --> crates/kasumi-store/src/spool.rs:52:5
+   |
+49 | pub struct EncryptedSpool {
+   |            -------------- field in this struct
+...
+52 |     close_entered: bool,
+   |     ^^^^^^^^^^^^^
+
+warning: methods `settle_growth`, `close_once`, and `close_once_with` are never used
+   --> crates/kasumi-store/src/spool.rs:149:19
+    |
+ 78 | impl EncryptedSpool {
+    | ------------------- methods in this implementation
+...
+149 |     pub(crate) fn settle_growth(&mut self, actual: u64) -> io::Result<()> {
+    |                   ^^^^^^^^^^^^^
+...
+168 |     pub(crate) fn close_once(&mut self) -> BackendCloseOutcome {
+    |                   ^^^^^^^^^^
+...
+172 |     fn close_once_with(
+    |        ^^^^^^^^^^^^^^^
+
+   Compiling kasumi-raft v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-raft)
+warning: `kasumi-store` (lib) generated 4 warnings (run `cargo fix --lib -p kasumi-store` to apply 1 suggestion)
+   Compiling kasumi-engine v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-engine)
+warning: variant `Mutation` is never constructed
+  --> crates/kasumi-engine/src/security_audit_jobs.rs:26:5
+   |
+24 | enum JobEffect {
+   |      --------- variant in this enum
+25 |     Read,
+26 |     Mutation(&'static str),
+   |     ^^^^^^^^
+   |
+   = note: `JobEffect` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: struct `ReadPause` is never constructed
+  --> crates/kasumi-engine/src/security_audit_jobs.rs:57:19
+   |
+57 | pub(super) struct ReadPause {
+   |                   ^^^^^^^^^
+
+warning: method `run_mutation` is never used
+   --> crates/kasumi-engine/src/security_audit_jobs.rs:120:25
+    |
+ 62 | impl SecurityAudit {
+    | ------------------ method in this implementation
+...
+120 |     pub(super) async fn run_mutation<T, F, R>(&self, component: &'static str, run: R) -> Result<T>
+    |                         ^^^^^^^^^^^^
+
+warning: `kasumi-engine` (lib) generated 3 warnings
+warning: field `panic` is never read
+  --> crates/kasumi-engine/src/security_audit_jobs.rs:52:9
+   |
+48 | pub(super) struct RecordFault {
+   |                   ----------- field in this struct
+...
+52 |     pub panic: bool,
+   |         ^^^^^
+
+warning: `kasumi-engine` (lib test) generated 4 warnings (3 duplicates)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5m 17s
+     Running unittests src/lib.rs (target/disk-backed-cache/debug/deps/kasumi_engine-3656345440c90b6a)
+
+running 13 tests
+test admission::disk_memory::tests::cache_work_reserves_reject_zero_and_values_above_installed_capacity ... ok
+test admission::disk_memory::tests::cache_credit_grows_in_one_slot_and_retains_its_exact_core ... ok
+test admission::disk_memory::tests::cache_respects_slot_headroom_on_acquisition_and_growth ... ok
+test admission::disk_memory::tests::cache_growth_leaves_byte_headroom_and_cleanup_never_readmits ... ok
+test admission::disk_memory::tests::full_byte_work_reserve_disables_cache_but_preserves_required_capacity ... ok
+test admission::disk_memory::tests::headroom_may_disable_caching_without_disabling_required_work ... ok
+test admission::disk_memory::native_cache_admission_tests::installed_cache_credit_survives_clear_and_cross_thread_final_reader_release ... ok
+test admission::disk_memory::tests::lease_overhead_is_admitted_before_boxing_and_denial_preserves_counters ... ok
+test admission::disk_memory::tests::cache_preserves_audit_protection_and_never_uses_scoped_escrow ... ok
+test admission::disk_memory::tests::default_cache_work_reserves_follow_resolved_capacity_and_caps ... ok
+test admission::disk_memory::tests::installed_storage_census_is_fixed_precharged_and_matches_the_exact_core ... ok
+test admission::disk_memory::tests::installed_box_stays_charged_after_facade_drop_with_operation_slots_full ... ok
+test admission::disk_memory::native_cache_admission_tests::sixteen_thousand_rows_fit_with_one_hundred_twenty_eight_governor_slots has been running for over 60 seconds
+rows=16513 cache_limit=67108864 hot=CacheStats { hits: 0, misses: 0, loads: 0, uncached_loads: 0, evictions: 0, entries: 16604, resident_bytes: 20779032, cached_bytes: 9183552, pinned_bytes: 0, metadata_bytes: 11537272, allocated_bytes: 20720824, admitted_credit_bytes: 20774912, unused_credit_bytes: 54088, provider_overhead_bytes: 4120 } cold_slots=7 hot_slots=9 warm_segment_reads=16513 warm_directory_reads=182
+test admission::disk_memory::native_cache_admission_tests::sixteen_thousand_rows_fit_with_one_hundred_twenty_eight_governor_slots ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 325 filtered out; finished in 91.57s
+

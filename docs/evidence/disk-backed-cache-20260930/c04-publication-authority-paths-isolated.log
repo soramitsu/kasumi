@@ -1,0 +1,40 @@
+
+running 5 tests
+test service::tests::exact_target_preparation_cannot_serve_and_needs_a_fresh_active_lease_after_drain ... ok
+test service::tests::issuer_tests::target_materialization_tests::three_actual_materializations_initialize_and_commit_completion_with_restart_proof ... 
+thread 'service::tests::issuer_tests::target_materialization_tests::three_actual_materializations_initialize_and_commit_completion_with_restart_proof' (5765632) panicked at crates/kasumi-authority/src/target_materialization_tests.rs:1205:14:
+called `Result::unwrap()` on an `Err` value: Unavailable: tenant audit placement unavailable
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+test service::tests::maintenance_requires_every_installed_peer_before_admission ... 
+thread 'service::tests::maintenance_requires_every_installed_peer_before_admission' (5770877) panicked at crates/kasumi-authority/src/tests.rs:276:14:
+called `Result::unwrap()` on an `Err` value: drain Complete; Raft startup[0]: tenant store already has a live Raft group; shut it down before reopening
+
+Caused by:
+    tenant store already has a live Raft group; shut it down before reopening
+FAILED
+test service::tests::request_drain_tests::ordinary_command_rejection_is_preserved_without_fencing_or_failed_drain ... 
+thread 'service::tests::request_drain_tests::ordinary_command_rejection_is_preserved_without_fencing_or_failed_drain' (5770889) panicked at crates/kasumi-authority/src/tests.rs:276:14:
+called `Result::unwrap()` on an `Err` value: drain Complete; Raft startup[0]: tenant store already has a live Raft group; shut it down before reopening
+
+Caused by:
+    tenant store already has a live Raft group; shut it down before reopening
+FAILED
+test service::tests::signer_directive_is_ordered_exact_finite_and_preserved_in_encrypted_snapshots ... 
+thread 'service::tests::signer_directive_is_ordered_exact_finite_and_preserved_in_encrypted_snapshots' (5770914) panicked at crates/kasumi-authority/src/tests.rs:276:14:
+called `Result::unwrap()` on an `Err` value: drain Complete; Raft startup[0]: tenant store already has a live Raft group; shut it down before reopening
+
+Caused by:
+    tenant store already has a live Raft group; shut it down before reopening
+FAILED
+
+failures:
+
+failures:
+    service::tests::issuer_tests::target_materialization_tests::three_actual_materializations_initialize_and_commit_completion_with_restart_proof
+    service::tests::maintenance_requires_every_installed_peer_before_admission
+    service::tests::request_drain_tests::ordinary_command_rejection_is_preserved_without_fencing_or_failed_drain
+    service::tests::signer_directive_is_ordered_exact_finite_and_preserved_in_encrypted_snapshots
+
+test result: FAILED. 1 passed; 4 failed; 0 ignored; 0 measured; 69 filtered out; finished in 97.98s
+

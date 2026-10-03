@@ -31,20 +31,10 @@ uses Rust/Cargo 1.94.1 and immutable image ID
 
 The container has six CPUs and a 14 GiB memory limit, with no additional swap
 allowance. It reuses `target/linux-validation` and the existing Cargo registry
-mount. Cargo runs offline with its native jobserver. The command is:
-
-```sh
-docker \
-  --host unix:///Users/takemiyamakoto/.colima/kasumi-validation/docker.sock \
-  --config /Users/takemiyamakoto/dev/kasumi/target/docker-validation-client \
-  run --rm --cpus 6 --memory 14g --memory-swap 14g \
-  --mount type=bind,source=/Users/takemiyamakoto/dev/kasumi,target=/workspace \
-  --mount type=bind,source=/Users/takemiyamakoto/dev/kasumi/target/linux-cargo-registry,target=/usr/local/cargo/registry \
-  -e CARGO_NET_OFFLINE=true \
-  -e CARGO_TARGET_DIR=/workspace/target/linux-validation -w /workspace \
-  sha256:67b357ce730a064aab665277d0dfaece94ab2ca0407ba4fe818b9f2d7fb40861 bash -c \
-  'bash scripts/validate_linux.sh && cargo fmt --all --check && python3 -m unittest discover -s scripts -p "test_*.py"'
-```
+mount. Cargo ran offline with its native jobserver. The exact historical command
+is retained in the [machine-readable gate record](../benchmarks/results/linux-validation-20260905-listener/evidence.json).
+New functional release runs use the canonical [`release_gate.py`](../scripts/release_gate.py)
+runner and the current [release checklist](release-checklist.md).
 
 The gate ran in a detached OS session under `caffeinate`, with regular-file logs
 and persistent status updates. It completed in 271.44 seconds using the warm

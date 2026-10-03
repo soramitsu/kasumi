@@ -1,0 +1,64 @@
+Command: cargo test -p kasumi-engine --all-features --lib --locked --offline --config profile.test.package.kasumi-kv.opt-level=3 --config profile.test.package.sha2.opt-level=3 -- --test-threads=1 selected_sources_ topology_input_ primary_tree:: primary_stage_
+CARGO_TARGET_DIR=target/disk-backed-cache
+   Compiling kasumi-engine v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-engine)
+warning: variant `Mutation` is never constructed
+  --> crates/kasumi-engine/src/security_audit_jobs.rs:26:5
+   |
+24 | enum JobEffect {
+   |      --------- variant in this enum
+25 |     Read,
+26 |     Mutation(&'static str),
+   |     ^^^^^^^^
+   |
+   = note: `JobEffect` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: struct `ReadPause` is never constructed
+  --> crates/kasumi-engine/src/security_audit_jobs.rs:57:19
+   |
+57 | pub(super) struct ReadPause {
+   |                   ^^^^^^^^^
+
+warning: method `run_mutation` is never used
+   --> crates/kasumi-engine/src/security_audit_jobs.rs:120:25
+    |
+ 62 | impl SecurityAudit {
+    | ------------------ method in this implementation
+...
+120 |     pub(super) async fn run_mutation<T, F, R>(&self, component: &'static str, run: R) -> Result<T>
+    |                         ^^^^^^^^^^^^
+
+warning: `kasumi-engine` (lib) generated 3 warnings
+error[E0616]: field `apply_lock` of struct `state::TenantEngine` is private
+  --> crates/kasumi-engine/src/primary_stage.rs:81:14
+   |
+81 |             .apply_lock
+   |              ^^^^^^^^^^ private field
+
+error[E0616]: field `application_sources` of struct `state::TenantEngine` is private
+  --> crates/kasumi-engine/src/primary_stage.rs:85:14
+   |
+85 |             .application_sources
+   |              ^^^^^^^^^^^^^^^^^^^ private field
+
+error[E0616]: field `bootstrap_sha256` of struct `state::TenantEngine` is private
+  --> crates/kasumi-engine/src/primary_stage.rs:89:14
+   |
+89 |             .bootstrap_sha256
+   |              ^^^^^^^^^^^^^^^^ private field
+
+error[E0616]: field `tenant` of struct `state::TenantEngine` is private
+  --> crates/kasumi-engine/src/primary_stage.rs:93:19
+   |
+93 |             &self.tenant,
+   |                   ^^^^^^ private field
+
+error[E0616]: field `incarnation` of struct `state::TenantEngine` is private
+  --> crates/kasumi-engine/src/primary_stage.rs:94:19
+   |
+94 |             &self.incarnation,
+   |                   ^^^^^^^^^^^ private field
+
+For more information about this error, try `rustc --explain E0616`.
+error: could not compile `kasumi-engine` (lib test) due to 5 previous errors
+Runner: 185.26s; exit=101; matching=752/752

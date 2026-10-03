@@ -110,7 +110,9 @@ pub struct ChangeEvent {
     pub commit_event_count: usize,
     pub collection: String,
     pub id: String,
-    pub document: Option<Arc<Document>>,
+    /// Owned public after-image. Internal committed records retain shared Arcs;
+    /// a released page must not expose a cloneable uncharged internal handle.
+    pub document: Option<Document>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

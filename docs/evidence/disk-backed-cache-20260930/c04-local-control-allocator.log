@@ -1,0 +1,12 @@
+Command: cargo test -p kasumi-types --all-features --test control_topology_memory --locked --offline --config profile.test.package.kasumi-kv.opt-level=3 --config profile.test.package.sha2.opt-level=3 -- --test-threads=1 --nocapture
+CARGO_TARGET_DIR=target/disk-backed-cache
+   Compiling kasumi-types v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-types)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 33.98s
+     Running tests/control_topology_memory.rs (target/disk-backed-cache/debug/deps/control_topology_memory-547e10dbddcd7a30)
+
+running 1 test
+test concrete_topology_quote_covers_typed_containers_positional_and_invalid_inputs ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+Runner: 34.11s; exit=0; matching=722/722

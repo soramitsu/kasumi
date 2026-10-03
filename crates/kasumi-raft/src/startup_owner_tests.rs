@@ -24,18 +24,42 @@ impl std::fmt::Display for OriginalFailure {
 }
 impl std::error::Error for OriginalFailure {}
 
+struct HeldGroup {
+    drops: Arc<std::sync::atomic::AtomicUsize>,
+}
+impl Drop for HeldGroup {
+    fn drop(&mut self) {
+        self.drops.fetch_add(1, Ordering::AcqRel);
+    }
+}
 pub(crate) struct FixtureGroup {
     child: tokio::task::JoinHandle<()>,
     report: DrainReport,
+    retained: Option<kasumi_types::drain::DrainFailure>,
+    _held: Option<Arc<HeldGroup>>,
+    panic_cleanup: bool,
 }
 impl FixtureGroup {
-    pub(crate) async fn shutdown(mut self) -> kasumi_types::drain::DrainResult {
+    pub(crate) async fn shutdown(&mut self) -> kasumi_types::drain::DrainResult {
+        if self.panic_cleanup {
+            std::panic::panic_any(OriginalFailure(193));
+        }
         if let Err(error) = (&mut self.child).await {
             self.report.record("startup fixture child", 0, error.into());
         }
-        self.report.complete()
+        self.report.outcome(self.retained.clone())
     }
 }
+pub(crate) fn source_custody_fixture_group(child: tokio::task::JoinHandle<()>) -> StartedGroup {
+    StartedGroup::Fixture(FixtureGroup {
+        child,
+        report: DrainReport::default(),
+        retained: None,
+        _held: None,
+        panic_cleanup: false,
+    })
+}
+
 async fn pending<F: Future>(future: std::pin::Pin<&mut F>) {
     let mut future = future;
     poll_fn(|cx| {
@@ -83,7 +107,10 @@ async fn cancelled_startup_and_drain_keep_actual_child_panic_and_charge() -> Res
     assert!(join.is_panic());
     assert_eq!(join.id(), task_id);
     let repeated = owner.drain_startup().await.unwrap_err();
-    assert!(Arc::ptr_eq(&original, &repeated.issues()[0]));
+    assert!(kasumi_types::drain::DrainIssueRef::ptr_eq(
+        &original,
+        &repeated.issues()[0]
+    ));
     drop(owner);
     assert!(weak.upgrade().is_none());
     assert_eq!(Arc::strong_count(&charge), 1);
@@ -106,6 +133,9 @@ async fn cancelled_unclaimed_group_cleanup_keeps_same_actual_child() -> Result<(
         Ok(StartedGroup::Fixture(FixtureGroup {
             child,
             report: DrainReport::default(),
+            retained: None,
+            _held: None,
+            panic_cleanup: false,
         }))
     }));
     pending(startup.as_mut()).await;
@@ -129,7 +159,10 @@ async fn cancelled_unclaimed_group_cleanup_keeps_same_actual_child() -> Result<(
         task_id
     );
     let repeated = owner.drain_startup().await.unwrap_err();
-    assert!(Arc::ptr_eq(&original, &repeated.issues()[0]));
+    assert!(kasumi_types::drain::DrainIssueRef::ptr_eq(
+        &original,
+        &repeated.issues()[0]
+    ));
     Ok(())
 }
 
@@ -144,6 +177,9 @@ async fn delivered_startup_is_not_closed_by_node_startup_census() -> Result<()> 
             Ok(StartedGroup::Fixture(FixtureGroup {
                 child: tokio::spawn(async {}),
                 report: DrainReport::default(),
+                retained: None,
+                _held: None,
+                panic_cleanup: false,
             }))
         })
         .await?;
@@ -153,7 +189,7 @@ async fn delivered_startup_is_not_closed_by_node_startup_census() -> Result<()> 
     let buffer = crate::SnapshotBuffer::new(&disk, 64, &owner)?;
     drop(buffer);
     match started {
-        StartedGroup::Fixture(group) => group.shutdown().await?,
+        StartedGroup::Fixture(mut group) => group.shutdown().await?,
         _ => unreachable!(),
     }
     owner.drain().await?;
@@ -185,14 +221,17 @@ async fn oversized_startup_is_rejected_before_polling_or_global_publication() ->
 struct Backend;
 impl crate::StateMachineBackend for Backend {
     fn close_application(&self) {}
-    fn apply(
+    fn apply_with_publisher(
         &self,
         _: &crate::AppliedEntryContext,
-        bytes: &[u8],
-    ) -> Result<crate::AppliedResponse> {
-        Ok(crate::AppliedResponse::application(bytes.to_vec()))
-    }
-    fn apply_metadata(&self, _position: &crate::AppliedEntryContext) -> anyhow::Result<()> {
+        input: crate::AppliedInput<'_>,
+        publisher: &mut dyn crate::ApplyPublisher,
+    ) -> Result<()> {
+        let crate::AppliedInput::Command(bytes) = input else {
+            publisher.commit(crate::AppliedResponse::application(Vec::new()), &[])?;
+            return Ok(());
+        };
+        publisher.commit(crate::AppliedResponse::application(bytes.to_vec()), &[])?;
         Ok(())
     }
     fn capture_snapshot(&self) -> Result<crate::CapturedSnapshot> {
@@ -328,6 +367,9 @@ async fn startup_census_closes_delivery_before_waiting_for_active_caller() -> Re
         Ok(StartedGroup::Fixture(FixtureGroup {
             child,
             report: DrainReport::default(),
+            retained: None,
+            _held: None,
+            panic_cleanup: false,
         }))
     }));
     pending(startup.as_mut()).await;
@@ -427,7 +469,7 @@ async fn assert_original_poll_panic_retained(
             repeated
                 .issues()
                 .iter()
-                .any(|next| Arc::ptr_eq(next, &issue))
+                .any(|next| kasumi_types::drain::DrainIssueRef::ptr_eq(next, &issue))
         );
     }
     let all_resources = owner.drain().await.unwrap_err();
@@ -436,7 +478,7 @@ async fn assert_original_poll_panic_retained(
         all_resources
             .issues()
             .iter()
-            .any(|next| Arc::ptr_eq(next, &issue))
+            .any(|next| kasumi_types::drain::DrainIssueRef::ptr_eq(next, &issue))
     );
     assert_eq!(
         state.polls.load(Ordering::Acquire),
@@ -511,7 +553,7 @@ async fn cleanup_retained_result_cannot_be_promoted_to_complete_or_release_custo
             failure
                 .issues()
                 .iter()
-                .any(|next| Arc::ptr_eq(next, &issue))
+                .any(|next| kasumi_types::drain::DrainIssueRef::ptr_eq(next, &issue))
         );
     }
     assert_eq!(
@@ -533,6 +575,9 @@ async fn synchronous_enrollment_allows_census_before_the_claimant_is_polled() ->
         Ok(StartedGroup::Fixture(FixtureGroup {
             child: tokio::spawn(async {}),
             report: DrainReport::default(),
+            retained: None,
+            _held: None,
+            panic_cleanup: false,
         }))
     });
     assert!(
@@ -618,5 +663,194 @@ async fn panicked_core_closes_group_access_and_drains_complete_for_reopen() -> R
     .await?;
     reopened.check_access()?;
     reopened.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn retained_cleanup_keeps_exact_group_after_shutdown_future_returns() -> Result<()> {
+    let owner = SnapshotBufferOwner::new(1, Arc::new(()))?;
+    let weak_owner = Arc::downgrade(&owner);
+    let group_drops = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let held = Arc::new(HeldGroup {
+        drops: group_drops.clone(),
+    });
+    let weak_group = Arc::downgrade(&held);
+    let mut report = DrainReport::default();
+    let issue = report.record("retained group fixture", 0, OriginalFailure(173).into());
+    let retained = kasumi_types::drain::DrainFailure::retained(issue);
+    let claimant = owner.start(async move {
+        Ok(StartedGroup::Fixture(FixtureGroup {
+            child: tokio::spawn(async {}),
+            report: DrainReport::default(),
+            retained: Some(retained),
+            _held: Some(held),
+            panic_cleanup: false,
+        }))
+    });
+    // The lifecycle takes an unclaimed group, including its exact held resource.
+    let failure = owner.drain_startup().await.unwrap_err();
+    assert_eq!(failure.completion(), DrainCompletion::Retained);
+    drop(claimant);
+    assert!(weak_group.upgrade().is_some());
+    assert_eq!(
+        owner.drain_startup().await.unwrap_err().completion(),
+        DrainCompletion::Retained
+    );
+    drop(owner);
+    assert!(weak_owner.upgrade().is_some());
+    assert!(weak_group.upgrade().is_some());
+    assert_eq!(group_drops.load(Ordering::Acquire), 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn delivered_apply_failure_keeps_registry_and_fence_after_all_facades_drop() -> Result<()> {
+    let owner = SnapshotBufferOwner::new(1, Arc::new(()))?;
+    let weak_owner = Arc::downgrade(&owner);
+    let ownership = Arc::new(AtomicBool::new(true));
+    let weak_fence = Arc::downgrade(&ownership);
+    let identity_drops = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let identity = Arc::new(HeldGroup {
+        drops: identity_drops.clone(),
+    });
+    let weak_identity = Arc::downgrade(&identity);
+    owner.bind_fixture_group_ownership(ownership, identity)?;
+    let group = owner
+        .start(async {
+            Ok(StartedGroup::Fixture(FixtureGroup {
+                child: tokio::spawn(async {}),
+                report: DrainReport::default(),
+                retained: None,
+                _held: None,
+                panic_cleanup: false,
+            }))
+        })
+        .await?;
+    drop(owner.retain_apply_failure(OriginalFailure(181).into()));
+    let failure = owner.drain_buffers().await.unwrap_err();
+    assert_eq!(failure.completion(), DrainCompletion::Retained);
+    drop(failure);
+    drop(group);
+    drop(owner);
+    let retained = weak_owner
+        .upgrade()
+        .expect("pre-admitted registry root must survive delivery");
+    assert!(weak_fence.upgrade().unwrap().load(Ordering::Acquire));
+    assert!(weak_identity.upgrade().is_some());
+    assert_eq!(identity_drops.load(Ordering::Acquire), 0);
+    assert_eq!(
+        retained.drain_startup().await.unwrap_err().completion(),
+        DrainCompletion::Retained
+    );
+    retained
+        .apply_failure()
+        .unwrap()
+        .try_with_report(|report| {
+            let crate::RetainedApplyReport::Single(original) = report else {
+                panic!("non-completion startup failure requires its single original")
+            };
+            assert!(original.downcast_ref::<OriginalFailure>().is_some());
+        })
+        .expect("settled startup failure report is busy");
+    Ok(())
+}
+
+#[tokio::test]
+async fn positive_delivered_shutdown_releases_existing_registry_root_and_fence() -> Result<()> {
+    let owner = SnapshotBufferOwner::new(1, Arc::new(()))?;
+    let weak_owner = Arc::downgrade(&owner);
+    let ownership = Arc::new(AtomicBool::new(true));
+    let identity_drops = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let identity = Arc::new(HeldGroup {
+        drops: identity_drops.clone(),
+    });
+    let weak_identity = Arc::downgrade(&identity);
+    owner.bind_fixture_group_ownership(ownership.clone(), identity)?;
+    let group = owner
+        .start(async {
+            Ok(StartedGroup::Fixture(FixtureGroup {
+                child: tokio::spawn(async {}),
+                report: DrainReport::default(),
+                retained: None,
+                _held: None,
+                panic_cleanup: false,
+            }))
+        })
+        .await?;
+    drop(owner);
+    let owner = weak_owner
+        .upgrade()
+        .expect("active delivered group retains admitted root");
+    match group {
+        StartedGroup::Fixture(mut group) => group.shutdown().await?,
+        _ => unreachable!(),
+    }
+    owner.drain_buffers().await?;
+    assert!(ownership.load(Ordering::Acquire));
+    owner.release_group_ownership();
+    assert!(!ownership.load(Ordering::Acquire));
+    assert!(weak_identity.upgrade().is_none());
+    assert_eq!(identity_drops.load(Ordering::Acquire), 1);
+    drop(owner);
+    assert!(weak_owner.upgrade().is_none());
+    Ok(())
+}
+
+#[tokio::test]
+async fn actual_group_cleanup_poll_panic_keeps_group_outside_unwinding_generator() -> Result<()> {
+    let owner = SnapshotBufferOwner::new(1, Arc::new(()))?;
+    let weak_owner = Arc::downgrade(&owner);
+    let group_drops = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let held = Arc::new(HeldGroup {
+        drops: group_drops.clone(),
+    });
+    let weak_group = Arc::downgrade(&held);
+    let claimant = owner.start(async move {
+        Ok(StartedGroup::Fixture(FixtureGroup {
+            child: tokio::spawn(async {}),
+            report: DrainReport::default(),
+            retained: None,
+            _held: Some(held),
+            panic_cleanup: true,
+        }))
+    });
+    let failure = owner.drain_startup().await.unwrap_err();
+    assert_eq!(failure.completion(), DrainCompletion::Retained);
+    let issue = failure
+        .issues()
+        .iter()
+        .find(|issue| {
+            issue
+                .error()
+                .downcast_ref::<crate::startup_owner::StartupPollPanic>()
+                .is_some()
+        })
+        .unwrap();
+    let panic = issue
+        .error()
+        .downcast_ref::<crate::startup_owner::StartupPollPanic>()
+        .unwrap();
+    assert_eq!(
+        panic
+            .payload
+            .lock()
+            .unwrap()
+            .downcast_ref::<OriginalFailure>()
+            .unwrap()
+            .0,
+        193
+    );
+    assert!(
+        weak_group.upgrade().is_some(),
+        "unwinding cleanup dropped the actual group"
+    );
+    drop(claimant);
+    let repeated = owner.drain_startup().await.unwrap_err();
+    assert_eq!(repeated.completion(), DrainCompletion::Retained);
+    assert!(weak_group.upgrade().is_some());
+    drop(owner);
+    assert!(weak_owner.upgrade().is_some());
+    assert!(weak_group.upgrade().is_some());
+    assert_eq!(group_drops.load(Ordering::Acquire), 0);
     Ok(())
 }

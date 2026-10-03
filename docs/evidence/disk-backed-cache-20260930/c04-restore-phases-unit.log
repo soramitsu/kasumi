@@ -1,0 +1,85 @@
+Command: cargo test -p kasumi-engine --lib --locked --offline --config profile.test.package.kasumi-kv.opt-level=3 --config profile.test.package.sha2.opt-level=3 -- --test-threads=1 --nocapture backup_verify::phase::tests expired_live_verification_worker_keeps_bytes_and_shutdown_registration_until_done builder_preserves_linked_seals_for_one_incarnation builder_rejects_missing_or_wrong_successor_predecessor indexed_target_resolutions_ thirty_two_empty_collections_build_a_complete_structural_index_and_drain
+   Compiling tracing-subscriber v0.3.23
+   Compiling kasumi-engine v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-engine)
+warning: variant `Mutation` is never constructed
+  --> crates/kasumi-engine/src/security_audit_jobs.rs:26:5
+   |
+24 | enum JobEffect {
+   |      --------- variant in this enum
+25 |     Read,
+26 |     Mutation(&'static str),
+   |     ^^^^^^^^
+   |
+   = note: `JobEffect` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: struct `ReadPause` is never constructed
+  --> crates/kasumi-engine/src/security_audit_jobs.rs:57:19
+   |
+57 | pub(super) struct ReadPause {
+   |                   ^^^^^^^^^
+
+warning: method `run_mutation` is never used
+   --> crates/kasumi-engine/src/security_audit_jobs.rs:120:25
+    |
+ 62 | impl SecurityAudit {
+    | ------------------ method in this implementation
+...
+120 |     pub(super) async fn run_mutation<T, F, R>(&self, component: &'static str, run: R) -> Result<T>
+    |                         ^^^^^^^^^^^^
+
+warning: `kasumi-engine` (lib) generated 3 warnings
+warning: field `panic` is never read
+  --> crates/kasumi-engine/src/security_audit_jobs.rs:52:9
+   |
+48 | pub(super) struct RecordFault {
+   |                   ----------- field in this struct
+...
+52 |     pub panic: bool,
+   |         ^^^^^
+
+warning: `kasumi-engine` (lib test) generated 4 warnings (3 duplicates)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3m 11s
+     Running unittests src/lib.rs (target/disk-backed-cache/debug/deps/kasumi_engine-b15d1192089511a8)
+
+running 10 tests
+test backup_verify::phase::tests::phase_blocking_worker_finishes_after_its_waiter_times_out ... ok
+test backup_verify::phase::tests::phase_disabled_target_keeps_no_timer_or_id_state ... ok
+test backup_verify::phase::tests::phase_dropped_async_future_reports_unfinished ... ok
+test backup_verify::phase::tests::phase_success_and_early_return_keep_fixed_fields_and_original_deadline ... ok
+test backup_verify::tests::expired_live_verification_worker_keeps_bytes_and_shutdown_registration_until_done ... ok
+test snapshot_index::tests::thirty_two_empty_collections_build_a_complete_structural_index_and_drain ... restore_structural_index_32 capture_ms=11 index_ms=15155 verify_ms=101 teardown_ms=162
+ok
+test state::snapshot_validation::tests::indexed_target_resolutions_preserve_linked_seals_for_one_incarnation ... ok
+test state::snapshot_validation::tests::indexed_target_resolutions_reject_changed_predecessors_and_duplicate_identity ... ok
+test target_resolution::tests::builder_preserves_linked_seals_for_one_incarnation ... 
+thread 'target_resolution::tests::builder_preserves_linked_seals_for_one_incarnation' (7740061) panicked at crates/kasumi-engine/src/target_resolution_tests.rs:525:86:
+called `Result::unwrap()` on an `Err` value: scratch table setup failed: storage capacity denied
+
+Caused by:
+    0: storage capacity denied
+    1: storage capacity denied
+    2: storage capacity denied
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+test target_resolution::tests::builder_rejects_missing_or_wrong_successor_predecessor ... 
+thread 'target_resolution::tests::builder_rejects_missing_or_wrong_successor_predecessor' (7740342) panicked at crates/kasumi-engine/src/target_resolution_tests.rs:596:90:
+called `Result::unwrap()` on an `Err` value: scratch table setup failed: storage capacity denied
+
+Caused by:
+    0: storage capacity denied
+    1: storage capacity denied
+    2: storage capacity denied
+FAILED
+
+failures:
+
+failures:
+    target_resolution::tests::builder_preserves_linked_seals_for_one_incarnation
+    target_resolution::tests::builder_rejects_missing_or_wrong_successor_predecessor
+
+test result: FAILED. 8 passed; 2 failed; 0 ignored; 0 measured; 368 filtered out; finished in 42.59s
+
+error: test failed, to rerun pass `-p kasumi-engine --lib`
+
+Runner elapsed_seconds=234.39 exit_code=101

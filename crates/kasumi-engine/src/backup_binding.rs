@@ -1,6 +1,7 @@
 //! Permanent Control backup bindings. A generation selects an authenticated
 //! prefix of encrypted point rows; rows persisted ahead of the applied cursor
 //! cannot prove that a claim committed.
+use crate::namespace_installation::PreparedRows;
 use anyhow::{Context, Result, ensure};
 use kasumi_store::{EncryptedTable, ScratchDisk, TenantStore, WriteOp};
 use kasumi_types::{BackupBindingHead, BackupBindingRecord, TenantState, staged_digest};
@@ -382,11 +383,8 @@ impl View {
             "backup binding checkpoint is already installed"
         );
         let replacement = match self.source.as_deref() {
-            Some(Source::Staged(table)) => table.clone(),
-            None if self.head.count == 0 => Arc::new(EncryptedTable::new(
-                store.scratch_disk(),
-                scratch_limit(state.limits.max_backup_binding_bytes)?,
-            )?),
+            Some(Source::Staged(table)) => PreparedRows::Staged(table.clone()),
+            None if self.head.count == 0 => PreparedRows::Empty,
             _ => anyhow::bail!("backup binding installation requires verified staged rows"),
         };
         let binding = NamespaceBinding {
@@ -455,7 +453,11 @@ pub(crate) struct Builder {
 impl Builder {
     pub(crate) fn new(disk: &Arc<ScratchDisk>, limit: u64, incarnation: &str) -> Result<Self> {
         Ok(Self {
-            table: Arc::new(EncryptedTable::new(disk, limit)?),
+            table: Arc::new(EncryptedTable::new(
+                disk,
+                limit,
+                disk.native_cache_config(),
+            )?),
             head: BackupBindingHead::empty(incarnation)?,
         })
     }
@@ -509,16 +511,16 @@ pub(crate) fn advance(head: &mut BackupBindingHead, row: &Row) -> Result<()> {
     Ok(())
 }
 pub(crate) struct Installation {
-    replacement: Option<Arc<EncryptedTable>>,
+    replacement: Option<PreparedRows>,
     namespace: String,
     writes: Vec<WriteOp>,
     pub(crate) view: View,
 }
 impl Installation {
-    pub(crate) fn replacements(&self) -> Vec<(&str, &EncryptedTable)> {
+    pub(crate) fn replacements(&self) -> Vec<kasumi_store::NamespaceReplacement<'_>> {
         self.replacement
             .as_ref()
-            .map(|table| vec![(self.namespace.as_str(), table.as_ref())])
+            .map(|rows| vec![rows.replacement(&self.namespace)])
             .unwrap_or_default()
     }
     pub(crate) fn writes(&self) -> &[WriteOp] {
@@ -600,4 +602,4 @@ impl Pending {
 
 #[cfg(test)]
 #[path = "backup_binding_tests.rs"]
-mod tests;
+pub(crate) mod tests;

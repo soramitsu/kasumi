@@ -1,0 +1,7 @@
+{
+  "binary": "target/disk-backed-cache/debug/deps/kasumi_engine-44db468831cfc59f",
+  "sha256": "7e109b65360fe05d06c67dafbf3640f42353fbe451c21a07fc074a5c15e203d9",
+  "build_source_pins": "c04-native-workspace-engine-and-operational-regressions-selected.sha256",
+  "build_source_pins_sha256": "e77fb7db474d0c4e3a892e606e085612ecd305a1dfaf11502fd6e115f882ad85",
+  "scope": "Exact unchanged prior 852-source compiled executable; current live source is not qualified by this run."
+}

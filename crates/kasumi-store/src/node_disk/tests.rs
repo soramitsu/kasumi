@@ -9,6 +9,7 @@ fn installation() -> (tempfile::TempDir, NodeDiskConfig) {
     let root = directory.path().join("owned");
     crate::private_files::create_directory(&root).unwrap();
     let config = NodeDiskConfig {
+        native_storage: crate::test_utils::node_storage_config(),
         roots: BTreeMap::from([("data".into(), root)]),
         max_bytes: 16 << 20,
         maintenance_reserve_bytes: 1 << 20,
@@ -16,6 +17,8 @@ fn installation() -> (tempfile::TempDir, NodeDiskConfig) {
         max_open_files: 16,
         max_open_directories: 16,
         directory_policy: DirectoryPolicy::fixture(),
+        // Explicit strict policy keeps these failure-boundary fixtures exact.
+        file_allocation_policy: FileAllocationPolicy::new(0).unwrap(),
         max_persistent_files: 10_000,
         max_persistent_subdirectories: 10_000,
         census_work_per_step: 10_000,
@@ -2484,13 +2487,17 @@ fn node_store_rejects_different_isolated_memory_before_touching_file() {
     let other_held = other_memory.snapshot();
     let absent = config.roots["data"].join("must-not-exist");
     let empty = config.roots["data"].join("owned-empty");
-    let identity = crate::private_files::file_identity(&empty).unwrap();
+    let identity = crate::NodeGroupIdentity {
+        directory: crate::private_files::directory_identity(&config.roots["data"]).unwrap(),
+        root: crate::private_files::file_identity(&empty).unwrap(),
+    };
     assert!(
         crate::NodeStore::create_new(
             &absent,
             crate::test_utils::NODE_STORE_ID,
             disk.clone(),
-            scratch.clone()
+            scratch.clone(),
+            crate::test_utils::node_storage_config()
         )
         .is_err()
     );
@@ -2499,7 +2506,8 @@ fn node_store_rejects_different_isolated_memory_before_touching_file() {
             &empty,
             crate::test_utils::NODE_STORE_ID,
             disk.clone(),
-            scratch.clone()
+            scratch.clone(),
+            crate::test_utils::node_storage_config()
         )
         .is_err()
     );
@@ -2509,7 +2517,8 @@ fn node_store_rejects_different_isolated_memory_before_touching_file() {
             &identity,
             crate::test_utils::NODE_STORE_ID,
             disk.clone(),
-            scratch.clone()
+            scratch.clone(),
+            crate::test_utils::node_storage_config()
         )
         .is_err()
     );
@@ -3355,4 +3364,399 @@ fn exhausted_close_generation_denies_new_effects_but_preserves_terminal_native_o
         assert_eq!(file.close_owner_address(), owner);
         assert_eq!(native_file::close_attempts(), attempts);
     }
+}
+
+#[test]
+fn standing_file_allowance_survives_settlement_close_overwrite_and_census() {
+    let memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let (_directory, mut config) = installation();
+    config.file_allocation_policy = FileAllocationPolicy::fixture();
+    let disk = open(config, memory);
+    let allowance = rounded(
+        disk.config
+            .file_allocation_policy
+            .maximum_extra_extent_bytes,
+        disk.unit,
+    )
+    .unwrap();
+    let mut file = disk
+        .create_file("data", Path::new("standing"), DiskWork::Foreground)
+        .unwrap();
+    assert_eq!(
+        disk.snapshot().charged_bytes,
+        namespace_charge(&disk) + allowance
+    );
+    file.reserve_growth(0, 128 << 10, DiskWork::Foreground)
+        .unwrap();
+    file.grow_reserved(32 << 10).unwrap();
+    file.write_all_at(&[31; 4096], 0).unwrap();
+    file.sync_all().unwrap();
+    assert_eq!(
+        disk.snapshot().charged_bytes,
+        namespace_charge(&disk) + allowance + (128 << 10)
+    );
+    file.settle_growth(32 << 10).unwrap();
+    let expected = namespace_charge(&disk) + allowance + (32 << 10);
+    assert_eq!(disk.snapshot().charged_bytes, expected);
+    file.close().unwrap();
+    assert_eq!(disk.snapshot().charged_bytes, expected);
+    drop(file);
+    disk.pause().unwrap();
+    disk.reconcile(&CensusCancellation::default()).unwrap();
+    assert_eq!(disk.snapshot().charged_bytes, expected);
+    let mut file = disk.open_file("data", Path::new("standing")).unwrap();
+    // A terminal record can consume its existing physical allowance after
+    // reopen without acquiring a new growth reservation.
+    for byte in [57, 91, 123] {
+        file.write_all_at(&[byte; 4096], 0).unwrap();
+        file.sync_all_and_parent().unwrap();
+        assert_eq!(disk.snapshot().charged_bytes, expected);
+    }
+    file.shrink(0).unwrap();
+    assert_eq!(
+        disk.snapshot().charged_bytes,
+        namespace_charge(&disk) + allowance
+    );
+    file.close().unwrap();
+    drop(file);
+    disk.pause().unwrap();
+    disk.reconcile(&CensusCancellation::default()).unwrap();
+    assert_eq!(
+        disk.snapshot().charged_bytes,
+        namespace_charge(&disk) + allowance
+    );
+    clean(&disk, &["standing"]);
+}
+
+#[test]
+fn standing_file_allowance_denial_precedes_inode_creation() {
+    let memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let (_directory, mut config) = installation();
+    config.file_allocation_policy = FileAllocationPolicy::fixture();
+    config.maintenance_reserve_bytes = 0;
+    config.max_bytes = config.directory_policy.extent_bytes
+        + config.file_allocation_policy.maximum_extra_extent_bytes
+        - 1;
+    let root = config.roots["data"].clone();
+    let disk = open(config, memory);
+    let before = disk.snapshot();
+    assert_eq!(
+        disk.create_file("data", Path::new("denied"), DiskWork::Foreground)
+            .unwrap_err()
+            .kind(),
+        io::ErrorKind::StorageFull
+    );
+    assert!(!root.join("denied").exists());
+    let after = disk.snapshot();
+    assert_eq!(after.phase, NodeDiskPhase::Open);
+    assert_eq!(after.charged_bytes, before.charged_bytes);
+    assert_eq!(after.pending_bytes, before.pending_bytes);
+    assert_eq!(after.persistent_files, 0);
+    assert_eq!(after.open_files, 0);
+    assert_eq!(after.retained_file_attempts, 0);
+    disk.pause().unwrap();
+}
+
+#[test]
+fn standing_file_allowance_is_retained_after_uncertain_empty_creation() {
+    for fault in [
+        file::NamespaceFailure::CreateFileSync,
+        file::NamespaceFailure::CreateParentSync,
+    ] {
+        let memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+        let (_directory, mut config) = installation();
+        config.file_allocation_policy = FileAllocationPolicy::fixture();
+        let disk = open(config, memory);
+        let allowance = rounded(
+            disk.config
+                .file_allocation_policy
+                .maximum_extra_extent_bytes,
+            disk.unit,
+        )
+        .unwrap();
+        disk.namespace_failure.store(fault as u8, Ordering::Relaxed);
+        assert!(
+            disk.create_file("data", Path::new("uncertain"), DiskWork::Foreground)
+                .is_err()
+        );
+        assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
+        assert_eq!(
+            disk.snapshot().charged_bytes,
+            namespace_charge(&disk) + allowance
+        );
+        assert_eq!(disk.snapshot().retained_file_attempts, 1);
+        disk.reconcile(&CensusCancellation::default()).unwrap();
+        assert_eq!(disk.snapshot().phase, NodeDiskPhase::Open);
+        assert_eq!(
+            disk.snapshot().charged_bytes,
+            namespace_charge(&disk) + allowance
+        );
+        assert_eq!(disk.snapshot().persistent_files, 1);
+        clean(&disk, &["uncertain"]);
+    }
+}
+
+#[test]
+fn standing_file_allowance_create_collision_never_duplicates_charge() {
+    let memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let (_directory, mut config) = installation();
+    config.file_allocation_policy = FileAllocationPolicy::fixture();
+    let disk = open(config, memory);
+    let mut file = disk
+        .create_file("data", Path::new("same"), DiskWork::Foreground)
+        .unwrap();
+    file.close().unwrap();
+    drop(file);
+    let before = disk.snapshot();
+    for _ in 0..3 {
+        assert_eq!(
+            disk.create_file("data", Path::new("same"), DiskWork::Foreground)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::AlreadyExists
+        );
+        assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes);
+        assert_eq!(disk.snapshot().pending_bytes, before.pending_bytes);
+        assert_eq!(disk.snapshot().persistent_files, 1);
+        assert_eq!(disk.snapshot().retained_file_attempts, 0);
+        assert_eq!(disk.snapshot().phase, NodeDiskPhase::Open);
+    }
+    clean(&disk, &["same"]);
+}
+
+#[test]
+fn standing_file_allowance_quotes_observed_overallocation_and_rejects_excess() {
+    let unit = 4096;
+    let policy = FileAllocationPolicy::new(32_768).unwrap();
+    // The original APFS failure had unchanged EOF but eight extra blocks.
+    assert_eq!(
+        file_extent_from_parts(434_176, 466_944, unit, policy).unwrap(),
+        (466_944, 0)
+    );
+    assert_eq!(
+        file_extent_from_parts(434_176, 434_176, unit, policy).unwrap(),
+        (466_944, 32_768)
+    );
+    assert_eq!(
+        file_extent_from_parts(434_176, 466_945, unit, policy)
+            .unwrap_err()
+            .kind(),
+        io::ErrorKind::InvalidData
+    );
+    assert_eq!(
+        file_extent_from_parts(0, 0, unit, policy).unwrap(),
+        (32_768, 32_768)
+    );
+    assert_eq!(
+        file_ceiling(1, unit, FileAllocationPolicy::new(1).unwrap()).unwrap(),
+        8192
+    );
+    assert!(file_ceiling(u64::MAX, unit, policy).is_err());
+    assert!(FileAllocationPolicy::new(u64::MAX).is_err());
+    assert_eq!(
+        file_extent_from_parts(4096, 4097, unit, FileAllocationPolicy::new(0).unwrap())
+            .unwrap_err()
+            .kind(),
+        io::ErrorKind::InvalidData
+    );
+}
+
+#[test]
+fn standing_file_allowance_is_required_in_serialized_installation_policy() {
+    let (_directory, config) = installation();
+    let mut value = serde_json::to_value(&config).unwrap();
+    value
+        .as_object_mut()
+        .unwrap()
+        .remove("file_allocation_policy");
+    assert!(serde_json::from_value::<NodeDiskConfig>(value).is_err());
+    assert!(serde_json::from_str::<FileAllocationPolicy>(r#"{}"#).is_err());
+    assert!(
+        serde_json::from_str::<FileAllocationPolicy>(
+            r#"{"maximum_extra_extent_bytes":0,"implicit":true}"#
+        )
+        .is_err()
+    );
+    assert_eq!(
+        serde_json::from_str::<FileAllocationPolicy>(r#"{"maximum_extra_extent_bytes":0}"#)
+            .unwrap(),
+        FileAllocationPolicy::new(0).unwrap()
+    );
+}
+
+#[test]
+fn standing_file_allowance_observation_consumes_promises_without_growing_charge() {
+    let memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let (_directory, mut config) = installation();
+    config.file_allocation_policy = FileAllocationPolicy::new(32_768).unwrap();
+    seed(&config, "extent", 434_176);
+    let disk = open(config, memory);
+    let file = disk.open_file("data", Path::new("extent")).unwrap();
+    let before = disk.snapshot();
+    file.observe_allocation_for_test(466_944).unwrap();
+    assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes);
+    assert_eq!(disk.snapshot().pending_bytes, namespace_pending(&disk));
+    assert_eq!(disk.snapshot().phase, NodeDiskPhase::Open);
+    // Restore the actual metadata observation before normal retirement.
+    file.sync_all().unwrap();
+    drop(file);
+    clean(&disk, &["extent"]);
+}
+
+#[test]
+fn standing_file_allowance_observation_accounts_excess_before_fencing() {
+    let memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let (_directory, mut config) = installation();
+    config.file_allocation_policy = FileAllocationPolicy::new(32_768).unwrap();
+    seed(&config, "extent", 434_176);
+    let disk = open(config, memory);
+    let file = disk.open_file("data", Path::new("extent")).unwrap();
+    let before = disk.snapshot();
+    assert_eq!(
+        file.observe_allocation_for_test(471_040)
+            .unwrap_err()
+            .kind(),
+        io::ErrorKind::InvalidData
+    );
+    assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes + 4096);
+    assert_eq!(disk.snapshot().pending_bytes, namespace_pending(&disk));
+    assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
+    assert!(!disk.snapshot().filesystem_admission_ready);
+    drop(file);
+    assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes + 4096);
+    // Only an exclusive census may replace injected uncertain observations
+    // with the physical file's exact durable accounting.
+    clean(&disk, &["extent"]);
+}
+
+// Isolate the enrollment predicate from cluster timing and from one
+// filesystem's preallocation policy. The existing hook records a conservative
+// prior allocator observation through real account_materialization; neither the
+// actual file nor its identity, EOF, paid ceiling or settled state is changed.
+fn exercise_pending_only_enrollment(smaller_prior_observation: bool) {
+    for via_cursor in [false, true] {
+        let memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+        let (_directory, mut config) = installation();
+        config.file_allocation_policy = FileAllocationPolicy::fixture();
+        seed(&config, "extent", 64 << 10);
+        let path = config.roots["data"].join("extent");
+        let disk = open(config, memory);
+        let mut file = disk.open_file("data", Path::new("extent")).unwrap();
+        file.write_all_at(&[0x7b; 4096], 0).unwrap();
+        file.sync_all().unwrap();
+        let actual = path.metadata().unwrap();
+        let identity = Identity::of(&actual);
+        let allocated = actual.blocks().checked_mul(512).unwrap();
+        assert!(allocated >= 512, "the real written fixture must own blocks");
+        let original = *disk.lock_state().accounted[&identity].file().unwrap();
+        let (bytes, pending) =
+            file_extent(&actual, disk.unit, disk.config.file_allocation_policy).unwrap();
+        assert_eq!(
+            original,
+            AccountedFile::durable(original.binding, bytes, pending, actual.len())
+        );
+        let before = disk.snapshot();
+        let difference = if smaller_prior_observation { 512 } else { 0 };
+        file.observe_allocation_for_test(allocated - difference)
+            .unwrap();
+        let mut expected = original;
+        expected.pending += difference;
+        assert_eq!(
+            *disk.lock_state().accounted[&identity].file().unwrap(),
+            expected,
+            "only pending may differ from the canonical actual observation"
+        );
+        let admitted = disk.snapshot();
+        assert_eq!(admitted.phase, NodeDiskPhase::Open);
+        assert!(admitted.filesystem_admission_ready);
+        assert_eq!(admitted.charged_bytes, before.charged_bytes);
+        assert_eq!(admitted.pending_bytes, before.pending_bytes + difference);
+        assert_eq!(
+            admitted.filesystem_pending_bytes,
+            before.filesystem_pending_bytes + difference
+        );
+        file.close().unwrap();
+        drop(file);
+        assert_eq!(disk.snapshot().open_files, 0);
+        let unchanged = path.metadata().unwrap();
+        assert_eq!(Identity::of(&unchanged), identity);
+        assert_eq!(unchanged.len(), actual.len());
+        assert_eq!(unchanged.blocks(), actual.blocks());
+
+        if via_cursor {
+            let cancel = CensusCancellation::default();
+            let directory = disk.open_directory("data", Path::new("")).unwrap();
+            let mut cursor = directory.cursor(&cancel).unwrap();
+            if smaller_prior_observation {
+                assert_eq!(
+                    cursor.next(&cancel).unwrap_err().kind(),
+                    io::ErrorKind::InvalidData
+                );
+                assert_eq!(
+                    cursor.next(&cancel).unwrap_err().kind(),
+                    io::ErrorKind::InvalidData
+                );
+            } else {
+                let entry = cursor.next(&cancel).unwrap().unwrap();
+                assert_eq!(entry.name().to_bytes(), b"extent");
+                assert_eq!(entry.kind(), NodeDiskEntryKind::File);
+                assert!(cursor.next(&cancel).unwrap().is_none());
+            }
+            cursor.close().unwrap();
+            assert!(cursor.close_error().is_none());
+            drop(cursor);
+        } else if smaller_prior_observation {
+            assert_eq!(
+                disk.open_file("data", Path::new("extent"))
+                    .unwrap_err()
+                    .kind(),
+                io::ErrorKind::InvalidData
+            );
+        } else {
+            let mut reopened = disk.open_file("data", Path::new("extent")).unwrap();
+            let mut payload = [0; 4096];
+            reopened.read_exact_at(&mut payload, 0).unwrap();
+            assert_eq!(payload, [0x7b; 4096]);
+            reopened.close().unwrap();
+        }
+        let after = disk.snapshot();
+        assert_eq!(
+            after.phase,
+            if smaller_prior_observation {
+                NodeDiskPhase::Failed
+            } else {
+                NodeDiskPhase::Open
+            }
+        );
+        assert_eq!(after.filesystem_admission_ready, !smaller_prior_observation);
+        assert_eq!(after.charged_bytes, admitted.charged_bytes);
+        assert_eq!(after.pending_bytes, admitted.pending_bytes);
+        assert_eq!(
+            after.filesystem_pending_bytes,
+            admitted.filesystem_pending_bytes
+        );
+        assert_eq!(after.persistent_files, admitted.persistent_files);
+        assert_eq!(
+            *disk.lock_state().accounted[&identity].file().unwrap(),
+            expected,
+            "acquisition must not adopt the later allocation or refund credit"
+        );
+        let unchanged = path.metadata().unwrap();
+        assert_eq!(Identity::of(&unchanged), identity);
+        assert_eq!(unchanged.len(), actual.len());
+        assert_eq!(unchanged.blocks(), actual.blocks());
+        // Explicit fixture teardown only, after all refusal and retained-credit
+        // assertions. Acquisition itself performs no reconciliation or retry.
+        clean(&disk, &["extent"]);
+    }
+}
+
+#[test]
+fn pending_only_enrollment_unchanged_observation_reopens_and_iterates() {
+    exercise_pending_only_enrollment(false);
+}
+
+#[test]
+fn pending_only_enrollment_drift_fences_without_releasing_credit() {
+    exercise_pending_only_enrollment(true);
 }

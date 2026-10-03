@@ -1,0 +1,83 @@
+Command: cargo test --locked --offline --config profile.test.package.kasumi-kv.opt-level=3 --config profile.test.package.sha2.opt-level=3 -p kasumi-engine --all-features --lib -- --nocapture selected_sources_ source_quote_ application_sources::tests::allocation_tails::
+CARGO_TARGET_DIR=target/disk-backed-cache
+   Compiling kasumi-raft v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-raft)
+   Compiling kasumi-engine v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-engine)
+warning: variant `Mutation` is never constructed
+  --> crates/kasumi-engine/src/security_audit_jobs.rs:26:5
+   |
+24 | enum JobEffect {
+   |      --------- variant in this enum
+25 |     Read,
+26 |     Mutation(&'static str),
+   |     ^^^^^^^^
+   |
+   = note: `JobEffect` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: struct `ReadPause` is never constructed
+  --> crates/kasumi-engine/src/security_audit_jobs.rs:57:19
+   |
+57 | pub(super) struct ReadPause {
+   |                   ^^^^^^^^^
+
+warning: method `run_mutation` is never used
+   --> crates/kasumi-engine/src/security_audit_jobs.rs:120:25
+    |
+ 62 | impl SecurityAudit {
+    | ------------------ method in this implementation
+...
+120 |     pub(super) async fn run_mutation<T, F, R>(&self, component: &'static str, run: R) -> Result<T>
+    |                         ^^^^^^^^^^^^
+
+warning: `kasumi-engine` (lib) generated 3 warnings
+warning: field `panic` is never read
+  --> crates/kasumi-engine/src/security_audit_jobs.rs:52:9
+   |
+48 | pub(super) struct RecordFault {
+   |                   ----------- field in this struct
+...
+52 |     pub panic: bool,
+   |         ^^^^^
+
+warning: `kasumi-engine` (lib test) generated 4 warnings (3 duplicates)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2m 53s
+     Running unittests src/lib.rs (target/disk-backed-cache/debug/deps/kasumi_engine-b15d1192089511a8)
+
+running 28 tests
+test application_sources::tests::quote_tests::source_quote_actual_engine_provider_token_is_preclaimed_and_request_is_pure ... ok
+test application_sources::tests::quote_tests::source_quote_reader_retained_amount_matches_actual_installed_provider_requests ... ok
+test application_sources::tests::selected_sources_failed_consuming_close_never_becomes_success_from_none ... ok
+test application_sources::tests::allocation_tails::source_view_unique_close_holds_cell_credit_while_arc_backing_retires ... ok
+test application_sources::tests::selected_sources_alias_refusal_preserves_later_actual_native_close_failure ... ok
+test application_sources::tests::selected_sources_maintenance_publication_requires_actual_scope_for_owner_and_growth ... ok
+test application_sources::tests::selected_sources_canonical_failure_closes_parent_preserves_original_and_issue ... ok
+test application_sources::tests::selected_sources_capture_finalization_settles_handle_before_retirement ... ok
+publication_owner_layout expectation=72 challenge=72 receipt=216 plan=312 root_preparation=456 publication_preparation=472 source_roots=128 cell_bytes=8192
+test application_sources::tests::quote_tests::source_quote_is_allocation_free_bound_and_covers_real_capture_peak ... ok
+test application_sources::tests::quote_tests::source_quote_covered_planning_uses_actual_format_bound_before_exact_lengths_exist ... ok
+test application_sources::tests::selected_sources_fork_seal_closes_registered_child_before_releasing_permit ... ok
+test application_sources::tests::selected_sources_last_selected_handle_closes_during_ordinary_operation ... ok
+test application_sources::tests::allocation_tails::source_root_weak_retains_shell_credit_after_payload_is_gone ... ok
+test application_sources::tests::selected_sources_fork_keeps_exact_old_native_generation_after_parent_retirement ... ok
+test application_sources::tests::selected_sources_repeated_prospective_callback_is_sticky_and_cancels_queued_reader ... ok
+test application_sources::tests::selected_sources_routine_bounded_read_error_retires_with_original_report_alive ... ok
+
+thread 'application_sources::tests::selected_sources_unknown_capture_panic_without_view_never_drains_as_clean' (17171964) panicked at crates/kasumi-engine/src/application_sources_tests.rs:662:17:
+Box<dyn Any>
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test application_sources::tests::selected_sources_unknown_capture_panic_without_view_never_drains_as_clean ... ok
+test application_sources::tests::allocation_tails::source_failure_actual_error_aliases_hold_credit_through_owner_deallocation ... ok
+test application_sources::tests::selected_sources_shutdown_closes_native_parent_with_metadata_alias_alive ... ok
+test application_sources::tests::selected_sources_missing_prospective_callback_never_publishes_generation ... ok
+test application_sources::tests::selected_sources_prospective_denial_preserves_cursor_generation_and_original_then_retries ... ok
+test application_sources::tests::allocation_tails::source_root_and_credit_arcs_remain_funded_through_actual_deallocation ... ok
+test application_sources::tests::selected_sources_covered_capture_cannot_settle_after_serving_handoff ... ok
+test application_sources::tests::allocation_tails::source_view_weak_retains_credit_after_unique_native_close ... ok
+test application_sources::tests::selected_sources_real_local_startup_publishes_entry_and_drains_surviving_generation ... ok
+test application_sources::tests::allocation_tails::source_cell_concurrent_strong_and_weak_drops_hold_the_actual_credit_tail ... ok
+test application_sources::tests::allocation_tails::source_binding_box_retires_before_its_real_root_credit ... ok
+test application_sources::tests::selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_identity ... ok
+
+test result: ok. 28 passed; 0 failed; 0 ignored; 0 measured; 546 filtered out; finished in 17.62s
+
+Runner: 191.20s; exit=0; matching=831/831

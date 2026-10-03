@@ -143,6 +143,7 @@ impl MaterializationFile {
                 self.node_store_id,
                 self.persistent_disk.clone(),
                 scratch,
+                self.persistent_disk.native_storage_config(),
             )
         } else {
             kasumi_store::NodeStore::open_existing(
@@ -150,6 +151,7 @@ impl MaterializationFile {
                 self.node_store_id,
                 self.persistent_disk.clone(),
                 scratch,
+                self.persistent_disk.native_storage_config(),
             )
         }
         .map_err(journal_unknown)?;

@@ -8,8 +8,8 @@ impl Backend {
         before: u64,
         read: impl Fn(&str) -> Result<Option<Record>>,
     ) -> Result<()> {
-        directive.validate()?;
-        ensure!(
+        directive.validate().map_err(reject_conflict)?;
+        reject_unless!(
             directive.domain_sha256
                 == self
                     .installation
@@ -20,11 +20,11 @@ impl Backend {
         );
         let completed = |id: Uuid| -> Result<AuthorityMaintenanceStatus> {
             let Some(Record::Maintenance(status)) = read(&operation_key(id))? else {
-                anyhow::bail!(
+                reject_bail!(
                     "local signer directive lacks its permanent global/local prerequisite"
                 );
             };
-            ensure!(
+            reject_unless!(
                 status.phase == AuthorityMaintenancePhase::Completed
                     && status.progress_revision < before,
                 "signer prerequisite did not precede publication permission"
@@ -35,13 +35,13 @@ impl Backend {
         let AuthorityMaintenanceAction::StageSignerGeneration { certificate } =
             &stage.command.action
         else {
-            anyhow::bail!("local signer global stage identity differs");
+            reject_bail!("local signer global stage identity differs");
         };
         if let SignerTrustAction::Stage {
             certificate: requested,
         } = &directive.command.action
         {
-            ensure!(
+            reject_unless!(
                 requested == certificate,
                 "local signer certificate differs from global stage"
             );
@@ -50,9 +50,9 @@ impl Backend {
         let winner = completed(
             directive
                 .global_activation_operation_id
-                .context("global activation absent")?,
+                .ok_or_else(|| reject_conflict("global activation absent"))?,
         )?;
-        ensure!(
+        reject_unless!(
             matches!(&winner.command.action, AuthorityMaintenanceAction::ActivateSignerGeneration {
             stage_operation_id, certificate_sha256 } if *stage_operation_id == directive.global_stage_operation_id && *certificate_sha256 == certificate.digest()?),
             "local signer directive substituted the global activation winner"
@@ -62,7 +62,7 @@ impl Backend {
                 staged_operation_id,
                 certificate_sha256,
             } => {
-                ensure!(
+                reject_unless!(
                     *certificate_sha256 == certificate.digest()?,
                     "local activation certificate differs"
                 );
@@ -71,15 +71,15 @@ impl Backend {
             SignerTrustAction::CompleteRetirement {
                 activation_operation_id,
             } => completed(*activation_operation_id)?,
-            _ => anyhow::bail!("local stage abort requires a committed global abort"),
+            _ => reject_bail!("local stage abort requires a committed global abort"),
         };
         let AuthorityMaintenanceAction::AuthorizeSignerTrust {
             directive: previous,
         } = &predecessor.command.action
         else {
-            anyhow::bail!("local signer predecessor is another permission kind");
+            reject_bail!("local signer predecessor is another permission kind");
         };
-        ensure!(
+        reject_unless!(
             previous.verifier == directive.verifier
                 && previous.domain_sha256 == directive.domain_sha256
                 && previous.global_stage_operation_id == directive.global_stage_operation_id
@@ -94,7 +94,7 @@ impl Backend {
                     certificate: actual,
                 },
             ) => {
-                ensure!(
+                reject_unless!(
                     actual == certificate && previous.global_activation_operation_id.is_none(),
                     "local original stage differs"
                 );
@@ -105,14 +105,14 @@ impl Backend {
                     certificate_sha256, ..
                 },
             ) => {
-                ensure!(
+                reject_unless!(
                     *certificate_sha256 == certificate.digest()?
                         && previous.global_activation_operation_id
                             == directive.global_activation_operation_id,
                     "local retirement substituted its original committed activation"
                 );
             }
-            _ => anyhow::bail!("local signer phase predecessor differs"),
+            _ => reject_bail!("local signer phase predecessor differs"),
         }
         Ok(())
     }
@@ -121,7 +121,9 @@ impl Backend {
         meta: &Meta,
         directive: &IssuerSignerDirective,
     ) -> Result<()> {
-        directive.validate_for_head(&meta.signing)?;
+        directive
+            .validate_for_head(&meta.signing)
+            .map_err(reject_conflict)?;
         self.issuer_signer_dependencies(
             directive,
             meta.revision

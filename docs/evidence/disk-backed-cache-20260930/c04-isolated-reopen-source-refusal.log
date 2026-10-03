@@ -1,0 +1,42 @@
+Command: cargo test --locked --offline --config profile.test.package.kasumi-kv.opt-level=3 --config profile.test.package.sha2.opt-level=3 -p kasumi-kv -p kasumi-store -p kasumi-raft -p kasumi-engine --all-features --lib --no-fail-fast -- existing_replicas_replay_committed_state_and_membership_after_full_close --nocapture
+CARGO_TARGET_DIR=target/disk-backed-cache
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.09s
+     Running unittests src/lib.rs (target/disk-backed-cache/debug/deps/kasumi_engine-44db468831cfc59f)
+
+running 1 test
+kasumi source grant refused caller=crates/kasumi-engine/src/application_sources.rs:469:37 requested=528 charged=265194343 limit=454059462 source_bytes=0 source_slots=0 live_slots=24 total_slots=4096 free_slot=true cache_reserve_bytes=67108864 cache_reserve_slots=64 ordinary_protected_bytes=134217728 ordinary_protected_slots=4 resident=0 high=1073741824 usable=true pressured=false
+Error: open existing replicated database 1
+
+Caused by:
+    ResourceExhausted: document source retention budget exhausted
+test bootstrap::existing_replicated_tests::existing_replicas_replay_committed_state_and_membership_after_full_close ... FAILED
+
+failures:
+
+failures:
+    bootstrap::existing_replicated_tests::existing_replicas_replay_committed_state_and_membership_after_full_close
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 629 filtered out; finished in 23.95s
+
+error: test failed, to rerun pass `-p kasumi-engine --lib`
+     Running unittests src/lib.rs (target/disk-backed-cache/debug/deps/kasumi_kv-221aa5373d25965b)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 550 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/disk-backed-cache/debug/deps/kasumi_raft-8af78bc0d2a8574c)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 173 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/disk-backed-cache/debug/deps/kasumi_store-4ef75ebdc018c368)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 708 filtered out; finished in 0.00s
+
+error: 1 target failed:
+    `-p kasumi-engine --lib`
+Runner: 25.28s; exit=101; matching=1528/1528

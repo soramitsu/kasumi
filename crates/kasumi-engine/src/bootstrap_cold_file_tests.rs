@@ -26,6 +26,7 @@ impl ProcessFixture {
                     directory: root.join("scratch"),
                     max_bytes: 256 << 30,
                     min_free_bytes: 0,
+                    native_cache_bytes: 8 << 20,
                 },
             )
         };
@@ -191,7 +192,7 @@ async fn child(root: &Path, stage: &str) -> anyhow::Result<()> {
                 reader.read_exact(&mut chunk)?;
                 application.push(WriteOp::put(NS, index.to_be_bytes(), chunk));
             }
-            let manifest = Manifest {
+            let manifest = ApplicationBootstrapManifest {
                 format: 2,
                 bytes: image.len(),
                 chunks: image.len().div_ceil(CHUNK as u64),

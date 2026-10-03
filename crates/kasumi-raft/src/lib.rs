@@ -1,7 +1,44 @@
 //! Durable byte-command replication. Application outcomes are encoded in response bytes;
 //! backend errors are fatal materialization failures, never replica-local rejections.
 
+mod selected_application;
+pub use selected_application::{
+    ApplicationBoundaryRef, ApplicationSelectionMode, PreparedOrdinarySourceEnvelope,
+    PreparedSelectionPlan, PreparedSourceCapacityEnvelope, SelectedApplicationPosition,
+    SelectedAppliedRef, SelectedSnapshotRef, SelectionFailure, SelectionReadIdentity,
+    SelectionWorkspace, selected_application_at, selected_application_at_planned,
+    selected_application_at_prepared, selected_application_at_source,
+    selected_application_at_source_loan,
+};
+
+/// Fixed canonical cursor read specification for the test-only primary
+/// predecessor check. This provides bounds, not a decoded proof or authority.
+#[cfg(any(test, feature = "test-utils"))]
+pub const fn primary_applied_cursor_read_spec_for_test() -> (&'static str, &'static [u8], usize) {
+    PreparedSelectionPlan::applied_cursor_read_spec()
+}
+
+mod apply_completion;
+pub use apply_completion::{
+    CompletionAction, CompletionBinding, CompletionCallError, CompletionCustody,
+    CompletionFinalization, CompletionIdentity, CompletionInvocation, CompletionSettleError,
+    CompletionVerdict,
+};
+mod apply_failure;
+pub use apply_failure::completion::{
+    ApplyObservationRef, CompletionViolation, OrdinaryApplyReport, ReportBusy, RetainedApplyReport,
+};
+mod apply_publication;
 mod command;
+pub use apply_publication::{
+    AppliedInput, ApplyPublisher, JointPublicationReceipt, PublicationChallenge,
+    PublicationExpectation, PublicationExpectationError, PublishCallError, SelectionPreparer,
+};
+#[cfg(any(test, feature = "test-utils"))]
+pub use apply_publication::{
+    with_application_publisher_bound_for_test, with_application_publisher_bound_observed_for_test,
+    with_application_publisher_for_test,
+};
 mod control;
 mod entry;
 pub use entry::Entry;
@@ -54,12 +91,16 @@ pub use custody_group::{CustodyRaftGroup, CustodyView};
 use kasumi_store::TenantStorageSet;
 use lifetime::StorageDrain;
 pub use network::{
-    InProcessRouter, RaftTransport, RpcPayloadTooLarge, RpcRequest, RpcResponse, dispatch_rpc,
+    InProcessRouter, RaftTransport, ReadIndexError, ReadIndexResponse, RpcPayloadTooLarge,
+    RpcRequest, RpcResponse, dispatch_rpc,
 };
 pub use openraft::{
     BasicNode, Config, LogId, MembershipObserver, SnapshotMeta, SnapshotPolicy, StoredMembership,
 };
-pub use snapshot_buffer::{SNAPSHOT_BUFFER_SLOTS, SnapshotBuffer, SnapshotBufferOwner};
+pub use snapshot_buffer::{
+    ApplicationSourceBinding, ApplicationSourceCustody, SNAPSHOT_BUFFER_SLOTS, SnapshotBuffer,
+    SnapshotBufferOwner,
+};
 pub use snapshot_state::RetiredSnapshotState;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
@@ -166,8 +207,8 @@ impl CapturedSnapshot {
 }
 
 /// Only the Raft adapter may call mutation methods after the group starts.
-/// `apply` must publish the complete command atomically; business errors belong in
-/// its returned bytes. `restore` must validate before atomically replacing state.
+/// Application effects publish through the adapter's synchronous callback;
+/// business rejections belong in the committed response bytes.
 /// Validated backend state held unpublished while Raft durably installs its
 /// encrypted tables and the matching snapshot/applied cursor. The borrowed
 /// lifetime keeps the backend's mutation lock and tracked storage owner alive.
@@ -205,7 +246,7 @@ impl SnapshotRestoreContext {
 
 pub trait PreparedStateMachineRestore {
     fn retirement(&self) -> Option<RetiredSnapshotState>;
-    fn application_replacements(&self) -> Vec<(&str, &kasumi_store::EncryptedTable)>;
+    fn application_replacements(&self) -> Vec<kasumi_store::NamespaceReplacement<'_>>;
     fn application_writes(&self) -> &[kasumi_store::WriteOp];
     /// Called only after durable publication succeeds. A release failure seals
     /// the replica; restart must recover the already committed snapshot exactly.
@@ -213,10 +254,17 @@ pub trait PreparedStateMachineRestore {
 }
 
 pub trait StateMachineBackend: Send + Sync + 'static {
-    fn apply(&self, position: &AppliedEntryContext, command: &[u8]) -> Result<AppliedResponse>;
-    /// Advance the logical snapshot cursor for consensus-only entries without
-    /// decoding an application command or manufacturing an application effect.
-    fn apply_metadata(&self, position: &AppliedEntryContext) -> Result<()>;
+    /// Prepare under the backend's mutation guard, commit exactly once, then
+    /// release the prepared generation only after the callback succeeds. Keep
+    /// the guard through that release. Metadata commits an empty response without
+    /// retirement; its application writes use the same publication boundary.
+    /// Outer errors fence this replica.
+    fn apply_with_publisher(
+        &self,
+        position: &AppliedEntryContext,
+        input: AppliedInput<'_>,
+        publisher: &mut dyn ApplyPublisher,
+    ) -> Result<()>;
     fn capture_snapshot(&self) -> Result<CapturedSnapshot>;
     fn snapshot(&self, writer: &mut dyn std::io::Write) -> Result<Option<RetiredSnapshotState>> {
         let captured = self.capture_snapshot()?;
@@ -240,9 +288,34 @@ pub trait StateMachineBackend: Send + Sync + 'static {
     fn close_application(&self);
 }
 
+/// The membership a readiness probe certifies for the local node, in addition
+/// to a leader-confirmed observation of an applied, nonjoint configuration.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ReadinessRole {
+    /// The local node votes; `Some` also requires exactly this voter set.
+    Voter(Option<BTreeSet<u64>>),
+    /// The local node is a Control group voter or learner.
+    ControlMember,
+}
+
+/// Installed readiness callers still name the expected voter set directly.
+/// This maps them to the voter role until they select `ControlMember`.
+impl From<Option<BTreeSet<u64>>> for ReadinessRole {
+    fn from(expected_voters: Option<BTreeSet<u64>>) -> Self {
+        Self::Voter(expected_voters)
+    }
+}
+
+/// One readiness observation stays below the installed probe's one-second
+/// diagnostic timeout, so a lost quorum is reported as unhealthy, not stalled.
+const READINESS_OBSERVATION_DEADLINE: Duration = Duration::from_millis(750);
+
 #[derive(Clone)]
 pub struct RaftGroup {
     raft: Raft,
+    id: u64,
+    group: String,
+    transport: Arc<dyn RaftTransport>,
     machine_failed: Arc<AtomicBool>,
     storage_drain: StorageDrain,
     snapshot_buffers: Arc<SnapshotBufferOwner>,
@@ -266,11 +339,13 @@ impl StateMachineBackend for OwnedBackend {
     fn close_application(&self) {
         self.inner.close_application();
     }
-    fn apply(&self, position: &AppliedEntryContext, command: &[u8]) -> Result<AppliedResponse> {
-        self.inner.apply(position, command)
-    }
-    fn apply_metadata(&self, position: &AppliedEntryContext) -> Result<()> {
-        self.inner.apply_metadata(position)
+    fn apply_with_publisher(
+        &self,
+        position: &AppliedEntryContext,
+        input: AppliedInput<'_>,
+        publisher: &mut dyn ApplyPublisher,
+    ) -> Result<()> {
+        self.inner.apply_with_publisher(position, input, publisher)
     }
     fn capture_snapshot(&self) -> Result<CapturedSnapshot> {
         self.inner.capture_snapshot()
@@ -317,14 +392,47 @@ async fn failed_startup(
     snapshot_buffers: &Arc<SnapshotBufferOwner>,
     storage_drain: &StorageDrain,
 ) -> anyhow::Error {
+    snapshot_buffers.seal_application_source_consumers();
     let startup = snapshot_buffers.record_startup_error(error);
-    let failure = snapshot_buffers
-        .drain_buffers()
-        .await
-        .err()
-        .unwrap_or(startup);
+    let mut report = kasumi_types::drain::DrainReport::default();
+    report.merge(&startup);
+    let startup_unresolved =
+        (startup.completion() == kasumi_types::drain::DrainCompletion::Retained).then_some(startup);
+    let mut buffer_unresolved = None;
+    if let Err(failure) = snapshot_buffers.drain_buffers().await {
+        report.merge(&failure);
+        if failure.completion() == kasumi_types::drain::DrainCompletion::Retained {
+            buffer_unresolved = Some(failure);
+        }
+    }
     storage_drain.wait().await;
-    failure.into()
+    // A canceled apply waiter can leave a worker that records its failure late.
+    if let Err(failure) = snapshot_buffers.drain_buffers().await {
+        report.merge(&failure);
+        if failure.completion() == kasumi_types::drain::DrainCompletion::Retained {
+            buffer_unresolved = Some(failure);
+        }
+    }
+    let mut source_unresolved = None;
+    if let Err(failure) = snapshot_buffers.drain_application_sources().await {
+        report.merge(&failure);
+        if failure.completion() == kasumi_types::drain::DrainCompletion::Retained {
+            source_unresolved = Some(failure);
+        }
+    }
+    let buffer_unresolved = snapshot_buffers
+        .finish_failed_buffer_drain(buffer_unresolved, &mut report)
+        .await;
+    let unresolved = startup_unresolved
+        .or(source_unresolved)
+        .or(buffer_unresolved);
+    if unresolved.is_none() {
+        snapshot_buffers.release_group_ownership();
+    }
+    report
+        .outcome(unresolved)
+        .expect_err("startup error retained")
+        .into()
 }
 
 impl RaftGroup {
@@ -429,6 +537,8 @@ impl RaftGroup {
             read_target_first_membership_prebind(&store, expected)?;
         }
         let ownership = claim_store(&store)?;
+        snapshot_buffers
+            .bind_group_ownership(ownership.clone(), store.custody().store().clone())?;
         let backend = Arc::new(OwnedBackend {
             inner: backend,
             _ownership: ownership.clone(),
@@ -449,7 +559,7 @@ impl RaftGroup {
             let raft = Raft::new(
                 id,
                 config,
-                network::NetworkFactory::new(id, group, transport),
+                network::NetworkFactory::new(id, group.clone(), transport.clone()),
                 log,
                 machine,
             )
@@ -466,6 +576,9 @@ impl RaftGroup {
         };
         Ok(Self {
             raft,
+            id,
+            group,
+            transport,
             machine_failed,
             storage_drain,
             snapshot_buffers,
@@ -555,6 +668,22 @@ impl RaftGroup {
         Ok(instance)
     }
 
+    /// Borrow this group's actual retained apply report without draining or
+    /// releasing custody. `Ok(None)` means no terminal failure is latched at
+    /// this observation; `ReportBusy` means inspection is temporarily busy.
+    /// Neither result proves that apply or shutdown has completed.
+    ///
+    /// The synchronous callback must not wait for the failed worker or drain.
+    /// See [`SnapshotBufferOwner::try_with_retained_apply_report`] for the
+    /// borrowed-report and original-outcome ownership contract.
+    pub fn try_with_retained_apply_report<R>(
+        &self,
+        inspect: impl for<'a> FnOnce(RetainedApplyReport<'a>) -> R,
+    ) -> std::result::Result<Option<R>, ReportBusy> {
+        self.snapshot_buffers
+            .try_with_retained_apply_report(inspect)
+    }
+
     pub fn raft(&self) -> &Raft {
         &self.raft
     }
@@ -569,30 +698,31 @@ impl RaftGroup {
     /// One complete readiness operation. The installed caller retains this
     /// future through diagnostic timeouts and stops; there is deliberately no
     /// timeout that abandons a queued SDK actor request or applied-state waiter.
+    /// Followers and learners are observed through the leader's read index.
     pub async fn readiness_probe(
         &self,
         local_id: u64,
-        expected_voters: Option<BTreeSet<u64>>,
+        role: impl Into<ReadinessRole>,
     ) -> Result<bool> {
-        use openraft::error::{Fatal, RaftError};
+        use openraft::error::Fatal;
+        let role = role.into();
         if self.check_access().is_err() {
             return Ok(false);
         }
         let term = self.raft.metrics().borrow().current_term;
-        let applied = match self.raft.ensure_linearizable().await {
+        let applied = match self.observe_within(READINESS_OBSERVATION_DEADLINE).await {
             Ok(applied) => applied,
-            // These are ordinary observations of a follower, a lost quorum or
-            // a stopped group, not infrastructure failures of the probe owner.
-            Err(RaftError::APIError(_)) | Err(RaftError::Fatal(Fatal::Stopped)) => {
-                return Ok(false);
-            }
-            Err(error) => return Err(error.into()),
+            // A lost quorum, an unreachable or changed leader, a seal or a
+            // stopped group is an ordinary observation, not an infrastructure
+            // failure of the probe owner.
+            Err(error) if !failed_core(&error) => return Ok(false),
+            Err(error) => return Err(error),
         };
         if self.check_access().is_err() || self.raft.metrics().borrow().current_term != term {
             return Ok(false);
         }
         let result = self
-            .readiness_membership_matches(applied, local_id, expected_voters)
+            .readiness_membership_matches(applied, local_id, role)
             .await;
         match result {
             Err(error) if matches!(error.downcast_ref::<Fatal<u64>>(), Some(Fatal::Stopped)) => {
@@ -611,24 +741,55 @@ impl RaftGroup {
         &self,
         applied: Option<LogId<u64>>,
         local_id: u64,
-        expected_voters: Option<BTreeSet<u64>>,
+        role: ReadinessRole,
     ) -> Result<bool> {
         Ok(self
             .raft
             .with_raft_state(move |state| {
                 let membership = state.membership_state.effective();
                 let configurations = membership.membership().get_joint_config();
+                let member = match &role {
+                    ReadinessRole::Voter(expected) => {
+                        configurations.first().is_some_and(|voters| {
+                            voters.contains(&local_id)
+                                && expected.as_ref().is_none_or(|expected| voters == expected)
+                        })
+                    }
+                    ReadinessRole::ControlMember => {
+                        membership.membership().get_node(&local_id).is_some()
+                    }
+                };
                 membership
                     .log_id()
                     .as_ref()
                     .is_some_and(|log| applied.as_ref().is_some_and(|applied| applied >= log))
                     && configurations.len() == 1
-                    && configurations[0].contains(&local_id)
-                    && expected_voters
-                        .as_ref()
-                        .is_none_or(|expected| &configurations[0] == expected)
+                    && member
             })
             .await?)
+    }
+
+    /// Read-only observation barrier for any current member, including
+    /// followers and learners: see `quorum::observation_barrier`. It grants no
+    /// write authority; `write` and `linearizable_barrier` stay leader-only.
+    pub async fn observation_barrier(&self) -> Result<Option<LogId<u64>>> {
+        self.observe_within(quorum::BARRIER_DEADLINE).await
+    }
+
+    async fn observe_within(&self, within: Duration) -> Result<Option<LogId<u64>>> {
+        quorum::observation_barrier(
+            &self.raft,
+            quorum::ReadIndexRoute {
+                local: self.id,
+                group: &self.group,
+                transport: self.transport.as_ref(),
+            },
+            || self.check_access(),
+            self.store.custody().store(),
+            Some(self.store.application()),
+            within,
+        )
+        .await
     }
 
     pub fn storage_domains(&self) -> &Arc<TenantStorageSet> {
@@ -822,7 +983,9 @@ impl RaftGroup {
     }
 
     pub async fn shutdown(&self) -> kasumi_types::drain::DrainResult {
+        self.snapshot_buffers.seal_application_source_consumers();
         let mut report = self.shutdown_report.lock().await;
+        let mut buffer_unresolved = None;
         if let Some((router, group, id)) = &self.local_route {
             router.unregister(group, *id);
         }
@@ -831,14 +994,48 @@ impl RaftGroup {
         }
         if let Err(failure) = self.snapshot_buffers.drain_buffers().await {
             report.merge(&failure);
+            if failure.completion() == kasumi_types::drain::DrainCompletion::Retained {
+                buffer_unresolved = Some(failure);
+            }
         }
         self.storage_drain.wait().await;
+        if let Err(failure) = self.snapshot_buffers.drain_buffers().await {
+            report.merge(&failure);
+            if failure.completion() == kasumi_types::drain::DrainCompletion::Retained {
+                buffer_unresolved = Some(failure);
+            }
+        }
+        let mut source_unresolved = None;
+        if let Err(failure) = self.snapshot_buffers.drain_application_sources().await {
+            report.merge(&failure);
+            if failure.completion() == kasumi_types::drain::DrainCompletion::Retained {
+                source_unresolved = Some(failure);
+            }
+        }
         // SDK shutdown has joined every runtime child. Its failed incoming
         // facade is now unusable because the independent buffer owner closed
         // every backing; keep the original errors while establishing completion.
-        self.ownership.store(false, Ordering::Release);
-        report.complete()
+        let buffer_unresolved = self
+            .snapshot_buffers
+            .finish_failed_buffer_drain(buffer_unresolved, &mut report)
+            .await;
+        let unresolved = source_unresolved.or(buffer_unresolved);
+        if unresolved.is_none() {
+            self.snapshot_buffers.release_group_ownership();
+        }
+        report.outcome(unresolved)
     }
+}
+
+/// An SDK fatal other than a stop, from either a leader round or a follower's
+/// application wait. Every other barrier failure is an unhealthy observation.
+fn failed_core(error: &anyhow::Error) -> bool {
+    use openraft::error::{Fatal, RaftError};
+    let fatal = match error.downcast_ref::<ReadIndexError>() {
+        Some(RaftError::Fatal(fatal)) => Some(fatal),
+        _ => error.downcast_ref::<Fatal<u64>>(),
+    };
+    fatal.is_some_and(|fatal| !matches!(fatal, Fatal::Stopped))
 }
 
 mod local_applied;

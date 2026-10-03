@@ -2,6 +2,10 @@
 use super::{ALLOCATION_ALLOWANCE, ChargeKind, MemoryCore, Reservation, ReserveKindError};
 use std::{io, sync::Arc};
 
+#[cfg(test)]
+#[path = "../native_cache_admission_tests.rs"]
+mod native_cache_admission_tests;
+
 impl MemoryCore {
     fn installed_reservation_bytes(workspace: u64) -> Option<u64> {
         workspace.checked_add(
@@ -32,6 +36,44 @@ impl MemoryCore {
     }
 }
 impl kasumi_store::NodeDiskMemoryAdmission for MemoryCore {
+    fn install_source_metadata(
+        self: Arc<Self>,
+        install: &mut kasumi_store::SourceMetadataInstall<'_>,
+    ) -> io::Result<()> {
+        let provider: Arc<dyn kasumi_store::NodeDiskMemoryAdmission> = self.clone();
+        let permit = install
+            .try_begin_bind(provider)
+            .map_err(|_| io::ErrorKind::InvalidInput)?;
+        let bytes = Self::installed_reservation_bytes(permit.request_bytes())
+            .ok_or(io::ErrorKind::OutOfMemory)?;
+        // The exact constructor, including History, is ordinary source work.
+        // Publication lanes are standing reservations acquired ahead of work;
+        // this does not borrow audit TLS or bypass cache/ordinary headroom.
+        let charge = match self.reserve_kind_raw(
+            bytes,
+            None,
+            ChargeKind::Resident,
+            super::ChargeOrigin::DocumentSource,
+        ) {
+            Ok(charge) => charge,
+            Err(ReserveKindError::Exhausted) => {
+                return Err(permit.refuse_capacity(io::ErrorKind::OutOfMemory.into()));
+            }
+            Err(ReserveKindError::IdentifierExhausted | ReserveKindError::Missing) => {
+                return Err(io::ErrorKind::Other.into());
+            }
+        };
+        #[cfg(test)]
+        super::installed_drop_probe::observe(&charge);
+        permit.bind(charge);
+        Ok(())
+    }
+
+    fn quote_installed(&self, workspace: u64) -> io::Result<u64> {
+        Self::installed_reservation_bytes(workspace)
+            .ok_or_else(|| io::ErrorKind::OutOfMemory.into())
+    }
+
     fn storage_census(&self) -> &kasumi_store::StorageCensus {
         &self.storage_census
     }
@@ -56,9 +98,58 @@ impl kasumi_store::NodeDiskMemoryAdmission for MemoryCore {
             )
             .map_err(|error| match error {
                 ReserveKindError::Exhausted => io::ErrorKind::OutOfMemory,
-                ReserveKindError::IdentifierExhausted => io::ErrorKind::Other,
+                ReserveKindError::IdentifierExhausted | ReserveKindError::Missing => {
+                    io::ErrorKind::Other
+                }
             })?;
+        #[cfg(test)]
+        super::installed_drop_probe::observe(&charge);
         Ok(kasumi_store::DiskMemoryLease::new(charge))
+    }
+
+    fn quote_cache_memory(&self, credit_bytes: u64) -> io::Result<kasumi_kv::CacheMemoryQuote> {
+        let overhead = Self::installed_reservation_bytes(0).ok_or(io::ErrorKind::OutOfMemory)?;
+        kasumi_kv::CacheMemoryQuote::new(credit_bytes, overhead)
+            .ok_or_else(|| io::ErrorKind::OutOfMemory.into())
+    }
+
+    fn reserve_cache_memory(
+        self: Arc<Self>,
+        credit_bytes: u64,
+    ) -> io::Result<kasumi_kv::CacheMemoryLease> {
+        let quote = self.quote_cache_memory(credit_bytes)?;
+        // Deliberately bypass ACTIVE_AUDIT: optional retention and temporary
+        // rehash custody must not strand protected maintenance escrow.
+        let charge = self
+            .reserve_kind_raw(
+                quote.charged_bytes(),
+                None,
+                ChargeKind::Resident,
+                super::ChargeOrigin::NativeCache,
+            )
+            .map_err(|error| match error {
+                ReserveKindError::Exhausted => io::ErrorKind::OutOfMemory,
+                ReserveKindError::IdentifierExhausted | ReserveKindError::Missing => {
+                    io::ErrorKind::Other
+                }
+            })?;
+        Ok(kasumi_kv::CacheMemoryLease::new(quote, charge))
+    }
+}
+
+impl kasumi_kv::CacheMemoryReservation for Reservation {
+    fn try_grow(&mut self, additional_bytes: u64) -> Result<(), kasumi_kv::AdmissionError> {
+        self.reserve_additional_raw(additional_bytes)
+            .map_err(|error| match error {
+                ReserveKindError::Exhausted => kasumi_kv::AdmissionError::CapacityDenied,
+                ReserveKindError::IdentifierExhausted | ReserveKindError::Missing => {
+                    kasumi_kv::AdmissionError::OwnerFailed
+                }
+            })
+    }
+
+    fn retain_charge(&mut self, charged_bytes: u64) {
+        self.retain(charged_bytes);
     }
 }
 
@@ -143,5 +234,265 @@ mod tests {
         too_small.max_inflight_bytes =
             Some(MemoryCore::required_bookkeeping_bytes(&too_small).unwrap() - 1);
         assert!(NodeAdmission::with_fixed_memory(too_small, 2 << 30, 0).is_err());
+    }
+
+    fn cache_policy() -> AdmissionConfig {
+        AdmissionConfig {
+            max_inflight_bytes: Some(16 << 20),
+            max_reservations: 16,
+            cache_work_reserve_bytes: Some(4 << 20),
+            cache_work_reserve_slots: Some(4),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn cache_credit_grows_in_one_slot_and_retains_its_exact_core() {
+        let node = NodeAdmission::with_fixed_memory(cache_policy(), 2 << 30, 0).unwrap();
+        let core = node.memory().clone();
+        let baseline = core.snapshot();
+        let quote = core.quote_cache_memory(1024).unwrap();
+        assert_eq!(
+            quote.charged_bytes(),
+            MemoryCore::required_installed_reservation_bytes(1024).unwrap()
+        );
+        let mut cache = core.clone().reserve_cache_memory(1024).unwrap();
+        let next = core.data.state.lock().unwrap().next;
+        cache.try_grow_to(1 << 20).unwrap();
+        assert_eq!(core.data.state.lock().unwrap().next, next);
+        assert_eq!(
+            core.snapshot().live_reservations,
+            baseline.live_reservations + 1
+        );
+        assert_eq!(
+            core.snapshot().reserved_bytes,
+            baseline.reserved_bytes + cache.quote().charged_bytes()
+        );
+        let before = core.snapshot();
+        assert_eq!(
+            cache.try_grow_to(u64::MAX),
+            Err(kasumi_kv::AdmissionError::CapacityDenied)
+        );
+        assert_eq!(core.snapshot().reserved_bytes, before.reserved_bytes);
+        assert!(cache.shrink_to(123));
+        assert_eq!(
+            core.snapshot().reserved_bytes,
+            baseline.reserved_bytes + quote.overhead_bytes() + 123
+        );
+        drop(node);
+        let retained = Arc::downgrade(&core);
+        drop(core);
+        assert!(retained.upgrade().is_some());
+        drop(cache);
+        assert!(retained.upgrade().is_none());
+    }
+
+    #[test]
+    fn cache_growth_leaves_byte_headroom_and_cleanup_never_readmits() {
+        let policy = cache_policy();
+        let total = policy.max_inflight_bytes.unwrap();
+        let reserve = policy.cache_work_reserve_bytes.unwrap();
+        let node = NodeAdmission::with_fixed_memory(policy, 2 << 30, 0).unwrap();
+        let core = node.memory().clone();
+        let baseline = core.snapshot();
+        let overhead = core.quote_cache_memory(0).unwrap().overhead_bytes();
+        let credit = total - baseline.reserved_bytes - reserve - overhead;
+        let mut cache = core.clone().reserve_cache_memory(credit).unwrap();
+        let before = core.snapshot();
+        assert_eq!(before.reserved_bytes, total - reserve);
+        assert_eq!(
+            cache.try_grow_to(credit + 1),
+            Err(kasumi_kv::AdmissionError::CapacityDenied)
+        );
+        assert_eq!(core.snapshot().reserved_bytes, before.reserved_bytes);
+        let work = core.clone().reserve_installed(reserve - overhead).unwrap();
+        assert_eq!(core.snapshot().reserved_bytes, total);
+        core.data.state.lock().unwrap().pressured = true;
+        assert!(cache.shrink_to(0));
+        assert_eq!(cache.quote().charged_bytes(), overhead);
+        drop(cache);
+        drop(work);
+        assert_eq!(core.snapshot().reserved_bytes, baseline.reserved_bytes);
+        assert_eq!(
+            core.snapshot().live_reservations,
+            baseline.live_reservations
+        );
+    }
+
+    #[test]
+    fn cache_respects_slot_headroom_on_acquisition_and_growth() {
+        let policy = cache_policy();
+        let reserve = policy.cache_work_reserve_slots.unwrap();
+        let limit = policy.max_reservations;
+        let node = NodeAdmission::with_fixed_memory(policy, 2 << 30, 0).unwrap();
+        let core = node.memory().clone();
+        let mut cache = core.clone().reserve_cache_memory(1).unwrap();
+        let mut work = Vec::new();
+        while core.snapshot().live_reservations < limit - reserve {
+            work.push(core.clone().reserve_installed(0).unwrap());
+        }
+        cache.try_grow_to(2).unwrap();
+        assert_eq!(
+            core.clone().reserve_cache_memory(0).err().unwrap().kind(),
+            io::ErrorKind::OutOfMemory
+        );
+        work.push(core.clone().reserve_installed(0).unwrap());
+        let before = core.snapshot();
+        assert_eq!(
+            cache.try_grow_to(3),
+            Err(kasumi_kv::AdmissionError::CapacityDenied)
+        );
+        assert_eq!(core.snapshot().reserved_bytes, before.reserved_bytes);
+        while core.snapshot().live_reservations < limit {
+            work.push(core.clone().reserve_installed(0).unwrap());
+        }
+        assert!(cache.shrink_to(0));
+        drop(cache);
+        drop(work);
+    }
+
+    #[test]
+    fn cache_preserves_audit_protection_and_never_uses_scoped_escrow() {
+        // Admit both the 128 MiB audit escrow and its independent 128 MiB
+        // required-work protection, plus bookkeeping and optional cache room.
+        let node = NodeAdmission::with_fixed_memory(
+            AdmissionConfig {
+                max_inflight_bytes: Some(512 << 20),
+                ..AdmissionConfig::default()
+            },
+            2 << 30,
+            0,
+        )
+        .unwrap();
+        let core = node.memory().clone();
+        let pool = crate::audit_maintenance::NodeAuditMaintenance::install(&node).unwrap();
+        let baseline = core.snapshot();
+        let (reserve, _) = core.data.config.cache_work_headroom(core.data.max_bytes);
+        let protected = core.data.state.lock().unwrap().ordinary_protected;
+        let overhead = core.quote_cache_memory(0).unwrap().overhead_bytes();
+        let credit = core.data.max_bytes - baseline.reserved_bytes - reserve - protected - overhead;
+        let scope = pool.enter_scope();
+        let mut cache = core.clone().reserve_cache_memory(credit).unwrap();
+        assert_eq!(
+            core.snapshot().live_reservations,
+            baseline.live_reservations + 1
+        );
+        assert_eq!(
+            core.snapshot().reserved_bytes,
+            baseline.reserved_bytes + cache.quote().charged_bytes()
+        );
+        let work = core.clone().reserve_installed(1024).unwrap();
+        assert_eq!(
+            core.snapshot().live_reservations,
+            baseline.live_reservations + 1
+        );
+        assert_eq!(
+            cache.try_grow_to(credit + 1),
+            Err(kasumi_kv::AdmissionError::CapacityDenied)
+        );
+        drop(work);
+        drop(scope);
+        drop(cache);
+        assert_eq!(core.snapshot().reserved_bytes, baseline.reserved_bytes);
+    }
+
+    #[test]
+    fn headroom_may_disable_caching_without_disabling_required_work() {
+        let mut policy = cache_policy();
+        policy.cache_work_reserve_slots = Some(policy.max_reservations);
+        let node = NodeAdmission::with_fixed_memory(policy, 2 << 30, 0).unwrap();
+        let core = node.memory().clone();
+        assert_eq!(
+            core.clone().reserve_cache_memory(0).err().unwrap().kind(),
+            io::ErrorKind::OutOfMemory
+        );
+        let work = core.reserve_installed(1024).unwrap();
+        drop(work);
+    }
+
+    #[test]
+    fn cache_work_reserves_reject_zero_and_values_above_installed_capacity() {
+        let valid = cache_policy();
+        for bytes in [0, valid.max_inflight_bytes.unwrap() + 1] {
+            let mut policy = valid.clone();
+            policy.cache_work_reserve_bytes = Some(bytes);
+            assert!(
+                NodeAdmission::with_fixed_memory(policy, 2 << 30, 0).is_err(),
+                "accepted invalid cache byte reserve {bytes}"
+            );
+        }
+        for slots in [0, valid.max_reservations + 1] {
+            let mut policy = valid.clone();
+            policy.cache_work_reserve_slots = Some(slots);
+            assert!(
+                NodeAdmission::with_fixed_memory(policy, 2 << 30, 0).is_err(),
+                "accepted invalid cache slot reserve {slots}"
+            );
+        }
+    }
+
+    #[test]
+    fn default_cache_work_reserves_follow_resolved_capacity_and_caps() {
+        let small = AdmissionConfig {
+            cache_work_reserve_bytes: None,
+            cache_work_reserve_slots: None,
+            ..cache_policy()
+        };
+        for (policy, expected_total, expected_headroom) in [
+            (small, 16 << 20, (4 << 20, 4)),
+            (AdmissionConfig::default(), 256 << 20, (64 << 20, 64)),
+        ] {
+            assert_eq!(policy.cache_work_reserve_bytes, None);
+            assert_eq!(policy.cache_work_reserve_slots, None);
+            // Fixed 2 GiB capacity resolves default high water to 1 GiB and
+            // default total admission to one quarter of that high water.
+            let node = NodeAdmission::with_fixed_memory(policy, 2 << 30, 0).unwrap();
+            let core = node.memory();
+            assert_eq!(core.data.max_bytes, expected_total);
+            assert_eq!(
+                core.data.config.cache_work_headroom(core.data.max_bytes),
+                expected_headroom
+            );
+            let before = core.snapshot();
+            let cache = core.clone().reserve_cache_memory(0).unwrap();
+            assert_eq!(
+                core.snapshot().reserved_bytes,
+                before.reserved_bytes + cache.quote().charged_bytes()
+            );
+            drop(cache);
+            assert_eq!(core.snapshot().reserved_bytes, before.reserved_bytes);
+        }
+    }
+
+    #[test]
+    fn full_byte_work_reserve_disables_cache_but_preserves_required_capacity() {
+        let mut policy = cache_policy();
+        let total = policy.max_inflight_bytes.unwrap();
+        policy.cache_work_reserve_bytes = Some(total);
+        let node = NodeAdmission::with_fixed_memory(policy, 2 << 30, 0).unwrap();
+        let core = node.memory().clone();
+        let before = core.snapshot();
+        let next_id = core.data.state.lock().unwrap().next;
+        assert_eq!(
+            core.clone().reserve_cache_memory(0).err().unwrap().kind(),
+            io::ErrorKind::OutOfMemory
+        );
+        assert_eq!(core.snapshot().reserved_bytes, before.reserved_bytes);
+        assert_eq!(core.snapshot().live_reservations, before.live_reservations);
+        assert_eq!(core.data.state.lock().unwrap().next, next_id);
+
+        // Spend the exact remaining ordinary budget, including its concrete
+        // lease overhead. The cache-only reserve must not reduce this path.
+        let overhead = MemoryCore::required_installed_reservation_bytes(0).unwrap();
+        let workspace = total - before.reserved_bytes - overhead;
+        let work = core.clone().reserve_installed(workspace).unwrap();
+        assert_eq!(core.snapshot().reserved_bytes, total);
+        assert_eq!(
+            core.snapshot().live_reservations,
+            before.live_reservations + 1
+        );
+        drop(work);
+        assert_eq!(core.snapshot().reserved_bytes, before.reserved_bytes);
+        assert_eq!(core.snapshot().live_reservations, before.live_reservations);
     }
 }

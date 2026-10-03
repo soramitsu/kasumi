@@ -1,0 +1,101 @@
+Command: cargo test -p kasumi-engine --lib --test contracts --test history --test schema_activation --locked --offline --config profile.test.package.kasumi-kv.opt-level=3 --config profile.test.package.sha2.opt-level=3 -- --test-threads=1 query_memory pagination_memory lease_retention::tests document_source::tests query_shutdown snapshot_leases::workspace_tests snapshot_quota_rejection_preserves_text_writer_and_original_receipts captured_index_corruption_is_outer_before_mutation_receipt_or_text_publication actual_raft_writes_queries_and_snapshot_pagination coherent_snapshot_reads_span_collections_under_concurrent_commits_and_strict_audit snapshot_reads_reject_partial_queries_cursors_and_foreign_authority key_revocation_evicts_retained_coherent_leases_and_rejects_every_page batch_failure_leaves_no_partial_document_or_index_effects unique_index_swap_is_atomic_and_old_generation_remains_coherent archived_prefixes_keep_logical_reads_unique_indexes_and_dedup_after_restart atomic_bundle_publishes_all_indexes_once_and_preserves_read_generations text_and_structured_indexes_publish_together_after_existing_documents_validate
+CARGO_TARGET_DIR=target/disk-backed-cache
+   Compiling kasumi-engine v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-engine)
+warning: variant `Mutation` is never constructed
+  --> crates/kasumi-engine/src/security_audit_jobs.rs:26:5
+   |
+24 | enum JobEffect {
+   |      --------- variant in this enum
+25 |     Read,
+26 |     Mutation(&'static str),
+   |     ^^^^^^^^
+   |
+   = note: `JobEffect` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: struct `ReadPause` is never constructed
+  --> crates/kasumi-engine/src/security_audit_jobs.rs:57:19
+   |
+57 | pub(super) struct ReadPause {
+   |                   ^^^^^^^^^
+
+warning: method `run_mutation` is never used
+   --> crates/kasumi-engine/src/security_audit_jobs.rs:120:25
+    |
+ 62 | impl SecurityAudit {
+    | ------------------ method in this implementation
+...
+120 |     pub(super) async fn run_mutation<T, F, R>(&self, component: &'static str, run: R) -> Result<T>
+    |                         ^^^^^^^^^^^^
+
+warning: `kasumi-engine` (lib) generated 3 warnings
+warning: field `panic` is never read
+  --> crates/kasumi-engine/src/security_audit_jobs.rs:52:9
+   |
+48 | pub(super) struct RecordFault {
+   |                   ----------- field in this struct
+...
+52 |     pub panic: bool,
+   |         ^^^^^
+
+warning: `kasumi-engine` (lib test) generated 4 warnings (3 duplicates)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 31s
+     Running unittests src/lib.rs (target/disk-backed-cache/debug/deps/kasumi_engine-b15d1192089511a8)
+
+running 25 tests
+test document_source::tests::absent_records_require_presence_only_when_a_version_is_expected ... ok
+test document_source::tests::cancellation_is_checked_before_lending_and_after_the_callback ... ok
+test document_source::tests::corrupt_ids_versions_and_disagreeing_hydration_never_reach_the_loan ... ok
+test document_source::tests::headers_merge_live_archive_and_hydrated_rows_once_in_exclusive_order ... ok
+test document_source::tests::identity_retains_actual_generation_collection_and_exact_indexes ... ok
+test document_source::tests::later_overlay_cannot_change_the_captured_records_or_indexes ... ok
+test service::snapshot_leases::workspace_tests::cancelled_page_preparation_keeps_selected_payload_and_charge_together ... ok
+test service::snapshot_leases::workspace_tests::completed_scan_keeps_output_charged_after_lease_expiry_until_abandoned ... ok
+test service::tests::pagination_memory_await_cancellation_and_unwind_drain_payload_before_charge ... ok
+test service::tests::pagination_memory_completed_fresh_owner_releases_only_its_operation_slot ... ok
+test service::tests::pagination_memory_concurrent_continuations_use_independent_page_charges ... ok
+test service::tests::pagination_memory_fresh_clone_admits_full_response_and_page_before_cursor_handoff ... ok
+test service::tests::pagination_memory_strict_fresh_queries_release_the_completed_operation_slot ... ok
+test service::tests::query_memory_reuses_prepaid_slot_and_preserves_growth_on_denial_and_cancellation ... ok
+test service::tests::query_memory_success_and_source_error_outputs_hold_custody_until_abandoned ... ok
+test service::tests::query_shutdown_drains_abandoned_output_and_captured_generation ... ok
+test service::tests::snapshot_query_memory_keeps_points_and_prior_results_live_and_denies_second_peak ... ok
+test state::lease_retention::tests::archive_leaf_clones_share_unchanged_large_values_and_manifest_payloads ... ok
+test state::lease_retention::tests::metadata_allocation_is_charged_before_opening_and_snapshot_replace_invalidates_handles ... ok
+test state::lease_retention::tests::primary_id_paths_stay_charged_after_temporary_insert_and_delete ... ok
+test state::lease_retention::tests::publication_enforces_aggregate_retention_before_another_page_or_monitor_tick ... ok
+test state::lease_retention::tests::publication_expires_full_roots_while_two_inflight_selections_keep_only_bounded_pages ... ok
+test state::lease_retention::tests::selected_input_baseline_reuses_grown_charge_and_survives_lease_expiry ... ok
+test state::mutation_apply::tests::captured_index_corruption_is_outer_before_mutation_receipt_or_text_publication ... ok
+test state::mutation_apply::tests::snapshot_quota_rejection_preserves_text_writer_and_original_receipts ... ok
+
+test result: ok. 25 passed; 0 failed; 0 ignored; 0 measured; 366 filtered out; finished in 19.82s
+
+     Running tests/contracts.rs (target/disk-backed-cache/debug/deps/contracts-cefae1449b4688eb)
+
+running 6 tests
+test actual_raft_writes_queries_and_snapshot_pagination ... ok
+test batch_failure_leaves_no_partial_document_or_index_effects ... ok
+test coherent_snapshot_reads_span_collections_under_concurrent_commits_and_strict_audit ... ok
+test key_revocation_evicts_retained_coherent_leases_and_rejects_every_page ... ok
+test snapshot_reads_reject_partial_queries_cursors_and_foreign_authority ... ok
+test unique_index_swap_is_atomic_and_old_generation_remains_coherent ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 20 filtered out; finished in 57.65s
+
+     Running tests/history.rs (target/disk-backed-cache/debug/deps/history-be0399b92922be2f)
+
+running 1 test
+test archived_prefixes_keep_logical_reads_unique_indexes_and_dedup_after_restart ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 64.81s
+
+     Running tests/schema_activation.rs (target/disk-backed-cache/debug/deps/schema_activation-2da7b459946c32f5)
+
+running 2 tests
+test atomic_bundle_publishes_all_indexes_once_and_preserves_read_generations ... ok
+test text_and_structured_indexes_publish_together_after_existing_documents_validate ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 16 filtered out; finished in 4.69s
+
+Runner: 238.18s; exit=0; matching=695/695

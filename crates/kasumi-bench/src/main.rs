@@ -284,6 +284,7 @@ impl BenchmarkStorage {
             directory: root.join("scratch"),
             max_bytes: 64 << 30,
             min_free_bytes: 256 << 20,
+            native_cache_bytes: 8 << 20,
         };
         let original = AdmissionConfig::default();
         let payload = original

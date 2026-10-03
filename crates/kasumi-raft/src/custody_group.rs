@@ -88,6 +88,7 @@ impl CustodyRaftGroup {
         raft_config.cluster_name = group.clone();
         let config = Arc::new(raft_config.validate()?);
         let ownership = crate::claim_custody(&custody)?;
+        snapshot_buffers.bind_group_ownership(ownership.clone(), custody.store().clone())?;
         let (storage_drain, lease) = StorageDrain::new();
         let opened = async {
             let control = ControlLog::open(custody.clone(), id, group.clone())?;
@@ -207,15 +208,40 @@ impl CustodyRaftGroup {
         Ok(())
     }
     pub async fn shutdown(&self) -> kasumi_types::drain::DrainResult {
+        self.snapshot_buffers.seal_application_source_consumers();
         let mut report = self.shutdown_report.lock().await;
+        let mut buffer_unresolved = None;
         if let Err(error) = self.raft.shutdown().await {
             report.record("OpenRaft custody runtime", 0, error.into());
         }
         if let Err(failure) = self.snapshot_buffers.drain_buffers().await {
             report.merge(&failure);
+            if failure.completion() == kasumi_types::drain::DrainCompletion::Retained {
+                buffer_unresolved = Some(failure);
+            }
         }
         self.storage_drain.wait().await;
-        self.ownership.store(false, Ordering::Release);
-        report.complete()
+        if let Err(failure) = self.snapshot_buffers.drain_buffers().await {
+            report.merge(&failure);
+            if failure.completion() == kasumi_types::drain::DrainCompletion::Retained {
+                buffer_unresolved = Some(failure);
+            }
+        }
+        let mut source_unresolved = None;
+        if let Err(failure) = self.snapshot_buffers.drain_application_sources().await {
+            report.merge(&failure);
+            if failure.completion() == kasumi_types::drain::DrainCompletion::Retained {
+                source_unresolved = Some(failure);
+            }
+        }
+        let buffer_unresolved = self
+            .snapshot_buffers
+            .finish_failed_buffer_drain(buffer_unresolved, &mut report)
+            .await;
+        let unresolved = source_unresolved.or(buffer_unresolved);
+        if unresolved.is_none() {
+            self.snapshot_buffers.release_group_ownership();
+        }
+        report.outcome(unresolved)
     }
 }

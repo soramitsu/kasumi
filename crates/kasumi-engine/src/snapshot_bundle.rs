@@ -1,7 +1,9 @@
 //! Raft snapshots transport their immutable audit dependencies with the logical
 //! state. Only a complete verified bundle can publish a new engine generation.
 //! Frame and segment buffers are bounded independently of retained history.
-use super::{Generation, TenantEngine};
+#[cfg(test)]
+use super::CapturedValidation;
+use super::{Generation, TenantEngine, ValidationBaseline};
 use anyhow::{Context, Result, ensure};
 use kasumi_store::{InspectedAuditDependency, PreparedAuditSegment, StoragePurpose, TenantStore};
 use kasumi_types::{AuditArchiveLink, AuditArchiveReference, MAX_AUDIT_SEGMENT_BYTES, TenantState};
@@ -419,9 +421,11 @@ impl Read for LogicalReader<'_, '_> {
 
 pub(super) fn read(
     engine: &TenantEngine,
+    baseline: &ValidationBaseline<'_>,
     reader: &mut dyn Read,
     expected: Option<crate::snapshot_codec::StreamSummary>,
 ) -> Result<Generation> {
+    baseline.current_for(engine)?;
     let store = engine
         .snapshot_store
         .get()
@@ -455,7 +459,7 @@ pub(super) fn read(
         ended: false,
     };
     let generation =
-        engine.prepare_snapshot_reader(store.scratch_disk(), &mut logical, expected)?;
+        engine.prepare_snapshot_reader(baseline, store.scratch_disk(), &mut logical, expected)?;
     ensure!(logical.ended, "logical snapshot end missing");
     authorize_root(&generation.state, &source, store.storage_access().purpose())?;
     let retention = &generation.state.audit_retention;
@@ -687,6 +691,7 @@ mod tests {
         engine.current.store(Some(Arc::new(
             engine
                 .prepare_state(
+                    &CapturedValidation::capture(engine).unwrap().baseline(),
                     state,
                     engine.generation().unwrap().receipts.clone(),
                     engine.generation().unwrap().backup_bindings.clone(),
@@ -852,6 +857,7 @@ mod tests {
         source.current.store(Some(Arc::new(
             source
                 .prepare_state(
+                    &CapturedValidation::capture(&source).unwrap().baseline(),
                     state,
                     source.generation().unwrap().receipts.clone(),
                     source.generation().unwrap().backup_bindings.clone(),
@@ -866,6 +872,7 @@ mod tests {
         source.current.store(Some(Arc::new(
             source
                 .prepare_state(
+                    &CapturedValidation::capture(&source).unwrap().baseline(),
                     state,
                     source.generation().unwrap().receipts.clone(),
                     source.generation().unwrap().backup_bindings.clone(),
@@ -1009,6 +1016,26 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn public_restore_admits_resident_state_without_charging_permanent_stream_as_ram() {
+        // Opt in to the same fixed-target diagnostics used by the integration
+        // restore fixture, including events from its actual blocking worker.
+        if std::env::var_os("KASUMI_TEST_RESTORE_TRACE").as_deref()
+            == Some(std::ffi::OsStr::new("1"))
+        {
+            use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+            tracing_subscriber::registry()
+                .with(tracing_subscriber::filter::filter_fn(|metadata| {
+                    metadata.target() == "kasumi_engine::restore_phase"
+                        && *metadata.level() <= tracing::Level::DEBUG
+                }))
+                .with(
+                    tracing_subscriber::fmt::layer()
+                        .with_ansi(false)
+                        .without_time()
+                        .with_writer(std::io::stderr),
+                )
+                .try_init()
+                .expect("restore phase diagnostics require the test's sole global subscriber");
+        }
         use crate::staged_terminal::{AppliedIdentity, AppliedOrigin, Builder, Row};
         use kasumi_types::{
             ErrorCode, Mutation, Precondition, StagedChunk, StagedManifest, StagedOutcome,
@@ -1107,6 +1134,7 @@ mod tests {
             .unwrap();
         let generation = source
             .prepare_state(
+                &CapturedValidation::capture(&source).unwrap().baseline(),
                 state,
                 previous.receipts.clone(),
                 previous.backup_bindings.clone(),

@@ -1,0 +1,49 @@
+Command: cargo test --locked --offline --config profile.test.package.kasumi-kv.opt-level=3 --config profile.test.package.sha2.opt-level=3 -p kasumi-kv -p kasumi-store -p kasumi-raft -p kasumi-engine --all-features --lib --no-fail-fast -- constructor_envelope paired_constructor_visit ordinary_envelope production_capacity_tests --nocapture
+CARGO_TARGET_DIR=target/disk-backed-cache
+   Compiling kasumi-store v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-store)
+   Compiling kasumi-raft v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-raft)
+   Compiling kasumi-engine v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-engine)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 58.04s
+     Running unittests src/lib.rs (target/disk-backed-cache/debug/deps/kasumi_engine-44db468831cfc59f)
+
+running 4 tests
+test admission::source_publication::protected_point_tests::production_capacity_tests::production_prepared_source_cancellation_retires_its_exact_unused_right ... ok
+test admission::source_publication::protected_point_tests::production_capacity_tests::production_current_next_source_owners_reuse_positive_retirement_under_pressure ... ok
+test admission::source_publication::protected_point_tests::production_capacity_tests::production_source_history_escape_refusal_restores_current_then_reuses_exact_lane ... ok
+test admission::source_publication::protected_point_tests::production_capacity_tests::production_source_selection_uses_exact_encrypted_root_and_preowned_small_shape ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 640 filtered out; finished in 1.45s
+
+     Running unittests src/lib.rs (target/disk-backed-cache/debug/deps/kasumi_kv-221aa5373d25965b)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 551 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/disk-backed-cache/debug/deps/kasumi_raft-8af78bc0d2a8574c)
+
+running 11 tests
+test selected_application::plan::ordinary_envelope::tests::streamed_shape_quote_matches_actual_canonical_wire_and_number_channels ... ok
+test selected_application::plan::ordinary_envelope::tests::borrowed_maximum_shape_matches_actual_cursor_schema_for_zero_single_and_joint_membership ... ok
+test selected_application::plan::constructor_envelope::tests::constructor_preserves_actual_capacity_refusal_and_retires_reader_before_retry ... ok
+test selected_application::plan::ordinary_envelope::tests::ordinary_shape_preserves_the_existing_maximum_control_record_ceiling ... ok
+test selected_application::plan::constructor_envelope::tests::constructor_header_peak_refusal_preserves_current_dtos_and_durable_tail ... ok
+test selected_application::plan::ordinary_envelope::tests::ordinary_envelope_covers_actual_current_and_advancing_plans_but_not_covered_or_snapshot ... ok
+test selected_application::plan::constructor_envelope::tests::constructor_covers_retained_uncommitted_membership_and_real_capture_without_new_grants ... ok
+test selected_application::plan::ordinary_envelope::tests::membership_growth_requires_expanded_quote_before_actual_internal_entry_publication ... ok
+test selected_application::plan::constructor_envelope::tests::constructor_snapshot_seed_covers_exact_reconstruction_but_rejects_same_size_replacement ... ok
+test selected_application::plan::ordinary_envelope::tests::ordinary_envelope_rejects_foreign_pair_and_changed_bootstrap_without_admission ... ok
+test selected_application::plan::constructor_envelope::tests::constructor_rejects_foreign_workspace_and_noncanonical_or_disconnected_retained_headers ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 176 filtered out; finished in 3.49s
+
+     Running unittests src/lib.rs (target/disk-backed-cache/debug/deps/kasumi_store-4ef75ebdc018c368)
+
+running 3 tests
+test storage_domains::prepared_point_read::tests::constructor_visit_tests::paired_constructor_visit_uses_same_registered_root_and_actual_row_quote ... ok
+test storage_domains::prepared_point_read::tests::constructor_visit_tests::paired_constructor_visit_preserves_original_callback_and_admission_errors ... ok
+test storage_domains::prepared_point_read::tests::constructor_visit_tests::paired_constructor_visit_checks_peer_access_empty_scans_and_callback_expiry ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 721 filtered out; finished in 2.55s
+
+Runner: 65.62s; exit=0; matching=1550/1550

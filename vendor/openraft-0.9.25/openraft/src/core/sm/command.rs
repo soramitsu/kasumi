@@ -1,38 +1,47 @@
 use std::fmt::Debug;
 use std::fmt::Formatter;
 
+use super::pending_apply::ApplyRange;
 use crate::core::raft_msg::ResultSender;
-use crate::display_ext::DisplaySlice;
 use crate::error::Infallible;
-use crate::log_id::RaftLogId;
 use crate::type_config::alias::SnapshotDataOf;
+use crate::LogId;
 use crate::RaftTypeConfig;
 use crate::Snapshot;
 
 #[derive(PartialEq)]
 pub(crate) struct Command<C>
-where C: RaftTypeConfig
+where
+    C: RaftTypeConfig,
 {
     pub(crate) seq: CommandSeq,
+    pub(crate) apply_before: Option<ApplyRange<C>>,
     pub(crate) payload: CommandPayload<C>,
 }
 
 impl<C> Debug for Command<C>
-where C: RaftTypeConfig
+where
+    C: RaftTypeConfig,
 {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("StateMachineCommand")
             .field("seq", &self.seq)
+            .field("apply_before", &self.apply_before)
             .field("payload", &self.payload)
             .finish()
     }
 }
 
 impl<C> Command<C>
-where C: RaftTypeConfig
+where
+    C: RaftTypeConfig,
 {
     pub(crate) fn new(payload: CommandPayload<C>) -> Self {
-        Self { seq: 0, payload }
+        Self {
+            seq: 0,
+            apply_before: None,
+            payload,
+        }
     }
 
     #[allow(dead_code)]
@@ -69,8 +78,8 @@ where C: RaftTypeConfig
         Command::new(payload)
     }
 
-    pub(crate) fn apply(entries: Vec<C::Entry>) -> Self {
-        let payload = CommandPayload::Apply { entries };
+    pub(crate) fn apply(since: u64, upto: LogId<C::NodeId>) -> Self {
+        let payload = CommandPayload::Apply { since, upto };
         Command::new(payload)
     }
 }
@@ -84,7 +93,8 @@ pub(crate) type CommandSeq = u64;
 
 /// The payload of a state machine command.
 pub(crate) enum CommandPayload<C>
-where C: RaftTypeConfig
+where
+    C: RaftTypeConfig,
 {
     /// Instruct the state machine to create a snapshot based on its most recent view.
     BuildSnapshot,
@@ -102,14 +112,16 @@ where C: RaftTypeConfig
         snapshot: Snapshot<C>,
     },
 
-    /// Apply the log entries to the state machine.
+    /// Apply this committed range in bounded, acknowledged batches.
     Apply {
-        entries: Vec<C::Entry>,
+        since: u64,
+        upto: LogId<C::NodeId>,
     },
 }
 
 impl<C> Debug for CommandPayload<C>
-where C: RaftTypeConfig
+where
+    C: RaftTypeConfig,
 {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -121,14 +133,15 @@ where C: RaftTypeConfig
             CommandPayload::BeginReceivingSnapshot { .. } => {
                 write!(f, "BeginReceivingSnapshot")
             }
-            CommandPayload::Apply { entries } => write!(f, "Apply: {}", DisplaySlice::<_>(entries)),
+            CommandPayload::Apply { since, upto } => write!(f, "Apply: {}..={}", since, upto),
         }
     }
 }
 
 // `PartialEq` is only used for testing
 impl<C> PartialEq for CommandPayload<C>
-where C: RaftTypeConfig
+where
+    C: RaftTypeConfig,
 {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
@@ -139,12 +152,13 @@ where C: RaftTypeConfig
                 CommandPayload::InstallFullSnapshot { snapshot: s1 },
                 CommandPayload::InstallFullSnapshot { snapshot: s2 },
             ) => s1.meta == s2.meta,
-            (CommandPayload::Apply { entries: entries1 }, CommandPayload::Apply { entries: entries2 }) => {
-                // Entry may not be `Eq`, we just compare log id.
-                // This would be enough for testing.
-                entries1.iter().map(|e| e.get_log_id().clone()).collect::<Vec<_>>()
-                    == entries2.iter().map(|e| e.get_log_id().clone()).collect::<Vec<_>>()
-            }
+            (
+                CommandPayload::Apply { since, upto },
+                CommandPayload::Apply {
+                    since: b_since,
+                    upto: b_upto,
+                },
+            ) => since == b_since && upto == b_upto,
             _ => false,
         }
     }

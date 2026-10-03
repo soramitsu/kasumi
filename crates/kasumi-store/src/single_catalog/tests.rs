@@ -556,7 +556,13 @@ async fn singleton_initialization_registers_before_waiting_for_native_writer() -
     })?;
     let scratch_directory = crate::test_utils::private_tempdir()?;
     let scratch = crate::ScratchDisk::fixture(scratch_directory.path(), fixture_memory.clone());
-    let node = NodeStore::create_new(&path, crate::test_utils::NODE_STORE_ID, disk, scratch)?;
+    let node = NodeStore::create_new(
+        &path,
+        crate::test_utils::NODE_STORE_ID,
+        disk,
+        scratch,
+        crate::test_utils::node_storage_config(),
+    )?;
     let held = node.db.begin_write()?;
     let initializing = tokio::spawn(open(input(node.clone(), Mode::Initialize)));
     let registered = tokio::time::timeout(Duration::from_secs(2), async {

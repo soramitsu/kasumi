@@ -1,4 +1,3 @@
-
 use crate::core::raft_msg::external_command::ExternalCommand;
 use crate::error::CheckIsLeaderError;
 use crate::error::Infallible;
@@ -6,7 +5,6 @@ use crate::error::InitializeError;
 use crate::raft::AppendEntriesRequest;
 use crate::raft::AppendEntriesResponse;
 use crate::raft::BoxCoreFn;
-use crate::raft::SnapshotResponse;
 use crate::raft::VoteRequest;
 use crate::raft::VoteResponse;
 use crate::type_config::alias::LogIdOf;
@@ -18,8 +16,6 @@ use crate::type_config::alias::SnapshotDataOf;
 use crate::ChangeMembers;
 use crate::MessageSummary;
 use crate::RaftTypeConfig;
-use crate::Snapshot;
-use crate::Vote;
 
 pub(crate) mod external_command;
 
@@ -40,7 +36,8 @@ pub(crate) type ClientReadTx<C> =
 ///
 /// [`RaftCore`]: crate::core::RaftCore
 pub(crate) enum RaftMsg<C>
-where C: RaftTypeConfig
+where
+    C: RaftTypeConfig,
 {
     AppendEntries {
         rpc: AppendEntriesRequest<C>,
@@ -52,17 +49,14 @@ where C: RaftTypeConfig
         tx: VoteTx<C>,
     },
 
-    InstallFullSnapshot {
-        vote: Vote<C::NodeId>,
-        snapshot: Snapshot<C>,
-        tx: ResultSender<C, SnapshotResponse<C::NodeId>>,
-    },
+    /// Activate the one already-owned incoming snapshot cell.
+    InstallFullSnapshot,
 
     /// Begin receiving a snapshot from the leader.
     ///
     /// Returns a snapshot data handle for receiving data.
     ///
-    /// It does not check [`Vote`] because it is a read operation
+    /// It does not check [`Vote`](crate::Vote) because it is a read operation
     /// and does not break raft protocol.
     BeginReceivingSnapshot {
         tx: ResultSender<C, Box<SnapshotDataOf<C>>, Infallible>,
@@ -102,7 +96,8 @@ where C: RaftTypeConfig
 }
 
 impl<C> MessageSummary<RaftMsg<C>> for RaftMsg<C>
-where C: RaftTypeConfig
+where
+    C: RaftTypeConfig,
 {
     fn summary(&self) -> String {
         match self {
@@ -113,9 +108,7 @@ where C: RaftTypeConfig
                 format!("RequestVote: {}", rpc.summary())
             }
             RaftMsg::BeginReceivingSnapshot { .. } => "BeginReceivingSnapshot".to_string(),
-            RaftMsg::InstallFullSnapshot { vote, snapshot, .. } => {
-                format!("InstallFullSnapshot: vote: {}, snapshot: {}", vote, snapshot)
-            }
+            RaftMsg::InstallFullSnapshot => "InstallFullSnapshot".to_string(),
             RaftMsg::ClientWriteRequest { .. } => "ClientWriteRequest".to_string(),
             RaftMsg::CheckIsLeaderRequest { .. } => "CheckIsLeaderRequest".to_string(),
             RaftMsg::Initialize { entry, .. } => {

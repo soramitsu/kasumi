@@ -1,58 +1,24 @@
-//! Append-only transactional storage with two checksummed commit headers.
+//! Transactional storage over a durable segmented log and immutable disk directory.
 //!
-//! A commit writes and synchronizes its complete frame before publishing its
-//! alternate header. A failed I/O operation, a failed owner check, a poisoned
-//! lock or an unwinding backend or admission callback fences the instance
-//! once; the fence is sticky until close and a strict reopen, which chooses the
-//! newest intact header and validates every committed frame. Values remain on
-//! the backend. The resident ordered index contains keys and value offsets
-//! only, and every index node is admitted before allocation.
+//! The byte-bounded cache retains all fitting values and pages. Disk remains
+//! authoritative; snapshots pin immutable roots, and uncertain effects fence
+//! the exact owner until an observed close and strict reopen.
 
+use crate::cache::{CacheConfig, CacheStats};
+use crate::disk_state::DiskState;
+use crate::group::SegmentGroupBackend;
+use crate::snapshot_pins::SnapshotPin;
 use std::any::Any;
-#[cfg(test)]
-use std::cell::RefCell;
-use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
-#[cfg(test)]
-use std::fs::{File, OpenOptions};
 use std::io;
-#[cfg(test)]
-use std::io::{Read, Seek, SeekFrom, Write};
-use std::ops::Bound::{Excluded, Included, Unbounded};
-#[cfg(test)]
-use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd};
-#[cfg(test)]
-use std::os::unix::ffi::OsStrExt;
 use std::panic::{AssertUnwindSafe, catch_unwind};
-#[cfg(test)]
-use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, TryLockError};
 
-use crate::cache::{CacheConfig, CacheLoadError, CacheStats, NativeCache};
-
-// The public tenant API caps plaintext at 32 MiB. This physical limit leaves
-// room for authenticated envelopes and metadata around that plaintext.
 pub const MAX_VALUE_BYTES: usize = 40 << 20;
-// Store plaintext batches are capped at 64 MiB. The persisted envelope also
-// contains encrypted record headers, table names, keys, and operation framing.
 pub const MAX_BATCH_BYTES: usize = 96 << 20;
 pub const MAX_KEY_BYTES: usize = 4096;
 pub const MAX_TABLE_BYTES: usize = 1024;
-const MAX_OPERATIONS: usize = 65_536;
-const HEADER_BYTES: usize = 4096;
-const LOG_START: u64 = (HEADER_BYTES * 2) as u64;
-const HEADER_MAGIC: [u8; 16] = *b"KASUMI-KV-000001";
-const FRAME_MAGIC: [u8; 8] = *b"KASUMITX";
-const FRAME_BYTES: usize = 40;
-const OP_BYTES: usize = 13;
-const FORMAT_VERSION: u32 = 2;
-const INDEX_ENTRY_CHARGE: u64 = 256;
-const TABLE_CHARGE: u64 = 512;
-const INDEX_POOL_CHUNK: u64 = 64 << 10;
-const INDEX_POOL_SLOT: u64 = 2 * std::mem::size_of::<(u64, Box<dyn ResidentLease>)>() as u64;
-const COMPACTION_CHECK_BYTES: u64 = 1 << 20;
-static NEXT_OWNER: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BackendNativeDisposition {
@@ -164,65 +130,19 @@ impl CoreCloseReport {
     }
 }
 
-/// Exact-offset backing. Implementations must never return short successful
-/// reads or writes, and `sync_data` must include prior length and data writes.
-/// `set_len` must preserve every byte below the requested length even when it
-/// returns an error; the final compaction truncate relies on that prefix.
-pub trait StorageBackend: Send + Sync {
-    fn len(&self) -> io::Result<u64>;
-    fn is_empty(&self) -> io::Result<bool> {
-        self.len().map(|length| length == 0)
-    }
-    fn read(&self, at: u64, out: &mut [u8]) -> io::Result<()>;
-    fn write(&self, at: u64, bytes: &[u8]) -> io::Result<()>;
-    fn set_len(&self, length: u64) -> io::Result<()>;
-    fn sync_data(&self) -> io::Result<()>;
-    fn close(&self) -> BackendCloseOutcome;
+pub trait ResidentLease: Send + Sync {
+    /// Retire this lease's actual Box before dropping its reservation token.
+    fn retire(self: Box<Self>);
 }
-impl<T: StorageBackend + ?Sized> StorageBackend for Box<T> {
-    fn len(&self) -> io::Result<u64> {
-        (**self).len()
-    }
-    fn read(&self, at: u64, out: &mut [u8]) -> io::Result<()> {
-        (**self).read(at, out)
-    }
-    fn write(&self, at: u64, bytes: &[u8]) -> io::Result<()> {
-        (**self).write(at, bytes)
-    }
-    fn set_len(&self, length: u64) -> io::Result<()> {
-        (**self).set_len(length)
-    }
-    fn sync_data(&self) -> io::Result<()> {
-        (**self).sync_data()
-    }
-    fn close(&self) -> BackendCloseOutcome {
-        (**self).close()
+impl<T: Send + Sync> ResidentLease for T {
+    fn retire(self: Box<Self>) {
+        let reservation = {
+            let allocation = self;
+            *allocation
+        };
+        drop(reservation);
     }
 }
-impl<T: StorageBackend + ?Sized> StorageBackend for Arc<T> {
-    fn len(&self) -> io::Result<u64> {
-        (**self).len()
-    }
-    fn read(&self, at: u64, out: &mut [u8]) -> io::Result<()> {
-        (**self).read(at, out)
-    }
-    fn write(&self, at: u64, bytes: &[u8]) -> io::Result<()> {
-        (**self).write(at, bytes)
-    }
-    fn set_len(&self, length: u64) -> io::Result<()> {
-        (**self).set_len(length)
-    }
-    fn sync_data(&self) -> io::Result<()> {
-        (**self).sync_data()
-    }
-    fn close(&self) -> BackendCloseOutcome {
-        (**self).close()
-    }
-}
-
-/// Admission leases are held by their actual table/key/version owner.
-pub trait ResidentLease: Send + Sync {}
-impl<T: Send + Sync> ResidentLease for T {}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct OwnerFailed;
@@ -250,10 +170,30 @@ impl std::error::Error for AdmissionError {}
 
 /// Physical-owner admission. An `OwnerFailed` from any call, including
 /// `check_owner`, fences the core, which then calls `owner_failed` exactly
-/// once. `CapacityDenied` is decided before any backend effect and never fences.
+/// once. `CapacityDenied` proves no published effect and never fences; private work
+/// may have been durably rolled back.
 pub trait StorageAdmission: Send + Sync {
+    /// Purpose-bound native source funding through this actual installed owner.
+    fn install_source_pool(
+        self: Arc<Self>,
+        _install: &mut crate::SourcePoolInstall<'_>,
+    ) -> io::Result<()> {
+        Err(io::ErrorKind::Unsupported.into())
+    }
+
     fn check_owner(&self) -> Result<(), OwnerFailed>;
     fn reserve_workspace(&self, bytes: u64) -> Result<Box<dyn ResidentLease>, AdmissionError>;
+    /// Pure charge planning; this neither admits memory nor checks owner health.
+    fn quote_cache_memory(
+        &self,
+        credit_bytes: u64,
+    ) -> Result<crate::CacheMemoryQuote, AdmissionError>;
+    /// Optional cache credit, including temporary rehash custody. This must
+    /// preserve mandatory-work headroom and never consume maintenance escrow.
+    fn reserve_cache_memory(
+        self: Arc<Self>,
+        credit_bytes: u64,
+    ) -> Result<crate::CacheMemoryLease, AdmissionError>;
     fn reserve_growth(&self, current: u64, requested: u64) -> Result<(), AdmissionError>;
     fn settle_growth(&self, actual: u64) -> Result<(), OwnerFailed>;
     fn owner_failed(&self);
@@ -328,7 +268,7 @@ impl CoreError {
 pub struct CorePanic(Mutex<Box<dyn Any + Send>>);
 
 impl CorePanic {
-    fn new(payload: Box<dyn Any + Send>) -> Self {
+    pub(crate) fn new(payload: Box<dyn Any + Send>) -> Self {
         Self(Mutex::new(payload))
     }
 
@@ -371,17 +311,11 @@ fn run_open<T>(
     }
 }
 
-enum FailedOpenOwner {
-    Backend(Box<dyn StorageBackend>),
-    Installed(Core),
-}
+struct FailedOpenOwner(Arc<dyn SegmentGroupBackend>);
 
 impl FailedOpenOwner {
     fn close(&self) -> BackendCloseOutcome {
-        match self {
-            Self::Backend(backend) => backend.close(),
-            Self::Installed(core) => core.close(),
-        }
+        self.0.close()
     }
 }
 
@@ -507,461 +441,6 @@ impl From<AdmissionError> for CoreError {
     }
 }
 
-/// Native file-close fixture. Installed callers supply a backend from their
-/// authenticated namespace owner; KV does not acquire names or adopt files.
-#[cfg(test)]
-struct FileBackend {
-    state: Mutex<FileBackendState>,
-}
-
-#[cfg(test)]
-enum FileBackendState {
-    Open {
-        file: File,
-        parent: Option<File>,
-        parent_sync_pending: bool,
-    },
-    ParentOnly(File),
-    Drained(Option<io::Error>),
-    UnknownClose {
-        // Consumed numbers are diagnostic only. Never rebuild a File or retry them.
-        _data_descriptor: Option<i32>,
-        _parent_descriptor: Option<i32>,
-        original_error: io::Error,
-        _other_close_error: Option<io::Error>,
-        _prior_sync_error: Option<io::Error>,
-    },
-}
-
-/// A test acquisition failure keeps every acquired descriptor until its close
-/// outcome has been observed.
-#[cfg(test)]
-#[must_use]
-struct FileBackendOpenError {
-    original_error: io::Error,
-    owner: Option<FileBackend>,
-    close_report: Option<BackendCloseOutcome>,
-}
-
-#[cfg(test)]
-impl FileBackendOpenError {
-    fn without_owner(original_error: io::Error) -> Self {
-        Self {
-            original_error,
-            owner: None,
-            close_report: None,
-        }
-    }
-
-    fn with_parent(original_error: io::Error, parent: File) -> Self {
-        let mut failure = Self {
-            original_error,
-            owner: Some(FileBackend {
-                state: Mutex::new(FileBackendState::ParentOnly(parent)),
-            }),
-            close_report: None,
-        };
-        failure.retry_close();
-        failure
-    }
-
-    pub fn original_error(&self) -> &io::Error {
-        &self.original_error
-    }
-
-    pub fn raw_os_error(&self) -> Option<i32> {
-        self.original_error.raw_os_error()
-    }
-
-    pub fn close_report(&self) -> Option<&BackendCloseOutcome> {
-        self.close_report.as_ref()
-    }
-
-    pub fn retry_close(&mut self) -> Option<&BackendCloseOutcome> {
-        if self
-            .close_report
-            .as_ref()
-            .is_none_or(|report| report.entry() == BackendCloseEntry::NotEntered)
-            && let Some(owner) = self.owner.as_ref()
-        {
-            let outcome = owner.close();
-            if outcome.native_disposition() == BackendNativeDisposition::Drained {
-                self.owner.take();
-            }
-            self.close_report = Some(outcome);
-        }
-        self.close_report.as_ref()
-    }
-}
-
-#[cfg(test)]
-impl fmt::Debug for FileBackendOpenError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("FileBackendOpenError")
-            .field("original_error", &self.original_error)
-            .field("opened_resources_retained", &self.owner.is_some())
-            .field("close_report", &self.close_report)
-            .finish()
-    }
-}
-
-#[cfg(test)]
-impl fmt::Display for FileBackendOpenError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.original_error.fmt(f)
-    }
-}
-
-#[cfg(test)]
-impl std::error::Error for FileBackendOpenError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        Some(&self.original_error)
-    }
-}
-
-#[cfg(test)]
-impl Drop for FileBackendOpenError {
-    fn drop(&mut self) {
-        // Never let an unreported acquired descriptor close implicitly.
-        if let Some(owner) = self.owner.take() {
-            std::mem::forget(owner);
-        }
-    }
-}
-
-#[cfg(test)]
-fn project_file_error(error: &io::Error) -> io::Error {
-    error
-        .raw_os_error()
-        .map_or_else(|| error.kind().into(), io::Error::from_raw_os_error)
-}
-
-#[cfg(test)]
-std::thread_local! {
-    static FILE_CLOSE_FAILURE: std::cell::Cell<Option<i32>> = const { std::cell::Cell::new(None) };
-    static FILE_SYNC_FAILURE: std::cell::Cell<Option<i32>> = const { std::cell::Cell::new(None) };
-    static FILE_CLOSE_ATTEMPTS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
-    static FILE_PARENT_SYNC_FAILURE: std::cell::Cell<Option<i32>> = const { std::cell::Cell::new(None) };
-    static FILE_PARENT_SYNC_ATTEMPTS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
-    static FILE_PARENT_CLOSE_FAILURE: std::cell::Cell<Option<i32>> = const { std::cell::Cell::new(None) };
-    static FILE_PARENT_CLOSE_ATTEMPTS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
-    static FILE_AFTER_PREDATA_SYNC: RefCell<Option<Box<dyn FnOnce()>>> = RefCell::new(None);
-}
-
-#[cfg(test)]
-fn parent_directory(path: &Path) -> &Path {
-    path.parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."))
-}
-
-#[cfg(test)]
-fn create_in_parent(parent: &File, path: &Path) -> io::Result<File> {
-    let name = path.file_name().ok_or(io::ErrorKind::InvalidInput)?;
-    let name = std::ffi::CString::new(name.as_bytes()).map_err(|_| io::ErrorKind::InvalidInput)?;
-    let flags = libc::O_RDWR | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_CREAT | libc::O_EXCL;
-    // SAFETY: name is NUL terminated and parent remains open for the call.
-    let descriptor = unsafe { libc::openat(parent.as_raw_fd(), name.as_ptr(), flags, 0o600) };
-    if descriptor < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    // SAFETY: openat returned a new descriptor owned solely by this File.
-    Ok(unsafe { File::from_raw_fd(descriptor) })
-}
-
-#[cfg(test)]
-fn sync_parent(parent: &File) -> io::Result<()> {
-    #[cfg(test)]
-    {
-        FILE_PARENT_SYNC_ATTEMPTS.with(|count| count.set(count.get() + 1));
-        if let Some(errno) = FILE_PARENT_SYNC_FAILURE.with(std::cell::Cell::take) {
-            return Err(io::Error::from_raw_os_error(errno));
-        }
-    }
-    parent.sync_all()
-}
-
-#[cfg(test)]
-fn sync_file_and_parent(
-    file: &File,
-    parent: Option<&File>,
-    parent_sync_pending: &mut bool,
-) -> io::Result<()> {
-    file.sync_data()?;
-    if *parent_sync_pending {
-        let parent = parent.expect("pending named file has a parent descriptor");
-        sync_parent(parent)?;
-        *parent_sync_pending = false;
-    }
-    Ok(())
-}
-
-#[cfg(test)]
-fn close_file_descriptor(file: File, parent: bool) -> (i32, Option<io::Error>) {
-    let descriptor = file.into_raw_fd();
-    // SAFETY: into_raw_fd consumed the sole File owner. Never reconstruct it.
-    let result = unsafe { libc::close(descriptor) };
-    let error = (result != 0).then(io::Error::last_os_error);
-    #[cfg(test)]
-    let error = if parent {
-        FILE_PARENT_CLOSE_ATTEMPTS.with(|count| count.set(count.get() + 1));
-        error.or_else(|| {
-            FILE_PARENT_CLOSE_FAILURE
-                .with(std::cell::Cell::take)
-                .map(io::Error::from_raw_os_error)
-        })
-    } else {
-        FILE_CLOSE_ATTEMPTS.with(|count| count.set(count.get() + 1));
-        error.or_else(|| {
-            FILE_CLOSE_FAILURE
-                .with(std::cell::Cell::take)
-                .map(io::Error::from_raw_os_error)
-        })
-    };
-    #[cfg(not(test))]
-    let _ = parent;
-    (descriptor, error)
-}
-
-#[cfg(test)]
-impl FileBackend {
-    fn test_from_file(file: File) -> Self {
-        Self {
-            state: Mutex::new(FileBackendState::Open {
-                file,
-                parent: None,
-                parent_sync_pending: false,
-            }),
-        }
-    }
-    fn test_create_named(path: impl AsRef<Path>) -> Result<Self, FileBackendOpenError> {
-        let path = path.as_ref();
-        let parent =
-            File::open(parent_directory(path)).map_err(FileBackendOpenError::without_owner)?;
-        // Resolve parent durability before acquiring the data descriptor. The
-        // same held directory is synced again after a newly created file's
-        // first durable header, then closed with an observed native result.
-        if let Err(error) = sync_parent(&parent) {
-            return Err(FileBackendOpenError::with_parent(error, parent));
-        }
-        #[cfg(test)]
-        FILE_AFTER_PREDATA_SYNC.with(|slot| {
-            let action = slot.borrow_mut().take();
-            if let Some(action) = action {
-                action();
-            }
-        });
-        // A new named owner must not adopt a file inserted while the parent
-        // was being synchronized. The caller must resolve EEXIST against its
-        // separately retained, exact existing-file identity.
-        let file = match create_in_parent(&parent, path) {
-            Ok(file) => file,
-            Err(error) => return Err(FileBackendOpenError::with_parent(error, parent)),
-        };
-        Ok(Self {
-            state: Mutex::new(FileBackendState::Open {
-                file,
-                parent: Some(parent),
-                parent_sync_pending: true,
-            }),
-        })
-    }
-    fn with<T>(
-        &self,
-        work: impl FnOnce(&mut File, Option<&File>, &mut bool) -> io::Result<T>,
-    ) -> io::Result<T> {
-        let mut guard = self.state.lock().map_err(|_| io::ErrorKind::Other)?;
-        match &mut *guard {
-            FileBackendState::Open {
-                file,
-                parent,
-                parent_sync_pending,
-            } => work(file, parent.as_ref(), parent_sync_pending),
-            FileBackendState::ParentOnly(_)
-            | FileBackendState::Drained(_)
-            | FileBackendState::UnknownClose { .. } => Err(io::ErrorKind::BrokenPipe.into()),
-        }
-    }
-}
-#[cfg(test)]
-impl StorageBackend for FileBackend {
-    fn len(&self) -> io::Result<u64> {
-        self.with(|file, _, _| Ok(file.metadata()?.len()))
-    }
-    fn read(&self, at: u64, out: &mut [u8]) -> io::Result<()> {
-        self.with(|file, _, _| {
-            file.seek(SeekFrom::Start(at))?;
-            file.read_exact(out)
-        })
-    }
-    fn write(&self, at: u64, bytes: &[u8]) -> io::Result<()> {
-        self.with(|file, _, _| {
-            file.seek(SeekFrom::Start(at))?;
-            file.write_all(bytes)
-        })
-    }
-    fn set_len(&self, length: u64) -> io::Result<()> {
-        self.with(|file, _, _| file.set_len(length))
-    }
-    fn sync_data(&self) -> io::Result<()> {
-        self.with(|file, parent, pending| sync_file_and_parent(file, parent, pending))
-    }
-    fn close(&self) -> BackendCloseOutcome {
-        let mut guard = match self.state.try_lock() {
-            Ok(guard) => guard,
-            Err(TryLockError::WouldBlock) => {
-                return BackendCloseOutcome::not_entered(io::ErrorKind::WouldBlock.into());
-            }
-            Err(TryLockError::Poisoned(_)) => {
-                return BackendCloseOutcome::retained(io::ErrorKind::Other.into());
-            }
-        };
-        match &*guard {
-            FileBackendState::Drained(sync_error) => {
-                let result = sync_error
-                    .as_ref()
-                    .map_or(Ok(()), |error| Err(project_file_error(error)));
-                return BackendCloseOutcome::drained(result);
-            }
-            FileBackendState::UnknownClose { original_error, .. } => {
-                return BackendCloseOutcome::retained(project_file_error(original_error));
-            }
-            FileBackendState::Open { .. } | FileBackendState::ParentOnly(_) => {}
-        }
-        let previous = std::mem::replace(&mut *guard, FileBackendState::Drained(None));
-        let (file, parent, mut parent_sync_pending) = match previous {
-            FileBackendState::Open {
-                file,
-                parent,
-                parent_sync_pending,
-            } => (Some(file), parent, parent_sync_pending),
-            FileBackendState::ParentOnly(parent) => (None, Some(parent), false),
-            _ => unreachable!("the open arm was checked under the mutex"),
-        };
-        let sync_error = file.as_ref().and_then(|file| {
-            sync_file_and_parent(file, parent.as_ref(), &mut parent_sync_pending).err()
-        });
-        #[cfg(test)]
-        let sync_error = {
-            let injected = FILE_SYNC_FAILURE.with(std::cell::Cell::take);
-            sync_error.or_else(|| injected.map(io::Error::from_raw_os_error))
-        };
-        let (data_descriptor, data_error) = file
-            .map(|file| close_file_descriptor(file, false))
-            .map_or((None, None), |(descriptor, error)| {
-                (Some(descriptor), error)
-            });
-        let (parent_descriptor, parent_error) = parent
-            .map(|parent| close_file_descriptor(parent, true))
-            .map_or((None, None), |(descriptor, error)| {
-                (Some(descriptor), error)
-            });
-        let (original_close_error, other_close_error) = match (data_error, parent_error) {
-            (Some(data), parent) => (Some(data), parent),
-            (None, parent) => (parent, None),
-        };
-        if let Some(original_error) = original_close_error {
-            let returned = project_file_error(&original_error);
-            *guard = FileBackendState::UnknownClose {
-                _data_descriptor: data_descriptor,
-                _parent_descriptor: parent_descriptor,
-                original_error,
-                _other_close_error: other_close_error,
-                _prior_sync_error: sync_error,
-            };
-            BackendCloseOutcome::retained(returned)
-        } else {
-            let result = sync_error
-                .as_ref()
-                .map_or(Ok(()), |error| Err(project_file_error(error)));
-            *guard = FileBackendState::Drained(sync_error);
-            BackendCloseOutcome::drained(result)
-        }
-    }
-}
-
-/// An exact-offset volatile backend used by component tests and embeddings.
-#[derive(Debug)]
-pub struct InMemoryBackend {
-    bytes: Mutex<Option<Vec<u8>>>,
-}
-impl Default for InMemoryBackend {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-impl InMemoryBackend {
-    pub fn new() -> Self {
-        Self {
-            bytes: Mutex::new(Some(Vec::new())),
-        }
-    }
-    fn with<T>(&self, work: impl FnOnce(&mut Vec<u8>) -> io::Result<T>) -> io::Result<T> {
-        let mut guard = self.bytes.lock().map_err(|_| io::ErrorKind::Other)?;
-        work(guard.as_mut().ok_or(io::ErrorKind::BrokenPipe)?)
-    }
-}
-impl StorageBackend for InMemoryBackend {
-    fn len(&self) -> io::Result<u64> {
-        self.with(|bytes| Ok(bytes.len() as u64))
-    }
-    fn read(&self, at: u64, out: &mut [u8]) -> io::Result<()> {
-        self.with(|bytes| {
-            let start = usize::try_from(at).map_err(|_| io::ErrorKind::InvalidInput)?;
-            let end = start
-                .checked_add(out.len())
-                .ok_or(io::ErrorKind::InvalidInput)?;
-            let source = bytes.get(start..end).ok_or(io::ErrorKind::UnexpectedEof)?;
-            out.copy_from_slice(source);
-            Ok(())
-        })
-    }
-    fn write(&self, at: u64, input: &[u8]) -> io::Result<()> {
-        self.with(|bytes| {
-            let start = usize::try_from(at).map_err(|_| io::ErrorKind::InvalidInput)?;
-            let end = start
-                .checked_add(input.len())
-                .ok_or(io::ErrorKind::InvalidInput)?;
-            let target = bytes
-                .get_mut(start..end)
-                .ok_or(io::ErrorKind::UnexpectedEof)?;
-            target.copy_from_slice(input);
-            Ok(())
-        })
-    }
-    fn set_len(&self, length: u64) -> io::Result<()> {
-        self.with(|bytes| {
-            let length = usize::try_from(length).map_err(|_| io::ErrorKind::InvalidInput)?;
-            if length > bytes.len() {
-                bytes
-                    .try_reserve_exact(length - bytes.len())
-                    .map_err(|_| io::ErrorKind::OutOfMemory)?;
-            }
-            bytes.resize(length, 0);
-            Ok(())
-        })
-    }
-    fn sync_data(&self) -> io::Result<()> {
-        self.with(|_| Ok(()))
-    }
-    fn close(&self) -> BackendCloseOutcome {
-        let mut guard = match self.bytes.try_lock() {
-            Ok(guard) => guard,
-            Err(TryLockError::WouldBlock) => {
-                return BackendCloseOutcome::not_entered(io::ErrorKind::WouldBlock.into());
-            }
-            Err(TryLockError::Poisoned(_)) => {
-                return BackendCloseOutcome::retained(io::ErrorKind::Other.into());
-            }
-        };
-        guard.take();
-        BackendCloseOutcome::drained(Ok(()))
-    }
-}
-
-/// One operation of a durable batch. Rows of one table share a single table
-/// name allocation, so materializing a batch allocates per table, not per row.
-#[derive(Clone, Debug)]
 pub enum Operation {
     CreateTable {
         table: Arc<str>,
@@ -999,72 +478,30 @@ impl Operation {
             key: key.into(),
         }
     }
-    fn table(&self) -> &str {
-        match self {
-            Self::CreateTable { table } | Self::Put { table, .. } | Self::Delete { table, .. } => {
-                table
-            }
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug)]
-struct ValueRef {
-    at: u64,
-    len: u32,
-    crc: u32,
-}
-struct VersionNode {
-    generation: u64,
-    value: Option<ValueRef>,
-    previous: Option<Box<VersionNode>>,
-    _lease: Box<dyn ResidentLease>,
-}
-struct Entry {
-    head: Option<Box<VersionNode>>,
-    _lease: Box<dyn ResidentLease>,
-}
-struct Table {
-    birth_generation: u64,
-    rows: BTreeMap<Vec<u8>, Entry>,
-    _lease: Box<dyn ResidentLease>,
-}
-struct Index {
-    tables: BTreeMap<String, Table>,
-}
-impl Index {
-    fn new() -> Self {
-        Self {
-            tables: BTreeMap::new(),
-        }
-    }
 }
 
 struct State {
-    backend: Box<dyn StorageBackend>,
-    index: Index,
-    value_cache: NativeCache,
-    cache_warmup: CacheWarmupState,
-    generation: u64,
-    base: u64,
-    first_generation: u64,
-    committed_end: u64,
-    compaction_check_end: u64,
-    slot: usize,
+    backend: Arc<dyn SegmentGroupBackend>,
+    disk: Option<DiskState>,
     close_entered: bool,
     close_report: Option<CoreCloseReport>,
     closed: bool,
-    needs_gc: bool,
+    maintenance_active: bool,
+    maintenance_position: Option<CommittedPosition>,
+}
+impl State {
+    fn disk(&mut self) -> Result<&mut DiskState, CoreError> {
+        self.disk.as_mut().ok_or(CoreError::Closed)
+    }
 }
 struct Shared {
     state: Mutex<State>,
     admission: Arc<dyn StorageAdmission>,
-    index_pool: Arc<IndexChargePool>,
     stopped: AtomicBool,
     fenced: AtomicBool,
     fence_panic: OnceLock<CorePanic>,
     snapshots: AtomicUsize,
-    owner_id: u64,
+    _lease: Box<dyn ResidentLease>,
 }
 impl Shared {
     /// Latch owner failure. The admission owner is told exactly once; an
@@ -1128,73 +565,124 @@ pub struct Core {
 
 pub struct ReadSnapshot {
     shared: Arc<Shared>,
-    generation: u64,
+    pin: SnapshotPin,
 }
 
-/// Progress of one bounded pass over the currently committed native values.
-/// A completed pass is fully resident only when every value stayed cached.
-/// This describes native bytes, not the engine's decoded document/index cache.
+/// One bounded reconciliation pass over cache slots and reachable directory
+/// entries. Complete does not imply resident when the configured budget is full.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CacheWarmup {
-    pub visited: usize,
-    pub scan_complete: bool,
+    pub work: usize,
+    pub complete: bool,
     pub fully_resident: bool,
 }
 
-#[derive(Default)]
-struct CacheWarmupState {
-    generation: Option<u64>,
-    after: Option<CacheWarmupKey>,
-    complete: bool,
-    retained_all: bool,
-    initial_evictions: u64,
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CacheWarmupState {
+    Pending,
+    Running,
+    Resident,
+    CapacityLimited,
+    Disabled,
 }
 
-struct CacheWarmupKey {
-    table: String,
-    key: Vec<u8>,
-    _lease: Box<dyn ResidentLease>,
+/// Owner-checked automatic scheduling state. Fatal failures remain errors.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CacheWarmupStatus {
+    pub state: CacheWarmupState,
+    /// Whether the latest attempt examined its whole selected/pinned union.
+    /// Required workspace denial can park an incomplete attempt.
+    pub complete: bool,
+    /// Required workspace or maintenance provider admission prevented work.
+    /// Retry the incomplete cursor with backoff. A completed local-budget-only
+    /// attempt remains parked until its retention eligibility changes.
+    pub provider_limited: bool,
+    /// Examined work units, including pressure-refused items, saturating.
+    pub cumulative_work: u64,
+    pub attempt_generation: Option<u64>,
+    pub byte_limit: u64,
 }
 
-fn next_warm_value<'a>(
-    index: &'a Index,
-    after: Option<&CacheWarmupKey>,
-) -> Option<(&'a str, &'a [u8], ValueRef)> {
-    let tables_from = after.map_or(Unbounded, |after| Included(after.table.as_str()));
-    for (name, table) in index.tables.range::<str, _>((tables_from, Unbounded)) {
-        let keys_from = match after {
-            Some(after) if name == &after.table => Excluded(after.key.as_slice()),
-            _ => Unbounded,
-        };
-        for (key, entry) in table.rows.range::<[u8], _>((keys_from, Unbounded)) {
-            if let Some(reference) = entry.head.as_ref().and_then(|head| head.value) {
-                return Some((name, key, reference));
-            }
-        }
-    }
-    None
+/// Published commit boundary; offsets from different segments are not comparable.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CommittedPosition {
+    pub segment_id: u64,
+    pub offset: u64,
 }
 
-/// Owned backend bytes with the exact output allocation kept admitted until
-/// the last consumer drops them.
+/// Owned output bytes whose allocation remains admitted until the consumer drops it.
 pub struct AdmittedValue {
-    bytes: Vec<u8>,
-    lease: Box<dyn ResidentLease>,
+    pub(crate) bytes: Vec<u8>,
+    pub(crate) lease: Box<dyn ResidentLease>,
 }
 impl AdmittedValue {
+    pub(crate) fn request_bytes(len: usize) -> Result<u64, CoreError> {
+        let bytes = len
+            .checked_add(std::mem::size_of::<Self>() + 192)
+            .ok_or(CoreError::CapacityDenied)?;
+        u64::try_from(bytes).map_err(|_| CoreError::CapacityDenied)
+    }
     pub fn as_bytes(&self) -> &[u8] {
         &self.bytes
     }
     pub(crate) fn into_parts(self) -> (Vec<u8>, Box<dyn ResidentLease>) {
         (self.bytes, self.lease)
     }
+    pub(crate) fn allocate(
+        admission: &Arc<dyn StorageAdmission>,
+        len: usize,
+    ) -> Result<Self, CoreError> {
+        // Include the output handle, allocator allowance and retained lease.
+        let lease = admission.reserve_workspace(Self::request_bytes(len)?)?;
+        let mut bytes = Vec::new();
+        bytes
+            .try_reserve_exact(len)
+            .map_err(|_| CoreError::CapacityDenied)?;
+        if bytes.capacity() != len {
+            return Err(CoreError::CapacityDenied);
+        }
+        bytes.resize(len, 0);
+        Ok(Self { bytes, lease })
+    }
+    pub(crate) fn copy(
+        admission: &Arc<dyn StorageAdmission>,
+        value: &[u8],
+    ) -> Result<Self, CoreError> {
+        let mut result = Self::allocate(admission, value.len())?;
+        result.bytes.copy_from_slice(value);
+        Ok(result)
+    }
 }
+
+/// Reusable point-read backing admitted by one exact native owner. Directory
+/// pages and output coexist; capacity remains charged across short/absent reads.
+/// The output never escapes independently of this exclusive workspace borrow.
+pub struct PreparedPointRead {
+    pub(crate) directory: crate::directory::DirectoryReadWorkspace,
+    pub(crate) output: AdmittedValue,
+    owner: Arc<Shared>,
+    _charge: Box<dyn ResidentLease>,
+}
+impl PreparedPointRead {
+    /// Request for the fixed workspace shell; directory and output are separate.
+    pub const fn shell_request_bytes() -> u64 {
+        (std::mem::size_of::<Self>() + 192) as u64
+    }
+    /// Exact reusable directory traversal and page request in one actual grant.
+    pub const fn directory_request_bytes() -> u64 {
+        crate::directory::DirectoryReadWorkspace::request_bytes()
+    }
+    pub fn capacity(&self) -> usize {
+        self.output.bytes.len()
+    }
+}
+
 impl Clone for ReadSnapshot {
     fn clone(&self) -> Self {
         self.shared.snapshots.fetch_add(1, Ordering::AcqRel);
         Self {
             shared: self.shared.clone(),
-            generation: self.generation,
+            pin: self.pin.clone(),
         }
     }
 }
@@ -1205,45 +693,12 @@ impl Drop for ReadSnapshot {
 }
 impl ReadSnapshot {
     pub fn generation(&self) -> u64 {
-        self.generation
+        self.pin.root().generation
     }
     pub fn table_exists(&self, table: &str) -> Result<bool, CoreError> {
         self.shared.run(CoreError::panicked, |state| {
             self.shared.check_open(state)?;
-            Ok(state
-                .index
-                .tables
-                .get(table)
-                .is_some_and(|table| table.birth_generation <= self.generation))
-        })
-    }
-    #[cfg(test)]
-    fn next_key(
-        &self,
-        table: &str,
-        start: &[u8],
-        after: Option<&[u8]>,
-    ) -> Result<Option<Vec<u8>>, CoreError> {
-        self.shared.run(CoreError::panicked, |state| {
-            self.shared.check_open(state)?;
-            let Some(table) = state.index.tables.get(table) else {
-                return Ok(None);
-            };
-            if table.birth_generation > self.generation {
-                return Ok(None);
-            }
-            let rows = &table.rows;
-            let lower = match after {
-                Some(after) if after >= start => Excluded(after),
-                _ => Included(start),
-            };
-            Ok(rows
-                .range::<[u8], _>((lower, Unbounded))
-                .find_map(|(key, entry)| {
-                    visible(&entry.head, self.generation)
-                        .flatten()
-                        .map(|_| key.clone())
-                }))
+            state.disk()?.table_exists(&self.pin, table)
         })
     }
     pub fn next_key_admitted(
@@ -1254,1042 +709,334 @@ impl ReadSnapshot {
     ) -> Result<Option<AdmittedValue>, CoreError> {
         self.shared.run(CoreError::panicked, |state| {
             self.shared.check_open(state)?;
-            let table = state
-                .index
-                .tables
-                .get(table)
-                .ok_or(CoreError::MissingTable)?;
-            if table.birth_generation > self.generation {
-                return Err(CoreError::MissingTable);
-            }
-            let lower = match after {
-                Some(after) if after >= start => Excluded(after),
-                _ => Included(start),
-            };
-            let key = table
-                .rows
-                .range::<[u8], _>((lower, Unbounded))
-                .find_map(|(key, entry)| {
-                    visible(&entry.head, self.generation).flatten().map(|_| key)
-                });
-            match key {
-                None => Ok(None),
-                Some(key) => {
-                    let lease = reserve(&self.shared.admission, key.len() as u64)?;
-                    let mut bytes = Vec::new();
-                    bytes
-                        .try_reserve_exact(key.len())
-                        .map_err(|_| CoreError::CapacityDenied)?;
-                    bytes.extend_from_slice(key);
-                    Ok(Some(AdmittedValue { bytes, lease }))
-                }
-            }
-        })
-    }
-}
-
-fn visible(head: &Option<Box<VersionNode>>, generation: u64) -> Option<Option<ValueRef>> {
-    let mut node = head.as_deref();
-    while let Some(version) = node {
-        if version.generation <= generation {
-            return Some(version.value);
-        }
-        node = version.previous.as_deref();
-    }
-    None
-}
-
-fn reserve(
-    admission: &Arc<dyn StorageAdmission>,
-    bytes: u64,
-) -> Result<Box<dyn ResidentLease>, CoreError> {
-    admission.reserve_workspace(bytes).map_err(Into::into)
-}
-
-/// Resident index nodes consume exact logical credit from admitted chunks.
-/// This avoids one physical-owner reservation per key while keeping every
-/// node's charge live until that node is actually dropped.
-struct IndexChargePool {
-    admission: Arc<dyn StorageAdmission>,
-    state: Mutex<IndexPoolState>,
-}
-struct IndexPoolState {
-    used: u64,
-    reserved: u64,
-    leases: Vec<(u64, Box<dyn ResidentLease>)>,
-}
-struct IndexNodeCharge {
-    pool: Arc<IndexChargePool>,
-    bytes: u64,
-}
-impl IndexChargePool {
-    fn new(admission: Arc<dyn StorageAdmission>) -> Arc<Self> {
-        Arc::new(Self {
-            admission,
-            state: Mutex::new(IndexPoolState {
-                used: 0,
-                reserved: 0,
-                leases: Vec::new(),
-            }),
-        })
-    }
-    fn claim(self: &Arc<Self>, bytes: u64) -> Result<Box<dyn ResidentLease>, CoreError> {
-        // Poison means an admission callback unwound mid-reservation. Every
-        // installed caller runs under `Shared::run`, which fences on this.
-        let mut state = self.state.lock().map_err(|_| CoreError::OwnerFailed)?;
-        let next_used = state
-            .used
-            .checked_add(bytes)
-            .ok_or(CoreError::CapacityDenied)?;
-        if next_used > state.reserved {
-            let deficit = next_used - state.reserved;
-            let desired = deficit.max(INDEX_POOL_CHUNK);
-            // Each chunk also admits its slot in the lease vector, whose
-            // capacity may double, before that vector grows.
-            let (charge, lease) = match reserve(&self.admission, desired + INDEX_POOL_SLOT) {
-                Ok(lease) => (desired, lease),
-                Err(CoreError::CapacityDenied) if desired > deficit => (
-                    deficit,
-                    reserve(&self.admission, deficit + INDEX_POOL_SLOT)?,
-                ),
-                Err(error) => return Err(error),
-            };
             state
-                .leases
-                .try_reserve(1)
-                .map_err(|_| CoreError::CapacityDenied)?;
-            state.reserved = state
-                .reserved
-                .checked_add(charge)
-                .ok_or(CoreError::CapacityDenied)?;
-            state.leases.push((charge, lease));
-        }
-        state.used = next_used;
-        Ok(Box::new(IndexNodeCharge {
-            pool: self.clone(),
-            bytes,
-        }))
+                .disk()?
+                .next_key_admitted(&self.pin, table, start, after)
+        })
     }
-}
-impl Drop for IndexNodeCharge {
-    fn drop(&mut self) {
-        {
-            let mut state = self.pool.state.lock().unwrap_or_else(|p| p.into_inner());
-            debug_assert!(state.used >= self.bytes);
-            state.used -= self.bytes;
-        }
-        loop {
-            let retired = {
-                let mut state = self.pool.state.lock().unwrap_or_else(|p| p.into_inner());
-                let free = state.reserved - state.used;
-                if state.leases.last().is_some_and(|(bytes, _)| *bytes <= free) {
-                    let (bytes, lease) = state.leases.pop().expect("admitted index chunk");
-                    state.reserved -= bytes;
-                    Some(lease)
-                } else {
-                    None
-                }
-            };
-            if retired.is_none() {
-                break;
-            }
-            drop(retired);
-        }
-    }
-}
-fn entry_charge(key_len: usize) -> Result<u64, CoreError> {
-    INDEX_ENTRY_CHARGE
-        .checked_add(key_len as u64)
-        .ok_or(CoreError::InvalidInput("index charge overflow"))
-}
-fn table_charge(name_len: usize) -> Result<u64, CoreError> {
-    TABLE_CHARGE
-        .checked_add(name_len as u64)
-        .ok_or(CoreError::InvalidInput("table charge overflow"))
-}
-
-#[derive(Clone, Copy)]
-struct CommitHeader {
-    generation: u64,
-    base: u64,
-    first_generation: u64,
-    end: u64,
-    slot: usize,
-}
-
-fn put_u16(dst: &mut [u8], value: u16) {
-    dst.copy_from_slice(&value.to_le_bytes());
-}
-fn put_u32(dst: &mut [u8], value: u32) {
-    dst.copy_from_slice(&value.to_le_bytes());
-}
-fn put_u64(dst: &mut [u8], value: u64) {
-    dst.copy_from_slice(&value.to_le_bytes());
-}
-fn get_u16(src: &[u8]) -> u16 {
-    u16::from_le_bytes(src.try_into().expect("two bytes"))
-}
-fn get_u32(src: &[u8]) -> u32 {
-    u32::from_le_bytes(src.try_into().expect("four bytes"))
-}
-fn get_u64(src: &[u8]) -> u64 {
-    u64::from_le_bytes(src.try_into().expect("eight bytes"))
-}
-
-const fn crc_table() -> [u32; 256] {
-    let mut table = [0u32; 256];
-    let mut i = 0;
-    while i < 256 {
-        let mut value = i as u32;
-        let mut bit = 0;
-        while bit < 8 {
-            value = if value & 1 == 1 {
-                (value >> 1) ^ 0x82f6_3b78
-            } else {
-                value >> 1
-            };
-            bit += 1;
-        }
-        table[i] = value;
-        i += 1;
-    }
-    table
-}
-const CRC_TABLE: [u32; 256] = crc_table();
-struct Crc32c(u32);
-impl Crc32c {
-    fn new() -> Self {
-        Self(!0)
-    }
-    fn update(&mut self, bytes: &[u8]) {
-        for &byte in bytes {
-            self.0 = CRC_TABLE[((self.0 as u8) ^ byte) as usize] ^ (self.0 >> 8);
-        }
-    }
-    fn finish(self) -> u32 {
-        !self.0
-    }
-}
-fn crc32c(bytes: &[u8]) -> u32 {
-    let mut crc = Crc32c::new();
-    crc.update(bytes);
-    crc.finish()
-}
-
-fn header_bytes(generation: u64, base: u64, first_generation: u64, end: u64) -> [u8; HEADER_BYTES] {
-    let mut bytes = [0u8; HEADER_BYTES];
-    bytes[..16].copy_from_slice(&HEADER_MAGIC);
-    put_u32(&mut bytes[16..20], FORMAT_VERSION);
-    put_u64(&mut bytes[24..32], generation);
-    put_u64(&mut bytes[32..40], end);
-    put_u64(&mut bytes[40..48], base);
-    put_u64(&mut bytes[48..56], first_generation);
-    let checksum = crc32c(&bytes[..HEADER_BYTES - 4]);
-    put_u32(&mut bytes[HEADER_BYTES - 4..], checksum);
-    bytes
-}
-fn decode_header(bytes: &[u8; HEADER_BYTES], slot: usize) -> Option<CommitHeader> {
-    if bytes[..16] != HEADER_MAGIC
-        || get_u32(&bytes[16..20]) != FORMAT_VERSION
-        || bytes[20..24].iter().any(|&byte| byte != 0)
-        || bytes[56..HEADER_BYTES - 4].iter().any(|&byte| byte != 0)
-        || get_u32(&bytes[HEADER_BYTES - 4..]) != crc32c(&bytes[..HEADER_BYTES - 4])
-    {
-        return None;
-    }
-    let end = get_u64(&bytes[32..40]);
-    let base = get_u64(&bytes[40..48]);
-    let first_generation = get_u64(&bytes[48..56]);
-    let generation = get_u64(&bytes[24..32]);
-    if base < LOG_START
-        || base > end
-        || first_generation == 0
-        || first_generation > generation.saturating_add(1)
-        || (base == end && generation.saturating_add(1) != first_generation)
-        || (base < end && first_generation > generation)
-    {
-        return None;
-    }
-    Some(CommitHeader {
-        generation,
-        base,
-        first_generation,
-        end,
-        slot,
-    })
-}
-fn read_header(
-    backend: &dyn StorageBackend,
-    slot: usize,
-) -> Result<Option<CommitHeader>, CoreError> {
-    let mut bytes = [0u8; HEADER_BYTES];
-    backend.read((slot * HEADER_BYTES) as u64, &mut bytes)?;
-    Ok(decode_header(&bytes, slot))
-}
-fn chosen_header(backend: &dyn StorageBackend, length: u64) -> Result<CommitHeader, CoreError> {
-    if length < LOG_START {
-        return Err(CoreError::Corrupt(
-            "node payload is shorter than commit headers",
-        ));
-    }
-    let left = read_header(backend, 0)?;
-    let right = read_header(backend, 1)?;
-    let chosen = match (left, right) {
-        (Some(left), Some(right)) if left.generation == right.generation => {
-            if left.end != right.end
-                || left.base != right.base
-                || left.first_generation != right.first_generation
-            {
-                return Err(CoreError::Corrupt(
-                    "commit headers disagree at one generation",
-                ));
-            }
-            left
-        }
-        (Some(left), Some(right)) => {
-            if left.generation > right.generation {
-                left
-            } else {
-                right
-            }
-        }
-        (Some(header), None) | (None, Some(header)) => header,
-        (None, None) => return Err(CoreError::Corrupt("no valid commit header")),
-    };
-    if chosen.end > length {
-        return Err(CoreError::Corrupt("committed end exceeds backend length"));
-    }
-    if chosen.generation == 0 && (chosen.end != LOG_START || chosen.base != LOG_START) {
-        return Err(CoreError::Corrupt("empty generation has a nonempty log"));
-    }
-    Ok(chosen)
-}
-
-fn validate_table_name(name: &str) -> Result<(), CoreError> {
-    if name.is_empty() || name.len() > MAX_TABLE_BYTES {
-        return Err(CoreError::InvalidInput("table name is empty or too long"));
-    }
-    Ok(())
-}
-fn validate_operations(
-    index: &Index,
-    operations: &[Operation],
-    admission: &Arc<dyn StorageAdmission>,
-) -> Result<u32, CoreError> {
-    if operations.is_empty() || operations.len() > MAX_OPERATIONS {
-        return Err(CoreError::InvalidInput("empty or oversized transaction"));
-    }
-    let creates = operations
-        .iter()
-        .filter(|operation| matches!(operation, Operation::CreateTable { .. }))
-        .count();
-    let _created_lease = if creates == 0 {
-        None
-    } else {
-        Some(reserve(
-            admission,
-            (creates as u64)
-                .checked_mul(128)
-                .ok_or(CoreError::InvalidInput("table validation overflow"))?,
-        )?)
-    };
-    let mut created = BTreeSet::new();
-    let mut length = 0usize;
-    for operation in operations {
-        let table = operation.table();
-        validate_table_name(table)?;
-        let known = index.tables.contains_key(table) || created.contains(table);
-        let (key_len, value_len) = match operation {
-            Operation::CreateTable { .. } => (0, 0),
-            Operation::Put { key, value, .. } => {
-                if !known {
-                    return Err(CoreError::MissingTable);
-                }
-                (key.len(), value.len())
-            }
-            Operation::Delete { key, .. } => {
-                if !known {
-                    return Err(CoreError::MissingTable);
-                }
-                (key.len(), 0)
-            }
-        };
-        if key_len > MAX_KEY_BYTES || value_len > MAX_VALUE_BYTES {
-            return Err(CoreError::InvalidInput(
-                "key or value exceeds storage limit",
-            ));
-        }
-        length = length
-            .checked_add(OP_BYTES)
-            .and_then(|n| n.checked_add(table.len()))
-            .and_then(|n| n.checked_add(key_len))
-            .and_then(|n| n.checked_add(value_len))
-            .ok_or(CoreError::InvalidInput("transaction length overflow"))?;
-        if length > MAX_BATCH_BYTES {
-            return Err(CoreError::InvalidInput(
-                "transaction exceeds 96 MiB physical limit",
-            ));
-        }
-        if matches!(operation, Operation::CreateTable { .. }) {
-            created.insert(table);
-        }
-    }
-    u32::try_from(length).map_err(|_| CoreError::InvalidInput("transaction length overflow"))
-}
-fn op_header(operation: &Operation) -> [u8; OP_BYTES] {
-    let mut bytes = [0u8; OP_BYTES];
-    bytes[0] = match operation {
-        Operation::CreateTable { .. } => 1,
-        Operation::Put { .. } => 2,
-        Operation::Delete { .. } => 3,
-    };
-    put_u16(&mut bytes[1..3], operation.table().len() as u16);
-    match operation {
-        Operation::Put { key, value, .. } => {
-            put_u16(&mut bytes[3..5], key.len() as u16);
-            put_u32(&mut bytes[5..9], value.len() as u32);
-            put_u32(&mut bytes[9..13], crc32c(value));
-        }
-        Operation::Delete { key, .. } => {
-            put_u16(&mut bytes[3..5], key.len() as u16);
-        }
-        Operation::CreateTable { .. } => {}
-    }
-    bytes
-}
-fn operation_parts(operation: &Operation) -> (&[u8], &[u8], &[u8]) {
-    match operation {
-        Operation::CreateTable { table } => (table.as_bytes(), &[], &[]),
-        Operation::Put { table, key, value } => (table.as_bytes(), key, value),
-        Operation::Delete { table, key } => (table.as_bytes(), key, &[]),
-    }
-}
-fn payload_checksum(operations: &[Operation]) -> u32 {
-    let mut checksum = Crc32c::new();
-    for operation in operations {
-        let header = op_header(operation);
-        let (table, key, value) = operation_parts(operation);
-        checksum.update(&header);
-        checksum.update(table);
-        checksum.update(key);
-        checksum.update(value);
-    }
-    checksum.finish()
-}
-fn frame_header(
-    generation: u64,
-    previous_end: u64,
-    payload_len: u32,
-    count: u32,
-    payload_crc: u32,
-) -> [u8; FRAME_BYTES] {
-    let mut bytes = [0u8; FRAME_BYTES];
-    bytes[..8].copy_from_slice(&FRAME_MAGIC);
-    put_u64(&mut bytes[8..16], generation);
-    put_u64(&mut bytes[16..24], previous_end);
-    put_u32(&mut bytes[24..28], payload_len);
-    put_u32(&mut bytes[28..32], count);
-    put_u32(&mut bytes[32..36], payload_crc);
-    let checksum = crc32c(&bytes[..36]);
-    put_u32(&mut bytes[36..40], checksum);
-    bytes
 }
 
 impl Core {
-    /// Create a new payload when empty, otherwise recover an existing one.
-    /// This form supports crash-image backends whose reopen uses the same call.
+    /// Strictly initialize an empty group using the installed owner's explicit
+    /// incarnation and cache budget. Existing groups require `open_with_backend`.
     pub fn create_with_backend(
-        backend: impl StorageBackend + 'static,
+        backend: impl SegmentGroupBackend + 'static,
         admission: Arc<dyn StorageAdmission>,
+        group_id: [u8; 16],
+        cache: CacheConfig,
     ) -> Result<Self, CoreError> {
-        let backend: Box<dyn StorageBackend> = Box::new(backend);
-        let length = match run_open(true, || backend.len().map_err(CoreError::from)) {
-            Ok(length) => length,
-            Err(error) => {
-                return Err(failed_open(FailedOpenOwner::Backend(backend), error, true));
-            }
-        };
-        if length == 0 {
-            Self::create_strict_boxed(backend, admission, true)
-        } else {
-            Self::open_boxed(backend, admission, true)
-        }
+        Self::assemble(Arc::new(backend), admission, group_id, cache, true, true)
     }
-
-    pub fn create_strict_with_backend(
-        backend: impl StorageBackend + 'static,
+    pub fn open_with_backend(
+        backend: impl SegmentGroupBackend + 'static,
         admission: Arc<dyn StorageAdmission>,
+        group_id: [u8; 16],
+        cache: CacheConfig,
     ) -> Result<Self, CoreError> {
-        Self::create_strict_boxed(Box::new(backend), admission, true)
+        Self::assemble(Arc::new(backend), admission, group_id, cache, false, true)
     }
-
-    pub(crate) fn create_strict_with_backend_retained(
-        backend: impl StorageBackend + 'static,
+    pub(crate) fn create_with_backend_retained(
+        backend: impl SegmentGroupBackend + 'static,
         admission: Arc<dyn StorageAdmission>,
+        group_id: [u8; 16],
+        cache: CacheConfig,
     ) -> Result<Self, CoreError> {
-        Self::create_strict_boxed(Box::new(backend), admission, false)
+        Self::assemble(Arc::new(backend), admission, group_id, cache, true, false)
     }
-
-    fn create_strict_boxed(
-        backend: Box<dyn StorageBackend>,
+    pub(crate) fn open_with_backend_retained(
+        backend: impl SegmentGroupBackend + 'static,
         admission: Arc<dyn StorageAdmission>,
+        group_id: [u8; 16],
+        cache: CacheConfig,
+    ) -> Result<Self, CoreError> {
+        Self::assemble(Arc::new(backend), admission, group_id, cache, false, false)
+    }
+    fn assemble(
+        backend: Arc<dyn SegmentGroupBackend>,
+        admission: Arc<dyn StorageAdmission>,
+        group_id: [u8; 16],
+        cache: CacheConfig,
+        create: bool,
         close_on_failure: bool,
     ) -> Result<Self, CoreError> {
-        let result = run_open(close_on_failure, || -> Result<(), CoreError> {
+        let result = run_open(close_on_failure, || {
             admission
                 .check_owner()
                 .map_err(|_| CoreError::OwnerFailed)?;
-            if backend.len()? != 0 {
-                return Err(CoreError::InvalidInput("new backend is not empty"));
-            }
-            admission.reserve_growth(0, LOG_START)?;
-            backend.set_len(LOG_START)?;
-            admission
-                .settle_growth(LOG_START)
-                .map_err(|_| CoreError::OwnerFailed)?;
-            let header = header_bytes(0, LOG_START, 1, LOG_START);
-            backend.write(0, &header)?;
-            backend.write(HEADER_BYTES as u64, &header)?;
-            backend.sync_data()?;
-            Ok(())
-        });
-        if let Err(error) = result {
-            return Err(failed_open(
-                FailedOpenOwner::Backend(backend),
-                error,
-                close_on_failure,
-            ));
-        }
-        let index_pool = IndexChargePool::new(admission.clone());
-        Ok(Self::installed(
-            backend,
-            admission,
-            index_pool,
-            Index::new(),
-            CommitHeader {
-                generation: 0,
-                base: LOG_START,
-                first_generation: 1,
-                end: LOG_START,
-                slot: 0,
-            },
-        ))
-    }
-
-    /// Open only an existing payload. A valid newest header whose committed
-    /// frame is corrupt is an error; recovery never falls back to older data.
-    pub fn open_with_backend(
-        backend: impl StorageBackend + 'static,
-        admission: Arc<dyn StorageAdmission>,
-    ) -> Result<Self, CoreError> {
-        Self::open_boxed(Box::new(backend), admission, true)
-    }
-
-    pub(crate) fn open_with_backend_retained(
-        backend: impl StorageBackend + 'static,
-        admission: Arc<dyn StorageAdmission>,
-    ) -> Result<Self, CoreError> {
-        Self::open_boxed(Box::new(backend), admission, false)
-    }
-
-    fn open_boxed(
-        backend: Box<dyn StorageBackend>,
-        admission: Arc<dyn StorageAdmission>,
-        close_on_failure: bool,
-    ) -> Result<Self, CoreError> {
-        let result = run_open(
-            close_on_failure,
-            || -> Result<(Index, Arc<IndexChargePool>, CommitHeader), CoreError> {
-                admission
-                    .check_owner()
-                    .map_err(|_| CoreError::OwnerFailed)?;
-                let length = backend.len()?;
-                let header = chosen_header(&*backend, length)?;
-                let mut index = Index::new();
-                let index_pool = IndexChargePool::new(admission.clone());
-                let mut cursor = header.base;
-                let mut generation = header.first_generation - 1;
-                while cursor < header.end {
-                    let frame = read_frame(&*backend, cursor, header.end, generation)?;
-                    scan_payload(&*backend, &frame)?;
-                    replay_payload(&*backend, &frame, &mut index, &index_pool)?;
-                    cursor = frame.end;
-                    generation = frame.generation;
-                }
-                if cursor != header.end || generation != header.generation {
-                    return Err(CoreError::Corrupt(
-                        "commit chain does not reach selected header",
-                    ));
-                }
-                // Bytes beyond the selected header belong to an uncommitted attempt.
-                // Recovery validates every committed byte before reclaiming that tail.
-                if length > header.end {
-                    backend.set_len(header.end)?;
-                }
-                // Persist a fully validated page-cache generation before resolving
-                // an uncertain same-host commit for the caller.
-                backend.sync_data()?;
-                if length > header.end {
-                    admission
-                        .settle_growth(header.end)
-                        .map_err(|_| CoreError::OwnerFailed)?;
-                }
-                Ok((index, index_pool, header))
-            },
-        );
-        let (index, index_pool, header) = match result {
-            Ok(result) => result,
-            Err(error) => {
-                return Err(failed_open(
-                    FailedOpenOwner::Backend(backend),
-                    error,
-                    close_on_failure,
-                ));
-            }
-        };
-        let core = Self::installed(backend, admission, index_pool, index, header);
-        if header.base != LOG_START {
-            // Recovery finishes a published shadow relocation before exposing
-            // an instance that may accept another user commit.
-            if let Err(error) = run_open(close_on_failure, || core.compact()) {
-                return Err(failed_open(
-                    FailedOpenOwner::Installed(core),
-                    error,
-                    close_on_failure,
-                ));
-            }
-        }
-        Ok(core)
-    }
-
-    fn installed(
-        backend: Box<dyn StorageBackend>,
-        admission: Arc<dyn StorageAdmission>,
-        index_pool: Arc<IndexChargePool>,
-        index: Index,
-        header: CommitHeader,
-    ) -> Self {
-        Self {
-            shared: Arc::new(Shared {
-                state: Mutex::new(State {
-                    backend,
-                    index,
-                    value_cache: NativeCache::new(CacheConfig { byte_limit: 0 }, admission.clone()),
-                    cache_warmup: CacheWarmupState::default(),
-                    generation: header.generation,
-                    base: header.base,
-                    first_generation: header.first_generation,
-                    committed_end: header.end,
-                    compaction_check_end: header.end,
-                    slot: header.slot,
-                    close_entered: false,
-                    close_report: None,
-                    closed: false,
-                    needs_gc: false,
+            let lease =
+                admission.reserve_workspace((std::mem::size_of::<Shared>() + 256) as u64)?;
+            let disk = if create {
+                DiskState::create(backend.clone(), admission.clone(), group_id, cache)?
+            } else {
+                DiskState::open(backend.clone(), admission.clone(), group_id, cache)?
+            };
+            let position = disk.committed_position()?;
+            Ok(Self {
+                shared: Arc::new(Shared {
+                    state: Mutex::new(State {
+                        backend: backend.clone(),
+                        disk: Some(disk),
+                        close_entered: false,
+                        close_report: None,
+                        closed: false,
+                        maintenance_active: false,
+                        maintenance_position: position,
+                    }),
+                    admission: admission.clone(),
+                    stopped: AtomicBool::new(false),
+                    fenced: AtomicBool::new(false),
+                    fence_panic: OnceLock::new(),
+                    snapshots: AtomicUsize::new(0),
+                    _lease: lease,
                 }),
-                admission,
-                index_pool,
-                stopped: AtomicBool::new(false),
-                fenced: AtomicBool::new(false),
-                fence_panic: OnceLock::new(),
-                snapshots: AtomicUsize::new(0),
-                owner_id: NEXT_OWNER.fetch_add(1, Ordering::Relaxed),
-            }),
-        }
+            })
+        });
+        result.map_err(|error| failed_open(FailedOpenOwner(backend), error, close_on_failure))
     }
-
     pub fn snapshot(&self) -> Result<ReadSnapshot, CoreError> {
         if self.shared.stopped.load(Ordering::Acquire) {
             return Err(CoreError::Closed);
         }
         self.shared.run(CoreError::panicked, |state| {
             self.shared.check_open(state)?;
+            let pin = state.disk()?.snapshot()?;
             self.shared.snapshots.fetch_add(1, Ordering::AcqRel);
             Ok(ReadSnapshot {
                 shared: self.shared.clone(),
-                generation: state.generation,
+                pin,
             })
         })
     }
-
     pub(crate) fn check_read_owner(&self) -> Result<(), CoreError> {
         self.shared
             .run(CoreError::panicked, |state| self.shared.check_open(state))
     }
-
-    /// Whether this instance has latched an owner failure. An error returned
-    /// while unfenced was decided before any effect and left every committed
-    /// value unchanged. Once fenced, every operation reports `OwnerFailed`
-    /// until close; only a strict reopen decides an uncertain outcome.
     pub fn is_fenced(&self) -> bool {
         self.shared.fenced.load(Ordering::Acquire)
     }
-
-    /// The original payload of an admission `owner_failed` callback that
-    /// unwound while this instance was being fenced.
     pub fn fence_panic(&self) -> Option<&CorePanic> {
         self.shared.fence_panic.get()
     }
-
-    /// Latch an owner failure observed by a facade outside a core call.
     pub(crate) fn fence(&self) {
         self.shared.fence();
     }
-
-    /// Confirm the physical owner for a facade decision that has no backend
-    /// effect of its own. A failure or unwind fences like any core operation.
     pub(crate) fn check_owner(&self) -> Result<(), CoreError> {
         self.shared
             .run(CoreError::panicked, |_| self.shared.check_owner())
     }
-
-    /// Admit facade workspace through this instance, so an owner failure
-    /// reported by the admission fences it. A denial never fences.
     pub(crate) fn reserve_workspace(
         &self,
         bytes: u64,
     ) -> Result<Box<dyn ResidentLease>, CoreError> {
-        if self.shared.fenced.load(Ordering::Acquire) {
-            return Err(CoreError::OwnerFailed);
-        }
-        let result = catch_unwind(AssertUnwindSafe(|| reserve(&self.shared.admission, bytes)))
-            .unwrap_or_else(|payload| Err(CoreError::panicked(CorePanic::new(payload))));
-        if result.as_ref().is_err_and(CoreError::fences_owner) {
-            self.shared.fence();
-        }
-        result
+        self.shared.run(CoreError::panicked, |state| {
+            self.shared.check_open(state)?;
+            self.shared
+                .admission
+                .reserve_workspace(bytes)
+                .map_err(Into::into)
+        })
     }
-
     pub fn generation(&self) -> Result<u64, CoreError> {
         self.shared.run(CoreError::panicked, |state| {
             self.shared.check_open(state)?;
-            Ok(state.generation)
+            state.disk()?.generation()
         })
     }
-
-    /// Configure the native immutable-byte cache within this core's existing
-    /// storage admission owner. The embedding owner chooses its share of the
-    /// installed memory budget; native constructors do not invent one.
-    pub fn configure_value_cache(&self, config: CacheConfig) -> Result<(), CoreError> {
+    pub fn committed_position(&self) -> Result<Option<CommittedPosition>, CoreError> {
         self.shared.run(CoreError::panicked, |state| {
             self.shared.check_open(state)?;
-            state.value_cache.set_byte_limit(config.byte_limit)?;
-            state.cache_warmup = CacheWarmupState::default();
-            Ok(())
+            state.disk()?.committed_position()
         })
     }
-
-    pub fn value_cache_stats(&self) -> Result<CacheStats, CoreError> {
+    pub fn configure_cache(&self, config: CacheConfig) -> Result<(), CoreError> {
         self.shared.run(CoreError::panicked, |state| {
             self.shared.check_open(state)?;
-            Ok(state.value_cache.stats())
+            state.disk()?.configure_cache(config)
         })
     }
-
-    /// Warm at most `max_values` committed native values. The cursor retains
-    /// only one admitted table/key, never an all-key list. A write restarts the
-    /// pass at its new generation. Capacity pressure skips cache insertion but
-    /// does not turn durable data into a capacity-denied database.
-    pub fn warm_value_cache(&self, max_values: usize) -> Result<CacheWarmup, CoreError> {
-        if max_values == 0 {
+    pub fn cache_stats(&self) -> Result<CacheStats, CoreError> {
+        self.shared.run(CoreError::panicked, |state| {
+            self.shared.check_open(state)?;
+            state.disk()?.cache_stats()
+        })
+    }
+    /// Advance an explicit bounded pass, restarting a completed pass on demand.
+    /// Admission refusal, including a metadata shrink, returns CapacityDenied
+    /// with its continuation preserved for retry. Periodic drivers should use
+    /// warm_cache_if_needed, which reports provider pressure without an error.
+    pub fn warm_cache(&self, work_limit: usize) -> Result<CacheWarmup, CoreError> {
+        if work_limit == 0 {
             return Err(CoreError::InvalidInput(
                 "cache warm-up step must be nonzero",
             ));
         }
         self.shared.run(CoreError::panicked, |state| {
             self.shared.check_open(state)?;
-            if state.value_cache.config().byte_limit == 0 {
-                return Ok(CacheWarmup {
-                    visited: 0,
-                    scan_complete: true,
-                    fully_resident: false,
-                });
-            }
-            if state.cache_warmup.generation != Some(state.generation) {
-                state.cache_warmup = CacheWarmupState {
-                    generation: Some(state.generation),
-                    retained_all: true,
-                    initial_evictions: state.value_cache.stats().evictions,
-                    ..CacheWarmupState::default()
-                };
-            }
-            let mut visited = 0;
-            while !state.cache_warmup.complete && visited < max_values {
-                let Some((table, key, reference)) =
-                    next_warm_value(&state.index, state.cache_warmup.after.as_ref())
-                else {
-                    state.cache_warmup.complete = true;
-                    state.cache_warmup.after = None;
-                    break;
-                };
-                let cursor_bytes = table.len()
-                    + key.len()
-                    + std::mem::size_of::<CacheWarmupKey>()
-                    + 4 * std::mem::size_of::<usize>();
-                let lease = reserve(&self.shared.admission, cursor_bytes as u64)?;
-                let mut next_table = String::new();
-                next_table
-                    .try_reserve_exact(table.len())
-                    .map_err(|_| CoreError::CapacityDenied)?;
-                next_table.push_str(table);
-                let mut next_key = Vec::new();
-                next_key
-                    .try_reserve_exact(key.len())
-                    .map_err(|_| CoreError::CapacityDenied)?;
-                next_key.extend_from_slice(key);
-                let result = state
-                    .value_cache
-                    .load(reference.at, reference.len as usize, |out| {
-                        read_checked_value(&*state.backend, reference, out)
-                    });
-                match result {
-                    Ok(_) => {}
-                    Err(CacheLoadError::Admission(AdmissionError::CapacityDenied)) => {
-                        state.cache_warmup.retained_all = false;
-                    }
-                    Err(CacheLoadError::Admission(error)) => return Err(error.into()),
-                    Err(CacheLoadError::Load(error)) => return Err(error),
+            state.disk()?.warm(work_limit)
+        })
+    }
+
+    /// Advance automatic warm-up only when local eligibility has changed.
+    /// Completed oversized attempts park without data I/O or new admission.
+    /// Provider refusal retains the incomplete cursor for bounded retry; an
+    /// automatic driver must apply backoff to provider-limited attempts.
+    pub fn warm_cache_if_needed(&self, work_limit: usize) -> Result<CacheWarmup, CoreError> {
+        if work_limit == 0 {
+            return Err(CoreError::InvalidInput(
+                "cache warm-up step must be nonzero",
+            ));
+        }
+        self.shared.run(CoreError::panicked, |state| {
+            self.shared.check_open(state)?;
+            state.disk()?.warm_if_needed(work_limit)
+        })
+    }
+
+    pub fn cache_warmup_status(&self) -> Result<CacheWarmupStatus, CoreError> {
+        self.shared.run(CoreError::panicked, |state| {
+            self.shared.check_open(state)?;
+            state.disk()?.warm_status()
+        })
+    }
+
+    /// Explicit policy-driven restart, discarding the current continuation.
+    /// Periodic drivers should use warm_cache_if_needed with provider backoff
+    /// instead; headroom samples are not a reason to discard bounded progress.
+    pub fn request_cache_warm_retry(&self) -> Result<(), CoreError> {
+        self.shared.run(CoreError::panicked, |state| {
+            self.shared.check_open(state)?;
+            state.disk()?.request_warm_retry()
+        })
+    }
+    /// Finish one compaction cycle. Individual steps use bounded workspace;
+    /// explicit full compaction may still take time proportional to the dataset.
+    pub fn compact(&self) -> Result<(), CoreError> {
+        self.shared.run(CoreError::unknown_commit, |state| {
+            self.shared.check_open(state)?;
+            while !state.disk()?.compact_step(64)?.complete {}
+            state.maintenance_active = false;
+            state.maintenance_position = state.disk()?.committed_position()?;
+            Ok(())
+        })
+    }
+    /// Advance at most one maintenance work unit once append growth reaches a
+    /// MiB. Work uses the same durable publication and snapshot ownership rules.
+    pub(crate) fn prepare_write(&self) -> Result<(), CoreError> {
+        self.shared.run(CoreError::unknown_commit, |state| {
+            self.shared.check_open(state)?;
+            let now = state.disk()?.committed_position()?;
+            let grew = match (state.maintenance_position, now) {
+                (Some(old), Some(now)) if old.segment_id == now.segment_id => {
+                    now.offset.saturating_sub(old.offset) >= 1 << 20
                 }
-                state.cache_warmup.retained_all &= state.value_cache.contains(reference.at);
-                state.cache_warmup.after = Some(CacheWarmupKey {
-                    table: next_table,
-                    key: next_key,
-                    _lease: lease,
-                });
-                visited += 1;
+                (None, None) => false,
+                (None, Some(now)) => now.segment_id > 1 || now.offset >= 1 << 20,
+                _ => true,
+            };
+            if grew || state.maintenance_active {
+                state.maintenance_active = !state.disk()?.compact_step(1)?.complete;
+                if !state.maintenance_active {
+                    state.maintenance_position = state.disk()?.committed_position()?;
+                }
             }
-            if !state.cache_warmup.complete
-                && next_warm_value(&state.index, state.cache_warmup.after.as_ref()).is_none()
-            {
-                state.cache_warmup.complete = true;
-                state.cache_warmup.after = None;
-            }
-            Ok(CacheWarmup {
-                visited,
-                scan_complete: state.cache_warmup.complete,
-                fully_resident: state.cache_warmup.complete
-                    && state.cache_warmup.retained_all
-                    && state.value_cache.stats().evictions == state.cache_warmup.initial_evictions,
+            Ok(())
+        })
+    }
+    fn check_snapshot(&self, snapshot: &ReadSnapshot) -> Result<(), CoreError> {
+        if !Arc::ptr_eq(&self.shared, &snapshot.shared) {
+            return Err(CoreError::InvalidInput(
+                "snapshot belongs to another database owner",
+            ));
+        }
+        Ok(())
+    }
+    pub fn prepare_point_read(
+        &self,
+        max_value_bytes: usize,
+    ) -> Result<PreparedPointRead, CoreError> {
+        if max_value_bytes > MAX_VALUE_BYTES {
+            return Err(CoreError::InvalidInput(
+                "prepared point bound exceeds native value limit",
+            ));
+        }
+        self.shared.run(CoreError::panicked, |state| {
+            self.shared.check_open(state)?;
+            let charge = self
+                .shared
+                .admission
+                .reserve_workspace(PreparedPointRead::shell_request_bytes())?;
+            let directory = crate::directory::DirectoryReadWorkspace::new(&self.shared.admission)?;
+            let output = AdmittedValue::allocate(&self.shared.admission, max_value_bytes)?;
+            self.shared.check_open(state)?;
+            Ok(PreparedPointRead {
+                directory,
+                output,
+                owner: self.shared.clone(),
+                _charge: charge,
             })
         })
     }
 
-    pub fn committed_end(&self) -> Result<u64, CoreError> {
-        self.shared.run(CoreError::panicked, |state| {
-            self.shared.check_open(state)?;
-            Ok(state.committed_end)
-        })
-    }
-
-    /// Reclaim obsolete log records while preserving the selected committed
-    /// header through every crash point. Active snapshots defer compaction.
-    /// A front log first moves to a durable shadow log, then moves back to
-    /// the front; reopening completes a published shadow relocation.
-    pub fn compact(&self) -> Result<(), CoreError> {
-        if self.shared.stopped.load(Ordering::Acquire) {
-            return Err(CoreError::Closed);
-        }
-        self.shared.run(CoreError::panicked, |state| {
-            self.shared.check_open(state)?;
-            self.compact_locked(state)
-        })
-    }
-
-    /// Run bounded maintenance before a write transaction pins its read
-    /// snapshot. The table facade invokes this while holding its writer gate.
-    pub fn prepare_write(&self) -> Result<(), CoreError> {
-        if self.shared.stopped.load(Ordering::Acquire) {
-            return Err(CoreError::Closed);
-        }
-        self.shared.run(CoreError::panicked, |state| {
-            self.shared.check_open(state)?;
-            self.maybe_compact_locked(state)
-        })
-    }
-
-    fn maybe_compact_locked(&self, state: &mut State) -> Result<(), CoreError> {
-        if state.base != LOG_START {
-            self.compact_locked(state)?;
-            if state.base != LOG_START {
-                return Err(CoreError::Corrupt("shadow relocation did not finish"));
-            }
-        }
-        if self.shared.snapshots.load(Ordering::Acquire) == 0
-            && state
-                .committed_end
-                .saturating_sub(state.compaction_check_end)
-                >= COMPACTION_CHECK_BYTES
-        {
-            state.compaction_check_end = state.committed_end;
-            let layout = compact_layout(&state.index)?;
-            let active_bytes = state.committed_end - state.base;
-            if layout.frames != 0 && active_bytes >= layout.bytes.saturating_mul(2) {
-                match self.compact_locked(state) {
-                    Ok(()) | Err(CoreError::CapacityDenied) => {}
-                    Err(error) => return Err(error),
-                }
-            }
-        }
-        Ok(())
-    }
-
-    fn compact_locked(&self, state: &mut State) -> Result<(), CoreError> {
-        self.compact_locked_with_lease(state, None)
-    }
-
-    fn compact_locked_with_lease(
+    pub fn table_exists_prepared(
         &self,
-        state: &mut State,
-        held_copy_lease: Option<&dyn ResidentLease>,
-    ) -> Result<(), CoreError> {
-        if self.shared.snapshots.load(Ordering::Acquire) != 0 {
-            return Err(CoreError::InvalidInput(
-                "active snapshots prevent compaction",
-            ));
+        snapshot: &ReadSnapshot,
+        table: &str,
+        workspace: &mut PreparedPointRead,
+    ) -> Result<bool, CoreError> {
+        self.check_snapshot(snapshot)?;
+        if !Arc::ptr_eq(&self.shared, &workspace.owner) {
+            return Err(CoreError::InvalidInput("prepared point owner differs"));
         }
-        if state.needs_gc {
-            prune_all(&mut state.index, &mut state.value_cache);
-            state.needs_gc = false;
-        }
-        let layout = compact_layout(&state.index)?;
-        if layout.frames == 0 {
-            return Ok(());
-        }
-        let front = state.base == LOG_START;
-        if front && layout.bytes >= state.committed_end - LOG_START {
-            return Ok(());
-        }
-        let copies = if front { 2 } else { 1 };
-        let generations = layout
-            .frames
-            .checked_mul(copies)
-            .ok_or(CoreError::InvalidInput("generation overflow"))?;
-        state
-            .generation
-            .checked_add(generations)
-            .ok_or(CoreError::InvalidInput("generation overflow"))?;
-        let own_copy_lease = if held_copy_lease.is_none() {
-            Some(reserve(&self.shared.admission, 8192)?)
-        } else {
-            None
-        };
-        let copy_lease = held_copy_lease
-            .or(own_copy_lease.as_deref())
-            .expect("compaction workspace is admitted");
-        let first_generation = state.generation + 1;
-        let target = if front {
-            state.committed_end.max(
-                LOG_START
-                    .checked_add(layout.bytes)
-                    .ok_or(CoreError::InvalidInput("compaction length overflow"))?,
-            )
-        } else {
-            LOG_START
-        };
-        let target_end = target
-            .checked_add(layout.bytes)
-            .ok_or(CoreError::InvalidInput("compaction length overflow"))?;
-        if target_end > i64::MAX as u64 {
-            return Err(CoreError::InvalidInput(
-                "backend length exceeds platform bound",
-            ));
-        }
-        if !front && target_end > state.base {
-            return Err(CoreError::Corrupt("shadow relocation overlaps its source"));
-        }
-        let physical_len = state.backend.len().map_err(|error| {
-            self.shared.fence();
-            CoreError::Io(error)
-        })?;
-        if front {
-            self.shared
-                .admission
-                .reserve_growth(physical_len, target_end)?;
-        }
-        let next_slot = 1 - state.slot;
-        let result = (|| -> Result<u64, CoreError> {
-            if front {
-                state.backend.set_len(target_end)?;
-            }
-            let (written_end, generation) = write_compact_snapshot(state, target, layout)?;
-            debug_assert_eq!(written_end, target_end);
-            state.backend.sync_data()?;
-            if front {
-                self.shared
-                    .admission
-                    .settle_growth(target_end)
-                    .map_err(|_| CoreError::OwnerFailed)?;
-            }
-            let header = header_bytes(generation, target, first_generation, target_end);
+        self.shared.run(CoreError::panicked, |state| {
+            self.shared.check_open(state)?;
             state
-                .backend
-                .write((next_slot * HEADER_BYTES) as u64, &header)?;
-            state.backend.sync_data()?;
-            Ok(generation)
-        })();
-        let generation = match result {
-            Ok(generation) => generation,
-            Err(error) => {
-                self.shared.fence();
-                return Err(error);
-            }
-        };
-        state.generation = generation;
-        state.base = target;
-        state.first_generation = first_generation;
-        state.committed_end = target_end;
-        state.slot = next_slot;
-        if front {
-            // The shadow header now protects every live value; the old front
-            // extent can be overwritten. A crash before the next header sync
-            // recovers from shadow and retries this exact phase.
-            self.compact_locked_with_lease(state, Some(copy_lease))
-        } else {
-            // Both headers must point to the durable front before the shadow
-            // tail is discarded. Otherwise damage to the only front header
-            // would leave a valid shadow header pointing beyond the new EOF.
-            let front_header = header_bytes(
-                state.generation,
-                state.base,
-                state.first_generation,
-                state.committed_end,
-            );
-            if let Err(error) = state
-                .backend
-                .write(((1 - state.slot) * HEADER_BYTES) as u64, &front_header)
-                .and_then(|()| state.backend.sync_data())
-            {
-                self.shared.fence();
-                return Err(CoreError::Io(error));
-            }
-            // A failed truncate now leaves two valid front headers for reopen.
-            if let Err(error) = state
-                .backend
-                .set_len(target_end)
-                .and_then(|()| state.backend.sync_data())
-            {
-                self.shared.fence();
-                return Err(CoreError::Io(error));
-            }
-            if self.shared.admission.settle_growth(target_end).is_err() {
-                self.shared.fence();
-                return Err(CoreError::OwnerFailed);
-            }
-            state.compaction_check_end = target_end;
-            Ok(())
-        }
+                .disk()?
+                .table_exists_prepared(&snapshot.pin, table, workspace)
+        })
     }
 
-    #[cfg(test)]
-    fn get(
+    /// Inspect the exact pinned directory's value extent using already-owned
+    /// traversal pages. This does not read or authenticate the value bytes.
+    pub fn point_length_prepared(
+        &self,
+        snapshot: &ReadSnapshot,
+        table: &str,
+        key: &[u8],
+        workspace: &mut PreparedPointRead,
+    ) -> Result<Option<usize>, CoreError> {
+        self.check_snapshot(snapshot)?;
+        if !Arc::ptr_eq(&self.shared, &workspace.owner) {
+            return Err(CoreError::InvalidInput("prepared point owner differs"));
+        }
+        self.shared.run(CoreError::panicked, |state| {
+            self.shared.check_open(state)?;
+            state
+                .disk()?
+                .point_length_prepared(&snapshot.pin, table, key, workspace)
+        })
+    }
+
+    pub fn get_prepared<'workspace>(
         &self,
         snapshot: &ReadSnapshot,
         table: &str,
         key: &[u8],
         max_value_bytes: usize,
-    ) -> Result<Option<Vec<u8>>, CoreError> {
-        self.get_admitted(snapshot, table, key, max_value_bytes)
-            .map(|value| value.map(|value| value.into_parts().0))
+        workspace: &'workspace mut PreparedPointRead,
+    ) -> Result<Option<&'workspace [u8]>, CoreError> {
+        self.check_snapshot(snapshot)?;
+        if !Arc::ptr_eq(&self.shared, &workspace.owner) || max_value_bytes > workspace.capacity() {
+            return Err(CoreError::InvalidInput(
+                "prepared point owner or bound differs",
+            ));
+        }
+        let length = self.shared.run(CoreError::panicked, |state| {
+            self.shared.check_open(state)?;
+            state
+                .disk()?
+                .get_prepared(&snapshot.pin, table, key, max_value_bytes, workspace)
+        })?;
+        Ok(length.map(|length| &workspace.output.bytes[..length]))
     }
 
     pub fn get_admitted(
@@ -2302,28 +1049,11 @@ impl Core {
         self.check_snapshot(snapshot)?;
         self.shared.run(CoreError::panicked, |state| {
             self.shared.check_open(state)?;
-            let Some(table) = state.index.tables.get(table) else {
-                return Err(CoreError::MissingTable);
-            };
-            if table.birth_generation > snapshot.generation {
-                return Err(CoreError::MissingTable);
-            }
-            let reference = table
-                .rows
-                .get(key)
-                .and_then(|entry| visible(&entry.head, snapshot.generation))
-                .flatten();
-            match reference {
-                None => Ok(None),
-                Some(reference) => self
-                    .read_value_admitted(state, reference, max_value_bytes)
-                    .map(Some),
-            }
+            state
+                .disk()?
+                .get_admitted(&snapshot.pin, table, key, max_value_bytes)
         })
     }
-
-    /// Inspect only the charged snapshot index. No row bytes escape or need
-    /// another resident allocation for an existence decision.
     pub fn key_exists(
         &self,
         snapshot: &ReadSnapshot,
@@ -2333,22 +1063,9 @@ impl Core {
         self.check_snapshot(snapshot)?;
         self.shared.run(CoreError::panicked, |state| {
             self.shared.check_open(state)?;
-            let table = state
-                .index
-                .tables
-                .get(table)
-                .ok_or(CoreError::MissingTable)?;
-            if table.birth_generation > snapshot.generation {
-                return Err(CoreError::MissingTable);
-            }
-            Ok(table.rows.get(key).is_some_and(|entry| {
-                visible(&entry.head, snapshot.generation)
-                    .flatten()
-                    .is_some()
-            }))
+            state.disk()?.key_exists(&snapshot.pin, table, key)
         })
     }
-
     pub fn prefix_exists(
         &self,
         snapshot: &ReadSnapshot,
@@ -2358,26 +1075,12 @@ impl Core {
         self.check_snapshot(snapshot)?;
         self.shared.run(CoreError::panicked, |state| {
             self.shared.check_open(state)?;
-            let table = state
-                .index
-                .tables
-                .get(table)
-                .ok_or(CoreError::MissingTable)?;
-            if table.birth_generation > snapshot.generation {
-                return Err(CoreError::MissingTable);
-            }
-            Ok(table
-                .rows
-                .range::<[u8], _>((Included(prefix), Unbounded))
-                .take_while(|(key, _)| key.starts_with(prefix))
-                .any(|(_, entry)| {
-                    visible(&entry.head, snapshot.generation)
-                        .flatten()
-                        .is_some()
-                }))
+            Ok(state
+                .disk()?
+                .next(&snapshot.pin, table, prefix, None)?
+                .is_some())
         })
     }
-
     pub fn next_admitted(
         &self,
         snapshot: &ReadSnapshot,
@@ -2389,301 +1092,20 @@ impl Core {
         self.check_snapshot(snapshot)?;
         self.shared.run(CoreError::panicked, |state| {
             self.shared.check_open(state)?;
-            let Some(table) = state.index.tables.get(table) else {
-                return Err(CoreError::MissingTable);
-            };
-            if table.birth_generation > snapshot.generation {
-                return Err(CoreError::MissingTable);
-            }
-            let lower = match after {
-                Some(after) if after >= prefix => Excluded(after),
-                _ => Included(prefix),
-            };
-            let mut found = None;
-            for (key, entry) in table.rows.range::<[u8], _>((lower, Unbounded)) {
-                if !key.starts_with(prefix) {
-                    break;
-                }
-                if let Some(reference) = visible(&entry.head, snapshot.generation).flatten() {
-                    let key_lease = reserve(&self.shared.admission, key.len() as u64)?;
-                    let mut key_bytes = Vec::new();
-                    key_bytes
-                        .try_reserve_exact(key.len())
-                        .map_err(|_| CoreError::CapacityDenied)?;
-                    key_bytes.extend_from_slice(key);
-                    found = Some((
-                        AdmittedValue {
-                            bytes: key_bytes,
-                            lease: key_lease,
-                        },
-                        reference,
-                    ));
-                    break;
-                }
-            }
-            match found {
-                None => Ok(None),
-                Some((key, reference)) => Ok(Some((
-                    key,
-                    self.read_value_admitted(state, reference, max_value_bytes)?,
-                ))),
-            }
+            state
+                .disk()?
+                .next_admitted(&snapshot.pin, table, prefix, after, max_value_bytes)
         })
     }
-
-    fn check_snapshot(&self, snapshot: &ReadSnapshot) -> Result<(), CoreError> {
-        if self.shared.owner_id != snapshot.shared.owner_id
-            || !Arc::ptr_eq(&self.shared, &snapshot.shared)
-        {
-            return Err(CoreError::InvalidInput(
-                "snapshot belongs to another database",
-            ));
-        }
-        Ok(())
-    }
-
-    fn read_value_admitted(
-        &self,
-        state: &mut State,
-        reference: ValueRef,
-        max_value_bytes: usize,
-    ) -> Result<AdmittedValue, CoreError> {
-        let len = reference.len as usize;
-        if len > max_value_bytes {
-            return Err(CoreError::InvalidInput("stored value exceeds read bound"));
-        }
-        self.shared.check_owner()?;
-        let lease = reserve(&self.shared.admission, len as u64)?;
-        let mut value = Vec::new();
-        value
-            .try_reserve_exact(len)
-            .map_err(|_| CoreError::CapacityDenied)?;
-        value.resize(len, 0);
-        if state.value_cache.config().byte_limit == 0 {
-            read_checked_value(&*state.backend, reference, &mut value)?;
-        } else {
-            let cached = state.value_cache.load(reference.at, len, |out| {
-                read_checked_value(&*state.backend, reference, out)
-            });
-            match cached {
-                Ok(cached) => {
-                    if cached.as_bytes().len() != len || crc32c(cached.as_bytes()) != reference.crc
-                    {
-                        return Err(CoreError::Corrupt("cached value identity differs"));
-                    }
-                    value.copy_from_slice(cached.as_bytes());
-                }
-                // The caller's output is already admitted. Optional cache
-                // storage must not make an otherwise admissible read fail.
-                Err(CacheLoadError::Admission(AdmissionError::CapacityDenied)) => {
-                    read_checked_value(&*state.backend, reference, &mut value)?;
-                }
-                Err(CacheLoadError::Admission(error)) => return Err(error.into()),
-                Err(CacheLoadError::Load(error)) => return Err(error),
-            }
-        }
-        Ok(AdmittedValue {
-            bytes: value,
-            lease,
-        })
-    }
-
-    /// Commit a complete batch. A capacity denial before the first backend
-    /// effect rolls back provisional index versions and leaves the instance
-    /// unfenced. A failed owner check or admission fences the instance
-    /// without a backend effect. Any I/O failure or unwind after the first
-    /// effect fences it with an unknown outcome; only reopen decides it.
     pub fn commit(&self, operations: &[Operation]) -> Result<(), CoreError> {
-        if self.shared.stopped.load(Ordering::Acquire) {
-            return Err(CoreError::Closed);
-        }
         self.shared.run(CoreError::unknown_commit, |state| {
             self.shared.check_open(state)?;
-            self.commit_locked(state, operations)
+            if operations.is_empty() {
+                return Ok(());
+            }
+            state.disk()?.commit(operations)
         })
     }
-
-    fn commit_locked(&self, state: &mut State, operations: &[Operation]) -> Result<(), CoreError> {
-        let payload_len = validate_operations(&state.index, operations, &self.shared.admission)?;
-        // A published shadow must return to the front before any user append.
-        // If this pre-effect relocation is denied, the shadow remains intact
-        // and this commit has made no backend change.
-        // Direct Core callers may commit without using the table facade.
-        // Facade callers already ran this before pinning their snapshot.
-        self.maybe_compact_locked(state)?;
-        let next_generation = state
-            .generation
-            .checked_add(1)
-            .ok_or(CoreError::InvalidInput("generation overflow"))?;
-        let frame_start = state.committed_end;
-        let frame_end = frame_start
-            .checked_add(FRAME_BYTES as u64)
-            .and_then(|end| end.checked_add(payload_len as u64))
-            .ok_or(CoreError::InvalidInput("backend length overflow"))?;
-        if frame_end > i64::MAX as u64 {
-            return Err(CoreError::InvalidInput(
-                "backend length exceeds platform bound",
-            ));
-        }
-        let undo_bytes = (operations.len() as u64)
-            .checked_mul(std::mem::size_of::<Undo>() as u64)
-            .ok_or(CoreError::InvalidInput("undo workspace overflow"))?;
-        let _undo_lease = reserve(&self.shared.admission, undo_bytes)?;
-        let mut undo = Vec::new();
-        undo.try_reserve_exact(operations.len())
-            .map_err(|_| CoreError::CapacityDenied)?;
-        let mut value_cursor = frame_start + FRAME_BYTES as u64;
-        for operation in operations {
-            let (table, key, value) = operation_parts(operation);
-            let value_at = value_cursor + OP_BYTES as u64 + table.len() as u64 + key.len() as u64;
-            let reference = match operation {
-                Operation::Put { .. } => Some(ValueRef {
-                    at: value_at,
-                    len: value.len() as u32,
-                    crc: crc32c(value),
-                }),
-                _ => None,
-            };
-            match apply_provisional(
-                &mut state.index,
-                operation,
-                next_generation,
-                reference,
-                &self.shared.index_pool,
-            ) {
-                Ok(change) => undo.push(change),
-                Err(error) => {
-                    // An OwnerFailed admission is fenced by the caller before
-                    // the state lock is released; the index is restored first.
-                    rollback(&mut state.index, operations, &undo);
-                    return Err(error);
-                }
-            }
-            value_cursor = value_at
-                .checked_add(value.len() as u64)
-                .ok_or(CoreError::InvalidInput("backend length overflow"))?;
-        }
-        debug_assert_eq!(value_cursor, frame_end);
-        // Cache candidate bytes before any backend effect. The state mutex
-        // and committed generation prevent readers from seeing provisional
-        // values. A denied write may reuse these offsets, so every later
-        // candidate invalidates the previous entry at its exact offset first.
-        if state.value_cache.config().byte_limit != 0 {
-            let mut cursor = frame_start + FRAME_BYTES as u64;
-            for operation in operations {
-                let (table, key, value) = operation_parts(operation);
-                let at = cursor + OP_BYTES as u64 + table.len() as u64 + key.len() as u64;
-                if matches!(operation, Operation::Put { .. }) {
-                    state.value_cache.remove(at);
-                    let cached = state.value_cache.load(at, value.len(), |out| {
-                        out.copy_from_slice(value);
-                        Ok::<_, CoreError>(())
-                    });
-                    match cached {
-                        Ok(_) | Err(CacheLoadError::Admission(AdmissionError::CapacityDenied)) => {}
-                        Err(CacheLoadError::Admission(error)) => {
-                            rollback(&mut state.index, operations, &undo);
-                            return Err(error.into());
-                        }
-                        Err(CacheLoadError::Load(error)) => {
-                            rollback(&mut state.index, operations, &undo);
-                            return Err(error);
-                        }
-                    }
-                }
-                cursor = at + value.len() as u64;
-            }
-        }
-        let physical_len = match state.backend.len() {
-            Ok(length) => length,
-            Err(error) => {
-                self.shared.fence();
-                return Err(CoreError::Io(error));
-            }
-        };
-        if let Err(error) = self
-            .shared
-            .admission
-            .reserve_growth(physical_len, frame_end)
-        {
-            rollback(&mut state.index, operations, &undo);
-            if error == AdmissionError::OwnerFailed {
-                self.shared.fence();
-            }
-            return Err(error.into());
-        }
-        let payload_crc = payload_checksum(operations);
-        let header = frame_header(
-            next_generation,
-            frame_start,
-            payload_len,
-            operations.len() as u32,
-            payload_crc,
-        );
-        let result = (|| -> io::Result<()> {
-            state.backend.set_len(frame_end)?;
-            state.backend.write(frame_start, &header)?;
-            let mut at = frame_start + FRAME_BYTES as u64;
-            for operation in operations {
-                let op = op_header(operation);
-                let (table, key, value) = operation_parts(operation);
-                for part in [&op[..], table, key, value] {
-                    state.backend.write(at, part)?;
-                    at += part.len() as u64;
-                }
-            }
-            debug_assert_eq!(at, frame_end);
-            state.backend.sync_data()?;
-            Ok(())
-        })();
-        if let Err(error) = result {
-            self.shared.fence();
-            return Err(CoreError::UnknownCommit(error));
-        }
-        // No header names this frame yet. Reopen truncates it as an
-        // uncommitted tail, so a settle failure is a known non-publication.
-        if self.shared.admission.settle_growth(frame_end).is_err() {
-            self.shared.fence();
-            return Err(CoreError::OwnerFailed);
-        }
-        let previous_slot = state.slot;
-        let next_slot = 1 - previous_slot;
-        let commit_header = header_bytes(
-            next_generation,
-            state.base,
-            state.first_generation,
-            frame_end,
-        );
-        // The first durable header publishes the batch. Mirror it before
-        // returning success so damage to one header cannot silently roll an
-        // acknowledged commit back to the preceding generation. A failure
-        // during either publication still has an unknown durable outcome.
-        let published = [next_slot, previous_slot].into_iter().try_for_each(|slot| {
-            state
-                .backend
-                .write((slot * HEADER_BYTES) as u64, &commit_header)?;
-            state.backend.sync_data()
-        });
-        if let Err(error) = published {
-            self.shared.fence();
-            return Err(CoreError::UnknownCommit(error));
-        }
-        state.generation = next_generation;
-        state.committed_end = frame_end;
-        state.slot = next_slot;
-        if self.shared.snapshots.load(Ordering::Acquire) == 0 {
-            if state.needs_gc {
-                prune_all(&mut state.index, &mut state.value_cache);
-                state.needs_gc = false;
-            } else {
-                prune_touched(&mut state.index, operations, &mut state.value_cache);
-            }
-        } else {
-            state.needs_gc = true;
-        }
-        Ok(())
-    }
-
     /// Stop new snapshots and writes. A pre-effect busy result is retryable;
     /// once the backend close is entered, its native effect is never replayed.
     /// Later calls project the first terminal result without moving its error.
@@ -2705,6 +1127,11 @@ impl Core {
                 poisoned.into_inner()
             }
         };
+        // A snapshot may have passed its open check while holding this mutex
+        // before close stopped admission. Its pin and counter are now visible.
+        if self.shared.snapshots.load(Ordering::Acquire) != 0 {
+            return BackendCloseOutcome::not_entered(io::ErrorKind::WouldBlock.into());
+        }
         if let Some(report) = state.close_report {
             return report.report();
         }
@@ -2721,8 +1148,7 @@ impl Core {
             state.close_report = Some(CoreCloseReport::capture(&outcome));
             if outcome.native_disposition() == BackendNativeDisposition::Drained {
                 state.closed = true;
-                state.value_cache.clear();
-                state.cache_warmup = CacheWarmupState::default();
+                state.disk.take();
             }
         }
         outcome
@@ -2732,2439 +1158,10 @@ impl Core {
         self.shared.admission.clone()
     }
 }
-
-fn read_checked_value(
-    backend: &dyn StorageBackend,
-    reference: ValueRef,
-    out: &mut [u8],
-) -> Result<(), CoreError> {
-    backend.read(reference.at, out)?;
-    if crc32c(out) != reference.crc {
-        return Err(CoreError::Corrupt("committed value checksum differs"));
-    }
-    Ok(())
-}
-
-#[derive(Clone, Copy)]
-enum Undo {
-    Noop,
-    CreatedTable,
-    InsertedKey,
-    AddedVersion,
-}
-
-fn apply_provisional(
-    index: &mut Index,
-    operation: &Operation,
-    generation: u64,
-    reference: Option<ValueRef>,
-    pool: &Arc<IndexChargePool>,
-) -> Result<Undo, CoreError> {
-    let table_name = operation.table();
-    if let Operation::CreateTable { .. } = operation {
-        if index.tables.contains_key(table_name) {
-            return Ok(Undo::Noop);
-        }
-        let lease = pool.claim(table_charge(table_name.len())?)?;
-        index.tables.insert(
-            table_name.to_owned(),
-            Table {
-                birth_generation: generation,
-                rows: BTreeMap::new(),
-                _lease: lease,
-            },
-        );
-        return Ok(Undo::CreatedTable);
-    }
-    let table = index
-        .tables
-        .get_mut(table_name)
-        .ok_or(CoreError::MissingTable)?;
-    let key = match operation {
-        Operation::Put { key, .. } | Operation::Delete { key, .. } => key,
-        _ => unreachable!(),
-    };
-    if let Some(entry) = table.rows.get_mut(key.as_slice()) {
-        let version_lease = pool.claim(INDEX_ENTRY_CHARGE)?;
-        let previous = entry.head.take();
-        entry.head = Some(Box::new(VersionNode {
-            generation,
-            value: reference,
-            previous,
-            _lease: version_lease,
-        }));
-        return Ok(Undo::AddedVersion);
-    }
-    if matches!(operation, Operation::Delete { .. }) {
-        return Ok(Undo::Noop);
-    }
-    let key_lease = pool.claim(entry_charge(key.len())?)?;
-    let version_lease = pool.claim(INDEX_ENTRY_CHARGE)?;
-    table.rows.insert(
-        key.clone(),
-        Entry {
-            head: Some(Box::new(VersionNode {
-                generation,
-                value: reference,
-                previous: None,
-                _lease: version_lease,
-            })),
-            _lease: key_lease,
-        },
-    );
-    Ok(Undo::InsertedKey)
-}
-
-fn rollback(index: &mut Index, operations: &[Operation], undo: &[Undo]) {
-    for (operation, change) in operations.iter().zip(undo).rev() {
-        let table_name = operation.table();
-        match change {
-            Undo::Noop => {}
-            Undo::CreatedTable => {
-                index.tables.remove(table_name);
-            }
-            Undo::InsertedKey => {
-                let key = match operation {
-                    Operation::Put { key, .. } => key,
-                    _ => unreachable!(),
-                };
-                if let Some(table) = index.tables.get_mut(table_name) {
-                    table.rows.remove(key.as_slice());
-                }
-            }
-            Undo::AddedVersion => {
-                let key = match operation {
-                    Operation::Put { key, .. } | Operation::Delete { key, .. } => key,
-                    _ => unreachable!(),
-                };
-                if let Some(entry) = index
-                    .tables
-                    .get_mut(table_name)
-                    .and_then(|table| table.rows.get_mut(key.as_slice()))
-                {
-                    let head = entry.head.take().expect("provisional version");
-                    entry.head = head.previous;
-                }
-            }
-        }
-    }
-}
-
-fn prune_entry(entry: &mut Entry, cache: &mut NativeCache) -> bool {
-    let Some(head) = entry.head.as_mut() else {
-        return true;
-    };
-    let mut retired = head.previous.take();
-    while let Some(mut version) = retired {
-        if let Some(reference) = version.value {
-            cache.remove(reference.at);
-        }
-        retired = version.previous.take();
-    }
-    head.value.is_none()
-}
-fn prune_touched(index: &mut Index, operations: &[Operation], cache: &mut NativeCache) {
-    for operation in operations {
-        let key = match operation {
-            Operation::Put { key, .. } | Operation::Delete { key, .. } => key,
-            _ => continue,
-        };
-        let Some(table) = index.tables.get_mut(operation.table()) else {
-            continue;
-        };
-        let remove = table
-            .rows
-            .get_mut(key.as_slice())
-            .is_some_and(|entry| prune_entry(entry, cache));
-        if remove {
-            table.rows.remove(key.as_slice());
-        }
-    }
-}
-fn prune_all(index: &mut Index, cache: &mut NativeCache) {
-    for table in index.tables.values_mut() {
-        table.rows.retain(|_, entry| !prune_entry(entry, cache));
-    }
-}
-
-#[derive(Clone, Copy)]
-struct CompactLayout {
-    bytes: u64,
-    frames: u64,
-}
-
-/// Compute the exact physical size before asking the backend to grow. Each
-/// operation fits in one bounded frame; a live database can use many frames.
-fn compact_layout(index: &Index) -> Result<CompactLayout, CoreError> {
-    let mut bytes = 0u64;
-    let mut frames = 0u64;
-    let mut payload = 0usize;
-    let mut count = 0usize;
-    let mut add = |item: usize| -> Result<(), CoreError> {
-        if item > MAX_BATCH_BYTES {
-            return Err(CoreError::Corrupt("live record exceeds frame bound"));
-        }
-        if count == 0 || count == MAX_OPERATIONS || payload + item > MAX_BATCH_BYTES {
-            bytes = bytes
-                .checked_add(FRAME_BYTES as u64)
-                .ok_or(CoreError::InvalidInput("compaction length overflow"))?;
-            frames += 1;
-            payload = 0;
-            count = 0;
-        }
-        bytes = bytes
-            .checked_add(item as u64)
-            .ok_or(CoreError::InvalidInput("compaction length overflow"))?;
-        payload += item;
-        count += 1;
-        Ok(())
-    };
-    for (name, table) in &index.tables {
-        add(OP_BYTES + name.len())?;
-        for (key, entry) in &table.rows {
-            let Some(reference) = entry.head.as_ref().and_then(|head| head.value) else {
-                continue;
-            };
-            add(OP_BYTES + name.len() + key.len() + reference.len as usize)?;
-        }
-    }
-    Ok(CompactLayout { bytes, frames })
-}
-
-/// Writes a compact snapshot without ever allocating an owned value buffer.
-/// The caller guarantees that the source and destination extents do not
-/// overlap. Frame headers are written after their payload is complete.
-struct CompactWriter<'a> {
-    backend: &'a dyn StorageBackend,
-    frame_at: u64,
-    cursor: u64,
-    payload: u32,
-    count: u32,
-    checksum: Crc32c,
-    generation: u64,
-    frames: u64,
-}
-impl<'a> CompactWriter<'a> {
-    fn new(backend: &'a dyn StorageBackend, at: u64, prior_generation: u64) -> Self {
-        Self {
-            backend,
-            frame_at: at,
-            cursor: at + FRAME_BYTES as u64,
-            payload: 0,
-            count: 0,
-            checksum: Crc32c::new(),
-            generation: prior_generation,
-            frames: 0,
-        }
-    }
-    fn begin_item(&mut self, len: usize) -> Result<(), CoreError> {
-        if len > MAX_BATCH_BYTES {
-            return Err(CoreError::Corrupt("live record exceeds frame bound"));
-        }
-        if self.count != 0
-            && (self.count as usize == MAX_OPERATIONS
-                || self.payload as usize + len > MAX_BATCH_BYTES)
-        {
-            self.finish_frame(true)?;
-        }
-        self.payload += len as u32;
-        self.count += 1;
-        Ok(())
-    }
-    fn write_part(&mut self, bytes: &[u8]) -> Result<(), CoreError> {
-        if !bytes.is_empty() {
-            self.backend.write(self.cursor, bytes)?;
-            self.cursor += bytes.len() as u64;
-            self.checksum.update(bytes);
-        }
-        Ok(())
-    }
-    fn finish_frame(&mut self, next: bool) -> Result<(), CoreError> {
-        if self.count == 0 {
-            return Ok(());
-        }
-        if self.cursor != self.frame_at + FRAME_BYTES as u64 + self.payload as u64 {
-            return Err(CoreError::Corrupt("compaction frame length disagrees"));
-        }
-        let generation = self
-            .generation
-            .checked_add(1)
-            .ok_or(CoreError::InvalidInput("generation overflow"))?;
-        let header = frame_header(
-            generation,
-            self.frame_at,
-            self.payload,
-            self.count,
-            std::mem::replace(&mut self.checksum, Crc32c::new()).finish(),
-        );
-        self.backend.write(self.frame_at, &header)?;
-        self.generation = generation;
-        self.frames += 1;
-        if next {
-            self.frame_at = self.cursor;
-            self.cursor += FRAME_BYTES as u64;
-            self.payload = 0;
-            self.count = 0;
-        }
-        Ok(())
-    }
-    fn finish(mut self) -> Result<(u64, u64, u64), CoreError> {
-        self.finish_frame(false)?;
-        Ok((self.cursor, self.generation, self.frames))
-    }
-}
-
-fn write_compact_snapshot(
-    state: &mut State,
-    at: u64,
-    layout: CompactLayout,
-) -> Result<(u64, u64), CoreError> {
-    let mut writer = CompactWriter::new(&*state.backend, at, state.generation);
-    let mut chunk = [0u8; 8192];
-    for (name, table) in &mut state.index.tables {
-        writer.begin_item(OP_BYTES + name.len())?;
-        let mut header = [0u8; OP_BYTES];
-        header[0] = 1;
-        put_u16(&mut header[1..3], name.len() as u16);
-        writer.write_part(&header)?;
-        writer.write_part(name.as_bytes())?;
-        for (key, entry) in &mut table.rows {
-            let Some(head) = entry.head.as_mut() else {
-                continue;
-            };
-            let Some(source) = head.value else {
-                continue;
-            };
-            writer.begin_item(OP_BYTES + name.len() + key.len() + source.len as usize)?;
-            let mut header = [0u8; OP_BYTES];
-            header[0] = 2;
-            put_u16(&mut header[1..3], name.len() as u16);
-            put_u16(&mut header[3..5], key.len() as u16);
-            put_u32(&mut header[5..9], source.len);
-            put_u32(&mut header[9..13], source.crc);
-            writer.write_part(&header)?;
-            writer.write_part(name.as_bytes())?;
-            writer.write_part(key)?;
-            let value_at = writer.cursor;
-            let mut remaining = source.len as usize;
-            let mut source_at = source.at;
-            let mut value_crc = Crc32c::new();
-            while remaining != 0 {
-                let take = remaining.min(chunk.len());
-                writer.backend.read(source_at, &mut chunk[..take])?;
-                value_crc.update(&chunk[..take]);
-                writer.write_part(&chunk[..take])?;
-                source_at += take as u64;
-                remaining -= take;
-            }
-            if value_crc.finish() != source.crc {
-                return Err(CoreError::Corrupt("committed value checksum differs"));
-            }
-            state.value_cache.relocate(source.at, value_at);
-            head.value = Some(ValueRef {
-                at: value_at,
-                len: source.len,
-                crc: source.crc,
-            });
-        }
-    }
-    let (end, generation, frames) = writer.finish()?;
-    if end != at + layout.bytes || frames != layout.frames {
-        return Err(CoreError::Corrupt("compaction layout disagrees"));
-    }
-    Ok((end, generation))
-}
-
-struct Frame {
-    generation: u64,
-    payload_at: u64,
-    payload_end: u64,
-    end: u64,
-    count: u32,
-    checksum: u32,
-}
-
-fn read_frame(
-    backend: &dyn StorageBackend,
-    at: u64,
-    committed_end: u64,
-    prior_generation: u64,
-) -> Result<Frame, CoreError> {
-    if at
-        .checked_add(FRAME_BYTES as u64)
-        .is_none_or(|end| end > committed_end)
-    {
-        return Err(CoreError::Corrupt("truncated committed transaction header"));
-    }
-    let mut bytes = [0u8; FRAME_BYTES];
-    backend.read(at, &mut bytes)?;
-    if bytes[..8] != FRAME_MAGIC || get_u32(&bytes[36..40]) != crc32c(&bytes[..36]) {
-        return Err(CoreError::Corrupt("transaction header checksum differs"));
-    }
-    let generation = get_u64(&bytes[8..16]);
-    if generation
-        != prior_generation
-            .checked_add(1)
-            .ok_or(CoreError::Corrupt("generation overflow"))?
-        || get_u64(&bytes[16..24]) != at
-    {
-        return Err(CoreError::Corrupt("transaction chain is discontinuous"));
-    }
-    let payload_len = get_u32(&bytes[24..28]) as u64;
-    let count = get_u32(&bytes[28..32]);
-    if payload_len == 0
-        || payload_len > MAX_BATCH_BYTES as u64
-        || count == 0
-        || count as usize > MAX_OPERATIONS
-    {
-        return Err(CoreError::Corrupt("transaction bound is invalid"));
-    }
-    let payload_at = at + FRAME_BYTES as u64;
-    let end = payload_at
-        .checked_add(payload_len)
-        .ok_or(CoreError::Corrupt("transaction length overflow"))?;
-    if end > committed_end {
-        return Err(CoreError::Corrupt("committed transaction is truncated"));
-    }
-    Ok(Frame {
-        generation,
-        payload_at,
-        payload_end: end,
-        end,
-        count,
-        checksum: get_u32(&bytes[32..36]),
-    })
-}
-
-#[derive(Clone, Copy)]
-struct DiskOp {
-    tag: u8,
-    table_len: usize,
-    key_len: usize,
-    value_len: usize,
-    value_crc: u32,
-}
-fn decode_disk_op(bytes: &[u8; OP_BYTES]) -> Result<DiskOp, CoreError> {
-    let tag = bytes[0];
-    let table_len = get_u16(&bytes[1..3]) as usize;
-    let key_len = get_u16(&bytes[3..5]) as usize;
-    let value_len = get_u32(&bytes[5..9]) as usize;
-    let value_crc = get_u32(&bytes[9..13]);
-    if table_len == 0
-        || table_len > MAX_TABLE_BYTES
-        || key_len > MAX_KEY_BYTES
-        || value_len > MAX_VALUE_BYTES
-        || !matches!(tag, 1..=3)
-        || (tag == 1 && (key_len != 0 || value_len != 0 || value_crc != 0))
-        || (tag == 3 && (value_len != 0 || value_crc != 0))
-    {
-        return Err(CoreError::Corrupt(
-            "transaction operation has invalid lengths or tag",
-        ));
-    }
-    Ok(DiskOp {
-        tag,
-        table_len,
-        key_len,
-        value_len,
-        value_crc,
-    })
-}
-fn bounded_read(
-    backend: &dyn StorageBackend,
-    at: &mut u64,
-    end: u64,
-    out: &mut [u8],
-) -> Result<(), CoreError> {
-    let next = at
-        .checked_add(out.len() as u64)
-        .ok_or(CoreError::Corrupt("transaction offset overflow"))?;
-    if next > end {
-        return Err(CoreError::Corrupt("transaction payload is truncated"));
-    }
-    backend.read(*at, out)?;
-    *at = next;
-    Ok(())
-}
-
-/// First pass verifies the complete committed payload before any index state is
-/// exposed. Fixed stack buffers bound recovery even for a 32 MiB value.
-fn scan_payload(backend: &dyn StorageBackend, frame: &Frame) -> Result<(), CoreError> {
-    let mut at = frame.payload_at;
-    let mut checksum = Crc32c::new();
-    let mut table = [0u8; MAX_TABLE_BYTES];
-    let mut key = [0u8; MAX_KEY_BYTES];
-    let mut chunk = [0u8; 8192];
-    for _ in 0..frame.count {
-        let mut header = [0u8; OP_BYTES];
-        bounded_read(backend, &mut at, frame.payload_end, &mut header)?;
-        let op = decode_disk_op(&header)?;
-        checksum.update(&header);
-        bounded_read(
-            backend,
-            &mut at,
-            frame.payload_end,
-            &mut table[..op.table_len],
-        )?;
-        if std::str::from_utf8(&table[..op.table_len]).is_err() {
-            return Err(CoreError::Corrupt("transaction table name is not UTF-8"));
-        }
-        checksum.update(&table[..op.table_len]);
-        bounded_read(backend, &mut at, frame.payload_end, &mut key[..op.key_len])?;
-        checksum.update(&key[..op.key_len]);
-        let mut value_crc = Crc32c::new();
-        let mut left = op.value_len;
-        while left != 0 {
-            let count = left.min(chunk.len());
-            bounded_read(backend, &mut at, frame.payload_end, &mut chunk[..count])?;
-            checksum.update(&chunk[..count]);
-            value_crc.update(&chunk[..count]);
-            left -= count;
-        }
-        if value_crc.finish() != op.value_crc {
-            return Err(CoreError::Corrupt("committed value checksum differs"));
-        }
-    }
-    if at != frame.payload_end || checksum.finish() != frame.checksum {
-        return Err(CoreError::Corrupt("committed transaction checksum differs"));
-    }
-    Ok(())
-}
-
-/// Second pass builds only the ordered key-to-offset index. The scan above has
-/// already authenticated the complete frame; value bytes are never allocated.
-fn replay_payload(
-    backend: &dyn StorageBackend,
-    frame: &Frame,
-    index: &mut Index,
-    pool: &Arc<IndexChargePool>,
-) -> Result<(), CoreError> {
-    let mut at = frame.payload_at;
-    let mut table_buf = [0u8; MAX_TABLE_BYTES];
-    let mut key_buf = [0u8; MAX_KEY_BYTES];
-    for _ in 0..frame.count {
-        let mut header = [0u8; OP_BYTES];
-        bounded_read(backend, &mut at, frame.payload_end, &mut header)?;
-        let op = decode_disk_op(&header)?;
-        bounded_read(
-            backend,
-            &mut at,
-            frame.payload_end,
-            &mut table_buf[..op.table_len],
-        )?;
-        bounded_read(
-            backend,
-            &mut at,
-            frame.payload_end,
-            &mut key_buf[..op.key_len],
-        )?;
-        let table_name = std::str::from_utf8(&table_buf[..op.table_len])
-            .map_err(|_| CoreError::Corrupt("transaction table name is not UTF-8"))?;
-        let key = &key_buf[..op.key_len];
-        let value_at = at;
-        at = at
-            .checked_add(op.value_len as u64)
-            .ok_or(CoreError::Corrupt("transaction offset overflow"))?;
-        if at > frame.payload_end {
-            return Err(CoreError::Corrupt("transaction value is truncated"));
-        }
-        match op.tag {
-            1 => {
-                if !index.tables.contains_key(table_name) {
-                    let lease = pool.claim(table_charge(table_name.len())?)?;
-                    index.tables.insert(
-                        table_name.to_owned(),
-                        Table {
-                            birth_generation: frame.generation,
-                            rows: BTreeMap::new(),
-                            _lease: lease,
-                        },
-                    );
-                }
-            }
-            2 => {
-                let table = index
-                    .tables
-                    .get_mut(table_name)
-                    .ok_or(CoreError::Corrupt("put precedes table creation"))?;
-                let reference = ValueRef {
-                    at: value_at,
-                    len: op.value_len as u32,
-                    crc: op.value_crc,
-                };
-                if let Some(entry) = table.rows.get_mut(key) {
-                    let version = entry.head.as_mut().expect("recovered key has version");
-                    version.generation = frame.generation;
-                    version.value = Some(reference);
-                } else {
-                    let key_lease = pool.claim(entry_charge(key.len())?)?;
-                    let version_lease = pool.claim(INDEX_ENTRY_CHARGE)?;
-                    table.rows.insert(
-                        key.to_vec(),
-                        Entry {
-                            head: Some(Box::new(VersionNode {
-                                generation: frame.generation,
-                                value: Some(reference),
-                                previous: None,
-                                _lease: version_lease,
-                            })),
-                            _lease: key_lease,
-                        },
-                    );
-                }
-            }
-            3 => {
-                let table = index
-                    .tables
-                    .get_mut(table_name)
-                    .ok_or(CoreError::Corrupt("delete precedes table creation"))?;
-                table.rows.remove(key);
-            }
-            _ => unreachable!(),
-        }
-    }
-    if at != frame.payload_end {
-        return Err(CoreError::Corrupt("replay did not consume transaction"));
-    }
-    Ok(())
-}
-
 #[cfg(test)]
-mod tests {
-    use super::*;
+#[path = "core_tests.rs"]
+mod tests;
 
-    #[derive(Default)]
-    struct TestAdmission {
-        used: Arc<AtomicU64>,
-        limit: AtomicU64,
-        growth_limit: AtomicU64,
-        copy_reservations: AtomicUsize,
-        deny_copy_at: AtomicUsize,
-        failed: AtomicBool,
-        owner_failures: AtomicUsize,
-    }
-    struct TestLease {
-        used: Arc<AtomicU64>,
-        bytes: u64,
-    }
-    impl Drop for TestLease {
-        fn drop(&mut self) {
-            self.used.fetch_sub(self.bytes, Ordering::AcqRel);
-        }
-    }
-    impl TestAdmission {
-        fn unlimited() -> Arc<Self> {
-            Arc::new(Self {
-                limit: AtomicU64::new(u64::MAX),
-                growth_limit: AtomicU64::new(u64::MAX),
-                deny_copy_at: AtomicUsize::new(usize::MAX),
-                ..Self::default()
-            })
-        }
-        fn limited(limit: u64) -> Arc<Self> {
-            Arc::new(Self {
-                limit: AtomicU64::new(limit),
-                growth_limit: AtomicU64::new(u64::MAX),
-                deny_copy_at: AtomicUsize::new(usize::MAX),
-                ..Self::default()
-            })
-        }
-    }
-    impl StorageAdmission for TestAdmission {
-        fn check_owner(&self) -> Result<(), OwnerFailed> {
-            if self.failed.load(Ordering::Acquire) {
-                Err(OwnerFailed)
-            } else {
-                Ok(())
-            }
-        }
-        fn reserve_workspace(&self, bytes: u64) -> Result<Box<dyn ResidentLease>, AdmissionError> {
-            self.check_owner()
-                .map_err(|_| AdmissionError::OwnerFailed)?;
-            if bytes == 8192
-                && self.copy_reservations.fetch_add(1, Ordering::AcqRel) + 1
-                    == self.deny_copy_at.load(Ordering::Acquire)
-            {
-                return Err(AdmissionError::CapacityDenied);
-            }
-            let mut observed = self.used.load(Ordering::Acquire);
-            loop {
-                let next = observed
-                    .checked_add(bytes)
-                    .ok_or(AdmissionError::CapacityDenied)?;
-                if next > self.limit.load(Ordering::Acquire) {
-                    return Err(AdmissionError::CapacityDenied);
-                }
-                match self.used.compare_exchange(
-                    observed,
-                    next,
-                    Ordering::AcqRel,
-                    Ordering::Acquire,
-                ) {
-                    Ok(_) => break,
-                    Err(actual) => observed = actual,
-                }
-            }
-            Ok(Box::new(TestLease {
-                used: self.used.clone(),
-                bytes,
-            }))
-        }
-        fn reserve_growth(&self, _current: u64, requested: u64) -> Result<(), AdmissionError> {
-            self.check_owner()
-                .map_err(|_| AdmissionError::OwnerFailed)?;
-            if requested > self.growth_limit.load(Ordering::Acquire) {
-                return Err(AdmissionError::CapacityDenied);
-            }
-            Ok(())
-        }
-        fn settle_growth(&self, _actual: u64) -> Result<(), OwnerFailed> {
-            self.check_owner()
-        }
-        fn owner_failed(&self) {
-            self.owner_failures.fetch_add(1, Ordering::AcqRel);
-            self.failed.store(true, Ordering::Release);
-        }
-    }
-
-    struct CrashState {
-        volatile: Vec<u8>,
-        durable: Vec<u8>,
-        reads: usize,
-        sync_fault: Option<(usize, bool)>,
-        fail_next_read: bool,
-        fail_next_len: bool,
-        panic_next_len: bool,
-        close_not_entered: bool,
-        panic_close: bool,
-        close_attempts: usize,
-        close_error: Option<io::Error>,
-    }
-    #[derive(Clone)]
-    struct CrashBackend(Arc<Mutex<CrashState>>);
-    impl CrashBackend {
-        fn new() -> Self {
-            Self(Arc::new(Mutex::new(CrashState {
-                volatile: Vec::new(),
-                durable: Vec::new(),
-                reads: 0,
-                sync_fault: None,
-                fail_next_read: false,
-                fail_next_len: false,
-                panic_next_len: false,
-                close_not_entered: false,
-                panic_close: false,
-                close_attempts: 0,
-                close_error: None,
-            })))
-        }
-        fn crash(&self) -> Self {
-            let durable = self.0.lock().unwrap().durable.clone();
-            Self(Arc::new(Mutex::new(CrashState {
-                volatile: durable.clone(),
-                durable,
-                reads: 0,
-                sync_fault: None,
-                fail_next_read: false,
-                fail_next_len: false,
-                panic_next_len: false,
-                close_not_entered: false,
-                panic_close: false,
-                close_attempts: 0,
-                close_error: None,
-            })))
-        }
-        fn fail_sync(&self, ordinal: usize, after_persist: bool) {
-            self.0.lock().unwrap().sync_fault = Some((ordinal, after_persist));
-        }
-        fn fail_next_read(&self) {
-            self.0.lock().unwrap().fail_next_read = true;
-        }
-        fn reads(&self) -> usize {
-            self.0.lock().unwrap().reads
-        }
-        fn fail_next_len(&self) {
-            self.0.lock().unwrap().fail_next_len = true;
-        }
-        fn panic_next_len(&self) {
-            self.0.lock().unwrap().panic_next_len = true;
-        }
-        fn panic_close(&self) {
-            self.0.lock().unwrap().panic_close = true;
-        }
-        fn close_not_entered_once(&self) {
-            self.0.lock().unwrap().close_not_entered = true;
-        }
-        fn close_attempts(&self) -> usize {
-            self.0.lock().unwrap().close_attempts
-        }
-        fn fail_close_with(&self, error: io::Error) {
-            self.0.lock().unwrap().close_error = Some(error);
-        }
-        fn corrupt_durable(&self, needle: &[u8]) {
-            let mut state = self.0.lock().unwrap();
-            let at = state
-                .durable
-                .windows(needle.len())
-                .position(|window| window == needle)
-                .unwrap();
-            state.durable[at] ^= 0x80;
-        }
-        fn corrupt_header(&self, slot: usize) {
-            let mut state = self.0.lock().unwrap();
-            state.durable[slot * HEADER_BYTES + 24] ^= 0x80;
-        }
-    }
-    impl StorageBackend for CrashBackend {
-        fn len(&self) -> io::Result<u64> {
-            let mut state = self.0.lock().unwrap();
-            if std::mem::take(&mut state.panic_next_len) {
-                drop(state);
-                panic!("injected length panic");
-            }
-            if std::mem::take(&mut state.fail_next_len) {
-                return Err(io::Error::from_raw_os_error(libc::EIO));
-            }
-            Ok(state.volatile.len() as u64)
-        }
-        fn read(&self, at: u64, out: &mut [u8]) -> io::Result<()> {
-            let mut state = self.0.lock().unwrap();
-            state.reads += 1;
-            if state.fail_next_read {
-                state.fail_next_read = false;
-                return Err(io::Error::other("injected value read failure"));
-            }
-            let at = usize::try_from(at).map_err(|_| io::ErrorKind::InvalidInput)?;
-            let end = at
-                .checked_add(out.len())
-                .ok_or(io::ErrorKind::InvalidInput)?;
-            out.copy_from_slice(
-                state
-                    .volatile
-                    .get(at..end)
-                    .ok_or(io::ErrorKind::UnexpectedEof)?,
-            );
-            Ok(())
-        }
-        fn write(&self, at: u64, input: &[u8]) -> io::Result<()> {
-            let mut state = self.0.lock().unwrap();
-            let at = usize::try_from(at).map_err(|_| io::ErrorKind::InvalidInput)?;
-            let end = at
-                .checked_add(input.len())
-                .ok_or(io::ErrorKind::InvalidInput)?;
-            state
-                .volatile
-                .get_mut(at..end)
-                .ok_or(io::ErrorKind::UnexpectedEof)?
-                .copy_from_slice(input);
-            Ok(())
-        }
-        fn set_len(&self, length: u64) -> io::Result<()> {
-            self.0.lock().unwrap().volatile.resize(
-                usize::try_from(length).map_err(|_| io::ErrorKind::InvalidInput)?,
-                0,
-            );
-            Ok(())
-        }
-        fn sync_data(&self) -> io::Result<()> {
-            let mut state = self.0.lock().unwrap();
-            if let Some((remaining, after)) = state.sync_fault {
-                if remaining == 1 {
-                    state.sync_fault = None;
-                    if after {
-                        state.durable = state.volatile.clone();
-                    }
-                    return Err(io::Error::other("injected sync failure"));
-                }
-                state.sync_fault = Some((remaining - 1, after));
-            }
-            state.durable = state.volatile.clone();
-            Ok(())
-        }
-        fn close(&self) -> BackendCloseOutcome {
-            let mut state = self.0.lock().unwrap();
-            state.close_attempts += 1;
-            if std::mem::take(&mut state.close_not_entered) {
-                return BackendCloseOutcome::not_entered(io::ErrorKind::WouldBlock.into());
-            }
-            if std::mem::take(&mut state.panic_close) {
-                drop(state);
-                panic!("injected close panic");
-            }
-            BackendCloseOutcome::drained(state.close_error.take().map_or(Ok(()), Err))
-        }
-    }
-
-    fn new_core() -> (Core, CrashBackend) {
-        let backend = CrashBackend::new();
-        let core = Core::create_with_backend(backend.clone(), TestAdmission::unlimited()).unwrap();
-        (core, backend)
-    }
-
-    #[test]
-    fn cache_keeps_every_fitting_committed_value_without_disk_reads() {
-        let (core, backend) = new_core();
-        core.configure_value_cache(CacheConfig {
-            byte_limit: 128 << 10,
-        })
-        .unwrap();
-        core.commit(&[Operation::create_table("accounts")]).unwrap();
-        for id in 0..80_u64 {
-            core.commit(&[Operation::put(
-                "accounts",
-                id.to_be_bytes(),
-                vec![id as u8; 512],
-            )])
-            .unwrap();
-        }
-        let before = backend.reads();
-        let snapshot = core.snapshot().unwrap();
-        for _ in 0..3 {
-            for id in 0..80_u64 {
-                let value = core
-                    .get_admitted(&snapshot, "accounts", &id.to_be_bytes(), 512)
-                    .unwrap()
-                    .unwrap();
-                assert_eq!(value.as_bytes(), vec![id as u8; 512]);
-            }
-        }
-        assert_eq!(backend.reads(), before);
-        let stats = core.value_cache_stats().unwrap();
-        assert_eq!(stats.entries, 80);
-        assert_eq!(stats.evictions, 0);
-        assert!(stats.resident_bytes <= 128 << 10);
-    }
-
-    #[test]
-    fn cache_hits_keep_owner_checks_snapshot_versions_and_read_bounds() {
-        let backend = CrashBackend::new();
-        let admission = TestAdmission::unlimited();
-        let core = Core::create_with_backend(backend.clone(), admission.clone()).unwrap();
-        core.configure_value_cache(CacheConfig {
-            byte_limit: 32 << 10,
-        })
-        .unwrap();
-        core.commit(&[
-            Operation::create_table("t"),
-            Operation::put("t", b"k", b"old"),
-        ])
-        .unwrap();
-        let old = core.snapshot().unwrap();
-        core.commit(&[Operation::put("t", b"k", b"new")]).unwrap();
-        let current = core.snapshot().unwrap();
-        let before = backend.reads();
-        assert_eq!(core.get(&old, "t", b"k", 3).unwrap().unwrap(), b"old");
-        assert_eq!(core.get(&current, "t", b"k", 3).unwrap().unwrap(), b"new");
-        assert!(matches!(
-            core.get(&current, "t", b"k", 2),
-            Err(CoreError::InvalidInput(_))
-        ));
-        assert_eq!(backend.reads(), before);
-        admission.failed.store(true, Ordering::Release);
-        assert!(matches!(
-            core.get(&current, "t", b"k", 3),
-            Err(CoreError::OwnerFailed)
-        ));
-        assert!(core.is_fenced());
-        assert_eq!(backend.reads(), before);
-    }
-
-    #[test]
-    fn cache_reopen_warms_in_bounded_steps_then_serves_only_memory() {
-        let (core, backend) = new_core();
-        core.commit(&[Operation::create_table("a"), Operation::create_table("b")])
-            .unwrap();
-        for id in 0..17_u64 {
-            core.commit(&[Operation::put(
-                if id < 9 { "a" } else { "b" },
-                id.to_be_bytes(),
-                vec![id as u8; 128],
-            )])
-            .unwrap();
-        }
-        core.close().into_result().unwrap();
-        let backend = backend.crash();
-        let core = Core::open_with_backend(backend.clone(), TestAdmission::unlimited()).unwrap();
-        core.configure_value_cache(CacheConfig {
-            byte_limit: 64 << 10,
-        })
-        .unwrap();
-        let mut visited = 0;
-        loop {
-            let progress = core.warm_value_cache(3).unwrap();
-            assert!(progress.visited <= 3);
-            visited += progress.visited;
-            if progress.scan_complete {
-                assert!(progress.fully_resident);
-                break;
-            }
-        }
-        assert_eq!(visited, 17);
-        let before = backend.reads();
-        let snapshot = core.snapshot().unwrap();
-        for id in 0..17_u64 {
-            assert_eq!(
-                core.get(
-                    &snapshot,
-                    if id < 9 { "a" } else { "b" },
-                    &id.to_be_bytes(),
-                    128
-                )
-                .unwrap()
-                .unwrap(),
-                vec![id as u8; 128]
-            );
-        }
-        assert_eq!(backend.reads(), before);
-    }
-
-    #[test]
-    fn cache_pressure_keeps_durable_values_and_returns_to_full_residency() {
-        let (core, backend) = new_core();
-        core.configure_value_cache(CacheConfig {
-            byte_limit: 8 << 10,
-        })
-        .unwrap();
-        core.commit(&[Operation::create_table("t")]).unwrap();
-        for id in 0..64_u64 {
-            core.commit(&[Operation::put("t", id.to_be_bytes(), vec![id as u8; 512])])
-                .unwrap();
-            assert!(core.value_cache_stats().unwrap().resident_bytes <= 8 << 10);
-        }
-        assert!(core.value_cache_stats().unwrap().entries < 64);
-        let snapshot = core.snapshot().unwrap();
-        for id in 0..64_u64 {
-            assert_eq!(
-                core.get(&snapshot, "t", &id.to_be_bytes(), 512)
-                    .unwrap()
-                    .unwrap(),
-                vec![id as u8; 512]
-            );
-        }
-        drop(snapshot);
-        core.configure_value_cache(CacheConfig {
-            byte_limit: 128 << 10,
-        })
-        .unwrap();
-        loop {
-            let progress = core.warm_value_cache(7).unwrap();
-            if progress.scan_complete {
-                assert!(progress.fully_resident);
-                break;
-            }
-        }
-        let before = backend.reads();
-        let snapshot = core.snapshot().unwrap();
-        for id in 0..64_u64 {
-            core.get_admitted(&snapshot, "t", &id.to_be_bytes(), 512)
-                .unwrap()
-                .unwrap();
-        }
-        assert_eq!(backend.reads(), before);
-    }
-
-    #[test]
-    fn cache_never_serves_a_denied_or_uncertain_commit() {
-        let backend = CrashBackend::new();
-        let admission = TestAdmission::unlimited();
-        let core = Core::create_with_backend(backend.clone(), admission.clone()).unwrap();
-        core.configure_value_cache(CacheConfig {
-            byte_limit: 32 << 10,
-        })
-        .unwrap();
-        core.commit(&[
-            Operation::create_table("t"),
-            Operation::put("t", b"k", b"old"),
-        ])
-        .unwrap();
-        let old = core.snapshot().unwrap();
-        admission
-            .growth_limit
-            .store(core.committed_end().unwrap(), Ordering::Release);
-        assert!(matches!(
-            core.commit(&[Operation::put("t", b"k", b"bad")]),
-            Err(CoreError::CapacityDenied)
-        ));
-        assert_eq!(core.get(&old, "t", b"k", 3).unwrap().unwrap(), b"old");
-        admission.growth_limit.store(u64::MAX, Ordering::Release);
-        core.commit(&[Operation::put("t", b"k", b"new")]).unwrap();
-        let current = core.snapshot().unwrap();
-        assert_eq!(core.get(&current, "t", b"k", 3).unwrap().unwrap(), b"new");
-        backend.fail_sync(1, false);
-        assert!(matches!(
-            core.commit(&[Operation::put("t", b"k", b"lost")]),
-            Err(CoreError::UnknownCommit(_))
-        ));
-        assert!(matches!(
-            core.get(&current, "t", b"k", 4),
-            Err(CoreError::OwnerFailed)
-        ));
-        let reopened =
-            Core::open_with_backend(backend.crash(), TestAdmission::unlimited()).unwrap();
-        assert_eq!(
-            reopened
-                .get(&reopened.snapshot().unwrap(), "t", b"k", 4)
-                .unwrap()
-                .unwrap(),
-            b"new"
-        );
-    }
-
-    #[test]
-    fn cache_compaction_preserves_hot_values_and_invalidates_reused_offsets() {
-        let (core, backend) = new_core();
-        core.configure_value_cache(CacheConfig {
-            byte_limit: 64 << 10,
-        })
-        .unwrap();
-        core.commit(&[
-            Operation::create_table("t"),
-            Operation::put("t", b"other", b"kept"),
-        ])
-        .unwrap();
-        for id in 0..32_u8 {
-            core.commit(&[Operation::put("t", b"k", vec![id; 256])])
-                .unwrap();
-        }
-        assert_eq!(core.value_cache_stats().unwrap().entries, 2);
-        let old_end = core.committed_end().unwrap();
-        core.compact().unwrap();
-        assert!(core.committed_end().unwrap() < old_end);
-        let before = backend.reads();
-        let snapshot = core.snapshot().unwrap();
-        assert_eq!(
-            core.get(&snapshot, "t", b"k", 256).unwrap().unwrap(),
-            vec![31; 256]
-        );
-        assert_eq!(
-            core.get(&snapshot, "t", b"other", 4).unwrap().unwrap(),
-            b"kept"
-        );
-        assert_eq!(backend.reads(), before);
-        drop(snapshot);
-        core.commit(&[Operation::put("t", b"later", b"after relocation")])
-            .unwrap();
-        assert_eq!(
-            core.get(&core.snapshot().unwrap(), "t", b"later", 32)
-                .unwrap()
-                .unwrap(),
-            b"after relocation"
-        );
-    }
-
-    #[test]
-    fn failed_direct_create_len_check_closes_the_exact_backend_once() {
-        let backend = CrashBackend::new();
-        backend.fail_next_len();
-        let error = Core::create_with_backend(backend.clone(), TestAdmission::unlimited())
-            .err()
-            .expect("injected length failure must reject creation");
-        assert!(matches!(
-            error,
-            CoreError::Io(ref error) if error.raw_os_error() == Some(libc::EIO)
-        ));
-        assert_eq!(backend.close_attempts(), 1);
-    }
-
-    #[test]
-    fn failed_direct_open_retains_the_open_and_close_errors() {
-        let backend = CrashBackend::new();
-        backend.fail_close_with(io::Error::from_raw_os_error(libc::ENOSPC));
-        let mut error = Core::open_with_backend(backend.clone(), TestAdmission::unlimited())
-            .err()
-            .expect("an empty backend is not an existing database");
-        let CoreError::OpeningFailure(failure) = &mut error else {
-            panic!("the failed close must accompany the original open failure");
-        };
-        assert!(matches!(failure.original_error(), CoreError::Corrupt(_)));
-        assert_eq!(failure.close_report().entry(), BackendCloseEntry::Entered);
-        assert_eq!(
-            failure.close_report().native_disposition(),
-            BackendNativeDisposition::Drained
-        );
-        assert_eq!(
-            failure
-                .close_report()
-                .result
-                .as_ref()
-                .unwrap_err()
-                .raw_os_error(),
-            Some(libc::ENOSPC)
-        );
-        let _ = failure.retry_close();
-        assert_eq!(backend.close_attempts(), 1);
-    }
-
-    #[test]
-    fn direct_constructor_panic_keeps_its_payload_and_closes() {
-        let backend = CrashBackend::new();
-        backend.panic_next_len();
-        let error = Core::create_with_backend(backend.clone(), TestAdmission::unlimited())
-            .err()
-            .expect("injected length panic must become a retained failure");
-        let CoreError::Panicked(panic) = error else {
-            panic!("original opening panic must remain inspectable");
-        };
-        assert_eq!(
-            panic.with_payload(|payload| payload.downcast_ref::<&str>().copied()),
-            Some("injected length panic")
-        );
-        assert_eq!(backend.close_attempts(), 1);
-    }
-
-    #[test]
-    fn direct_constructor_close_panic_is_terminal_and_keeps_both_causes() {
-        let backend = CrashBackend::new();
-        backend.fail_next_len();
-        backend.panic_close();
-        let mut error = Core::create_with_backend(backend.clone(), TestAdmission::unlimited())
-            .err()
-            .expect("injected length failure and close panic must both be reported");
-        let CoreError::OpeningFailure(failure) = &mut error else {
-            panic!("close panic must retain the failed opening owner");
-        };
-        assert!(matches!(
-            failure.original_error(),
-            CoreError::Io(error) if error.raw_os_error() == Some(libc::EIO)
-        ));
-        assert_eq!(failure.close_report().entry(), BackendCloseEntry::Entered);
-        assert_eq!(
-            failure.close_report().native_disposition(),
-            BackendNativeDisposition::Retained
-        );
-        assert_eq!(
-            failure
-                .close_panic()
-                .unwrap()
-                .with_payload(|payload| payload.downcast_ref::<&str>().copied()),
-            Some("injected close panic")
-        );
-        let _ = failure.retry_close();
-        assert_eq!(backend.close_attempts(), 1);
-    }
-
-    #[test]
-    fn retrying_a_pre_effect_close_keeps_its_later_panic_and_original_error() {
-        let backend = CrashBackend::new();
-        backend.fail_next_len();
-        backend.close_not_entered_once();
-        backend.panic_close();
-        let Err(mut error) = Core::create_with_backend(backend.clone(), TestAdmission::unlimited())
-        else {
-            panic!("injected length error must reject creation");
-        };
-        let CoreError::OpeningFailure(failure) = &mut error else {
-            panic!("pre-effect close must retain the original owner");
-        };
-        assert_eq!(
-            failure.close_report().entry(),
-            BackendCloseEntry::NotEntered
-        );
-        assert_eq!(backend.close_attempts(), 1);
-        assert_eq!(failure.retry_close().entry(), BackendCloseEntry::Entered);
-        assert!(matches!(
-            failure.original_error(),
-            CoreError::Io(error) if error.raw_os_error() == Some(libc::EIO)
-        ));
-        assert_eq!(
-            failure
-                .close_panic()
-                .unwrap()
-                .with_payload(|payload| payload.downcast_ref::<&str>().copied()),
-            Some("injected close panic")
-        );
-        let _ = failure.retry_close();
-        assert_eq!(backend.close_attempts(), 2);
-    }
-
-    #[test]
-    fn failed_value_read_fences_every_snapshot_fact() {
-        let backend = CrashBackend::new();
-        let admission = TestAdmission::unlimited();
-        let core = Core::create_with_backend(backend.clone(), admission.clone()).unwrap();
-        core.commit(&[
-            Operation::create_table("items"),
-            Operation::put("items", b"present", b"value"),
-        ])
-        .unwrap();
-        let snapshot = core.snapshot().unwrap();
-        backend.fail_next_read();
-        assert!(matches!(
-            core.get_admitted(&snapshot, "items", b"present", 16),
-            Err(CoreError::Io(_))
-        ));
-        assert!(admission.failed.load(Ordering::Acquire));
-        assert!(matches!(
-            snapshot.table_exists("items"),
-            Err(CoreError::OwnerFailed)
-        ));
-        assert!(matches!(
-            snapshot.table_exists("missing"),
-            Err(CoreError::OwnerFailed)
-        ));
-        assert!(matches!(
-            core.get_admitted(&snapshot, "items", b"present", 16),
-            Err(CoreError::OwnerFailed)
-        ));
-        assert!(matches!(
-            core.get_admitted(&snapshot, "items", b"absent", 16),
-            Err(CoreError::OwnerFailed)
-        ));
-        assert!(matches!(
-            core.next_admitted(&snapshot, "items", b"present", None, 16),
-            Err(CoreError::OwnerFailed)
-        ));
-        assert!(matches!(
-            core.next_admitted(&snapshot, "items", b"empty-prefix", None, 16),
-            Err(CoreError::OwnerFailed)
-        ));
-        assert!(matches!(
-            snapshot.next_key_admitted("items", b"present", None),
-            Err(CoreError::OwnerFailed)
-        ));
-        assert!(matches!(
-            snapshot.next_key_admitted("items", b"empty-prefix", None),
-            Err(CoreError::OwnerFailed)
-        ));
-        assert!(matches!(core.generation(), Err(CoreError::OwnerFailed)));
-        assert!(matches!(core.committed_end(), Err(CoreError::OwnerFailed)));
-    }
-
-    fn poison(lock: impl FnOnce() + Send + 'static) {
-        let holder = std::thread::spawn(move || {
-            lock();
-            unreachable!("the holder unwinds while the lock is held");
-        });
-        assert!(holder.join().is_err());
-    }
-
-    #[test]
-    fn poisoned_state_lock_fences_once_and_the_owner_still_drains() {
-        let backend = CrashBackend::new();
-        let admission = TestAdmission::unlimited();
-        let core = Core::create_with_backend(backend.clone(), admission.clone()).unwrap();
-        core.commit(&[
-            Operation::create_table("data"),
-            Operation::put("data", b"k", b"acknowledged"),
-        ])
-        .unwrap();
-        let view = core.snapshot().unwrap();
-        let shared = core.shared.clone();
-        poison(move || {
-            let _held = shared.state.lock().unwrap();
-            panic!("injected state holder panic");
-        });
-        assert!(!core.is_fenced());
-        assert!(matches!(
-            core.get_admitted(&view, "data", b"k", 16),
-            Err(CoreError::OwnerFailed)
-        ));
-        assert!(core.is_fenced());
-        assert_eq!(admission.owner_failures.load(Ordering::Acquire), 1);
-        assert!(matches!(
-            view.table_exists("data"),
-            Err(CoreError::OwnerFailed)
-        ));
-        assert!(matches!(
-            core.commit(&[Operation::put("data", b"k", b"lost")]),
-            Err(CoreError::OwnerFailed)
-        ));
-        assert!(matches!(core.compact(), Err(CoreError::OwnerFailed)));
-        assert_eq!(admission.owner_failures.load(Ordering::Acquire), 1);
-        drop(view);
-        // A poisoned lock never makes a fenced owner undrainable.
-        let closed = core.close();
-        assert_eq!(
-            closed.native_disposition(),
-            BackendNativeDisposition::Drained
-        );
-        closed.into_result().unwrap();
-        assert_eq!(backend.close_attempts(), 1);
-        assert_eq!(admission.owner_failures.load(Ordering::Acquire), 1);
-        let reopened =
-            Core::open_with_backend(backend.crash(), TestAdmission::unlimited()).unwrap();
-        let view = reopened.snapshot().unwrap();
-        assert_eq!(
-            reopened.get(&view, "data", b"k", 16).unwrap(),
-            Some(b"acknowledged".to_vec())
-        );
-    }
-
-    #[test]
-    fn poisoned_index_pool_rolls_back_and_fences_the_next_writer() {
-        let backend = CrashBackend::new();
-        let admission = TestAdmission::unlimited();
-        let core = Core::create_with_backend(backend.clone(), admission.clone()).unwrap();
-        core.commit(&[
-            Operation::create_table("data"),
-            Operation::put("data", b"k", b"acknowledged"),
-        ])
-        .unwrap();
-        let length = backend.len().unwrap();
-        let pool = core.shared.index_pool.clone();
-        poison(move || {
-            let _held = pool.state.lock().unwrap();
-            panic!("injected index pool holder panic");
-        });
-        assert!(matches!(
-            core.commit(&[Operation::put("data", b"fresh", b"value")]),
-            Err(CoreError::OwnerFailed)
-        ));
-        assert!(core.is_fenced());
-        assert_eq!(admission.owner_failures.load(Ordering::Acquire), 1);
-        assert_eq!(backend.len().unwrap(), length);
-        assert!(
-            !core.shared.state.lock().unwrap().index.tables["data"]
-                .rows
-                .contains_key(b"fresh".as_slice())
-        );
-        assert!(matches!(core.snapshot(), Err(CoreError::OwnerFailed)));
-        assert_eq!(
-            core.close().native_disposition(),
-            BackendNativeDisposition::Drained
-        );
-        let reopened =
-            Core::open_with_backend(backend.crash(), TestAdmission::unlimited()).unwrap();
-        let view = reopened.snapshot().unwrap();
-        assert_eq!(reopened.get(&view, "data", b"fresh", 16).unwrap(), None);
-        assert_eq!(
-            reopened.get(&view, "data", b"k", 16).unwrap(),
-            Some(b"acknowledged".to_vec())
-        );
-    }
-
-    #[test]
-    fn external_owner_failure_cannot_report_absence_without_a_backend_read() {
-        let backend = CrashBackend::new();
-        let admission = TestAdmission::unlimited();
-        let core = Core::create_with_backend(backend, admission.clone()).unwrap();
-        core.commit(&[Operation::create_table("items")]).unwrap();
-        let snapshot = core.snapshot().unwrap();
-        admission.failed.store(true, Ordering::Release);
-        assert!(matches!(
-            snapshot.table_exists("missing"),
-            Err(CoreError::OwnerFailed)
-        ));
-        assert!(matches!(
-            core.get_admitted(&snapshot, "items", b"absent", 16),
-            Err(CoreError::OwnerFailed)
-        ));
-        assert!(matches!(
-            core.next_admitted(&snapshot, "items", b"empty", None, 16),
-            Err(CoreError::OwnerFailed)
-        ));
-        assert!(matches!(
-            snapshot.next_key_admitted("items", b"empty", None),
-            Err(CoreError::OwnerFailed)
-        ));
-    }
-
-    fn file_backend_for_close_test() -> FileBackend {
-        static NEXT_TEST_FILE: AtomicU64 = AtomicU64::new(0);
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!(
-            "kasumi-kv-close-{}-{nonce}-{}",
-            std::process::id(),
-            NEXT_TEST_FILE.fetch_add(1, Ordering::Relaxed)
-        ));
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create_new(true)
-            .open(&path)
-            .unwrap();
-        std::fs::remove_file(path).unwrap();
-        FileBackend::test_from_file(file)
-    }
-
-    fn parent_sync_test_path() -> std::path::PathBuf {
-        static NEXT_TEST_FILE: AtomicU64 = AtomicU64::new(0);
-        std::env::temp_dir().join(format!(
-            "kasumi-kv-parent-sync-{}-{}",
-            std::process::id(),
-            NEXT_TEST_FILE.fetch_add(1, Ordering::Relaxed)
-        ))
-    }
-
-    #[test]
-    fn new_named_file_syncs_parent_and_reopens_supplied_descriptor() {
-        let path = parent_sync_test_path();
-        let before = FILE_PARENT_SYNC_ATTEMPTS.with(std::cell::Cell::get);
-        let closes = FILE_PARENT_CLOSE_ATTEMPTS.with(std::cell::Cell::get);
-        let backend = FileBackend::test_create_named(&path).unwrap();
-        // The fixture retains an exact descriptor from the original backend.
-        // The embedding owner must authenticate this handoff itself.
-        let supplied = backend.with(|file, _, _| file.try_clone()).unwrap();
-        assert_eq!(
-            FILE_PARENT_SYNC_ATTEMPTS.with(std::cell::Cell::get),
-            before + 1
-        );
-
-        let core = Core::create_strict_with_backend(backend, TestAdmission::unlimited()).unwrap();
-        assert_eq!(
-            FILE_PARENT_SYNC_ATTEMPTS.with(std::cell::Cell::get),
-            before + 2
-        );
-        core.commit(&[
-            Operation::create_table("items"),
-            Operation::put("items", b"key", b"durable"),
-        ])
-        .unwrap();
-        assert_eq!(
-            FILE_PARENT_SYNC_ATTEMPTS.with(std::cell::Cell::get),
-            before + 2
-        );
-        assert_eq!(
-            core.close().native_disposition(),
-            BackendNativeDisposition::Drained
-        );
-        assert_eq!(
-            FILE_PARENT_CLOSE_ATTEMPTS.with(std::cell::Cell::get),
-            closes + 1
-        );
-
-        let reopened = Core::open_with_backend(
-            FileBackend::test_from_file(supplied),
-            TestAdmission::unlimited(),
-        )
-        .unwrap();
-        assert_eq!(
-            FILE_PARENT_SYNC_ATTEMPTS.with(std::cell::Cell::get),
-            before + 2
-        );
-        let snapshot = reopened.snapshot().unwrap();
-        assert_eq!(
-            reopened.get(&snapshot, "items", b"key", 16).unwrap(),
-            Some(b"durable".to_vec())
-        );
-        drop(snapshot);
-        assert_eq!(
-            reopened.close().native_disposition(),
-            BackendNativeDisposition::Drained
-        );
-        assert_eq!(
-            FILE_PARENT_CLOSE_ATTEMPTS.with(std::cell::Cell::get),
-            closes + 1
-        );
-        std::fs::remove_file(path).unwrap();
-    }
-
-    #[test]
-    fn named_create_does_not_adopt_file_inserted_after_parent_sync() {
-        let path = parent_sync_test_path();
-        let inserted = path.clone();
-        let data_closes = FILE_CLOSE_ATTEMPTS.with(std::cell::Cell::get);
-        let parent_closes = FILE_PARENT_CLOSE_ATTEMPTS.with(std::cell::Cell::get);
-        FILE_AFTER_PREDATA_SYNC.with(|slot| {
-            assert!(
-                slot.borrow_mut()
-                    .replace(Box::new(move || {
-                        std::fs::write(&inserted, b"other owner").unwrap();
-                    }))
-                    .is_none()
-            );
-        });
-        let error = FileBackend::test_create_named(&path).err().unwrap();
-        assert_eq!(error.raw_os_error(), Some(libc::EEXIST));
-        assert_eq!(
-            error.close_report().unwrap().native_disposition(),
-            BackendNativeDisposition::Drained
-        );
-        assert_eq!(FILE_CLOSE_ATTEMPTS.with(std::cell::Cell::get), data_closes);
-        assert_eq!(
-            FILE_PARENT_CLOSE_ATTEMPTS.with(std::cell::Cell::get),
-            parent_closes + 1
-        );
-        assert_eq!(std::fs::read(&path).unwrap(), b"other owner");
-        std::fs::remove_file(path).unwrap();
-    }
-
-    #[test]
-    fn supplied_descriptor_stays_on_original_file_after_name_replacement() {
-        let path = parent_sync_test_path();
-        let replacement = path.with_extension("replacement");
-        let original = FileBackend::test_create_named(&path).unwrap();
-        // Keep the descriptor from the original backend, independent of any
-        // later pathname lookup. Namespace authentication is the caller's job.
-        let supplied = original.with(|file, _, _| file.try_clone()).unwrap();
-        let original =
-            Core::create_strict_with_backend(original, TestAdmission::unlimited()).unwrap();
-        original
-            .commit(&[
-                Operation::create_table("items"),
-                Operation::put("items", b"key", b"original"),
-            ])
-            .unwrap();
-        assert_eq!(
-            original.close().native_disposition(),
-            BackendNativeDisposition::Drained
-        );
-        let other = FileBackend::test_create_named(&replacement).unwrap();
-        let other = Core::create_strict_with_backend(other, TestAdmission::unlimited()).unwrap();
-        other
-            .commit(&[
-                Operation::create_table("items"),
-                Operation::put("items", b"key", b"replacement"),
-            ])
-            .unwrap();
-        assert_eq!(
-            other.close().native_disposition(),
-            BackendNativeDisposition::Drained
-        );
-        std::fs::rename(&replacement, &path).unwrap();
-
-        let data_closes = FILE_CLOSE_ATTEMPTS.with(std::cell::Cell::get);
-        let parent_closes = FILE_PARENT_CLOSE_ATTEMPTS.with(std::cell::Cell::get);
-        let reopened = Core::open_with_backend(
-            FileBackend::test_from_file(supplied),
-            TestAdmission::unlimited(),
-        )
-        .unwrap();
-        let snapshot = reopened.snapshot().unwrap();
-        assert_eq!(
-            reopened.get(&snapshot, "items", b"key", 16).unwrap(),
-            Some(b"original".to_vec())
-        );
-        drop(snapshot);
-        assert_eq!(
-            reopened.close().native_disposition(),
-            BackendNativeDisposition::Drained
-        );
-        assert_eq!(
-            FILE_CLOSE_ATTEMPTS.with(std::cell::Cell::get),
-            data_closes + 1
-        );
-        assert_eq!(
-            FILE_PARENT_CLOSE_ATTEMPTS.with(std::cell::Cell::get),
-            parent_closes
-        );
-        std::fs::remove_file(path).unwrap();
-    }
-
-    #[test]
-    fn failed_parent_sync_leaves_create_uncertain_and_retry_cannot_adopt() {
-        let path = parent_sync_test_path();
-        let backend = FileBackend::test_create_named(&path).unwrap();
-        let before = FILE_PARENT_SYNC_ATTEMPTS.with(std::cell::Cell::get);
-        FILE_PARENT_SYNC_FAILURE
-            .with(|failure| assert!(failure.replace(Some(libc::EIO)).is_none()));
-        let error = Core::create_strict_with_backend(backend, TestAdmission::unlimited())
-            .err()
-            .expect("directory sync failure must not publish a successful create");
-        assert!(
-            matches!(error, CoreError::Io(ref error) if error.raw_os_error() == Some(libc::EIO))
-        );
-        assert_eq!(
-            FILE_PARENT_SYNC_ATTEMPTS.with(std::cell::Cell::get),
-            before + 2
-        );
-
-        let data_closes = FILE_CLOSE_ATTEMPTS.with(std::cell::Cell::get);
-        let retry = FileBackend::test_create_named(&path).err().unwrap();
-        assert_eq!(retry.raw_os_error(), Some(libc::EEXIST));
-        assert_eq!(
-            retry.close_report().unwrap().native_disposition(),
-            BackendNativeDisposition::Drained
-        );
-        assert_eq!(FILE_CLOSE_ATTEMPTS.with(std::cell::Cell::get), data_closes);
-        assert_eq!(
-            FILE_PARENT_SYNC_ATTEMPTS.with(std::cell::Cell::get),
-            before + 3
-        );
-        std::fs::remove_file(path).unwrap();
-    }
-
-    #[test]
-    fn predata_parent_sync_failure_retains_original_and_observes_close_once() {
-        let path = parent_sync_test_path();
-        let parent_closes = FILE_PARENT_CLOSE_ATTEMPTS.with(std::cell::Cell::get);
-        let data_closes = FILE_CLOSE_ATTEMPTS.with(std::cell::Cell::get);
-        FILE_PARENT_SYNC_FAILURE
-            .with(|failure| assert!(failure.replace(Some(libc::EIO)).is_none()));
-        FILE_PARENT_CLOSE_FAILURE
-            .with(|failure| assert!(failure.replace(Some(libc::EINTR)).is_none()));
-        let mut error = FileBackend::test_create_named(&path).err().unwrap();
-        assert_eq!(error.original_error().raw_os_error(), Some(libc::EIO));
-        assert!(!path.exists(), "data descriptor was never acquired");
-        let report = error.close_report().unwrap();
-        assert_eq!(report.entry(), BackendCloseEntry::Entered);
-        assert_eq!(
-            report.native_disposition(),
-            BackendNativeDisposition::Retained
-        );
-        assert_eq!(
-            report.result.as_ref().unwrap_err().raw_os_error(),
-            Some(libc::EINTR)
-        );
-        assert_eq!(
-            FILE_PARENT_CLOSE_ATTEMPTS.with(std::cell::Cell::get),
-            parent_closes + 1
-        );
-        assert_eq!(FILE_CLOSE_ATTEMPTS.with(std::cell::Cell::get), data_closes);
-        let _ = error.retry_close();
-        assert_eq!(
-            FILE_PARENT_CLOSE_ATTEMPTS.with(std::cell::Cell::get),
-            parent_closes + 1
-        );
-    }
-
-    #[test]
-    fn failed_create_preserves_open_error_and_uncertain_parent_close_report() {
-        let path = parent_sync_test_path();
-        let backend = FileBackend::test_create_named(&path).unwrap();
-        let parent_closes = FILE_PARENT_CLOSE_ATTEMPTS.with(std::cell::Cell::get);
-        let data_closes = FILE_CLOSE_ATTEMPTS.with(std::cell::Cell::get);
-        FILE_PARENT_SYNC_FAILURE
-            .with(|failure| assert!(failure.replace(Some(libc::EIO)).is_none()));
-        FILE_PARENT_CLOSE_FAILURE
-            .with(|failure| assert!(failure.replace(Some(libc::EINTR)).is_none()));
-        let mut error = Core::create_strict_with_backend(backend, TestAdmission::unlimited())
-            .err()
-            .unwrap();
-        let CoreError::OpeningFailure(failure) = &mut error else {
-            panic!("uncertain close must retain the original opening error");
-        };
-        assert!(
-            matches!(failure.original_error(), CoreError::Io(error) if error.raw_os_error() == Some(libc::EIO))
-        );
-        assert_eq!(failure.close_report().entry(), BackendCloseEntry::Entered);
-        assert_eq!(
-            failure.close_report().native_disposition(),
-            BackendNativeDisposition::Retained
-        );
-        assert_eq!(
-            failure
-                .close_report()
-                .result
-                .as_ref()
-                .unwrap_err()
-                .raw_os_error(),
-            Some(libc::EINTR)
-        );
-        assert_eq!(
-            FILE_PARENT_CLOSE_ATTEMPTS.with(std::cell::Cell::get),
-            parent_closes + 1
-        );
-        assert_eq!(
-            FILE_CLOSE_ATTEMPTS.with(std::cell::Cell::get),
-            data_closes + 1
-        );
-        let _ = failure.retry_close();
-        assert_eq!(
-            FILE_PARENT_CLOSE_ATTEMPTS.with(std::cell::Cell::get),
-            parent_closes + 1
-        );
-        std::fs::remove_file(path).unwrap();
-    }
-
-    #[test]
-    fn named_create_rejects_final_symlink_without_opening_target() {
-        let target = parent_sync_test_path();
-        let link = target.with_extension("link");
-        std::fs::write(&target, b"target bytes").unwrap();
-        std::os::unix::fs::symlink(&target, &link).unwrap();
-        let data_closes = FILE_CLOSE_ATTEMPTS.with(std::cell::Cell::get);
-        let error = FileBackend::test_create_named(&link).err().unwrap();
-        assert_eq!(error.raw_os_error(), Some(libc::EEXIST));
-        assert_eq!(
-            error.close_report().unwrap().native_disposition(),
-            BackendNativeDisposition::Drained
-        );
-        assert_eq!(FILE_CLOSE_ATTEMPTS.with(std::cell::Cell::get), data_closes);
-        assert_eq!(std::fs::read(&target).unwrap(), b"target bytes");
-        std::fs::remove_file(link).unwrap();
-        std::fs::remove_file(target).unwrap();
-    }
-
-    #[test]
-    fn file_backend_close_waits_for_lock_before_native_attempt() {
-        let backend = file_backend_for_close_test();
-        let attempts = FILE_CLOSE_ATTEMPTS.with(std::cell::Cell::get);
-        let guard = backend.state.lock().unwrap();
-        let busy = backend.close();
-        assert_eq!(busy.entry(), BackendCloseEntry::NotEntered);
-        assert_eq!(
-            busy.native_disposition(),
-            BackendNativeDisposition::Retained
-        );
-        assert_eq!(
-            busy.into_result().unwrap_err().kind(),
-            io::ErrorKind::WouldBlock
-        );
-        assert_eq!(FILE_CLOSE_ATTEMPTS.with(std::cell::Cell::get), attempts);
-        drop(guard);
-        assert_eq!(backend.close().entry(), BackendCloseEntry::Entered);
-        assert_eq!(
-            backend.close().native_disposition(),
-            BackendNativeDisposition::Drained
-        );
-        assert_eq!(FILE_CLOSE_ATTEMPTS.with(std::cell::Cell::get), attempts + 1);
-    }
-
-    #[test]
-    fn file_backend_uncertain_close_retains_original_error_without_retry() {
-        let backend = file_backend_for_close_test();
-        let attempts = FILE_CLOSE_ATTEMPTS.with(std::cell::Cell::get);
-        FILE_CLOSE_FAILURE.with(|failure| assert!(failure.replace(Some(libc::EINTR)).is_none()));
-        let first = backend.close();
-        assert_eq!(first.entry(), BackendCloseEntry::Entered);
-        assert_eq!(
-            first.native_disposition(),
-            BackendNativeDisposition::Retained
-        );
-        assert_eq!(
-            first.into_result().unwrap_err().raw_os_error(),
-            Some(libc::EINTR)
-        );
-        assert_eq!(FILE_CLOSE_ATTEMPTS.with(std::cell::Cell::get), attempts + 1);
-        let consumed_descriptor = match &*backend.state.lock().unwrap() {
-            FileBackendState::UnknownClose {
-                _data_descriptor,
-                original_error,
-                _prior_sync_error,
-                ..
-            } => {
-                assert_eq!(original_error.raw_os_error(), Some(libc::EINTR));
-                assert!(_prior_sync_error.is_none());
-                _data_descriptor.expect("data descriptor was consumed")
-            }
-            _ => panic!("uncertain close must retain original native evidence"),
-        };
-        assert!(consumed_descriptor >= 0);
-        let other_owner = file_backend_for_close_test();
-        let second = backend.close();
-        assert_eq!(second.entry(), BackendCloseEntry::Entered);
-        assert_eq!(
-            second.native_disposition(),
-            BackendNativeDisposition::Retained
-        );
-        assert_eq!(
-            second.into_result().unwrap_err().raw_os_error(),
-            Some(libc::EINTR)
-        );
-        assert_eq!(FILE_CLOSE_ATTEMPTS.with(std::cell::Cell::get), attempts + 1);
-        assert_eq!(other_owner.len().unwrap(), 0);
-        assert_eq!(
-            other_owner.close().native_disposition(),
-            BackendNativeDisposition::Drained
-        );
-    }
-
-    #[test]
-    fn file_backend_sync_error_with_successful_native_close_is_drained() {
-        let backend = file_backend_for_close_test();
-        let attempts = FILE_CLOSE_ATTEMPTS.with(std::cell::Cell::get);
-        FILE_SYNC_FAILURE.with(|failure| assert!(failure.replace(Some(libc::EIO)).is_none()));
-        let first = backend.close();
-        assert_eq!(first.entry(), BackendCloseEntry::Entered);
-        assert_eq!(
-            first.native_disposition(),
-            BackendNativeDisposition::Drained
-        );
-        assert_eq!(
-            first.into_result().unwrap_err().raw_os_error(),
-            Some(libc::EIO)
-        );
-        assert_eq!(FILE_CLOSE_ATTEMPTS.with(std::cell::Cell::get), attempts + 1);
-        let second = backend.close();
-        assert_eq!(
-            second.native_disposition(),
-            BackendNativeDisposition::Drained
-        );
-        assert_eq!(
-            second.into_result().unwrap_err().raw_os_error(),
-            Some(libc::EIO)
-        );
-        assert_eq!(FILE_CLOSE_ATTEMPTS.with(std::cell::Cell::get), attempts + 1);
-    }
-
-    #[test]
-    fn file_backend_native_error_retains_prior_sync_error() {
-        let backend = file_backend_for_close_test();
-        let attempts = FILE_CLOSE_ATTEMPTS.with(std::cell::Cell::get);
-        FILE_SYNC_FAILURE.with(|failure| assert!(failure.replace(Some(libc::EIO)).is_none()));
-        FILE_CLOSE_FAILURE.with(|failure| assert!(failure.replace(Some(libc::EINTR)).is_none()));
-        let outcome = backend.close();
-        assert_eq!(
-            outcome.native_disposition(),
-            BackendNativeDisposition::Retained
-        );
-        assert_eq!(
-            outcome.into_result().unwrap_err().raw_os_error(),
-            Some(libc::EINTR)
-        );
-        assert_eq!(FILE_CLOSE_ATTEMPTS.with(std::cell::Cell::get), attempts + 1);
-        match &*backend.state.lock().unwrap() {
-            FileBackendState::UnknownClose {
-                original_error,
-                _prior_sync_error,
-                ..
-            } => {
-                assert_eq!(original_error.raw_os_error(), Some(libc::EINTR));
-                assert_eq!(
-                    _prior_sync_error.as_ref().unwrap().raw_os_error(),
-                    Some(libc::EIO)
-                );
-            }
-            _ => panic!("native uncertainty must retain both original errors"),
-        }
-    }
-
-    #[test]
-    fn core_file_backend_never_retries_entered_native_close() {
-        let core =
-            Core::create_with_backend(file_backend_for_close_test(), TestAdmission::unlimited())
-                .unwrap();
-        let attempts = FILE_CLOSE_ATTEMPTS.with(std::cell::Cell::get);
-        FILE_CLOSE_FAILURE.with(|failure| assert!(failure.replace(Some(libc::EINTR)).is_none()));
-        let first = core.close();
-        assert_eq!(first.entry(), BackendCloseEntry::Entered);
-        assert_eq!(
-            first.native_disposition(),
-            BackendNativeDisposition::Retained
-        );
-        assert_eq!(
-            first.into_result().unwrap_err().raw_os_error(),
-            Some(libc::EINTR)
-        );
-        let second = core.close();
-        assert_eq!(second.entry(), BackendCloseEntry::Entered);
-        assert_eq!(
-            second.native_disposition(),
-            BackendNativeDisposition::Retained
-        );
-        assert_eq!(
-            second.into_result().unwrap_err().raw_os_error(),
-            Some(libc::EINTR)
-        );
-        assert_eq!(FILE_CLOSE_ATTEMPTS.with(std::cell::Cell::get), attempts + 1);
-    }
-
-    #[test]
-    fn core_file_backend_sync_error_stays_failed_after_native_drain() {
-        let core =
-            Core::create_with_backend(file_backend_for_close_test(), TestAdmission::unlimited())
-                .unwrap();
-        let attempts = FILE_CLOSE_ATTEMPTS.with(std::cell::Cell::get);
-        FILE_SYNC_FAILURE.with(|failure| assert!(failure.replace(Some(libc::EIO)).is_none()));
-        let first = core.close();
-        assert_eq!(first.entry(), BackendCloseEntry::Entered);
-        assert_eq!(
-            first.native_disposition(),
-            BackendNativeDisposition::Drained
-        );
-        assert_eq!(
-            first.into_result().unwrap_err().raw_os_error(),
-            Some(libc::EIO)
-        );
-        let second = core.close();
-        assert_eq!(second.entry(), BackendCloseEntry::Entered);
-        assert_eq!(
-            second.native_disposition(),
-            BackendNativeDisposition::Drained
-        );
-        assert_eq!(
-            second.into_result().unwrap_err().raw_os_error(),
-            Some(libc::EIO)
-        );
-        assert_eq!(FILE_CLOSE_ATTEMPTS.with(std::cell::Cell::get), attempts + 1);
-    }
-
-    #[test]
-    fn core_first_close_keeps_original_error_source() {
-        #[derive(Debug)]
-        struct CloseMarker(Arc<()>);
-        impl fmt::Display for CloseMarker {
-            fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-                formatter.write_str("original close marker")
-            }
-        }
-        impl std::error::Error for CloseMarker {}
-
-        let identity = Arc::new(());
-        let backend = CrashBackend::new();
-        let core = Core::create_with_backend(backend.clone(), TestAdmission::unlimited()).unwrap();
-        backend.fail_close_with(io::Error::other(CloseMarker(identity.clone())));
-        let first = core.close();
-        assert_eq!(
-            first.native_disposition(),
-            BackendNativeDisposition::Drained
-        );
-        let first_error = first.into_result().unwrap_err();
-        let source = first_error
-            .get_ref()
-            .unwrap()
-            .downcast_ref::<CloseMarker>()
-            .unwrap();
-        assert!(Arc::ptr_eq(&source.0, &identity));
-        let second = core.close();
-        assert_eq!(
-            second.native_disposition(),
-            BackendNativeDisposition::Drained
-        );
-        assert_eq!(
-            second.into_result().unwrap_err().kind(),
-            io::ErrorKind::Other
-        );
-    }
-
-    #[test]
-    fn durable_batches_reopen_with_ordered_snapshot_values() {
-        let (core, backend) = new_core();
-        core.commit(&[
-            Operation::create_table("docs"),
-            Operation::put("docs", b"b", b"one"),
-        ])
-        .unwrap();
-        let first = core.snapshot().unwrap();
-        core.commit(&[
-            Operation::put("docs", b"b", b"two"),
-            Operation::put("docs", b"c", b"three"),
-        ])
-        .unwrap();
-        let second = core.snapshot().unwrap();
-        assert_eq!(
-            core.get(&first, "docs", b"b", 8).unwrap(),
-            Some(b"one".to_vec())
-        );
-        assert_eq!(core.get(&first, "docs", b"c", 8).unwrap(), None);
-        assert_eq!(
-            core.get(&second, "docs", b"b", 8).unwrap(),
-            Some(b"two".to_vec())
-        );
-        assert_eq!(
-            second.next_key("docs", b"b", None).unwrap(),
-            Some(b"b".to_vec())
-        );
-        assert_eq!(
-            second.next_key("docs", b"b", Some(b"b")).unwrap(),
-            Some(b"c".to_vec())
-        );
-        assert_eq!(
-            core.close().native_disposition(),
-            BackendNativeDisposition::Retained
-        );
-        drop(first);
-        drop(second);
-        assert_eq!(
-            core.close().native_disposition(),
-            BackendNativeDisposition::Drained
-        );
-        let reopened =
-            Core::open_with_backend(backend.crash(), TestAdmission::unlimited()).unwrap();
-        let view = reopened.snapshot().unwrap();
-        assert_eq!(
-            reopened.get(&view, "docs", b"b", 8).unwrap(),
-            Some(b"two".to_vec())
-        );
-    }
-
-    #[test]
-    fn table_birth_and_deletion_respect_older_snapshots() {
-        let (core, _) = new_core();
-        core.commit(&[
-            Operation::create_table("old"),
-            Operation::put("old", b"k", b"v"),
-        ])
-        .unwrap();
-        let old = core.snapshot().unwrap();
-        core.commit(&[
-            Operation::create_table("new"),
-            Operation::delete("old", b"k"),
-        ])
-        .unwrap();
-        let current = core.snapshot().unwrap();
-        assert!(!old.table_exists("new").unwrap());
-        assert!(current.table_exists("new").unwrap());
-        assert_eq!(core.get(&old, "old", b"k", 1).unwrap(), Some(b"v".to_vec()));
-        assert_eq!(core.get(&current, "old", b"k", 1).unwrap(), None);
-        drop(old);
-        drop(current);
-        core.commit(&[Operation::put("old", b"again", b"x")])
-            .unwrap();
-        assert!(!core.shared.state.lock().unwrap().needs_gc);
-    }
-
-    #[test]
-    fn failed_header_sync_has_unknown_outcome_and_reopen_decides() {
-        for after_persist in [false, true] {
-            let (core, backend) = new_core();
-            core.commit(&[
-                Operation::create_table("data"),
-                Operation::put("data", b"key", b"before"),
-            ])
-            .unwrap();
-            backend.fail_sync(2, after_persist);
-            assert!(matches!(
-                core.commit(&[Operation::put("data", b"key", b"after")]),
-                Err(CoreError::UnknownCommit(_))
-            ));
-            assert!(core.snapshot().is_err());
-            let reopened =
-                Core::open_with_backend(backend.crash(), TestAdmission::unlimited()).unwrap();
-            let view = reopened.snapshot().unwrap();
-            let expected = if after_persist {
-                b"after".to_vec()
-            } else {
-                b"before".to_vec()
-            };
-            assert_eq!(
-                reopened.get(&view, "data", b"key", 16).unwrap(),
-                Some(expected)
-            );
-        }
-    }
-
-    #[test]
-    fn failed_mirror_sync_is_unknown_but_first_header_recovers_the_batch() {
-        for after_persist in [false, true] {
-            let (core, backend) = new_core();
-            core.commit(&[
-                Operation::create_table("data"),
-                Operation::put("data", b"key", b"before"),
-            ])
-            .unwrap();
-            // The frame and first new header have both been synchronized.
-            // The mirror may or may not persist, but the batch is recoverable.
-            backend.fail_sync(3, after_persist);
-            assert!(matches!(
-                core.commit(&[Operation::put("data", b"key", b"after")]),
-                Err(CoreError::UnknownCommit(_))
-            ));
-            assert!(core.snapshot().is_err());
-            let reopened =
-                Core::open_with_backend(backend.crash(), TestAdmission::unlimited()).unwrap();
-            let view = reopened.snapshot().unwrap();
-            assert_eq!(
-                reopened.get(&view, "data", b"key", 16).unwrap(),
-                Some(b"after".to_vec())
-            );
-            assert_eq!(reopened.generation().unwrap(), 2);
-        }
-    }
-
-    #[test]
-    fn same_host_reopen_persists_validated_volatile_generation() {
-        let (core, backend) = new_core();
-        core.commit(&[
-            Operation::create_table("data"),
-            Operation::put("data", b"key", b"before"),
-        ])
-        .unwrap();
-
-        // The frame sync succeeds, but the header sync fails before the
-        // volatile new header becomes durable.
-        backend.fail_sync(2, false);
-        assert!(matches!(
-            core.commit(&[Operation::put("data", b"key", b"after")]),
-            Err(CoreError::UnknownCommit(_))
-        ));
-
-        let previous_crash =
-            Core::open_with_backend(backend.crash(), TestAdmission::unlimited()).unwrap();
-        let previous = previous_crash.snapshot().unwrap();
-        assert_eq!(
-            previous_crash.get(&previous, "data", b"key", 16).unwrap(),
-            Some(b"before".to_vec())
-        );
-
-        backend.fail_sync(1, false);
-        assert!(matches!(
-            Core::open_with_backend(backend.clone(), TestAdmission::unlimited()),
-            Err(CoreError::Io(_))
-        ));
-
-        let resolved =
-            Core::open_with_backend(backend.clone(), TestAdmission::unlimited()).unwrap();
-        let view = resolved.snapshot().unwrap();
-        assert_eq!(
-            resolved.get(&view, "data", b"key", 16).unwrap(),
-            Some(b"after".to_vec())
-        );
-        drop(view);
-
-        // Once open has returned the new generation as committed, another
-        // crash must still recover it.
-        let after_crash =
-            Core::open_with_backend(backend.crash(), TestAdmission::unlimited()).unwrap();
-        let view = after_crash.snapshot().unwrap();
-        assert_eq!(
-            after_crash.get(&view, "data", b"key", 16).unwrap(),
-            Some(b"after".to_vec())
-        );
-    }
-
-    #[test]
-    fn committed_corruption_fails_closed_even_with_older_header() {
-        let (core, backend) = new_core();
-        core.commit(&[
-            Operation::create_table("data"),
-            Operation::put("data", b"k", b"unique_payload"),
-        ])
-        .unwrap();
-        backend.corrupt_durable(b"unique_payload");
-        assert!(matches!(
-            Core::open_with_backend(backend.crash(), TestAdmission::unlimited()),
-            Err(CoreError::Corrupt(_))
-        ));
-    }
-
-    #[test]
-    fn one_corrupt_header_cannot_roll_back_an_acknowledged_commit() {
-        for damaged_slot in 0..2 {
-            let (core, backend) = new_core();
-            core.commit(&[
-                Operation::create_table("data"),
-                Operation::put("data", b"k", b"before"),
-            ])
-            .unwrap();
-            core.commit(&[Operation::put("data", b"k", b"after")])
-                .unwrap();
-            let durable = backend.crash();
-            let left = read_header(&durable, 0).unwrap().unwrap();
-            let right = read_header(&durable, 1).unwrap().unwrap();
-            assert_eq!((left.generation, left.end), (right.generation, right.end));
-            assert_eq!(left.generation, 2);
-
-            backend.corrupt_header(damaged_slot);
-            let reopened =
-                Core::open_with_backend(backend.crash(), TestAdmission::unlimited()).unwrap();
-            let view = reopened.snapshot().unwrap();
-            assert_eq!(
-                reopened.get(&view, "data", b"k", 16).unwrap(),
-                Some(b"after".to_vec())
-            );
-            assert_eq!(reopened.generation().unwrap(), 2);
-        }
-    }
-
-    #[test]
-    fn one_corrupt_header_after_compaction_still_reopens_the_live_values() {
-        for damaged_slot in 0..2 {
-            let (core, backend) = new_core();
-            core.commit(&[
-                Operation::create_table("data"),
-                Operation::put("data", b"k", b"before"),
-            ])
-            .unwrap();
-            core.commit(&[Operation::put("data", b"k", b"after")])
-                .unwrap();
-            core.compact().unwrap();
-
-            let durable = backend.crash();
-            let left = read_header(&durable, 0).unwrap().unwrap();
-            let right = read_header(&durable, 1).unwrap().unwrap();
-            assert_eq!(
-                (left.generation, left.base, left.end),
-                (right.generation, right.base, right.end)
-            );
-            assert!(left.generation > 2, "compaction must publish a new root");
-            assert_eq!(left.base, LOG_START);
-            assert_eq!(durable.len().unwrap(), left.end);
-
-            backend.corrupt_header(damaged_slot);
-            let reopened =
-                Core::open_with_backend(backend.crash(), TestAdmission::unlimited()).unwrap();
-            let view = reopened.snapshot().unwrap();
-            assert_eq!(
-                reopened.get(&view, "data", b"k", 16).unwrap(),
-                Some(b"after".to_vec())
-            );
-            assert_eq!(reopened.generation().unwrap(), left.generation);
-        }
-    }
-
-    #[test]
-    fn denied_index_reservation_keeps_old_generation_and_backend_end() {
-        let backend = CrashBackend::new();
-        let admission = TestAdmission::limited(700);
-        let core = Core::create_with_backend(backend, admission.clone()).unwrap();
-        core.commit(&[Operation::create_table("t")]).unwrap();
-        let end = core.committed_end().unwrap();
-        assert!(matches!(
-            core.commit(&[Operation::put("t", b"k", b"v")]),
-            Err(CoreError::CapacityDenied)
-        ));
-        assert_eq!(core.generation().unwrap(), 1);
-        assert_eq!(core.committed_end().unwrap(), end);
-        assert_eq!(
-            admission.used.load(Ordering::Acquire),
-            table_charge(1).unwrap() + INDEX_POOL_SLOT
-        );
-    }
-
-    #[test]
-    fn encrypted_value_headroom_exceeds_plaintext_limit_but_stays_bounded() {
-        let (core, _) = new_core();
-        core.commit(&[Operation::create_table("records")]).unwrap();
-        let envelope = vec![0x5a; (32 << 20) + 128];
-        core.commit(&[Operation::put("records", b"k", envelope.clone())])
-            .unwrap();
-        let snapshot = core.snapshot().unwrap();
-        let read = core
-            .get_admitted(&snapshot, "records", b"k", envelope.len())
-            .unwrap()
-            .unwrap();
-        assert_eq!(read.as_bytes(), envelope);
-        assert!(matches!(
-            core.commit(&[Operation::put(
-                "records",
-                b"too-large",
-                vec![0; MAX_VALUE_BYTES + 1]
-            )]),
-            Err(CoreError::InvalidInput(_))
-        ));
-    }
-
-    #[test]
-    fn compaction_spans_multiple_bounded_frames() {
-        let backend = Arc::new(InMemoryBackend::new());
-        let core = Core::create_with_backend(backend.clone(), TestAdmission::unlimited()).unwrap();
-        core.commit(&[
-            Operation::create_table("large"),
-            Operation::put("large", b"a", vec![0; 4 << 20]),
-        ])
-        .unwrap();
-        for (key, len, fill) in [
-            (b"a".as_slice(), 39 << 20, 1u8),
-            (b"b".as_slice(), 39 << 20, 2u8),
-            (b"c".as_slice(), 20 << 20, 3u8),
-        ] {
-            core.commit(&[Operation::put("large", key, vec![fill; len])])
-                .unwrap();
-        }
-        let layout = compact_layout(&core.shared.state.lock().unwrap().index).unwrap();
-        assert!(layout.bytes > MAX_BATCH_BYTES as u64);
-        assert!(layout.frames >= 2);
-        let before = backend.len().unwrap();
-        core.compact().unwrap();
-        assert!(backend.len().unwrap() < before);
-        let reopened = Core::open_with_backend(backend, TestAdmission::unlimited()).unwrap();
-        let view = reopened.snapshot().unwrap();
-        for (key, len, fill) in [
-            (b"a".as_slice(), 39 << 20, 1u8),
-            (b"b".as_slice(), 39 << 20, 2u8),
-            (b"c".as_slice(), 20 << 20, 3u8),
-        ] {
-            let value = reopened
-                .get_admitted(&view, "large", key, MAX_VALUE_BYTES)
-                .unwrap()
-                .unwrap();
-            assert_eq!(value.as_bytes().len(), len);
-            assert!(value.as_bytes().iter().all(|byte| *byte == fill));
-        }
-    }
-
-    #[test]
-    fn denied_shadow_headroom_leaves_committed_data_readable() {
-        let backend = CrashBackend::new();
-        let admission = TestAdmission::unlimited();
-        let core = Core::create_with_backend(backend.clone(), admission.clone()).unwrap();
-        core.commit(&[
-            Operation::create_table("data"),
-            Operation::put("data", b"k", b"old"),
-        ])
-        .unwrap();
-        core.commit(&[Operation::put("data", b"k", b"new")])
-            .unwrap();
-        let before = backend.len().unwrap();
-        let live = compact_layout(&core.shared.state.lock().unwrap().index)
-            .unwrap()
-            .bytes;
-        admission
-            .growth_limit
-            .store(before + live - 1, Ordering::Release);
-        assert!(matches!(core.compact(), Err(CoreError::CapacityDenied)));
-        assert_eq!(backend.len().unwrap(), before);
-        let view = core.snapshot().unwrap();
-        assert_eq!(
-            core.get(&view, "data", b"k", 8).unwrap(),
-            Some(b"new".to_vec())
-        );
-        drop(view);
-        admission.growth_limit.store(u64::MAX, Ordering::Release);
-        core.compact().unwrap();
-        let reopened =
-            Core::open_with_backend(backend.crash(), TestAdmission::unlimited()).unwrap();
-        let view = reopened.snapshot().unwrap();
-        assert_eq!(
-            reopened.get(&view, "data", b"k", 8).unwrap(),
-            Some(b"new".to_vec())
-        );
-    }
-
-    #[test]
-    fn repeated_overwrites_trigger_precommit_reclamation() {
-        let (core, backend) = new_core();
-        core.commit(&[Operation::create_table("data")]).unwrap();
-        for value in 0..20u8 {
-            core.commit(&[Operation::put("data", b"k", vec![value; 256 << 10])])
-                .unwrap();
-        }
-        assert!(backend.len().unwrap() < 3 << 20);
-        let reopened =
-            Core::open_with_backend(backend.crash(), TestAdmission::unlimited()).unwrap();
-        let view = reopened.snapshot().unwrap();
-        let value = reopened
-            .get_admitted(&view, "data", b"k", 256 << 10)
-            .unwrap()
-            .unwrap();
-        assert!(value.as_bytes().iter().all(|byte| *byte == 19));
-    }
-
-    #[test]
-    fn phase_two_uses_the_same_workspace_reservation() {
-        let backend = CrashBackend::new();
-        let admission = TestAdmission::unlimited();
-        admission.deny_copy_at.store(2, Ordering::Release);
-        let core = Core::create_with_backend(backend.clone(), admission.clone()).unwrap();
-        core.commit(&[
-            Operation::create_table("data"),
-            Operation::put("data", b"k", b"old"),
-        ])
-        .unwrap();
-        core.commit(&[Operation::put("data", b"k", b"new")])
-            .unwrap();
-        core.compact().unwrap();
-        assert_eq!(admission.copy_reservations.load(Ordering::Acquire), 1);
-        let reopened =
-            Core::open_with_backend(backend.crash(), TestAdmission::unlimited()).unwrap();
-        let view = reopened.snapshot().unwrap();
-        assert_eq!(
-            reopened.get(&view, "data", b"k", 8).unwrap(),
-            Some(b"new".to_vec())
-        );
-    }
-
-    #[test]
-    fn denied_recovery_of_published_shadow_can_retry_without_data_loss() {
-        let (core, backend) = new_core();
-        core.commit(&[
-            Operation::create_table("data"),
-            Operation::put("data", b"k", b"old"),
-        ])
-        .unwrap();
-        core.commit(&[Operation::put("data", b"k", b"new")])
-            .unwrap();
-        backend.fail_sync(3, false);
-        assert!(core.compact().is_err());
-        let recovered_backend = backend.crash();
-        let denied = TestAdmission::unlimited();
-        denied.deny_copy_at.store(1, Ordering::Release);
-        assert!(matches!(
-            Core::open_with_backend(recovered_backend.clone(), denied),
-            Err(CoreError::CapacityDenied)
-        ));
-        assert_eq!(recovered_backend.close_attempts(), 1);
-        let reopened =
-            Core::open_with_backend(recovered_backend, TestAdmission::unlimited()).unwrap();
-        let view = reopened.snapshot().unwrap();
-        assert_eq!(
-            reopened.get(&view, "data", b"k", 8).unwrap(),
-            Some(b"new".to_vec())
-        );
-    }
-}
+#[path = "core_source_read.rs"]
+mod source_read;
+pub(crate) use source_read::SourceReadContext;

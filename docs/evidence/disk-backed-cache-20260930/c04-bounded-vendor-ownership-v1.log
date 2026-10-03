@@ -1,0 +1,24 @@
+Command: cargo +1.97.1 test --manifest-path vendor/openraft-0.9.25/openraft/Cargo.toml --locked --offline --target-dir /Users/takemiyamakoto/dev/kasumi/target/disk-backed-cache --features serde,storage-v2 --lib -- storage::sm_custody_test raft::incoming_snapshot_test raft::shutdown_test --test-threads=1
+CARGO_TARGET_DIR=target/disk-backed-cache
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.21s
+     Running unittests src/lib.rs (target/disk-backed-cache/debug/deps/openraft-5e17d9bd08c72f35)
+
+running 14 tests
+test raft::incoming_snapshot_test::cancelled_final_chunk_keeps_stream_until_successful_close_then_transfers_data ... ok
+test raft::incoming_snapshot_test::cancelled_raft_shutdown_keeps_incoming_owner_until_actual_child_joins ... ok
+test raft::incoming_snapshot_test::failed_stream_cannot_be_overwritten_by_replacement ... ok
+test raft::incoming_snapshot_test::premature_data_transfer_returns_same_pending_owner_without_unwinding ... ok
+test raft::incoming_snapshot_test::receive_and_close_failures_retain_independent_original_errors_and_owner ... ok
+test raft::incoming_snapshot_test::retained_failure_notifies_live_core_exactly_once ... ok
+test raft::incoming_snapshot_test::unwound_data_poll_retains_uncertain_owner_without_polling_it_again ... ok
+test raft::incoming_snapshot_test::unwound_incoming_rpc_notifies_live_core_and_preserves_owner ... ok
+test raft::shutdown_test::aborted_core_still_drains_ticker_and_retains_distinct_cancellation ... ok
+test raft::shutdown_test::cancelled_shutdown_after_core_join_retains_ticker_and_both_failures ... ok
+test storage::sm_custody_test::cancelled_worker_join_retains_actual_panic_and_storage_failure ... ok
+test storage::sm_custody_test::live_worker_observes_snapshot_failure_without_detached_monitor ... ok
+test storage::sm_custody_test::successful_snapshot_history_reuses_one_joined_builder_cell ... ok
+test storage::sm_custody_test::worker_completion_never_discards_held_snapshot_or_either_failure ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 214 filtered out; finished in 0.14s
+
+Runner: 0.49s; exit=0; matching=1542/1542

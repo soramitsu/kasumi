@@ -80,7 +80,12 @@ async fn canceled_waiter_leaves_original_command_error_for_exact_shutdown_drain(
         &marker
     ));
     let again = jobs.drain().await.unwrap_err();
-    assert!(again.issues().iter().any(|value| Arc::ptr_eq(value, issue)));
+    assert!(
+        again
+            .issues()
+            .iter()
+            .any(|value| kasumi_types::drain::DrainIssueRef::ptr_eq(value, issue))
+    );
     assert_eq!(jobs.registered(), 0);
     drop(jobs);
     assert_eq!(admission.snapshot().reserved_bytes, baseline);
@@ -156,7 +161,7 @@ async fn aborted_drain_retries_with_original_join_error_and_fenced_admission() {
         failure
             .issues()
             .iter()
-            .any(|issue| Arc::ptr_eq(issue, &original.issues()[0]))
+            .any(|issue| kasumi_types::drain::DrainIssueRef::ptr_eq(issue, &original.issues()[0]))
     );
     let again = jobs.drain().await.unwrap_err();
     assert_eq!(again.issues().len(), 1);
@@ -164,7 +169,7 @@ async fn aborted_drain_retries_with_original_join_error_and_fenced_admission() {
         again
             .issues()
             .iter()
-            .any(|issue| Arc::ptr_eq(issue, &original.issues()[0]))
+            .any(|issue| kasumi_types::drain::DrainIssueRef::ptr_eq(issue, &original.issues()[0]))
     );
 }
 

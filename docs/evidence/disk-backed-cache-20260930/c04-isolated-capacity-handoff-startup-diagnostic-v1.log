@@ -1,0 +1,62 @@
+Command: cargo test --locked --offline --config profile.test.package.kasumi-kv.opt-level=3 --config profile.test.package.sha2.opt-level=3 -p kasumi-kv -p kasumi-store -p kasumi-raft -p kasumi-engine --all-features --lib --no-fail-fast -- source_capacity_actor_handoff source_capacity_real_actor_slot selected_sources_real_local_startup_publishes selected_sources_actual_snapshot_install selected_sources_covered_capture_cannot --nocapture
+ISOLATED_SOURCE=/tmp/kasumi-source-cohort-validation-v1
+CARGO_TARGET_DIR=/Users/takemiyamakoto/dev/kasumi/target/disk-backed-cache
+   Compiling openraft v0.9.25 (/private/tmp/kasumi-source-cohort-validation-v1/vendor/openraft-0.9.25/openraft)
+   Compiling kasumi-raft v0.1.0 (/private/tmp/kasumi-source-cohort-validation-v1/crates/kasumi-raft)
+   Compiling kasumi-engine v0.1.0 (/private/tmp/kasumi-source-cohort-validation-v1/crates/kasumi-engine)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 25s
+     Running unittests src/lib.rs (/Users/takemiyamakoto/dev/kasumi/target/disk-backed-cache/debug/deps/kasumi_engine-44db468831cfc59f)
+
+running 4 tests
+test application_sources::tests::cohort_tests::source_capacity_real_actor_slot_retains_root_until_append_and_flush_return ... ok
+local source startup failed: drain Retained; Raft startup[0]: raft stopped; Raft apply[0]: Raft apply failed; original failure retained; OpenRaft runtime[0]: raft shutdown failed (core: Some(StorageError(IO { source: StorageIOError { subject: Store, verb: Write, source: std::io::error::Error: Raft apply failed; original failure retained, backtrace: None } })), core join: None, ticker join: None, state machine: Some(Storage(IO { source: StorageIOError { subject: Store, verb: Write, source: std::io::error::Error: Raft apply failed; original failure retained, backtrace: None } })), snapshot builder: None, replications: [], auxiliary: [], incoming snapshot: None, unconsumed apply: None, pending snapshot: None): raft stopped; actual retained apply: Ok(Some("single original: application publication and backend both failed; publication: ordinary source plan exceeds funded shape; backend: application publication failed; publisher retains its error: ordinary source plan exceeds funded shape: ordinary source plan exceeds funded shape"))
+Error: drain Retained; Raft startup[0]: raft stopped; Raft apply[0]: Raft apply failed; original failure retained; OpenRaft runtime[0]: raft shutdown failed (core: Some(StorageError(IO { source: StorageIOError { subject: Store, verb: Write, source: std::io::error::Error: Raft apply failed; original failure retained, backtrace: None } })), core join: None, ticker join: None, state machine: Some(Storage(IO { source: StorageIOError { subject: Store, verb: Write, source: std::io::error::Error: Raft apply failed; original failure retained, backtrace: None } })), snapshot builder: None, replications: [], auxiliary: [], incoming snapshot: None, unconsumed apply: None, pending snapshot: None)
+
+Caused by:
+    raft stopped
+test application_sources::tests::selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_identity ... FAILED
+local source startup failed: drain Retained; Raft startup[0]: raft stopped; Raft apply[0]: Raft apply failed; original failure retained; OpenRaft runtime[0]: raft shutdown failed (core: Some(StorageError(IO { source: StorageIOError { subject: Store, verb: Write, source: std::io::error::Error: Raft apply failed; original failure retained, backtrace: None } })), core join: None, ticker join: None, state machine: Some(Storage(IO { source: StorageIOError { subject: Store, verb: Write, source: std::io::error::Error: Raft apply failed; original failure retained, backtrace: None } })), snapshot builder: None, replications: [], auxiliary: [], incoming snapshot: None, unconsumed apply: None, pending snapshot: None): raft stopped; actual retained apply: Ok(Some("single original: application publication and backend both failed; publication: ordinary source plan exceeds funded shape; backend: application publication failed; publisher retains its error: ordinary source plan exceeds funded shape: ordinary source plan exceeds funded shape"))
+Error: drain Retained; Raft startup[0]: raft stopped; Raft apply[0]: Raft apply failed; original failure retained; OpenRaft runtime[0]: raft shutdown failed (core: Some(StorageError(IO { source: StorageIOError { subject: Store, verb: Write, source: std::io::error::Error: Raft apply failed; original failure retained, backtrace: None } })), core join: None, ticker join: None, state machine: Some(Storage(IO { source: StorageIOError { subject: Store, verb: Write, source: std::io::error::Error: Raft apply failed; original failure retained, backtrace: None } })), snapshot builder: None, replications: [], auxiliary: [], incoming snapshot: None, unconsumed apply: None, pending snapshot: None)
+
+Caused by:
+    raft stopped
+test application_sources::tests::selected_sources_covered_capture_cannot_settle_after_serving_handoff ... FAILED
+local source startup failed: drain Retained; Raft startup[0]: raft stopped; Raft apply[0]: Raft apply failed; original failure retained; OpenRaft runtime[0]: raft shutdown failed (core: Some(StorageError(IO { source: StorageIOError { subject: Store, verb: Write, source: std::io::error::Error: Raft apply failed; original failure retained, backtrace: None } })), core join: None, ticker join: None, state machine: Some(Storage(IO { source: StorageIOError { subject: Store, verb: Write, source: std::io::error::Error: Raft apply failed; original failure retained, backtrace: None } })), snapshot builder: None, replications: [], auxiliary: [], incoming snapshot: None, unconsumed apply: None, pending snapshot: None): raft stopped; actual retained apply: Ok(Some("single original: application publication and backend both failed; publication: ordinary source plan exceeds funded shape; backend: application publication failed; publisher retains its error: ordinary source plan exceeds funded shape: ordinary source plan exceeds funded shape"))
+Error: drain Retained; Raft startup[0]: raft stopped; Raft apply[0]: Raft apply failed; original failure retained; OpenRaft runtime[0]: raft shutdown failed (core: Some(StorageError(IO { source: StorageIOError { subject: Store, verb: Write, source: std::io::error::Error: Raft apply failed; original failure retained, backtrace: None } })), core join: None, ticker join: None, state machine: Some(Storage(IO { source: StorageIOError { subject: Store, verb: Write, source: std::io::error::Error: Raft apply failed; original failure retained, backtrace: None } })), snapshot builder: None, replications: [], auxiliary: [], incoming snapshot: None, unconsumed apply: None, pending snapshot: None)
+
+Caused by:
+    raft stopped
+test application_sources::tests::selected_sources_real_local_startup_publishes_entry_and_drains_surviving_generation ... FAILED
+
+failures:
+
+failures:
+    application_sources::tests::selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_identity
+    application_sources::tests::selected_sources_covered_capture_cannot_settle_after_serving_handoff
+    application_sources::tests::selected_sources_real_local_startup_publishes_entry_and_drains_surviving_generation
+
+test result: FAILED. 1 passed; 3 failed; 0 ignored; 0 measured; 665 filtered out; finished in 3.61s
+
+error: test failed, to rerun pass `-p kasumi-engine --lib`
+     Running unittests src/lib.rs (/Users/takemiyamakoto/dev/kasumi/target/disk-backed-cache/debug/deps/kasumi_kv-221aa5373d25965b)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 555 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (/Users/takemiyamakoto/dev/kasumi/target/disk-backed-cache/debug/deps/kasumi_raft-8af78bc0d2a8574c)
+
+running 1 test
+test application_source_capacity::tests::source_capacity_actor_handoff_keeps_one_allocation_and_actual_owner ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 195 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (/Users/takemiyamakoto/dev/kasumi/target/disk-backed-cache/debug/deps/kasumi_store-4ef75ebdc018c368)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 726 filtered out; finished in 0.00s
+
+error: 1 target failed:
+    `-p kasumi-engine --lib`
+Runner: 89.17s; exit=101; matching=1565/1565

@@ -1,0 +1,32 @@
+Command: cargo test -p kasumi-query --lib --all-features --locked --offline -- --nocapture text_resident_physical_loan text_resident_
+ISOLATED_SOURCE=/tmp/kasumi-source-cohort-validation-v1
+CARGO_TARGET_DIR=/Users/takemiyamakoto/dev/kasumi/target/disk-backed-cache
+   Compiling kasumi-query v0.1.0 (/private/tmp/kasumi-source-cohort-validation-v1/crates/kasumi-query)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.73s
+     Running unittests src/lib.rs (/Users/takemiyamakoto/dev/kasumi/target/disk-backed-cache/debug/deps/kasumi_query-afbb55dd45d980ea)
+
+running 4 tests
+resident physical stats: initial=PhysicalTextStats { segments: 1, live: 2, physical: 2, tokens: 4, stale_df: 1 }; mixed=PhysicalTextStats { segments: 2, live: 2, physical: 3, tokens: 6, stale_df: 1 }; whole-empty-removed=PhysicalTextStats { segments: 1, live: 1, physical: 1, tokens: 2, stale_df: 0 }
+test search::lending_tests::text_resident_physical_stats_remove_whole_empty_segments_but_retain_mixed_deletions ... ok
+resident baseline accepted=PhysicalTextStats { segments: 2, live: 2, physical: 3, tokens: 6, stale_df: 1 } scores={"a": 1040759927, "b": 1040759927}; clean rebuild=PhysicalTextStats { segments: 1, live: 2, physical: 2, tokens: 4, stale_df: 0 } scores={"a": 1044034179, "b": 1044034179}
+test search::lending_tests::text_resident_baseline_cannot_substitute_clean_live_rebuild_for_mixed_snapshot ... ok
+resident default merge boundary: PhysicalTextStats { segments: 1, live: 8, physical: 8, tokens: 16, stale_df: 0 }
+
+thread 'search::lending_tests::text_resident_physical_loan_copies_selected_deletion_files_and_old_scores_after_merge' (30432598) panicked at crates/kasumi-query/src/search.rs:959:18:
+called `Result::unwrap()` on an `Err` value: Custom { kind: Other, error: FileDoesNotExist("e264be79e8364dd6bbf31daaa4b8599d.6.del") }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test search::lending_tests::text_resident_physical_loan_copies_selected_deletion_files_and_old_scores_after_merge ... FAILED
+resident repeated merge 7: PhysicalTextStats { segments: 1, live: 8, physical: 8, tokens: 16, stale_df: 0 }
+resident repeated merge 14: PhysicalTextStats { segments: 1, live: 8, physical: 8, tokens: 16, stale_df: 0 }
+resident repeated merge 21: PhysicalTextStats { segments: 1, live: 8, physical: 8, tokens: 16, stale_df: 0 }
+test search::lending_tests::text_resident_default_eight_segment_merges_reclaim_deleted_stats_and_preserve_old_scores ... ok
+
+failures:
+
+failures:
+    search::lending_tests::text_resident_physical_loan_copies_selected_deletion_files_and_old_scores_after_merge
+
+test result: FAILED. 3 passed; 1 failed; 0 ignored; 0 measured; 95 filtered out; finished in 0.63s
+
+error: test failed, to rerun pass `-p kasumi-query --lib`
+Runner: 5.42s; exit=101; matching=1774/1774

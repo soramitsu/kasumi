@@ -181,7 +181,7 @@ async fn committed_log_replay_survives_every_append_and_commit_io_failure() -> R
     ) -> Result<Arc<kasumi_store::TenantStorageSet>> {
         let application = (if create {
             TenantStore::initialize_catalog_fixture_with_clock(
-                NodeStore::open_with_backend(
+                NodeStore::create_with_backend(
                     disk,
                     kasumi_store::test_utils::storage_admission(),
                     fixture_scratch.clone(),

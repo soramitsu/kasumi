@@ -84,10 +84,15 @@ impl crate::PreparedStateMachineRestore for PreparedJoint<'_> {
     fn retirement(&self) -> Option<crate::RetiredSnapshotState> {
         None
     }
-    fn application_replacements(&self) -> Vec<(&str, &kasumi_store::EncryptedTable)> {
+    fn application_replacements(&self) -> Vec<kasumi_store::NamespaceReplacement<'_>> {
         self.replacement
             .as_ref()
-            .map(|table| vec![(self.selected.namespace.as_str(), table)])
+            .map(|table| {
+                vec![kasumi_store::NamespaceReplacement::from_table(
+                    &self.selected.namespace,
+                    table,
+                )]
+            })
             .unwrap_or_default()
     }
     fn application_writes(&self) -> &[WriteOp] {
@@ -114,10 +119,17 @@ impl StateMachineBackend for JointBackend {
     fn close_application(&self) {
         self.current.lock().unwrap().take();
     }
-    fn apply(&self, _: &crate::AppliedEntryContext, _: &[u8]) -> Result<crate::AppliedResponse> {
-        anyhow::bail!("joint fixture accepts only snapshot installation")
-    }
-    fn apply_metadata(&self, _position: &crate::AppliedEntryContext) -> anyhow::Result<()> {
+    fn apply_with_publisher(
+        &self,
+        _: &crate::AppliedEntryContext,
+        input: crate::AppliedInput<'_>,
+        publisher: &mut dyn crate::ApplyPublisher,
+    ) -> Result<()> {
+        ensure!(
+            matches!(input, crate::AppliedInput::Metadata),
+            "joint fixture accepts only snapshot installation"
+        );
+        publisher.commit(crate::AppliedResponse::application(Vec::new()), &[])?;
         Ok(())
     }
     fn capture_snapshot(&self) -> Result<crate::CapturedSnapshot> {
@@ -163,7 +175,11 @@ impl StateMachineBackend for JointBackend {
                 // the KV engine reserves commit headers and admitted index metadata
                 // at creation. This tests publication faults, so fund
                 // initialization and the two bounded rows explicitly.
-                let table = kasumi_store::EncryptedTable::new(self.store.scratch_disk(), 8 << 20)?;
+                let table = kasumi_store::EncryptedTable::new(
+                    self.store.scratch_disk(),
+                    8 << 20,
+                    self.store.scratch_disk().native_cache_config(),
+                )?;
                 for ordinal in 0..2 {
                     table.insert(&[ordinal], &row(selected.tag, ordinal))?;
                 }

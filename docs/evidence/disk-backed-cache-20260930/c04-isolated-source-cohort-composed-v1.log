@@ -1,0 +1,26 @@
+Command: cargo test --locked --offline --config profile.test.package.kasumi-kv.opt-level=3 --config profile.test.package.sha2.opt-level=3 -p kasumi-kv -p kasumi-store -p kasumi-raft -p kasumi-engine --all-features --lib --no-fail-fast -- source_cohort_ source_constructor_ source_lane_growth_ source_capacity_ready_owner_ control_memory constructor_envelope planning_session_tests selected_sources_actual_entry_hands_point_backing_to_capture_and_queue_cancellation --nocapture
+ISOLATED_SOURCE=/tmp/kasumi-source-cohort-validation-v1
+CARGO_TARGET_DIR=/Users/takemiyamakoto/dev/kasumi/target/disk-backed-cache
+   Compiling kasumi-store v0.1.0 (/private/tmp/kasumi-source-cohort-validation-v1/crates/kasumi-store)
+   Compiling kasumi-raft v0.1.0 (/private/tmp/kasumi-source-cohort-validation-v1/crates/kasumi-raft)
+   Compiling kasumi-engine v0.1.0 (/private/tmp/kasumi-source-cohort-validation-v1/crates/kasumi-engine)
+error[E0277]: `AppliedResponse` doesn't implement `std::fmt::Debug`
+   --> crates/kasumi-raft/src/selected_application/receipt_tests.rs:598:14
+    |
+598 |             .unwrap_err();
+    |              ^^^^^^^^^^ the trait `std::fmt::Debug` is not implemented for `AppliedResponse`
+    |
+    = note: add `#[derive(Debug)]` to `AppliedResponse` or manually `impl std::fmt::Debug for AppliedResponse`
+note: required by a bound in `std::result::Result::<T, E>::unwrap_err`
+   --> /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/result.rs:1324:4
+help: consider annotating `AppliedResponse` with `#[derive(Debug)]`
+   --> crates/kasumi-raft/src/lib.rs:160:1
+    |
+160 + #[derive(Debug)]
+161 | pub struct AppliedResponse {
+    |
+
+For more information about this error, try `rustc --explain E0277`.
+error: could not compile `kasumi-raft` (lib test) due to 1 previous error
+warning: build failed, waiting for other jobs to finish...
+Runner: 91.71s; exit=101; matching=1563/1563

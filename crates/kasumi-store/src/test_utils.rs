@@ -1,4 +1,8 @@
 //! Real authenticated wrapping for tests only. Never selectable in production config.
+#[cfg(test)]
+#[path = "source_quote_observer.rs"]
+pub(crate) mod source_quote_observer;
+
 use std::{
     sync::atomic::{AtomicBool, AtomicU64, Ordering},
     time::Duration,
@@ -13,10 +17,26 @@ use zeroize::Zeroizing;
 use crate::{GeneratedKey, KeyProvider, SecretKey, WrappedKey, decrypt, encrypt};
 use kasumi_clock::LeaseClock;
 
+use kasumi_kv as cache_types;
+#[cfg(test)]
+#[path = "test_cache_memory.rs"]
+pub(crate) mod cache_memory;
+#[path = "../../kasumi-kv/src/cache_test.rs"]
+pub(crate) mod cache_test;
+
 /// Explicit fixture identity; production callers must retain their own installed
 /// UUID. Tests of identity mismatch select distinct UUIDs directly.
 pub const NODE_STORE_ID: uuid::Uuid =
     uuid::Uuid::from_u128(0x5c8c_7c42_e708_452c_b92f_510a_4673_4f2b);
+
+/// Explicit deterministic fixture shares. Residency behavior has dedicated KV
+/// tests; these unrelated store fixtures keep request-owned output uncached.
+pub fn node_storage_config() -> crate::NodeStorageConfig {
+    crate::NodeStorageConfig {
+        cache: kasumi_kv::CacheConfig { byte_limit: 0 },
+        cached_files: 8,
+    }
+}
 
 /// A fixture installation starts private; production constructors never repair
 /// permissions on a supplied directory.
@@ -25,6 +45,34 @@ pub fn private_tempdir() -> std::io::Result<tempfile::TempDir> {
     tempfile::Builder::new()
         .permissions(std::fs::Permissions::from_mode(0o700))
         .tempdir()
+}
+
+/// Enumerate the actual regular files in a test node group without following
+/// symlinks or silently skipping unexpected physical entries.
+#[cfg(test)]
+pub(crate) fn node_group_files(path: &std::path::Path) -> Vec<std::path::PathBuf> {
+    assert!(std::fs::symlink_metadata(path).unwrap().is_dir());
+    let mut pending = vec![path.to_owned()];
+    let mut files = Vec::new();
+    while let Some(directory) = pending.pop() {
+        for entry in std::fs::read_dir(directory).unwrap() {
+            let path = entry.unwrap().path();
+            let metadata = std::fs::symlink_metadata(&path).unwrap();
+            if metadata.is_dir() {
+                pending.push(path);
+            } else {
+                assert!(
+                    metadata.is_file(),
+                    "unexpected node entry: {}",
+                    path.display()
+                );
+                files.push(path);
+            }
+        }
+    }
+    files.sort();
+    assert!(files.contains(&path.join(kasumi_kv::ROOT_FILE_NAME)));
+    files
 }
 
 /// A test-only physical fault: publish authenticated rows from both encrypted
@@ -122,6 +170,8 @@ pub struct TestDiskMemory {
     max_bytes: u64,
     max_reservations: usize,
     state: std::sync::Mutex<TestDiskMemorySnapshot>,
+    #[cfg(test)]
+    point_drop_panic: std::sync::Mutex<Option<(u64, Box<dyn std::any::Any + Send>)>>,
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct TestDiskMemorySnapshot {
@@ -133,6 +183,9 @@ pub struct TestDiskMemorySnapshot {
     pub attempts: u64,
 }
 struct TestDiskLease {
+    // The real lease carries its acquisition identity in test-utils builds too.
+    // required_reservation_bytes includes this field before allocation.
+    id: u64,
     owner: std::sync::Arc<TestDiskMemory>,
     bytes: u64,
 }
@@ -147,6 +200,8 @@ impl TestDiskMemory {
         let storage_census = crate::StorageCensus::allocate(max_reservations).unwrap();
         let owner = std::sync::Arc::new(Self {
             storage_census,
+            #[cfg(test)]
+            point_drop_panic: std::sync::Mutex::new(None),
             max_bytes,
             max_reservations,
             state: std::sync::Mutex::new(TestDiskMemorySnapshot {
@@ -155,6 +210,10 @@ impl TestDiskMemory {
             }),
         });
         drop(owner.state.lock().unwrap());
+        // macOS initializes std mutex backing on first lock. Construct the
+        // test-only fault hook here, before any allocation-free retirement.
+        #[cfg(test)]
+        drop(owner.point_drop_panic.lock().unwrap());
         let provider: std::sync::Arc<dyn crate::NodeDiskMemoryAdmission> = owner.clone();
         owner.storage_census.bind_provider(&provider).unwrap();
         owner
@@ -171,8 +230,37 @@ impl TestDiskMemory {
     pub fn snapshot(&self) -> TestDiskMemorySnapshot {
         *self.state.lock().unwrap()
     }
+    // Scalar observation only; called after releasing the admission ledger.
+    // No shadow owner registry or replacement lease is constructed.
+    fn observe_lease(
+        &self,
+        event: &'static str,
+        id: u64,
+        before: u64,
+        after: u64,
+        snapshot: TestDiskMemorySnapshot,
+    ) {
+        if std::env::var_os("KASUMI_TEST_METADATA_LEASE_TRACE").as_deref()
+            != Some(std::ffi::OsStr::new("1"))
+        {
+            return;
+        }
+        use std::io::Write as _;
+        let _ = writeln!(
+            std::io::stderr().lock(),
+            "fixture_lease event={event} owner={:p} id={id} before_bytes={before} after_bytes={after} used_bytes={} live_reservations={} attempts={}",
+            self,
+            snapshot.used_bytes,
+            snapshot.live_reservations,
+            snapshot.attempts,
+        );
+    }
 }
+impl kasumi_kv::SourceMemoryProvider for TestDiskMemory {}
 impl crate::NodeDiskMemoryAdmission for TestDiskMemory {
+    fn quote_installed(&self, bytes: u64) -> std::io::Result<u64> {
+        Self::required_reservation_bytes(bytes)
+    }
     fn storage_census(&self) -> &crate::StorageCensus {
         &self.storage_census
     }
@@ -180,12 +268,17 @@ impl crate::NodeDiskMemoryAdmission for TestDiskMemory {
         self: std::sync::Arc<Self>,
         bytes: u64,
     ) -> std::io::Result<crate::DiskMemoryLease> {
+        let requested_bytes = bytes;
         let bytes = Self::required_reservation_bytes(bytes)?;
         let mut state = self.state.lock().map_err(|_| std::io::ErrorKind::Other)?;
         state.attempts = state
             .attempts
             .checked_add(1)
             .ok_or(std::io::ErrorKind::Other)?;
+        #[cfg(test)]
+        if binding_staging_refuses(std::sync::Arc::as_ptr(&self) as usize, requested_bytes) {
+            return Err(std::io::ErrorKind::OutOfMemory.into());
+        }
         let next = state
             .used_bytes
             .checked_add(bytes)
@@ -195,20 +288,156 @@ impl crate::NodeDiskMemoryAdmission for TestDiskMemory {
             .is_none_or(|total| total > self.max_bytes)
             || state.live_reservations >= self.max_reservations
         {
-            return Err(std::io::ErrorKind::OutOfMemory.into());
+            let error = std::io::Error::from(std::io::ErrorKind::OutOfMemory);
+            let refused = *state;
+            drop(state);
+            use std::io::Write as _;
+            let _ = writeln!(
+                std::io::stderr().lock(),
+                "TestDiskMemory::reserve_installed denied: provider={:p} requested_bytes={requested_bytes} charged_bytes={bytes} bookkeeping_bytes={} used_bytes={} next_used_bytes={next} max_bytes={} live_reservations={} max_reservations={} attempts={} error={error:?}",
+                std::sync::Arc::as_ptr(&self),
+                refused.bookkeeping_bytes,
+                refused.used_bytes,
+                self.max_bytes,
+                refused.live_reservations,
+                self.max_reservations,
+                refused.attempts,
+            );
+            return Err(error);
         }
         state.used_bytes = next;
         state.live_reservations += 1;
+        #[cfg(test)]
+        source_quote_observer::record(
+            std::sync::Arc::as_ptr(&self) as usize,
+            bytes,
+            state.used_bytes,
+            state.live_reservations,
+        );
+        let id = state.attempts;
+        let observed = *state;
         drop(state);
+        self.observe_lease("installed", id, 0, bytes, observed);
         Ok(crate::DiskMemoryLease::new(TestDiskLease {
+            id,
             owner: self,
             bytes,
         }))
     }
+
+    fn quote_cache_memory(&self, bytes: u64) -> std::io::Result<kasumi_kv::CacheMemoryQuote> {
+        kasumi_kv::CacheMemoryQuote::new(bytes, Self::required_reservation_bytes(0)?)
+            .ok_or_else(|| std::io::ErrorKind::OutOfMemory.into())
+    }
+
+    fn reserve_cache_memory(
+        self: std::sync::Arc<Self>,
+        bytes: u64,
+    ) -> std::io::Result<kasumi_kv::CacheMemoryLease> {
+        let quote = self.quote_cache_memory(bytes)?;
+        let mut state = self.state.lock().map_err(|_| std::io::ErrorKind::Other)?;
+        state.attempts = state
+            .attempts
+            .checked_add(1)
+            .ok_or(std::io::ErrorKind::Other)?;
+        let next = state
+            .used_bytes
+            .checked_add(quote.charged_bytes())
+            .ok_or(std::io::ErrorKind::OutOfMemory)?;
+        if !self.cache_headroom_fits(&state, next, 1) {
+            return Err(std::io::ErrorKind::OutOfMemory.into());
+        }
+        state.used_bytes = next;
+        state.live_reservations += 1;
+        let id = state.attempts;
+        let observed = *state;
+        drop(state);
+        self.observe_lease("cache", id, 0, quote.charged_bytes(), observed);
+        Ok(kasumi_kv::CacheMemoryLease::new(
+            quote,
+            TestDiskLease {
+                id,
+                owner: self,
+                bytes: quote.charged_bytes(),
+            },
+        ))
+    }
+}
+
+impl TestDiskMemory {
+    fn cache_headroom_fits(
+        &self,
+        state: &TestDiskMemorySnapshot,
+        used: u64,
+        additional_slots: usize,
+    ) -> bool {
+        let bytes = (self.max_bytes / 4).min(64 << 20);
+        let slots = (self.max_reservations / 4).clamp(1, 64);
+        used.checked_add(state.bookkeeping_bytes)
+            .and_then(|used| used.checked_add(bytes))
+            .is_some_and(|total| total <= self.max_bytes)
+            && state
+                .live_reservations
+                .checked_add(additional_slots)
+                .and_then(|used| used.checked_add(slots))
+                .is_some_and(|total| total <= self.max_reservations)
+    }
+}
+
+impl kasumi_kv::CacheMemoryReservation for TestDiskLease {
+    fn try_grow(&mut self, bytes: u64) -> Result<(), kasumi_kv::AdmissionError> {
+        let mut state = self
+            .owner
+            .state
+            .lock()
+            .map_err(|_| kasumi_kv::AdmissionError::OwnerFailed)?;
+        state.attempts = state
+            .attempts
+            .checked_add(1)
+            .ok_or(kasumi_kv::AdmissionError::OwnerFailed)?;
+        let used = state
+            .used_bytes
+            .checked_add(bytes)
+            .ok_or(kasumi_kv::AdmissionError::CapacityDenied)?;
+        let charged = self
+            .bytes
+            .checked_add(bytes)
+            .ok_or(kasumi_kv::AdmissionError::CapacityDenied)?;
+        if !self.owner.cache_headroom_fits(&state, used, 0) {
+            return Err(kasumi_kv::AdmissionError::CapacityDenied);
+        }
+        state.used_bytes = used;
+        let previous = self.bytes;
+        self.bytes = charged;
+        let observed = *state;
+        drop(state);
+        self.owner
+            .observe_lease("grow", self.id, previous, charged, observed);
+        Ok(())
+    }
+
+    fn retain_charge(&mut self, bytes: u64) {
+        let mut state = self
+            .owner
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.used_bytes -= self.bytes - bytes;
+        let previous = self.bytes;
+        self.bytes = bytes;
+        let observed = *state;
+        drop(state);
+        self.owner
+            .observe_lease("retain", self.id, previous, bytes, observed);
+    }
 }
 impl Drop for TestDiskLease {
     fn drop(&mut self) {
-        let mut state = self.owner.state.lock().unwrap();
+        let mut state = self
+            .owner
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         state.used_bytes = state
             .used_bytes
             .checked_sub(self.bytes)
@@ -217,6 +446,23 @@ impl Drop for TestDiskLease {
             .live_reservations
             .checked_sub(1)
             .expect("owned fixture slot");
+        let observed = *state;
+        drop(state);
+        self.owner
+            .observe_lease("drop", self.id, self.bytes, 0, observed);
+        #[cfg(test)]
+        {
+            let mut pending = self.owner.point_drop_panic.lock().unwrap();
+            let payload = if pending.as_ref().is_some_and(|(id, _)| *id == self.id) {
+                pending.take().map(|(_, payload)| payload)
+            } else {
+                None
+            };
+            drop(pending);
+            if let Some(payload) = payload {
+                std::panic::resume_unwind(payload);
+            }
+        }
     }
 }
 
@@ -224,8 +470,8 @@ impl crate::NodeStore {
     /// Synthetic KV I/O with an explicit admitted physical owner for engine
     /// fixtures. This does not claim the backend itself is a physical file.
     /// The exact persistent/scratch core is checked before the engine can touch it.
-    pub fn open_fixture_backend_on_disk(
-        backend: impl kasumi_kv::StorageBackend + 'static,
+    pub fn create_fixture_backend_on_disk(
+        backend: impl kasumi_kv::SegmentGroupBackend + 'static,
         storage_admission: std::sync::Arc<dyn kasumi_kv::StorageAdmission>,
         persistent: std::sync::Arc<crate::NodeDisk>,
         scratch: std::sync::Arc<crate::ScratchDisk>,
@@ -234,8 +480,38 @@ impl crate::NodeStore {
             std::sync::Arc::ptr_eq(persistent.memory(), scratch.memory()),
             "persistent and scratch disks require the same installed memory admission"
         );
-        let db = kasumi_kv::Database::builder(storage_admission).create_with_backend(backend)?;
+        let db = kasumi_kv::Database::builder(
+            storage_admission,
+            *NODE_STORE_ID.as_bytes(),
+            node_storage_config().cache,
+        )
+        .create_with_backend(backend)?;
         let db = Self::finish_setup(db, Self::initialize_tables)?;
+        Ok(Self::installed(db, None, Some(persistent), scratch))
+    }
+
+    pub fn open_fixture_backend_on_disk(
+        backend: impl kasumi_kv::SegmentGroupBackend + 'static,
+        storage_admission: std::sync::Arc<dyn kasumi_kv::StorageAdmission>,
+        persistent: std::sync::Arc<crate::NodeDisk>,
+        scratch: std::sync::Arc<crate::ScratchDisk>,
+    ) -> Result<std::sync::Arc<Self>> {
+        ensure!(
+            std::sync::Arc::ptr_eq(persistent.memory(), scratch.memory()),
+            "persistent and scratch disks require the same installed memory admission"
+        );
+        let db = kasumi_kv::Database::builder(
+            storage_admission,
+            *NODE_STORE_ID.as_bytes(),
+            node_storage_config().cache,
+        )
+        .open_with_backend(backend)?;
+        let db = Self::finish_setup(db, |database| {
+            let tx = database.begin_read()?;
+            tx.open_table(crate::CATALOG)?;
+            tx.open_table(crate::RECORDS)?;
+            Ok(())
+        })?;
         Ok(Self::installed(db, None, Some(persistent), scratch))
     }
 
@@ -265,7 +541,7 @@ impl crate::NodeStore {
 
     pub fn initialize_owned_empty_fixture(
         path: impl AsRef<std::path::Path>,
-        identity: &crate::private_files::FileIdentity,
+        identity: &crate::NodeGroupIdentity,
         id: uuid::Uuid,
         memory: std::sync::Arc<dyn crate::NodeDiskMemoryAdmission>,
         scratch: std::sync::Arc<crate::ScratchDisk>,
@@ -280,11 +556,11 @@ impl crate::NodeStore {
         path: impl AsRef<std::path::Path>,
         id: uuid::Uuid,
         memory: std::sync::Arc<dyn crate::NodeDiskMemoryAdmission>,
-    ) -> Result<crate::NodeFileCleanup> {
+    ) -> Result<crate::NodeSegmentGroupCleanup> {
         let disk = retry_disk_registry(|| {
             crate::NodeDisk::fixture_for_path(path.as_ref(), memory.clone())
         })?;
-        Self::claim_cleanup(path, id, disk)
+        Self::claim_cleanup(path, id, disk, node_storage_config())
     }
 }
 
@@ -293,6 +569,7 @@ impl crate::NodeStore {
 /// this exact owner; a restarted crash image needs an explicitly new fixture.
 #[derive(Debug, Default)]
 struct FixtureStorageAdmission {
+    cache_bytes: AtomicU64,
     failed: AtomicBool,
     reserved: AtomicU64,
 }
@@ -337,6 +614,34 @@ impl kasumi_kv::StorageAdmission for FixtureStorageAdmission {
     }
     fn owner_failed(&self) {
         self.failed.store(true, Ordering::Release);
+    }
+
+    fn quote_cache_memory(
+        &self,
+        bytes: u64,
+    ) -> Result<kasumi_kv::CacheMemoryQuote, kasumi_kv::AdmissionError> {
+        crate::test_utils::cache_test::quote::<Self>(bytes)
+    }
+    fn reserve_cache_memory(
+        self: std::sync::Arc<Self>,
+        bytes: u64,
+    ) -> Result<kasumi_kv::CacheMemoryLease, kasumi_kv::AdmissionError> {
+        crate::test_utils::cache_test::reserve(self, bytes)
+    }
+}
+impl crate::test_utils::cache_test::Provider for FixtureStorageAdmission {
+    fn acquire_cache(&self, bytes: u64, first: bool) -> Result<(), kasumi_kv::AdmissionError> {
+        let _ = first;
+        self.cache_bytes
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |used| {
+                used.checked_add(bytes).filter(|total| *total <= 256 << 20)
+            })
+            .map_err(|_| kasumi_kv::AdmissionError::CapacityDenied)?;
+        Ok(())
+    }
+    fn release_cache(&self, bytes: u64, last: bool) {
+        let _ = (bytes, last);
+        self.cache_bytes.fetch_sub(bytes, Ordering::AcqRel);
     }
 }
 
@@ -554,117 +859,157 @@ impl LeaseClock for ManualClock {
 /// Reopenable storage whose synchronized image models what survives power loss.
 /// Mutations after `fail_after` operations fail, including fsync, until disarmed.
 /// Only the synchronized image is installed by `crash`, without running database cleanup.
-#[derive(Clone, Debug, Default)]
-pub struct FaultBackend(std::sync::Arc<parking_lot::Mutex<FaultState>>);
-
+#[derive(Clone)]
+pub struct FaultBackend {
+    backend: kasumi_kv::backends::InMemoryGroup,
+    state: std::sync::Arc<parking_lot::Mutex<FaultState>>,
+}
+impl std::fmt::Debug for FaultBackend {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("FaultBackend")
+            .finish_non_exhaustive()
+    }
+}
+impl Default for FaultBackend {
+    fn default() -> Self {
+        Self {
+            backend: kasumi_kv::backends::InMemoryGroup::new(),
+            state: Default::default(),
+        }
+    }
+}
 #[derive(Debug, Default)]
 struct FaultState {
-    volatile: Vec<u8>,
-    durable: Vec<u8>,
     remaining: Option<usize>,
     operations: usize,
     syncs: usize,
     advance_on_sync: Option<(std::sync::Arc<ManualClock>, Duration)>,
 }
-
 impl FaultBackend {
     pub fn new() -> Self {
         Self::default()
     }
     pub fn fail_after(&self, mutations: usize) {
-        self.0.lock().remaining = Some(mutations);
+        self.state.lock().remaining = Some(mutations);
     }
     pub fn disarm(&self) {
-        self.0.lock().remaining = None;
+        self.state.lock().remaining = None;
     }
     pub fn operations(&self) -> usize {
-        self.0.lock().operations
+        self.state.lock().operations
     }
     pub fn syncs(&self) -> usize {
-        self.0.lock().syncs
+        self.state.lock().syncs
     }
+    /// Expire after root publication, not after a prepared data/page fsync.
     pub fn advance_clock_on_next_sync(
         &self,
         clock: std::sync::Arc<ManualClock>,
         elapsed: Duration,
     ) {
-        self.0.lock().advance_on_sync = Some((clock, elapsed));
+        self.state.lock().advance_on_sync = Some((clock, elapsed));
     }
-    /// Returns a new independent backend, so dropping the old database cannot
-    /// synchronize anything into the simulated post-crash disk.
     pub fn crash(&self) -> Self {
-        let durable = self.0.lock().durable.clone();
-        Self(std::sync::Arc::new(parking_lot::Mutex::new(FaultState {
-            volatile: durable.clone(),
-            durable,
-            ..FaultState::default()
-        })))
+        Self {
+            backend: self.backend.crash(),
+            state: Default::default(),
+        }
     }
-}
-
-impl FaultState {
-    fn mutate(&mut self) -> std::io::Result<()> {
-        if let Some(remaining) = &mut self.remaining {
+    fn mutate(&self) -> std::io::Result<()> {
+        let mut state = self.state.lock();
+        if let Some(remaining) = &mut state.remaining {
             if *remaining == 0 {
                 return Err(std::io::Error::other("injected storage failure"));
             }
             *remaining -= 1;
         }
-        self.operations += 1;
+        state.operations += 1;
         Ok(())
     }
 }
+impl kasumi_kv::SegmentGroupBackend for FaultBackend {
+    fn reserve_transaction(
+        &self,
+        plan: &kasumi_kv::TransactionSpacePlan,
+    ) -> std::result::Result<(), kasumi_kv::TransactionReserveError> {
+        self.backend.reserve_transaction(plan)
+    }
+    fn finish_transaction(&self, group_id: [u8; 16], batch_seq: u64) -> std::io::Result<()> {
+        self.backend.finish_transaction(group_id, batch_seq)
+    }
+    fn cancel_transaction(&self, group_id: [u8; 16], batch_seq: u64) -> std::io::Result<()> {
+        self.backend.cancel_transaction(group_id, batch_seq)
+    }
 
-impl kasumi_kv::StorageBackend for FaultBackend {
-    fn close(&self) -> kasumi_kv::BackendCloseOutcome {
-        kasumi_kv::BackendCloseOutcome::drained(Ok(()))
+    fn read_root(
+        &self,
+        slot: kasumi_kv::RootSlot,
+        out: &mut [u8; kasumi_kv::ROOT_SLOT_BYTES],
+    ) -> std::io::Result<()> {
+        self.backend.read_root(slot, out)
     }
-    fn len(&self) -> std::io::Result<u64> {
-        Ok(self.0.lock().volatile.len() as u64)
+    fn write_root(
+        &self,
+        slot: kasumi_kv::RootSlot,
+        bytes: &[u8; kasumi_kv::ROOT_SLOT_BYTES],
+    ) -> std::io::Result<()> {
+        self.mutate()?;
+        self.backend.write_root(slot, bytes)
     }
-    fn read(&self, offset: u64, out: &mut [u8]) -> std::io::Result<()> {
-        let state = self.0.lock();
-        let offset = usize::try_from(offset).map_err(std::io::Error::other)?;
-        let end = offset
-            .checked_add(out.len())
-            .ok_or_else(|| std::io::Error::other("read overflow"))?;
-        let bytes = state.volatile.get(offset..end).ok_or_else(|| {
-            std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "read outside storage")
-        })?;
-        out.copy_from_slice(bytes);
-        Ok(())
-    }
-    fn set_len(&self, len: u64) -> std::io::Result<()> {
-        let mut state = self.0.lock();
-        state.mutate()?;
-        state
-            .volatile
-            .resize(usize::try_from(len).map_err(std::io::Error::other)?, 0);
-        Ok(())
-    }
-    fn sync_data(&self) -> std::io::Result<()> {
-        let mut state = self.0.lock();
-        state.mutate()?;
+    fn sync_root(&self) -> std::io::Result<()> {
+        self.mutate()?;
+        self.backend.sync_root()?;
+        let mut state = self.state.lock();
+        state.syncs += 1;
         if let Some((clock, elapsed)) = state.advance_on_sync.take() {
             clock.advance(elapsed);
         }
-        state.syncs += 1;
-        state.durable = state.volatile.clone();
         Ok(())
     }
-    fn write(&self, offset: u64, data: &[u8]) -> std::io::Result<()> {
-        let mut state = self.0.lock();
-        state.mutate()?;
-        let offset = usize::try_from(offset).map_err(std::io::Error::other)?;
-        let end = offset
-            .checked_add(data.len())
-            .ok_or_else(|| std::io::Error::other("write overflow"))?;
-        let target = state
-            .volatile
-            .get_mut(offset..end)
-            .ok_or_else(|| std::io::Error::other("write outside storage"))?;
-        target.copy_from_slice(data);
+    fn visit_entries(
+        &self,
+        visitor: &mut dyn FnMut(&std::ffi::OsStr) -> std::io::Result<()>,
+    ) -> std::io::Result<()> {
+        self.backend.visit_entries(visitor)
+    }
+    fn exists(&self, file: kasumi_kv::GroupFile) -> std::io::Result<bool> {
+        self.backend.exists(file)
+    }
+    fn create(&self, file: kasumi_kv::GroupFile) -> std::io::Result<()> {
+        self.mutate()?;
+        self.backend.create(file)
+    }
+    fn len(&self, file: kasumi_kv::GroupFile) -> std::io::Result<u64> {
+        self.backend.len(file)
+    }
+    fn read(&self, file: kasumi_kv::GroupFile, at: u64, out: &mut [u8]) -> std::io::Result<()> {
+        self.backend.read(file, at, out)
+    }
+    fn write(&self, file: kasumi_kv::GroupFile, at: u64, bytes: &[u8]) -> std::io::Result<()> {
+        self.mutate()?;
+        self.backend.write(file, at, bytes)
+    }
+    fn set_len(&self, file: kasumi_kv::GroupFile, length: u64) -> std::io::Result<()> {
+        self.mutate()?;
+        self.backend.set_len(file, length)
+    }
+    fn sync(&self, file: kasumi_kv::GroupFile) -> std::io::Result<()> {
+        self.mutate()?;
+        self.backend.sync(file)?;
+        self.state.lock().syncs += 1;
         Ok(())
+    }
+    fn unlink(&self, file: kasumi_kv::GroupFile) -> std::io::Result<()> {
+        self.mutate()?;
+        self.backend.unlink(file)
+    }
+    fn sync_names(&self) -> std::io::Result<()> {
+        self.mutate()?;
+        self.backend.sync_names()
+    }
+    fn close(&self) -> kasumi_kv::BackendCloseOutcome {
+        self.backend.close()
     }
 }
 
@@ -823,21 +1168,79 @@ mod admitted_backend_tests {
 
     #[derive(Debug)]
     struct UntouchedBackend;
-    impl kasumi_kv::StorageBackend for UntouchedBackend {
-        fn len(&self) -> std::io::Result<u64> {
-            panic!("foreign-core backend was queried")
+    impl kasumi_kv::SegmentGroupBackend for UntouchedBackend {
+        fn reserve_transaction(
+            &self,
+            _plan: &kasumi_kv::TransactionSpacePlan,
+        ) -> std::result::Result<(), kasumi_kv::TransactionReserveError> {
+            panic!("foreign-core backend was touched")
         }
-        fn read(&self, _: u64, _: &mut [u8]) -> std::io::Result<()> {
-            panic!("foreign-core backend was read")
+        fn finish_transaction(&self, _group_id: [u8; 16], _batch_seq: u64) -> std::io::Result<()> {
+            panic!("foreign-core backend was touched")
         }
-        fn set_len(&self, _: u64) -> std::io::Result<()> {
-            panic!("foreign-core backend was resized")
+        fn cancel_transaction(&self, _group_id: [u8; 16], _batch_seq: u64) -> std::io::Result<()> {
+            panic!("foreign-core backend was touched")
         }
-        fn sync_data(&self) -> std::io::Result<()> {
-            panic!("foreign-core backend was synchronized")
+
+        fn read_root(
+            &self,
+            _slot: kasumi_kv::RootSlot,
+            _out: &mut [u8; kasumi_kv::ROOT_SLOT_BYTES],
+        ) -> std::io::Result<()> {
+            panic!("foreign-core backend was touched")
         }
-        fn write(&self, _: u64, _: &[u8]) -> std::io::Result<()> {
-            panic!("foreign-core backend was written")
+        fn write_root(
+            &self,
+            _slot: kasumi_kv::RootSlot,
+            _bytes: &[u8; kasumi_kv::ROOT_SLOT_BYTES],
+        ) -> std::io::Result<()> {
+            panic!("foreign-core backend was touched")
+        }
+        fn sync_root(&self) -> std::io::Result<()> {
+            panic!("foreign-core backend was touched")
+        }
+        fn visit_entries(
+            &self,
+            _visitor: &mut dyn FnMut(&std::ffi::OsStr) -> std::io::Result<()>,
+        ) -> std::io::Result<()> {
+            panic!("foreign-core backend was touched")
+        }
+        fn exists(&self, _file: kasumi_kv::GroupFile) -> std::io::Result<bool> {
+            panic!("foreign-core backend was touched")
+        }
+        fn create(&self, _file: kasumi_kv::GroupFile) -> std::io::Result<()> {
+            panic!("foreign-core backend was touched")
+        }
+        fn len(&self, _file: kasumi_kv::GroupFile) -> std::io::Result<u64> {
+            panic!("foreign-core backend was touched")
+        }
+        fn read(
+            &self,
+            _file: kasumi_kv::GroupFile,
+            _at: u64,
+            _out: &mut [u8],
+        ) -> std::io::Result<()> {
+            panic!("foreign-core backend was touched")
+        }
+        fn write(
+            &self,
+            _file: kasumi_kv::GroupFile,
+            _at: u64,
+            _bytes: &[u8],
+        ) -> std::io::Result<()> {
+            panic!("foreign-core backend was touched")
+        }
+        fn set_len(&self, _file: kasumi_kv::GroupFile, _length: u64) -> std::io::Result<()> {
+            panic!("foreign-core backend was touched")
+        }
+        fn sync(&self, _file: kasumi_kv::GroupFile) -> std::io::Result<()> {
+            panic!("foreign-core backend was touched")
+        }
+        fn unlink(&self, _file: kasumi_kv::GroupFile) -> std::io::Result<()> {
+            panic!("foreign-core backend was touched")
+        }
+        fn sync_names(&self) -> std::io::Result<()> {
+            panic!("foreign-core backend was touched")
         }
         fn close(&self) -> kasumi_kv::BackendCloseOutcome {
             panic!("foreign-core backend was acquired")
@@ -862,7 +1265,7 @@ mod admitted_backend_tests {
         let foreign = crate::ScratchDisk::fixture(foreign_directory.path(), foreign_memory.clone());
         let before = memory.snapshot();
         let foreign_before = foreign_memory.snapshot();
-        let error = crate::NodeStore::open_fixture_backend_on_disk(
+        let error = crate::NodeStore::create_fixture_backend_on_disk(
             UntouchedBackend,
             storage_admission(),
             persistent.clone(),
@@ -880,7 +1283,7 @@ mod admitted_backend_tests {
         assert!(!persistent_directory.path().join("node.kv").exists());
 
         let backend = FaultBackend::new();
-        let node = crate::NodeStore::open_fixture_backend_on_disk(
+        let node = crate::NodeStore::create_fixture_backend_on_disk(
             backend.clone(),
             storage_admission(),
             persistent.clone(),
@@ -900,5 +1303,206 @@ mod admitted_backend_tests {
         );
         node.shutdown().await.unwrap();
         assert!(!persistent_directory.path().join("node.kv").exists());
+    }
+}
+
+// Diagnostic-only renderings preserve the exact typed observations and never
+// acknowledge a retained operation. Used only when an existing assertion fails.
+#[cfg(test)]
+pub(crate) fn observation_diagnostic<E: std::fmt::Debug>(
+    observation: kasumi_kv::TerminalObservation<'_, E>,
+) -> String {
+    match observation {
+        kasumi_kv::TerminalObservation::NotEntered => "NotEntered".into(),
+        kasumi_kv::TerminalObservation::Entered => "Entered".into(),
+        kasumi_kv::TerminalObservation::Returned(result) => format!("{result:?}"),
+        kasumi_kv::TerminalObservation::Panicked(payload) => format!(
+            "Panicked(str={:?}, u64={:?})",
+            payload.downcast_ref::<&str>(),
+            payload.downcast_ref::<u64>()
+        ),
+    }
+}
+#[cfg(test)]
+pub(crate) fn native_write_diagnostic<E: std::fmt::Debug>(
+    phase: crate::NodeWriterPhase,
+    begin: kasumi_kv::TerminalObservation<'_, kasumi_kv::TransactionError>,
+    body: kasumi_kv::TerminalObservation<'_, E>,
+    outer: kasumi_kv::TerminalObservation<'_, std::convert::Infallible>,
+    terminal: Option<kasumi_kv::WriteTerminalReport<'_>>,
+) -> String {
+    let native = terminal.map(|report| {
+        format!(
+            "operation={:?}, settlement={:?}, terminal={}, rollback={}, disposal={}",
+            report.operation(),
+            report.settlement(),
+            observation_diagnostic(report.terminal()),
+            observation_diagnostic(report.rollback()),
+            observation_diagnostic(report.disposal())
+        )
+    });
+    format!(
+        "phase={phase:?}, begin={}, body={}, outer={}, native={native:?}",
+        observation_diagnostic(begin),
+        observation_diagnostic(body),
+        observation_diagnostic(outer)
+    )
+}
+
+// One fixed, thread-local fault slot, scoped to the actual binding insert and
+// exact installed provider. Its backing is charged by the arm before use.
+#[cfg(test)]
+#[derive(Clone, Copy)]
+struct BindingStagingFault {
+    provider: usize,
+    depth: usize,
+    entries: usize,
+    denials: usize,
+    requests: [u64; 2],
+}
+#[cfg(test)]
+std::thread_local! {
+    static BINDING_STAGING_FAULT: std::cell::Cell<Option<BindingStagingFault>> = const {
+        std::cell::Cell::new(None)
+    };
+}
+
+#[cfg(test)]
+pub(crate) struct BindingStagingDenial<'a> {
+    memory: &'a std::sync::Arc<TestDiskMemory>,
+    previous: Option<BindingStagingFault>,
+    charge: Option<crate::DiskMemoryLease>,
+    // Arm and scope guards must be destroyed on their originating thread.
+    _thread: std::marker::PhantomData<std::rc::Rc<()>>,
+}
+#[cfg(test)]
+impl TestDiskMemory {
+    pub(crate) fn deny_binding_staging(
+        self: &std::sync::Arc<Self>,
+    ) -> std::io::Result<BindingStagingDenial<'_>> {
+        use crate::NodeDiskMemoryAdmission;
+        // No heap TLS or request log: one fixed slot and two stack guards.
+        let bytes = (std::mem::size_of::<std::cell::Cell<Option<BindingStagingFault>>>()
+            + std::mem::size_of::<BindingStagingDenial<'_>>()
+            + std::mem::size_of::<BindingStagingScope>()) as u64;
+        let charge = self.clone().reserve_installed(bytes)?;
+        let fault = BindingStagingFault {
+            provider: std::sync::Arc::as_ptr(self) as usize,
+            depth: 0,
+            entries: 0,
+            denials: 0,
+            requests: [0; 2],
+        };
+        let previous = BINDING_STAGING_FAULT.with(|slot| slot.replace(Some(fault)));
+        Ok(BindingStagingDenial {
+            memory: self,
+            previous,
+            charge: Some(charge),
+            _thread: std::marker::PhantomData,
+        })
+    }
+}
+#[cfg(test)]
+impl BindingStagingDenial<'_> {
+    pub(crate) fn assert_refused_chunk_and_fallback(&self) {
+        let fault = BINDING_STAGING_FAULT.with(|slot| slot.get()).unwrap();
+        assert_eq!(fault.provider, std::sync::Arc::as_ptr(self.memory) as usize);
+        assert_eq!(fault.depth, 0, "binding insert scope did not unwind");
+        assert_eq!(fault.entries, 1, "expected one actual binding insert");
+        assert_eq!(
+            fault.denials, 2,
+            "chunk and exact fallback must both be denied"
+        );
+        // Native staging first requests its 64 KiB chunk plus lease/wrapper
+        // backing, then the smaller exact row deficit plus that same backing.
+        assert!(fault.requests[0] > 64 << 10, "{:?}", fault.requests);
+        assert!(
+            fault.requests[1] > 0 && fault.requests[1] < fault.requests[0],
+            "{:?}",
+            fault.requests
+        );
+    }
+}
+#[cfg(test)]
+impl Drop for BindingStagingDenial<'_> {
+    fn drop(&mut self) {
+        BINDING_STAGING_FAULT.with(|slot| slot.set(self.previous));
+        // Uninstall TLS observations before refunding their backing, including
+        // on unwind or after a nested arm restores its predecessor.
+        drop(self.charge.take());
+    }
+}
+
+#[cfg(test)]
+pub(crate) struct BindingStagingScope {
+    previous_depth: Option<usize>,
+    provider: usize,
+    _thread: std::marker::PhantomData<std::rc::Rc<()>>,
+}
+#[cfg(test)]
+impl BindingStagingScope {
+    pub(crate) fn enter(provider: &std::sync::Arc<dyn crate::NodeDiskMemoryAdmission>) -> Self {
+        let provider = std::sync::Arc::as_ptr(provider) as *const () as usize;
+        let previous_depth = BINDING_STAGING_FAULT.with(|slot| {
+            let mut fault = slot.get()?;
+            if fault.provider != provider {
+                return None;
+            }
+            let previous = fault.depth;
+            fault.depth = fault.depth.checked_add(1).unwrap();
+            fault.entries = fault.entries.checked_add(1).unwrap();
+            slot.set(Some(fault));
+            Some(previous)
+        });
+        Self {
+            previous_depth,
+            provider,
+            _thread: std::marker::PhantomData,
+        }
+    }
+}
+#[cfg(test)]
+impl Drop for BindingStagingScope {
+    fn drop(&mut self) {
+        if let Some(previous_depth) = self.previous_depth {
+            BINDING_STAGING_FAULT.with(|slot| {
+                if let Some(mut fault) = slot.get().filter(|fault| fault.provider == self.provider)
+                {
+                    fault.depth = previous_depth;
+                    slot.set(Some(fault));
+                }
+            });
+        }
+    }
+}
+#[cfg(test)]
+fn binding_staging_refuses(provider: usize, bytes: u64) -> bool {
+    BINDING_STAGING_FAULT.with(|slot| {
+        let Some(mut fault) = slot.get() else {
+            return false;
+        };
+        if fault.provider != provider || fault.depth == 0 {
+            return false;
+        }
+        assert!(
+            fault.denials < fault.requests.len(),
+            "unexpected additional staging grant"
+        );
+        fault.requests[fault.denials] = bytes;
+        fault.denials += 1;
+        slot.set(Some(fault));
+        true
+    })
+}
+
+#[cfg(test)]
+impl TestDiskMemory {
+    /// Arm the exact most recently admitted actual lease, after construction.
+    /// Injection runs only after its real accounting release and mutex unlock.
+    pub(crate) fn panic_on_last_point_lease_drop(&self, payload: Box<dyn std::any::Any + Send>) {
+        let id = self.state.lock().unwrap().attempts;
+        let mut pending = self.point_drop_panic.lock().unwrap();
+        assert!(pending.is_none());
+        *pending = Some((id, payload));
     }
 }

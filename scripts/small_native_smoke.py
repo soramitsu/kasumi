@@ -329,6 +329,24 @@ def load_directory_policy(path):
     return raw, value
 
 
+def load_file_allocation_policy(path):
+    def unique(pairs):
+        value = {}
+        for key, item in pairs:
+            require(key not in value, "duplicate file allocation policy field")
+            value[key] = item
+        return value
+    with path.open("rb") as source:
+        raw = source.read(4097)
+    require(len(raw) <= 4096, "file allocation policy exceeds input bound")
+    value = json.loads(raw, object_pairs_hook=unique)
+    require(isinstance(value, dict) and set(value) == {"maximum_extra_extent_bytes"}
+            and type(value["maximum_extra_extent_bytes"]) is int
+            and 0 <= value["maximum_extra_extent_bytes"] <= (1 << 63) - 1,
+            "invalid explicit file allocation policy")
+    return raw, value
+
+
 class Runner:
     def __init__(self, args):
         self.args = args
@@ -408,6 +426,12 @@ class Runner:
         self.record["directory_policy"] = {"file": str(self.directory_policy_file),
                                            "sha256": sha256(self.directory_policy_file),
                                            "policy": directory_policy}
+        allocation_bytes, allocation_policy = load_file_allocation_policy(self.args.file_allocation_policy)
+        self.file_allocation_policy_file = provenance / "file-allocation-policy.json"
+        private_write(self.file_allocation_policy_file, allocation_bytes)
+        self.record["file_allocation_policy"] = {"file": str(self.file_allocation_policy_file),
+                                                 "sha256": sha256(self.file_allocation_policy_file),
+                                                 "policy": allocation_policy}
         collection = git("show", commit + ":benchmarks/capacity-collection.json")
         require(json.loads(collection)["name"] == "capacity", "unexpected source collection schema")
         private_write(self.output / "collection.json", collection)
@@ -571,6 +595,7 @@ class Runner:
                 "file": str(network_file), "sha256": sha256(network_file), "network": network}
             self.command("init", [daemon, "init", "--mode", "standalone", installation,
                                   "--directory-policy", self.directory_policy_file,
+                                  "--file-allocation-policy", self.file_allocation_policy_file,
                                   "--network", network_file, "--tenant", "capacity-smoke"])
             self.config_file = installation / "kasumi.json"
             config = read_json(self.config_file)
@@ -578,6 +603,8 @@ class Runner:
                     and config["replication"] is None, "init did not produce explicit standalone storage")
             require(config["persistent_disk"]["directory_policy"] == self.record["directory_policy"]["policy"],
                     "init changed the supplied directory admission policy")
+            require(config["persistent_disk"]["file_allocation_policy"] == self.record["file_allocation_policy"]["policy"],
+                    "init changed the supplied file allocation policy")
             require(config["mcp"]["listen"] == network["mcp_listen"]
                     and config["mcp"]["protocol"]["public_url"] == network["mcp_public_url"]
                     and config["native"]["listen"] == network["native_listen"]
@@ -696,6 +723,7 @@ def main(argv=None):
     parser.add_argument("--build-evidence", type=Path, required=True,
                         help="scripts/release_gate.py evidence.json for the actual binary builds")
     parser.add_argument("--directory-policy", type=Path, required=True)
+    parser.add_argument("--file-allocation-policy", type=Path, required=True)
     parser.add_argument("--source", required=True)
     parser.add_argument("--repository", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
@@ -711,6 +739,7 @@ def main(argv=None):
     args.binaries = args.binaries.resolve(strict=True)
     args.build_evidence = args.build_evidence.resolve(strict=True)
     args.directory_policy = args.directory_policy.resolve(strict=True)
+    args.file_allocation_policy = args.file_allocation_policy.resolve(strict=True)
     require(args.output.is_absolute() and not args.output.exists() and not args.output.is_symlink()
             and not args.output.resolve().is_relative_to(args.repository),
             "output must be a new absolute directory outside the repository")

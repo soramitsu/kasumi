@@ -155,6 +155,7 @@ impl ClusterStorage {
                     // Preserve the original two separate ScratchDisk::fixture quotas.
                     max_bytes: 256 << 30,
                     min_free_bytes: 0,
+                    native_cache_bytes: scratch_template.native_cache_bytes,
                 })
             })
             .collect::<Vec<_>>();

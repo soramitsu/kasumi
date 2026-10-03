@@ -108,7 +108,7 @@ async fn snapshot_pages_overlap_atomic_writers_and_current_policy_revocation() {
         .unwrap();
     let revision = first.revision;
     let mut next = request();
-    next.cursor = first.cursor;
+    next.cursor = first.cursor.clone();
     let mut seen = BTreeSet::from([first.rows[0].id.clone()]);
     assert_eq!(first.rows[0].body["phase"], 0);
 
@@ -142,7 +142,7 @@ async fn snapshot_pages_overlap_atomic_writers_and_current_policy_revocation() {
                 seen.insert(page.rows[0].id.clone()),
                 "duplicate historical row"
             );
-            next.cursor = page.cursor;
+            next.cursor = page.cursor.clone();
             rendezvous.wait().await;
         }
         assert!(next.cursor.is_none());
@@ -169,10 +169,10 @@ async fn snapshot_pages_overlap_atomic_writers_and_current_policy_revocation() {
         .await
         .unwrap();
     let mut reader_cursor = request();
-    reader_cursor.cursor = reader_page.cursor;
+    reader_cursor.cursor = reader_page.cursor.clone();
     let owner_page = database.query(&identity("owner"), request()).await.unwrap();
     let mut owner_cursor = request();
-    owner_cursor.cursor = owner_page.cursor;
+    owner_cursor.cursor = owner_page.cursor.clone();
     let rendezvous = Arc::new(tokio::sync::Barrier::new(2));
     let revoke_db = database.clone();
     let revoke_barrier = rendezvous.clone();

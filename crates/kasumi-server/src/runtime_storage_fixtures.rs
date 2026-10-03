@@ -36,9 +36,12 @@ pub(crate) fn standalone_disks(directory: &Path) -> Result<(NodeDiskConfig, Scra
     ]));
     let scratch = ScratchDiskConfig {
         directory: directory.join("scratch"),
-        ..crate::runtime::example_config(kasumi_store::DirectoryPolicy::fixture())
-            .unwrap()
-            .scratch_disk
+        ..crate::runtime::example_config(
+            kasumi_store::DirectoryPolicy::fixture(),
+            kasumi_store::FileAllocationPolicy::fixture(),
+        )
+        .unwrap()
+        .scratch_disk
     };
     Ok((persistent, scratch))
 }
@@ -70,6 +73,7 @@ pub(crate) async fn initialize_standalone(
         directory,
         tenant,
         kasumi_store::DirectoryPolicy::fixture(),
+        kasumi_store::FileAllocationPolicy::fixture(),
         crate::standalone::StandaloneNetwork::fixture(),
         storage.clone(),
     )

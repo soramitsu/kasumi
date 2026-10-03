@@ -1,0 +1,95 @@
+Command: cargo test --locked --offline --config profile.test.package.kasumi-kv.opt-level=3 --config profile.test.package.sha2.opt-level=3 -p kasumi-kv -p kasumi-store -p kasumi-raft --all-features --lib -- prepared_point plaintext_get_workspace paired_read_quote routine_early_missing_or_wrong_typed_table_stays_retained_after_real_disposal selected_application
+CARGO_TARGET_DIR=target/disk-backed-cache
+   Compiling kasumi-store v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-store)
+   Compiling kasumi-raft v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-raft)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 07s
+     Running unittests src/lib.rs (target/disk-backed-cache/debug/deps/kasumi_kv-221aa5373d25965b)
+
+running 1 test
+test tables::tests::prepared_points_reuse_backing_under_total_workspace_refusal_and_bind_exact_owner ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 539 filtered out; finished in 0.08s
+
+     Running unittests src/lib.rs (target/disk-backed-cache/debug/deps/kasumi_raft-52e19526acc9deb0)
+
+running 22 tests
+test selected_application::plan_tests::producer_wire_quote_covers_arbitrary_numbers_without_reclassifying_literal_markers ... ok
+test selected_application::plan_tests::producer_wire_shape_overquotes_actual_decoder_for_escaped_unicode_and_nested_metadata ... ok
+test selected_application::allocation_tests::selected_application_allocation_census_covers_expanding_typed_diagnostics ... ok
+test selected_application::allocation_tests::selected_application_allocation_census_covers_membership_and_noncanonical_defaults ... ok
+test selected_application::receipt_tests::invocation_receipt_rejects_concrete_retirement_seed_and_response_fields_before_effects ... ok
+test selected_application::tests::selected_application_denial_foreign_provider_and_retain_failure_keep_grant ... ok
+test selected_application::receipt_tests::invocation_receipt_fixed_inputs_hash_and_authentic_consume_allocate_nothing ... ok
+test selected_application::receipt_tests::invocation_receipt_binds_the_actual_preparer_plan_and_joint_effects ... ok
+test selected_application::tests::selected_application_checks_complete_entry_and_bootstrap_identity ... ok
+test selected_application::plan_tests::prospective_covered_snapshot_uses_actual_five_record_proof ... ok
+test selected_application::receipt_tests::invocation_receipt_reentrant_early_consume_cannot_change_entered_mint_state ... ok
+test selected_application::plan_tests::prospective_callback_prepares_before_real_producer_publication_and_keeps_original_refusal ... ok
+test selected_application::tests::selected_application_exact_old_entry_and_real_covered_replay_remain_distinct ... ok
+test selected_application::plan_tests::prospective_advancing_origin_refuses_real_exact_replay_before_application_effects ... ok
+test selected_application::receipt_tests::invocation_receipt_authenticates_advance_and_identical_covered_replays ... ok
+test selected_application::tests::selected_application_older_image_and_entry_replay_keep_newer_snapshot_identity ... ok
+test selected_application::plan_tests::prospective_covered_replay_quotes_actual_newer_cursor ... ok
+test selected_application::receipt_tests::invocation_receipt_consumes_covered_replay_with_changed_and_empty_effects ... ok
+test selected_application::receipt_tests::invocation_receipt_rejects_pair_context_response_and_ordered_effect_substitution_before_effects ... ok
+test selected_application::plan_tests::prospective_plan_rejects_later_actual_record_and_foreign_domain_pair ... ok
+test selected_application::tests::selected_application_original_bounded_read_failure_retains_exact_reader ... ok
+test selected_application::tests::selected_application_snapshot_uses_actual_manifest_and_snapshot_cursor ... ok
+
+test result: ok. 22 passed; 0 failed; 0 ignored; 0 measured; 137 filtered out; finished in 13.91s
+
+     Running unittests src/lib.rs (target/disk-backed-cache/debug/deps/kasumi_store-884c18e0fcc298ea)
+
+running 13 tests
+test read_view::workspace_tests::plaintext_get_workspace_quote_is_checked_bounded_and_allocation_free ... ok
+test storage_domains::prepared_point_read::tests::prepared_points_check_peer_access_even_on_application_cache_hit_and_absence ... FAILED
+test storage_domains::prepared_point_read::tests::prepared_points_retain_full_fit_cache_and_check_expiry_on_hits_and_absence ... FAILED
+test read_view::workspace_tests::plaintext_get_workspace_covers_authenticated_long_fields_and_ciphertext_failures ... FAILED
+test storage_opening::reads::fork_tests::routine_early_missing_or_wrong_typed_table_stays_retained_after_real_disposal ... ok
+test storage_domains::read_memory_quote::tests::paired_read_quote_has_no_allocations_or_admission_and_matches_reader_retention ... ok
+test storage_domains::read_memory_quote::tests::paired_read_quote_key_id_ceiling_is_owned_and_stale_growth_is_rejected ... ok
+TestDiskMemory::reserve_installed denied: provider=0x7568c2cf90 requested_bytes=4515 charged_bytes=8627 bookkeeping_bytes=71800 used_bytes=52293809 next_used_bytes=52302436 max_bytes=268435456 live_reservations=128 max_reservations=128 attempts=502 error=Kind(OutOfMemory)
+test storage_domains::prepared_point_read::tests::prepared_point_partial_construction_denial_retires_backing_and_registered_reader ... ok
+test storage_domains::prepared_point_read::tests::prepared_points_reuse_real_encrypted_backing_with_exact_overlapping_charges ... ok
+test storage_domains::read_memory_quote::tests::paired_read_quote_covers_real_encrypted_get_requested_allocations ... ok
+test storage_domains::prepared_point_read::tests::prepared_points_keep_both_domains_on_the_same_snapshot_across_writes_and_rotation ... ok
+test read_view::workspace_tests::plaintext_get_workspace_covers_first_read_pages_large_values_and_max_names ... ok
+test storage_domains::prepared_point_read::tests::prepared_points_authenticate_and_reject_wrong_identity_trailing_and_missing_key ... ok
+
+failures:
+
+---- storage_domains::prepared_point_read::tests::prepared_points_check_peer_access_even_on_application_cache_hit_and_absence stdout ----
+Error: invalid input parameter
+
+---- storage_domains::prepared_point_read::tests::prepared_points_retain_full_fit_cache_and_check_expiry_on_hits_and_absence stdout ----
+Error: invalid input parameter
+
+---- read_view::workspace_tests::plaintext_get_workspace_covers_authenticated_long_fields_and_ciphertext_failures stdout ----
+Error: isolated plaintext census failed: 
+running 1 test
+test read_view::workspace_tests::plaintext_get_workspace_covers_authenticated_long_fields_and_ciphertext_failures ... FAILED
+
+failures:
+
+failures:
+    read_view::workspace_tests::plaintext_get_workspace_covers_authenticated_long_fields_and_ciphertext_failures
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 693 filtered out; finished in 2.93s
+
+
+
+thread 'read_view::workspace_tests::plaintext_get_workspace_covers_authenticated_long_fields_and_ciphertext_failures' (20823819) panicked at crates/kasumi-store/src/read_view_workspace_tests.rs:261:9:
+long field was not copied
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+
+failures:
+    read_view::workspace_tests::plaintext_get_workspace_covers_authenticated_long_fields_and_ciphertext_failures
+    storage_domains::prepared_point_read::tests::prepared_points_check_peer_access_even_on_application_cache_hit_and_absence
+    storage_domains::prepared_point_read::tests::prepared_points_retain_full_fit_cache_and_check_expiry_on_hits_and_absence
+
+test result: FAILED. 10 passed; 3 failed; 0 ignored; 0 measured; 681 filtered out; finished in 10.13s
+
+error: test failed, to rerun pass `-p kasumi-store --lib`
+Runner: 92.52s; exit=101; matching=852/852

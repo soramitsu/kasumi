@@ -1,0 +1,20 @@
+Command: cargo test --locked --offline -p kasumi-store --all-features --lib --config profile.test.package.kasumi-kv.opt-level=3 --config profile.test.package.sha2.opt-level=3 read_view::fork_tests::
+CARGO_TARGET_DIR=target/disk-backed-cache
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.29s
+     Running unittests src/lib.rs (target/disk-backed-cache/debug/deps/kasumi_store-98be0c6afb7030c8)
+
+running 10 tests
+test read_view::fork_tests::prepared_pair_denial_happens_before_registration_and_keeps_original_value ... ok
+test read_view::fork_tests::prepared_pair_cancel_and_drop_retire_unbegun_actual_children ... ok
+test read_view::fork_tests::prepared_pair_owns_one_census_child_before_selecting_the_published_root ... ok
+test read_view::fork_tests::selected_view_fork_preserves_single_domain_point_and_range_after_parent_drop ... ok
+test read_view::fork_tests::selected_view_fork_rejects_foreign_database_even_with_same_provider_and_uuid ... ok
+test read_view::fork_tests::prepared_pair_rejects_recovered_begin_before_application_publication ... ok
+test read_view::fork_tests::prepared_pair_unknown_cancellation_keeps_exact_payload_and_census_custody ... ok
+test read_view::fork_tests::prepared_pair_rechecks_each_domain_before_native_begin_and_retires_queue ... ok
+test read_view::fork_tests::selected_view_fork_keeps_both_encrypted_domains_on_one_old_root ... ok
+test read_view::fork_tests::selected_view_fork_rechecks_expiry_and_settles_post_fork_denial ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 665 filtered out; finished in 6.11s
+
+Runner: 6.57s; exit=0; matching=801/801

@@ -1,0 +1,68 @@
+Command: cargo test -p kasumi-engine --all-features --lib --locked --offline --config profile.test.package.kasumi-kv.opt-level=3 --config profile.test.package.sha2.opt-level=3 -- --test-threads=1 audit_maintenance_service::tests:: database_worker_outcome_tests::
+CARGO_TARGET_DIR=target/disk-backed-cache
+warning: variant `Mutation` is never constructed
+  --> crates/kasumi-engine/src/security_audit_jobs.rs:26:5
+   |
+24 | enum JobEffect {
+   |      --------- variant in this enum
+25 |     Read,
+26 |     Mutation(&'static str),
+   |     ^^^^^^^^
+   |
+   = note: `JobEffect` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: struct `ReadPause` is never constructed
+  --> crates/kasumi-engine/src/security_audit_jobs.rs:57:19
+   |
+57 | pub(super) struct ReadPause {
+   |                   ^^^^^^^^^
+
+warning: method `run_mutation` is never used
+   --> crates/kasumi-engine/src/security_audit_jobs.rs:120:25
+    |
+ 62 | impl SecurityAudit {
+    | ------------------ method in this implementation
+...
+120 |     pub(super) async fn run_mutation<T, F, R>(&self, component: &'static str, run: R) -> Result<T>
+    |                         ^^^^^^^^^^^^
+
+warning: `kasumi-engine` (lib) generated 3 warnings
+warning: field `panic` is never read
+  --> crates/kasumi-engine/src/security_audit_jobs.rs:52:9
+   |
+48 | pub(super) struct RecordFault {
+   |                   ----------- field in this struct
+...
+52 |     pub panic: bool,
+   |         ^^^^^
+
+warning: `kasumi-engine` (lib test) generated 4 warnings (3 duplicates)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.43s
+     Running unittests src/lib.rs (target/disk-backed-cache/debug/deps/kasumi_engine-b15d1192089511a8)
+
+running 10 tests
+test service::audit_maintenance_service::tests::encrypted_worker_drains_hot_history_when_ordinary_capacity_is_full ... ok
+test service::audit_maintenance_service::tests::external_archive_outage_before_proposal_preserves_hot_history_and_raft_availability ... ok
+test service::audit_maintenance_service::tests::tenant_audit_worker_keeps_its_owner_through_cancelled_shutdown ... ok
+test service::database_worker_outcome_tests::aborted_database_monitor_retains_its_blocking_child_and_distinct_panic ... ok
+test service::database_worker_outcome_tests::admitted_full_backup_cancelled_caller_retains_exact_state_stream_producer_until_release ... FAILED
+test service::database_worker_outcome_tests::cancelled_backup_producer_and_shutdown_waiter_keep_original_blocking_panic ... ok
+test service::database_worker_outcome_tests::cancelled_database_drain_keeps_monitor_panic_before_pending_audit_child ... ok
+test service::database_worker_outcome_tests::database_audit_blocking_panic_is_terminal_and_retained ... ok
+test service::database_worker_outcome_tests::database_shutdown_cancels_undispatched_shared_permit_wait_before_other_tenant_drain ... ok
+test service::database_worker_outcome_tests::sealed_database_admission_preserves_raft_storage_until_shutdown ... ok
+
+failures:
+
+---- service::database_worker_outcome_tests::admitted_full_backup_cancelled_caller_retains_exact_state_stream_producer_until_release stdout ----
+Error: deadline has elapsed
+
+
+failures:
+    service::database_worker_outcome_tests::admitted_full_backup_cancelled_caller_retains_exact_state_stream_producer_until_release
+
+test result: FAILED. 9 passed; 1 failed; 0 ignored; 0 measured; 468 filtered out; finished in 162.79s
+
+error: test failed, to rerun pass `-p kasumi-engine --lib`
+Runner: 164.40s; exit=101; matching=752/752

@@ -87,7 +87,11 @@ struct Fixture {
 impl Fixture {
     async fn new() -> Result<Self> {
         let root = kasumi_store::test_utils::private_tempdir()?;
-        let mut config = example_config(kasumi_store::DirectoryPolicy::fixture()).unwrap();
+        let mut config = example_config(
+            kasumi_store::DirectoryPolicy::fixture(),
+            kasumi_store::FileAllocationPolicy::fixture(),
+        )
+        .unwrap();
         config.database_id = Uuid::new_v4();
         config.database_path = root.path().join("replica-1/persistent/source.kv");
         let tenant = config.tenants[0].tenant.clone();

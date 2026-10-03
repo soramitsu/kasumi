@@ -105,11 +105,18 @@ pub(crate) fn publish(
         .writes
         .push(WriteOp::put(META, b"snapshot_coverage", coverage_bytes));
     install.writes.push(manifest);
-    let mut replacements = install
-        .records
-        .as_ref()
-        .map_or_else(Vec::new, |records| records.namespaces().to_vec());
-    replacements.push((CLOSED_SNAPSHOT, &chunks));
+    let mut replacements = install.records.as_ref().map_or_else(Vec::new, |records| {
+        records
+            .namespaces()
+            .map(|(namespace, table)| {
+                kasumi_store::NamespaceReplacement::from_table(namespace, table)
+            })
+            .to_vec()
+    });
+    replacements.push(kasumi_store::NamespaceReplacement::from_table(
+        CLOSED_SNAPSHOT,
+        &chunks,
+    ));
     custody
         .store()
         .replace_namespaces(&replacements, &install.writes)
@@ -404,7 +411,7 @@ impl RaftStateMachine<TypeConfig> for CustodyMachine {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     const MAX_CLOSED_SNAPSHOT_BYTES: u64 = 64 << 20;
     fn publish(custody: &CustodyStore, snapshot: &SnapshotEnvelope) -> Result<()> {
@@ -428,6 +435,37 @@ mod tests {
                 BTreeMap::from([(1, BasicNode::new("local"))]),
             )),
         }
+    }
+    // Appending/committing membership is not application. Persist its actual
+    // header-bound fact and ordinary initialization state through the same
+    // applied transaction before the retirement-only fixtures recover custody.
+    pub(crate) fn apply_membership(
+        domains: &kasumi_store::TenantStorageSet,
+        entry: &Entry<TypeConfig>,
+        previous: Option<LogId<u64>>,
+    ) -> Result<()> {
+        let EntryPayload::Membership(membership) = &entry.payload else {
+            anyhow::bail!("fixture entry is not membership")
+        };
+        let encoded = crate::storage::encode_entry(entry)?;
+        control::persist_applied(
+            domains,
+            &AppliedEntryContext {
+                log_id: entry.log_id,
+                previous,
+                membership: StoredMembership::new(Some(entry.log_id), membership.clone()),
+                command_sha256: crate::command::sha256(&encoded),
+                retirement_seed: None,
+            },
+            None,
+        )?;
+        let first = control::first_applied_membership(domains.custody().store())?
+            .context("fixture first membership was not applied")?;
+        assert!(matches!(
+            crate::initialization_association::load_state(domains.custody(), Some(&first))?,
+            Some(crate::initialization_association::AssociationState::Ordinary {})
+        ));
+        Ok(())
     }
     fn rotation(request: &RetireSourceRequest) -> crate::CustodyCommand {
         crate::CustodyCommand {
@@ -482,6 +520,7 @@ mod tests {
         log.blocking_append([membership(), retirement_entry()?])
             .await?;
         log.save_committed(Some(id(1))).await?;
+        apply_membership(&domains, &membership(), None)?;
         assert!(crate::ControlLog::open(domains.custody().clone(), 1, group())?.recover_retired()?);
         let initial = control::custody_state(domains.custody())?;
         let command = rotation(&initial.origin.request);
@@ -551,6 +590,7 @@ mod tests {
         log.blocking_append([membership(), retirement_entry()?])
             .await?;
         log.save_committed(Some(id(1))).await?;
+        apply_membership(&domains, &membership(), None)?;
         assert!(crate::ControlLog::open(domains.custody().clone(), 1, group())?.recover_retired()?);
         let state = control::custody_state(domains.custody())?;
         let command = rotation(&state.origin.request);
@@ -621,6 +661,7 @@ mod tests {
         log.blocking_append([membership(), retirement_entry()?])
             .await?;
         log.save_committed(Some(id(1))).await?;
+        apply_membership(&domains, &membership(), None)?;
         log.save_vote(&openraft::Vote::new_committed(3, 1)).await?;
         drop(log);
         app.revoke();
@@ -684,6 +725,7 @@ mod tests {
             log.blocking_append([members.clone(), retirement.clone()])
                 .await?;
             log.save_committed(Some(id(1))).await?;
+            apply_membership(&domains, &members, None)?;
             log.save_vote(&openraft::Vote::new_committed(3, 1)).await?;
             drop(log);
             app.revoke();
@@ -745,6 +787,7 @@ mod tests {
         log.blocking_append([membership(), retirement_entry()?])
             .await?;
         log.save_committed(Some(id(1))).await?;
+        apply_membership(&domains, &membership(), None)?;
         assert!(crate::ControlLog::open(domains.custody().clone(), 1, group())?.recover_retired()?);
         let initial = control::custody_state(domains.custody())?;
         let command = rotation(&initial.origin.request);
@@ -816,6 +859,7 @@ mod tests {
         log.blocking_append([membership(), retirement_entry()?])
             .await?;
         log.save_committed(Some(id(1))).await?;
+        apply_membership(&domains, &membership(), None)?;
         assert!(crate::ControlLog::open(domains.custody().clone(), 1, group())?.recover_retired()?);
         let original: AppliedCursor = load(domains.custody().store(), META, b"applied")?.unwrap();
         domains.custody().store().write_batch(&[WriteOp::put(
@@ -851,6 +895,7 @@ mod tests {
         log.blocking_append([membership(), retirement_entry()?])
             .await?;
         log.save_committed(Some(id(1))).await?;
+        apply_membership(&domains, &membership(), None)?;
         assert!(crate::ControlLog::open(domains.custody().clone(), 1, group())?.recover_retired()?);
         let command = rotation(
             &control::custody_head(domains.custody())?
@@ -952,6 +997,7 @@ mod tests {
         log.blocking_append([membership(), retirement_entry()?])
             .await?;
         log.save_committed(Some(id(1))).await?;
+        apply_membership(&domains, &membership(), None)?;
         assert!(crate::ControlLog::open(domains.custody().clone(), 1, group())?.recover_retired()?);
         let command = rotation(&control::custody_state(domains.custody())?.origin.request);
         log.blocking_append([Entry {
@@ -1023,15 +1069,18 @@ mod tests {
         log.blocking_append([membership(), retirement_entry()?])
             .await?;
         log.save_committed(Some(id(1))).await?;
+        apply_membership(&source, &membership(), None)?;
         assert!(crate::ControlLog::open(source.custody().clone(), 1, group())?.recover_retired()?);
         let mut snapshot = capture(source.custody())?;
-        let membership = |address: String| {
-            StoredMembership::new(
-                None,
-                openraft::Membership::from(BTreeMap::from([(1u64, BasicNode::new(address))])),
+        let later_membership = |address: String| {
+            openraft::Membership::new(
+                vec![BTreeSet::from([1])],
+                BTreeMap::from([(1u64, BasicNode::new(address))]),
             )
         };
-        snapshot.meta.last_membership = membership(String::new());
+        snapshot.meta.last_log_id = Some(id(2));
+        snapshot.meta.last_membership =
+            StoredMembership::new(Some(id(2)), later_membership(String::new()));
         let base = snapshot
             .encode(MAX_CLOSED_SNAPSHOT_BYTES)?
             .read_bounded(usize::try_from(MAX_CLOSED_SNAPSHOT_BYTES)?)?;
@@ -1039,7 +1088,21 @@ mod tests {
         let address_len = crate::snapshot_codec::MAX_METADATA
             .checked_sub(base_metadata_len + 4096)
             .context("base closed metadata exceeds test budget")?;
-        snapshot.meta.last_membership = membership("x".repeat(address_len));
+        let entry = Entry {
+            initialization: None,
+            log_id: id(2),
+            payload: EntryPayload::Membership(later_membership("x".repeat(address_len))),
+        };
+        log.blocking_append([entry.clone()]).await?;
+        log.save_committed(Some(id(2))).await?;
+        apply_membership(&source, &entry, Some(id(1)))?;
+        // Capture the real later applied membership. Its large address must not
+        // replace the immutable first membership or its initialization binding.
+        let snapshot = capture(source.custody())?;
+        assert_eq!(
+            snapshot.first_membership.as_ref().unwrap().header.log_id,
+            id(0)
+        );
         let encoded = snapshot
             .encode(MAX_CLOSED_SNAPSHOT_BYTES)?
             .read_bounded(usize::try_from(MAX_CLOSED_SNAPSHOT_BYTES)?)?;

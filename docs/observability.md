@@ -220,8 +220,10 @@ open owner, usable filesystem admission and sufficient sampled free space for th
 shared pending growth and minimum-free reservation. Its response fence rechecks
 that requirement immediately before releasing a ready observation.
 
- Health JSON includes `scratch_disk`; Prometheus exposes
+Health JSON includes `scratch_disk`, including its configured per-table
+`native_cache_bytes` ceiling; Prometheus exposes
 `kasumi_scratch_disk_max_bytes`, `kasumi_scratch_disk_min_free_bytes`,
+`kasumi_scratch_disk_native_cache_bytes`,
 `kasumi_scratch_disk_charged_bytes`, `kasumi_scratch_disk_live_files`,
 `kasumi_scratch_disk_filesystem_pending_bytes`, and the optional fresh
 `kasumi_scratch_disk_filesystem_available_bytes` sample, plus optional

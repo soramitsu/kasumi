@@ -69,22 +69,25 @@ impl OrderedSeekWork {
             let state = &self.generation.state;
             let (collection_epoch, index_sha256, request_sha256) =
                 source_identity(state, &self.request)?;
-            let page = self.generation.indexes.ordered_seek_with_cancellation(
-                &state.collections,
-                &self.request,
-                &state.limits,
-                &self.cancellation,
-            )?;
+            let source = self.generation.document_source(&self.request.collection)?;
+            let page = self
+                .generation
+                .indexes
+                .ordered_seek_with_cancellation(
+                    &source,
+                    &self.request,
+                    &state.limits,
+                    &self.cancellation,
+                )
+                .map_err(ReadFailure::into_query_error)?;
             let revision = self
                 .request
                 .continuation
                 .as_ref()
                 .map_or(state.revision, |cursor| cursor.revision);
-            if page
-                .rows
-                .iter()
-                .any(|row| row.version > revision || row.version == 0)
-            {
+            // Restored documents may have version zero. The continuation's
+            // original revision remains the upper bound for every returned row.
+            if page.rows.iter().any(|row| row.version > revision) {
                 return Err(conflict(
                     "ordered seek source version exceeds original revision",
                 ));
@@ -234,3 +237,7 @@ impl Database {
         Ok(response)
     }
 }
+
+#[cfg(test)]
+#[path = "ordered_seek_zero_tests.rs"]
+mod zero_version_tests;

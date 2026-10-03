@@ -1,0 +1,10 @@
+Diff in /Users/takemiyamakoto/dev/kasumi/crates/kasumi-engine/src/lib.rs:20:
+ mod audit_source;
+ mod current_json;
+ mod document_source;
+[31m-pub use document_source::GenerationDocumentSource;
+(B[m pub use audit_source::authorize_audit_source;
+[32m+pub use document_source::GenerationDocumentSource;
+(B[m pub mod admission;
+ mod audit_maintenance;
+ pub use audit_maintenance::AuditMaintenanceStatus;

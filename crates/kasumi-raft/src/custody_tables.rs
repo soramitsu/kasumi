@@ -204,12 +204,17 @@ impl CustodyHead {
 }
 
 pub(crate) fn load(store: &TenantStore) -> Result<CustodyHead> {
-    let bytes = store
-        .get_bounded(crate::control::META, HEAD, HEAD_BYTES)?
-        .context("custody point table head absent; unsupported custody storage format")?;
-    let head: CustodyHead = decode_canonical(&bytes)?;
-    head.validate()?;
-    Ok(head)
+    load_at(&mut &*store)
+}
+
+pub(crate) fn load_at(reads: &mut impl crate::control::CustodyRead) -> Result<CustodyHead> {
+    reads.with_point(crate::control::META, HEAD, HEAD_BYTES, |bytes| {
+        let bytes =
+            bytes.context("custody point table head absent; unsupported custody storage format")?;
+        let head: CustodyHead = decode_canonical(bytes)?;
+        head.validate()?;
+        Ok(head)
+    })
 }
 
 pub(crate) fn receipt(store: &TenantStore, identity: &str) -> Result<Option<CustodyReceipt>> {

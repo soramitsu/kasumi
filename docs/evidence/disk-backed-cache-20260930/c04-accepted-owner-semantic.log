@@ -1,0 +1,72 @@
+Command: cargo test --locked --offline -p kasumi-engine --all-features --lib state::accepted_apply::tests:: --config profile.test.package.kasumi-kv.opt-level=3 --config profile.test.package.sha2.opt-level=3
+CARGO_TARGET_DIR=target/disk-backed-cache
+   Compiling kasumi-engine v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-engine)
+error[E0618]: expected function, found `accepted_apply::ApplyOwner<'_>`
+   --> crates/kasumi-engine/src/recovery_state.rs:317:68
+    |
+302 |           let apply = ApplyOwner::lock(self, || {
+    |               ----- `apply` has type `accepted_apply::ApplyOwner<'_>`
+...
+317 |               authorize(&next, &command.authorization).and_then(|()| apply(&mut next, &command));
+    |                                                                      ^^^^^---------------------
+    |                                                                      |
+    |                                                                      call expression requires function
+...
+434 |   pub(crate) fn apply(state: &mut TenantState, command: &RecoveryCommand) -> Result<RecoveryRecord> {
+    |   ------------------------------------------------------------------------------------------------- this function of the same name is available here, but it's shadowed by the local binding
+    |
+   ::: crates/kasumi-engine/src/recovery_route.rs:104:1
+    |
+104 | / pub(crate) fn apply(
+105 | |     state: &mut TenantState,
+106 | |     operation: &RecoveryRecord,
+107 | |     input: &RecoveryRouteChange,
+108 | |     now: u64,
+109 | | ) -> Result<RecoveryDispatchOutcome> {
+    | |____________________________________- this function of the same name is available here, but it's shadowed by the local binding
+    |
+   ::: crates/kasumi-engine/src/lifecycle_state.rs:80:1
+    |
+ 80 | / pub(crate) fn apply(
+ 81 | |     state: &mut TenantState,
+ 82 | |     command: &Command,
+ 83 | |     request: &LifecycleControlCommand,
+ 84 | |     revision: u64,
+ 85 | | ) -> Result<(Result<WriteReceipt>, bool)> {
+    | |_________________________________________- this function of the same name is available here, but it's shadowed by the local binding
+    |
+   ::: crates/kasumi-engine/src/retirement_state.rs:78:1
+    |
+ 78 | / pub(super) fn apply(
+ 79 | |     state: &mut TenantState,
+ 80 | |     command: &Command,
+ 81 | |     request: &PreparedRetirement,
+ 82 | |     previous_revision: u64,
+ 83 | |     revision: u64,
+ 84 | | ) -> Result<(Result<WriteReceipt>, bool)> {
+    | |_________________________________________- this function of the same name is available here, but it's shadowed by the local binding
+    |
+   ::: crates/kasumi-engine/src/schema_activation.rs:98:1
+    |
+ 98 | / pub(super) fn apply(
+ 99 | |     state: &mut TenantState,
+100 | |     context: &RequestContext,
+101 | |     request: &SchemaChangeSet,
+102 | |     revision: u64,
+103 | |     evaluated_at_ms: u64,
+104 | | ) -> Result<(Result<WriteReceipt>, bool)> {
+    | |_________________________________________- this function of the same name is available here, but it's shadowed by the local binding
+    |
+   ::: crates/kasumi-engine/src/staging.rs:436:1
+    |
+436 | / pub(super) fn apply(
+437 | |     state: &mut TenantState,
+438 | |     command: &Command,
+439 | |     revision: u64,
+440 | |     indexes: &QueryIndexes,
+441 | | ) -> Result<(Result<WriteReceipt>, bool)> {
+    | |_________________________________________- this function of the same name is available here, but it's shadowed by the local binding
+
+For more information about this error, try `rustc --explain E0618`.
+error: could not compile `kasumi-engine` (lib) due to 1 previous error
+Runner: 18.89s; exit=101; matching=789/789

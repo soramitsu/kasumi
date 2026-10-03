@@ -7,6 +7,11 @@
 //! kernel, device durability and the embedding process are trusted. A successful
 //! store call can return owned plaintext to its caller; that copy is not revocable.
 
+mod application_bootstrap;
+pub use application_bootstrap::{
+    APPLICATION_BOOTSTRAP_CHUNK_BYTES, APPLICATION_BOOTSTRAP_MANIFEST_BYTES,
+    ApplicationBootstrapManifest,
+};
 mod archive_objects;
 mod audit_archive;
 pub use audit_archive::{
@@ -19,17 +24,23 @@ mod backup_destination_index;
 pub use backup_destination_index::{ExactBackupDestinationIndex, MAX_EXACT_BACKUP_DESTINATIONS};
 mod backup_marker;
 mod backup_sessions;
+mod cache_warmer;
 mod catalog_read_budget;
 pub use backup_sessions::{
     BackupSessionObject, BackupSessionObjectPage, BackupSessionObjects, BackupSessionSlot,
     MAX_SESSION_GC_OBJECTS, MAX_SESSION_RECORD_BYTES, VerifiedBackupAbort, VerifiedBackupSession,
     verify_backup_session,
 };
+pub use cache_warmer::CacheWorkerStatus;
 use catalog_read_budget::AdmittedKeyCatalog;
 #[cfg(test)]
 mod allocation_tests;
 mod device_disk;
 mod disk_memory;
+mod source_metadata;
+pub use source_metadata::{
+    SourceMetadataCallError, SourceMetadataInstall, SourceMetadataPermit, SourceMetadataPurpose,
+};
 mod storage_census;
 mod storage_opening;
 pub use disk_memory::{
@@ -42,41 +53,50 @@ pub use storage_census::{
 pub use storage_opening::{
     AdmittedReadBytes, BindingInstallBodyError, FailedOpeningAcknowledgement,
     FailedOpeningRecovery, NodeBindingWriteReport, NodeCatalogPutBodyError, NodeCatalogWriteReport,
-    NodeOpeningMode, NodeOpeningPhase, NodeOpeningReport, NodeReadAccessError, NodeReadPhase,
-    NodeReadReport, NodeReadTablesError, NodeStartupFailureCustody, NodeStartupPhase,
-    NodeTablesBodyError, NodeTablesReport, NodeWriterPhase, OwnedEncryptedRow,
-    RegisteredBindingPut, RegisteredCatalogPut, RegisteredNodeOpening, RegisteredNodeRead,
-    RegisteredNodeStartup, RegisteredNodeTables,
+    NodeGroupIdentity, NodeOpeningMode, NodeOpeningPhase, NodeOpeningReport, NodeReadAccessError,
+    NodeReadPhase, NodeReadReport, NodeReadTablesError, NodeStartupFailureCustody,
+    NodeStartupPhase, NodeStorageConfig, NodeTablesBodyError, NodeTablesReport, NodeWriterPhase,
+    OwnedEncryptedRow, RegisteredBindingPut, RegisteredCatalogPut, RegisteredNodeOpening,
+    RegisteredNodeRead, RegisteredNodeStartup, RegisteredNodeTables,
 };
 mod keys;
 mod node_database;
 mod node_disk;
 mod node_file;
-pub use node_file::NodeFileCleanup;
+pub use node_file::segment_group::NodeSegmentGroupCleanup;
 pub mod node_store_ids;
+mod point_read_backing;
 mod read_view;
 mod registered_read_scope;
 pub use node_disk::{
-    CensusCancellation, DirectoryPolicy, DiskWork, NodeDisk, NodeDiskConfig, NodeDiskDirectory,
-    NodeDiskDirectoryCloseError, NodeDiskDirectoryCursor, NodeDiskDirectoryEntry,
-    NodeDiskDirectoryFailure, NodeDiskDirectoryOperation, NodeDiskDirectoryOperationKind,
-    NodeDiskDirectoryOperationStep, NodeDiskEntryKind, NodeDiskFile, NodeDiskPhase,
-    NodeDiskSnapshot,
+    CensusCancellation, DirectoryPolicy, DiskWork, FileAllocationPolicy, NodeDisk, NodeDiskConfig,
+    NodeDiskDirectory, NodeDiskDirectoryCloseError, NodeDiskDirectoryCursor,
+    NodeDiskDirectoryEntry, NodeDiskDirectoryFailure, NodeDiskDirectoryOperation,
+    NodeDiskDirectoryOperationKind, NodeDiskDirectoryOperationStep, NodeDiskEntryKind,
+    NodeDiskFile, NodeDiskPhase, NodeDiskSnapshot,
 };
 mod scratch_disk;
 mod scratch_table;
 pub use scratch_disk::{ScratchDisk, ScratchDiskConfig, ScratchDiskSnapshot};
 mod serving_access;
 mod spool;
-pub use read_view::TenantReadView;
+pub use read_view::{
+    NamespaceReplacement, PointRetirementFailure, PreparedTenantReadPoints,
+    PreparedTenantReadSource, PreparedTenantReadSourceLoan, PreparedTenantReadWorkspace,
+    TenantReadView, plaintext_get_workspace_bytes,
+};
 pub use registered_read_scope::{NodeScopedReadFailure, NodeScopedReadRetirement};
 pub use scratch_table::{EncryptedTable, EncryptedTableBatch};
 mod storage_domains;
 pub use serving_access::{StorageAccess, StoragePurpose};
+pub use storage_domains::{
+    PreparedTenantSourcePointLoan, PreparedTenantSourcePointReads, PreparedTenantSourceReadView,
+    SourceHistoryDisposition,
+};
 mod file_keys;
 mod live_trust;
 pub mod private_files;
-pub use file_keys::FileKeyProvider;
+pub use file_keys::{FileKeyOpenInput, FileKeyProvider};
 pub use spool::{EncryptedSpool, RetainedSpool, SnapshotImage, SnapshotReader, SpoolClosePhase};
 #[cfg(any(test, feature = "test-utils"))]
 pub mod test_utils;
@@ -96,7 +116,10 @@ pub use keys::{
 };
 pub use storage_domains::{
     AdmittedDeploymentBinding, BindingInstallWriteFailure, BindingInstallWriteRetirement,
-    CustodyStore, StorageBinding, TenantStorageReadView, TenantStorageSet,
+    CommittedAccessDenied, CustodyStore, DomainPublicationOutcome, PairedReadMemoryQuote,
+    PointReadMemoryQuote, PreparedTenantPointBounds, PreparedTenantPointReads,
+    PreparedTenantPointWorkspace, PreparedTenantStorageReadView, StorageBinding,
+    TenantStorageReadView, TenantStorageSet,
 };
 
 use std::{
@@ -491,8 +514,9 @@ impl std::error::Error for NodeCatalogReadRetirement {
     }
 }
 
-/// A catalog mutation that did not prove a committed and disposed native
-/// writer retains its exact child, admitted input, and original observations.
+/// A catalog mutation that proved neither a committed and disposed native
+/// writer nor a settled capacity denial retains its exact child, admitted
+/// input, and original observations.
 pub struct NodeCatalogWriteFailure {
     writer: RegisteredCatalogPut,
 }
@@ -565,6 +589,115 @@ impl std::fmt::Display for NodeCatalogWriteRetirement {
     }
 }
 impl std::error::Error for NodeCatalogWriteRetirement {}
+
+/// Where an installed owner refused a registered write for capacity.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CapacityDenialStage {
+    /// A staged mutation was refused and the writer aborted before commit.
+    Staging,
+    /// The commit was refused before publication.
+    Commit,
+}
+
+/// The registered store write that an installed owner refused for capacity.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CapacityDeniedWrite {
+    KeyCatalog,
+    DomainBinding,
+}
+
+/// A registered catalog or binding write refused for capacity before
+/// publication. The native batch was rolled back whole, its writer gate was
+/// released and disposed, and the opening stays open: nothing was published,
+/// so the caller may retry the same write once space is freed. Owner failures
+/// and unknown outcomes never produce this value; they keep their exact writer.
+/// The owner does not report which budget refused or how many bytes remained,
+/// so only the refused write's admitted payload size is carried. When census
+/// retirement of the settled writer waits, this denial is the source of the
+/// returned retirement, which keeps the exact child identity.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StorageCapacityDenied {
+    write: CapacityDeniedWrite,
+    stage: CapacityDenialStage,
+    payload_bytes: u64,
+}
+impl StorageCapacityDenied {
+    /// Classify a writer report that proved a settled, no-effect denial.
+    fn settled(
+        write: CapacityDeniedWrite,
+        payload_bytes: u64,
+        denied: bool,
+        terminal: Option<kasumi_kv::WriteTerminalReport<'_>>,
+    ) -> Option<Self> {
+        if !denied {
+            return None;
+        }
+        let stage = match terminal?.operation()? {
+            kasumi_kv::WriteTerminalOperation::Abort => CapacityDenialStage::Staging,
+            kasumi_kv::WriteTerminalOperation::Commit => CapacityDenialStage::Commit,
+        };
+        Some(Self {
+            write,
+            stage,
+            payload_bytes,
+        })
+    }
+
+    pub fn write(&self) -> CapacityDeniedWrite {
+        self.write
+    }
+    pub fn stage(&self) -> CapacityDenialStage {
+        self.stage
+    }
+    /// Admitted payload bytes of the refused row (catalog JSON or encrypted
+    /// binding envelope), excluding keys and engine framing.
+    pub fn payload_bytes(&self) -> u64 {
+        self.payload_bytes
+    }
+}
+impl std::fmt::Display for StorageCapacityDenied {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let write = match self.write {
+            CapacityDeniedWrite::KeyCatalog => "key catalog",
+            CapacityDeniedWrite::DomainBinding => "storage domain binding",
+        };
+        let stage = match self.stage {
+            CapacityDenialStage::Staging => "staging",
+            CapacityDenialStage::Commit => "commit",
+        };
+        write!(
+            f,
+            "{write} write of {} payload bytes refused for storage capacity at {stage}; \
+             nothing was published",
+            self.payload_bytes
+        )
+    }
+}
+impl std::error::Error for StorageCapacityDenied {}
+
+/// Retire a catalog writer whose outcome is proved: its commit, a clean
+/// freshness rejection, or a settled capacity denial. A waiting retirement
+/// keeps the exact census identity, with any denial as its source.
+fn retire_catalog_writer(
+    provider: Arc<dyn NodeDiskMemoryAdmission>,
+    writer: RegisteredCatalogPut,
+    denied: Option<StorageCapacityDenied>,
+) -> Result<()> {
+    let id = writer.id();
+    let disposition = writer.retire();
+    let retirement =
+        (disposition != StorageCensusDisposition::Retired).then_some(NodeCatalogWriteRetirement {
+            provider,
+            id,
+            disposition,
+        });
+    match (denied, retirement) {
+        (None, None) => Ok(()),
+        (None, Some(retirement)) => Err(retirement.into()),
+        (Some(denied), None) => Err(denied.into()),
+        (Some(denied), Some(retirement)) => Err(anyhow::Error::new(denied).context(retirement)),
+    }
+}
 
 /// A failed point read keeps its exact registered child and original read or
 /// close observation. The census retains it after this facade is dropped.
@@ -676,28 +809,37 @@ pub struct NodeStore {
     // Retain initialization tasks through rejected/cancelled result delivery.
     initializers: AsyncMutex<InitializerRegistry>,
     shutdown_report: AsyncMutex<DrainReport>,
+    cache_warmer: cache_warmer::CacheWarmer,
 }
 
 impl NodeStore {
-    /// Claim an exact recognized Prepared or Ready inode for independently
+    /// Claim an exact recognized Prepared or Ready group for independently
     /// authorized cleanup. No database open, initialization or repair takes place.
     /// This physical guard grants no authority to stop or delete a generation.
     pub fn claim_cleanup(
         path: impl AsRef<Path>,
         expected_id: Uuid,
         persistent_disk: Arc<NodeDisk>,
-    ) -> Result<NodeFileCleanup> {
-        node_file::NodeFile::claim_cleanup(path.as_ref(), expected_id, persistent_disk)
+        config: NodeStorageConfig,
+    ) -> Result<NodeSegmentGroupCleanup> {
+        config.validate_within(persistent_disk.native_storage_config())?;
+        node_file::segment_group::NodeSegmentGroup::claim_cleanup(
+            path.as_ref(),
+            expected_id,
+            persistent_disk,
+            config.cached_files,
+        )
     }
 
-    /// Initialize a new, exclusively created inode. Its parent must exist.
-    /// The caller durably chooses `node_store_id` before creating the file and
+    /// Initialize a new, exclusively created directory and root. Its parent must exist.
+    /// The caller durably chooses `node_store_id` before creating the group and
     /// retains responsibility for exact partial/uncertain initialization cleanup.
     pub fn create_new(
         path: impl AsRef<Path>,
         node_store_id: Uuid,
         persistent_disk: Arc<NodeDisk>,
         scratch_disk: Arc<ScratchDisk>,
+        config: NodeStorageConfig,
     ) -> Result<Arc<Self>> {
         Self::start_registered(
             path.as_ref(),
@@ -705,24 +847,27 @@ impl NodeStore {
             persistent_disk,
             scratch_disk,
             NodeOpeningMode::Create,
+            config,
         )
     }
 
-    /// Initialize the exact empty inode already durably owned by an installation
-    /// or recovery journal. A populated/partial file is never adopted or reset.
+    /// Initialize the exact directory and empty root already durably owned by an
+    /// installation journal. A populated or partial group is never reset.
     pub fn initialize_owned_empty(
         path: impl AsRef<Path>,
-        expected_file: &private_files::FileIdentity,
+        expected_group: &NodeGroupIdentity,
         node_store_id: Uuid,
         persistent_disk: Arc<NodeDisk>,
         scratch_disk: Arc<ScratchDisk>,
+        config: NodeStorageConfig,
     ) -> Result<Arc<Self>> {
         Self::start_registered(
             path.as_ref(),
             node_store_id,
             persistent_disk,
             scratch_disk,
-            NodeOpeningMode::OwnedEmpty(expected_file.clone()),
+            NodeOpeningMode::OwnedEmpty(expected_group.clone()),
+            config,
         )
     }
 
@@ -733,6 +878,7 @@ impl NodeStore {
         expected_id: Uuid,
         persistent_disk: Arc<NodeDisk>,
         scratch_disk: Arc<ScratchDisk>,
+        config: NodeStorageConfig,
     ) -> Result<Arc<Self>> {
         Self::start_registered(
             path.as_ref(),
@@ -740,6 +886,7 @@ impl NodeStore {
             persistent_disk,
             scratch_disk,
             NodeOpeningMode::Existing,
+            config,
         )
     }
 
@@ -749,13 +896,15 @@ impl NodeStore {
         persistent_disk: Arc<NodeDisk>,
         scratch_disk: Arc<ScratchDisk>,
         mode: NodeOpeningMode,
+        config: NodeStorageConfig,
     ) -> Result<Arc<Self>> {
         ensure!(
             Arc::ptr_eq(persistent_disk.memory(), scratch_disk.memory()),
             "persistent and scratch disks require the same installed memory admission"
         );
         let provider = persistent_disk.memory().clone();
-        let mut startup = RegisteredNodeStartup::prepare(path, id, persistent_disk.clone(), mode)?;
+        let mut startup =
+            RegisteredNodeStartup::prepare(path, id, persistent_disk.clone(), mode, config)?;
         if startup.advance() != NodeStartupPhase::Ready {
             let close_error = startup.close_failed().err();
             let custody = startup.into_failed_custody().map_err(|_| {
@@ -778,12 +927,11 @@ impl NodeStore {
             tenants: AsyncMutex::new(HashMap::new()),
             initializers: AsyncMutex::new(InitializerRegistry::default()),
             shutdown_report: AsyncMutex::new(DrainReport::default()),
+            cache_warmer: cache_warmer::CacheWarmer::default(),
         }))
     }
 
-    /// Synthetic fixtures keep their direct, test-only owner so unrelated
-    /// suites can model an implicit process-exit drop. Installed production
-    /// constructors above always use the registered opening and explicit close.
+    /// Synthetic physical fixtures retain direct owners for process-exit tests.
     #[cfg(any(test, feature = "test-utils"))]
     pub(crate) fn create_new_fixture_direct(
         path: &Path,
@@ -791,88 +939,128 @@ impl NodeStore {
         persistent_disk: Arc<NodeDisk>,
         scratch_disk: Arc<ScratchDisk>,
     ) -> Result<Arc<Self>> {
-        ensure!(
-            Arc::ptr_eq(persistent_disk.memory(), scratch_disk.memory()),
-            "persistent and scratch disks require the same installed memory admission"
-        );
-        Self::initialize_fixture(
-            node_file::NodeFile::create_new(path, id, persistent_disk)?,
+        Self::physical_fixture(
+            path,
+            id,
+            persistent_disk,
             scratch_disk,
+            NodeOpeningMode::Create,
         )
     }
 
     #[cfg(any(test, feature = "test-utils"))]
     pub(crate) fn initialize_owned_empty_fixture_direct(
         path: &Path,
-        expected_file: &private_files::FileIdentity,
+        expected_group: &NodeGroupIdentity,
         id: Uuid,
         persistent_disk: Arc<NodeDisk>,
         scratch_disk: Arc<ScratchDisk>,
     ) -> Result<Arc<Self>> {
-        ensure!(
-            Arc::ptr_eq(persistent_disk.memory(), scratch_disk.memory()),
-            "persistent and scratch disks require the same installed memory admission"
-        );
-        Self::initialize_fixture(
-            node_file::NodeFile::initialize_owned_empty(path, expected_file, id, persistent_disk)?,
+        Self::physical_fixture(
+            path,
+            id,
+            persistent_disk,
             scratch_disk,
+            NodeOpeningMode::OwnedEmpty(expected_group.clone()),
         )
-    }
-
-    #[cfg(any(test, feature = "test-utils"))]
-    fn initialize_fixture(
-        file: Arc<node_file::NodeFile>,
-        scratch_disk: Arc<ScratchDisk>,
-    ) -> Result<Arc<Self>> {
-        let db = Database::builder(file.clone()).create_with_backend(file.backend())?;
-        let db = Self::finish_setup(db, |db| {
-            Self::initialize_tables(db)?;
-            file.publish_ready()?;
-            Ok(())
-        })?;
-        Ok(Self::installed(
-            db,
-            Some(file.path().to_owned()),
-            Some(file.disk().clone()),
-            scratch_disk,
-        ))
     }
 
     #[cfg(any(test, feature = "test-utils"))]
     pub(crate) fn open_existing_fixture_direct(
         path: &Path,
-        expected_id: Uuid,
+        id: Uuid,
         persistent_disk: Arc<NodeDisk>,
         scratch_disk: Arc<ScratchDisk>,
+    ) -> Result<Arc<Self>> {
+        Self::physical_fixture(
+            path,
+            id,
+            persistent_disk,
+            scratch_disk,
+            NodeOpeningMode::Existing,
+        )
+    }
+
+    #[cfg(any(test, feature = "test-utils"))]
+    fn physical_fixture(
+        path: &Path,
+        id: Uuid,
+        persistent_disk: Arc<NodeDisk>,
+        scratch_disk: Arc<ScratchDisk>,
+        mode: NodeOpeningMode,
     ) -> Result<Arc<Self>> {
         ensure!(
             Arc::ptr_eq(persistent_disk.memory(), scratch_disk.memory()),
             "persistent and scratch disks require the same installed memory admission"
         );
-        let file = node_file::NodeFile::open_existing(path, expected_id, persistent_disk)?;
-        let db = Database::builder(file.clone()).create_with_backend(file.backend())?;
+        let config = test_utils::node_storage_config();
+        let group = node_file::segment_group::NodeSegmentGroup::owned_prepared(
+            path,
+            id,
+            persistent_disk,
+            config.cached_files,
+        )?;
+        group.acquire_prepared(&mode)?;
+        let builder = Database::builder(group.clone(), *id.as_bytes(), config.cache);
+        let existing = matches!(mode, NodeOpeningMode::Existing);
+        let db = if existing {
+            builder.open_with_backend(group.clone())?
+        } else {
+            builder.create_with_backend(group.clone())?
+        };
+        let db = Self::finish_setup(db, |db| {
+            if existing {
+                let tx = db.begin_read()?;
+                tx.open_table(CATALOG)?;
+                tx.open_table(RECORDS)?;
+            } else {
+                Self::initialize_tables(db)?;
+                group.publish_ready()?;
+            }
+            Ok(())
+        })?;
+        Ok(Self::installed(
+            db,
+            Some(group.path().to_owned()),
+            Some(group.disk().clone()),
+            scratch_disk,
+        ))
+    }
+
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn create_with_backend(
+        backend: impl kasumi_kv::SegmentGroupBackend + 'static,
+        admission: Arc<dyn kasumi_kv::StorageAdmission>,
+        scratch_disk: Arc<ScratchDisk>,
+    ) -> Result<Arc<Self>> {
+        let db = Database::builder(
+            admission,
+            *test_utils::NODE_STORE_ID.as_bytes(),
+            test_utils::node_storage_config().cache,
+        )
+        .create_with_backend(backend)?;
+        let db = Self::finish_setup(db, Self::initialize_tables)?;
+        Ok(Self::installed(db, None, None, scratch_disk))
+    }
+
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn open_with_backend(
+        backend: impl kasumi_kv::SegmentGroupBackend + 'static,
+        admission: Arc<dyn kasumi_kv::StorageAdmission>,
+        scratch_disk: Arc<ScratchDisk>,
+    ) -> Result<Arc<Self>> {
+        let db = Database::builder(
+            admission,
+            *test_utils::NODE_STORE_ID.as_bytes(),
+            test_utils::node_storage_config().cache,
+        )
+        .open_with_backend(backend)?;
         let db = Self::finish_setup(db, |db| {
             let tx = db.begin_read()?;
             tx.open_table(CATALOG)?;
             tx.open_table(RECORDS)?;
             Ok(())
         })?;
-        Ok(Self::installed(
-            db,
-            Some(file.path().to_owned()),
-            Some(file.disk().clone()),
-            scratch_disk,
-        ))
-    }
-
-    #[cfg(any(test, feature = "test-utils"))]
-    pub fn open_with_backend(
-        backend: impl kasumi_kv::StorageBackend + 'static,
-        admission: Arc<dyn kasumi_kv::StorageAdmission>,
-        scratch_disk: Arc<ScratchDisk>,
-    ) -> Result<Arc<Self>> {
-        let db = Database::builder(admission).create_with_backend(backend)?;
-        let db = Self::finish_setup(db, Self::initialize_tables)?;
         Ok(Self::installed(db, None, None, scratch_disk))
     }
 
@@ -894,6 +1082,53 @@ impl NodeStore {
         }
     }
 
+    /// Exact identities verified through this installed group's retained descriptors.
+    pub fn physical_identity(&self) -> Result<NodeGroupIdentity> {
+        self.db.physical_identity()
+    }
+
+    pub fn configure_cache(
+        &self,
+        config: kasumi_kv::CacheConfig,
+    ) -> Result<(), kasumi_kv::StorageError> {
+        if self
+            .persistent_disk
+            .as_ref()
+            .is_some_and(|disk| config.byte_limit > disk.native_storage_config().cache.byte_limit)
+        {
+            return Err(std::io::Error::from(std::io::ErrorKind::InvalidInput).into());
+        }
+        self.db.configure_cache(config)
+    }
+
+    pub fn cache_stats(&self) -> Result<kasumi_kv::CacheStats, kasumi_kv::StorageError> {
+        self.db.cache_stats()
+    }
+
+    pub fn warm_cache(
+        &self,
+        work_limit: usize,
+    ) -> Result<kasumi_kv::CacheWarmup, kasumi_kv::StorageError> {
+        self.db.warm_cache(work_limit)
+    }
+
+    pub fn warm_cache_if_needed(
+        &self,
+        work_limit: usize,
+    ) -> Result<kasumi_kv::CacheWarmup, kasumi_kv::StorageError> {
+        self.db.warm_cache_if_needed(work_limit)
+    }
+
+    pub fn cache_warmup_status(
+        &self,
+    ) -> Result<kasumi_kv::CacheWarmupStatus, kasumi_kv::StorageError> {
+        self.db.cache_warmup_status()
+    }
+
+    pub fn request_cache_warm_retry(&self) -> Result<(), kasumi_kv::StorageError> {
+        self.db.request_cache_warm_retry()
+    }
+
     /// Exact installed census owner for this node's database and close report.
     /// A retained close can be inspected through `RegisteredNodeOpening::retained`
     /// on the same installed memory provider and this ID.
@@ -908,12 +1143,18 @@ impl NodeStore {
             .expect("synthetic backend fixture has no installed physical disk")
     }
 
-    /// Stop new database work, join retained initializers, then explicitly close
+    /// Stop new database work, drain cache warming and retained initializers, then close
     /// the database. The caller first drains its tenant and Raft workers. Busy retains
     /// the exact database and all physical charges for a later shutdown retry.
     pub async fn shutdown(&self) -> DrainResult {
-        self.db.stop();
+        self.cache_warmer.stop(self);
         let mut report = self.shutdown_report.lock().await;
+        if let Err(failure) = self.cache_warmer.drain().await {
+            report.merge(&failure);
+            if failure.completion() == kasumi_types::drain::DrainCompletion::Retained {
+                return report.outcome(Some(failure));
+            }
+        }
         if let Err(error) = self.drain_initializers().await {
             report.record("node catalog initialization", 0, error);
         }
@@ -962,6 +1203,7 @@ impl NodeStore {
             tenants: AsyncMutex::new(HashMap::new()),
             initializers: AsyncMutex::new(InitializerRegistry::default()),
             shutdown_report: AsyncMutex::new(DrainReport::default()),
+            cache_warmer: cache_warmer::CacheWarmer::default(),
         })
     }
 
@@ -1096,23 +1338,25 @@ impl NodeStore {
             catalog,
             provider.clone(),
         )?;
+        let payload_bytes = u64::try_from(plan.bytes().len())?;
         let writer = self.db.queue_registered_catalog_put(plan)?;
         let _ = writer.run();
-        let committed = writer.report().committed_and_disposed();
-        if !committed {
+        let (committed, denied) = {
+            let report = writer.report();
+            (
+                report.committed_and_disposed(),
+                StorageCapacityDenied::settled(
+                    CapacityDeniedWrite::KeyCatalog,
+                    payload_bytes,
+                    report.is_capacity_denied(),
+                    report.terminal(),
+                ),
+            )
+        };
+        if !committed && denied.is_none() {
             return Err(NodeCatalogWriteFailure { writer }.into());
         }
-        let id = writer.id();
-        let disposition = writer.retire();
-        if disposition != StorageCensusDisposition::Retired {
-            return Err(NodeCatalogWriteRetirement {
-                provider,
-                id,
-                disposition,
-            }
-            .into());
-        }
-        Ok(())
+        retire_catalog_writer(provider, writer, denied)
     }
 }
 
@@ -1176,6 +1420,11 @@ struct DecodedRecord {
     namespace: String,
     key: Vec<u8>,
     value: Vec<u8>,
+}
+struct DecodedRecordRef<'plaintext> {
+    namespace: &'plaintext str,
+    key: &'plaintext [u8],
+    value: &'plaintext [u8],
 }
 
 /// A tenant's per-replica key cache. All keys are zeroized when the cache is sealed.
@@ -1904,23 +2153,7 @@ impl TenantStore {
     }
 
     pub fn write_batch(&self, operations: &[WriteOp]) -> Result<()> {
-        let _access = AccessGuard(self);
-        validate_batch(&[operations])?;
-        reject_unpaired_identity_ops(operations)?;
-        self.check_access()?;
-        let _mutation = self.mutations.lock();
-        let state = self.state.read();
-        self.require_access(&state)?;
-        let catalog = self.catalog.read();
-        let tx = self.node.db.begin_write()?;
-        write_domain(&tx, self, &state, &catalog, operations)?;
-        self.require_access(&state)?;
-        tx.commit()
-            .context("durable encrypted batch commit failed; outcome may be unknown")?;
-        // Expiry during fsync is an unknown-outcome write, never a false rollback claim.
-        self.require_access(&state).context(
-            "batch committed but key access was lost before acknowledgment; outcome unknown",
-        )
+        self.write_batch_with_source(operations, None)
     }
 
     pub async fn rotate_data_key(&self) -> Result<()> {
@@ -2005,25 +2238,40 @@ impl TenantStore {
             input,
             &record_aad(&self.tenant, disk_key),
         )?);
-        let mut input = plaintext.as_slice();
-        let mut record = DecodedRecord {
-            namespace: String::new(),
-            key: Vec::new(),
-            value: Vec::new(),
+        let record = self.decode_record_fields(disk_key, &plaintext, state)?;
+        Ok(DecodedRecord {
+            namespace: record.namespace.to_owned(),
+            key: record.key.to_vec(),
+            value: record.value.to_vec(),
+        })
+    }
+
+    // One authenticated record parser for ordinary owned reads and prepared
+    // loans. A borrowed field never outlives its zeroizing plaintext owner.
+    fn decode_record_fields<'plaintext>(
+        &self,
+        disk_key: &[u8],
+        plaintext: &'plaintext [u8],
+        state: &KeyState,
+    ) -> Result<DecodedRecordRef<'plaintext>> {
+        let mut input = plaintext;
+        let record = DecodedRecordRef {
+            namespace: std::str::from_utf8(take_bytes(&mut input)?)
+                .context("invalid record namespace")?,
+            key: take_bytes(&mut input)?,
+            value: take_bytes(&mut input)?,
         };
-        record.namespace = std::str::from_utf8(take_bytes(&mut input)?)
-            .context("invalid record namespace")?
-            .to_owned();
-        record.key = take_bytes(&mut input)?.to_vec();
-        record.value = take_bytes(&mut input)?.to_vec();
         ensure!(input.is_empty(), "trailing encrypted record data");
-        let expected = record_key(
+        let expected = inline_record_key(
             &self.tenant,
-            &record.namespace,
-            &record.key,
+            record.namespace,
+            record.key,
             state.keys.get(INDEX_KEY).context("index key missing")?,
         );
-        ensure!(expected == disk_key, "encrypted record identity mismatch");
+        ensure!(
+            expected.as_slice() == disk_key,
+            "encrypted record identity mismatch"
+        );
         Ok(record)
     }
 }
@@ -2359,12 +2607,19 @@ fn inline_record_key(tenant: &str, namespace: &str, key: &[u8], index: &SecretKe
 }
 
 fn record_aad(tenant: &str, key: &[u8]) -> Vec<u8> {
-    let mut aad = b"kasumi.encrypted-record.v1".to_vec();
-    aad.extend((tenant.len() as u64).to_be_bytes());
-    aad.extend(tenant.as_bytes());
-    // The physical key is an HMAC commitment to the exact namespace and user key.
-    aad.extend(key);
+    let mut aad =
+        Vec::with_capacity(b"kasumi.encrypted-record.v1".len() + 8 + tenant.len() + key.len());
+    record_aad_into(&mut aad, tenant, key);
     aad
+}
+
+fn record_aad_into(aad: &mut Vec<u8>, tenant: &str, key: &[u8]) {
+    aad.clear();
+    aad.extend_from_slice(b"kasumi.encrypted-record.v1");
+    aad.extend_from_slice(&(tenant.len() as u64).to_be_bytes());
+    aad.extend_from_slice(tenant.as_bytes());
+    // The physical key commits to the exact namespace and user key.
+    aad.extend_from_slice(key);
 }
 
 fn validate_record(namespace: &str, key: &[u8], value_len: usize) -> Result<()> {
@@ -2398,6 +2653,20 @@ fn take_bytes<'a>(input: &mut &'a [u8]) -> Result<&'a [u8]> {
     Ok(result)
 }
 
+// The physical framing arithmetic is shared by the real reader and its quote.
+fn encrypted_record_length(
+    namespace_bytes: usize,
+    key_bytes: usize,
+    max_value_bytes: usize,
+    longest_key_id: usize,
+) -> Option<usize> {
+    max_value_bytes
+        .checked_add(namespace_bytes)
+        .and_then(|bytes| bytes.checked_add(key_bytes))
+        .and_then(|bytes| bytes.checked_add(longest_key_id))
+        .and_then(|bytes| bytes.checked_add(4 + 12 + 24 + 16))
+}
+
 fn encrypted_record_limit(
     namespace_bytes: usize,
     key_bytes: usize,
@@ -2405,12 +2674,9 @@ fn encrypted_record_limit(
     state: &KeyState,
 ) -> Result<usize> {
     let longest_key_id = state.keys.keys().map(String::len).max().unwrap_or(0);
-    let limit = max_value_bytes
-        .checked_add(namespace_bytes)
-        .and_then(|bytes| bytes.checked_add(key_bytes))
-        .and_then(|bytes| bytes.checked_add(longest_key_id))
-        .and_then(|bytes| bytes.checked_add(4 + 12 + 24 + 16))
-        .context("record read budget overflow")?;
+    let limit =
+        encrypted_record_length(namespace_bytes, key_bytes, max_value_bytes, longest_key_id)
+            .context("record read budget overflow")?;
     ensure!(
         limit <= MAX_BATCH,
         "encrypted record read budget exceeds storage limit"
@@ -2470,15 +2736,26 @@ fn encrypt(key: &SecretKey, plaintext: &[u8], aad: &[u8]) -> Result<Vec<u8>> {
 
 fn decrypt(key: &SecretKey, ciphertext: &[u8], aad: &[u8]) -> Result<Vec<u8>> {
     ensure!(ciphertext.len() >= 40, "truncated encrypted record");
+    let mut plaintext = Zeroizing::new(vec![0; ciphertext.len() - 40]);
+    decrypt_into(key, ciphertext, aad, &mut plaintext)?;
+    Ok(std::mem::take(&mut *plaintext))
+}
+
+// Prepared and allocating readers share authentication and nonce/tag handling.
+// The caller owns and clears output on failure; no unauthenticated bytes escape.
+fn decrypt_into(key: &SecretKey, ciphertext: &[u8], aad: &[u8], output: &mut [u8]) -> Result<()> {
+    ensure!(ciphertext.len() >= 40, "truncated encrypted record");
+    let length = ciphertext.len() - 40;
+    ensure!(output.len() == length, "decryption output length differs");
     let cipher = XChaCha20Poly1305::new_from_slice(key.as_bytes())
         .map_err(|_| anyhow::anyhow!("invalid encryption key"))?;
+    output.copy_from_slice(&ciphertext[24..24 + length]);
     cipher
-        .decrypt(
+        .decrypt_in_place_detached(
             XNonce::from_slice(&ciphertext[..24]),
-            Payload {
-                msg: &ciphertext[24..],
-                aad,
-            },
+            aad,
+            output,
+            chacha20poly1305::Tag::from_slice(&ciphertext[24 + length..]),
         )
         .map_err(|_| anyhow::anyhow!("encrypted record authentication failed"))
 }
@@ -2489,3 +2766,19 @@ mod catalog_budget;
 mod tests;
 #[cfg(test)]
 mod tls_fixture;
+
+#[cfg(any(test, feature = "test-utils"))]
+pub use storage_opening::{
+    NativeSlotBlockers, NativeSourceFixtureError, NativeSourceFundingFixture,
+};
+
+#[cfg(any(test, feature = "test-utils"))]
+pub use storage_opening::{
+    RegisteredSourceFundingFixture, SourceCompletionFault, SourceReadDiagnostic,
+};
+
+pub use storage_opening::{
+    PreparedRegisteredSource, RegisteredSourceCapacity, SourceCapacityClose, SourceCapacityFailure,
+    SourceCapacityReport, SourceCapacityRetirement, SourceHistoryAbort, SourceHistoryRefusal,
+    SourcePoolPhase,
+};

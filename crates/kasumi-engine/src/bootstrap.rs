@@ -1,4 +1,8 @@
-use kasumi_store::{EncryptedSpool, SnapshotImage};
+use kasumi_store::{
+    APPLICATION_BOOTSTRAP_CHUNK_BYTES as CHUNK,
+    APPLICATION_BOOTSTRAP_MANIFEST_BYTES as MAX_BOOTSTRAP_MANIFEST_BYTES,
+    ApplicationBootstrapManifest, EncryptedSpool, SnapshotImage,
+};
 use std::io::{Read, Write};
 // Persisted bootstrap and logical restore, separate from node-bound Raft snapshots.
 use crate::service::construction::DatabaseConstruction;
@@ -42,9 +46,6 @@ mod control_genesis;
 pub use control_genesis::{ControlGenesis, ControlLifecycleGenesis, ReplicatedGenesis};
 
 const NS: &str = "engine.bootstrap";
-const CHUNK: usize = 4 << 20;
-// The current writer emits one small JSON row with four fixed fields and a SHA-256 digest.
-const MAX_BOOTSTRAP_MANIFEST_BYTES: usize = 256;
 // Only bootstraps are serialized here, never data operations. A node owns its
 // database file exclusively; startup must register each returned tenant once.
 static BOOTSTRAP_GATE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
@@ -210,6 +211,7 @@ pub async fn prepare_replicated_restore(
     let database = construction
         .start_replicated(
             engine,
+            &restored.bytes,
             replica.node_id,
             format!("{}/{}", target.tenant(), bootstrap.incarnation),
             transport,
@@ -577,6 +579,7 @@ async fn open_replicated_inner<'a>(
     let database = construction
         .start_replicated(
             engine,
+            &bytes,
             node_id,
             format!("{}/{}", store.tenant(), bootstrap.incarnation),
             transport,
@@ -629,15 +632,6 @@ pub async fn initialize_replicated(
         .await
 }
 
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Manifest {
-    format: u32,
-    bytes: u64,
-    chunks: u64,
-    digest: String,
-}
-
 /// Compare bounded typed genesis fields without materializing another JSON
 /// copy while the decoded bootstrap image is resident.
 fn canonical_digest<T: Serialize>(value: &T) -> anyhow::Result<[u8; 32]> {
@@ -656,40 +650,20 @@ fn canonical_digest<T: Serialize>(value: &T) -> anyhow::Result<[u8; 32]> {
     Ok(writer.0.finalize().into())
 }
 
-fn decode_current_manifest(bytes: &[u8]) -> anyhow::Result<Manifest> {
-    anyhow::ensure!(
-        bytes.len() <= MAX_BOOTSTRAP_MANIFEST_BYTES,
-        "bootstrap manifest exceeds current writer bound"
-    );
-    let manifest: Manifest = serde_json::from_slice(bytes)?;
-    anyhow::ensure!(
-        manifest.format == 2
-            && manifest.bytes > 0
-            && manifest.chunks == manifest.bytes.div_ceil(CHUNK as u64)
-            && manifest.digest.len() == 64
-            && manifest
-                .digest
-                .bytes()
-                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)),
-        "invalid bootstrap manifest"
-    );
-    anyhow::ensure!(
-        serde_json::to_vec(&manifest)? == bytes,
-        "noncanonical bootstrap manifest"
-    );
-    Ok(manifest)
-}
-
-fn read_current_manifest(store: &TenantStore) -> anyhow::Result<Option<Manifest>> {
+fn read_current_manifest(
+    store: &TenantStore,
+) -> anyhow::Result<Option<ApplicationBootstrapManifest>> {
     store
         .get_bounded(NS, b"manifest", MAX_BOOTSTRAP_MANIFEST_BYTES)?
-        .map(|bytes| decode_current_manifest(&bytes))
+        .map(|bytes| ApplicationBootstrapManifest::decode(&bytes))
         .transpose()
 }
 
-fn read_current_manifest_at(view: &TenantStorageReadView) -> anyhow::Result<Option<Manifest>> {
+fn read_current_manifest_at(
+    view: &TenantStorageReadView,
+) -> anyhow::Result<Option<ApplicationBootstrapManifest>> {
     view.application_get(NS, b"manifest", MAX_BOOTSTRAP_MANIFEST_BYTES)?
-        .map(|bytes| decode_current_manifest(&bytes))
+        .map(|bytes| ApplicationBootstrapManifest::decode(&bytes))
         .transpose()
 }
 
@@ -830,7 +804,7 @@ fn persist_new_checked(
         store.write_batch(&[WriteOp::put(NS, i.to_be_bytes(), chunk)])?;
         check()?;
     }
-    let manifest = Manifest {
+    let manifest = ApplicationBootstrapManifest {
         format: 2,
         bytes: bytes.len(),
         chunks,
@@ -1033,12 +1007,13 @@ async fn start(
             "local bootstrap differs from authenticated standalone identity"
         );
     }
-    start_prepared(construction, engine, runtime).await
+    start_prepared(construction, engine, bytes, runtime).await
 }
 
 async fn start_prepared(
     construction: DatabaseConstruction,
     engine: Arc<TenantEngine>,
+    bytes: &SnapshotImage,
     runtime: LocalRuntime,
 ) -> anyhow::Result<Arc<Database>> {
     let store = construction.stores().application().clone();
@@ -1052,7 +1027,12 @@ async fn start_prepared(
     }
     let incarnation = engine.generation()?.state.incarnation.clone();
     construction
-        .start_local(engine, 1, format!("{}/{incarnation}", store.tenant()))
+        .start_local(
+            engine,
+            bytes,
+            1,
+            format!("{}/{incarnation}", store.tenant()),
+        )
         .await
 }
 
@@ -1099,10 +1079,15 @@ pub async fn restore_local(
         target.storage_access().serving_gate().is_none(),
         "independent restore authority requires replicated storage; local downgrade is forbidden"
     );
+    use crate::backup_verify::VerificationPhase;
     let deadline = source.deadline()?;
+    let total = VerificationPhase::start("restore.local_total", Some(deadline));
     let cancellation = kasumi_query::QueryCancellation::default();
     let _cancel = crate::admission::CancelOnDrop(cancellation.clone());
+    let phase = VerificationPhase::start("restore.bootstrap_gate", Some(deadline));
     let _gate = deadline.run(BOOTSTRAP_GATE.lock()).await?;
+    phase.complete();
+    let phase = VerificationPhase::start("restore.initial_access", Some(deadline));
     let authorization = backup_restore::RestoreAuthorization::Local(&request);
     authorization.check_access(&target, &security_audit).await?;
     anyhow::ensure!(
@@ -1116,6 +1101,8 @@ pub async fn restore_local(
                 .is_none(),
         "restore target is already initialized"
     );
+    phase.complete();
+    let phase = VerificationPhase::start("restore.load_authorized", Some(deadline));
     let verified = deadline
         .run(Box::pin(backup_restore::load_authorized(
             source,
@@ -1129,6 +1116,7 @@ pub async fn restore_local(
             Some(cancellation.clone()),
         )))
         .await??;
+    phase.complete();
     anyhow::ensure!(
         verified.checkpoint == request.checkpoint,
         "verified local backup differs from exact checkpoint"
@@ -1148,10 +1136,12 @@ pub async fn restore_local(
             None,
         )
         .await?;
+    let phase = VerificationPhase::start("restore.publication_access", Some(deadline));
     deadline.check()?;
     backup_restore::RestoreAuthorization::Local(&request)
         .check_access(&target, &security_audit)
         .await?;
+    phase.complete();
     let (restored, _gate) = publication::Publication {
         stores: targets.clone(),
         audit: security_audit.clone(),
@@ -1169,7 +1159,16 @@ pub async fn restore_local(
         kasumi_raft::initial_storage_identity(1, &format!("{}/{}", target.tenant(), incarnation))?,
     )
     .await?;
-    let database = start_prepared(construction, restored.engine, LocalRuntime::Production).await?;
+    let phase = VerificationPhase::start("restore.start_prepared", Some(deadline));
+    let database = start_prepared(
+        construction,
+        restored.engine,
+        &restored.bytes,
+        LocalRuntime::Production,
+    )
+    .await?;
+    phase.complete();
+    let phase = VerificationPhase::start("restore.maintenance_audit", Some(deadline));
     database.install_archive_destination(
         source.destination_alias.clone(),
         source.destination.clone(),
@@ -1186,6 +1185,8 @@ pub async fn restore_local(
         database.shutdown().await?;
         return Err(error.into());
     }
+    phase.complete();
+    total.complete();
     Ok(database)
 }
 
@@ -1258,3 +1259,18 @@ pub fn recovery_workspace_bytes(stores: &TenantStorageSet) -> anyhow::Result<u64
 
 #[path = "bootstrap_target_serving.rs"]
 pub(crate) mod target_serving;
+
+#[cfg(test)]
+pub(crate) fn persist_fixture_bootstrap(
+    stores: &TenantStorageSet,
+    image: &SnapshotImage,
+    node_id: u64,
+    name: &str,
+) -> anyhow::Result<()> {
+    persist_new_checked(
+        stores,
+        image,
+        kasumi_raft::initial_storage_identity(node_id, name)?,
+        || stores.check_access(),
+    )
+}

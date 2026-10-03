@@ -1,0 +1,24 @@
+   Compiling kasumi-kv v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-kv)
+   Compiling kasumi-store v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-store)
+warning: field `owner` is never read
+  --> crates/kasumi-store/src/node_file/file_owner_fixture.rs:38:5
+   |
+37 | pub struct NodeFileCleanup {
+   |            --------------- field in this struct
+38 |     owner: Arc<NodeFile>,
+   |     ^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `delete` is never used
+  --> crates/kasumi-store/src/node_file/file_owner_fixture.rs:50:12
+   |
+41 | impl NodeFileCleanup {
+   | -------------------- method in this implementation
+...
+50 |     pub fn delete(self) -> Result<()> {
+   |            ^^^^^^
+
+warning: `kasumi-store` (lib test) generated 2 warnings
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 45.07s
+  Executable unittests src/lib.rs (target/disk-backed-cache/debug/deps/kasumi_store-9e76b1ecb60de376)

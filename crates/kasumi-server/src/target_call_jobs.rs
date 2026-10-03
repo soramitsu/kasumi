@@ -390,7 +390,10 @@ mod tests {
             "exact target rejection"
         );
         let again = jobs.drain().await.unwrap_err();
-        assert!(Arc::ptr_eq(&first.issues()[0], &again.issues()[0]));
+        assert!(kasumi_types::drain::DrainIssueRef::ptr_eq(
+            &first.issues()[0],
+            &again.issues()[0]
+        ));
 
         let jobs = self::jobs();
         let receive = jobs
@@ -457,7 +460,10 @@ mod tests {
                 .is_some()
         );
         let again = jobs.drain().await.unwrap_err();
-        assert!(Arc::ptr_eq(&result.issues()[0], &again.issues()[0]));
+        assert!(kasumi_types::drain::DrainIssueRef::ptr_eq(
+            &result.issues()[0],
+            &again.issues()[0]
+        ));
     }
 
     #[tokio::test]
@@ -501,7 +507,10 @@ mod tests {
                 .is_some()
         );
         let repeated = jobs.drain().await.unwrap_err();
-        assert!(Arc::ptr_eq(&failure.issues()[0], &repeated.issues()[0]));
+        assert!(kasumi_types::drain::DrainIssueRef::ptr_eq(
+            &failure.issues()[0],
+            &repeated.issues()[0]
+        ));
 
         let channel_jobs = self::jobs();
         let (send, receive) = oneshot::channel::<Ticket<()>>();

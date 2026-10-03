@@ -1,0 +1,13 @@
+Command: cargo test --locked --offline --config profile.test.package.kasumi-kv.opt-level=3 --config profile.test.package.sha2.opt-level=3 -p kasumi-store --all-features --lib pending_only_enrollment_ -- --nocapture
+CARGO_TARGET_DIR=target/disk-backed-cache
+   Compiling kasumi-kv v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-kv)
+   Compiling kasumi-store v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-store)
+error[E0405]: cannot find trait `RetireLease` in this scope
+  --> crates/kasumi-store/src/disk_memory_tests.rs:13:30
+   |
+13 |     std::ptr::from_ref::<dyn RetireLease>(lease.0.as_deref().expect("live lease")).cast::<()>()
+   |                              ^^^^^^^^^^^ not found in this scope
+
+For more information about this error, try `rustc --explain E0405`.
+error: could not compile `kasumi-store` (lib test) due to 1 previous error
+Runner: 141.63s; exit=101; matching=814/814

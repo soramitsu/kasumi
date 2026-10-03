@@ -1,0 +1,67 @@
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+   Compiling kasumi-query v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-query)
+   Compiling kasumi-engine v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-engine)
+warning: variant `Mutation` is never constructed
+  --> crates/kasumi-engine/src/security_audit_jobs.rs:26:5
+   |
+24 | enum JobEffect {
+   |      --------- variant in this enum
+25 |     Read,
+26 |     Mutation(&'static str),
+   |     ^^^^^^^^
+   |
+   = note: `JobEffect` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: struct `ReadPause` is never constructed
+  --> crates/kasumi-engine/src/security_audit_jobs.rs:57:19
+   |
+57 | pub(super) struct ReadPause {
+   |                   ^^^^^^^^^
+
+warning: method `run_mutation` is never used
+   --> crates/kasumi-engine/src/security_audit_jobs.rs:120:25
+    |
+ 62 | impl SecurityAudit {
+    | ------------------ method in this implementation
+...
+120 |     pub(super) async fn run_mutation<T, F, R>(&self, component: &'static str, run: R) -> Result<T>
+    |                         ^^^^^^^^^^^^
+
+warning: `kasumi-engine` (lib) generated 3 warnings
+warning: field `panic` is never read
+  --> crates/kasumi-engine/src/security_audit_jobs.rs:52:9
+   |
+48 | pub(super) struct RecordFault {
+   |                   ----------- field in this struct
+...
+52 |     pub panic: bool,
+   |         ^^^^^
+
+warning: `kasumi-engine` (lib test) generated 4 warnings (3 duplicates)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4m 34s
+     Running unittests src/lib.rs (target/disk-backed-cache/debug/deps/kasumi_engine-3656345440c90b6a)
+
+running 18 tests
+test document_source::tests::absent_records_require_presence_only_when_a_version_is_expected ... ok
+test document_source::tests::cancellation_is_checked_before_lending_and_after_the_callback ... ok
+test document_source::tests::corrupt_ids_versions_and_disagreeing_hydration_never_reach_the_loan ... ok
+test document_source::tests::headers_merge_live_archive_and_hydrated_rows_once_in_exclusive_order ... ok
+test document_source::tests::identity_retains_actual_generation_collection_and_exact_indexes ... ok
+test document_source::tests::later_overlay_cannot_change_the_captured_records_or_indexes ... ok
+test index_source::tests::collection_records_merge_hydration_once_without_cloning_bodies ... ok
+test index_source::tests::delta_replays_one_sorted_old_final_pair_for_repeated_mutations ... ok
+test index_source::tests::explicit_schema_rebuild_and_removal_do_not_require_document_journals ... ok
+test index_source::tests::schema_candidates_and_empty_snapshot_metadata_have_exact_borrowed_owners ... ok
+test index_source::tests::unexplained_live_and_archive_roots_fail_without_rebuild_fallback ... ok
+test index_source::tests::unique_swap_uses_final_pairs_and_conflict_is_prevalidated ... ok
+test state::mutation_apply::tests::captured_index_corruption_is_outer_before_mutation_receipt_or_text_publication ... ok
+test state::mutation_apply::tests::captured_index_corruption_leaves_staged_terminal_unselected_but_conflict_is_durable ... ok
+test state::mutation_apply::tests::invalid_index_inputs_remain_deterministic_rejections_before_text_materialization ... ok
+test state::mutation_apply::tests::recovery_seal_two_writes_three_reads_are_atomic_and_replay_original_receipts ... ok
+test state::mutation_apply::tests::snapshot_quota_rejection_preserves_text_writer_and_original_receipts ... ok
+test state::mutation_apply::tests::text_materialization_failure_is_outer_and_does_not_select_a_receipt ... ok
+
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 346 filtered out; finished in 18.76s
+

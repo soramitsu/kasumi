@@ -18,14 +18,17 @@ impl std::error::Error for OriginalStartupFailure {}
 struct Backend;
 impl kasumi_raft::StateMachineBackend for Backend {
     fn close_application(&self) {}
-    fn apply(
+    fn apply_with_publisher(
         &self,
         _: &kasumi_raft::AppliedEntryContext,
-        bytes: &[u8],
-    ) -> anyhow::Result<kasumi_raft::AppliedResponse> {
-        Ok(kasumi_raft::AppliedResponse::application(bytes.to_vec()))
-    }
-    fn apply_metadata(&self, _position: &kasumi_raft::AppliedEntryContext) -> anyhow::Result<()> {
+        input: kasumi_raft::AppliedInput<'_>,
+        publisher: &mut dyn kasumi_raft::ApplyPublisher,
+    ) -> anyhow::Result<()> {
+        let bytes = match input {
+            kasumi_raft::AppliedInput::Command(bytes) => bytes.to_vec(),
+            kasumi_raft::AppliedInput::Metadata => Vec::new(),
+        };
+        publisher.commit(kasumi_raft::AppliedResponse::application(bytes), &[])?;
         Ok(())
     }
     fn capture_snapshot(&self) -> anyhow::Result<kasumi_raft::CapturedSnapshot> {
@@ -191,7 +194,7 @@ async fn cancelled_local_startup_and_node_census_keep_actual_group_and_charges_u
             repeated
                 .issues()
                 .iter()
-                .any(|issue| Arc::ptr_eq(issue, &original))
+                .any(|issue| kasumi_types::drain::DrainIssueRef::ptr_eq(issue, &original))
         );
         assert_eq!(
             admission.snapshot().reserved_bytes,

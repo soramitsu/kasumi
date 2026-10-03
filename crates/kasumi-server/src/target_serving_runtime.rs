@@ -168,12 +168,14 @@ impl TargetRecoveryRuntime {
         };
         if let Some((_, custody)) = &g.custody {
             if custody.identity().is_ok() {
+                self.activate_generation_cache(&g)?;
                 return Ok(());
             }
             g.close(&self.cluster, &self.registry).await?;
         }
         if let Some(owner) = &g.serving {
             if owner.check().is_ok() && g.registered_data.is_some() {
+                self.activate_generation_cache(&g)?;
                 return Ok(());
             }
             g.close(&self.cluster, &self.registry).await?;
@@ -194,13 +196,18 @@ impl TargetRecoveryRuntime {
                 .context("activation projection unavailable")?,
         );
         let path = self.path(&key)?;
-        ensure!(path.is_file(), "activated target file is missing");
+        ensure!(
+            target_file_exists(&path)?,
+            "activated target group is missing"
+        );
         g.node = Some(NodeStore::open_existing(
             path,
             self.journal.materialization_file_id(&key.0, key.1)?,
             self.audit.store().persistent_disk().clone(),
             self.audit.store().scratch_disk().clone(),
+            self.audit.store().persistent_disk().native_storage_config(),
         )?);
+        g.node.as_ref().unwrap().prepare_cache_warming().await?;
         self.placement(&projection.execution()?.origin.input)?;
         // Closed retirement recovery consults only independently keyed control
         // storage. It remains available after ordinary serving expires, without
@@ -249,6 +256,7 @@ impl TargetRecoveryRuntime {
             )?;
             g.custody = Some((key, custody));
             g.custody_probe = None;
+            self.activate_generation_cache(&g)?;
             return Ok(());
         }
         drop(control);
@@ -343,6 +351,7 @@ impl TargetRecoveryRuntime {
         self.registry.insert(database.clone())?;
         g.registered_data = Some((key, database));
         g.serving.as_ref().unwrap().check()?;
+        self.activate_generation_cache(&g)?;
         Ok(())
     }
 }

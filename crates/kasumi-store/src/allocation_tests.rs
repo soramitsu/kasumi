@@ -8,6 +8,7 @@ use std::{
 thread_local! {
     static ACTIVE: Cell<bool> = const { Cell::new(false) };
     static ALLOCATIONS: Cell<usize> = const { Cell::new(0) };
+    static ALLOCATION_ADDRESS: Cell<usize> = const { Cell::new(0) };
     static REQUESTED_BYTES: Cell<usize> = const { Cell::new(0) };
     static RETIRED_BYTES: Cell<usize> = const { Cell::new(0) };
     static RETIREMENTS: Cell<usize> = const { Cell::new(0) };
@@ -24,19 +25,36 @@ fn allocated(bytes: usize) {
         let _ = REQUESTED_BYTES.try_with(|n| n.set(n.get().saturating_add(bytes)));
     }
 }
+// Records only an address for equality at the later deallocation gate. It never
+// dereferences the allocation or exposes its concrete owner.
+fn allocation_returned(pointer: *mut u8) {
+    if ACTIVE.try_with(Cell::get).unwrap_or(false) {
+        let _ = ALLOCATION_ADDRESS.try_with(|address| {
+            if address.get() == 0 {
+                address.set(pointer as usize);
+            }
+        });
+    }
+}
 // SAFETY: every operation forwards its unchanged allocation contract to System.
 unsafe impl GlobalAlloc for ObservedSystem {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         allocated(layout.size());
-        unsafe { System.alloc(layout) }
+        let result = unsafe { System.alloc(layout) };
+        allocation_returned(result);
+        result
     }
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
         allocated(layout.size());
-        unsafe { System.alloc_zeroed(layout) }
+        let result = unsafe { System.alloc_zeroed(layout) };
+        allocation_returned(result);
+        result
     }
     unsafe fn realloc(&self, pointer: *mut u8, layout: Layout, size: usize) -> *mut u8 {
         allocated(size);
-        unsafe { System.realloc(pointer, layout, size) }
+        let result = unsafe { System.realloc(pointer, layout, size) };
+        allocation_returned(result);
+        result
     }
     unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
         let observation = observe_before_deallocation(pointer, layout);
@@ -64,6 +82,7 @@ pub(crate) fn measure<T>(work: impl FnOnce() -> T) -> (T, usize) {
     }
     ACTIVE.with(|active| assert!(!active.replace(true), "nested allocation measurement"));
     ALLOCATIONS.with(|n| n.set(0));
+    ALLOCATION_ADDRESS.with(|address| address.set(0));
     REQUESTED_BYTES.with(|n| n.set(0));
     RETIRED_BYTES.with(|n| n.set(0));
     RETIREMENTS.with(|n| n.set(0));
@@ -71,6 +90,30 @@ pub(crate) fn measure<T>(work: impl FnOnce() -> T) -> (T, usize) {
     let result = work();
     drop(reset);
     (result, ALLOCATIONS.with(Cell::get))
+}
+
+/// Observe one retained allocation made by a closed constructor. The returned
+/// numeric address is only for equality at a later real deallocation boundary;
+/// callers keep the constructed owner alive until installing that observation.
+/// Assertions run after the measurement window, never inside the allocator.
+pub(crate) fn observe_one_allocation<T>(
+    expected_bytes: usize,
+    work: impl FnOnce() -> T,
+) -> (T, usize) {
+    let (result, allocations) = measure(work);
+    let address = ALLOCATION_ADDRESS.with(Cell::get);
+    assert_eq!(
+        allocations, 1,
+        "constructor must allocate exactly one token"
+    );
+    assert_eq!(REQUESTED_BYTES.with(Cell::get), expected_bytes);
+    assert_eq!(
+        RETIREMENTS.with(Cell::get),
+        0,
+        "constructor retains its token"
+    );
+    assert_ne!(address, 0, "constructor returned a live allocation");
+    (result, address)
 }
 
 /// One exact Box allocation's real System.dealloc boundary. The observer never

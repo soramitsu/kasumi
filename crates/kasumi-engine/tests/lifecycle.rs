@@ -3,6 +3,8 @@ use kasumi_engine::test_utils::open_fixture_replicated;
 #[path = "common/bootstrap_vote_probe.rs"]
 mod bootstrap_vote_probe;
 mod common;
+#[path = "common/node_open_diagnostic.rs"]
+mod node_open_diagnostic;
 use bootstrap_vote_probe::BootstrapVoteProbe;
 use kasumi_engine::{
     Database, LifecycleSigner, ReplicaPlacement, ReplicatedBootstrap, initialize_replicated,
@@ -221,7 +223,7 @@ impl Fixture {
                     kasumi_store::test_utils::NODE_STORE_ID,
                 )
             })
-            .unwrap();
+            .unwrap_or_else(|error| node_open_diagnostic::fail(id, create, &error));
             let audit = if create {
                 common::security_audit(node.clone(), self.physical[&id].storage.admission.clone())
                     .await

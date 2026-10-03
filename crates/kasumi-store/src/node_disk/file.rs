@@ -1,6 +1,9 @@
+#[cfg(feature = "test-utils")]
+type CloseExtentObservation = (Result<(u64, u64), io::ErrorKind>, AccountedFile);
+
 use super::{
     AccountedFile, AccountedInode, DiskWork, Identity, NamespaceBinding, NodeDisk, NodeDiskPhase,
-    State, census, extent,
+    State, census, file_ceiling, file_extent, file_extent_from_parts,
     namespace::{self, ParentTransition, RetainedParent},
     rounded,
 };
@@ -15,6 +18,46 @@ use std::{
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
+
+// Failure-only fixture evidence from an already observed metadata record.
+// Never stat, reopen, reconcile or print a path/name/namespace digest here.
+#[cfg(feature = "test-utils")]
+#[cold]
+#[inline(never)]
+pub(in crate::node_disk) fn report_enrollment_mismatch(
+    stage: &'static str,
+    identity: Identity,
+    previous: Option<&AccountedInode>,
+    observed: &AccountedFile,
+    metadata: &std::fs::Metadata,
+    unit: u64,
+) {
+    use std::io::Write;
+    let old = previous.and_then(AccountedInode::file);
+    // The ledger lookup used exactly the observed inode identity. A missing
+    // entry is distinguished from an existing wrong-kind entry.
+    let identity_equal = previous.is_some();
+    let binding_equal = previous.is_some_and(|entry| entry.binding() == observed.binding);
+    let allocated = metadata.blocks().checked_mul(512);
+    let _ = writeln!(
+        std::io::stderr().lock(),
+        "physical enrollment mismatch: stage={stage}, identity={identity:?}, identity_equal={identity_equal}, file_kind={}, binding_equal={binding_equal}, old_bytes={:?}, old_pending={:?}, old_actual_len={:?}, old_reserved_len={:?}, old_settled={:?}, old_represented_bytes={:?}, observed_bytes={}, observed_pending={}, observed_actual_len={}, observed_reserved_len={}, observed_settled={}, observed_represented_bytes={:?}, allocated={allocated:?}, unit={unit}, observed_bytes_exceed_old={:?}",
+        old.is_some(),
+        old.map(|e| e.bytes),
+        old.map(|e| e.pending),
+        old.map(|e| e.actual_len),
+        old.map(|e| e.reserved_len),
+        old.map(|e| e.settled),
+        old.and_then(|e| e.bytes.checked_sub(e.pending)),
+        observed.bytes,
+        observed.pending,
+        observed.actual_len,
+        observed.reserved_len,
+        observed.settled,
+        observed.bytes.checked_sub(observed.pending),
+        old.map(|e| observed.bytes > e.bytes)
+    );
+}
 
 struct Budget {
     file: Option<File>,
@@ -466,6 +509,7 @@ pub(super) struct PreparedFile<'a> {
     create: bool,
     work: Option<DiskWork>,
     admitted_growth: Option<(u64, u64)>,
+    transaction_permit: Option<super::transaction::FileCreationPermit>,
 }
 impl PreparedFile<'_> {
     #[cfg(test)]
@@ -492,10 +536,13 @@ impl PreparedFile<'_> {
                 .resources
                 .as_mut()
                 .expect("prepared resources"),
-            self.create,
-            self.work,
-            self.device,
-            self.admitted_growth,
+            FileExecution {
+                create: self.create,
+                work: self.work,
+                device: self.device,
+                admitted_growth: self.admitted_growth,
+                transaction_permit: self.transaction_permit.as_ref(),
+            },
         );
         let identity = match result {
             Ok(identity) => identity,
@@ -529,15 +576,26 @@ impl PreparedFile<'_> {
         Ok(NodeDiskFile(OwnedFileArc::new(owner)))
     }
 }
-fn execute_prepared(
-    disk: &Arc<NodeDisk>,
-    state: &mut State,
-    resources: &mut FileResources,
+struct FileExecution<'a> {
     create: bool,
     work: Option<DiskWork>,
     device: u64,
     admitted_growth: Option<(u64, u64)>,
+    transaction_permit: Option<&'a super::transaction::FileCreationPermit>,
+}
+fn execute_prepared(
+    disk: &Arc<NodeDisk>,
+    state: &mut State,
+    resources: &mut FileResources,
+    execution: FileExecution<'_>,
 ) -> io::Result<Identity> {
+    let FileExecution {
+        create,
+        work,
+        device,
+        admitted_growth,
+        transaction_permit,
+    } = execution;
     verify_parent(
         &disk.roots[&resources.root],
         &resources.parent_names,
@@ -558,6 +616,7 @@ fn execute_prepared(
                 resources.name.as_ref().expect("prepared name"),
                 device,
                 disk.unit,
+                disk.config.file_allocation_policy,
             )
         });
         if let Err(error) = result {
@@ -568,23 +627,47 @@ fn execute_prepared(
         }
     }
     let mut transition = if create {
-        Some(ParentTransition::prepare(
-            disk,
-            state,
-            (
-                resources
-                    .parent
-                    .as_ref()
-                    .expect("prepared parent")
-                    .identity(),
-                1,
-            ),
-            None,
-            work,
-        )?)
+        let first = (
+            resources
+                .parent
+                .as_ref()
+                .expect("prepared creation parent")
+                .identity(),
+            1,
+        );
+        Some(match transaction_permit {
+            Some(permit) => ParentTransition::preflight_transaction(disk, state, first, permit)?,
+            None => ParentTransition::preflight(disk, state, first, None, work)?,
+        })
     } else {
         None
     };
+    if create {
+        let (bytes, length) = match admitted_growth {
+            Some(admitted) => admitted,
+            None => {
+                let bytes = file_ceiling(0, disk.unit, disk.config.file_allocation_policy)?;
+                disk.reserve(state, bytes, work.expect("creation work class"))?;
+                (bytes, 0)
+            }
+        };
+        // This exact charge is retained before O_CREAT can create an inode.
+        // An uncertain acquisition keeps it with the prepared custody payload;
+        // a proved no-create conflict returns only the ordinary precharge.
+        let budget = resources
+            .budget
+            .as_mut()
+            .expect("prepared budget")
+            .get_mut()
+            .expect("unpublished budget");
+        budget.bytes = bytes;
+        budget.pending = bytes;
+        budget.reserved_len = length;
+        transition
+            .as_ref()
+            .expect("prepared creation parent")
+            .activate(state);
+    }
     let flags = libc::O_RDWR
         | libc::O_NONBLOCK
         | if create {
@@ -613,6 +696,12 @@ fn execute_prepared(
                 {
                     disk.fail_locked(state);
                     return Err(rollback);
+                }
+                if create
+                    && error.kind() == io::ErrorKind::AlreadyExists
+                    && admitted_growth.is_none()
+                {
+                    refund_uncreated_file(disk, state, resources)?;
                 }
                 // An absent final leaf is harmless only if its complete name
                 // was never enrolled and the prepared parent is still rooted.
@@ -647,7 +736,7 @@ fn execute_prepared(
         .as_ref()
         .expect("retained acquired file");
     let mut already_owned = false;
-    let inspected = (|| -> io::Result<(Identity, AccountedFile)> {
+    let inspected = (|| -> io::Result<(Identity, std::fs::Metadata)> {
         let metadata = file.metadata()?;
         census::regular_nonallocating(&metadata, device)?;
         let identity = Identity::of(&metadata);
@@ -672,13 +761,9 @@ fn execute_prepared(
         if Identity::of(&metadata) != identity {
             return Err(io::ErrorKind::InvalidData.into());
         }
-        let (bytes, pending) = extent(&metadata, disk.unit)?;
-        Ok((
-            identity,
-            AccountedFile::durable(resources.binding, bytes, pending, metadata.len()),
-        ))
+        Ok((identity, metadata))
     })();
-    let (identity, mut enrolled) = match inspected {
+    let (identity, metadata) = match inspected {
         Ok(value) => value,
         Err(error) => {
             // A still-live registered owner makes an attempted second open
@@ -689,8 +774,8 @@ fn execute_prepared(
             return Err(error);
         }
     };
-    if create {
-        if state.accounted.contains_key(&identity) || enrolled.bytes != 0 {
+    let enrolled = if create {
+        if state.accounted.contains_key(&identity) {
             disk.fail_locked(state);
             return Err(io::ErrorKind::InvalidData.into());
         }
@@ -698,17 +783,22 @@ fn execute_prepared(
             disk.fail_locked(state);
             return Err(io::ErrorKind::InvalidData.into());
         };
-        // Both tables have reserved capacity. Even this provisional inode
-        // survives a failed durability step in the retained census ledger.
+        let budget = resources
+            .budget
+            .as_mut()
+            .expect("prepared budget")
+            .get_mut()
+            .expect("unpublished budget");
+        // Both tables have reserved capacity. At inode birth transfer the full
+        // ordinary or namespace-plan promise before any durability operation.
         state.accounted.insert(
             identity,
-            AccountedInode::File(AccountedFile {
-                settled: false,
-                ..enrolled
-            }),
+            AccountedInode::File(budget.accounted(resources.binding)),
         );
         state.files = files;
+        reconcile_created_file(disk, state, resources, identity, &metadata, false)?;
         let durable = (|| -> io::Result<()> {
+            let file = resources.provisional_file.as_ref().expect("created file");
             #[cfg(test)]
             disk.namespace_checkpoint(NamespaceFailure::CreateFileSync)?;
             file.sync_all()?;
@@ -725,43 +815,56 @@ fn execute_prepared(
                 &resources.parent_names,
                 resources.parent.as_ref().expect("prepared parent"),
             )?;
-            transition.take().expect("prepared creation parent").settle(
-                disk,
-                state,
-                &[resources.parent.as_ref().expect("prepared parent")],
-            )
+            transition
+                .take()
+                .expect("prepared creation parent")
+                .settle(
+                    disk,
+                    state,
+                    &[resources.parent.as_ref().expect("prepared parent")],
+                )?;
+            // Empty-file allocation can materialize during fsync too. Its
+            // allowance was already paid; reconcile it before close is safe.
+            let metadata = file.metadata()?;
+            reconcile_created_file(disk, state, resources, identity, &metadata, true)
         })();
         if let Err(error) = durable {
             disk.fail_locked(state);
             return Err(error);
         }
-        *state
+        resources
+            .budget
+            .as_mut()
+            .expect("prepared budget")
+            .get_mut()
+            .expect("unpublished budget")
+            .accounted(resources.binding)
+    } else {
+        let (bytes, pending) =
+            file_extent(&metadata, disk.unit, disk.config.file_allocation_policy)
+                .inspect_err(|_| disk.fail_locked(state))?;
+        let enrolled = AccountedFile::durable(resources.binding, bytes, pending, metadata.len());
+        if state
             .accounted
-            .get_mut(&identity)
-            .and_then(AccountedInode::file_mut)
-            .expect("new enrolled inode") = enrolled;
-    } else if state
-        .accounted
-        .get(&identity)
-        .and_then(AccountedInode::file)
-        != Some(&enrolled)
-    {
-        disk.fail_locked(state);
-        return Err(io::ErrorKind::InvalidData.into());
-    }
-    if let Some((bytes, length)) = admitted_growth {
-        // The batch already charged this exact future file. Transfer its
-        // full promise into the inode ledger/budget without a second reserve.
-        enrolled.bytes = bytes;
-        enrolled.pending = bytes;
-        enrolled.reserved_len = length;
-        enrolled.settled = length == 0;
-        *state
-            .accounted
-            .get_mut(&identity)
-            .and_then(AccountedInode::file_mut)
-            .expect("admitted new inode") = enrolled;
-    }
+            .get(&identity)
+            .and_then(AccountedInode::file)
+            != Some(&enrolled)
+        {
+            #[cfg(feature = "test-utils")]
+            report_enrollment_mismatch(
+                "exclusive-open",
+                identity,
+                state.accounted.get(&identity),
+                &enrolled,
+                &metadata,
+                disk.unit,
+            );
+            disk.fail_locked(state);
+            return Err(io::ErrorKind::InvalidData.into());
+        }
+        enrolled
+    };
+
     resources
         .parent
         .as_mut()
@@ -783,6 +886,139 @@ fn execute_prepared(
         close_outcome: None,
     };
     Ok(identity)
+}
+
+fn account_materialization(
+    disk: &NodeDisk,
+    state: &mut State,
+    budget: &mut Budget,
+    logical_len: u64,
+    allocated: u64,
+    changed_length_expected: bool,
+) -> io::Result<()> {
+    let outcome = (|| -> io::Result<()> {
+        if state.phase == NodeDiskPhase::Failed || !disk.device.lock().admission_ready() {
+            return Err(io::ErrorKind::Other.into());
+        }
+        let observed = rounded(logical_len.max(allocated), disk.unit)?;
+        let extra = observed.saturating_sub(budget.bytes);
+        let bytes = budget.bytes.max(observed);
+        let pending = bytes - allocated;
+        let changed_length = logical_len != budget.actual_len && !changed_length_expected;
+        let mut promises = disk.device.lock();
+        let next = promises
+            .checked_sub(budget.pending)
+            .and_then(|n| n.checked_add(pending));
+        let own_next = state
+            .pending
+            .checked_sub(budget.pending)
+            .and_then(|n| n.checked_add(pending));
+        let owned = state.bytes.checked_add(extra);
+        let (Some(next), Some(own_next), Some(owned)) = (next, own_next, owned) else {
+            state.phase = NodeDiskPhase::Failed;
+            promises.fail_owner();
+            return Err(io::ErrorKind::InvalidData.into());
+        };
+        promises
+            .set_pending(next)
+            .inspect_err(|_| state.phase = NodeDiskPhase::Failed)?;
+        state.pending = own_next;
+        state.bytes = owned;
+        budget.bytes = bytes;
+        budget.pending = pending;
+        // The standing allowance is part of a canonical settled file. Only
+        // unused logical growth requires an explicit stopped reconciliation.
+        budget.settled = logical_len == budget.reserved_len && !changed_length;
+        budget.actual_len = logical_len;
+        if extra != 0 || logical_len > budget.reserved_len || changed_length {
+            state.phase = NodeDiskPhase::Failed;
+            promises.fail_owner();
+            return Err(io::ErrorKind::InvalidData.into());
+        }
+        Ok(())
+    })();
+    outcome.inspect_err(|_| disk.fail_locked(state))
+}
+
+fn reconcile_created_file(
+    disk: &NodeDisk,
+    state: &mut State,
+    resources: &mut FileResources,
+    identity: Identity,
+    metadata: &std::fs::Metadata,
+    durable: bool,
+) -> io::Result<()> {
+    let allocated = metadata.blocks().checked_mul(512).ok_or_else(|| {
+        disk.fail_locked(state);
+        io::Error::from(io::ErrorKind::InvalidData)
+    })?;
+    let budget = resources
+        .budget
+        .as_mut()
+        .expect("prepared budget")
+        .get_mut()
+        .expect("unpublished budget");
+    let outcome = account_materialization(disk, state, budget, metadata.len(), allocated, false);
+    if !durable {
+        budget.settled = false;
+    }
+    *state
+        .accounted
+        .get_mut(&identity)
+        .and_then(AccountedInode::file_mut)
+        .expect("created inode enrollment") = budget.accounted(resources.binding);
+    // O_EXCL creates an empty inode. Reserved future EOF never authorizes an
+    // unexpected initial length, even when a namespace plan paid for growth.
+    if metadata.len() != 0 {
+        disk.fail_locked(state);
+        return Err(io::ErrorKind::InvalidData.into());
+    }
+    outcome
+}
+
+/// O_EXCL and an unchanged verified parent proved that no new inode exists.
+/// Only the ordinary creation precharge is returned; an admitted namespace
+/// plan keeps its own transfer custody until its complete terminal protocol.
+fn refund_uncreated_file(
+    disk: &NodeDisk,
+    state: &mut State,
+    resources: &mut FileResources,
+) -> io::Result<()> {
+    let outcome = (|| -> io::Result<()> {
+        let budget = resources
+            .budget
+            .as_mut()
+            .expect("prepared budget")
+            .get_mut()
+            .expect("unpublished budget");
+        if resources.provisional_file.is_some()
+            || budget.file.is_some()
+            || budget.bytes != budget.pending
+            || budget.actual_len != 0
+            || budget.reserved_len != 0
+        {
+            return Err(io::ErrorKind::InvalidData.into());
+        }
+        let bytes = state
+            .bytes
+            .checked_sub(budget.bytes)
+            .ok_or(io::ErrorKind::InvalidData)?;
+        let pending = state
+            .pending
+            .checked_sub(budget.pending)
+            .ok_or(io::ErrorKind::InvalidData)?;
+        let mut device = disk.device.lock();
+        let shared = device
+            .checked_sub(budget.pending)
+            .ok_or(io::ErrorKind::InvalidData)?;
+        device.set_pending(shared)?;
+        state.bytes = bytes;
+        state.pending = pending;
+        budget.bytes = 0;
+        budget.pending = 0;
+        Ok(())
+    })();
+    outcome.inspect_err(|_| disk.fail_locked(state))
 }
 
 // Destination preparation unlocks before the source owner's recursive Drop.
@@ -870,7 +1106,8 @@ fn execute_publication(
             let actual = budget.file.as_ref().ok_or(io::ErrorKind::BrokenPipe)?;
             owner.verify(actual)?;
             let metadata = actual.metadata()?;
-            let (bytes, pending) = extent(&metadata, disk.unit)?;
+            let (bytes, pending) =
+                file_extent(&metadata, disk.unit, disk.config.file_allocation_policy)?;
             if AccountedFile::durable(owner.binding, bytes, pending, metadata.len())
                 != budget.accounted(owner.binding)
             {
@@ -894,6 +1131,7 @@ fn execute_publication(
             target.name.as_ref().expect("prepared destination name"),
             owner.identity.0,
             disk.unit,
+            disk.config.file_allocation_policy,
         )?;
         transition = Some(ParentTransition::prepare(
             disk,
@@ -1018,7 +1256,8 @@ fn execute_publication(
         let actual = budget.file.as_ref().expect("live publication descriptor");
         owner.verify(actual)?;
         let metadata = actual.metadata()?;
-        let (bytes, pending) = extent(&metadata, disk.unit)?;
+        let (bytes, pending) =
+            file_extent(&metadata, disk.unit, disk.config.file_allocation_policy)?;
         if AccountedFile::durable(owner.binding, bytes, pending, metadata.len())
             != budget.accounted(owner.binding)
         {
@@ -1144,7 +1383,36 @@ impl NodeDisk {
         root: &str,
         relative: &Path,
         create: Option<DiskWork>,
+        admission: Option<&mut super::batch::NamespaceAdmission>,
+    ) -> io::Result<PreparedFile<'a>> {
+        self.prepare_file_in_transaction(root, relative, create, admission, None)
+    }
+
+    pub(crate) fn open_transaction_file(
+        self: &Arc<Self>,
+        claim: &mut super::transaction::TransactionSpace,
+        root: &str,
+        relative: &Path,
+        create: bool,
+    ) -> io::Result<NodeDiskFile> {
+        self.prepare_file_in_transaction(
+            root,
+            relative,
+            create.then_some(DiskWork::Foreground),
+            None,
+            Some(claim),
+        )
+        .and_then(PreparedFile::execute)
+        .inspect_err(|_| self.fail())
+    }
+
+    fn prepare_file_in_transaction<'a>(
+        self: &'a Arc<Self>,
+        root: &str,
+        relative: &Path,
+        create: Option<DiskWork>,
         mut admission: Option<&mut super::batch::NamespaceAdmission>,
+        mut transaction: Option<&mut super::transaction::TransactionSpace>,
     ) -> io::Result<PreparedFile<'a>> {
         let mut state = self.lock_state();
         if state.phase != NodeDiskPhase::Open {
@@ -1171,11 +1439,37 @@ impl NodeDisk {
         } else {
             None
         };
+        let mut transaction_permit = None;
+        let transaction_growth = if let Some(claim) = transaction.as_mut() {
+            let selected = self.roots.get(root).ok_or(io::ErrorKind::InvalidInput)?;
+            let names = super::directory::names(
+                relative,
+                self.config.max_depth,
+                self.config.max_name_bytes,
+            )?;
+            let (_, parents) = names.split_last().ok_or(io::ErrorKind::InvalidInput)?;
+            let parent = parents.iter().fold(
+                NamespaceBinding::root(selected.identity),
+                |binding, name| binding.child(name),
+            );
+            claim.check_parent(parent)?;
+            claim.consume_descriptor(self, &mut state)?;
+            if create.is_some() {
+                let bytes = file_ceiling(0, self.unit, self.config.file_allocation_policy)?;
+                transaction_permit = Some(claim.consume_file(self, &mut state, bytes)?);
+                Some((bytes, 0))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
         // Retiring registrations remain exclusive until BOTH descriptors and
         // their metadata backing are gone; strong_count == 0 is not drain.
         if state
             .open_files
             .checked_add(super::batch::reserved_files(&state))
+            .and_then(|n| n.checked_add(state.transaction_descriptors))
             .is_none_or(|n| n >= self.config.max_open_files)
         {
             return Err(io::ErrorKind::StorageFull.into());
@@ -1184,18 +1478,23 @@ impl NodeDisk {
             if state
                 .files
                 .checked_add(u64::from(super::batch::reserved_files(&state)))
+                .and_then(|n| n.checked_add(state.transaction_files))
                 .is_none_or(|n| n >= self.config.max_persistent_files)
             {
                 return Err(io::ErrorKind::StorageFull.into());
             }
-            self.reserve(&mut state, 0, work)?;
+            if transaction.is_none() {
+                self.reserve(&mut state, 0, work)?;
+            }
             let required = 1 + super::batch::reserved_entries(&state);
             state
                 .accounted
                 .try_reserve(required)
                 .map_err(|_| io::ErrorKind::OutOfMemory)?;
         }
-        let required = 1 + super::batch::reserved_files(&state) as usize;
+        let required = 1
+            + super::batch::reserved_files(&state) as usize
+            + state.transaction_descriptors as usize;
         state
             .live
             .try_reserve(required)
@@ -1221,7 +1520,7 @@ impl NodeDisk {
         drop(original_error.lock().expect("unpublished original outcome"));
         let (allocation, admitted_growth) = match admitted {
             Some((allocation, bytes, length)) => (allocation, Some((bytes, length))),
-            None => (Arc::<FileOwner>::new_uninit(), None),
+            None => (Arc::<FileOwner>::new_uninit(), transaction_growth),
         };
         let mut resources = FileResources {
             root: root.to_owned(),
@@ -1256,6 +1555,7 @@ impl NodeDisk {
             create: create.is_some(),
             work: create,
             admitted_growth,
+            transaction_permit,
         })
     }
 
@@ -1389,8 +1689,8 @@ impl NodeDisk {
         }
         budget.settled = false;
         owner.record_enrollment(&mut state, &budget);
-        let actual = budget.file.as_ref().expect("live persistent descriptor");
         let result = (|| -> io::Result<(u64, u64)> {
+            let actual = budget.file.as_ref().expect("live persistent descriptor");
             owner.verify(actual)?;
             let current = actual.metadata()?.len();
             if current != budget.actual_len {
@@ -1405,13 +1705,29 @@ impl NodeDisk {
                 self.namespace_checkpoint(NamespaceFailure::ReclaimFileSync)?;
                 actual.sync_all()?;
                 owner.verify(actual)?;
-                if actual.metadata()?.len() != len {
-                    return Err(io::ErrorKind::InvalidData.into());
+                let metadata = actual.metadata()?;
+                if metadata.len() != len {
+                    return Err(owner.unexpected_length(&mut state, &mut budget, &metadata));
                 }
                 #[cfg(test)]
                 self.namespace_checkpoint(NamespaceFailure::ReclaimParentSync)?;
                 owner.parent().sync_all()?;
-                extent(&actual.metadata()?, self.unit)
+                let metadata = actual.metadata()?;
+                let allocated = metadata
+                    .blocks()
+                    .checked_mul(512)
+                    .ok_or(io::ErrorKind::InvalidData)?;
+                owner.observe_materialization(
+                    &mut state,
+                    &mut budget,
+                    metadata.len(),
+                    allocated,
+                    metadata.len() == len,
+                )?;
+                if metadata.len() != len {
+                    return Err(io::ErrorKind::InvalidData.into());
+                }
+                file_extent(&metadata, self.unit, self.config.file_allocation_policy)
             } else {
                 actual.sync_all()?;
                 let transition = ParentTransition::prepare(
@@ -1545,6 +1861,7 @@ fn require_unenrolled_target(
     name: &std::ffi::CStr,
     device: u64,
     unit: u64,
+    policy: super::FileAllocationPolicy,
 ) -> io::Result<()> {
     if super::batch::reserved_binding(state, binding) {
         return Err(io::ErrorKind::WouldBlock.into());
@@ -1565,13 +1882,14 @@ fn require_unenrolled_target(
         .checked_mul(512)
         .ok_or(io::ErrorKind::InvalidData)?;
     let bytes = rounded(length.max(allocated), unit)?;
-    let pending = bytes - allocated;
     if metadata.st_ino != identity.1
         || length != enrolled.actual_len
         || enrolled.actual_len > enrolled.reserved_len
         || bytes > enrolled.bytes
-        || (enrolled.settled
-            && *enrolled != AccountedFile::durable(binding, bytes, pending, length))
+        || (enrolled.settled && {
+            let (bytes, pending) = file_extent_from_parts(length, allocated, unit, policy)?;
+            *enrolled != AccountedFile::durable(binding, bytes, pending, length)
+        })
     {
         return Err(io::ErrorKind::InvalidData.into());
     }
@@ -1763,64 +2081,61 @@ impl FileOwner {
             self.disk.fail();
             self.record_error(error)
         })?;
-        let (observed, _) = extent(&metadata, self.disk.unit).map_err(|error| {
+        let allocated = metadata.blocks().checked_mul(512).ok_or_else(|| {
             self.disk.fail();
-            self.record_error(error)
+            self.record_error(io::ErrorKind::InvalidData.into())
         })?;
-        let extra = observed.saturating_sub(budget.bytes);
-        let bytes = budget.bytes.max(observed);
-        let allocated = metadata
+        let mut state = self.disk.lock_state();
+        self.observe_materialization(&mut state, budget, metadata.len(), allocated, false)
+    }
+
+    /// Reconcile the actual allocation against the already admitted physical
+    /// ceiling, including partial writes below a larger reserved logical EOF.
+    /// Record all observed excess before fencing; never turn an overrun into a
+    /// newly admitted mutation. `changed_length_expected` is used only after
+    /// the exclusive shrink path verified its exact requested new EOF.
+    fn observe_materialization(
+        &self,
+        state: &mut State,
+        budget: &mut Budget,
+        logical_len: u64,
+        allocated: u64,
+        changed_length_expected: bool,
+    ) -> io::Result<()> {
+        self.check_enrollment(state, budget)?;
+        let outcome = account_materialization(
+            &self.disk,
+            state,
+            budget,
+            logical_len,
+            allocated,
+            changed_length_expected,
+        );
+        self.record_enrollment(state, budget);
+        outcome.map_err(|error| self.record_error(error))
+    }
+
+    /// A post-mutation EOF mismatch cannot authorize another physical effect.
+    /// Preserve every already observed block before returning the failure.
+    fn unexpected_length(
+        &self,
+        state: &mut State,
+        budget: &mut Budget,
+        metadata: &std::fs::Metadata,
+    ) -> io::Error {
+        let outcome = metadata
             .blocks()
             .checked_mul(512)
-            .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidData))?;
-        let pending = bytes - allocated;
-        let mut state = self.disk.lock_state();
-        self.check_enrollment(&mut state, budget)?;
-        if state.phase == NodeDiskPhase::Failed || !self.disk.device.lock().admission_ready() {
-            return Err(io::ErrorKind::Other.into());
-        }
-        let changed_length = metadata.len() != budget.actual_len;
-        let mut promises = self.disk.device.lock();
-        let Some(next) = promises
-            .checked_sub(budget.pending)
-            .and_then(|n| n.checked_add(pending))
-        else {
-            state.phase = NodeDiskPhase::Failed;
-            promises.fail_owner();
-            return Err(io::Error::from(io::ErrorKind::InvalidData));
-        };
-        let Some(own_next) = state
-            .pending
-            .checked_sub(budget.pending)
-            .and_then(|n| n.checked_add(pending))
-        else {
-            state.phase = NodeDiskPhase::Failed;
-            promises.fail_owner();
-            return Err(io::Error::from(io::ErrorKind::InvalidData));
-        };
-        let Some(owned) = state.bytes.checked_add(extra) else {
-            state.phase = NodeDiskPhase::Failed;
-            promises.fail_owner();
-            return Err(io::Error::from(io::ErrorKind::InvalidData));
-        };
-        promises
-            .set_pending(next)
-            .inspect_err(|_| state.phase = NodeDiskPhase::Failed)?;
-        state.pending = own_next;
-        state.bytes = owned;
-        budget.bytes = bytes;
-        budget.pending = pending;
-        // Sync cannot convert an unused reservation into a physically present
-        // extent. Closing it still requires a stopped, exclusive reconciliation.
-        budget.settled = metadata.len() == budget.reserved_len && !changed_length;
-        budget.actual_len = metadata.len();
-        self.record_enrollment(&mut state, budget);
-        if extra != 0 || metadata.len() > budget.reserved_len || changed_length {
-            state.phase = NodeDiskPhase::Failed;
-            promises.fail_owner();
-            return Err(io::Error::from(io::ErrorKind::InvalidData));
-        }
-        Ok(())
+            .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidData))
+            .and_then(|allocated| {
+                self.observe_materialization(state, budget, metadata.len(), allocated, false)
+            });
+        self.disk.fail_locked(state);
+        self.record_error(
+            outcome
+                .err()
+                .unwrap_or_else(|| io::ErrorKind::InvalidData.into()),
+        )
     }
 }
 
@@ -2101,8 +2416,8 @@ impl NodeDiskFile {
 
     /// Settle unused pre-I/O promises after a commit or aborted transaction.
     /// Sync and verify the exact descriptor before crediting only the difference
-    /// between its retained reservation and its actual durable extent. This is
-    /// valid with live KV readers because no physical byte is removed.
+    /// between its retained reservation and the actual durable EOF's standing
+    /// physical allowance. Valid with live readers: no physical byte is removed.
     pub fn settle_growth(&self, actual_len: u64) -> io::Result<()> {
         self.ensure_open()?;
         let mut budget = self.0.lock_budget()?;
@@ -2114,22 +2429,38 @@ impl NodeDiskFile {
         self.0.check_enrollment(&mut state, &budget)?;
         // Serialize the owner seal through physical verification and sync. A
         // previously failed owner must not initiate another backend operation.
-        let outcome = (|| -> io::Result<(u64, u64)> {
+        let outcome = (|| -> io::Result<std::fs::Metadata> {
             self.0.verify(file)?;
             file.sync_all()?;
             self.0.verify(file)?;
-            let metadata = file.metadata()?;
-            let (bytes, pending) = extent(&metadata, self.0.disk.unit)?;
-            if metadata.len() != actual_len
-                || actual_len != budget.actual_len
-                || actual_len > budget.reserved_len
-                || bytes > budget.bytes
-            {
+            file.metadata()
+        })();
+        let metadata = outcome.map_err(|error| {
+            self.0.disk.fail_locked(&mut state);
+            self.0.record_error(error)
+        })?;
+        let reconciled = (|| -> io::Result<(u64, u64)> {
+            let allocated = metadata
+                .blocks()
+                .checked_mul(512)
+                .ok_or(io::ErrorKind::InvalidData)?;
+            self.0.observe_materialization(
+                &mut state,
+                &mut budget,
+                metadata.len(),
+                allocated,
+                false,
+            )?;
+            if metadata.len() != actual_len || actual_len > budget.reserved_len {
                 return Err(io::ErrorKind::InvalidData.into());
             }
-            Ok((bytes, pending))
+            file_extent(
+                &metadata,
+                self.0.disk.unit,
+                self.0.disk.config.file_allocation_policy,
+            )
         })();
-        let (bytes, pending) = outcome.map_err(|error| {
+        let (bytes, pending) = reconciled.map_err(|error| {
             self.0.disk.fail_locked(&mut state);
             self.0.record_error(error)
         })?;
@@ -2237,7 +2568,7 @@ impl NodeDiskFile {
         // Keep the previous budget until both syncs and exact observations pass.
         budget.settled = false;
         owner.record_enrollment(&mut state, &budget);
-        let outcome = (|| -> io::Result<(u64, u64)> {
+        let outcome = (|| -> io::Result<std::fs::Metadata> {
             let file = budget.file.as_ref().expect("live persistent descriptor");
             #[cfg(test)]
             owner.shrink_checkpoint(ShrinkFailure::Truncate)?;
@@ -2246,8 +2577,9 @@ impl NodeDiskFile {
             owner.shrink_checkpoint(ShrinkFailure::FileSync)?;
             file.sync_all()?;
             owner.verify(file)?;
-            if file.metadata()?.len() != len {
-                return Err(io::ErrorKind::InvalidData.into());
+            let metadata = file.metadata()?;
+            if metadata.len() != len {
+                return Err(owner.unexpected_length(&mut state, &mut budget, &metadata));
             }
             #[cfg(test)]
             owner.shrink_checkpoint(ShrinkFailure::DirectorySync)?;
@@ -2257,11 +2589,29 @@ impl NodeDiskFile {
             owner.verify(file)?;
             let metadata = file.metadata()?;
             if metadata.len() != len {
-                return Err(io::ErrorKind::InvalidData.into());
+                return Err(owner.unexpected_length(&mut state, &mut budget, &metadata));
             }
-            extent(&metadata, owner.disk.unit)
+            Ok(metadata)
         })();
-        let (bytes, pending) = match outcome {
+        let observed = outcome.and_then(|metadata| {
+            let allocated = metadata
+                .blocks()
+                .checked_mul(512)
+                .ok_or(io::ErrorKind::InvalidData)?;
+            owner.observe_materialization(
+                &mut state,
+                &mut budget,
+                metadata.len(),
+                allocated,
+                true,
+            )?;
+            file_extent(
+                &metadata,
+                owner.disk.unit,
+                owner.disk.config.file_allocation_policy,
+            )
+        });
+        let (bytes, pending) = match observed {
             Ok((bytes, pending)) if bytes <= budget.bytes => (bytes, pending),
             Ok(_) => {
                 owner.disk.fail_locked(&mut state);
@@ -2324,6 +2674,21 @@ impl NodeDiskFile {
             .len())
     }
 
+    /// Substitute only allocator-reported physical bytes at the real verified
+    /// EOF. Tests exercise admission and failure custody without depending on
+    /// one filesystem's nondeterministic preallocation decisions.
+    #[cfg(test)]
+    pub(crate) fn observe_allocation_for_test(&self, allocated: u64) -> io::Result<()> {
+        self.ensure_open()?;
+        let mut budget = self.0.lock_budget()?;
+        let file = budget.file.as_ref().expect("live persistent descriptor");
+        self.0.check(file)?;
+        let logical_len = file.metadata()?.len();
+        let mut state = self.0.disk.lock_state();
+        self.0
+            .observe_materialization(&mut state, &mut budget, logical_len, allocated, false)
+    }
+
     /// A synchronous, pre-I/O exact growth reservation. Failure never resizes.
     /// Caller must retain this owner through all backend activity and final sync.
     pub fn reserve_growth(
@@ -2347,13 +2712,105 @@ impl NodeDiskFile {
             self.0.disk.fail();
             return Err(io::Error::from(io::ErrorKind::InvalidData));
         }
-        let bytes = rounded(requested_len, self.0.disk.unit)?;
+        let bytes = file_ceiling(
+            requested_len,
+            self.0.disk.unit,
+            self.0.disk.config.file_allocation_policy,
+        )?;
         let delta = bytes.saturating_sub(budget.bytes);
         let mut state = self.0.disk.lock_state();
         self.0.check_enrollment(&mut state, &budget)?;
         self.0.disk.reserve(&mut state, delta, work)?;
         budget.bytes += delta;
         budget.pending += delta;
+        budget.reserved_len = budget.reserved_len.max(requested_len);
+        budget.settled = false;
+        self.0.record_enrollment(&mut state, &budget);
+        Ok(())
+    }
+
+    pub(crate) fn transaction_growth_quote(
+        &self,
+        initial_len: u64,
+        maximum_len: u64,
+    ) -> io::Result<u64> {
+        self.ensure_open()?;
+        let budget = self.0.lock_budget()?;
+        let file = budget.file.as_ref().ok_or(io::ErrorKind::BrokenPipe)?;
+        self.0.check(file)?;
+        let actual = file.metadata().map_err(|error| {
+            self.0.disk.fail();
+            self.0.record_error(error)
+        })?;
+        if !budget.settled
+            || actual.len() != initial_len
+            || budget.actual_len != initial_len
+            || maximum_len < initial_len
+        {
+            return Err(io::ErrorKind::InvalidData.into());
+        }
+        let mut state = self.0.disk.lock_state();
+        self.0.check_enrollment(&mut state, &budget)?;
+        Ok(file_ceiling(
+            maximum_len,
+            self.0.disk.unit,
+            self.0.disk.config.file_allocation_policy,
+        )?
+        .saturating_sub(budget.bytes))
+    }
+
+    pub(crate) fn reserve_transaction_growth(
+        &self,
+        claim: &mut super::transaction::TransactionSpace,
+        current_len: u64,
+        requested_len: u64,
+    ) -> io::Result<()> {
+        self.ensure_open()?;
+        let mut budget = self.0.lock_budget()?;
+        let file = budget.file.as_ref().ok_or(io::ErrorKind::BrokenPipe)?;
+        self.0.check(file)?;
+        let actual = file.metadata().map_err(|error| {
+            self.0.disk.fail();
+            self.0.record_error(error)
+        })?;
+        if actual.len() != current_len
+            || current_len != budget.actual_len
+            || requested_len < current_len
+        {
+            self.0.disk.fail();
+            return Err(io::ErrorKind::InvalidData.into());
+        }
+        let bytes = file_ceiling(
+            requested_len,
+            self.0.disk.unit,
+            self.0.disk.config.file_allocation_policy,
+        )?;
+        let delta = bytes.saturating_sub(budget.bytes);
+        let mut state = self.0.disk.lock_state();
+        self.0.check_enrollment(&mut state, &budget)?;
+        let parent = self
+            .0
+            .parent
+            .as_ref()
+            .ok_or(io::ErrorKind::InvalidData)?
+            .identity();
+        let binding = state
+            .accounted
+            .get(&parent)
+            .and_then(AccountedInode::directory)
+            .ok_or(io::ErrorKind::InvalidData)?
+            .binding;
+        claim.check_parent(binding)?;
+        // Global bytes and pending already include delta. Only custody moves.
+        claim.consume_growth(&self.0.disk, &state, delta)?;
+        budget.bytes = budget
+            .bytes
+            .checked_add(delta)
+            .ok_or(io::ErrorKind::InvalidData)?;
+        budget.pending = budget
+            .pending
+            .checked_add(delta)
+            .ok_or(io::ErrorKind::InvalidData)?;
         budget.reserved_len = budget.reserved_len.max(requested_len);
         budget.settled = false;
         self.0.record_enrollment(&mut state, &budget);
@@ -2607,9 +3064,35 @@ impl FileOwner {
     // explicit close borrowed the original allocation under State. Registration
     // credit remains held while descriptors and heap backing retire.
     fn retire_resources(&mut self) -> io::Result<()> {
+        // Opt-in fixture evidence for the actual one-shot native close. These
+        // read-only samples do not reconcile enrollment or alter its result.
+        #[cfg(feature = "test-utils")]
+        let observation = self.close_extent_observation();
         if let Some(mutex) = &mut self.resources.budget {
             let budget = mutex.get_mut().unwrap_or_else(|poison| poison.into_inner());
             super::native_file::close(&mut budget.file, &mut budget.close_outcome)?;
+        }
+        #[cfg(feature = "test-utils")]
+        if let Some((before, enrolled)) = observation {
+            let after = self.sample_close_extent();
+            if before != after
+                || before.is_err()
+                || before.as_ref().is_ok_and(|(_, allocated)| {
+                    Some(*allocated) != enrolled.bytes.checked_sub(enrolled.pending)
+                })
+            {
+                use std::io::Write;
+                let _ = writeln!(
+                    std::io::stderr().lock(),
+                    "physical native close extent: identity={:?}, before={before:?}, after={after:?}, enrolled_bytes={}, enrolled_pending={}, enrolled_actual_len={}, enrolled_reserved_len={}, enrolled_settled={}",
+                    self.identity,
+                    enrolled.bytes,
+                    enrolled.pending,
+                    enrolled.actual_len,
+                    enrolled.reserved_len,
+                    enrolled.settled,
+                );
+            }
         }
         #[cfg(test)]
         self.close_checkpoint(CloseStage::DataClosed);
@@ -2648,6 +3131,36 @@ impl FileOwner {
         self.close_checkpoint(CloseStage::ResourcesClosed);
         Ok(())
     }
+    #[cfg(feature = "test-utils")]
+    fn close_extent_observation(&mut self) -> Option<CloseExtentObservation> {
+        if std::env::var_os("KASUMI_TEST_FILE_CLOSE_TRACE").as_deref()
+            != Some(std::ffi::OsStr::new("1"))
+        {
+            return None;
+        }
+        let binding = self.binding;
+        let budget = self.resources.budget.as_mut()?.get_mut().ok()?;
+        budget.file.as_ref()?;
+        let enrolled = budget.accounted(binding);
+        Some((self.sample_close_extent(), enrolled))
+    }
+
+    #[cfg(feature = "test-utils")]
+    fn sample_close_extent(&self) -> Result<(u64, u64), io::ErrorKind> {
+        let parent = self.parent.as_ref().ok_or(io::ErrorKind::InvalidData)?;
+        let name = self.name.as_ref().ok_or(io::ErrorKind::InvalidData)?;
+        let stat = stat_leaf(parent.file(), name, self.identity.0).map_err(|error| error.kind())?;
+        if stat.st_ino != self.identity.1 {
+            return Err(io::ErrorKind::InvalidData);
+        }
+        let length = u64::try_from(stat.st_size).map_err(|_| io::ErrorKind::InvalidData)?;
+        let allocated = u64::try_from(stat.st_blocks)
+            .map_err(|_| io::ErrorKind::InvalidData)?
+            .checked_mul(512)
+            .ok_or(io::ErrorKind::InvalidData)?;
+        Ok((length, allocated))
+    }
+
     fn retain_locked(&mut self, state: &mut State) {
         let resources = std::mem::replace(&mut self.resources, FileResources::empty());
         self.disk.fail_locked(state);

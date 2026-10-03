@@ -1,0 +1,320 @@
+{
+  "line": 1330,
+  "refusal": "TestDiskMemory::reserve_installed denied: provider=0x7beec06190 requested_bytes=4351 charged_bytes=8471 bookkeeping_bytes=24184 used_bytes=2894460 next_used_bytes=2902931 max_bytes=67108864 live_reservations=32 max_reservations=32 attempts=944 error=Kind(OutOfMemory)",
+  "reconstructed_slots": 32,
+  "reported_slots": 32,
+  "reconstructed_bytes": 2894460,
+  "inventory": [
+    {
+      "id": 1,
+      "kind": "installed",
+      "bytes": 74164,
+      "phase": "fixture_before_receipt_builder",
+      "line": 7
+    },
+    {
+      "id": 2,
+      "kind": "installed",
+      "bytes": 8264,
+      "phase": "fixture_before_receipt_builder",
+      "line": 8
+    },
+    {
+      "id": 3,
+      "kind": "installed",
+      "bytes": 12424,
+      "phase": "fixture_before_receipt_builder",
+      "line": 9
+    },
+    {
+      "id": 4,
+      "kind": "installed",
+      "bytes": 8280,
+      "phase": "fixture_before_receipt_builder",
+      "line": 10
+    },
+    {
+      "id": 350,
+      "kind": "installed",
+      "bytes": 267232,
+      "phase": "setup_entered:None",
+      "line": 692
+    },
+    {
+      "id": 351,
+      "kind": "installed",
+      "bytes": 147552,
+      "phase": "setup_entered:None",
+      "line": 693
+    },
+    {
+      "id": 352,
+      "kind": "installed",
+      "bytes": 57736,
+      "phase": "setup_entered:None",
+      "line": 694
+    },
+    {
+      "id": 353,
+      "kind": "installed",
+      "bytes": 157648,
+      "phase": "setup_entered:None",
+      "line": 695
+    },
+    {
+      "id": 354,
+      "kind": "installed",
+      "bytes": 13008,
+      "phase": "setup_entered:None",
+      "line": 696
+    },
+    {
+      "id": 355,
+      "kind": "installed",
+      "bytes": 16792,
+      "phase": "setup_entered:None",
+      "line": 697
+    },
+    {
+      "id": 356,
+      "kind": "installed",
+      "bytes": 43440,
+      "phase": "setup_entered:None",
+      "line": 698
+    },
+    {
+      "id": 367,
+      "kind": "installed",
+      "bytes": 147552,
+      "phase": "setup_entered:None",
+      "line": 712
+    },
+    {
+      "id": 368,
+      "kind": "installed",
+      "bytes": 147552,
+      "phase": "setup_entered:None",
+      "line": 713
+    },
+    {
+      "id": 786,
+      "kind": "installed",
+      "bytes": 267232,
+      "phase": "setup_entered:None",
+      "line": 1155
+    },
+    {
+      "id": 787,
+      "kind": "installed",
+      "bytes": 147552,
+      "phase": "setup_entered:None",
+      "line": 1156
+    },
+    {
+      "id": 788,
+      "kind": "installed",
+      "bytes": 57736,
+      "phase": "setup_entered:None",
+      "line": 1157
+    },
+    {
+      "id": 789,
+      "kind": "installed",
+      "bytes": 157648,
+      "phase": "setup_entered:None",
+      "line": 1158
+    },
+    {
+      "id": 790,
+      "kind": "installed",
+      "bytes": 13008,
+      "phase": "setup_entered:None",
+      "line": 1159
+    },
+    {
+      "id": 791,
+      "kind": "installed",
+      "bytes": 16792,
+      "phase": "setup_entered:None",
+      "line": 1160
+    },
+    {
+      "id": 792,
+      "kind": "installed",
+      "bytes": 43440,
+      "phase": "setup_entered:None",
+      "line": 1161
+    },
+    {
+      "id": 803,
+      "kind": "installed",
+      "bytes": 147552,
+      "phase": "setup_entered:None",
+      "line": 1175
+    },
+    {
+      "id": 804,
+      "kind": "installed",
+      "bytes": 147552,
+      "phase": "setup_entered:None",
+      "line": 1176
+    },
+    {
+      "id": 934,
+      "kind": "installed",
+      "bytes": 267232,
+      "phase": "setup_entered:None",
+      "line": 1320
+    },
+    {
+      "id": 935,
+      "kind": "installed",
+      "bytes": 147552,
+      "phase": "setup_entered:None",
+      "line": 1321
+    },
+    {
+      "id": 936,
+      "kind": "installed",
+      "bytes": 57736,
+      "phase": "setup_entered:None",
+      "line": 1322
+    },
+    {
+      "id": 937,
+      "kind": "installed",
+      "bytes": 157648,
+      "phase": "setup_entered:None",
+      "line": 1323
+    },
+    {
+      "id": 938,
+      "kind": "installed",
+      "bytes": 13008,
+      "phase": "setup_entered:None",
+      "line": 1324
+    },
+    {
+      "id": 939,
+      "kind": "installed",
+      "bytes": 16792,
+      "phase": "setup_entered:None",
+      "line": 1325
+    },
+    {
+      "id": 940,
+      "kind": "installed",
+      "bytes": 43440,
+      "phase": "setup_entered:None",
+      "line": 1326
+    },
+    {
+      "id": 941,
+      "kind": "installed",
+      "bytes": 8488,
+      "phase": "setup_entered:None",
+      "line": 1327
+    },
+    {
+      "id": 942,
+      "kind": "installed",
+      "bytes": 8608,
+      "phase": "setup_entered:None",
+      "line": 1328
+    },
+    {
+      "id": 943,
+      "kind": "installed",
+      "bytes": 73800,
+      "phase": "setup_entered:None",
+      "line": 1329
+    }
+  ],
+  "groups": [
+    {
+      "phase": "fixture_before_receipt_builder",
+      "kind": "installed",
+      "bytes_each": 74164,
+      "count": 1
+    },
+    {
+      "phase": "fixture_before_receipt_builder",
+      "kind": "installed",
+      "bytes_each": 8264,
+      "count": 1
+    },
+    {
+      "phase": "fixture_before_receipt_builder",
+      "kind": "installed",
+      "bytes_each": 12424,
+      "count": 1
+    },
+    {
+      "phase": "fixture_before_receipt_builder",
+      "kind": "installed",
+      "bytes_each": 8280,
+      "count": 1
+    },
+    {
+      "phase": "setup_entered:None",
+      "kind": "installed",
+      "bytes_each": 267232,
+      "count": 3
+    },
+    {
+      "phase": "setup_entered:None",
+      "kind": "installed",
+      "bytes_each": 147552,
+      "count": 7
+    },
+    {
+      "phase": "setup_entered:None",
+      "kind": "installed",
+      "bytes_each": 57736,
+      "count": 3
+    },
+    {
+      "phase": "setup_entered:None",
+      "kind": "installed",
+      "bytes_each": 157648,
+      "count": 3
+    },
+    {
+      "phase": "setup_entered:None",
+      "kind": "installed",
+      "bytes_each": 13008,
+      "count": 3
+    },
+    {
+      "phase": "setup_entered:None",
+      "kind": "installed",
+      "bytes_each": 16792,
+      "count": 3
+    },
+    {
+      "phase": "setup_entered:None",
+      "kind": "installed",
+      "bytes_each": 43440,
+      "count": 3
+    },
+    {
+      "phase": "setup_entered:None",
+      "kind": "installed",
+      "bytes_each": 8488,
+      "count": 1
+    },
+    {
+      "phase": "setup_entered:None",
+      "kind": "installed",
+      "bytes_each": 8608,
+      "count": 1
+    },
+    {
+      "phase": "setup_entered:None",
+      "kind": "installed",
+      "bytes_each": 73800,
+      "count": 1
+    }
+  ],
+  "observation_mismatches": []
+}

@@ -1,6 +1,6 @@
 //! Restore persistence owns its original gate, stores and request lifetime.
 use super::*;
-use crate::backup_verify::VerificationDeadline;
+use crate::backup_verify::{VerificationDeadline, VerificationPhase};
 use kasumi_query::QueryCancellation;
 
 pub(super) struct Publication {
@@ -42,7 +42,9 @@ impl Publication {
     )> {
         let workspace = restored.publication_workspace();
         let registration = restored.publication_registration();
-        self.deadline
+        let phase = VerificationPhase::start("restore.publication_wait", Some(self.deadline));
+        let result = self
+            .deadline
             .blocking(workspace, registration, move || {
                 // Declare the serial guard first so error cleanup destroys stores
                 // and prepared state before releasing bootstrap serialization.
@@ -50,14 +52,26 @@ impl Publication {
                 let prepared = restored;
                 let publication = self;
                 publication.check()?;
+                let phase = VerificationPhase::start(
+                    "restore.deployment_binding",
+                    Some(publication.deadline),
+                );
                 bind_deployment(&publication.stores, &binding)?;
+                phase.complete();
                 publication.check()?;
+                let phase = VerificationPhase::start(
+                    "restore.bootstrap_persistence",
+                    Some(publication.deadline),
+                );
                 persist_new_checked(&publication.stores, &prepared.bytes, identity, || {
                     publication.check()
                 })?;
                 publication.check()?;
+                phase.complete();
                 Ok((prepared, serial))
             })
-            .await
+            .await?;
+        phase.complete();
+        Ok(result)
     }
 }

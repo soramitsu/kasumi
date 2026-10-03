@@ -13,6 +13,11 @@ pub(super) struct AdmittedKeyCatalog {
 }
 
 impl AdmittedKeyCatalog {
+    #[cfg(test)]
+    pub(super) fn typed_budget_for_test(catalog: &KeyCatalog) -> Result<u64> {
+        typed_catalog_budget_for_owned(catalog)
+    }
+
     pub(super) fn admit_backup_manifest_decode(
         header: &[u8],
         memory: Arc<dyn NodeDiskMemoryAdmission>,

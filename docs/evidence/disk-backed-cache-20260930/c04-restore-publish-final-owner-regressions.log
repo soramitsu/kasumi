@@ -1,0 +1,82 @@
+Command: cargo test --locked --offline --config profile.test.package.kasumi-kv.opt-level=3 --config profile.test.package.sha2.opt-level=3 -p kasumi-engine --all-features --lib -- validation_baseline_ ordered_command_ ordinary_completion_
+CARGO_TARGET_DIR=target/disk-backed-cache
+   Compiling kasumi-engine v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-engine)
+warning: variant `Mutation` is never constructed
+  --> crates/kasumi-engine/src/security_audit_jobs.rs:26:5
+   |
+24 | enum JobEffect {
+   |      --------- variant in this enum
+25 |     Read,
+26 |     Mutation(&'static str),
+   |     ^^^^^^^^
+   |
+   = note: `JobEffect` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: struct `ReadPause` is never constructed
+  --> crates/kasumi-engine/src/security_audit_jobs.rs:57:19
+   |
+57 | pub(super) struct ReadPause {
+   |                   ^^^^^^^^^
+
+warning: method `run_mutation` is never used
+   --> crates/kasumi-engine/src/security_audit_jobs.rs:120:25
+    |
+ 62 | impl SecurityAudit {
+    | ------------------ method in this implementation
+...
+120 |     pub(super) async fn run_mutation<T, F, R>(&self, component: &'static str, run: R) -> Result<T>
+    |                         ^^^^^^^^^^^^
+
+warning: `kasumi-engine` (lib) generated 3 warnings
+warning: field `panic` is never read
+  --> crates/kasumi-engine/src/security_audit_jobs.rs:52:9
+   |
+48 | pub(super) struct RecordFault {
+   |                   ----------- field in this struct
+...
+52 |     pub panic: bool,
+   |         ^^^^^
+
+warning: `kasumi-engine` (lib test) generated 4 warnings (3 duplicates)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 42s
+     Running unittests src/lib.rs (target/disk-backed-cache/debug/deps/kasumi_engine-b15d1192089511a8)
+
+running 32 tests
+test state::mutation_apply::tests::ordered_input::ordered_command_actual_byte_binding_success_has_zero_requested_heap ... ok
+test application_sources::tests::allocation_tails::completion_allocations::ordinary_completion_cell_and_credit_remain_funded_through_actual_deallocation ... ok
+test state::validation_baseline_tests::validation_baseline_actual_bootstrap_absence_and_public_failure_are_distinct ... ok
+test state::mutation_apply::tests::ordered_input::ordered_command_actual_backend_checks_digest_before_json_and_each_special_prefix ... ok
+test state::validation_baseline_tests::validation_baseline_control_installation_continuity_refuses_valid_rollback ... ok
+test state::mutation_apply::tests::ordered_input::ordered_command_actual_backend_rejects_raw_digest_before_mutation_or_publication ... ok
+test state::validation_baseline_tests::validation_baseline_foreign_same_identity_owner_refuses_before_read ... ok
+test application_sources::tests::completion_tests::ordinary_completion_drain_registers_before_busy_and_wakes_after_real_guard_release ... ok
+test state::validation_baseline_tests::validation_baseline_lifecycle_intent_continuity_refuses_valid_rollback ... ok
+test state::validation_baseline_tests::validation_baseline_backup_binding_continuity_refuses_valid_rollback ... ok
+test application_sources::tests::allocation_tails::completion_allocations::ordinary_completion_erased_binding_retires_before_its_actual_credit ... ok
+test state::validation_baseline_tests::validation_baseline_recovery_binding_continuity_refuses_valid_rollback ... ok
+test state::validation_baseline_tests::validation_baseline_mutation_receipt_continuity_refuses_valid_rollback ... ok
+test state::validation_baseline_tests::validation_baseline_staged_terminal_continuity_refuses_valid_rollback ... ok
+test application_sources::tests::allocation_tails::completion_allocations::ordinary_completion_constructor_quote_covers_actual_three_allocations ... ok
+test application_sources::tests::completion_tests::ordinary_completion_outer_finish_panic_retains_original_response_after_facade_seal ... ok
+test state::primary_projection::tests::ordered_command_publication::ordered_command_frozen_refusal_keeps_actual_guard_and_encoded_sealed_outcome ... ok
+test application_sources::tests::completion_tests::ordinary_completion_is_last_selected_owner_through_real_outer_finish ... ok
+test application_sources::tests::completion_tests::ordinary_completion_bound_frozen_branch_keeps_source_without_new_preparation ... ok
+test state::validation_baseline_tests::validation_baseline_sealed_and_poisoned_owners_refuse_before_decode ... ok
+test state::primary_projection::tests::ordered_command_publication::ordered_command_real_sink_rejects_full_context_substitution_after_preparation ... ok
+test application_sources::tests::completion_tests::ordinary_completion_reuses_only_after_real_accept_reject_and_idempotent_finish ... ok
+test state::validation_baseline_tests::validation_baseline_real_ordered_retirement_uses_apply_prior_without_public_escape ... ok
+test application_sources::tests::completion_tests::ordinary_completion_cancelled_real_group_waiter_keeps_queued_source_and_original ... ok
+test state::primary_projection::tests::ordered_command_publication::ordered_command_real_sink_publishes_acceptance_rejection_and_idempotent_outcome ... ok
+test state::validation_baseline_tests::validation_baseline_failed_publish_retires_candidate_before_apply_owner ... ok
+test state::validation_baseline_tests::validation_baseline_target_history_continuity_refuses_valid_rollback ... ok
+test state::validation_baseline_tests::validation_baseline_target_terminal_continuity_refuses_valid_rollback ... ok
+test state::validation_baseline_tests::validation_baseline_standalone_decode_uses_one_prior_during_real_advance ... ok
+test state::validation_baseline_tests::validation_baseline_real_prepared_restore_holds_one_checked_apply_owner ... ok
+test application_sources::tests::completion_tests::ordinary_completion_capture_wake_unwind_retires_the_actual_counted_handle ... ok
+test application_sources::tests::completion_tests::ordinary_completion_fault_checkpoints_preserve_exact_original_and_source_phase has been running for over 60 seconds
+test application_sources::tests::completion_tests::ordinary_completion_fault_checkpoints_preserve_exact_original_and_source_phase ... ok
+
+test result: ok. 32 passed; 0 failed; 0 ignored; 0 measured; 582 filtered out; finished in 95.75s
+
+Runner: 198.27s; exit=0; matching=848/848

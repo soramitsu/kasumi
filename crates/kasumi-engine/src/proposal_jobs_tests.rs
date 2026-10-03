@@ -190,8 +190,11 @@ async fn cancelled_drain_preserves_prior_panic_while_later_child_remains_owned()
     release.send(()).unwrap();
     let finished = jobs.drain().await.unwrap_err();
     assert_eq!(finished.completion(), DrainCompletion::Complete);
-    assert!(Arc::ptr_eq(&original, &finished.issues()[0]));
-    assert!(Arc::ptr_eq(
+    assert!(kasumi_types::drain::DrainIssueRef::ptr_eq(
+        &original,
+        &finished.issues()[0]
+    ));
+    assert!(kasumi_types::drain::DrainIssueRef::ptr_eq(
         &original,
         &jobs.drain().await.unwrap_err().issues()[0]
     ));
@@ -236,7 +239,10 @@ async fn original_error_and_charge_survive_cancelled_caller_and_registry_drop() 
         .unwrap();
     assert!(Arc::ptr_eq(&identity, &actual.0));
     let again = recovered.drain().await.unwrap_err();
-    assert!(Arc::ptr_eq(&failure.issues()[0], &again.issues()[0]));
+    assert!(kasumi_types::drain::DrainIssueRef::ptr_eq(
+        &failure.issues()[0],
+        &again.issues()[0]
+    ));
     drop(recovered);
     assert!(worker.upgrade().is_none());
     assert_eq!(crate::test_utils::reserved_payload_bytes(&admission), 0);

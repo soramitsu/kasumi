@@ -96,6 +96,118 @@ struct Cell {
     next_child: Mutex<Option<Arc<tests::ChildControl>>>,
 }
 
+/// Lifecycle custody for the application's exact selected storage sources.
+///
+/// Bind once before acquiring any source. Implementations must not retain a
+/// `SnapshotBufferOwner`, Database, Engine or Generation, or call startup APIs:
+/// unclaimed group cleanup can poll them while startup is serialized. Calls run
+/// outside this owner's retained registry and transfer-cell locks. This hook
+/// confers no storage-provider, document-allocation or primary-format authority.
+///
+/// `seal_consumers` is idempotent and leaves admitted application writers able to finish.
+/// `poll_drain` is called only after those writers stop; it must seal preparation,
+/// preserve original errors and cleanup ownership across canceled polls, and be
+/// idempotent. `is_drained` is monotonic and true only after positive retirement
+/// of every exact source and in-flight acquisition.
+pub trait ApplicationSourceCustody: Send + Sync {
+    /// Check the final selected reconstruction after full startup and before
+    /// delivery. Success may switch the concrete source owner into serving;
+    /// failure is retained with the unclaimed group before cleanup awaits.
+    fn finish_reconstruction(&self) -> anyhow::Result<()>;
+    fn seal_consumers(&self);
+    fn poll_drain(&self, cx: &mut Context<'_>) -> Poll<DrainResult>;
+    fn is_drained(&self) -> bool;
+}
+
+// This erasure preserves the concrete owner's external credit through the
+// binding Box's deallocation. There is no clone/raw-Box extraction API.
+trait RetireApplicationSource: ApplicationSourceCustody {
+    fn retire(self: Box<Self>);
+}
+impl<T: ApplicationSourceCustody> RetireApplicationSource for T {
+    fn retire(self: Box<Self>) {
+        let source = {
+            let allocation = self;
+            *allocation
+        };
+        drop(source);
+    }
+}
+
+/// One pre-admitted application-source hook. Its concrete source must retain
+/// the quoted binding allocation's credit until that source is dropped.
+/// The trusted installer constructs exactly one binding from its root grant.
+pub struct ApplicationSourceBinding {
+    source: Option<Box<dyn RetireApplicationSource>>,
+}
+impl ApplicationSourceBinding {
+    pub fn required_bytes<T: ApplicationSourceCustody>() -> anyhow::Result<u64> {
+        std::mem::size_of::<T>()
+            .checked_next_power_of_two()
+            .and_then(|bytes| bytes.checked_add(64))
+            .and_then(|bytes| u64::try_from(bytes).ok())
+            .ok_or_else(|| anyhow::anyhow!("application source binding quote overflow"))
+    }
+    /// The caller has already reserved `required_bytes::<T>()` and carries that
+    /// reservation in `source`. Construction does not authorize admission.
+    pub fn new<T: ApplicationSourceCustody + 'static>(source: T) -> Self {
+        Self {
+            source: Some(Box::new(source)),
+        }
+    }
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn allocation_address(&self) -> usize {
+        std::ptr::from_ref(self.source.as_deref().expect("source binding")) as *const () as usize
+    }
+    /// Explicit fixture-only hook without production admission semantics.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn fixture(source: Arc<dyn ApplicationSourceCustody>) -> Self {
+        struct Fixture(Arc<dyn ApplicationSourceCustody>);
+        impl ApplicationSourceCustody for Fixture {
+            fn finish_reconstruction(&self) -> anyhow::Result<()> {
+                self.0.finish_reconstruction()
+            }
+            fn seal_consumers(&self) {
+                self.0.seal_consumers();
+            }
+            fn poll_drain(&self, cx: &mut Context<'_>) -> Poll<DrainResult> {
+                self.0.poll_drain(cx)
+            }
+            fn is_drained(&self) -> bool {
+                self.0.is_drained()
+            }
+        }
+        Self::new(Fixture(source))
+    }
+}
+impl ApplicationSourceCustody for ApplicationSourceBinding {
+    fn finish_reconstruction(&self) -> anyhow::Result<()> {
+        self.source
+            .as_ref()
+            .expect("source binding")
+            .finish_reconstruction()
+    }
+    fn seal_consumers(&self) {
+        self.source
+            .as_ref()
+            .expect("source binding")
+            .seal_consumers();
+    }
+    fn poll_drain(&self, cx: &mut Context<'_>) -> Poll<DrainResult> {
+        self.source.as_ref().expect("source binding").poll_drain(cx)
+    }
+    fn is_drained(&self) -> bool {
+        self.source.as_ref().expect("source binding").is_drained()
+    }
+}
+impl Drop for ApplicationSourceBinding {
+    fn drop(&mut self) {
+        if let Some(source) = self.source.take() {
+            source.retire();
+        }
+    }
+}
+
 /// A trusted installer reserves `required_bytes` from its node governor before
 /// constructing this owner. Its fixed inventory covers transfer workspace and
 /// child/handle metadata; encrypted extents retain their ScratchDisk charges.
@@ -104,12 +216,18 @@ pub struct SnapshotBufferOwner {
     cells: Mutex<Box<[Option<Arc<Cell>>]>>,
     closed: AtomicBool,
     startup_closing: AtomicBool,
+    application_sources: OnceLock<ApplicationSourceBinding>,
+    // Set false before binding is visible; only a completed final drain with
+    // positive source retirement sets it true. Release predicates never invoke
+    // application callbacks while holding startup/registry/cell locks.
+    application_sources_drained: AtomicBool,
     failed: Arc<AtomicBool>,
     drain_gate: tokio::sync::Mutex<()>,
     startup: tokio::sync::Mutex<crate::startup_owner::StartupState>,
     #[cfg(any(test, feature = "test-utils"))]
     pub(crate) local_startup_gate: Mutex<Option<Arc<crate::startup_test_utils::LocalStartupGate>>>,
     report: Mutex<DrainReport>,
+    apply_failure: crate::apply_failure::ApplyFailureSlot,
     _charge: Arc<dyn Send + Sync>,
 }
 impl std::fmt::Debug for SnapshotBufferOwner {
@@ -134,7 +252,15 @@ impl SnapshotBufferOwner {
         u64::try_from(max_buffers)?
             .checked_mul(BUFFER_WORKSPACE + CELL_METADATA + RECEIVING_BACKING)
             .and_then(|bytes| {
-                bytes.checked_add(CELL_METADATA + crate::startup_owner::STARTUP_WORKSPACE)
+                bytes.checked_add(
+                    CELL_METADATA
+                        + crate::startup_owner::STARTUP_WORKSPACE
+                        + std::mem::size_of::<crate::startup_owner::StartupState>() as u64
+                        + std::mem::size_of::<(OnceLock<ApplicationSourceBinding>, AtomicBool)>()
+                            as u64
+                        + crate::apply_failure::ApplyFailureSlot::required_bytes()
+                        + std::mem::size_of::<crate::apply_failure::ApplyFailureSlot>() as u64,
+                )
             })
             .ok_or_else(|| anyhow::anyhow!("snapshot buffer inventory overflow"))
     }
@@ -145,12 +271,15 @@ impl SnapshotBufferOwner {
             cells: Mutex::new((0..max_buffers).map(|_| None).collect()),
             closed: AtomicBool::new(false),
             startup_closing: AtomicBool::new(false),
+            application_sources: OnceLock::new(),
+            application_sources_drained: AtomicBool::new(true),
             failed: Arc::new(AtomicBool::new(false)),
             drain_gate: Default::default(),
             startup: Default::default(),
             #[cfg(any(test, feature = "test-utils"))]
             local_startup_gate: Default::default(),
             report: Default::default(),
+            apply_failure: crate::apply_failure::ApplyFailureSlot::new(charge.clone()),
             _charge: charge,
         });
         Ok(owner)
@@ -158,6 +287,205 @@ impl SnapshotBufferOwner {
     #[cfg(any(test, feature = "test-utils"))]
     pub fn fixture() -> Arc<Self> {
         Self::new(SNAPSHOT_BUFFER_SLOTS, Arc::new(())).unwrap()
+    }
+
+    /// Enroll one pre-admitted application source registry before native source
+    /// acquisition or startup. The existing strong startup root is installed
+    /// synchronously, so an abandoned Idle construction remains drainable.
+    /// The concrete registry and its backings require their own real charge;
+    /// `required_bytes` includes this owner's hook/control layout; its existing
+    /// `CELL_METADATA` allowance covers the same retained-map entry previously
+    /// installed by `start` or first transfer acquisition. There is no second
+    /// registry entry or per-binding dynamic inventory.
+    pub fn bind_application_sources(
+        self: &Arc<Self>,
+        source: ApplicationSourceBinding,
+    ) -> anyhow::Result<()> {
+        let startup = self
+            .startup
+            .try_lock()
+            .map_err(|_| anyhow::anyhow!("Raft startup owner is already in use"))?;
+        self.check_startup()?;
+        anyhow::ensure!(
+            matches!(*startup, crate::startup_owner::StartupState::Idle),
+            "application sources must be bound before Raft startup"
+        );
+        anyhow::ensure!(
+            self.application_sources.get().is_none(),
+            "application source custody is already bound"
+        );
+        let mut registry = retained().lock().unwrap_or_else(|p| p.into_inner());
+        anyhow::ensure!(
+            registry
+                .get(&self.id)
+                .is_none_or(|owner| Arc::ptr_eq(owner, self)),
+            "snapshot custody identity collision"
+        );
+        // Every removal path holds startup through its registry mutation. No
+        // release can observe the old true latch while this binding publishes.
+        self.application_sources_drained
+            .store(false, Ordering::Release);
+        assert!(self.application_sources.set(source).is_ok());
+        registry.insert(self.id, self.clone());
+        Ok(())
+    }
+
+    /// Atomically enroll the paired source registry and its ordinary completion.
+    /// Both erased owners already hold their actual construction grants.
+    pub fn bind_application_sources_with_completion(
+        self: &Arc<Self>,
+        source: &mut Option<ApplicationSourceBinding>,
+        completion: &mut Option<crate::CompletionBinding>,
+    ) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            source.is_some() && completion.is_some(),
+            "application source or completion binding absent"
+        );
+        let startup = self
+            .startup
+            .try_lock()
+            .map_err(|_| anyhow::anyhow!("Raft startup owner is already in use"))?;
+        self.check_startup()?;
+        anyhow::ensure!(
+            matches!(*startup, crate::startup_owner::StartupState::Idle),
+            "application sources must be bound before Raft startup"
+        );
+        anyhow::ensure!(
+            self.application_sources.get().is_none() && !self.apply_failure.completion().bound(),
+            "application source or completion custody is already bound"
+        );
+        let mut registry = retained().lock().unwrap_or_else(|p| p.into_inner());
+        anyhow::ensure!(
+            registry
+                .get(&self.id)
+                .is_none_or(|owner| Arc::ptr_eq(owner, self)),
+            "snapshot custody identity collision"
+        );
+        self.application_sources_drained
+            .store(false, Ordering::Release);
+        assert!(
+            self.apply_failure
+                .completion()
+                .bind(completion.take().expect("prevalidated completion"))
+                .is_ok()
+        );
+        assert!(
+            self.application_sources
+                .set(source.take().expect("prevalidated source"))
+                .is_ok()
+        );
+        registry.insert(self.id, self.clone());
+        Ok(())
+    }
+    pub(crate) fn apply_slot(&self) -> &crate::apply_failure::ApplyFailureSlot {
+        &self.apply_failure
+    }
+    /// Borrow the actual retained apply report without releasing its custody.
+    ///
+    /// `Ok(None)` means no terminal failure is latched at this observation; it
+    /// does not prove successful apply or completed drain. `ReportBusy` means
+    /// the report is currently borrowed or being updated, not that it is absent.
+    ///
+    /// The callback runs synchronously and cannot move originals out. It may
+    /// observe a failed worker still recording its remaining outcomes, so it
+    /// must not wait for that worker or drain while holding this borrow.
+    /// Inspection never acknowledges, retries, clears, or drains an outcome.
+    /// Its borrow is released before waking a waiting drain, even on unwind.
+    pub fn try_with_retained_apply_report<R>(
+        &self,
+        inspect: impl for<'a> FnOnce(crate::RetainedApplyReport<'a>) -> R,
+    ) -> Result<Option<R>, crate::ReportBusy> {
+        self.apply_failure
+            .failure()
+            .map(|failure| failure.try_with_report(inspect))
+            .transpose()
+    }
+    fn completion_released(&self) -> bool {
+        (!self.apply_failure.completion().unsettled()
+            || self.apply_failure.failure_ownership_drained())
+            && self.apply_failure.completion().drained()
+    }
+
+    fn failed_apply_resources_drained(&self) -> bool {
+        self.application_sources_drained.load(Ordering::Acquire)
+            && self.apply_failure.failure_ownership_drained()
+    }
+
+    fn apply_failure_unresolved(&self) -> bool {
+        self.apply_failure.failure().is_some() && !self.failed_apply_resources_drained()
+    }
+
+    /// Revisit only this owner's earlier buffer census after actual writers and
+    /// application sources have stopped. The trusted disposition does not clear
+    /// the original diagnostic, acknowledge the entry, or settle other owners.
+    pub(crate) async fn finish_failed_buffer_drain(
+        &self,
+        earlier: Option<kasumi_types::drain::DrainFailure>,
+        report: &mut DrainReport,
+    ) -> Option<kasumi_types::drain::DrainFailure> {
+        if earlier.is_none() || !self.failed_apply_resources_drained() {
+            return earlier;
+        }
+        let final_census = self.drain_buffers().await;
+        report.merge_result(&final_census);
+        final_census.err().filter(|failure| {
+            failure.completion() == kasumi_types::drain::DrainCompletion::Retained
+        })
+    }
+
+    pub(crate) fn finish_application_source_reconstruction(&self) -> anyhow::Result<()> {
+        match self.application_sources.get() {
+            Some(source) => source.finish_reconstruction(),
+            None => Ok(()),
+        }
+    }
+
+    /// Stop new source consumers while allowing admitted apply/replay writers
+    /// to reach their actual durable publication boundary.
+    pub fn seal_application_source_consumers(&self) {
+        if let Some(source) = self.application_sources.get() {
+            source.seal_consumers();
+        }
+    }
+
+    /// Final source retirement, only after real application writers stop.
+    /// Cancellation leaves the exact registry, cells and errors in the bound
+    /// hook. Do not call from the initial transfer-buffer drain.
+    pub(crate) async fn drain_application_sources(&self) -> DrainResult {
+        std::future::poll_fn(|cx| self.apply_failure.completion().poll_drain(cx)).await;
+        if !self.apply_failure.completion().drained() {
+            let failure = self.apply_failure.diagnostic();
+            let mut report = self.report.lock().unwrap_or_else(|p| p.into_inner());
+            let issue = report.record("Raft ordinary completion", 0, failure.into());
+            return report.outcome(Some(kasumi_types::drain::DrainFailure::retained(issue)));
+        }
+        let Some(source) = self.application_sources.get() else {
+            return Ok(());
+        };
+        let result = std::future::poll_fn(|cx| source.poll_drain(cx)).await;
+        let positive = source.is_drained();
+        let mut report = self.report.lock().unwrap_or_else(|p| p.into_inner());
+        report.merge_result(&result);
+        let unresolved = if !positive {
+            Some(match result {
+                Err(failure) => failure,
+                Ok(()) => {
+                    let issue = report.record(
+                        "application source custody",
+                        0,
+                        anyhow::anyhow!("source drain returned without positive retirement"),
+                    );
+                    kasumi_types::drain::DrainFailure::retained(issue)
+                }
+            })
+        } else if !drain_completed(&result) {
+            result.err()
+        } else {
+            self.application_sources_drained
+                .store(true, Ordering::Release);
+            None
+        };
+        report.outcome(unresolved)
     }
 
     pub(crate) fn start<F>(
@@ -199,16 +527,88 @@ impl SnapshotBufferOwner {
         // This non-generic future contains only the owner and admission result.
         let mut startup = self.startup.lock().await;
         let result = startup.claim(self).await;
-        // A delivered group now owns startup custody. Actual snapshot cells,
-        // if any, retain their original global enrollment independently.
+        // Keep the already admitted strong root throughout a real group's
+        // lifetime. Installed startup inventories hold only Weak handles, and
+        // a canceled apply waiter must not become the last failure owner.
         let cells = self.cells.lock().unwrap_or_else(|p| p.into_inner());
-        if startup.can_release_custody() && cells.iter().all(Option::is_none) {
+        if startup.can_release_custody()
+            && self.application_sources_drained.load(Ordering::Acquire)
+            && self.completion_released()
+            && !self.apply_failure.has_live_ownership()
+            && !self.apply_failure_unresolved()
+            && cells.iter().all(Option::is_none)
+        {
             retained()
                 .lock()
                 .unwrap_or_else(|p| p.into_inner())
                 .remove(&self.id);
         }
         result
+    }
+
+    pub(crate) fn bind_group_ownership(
+        &self,
+        ownership: Arc<AtomicBool>,
+        identity: Arc<kasumi_store::TenantStore>,
+    ) -> anyhow::Result<()> {
+        self.apply_failure.bind_ownership(ownership, identity)
+    }
+    #[cfg(test)]
+    pub(crate) fn bind_fixture_group_ownership(
+        &self,
+        ownership: Arc<AtomicBool>,
+        identity: Arc<dyn Send + Sync>,
+    ) -> anyhow::Result<()> {
+        self.apply_failure.bind_ownership(ownership, identity)
+    }
+    pub(crate) fn release_group_ownership(&self) {
+        if !self.application_sources_drained.load(Ordering::Acquire) || !self.completion_released()
+        {
+            return;
+        }
+        self.apply_failure.release_ownership();
+        // Called only after a positive final drain. During startup cleanup the
+        // startup lock is held; its subsequent final census removes this root.
+        if let Ok(startup) = self.startup.try_lock()
+            && startup.can_release_custody()
+            && self.application_sources_drained.load(Ordering::Acquire)
+            && self.completion_released()
+            && !self.apply_failure_unresolved()
+            && self
+                .cells
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .iter()
+                .all(Option::is_none)
+        {
+            retained()
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .remove(&self.id);
+        }
+    }
+
+    pub(crate) fn apply_failure(&self) -> Option<crate::apply_failure::RetainedApplyFailure> {
+        self.apply_failure.failure()
+    }
+
+    // Called while the state-machine serialization guard is held, before the
+    // blocking worker returns. The waiter does not own the only error handle.
+    pub(crate) fn retain_apply_failure(
+        &self,
+        error: anyhow::Error,
+    ) -> crate::apply_failure::RetainedApplyFailure {
+        self.failed.store(true, Ordering::Release);
+        match self.apply_failure.retain(error) {
+            Ok(retained) => retained,
+            Err(independent) => {
+                // This requires a violated owner/serialization contract. Keep
+                // the independent owner in the lifecycle report as well.
+                let mut report = self.report.lock().unwrap_or_else(|p| p.into_inner());
+                report.record("Raft additional apply failure", 0, independent);
+                self.apply_failure.failure().expect("occupied apply slot")
+            }
+        }
     }
 
     pub(crate) fn record_startup_error(
@@ -265,7 +665,9 @@ impl SnapshotBufferOwner {
     }
 
     pub(crate) fn check(&self) -> io::Result<()> {
-        if self.closed.load(Ordering::Acquire) || self.failed.load(Ordering::Acquire) {
+        if self.closed.load(Ordering::Acquire)
+            || (self.failed.load(Ordering::Acquire) || self.apply_failure.completion().failed())
+        {
             Err(io::Error::other("snapshot transfer admission is closed"))
         } else {
             Ok(())
@@ -347,10 +749,35 @@ impl SnapshotBufferOwner {
         self.startup_closing.store(true, Ordering::Release);
         let mut startup = self.startup.lock().await;
         if matches!(*startup, crate::startup_owner::StartupState::Delivered) {
-            return Ok(());
+            // Delivered healthy groups drain through their runtime. A known
+            // apply failure must remain visible to the installed weak census.
+            return if let Some(failure) = self.apply_failure.failure() {
+                let mut report = self.report.lock().unwrap_or_else(|p| p.into_inner());
+                let issue = report.record("Raft apply", 0, failure.into());
+                let unresolved = (!self.failed_apply_resources_drained())
+                    .then(|| kasumi_types::drain::DrainFailure::retained(issue));
+                report.outcome(unresolved)
+            } else if self.apply_failure.completion().unsettled() {
+                let mut report = self.report.lock().unwrap_or_else(|p| p.into_inner());
+                let issue = report.record(
+                    "Raft ordinary completion in progress",
+                    0,
+                    anyhow::anyhow!("ordinary completion remains owned by active runtime"),
+                );
+                report.outcome(Some(kasumi_types::drain::DrainFailure::retained(issue)))
+            } else {
+                Ok(())
+            };
         }
+        // A binder already admitted before startup_closing may finish while
+        // this census waits for startup. Inspect the installed hook only after
+        // acquiring that lock. Delivered groups retain their established
+        // independent runtime shutdown contract above.
+        self.seal_application_source_consumers();
         self.closed.store(true, Ordering::Release);
-        let unresolved = match startup.drain(self).await {
+        let startup_result = startup.drain(self).await;
+        let writers_stopped = drain_completed(&startup_result);
+        let startup_unresolved = match startup_result {
             Err(failure) => {
                 self.report
                     .lock()
@@ -361,13 +788,59 @@ impl SnapshotBufferOwner {
             }
             Ok(()) => None,
         };
-        let buffers = self.drain_buffers().await;
+        let mut buffers = self.drain_buffers().await;
+        let buffer_unresolved = buffers
+            .as_ref()
+            .err()
+            .filter(|failure| {
+                failure.completion() == kasumi_types::drain::DrainCompletion::Retained
+            })
+            .cloned();
+        // Idle abandonment has no writer. Opening/Cleaning may have writer
+        // ownership even after an error, so only a positive startup drain may
+        // close preparation. Actual groups already do this after StorageDrain.
+        let sources = if writers_stopped {
+            self.drain_application_sources().await
+        } else {
+            Ok(())
+        };
+        let source_unresolved = sources
+            .as_ref()
+            .err()
+            .filter(|failure| {
+                failure.completion() == kasumi_types::drain::DrainCompletion::Retained
+            })
+            .cloned();
+        // A retained startup error is independent and stays retained. Revisit
+        // only the buffer owner after its real source census has completed.
+        let buffer_unresolved =
+            if buffer_unresolved.is_some() && self.failed_apply_resources_drained() {
+                buffers = self.drain_buffers().await;
+                buffers
+                    .as_ref()
+                    .err()
+                    .filter(|failure| {
+                        failure.completion() == kasumi_types::drain::DrainCompletion::Retained
+                    })
+                    .cloned()
+            } else {
+                buffer_unresolved
+            };
+        let unresolved = startup_unresolved
+            .or(source_unresolved)
+            .or(buffer_unresolved);
         let result = {
             let mut report = self.report.lock().unwrap_or_else(|p| p.into_inner());
             report.merge_result(&buffers);
+            report.merge_result(&sources);
             report.outcome(unresolved)
         };
-        if startup.can_release_custody() {
+        if drain_completed(&result)
+            && self.application_sources_drained.load(Ordering::Acquire)
+            && self.completion_released()
+            && !self.apply_failure.has_live_ownership()
+            && startup.can_release_custody()
+        {
             retained()
                 .lock()
                 .unwrap_or_else(|p| p.into_inner())
@@ -403,7 +876,27 @@ impl SnapshotBufferOwner {
                 }
             }
             if all_ready {
-                Poll::Ready(report.complete())
+                // Arbitrary errors may own native children. Only the exact
+                // typed publication failure plus completed source/completion
+                // census can retire ownership while keeping its diagnostic.
+                let unresolved = self.apply_failure.failure().and_then(|failure| {
+                    let issue = report.record("Raft apply", 0, failure.into());
+                    (!self.failed_apply_resources_drained())
+                        .then(|| kasumi_types::drain::DrainFailure::retained(issue))
+                });
+                let unresolved = unresolved.or_else(|| {
+                    (self.apply_failure.completion().unsettled()
+                        && !self.failed_apply_resources_drained())
+                    .then(|| {
+                        let issue = report.record(
+                            "Raft ordinary completion in progress",
+                            0,
+                            anyhow::anyhow!("ordinary completion has not settled"),
+                        );
+                        kasumi_types::drain::DrainFailure::retained(issue)
+                    })
+                });
+                Poll::Ready(report.outcome(unresolved))
             } else {
                 Poll::Pending
             }
@@ -411,10 +904,12 @@ impl SnapshotBufferOwner {
         .await;
         // Internal cleanup may be running inside the retained startup future.
         // Only a non-running startup can release this global custody root.
-        if self
-            .startup
-            .try_lock()
-            .is_ok_and(|startup| startup.can_release_custody())
+        if let Ok(startup) = self.startup.try_lock()
+            && startup.can_release_custody()
+            && drain_completed(&result)
+            && self.application_sources_drained.load(Ordering::Acquire)
+            && self.completion_released()
+            && !self.apply_failure.has_live_ownership()
         {
             retained()
                 .lock()
@@ -423,6 +918,11 @@ impl SnapshotBufferOwner {
         }
         result
     }
+}
+fn drain_completed(result: &DrainResult) -> bool {
+    result.as_ref().err().is_none_or(|failure| {
+        failure.completion() == kasumi_types::drain::DrainCompletion::Complete
+    })
 }
 trait MergeResult {
     fn merge_result(&mut self, result: &DrainResult);
@@ -855,3 +1355,7 @@ impl AsyncSeek for SnapshotBuffer {
 #[cfg(test)]
 #[path = "snapshot_buffer_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "application_source_custody_tests.rs"]
+mod application_source_custody_tests;

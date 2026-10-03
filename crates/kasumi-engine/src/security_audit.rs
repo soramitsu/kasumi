@@ -370,6 +370,17 @@ impl SecurityAudit {
         self.writer.work.drain().await;
     }
 
+    /// Test-only census boundary for a fixture that admits no concurrent audit
+    /// requests. Reap the actual dispatched jobs before pausing maintenance;
+    /// their retained handle reservations otherwise survive a delivered reply.
+    /// The guard must be dropped before new audit requests or shutdown. This
+    /// neither seals admission nor replaces durable authentication/audit work.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub async fn quiescent_jobs_for_test(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.drain_jobs().await;
+        self.writer.maintenance.lock().await
+    }
+
     /// Close audit admission immediately. Explicit shutdown additionally drains
     /// any writes that already hold the store before stopping its key monitors.
     pub fn seal(&self) {
@@ -881,7 +892,7 @@ mod tests {
             drained
                 .issues()
                 .iter()
-                .any(|issue| Arc::ptr_eq(issue, &original))
+                .any(|issue| kasumi_types::drain::DrainIssueRef::ptr_eq(issue, &original))
         );
         assert_eq!(original.component(), "audit persistence");
         let repeated = audit.shutdown().await.unwrap_err();
@@ -893,7 +904,7 @@ mod tests {
             repeated
                 .issues()
                 .iter()
-                .any(|issue| Arc::ptr_eq(issue, &original))
+                .any(|issue| kasumi_types::drain::DrainIssueRef::ptr_eq(issue, &original))
         );
         reopened.shutdown().await.unwrap();
     }

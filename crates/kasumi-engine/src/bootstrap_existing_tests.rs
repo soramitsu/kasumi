@@ -135,8 +135,8 @@ impl Installation {
     }
 }
 
-fn manifest_for(image: &SnapshotImage) -> Manifest {
-    Manifest {
+fn manifest_for(image: &SnapshotImage) -> ApplicationBootstrapManifest {
+    ApplicationBootstrapManifest {
         format: 2,
         bytes: image.len(),
         chunks: image.len().div_ceil(CHUNK as u64),
@@ -227,7 +227,7 @@ async fn bootstrap_manifest_rejects_alternate_and_oversized_rows_without_repair(
     let canonical = store
         .get_bounded(NS, b"manifest", MAX_BOOTSTRAP_MANIFEST_BYTES)?
         .expect("current bootstrap manifest");
-    let manifest = decode_current_manifest(&canonical)?;
+    let manifest = ApplicationBootstrapManifest::decode(&canonical)?;
     assert_eq!(persisted_bootstrap_digest(store)?, manifest.digest);
     assert!(load(store)?.is_some());
     let expected_workspace = recovery_workspace_bytes(&fixture.stores)?;
@@ -430,6 +430,7 @@ async fn authenticated_bootstrap_cannot_change_the_standalone_catalog_incarnatio
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn existing_local_reopens_the_same_committed_standalone_after_complete_shutdown()
 -> anyhow::Result<()> {
+    use anyhow::Context as _;
     let fixture = Installation::new().await?;
     let database = open_local_with_incarnation(
         fixture.stores.clone(),
@@ -438,7 +439,8 @@ async fn existing_local_reopens_the_same_committed_standalone_after_complete_shu
         fixture.audit.clone(),
         fixture.incarnation,
     )
-    .await?;
+    .await
+    .context("local reopen fixture: initial Database startup")?;
     let context = RequestContext {
         authorization: RequestAuthorization::service_identity(),
         tenant: "tenant".into(),
@@ -458,7 +460,8 @@ async fn existing_local_reopens_the_same_committed_standalone_after_complete_shu
                 strict_read_audit: false,
             }),
         )
-        .await?;
+        .await
+        .context("local reopen fixture: create retained collection")?;
     let expected_revision = database.engine().generation()?.state.revision;
     database.shutdown().await?;
     drop(database);
@@ -496,7 +499,9 @@ async fn existing_local_reopens_the_same_committed_standalone_after_complete_shu
     )
     .await?;
     let audit = SecurityAudit::open(audit_store, Default::default(), storage.admission.clone())?;
-    let reopened = open_existing_local(stores.clone(), audit.clone(), incarnation).await?;
+    let reopened = open_existing_local(stores.clone(), audit.clone(), incarnation)
+        .await
+        .context("local reopen fixture: existing Database startup")?;
     let generation = reopened.engine().generation()?;
     assert_eq!(generation.state.incarnation, incarnation.to_string());
     assert_eq!(generation.state.revision, expected_revision);

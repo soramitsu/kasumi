@@ -4,8 +4,11 @@
 //! It is responsible for applying log entries, building/receiving snapshot  and sending responses
 //! to the RaftCore.
 
+pub(crate) mod apply_batch;
 pub(crate) mod command;
 pub(crate) mod handle;
+pub(crate) mod pending_apply;
+pub(crate) mod pending_snapshot;
 pub(crate) mod response;
 pub(crate) mod tasks;
 pub(crate) mod worker;
@@ -16,3 +19,6 @@ pub(crate) use command::CommandPayload;
 pub(crate) use command::CommandSeq;
 pub(crate) use response::CommandResult;
 pub(crate) use response::Response;
+
+#[cfg(all(test, not(feature = "singlethreaded")))]
+mod bounded_apply_tests;

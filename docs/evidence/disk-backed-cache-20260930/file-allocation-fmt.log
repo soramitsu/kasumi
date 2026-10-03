@@ -1,0 +1,15 @@
+Diff in /Users/takemiyamakoto/dev/kasumi/crates/kasumi-server/src/standalone_operator.rs:31:
+             let AuthKeySource::Local { signer_file } = &config.auth.source else {
+                 anyhow::bail!("operator requires a local issuer");
+             };
+-            let node = NodeStore::open_existing(&config.database_path, config.database_id, persistent_disk.clone(), storage.open_scratch(&config.scratch_disk)?, persistent_disk.native_storage_config())?;
++            let node = NodeStore::open_existing(
++                &config.database_path,
++                config.database_id,
++                persistent_disk.clone(),
++                storage.open_scratch(&config.scratch_disk)?,
++                persistent_disk.native_storage_config(),
++            )?;
+             pending.owned_nodes.push(node.clone());
+             #[cfg(test)]
+             super::ownership_tests::checkpoint(&config.database_path, "node").await?;

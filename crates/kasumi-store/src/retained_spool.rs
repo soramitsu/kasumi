@@ -82,7 +82,9 @@ impl RetainedSpool {
     pub fn close(&mut self) -> BackendCloseOutcome {
         self.close_with(EncryptedSpool::sync_all)
     }
-    pub(super) fn close_with(
+    // Crate-internal aggregate owners may supply their root synchronization
+    // callback while preserving this spool's one-shot close state machine.
+    pub(crate) fn close_with(
         &mut self,
         sync: impl FnOnce(&mut EncryptedSpool) -> io::Result<()>,
     ) -> BackendCloseOutcome {

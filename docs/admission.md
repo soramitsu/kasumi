@@ -29,6 +29,27 @@ fields and the enclosing runtime admission object are required in serialized
 configuration; missing fields and unknown aliases are rejected. Programmatic
 `Default` is a policy for new callers, not a configuration migration.
 
+The native disk-cache redesign uses one growable resident reservation per cache;
+cached objects borrow byte credit without consuming individual ledger slots.
+Its configured byte ceiling includes payloads, pages, hash backing, retained
+reader versions, provider overhead and unused admitted credit. All fitting
+objects remain cached; frequency and recency affect eviction only under pressure.
+The generated server profile sets a 2 GiB aggregate reservation cap, a 1 GiB
+ceiling per persistent group and 512 MiB per scratch cache. These ceilings share
+the installed total and are not independently reserved allocations. They remain
+initial defaults pending the full capacity qualification.
+
+`cache_work_reserve_bytes` and `cache_work_reserve_slots` keep optional cache
+growth out of shared capacity needed for required work. Null resolves to
+`min(total / 4, 64 MiB)` and `max(1, min(max_reservations / 4, 64))`, respectively;
+the generated profile explicitly selects 64 MiB and 64 slots. Both add to any
+installed audit-maintenance protection. Ordinary required workspace admission
+is unchanged, and optional cache retention never borrows the audit thread's
+protected escrow. The reserve preserves bounded read and maintenance room; it
+does not guarantee that every maximum-size write or concurrent operation fits.
+Cache growth, metadata replacement and pressure behavior are under validation
+in the [disk-cache evidence record](evidence/disk-backed-cache-20260930/README.md).
+
 The core admits its fixed bookkeeping before allocating the ledger or starting
 the RSS sampler. A facade separately admits its inline storage and complete
 startup inventory. `required_bookkeeping_bytes` exposes the checked workspace
@@ -103,7 +124,9 @@ RSS includes resident indexes, search readers/writers, receipts, audits, and pin
 generations, but sampling and individual library calls can overshoot high water.
 This mechanism does not guarantee freedom from OS OOM, impose a hard per-tenant
 physical RAM cap, or change the requirement that configured datasets and indexes
-fit in replica RAM. Capacity measurements must include rebuilds, snapshots,
+fit in replica RAM while application document and query-index state remain
+resident. The native cache cutover alone does not complete that application
+redesign. Capacity measurements must include rebuilds, snapshots,
 concurrent tenant groups, and the embedding application's own allocations.
 
 `Limits.max_snapshot_bytes` separately bounds the exact canonical serialized

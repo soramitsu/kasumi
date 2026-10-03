@@ -130,7 +130,10 @@ async fn abandoned_facade_and_cancelled_owner_drain_keep_actual_panic_and_charge
             .is_panic()
     );
     let repeated = owner.drain().await.unwrap_err();
-    assert!(Arc::ptr_eq(&original, &repeated.issues()[0]));
+    assert!(kasumi_types::drain::DrainIssueRef::ptr_eq(
+        &original,
+        &repeated.issues()[0]
+    ));
     assert_eq!(disk.snapshot().live_files, 0);
     drop(owner);
     assert!(weak.upgrade().is_none());
@@ -172,10 +175,16 @@ async fn original_io_failure_survives_io_bridge_and_repeated_typed_drain() -> an
         73
     );
     let repeated = buffer.drain().await.unwrap_err();
-    assert!(Arc::ptr_eq(&original, &repeated.issues()[0]));
+    assert!(kasumi_types::drain::DrainIssueRef::ptr_eq(
+        &original,
+        &repeated.issues()[0]
+    ));
     assert!(SnapshotBuffer::new(&disk, 1 << 20, &owner).is_err());
     let global = owner.drain().await.unwrap_err();
-    assert!(Arc::ptr_eq(&original, &global.issues()[0]));
+    assert!(kasumi_types::drain::DrainIssueRef::ptr_eq(
+        &original,
+        &global.issues()[0]
+    ));
     Ok(())
 }
 

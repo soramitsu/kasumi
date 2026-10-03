@@ -632,13 +632,15 @@ pub(super) fn apply(
                     staged.limits.atomic.max_read_assertions,
                 )?;
                 let receipt = apply_mutations(&mut staged, &operations, revision, false, indexes)?;
-                indexes.validate_unique_changes(
-                    &state.collections,
-                    &staged.collections,
-                    &changes(&stage),
-                )?;
+                crate::index_source::validate_changes(indexes, state, &staged, &changes(&stage))?;
                 Ok(receipt)
             });
+            // An inconsistent captured source is not a transaction outcome.
+            // Keep the original active stage and its permanent terminal unset.
+            let outcome = match outcome {
+                Err(error) if error.code == ErrorCode::Corruption => return Err(error),
+                outcome => outcome,
+            };
             if outcome.is_err() {
                 staged = state.clone();
             }

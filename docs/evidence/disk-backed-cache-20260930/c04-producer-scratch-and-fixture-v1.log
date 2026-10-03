@@ -1,0 +1,14 @@
+Command: cargo test --locked --offline --config profile.test.package.kasumi-kv.opt-level=3 --config profile.test.package.sha2.opt-level=3 -p kasumi-kv -p kasumi-store -p kasumi-raft -p kasumi-engine --all-features --lib --no-fail-fast -- scratch_table::tests restored_identity_metadata production_source_capacity_tests source_quote_covered_planning_tracks selected_sources_repeated_prospective audit_maintenance::tests planning_session_tests --nocapture
+CARGO_TARGET_DIR=target/disk-backed-cache
+   Compiling kasumi-store v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-store)
+   Compiling kasumi-raft v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-raft)
+error[E0063]: missing fields `admission` and `retained_batches` in initializer of `scratch_table::ScratchTableDatabase`
+   --> crates/kasumi-store/src/scratch_table_tests.rs:478:25
+    |
+478 |         owner: Arc::new(ScratchTableDatabase {
+    |                         ^^^^^^^^^^^^^^^^^^^^ missing `admission` and `retained_batches`
+
+For more information about this error, try `rustc --explain E0063`.
+error: could not compile `kasumi-store` (lib test) due to 1 previous error
+warning: build failed, waiting for other jobs to finish...
+Runner: 74.06s; exit=101; matching=1544/1544

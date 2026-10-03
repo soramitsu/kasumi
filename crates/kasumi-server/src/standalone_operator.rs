@@ -34,8 +34,9 @@ impl OperatorState {
             let node = NodeStore::open_existing(
                 &config.database_path,
                 config.database_id,
-                persistent_disk,
+                persistent_disk.clone(),
                 storage.open_scratch(&config.scratch_disk)?,
+                persistent_disk.native_storage_config(),
             )?;
             pending.owned_nodes.push(node.clone());
             #[cfg(test)]

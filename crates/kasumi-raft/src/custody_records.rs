@@ -42,8 +42,12 @@ impl Builder {
         Ok(Self {
             records: Records {
                 head,
-                commands: EncryptedTable::new(scratch_disk, disk)?,
-                audit: EncryptedTable::new(scratch_disk, disk)?,
+                commands: EncryptedTable::new(
+                    scratch_disk,
+                    disk,
+                    scratch_disk.native_cache_config(),
+                )?,
+                audit: EncryptedTable::new(scratch_disk, disk, scratch_disk.native_cache_config())?,
                 sha256: String::new(),
             },
             commands: 0,

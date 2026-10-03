@@ -1,0 +1,22 @@
+Command: cargo test -p kasumi-store --all-features --lib --locked --offline --config profile.test.package.kasumi-kv.opt-level=3 --config profile.test.package.sha2.opt-level=3 -- --test-threads=1 file_keys::
+CARGO_TARGET_DIR=target/disk-backed-cache
+    Blocking waiting for file lock on package cache
+   Compiling kasumi-types v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-types)
+   Compiling kasumi-serving v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-serving)
+   Compiling kasumi-store v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-store)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 49.99s
+     Running unittests src/lib.rs (target/disk-backed-cache/debug/deps/kasumi_store-98be0c6afb7030c8)
+
+running 8 tests
+test file_keys::tests::file_keyring_rotation_binding_fresh_reads_and_reopen ... ok
+test file_keys::tests::keyring_rejects_writer_impossible_domain_and_generation_gaps_without_repair ... ok
+test file_keys::tests::keyring_requires_current_writer_bytes_without_repair ... ok
+test file_keys::tests::rejects_public_keyrings_symlinks_and_unsupported_formats ... ok
+test file_keys::tests::standalone_catalog_binds_installation_tenant_and_generation ... ok
+test file_keys::workspace::tests::file_key_open_workspace_covers_real_bounded_factory ... ok
+test file_keys::workspace::tests::file_key_open_workspace_is_checked_and_allocation_free ... ok
+test file_keys::workspace::tests::prepared_file_input_selects_one_generation_and_preserves_validation_errors ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 620 filtered out; finished in 1.42s
+
+Runner: 51.52s; exit=0; matching=734/734

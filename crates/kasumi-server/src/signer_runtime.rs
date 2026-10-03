@@ -64,6 +64,7 @@ impl SignerVerifierConfig {
                     database_id,
                     persistent_disk.clone(),
                     scratch_disk.clone(),
+                    persistent_disk.native_storage_config(),
                 )?
             } else {
                 NodeStore::open_existing(
@@ -71,9 +72,13 @@ impl SignerVerifierConfig {
                     database_id,
                     persistent_disk.clone(),
                     scratch_disk.clone(),
+                    persistent_disk.native_storage_config(),
                 )?
             };
             pending.owned_nodes.push(node.clone());
+            if !initialize {
+                node.prepare_cache_warming().await?;
+            }
             #[cfg(test)]
             crate::startup_preparation::checkpoint(database_id, "verifier-storage-node");
             let store = if initialize {
@@ -116,10 +121,12 @@ impl SignerVerifierConfig {
         scratch_disk: Arc<kasumi_store::ScratchDisk>,
         admission: Arc<kasumi_engine::admission::NodeAdmission>,
     ) -> Result<Arc<InstalledSignerVerifier>> {
-        ensure!(
-            self.database_path.is_file(),
-            "signer verifier must be explicitly initialized before runtime startup"
-        );
+        // This is only a no-symlink/private-kind precheck. The subsequent
+        // managed group acquisition verifies the enrolled directory/root and
+        // exact signer-verifier incarnation before reading native data.
+        private_files::check_directory(&self.database_path).context(
+            "signer verifier group must be explicitly initialized before runtime startup",
+        )?;
         self.validate()?;
         let bytes =
             BackgroundWorkBudget::required_bytes(self.max_background_workers, domains.len())?;
@@ -189,6 +196,12 @@ pub(crate) struct InstalledSignerVerifier {
     drain_report: std::sync::Mutex<kasumi_types::drain::DrainReport>,
 }
 impl InstalledSignerVerifier {
+    /// The parent runtime's acknowledged handoff activates this already
+    /// retained worker; installation and abandoned opens remain dormant.
+    pub(crate) fn activate_cache_warming(&self) -> Result<()> {
+        self.node.activate_cache_warming()
+    }
+
     /// Only the live verifier on this exact installed disk may supply the
     /// replicated physical owner to destination opening.
     pub(crate) fn identity_for(

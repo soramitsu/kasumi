@@ -753,6 +753,10 @@ impl Observation {
             self.scratch_disk.min_free_bytes
         );
         gauge!(
+            "scratch_disk_native_cache_bytes",
+            self.scratch_disk.native_cache_bytes
+        );
+        gauge!(
             "scratch_disk_charged_bytes",
             self.scratch_disk.charged_bytes
         );

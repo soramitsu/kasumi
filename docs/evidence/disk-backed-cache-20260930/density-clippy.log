@@ -1,0 +1,3 @@
+    Blocking waiting for file lock on package cache
+    Checking kasumi-kv v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-kv)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 5.24s

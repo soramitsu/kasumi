@@ -1,0 +1,104 @@
+Command: cargo test -p kasumi-engine --all-features --lib --test contracts --test history --test embedded_audit --test response_release --test shutdown --test control --locked --offline --config profile.test.package.kasumi-kv.opt-level=3 --config profile.test.package.sha2.opt-level=3 -- --test-threads=1 point_memory_ strict_read_audit_is_committed_before_return_and_tied_to_data_revision shared_get_uses_the_same_audit_and_authorization_and_keeps_historical_values key_revocation_fences_and_evicts_resident_state archived_prefixes_keep_logical_reads_unique_indexes_and_dedup_after_restart every_embedded_request_boundary_durably_audits_denials_and_sealed_tenants encoded_response_is_fenced_by_policy_changes_and_actual_key_denial full_shutdown_reopens_immediately_with_receipts_and_retained_plaintext control_updates_require_operator_authority_cas_and_survive_reopen
+CARGO_TARGET_DIR=target/disk-backed-cache
+   Compiling kasumi-types v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-types)
+   Compiling kasumi-serving v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-serving)
+   Compiling kasumi-query v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-query)
+   Compiling kasumi-store v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-store)
+   Compiling kasumi-raft v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-raft)
+   Compiling kasumi-engine v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-engine)
+warning: variant `Mutation` is never constructed
+  --> crates/kasumi-engine/src/security_audit_jobs.rs:26:5
+   |
+24 | enum JobEffect {
+   |      --------- variant in this enum
+25 |     Read,
+26 |     Mutation(&'static str),
+   |     ^^^^^^^^
+   |
+   = note: `JobEffect` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: struct `ReadPause` is never constructed
+  --> crates/kasumi-engine/src/security_audit_jobs.rs:57:19
+   |
+57 | pub(super) struct ReadPause {
+   |                   ^^^^^^^^^
+
+warning: method `run_mutation` is never used
+   --> crates/kasumi-engine/src/security_audit_jobs.rs:120:25
+    |
+ 62 | impl SecurityAudit {
+    | ------------------ method in this implementation
+...
+120 |     pub(super) async fn run_mutation<T, F, R>(&self, component: &'static str, run: R) -> Result<T>
+    |                         ^^^^^^^^^^^^
+
+warning: `kasumi-engine` (lib) generated 3 warnings
+warning: field `panic` is never read
+  --> crates/kasumi-engine/src/security_audit_jobs.rs:52:9
+   |
+48 | pub(super) struct RecordFault {
+   |                   ----------- field in this struct
+...
+52 |     pub panic: bool,
+   |         ^^^^^
+
+warning: `kasumi-engine` (lib test) generated 4 warnings (3 duplicates)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 6m 57s
+     Running unittests src/lib.rs (target/disk-backed-cache/debug/deps/kasumi_engine-b15d1192089511a8)
+
+running 6 tests
+test service::tests::point_memory_cancelled_public_outputs_retain_admitted_audit_until_completion ... ok
+test service::tests::point_memory_clone_denial_and_cancellation_keep_source_and_charge_together ... ok
+test service::tests::point_memory_cold_shared_clone_keeps_archive_charge_after_shutdown ... ok
+test service::tests::point_memory_public_hot_outputs_release_strict_slots_and_outlive_shutdown ... ok
+test service::tests::point_memory_shared_clones_keep_one_charge_until_cross_thread_last_drop ... ok
+test service::tests::point_memory_shared_owner_backing_denial_leaves_selected_source_owned ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 400 filtered out; finished in 63.99s
+
+     Running tests/contracts.rs (target/disk-backed-cache/debug/deps/contracts-cefae1449b4688eb)
+
+running 3 tests
+test key_revocation_fences_and_evicts_resident_state ... ok
+test shared_get_uses_the_same_audit_and_authorization_and_keeps_historical_values ... ok
+test strict_read_audit_is_committed_before_return_and_tied_to_data_revision ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 23 filtered out; finished in 51.13s
+
+     Running tests/control.rs (target/disk-backed-cache/debug/deps/control-2233749d989548b4)
+
+running 1 test
+test control_updates_require_operator_authority_cas_and_survive_reopen ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 22.60s
+
+     Running tests/embedded_audit.rs (target/disk-backed-cache/debug/deps/embedded_audit-0dbae676f04ce619)
+
+running 1 test
+test every_embedded_request_boundary_durably_audits_denials_and_sealed_tenants ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 12.01s
+
+     Running tests/history.rs (target/disk-backed-cache/debug/deps/history-be0399b92922be2f)
+
+running 1 test
+test archived_prefixes_keep_logical_reads_unique_indexes_and_dedup_after_restart ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 63.81s
+
+     Running tests/response_release.rs (target/disk-backed-cache/debug/deps/response_release-8f855474e09010e4)
+
+running 1 test
+test encoded_response_is_fenced_by_policy_changes_and_actual_key_denial ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 14.22s
+
+     Running tests/shutdown.rs (target/disk-backed-cache/debug/deps/shutdown-86fd42838bc6b557)
+
+running 1 test
+test full_shutdown_reopens_immediately_with_receipts_and_retained_plaintext ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 54.62s
+
+Runner: 700.23s; exit=0; matching=702/702

@@ -1,0 +1,22 @@
+Command: cargo clippy --locked --offline -p kasumi-raft --lib -- -D warnings
+CARGO_TARGET_DIR=target/disk-backed-cache
+    Checking hyper v1.11.1
+    Checking tower v0.5.3
+    Checking tokio-rustls v0.26.5
+    Checking serde_json v1.0.151 (/Users/takemiyamakoto/dev/kasumi/vendor/serde_json-1.0.151)
+    Checking kasumi-clock v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-clock)
+    Checking kasumi-kv v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-kv)
+    Checking openraft v0.9.25 (/Users/takemiyamakoto/dev/kasumi/vendor/openraft-0.9.25/openraft)
+    Checking kasumi-types v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-types)
+    Checking tower-http v0.6.11
+    Checking hyper-util v0.1.20
+    Checking hyper-timeout v0.5.2
+    Checking hyper-rustls v0.27.9
+    Checking reqwest v0.12.28
+    Checking tonic v0.14.6
+    Checking kasumi-transport v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-transport)
+    Checking kasumi-serving v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-serving)
+    Checking kasumi-store v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-store)
+    Checking kasumi-raft v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-raft)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 53.18s
+Runner: 53.38s; exit=0; matching=831/831

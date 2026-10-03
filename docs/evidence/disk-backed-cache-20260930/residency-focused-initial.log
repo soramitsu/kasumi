@@ -1,0 +1,24 @@
+   Compiling kasumi-kv v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-kv)
+warning: unused import: `CachedValueIdentity`
+  --> crates/kasumi-kv/src/segment.rs:62:33
+   |
+62 |     CACHED_VALUE_LOCATOR_BYTES, CachedValueIdentity, inspect_cached_value_identity,
+   |                                 ^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+error[E0063]: missing field `retention_denied` in initializer of `page_cache::MaintenanceDirectoryBackend<'_, _>`
+   --> crates/kasumi-kv/src/page_cache.rs:629:31
+    |
+629 |             let maintenance = MaintenanceDirectoryBackend {
+    |                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^ missing `retention_denied`
+
+error[E0063]: missing field `retention_denied` in initializer of `page_cache::MaintenanceDirectoryBackend<'_, _>`
+   --> crates/kasumi-kv/src/page_cache.rs:666:39
+    |
+666 |                     let maintenance = MaintenanceDirectoryBackend {
+    |                                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^ missing `retention_denied`
+
+For more information about this error, try `rustc --explain E0063`.
+warning: `kasumi-kv` (lib test) generated 1 warning
+error: could not compile `kasumi-kv` (lib test) due to 2 previous errors; 1 warning emitted

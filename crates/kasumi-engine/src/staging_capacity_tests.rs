@@ -116,11 +116,10 @@ fn permanent_staged_reservation_bounds_all_terminal_outcomes_and_maximum_counter
 
 #[test]
 fn permanent_staged_point_capacity_transfers_to_outcome_and_can_expand_without_identity_reuse() {
-    let scratch = crate::codec_fixture::ScratchScope::new(
-        kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 32),
-    )
-    .unwrap();
+    let memory = kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 32);
+    let scratch = crate::codec_fixture::ScratchScope::new(memory.clone()).unwrap();
     let disk = &scratch.disk;
+    let baseline = memory.snapshot();
     let mut state = state();
     let (key, original) = stage("a");
     let charge = permanent_charge(&key, &original).unwrap();
@@ -142,6 +141,14 @@ fn permanent_staged_point_capacity_transfers_to_outcome_and_can_expand_without_i
         expired_rows.get(&key).unwrap().unwrap().stage.outcome,
         StagedOutcome::Expired { .. }
     ));
+    // The expiry branch is fully observed. Retire its independent scratch
+    // owner before constructing the separate completion branch below.
+    drop(expired_rows);
+    assert_eq!(memory.snapshot().used_bytes, baseline.used_bytes);
+    assert_eq!(
+        memory.snapshot().live_reservations,
+        baseline.live_reservations
+    );
     let (second_key, second) = stage("b");
     assert_eq!(
         replace_record(&mut state, second_key.clone(), second.clone())
@@ -215,7 +222,7 @@ fn persist_terminal_overlay(
     };
     crate::staged_terminal::Pending::prepare(&owner, previous, next, &applied)
         .unwrap()
-        .persist()
+        .stage()
         .unwrap()
 }
 

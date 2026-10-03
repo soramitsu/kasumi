@@ -1,0 +1,99 @@
+Command: cargo test --locked --offline --config profile.test.package.kasumi-kv.opt-level=3 --config profile.test.package.sha2.opt-level=3 -p kasumi-engine --all-features --lib -- application_backup_rejects_control_recovery_and_embedded_or_orphan_records restored_identity_metadata_is_validated_before_bootstrap_persistence control_archive_transfer_uses_exact_reserved_domain_without_application_authority existing_local_reopens_the_same_committed_standalone_after_complete_shutdown serving_expiry_rejects_queued_effect_and_late_read_or_committed_ack_then_reopens_exactly
+CARGO_TARGET_DIR=target/disk-backed-cache
+   Compiling kasumi-kv v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-kv)
+   Compiling kasumi-store v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-store)
+   Compiling kasumi-raft v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-raft)
+   Compiling kasumi-engine v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-engine)
+warning: variant `Mutation` is never constructed
+  --> crates/kasumi-engine/src/security_audit_jobs.rs:26:5
+   |
+24 | enum JobEffect {
+   |      --------- variant in this enum
+25 |     Read,
+26 |     Mutation(&'static str),
+   |     ^^^^^^^^
+   |
+   = note: `JobEffect` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: struct `ReadPause` is never constructed
+  --> crates/kasumi-engine/src/security_audit_jobs.rs:57:19
+   |
+57 | pub(super) struct ReadPause {
+   |                   ^^^^^^^^^
+
+warning: method `run_mutation` is never used
+   --> crates/kasumi-engine/src/security_audit_jobs.rs:120:25
+    |
+ 62 | impl SecurityAudit {
+    | ------------------ method in this implementation
+...
+120 |     pub(super) async fn run_mutation<T, F, R>(&self, component: &'static str, run: R) -> Result<T>
+    |                         ^^^^^^^^^^^^
+
+warning: `kasumi-engine` (lib) generated 3 warnings
+warning: field `panic` is never read
+  --> crates/kasumi-engine/src/security_audit_jobs.rs:52:9
+   |
+48 | pub(super) struct RecordFault {
+   |                   ----------- field in this struct
+...
+52 |     pub panic: bool,
+   |         ^^^^^
+
+warning: `kasumi-engine` (lib test) generated 4 warnings (3 duplicates)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3m 51s
+     Running unittests src/lib.rs (target/disk-backed-cache/debug/deps/kasumi_engine-b15d1192089511a8)
+
+running 5 tests
+test state::restore_budget_tests::restored_identity_metadata_is_validated_before_bootstrap_persistence ... FAILED
+test state::snapshot_bundle::tests::control_archive_transfer_uses_exact_reserved_domain_without_application_authority ... FAILED
+test snapshot_codec::recovery_tests::application_backup_rejects_control_recovery_and_embedded_or_orphan_records ... FAILED
+test bootstrap::existing_tests::existing_local_reopens_the_same_committed_standalone_after_complete_shutdown ... FAILED
+test service::tests::serving_expiry_rejects_queued_effect_and_late_read_or_committed_ack_then_reopens_exactly ... FAILED
+
+failures:
+
+---- state::restore_budget_tests::restored_identity_metadata_is_validated_before_bootstrap_persistence stdout ----
+
+thread 'state::restore_budget_tests::restored_identity_metadata_is_validated_before_bootstrap_persistence' (19248902) panicked at crates/kasumi-engine/src/state.rs:3312:14:
+called `Result::unwrap()` on an `Err` value: scratch table setup failed: broken pipe; close: drain Retained; encrypted scratch table[0]: database backend remains retained: broken pipe
+
+Caused by:
+    0: broken pipe
+    1: broken pipe
+    2: broken pipe
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- state::snapshot_bundle::tests::control_archive_transfer_uses_exact_reserved_domain_without_application_authority stdout ----
+
+thread 'state::snapshot_bundle::tests::control_archive_transfer_uses_exact_reserved_domain_without_application_authority' (19248903) panicked at crates/kasumi-engine/src/snapshot_bundle.rs:646:47:
+called `Result::unwrap()` on an `Err` value: Error { code: Corruption, message: "scratch table setup failed: storage capacity denied" }
+
+---- snapshot_codec::recovery_tests::application_backup_rejects_control_recovery_and_embedded_or_orphan_records stdout ----
+
+thread 'snapshot_codec::recovery_tests::application_backup_rejects_control_recovery_and_embedded_or_orphan_records' (19248901) panicked at crates/kasumi-engine/src/snapshot_recovery_tests.rs:732:5:
+assertion failed: error.to_string().contains("Control state")
+
+---- bootstrap::existing_tests::existing_local_reopens_the_same_committed_standalone_after_complete_shutdown stdout ----
+Error: ResourceExhausted: document source retention budget exhausted
+
+---- service::tests::serving_expiry_rejects_queued_effect_and_late_read_or_committed_ack_then_reopens_exactly stdout ----
+
+thread 'service::tests::serving_expiry_rejects_queued_effect_and_late_read_or_committed_ack_then_reopens_exactly' (19248900) panicked at crates/kasumi-engine/src/service_serving_tests.rs:318:17:
+assertion `left == right` failed
+  left: Retained
+ right: Complete
+
+
+failures:
+    bootstrap::existing_tests::existing_local_reopens_the_same_committed_standalone_after_complete_shutdown
+    service::tests::serving_expiry_rejects_queued_effect_and_late_read_or_committed_ack_then_reopens_exactly
+    snapshot_codec::recovery_tests::application_backup_rejects_control_recovery_and_embedded_or_orphan_records
+    state::restore_budget_tests::restored_identity_metadata_is_validated_before_bootstrap_persistence
+    state::snapshot_bundle::tests::control_archive_transfer_uses_exact_reserved_domain_without_application_authority
+
+test result: FAILED. 0 passed; 5 failed; 0 ignored; 0 measured; 594 filtered out; finished in 31.30s
+
+error: test failed, to rerun pass `-p kasumi-engine --lib`
+Runner: 263.37s; exit=101; matching=845/845

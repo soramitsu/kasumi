@@ -6,8 +6,8 @@
 //! and disposition; a progressed census cell may no longer expose a report.
 use super::{
     NodeOpeningMode, NodeOpeningPhase, NodeOpeningReport, NodeReadPhase, NodeReadReport,
-    NodeTablesReport, NodeWriterPhase, RegisteredNodeOpening, RegisteredNodeRead,
-    RegisteredNodeTables,
+    NodeStorageConfig, NodeTablesReport, NodeWriterPhase, RegisteredNodeOpening,
+    RegisteredNodeRead, RegisteredNodeTables,
 };
 use crate::{NodeDisk, StorageCensusDisposition, StorageOwnerId};
 use kasumi_kv::DatabaseOpenSettlement;
@@ -107,10 +107,11 @@ impl RegisteredNodeStartup {
         id: Uuid,
         disk: Arc<NodeDisk>,
         mode: NodeOpeningMode,
+        config: NodeStorageConfig,
     ) -> io::Result<Self> {
         let existing = matches!(&mode, NodeOpeningMode::Existing);
         Ok(Self {
-            opening: RegisteredNodeOpening::prepare(path, id, disk, mode)?,
+            opening: RegisteredNodeOpening::prepare(path, id, disk, mode, config)?,
             existing,
             phase: NodeStartupPhase::Prepared,
             tables: None,
@@ -302,9 +303,14 @@ mod tests {
         let memory = TestDiskMemory::new(256 << 20, 4096);
         let disk =
             retry_disk_registry(|| NodeDisk::fixture_for_path(&path, memory.clone())).unwrap();
-        let mut created =
-            RegisteredNodeStartup::prepare(&path, ID, disk.clone(), NodeOpeningMode::Create)
-                .unwrap();
+        let mut created = RegisteredNodeStartup::prepare(
+            &path,
+            ID,
+            disk.clone(),
+            NodeOpeningMode::Create,
+            crate::test_utils::node_storage_config(),
+        )
+        .unwrap();
         let create_id = created.opening_id();
         assert_eq!(memory.storage_census().snapshot().databases, 1);
         assert_eq!(created.advance(), NodeStartupPhase::Ready);
@@ -320,8 +326,14 @@ mod tests {
         assert_eq!(opening.retire(), StorageCensusDisposition::Retired);
         assert_eq!(memory.storage_census().snapshot().databases, 0);
 
-        let mut existing =
-            RegisteredNodeStartup::prepare(&path, ID, disk, NodeOpeningMode::Existing).unwrap();
+        let mut existing = RegisteredNodeStartup::prepare(
+            &path,
+            ID,
+            disk,
+            NodeOpeningMode::Existing,
+            crate::test_utils::node_storage_config(),
+        )
+        .unwrap();
         let existing_id = existing.opening_id();
         assert_eq!(memory.storage_census().snapshot().databases, 1);
         assert_eq!(existing.advance(), NodeStartupPhase::Ready);
@@ -354,8 +366,14 @@ mod tests {
         let memory = TestDiskMemory::new(256 << 20, 4096);
         let disk =
             retry_disk_registry(|| NodeDisk::fixture_for_path(&path, memory.clone())).unwrap();
-        let mut startup =
-            RegisteredNodeStartup::prepare(&path, ID, disk, NodeOpeningMode::Existing).unwrap();
+        let mut startup = RegisteredNodeStartup::prepare(
+            &path,
+            ID,
+            disk,
+            NodeOpeningMode::Existing,
+            crate::test_utils::node_storage_config(),
+        )
+        .unwrap();
         let original_id = startup.opening_id();
         assert_eq!(memory.storage_census().snapshot().databases, 1);
         assert_eq!(startup.advance(), NodeStartupPhase::Failed);
@@ -402,8 +420,14 @@ mod tests {
         let memory = TestDiskMemory::new(256 << 20, 4096);
         let disk =
             retry_disk_registry(|| NodeDisk::fixture_for_path(&path, memory.clone())).unwrap();
-        let mut startup =
-            RegisteredNodeStartup::prepare(&path, ID, disk, NodeOpeningMode::Create).unwrap();
+        let mut startup = RegisteredNodeStartup::prepare(
+            &path,
+            ID,
+            disk,
+            NodeOpeningMode::Create,
+            crate::test_utils::node_storage_config(),
+        )
+        .unwrap();
         assert_eq!(startup.opening.open(), NodeOpeningPhase::Open);
         let tables = startup.opening.queue_node_tables().unwrap();
         let original_child_id = tables.id();

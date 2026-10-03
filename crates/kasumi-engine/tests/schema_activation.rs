@@ -37,8 +37,12 @@ fn definition(name: &str) -> CollectionDefinition {
     }
 }
 fn engine(limits: Limits) -> FixtureEngine {
+    // Schema application retains its encrypted terminal group while the first
+    // document mutation initializes receipts. As in mutation_apply_tests, that
+    // native setup needs a 33rd reservation. Fund the same bounded overlap and
+    // leave the 64 MiB byte cap and schema/snapshot quota assertions unchanged.
     FixtureEngine::new(
-        kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 32),
+        kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 64),
         "schema".into(),
         "incarnation".into(),
         policy(),
@@ -782,16 +786,14 @@ fn atomic_bundle_publishes_all_indexes_once_and_preserves_read_generations() {
     )
     .unwrap();
     assert_eq!(
-        new.indexes
-            .execute(&new.state.collections, &query, &new.state.limits)
+        kasumi_engine::test_utils::fixture_query(&new, &query, &mut common::query_memory())
             .unwrap()
             .rows
             .len(),
         1
     );
     assert_eq!(
-        old.indexes
-            .execute(&old.state.collections, &query, &old.state.limits)
+        kasumi_engine::test_utils::fixture_query(&old, &query, &mut common::query_memory())
             .unwrap_err()
             .code,
         ErrorCode::IndexRequired
@@ -1195,9 +1197,7 @@ fn text_and_structured_indexes_publish_together_after_existing_documents_validat
     let current = db.generation().unwrap();
     let query: QueryRequest = serde_json::from_value(json!({"collection":"journal","text":{"index":"search","query":"ledger","mode":"terms"},"limit":10})).unwrap();
     assert_eq!(
-        current
-            .indexes
-            .execute(&current.state.collections, &query, &current.state.limits)
+        kasumi_engine::test_utils::fixture_query(&current, &query, &mut common::query_memory())
             .unwrap()
             .rows
             .len(),
@@ -1392,6 +1392,7 @@ async fn complete_schema_inventory_is_authorized_audited_and_never_truncated() {
 
 #[tokio::test]
 async fn encrypted_restart_and_full_restore_preserve_permanent_activation_receipts() {
+    common::restore_phase_trace();
     let root = kasumi_store::test_utils::private_tempdir().unwrap();
     let path = root.path().join("node.kv");
     let physical = common::PhysicalFixture::new(&path, Default::default());

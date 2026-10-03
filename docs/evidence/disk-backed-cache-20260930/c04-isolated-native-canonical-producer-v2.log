@@ -1,0 +1,187 @@
+Command: cargo test --locked --offline --config profile.test.package.kasumi-kv.opt-level=3 --config profile.test.package.sha2.opt-level=3 -p kasumi-kv -p kasumi-store -p kasumi-query -p kasumi-raft -p kasumi-engine -p kasumi-authority --all-features --lib --no-fail-fast -- publication_inventory_ native_publication_backend_ snapshot_actor_ storage::snapshot_conflict::tests group_publication prepared_publication::tests streamed_publication_ --nocapture
+ISOLATED_SOURCE=/tmp/kasumi-source-cohort-validation-v1
+CARGO_TARGET_DIR=/Users/takemiyamakoto/dev/kasumi/target/disk-backed-cache
+   Compiling kasumi-kv v0.1.0 (/private/tmp/kasumi-source-cohort-validation-v1/crates/kasumi-kv)
+   Compiling openraft v0.9.25 (/private/tmp/kasumi-source-cohort-validation-v1/vendor/openraft-0.9.25/openraft)
+warning: unused import: `publication::StreamedBatchWorkspace`
+    --> crates/kasumi-kv/src/segment.rs:4203:16
+     |
+4203 | pub(crate) use publication::StreamedBatchWorkspace;
+     |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `space_requirements` is never used
+   --> crates/kasumi-kv/src/publication_inventory.rs:315:19
+    |
+270 | impl PublicationInventory {
+    | ------------------------- method in this implementation
+...
+315 |     pub(crate) fn space_requirements(
+    |                   ^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+   Compiling kasumi-store v0.1.0 (/private/tmp/kasumi-source-cohort-validation-v1/crates/kasumi-store)
+warning: `kasumi-kv` (lib) generated 2 warnings (run `cargo fix --lib -p kasumi-kv` to apply 1 suggestion)
+error[E0599]: no method named `close_once` found for mutable reference `&mut Box<spool::EncryptedSpool>` in the current scope
+  --> crates/kasumi-store/src/prepared_publication/retirement.rs:93:30
+   |
+93 |                 || receiving.close_once(),
+   |                              ^^^^^^^^^^ method not found in `&mut Box<spool::EncryptedSpool>`
+
+error[E0624]: method `stage_operations` is private
+   --> crates/kasumi-store/src/prepared_publication.rs:314:18
+    |
+314 |             self.stage_operations(store, application)?;
+    |                  ^^^^^^^^^^^^^^^^ private method
+    |
+   ::: crates/kasumi-store/src/prepared_publication/staging.rs:61:5
+    |
+ 61 |     fn stage_operations(&self, store: &TenantStore, operations: &[WriteOp]) -> Result<()> {
+    |     ------------------------------------------------------------------------------------- private method defined here
+
+error[E0624]: method `stage_operations` is private
+   --> crates/kasumi-store/src/prepared_publication.rs:321:14
+    |
+321 |         self.stage_operations(self.stores.custody().store(), custody)?;
+    |              ^^^^^^^^^^^^^^^^ private method
+    |
+   ::: crates/kasumi-store/src/prepared_publication/staging.rs:61:5
+    |
+ 61 |     fn stage_operations(&self, store: &TenantStore, operations: &[WriteOp]) -> Result<()> {
+    |     ------------------------------------------------------------------------------------- private method defined here
+
+error[E0624]: method `stage_replacements` is private
+   --> crates/kasumi-store/src/prepared_publication.rs:348:18
+    |
+348 |               self.stage_replacements(store, application_replacements)?;
+    |                    ^^^^^^^^^^^^^^^^^^ private method
+    |
+   ::: crates/kasumi-store/src/prepared_publication/staging.rs:4:5
+    |
+  4 | /     fn stage_replacements(
+  5 | |         &self,
+  6 | |         store: &TenantStore,
+  7 | |         replacements: &[NamespaceReplacement<'_>],
+  8 | |     ) -> Result<()> {
+    | |___________________- private method defined here
+
+error[E0624]: method `stage_operations` is private
+   --> crates/kasumi-store/src/prepared_publication.rs:349:18
+    |
+349 |             self.stage_operations(store, application)?;
+    |                  ^^^^^^^^^^^^^^^^ private method
+    |
+   ::: crates/kasumi-store/src/prepared_publication/staging.rs:61:5
+    |
+ 61 |     fn stage_operations(&self, store: &TenantStore, operations: &[WriteOp]) -> Result<()> {
+    |     ------------------------------------------------------------------------------------- private method defined here
+
+error[E0624]: method `stage_replacements` is private
+   --> crates/kasumi-store/src/prepared_publication.rs:356:14
+    |
+356 |           self.stage_replacements(self.stores.custody().store(), custody_replacements)?;
+    |                ^^^^^^^^^^^^^^^^^^ private method
+    |
+   ::: crates/kasumi-store/src/prepared_publication/staging.rs:4:5
+    |
+  4 | /     fn stage_replacements(
+  5 | |         &self,
+  6 | |         store: &TenantStore,
+  7 | |         replacements: &[NamespaceReplacement<'_>],
+  8 | |     ) -> Result<()> {
+    | |___________________- private method defined here
+
+error[E0624]: method `stage_operations` is private
+   --> crates/kasumi-store/src/prepared_publication.rs:357:14
+    |
+357 |         self.stage_operations(self.stores.custody().store(), custody)?;
+    |              ^^^^^^^^^^^^^^^^ private method
+    |
+   ::: crates/kasumi-store/src/prepared_publication/staging.rs:61:5
+    |
+ 61 |     fn stage_operations(&self, store: &TenantStore, operations: &[WriteOp]) -> Result<()> {
+    |     ------------------------------------------------------------------------------------- private method defined here
+
+error[E0624]: method `stage_operations` is private
+   --> crates/kasumi-store/src/prepared_publication.rs:388:18
+    |
+388 |             self.stage_operations(store, application)?;
+    |                  ^^^^^^^^^^^^^^^^ private method
+    |
+   ::: crates/kasumi-store/src/prepared_publication/staging.rs:61:5
+    |
+ 61 |     fn stage_operations(&self, store: &TenantStore, operations: &[WriteOp]) -> Result<()> {
+    |     ------------------------------------------------------------------------------------- private method defined here
+
+error[E0624]: method `stage_operations` is private
+   --> crates/kasumi-store/src/prepared_publication.rs:395:14
+    |
+395 |         self.stage_operations(self.stores.custody().store(), custody)?;
+    |              ^^^^^^^^^^^^^^^^ private method
+    |
+   ::: crates/kasumi-store/src/prepared_publication/staging.rs:61:5
+    |
+ 61 |     fn stage_operations(&self, store: &TenantStore, operations: &[WriteOp]) -> Result<()> {
+    |     ------------------------------------------------------------------------------------- private method defined here
+
+warning: method `publication_pages` is never used
+  --> crates/kasumi-kv/src/arena_space.rs:95:19
+   |
+94 | impl DirectoryArenaBackend {
+   | -------------------------- method in this implementation
+95 |     pub(crate) fn publication_pages(&self) -> Result<u64, CoreError> {
+   |                   ^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `publication_capacity` is never used
+   --> crates/kasumi-kv/src/segment_space.rs:291:19
+    |
+290 | impl SegmentWriter {
+    | ------------------ method in this implementation
+291 |     pub(crate) fn publication_capacity(&self) -> Result<u64, CoreError> {
+    |                   ^^^^^^^^^^^^^^^^^^^^
+
+warning: method `values` is never used
+  --> crates/kasumi-kv/src/segment_publication.rs:39:19
+   |
+38 | impl StreamedBatchWorkspace {
+   | --------------------------- method in this implementation
+39 |     pub(crate) fn values(&self) -> &[Option<ValueLocation>] {
+   |                   ^^^^^^
+
+warning: method `last_sm_seq` is never used
+  --> vendor/openraft-0.9.25/openraft/src/engine/engine_output.rs:35:19
+   |
+24 | / impl<C> EngineOutput<C>
+25 | | where
+26 | |     C: RaftTypeConfig,
+   | |______________________- method in this implementation
+...
+35 |       pub(crate) fn last_sm_seq(&self) -> CommandSeq {
+   |                     ^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `accept_vote` is never used
+  --> vendor/openraft-0.9.25/openraft/src/engine/handler/vote_handler/mod.rs:58:19
+   |
+45 | / impl<C> VoteHandler<'_, C>
+46 | | where
+47 | |     C: RaftTypeConfig,
+   | |______________________- method in this implementation
+...
+58 |       pub(crate) fn accept_vote<T, E, F>(
+   |                     ^^^^^^^^^^^
+
+warning: `openraft` (lib) generated 2 warnings
+Some errors have detailed explanations: E0599, E0624.
+For more information about an error, try `rustc --explain E0599`.
+error: could not compile `kasumi-store` (lib) due to 9 previous errors
+warning: build failed, waiting for other jobs to finish...
+warning: `kasumi-kv` (lib test) generated 4 warnings (1 duplicate)
+For more information about this error, try `rustc --explain E0624`.
+error: could not compile `kasumi-store` (lib test) due to 8 previous errors
+Runner: 61.54s; exit=101; matching=1602/1602

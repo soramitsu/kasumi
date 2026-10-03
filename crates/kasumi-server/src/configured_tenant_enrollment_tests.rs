@@ -38,7 +38,7 @@ async fn approve_fixture(
         Err(error) => return Err(error.into()),
     }
     ensure!(
-        manager.approved_enrollment(tenant)?.digest()?
+        manager.approved_enrollment(tenant)?.digest()
             == manager.enrollment_proposal(tenant)?.digest()?,
         "fixture approval did not commit the exact configured proposal"
     );
@@ -75,6 +75,32 @@ async fn dormant_resident() -> (
     let manager = runtime.administration_for_enrollment_test();
     let context = crate::runtime::configured_control_context(&manager.config.control).unwrap();
     let plane = ControlPlane::new(manager.control.clone()).unwrap();
+    // A configured resident that already has a durable route cannot be approved
+    // again. Exercise the actual local-topology consumer before the existing
+    // fixture removes that route and proves absent-route approval succeeds.
+    let approval_version = || {
+        manager
+            .control
+            .engine()
+            .generation()
+            .unwrap()
+            .state
+            .collections
+            .get("tenant_enrollments")
+            .and_then(|collection| collection.documents.get("tenant-a"))
+            .map(|document| document.version)
+    };
+    let before_approval = approval_version();
+    let proposal = manager.enrollment_proposal("tenant-a").unwrap();
+    // The actual approval future includes its later schema/mutation branches
+    // even when this request rejects early. Keep that future off the nested
+    // fixture/test state machines rather than increasing the test thread stack.
+    let rejection = Box::pin(manager.approve_tenant(&context, "tenant-a", &proposal))
+        .await
+        .unwrap_err();
+    assert_eq!(rejection.to_string(), "tenant already has a serving route");
+    assert_eq!(approval_version(), before_approval);
+    drop(rejection);
     let mut current = plane.topology(&context).await.unwrap().unwrap();
     current.topology.tenants.remove("tenant-a");
     plane
@@ -97,7 +123,7 @@ async fn cancelled_preparation_of_borrowed_resident_preserves_its_original_stora
     let _serial = crate::control_genesis::tests::data_startup_serial()
         .lock()
         .await;
-    let (_directory, mut runtime, manager, context) = dormant_resident().await;
+    let (_directory, mut runtime, manager, context) = Box::pin(dormant_resident()).await;
     let before = manager.configured("tenant-a").unwrap();
     let original = before.store.get("engine.bootstrap", b"manifest").unwrap();
     let pause = Arc::new(Pause::default());
@@ -150,7 +176,7 @@ async fn closure_before_actual_enrollment_handoff_rejects_publication_and_preser
     let _serial = crate::control_genesis::tests::data_startup_serial()
         .lock()
         .await;
-    let (_directory, mut runtime, manager, context) = dormant_resident().await;
+    let (_directory, mut runtime, manager, context) = Box::pin(dormant_resident()).await;
     let before = manager.configured("tenant-a").unwrap();
     let pause = Arc::new(Pause::default());
     pauses()
@@ -324,4 +350,177 @@ async fn abandoned_fresh_standalone_preparation_drains_without_publication_and_r
     drop(invocation);
     runtime.shutdown().await?;
     Ok(())
+}
+
+#[tokio::test]
+async fn local_topology_failure_adapters_preserve_validation_and_decode_fallback() {
+    use kasumi_engine::control::LocalTopologyFailure;
+    use kasumi_store::test_utils::LocalKeyProvider;
+    use kasumi_types::{ErrorCode, Grant, Limits, Mutation, MutationBatch, Policy};
+    use serde_json::json;
+
+    // Use the same real installed physical provider and audit/database governor
+    // as the existing low-level server fixtures. This group intentionally has
+    // no closed lifecycle binding: generic writes can seed schema-valid but
+    // semantically invalid Control input without a synthetic failure owner.
+    let directory = kasumi_store::test_utils::private_tempdir().unwrap();
+    let physical =
+        crate::runtime_storage_fixtures::physical(directory.path(), Default::default()).unwrap();
+    let node = physical
+        .create_new(
+            directory.path().join("persistent/node.kv"),
+            kasumi_store::test_utils::NODE_STORE_ID,
+        )
+        .unwrap();
+    let audit_store = TenantStore::initialize_catalog_fixture(
+        node.clone(),
+        crate::runtime::SECURITY_TENANT.into(),
+        Arc::new(LocalKeyProvider::new([81; 32])),
+    )
+    .await
+    .unwrap();
+    let audit =
+        SecurityAudit::initialize(audit_store, Default::default(), physical.admission.clone())
+            .unwrap();
+    let store = TenantStore::initialize_catalog_fixture(
+        node.clone(),
+        crate::runtime::CONTROL_TENANT.into(),
+        Arc::new(LocalKeyProvider::new([82; 32])),
+    )
+    .await
+    .unwrap();
+    let scopes = BTreeSet::from([Action::Read, Action::Write, Action::Admin]);
+    let context = RequestContext {
+        authorization: kasumi_types::RequestAuthorization::service_identity(),
+        principal: "control-owner-test".into(),
+        tenant: crate::runtime::CONTROL_TENANT.into(),
+        scopes: scopes.clone(),
+        request_id: "local-control-error-adapters".into(),
+    };
+    let database = kasumi_engine::test_utils::open_fixture(
+        kasumi_store::test_utils::initialize_custody_fixture(
+            store,
+            Arc::new(LocalKeyProvider::new([83; 32])),
+        )
+        .await
+        .unwrap(),
+        Policy {
+            grants: vec![Grant {
+                principal: context.principal.clone(),
+                collection: None,
+                actions: scopes,
+            }],
+            strict_read_audit: false,
+        },
+        Limits::default(),
+        audit.clone(),
+    )
+    .await
+    .unwrap();
+    ControlPlane::new(database.clone())
+        .unwrap()
+        .initialize(context.clone())
+        .await
+        .unwrap();
+
+    for (index, (body, validation)) in [
+        (
+            json!({"nodes":{},"tenants":{"tenant":{"incarnation":"bad","mode":"local","voters":[]}}}),
+            true,
+        ),
+        (json!({"nodes":{"not-an-integer":{}},"tenants":{}}), false),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        database
+            .mutate(
+                context.clone(),
+                MutationBatch {
+                    idempotency_key: format!("local-control-error-{index}"),
+                    read_set: vec![],
+                    operations: vec![Mutation::Put {
+                        collection: "topology".into(),
+                        id: "current".into(),
+                        body,
+                        expected: Precondition::Any,
+                    }],
+                },
+            )
+            .await
+            .unwrap();
+        // Mutation audit work may populate the native cache. Quiesce it before
+        // taking the exact ownership census; local_topology and both error
+        // adapters below perform no audit, I/O or maintenance admission.
+        let quiescent = audit.quiescent_jobs_for_test().await;
+        let baseline = physical.admission.snapshot();
+        assert_eq!(baseline.inflight_operations, 0);
+        let cache = node.cache_stats().unwrap();
+        let revision = database.engine().generation().unwrap().revision();
+        let error = ControlPlane::local_topology(&database).unwrap_err();
+        let owner = error.downcast_ref::<LocalTopologyFailure>().unwrap();
+        let original = error.to_string();
+        let held = physical.admission.snapshot();
+        assert_eq!(held.inflight_operations, 0);
+        assert_eq!(held.live_reservations, baseline.live_reservations + 1);
+        assert!(held.reserved_bytes > baseline.reserved_bytes);
+        assert_eq!(database.engine().generation().unwrap().revision(), revision);
+        assert_eq!(node.cache_stats().unwrap(), cache);
+
+        if validation {
+            let typed = administrative_error(&error).unwrap();
+            assert_eq!(typed.code, ErrorCode::InvalidArgument);
+            assert_eq!(typed.message, "invalid tenant incarnation");
+            assert!(std::ptr::eq(typed, owner.validation_error().unwrap()));
+            assert_eq!(typed.to_string(), original);
+        } else {
+            assert!(owner.validation_error().is_none());
+            assert!(administrative_error(&error).is_none());
+            assert!(
+                std::error::Error::source(owner)
+                    .unwrap()
+                    .is::<serde_json::Error>()
+            );
+        }
+        // The borrowed administrative classification cannot release its owner.
+        assert_eq!(physical.admission.snapshot().reserved_bytes, held.reserved_bytes);
+        assert_eq!(physical.admission.snapshot().live_reservations, held.live_reservations);
+        let mapped = api_error(error);
+        if validation {
+            assert_eq!(mapped.code, ErrorCode::InvalidArgument);
+            assert_eq!(mapped.message, "invalid tenant incarnation");
+        } else {
+            // Preserve enrollment's preexisting generic decode-error fallback,
+            // including its exact diagnostic rather than treating it as a
+            // typed Control validation error.
+            assert_eq!(mapped.code, ErrorCode::Unavailable);
+            assert_eq!(mapped.message, original);
+        }
+        let released = physical.admission.snapshot();
+        assert_eq!(released.reserved_bytes, baseline.reserved_bytes);
+        assert_eq!(released.live_reservations, baseline.live_reservations);
+        assert_eq!(released.inflight_operations, 0);
+        assert_eq!(node.cache_stats().unwrap(), cache);
+        drop(mapped);
+        drop(quiescent);
+    }
+    database.shutdown().await.unwrap();
+    audit.shutdown().await.unwrap();
+    node.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn local_topology_maps_keep_their_concrete_grants() {
+    let _serial = crate::control_genesis::tests::data_startup_serial()
+        .lock()
+        .await;
+    let (_directory, mut runtime, manager, _context) = Box::pin(dormant_resident()).await;
+    let local = manager.committed_topology().unwrap();
+    let nodes = manager.configured_nodes().unwrap();
+    assert_eq!(&*nodes, &local.nodes);
+    drop(local);
+    assert!(!nodes.is_empty());
+    drop(nodes);
+
+    Box::pin(runtime.shutdown()).await.unwrap();
 }

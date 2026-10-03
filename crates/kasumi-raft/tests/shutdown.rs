@@ -25,18 +25,14 @@ impl StateMachineBackend for PausedSnapshot {
     fn close_application(&self) {
         self.inner.close_application();
     }
-    fn apply(
+    fn apply_with_publisher(
         &self,
         position: &kasumi_raft::AppliedEntryContext,
-        command: &[u8],
-    ) -> Result<kasumi_raft::AppliedResponse> {
-        self.inner.apply(position, command)
+        input: kasumi_raft::AppliedInput<'_>,
+        publisher: &mut dyn kasumi_raft::ApplyPublisher,
+    ) -> Result<()> {
+        self.inner.apply_with_publisher(position, input, publisher)
     }
-
-    fn apply_metadata(&self, _position: &kasumi_raft::AppliedEntryContext) -> anyhow::Result<()> {
-        Ok(())
-    }
-
     fn capture_snapshot(&self) -> Result<kasumi_raft::CapturedSnapshot> {
         if let Some(entered) = self.entered.lock().unwrap().take() {
             let _ = entered.send(());

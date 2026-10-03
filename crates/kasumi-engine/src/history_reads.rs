@@ -269,83 +269,154 @@ impl Database {
         keys: &[DocumentKey],
         queries: &[QueryRequest],
         cancellation: &QueryCancellation,
+        memory: &mut QueryMemory<Reservation>,
     ) -> Result<Arc<crate::Generation>> {
-        let mut targets: BTreeSet<(String, String)> = keys
-            .iter()
-            .map(|key| (key.collection.clone(), key.id.clone()))
-            .collect();
-        for query in queries {
-            let collection = generation
-                .state
-                .collections
-                .get(&query.collection)
-                .ok_or_else(|| Error::new(ErrorCode::NotFound, "query collection missing"))?;
-            if collection.archived_documents.is_empty() {
-                continue;
+        let baseline = memory.live_bytes();
+        // This async phase cannot borrow a synchronous query scope. Its
+        // temporary target/candidate collections die before restoring the
+        // logical baseline; the physical reservation keeps its admitted peak.
+        let result = async {
+            let mut targets: BTreeSet<(String, String)> = BTreeSet::new();
+            for key in keys {
+                cancellation.check()?;
+                memory.reserve(history_target_workspace(&key.collection, &key.id)?)?;
+                targets.insert((key.collection.clone(), key.id.clone()));
             }
-            match generation.indexes.indexed_candidate_ids(
-                &generation.state.collections,
-                query,
-                &generation.state.limits,
-                cancellation,
-            ) {
-                Ok(ids) => targets.extend(ids.into_iter().map(|id| (query.collection.clone(), id))),
-                Err(error)
-                    if error.code == ErrorCode::IndexRequired
-                        && query.allow_scan
-                        && query.text.is_none() =>
-                {
-                    if collection
-                        .documents
-                        .len()
-                        .saturating_add(collection.archived_documents.len())
-                        > generation.state.limits.max_query_candidates
-                    {
-                        return Err(Error::new(
-                            ErrorCode::ResourceExhausted,
-                            "historical scan candidate budget exceeded",
-                        ));
-                    }
-                    targets.extend(
-                        collection
-                            .archived_documents
-                            .keys()
-                            .map(|id| (query.collection.clone(), id.clone())),
-                    );
+            for query in queries {
+                let collection = generation
+                    .state
+                    .collections
+                    .get(&query.collection)
+                    .ok_or_else(|| Error::new(ErrorCode::NotFound, "query collection missing"))?;
+                if collection.archived_documents.is_empty() {
+                    continue;
                 }
-                Err(error) => return Err(error),
+                let source = generation.document_source(&query.collection)?;
+                let candidate_baseline = memory.live_bytes();
+                match generation
+                    .indexes
+                    .indexed_candidate_ids(
+                        &source,
+                        query,
+                        &generation.state.limits,
+                        cancellation,
+                        memory,
+                    )
+                    .map_err(ReadFailure::into_query_error)
+                {
+                    Ok(ids) => {
+                        let candidate_bytes = memory.live_bytes() - candidate_baseline;
+                        for id in ids {
+                            cancellation.check()?;
+                            memory.reserve(history_target_workspace(&query.collection, &id)?)?;
+                            targets.insert((query.collection.clone(), id));
+                        }
+                        // IDs now belong to the separately admitted target set;
+                        // the candidate Vec and its iterator have been destroyed.
+                        memory.release(candidate_bytes)?;
+                    }
+                    Err(error)
+                        if error.code == ErrorCode::IndexRequired
+                            && query.allow_scan
+                            && query.text.is_none() =>
+                    {
+                        if collection
+                            .documents
+                            .len()
+                            .saturating_add(collection.archived_documents.len())
+                            > generation.state.limits.max_query_candidates
+                        {
+                            return Err(Error::new(
+                                ErrorCode::ResourceExhausted,
+                                "historical scan candidate budget exceeded",
+                            ));
+                        }
+                        for id in collection.archived_documents.keys() {
+                            cancellation.check()?;
+                            memory.reserve(history_target_workspace(&query.collection, id)?)?;
+                            targets.insert((query.collection.clone(), id.clone()));
+                        }
+                    }
+                    Err(error) => return Err(error),
+                }
             }
-        }
-        if !targets.iter().any(|(name, id)| {
-            generation
-                .state
-                .collections
-                .get(name)
-                .is_some_and(|collection| collection.archived_documents.contains_key(id))
-        }) {
-            return Ok(generation);
-        }
-        let mut collections = generation.state.collections.clone();
-        let mut cache = HistoryReadCache::new();
-        for (name, id) in targets {
-            if generation
-                .state
-                .collections
-                .get(&name)
-                .is_some_and(|collection| collection.archived_documents.contains_key(&id))
-                && let Some(document) = self
-                    .history_document(&generation, &name, &id, cancellation, &mut cache)
-                    .await?
-            {
-                collections
-                    .get_mut(&name)
-                    .expect("validated collection")
-                    .documents
-                    .insert(id, document);
+            if !targets.iter().any(|(name, id)| {
+                generation
+                    .state
+                    .collections
+                    .get(name)
+                    .is_some_and(|collection| collection.archived_documents.contains_key(id))
+            }) {
+                return Ok((generation, 0));
             }
+            memory.reserve(history_view_workspace(&generation.state)?)?;
+            let mut collections = generation.state.collections.clone();
+            let mut cache = HistoryReadCache::new();
+            for (name, id) in targets {
+                if generation
+                    .state
+                    .collections
+                    .get(&name)
+                    .is_some_and(|collection| collection.archived_documents.contains_key(&id))
+                    && let Some(document) = self
+                        .history_document(&generation, &name, &id, cancellation, &mut cache)
+                        .await?
+                {
+                    collections
+                        .get_mut(&name)
+                        .expect("validated collection")
+                        .documents
+                        .insert(id, document);
+                }
+            }
+            // Target IDs moved into the overlay and its cloned metadata live
+            // with the returned view. Keep their provisional allowance across
+            // the later query; archive bodies retain independent reservations.
+            let retained = memory.live_bytes() - baseline;
+            Ok((
+                Arc::new(generation.read_view(collections, cache.reservations)),
+                retained,
+            ))
         }
-        Ok(Arc::new(
-            generation.read_view(collections, cache.reservations),
-        ))
+        .await;
+        let retained = result.as_ref().map_or(0, |(_, retained)| *retained);
+        memory.release(memory.live_bytes() - baseline - retained)?;
+        result.map(|(generation, _)| generation)
     }
+}
+
+fn history_target_workspace(collection: &str, id: &str) -> Result<u64> {
+    (collection.len() as u64)
+        .checked_add(id.len() as u64)
+        .and_then(|bytes| bytes.checked_add(128))
+        .ok_or_else(query_workspace_overflow)
+}
+
+fn history_view_workspace(state: &TenantState) -> Result<u64> {
+    // An explicit provisional allowance for cloned headers and collection
+    // definitions, without serializing independently owned document/archive
+    // bodies. This does not claim complete persistent-tree allocation coverage.
+    let mut bytes = query_input_workspace(
+        &(
+            &state.tenant,
+            &state.incarnation,
+            &state.policy,
+            &state.pending_restore,
+            &state.restored_from,
+            &state.restore_lineage,
+            &state.lifecycle_control,
+            &state.recovery_control,
+            &state.active_staged_transactions,
+            &state.audit_retention,
+        ),
+        2,
+    )?;
+    for (name, collection) in &state.collections {
+        bytes = bytes
+            .checked_add(query_input_workspace(&collection.definition, 2)?)
+            .and_then(|bytes| bytes.checked_add(name.len() as u64))
+            .and_then(|bytes| bytes.checked_add(1024))
+            .ok_or_else(query_workspace_overflow)?;
+    }
+    Ok(bytes)
 }

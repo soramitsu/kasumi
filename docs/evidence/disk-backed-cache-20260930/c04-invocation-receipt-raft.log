@@ -1,0 +1,27 @@
+Command: cargo test --locked --offline -p kasumi-raft --all-features --lib selected_application::receipt_tests:: --config profile.test.package.kasumi-kv.opt-level=3 --config profile.test.package.sha2.opt-level=3
+CARGO_TARGET_DIR=target/disk-backed-cache
+   Compiling kasumi-kv v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-kv)
+   Compiling kasumi-store v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-store)
+   Compiling kasumi-raft v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-raft)
+warning: unused import: `kasumi_store::WriteOp`
+ --> crates/kasumi-raft/src/selected_application/plan_tests.rs:3:5
+  |
+3 | use kasumi_store::WriteOp;
+  |     ^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: `kasumi-raft` (lib test) generated 1 warning (run `cargo fix --lib -p kasumi-raft --tests` to apply 1 suggestion)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2m 31s
+     Running unittests src/lib.rs (target/disk-backed-cache/debug/deps/kasumi_raft-322a2bc95e307dbb)
+
+running 5 tests
+test selected_application::receipt_tests::invocation_receipt_fixed_inputs_hash_and_authentic_consume_allocate_nothing ... ok
+test selected_application::receipt_tests::invocation_receipt_binds_the_actual_preparer_plan_and_joint_effects ... ok
+test selected_application::receipt_tests::invocation_receipt_reentrant_early_consume_cannot_change_entered_mint_state ... ok
+test selected_application::receipt_tests::invocation_receipt_authenticates_advance_and_identical_covered_replays ... ok
+test selected_application::receipt_tests::invocation_receipt_rejects_pair_context_response_and_ordered_effect_substitution_before_effects ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 145 filtered out; finished in 5.34s
+
+Runner: 156.65s; exit=0; matching=804/804

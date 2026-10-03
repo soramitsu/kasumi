@@ -7,8 +7,21 @@
 //! Numbers produced by numeric aggregates are exact decimal strings. `count` is a
 //! JSON integer; missing/null inputs are ignored, except fieldless count counts rows.
 
+mod index_input;
+pub use index_input::{CollectionRecords, DocumentChanges, DocumentDelta, IndexUpdate};
+mod document_source;
+pub use document_source::{
+    DocumentSource, Header, ReadFailure, ReadResult, Record, RecordKind, SourceIdentity,
+};
 mod cancellation;
 pub use cancellation::QueryCancellation;
+mod workspace;
+pub use workspace::{QueryMemory, QueryWorkspace, query_workspace_estimate};
+mod allocation;
+pub use allocation::{
+    change_event_clone_bytes, change_feed_page_workspace_bytes, document_clone_bytes,
+    document_parts_clone_bytes, query_response_clone_bytes,
+};
 mod ordered_seek;
 mod scalar;
 mod search;
@@ -34,6 +47,7 @@ use structured::{IdSet, Structured, validate_predicate};
 struct CollectionIndexes {
     validator: std::sync::Arc<jsonschema::Validator>,
     schema_sha256: [u8; 32],
+    definition_sha256: [u8; 32],
     structured: Structured,
     text: Option<Arc<TextSnapshot>>,
 }
@@ -101,19 +115,32 @@ impl QueryIndexes {
     }
     /// Plan bounded candidates using maintained structured indexes without
     /// reading document bodies. Explicit scans are resolved by the service.
-    pub fn indexed_candidate_ids(
+    pub fn indexed_candidate_ids<S: DocumentSource + ?Sized, W: QueryWorkspace>(
         &self,
-        collections: &BTreeMap<String, CollectionState>,
+        source: &S,
         request: &QueryRequest,
         limits: &Limits,
         cancellation: &QueryCancellation,
-    ) -> Result<Vec<String>> {
+        memory: &mut QueryMemory<W>,
+    ) -> ReadResult<Vec<String>, S::Failure> {
+        memory.scope(|memory| {
+            self.indexed_candidate_ids_in(source, request, limits, cancellation, memory)
+        })
+    }
+
+    fn indexed_candidate_ids_in<S: DocumentSource + ?Sized, W: QueryWorkspace>(
+        &self,
+        source: &S,
+        request: &QueryRequest,
+        limits: &Limits,
+        cancellation: &QueryCancellation,
+        memory: &mut QueryMemory<W>,
+    ) -> ReadResult<(Vec<String>, u64), S::Failure> {
         cancellation.check()?;
+        document_source::check_source(source, self, &request.collection)?;
+        let source = &document_source::BoundSource::new(source);
         validate_name(&request.collection)?;
         validate_predicate(&request.filter, 0, &mut 0)?;
-        let collection = collections
-            .get(&request.collection)
-            .ok_or_else(|| Error::new(ErrorCode::NotFound, "collection not found"))?;
         let indexes = self
             .collections
             .get(&request.collection)
@@ -122,21 +149,39 @@ impl QueryIndexes {
             return Err(Error::new(
                 ErrorCode::IndexRequired,
                 "cold text queries require a supported archive text index",
-            ));
+            )
+            .into());
         }
+        // Recursive planner trees and typed predicate validation retain a
+        // provisional allowance. The returned Vec and ID clones are separately
+        // admitted below, while the planner result still exists.
+        memory.reserve(workspace::product(
+            workspace::bytes(limits.max_query_candidates)?,
+            128,
+        )?)?;
         indexes.structured.validate(&request.filter, false)?;
-        Ok(indexes
-            .structured
-            .candidates(
-                collection,
-                &request.filter,
-                &indexes.structured.ids,
-                false,
-                limits.max_query_candidates,
-                cancellation,
-            )?
-            .into_iter()
-            .collect())
+        let candidates = indexes.structured.candidates(
+            source,
+            &request.filter,
+            &indexes.structured.ids,
+            false,
+            limits.max_query_candidates,
+            cancellation,
+        )?;
+        let mut retained = allocation::vec_bytes::<String>(candidates.len())?;
+        memory.reserve(retained)?;
+        let mut ids = Vec::with_capacity(candidates.len());
+        let iterator_bytes = workspace::imbl_iterator_bytes()?;
+        memory.reserve(iterator_bytes)?;
+        for id in &candidates {
+            cancellation.check()?;
+            let bytes = allocation::string_clone_bytes(id)?;
+            memory.reserve(bytes)?;
+            ids.push(id.clone());
+            retained = allocation::add(retained, bytes)?;
+        }
+        memory.release(iterator_bytes)?;
+        Ok((ids, retained))
     }
     /// Bounded ID-order continuation over an existing generation's maintained
     /// primary ID index. The caller supplies authorization and snapshot fences.
@@ -163,161 +208,264 @@ impl QueryIndexes {
             .cloned()
             .collect())
     }
-    pub fn build(collections: &BTreeMap<String, CollectionState>) -> Result<Self> {
-        let mut indexes = BTreeMap::new();
-        for (name, collection) in collections {
-            if name != &collection.definition.name {
-                return Err(invalid("collection map key differs from its definition"));
+    pub fn build<R: CollectionRecords>(
+        sources: impl IntoIterator<Item = R>,
+    ) -> ReadResult<Self, R::Failure> {
+        let sources: Vec<_> = sources.into_iter().collect();
+        let mut prepared = Vec::with_capacity(sources.len());
+        let mut names = BTreeSet::new();
+        // Complete every deterministic and private construction pass before
+        // allocating/materializing any text index.
+        for source in &sources {
+            let source = index_input::CheckedRecords::new(source)?;
+            let name = source.definition().name.clone();
+            if !names.insert(name.clone()) {
+                return Err(invalid("duplicate index collection source").into());
             }
-            let validator = validation::validate_collection_and_compile(
-                &collection.definition,
-                &collection.documents,
-            )?;
-            indexes.insert(
-                name.clone(),
-                Arc::new(CollectionIndexes {
-                    validator,
-                    schema_sha256: validation::schema_sha256(&collection.definition.schema)?,
-                    structured: Structured::build(collection)?,
-                    text: TextSnapshot::build(collection)?.map(Arc::new),
-                }),
-            );
+            let validator = validation::validate_collection_and_compile(&source)?;
+            let indexes = CollectionIndexes {
+                validator,
+                schema_sha256: validation::schema_sha256(&source.definition().schema)?,
+                definition_sha256: index_input::definition_sha256(source.definition())?,
+                structured: Structured::build(&source)?,
+                text: None,
+            };
+            prepared.push((name, source, indexes));
         }
-        Ok(Self {
-            collections: indexes,
-        })
-    }
-
-    /// Advance from the current generation with the exact changed document IDs
-    /// supplied by ordered application. Unchanged collections and text fields
-    /// retain their readers. New/changed definitions rebuild before publication.
-    /// If a changed collection has no delta entry, rebuild it safely.
-    pub fn update(
-        &self,
-        previous: &BTreeMap<String, CollectionState>,
-        next: &BTreeMap<String, CollectionState>,
-        changed: &BTreeMap<String, BTreeSet<String>>,
-    ) -> Result<Self> {
         let mut collections = BTreeMap::new();
-        for (name, collection) in next {
-            let prior = previous.get(name).zip(self.collections.get(name));
-            if let Some((old, indexes)) =
-                prior.filter(|(old, _)| old.definition == collection.definition)
-            {
-                if old.documents.ptr_eq(&collection.documents) {
-                    collections.insert(name.clone(), indexes.clone());
-                    continue;
-                }
-                if let Some(ids) = changed.get(name).filter(|ids| !ids.is_empty()) {
-                    for id in ids {
-                        if let Some(document) = collection.documents.get(id) {
-                            validate_name(id)?;
-                            if &document.id != id {
-                                return Err(invalid("document map key differs from its id"));
-                            }
-                            validation::validate_document_with_validator(
-                                &collection.definition,
-                                &document.body,
-                                &indexes.validator,
-                            )?;
-                        }
-                    }
-                    let structured = indexes.structured.update(old, collection, ids)?;
-                    let text = if let Some(text) = &indexes.text {
-                        if text.fields_changed(old, collection, ids) {
-                            Some(Arc::new(text.update(collection, ids)?))
-                        } else {
-                            Some(text.clone())
-                        }
-                    } else {
-                        None
-                    };
-                    collections.insert(
-                        name.clone(),
-                        Arc::new(CollectionIndexes {
-                            validator: indexes.validator.clone(),
-                            schema_sha256: indexes.schema_sha256,
-                            structured,
-                            text,
-                        }),
-                    );
-                    continue;
-                }
-            }
-            let built = Self::build(&BTreeMap::from([(name.clone(), collection.clone())]))?;
-            collections.insert(name.clone(), built.collections[name].clone());
+        for (name, source, mut indexes) in prepared {
+            indexes.text = TextSnapshot::build(&source)?.map(Arc::new);
+            collections.insert(name, Arc::new(indexes));
         }
         Ok(Self { collections })
     }
 
-    /// Deterministic pre-application check for a staged atomic batch. Like update,
-    /// changed must contain every modified document ID. Run this before treating
-    /// a command as successful; index materialization errors are replica failures.
-    pub fn validate_unique_changes(
+    /// Explicit catalog actions. Omitted collections retain their captured
+    /// indexes; a changed definition requires Rebuild. No missing-delta fallback
+    /// can hide an incomplete mutation journal.
+    pub fn update<'a, R, D>(
         &self,
-        previous: &BTreeMap<String, CollectionState>,
-        next: &BTreeMap<String, CollectionState>,
-        changed: &BTreeMap<String, BTreeSet<String>>,
-    ) -> Result<()> {
-        for (name, ids) in changed {
-            let collection = next
-                .get(name)
-                .ok_or_else(|| invalid("changed collection missing"))?;
-            match previous.get(name).zip(self.collections.get(name)) {
-                Some((old, indexes)) if old.definition == collection.definition => indexes
-                    .structured
-                    .validate_unique_changes(old, collection, ids)?,
-                _ => check_unique(collection)?,
+        actions: impl IntoIterator<Item = IndexUpdate<'a, R, D>>,
+    ) -> ReadResult<Self, R::Failure>
+    where
+        R: CollectionRecords,
+        D: DocumentChanges<Failure = R::Failure>,
+    {
+        let actions: Vec<_> = actions.into_iter().collect();
+        let mut collections = self.collections.clone();
+        let mut names = BTreeSet::new();
+        let mut prepared = Vec::new();
+        let mut claim_name = |name: &str| -> Result<String> {
+            validate_name(name)?;
+            let name = name.to_owned();
+            if !names.insert(name.clone()) {
+                return Err(invalid("duplicate index update collection"));
             }
+            Ok(name)
+        };
+        for action in &actions {
+            match action {
+                IndexUpdate::Remove(name) => {
+                    let name = claim_name(name)?;
+                    if collections.remove(&name).is_none() {
+                        return Err(invalid("removed index collection absent").into());
+                    }
+                }
+                IndexUpdate::Unchanged(name) => {
+                    let name = claim_name(name)?;
+                    if !collections.contains_key(&name) {
+                        return Err(invalid("unchanged index collection absent").into());
+                    }
+                }
+                IndexUpdate::Rebuild(source) => {
+                    let source = index_input::CheckedRecords::new(source)?;
+                    let name = claim_name(&source.definition().name)?;
+                    let indexes = CollectionIndexes {
+                        validator: validation::validate_collection_and_compile(&source)?,
+                        schema_sha256: validation::schema_sha256(&source.definition().schema)?,
+                        definition_sha256: index_input::definition_sha256(source.definition())?,
+                        structured: Structured::build(&source)?,
+                        text: None,
+                    };
+                    prepared.push(PreparedIndexCollection {
+                        name,
+                        indexes,
+                        input: PreparedIndexInput::Rebuild(source),
+                    });
+                }
+                IndexUpdate::Delta(source) => {
+                    let source = index_input::CheckedChanges::new(source)?;
+                    let name = claim_name(&source.new_definition().name)?;
+                    let previous = self.delta_indexes(&source)?;
+                    source.visit_changes(|delta| {
+                        if let Some(Record::Live(document)) = delta.new {
+                            validation::validate_document_with_validator(
+                                source.new_definition(),
+                                &document.body,
+                                &previous.validator,
+                            )?;
+                        }
+                        Ok(())
+                    })?;
+                    let structured = previous.structured.update(&source)?;
+                    let text_changed = match &previous.text {
+                        Some(text) => text.fields_changed(&source)?,
+                        None => false,
+                    };
+                    let indexes = CollectionIndexes {
+                        validator: previous.validator.clone(),
+                        schema_sha256: previous.schema_sha256,
+                        definition_sha256: previous.definition_sha256,
+                        structured,
+                        text: previous.text.clone(),
+                    };
+                    prepared.push(PreparedIndexCollection {
+                        name,
+                        indexes,
+                        input: PreparedIndexInput::Delta {
+                            source,
+                            text_changed,
+                        },
+                    });
+                }
+            }
+        }
+        // From the first shared text update onward, any failure is an outer
+        // application failure. The caller must fence, never publish a rejection.
+        for PreparedIndexCollection {
+            name,
+            mut indexes,
+            input,
+        } in prepared
+        {
+            match input {
+                PreparedIndexInput::Rebuild(source) => {
+                    indexes.text = TextSnapshot::build(&source)?.map(Arc::new);
+                }
+                PreparedIndexInput::Delta {
+                    source,
+                    text_changed,
+                } => {
+                    if text_changed {
+                        indexes.text = Some(Arc::new(
+                            indexes
+                                .text
+                                .as_ref()
+                                .expect("changed text has prior reader")
+                                .update(&source)?,
+                        ));
+                    }
+                }
+            }
+            collections.insert(name, Arc::new(indexes));
+        }
+        Ok(Self { collections })
+    }
+
+    fn delta_indexes<D: DocumentChanges + ?Sized>(
+        &self,
+        source: &D,
+    ) -> Result<&Arc<CollectionIndexes>> {
+        if !std::ptr::eq(self, source.indexes()) {
+            return Err(Error::new(
+                ErrorCode::Corruption,
+                "index delta prior owner differs",
+            ));
+        }
+        let indexes = self
+            .collections
+            .get(&source.old_definition().name)
+            .ok_or_else(|| {
+                Error::new(ErrorCode::Corruption, "index delta prior collection absent")
+            })?;
+        if indexes.definition_sha256 != index_input::definition_sha256(source.old_definition())? {
+            return Err(Error::new(
+                ErrorCode::Corruption,
+                "index delta prior definition differs",
+            ));
+        }
+        Ok(indexes)
+    }
+
+    pub fn validate_unique_changes<D: DocumentChanges>(
+        &self,
+        sources: impl IntoIterator<Item = D>,
+    ) -> ReadResult<(), D::Failure> {
+        for source in sources {
+            let source = index_input::CheckedChanges::new(&source)?;
+            self.delta_indexes(&source)?
+                .structured
+                .validate_unique_changes(&source)?;
         }
         Ok(())
     }
 
-    /// The caller must supply collections from the same immutable generation.
+    /// The source must bind these indexes and records to one retained view.
     /// A cursor is consumed by the engine and cannot be evaluated here directly.
-    pub fn execute(
+    pub fn execute<S: DocumentSource + ?Sized, W: QueryWorkspace>(
         &self,
-        collections: &BTreeMap<String, CollectionState>,
+        source: &S,
         request: &QueryRequest,
         limits: &Limits,
-    ) -> Result<QueryResponse> {
-        self.execute_with_cancellation(collections, request, limits, &QueryCancellation::default())
+        memory: &mut QueryMemory<W>,
+    ) -> ReadResult<QueryResponse, S::Failure> {
+        self.execute_with_cancellation(
+            source,
+            request,
+            limits,
+            &QueryCancellation::default(),
+            memory,
+        )
     }
 
-    pub fn execute_with_cancellation(
+    pub fn execute_with_cancellation<S: DocumentSource + ?Sized, W: QueryWorkspace>(
         &self,
-        collections: &BTreeMap<String, CollectionState>,
+        source: &S,
         request: &QueryRequest,
         limits: &Limits,
         cancellation: &QueryCancellation,
-    ) -> Result<QueryResponse> {
+        memory: &mut QueryMemory<W>,
+    ) -> ReadResult<QueryResponse, S::Failure> {
+        memory.scope(|memory| self.execute_in(source, request, limits, cancellation, memory))
+    }
+
+    fn execute_in<S: DocumentSource + ?Sized, W: QueryWorkspace>(
+        &self,
+        source: &S,
+        request: &QueryRequest,
+        limits: &Limits,
+        cancellation: &QueryCancellation,
+        memory: &mut QueryMemory<W>,
+    ) -> ReadResult<(QueryResponse, u64), S::Failure> {
         cancellation.check()?;
+        document_source::check_source(source, self, &request.collection)?;
+        let source = &document_source::BoundSource::new(source);
         validate_name(&request.collection)?;
         if request.cursor.is_some() {
-            return Err(invalid("cursor continuation requires the tenant engine"));
+            return Err(invalid("cursor continuation requires the tenant engine").into());
         }
         if request.limit == 0 || request.limit > limits.max_page_size {
-            return Err(invalid("page limit outside allowed range"));
+            return Err(invalid("page limit outside allowed range").into());
         }
-        let collection = collections
-            .get(&request.collection)
-            .ok_or_else(|| Error::new(ErrorCode::NotFound, "collection not found"))?;
         let indexes = self
             .collections
             .get(&request.collection)
             .ok_or_else(|| Error::new(ErrorCode::Unavailable, "collection index is not ready"))?;
         let structured = &indexes.structured;
         validate_predicate(&request.filter, 0, &mut 0)?;
-        structured.validate(&request.filter, request.allow_scan)?;
         if request.sort.len() > 8
             || request.projection.len() > 64
             || request.aggregates.len() > 16
             || request.group_by.len() > 8
         {
-            return Err(invalid(
-                "query exceeds sort/projection/aggregate/group field limits",
-            ));
+            return Err(
+                invalid("query exceeds sort/projection/aggregate/group field limits").into(),
+            );
         }
+        // Recursive planner/group/search work remains provisional. The concrete
+        // metadata, selected rows and output copies below have separate claims.
+        memory.reserve(query_workspace_estimate(limits, request)?)?;
+        structured.validate(&request.filter, request.allow_scan)?;
         let scalar_kind = |path: &str| -> Result<Option<ScalarType>> {
             let kind = structured.field_kind(path, request.allow_scan)?;
             if matches!(
@@ -328,6 +476,13 @@ impl QueryIndexes {
             }
             Ok(kind)
         };
+        memory.reserve(allocation::add(
+            allocation::add(
+                allocation::vec_bytes::<Option<ScalarType>>(request.sort.len())?,
+                allocation::vec_bytes::<Option<ScalarType>>(request.group_by.len())?,
+            )?,
+            allocation::vec_bytes::<Option<ScalarType>>(request.aggregates.len())?,
+        )?)?;
         let sort_kinds = request
             .sort
             .iter()
@@ -338,25 +493,31 @@ impl QueryIndexes {
             .iter()
             .map(|field| scalar_kind(field))
             .collect::<Result<Vec<_>>>()?;
-        let mut projected = BTreeSet::new();
-        for path in &request.projection {
+        for (index, path) in request.projection.iter().enumerate() {
             validate_pointer(path)?;
-            if !projected.insert(path) {
-                return Err(invalid("duplicate projection field"));
+            if request.projection[..index].contains(path) {
+                return Err(invalid("duplicate projection field").into());
             }
         }
-        if request.group_by.iter().collect::<BTreeSet<_>>().len() != request.group_by.len() {
-            return Err(invalid("duplicate group field"));
+        if request
+            .group_by
+            .iter()
+            .enumerate()
+            .any(|(index, path)| request.group_by[..index].contains(path))
+        {
+            return Err(invalid("duplicate group field").into());
         }
         if !request.group_by.is_empty() && request.aggregates.is_empty() {
-            return Err(invalid("group_by requires an aggregation"));
+            return Err(invalid("group_by requires an aggregation").into());
         }
-        let mut aliases = BTreeSet::new();
-        let mut aggregate_kinds = Vec::new();
-        for aggregate in &request.aggregates {
+        let mut aggregate_kinds = Vec::with_capacity(request.aggregates.len());
+        for (index, aggregate) in request.aggregates.iter().enumerate() {
             validate_name(&aggregate.alias)?;
-            if !aliases.insert(&aggregate.alias) {
-                return Err(invalid("duplicate aggregate alias"));
+            if request.aggregates[..index]
+                .iter()
+                .any(|previous| previous.alias == aggregate.alias)
+            {
+                return Err(invalid("duplicate aggregate alias").into());
             }
             let kind = aggregate
                 .field
@@ -367,7 +528,7 @@ impl QueryIndexes {
             match aggregate.function {
                 AggregateFunction::Count => {
                     if aggregate.scale.is_some() {
-                        return Err(invalid("count does not accept a scale"));
+                        return Err(invalid("count does not accept a scale").into());
                     }
                 }
                 AggregateFunction::Avg => {
@@ -375,20 +536,24 @@ impl QueryIndexes {
                         .scale
                         .is_some_and(|scale| (0..=1000).contains(&scale))
                     {
-                        return Err(invalid("avg requires an explicit scale between 0 and 1000"));
+                        return Err(
+                            invalid("avg requires an explicit scale between 0 and 1000").into()
+                        );
                     }
                 }
-                _ if aggregate.scale.is_some() => return Err(invalid("only avg accepts a scale")),
+                _ if aggregate.scale.is_some() => {
+                    return Err(invalid("only avg accepts a scale").into());
+                }
                 _ => {}
             }
             if aggregate.function != AggregateFunction::Count {
                 if aggregate.field.is_none() {
-                    return Err(invalid("numeric aggregate requires a field"));
+                    return Err(invalid("numeric aggregate requires a field").into());
                 }
                 if !matches!(kind, None | Some(ScalarType::Number | ScalarType::Decimal)) {
-                    return Err(invalid(
-                        "sum/min/max/avg require a numeric or decimal field",
-                    ));
+                    return Err(
+                        invalid("sum/min/max/avg require a numeric or decimal field").into(),
+                    );
                 }
             }
             aggregate_kinds.push(kind);
@@ -409,7 +574,7 @@ impl QueryIndexes {
             .transpose()?;
         let text_ids = scores
             .as_ref()
-            .map(|scores| {
+            .map(|scores| -> Result<IdSet> {
                 let mut ids = IdSet::new();
                 for id in scores.keys() {
                     cancellation.check()?;
@@ -420,102 +585,133 @@ impl QueryIndexes {
             .transpose()?;
         let universe = text_ids.as_ref().unwrap_or(&structured.ids);
         let candidates = structured.candidates(
-            collection,
+            source,
             &request.filter,
             universe,
             request.allow_scan,
             limits.max_query_candidates,
             cancellation,
         )?;
+        // Candidate metadata owns no document body or cache guard. Each loan
+        // ends before another read, and output reloads the exact selected version.
+        let selected_bytes = allocation::vec_bytes::<SelectedRow>(candidates.len())?;
+        memory.reserve(selected_bytes)?;
         let mut selected = Vec::with_capacity(candidates.len());
-        for id in candidates {
-            cancellation.check()?;
-            let document = collection.documents.get(&id).ok_or_else(|| {
-                Error::new(ErrorCode::Corruption, "index/document generation mismatch")
-            })?;
-            let keys = request
-                .sort
-                .iter()
-                .zip(&sort_kinds)
-                .map(|(sort, kind)| scalar(document.body.pointer(&sort.field), *kind))
-                .collect::<Result<Vec<_>>>()?;
-            let score = scores.as_ref().and_then(|scores| scores.get(&id)).copied();
-            selected.push((document, keys, score));
-        }
-        // Candidate IDs are already ordered. Preserve that order without an
-        // extra sort when no field ordering or text ranking was requested.
-        if !request.sort.is_empty() || scores.is_some() {
-            cancellation::sort(
-                &mut selected,
-                cancellation,
-                |(left, left_keys, left_score), (right, right_keys, right_score)| {
-                    for ((a, b), order) in left_keys.iter().zip(right_keys).zip(&request.sort) {
-                        let ordering = a.cmp(b);
-                        let ordering = if order.direction == Direction::Desc {
-                            ordering.reverse()
-                        } else {
-                            ordering
-                        };
-                        if !ordering.is_eq() {
-                            return ordering;
-                        }
-                    }
-                    // Explicit field sorting takes precedence. Search defaults to rank.
-                    if request.sort.is_empty() {
-                        let rank = right_score
-                            .unwrap_or_default()
-                            .total_cmp(&left_score.unwrap_or_default());
-                        if !rank.is_eq() {
-                            return rank;
-                        }
-                    }
-                    left.id.cmp(&right.id)
-                },
-            )?;
-        }
-
         let mut groups: BTreeMap<Vec<Scalar>, Vec<Accumulator>> = BTreeMap::new();
         if !request.aggregates.is_empty() && request.group_by.is_empty() {
             if limits.max_query_groups == 0 {
-                return Err(exhausted("query group budget exceeded"));
+                return Err(exhausted("query group budget exceeded").into());
             }
             groups.insert(
                 Vec::new(),
                 vec![Accumulator::default(); request.aggregates.len()],
             );
         }
-        for (document, _, _) in &selected {
+        let iterator_bytes = workspace::imbl_iterator_bytes()?;
+        memory.reserve(iterator_bytes)?;
+        let mut has_numeric_sort_key = false;
+        for candidate in &candidates {
             cancellation.check()?;
-            if request.aggregates.is_empty() {
-                break;
-            }
-            let key = request
-                .group_by
-                .iter()
-                .zip(&group_kinds)
-                .map(|(path, kind)| scalar(document.body.pointer(path), *kind))
-                .collect::<Result<Vec<_>>>()?;
-            if !groups.contains_key(&key) && groups.len() >= limits.max_query_groups {
-                return Err(exhausted("query group budget exceeded"));
-            }
-            let values = groups
-                .entry(key)
-                .or_insert_with(|| vec![Accumulator::default(); request.aggregates.len()]);
-            for ((accumulator, aggregate), kind) in values
-                .iter_mut()
-                .zip(&request.aggregates)
-                .zip(&aggregate_kinds)
-            {
-                accumulator.add(
-                    aggregate,
-                    aggregate
-                        .field
-                        .as_deref()
-                        .and_then(|path| document.body.pointer(path)),
-                    *kind,
-                )?;
-            }
+            let id_bytes = allocation::string_clone_bytes(candidate)?;
+            memory.reserve(id_bytes)?;
+            let id = candidate.clone();
+            let (version, keys, keys_bytes) =
+                document_source::with_live(source, &id, None, cancellation, |document| {
+                    let mut keys_bytes = allocation::vec_bytes::<Scalar>(request.sort.len())?;
+                    memory.reserve(keys_bytes)?;
+                    let mut keys = Vec::with_capacity(request.sort.len());
+                    for (sort, kind) in request.sort.iter().zip(&sort_kinds) {
+                        let (key, bytes) = scalar::query_scalar(
+                            allocation::pointer(&document.body, &sort.field),
+                            *kind,
+                            memory,
+                        )?;
+                        has_numeric_sort_key |= matches!(key, Scalar::Number(_));
+                        keys_bytes = allocation::add(keys_bytes, bytes)?;
+                        keys.push(key);
+                    }
+                    if !request.aggregates.is_empty() {
+                        let key = request
+                            .group_by
+                            .iter()
+                            .zip(&group_kinds)
+                            .map(|(path, kind)| {
+                                scalar(allocation::pointer(&document.body, path), *kind)
+                            })
+                            .collect::<Result<Vec<_>>>()?;
+                        if !groups.contains_key(&key) && groups.len() >= limits.max_query_groups {
+                            return Err(exhausted("query group budget exceeded"));
+                        }
+                        let values = groups.entry(key).or_insert_with(|| {
+                            vec![Accumulator::default(); request.aggregates.len()]
+                        });
+                        for ((accumulator, aggregate), kind) in values
+                            .iter_mut()
+                            .zip(&request.aggregates)
+                            .zip(&aggregate_kinds)
+                        {
+                            accumulator.add(
+                                aggregate,
+                                aggregate
+                                    .field
+                                    .as_deref()
+                                    .and_then(|path| allocation::pointer(&document.body, path)),
+                                *kind,
+                            )?;
+                        }
+                    }
+                    Ok((document.version, keys, keys_bytes))
+                })?;
+            let score = scores.as_ref().and_then(|scores| scores.get(&id)).copied();
+            selected.push(SelectedRow {
+                id,
+                version,
+                keys,
+                score,
+                id_bytes,
+                keys_bytes,
+            });
         }
+        // The borrowed iterator drops at the end of the loop; its candidate
+        // root can now go too. Never consume a shared imbl root to obtain IDs.
+        memory.release(iterator_bytes)?;
+        drop(candidates);
+        // Candidate IDs are already ordered. Preserve that order without an
+        // extra sort when no field ordering or text ranking was requested.
+        if !request.sort.is_empty() || scores.is_some() {
+            let decimal_scratch = if has_numeric_sort_key {
+                scalar::PROVISIONAL_DECIMAL_SCRATCH_BYTES
+            } else {
+                0
+            };
+            memory.reserve(decimal_scratch)?;
+            cancellation::sort(&mut selected, cancellation, |left, right| {
+                for ((a, b), order) in left.keys.iter().zip(&right.keys).zip(&request.sort) {
+                    let ordering = a.cmp(b);
+                    let ordering = if order.direction == Direction::Desc {
+                        ordering.reverse()
+                    } else {
+                        ordering
+                    };
+                    if !ordering.is_eq() {
+                        return ordering;
+                    }
+                }
+                // Explicit field sorting takes precedence. Search defaults to rank.
+                if request.sort.is_empty() {
+                    let rank = right
+                        .score
+                        .unwrap_or_default()
+                        .total_cmp(&left.score.unwrap_or_default());
+                    if !rank.is_eq() {
+                        return rank;
+                    }
+                }
+                left.id.cmp(&right.id)
+            })?;
+            memory.release(decimal_scratch)?;
+        }
+
         let mut aggregates = Vec::with_capacity(groups.len());
         let mut budget = ResultBudget::new(limits.max_result_bytes);
         for (keys, accumulators) in groups {
@@ -534,29 +730,47 @@ impl QueryIndexes {
             budget.account(&entry)?;
             aggregates.push(entry);
         }
+        let mut retained_rows = allocation::vec_bytes::<QueryRow>(selected.len())?;
+        memory.reserve(retained_rows)?;
         let mut rows = Vec::with_capacity(selected.len());
-        for (document, _, score) in selected {
-            cancellation.check()?;
-            let body = if request.projection.is_empty() {
-                document.body.clone()
-            } else {
-                let mut body = Map::new();
-                for path in &request.projection {
-                    if let Some(value) = document.body.pointer(path) {
-                        body.insert(path.clone(), value.clone());
-                    }
-                }
-                Value::Object(body)
-            };
-            let row = QueryRow {
-                id: document.id.clone(),
-                version: document.version,
-                body,
-                score,
-            };
-            budget.account(&row)?;
+        for SelectedRow {
+            id,
+            version,
+            keys,
+            score,
+            id_bytes,
+            keys_bytes,
+        } in selected
+        {
+            drop(keys);
+            memory.release(keys_bytes)?;
+            let (row, row_bytes) =
+                document_source::with_live(source, &id, Some(version), cancellation, |document| {
+                    let borrowed = BorrowedRow {
+                        document,
+                        projection: &request.projection,
+                        score,
+                    };
+                    budget.account(&borrowed)?;
+                    let bytes = borrowed.clone_bytes()?;
+                    memory.reserve(bytes)?;
+                    Ok((borrowed.into_owned(), bytes))
+                })?;
             rows.push(row);
+            retained_rows = allocation::add(retained_rows, row_bytes)?;
+            drop(id);
+            memory.release(id_bytes)?;
         }
+        // Vec::IntoIter retains its whole backing allocation until the loop
+        // ends, even as individual selected IDs/keys are destroyed above.
+        memory.release(selected_bytes)?;
+        let retained_aggregates = if aggregates.is_empty() {
+            0
+        } else {
+            let mut aggregate_output = ResultBudget::new(limits.max_result_bytes);
+            aggregate_output.account(&aggregates)?;
+            workspace::product(workspace::bytes(aggregate_output.bytes)?, 3)?
+        };
         let response = QueryResponse {
             revision: 0,
             rows,
@@ -564,9 +778,125 @@ impl QueryIndexes {
             cursor: None,
         };
         // Include the envelope and separators in the exact wire-size bound too.
-        ResultBudget::new(limits.max_result_bytes).account(&response)?;
+        let mut output = ResultBudget::new(limits.max_result_bytes);
+        output.account(&response)?;
         cancellation.check()?;
-        Ok(response)
+        // Row clones retain their admitted backing, including container slack.
+        // Aggregate formatting/group output still use the separate provisional
+        // allowance; physical peak custody remains unchanged on all outcomes.
+        let retained = allocation::add(retained_rows, retained_aggregates)?;
+        Ok((response, retained))
+    }
+}
+
+struct PreparedIndexCollection<'a, R: CollectionRecords, D: DocumentChanges> {
+    name: String,
+    indexes: CollectionIndexes,
+    input: PreparedIndexInput<'a, R, D>,
+}
+enum PreparedIndexInput<'a, R: CollectionRecords, D: DocumentChanges> {
+    Rebuild(index_input::CheckedRecords<'a, R>),
+    Delta {
+        source: index_input::CheckedChanges<'a, D>,
+        text_changed: bool,
+    },
+}
+
+struct SelectedRow {
+    id: String,
+    version: u64,
+    keys: Vec<Scalar>,
+    score: Option<f32>,
+    id_bytes: u64,
+    keys_bytes: u64,
+}
+
+/// Serializes borrowed values for exact capacity checks before any body clone.
+struct BorrowedRow<'a> {
+    document: &'a Document,
+    projection: &'a [String],
+    score: Option<f32>,
+}
+impl serde::Serialize for BorrowedRow<'_> {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut row = serializer.serialize_struct("QueryRow", 4)?;
+        row.serialize_field("id", &self.document.id)?;
+        row.serialize_field("version", &self.document.version)?;
+        row.serialize_field(
+            "body",
+            &BorrowedProjection {
+                body: &self.document.body,
+                paths: self.projection,
+            },
+        )?;
+        row.serialize_field("score", &self.score)?;
+        row.end()
+    }
+}
+struct BorrowedProjection<'a> {
+    body: &'a Value,
+    paths: &'a [String],
+}
+impl serde::Serialize for BorrowedProjection<'_> {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        if self.paths.is_empty() {
+            return serde::Serialize::serialize(self.body, serializer);
+        }
+        let mut map = serializer.serialize_map(None)?;
+        for path in self.paths {
+            if let Some(value) = allocation::pointer(self.body, path) {
+                map.serialize_entry(path, value)?;
+            }
+        }
+        map.end()
+    }
+}
+impl BorrowedRow<'_> {
+    fn clone_bytes(&self) -> Result<u64> {
+        let mut bytes = allocation::string_clone_bytes(&self.document.id)?;
+        if self.projection.is_empty() {
+            return allocation::add(bytes, allocation::json_clone_bytes(&self.document.body)?);
+        }
+        for path in self.projection {
+            if let Some(value) = allocation::pointer(&self.document.body, path) {
+                // Each pointer is a distinct output key. Overlapping subtrees
+                // are copied independently and must each retain a full claim.
+                bytes = allocation::add(bytes, allocation::object_entry_bytes()?)?;
+                bytes = allocation::add(bytes, allocation::string_clone_bytes(path)?)?;
+                bytes = allocation::add(bytes, allocation::json_clone_bytes(value)?)?;
+            }
+        }
+        Ok(bytes)
+    }
+
+    fn into_owned(self) -> QueryRow {
+        let body = if self.projection.is_empty() {
+            self.document.body.clone()
+        } else {
+            // Avoid Map::from_iter's temporary collector/sort storage. The
+            // preflight counts each inserted node, key and cloned subtree.
+            let mut projected = Map::new();
+            for path in self.projection {
+                if let Some(value) = allocation::pointer(&self.document.body, path) {
+                    projected.insert(path.clone(), value.clone());
+                }
+            }
+            Value::Object(projected)
+        };
+        QueryRow {
+            id: self.document.id.clone(),
+            version: self.document.version,
+            body,
+            score: self.score,
+        }
     }
 }
 
@@ -688,3 +1018,11 @@ impl io::Write for ResultBudget {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod document_source_tests;
+#[cfg(test)]
+mod source_test_utils;
+
+#[cfg(test)]
+mod index_input_tests;

@@ -1,0 +1,43 @@
+Command: cargo test -p kasumi-types --doc --locked --offline
+CARGO_TARGET_DIR=target/disk-backed-cache
+   Compiling percent-encoding v2.3.2
+   Compiling syn v3.0.5
+   Compiling syn v2.0.119
+   Compiling memchr v2.8.3
+   Compiling form_urlencoded v1.2.2
+   Compiling serde_json v1.0.151 (/Users/takemiyamakoto/dev/kasumi/vendor/serde_json-1.0.151)
+   Compiling synstructure v0.13.2
+   Compiling zerovec-derive v0.11.6
+   Compiling displaydoc v0.2.7
+   Compiling serde_derive v1.0.229
+   Compiling thiserror-impl v2.0.20
+   Compiling zerofrom-derive v0.1.7
+   Compiling yoke-derive v0.8.2
+   Compiling thiserror v2.0.20
+   Compiling zerofrom v0.1.8
+   Compiling yoke v0.8.3
+   Compiling serde v1.0.229
+   Compiling zerovec v0.11.8
+   Compiling zerotrie v0.2.5
+   Compiling tinystr v0.8.4
+   Compiling potential_utf v0.1.6
+   Compiling icu_collections v2.3.0
+   Compiling icu_locale_core v2.3.0
+   Compiling icu_provider v2.3.1
+   Compiling icu_properties v2.3.0
+   Compiling icu_normalizer v2.3.0
+   Compiling idna_adapter v1.2.2
+   Compiling idna v1.1.0
+   Compiling url v2.5.8
+   Compiling kasumi-types v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-types)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 24s
+   Doc-tests kasumi_types
+
+running 3 tests
+test crates/kasumi-types/src/shared_document.rs - shared_document::SharedDocument (line 32) - compile fail ... ok
+test crates/kasumi-types/src/shared_document.rs - shared_document::SharedDocument (line 42) - compile fail ... ok
+test crates/kasumi-types/src/shared_document.rs - shared_document::SharedDocument (line 51) - compile fail ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.36s
+
+Runner: 89.47s; exit=0; matching=702/702

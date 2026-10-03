@@ -1,0 +1,154 @@
+Command: cargo test --locked --offline --config profile.test.package.kasumi-kv.opt-level=3 --config profile.test.package.sha2.opt-level=3 -p kasumi-kv -p kasumi-store -p kasumi-raft -p kasumi-engine --all-features --lib --no-fail-fast -- history_abort registered_source_funding source_publication protected_source_points initial_planning selected_sources_initial source_funding source_metadata source_census serving_expiry_suppresses_long_backup_verification_and_post_publication_proof --nocapture
+CARGO_TARGET_DIR=target/disk-backed-cache
+   Compiling kasumi-kv v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-kv)
+   Compiling kasumi-store v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-store)
+   Compiling kasumi-raft v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-raft)
+   Compiling kasumi-engine v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-engine)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5m 11s
+     Running unittests src/lib.rs (target/disk-backed-cache/debug/deps/kasumi_engine-44db468831cfc59f)
+
+running 30 tests
+kasumi source grant refused caller=crates/kasumi-engine/src/admission/disk_memory.rs:53:33 requested=17256 charged=322566350 limit=322566350 source_bytes=0 source_slots=0 live_slots=18 total_slots=4096 free_slot=true cache_reserve_bytes=67108864 cache_reserve_slots=64 ordinary_protected_bytes=0 ordinary_protected_slots=0 resident=0 high=1073741824 usable=true pressured=false
+test admission::source_publication::registered_tests::registered_source_control_real_capacity_failure_survives_all_facades_until_explicit_ack ... ok
+test admission::source_publication::registered_tests::registered_source_history_native_slot_denial_cancels_whole_registered_request ... ok
+
+thread 'admission::source_publication::registered_tests::registered_source_both_local_suffix_panics_retain_original_and_fence_lane_reuse' (22954340) panicked at crates/kasumi-store/src/storage_opening/reads/source_pool.rs:394:17:
+Box<dyn Any>
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test admission::source_publication::registered_tests::registered_source_busy_census_cancel_retries_without_replaying_native_cleanup ... ok
+test admission::source_publication::registered_tests::registered_source_funding_real_provider_counts_complete_layout_and_has_no_post_bank_reserve ... ok
+test admission::source_publication::registered_tests::registered_source_history_report_outlives_ordinary_cell_and_preserves_its_own_bytes ... ok
+test admission::source_publication::registered_tests::registered_source_native_success_survives_actual_committed_marker_contention_once ... ok
+
+thread 'admission::source_publication::registered_tests::registered_source_both_local_suffix_panics_retain_original_and_fence_lane_reuse' (22954340) panicked at crates/kasumi-store/src/storage_opening/reads/source_pool.rs:400:17:
+Box<dyn Any>
+test admission::source_publication::registered_tests::registered_source_both_local_suffix_panics_retain_original_and_fence_lane_reuse ... ok
+test admission::source_publication::registered_tests::registered_source_no_facade_close_recovers_actual_pool_and_both_prepared_readers ... ok
+kasumi source grant refused caller=crates/kasumi-engine/src/admission/disk_memory.rs:53:33 requested=31344 charged=322566350 limit=322566350 source_bytes=160152 source_slots=5 live_slots=27 total_slots=4096 free_slot=true cache_reserve_bytes=67108864 cache_reserve_slots=64 ordinary_protected_bytes=0 ordinary_protected_slots=0 resident=0 high=1073741824 usable=true pressured=false
+test admission::source_publication::protected_point_tests::history_abort_tests::history_census_admission_refusal_preserves_current_without_entering_native ... ok
+test admission::source_publication::registered_tests::registered_source_partial_queue_actual_registration_contention_retains_report_and_original ... ok
+kasumi source grant refused caller=crates/kasumi-engine/src/admission/source_publication.rs:35:10 requested=71760 charged=255377535 limit=322566350 source_bytes=0 source_slots=0 live_slots=18 total_slots=4096 free_slot=true cache_reserve_bytes=67108864 cache_reserve_slots=64 ordinary_protected_bytes=8192 ordinary_protected_slots=1 resident=0 high=1073741824 usable=true pressured=false
+kasumi source grant refused caller=crates/kasumi-engine/src/admission/source_publication.rs:435:65 requested=29520 charged=255457486 limit=322566350 source_bytes=191496 source_slots=6 live_slots=24 total_slots=4096 free_slot=true cache_reserve_bytes=67108864 cache_reserve_slots=64 ordinary_protected_bytes=0 ordinary_protected_slots=0 resident=0 high=1073741824 usable=true pressured=false
+test admission::source_publication::protected_point_tests::history_abort_tests::prepared_history_cancellation_keeps_current_then_retry_can_commit ... ok
+test admission::source_publication::tests::native_source_bank_exact_byte_boundary_preserves_cache_and_ordinary_headroom ... ok
+test admission::source_publication::protected_point_tests::history_abort_tests::history_refusal_and_actual_replacement_drop_panic_keep_distinct_originals ... ok
+kasumi source grant refused caller=crates/kasumi-engine/src/admission/source_publication.rs:435:65 requested=29520 charged=255457486 limit=322566350 source_bytes=191496 source_slots=6 live_slots=28 total_slots=4096 free_slot=true cache_reserve_bytes=67108864 cache_reserve_slots=64 ordinary_protected_bytes=0 ordinary_protected_slots=0 resident=0 high=1073741824 usable=true pressured=false
+test admission::source_publication::protected_point_tests::history_abort_tests::history_abort_keeps_exact_cause_while_census_cancel_is_pending ... ok
+test admission::source_publication::protected_point_tests::protected_source_actual_encrypted_current_and_history_need_no_new_ordinary_grant ... ok
+test admission::source_publication::tests::native_source_binding_rejects_same_policy_foreign_core_without_fallback ... ok
+test admission::source_publication::registered_tests::registered_source_no_facade_recovers_precommit_and_native_committed_pending_local_exchange ... ok
+kasumi source grant refused caller=crates/kasumi-engine/src/admission/source_publication.rs:435:65 requested=29520 charged=322566350 limit=322566350 source_bytes=71760 source_slots=1 live_slots=19 total_slots=4096 free_slot=true cache_reserve_bytes=67108864 cache_reserve_slots=64 ordinary_protected_bytes=0 ordinary_protected_slots=0 resident=0 high=1073741824 usable=true pressured=false
+test admission::source_publication::tests::native_source_busy_seal_resumes_only_after_positive_account_retirement ... ok
+test admission::source_publication::tests::native_source_history_byte_denial_preserves_original_then_cancels_unentered_native_hold ... ok
+test admission::source_publication::tests::native_source_history_slot_denial_retains_byte_grant_until_positive_cancel ... ok
+test admission::source_publication::tests::native_source_bank_real_provider_two_lanes_capture_with_ordinary_bytes_full ... ok
+test admission::source_publication::tests::native_source_prepared_rights_block_actual_opening_close_before_capture ... ok
+test admission::source_publication::tests::native_source_history_transfers_actual_children_and_sealed_bank_keeps_only_fixed_credit ... ok
+kasumi source grant refused caller=crates/kasumi-engine/src/admission/source_publication.rs:435:65 requested=29520 charged=255457486 limit=322566350 source_bytes=191496 source_slots=6 live_slots=28 total_slots=4096 free_slot=true cache_reserve_bytes=67108864 cache_reserve_slots=64 ordinary_protected_bytes=0 ordinary_protected_slots=0 resident=0 high=1073741824 usable=true pressured=false
+test admission::source_publication::allocation_tests::registered_source_actual_bank_account_report_and_control_tails_keep_exact_credit ... ok
+kasumi source grant refused caller=crates/kasumi-engine/src/application_sources_tests.rs:1483:54 requested=1048576 charged=255364083 limit=322566350 source_bytes=191891232 source_slots=185 live_slots=203 total_slots=4096 free_slot=true cache_reserve_bytes=67108864 cache_reserve_slots=64 ordinary_protected_bytes=0 ordinary_protected_slots=0 resident=0 high=1073741824 usable=true pressured=false
+kasumi source grant refused caller=crates/kasumi-engine/src/application_sources.rs:651:52 requested=16909824 charged=254324723 limit=322566350 source_bytes=190851872 source_slots=185 live_slots=203 total_slots=4096 free_slot=true cache_reserve_bytes=67108864 cache_reserve_slots=64 ordinary_protected_bytes=0 ordinary_protected_slots=0 resident=0 high=1073741824 usable=true pressured=false
+test application_sources::tests::selected_sources_initial_install_fits_actual_rows_below_format_ceiling ... ok
+test admission::source_publication::protected_point_tests::history_abort_tests::actual_history_capacity_refusals_restore_encrypted_current_and_allow_retry ... ok
+test admission::source_publication::allocation_tests::source_bank_and_account_actual_arc_and_backend_box_tails_remain_funded ... ok
+test admission::source_publication::protected_point_tests::protected_source_encrypted_loans_recheck_expiry_for_hits_misses_and_absence ... ok
+test admission::source_publication::protected_point_tests::protected_source_binding_rejects_foreign_pair_provider_and_uncaptured_owner ... ok
+kasumi source grant refused caller=crates/kasumi-engine/src/application_sources.rs:626:42 requested=9216 charged=433968186 limit=588277281 source_bytes=12600 source_slots=4 live_slots=38 total_slots=4096 free_slot=true cache_reserve_bytes=67108864 cache_reserve_slots=64 ordinary_protected_bytes=134217728 ordinary_protected_slots=4 resident=227835904 high=68719476736 usable=true pressured=false
+backup publication original failure before proof release: Error { code: UnknownOutcome, message: "write task failed; resolve or retry with the same idempotency key" }; raft metrics: Ref { inner: RwLockReadGuard(PhantomData<std::sync::poison::rwlock::RwLockReadGuard<'_, openraft::metrics::raft_metrics::RaftMetrics<u64, openraft::node::BasicNode>>>, RaftMetrics { running_state: Err(StorageError(IO { source: StorageIOError { subject: Store, verb: Write, source: std::io::error::Error: Raft apply failed; original failure retained, backtrace: None } })), id: 1, current_term: 1, vote: Vote { leader_id: LeaderId { term: 1, node_id: 1 }, committed: true }, last_log_index: Some(4), last_applied: Some(LogId { leader_id: LeaderId { term: 1, node_id: 1 }, index: 3 }), snapshot: None, purged: None, state: Shutdown, current_leader: Some(1), millis_since_quorum_ack: Some(314), membership_config: StoredMembership { log_id: Some(LogId { leader_id: LeaderId { term: 0, node_id: 0 }, index: 0 }), membership: Membership { configs: [{1, 2, 3}], nodes: {1: BasicNode { addr: "node-1" }, 2: BasicNode { addr: "node-2" }, 3: BasicNode { addr: "node-3" }} } }, replication: None }), has_changed: true }; retained apply: Ok(Some("ordinary ordinal=3; violation=None; response_retained=true; wake_panic_retained=false; sink: original error: ResourceExhausted: document source retention budget exhausted; action: returned; backend: returned; finish: returned; cleanup: refused: Retained; drain: not entered"))
+
+thread 'service::tests::serving_expiry_suppresses_long_backup_verification_and_post_publication_proof' (22954518) panicked at crates/kasumi-engine/src/service_serving_tests.rs:694:10:
+called `Result::unwrap()` on an `Err` value: Error { code: UnknownOutcome, message: "backup publication was admitted but complete proof release failed; immutable artifacts may exist and no verified proof was released" }
+test service::tests::serving_expiry_suppresses_long_backup_verification_and_post_publication_proof ... FAILED
+
+failures:
+
+failures:
+    service::tests::serving_expiry_suppresses_long_backup_verification_and_post_publication_proof
+
+test result: FAILED. 29 passed; 1 failed; 0 ignored; 0 measured; 606 filtered out; finished in 22.32s
+
+error: test failed, to rerun pass `-p kasumi-engine --lib`
+     Running unittests src/lib.rs (target/disk-backed-cache/debug/deps/kasumi_kv-221aa5373d25965b)
+
+running 11 tests
+test retained::source_funding::tests::child_foreign_and_repeated_claims_are_terminal_before_another_constructor ... ok
+test retained::source_funding::tests::actual_child_token_and_native_outer_box_deallocate_before_final_credit ... ok
+test retained::source_funding::tests::invalid_account_stamp_keeps_the_actual_bound_owner_and_sticky_rejection ... ok
+
+thread 'retained::source_funding::tests::final_controller_disposal_panic_retains_original_database_and_does_not_retry' (22956772) panicked at crates/kasumi-kv/src/source_funding_tests.rs:101:13:
+Box<dyn Any>
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'retained::source_funding::tests::each_child_bind_keeps_original_and_pending_credit_after_provider_error_or_panic' (22956771) panicked at crates/kasumi-kv/src/source_funding_tests.rs:62:18:
+Box<dyn Any>
+
+thread 'retained::source_funding::tests::history_abort_rejects_unproved_provider_capacity_panic_and_false_success' (22956774) panicked at crates/kasumi-kv/src/source_funding_tests.rs:183:18:
+Box<dyn Any>
+
+thread 'retained::source_funding::tests::pool_bind_retains_original_error_or_panic_and_actual_backend_without_retry' (22956776) panicked at crates/kasumi-kv/src/source_funding_tests.rs:62:18:
+Box<dyn Any>
+
+thread 'retained::source_funding::tests::seal_busy_poll_can_progress_but_first_poll_panic_is_retained_without_retry' (22956777) panicked at crates/kasumi-kv/src/source_funding_tests.rs:148:13:
+Box<dyn Any>
+
+thread 'retained::source_funding::tests::unbound_install_failure_disposes_exact_database_once_and_keeps_original' (22956778) panicked at crates/kasumi-kv/src/source_funding_tests.rs:62:18:
+Box<dyn Any>
+
+thread 'retained::source_funding::tests::account_bind_retains_original_error_or_panic_and_actual_backend_without_retry' (22956768) panicked at crates/kasumi-kv/src/source_funding_tests.rs:62:18:
+Box<dyn Any>
+test retained::source_funding::tests::funded_corridor_rejects_ordinary_foreign_database_pool_and_repeated_account_before_children ... ok
+test retained::source_funding::tests::seal_busy_poll_can_progress_but_first_poll_panic_is_retained_without_retry ... ok
+test retained::source_funding::tests::pool_bind_retains_original_error_or_panic_and_actual_backend_without_retry ... ok
+test retained::source_funding::tests::unbound_install_failure_disposes_exact_database_once_and_keeps_original ... ok
+test retained::source_funding::tests::account_bind_retains_original_error_or_panic_and_actual_backend_without_retry ... ok
+test retained::source_funding::tests::final_controller_disposal_panic_retains_original_database_and_does_not_retry ... ok
+
+thread 'retained::source_funding::tests::each_child_bind_keeps_original_and_pending_credit_after_provider_error_or_panic' (22956771) panicked at crates/kasumi-kv/src/source_funding_tests.rs:62:18:
+Box<dyn Any>
+
+thread 'retained::source_funding::tests::each_child_bind_keeps_original_and_pending_credit_after_provider_error_or_panic' (22956771) panicked at crates/kasumi-kv/src/source_funding_tests.rs:62:18:
+Box<dyn Any>
+test retained::source_funding::tests::history_abort_rejects_unproved_provider_capacity_panic_and_false_success ... ok
+test retained::source_funding::tests::each_child_bind_keeps_original_and_pending_credit_after_provider_error_or_panic ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 540 filtered out; finished in 0.01s
+
+     Running unittests src/lib.rs (target/disk-backed-cache/debug/deps/kasumi_raft-8af78bc0d2a8574c)
+
+running 3 tests
+test selected_application::planning_session_tests::initial_planning_uses_actual_small_root_and_ignores_unused_snapshot_rows ... ok
+test selected_application::planning_session_tests::initial_planning_snapshot_row_selection_does_not_accept_noncanonical_cursor ... ok
+test selected_application::planning_session_tests::initial_planning_binds_snapshot_five_records_and_rejects_later_cursor_change ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 173 filtered out; finished in 2.50s
+
+     Running unittests src/lib.rs (target/disk-backed-cache/debug/deps/kasumi_store-4ef75ebdc018c368)
+
+running 8 tests
+
+thread 'storage_census::source_tests::source_census_poisoned_control_report_cannot_mint_a_later_claim' (22957177) panicked at crates/kasumi-store/src/storage_census_source_tests.rs:440:13:
+poison actual vacant control report
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'storage_census::source_tests::source_census_control_cleanup_panic_preserves_provider_original_and_parent' (22957172) panicked at crates/kasumi-store/src/storage_census_source_tests.rs:38:13:
+Box<dyn Any>
+
+thread 'storage_census::source_tests::source_census_control_originals_survive_no_facade_cleanup_and_are_never_retried' (22957173) panicked at crates/kasumi-store/src/storage_census_source_tests.rs:146:13:
+Box<dyn Any>
+test storage_census::source_tests::source_census_partial_right_claim_is_real_capacity_and_release_returns_parent_once ... ok
+test storage_census::source_tests::source_census_control_cancel_pristine_and_capacity_refusal_never_dispatch_provider ... ok
+test storage_census::source_tests::source_census_foreign_holds_never_consume_capacity_or_parent_counts ... ok
+test storage_census::source_tests::source_census_recorded_release_survives_async_drain_and_slot_reuse ... ok
+test storage_census::source_tests::source_census_control_preclaims_identity_before_provider_and_retires_successful_report ... ok
+
+thread 'storage_census::source_tests::source_census_control_originals_survive_no_facade_cleanup_and_are_never_retried' (22957173) panicked at crates/kasumi-store/src/storage_census_source_tests.rs:165:13:
+Box<dyn Any>
+test storage_census::source_tests::source_census_control_originals_survive_no_facade_cleanup_and_are_never_retried ... ok
+test storage_census::source_tests::source_census_poisoned_control_report_cannot_mint_a_later_claim ... ok
+test storage_census::source_tests::source_census_control_cleanup_panic_preserves_provider_original_and_parent ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 700 filtered out; finished in 0.04s
+
+error: 1 target failed:
+    `-p kasumi-engine --lib`
+Runner: 336.32s; exit=101; matching=1530/1530

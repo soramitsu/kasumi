@@ -472,7 +472,8 @@ pub(crate) fn write(
     );
     receipts.validate_state(state)?;
     backup_bindings.validate_state(state)?;
-    terminals.check_head(&state.tenant)?;
+    // The ordered scan validates the physical head in its one selected root.
+    terminals.check_head_metadata(&state.tenant)?;
     target_resolutions.validate_state(state)?;
     let mut encoder = Encoder::new(writer)?;
     for kind in 0..21 {
@@ -1342,7 +1343,7 @@ mod tests {
 
 #[cfg(test)]
 #[path = "snapshot_recovery_tests.rs"]
-mod recovery_tests;
+pub(crate) mod recovery_tests;
 
 #[cfg(test)]
 #[path = "snapshot_literal_tests.rs"]

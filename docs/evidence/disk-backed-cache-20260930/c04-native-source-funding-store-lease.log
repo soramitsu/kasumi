@@ -1,0 +1,18 @@
+Command: cargo test --locked --offline --config profile.test.package.kasumi-kv.opt-level=3 --config profile.test.package.sha2.opt-level=3 -p kasumi-store --all-features --lib disk_memory::tests:: -- --nocapture
+CARGO_TARGET_DIR=target/disk-backed-cache
+   Compiling kasumi-store v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-store)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5m 40s
+     Running unittests src/lib.rs (target/disk-backed-cache/debug/deps/kasumi_store-98be0c6afb7030c8)
+
+running 3 tests
+
+thread 'disk_memory::tests::panicking_token_keeps_single_retirement_and_frees_box_before_field_unwind' (16129610) panicked at crates/kasumi-store/src/disk_memory_tests.rs:110:9:
+original token destructor panic
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test disk_memory::tests::mandatory_opaque_lease_preserves_inline_layout_and_provider_denial_accounting ... ok
+test disk_memory::tests::panicking_token_keeps_single_retirement_and_frees_box_before_field_unwind ... ok
+test disk_memory::tests::installed_lease_cannot_return_bytes_or_slot_before_actual_box_deallocation ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 674 filtered out; finished in 0.00s
+
+Runner: 340.32s; exit=0; matching=814/814

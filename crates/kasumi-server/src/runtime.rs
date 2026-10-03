@@ -7,7 +7,7 @@ use crate::{
     auth::{AuthConfig, Authenticator},
     cluster::{ClusterNetwork, PeerConfig, PeerLimits},
     mcp::McpConfig,
-    rpc::{NativeAdmin, NativeData},
+    rpc::{NativeAdmin, native_data_service},
     tls::{self, ListenerLimits},
 };
 use anyhow::{Context, Result, ensure};
@@ -416,18 +416,18 @@ impl RuntimeConfig {
             );
             validate_initial_policy(&tenant.initial_policy)?;
             // Reuse the engine's actual policy/quota validation.
-            kasumi_engine::TenantEngine::new(
-                tenant.tenant.clone(),
-                uuid::Uuid::nil().to_string(),
-                tenant.initial_policy.clone(),
-                tenant.initial_limits.clone(),
+            kasumi_engine::validate_genesis_inputs(
+                &tenant.tenant,
+                &uuid::Uuid::nil().to_string(),
+                &tenant.initial_policy,
+                &tenant.initial_limits,
             )?;
         }
-        kasumi_engine::TenantEngine::new(
-            CONTROL_TENANT.into(),
-            uuid::Uuid::nil().to_string(),
-            self.control.initial_policy.clone(),
-            self.control.initial_limits.clone(),
+        kasumi_engine::validate_genesis_inputs(
+            CONTROL_TENANT,
+            &uuid::Uuid::nil().to_string(),
+            &self.control.initial_policy,
+            &self.control.initial_limits,
         )?;
         match self.mode {
             DeploymentMode::Standalone => {
@@ -1202,13 +1202,9 @@ impl NodeRuntime {
         } else {
             (None, None)
         };
-        let node = NodeStore::open_existing(
-            &config.database_path,
-            config.database_id,
-            persistent_disk.clone(),
-            scratch_disk.clone(),
-        )?;
+        let node = NodeStore::open_existing(&config.database_path, config.database_id, persistent_disk.clone(), scratch_disk.clone(), persistent_disk.native_storage_config())?;
         pending.owned_nodes.push(node.clone());
+        node.prepare_cache_warming().await?;
         let security_store = TenantStore::open_existing(
             node.clone(),
             SECURITY_TENANT.into(),
@@ -1337,10 +1333,9 @@ impl NodeRuntime {
             }];
             for configured_tenant in &config.tenants {
                 if !selected_tenants.iter().any(|tenant| tenant.tenant == configured_tenant.tenant) {
-                    let state = runtime.control.database.engine().generation()?;
-                    if let Some(document) = state.state.collections.get("topology").and_then(|collection| collection.documents.get("current")) {
-                        let topology: kasumi_engine::control::ControlTopology = serde_json::from_value(document.body.clone())?;
-                        ensure!(!topology.tenants.contains_key(&configured_tenant.tenant), "routed tenant has no completed local catalog or enrollment");
+                    let selection = kasumi_engine::control::ControlPlane::select_local(&runtime.control.database)?;
+                    if let Some(current) = selection.decode_topology()? {
+                        ensure!(!current.topology.tenants.contains_key(&configured_tenant.tenant), "routed tenant has no completed local catalog or enrollment");
                     }
                     // Configuration may stage a tenant, but cannot make an
                     // absent installation eligible for provider or grant work.
@@ -1358,13 +1353,14 @@ impl NodeRuntime {
                 let tenant_node = match &active {
                     Some(active) => {
                         tenant.incarnation = Some(active.incarnation.to_string());
-                        NodeStore::open_existing(active.directory.join("node.kv"), active.database_id(&config, &tenant.tenant)?, persistent_disk.clone(), scratch_disk.clone())?
+                        NodeStore::open_existing(active.directory.join("node.kv"), active.database_id(&config, &tenant.tenant)?, persistent_disk.clone(), scratch_disk.clone(), persistent_disk.native_storage_config())?
                     }
                     None => node.clone(),
                 };
                 if active.is_some() {
                     pending.owned_nodes.push(tenant_node.clone());
                     runtime.owned_nodes.push(tenant_node.clone());
+                    tenant_node.prepare_cache_warming().await?;
                     #[cfg(test)]
                     crate::startup_preparation::checkpoint(config.database_id, "data-active-node");
                 }
@@ -1442,7 +1438,7 @@ impl NodeRuntime {
                 .await?;
                 if let Some(active) = active {
                     let generation = opened.database.engine().generation()?;
-                    if generation.state.restored_from.as_ref() != Some(&active.checkpoint) || generation.state.pending_restore.is_some() {
+                    if generation.restored_from().as_ref() != Some(&active.checkpoint) || generation.pending_restore().is_some() {
                         anyhow::bail!("active standalone generation is incomplete or differs from its committed checkpoint");
                     }
                 }
@@ -1479,7 +1475,7 @@ impl NodeRuntime {
             let mcp =
                 crate::mcp::router(config.mcp.protocol.clone(), registry.clone(), auth.clone())?;
             let native = tonic::service::Routes::new(
-                NativeData::new(registry.clone(), auth.clone()).service(),
+                native_data_service(registry.clone(), auth.clone()),
             )
             .into_axum_router();
             let mut native_admin = NativeAdmin::new(registry.clone(), auth.clone()).with_management(administration.clone()).with_telemetry(runtime.telemetry.clone());
@@ -1792,7 +1788,9 @@ impl NodeRuntime {
                 return Ok(false);
             }
             if let Some(manager) = &self.administration {
-                let topology = manager.committed_topology()?;
+                let topology =
+                    kasumi_engine::control::ControlPlane::local_topology(&self.control.database)?;
+                let topology = &topology.topology;
                 for tenant in &self.tenants {
                     // Configuration may contain staged tenants. Only a durable
                     // route authorizes starting its original group automatically.
@@ -1884,9 +1882,8 @@ impl NodeRuntime {
                             .database
                             .engine()
                             .generation()?
-                            .state
-                            .incarnation
-                            .clone(),
+                            .incarnation()
+                            .to_owned(),
                         mode: mode.clone(),
                         voters: voters.clone(),
                     },
@@ -1947,7 +1944,11 @@ impl NodeRuntime {
                         .context("installed Control topology is missing")?;
                     validate_configured_topology(&current.topology, &expected)?;
                     crate::lifecycle_runtime::require_applied(
-                        &self.control.database.engine().generation()?.state,
+                        self.control
+                            .database
+                            .engine()
+                            .generation()?
+                            .lifecycle_installation(),
                         self.config.control.lifecycle.as_ref(),
                     )?;
                     Ok::<_, anyhow::Error>(())
@@ -1973,13 +1974,14 @@ impl NodeRuntime {
                 // Genesis alone does not establish readiness. A follower must
                 // observe an actual leader and applied Raft state, then validate
                 // its own current Control state. This is not a quorum read.
-                let generation = self.control.database.engine().generation()?;
-                let current = ControlPlane::applied_topology(&generation.state)?;
+                let selection = ControlPlane::select_local(&self.control.database)?;
+                let current = selection.require_installed_topology()?;
                 validate_configured_topology(&current.topology, &expected)?;
                 crate::lifecycle_runtime::require_applied(
-                    &generation.state,
+                    selection.lifecycle_installation(),
                     self.config.control.lifecycle.as_ref(),
                 )?;
+                selection.check_access()?;
                 return Ok(true);
             }
             tokio::time::sleep(Duration::from_secs(1)).await;
@@ -2345,8 +2347,12 @@ pub(crate) fn control_context(policy: &Policy) -> Result<RequestContext> {
 }
 
 /// Credential-free operator example, also emitted by `kasumid example-config`.
-pub fn example_config(directory_policy: kasumi_store::DirectoryPolicy) -> Result<RuntimeConfig> {
+pub fn example_config(
+    directory_policy: kasumi_store::DirectoryPolicy,
+    file_allocation_policy: kasumi_store::FileAllocationPolicy,
+) -> Result<RuntimeConfig> {
     directory_policy.validate()?;
+    file_allocation_policy.validate()?;
     let tls = || TlsFiles {
         certificate: "/etc/kasumi/server.pem".into(),
         private_key: "/etc/kasumi/server-key.pem".into(),
@@ -2385,11 +2391,13 @@ pub fn example_config(directory_policy: kasumi_store::DirectoryPolicy) -> Result
                 ("backups".into(), "/var/lib/kasumi/backups".into()),
             ]),
             directory_policy,
+            file_allocation_policy,
         )?,
         scratch_disk: kasumi_store::ScratchDiskConfig {
             directory: "/var/lib/kasumi/scratch".into(),
             max_bytes: 64 << 30,
             min_free_bytes: 256 << 20,
+            native_cache_bytes: 512 << 20,
         },
         tenant_audit_archives: BTreeMap::new(),
         signer_verifier: Some(crate::signer_runtime::SignerVerifierConfig {
@@ -2443,6 +2451,8 @@ pub fn example_config(directory_policy: kasumi_store::DirectoryPolicy) -> Result
         format: 1,
         admission: kasumi_engine::admission::AdmissionConfig {
             max_inflight_bytes: Some(2 << 30),
+            cache_work_reserve_bytes: Some(64 << 20),
+            cache_work_reserve_slots: Some(64),
             ..Default::default()
         },
         backup_destinations: BTreeMap::new(),
@@ -2572,7 +2582,11 @@ impl AdminClientConfig {
 
 #[cfg(test)]
 fn fixture_config() -> RuntimeConfig {
-    let mut config = example_config(kasumi_store::DirectoryPolicy::fixture()).unwrap();
+    let mut config = example_config(
+        kasumi_store::DirectoryPolicy::fixture(),
+        kasumi_store::FileAllocationPolicy::fixture(),
+    )
+    .unwrap();
     // Keep the original fixture policy; the new-install generator's explicit
     // 2 GiB total is not a test workload budget increase.
     config.admission = kasumi_engine::admission::AdmissionConfig::default();
@@ -2596,12 +2610,19 @@ async fn create_fixture_node(
     storage: &crate::runtime_memory::RuntimeStorage,
 ) {
     let admission = storage.facade(&config.admission).unwrap();
-    let node = NodeStore::create_new(
-        &config.database_path,
-        config.database_id,
-        storage.open_persistent(&config.persistent_disk).unwrap(),
-        storage.open_scratch(&config.scratch_disk).unwrap(),
-    )
+    let node = {
+        let native_path = &config.database_path;
+        let native_id = config.database_id;
+        let native_disk = storage.open_persistent(&config.persistent_disk).unwrap();
+        let native_scratch_disk = storage.open_scratch(&config.scratch_disk).unwrap();
+        NodeStore::create_new(
+            native_path,
+            native_id,
+            native_disk.clone(),
+            native_scratch_disk,
+            native_disk.native_storage_config(),
+        )
+    }
     .unwrap();
     let credential: crate::serving_runtime::CredentialSource =
         Arc::new(|_| Ok(Zeroizing::new("test-runtime-token".into())));
@@ -2712,7 +2733,7 @@ async fn provision_local_fixture_domains(
                 routes.insert(
                     tenant.to_owned(),
                     kasumi_engine::control::TenantRoute {
-                        incarnation: database.engine().generation()?.state.incarnation.clone(),
+                        incarnation: database.engine().generation()?.incarnation().to_owned(),
                         mode: kasumi_engine::control::DeploymentMode::Local,
                         voters: BTreeSet::from([1]),
                     },
@@ -2794,7 +2815,10 @@ mod tests {
             Arc::new(LocalKeyProvider::new([35; 32])),
         )
         .await?;
-        let config = example_config(kasumi_store::DirectoryPolicy::fixture())?;
+        let config = example_config(
+            kasumi_store::DirectoryPolicy::fixture(),
+            kasumi_store::FileAllocationPolicy::fixture(),
+        )?;
         let tenant = &config.tenants[0];
         let bootstrap = config
             .bootstrap(
@@ -2954,9 +2978,14 @@ mod tests {
 
     #[test]
     fn runtime_config_requires_explicit_admission() {
-        let mut encoded =
-            serde_json::to_value(example_config(kasumi_store::DirectoryPolicy::fixture()).unwrap())
-                .unwrap();
+        let mut encoded = serde_json::to_value(
+            example_config(
+                kasumi_store::DirectoryPolicy::fixture(),
+                kasumi_store::FileAllocationPolicy::fixture(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
         let decoded: RuntimeConfig = serde_json::from_value(encoded.clone()).unwrap();
         decoded.validate().unwrap();
         assert_eq!(serde_json::to_value(decoded).unwrap(), encoded);
@@ -2969,7 +2998,11 @@ mod tests {
 
     #[test]
     fn operator_example_is_valid_secret_free_and_rejects_inline_credentials() {
-        let config = example_config(kasumi_store::DirectoryPolicy::fixture()).unwrap();
+        let config = example_config(
+            kasumi_store::DirectoryPolicy::fixture(),
+            kasumi_store::FileAllocationPolicy::fixture(),
+        )
+        .unwrap();
         config.validate().unwrap();
         let mut value = serde_json::to_value(&config).unwrap();
         assert!(value["tenants"][0]["keys"].get("token").is_none());
@@ -3273,7 +3306,11 @@ mod tests {
     #[test]
     fn replicated_control_origin_identity_matches_genesis_for_root_url_forms() {
         for trailing_slash in [false, true] {
-            let mut config = example_config(kasumi_store::DirectoryPolicy::fixture()).unwrap();
+            let mut config = example_config(
+                kasumi_store::DirectoryPolicy::fixture(),
+                kasumi_store::FileAllocationPolicy::fixture(),
+            )
+            .unwrap();
             if trailing_slash {
                 for peer in &mut config.replication.as_mut().unwrap().peers {
                     peer.endpoint.push('/');
@@ -4126,7 +4163,7 @@ mod lifecycle_tests {
             let database = tokio::time::timeout(Duration::from_secs(15), async {
                 loop {
                     if let Ok(database) = registry.database(&context)
-                        && !database.engine().generation().unwrap().state.retired
+                        && !database.engine().generation().unwrap().retired()
                     {
                         break database;
                     }
@@ -4155,7 +4192,7 @@ mod lifecycle_tests {
                         .contains_key("beta")
                 );
             }
-            let control_limits = control.engine().generation().unwrap().state.limits.clone();
+            let control_limits = control.engine().generation().unwrap().limits().clone();
             control
                 .administer(operator.clone(), Operation::SetLimits(control_limits))
                 .await
@@ -4183,9 +4220,8 @@ mod lifecycle_tests {
                 .engine()
                 .generation()
                 .unwrap()
-                .state
-                .incarnation
-                .clone();
+                .incarnation()
+                .to_owned();
             if round == 0 {
                 incarnation = Some(current);
                 database
@@ -4296,7 +4332,7 @@ mod lifecycle_tests {
                 let invocation = manager.prepare(context.clone(), M::Status {}).unwrap();
                 let fence = invocation.response_fence().unwrap();
                 let _encoded = serde_json::to_vec(&invocation.execute().await.unwrap()).unwrap();
-                let policy = database.engine().generation().unwrap().state.policy.clone();
+                let policy = database.engine().generation().unwrap().policy().clone();
                 let mut changed = policy.clone();
                 changed
                     .grants
@@ -4327,7 +4363,7 @@ mod lifecycle_tests {
                     .unwrap();
             }
             if round == 0 {
-                let mut policy = control.engine().generation().unwrap().state.policy.clone();
+                let mut policy = control.engine().generation().unwrap().policy().clone();
                 policy.grants.push(Grant {
                     principal: "rotated-startup-operator".into(),
                     collection: None,
@@ -4804,8 +4840,7 @@ mod lifecycle_tests {
                     .engine()
                     .generation()
                     .unwrap()
-                    .state
-                    .tenant,
+                    .tenant(),
                 CONTROL_TENANT
             );
             assert_eq!(runtime.data_listeners.len(), 3);
@@ -5192,7 +5227,7 @@ mod lifecycle_tests {
                 .map(|database| {
                     database.engine().generation().map(|generation| {
                         (
-                            generation.state.revision,
+                            generation.revision(),
                             generation.state.collections.contains_key("docs"),
                         )
                     })
@@ -5357,7 +5392,7 @@ mod lifecycle_tests {
                     .map(|database| {
                         database.engine().generation().map(|generation| {
                             (
-                                generation.state.revision,
+                                generation.revision(),
                                 generation.state.collections.get("docs").is_some_and(
                                     |collection| collection.documents.contains_key("a"),
                                 ),
@@ -5582,7 +5617,7 @@ mod lifecycle_tests {
         tokio::time::timeout(Duration::from_secs(20), async {
             while !databases
                 .iter()
-                .all(|db| db.engine().generation().unwrap().state.suspended)
+                .all(|db| db.engine().generation().unwrap().suspended())
             {
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
@@ -5591,12 +5626,11 @@ mod lifecycle_tests {
         .unwrap();
         fixture_stage!("suspend replicated");
         let source_incarnation = Uuid::parse_str(
-            &databases[leader]
+            databases[leader]
                 .engine()
                 .generation()
                 .unwrap()
-                .state
-                .incarnation,
+                .incarnation(),
         )
         .unwrap();
         let source_context = context.clone();
@@ -5664,8 +5698,8 @@ mod lifecycle_tests {
                                     )
                                 });
                             (
-                                generation.state.revision,
-                                generation.state.suspended,
+                                generation.revision(),
+                                generation.suspended(),
                                 verification_audit,
                             )
                         })
@@ -5797,9 +5831,7 @@ mod lifecycle_tests {
                     .database(&context)
                     .ok()
                     .and_then(|database| database.engine().generation().ok())
-                    .is_some_and(|generation| {
-                        generation.state.incarnation == incarnation.to_string()
-                    })
+                    .is_some_and(|generation| generation.incarnation() == incarnation.to_string())
             }) {
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
@@ -5814,7 +5846,7 @@ mod lifecycle_tests {
                 let execution = generation
                     .state
                     .target_lifecycle
-                    .get(&generation.state.incarnation)
+                    .get(generation.incarnation())
                     .cloned()
                     .unwrap();
                 assert_eq!(
@@ -5846,7 +5878,7 @@ mod lifecycle_tests {
                 async move {
                     // Resolve an uncertain resume from quorum-committed state before
                     // issuing another administrative operation.
-                    if restored.engine().generation()?.state.suspended {
+                    if restored.engine().generation()?.suspended() {
                         restored
                             .administer(context, Operation::Suspend(false))
                             .await?;
@@ -6028,7 +6060,7 @@ mod lifecycle_tests {
                     ready &= registry.database(&context).is_ok_and(|db| {
                         db.engine()
                             .generation()
-                            .is_ok_and(|g| g.state.incarnation == incarnation.to_string())
+                            .is_ok_and(|g| g.incarnation() == incarnation.to_string())
                     });
                 }
                 if ready {
@@ -6385,6 +6417,21 @@ mod audit_tests;
 mod observability_tests;
 
 impl crate::startup_owner::Runtime for NodeRuntime {
+    fn handoff(&mut self) -> Result<()> {
+        // Ticket::claim calls this synchronously while retaining the entire
+        // runtime. Failed/abandoned publication still drains dormant workers.
+        for node in &self.owned_nodes {
+            node.activate_cache_warming()?;
+        }
+        if let Some(verifier) = &self.signer_verifier {
+            verifier.activate_cache_warming()?;
+        }
+        if let Some(target) = &self.target_recovery {
+            target.activate_cache_warming()?;
+        }
+        Ok(())
+    }
+
     fn close(
         &mut self,
     ) -> std::pin::Pin<

@@ -1,0 +1,32 @@
+Command: cargo test --locked --offline --config profile.test.package.kasumi-kv.opt-level=3 --config profile.test.package.sha2.opt-level=3 -p kasumi-engine --all-features --lib admission::source_publication -- --nocapture
+CARGO_TARGET_DIR=target/disk-backed-cache
+   Compiling kasumi-kv v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-kv)
+   Compiling kasumi-store v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-store)
+   Compiling kasumi-raft v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-raft)
+   Compiling kasumi-engine v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-engine)
+error[E0308]: mismatched types
+  --> crates/kasumi-engine/src/admission/source_publication.rs:59:17
+   |
+58 |               add(
+   |               --- arguments to this function are incorrect
+59 | /                 add(
+60 | |                     arc::<Bank>()?,
+61 | |                     kasumi_kv::source_backend_allocation_bytes::<Pool>()?,
+62 | |                 ),
+   | |_________________^ expected `u64`, found `Result<u64, Error>`
+   |
+   = note: expected type `u64`
+              found enum `std::result::Result<u64, std::io::Error>`
+note: function defined here
+  --> crates/kasumi-engine/src/admission/source_publication.rs:18:4
+   |
+18 | fn add(a: u64, b: u64) -> io::Result<u64> {
+   |    ^^^ ------
+help: use the `?` operator to extract the `std::result::Result<u64, std::io::Error>` value, propagating a `Result::Err` value to the caller
+   |
+62 |                 )?,
+   |                  +
+
+For more information about this error, try `rustc --explain E0308`.
+error: could not compile `kasumi-engine` (lib) due to 1 previous error
+Runner: 90.14s; exit=101; matching=814/814

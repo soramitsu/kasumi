@@ -1,0 +1,25 @@
+Command: cargo test -p kasumi-raft --all-features --lib --locked --offline --config profile.test.package.kasumi-kv.opt-level=3 --config profile.test.package.sha2.opt-level=3 -- --test-threads=1 application_source_custody_tests::
+CARGO_TARGET_DIR=target/disk-backed-cache
+   Compiling kasumi-types v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-types)
+   Compiling kasumi-serving v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-serving)
+   Compiling kasumi-store v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-store)
+   Compiling kasumi-raft v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-raft)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 52s
+     Running unittests src/lib.rs (target/disk-backed-cache/debug/deps/kasumi_raft-322a2bc95e307dbb)
+
+running 11 tests
+test snapshot_buffer::application_source_custody_tests::application_source_binding_is_single_use_idle_and_before_acquisition ... ok
+test snapshot_buffer::application_source_custody_tests::application_source_failed_claim_cannot_release_unclosed_idle_roots ... ok
+test snapshot_buffer::application_source_custody_tests::application_source_failed_final_check_and_cancelled_cleanup_keep_unclaimed_group ... ok
+test snapshot_buffer::application_source_custody_tests::application_source_failed_startup_waits_real_storage_lease_before_final_drain ... ok
+test snapshot_buffer::application_source_custody_tests::application_source_final_check_precedes_group_delivery ... ok
+test snapshot_buffer::application_source_custody_tests::application_source_idle_abandonment_and_cancelled_drain_keep_original_close ... ok
+test snapshot_buffer::application_source_custody_tests::application_source_nonpositive_close_keeps_original_error_and_registry ... ok
+test snapshot_buffer::application_source_custody_tests::application_source_panicked_final_check_and_cancelled_cleanup_keep_unclaimed_group ... ok
+test snapshot_buffer::application_source_custody_tests::application_source_pending_retirement_blocks_buffer_and_group_release ... ok
+test snapshot_buffer::application_source_custody_tests::application_source_retained_startup_never_seals_writer_preparation ... ok
+test snapshot_buffer::application_source_custody_tests::application_source_shutdown_during_final_check_cannot_deliver_group ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 128 filtered out; finished in 0.01s
+
+Runner: 113.10s; exit=0; matching=768/768

@@ -19,8 +19,8 @@ impl NativeLifecycleControl {
     ) -> anyhow::Result<Self> {
         let state = database.engine().generation()?;
         anyhow::ensure!(
-            state.state.tenant == "__kasumi_control"
-                && state.state.incarnation == signer.root().control_incarnation.to_string(),
+            state.tenant() == "__kasumi_control"
+                && state.incarnation() == signer.root().control_incarnation.to_string(),
             "installed lifecycle database or signer resource differs"
         );
         drop(state);

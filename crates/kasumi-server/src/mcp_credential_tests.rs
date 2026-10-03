@@ -469,11 +469,34 @@ async fn catalog_body_wait_rechecks_revoked_credential_before_http_release() {
     fixture.close().await;
 }
 
+// Native cache capacity is independently retained by this same governor.
+// Exclude only its exact provider charge from adapter allocation comparisons.
+fn mcp_non_cache_reserved(fixture: &Fixture) -> u64 {
+    let cache = fixture.node.cache_stats().unwrap();
+    let cache_charge = cache
+        .admitted_credit_bytes
+        .checked_add(cache.provider_overhead_bytes)
+        .unwrap();
+    fixture
+        .admission
+        .snapshot()
+        .reserved_bytes
+        .checked_sub(cache_charge)
+        .unwrap()
+}
+
 #[tokio::test]
 async fn terminal_body_is_materialized_with_its_admission_before_credential_release() {
     let fixture = Fixture::new().await;
     let issued = fixture.issue();
-    let baseline = fixture.admission.snapshot().reserved_bytes;
+    // This fixture captures authentication audit in memory; revocation writes
+    // credential storage directly and dispatches no SecurityAudit job. Pause
+    // only the real audit maintenance reader during this isolated census.
+    let quiescent = fixture.security.quiescent_jobs_for_test().await;
+    let baseline_ledger = fixture.admission.snapshot();
+    assert_eq!(baseline_ledger.inflight_operations, 0);
+    let baseline_cache = fixture.node.cache_stats().unwrap();
+    let baseline = mcp_non_cache_reserved(&fixture);
     let entered = Arc::new(Notify::new());
     let (release, waiting) = oneshot::channel();
     let app = fixture.owned_response_router(
@@ -488,12 +511,15 @@ async fn terminal_body_is_materialized_with_its_admission_before_credential_rele
     tokio::time::timeout(Duration::from_secs(10), entered.notified())
         .await
         .unwrap();
+    let held_ledger = fixture.admission.snapshot();
+    let held_cache = fixture.node.cache_stats().unwrap();
+    assert_eq!(held_ledger.inflight_operations, 0);
     assert!(
         !running.is_finished(),
         "a lazy body escaped the final HTTP fence"
     );
     assert!(
-        fixture.admission.snapshot().reserved_bytes > baseline,
+        mcp_non_cache_reserved(&fixture) > baseline,
         "body materialization lost its response workspace reservation"
     );
     fixture
@@ -504,8 +530,20 @@ async fn terminal_body_is_materialized_with_its_admission_before_credential_rele
     let (status, body) = decoded(running.await.unwrap().unwrap()).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
     assert_eq!(body, json!({"error":"UNAUTHORIZED"}));
-    assert_eq!(fixture.admission.snapshot().reserved_bytes, baseline);
+    eprintln!(
+        "response-census terminal baseline={baseline_ledger:?} baseline_cache={baseline_cache:?} held={held_ledger:?} held_cache={held_cache:?} released={:?} released_cache={:?}",
+        fixture.admission.snapshot(),
+        fixture.node.cache_stats().unwrap()
+    );
+    assert_eq!(mcp_non_cache_reserved(&fixture), baseline);
+    let released = fixture.admission.snapshot();
+    assert_eq!(
+        released.live_reservations,
+        baseline_ledger.live_reservations
+    );
+    assert_eq!(released.inflight_operations, 0);
     fixture.assert_one_denial();
+    drop(quiescent);
     fixture.close().await;
 }
 
@@ -1059,9 +1097,11 @@ async fn sdk_terminal_transport_failure_preserves_dispatched_mutation_uncertaint
 async fn small_integer_query_is_refused_before_its_value_tree_under_a_tight_budget() {
     let fixture = Fixture::new().await;
     let issued = fixture.issue();
-    // About one million integers: two bytes each as JSON, but a Value slot
-    // and a heap text block each once decoded. Documents stay below the
-    // 20,000-node validation limit; one full page holds a thousand of them.
+    // Half a million integers: two bytes each as JSON, but a Value slot
+    // and a heap text block each once decoded. Keep a thousand documents and
+    // the full page while fitting the admitted source/page/tree overlap in
+    // the unchanged 256 MiB fixture budget. Each document stays below the
+    // 20,000-node validation limit.
     for batch in 0..4 {
         fixture
             .put(
@@ -1069,13 +1109,14 @@ async fn small_integer_query_is_refused_before_its_value_tree_under_a_tight_budg
                 (0..250).map(|index| {
                     (
                         format!("zeros-{batch}-{index}"),
-                        json!({"values":vec![0u8; 1000]}),
+                        json!({"values":vec![0u8; 500]}),
                     )
                 }),
             )
             .await;
     }
     let query = json!({"collection":"docs", "allow_scan":true, "limit":1000});
+    let before_source = fixture.admission.snapshot().reserved_bytes;
     let direct = fixture
         .database
         .query(
@@ -1085,18 +1126,42 @@ async fn small_integer_query_is_refused_before_its_value_tree_under_a_tight_budg
         .await
         .unwrap();
     assert_eq!(direct.rows.len(), 1000);
+    let source_charge = fixture
+        .admission
+        .snapshot()
+        .reserved_bytes
+        .checked_sub(before_source)
+        .expect("live source output adds its retained query charge");
+    assert!(source_charge > 0);
     let encoded = encode_json(&direct).unwrap();
     drop(direct);
+    assert_eq!(fixture.admission.snapshot().reserved_bytes, before_source);
     let tree = value_tree_bytes(&encoded).unwrap();
     assert!(tree > 24 * encoded.len() as u64);
 
     let baseline = fixture.admission.snapshot();
     let workspace = fixture.response_workspace();
-    // Query execution reserves about 38 MiB beside the fixed response
-    // workspace. The headroom keeps room for that and several times the
-    // encoded result, but misses the decoded tree by 12 MiB.
-    let headroom = workspace + tree - (12 << 20);
-    assert!(headroom > workspace + (40 << 20) + 4 * encoded.len() as u64);
+    // Measure the actual immutable source charge, including full-result/page
+    // overlap. Allow all claims before decoding, then miss only the decoded
+    // tree by 1 MiB. This leaves ample room for its bounded error envelope.
+    let pre_decode = [
+        source_charge,
+        workspace,
+        response_owner::owner_bytes::<kasumi_engine::AdmittedOutput<kasumi_types::QueryResponse>>()
+            .unwrap(),
+        response_owner::allocation_bytes(encoded.len()).unwrap(),
+    ]
+    .into_iter()
+    .try_fold(0u64, u64::checked_add)
+    .expect("fixture pre-decode claims fit u64");
+    let shortage = 1u64 << 20;
+    assert!(tree > shortage);
+    let through_decode = pre_decode
+        .checked_add(tree)
+        .expect("fixture complete decode charge fits u64");
+    let headroom = through_decode.checked_sub(shortage).unwrap();
+    assert!(headroom > pre_decode);
+    assert!(headroom < through_decode);
     let filler = fixture.reserve_all_but(headroom);
     let call = || {
         request(
@@ -1169,6 +1234,10 @@ async fn refused_body_charge_after_dispatch_is_unknown_outcome_resolved_by_recei
         .await
         .unwrap();
     assert_eq!(committed.body, json!({"value":"committed once"}));
+    let committed_version = committed.version;
+    // This direct observation is separately admitted; it must not become part
+    // of the pending mutation response's exact pressure census.
+    drop(committed);
     // The committed result tree is charged. Nothing is left for its body,
     // nor for a tool error body in its place.
     let held = fixture.admission.snapshot().reserved_bytes;
@@ -1225,14 +1294,14 @@ async fn refused_body_charge_after_dispatch_is_unknown_outcome_resolved_by_recei
         body["result"]["structuredContent"],
         serde_json::to_value(receipt.outcome.unwrap()).unwrap()
     );
-    assert_eq!(
-        fixture
-            .database
-            .get(&Fixture::context(), "docs", "charged")
-            .await
-            .unwrap(),
-        committed
-    );
+    let retained = fixture
+        .database
+        .get(&Fixture::context(), "docs", "charged")
+        .await
+        .unwrap();
+    assert_eq!(retained.version, committed_version);
+    assert_eq!(retained.body, json!({"value":"committed once"}));
+    drop(retained);
     assert_eq!(fixture.admission.snapshot().reserved_bytes, baseline);
     fixture.close().await;
 }
@@ -1247,13 +1316,41 @@ async fn exact_response_charges_are_retained_until_http_release() {
             [("held".to_owned(), json!({"values":vec![7u8; 4096]}))],
         )
         .await;
+    // Auth audit is captured and this non-strict get submits no SecurityAudit
+    // job. Hold maintenance quiescent through the source quote and HTTP/body
+    // disposal, then release the guard before shutting down the audit writer.
+    let quiescent = fixture.security.quiescent_jobs_for_test().await;
+    let baseline = fixture.admission.snapshot();
+    assert_eq!(baseline.inflight_operations, 0);
+    let baseline_bytes = mcp_non_cache_reserved(&fixture);
+    let baseline_cache = fixture.node.cache_stats().unwrap();
     let document = fixture
         .database
         .get(&Fixture::context(), "docs", "held")
         .await
         .unwrap();
-    let tree = value_tree_bytes(&encode_json(&document).unwrap()).unwrap();
-    let baseline = fixture.admission.snapshot();
+    let source_charge = mcp_non_cache_reserved(&fixture)
+        .checked_sub(baseline_bytes)
+        .unwrap();
+    assert!(source_charge > 0);
+    assert_eq!(
+        fixture.admission.snapshot().live_reservations,
+        baseline.live_reservations + 1
+    );
+    assert_eq!(fixture.admission.snapshot().inflight_operations, 0);
+    let expected_document = serde_json::to_value(document.as_ref()).unwrap();
+    let source_json = encode_json(document.as_ref()).unwrap();
+    let tree = value_tree_bytes(&source_json).unwrap();
+    let source_buffer = response_owner::allocation_bytes(source_json.len()).unwrap();
+    let source_owner =
+        response_owner::owner_bytes::<kasumi_engine::AdmittedOutput<kasumi_types::Document>>()
+            .unwrap();
+    drop(document);
+    assert_eq!(mcp_non_cache_reserved(&fixture), baseline_bytes);
+    assert_eq!(
+        fixture.admission.snapshot().live_reservations,
+        baseline.live_reservations
+    );
     let workspace = fixture.response_workspace();
     let gate = ReleaseGate::new();
     let mut pending_request = request(
@@ -1265,27 +1362,65 @@ async fn exact_response_charges_are_retained_until_http_release() {
     let running = tokio::spawn(fixture.router().oneshot(pending_request));
     gate.entered().await;
     let held = fixture.admission.snapshot();
+    let held_bytes = mcp_non_cache_reserved(&fixture);
+    let held_cache = fixture.node.cache_stats().unwrap();
     gate.release();
     let response = running.await.unwrap().unwrap();
     assert_eq!(response.status(), StatusCode::OK);
+    let delivered_cache = fixture.node.cache_stats().unwrap();
     let body = axum::body::to_bytes(response.into_body(), MAX_RESPONSE_BYTES)
         .await
         .unwrap();
     let decoded: Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(
-        decoded["result"]["structuredContent"],
-        serde_json::to_value(&document).unwrap()
+    assert_eq!(decoded["result"]["structuredContent"], expected_document);
+    eprintln!(
+        "response-census exact baseline={baseline:?} baseline_cache={baseline_cache:?} held={held:?} held_cache={held_cache:?} delivered={:?} delivered_cache={:?} workspace={workspace} source_charge={source_charge} source_owner={source_owner} source_buffer={source_buffer} tree={tree} sdk_body={} terminal_body={}",
+        fixture.admission.snapshot(),
+        fixture.node.cache_stats().unwrap(),
+        encoded_body_bytes(body.len()),
+        materialization_bytes(body.len()).unwrap()
     );
-    // One retained ledger entry holds the fixed workspace, the decoded tree
-    // and the SDK body derived from the exact envelope until HTTP release.
+    // The point source has its own retained reservation. The adapter's second
+    // entry owns the source wrapper, JSON buffer, decoded tree, SDK envelope
+    // and terminal materialized body/owner through the final emitted bytes.
+    let expected_charge = [
+        source_charge,
+        source_owner,
+        workspace,
+        source_buffer,
+        tree,
+        encoded_body_bytes(body.len()),
+        materialization_bytes(body.len()).unwrap(),
+    ]
+    .into_iter()
+    .try_fold(0u64, u64::checked_add)
+    .unwrap();
     assert_eq!(
-        held.reserved_bytes - baseline.reserved_bytes,
-        workspace + tree + encoded_body_bytes(body.len())
+        held_bytes.checked_sub(baseline_bytes).unwrap(),
+        expected_charge
     );
-    assert_eq!(held.live_reservations, baseline.live_reservations + 1);
+    assert_eq!(held.live_reservations, baseline.live_reservations + 2);
     assert_eq!(held.inflight_operations, baseline.inflight_operations);
+    assert_eq!(mcp_non_cache_reserved(&fixture), held_bytes);
+    assert_eq!(
+        fixture.admission.snapshot().live_reservations,
+        held.live_reservations
+    );
+    assert_eq!(fixture.node.cache_stats().unwrap(), delivered_cache);
+    drop(body);
     let released = fixture.admission.snapshot();
-    assert_eq!(released.reserved_bytes, baseline.reserved_bytes);
+    eprintln!(
+        "response-census exact-final released={released:?} released_cache={:?}",
+        fixture.node.cache_stats().unwrap()
+    );
+    assert_eq!(mcp_non_cache_reserved(&fixture), baseline_bytes);
+    assert_eq!(fixture.node.cache_stats().unwrap(), delivered_cache);
+    assert_eq!(
+        released.live_reservations,
+        held.live_reservations.checked_sub(2).unwrap()
+    );
+    assert_eq!(released.inflight_operations, 0);
     assert_eq!(released.live_reservations, baseline.live_reservations);
+    drop(quiescent);
     fixture.close().await;
 }

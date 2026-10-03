@@ -1,5 +1,10 @@
 use super::*;
 
+enum PreparedMaintenanceStart<'a> {
+    Signing(signing_state::PreparedSigningTransition<'a>),
+    Other,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct OperationalState {
@@ -156,6 +161,7 @@ impl Backend {
         &self,
         position: &AppliedEntryContext,
         prepared: PreparedMaintenance,
+        publication_writes: &mut Vec<WriteOp>,
     ) -> Result<kasumi_types::Result<AuthorityMaintenanceStatus>> {
         let mut meta = self.meta()?;
         if let Err(error) = prepared
@@ -221,34 +227,40 @@ impl Backend {
                     progress_revision: position.log_id.index,
                     phase: AuthorityMaintenancePhase::Prepared,
                 };
-                let validation = self.validate_maintenance_start(&meta, command);
-                if let Err(error) = validation {
-                    status.phase = AuthorityMaintenancePhase::Rejected {
-                        code: error.code,
-                        message: error.message,
-                    };
-                } else if let AuthorityMaintenanceAction::SetCapacity { capacity } = &command.action
-                {
-                    meta.operational.capacity = capacity.clone();
-                    status.phase = AuthorityMaintenancePhase::Completed;
-                    meta.operational.revision = position.log_id.index;
-                } else if command.action.is_signing_head_transition() {
-                    self.apply_signing_transition(
-                        &mut meta,
-                        command,
-                        position.log_id.index,
-                        &mut additions,
-                    )?;
-                    status.phase = AuthorityMaintenancePhase::Completed;
-                } else if matches!(
-                    command.action,
-                    AuthorityMaintenanceAction::AuthorizeSignerTrust { .. }
-                ) {
-                    status.phase = AuthorityMaintenancePhase::Completed;
-                    meta.operational.revision = position.log_id.index;
-                } else {
-                    meta.operational.pending_operation = Some(id);
-                    meta.operational.revision = position.log_id.index;
+                match prepared_outcome(self.prepare_maintenance_start(&meta, command))? {
+                    Err(error) => {
+                        status.phase = AuthorityMaintenancePhase::Rejected {
+                            code: error.code,
+                            message: error.message,
+                        };
+                    }
+                    Ok(PreparedMaintenanceStart::Signing(signing)) => {
+                        self.apply_signing_transition(
+                            &mut meta,
+                            signing,
+                            position.log_id.index,
+                            &mut additions,
+                        )?;
+                        status.phase = AuthorityMaintenancePhase::Completed;
+                    }
+                    Ok(PreparedMaintenanceStart::Other) => {
+                        if let AuthorityMaintenanceAction::SetCapacity { capacity } =
+                            &command.action
+                        {
+                            meta.operational.capacity = capacity.clone();
+                            status.phase = AuthorityMaintenancePhase::Completed;
+                            meta.operational.revision = position.log_id.index;
+                        } else if matches!(
+                            command.action,
+                            AuthorityMaintenanceAction::AuthorizeSignerTrust { .. }
+                        ) {
+                            status.phase = AuthorityMaintenancePhase::Completed;
+                            meta.operational.revision = position.log_id.index;
+                        } else {
+                            meta.operational.pending_operation = Some(id);
+                            meta.operational.revision = position.log_id.index;
+                        }
+                    }
                 }
                 meta.maintenance_receipts = meta
                     .maintenance_receipts
@@ -419,18 +431,18 @@ impl Backend {
         }
         meta.revision = position.log_id.index;
         writes.push(WriteOp::put(NS, META, serde_json::to_vec(&meta)?));
-        self.store.write_batch(&writes)?;
+        *publication_writes = writes;
         Ok(Ok(status))
     }
-    fn validate_maintenance_start(
+    fn prepare_maintenance_start<'a>(
         &self,
         meta: &Meta,
-        command: &AuthorityMaintenanceCommand,
-    ) -> kasumi_types::Result<()> {
+        command: &'a AuthorityMaintenanceCommand,
+    ) -> Result<PreparedMaintenanceStart<'a>> {
         if meta.operational.revision != command.expected_operational_revision
             || meta.operational.pending_operation.is_some()
         {
-            return Err(conflict(
+            return Err(reject_conflict(
                 "authority operational revision changed or maintenance remains pending",
             ));
         }
@@ -442,8 +454,8 @@ impl Backend {
             | AuthorityMaintenanceAction::StageSignerGeneration { .. }
             | AuthorityMaintenanceAction::ActivateSignerGeneration { .. } => {
                 return self
-                    .validate_signing_transition(meta, command)
-                    .map_err(|error| conflict(&error.to_string()));
+                    .prepare_signing_transition(meta, command)
+                    .map(PreparedMaintenanceStart::Signing);
             }
             AuthorityMaintenanceAction::AuthorizeSignerTrust { directive } => {
                 let verifier = &directive.verifier;
@@ -452,35 +464,26 @@ impl Backend {
                     .members
                     .get(&verifier.node_id)
                     .is_none_or(|member| member.verifier != *verifier)
-                    || self
-                        .record(&revoked_key(verifier.node_id))
-                        .map_err(unavailable)?
-                        .is_some()
+                    || self.record(&revoked_key(verifier.node_id))?.is_some()
                     || *domain_sha256
                         != self
                             .installation
                             .manifest
-                            .signing_domain(self.installation.partition)
-                            .map_err(unavailable)?
-                            .digest()
-                            .map_err(unavailable)?
+                            .signing_domain(self.installation.partition)?
+                            .digest()?
                 {
-                    return Err(conflict(
+                    return Err(reject_conflict(
                         "signer directive member or installed domain differs",
                     ));
                 }
-                self.validate_issuer_signer_directive(meta, directive)
-                    .map_err(|error| conflict(&error.to_string()))?;
+                self.validate_issuer_signer_directive(meta, directive)?;
             }
             AuthorityMaintenanceAction::EnrollLearner { node_id, member } => {
-                Self::check_new_verifier_admission(meta)?;
+                Self::check_new_verifier_admission(meta).map_err(reject)?;
                 if next.members.contains_key(node_id)
-                    || self
-                        .record(&revoked_key(*node_id))
-                        .map_err(unavailable)?
-                        .is_some()
+                    || self.record(&revoked_key(*node_id))?.is_some()
                 {
-                    return Err(conflict(
+                    return Err(reject_conflict(
                         "authority member identity is already allocated or permanently revoked",
                     ));
                 }
@@ -489,17 +492,17 @@ impl Backend {
             AuthorityMaintenanceAction::ReplaceVoters { voters } => next.voters = voters.clone(),
             AuthorityMaintenanceAction::RevokeMember { node_id } => {
                 if next.voters.contains(node_id) || next.members.remove(node_id).is_none() {
-                    return Err(conflict(
+                    return Err(reject_conflict(
                         "replace an active voter before revoking its member identity",
                     ));
                 }
             }
             AuthorityMaintenanceAction::SetCapacity { capacity } => {
                 capacity.validate().map_err(|_| {
-                    Error::new(
+                    reject(Error::new(
                         ErrorCode::InvalidArgument,
                         "invalid authority byte capacity",
-                    )
+                    ))
                 })?;
                 if capacity.max_tenants < meta.tenants
                     || meta
@@ -508,18 +511,19 @@ impl Backend {
                         .saturating_add(capacity.maintenance_reserve_bytes)
                         > capacity.max_state_bytes
                 {
-                    return Err(conflict(
+                    return Err(reject_conflict(
                         "new authority capacity cannot fit durable records and reserved completions",
                     ));
                 }
             }
         }
         next.validate().map_err(|_| {
-            Error::new(
+            reject(Error::new(
                 ErrorCode::InvalidArgument,
                 "authority membership violates installed endpoint or failure-domain requirements",
-            )
-        })
+            ))
+        })?;
+        Ok(PreparedMaintenanceStart::Other)
     }
     pub(super) fn completion_reserve(meta: &Meta) -> u64 {
         meta.active_fences

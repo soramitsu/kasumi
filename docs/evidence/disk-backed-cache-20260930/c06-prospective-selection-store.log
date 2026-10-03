@@ -1,0 +1,17 @@
+Command: cargo test -p kasumi-store --all-features --lib --locked --offline --config profile.test.package.kasumi-kv.opt-level=3 --config profile.test.package.sha2.opt-level=3 -- --test-threads=1 prepared_pair_
+CARGO_TARGET_DIR=target/disk-backed-cache
+   Compiling kasumi-store v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-store)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 30.67s
+     Running unittests src/lib.rs (target/disk-backed-cache/debug/deps/kasumi_store-98be0c6afb7030c8)
+
+running 6 tests
+test read_view::fork_tests::prepared_pair_cancel_and_drop_retire_unbegun_actual_children ... ok
+test read_view::fork_tests::prepared_pair_denial_happens_before_registration_and_keeps_original_value ... ok
+test read_view::fork_tests::prepared_pair_owns_one_census_child_before_selecting_the_published_root ... ok
+test read_view::fork_tests::prepared_pair_rechecks_each_domain_before_native_begin_and_retires_queue ... ok
+test read_view::fork_tests::prepared_pair_rejects_recovered_begin_before_application_publication ... ok
+test read_view::fork_tests::prepared_pair_unknown_cancellation_keeps_exact_payload_and_census_custody ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 665 filtered out; finished in 5.71s
+
+Runner: 36.51s; exit=0; matching=771/771

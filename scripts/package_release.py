@@ -38,8 +38,9 @@ if __name__ == "__main__":
 import gate_process
 import assembly_inputs
 
-from release_gate import (FORBIDDEN_FIXTURE_FEATURES, TOOLCHAIN, compiler_artifact_messages, compiler_executable_identity,
-                          functional_gates, inventory, record_compiled_package, sha256, write_json)
+from release_gate import (FORBIDDEN_FIXTURE_FEATURES, GENERATED_OUTPUTS, TOOLCHAIN, compiler_artifact_messages,
+                          compiler_executable_identity, functional_gates, generated_output_paths, inventory,
+                          record_compiled_package, sha256, write_json)
 
 TARGETS = {"aarch64-unknown-linux-gnu": ("elf", 183),
            "x86_64-unknown-linux-gnu": ("elf", 62),
@@ -62,6 +63,22 @@ def owned_file(root, relative):
             raise ValueError("artifact path contains a symbolic link")
     if not path.is_file() or not path.resolve(strict=True).is_relative_to(root):
         raise ValueError("artifact is not an owned regular file")
+    return path
+
+
+def owned_directory(root, relative):
+    root = Path(root).resolve(strict=True)
+    relative = Path(relative)
+    if relative.is_absolute() or ".." in relative.parts:
+        raise ValueError("artifact path escapes its owned directory")
+    path = root / relative
+    for parent in (path, *path.parents):
+        if parent == root:
+            break
+        if parent.is_symlink():
+            raise ValueError("artifact path contains a symbolic link")
+    if not path.is_dir() or not path.resolve(strict=True).is_relative_to(root):
+        raise ValueError("artifact is not an owned directory")
     return path
 
 
@@ -126,6 +143,25 @@ def verify_compiler_executables(directory, gate, process):
             raise ValueError("compiler-artifact executable bytes or mode differ")
 
 
+def verify_generated_outputs(directory, gate):
+    """Accept only the declared output of its own gate, re-hashed from its bytes."""
+    outputs = gate.get("generated_outputs")
+    if gate["name"] not in GENERATED_OUTPUTS:
+        if outputs != []:
+            raise ValueError("gate claims an undeclared generated output")
+        return
+    expected = generated_output_paths(gate["name"])
+    if (not isinstance(outputs, list) or len(outputs) != 1 or not isinstance(outputs[0], dict)
+            or set(outputs[0]) != set(expected) | {"files_sha256"}
+            or any(outputs[0][field] != value for field, value in expected.items())
+            or not isinstance(outputs[0]["files_sha256"], str)
+            or re.fullmatch(r"[0-9a-f]{64}", outputs[0]["files_sha256"]) is None):
+        raise ValueError("generated gate output differs from its declaration")
+    files = json.loads(verify_file(directory, expected["files"], outputs[0]["files_sha256"]).read_text())
+    if not files or inventory(owned_directory(directory, expected["path"])) != files:
+        raise ValueError("retained generated gate output differs from its inventory")
+
+
 def verify_evidence(directory):
     directory = Path(directory).resolve(strict=True)
     record = json.loads(owned_file(directory, "evidence.json").read_text())
@@ -160,6 +196,7 @@ def verify_evidence(directory):
         verify_file(directory, gate["resources"], gate["resources_sha256"])
         process = verify_process_receipt(directory, gate, timeout)
         verify_compiler_executables(directory, gate, process)
+        verify_generated_outputs(directory, gate)
         if gate["name"] in {"python", "dependency-patches"} and process["executable"] != {
                 "path": interpreter["path"], "sha256": interpreter["sha256"]}:
             raise ValueError("Python gate did not execute the recorded interpreter")

@@ -1,8 +1,8 @@
 //! Admitted audit jobs retain their actual task until its outcome is observed.
 use super::{AuditWork, SecurityAudit};
 use anyhow::{Context, Result};
-use kasumi_types::drain::{DrainFailure, DrainIssue};
-use std::{future::Future, sync::Arc};
+use kasumi_types::drain::{DrainFailure, DrainIssueRef};
+use std::future::Future;
 
 #[derive(Default)]
 pub(super) struct Jobs {
@@ -17,6 +17,7 @@ struct Job {
     _reservation: crate::admission::Reservation,
 }
 
+/// Pause the actual blocking record child before its injected panic.
 #[cfg(test)]
 pub(super) struct RecordFault {
     pub entered: tokio::sync::oneshot::Sender<()>,
@@ -29,7 +30,7 @@ impl SecurityAudit {
         component: &'static str,
         id: usize,
         error: anyhow::Error,
-    ) -> Arc<DrainIssue> {
+    ) -> DrainIssueRef {
         // Terminal evidence stops new admissions. Concurrent admitted owners
         // remain registered, so the failure inventory is bounded by that work.
         self.writer.work.seal();
@@ -58,13 +59,16 @@ impl SecurityAudit {
         }
     }
 
+    /// Keep accepted work and its reply task owned through actual completion.
+    /// Persistence errors and child panics are retained by their exact producer;
+    /// ordinary read, validation and recoverable maintenance errors remain replies.
     pub(super) async fn run_owned<T, F, R>(&self, run: R) -> Result<T>
     where
         T: Send + 'static,
         F: Future<Output = Result<T>> + Send + 'static,
         R: FnOnce(AuditWork, usize) -> F + Send + 'static,
     {
-        let (send, receive) = tokio::sync::oneshot::channel();
+        let (send, receiver) = tokio::sync::oneshot::channel();
         {
             // Registration and the shutdown census share this lock. WorkFence
             // admission is checked inside it, after reaping actual outcomes.
@@ -87,16 +91,21 @@ impl SecurityAudit {
             jobs.next = id.checked_add(1).context("audit job identity exhausted")?;
             // No await between dispatch and retained registration. The caller
             // only awaits the reply; abandoning it never cancels accepted work.
+            let audit = self.clone();
             jobs.handles.push(Job {
                 id,
                 handle: tokio::spawn(async move {
-                    let outcome = run(work, id).await;
-                    let _ = send.send(outcome);
+                    // Keep the writer alive through reply delivery or disposal
+                    // after caller cancellation, including after AuditWork ends.
+                    let _owner = audit;
+                    let _ = send.send(run(work, id).await);
                 }),
                 _reservation: reservation,
             });
         }
-        receive.await.context("audit job stopped before replying")?
+        receiver
+            .await
+            .context("audit job stopped before replying")?
     }
 
     pub(super) async fn drain_jobs(&self) {
@@ -121,7 +130,7 @@ mod tests {
     };
     use kasumi_store::{TenantStore, test_utils::LocalKeyProvider};
     use kasumi_types::drain::DrainCompletion;
-    use std::{task::Poll, time::Duration};
+    use std::{sync::Arc, task::Poll, time::Duration};
 
     fn event(sequence: u64) -> SecurityEvent {
         SecurityEvent {
@@ -202,7 +211,7 @@ mod tests {
                 .unwrap()
                 .is_panic()
         );
-        assert!(Arc::ptr_eq(
+        assert!(kasumi_types::drain::DrainIssueRef::ptr_eq(
             &failure.issues()[0],
             &audit.shutdown().await.unwrap_err().issues()[0]
         ));
@@ -260,14 +269,19 @@ mod tests {
         .unwrap();
         let path = directory.path().join("persistent/audit.kv");
         let provider = Arc::new(LocalKeyProvider::new([75; 32]));
+        // This test controls cancellation and actual publication panic, not
+        // lease time. Keep its ordinary 60-second grant on a controlled clock
+        // while the real encrypted setup performs all retained audit writes.
+        let clock = Arc::new(kasumi_store::test_utils::ManualClock::new());
         let node = storage
             .create_new(&path, kasumi_store::test_utils::NODE_STORE_ID)
             .unwrap();
         let weak = Arc::downgrade(&node);
-        let store = TenantStore::initialize_catalog_fixture(
+        let store = TenantStore::initialize_catalog_fixture_with_clock(
             node.clone(),
             SECURITY_TENANT.into(),
             provider.clone(),
+            clock.clone(),
         )
         .await
         .unwrap();
@@ -333,7 +347,7 @@ mod tests {
                 .unwrap()
                 .is_panic()
         );
-        assert!(Arc::ptr_eq(
+        assert!(kasumi_types::drain::DrainIssueRef::ptr_eq(
             &failure.issues()[0],
             &audit.shutdown().await.unwrap_err().issues()[0]
         ));
@@ -342,12 +356,13 @@ mod tests {
         drop(store);
         drop(node);
         assert!(weak.upgrade().is_none());
-        let reopened = TenantStore::open_existing_fixture(
+        let reopened = TenantStore::open_existing_fixture_with_clock(
             storage
                 .open_existing(&path, kasumi_store::test_utils::NODE_STORE_ID)
                 .unwrap(),
             SECURITY_TENANT.into(),
             provider,
+            clock,
         )
         .await
         .unwrap();

@@ -1,0 +1,53 @@
+Command: cargo test --locked --offline -p kasumi-engine --all-features --lib application_sources::tests::quote_tests:: --config profile.test.package.kasumi-kv.opt-level=3 --config profile.test.package.sha2.opt-level=3
+CARGO_TARGET_DIR=target/disk-backed-cache
+    Blocking waiting for file lock on package cache
+warning: variant `Mutation` is never constructed
+  --> crates/kasumi-engine/src/security_audit_jobs.rs:26:5
+   |
+24 | enum JobEffect {
+   |      --------- variant in this enum
+25 |     Read,
+26 |     Mutation(&'static str),
+   |     ^^^^^^^^
+   |
+   = note: `JobEffect` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: struct `ReadPause` is never constructed
+  --> crates/kasumi-engine/src/security_audit_jobs.rs:57:19
+   |
+57 | pub(super) struct ReadPause {
+   |                   ^^^^^^^^^
+
+warning: method `run_mutation` is never used
+   --> crates/kasumi-engine/src/security_audit_jobs.rs:120:25
+    |
+ 62 | impl SecurityAudit {
+    | ------------------ method in this implementation
+...
+120 |     pub(super) async fn run_mutation<T, F, R>(&self, component: &'static str, run: R) -> Result<T>
+    |                         ^^^^^^^^^^^^
+
+warning: `kasumi-engine` (lib) generated 3 warnings
+warning: field `panic` is never read
+  --> crates/kasumi-engine/src/security_audit_jobs.rs:52:9
+   |
+48 | pub(super) struct RecordFault {
+   |                   ----------- field in this struct
+...
+52 |     pub panic: bool,
+   |         ^^^^^
+
+warning: `kasumi-engine` (lib test) generated 4 warnings (3 duplicates)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.66s
+     Running unittests src/lib.rs (target/disk-backed-cache/debug/deps/kasumi_engine-b15d1192089511a8)
+
+running 4 tests
+test application_sources::tests::quote_tests::source_quote_actual_engine_provider_token_is_preclaimed_and_request_is_pure ... ok
+test application_sources::tests::quote_tests::source_quote_reader_retained_amount_matches_actual_installed_provider_requests ... ok
+test application_sources::tests::quote_tests::source_quote_is_allocation_free_bound_and_covers_real_capture_peak ... ok
+test application_sources::tests::quote_tests::source_quote_covered_planning_uses_actual_format_bound_before_exact_lengths_exist ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 536 filtered out; finished in 2.45s
+
+Runner: 3.33s; exit=0; matching=795/795

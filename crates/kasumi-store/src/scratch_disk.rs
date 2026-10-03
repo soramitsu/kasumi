@@ -30,6 +30,10 @@ pub struct ScratchDiskConfig {
     /// Leave this observed filesystem capacity outside scratch admission so
     /// permanent journal, archive publication and operator recovery can progress.
     pub min_free_bytes: u64,
+    /// Per-table native page/value cache ceiling, including cache metadata and
+    /// retained versions. Every allocation also uses this disk's shared
+    /// installed memory provider. Zero explicitly disables retention.
+    pub native_cache_bytes: u64,
 }
 impl ScratchDiskConfig {
     pub fn validate(&self) -> Result<()> {
@@ -45,6 +49,10 @@ impl ScratchDiskConfig {
             self.max_bytes.checked_add(self.min_free_bytes).is_some(),
             "scratch capacity and filesystem reserve overflow"
         );
+        ensure!(
+            self.native_cache_bytes <= usize::MAX as u64,
+            "scratch native cache exceeds supported address space"
+        );
         Ok(())
     }
 }
@@ -53,6 +61,7 @@ impl ScratchDiskConfig {
 pub struct ScratchDiskSnapshot {
     pub max_bytes: u64,
     pub min_free_bytes: u64,
+    pub native_cache_bytes: u64,
     pub charged_bytes: u64,
     pub live_files: u64,
     /// Capacity promised but not yet observed in allocated file blocks, shared
@@ -67,6 +76,7 @@ pub struct ScratchDiskSnapshot {
 struct State {
     bytes: u64,
     files: u64,
+    reserved_files: u64,
 }
 struct RegisteredScratch {
     identity: (u64, u64),
@@ -108,6 +118,13 @@ impl ScratchDisk {
     /// Parents must already exist; no implicit system temporary-directory fallback.
     pub fn memory(&self) -> &Arc<dyn NodeDiskMemoryAdmission> {
         &self.memory
+    }
+    /// The explicit configured share passed to each encrypted scratch table.
+    /// Concurrent tables remain bounded by the same installed memory provider.
+    pub fn native_cache_config(&self) -> kasumi_kv::CacheConfig {
+        kasumi_kv::CacheConfig {
+            byte_limit: self.config.native_cache_bytes,
+        }
     }
     pub fn required_metadata_bytes(config: &ScratchDiskConfig) -> Result<u64> {
         use std::os::unix::ffi::OsStrExt;
@@ -251,6 +268,7 @@ impl ScratchDisk {
             directory: directory.as_ref().to_owned(),
             max_bytes: 256 << 30,
             min_free_bytes: 0,
+            native_cache_bytes: 8 << 20,
         };
         crate::test_utils::retry_disk_registry(|| Self::open_fixture(&config, memory.clone()))
             .expect("fixture scratch governor")
@@ -265,6 +283,7 @@ impl ScratchDisk {
             directory: directory.as_ref().to_owned(),
             max_bytes,
             min_free_bytes: 0,
+            native_cache_bytes: 8 << 20,
         };
         crate::test_utils::retry_disk_registry(|| Self::open_fixture(&config, memory.clone()))
             .expect("isolated scratch governor")
@@ -280,8 +299,19 @@ impl ScratchDisk {
             directory,
             max_bytes: 16 << 20,
             min_free_bytes: 0,
+            native_cache_bytes: 8 << 20,
         };
-        let owner = Self::open_inner(&config, memory, DeviceSelection::Existing(device)).unwrap();
+        // Each rejected fixture attempt drops an unused registration on this
+        // same device. Only typed registry contention is retried; the installed
+        // constructors still return immediately without waiting or reopening.
+        let owner = crate::test_utils::retry_disk_registry(|| {
+            Self::open_inner(
+                &config,
+                memory.clone(),
+                DeviceSelection::Existing(device.share(0)),
+            )
+        })
+        .unwrap();
         *owner.available_override.lock().unwrap() = Some(available);
         owner
     }
@@ -292,6 +322,7 @@ impl ScratchDisk {
         ScratchDiskSnapshot {
             max_bytes: self.config.max_bytes,
             min_free_bytes: self.config.min_free_bytes,
+            native_cache_bytes: self.config.native_cache_bytes,
             charged_bytes: state.bytes,
             live_files: state.files,
             filesystem_pending_bytes: *pending,
@@ -360,6 +391,7 @@ impl ScratchDisk {
         state.files = state
             .files
             .checked_add(1)
+            .filter(|files| files.checked_add(state.reserved_files).is_some())
             .ok_or_else(|| exhausted("scratch file count overflow"))?;
         Ok((
             file,
@@ -595,12 +627,31 @@ impl Drop for Charge {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scratch_cache_limit_is_required_explicit_and_round_trips_large_values() {
+        let mut encoded = serde_json::json!({
+            "directory": "/var/lib/kasumi/scratch",
+            "max_bytes": 64_u64 << 30,
+            "min_free_bytes": 256_u64 << 20,
+        });
+        assert!(serde_json::from_value::<ScratchDiskConfig>(encoded.clone()).is_err());
+        for limit in [0, 512_u64 << 20, 6_u64 << 30] {
+            encoded["native_cache_bytes"] = limit.into();
+            let config: ScratchDiskConfig = serde_json::from_value(encoded.clone()).unwrap();
+            config.validate().unwrap();
+            assert_eq!(config.native_cache_bytes, limit);
+            assert_eq!(serde_json::to_value(config).unwrap(), encoded);
+        }
+    }
+
     fn disk(directory: &std::path::Path, max_bytes: u64, min_free_bytes: u64) -> Arc<ScratchDisk> {
         let memory = crate::test_utils::TestDiskMemory::new(16 << 20, 256);
         let config = ScratchDiskConfig {
             directory: directory.to_owned(),
             max_bytes,
             min_free_bytes,
+            native_cache_bytes: 8 << 20,
         };
         crate::test_utils::retry_disk_registry(|| {
             ScratchDisk::open_inner(&config, memory.clone(), DeviceSelection::Isolated)
@@ -628,8 +679,19 @@ mod tests {
         })
         .unwrap();
         assert!(Arc::ptr_eq(&disk, &same));
+        assert_eq!(disk.native_cache_config().byte_limit, 8 << 20);
+        assert_eq!(disk.snapshot().native_cache_bytes, 8 << 20);
         let mut changed = disk.config.clone();
         changed.max_bytes += 1;
+        assert!(
+            crate::test_utils::retry_disk_registry(|| ScratchDisk::open_fixture(
+                &changed,
+                disk.memory().clone()
+            ))
+            .is_err()
+        );
+        let mut changed = disk.config.clone();
+        changed.native_cache_bytes += 1;
         assert!(
             crate::test_utils::retry_disk_registry(|| ScratchDisk::open_fixture(
                 &changed,
@@ -675,6 +737,7 @@ mod tests {
             directory: directory.path().join("scratch"),
             max_bytes: 1 << 20,
             min_free_bytes: 1 << 16,
+            native_cache_bytes: 8 << 20,
         };
         let second = crate::test_utils::retry_disk_registry(|| {
             ScratchDisk::open_inner(
@@ -729,6 +792,7 @@ mod tests {
             directory: link,
             max_bytes: 1,
             min_free_bytes: 0,
+            native_cache_bytes: 8 << 20,
         };
         let memory = crate::test_utils::TestDiskMemory::new(1 << 20, 32);
         assert!(
@@ -741,7 +805,8 @@ mod tests {
             ScratchDiskConfig {
                 directory: root.path().to_owned(),
                 max_bytes: i64::MAX as u64,
-                min_free_bytes: u64::MAX
+                min_free_bytes: u64::MAX,
+                native_cache_bytes: 8 << 20,
             }
             .validate()
             .is_err()
@@ -858,6 +923,7 @@ mod memory_tests {
             directory: directory.path().join(name),
             max_bytes: 1 << 20,
             min_free_bytes: 0,
+            native_cache_bytes: 8 << 20,
         }
     }
 
@@ -1003,6 +1069,7 @@ mod registry_busy_tests {
             directory: temporary.path().join("not-created"),
             max_bytes: 1 << 20,
             min_free_bytes: 0,
+            native_cache_bytes: 8 << 20,
         };
         let memory = crate::test_utils::TestDiskMemory::new(
             crate::test_utils::TestDiskMemory::required_bookkeeping_bytes(1).unwrap() + 1,
@@ -1018,3 +1085,6 @@ mod registry_busy_tests {
         drop(guard);
     }
 }
+
+#[path = "scratch_transaction_space.rs"]
+pub(crate) mod transaction;

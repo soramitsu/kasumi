@@ -91,12 +91,10 @@ impl Backend {
         &self,
         meta: &Meta,
         nodes: &BTreeSet<NodeIdentity>,
-    ) -> kasumi_types::Result<()> {
+    ) -> Result<()> {
         if frozen(meta) {
             for node in nodes {
-                self.require_enrolled(&node.verifier).map_err(|_| {
-                    conflict("target activation introduces a verifier outside the frozen roster")
-                })?;
+                self.require_enrolled(&node.verifier)?;
             }
         }
         Ok(())
@@ -106,18 +104,18 @@ impl Backend {
         meta: &Meta,
         command: &AuthorityMaintenanceCommand,
     ) -> Result<()> {
-        Self::check_new_verifier_admission(meta)?;
+        Self::check_new_verifier_admission(meta).map_err(reject)?;
         match &command.action {
             AuthorityMaintenanceAction::EnrollSignerVerifier { enrollment } => {
-                enrollment.validate()?;
-                ensure!(
+                enrollment.validate().map_err(reject_conflict)?;
+                reject_unless!(
                     self.record(&verifier_key(&enrollment.verifier))?.is_none(),
                     "physical verifier identity is permanently allocated"
                 );
                 self.store.visit(NS, MAX_RECORD_BYTES, |key, bytes| {
                     if key.starts_with(b"signer-verifier/") {
                         let Record::Verifier(existing) = serde_json::from_slice(bytes)? else { anyhow::bail!("verifier record type differs") };
-                        ensure!(existing.enrollment.endpoint != enrollment.endpoint
+                        reject_unless!(existing.enrollment.endpoint != enrollment.endpoint
                             && existing.enrollment.certificate_pins.is_disjoint(&enrollment.certificate_pins),
                             "administrative origin or certificate already identifies another physical verifier");
                     }
@@ -126,7 +124,7 @@ impl Backend {
             }
             AuthorityMaintenanceAction::AdmitControlVerifiers { admission } => {
                 self.validate_control_admission(admission)?;
-                ensure!(
+                reject_unless!(
                     self.record(&control_key(admission.root.control_incarnation))?
                         .is_none(),
                     "Control verifier admission already has a permanent identity"
@@ -135,13 +133,13 @@ impl Backend {
                     self.require_enrolled(&node.verifier)?;
                 }
             }
-            _ => anyhow::bail!("not a verifier enrollment transition"),
+            _ => reject_bail!("not a verifier enrollment transition"),
         }
         Ok(())
     }
     fn validate_control_admission(&self, admission: &ControlVerifierAdmission) -> Result<()> {
-        admission.validate()?;
-        ensure!(
+        admission.validate().map_err(reject_conflict)?;
+        reject_unless!(
             self.installation
                 .manifest
                 .lifecycle_controls
@@ -157,7 +155,7 @@ impl Backend {
         Ok(())
     }
     fn require_enrolled(&self, verifier: &TrustVerifierIdentity) -> Result<()> {
-        ensure!(
+        reject_unless!(
             matches!(self.record(&verifier_key(verifier))?, Some(Record::Verifier(record)) if record.enrollment.verifier == *verifier),
             "physical verifier lacks its exact permanent administrative enrollment"
         );
@@ -228,7 +226,7 @@ impl Backend {
         for (incarnation, public_key) in &self.installation.manifest.lifecycle_controls {
             let Some(Record::ControlVerifier(record)) = self.record(&control_key(*incarnation))?
             else {
-                anyhow::bail!("installed Control root lacks an exact physical replica admission")
+                reject_bail!("installed Control root lacks an exact physical replica admission")
             };
             ensure!(
                 record.admission.root.public_key == *public_key,
@@ -240,7 +238,11 @@ impl Backend {
             .checked_mul(8)
             .and_then(|bytes| bytes.checked_add(64 << 20))
             .context("roster staging disk budget overflow")?;
-        let records = kasumi_store::EncryptedTable::new(self.store.scratch_disk(), maximum)?;
+        let records = kasumi_store::EncryptedTable::new(
+            self.store.scratch_disk(),
+            maximum,
+            self.store.scratch_disk().native_cache_config(),
+        )?;
         self.store
             .read_view()?
             .visit(NS, MAX_RECORD_BYTES, |key, bytes| {

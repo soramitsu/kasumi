@@ -126,7 +126,7 @@ struct Journal {
     installation_id: Uuid,
     database_path: PathBuf,
     target_directory: PathBuf,
-    database_file: Option<private_files::FileIdentity>,
+    database_group: Option<kasumi_store::NodeGroupIdentity>,
     target_preparation: TargetPreparation,
     #[serde(deserialize_with = "kasumi_types::require_explicit_option")]
     archive_directory: Option<private_files::DirectoryIdentity>,
@@ -199,7 +199,7 @@ fn record(store: &TenantStore, operation: Uuid) -> Result<Journal> {
             .context("local recovery operation is unknown")?,
     )?;
     ensure!(
-        journal.format == 3 && journal.status.request.operation_id == operation,
+        journal.format == 4 && journal.status.request.operation_id == operation,
         "unsupported or substituted local recovery record"
     );
     Ok(journal)
@@ -297,9 +297,9 @@ pub(crate) fn active_generation(
         "active generation differs from committed recovery"
     );
     check_binding(config, store.persistent_disk(), &journal)?;
-    check_database_file(&journal)?;
+    check_database_group(&journal)?;
     ensure!(
-        active.directory.join("node.kv").is_file(),
+        active.directory.join("node.kv").is_dir(),
         "activated standalone database is missing"
     );
     Ok(Some(active))
@@ -386,19 +386,19 @@ impl Operator {
     fn validate(&self, journal: &Journal) -> Result<()> {
         journal.status.request.validate()?;
         ensure!(
-            journal.format == 3,
+            journal.format == 4,
             "unsupported local recovery journal format"
         );
         ensure!(
             !matches!(
                 journal.target_preparation,
                 TargetPreparation::CatalogsReady | TargetPreparation::MaterializationDispatched
-            ) || journal.database_file.is_some(),
+            ) || journal.database_group.is_some(),
             "prepared local target lacks its durable physical binding"
         );
         ensure!(
             journal.target_preparation != TargetPreparation::Uncreated
-                || journal.database_file.is_none(),
+                || journal.database_group.is_none(),
             "uncreated local target has a physical binding"
         );
         ensure!(
@@ -587,11 +587,11 @@ async fn start_owned(
             "target generation directory already exists"
         );
         let journal = Journal {
-            format: 3,
+            format: 4,
             installation_id: installation_id(&operator.config, &request.tenant)?,
             database_path: operator.config.database_path.clone(),
             target_directory,
-            database_file: None,
+            database_group: None,
             target_preparation: TargetPreparation::Uncreated,
             archive_directory: None,
             source_provider: request.source_keys.identity_descriptor()?,
@@ -872,15 +872,15 @@ fn local_node_id(journal: &Journal) -> Result<Uuid> {
         journal.status.request.target_incarnation,
     )
 }
-fn check_database_file(journal: &Journal) -> Result<()> {
+fn check_database_group(journal: &Journal) -> Result<()> {
     let path = journal.target_directory.join("node.kv");
     let identity = journal
-        .database_file
+        .database_group
         .as_ref()
-        .context("target file has no durable physical binding")?;
+        .context("target group has no durable physical binding")?;
     ensure!(
-        &private_files::file_identity(&path)? == identity,
-        "target database inode has been substituted"
+        &kasumi_store::NodeGroupIdentity::read(&path)? == identity,
+        "target database group has been substituted"
     );
     Ok(())
 }
@@ -936,7 +936,7 @@ impl Operator {
             ),
         ])
     }
-    fn prepare_database_file(
+    fn prepare_database_group(
         &self,
         journal: &mut Journal,
     ) -> Result<Option<Arc<kasumi_store::NodeStore>>> {
@@ -945,7 +945,7 @@ impl Operator {
         let path = journal.target_directory.join("node.kv");
         let created = if journal.target_preparation == TargetPreparation::Uncreated {
             ensure!(
-                journal.database_file.is_none(),
+                journal.database_group.is_none(),
                 "uncreated local target has a physical binding"
             );
             // Commit the one original dispatch before any physical creation.
@@ -956,8 +956,9 @@ impl Operator {
                 local_node_id(journal)?,
                 self.store().persistent_disk().clone(),
                 self.store().scratch_disk().clone(),
+                self.store().persistent_disk().native_storage_config(),
             )?;
-            journal.database_file = Some(private_files::file_identity(&path)?);
+            journal.database_group = Some(node.physical_identity()?);
             self.store().write_batch(&[
                 WriteOp::put(
                     OPERATIONS,
@@ -967,14 +968,14 @@ impl Operator {
                 WriteOp::put(
                     PHASES,
                     format!("{}/physical", journal.status.phase_id).as_bytes(),
-                    encoded(&journal.database_file)?,
+                    encoded(&journal.database_group)?,
                 ),
             ])?;
             Some(node)
         } else {
             None
         };
-        check_database_file(journal)?;
+        check_database_group(journal)?;
         Ok(created)
     }
     fn directory_child(
@@ -1050,12 +1051,12 @@ impl Operator {
         let request = journal.status.request.clone();
         let outcome: GenerationRecord = decode(&self.store().get(GENERATIONS, request.target_incarnation.as_bytes())?.context("target generation reservation missing")?)?;
         ensure!(matches!(outcome, GenerationRecord::Reserved { operation_id } | GenerationRecord::Active { operation_id } if operation_id == request.operation_id), "target generation is permanently stopped or substituted");
-        let original_creation = if mode == TargetOpen::Materialize { self.prepare_database_file(journal)? } else {
+        let original_creation = if mode == TargetOpen::Materialize { self.prepare_database_group(journal)? } else {
             ensure!(journal.target_preparation == TargetPreparation::MaterializationDispatched, "local target materialization was never dispatched");
             None
         };
         check_binding(&self.config, self.store().persistent_disk(), journal)?;
-        check_database_file(journal)?;
+        check_database_group(journal)?;
         let path = journal.target_directory.join("node.kv");
         let tenant = self.config.tenants.iter().find(|tenant| tenant.tenant == request.tenant).context("installed tenant missing")?;
         ensure!(journal.application_provider == tenant.keys.identity_descriptor()? && journal.custody_provider == tenant.custody_keys.identity_descriptor()?, "local target wrapping-key identity differs");
@@ -1069,7 +1070,7 @@ impl Operator {
         let fresh = original_creation.is_some();
         let node = match original_creation {
             Some(node) => node,
-            None => kasumi_store::NodeStore::open_existing(&path, local_node_id(journal)?, self.store().persistent_disk().clone(), self.store().scratch_disk().clone())?,
+            None => kasumi_store::NodeStore::open_existing(&path, local_node_id(journal)?, self.store().persistent_disk().clone(), self.store().scratch_disk().clone(), self.store().persistent_disk().native_storage_config())?,
         };
         pending.owned_nodes.push(node.clone());
         let stores = if fresh {
@@ -1148,8 +1149,8 @@ impl Operator {
         let validated = (|| {
             let generation = database.engine().generation()?;
             ensure!(
-                generation.state.incarnation == request.target_incarnation.to_string()
-                    && generation.state.restored_from.as_ref() == Some(&request.checkpoint),
+                generation.incarnation() == request.target_incarnation.to_string()
+                    && generation.restored_from().as_ref() == Some(&request.checkpoint),
                 "target materialization differs from exact local recovery checkpoint"
             );
             for (alias, destination) in &self.config.backup_destinations {
@@ -1215,7 +1216,7 @@ impl Operator {
             LocalRecoveryPhase::Activate => {
                 let mut target = self.target(journal, TargetOpen::Existing).await?;
                 let ready = target.engine().generation().map(|generation| {
-                    generation.state.pending_restore.is_none() && generation.state.suspended
+                    generation.pending_restore().is_none() && generation.suspended()
                 });
                 target.shutdown().await?;
                 drop(target);
@@ -1334,10 +1335,12 @@ impl Operator {
             }
             for entry in &entries {
                 ensure!(
-                    (entry.file_type()?.is_file()
-                        && matches!(entry.file_name().to_str(), Some("binding.json" | "node.kv")))
+                    (entry.file_type()?.is_file() && entry.file_name() == "binding.json")
                         || (entry.file_type()?.is_dir()
-                            && entry.file_name() == "tenant-audit-archives"),
+                            && matches!(
+                                entry.file_name().to_str(),
+                                Some("node.kv" | "tenant-audit-archives")
+                            )),
                     "cleanup refuses an unrelated or linked target entry"
                 );
             }
@@ -1351,21 +1354,35 @@ impl Operator {
                     journal.target_preparation != TargetPreparation::Uncreated,
                     "cleanup refuses a file without an original creation dispatch"
                 );
-                if journal.database_file.is_some() {
-                    check_database_file(journal)?;
+                if let Some(expected) = &journal.database_group {
+                    ensure!(
+                        private_files::directory_identity(&database)? == expected.directory,
+                        "target database group has been substituted"
+                    );
                 }
-                // A lost file-binding commit can leave our exact Prepared or Ready
+                // A lost group-binding commit can leave our exact Prepared or Ready
                 // envelope. Claim its deterministic generation identity without
-                // opening/recovering the KV engine. Empty, torn or unrelated files stay intact.
+                // opening/recovering the KV engine. Torn or unrelated groups stay intact; an empty directory can finish interrupted cleanup.
                 let ownership = kasumi_store::NodeStore::claim_cleanup(
                     &database,
                     local_node_id(journal)?,
                     self.store().persistent_disk().clone(),
+                    self.store().persistent_disk().native_storage_config(),
                 )?;
                 ensure!(
-                    ownership.identity() == &private_files::file_identity(&database)?,
-                    "local cleanup path changed during ownership handoff"
+                    ownership.directory_identity()?
+                        == private_files::directory_identity(&database)?,
+                    "local cleanup directory changed during ownership handoff"
                 );
+                if let Some(expected) = &journal.database_group {
+                    ensure!(
+                        ownership.directory_identity()? == expected.directory,
+                        "local cleanup directory identity differs"
+                    );
+                    if let Some(root) = ownership.root_identity()? {
+                        ensure!(root == expected.root, "local cleanup root identity differs");
+                    }
+                }
                 Some(ownership)
             } else {
                 None
@@ -1405,7 +1422,7 @@ impl Operator {
                 "kasumi.local-cleanup.v2",
                 &binding(journal),
                 &journal.target_directory,
-                &journal.database_file,
+                &journal.database_group,
                 &journal.archive_directory,
             ))?
             .0,
@@ -1443,9 +1460,7 @@ impl Operator {
                     &administrator.tenant,
                     &administrator.principal,
                     kasumi_types::CredentialResource::Control {
-                        incarnation: Uuid::parse_str(
-                            &control.engine().generation()?.state.incarnation,
-                        )?,
+                        incarnation: Uuid::parse_str(control.engine().generation()?.incarnation())?,
                     },
                     journal.status.phase_id,
                 )
@@ -1526,10 +1541,10 @@ impl Operator {
                 .await?;
             let state = target.engine().generation()?;
             ensure!(
-                state.state.pending_restore.is_none(),
+                state.pending_restore().is_none(),
                 "local target completion has not committed"
             );
-            if state.state.suspended {
+            if state.suspended() {
                 target
                     .administer(context, kasumi_types::Operation::Suspend(false))
                     .await?;

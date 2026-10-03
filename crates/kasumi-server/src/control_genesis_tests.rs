@@ -43,8 +43,11 @@ pub(crate) async fn checkpoint(path: &Path) -> Result<()> {
 fn config(root: &Path) -> Result<(RuntimeConfig, crate::runtime_memory::RuntimeStorage)> {
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(root, std::fs::Permissions::from_mode(0o700))?;
-    let mut config =
-        crate::runtime::example_config(kasumi_store::DirectoryPolicy::fixture()).unwrap();
+    let mut config = crate::runtime::example_config(
+        kasumi_store::DirectoryPolicy::fixture(),
+        kasumi_store::FileAllocationPolicy::fixture(),
+    )
+    .unwrap();
     config.admission = Default::default();
     config.persistent_disk = crate::persistent_disk::fixture_config(&root.join("data"));
     config.database_path = root.join("data/node.kv");
@@ -127,12 +130,19 @@ async fn existing(
     config: &RuntimeConfig,
     storage: &crate::runtime_memory::RuntimeStorage,
 ) -> Result<(Arc<NodeStore>, Arc<TenantStore>)> {
-    let node = NodeStore::open_existing(
-        &config.database_path,
-        config.database_id,
-        storage.open_persistent(&config.persistent_disk)?,
-        storage.open_scratch(&config.scratch_disk)?,
-    )?;
+    let node = {
+        let native_path = &config.database_path;
+        let native_id = config.database_id;
+        let native_disk = storage.open_persistent(&config.persistent_disk)?;
+        let native_scratch_disk = storage.open_scratch(&config.scratch_disk)?;
+        NodeStore::open_existing(
+            native_path,
+            native_id,
+            native_disk.clone(),
+            native_scratch_disk,
+            native_disk.native_storage_config(),
+        )
+    }?;
     let security = TenantStore::open_existing(
         node.clone(),
         kasumi_engine::SECURITY_TENANT.into(),
@@ -171,12 +181,19 @@ async fn cancelled_ha_genesis_retains_actual_node_and_error_until_acknowledged_d
     tokio::time::timeout(std::time::Duration::from_secs(10), pause.entered.notified()).await?;
     drop(opening);
     assert!(
-        NodeStore::open_existing(
-            &config.database_path,
-            config.database_id,
-            storage.open_persistent(&config.persistent_disk)?,
-            storage.open_scratch(&config.scratch_disk)?
-        )
+        {
+            let native_path = &config.database_path;
+            let native_id = config.database_id;
+            let native_disk = storage.open_persistent(&config.persistent_disk)?;
+            let native_scratch_disk = storage.open_scratch(&config.scratch_disk)?;
+            NodeStore::open_existing(
+                native_path,
+                native_id,
+                native_disk.clone(),
+                native_scratch_disk,
+                native_disk.native_storage_config(),
+            )
+        }
         .is_err()
     );
     let mut drain = Box::pin(crate::runtime::NodeRuntime::drain_startups());
@@ -187,12 +204,19 @@ async fn cancelled_ha_genesis_retains_actual_node_and_error_until_acknowledged_d
     .await;
     drop(drain);
     assert!(
-        NodeStore::open_existing(
-            &config.database_path,
-            config.database_id,
-            storage.open_persistent(&config.persistent_disk)?,
-            storage.open_scratch(&config.scratch_disk)?
-        )
+        {
+            let native_path = &config.database_path;
+            let native_id = config.database_id;
+            let native_disk = storage.open_persistent(&config.persistent_disk)?;
+            let native_scratch_disk = storage.open_scratch(&config.scratch_disk)?;
+            NodeStore::open_existing(
+                native_path,
+                native_id,
+                native_disk.clone(),
+                native_scratch_disk,
+                native_disk.native_storage_config(),
+            )
+        }
         .is_err()
     );
     let mut drain = Box::pin(crate::runtime::NodeRuntime::drain_startups());
@@ -327,12 +351,19 @@ async fn panicked_ha_enrollment_drains_nested_node_audit_pair_and_database_owner
         );
         drop(fault);
         crate::runtime::NodeRuntime::drain_startups().await?;
-        let node = NodeStore::open_existing(
-            &config.database_path,
-            config.database_id,
-            storage.open_persistent(&config.persistent_disk)?,
-            storage.open_scratch(&config.scratch_disk)?,
-        )?;
+        let node = {
+            let native_path = &config.database_path;
+            let native_id = config.database_id;
+            let native_disk = storage.open_persistent(&config.persistent_disk)?;
+            let native_scratch_disk = storage.open_scratch(&config.scratch_disk)?;
+            NodeStore::open_existing(
+                native_path,
+                native_id,
+                native_disk.clone(),
+                native_scratch_disk,
+                native_disk.native_storage_config(),
+            )
+        }?;
         if index > 0 {
             let security = TenantStore::open_existing(
                 node.clone(),

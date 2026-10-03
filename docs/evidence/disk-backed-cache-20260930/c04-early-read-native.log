@@ -1,0 +1,22 @@
+Command: cargo test -p kasumi-kv --all-features --lib --locked --offline --config profile.test.package.kasumi-kv.opt-level=3 --config profile.test.package.sha2.opt-level=3 -- --test-threads=1 read_fork_tests::
+CARGO_TARGET_DIR=target/disk-backed-cache
+   Compiling kasumi-kv v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-kv)
+error[E0308]: mismatched types
+   --> crates/kasumi-kv/src/read_fork_tests.rs:386:17
+    |
+385 |             independent.fork(),
+    |             ------------------ this expression has type `Result<RetainedReadTransaction, ReadAcquisitionFailure>`
+386 |             Err(TransactionError(StorageError::DatabaseClosed))
+    |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `ReadAcquisitionFailure`, found `TransactionError`
+
+error[E0308]: mismatched types
+   --> crates/kasumi-kv/src/read_fork_tests.rs:395:17
+    |
+394 |             guarded.fork(),
+    |             -------------- this expression has type `Result<RetainedReadTransaction, ReadAcquisitionFailure>`
+395 |             Err(TransactionError(StorageError::DatabaseClosed))
+    |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `ReadAcquisitionFailure`, found `TransactionError`
+
+For more information about this error, try `rustc --explain E0308`.
+error: could not compile `kasumi-kv` (lib test) due to 2 previous errors
+Runner: 24.23s; exit=101; matching=736/736

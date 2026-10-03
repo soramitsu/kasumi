@@ -15,6 +15,7 @@ fn installation() -> (tempfile::TempDir, NodeDiskConfig) {
     let root = directory.path().join("owned");
     crate::private_files::create_directory(&root).unwrap();
     let config = NodeDiskConfig {
+        native_storage: crate::test_utils::node_storage_config(),
         roots: BTreeMap::from([("data".into(), root)]),
         max_bytes: 16 << 20,
         maintenance_reserve_bytes: 1 << 20,
@@ -22,6 +23,8 @@ fn installation() -> (tempfile::TempDir, NodeDiskConfig) {
         max_open_files: 16,
         max_open_directories: 16,
         directory_policy: DirectoryPolicy::fixture(),
+        // Explicit strict policy keeps these failure-boundary fixtures exact.
+        file_allocation_policy: FileAllocationPolicy::new(0).unwrap(),
         max_persistent_files: 10_000,
         max_persistent_subdirectories: 10_000,
         census_work_per_step: 10_000,

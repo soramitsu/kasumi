@@ -6,18 +6,27 @@
 //! commit outcome keeps the writer, its batch and the gate retained until a
 //! strict reopen decides.
 
+use kasumi_kv as cache_types;
+#[path = "../src/cache_test.rs"]
+mod cache_test;
+
+use kasumi_kv::group::{FaultTiming, GroupFile, GroupOp, InMemoryGroup, SegmentGroupBackend};
 use kasumi_kv::{
-    AdmissionError, BackendCloseOutcome, CommitError, CoreError, Database, DatabaseOpenMode,
-    DatabaseOpenSettlement, OwnerFailed, ResidentLease, StorageAdmission, StorageBackend,
-    StorageError, TableDefinition, TableError, TerminalObservation, TransactionError,
-    WriteTerminalError, WriteTerminalOperation, WriteTerminalSettlement, WriteTransaction,
+    AdmissionError, BackendCloseOutcome, CacheConfig, CommitError, CoreError, Database,
+    DatabaseOpenMode, DatabaseOpenSettlement, OwnerFailed, ROOT_SLOT_BYTES, ResidentLease,
+    RootSlot, StorageAdmission, StorageError, TableDefinition, TableError, TerminalObservation,
+    TransactionError, WriteTerminalError, WriteTerminalOperation, WriteTerminalSettlement,
+    WriteTransaction,
 };
+use std::collections::BTreeMap;
+use std::ffi::OsStr;
 use std::io;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc;
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+const GROUP: [u8; 16] = [62; 16];
 const ROWS: TableDefinition<&[u8], &[u8]> = TableDefinition::new("rows");
 const FRESH: TableDefinition<&[u8], &[u8]> = TableDefinition::new("fresh");
 /// Larger than a staging chunk's slack, so every insert needs its own
@@ -29,7 +38,6 @@ struct Admission {
     live: Arc<AtomicU64>,
     deny_workspace: AtomicBool,
     fail_workspace: AtomicBool,
-    deny_growth: AtomicBool,
     owner_failures: AtomicUsize,
 }
 
@@ -78,11 +86,7 @@ impl StorageAdmission for Admission {
     }
 
     fn reserve_growth(&self, _current: u64, _requested: u64) -> Result<(), AdmissionError> {
-        if self.deny_growth.load(Ordering::Acquire) {
-            Err(AdmissionError::CapacityDenied)
-        } else {
-            Ok(())
-        }
+        Ok(())
     }
 
     fn settle_growth(&self, _actual: u64) -> Result<(), OwnerFailed> {
@@ -92,118 +96,149 @@ impl StorageAdmission for Admission {
     fn owner_failed(&self) {
         self.owner_failures.fetch_add(1, Ordering::AcqRel);
     }
+
+    fn quote_cache_memory(
+        &self,
+        bytes: u64,
+    ) -> Result<kasumi_kv::CacheMemoryQuote, kasumi_kv::AdmissionError> {
+        cache_test::quote::<Self>(bytes)
+    }
+    fn reserve_cache_memory(
+        self: std::sync::Arc<Self>,
+        bytes: u64,
+    ) -> Result<kasumi_kv::CacheMemoryLease, kasumi_kv::AdmissionError> {
+        cache_test::reserve(self, bytes)
+    }
+}
+impl cache_test::Provider for Admission {
+    fn acquire_cache(&self, bytes: u64, first: bool) -> Result<(), kasumi_kv::AdmissionError> {
+        let _ = first;
+        if self.fail_workspace.load(Ordering::Acquire) {
+            return Err(AdmissionError::OwnerFailed);
+        }
+        if self.deny_workspace.load(Ordering::Acquire) {
+            return Err(AdmissionError::CapacityDenied);
+        }
+        self.live.fetch_add(bytes, Ordering::AcqRel);
+        Ok(())
+    }
+    fn release_cache(&self, bytes: u64, last: bool) {
+        let _ = (bytes, last);
+        self.live.fetch_sub(bytes, Ordering::AcqRel);
+    }
 }
 
-#[derive(Default)]
-struct Image {
-    volatile: Vec<u8>,
-    durable: Vec<u8>,
-    effects: usize,
-    syncs: usize,
-    fail_sync: Option<(usize, bool)>,
-}
-
-/// Effects are the mutating calls `set_len`, `write` and `sync_data`. The
-/// durable image holds what a crash would keep.
+/// Group mutations are counted independently of its volatile/durable images.
 #[derive(Clone, Default)]
-struct CrashBackend(Arc<Mutex<Image>>);
+struct CrashBackend {
+    group: InMemoryGroup,
+    effects: Arc<AtomicUsize>,
+}
+
+type GroupImage = BTreeMap<String, Vec<u8>>;
 
 impl CrashBackend {
-    fn image(&self) -> std::sync::MutexGuard<'_, Image> {
-        self.0.lock().unwrap_or_else(|poison| poison.into_inner())
-    }
-
     fn crash(&self) -> Self {
-        let bytes = self.image().durable.clone();
-        Self(Arc::new(Mutex::new(Image {
-            volatile: bytes.clone(),
-            durable: bytes,
-            ..Image::default()
-        })))
+        Self {
+            group: self.group.crash(),
+            effects: Arc::new(AtomicUsize::new(0)),
+        }
     }
 
     fn effects(&self) -> usize {
-        self.image().effects
+        self.effects.load(Ordering::Acquire)
     }
 
-    fn bytes(&self) -> (Vec<u8>, Vec<u8>) {
-        let image = self.image();
-        (image.volatile.clone(), image.durable.clone())
+    fn image(group: &InMemoryGroup) -> GroupImage {
+        let mut images = BTreeMap::new();
+        for slot in [RootSlot::A, RootSlot::B] {
+            let mut bytes = [0; ROOT_SLOT_BYTES];
+            group.read_root(slot, &mut bytes).unwrap();
+            images.insert(format!("root-{slot:?}"), bytes.to_vec());
+        }
+        for name in group.entries().unwrap() {
+            let Some(file) = name.to_str().and_then(GroupFile::parse_name) else {
+                continue;
+            };
+            let mut bytes = vec![0; group.len(file).unwrap() as usize];
+            group.read(file, 0, &mut bytes).unwrap();
+            images.insert(file.file_name(), bytes);
+        }
+        images
     }
 
-    /// Fail the `ordinal`-th sync from now; `persist` makes it reach the
-    /// durable image before reporting failure.
-    fn fail_sync(&self, ordinal: usize, persist: bool) {
-        let mut image = self.image();
-        image.syncs = 0;
-        image.fail_sync = Some((ordinal, persist));
+    fn bytes(&self) -> (GroupImage, GroupImage) {
+        (Self::image(&self.group), Self::image(&self.group.crash()))
+    }
+
+    fn effect(&self) {
+        self.effects.fetch_add(1, Ordering::AcqRel);
     }
 }
 
-impl StorageBackend for CrashBackend {
-    fn len(&self) -> io::Result<u64> {
-        Ok(self.image().volatile.len() as u64)
+impl SegmentGroupBackend for CrashBackend {
+    fn reserve_transaction(
+        &self,
+        plan: &kasumi_kv::TransactionSpacePlan,
+    ) -> std::result::Result<(), kasumi_kv::TransactionReserveError> {
+        self.group.reserve_transaction(plan)
+    }
+    fn finish_transaction(&self, group_id: [u8; 16], batch_seq: u64) -> std::io::Result<()> {
+        self.group.finish_transaction(group_id, batch_seq)
+    }
+    fn cancel_transaction(&self, group_id: [u8; 16], batch_seq: u64) -> std::io::Result<()> {
+        self.group.cancel_transaction(group_id, batch_seq)
     }
 
-    fn read(&self, at: u64, out: &mut [u8]) -> io::Result<()> {
-        let image = self.image();
-        let start = usize::try_from(at).map_err(|_| io::ErrorKind::InvalidInput)?;
-        let end = start
-            .checked_add(out.len())
-            .ok_or(io::ErrorKind::InvalidInput)?;
-        out.copy_from_slice(
-            image
-                .volatile
-                .get(start..end)
-                .ok_or(io::ErrorKind::UnexpectedEof)?,
-        );
-        Ok(())
+    fn read_root(&self, slot: RootSlot, out: &mut [u8; ROOT_SLOT_BYTES]) -> io::Result<()> {
+        self.group.read_root(slot, out)
     }
-
-    fn write(&self, at: u64, input: &[u8]) -> io::Result<()> {
-        let mut image = self.image();
-        image.effects += 1;
-        let start = usize::try_from(at).map_err(|_| io::ErrorKind::InvalidInput)?;
-        let end = start
-            .checked_add(input.len())
-            .ok_or(io::ErrorKind::InvalidInput)?;
-        image
-            .volatile
-            .get_mut(start..end)
-            .ok_or(io::ErrorKind::UnexpectedEof)?
-            .copy_from_slice(input);
-        Ok(())
+    fn write_root(&self, slot: RootSlot, bytes: &[u8; ROOT_SLOT_BYTES]) -> io::Result<()> {
+        self.effect();
+        self.group.write_root(slot, bytes)
     }
-
-    fn set_len(&self, length: u64) -> io::Result<()> {
-        let mut image = self.image();
-        image.effects += 1;
-        image.volatile.resize(
-            usize::try_from(length).map_err(|_| io::ErrorKind::InvalidInput)?,
-            0,
-        );
-        Ok(())
+    fn sync_root(&self) -> io::Result<()> {
+        self.effect();
+        self.group.sync_root()
     }
-
-    fn sync_data(&self) -> io::Result<()> {
-        let mut image = self.image();
-        image.effects += 1;
-        image.syncs += 1;
-        if let Some((ordinal, persist)) = image.fail_sync
-            && image.syncs == ordinal
-        {
-            image.fail_sync = None;
-            if persist {
-                image.durable = image.volatile.clone();
-            }
-            return Err(io::Error::other("injected sync failure"));
-        }
-        image.durable = image.volatile.clone();
-        Ok(())
+    fn visit_entries(&self, visitor: &mut dyn FnMut(&OsStr) -> io::Result<()>) -> io::Result<()> {
+        self.group.visit_entries(visitor)
     }
-
+    fn exists(&self, file: GroupFile) -> io::Result<bool> {
+        self.group.exists(file)
+    }
+    fn create(&self, file: GroupFile) -> io::Result<()> {
+        self.effect();
+        self.group.create(file)
+    }
+    fn len(&self, file: GroupFile) -> io::Result<u64> {
+        self.group.len(file)
+    }
+    fn read(&self, file: GroupFile, at: u64, out: &mut [u8]) -> io::Result<()> {
+        self.group.read(file, at, out)
+    }
+    fn write(&self, file: GroupFile, at: u64, bytes: &[u8]) -> io::Result<()> {
+        self.effect();
+        self.group.write(file, at, bytes)
+    }
+    fn set_len(&self, file: GroupFile, length: u64) -> io::Result<()> {
+        self.effect();
+        self.group.set_len(file, length)
+    }
+    fn sync(&self, file: GroupFile) -> io::Result<()> {
+        self.effect();
+        self.group.sync(file)
+    }
+    fn unlink(&self, file: GroupFile) -> io::Result<()> {
+        self.effect();
+        self.group.unlink(file)
+    }
+    fn sync_names(&self) -> io::Result<()> {
+        self.effect();
+        self.group.sync_names()
+    }
     fn close(&self) -> BackendCloseOutcome {
-        BackendCloseOutcome::drained(Ok(()))
+        self.group.close()
     }
 }
 
@@ -220,7 +255,7 @@ fn commit_rows(database: &Database, rows: &[(&[u8], &[u8])]) {
 
 /// Read every row of `ROWS` from a fresh strict reopen of `backend`.
 fn reopened_rows(backend: CrashBackend) -> Vec<Vec<u8>> {
-    let database = Database::builder(Admission::new())
+    let database = Database::builder(Admission::new(), GROUP, CacheConfig::default())
         .open_with_backend(backend)
         .unwrap();
     let read = database.begin_read().unwrap();
@@ -260,7 +295,7 @@ fn denied_second_of_three_inserts_rolls_back_the_whole_writer() {
     let admission = Admission::new();
     let backend = CrashBackend::default();
     let database = Arc::new(
-        Database::builder(admission.clone())
+        Database::builder(admission.clone(), GROUP, CacheConfig::default())
             .create_with_backend(backend.clone())
             .unwrap(),
     );
@@ -271,22 +306,23 @@ fn denied_second_of_three_inserts_rolls_back_the_whole_writer() {
 
     let write = database.begin_write().unwrap();
     let mut table = write.open_table(ROWS).unwrap();
+    let pinned = admission.live();
     table.insert(b"first", &VALUE).unwrap();
-    assert!(admission.live() > baseline);
+    assert!(admission.live() > pinned);
     Admission::set(&admission.deny_workspace, true);
     assert!(is_denied(table.insert(b"second", &VALUE)));
     Admission::set(&admission.deny_workspace, false);
 
     // The first denial dropped the whole batch and every staged lease. With
     // capacity available again, every later call repeats that denial.
-    assert_eq!(admission.live(), baseline);
+    assert_eq!(admission.live(), pinned);
     assert!(is_denied(table.insert(b"third", &VALUE)));
     assert!(is_denied(table.get(b"first")));
     assert!(is_denied(table.get(b"stable")));
     assert!(is_denied(table.delete_key(b"stable")));
     assert!(is_denied(table.range(&b""[..]..).map(|_| ())));
     assert!(is_denied(write.open_table(ROWS).map(|_| ())));
-    assert_eq!(admission.live(), baseline);
+    assert_eq!(admission.live(), pinned);
 
     // The writer gate opened at the denial: another writer begins while the
     // rolled-back writer and its table handle are still alive.
@@ -326,7 +362,7 @@ fn denied_second_of_three_inserts_rolls_back_the_whole_writer() {
 fn denied_table_creation_and_overlay_range_roll_back_their_writers() {
     let admission = Admission::new();
     let backend = CrashBackend::default();
-    let database = Database::builder(admission.clone())
+    let database = Database::builder(admission.clone(), GROUP, CacheConfig::default())
         .create_with_backend(backend.clone())
         .unwrap();
     commit_rows(&database, &[(b"stable", b"before")]);
@@ -335,16 +371,19 @@ fn denied_table_creation_and_overlay_range_roll_back_their_writers() {
 
     // A new table's staging reservation.
     let write = database.begin_write().unwrap();
+    let pinned = admission.live();
     Admission::set(&admission.deny_workspace, true);
     assert!(is_denied(write.open_table(FRESH).map(|_| ())));
     Admission::set(&admission.deny_workspace, false);
     assert!(is_denied(write.open_table(ROWS).map(|_| ())));
-    assert_eq!(admission.live(), baseline);
+    assert_eq!(admission.live(), pinned);
     assert!(write.commit().unwrap_err().0.is_capacity_denied());
+    assert_eq!(admission.live(), baseline);
 
     // An overlay range materializing a staged row.
     let write = database.begin_write().unwrap();
     let mut table = write.open_table(ROWS).unwrap();
+    let pinned = admission.live();
     table.insert(b"b", &VALUE).unwrap();
     let mut range = table.range(&b""[..]..).unwrap();
     Admission::set(&admission.deny_workspace, true);
@@ -357,10 +396,11 @@ fn denied_table_creation_and_overlay_range_roll_back_their_writers() {
     Admission::set(&admission.deny_workspace, false);
     assert!(range.next().is_none());
     drop(range);
-    assert_eq!(admission.live(), baseline);
+    assert_eq!(admission.live(), pinned);
     assert!(is_denied(table.insert(b"c", b"small")));
     drop(table);
     assert!(write.commit().unwrap_err().0.is_capacity_denied());
+    assert_eq!(admission.live(), baseline);
 
     assert_eq!(backend.effects(), effects);
     let read = database.begin_read().unwrap();
@@ -376,7 +416,7 @@ fn denied_table_creation_and_overlay_range_roll_back_their_writers() {
 #[test]
 fn table_handle_never_keeps_the_writer_gate_after_its_transaction_drops() {
     let database = Arc::new(
-        Database::builder(Admission::new())
+        Database::builder(Admission::new(), GROUP, CacheConfig::default())
             .create_with_backend(CrashBackend::default())
             .unwrap(),
     );
@@ -404,10 +444,10 @@ fn table_handle_never_keeps_the_writer_gate_after_its_transaction_drops() {
 }
 
 #[test]
-fn commit_growth_denial_settles_a_retained_writer_and_the_next_writer_commits() {
+fn commit_workspace_denial_settles_a_retained_writer_and_the_next_writer_commits() {
     let admission = Admission::new();
     let backend = CrashBackend::default();
-    let mut opening = Database::builder(admission.clone())
+    let mut opening = Database::builder(admission.clone(), GROUP, CacheConfig::default())
         .retain_backend(Box::new(backend.clone()), DatabaseOpenMode::Create);
     assert_eq!(opening.open().settlement(), DatabaseOpenSettlement::Ready);
     commit_rows(opening.database().unwrap(), &[(b"stable", b"before")]);
@@ -416,6 +456,7 @@ fn commit_growth_denial_settles_a_retained_writer_and_the_next_writer_commits() 
     let baseline = admission.live();
 
     let mut writer = opening.database().unwrap().begin_write().unwrap().retain();
+    let pinned = admission.live();
     writer
         .transaction()
         .unwrap()
@@ -423,7 +464,7 @@ fn commit_growth_denial_settles_a_retained_writer_and_the_next_writer_commits() 
         .unwrap()
         .insert(b"denied", b"value")
         .unwrap();
-    Admission::set(&admission.deny_growth, true);
+    Admission::set(&admission.deny_workspace, true);
     {
         let report = writer.commit();
         assert_eq!(report.operation(), Some(WriteTerminalOperation::Commit));
@@ -441,10 +482,12 @@ fn commit_growth_denial_settles_a_retained_writer_and_the_next_writer_commits() 
                 .is_some_and(StorageError::is_capacity_denied)
         );
     }
-    Admission::set(&admission.deny_growth, false);
+    Admission::set(&admission.deny_workspace, false);
     assert_eq!(backend.effects(), effects);
     assert_eq!(backend.bytes(), image);
-    assert_eq!(admission.live(), baseline);
+    // Materialization was refused before publication retired this transaction's
+    // snapshot. Its staged rows are gone; the retained pin lives until disposal.
+    assert_eq!(admission.live(), pinned);
     assert_eq!(admission.owner_failures.load(Ordering::Acquire), 0);
     // Crash image of the settled rejection: the prior generation.
     let crash = backend.crash();
@@ -460,6 +503,7 @@ fn commit_growth_denial_settles_a_retained_writer_and_the_next_writer_commits() 
             .dispose_settled(opening.retained_database().unwrap())
             .disposal_complete()
     );
+    assert_eq!(admission.live(), baseline);
 
     commit_rows(opening.database().unwrap(), &[(b"after", b"next")]);
     assert_eq!(opening.close().settlement(), DatabaseOpenSettlement::Closed);
@@ -473,7 +517,7 @@ fn commit_growth_denial_settles_a_retained_writer_and_the_next_writer_commits() 
 #[test]
 fn rejected_commit_input_settles_and_releases_the_writer() {
     let backend = CrashBackend::default();
-    let mut opening = Database::builder(Admission::new())
+    let mut opening = Database::builder(Admission::new(), GROUP, CacheConfig::default())
         .retain_backend(Box::new(backend.clone()), DatabaseOpenMode::Create);
     assert_eq!(opening.open().settlement(), DatabaseOpenSettlement::Ready);
     commit_rows(opening.database().unwrap(), &[(b"stable", b"before")]);
@@ -484,7 +528,7 @@ fn rejected_commit_input_settles_and_releases_the_writer() {
     writer
         .transaction()
         .unwrap()
-        .open_table(ROWS)
+        .open_table(FRESH)
         .unwrap()
         .insert(oversized.as_slice(), b"value")
         .unwrap();
@@ -501,6 +545,12 @@ fn rejected_commit_input_settles_and_releases_the_writer() {
             .dispose_settled(opening.retained_database().unwrap())
             .disposal_complete()
     );
+    let read = opening.database().unwrap().begin_read().unwrap();
+    assert!(matches!(
+        read.open_table(FRESH),
+        Err(TableError::DoesNotExist(_))
+    ));
+    drop(read);
     commit_rows(opening.database().unwrap(), &[(b"after", b"next")]);
     assert_eq!(opening.close().settlement(), DatabaseOpenSettlement::Closed);
 }
@@ -509,7 +559,7 @@ fn rejected_commit_input_settles_and_releases_the_writer() {
 fn abort_after_a_staging_rollback_settles_and_disposes() {
     let admission = Admission::new();
     let backend = CrashBackend::default();
-    let mut opening = Database::builder(admission.clone())
+    let mut opening = Database::builder(admission.clone(), GROUP, CacheConfig::default())
         .retain_backend(Box::new(backend.clone()), DatabaseOpenMode::Create);
     assert_eq!(opening.open().settlement(), DatabaseOpenSettlement::Ready);
     commit_rows(opening.database().unwrap(), &[(b"stable", b"before")]);
@@ -546,7 +596,7 @@ fn abort_after_a_staging_rollback_settles_and_disposes() {
 fn staging_owner_failure_keeps_the_batch_and_writer_gate_retained() {
     let admission = Admission::new();
     let backend = CrashBackend::default();
-    let mut opening = Database::builder(admission.clone())
+    let mut opening = Database::builder(admission.clone(), GROUP, CacheConfig::default())
         .retain_backend(Box::new(backend.clone()), DatabaseOpenMode::Create);
     assert_eq!(opening.open().settlement(), DatabaseOpenSettlement::Ready);
     commit_rows(opening.database().unwrap(), &[(b"stable", b"before")]);
@@ -601,13 +651,23 @@ fn staging_owner_failure_keeps_the_batch_and_writer_gate_retained() {
 }
 
 #[test]
-fn frame_sync_failure_keeps_the_writer_retained_until_reopen_decides() {
-    // The first sync of a commit persists its frame; the second publishes
-    // the header. Only a durable header makes the batch survive reopen.
-    for (sync, persist, published) in [(1, false, false), (2, true, true)] {
+fn group_sync_failure_keeps_the_writer_retained_until_reopen_decides() {
+    // Operation records, directory pages, the directory record and the commit
+    // synchronize in that order. A durable commit survives before root slots.
+    for (op, ordinal, timing, published) in [
+        (GroupOp::Sync, 1, FaultTiming::BeforeEffect, false),
+        (GroupOp::Sync, 1, FaultTiming::AfterEffect, false),
+        (GroupOp::Sync, 2, FaultTiming::AfterEffect, false),
+        (GroupOp::Sync, 3, FaultTiming::BeforeEffect, false),
+        (GroupOp::Sync, 3, FaultTiming::AfterEffect, false),
+        (GroupOp::Sync, 4, FaultTiming::BeforeEffect, false),
+        (GroupOp::Sync, 4, FaultTiming::AfterEffect, true),
+        (GroupOp::RootSync, 1, FaultTiming::BeforeEffect, true),
+        (GroupOp::RootSync, 1, FaultTiming::AfterEffect, true),
+    ] {
         let admission = Admission::new();
         let backend = CrashBackend::default();
-        let mut opening = Database::builder(admission.clone())
+        let mut opening = Database::builder(admission.clone(), GROUP, CacheConfig::default())
             .retain_backend(Box::new(backend.clone()), DatabaseOpenMode::Create);
         assert_eq!(opening.open().settlement(), DatabaseOpenSettlement::Ready);
         commit_rows(opening.database().unwrap(), &[(b"stable", b"before")]);
@@ -620,7 +680,7 @@ fn frame_sync_failure_keeps_the_writer_retained_until_reopen_decides() {
             .unwrap()
             .insert(b"uncertain", b"value")
             .unwrap();
-        backend.fail_sync(sync, persist);
+        backend.group.fail(op, ordinal, timing);
         {
             let report = writer.commit();
             assert_eq!(report.settlement(), WriteTerminalSettlement::Retained);
@@ -629,7 +689,7 @@ fn frame_sync_failure_keeps_the_writer_retained_until_reopen_decides() {
             assert!(matches!(
                 report.terminal(),
                 TerminalObservation::Returned(Err(WriteTerminalError::Commit(CommitError(
-                    StorageError::UnknownCommit(_)
+                    StorageError::UnknownCommit(_) | StorageError::Io(_)
                 ))))
             ));
         }

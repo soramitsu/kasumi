@@ -1,0 +1,52 @@
+Command: cargo test --locked --offline --config profile.test.package.kasumi-kv.opt-level=3 --config profile.test.package.sha2.opt-level=3 -p kasumi-raft --all-features --lib -- --nocapture selected_application:: apply_publication::
+CARGO_TARGET_DIR=target/disk-backed-cache
+   Compiling kasumi-store v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-store)
+   Compiling kasumi-raft v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-raft)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 26s
+     Running unittests src/lib.rs (target/disk-backed-cache/debug/deps/kasumi_raft-322a2bc95e307dbb)
+
+running 33 tests
+
+thread 'apply_publication::tests::retry_after_caught_sink_panic_is_a_sticky_duplicate_without_reentry' (17149117) panicked at crates/kasumi-raft/src/apply_publication.rs:683:13:
+injected sink panic
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'apply_publication::tests::caught_sink_panic_leaves_running_and_cannot_be_swallowed_into_success' (17149111) panicked at crates/kasumi-raft/src/apply_publication.rs:666:13:
+injected sink panic
+test apply_publication::tests::swallowed_sink_failure_retains_its_original_error_until_finish_owner_drops ... ok
+test apply_publication::tests::successful_sink_borrows_writes_and_returns_the_exact_owned_response ... ok
+test apply_publication::tests::caught_duplicate_after_success_is_sticky_and_never_reinvokes_sink ... ok
+test apply_publication::tests::missing_callback_rejects_backend_success_without_invoking_sink ... ok
+test apply_publication::tests::independent_backend_and_publication_errors_keep_both_exact_owners ... ok
+test apply_publication::tests::preparation_failure_returns_its_original_owner_without_missing_violation ... ok
+test apply_publication::tests::propagated_marker_and_its_owned_context_do_not_replace_sink_error ... ok
+test apply_publication::tests::postcommit_backend_failure_cannot_acknowledge_the_stored_response ... ok
+test apply_publication::tests::caught_duplicate_after_failure_keeps_the_original_failure_owner ... ok
+test apply_publication::tests::retry_after_caught_sink_panic_is_a_sticky_duplicate_without_reentry ... ok
+test apply_publication::tests::caught_sink_panic_leaves_running_and_cannot_be_swallowed_into_success ... ok
+test selected_application::plan_tests::producer_wire_shape_overquotes_actual_decoder_for_escaped_unicode_and_nested_metadata ... ok
+test selected_application::plan_tests::producer_wire_quote_covers_arbitrary_numbers_without_reclassifying_literal_markers ... ok
+test selected_application::allocation_tests::selected_application_allocation_census_covers_membership_and_noncanonical_defaults ... ok
+test selected_application::allocation_tests::selected_application_allocation_census_covers_expanding_typed_diagnostics ... ok
+test selected_application::tests::selected_application_denial_foreign_provider_and_retain_failure_keep_grant ... ok
+test selected_application::receipt_tests::invocation_receipt_rejects_concrete_retirement_seed_and_response_fields_before_effects ... ok
+test selected_application::receipt_tests::invocation_receipt_fixed_inputs_hash_and_authentic_consume_allocate_nothing ... ok
+test selected_application::receipt_tests::invocation_receipt_binds_the_actual_preparer_plan_and_joint_effects ... ok
+test selected_application::plan_tests::prospective_advancing_origin_refuses_real_exact_replay_before_application_effects ... ok
+test selected_application::plan_tests::prospective_callback_prepares_before_real_producer_publication_and_keeps_original_refusal ... ok
+test selected_application::tests::selected_application_checks_complete_entry_and_bootstrap_identity ... ok
+test selected_application::receipt_tests::invocation_receipt_reentrant_early_consume_cannot_change_entered_mint_state ... ok
+test selected_application::plan_tests::prospective_covered_replay_quotes_actual_newer_cursor ... ok
+test selected_application::tests::selected_application_exact_old_entry_and_real_covered_replay_remain_distinct ... ok
+test selected_application::plan_tests::prospective_covered_snapshot_uses_actual_five_record_proof ... ok
+test selected_application::tests::selected_application_older_image_and_entry_replay_keep_newer_snapshot_identity ... ok
+test selected_application::receipt_tests::invocation_receipt_consumes_covered_replay_with_changed_and_empty_effects ... ok
+test selected_application::receipt_tests::invocation_receipt_rejects_pair_context_response_and_ordered_effect_substitution_before_effects ... ok
+test selected_application::receipt_tests::invocation_receipt_authenticates_advance_and_identical_covered_replays ... ok
+test selected_application::tests::selected_application_original_bounded_read_failure_retains_exact_reader ... ok
+test selected_application::plan_tests::prospective_plan_rejects_later_actual_record_and_foreign_domain_pair ... ok
+test selected_application::tests::selected_application_snapshot_uses_actual_manifest_and_snapshot_cursor ... ok
+
+test result: ok. 33 passed; 0 failed; 0 ignored; 0 measured; 120 filtered out; finished in 5.98s
+
+Runner: 92.99s; exit=0; matching=831/831

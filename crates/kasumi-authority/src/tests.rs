@@ -35,6 +35,7 @@ impl PhysicalFixture {
             directory: scratch_directory.path().to_owned(),
             max_bytes: 256 << 30,
             min_free_bytes: 0,
+            native_cache_bytes: 8 << 20,
         };
         let storage = kasumi_engine::test_utils::FixtureStorage::open(
             &persistent,

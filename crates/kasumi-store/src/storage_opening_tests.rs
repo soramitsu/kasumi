@@ -9,14 +9,33 @@ use std::{
     time::{Duration, Instant},
 };
 
+// Match AdmittedValue::allocate's exact native workspace request, then the
+// Store adapter's retained lease Box. The provider adds its own token below.
+fn native_output_bytes(len: usize) -> u64 {
+    let native = len
+        .checked_add(std::mem::size_of::<kasumi_kv::AdmittedValue>() + 192)
+        .unwrap();
+    crate::disk_memory::add(
+        u64::try_from(native).unwrap(),
+        crate::disk_memory::allocation::<crate::DiskMemoryLease>(1).unwrap(),
+    )
+    .unwrap()
+}
+
 #[test]
 fn retained_reader_keeps_one_snapshot_and_admitted_bytes_through_close() {
     let directory = private_tempdir().unwrap();
     let path = directory.path().join("retained-reader.kasumi");
     let memory = TestDiskMemory::new(256 << 20, 4096);
     let disk = disk(&path, &memory);
-    let opening =
-        RegisteredNodeOpening::prepare(&path, ID, disk.clone(), NodeOpeningMode::Create).unwrap();
+    let opening = RegisteredNodeOpening::prepare(
+        &path,
+        ID,
+        disk.clone(),
+        NodeOpeningMode::Create,
+        crate::test_utils::node_storage_config(),
+    )
+    .unwrap();
     assert_eq!(opening.open(), NodeOpeningPhase::Open);
     let tables = opening.queue_node_tables().unwrap();
     assert_eq!(tables.run(), NodeWriterPhase::Finished);
@@ -67,8 +86,14 @@ fn retained_reader_keeps_one_snapshot_and_admitted_bytes_through_close() {
     assert_eq!(opening.close().unwrap(), DatabaseOpenSettlement::Closed);
     assert_eq!(opening.retire(), StorageCensusDisposition::Retired);
 
-    let existing =
-        RegisteredNodeOpening::prepare(&path, ID, disk, NodeOpeningMode::Existing).unwrap();
+    let existing = RegisteredNodeOpening::prepare(
+        &path,
+        ID,
+        disk,
+        NodeOpeningMode::Existing,
+        crate::test_utils::node_storage_config(),
+    )
+    .unwrap();
     assert_eq!(existing.open(), NodeOpeningPhase::Open);
     let verification = existing.verify_existing_tables().unwrap();
     assert_eq!(verification.phase(), NodeReadPhase::Active);
@@ -85,8 +110,14 @@ fn queued_store_writer_does_not_hold_opening_lock_against_close() {
     let path = directory.path().join("queued-store-writer.kv");
     let memory = TestDiskMemory::new(256 << 20, 4096);
     let disk = disk(&path, &memory);
-    let mut startup =
-        RegisteredNodeStartup::prepare(&path, ID, disk, NodeOpeningMode::Create).unwrap();
+    let mut startup = RegisteredNodeStartup::prepare(
+        &path,
+        ID,
+        disk,
+        NodeOpeningMode::Create,
+        crate::test_utils::node_storage_config(),
+    )
+    .unwrap();
     assert_eq!(startup.advance(), NodeStartupPhase::Ready);
     let opening = std::sync::Arc::new(startup.into_opening().ok().unwrap());
     let first = opening.begin_store_write().unwrap();
@@ -140,8 +171,14 @@ fn active_reader_finish_waits_for_opening_lock_before_reporting_completion() {
     let path = directory.path().join("reader-finish-contention.kv");
     let memory = TestDiskMemory::new(256 << 20, 4096);
     let disk = disk(&path, &memory);
-    let mut startup =
-        RegisteredNodeStartup::prepare(&path, ID, disk, NodeOpeningMode::Create).unwrap();
+    let mut startup = RegisteredNodeStartup::prepare(
+        &path,
+        ID,
+        disk,
+        NodeOpeningMode::Create,
+        crate::test_utils::node_storage_config(),
+    )
+    .unwrap();
     assert_eq!(startup.advance(), NodeStartupPhase::Ready);
     let opening = startup.into_opening().ok().unwrap();
     let reader = opening.queue_read().unwrap();
@@ -173,7 +210,14 @@ fn inspected_reader_failure_retires_directly_after_successful_close() {
     let path = directory.path().join("reader-failures.kasumi");
     let (memory, _, _) = PausedRegistrationMemory::new();
     let disk = retry_disk_registry(|| NodeDisk::fixture_for_path(&path, memory.clone())).unwrap();
-    let opening = RegisteredNodeOpening::prepare(&path, ID, disk, NodeOpeningMode::Create).unwrap();
+    let opening = RegisteredNodeOpening::prepare(
+        &path,
+        ID,
+        disk,
+        NodeOpeningMode::Create,
+        crate::test_utils::node_storage_config(),
+    )
+    .unwrap();
     assert_eq!(opening.open(), NodeOpeningPhase::Open);
     let tables = opening.queue_node_tables().unwrap();
     assert_eq!(tables.run(), NodeWriterPhase::Finished);
@@ -253,7 +297,14 @@ fn owned_reader_point_and_range_bytes_keep_exact_credit_after_close() {
     let path = directory.path().join("reader-owned-output.kasumi");
     let memory = TestDiskMemory::new(256 << 20, 4096);
     let disk = disk(&path, &memory);
-    let opening = RegisteredNodeOpening::prepare(&path, ID, disk, NodeOpeningMode::Create).unwrap();
+    let opening = RegisteredNodeOpening::prepare(
+        &path,
+        ID,
+        disk,
+        NodeOpeningMode::Create,
+        crate::test_utils::node_storage_config(),
+    )
+    .unwrap();
     assert_eq!(opening.open(), NodeOpeningPhase::Open);
     let tables = opening.queue_node_tables().unwrap();
     assert_eq!(tables.run(), NodeWriterPhase::Finished);
@@ -287,16 +338,8 @@ fn owned_reader_point_and_range_bytes_keep_exact_credit_after_close() {
         .unwrap(),
     )
     .unwrap();
-    let native_charge = |len: usize| {
-        TestDiskMemory::required_reservation_bytes(
-            crate::disk_memory::add(
-                len as u64,
-                crate::disk_memory::allocation::<crate::DiskMemoryLease>(1).unwrap(),
-            )
-            .unwrap(),
-        )
-        .unwrap()
-    };
+    let native_charge =
+        |len: usize| TestDiskMemory::required_reservation_bytes(native_output_bytes(len)).unwrap();
     let point_total = native_charge(value.len());
     let row_total = row_charge + native_charge(key.len()) + native_charge(value.len());
     let charged = memory.snapshot();
@@ -330,7 +373,14 @@ fn reader_output_admission_panic_is_reported_and_seals_new_work() {
     let path = directory.path().join("reader-output-panic.kasumi");
     let (memory, _, _) = PausedRegistrationMemory::new();
     let disk = retry_disk_registry(|| NodeDisk::fixture_for_path(&path, memory.clone())).unwrap();
-    let opening = RegisteredNodeOpening::prepare(&path, ID, disk, NodeOpeningMode::Create).unwrap();
+    let opening = RegisteredNodeOpening::prepare(
+        &path,
+        ID,
+        disk,
+        NodeOpeningMode::Create,
+        crate::test_utils::node_storage_config(),
+    )
+    .unwrap();
     assert_eq!(opening.open(), NodeOpeningPhase::Open);
     let tables = opening.queue_node_tables().unwrap();
     assert_eq!(tables.run(), NodeWriterPhase::Finished);
@@ -371,13 +421,24 @@ fn reader_output_admission_panic_is_reported_and_seals_new_work() {
     assert_eq!(opening.retire(), StorageCensusDisposition::Retired);
 }
 
+fn group_image(path: &Path) -> std::collections::BTreeMap<std::ffi::OsString, Vec<u8>> {
+    std::fs::read_dir(path)
+        .unwrap()
+        .map(|entry| {
+            let entry = entry.unwrap();
+            assert!(entry.file_type().unwrap().is_file());
+            (entry.file_name(), std::fs::read(entry.path()).unwrap())
+        })
+        .collect()
+}
+
 fn header_state(path: &Path) -> u8 {
-    let mut bytes = [0; 33];
-    std::fs::File::open(path)
+    let mut bytes = [0; 34];
+    std::fs::File::open(path.join(kasumi_kv::ROOT_FILE_NAME))
         .unwrap()
         .read_exact(&mut bytes)
         .unwrap();
-    bytes[32]
+    bytes[33]
 }
 
 fn disk(path: &Path, memory: &Arc<TestDiskMemory>) -> Arc<NodeDisk> {
@@ -418,8 +479,19 @@ struct PausedRegistrationMemory {
     census: crate::StorageCensus,
     backing: Arc<TestDiskMemory>,
     pause_next: AtomicBool,
+    // A reader now preadmits its independent diagnostic backing before its
+    // census owner. Tests naming the owner-admission boundary skip that grant.
+    pause_skip: std::sync::atomic::AtomicUsize,
     fail_next: AtomicBool,
+    fail_installed_bytes: AtomicU64,
+    fail_installed_denials: std::sync::atomic::AtomicUsize,
+    // Keep the refusal armed: optional cache work can request the same byte
+    // count before the required output. Each test disarms after the operation.
     deny_bytes: AtomicU64,
+    deny_installed_next: AtomicBool,
+    deny_installed_bytes: AtomicU64,
+    deny_installed_skip: std::sync::atomic::AtomicUsize,
+    capacity_denials: std::sync::atomic::AtomicUsize,
     panic_next: AtomicBool,
     entered: std::sync::mpsc::Sender<()>,
     resume: Mutex<std::sync::mpsc::Receiver<()>>,
@@ -446,8 +518,15 @@ impl PausedRegistrationMemory {
             census: crate::StorageCensus::allocate(slots).unwrap(),
             backing: TestDiskMemory::new(256 << 20, 4096),
             pause_next: AtomicBool::new(false),
+            pause_skip: std::sync::atomic::AtomicUsize::new(0),
             fail_next: AtomicBool::new(false),
+            fail_installed_bytes: AtomicU64::new(0),
+            fail_installed_denials: std::sync::atomic::AtomicUsize::new(0),
             deny_bytes: AtomicU64::new(0),
+            deny_installed_next: AtomicBool::new(false),
+            deny_installed_bytes: AtomicU64::new(0),
+            deny_installed_skip: std::sync::atomic::AtomicUsize::new(0),
+            capacity_denials: std::sync::atomic::AtomicUsize::new(0),
             panic_next: AtomicBool::new(false),
             entered,
             resume: Mutex::new(release),
@@ -457,17 +536,37 @@ impl PausedRegistrationMemory {
         (owner, observe, resume)
     }
 }
+impl kasumi_kv::SourceMemoryProvider for PausedRegistrationMemory {}
 impl NodeDiskMemoryAdmission for PausedRegistrationMemory {
     fn storage_census(&self) -> &crate::StorageCensus {
         &self.census
     }
     fn reserve_installed(self: Arc<Self>, bytes: u64) -> io::Result<crate::DiskMemoryLease> {
+        // Tests arm this only after queueing the real reader, or target the
+        // exact required two-byte native table-tag output (cache uses admit).
+        let target = bytes != 0 && self.deny_installed_bytes.load(Ordering::Acquire) == bytes;
+        if self.deny_installed_next.swap(false, Ordering::AcqRel)
+            || (target
+                && self
+                    .deny_installed_skip
+                    .fetch_update(Ordering::AcqRel, Ordering::Acquire, |left| {
+                        left.checked_sub(1)
+                    })
+                    .is_err())
+        {
+            self.capacity_denials.fetch_add(1, Ordering::AcqRel);
+            return Err(io::ErrorKind::OutOfMemory.into());
+        }
         if bytes != 0
             && self
-                .deny_bytes
+                .fail_installed_bytes
                 .compare_exchange(bytes, 0, Ordering::AcqRel, Ordering::Acquire)
                 .is_ok()
         {
+            self.fail_installed_denials.fetch_add(1, Ordering::AcqRel);
+            return Err(io::ErrorKind::Other.into());
+        }
+        if bytes != 0 && self.deny_bytes.load(Ordering::Acquire) == bytes {
             return Err(io::ErrorKind::OutOfMemory.into());
         }
         if self.panic_next.swap(false, Ordering::AcqRel) {
@@ -476,11 +575,58 @@ impl NodeDiskMemoryAdmission for PausedRegistrationMemory {
         if self.fail_next.swap(false, Ordering::AcqRel) {
             return Err(io::ErrorKind::Other.into());
         }
-        if self.pause_next.swap(false, Ordering::AcqRel) {
+        if self
+            .pause_skip
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |left| {
+                left.checked_sub(1)
+            })
+            .is_err()
+            && self.pause_next.swap(false, Ordering::AcqRel)
+        {
             self.entered.send(()).unwrap();
             self.resume.lock().recv().unwrap();
         }
         self.backing.clone().reserve_installed(bytes)
+    }
+
+    fn quote_cache_memory(&self, bytes: u64) -> std::io::Result<kasumi_kv::CacheMemoryQuote> {
+        crate::test_utils::cache_memory::disk_quote(self, bytes)
+    }
+    fn reserve_cache_memory(
+        self: Arc<Self>,
+        bytes: u64,
+    ) -> std::io::Result<kasumi_kv::CacheMemoryLease> {
+        crate::test_utils::cache_memory::disk_reserve(self, bytes)
+    }
+}
+impl crate::test_utils::cache_memory::DiskProvider for PausedRegistrationMemory {
+    fn backing(&self) -> Arc<dyn NodeDiskMemoryAdmission> {
+        self.backing.clone()
+    }
+    fn admit(&self, bytes: u64) -> std::io::Result<()> {
+        let _ = bytes;
+
+        if bytes != 0 && self.deny_bytes.load(Ordering::Acquire) == bytes {
+            return Err(io::ErrorKind::OutOfMemory.into());
+        }
+        if self.panic_next.swap(false, Ordering::AcqRel) {
+            panic!("reader output admission panic");
+        }
+        if self.fail_next.swap(false, Ordering::AcqRel) {
+            return Err(io::ErrorKind::Other.into());
+        }
+        if self
+            .pause_skip
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |left| {
+                left.checked_sub(1)
+            })
+            .is_err()
+            && self.pause_next.swap(false, Ordering::AcqRel)
+        {
+            self.entered.send(()).unwrap();
+            self.resume.lock().recv().unwrap();
+        }
+        Ok(())
     }
 }
 
@@ -490,8 +636,16 @@ fn close_during_table_registration_returns_the_exact_cancelled_request() {
     let path = directory.path().join("registration-race.kasumi");
     let (memory, entered, resume) = PausedRegistrationMemory::new();
     let disk = retry_disk_registry(|| NodeDisk::fixture_for_path(&path, memory.clone())).unwrap();
-    let opening =
-        Arc::new(RegisteredNodeOpening::prepare(&path, ID, disk, NodeOpeningMode::Create).unwrap());
+    let opening = Arc::new(
+        RegisteredNodeOpening::prepare(
+            &path,
+            ID,
+            disk,
+            NodeOpeningMode::Create,
+            crate::test_utils::node_storage_config(),
+        )
+        .unwrap(),
+    );
     assert_eq!(opening.open(), NodeOpeningPhase::Open);
     memory.pause_next.store(true, Ordering::Release);
     let queued = opening.clone();
@@ -531,8 +685,16 @@ fn close_during_read_registration_returns_the_exact_cancelled_request() {
     let path = directory.path().join("read-registration-race.kasumi");
     let (memory, entered, resume) = PausedRegistrationMemory::new();
     let disk = retry_disk_registry(|| NodeDisk::fixture_for_path(&path, memory.clone())).unwrap();
-    let opening =
-        Arc::new(RegisteredNodeOpening::prepare(&path, ID, disk, NodeOpeningMode::Create).unwrap());
+    let opening = Arc::new(
+        RegisteredNodeOpening::prepare(
+            &path,
+            ID,
+            disk,
+            NodeOpeningMode::Create,
+            crate::test_utils::node_storage_config(),
+        )
+        .unwrap(),
+    );
     assert_eq!(opening.open(), NodeOpeningPhase::Open);
     let tables = opening.queue_node_tables().unwrap();
     assert_eq!(tables.run(), NodeWriterPhase::Finished);
@@ -577,6 +739,7 @@ fn ready_publication_requires_the_exact_committed_disposed_tables_request_once()
         ID,
         disk(&first_path, &first_memory),
         NodeOpeningMode::Create,
+        crate::test_utils::node_storage_config(),
     )
     .unwrap();
     let second = RegisteredNodeOpening::prepare(
@@ -584,6 +747,7 @@ fn ready_publication_requires_the_exact_committed_disposed_tables_request_once()
         ID,
         disk(&second_path, &second_memory),
         NodeOpeningMode::Create,
+        crate::test_utils::node_storage_config(),
     )
     .unwrap();
     assert_eq!(first.open(), NodeOpeningPhase::Open);
@@ -618,9 +782,14 @@ fn aborted_table_body_is_not_a_ready_publication_proof() {
     let directory = private_tempdir().unwrap();
     let path = directory.path().join("aborted.kasumi");
     let memory = TestDiskMemory::new(256 << 20, 4096);
-    let opening =
-        RegisteredNodeOpening::prepare(&path, ID, disk(&path, &memory), NodeOpeningMode::Create)
-            .unwrap();
+    let opening = RegisteredNodeOpening::prepare(
+        &path,
+        ID,
+        disk(&path, &memory),
+        NodeOpeningMode::Create,
+        crate::test_utils::node_storage_config(),
+    )
+    .unwrap();
     assert_eq!(opening.open(), NodeOpeningPhase::Open);
     {
         let state = opening.registration.owner().state.lock();
@@ -658,8 +827,14 @@ fn failed_ready_attempt_is_one_shot_and_keeps_the_original_registered_owner() {
     let path = directory.path().join("failed-ready.kasumi");
     let memory = TestDiskMemory::new(256 << 20, 4096);
     let disk = disk(&path, &memory);
-    let opening =
-        RegisteredNodeOpening::prepare(&path, ID, disk.clone(), NodeOpeningMode::Create).unwrap();
+    let opening = RegisteredNodeOpening::prepare(
+        &path,
+        ID,
+        disk.clone(),
+        NodeOpeningMode::Create,
+        crate::test_utils::node_storage_config(),
+    )
+    .unwrap();
     FAILED_READY_DIRECTORY.lock().unwrap().replace(directory);
     assert_eq!(opening.open(), NodeOpeningPhase::Open);
     let tables = opening.queue_node_tables().unwrap();
@@ -698,7 +873,14 @@ fn registered_opening_exists_before_actual_creation_and_abandoned_prepare_has_no
     let memory = TestDiskMemory::new(256 << 20, 4096);
     let disk = disk(&path, &memory);
     let baseline = memory.snapshot();
-    let opening = RegisteredNodeOpening::prepare(&path, ID, disk, NodeOpeningMode::Create).unwrap();
+    let opening = RegisteredNodeOpening::prepare(
+        &path,
+        ID,
+        disk,
+        NodeOpeningMode::Create,
+        crate::test_utils::node_storage_config(),
+    )
+    .unwrap();
     let id = opening.id();
     assert!(!path.exists());
     assert_eq!(memory.storage_census().snapshot().databases, 1);
@@ -723,7 +905,14 @@ fn registered_node_tables_retains_actual_transaction_and_reports_through_physica
     let path = directory.path().join("initialized.kasumi");
     let memory = TestDiskMemory::new(256 << 20, 4096);
     let disk = disk(&path, &memory);
-    let opening = RegisteredNodeOpening::prepare(&path, ID, disk, NodeOpeningMode::Create).unwrap();
+    let opening = RegisteredNodeOpening::prepare(
+        &path,
+        ID,
+        disk,
+        NodeOpeningMode::Create,
+        crate::test_utils::node_storage_config(),
+    )
+    .unwrap();
     assert_eq!(opening.open(), NodeOpeningPhase::Open);
     assert!(path.exists());
     assert!(matches!(
@@ -791,7 +980,14 @@ fn explicit_close_waits_for_the_actual_reader_then_retries_without_consuming_the
     let path = directory.path().join("reader-close.kasumi");
     let memory = TestDiskMemory::new(256 << 20, 4096);
     let disk = disk(&path, &memory);
-    let opening = RegisteredNodeOpening::prepare(&path, ID, disk, NodeOpeningMode::Create).unwrap();
+    let opening = RegisteredNodeOpening::prepare(
+        &path,
+        ID,
+        disk,
+        NodeOpeningMode::Create,
+        crate::test_utils::node_storage_config(),
+    )
+    .unwrap();
     assert_eq!(opening.open(), NodeOpeningPhase::Open);
     let reader = {
         let state = opening.registration.owner().state.lock();
@@ -823,7 +1019,14 @@ fn explicit_close_seals_admission_without_waiting_for_a_held_report() {
     let path = directory.path().join("held-report-close.kasumi");
     let memory = TestDiskMemory::new(256 << 20, 4096);
     let disk = disk(&path, &memory);
-    let opening = RegisteredNodeOpening::prepare(&path, ID, disk, NodeOpeningMode::Create).unwrap();
+    let opening = RegisteredNodeOpening::prepare(
+        &path,
+        ID,
+        disk,
+        NodeOpeningMode::Create,
+        crate::test_utils::node_storage_config(),
+    )
+    .unwrap();
     assert_eq!(opening.open(), NodeOpeningPhase::Open);
     let report = opening.report();
     assert_eq!(
@@ -842,7 +1045,14 @@ fn actual_queued_worker_keeps_request_without_blocking_close_and_cancels_after_s
     let path = directory.path().join("queued.kasumi");
     let memory = TestDiskMemory::new(256 << 20, 4096);
     let disk = disk(&path, &memory);
-    let opening = RegisteredNodeOpening::prepare(&path, ID, disk, NodeOpeningMode::Create).unwrap();
+    let opening = RegisteredNodeOpening::prepare(
+        &path,
+        ID,
+        disk,
+        NodeOpeningMode::Create,
+        crate::test_utils::node_storage_config(),
+    )
+    .unwrap();
     assert_eq!(opening.open(), NodeOpeningPhase::Open);
     let writer = opening.queue_node_tables().unwrap();
     let id = writer.id();
@@ -891,7 +1101,14 @@ fn actual_body_error_is_retained_before_abort_and_disposal_without_replay() {
     let path = directory.path().join("body-error.kasumi");
     let memory = TestDiskMemory::new(256 << 20, 4096);
     let disk = disk(&path, &memory);
-    let opening = RegisteredNodeOpening::prepare(&path, ID, disk, NodeOpeningMode::Create).unwrap();
+    let opening = RegisteredNodeOpening::prepare(
+        &path,
+        ID,
+        disk,
+        NodeOpeningMode::Create,
+        crate::test_utils::node_storage_config(),
+    )
+    .unwrap();
     assert_eq!(opening.open(), NodeOpeningPhase::Open);
     {
         // Produce a real incompatible table with the ordinary engine. The
@@ -944,8 +1161,14 @@ fn real_commit_and_abort_failures_keep_actual_request_after_all_facades_cancel()
         let path = directory.path().join("terminal-failure.kasumi");
         let memory = TestDiskMemory::new(256 << 20, 4096);
         let disk = disk(&path, &memory);
-        let opening =
-            RegisteredNodeOpening::prepare(&path, ID, disk, NodeOpeningMode::Create).unwrap();
+        let opening = RegisteredNodeOpening::prepare(
+            &path,
+            ID,
+            disk,
+            NodeOpeningMode::Create,
+            crate::test_utils::node_storage_config(),
+        )
+        .unwrap();
         UNCERTAIN_DIRECTORIES.lock().unwrap()[index] = Some(directory);
         assert_eq!(opening.open(), NodeOpeningPhase::Open);
         if body_error {
@@ -1015,7 +1238,7 @@ fn real_commit_and_abort_failures_keep_actual_request_after_all_facades_cancel()
         let raw = std::fs::OpenOptions::new()
             .read(true)
             .write(true)
-            .open(&path)
+            .open(path.join(kasumi_kv::ROOT_FILE_NAME))
             .unwrap();
         use std::os::fd::AsRawFd;
         // SAFETY: the owned descriptor is live, and nonblocking flock does not
@@ -1043,8 +1266,14 @@ fn abandoned_failed_open_keeps_original_after_positive_close_until_explicit_repo
     );
     let memory = TestDiskMemory::new(256 << 20, 4096);
     let disk = disk(&path, &memory);
-    let opening =
-        RegisteredNodeOpening::prepare(&path, ID, disk, NodeOpeningMode::Existing).unwrap();
+    let opening = RegisteredNodeOpening::prepare(
+        &path,
+        ID,
+        disk,
+        NodeOpeningMode::Existing,
+        crate::test_utils::node_storage_config(),
+    )
+    .unwrap();
     assert_eq!(opening.open(), NodeOpeningPhase::FileAcquisition);
     let original = {
         let report = opening.report();
@@ -1075,13 +1304,18 @@ fn abandoned_failed_open_keeps_original_after_positive_close_until_explicit_repo
 
 #[test]
 fn a_new_close_error_is_not_relinquished_by_the_call_that_first_starts_close() {
-    use kasumi_kv::StorageBackend;
     let directory = private_tempdir().unwrap();
     let path = directory.path().join("new-close-error.kasumi");
     let memory = TestDiskMemory::new(256 << 20, 4096);
     let disk = disk(&path, &memory);
-    let opening =
-        RegisteredNodeOpening::prepare(&path, ID, disk.clone(), NodeOpeningMode::Create).unwrap();
+    let opening = RegisteredNodeOpening::prepare(
+        &path,
+        ID,
+        disk.clone(),
+        NodeOpeningMode::Create,
+        crate::test_utils::node_storage_config(),
+    )
+    .unwrap();
     assert_eq!(opening.open(), NodeOpeningPhase::Open);
     let id = opening.id();
     let actual = std::ptr::from_ref(opening.registration.owner());
@@ -1090,7 +1324,7 @@ fn a_new_close_error_is_not_relinquished_by_the_call_that_first_starts_close() {
         assert!(!state.outcomes_released);
         state.file.retained_file_custody().unwrap().0
     };
-    let physical = std::fs::read(&path).unwrap();
+    let physical = group_image(&path);
     let admitted = disk.snapshot();
     // Starting close may produce both a shutdown error and a failed backend
     // outcome. The explicit call keeps both originals in the same owner and
@@ -1137,7 +1371,7 @@ fn a_new_close_error_is_not_relinquished_by_the_call_that_first_starts_close() {
             native,
         )
     };
-    assert_eq!(disk.snapshot().open_files, 1);
+    assert_eq!(disk.snapshot().open_files, admitted.open_files);
     assert_eq!(disk.snapshot().charged_bytes, admitted.charged_bytes);
     assert_eq!(disk.snapshot().pending_bytes, admitted.pending_bytes);
     assert_eq!(disk.snapshot().phase, crate::NodeDiskPhase::Failed);
@@ -1177,7 +1411,13 @@ fn a_new_close_error_is_not_relinquished_by_the_call_that_first_starts_close() {
                 report.state.file.retained_file_custody(),
                 Some((file_owner, native))
             );
-            assert!(report.state.file.backend().len().is_err());
+            assert!(
+                report
+                    .state
+                    .file
+                    .len(kasumi_kv::GroupFile::segment(1))
+                    .is_err()
+            );
         }
         // Inspecting/relinquishing reports is not proof that the retained
         // physical owner and its error custody have retired.
@@ -1194,7 +1434,7 @@ fn a_new_close_error_is_not_relinquished_by_the_call_that_first_starts_close() {
         );
         drop(still_retained);
         assert_eq!(memory.snapshot(), charged);
-        assert_eq!(disk.snapshot().open_files, 1);
+        assert_eq!(disk.snapshot().open_files, admitted.open_files);
         assert_eq!(disk.snapshot().charged_bytes, admitted.charged_bytes);
         assert_eq!(disk.snapshot().pending_bytes, admitted.pending_bytes);
         assert!(
@@ -1203,14 +1443,14 @@ fn a_new_close_error_is_not_relinquished_by_the_call_that_first_starts_close() {
         );
         let (root, relative) = disk.binding(&path).unwrap();
         assert!(disk.open_file(root, relative).is_err());
-        assert_eq!(std::fs::read(&path).unwrap(), physical);
+        assert_eq!(group_image(&path), physical);
     }
     // Ordinary retirement never acknowledges the failed-close generation.
     // Without explicit recovery the installed owner remains after all facades
     // disappear, even though native closure is now separately proved.
     assert_eq!(memory.storage_census().snapshot().databases, 1);
     assert_eq!(memory.storage_census().snapshot().writers, 0);
-    assert_eq!(disk.snapshot().open_files, 1);
+    assert_eq!(disk.snapshot().open_files, admitted.open_files);
     assert_eq!(disk.snapshot().phase, crate::NodeDiskPhase::Failed);
 }
 
@@ -1220,7 +1460,14 @@ fn queued_relinquishment_seals_the_request_before_another_facade_can_run() {
     let path = directory.path().join("sealed-queue.kasumi");
     let memory = TestDiskMemory::new(256 << 20, 4096);
     let disk = disk(&path, &memory);
-    let opening = RegisteredNodeOpening::prepare(&path, ID, disk, NodeOpeningMode::Create).unwrap();
+    let opening = RegisteredNodeOpening::prepare(
+        &path,
+        ID,
+        disk,
+        NodeOpeningMode::Create,
+        crate::test_utils::node_storage_config(),
+    )
+    .unwrap();
     assert_eq!(opening.open(), NodeOpeningPhase::Open);
     let first = opening.queue_node_tables().unwrap();
     let second = RegisteredNodeTables::retained(memory.clone(), first.id()).unwrap();
@@ -1241,7 +1488,14 @@ fn busy_worker_cannot_acknowledge_the_body_error_that_it_has_not_produced_yet() 
     let path = directory.path().join("busy-report-release.kasumi");
     let memory = TestDiskMemory::new(256 << 20, 4096);
     let disk = disk(&path, &memory);
-    let opening = RegisteredNodeOpening::prepare(&path, ID, disk, NodeOpeningMode::Create).unwrap();
+    let opening = RegisteredNodeOpening::prepare(
+        &path,
+        ID,
+        disk,
+        NodeOpeningMode::Create,
+        crate::test_utils::node_storage_config(),
+    )
+    .unwrap();
     assert_eq!(opening.open(), NodeOpeningPhase::Open);
     {
         let state = opening.registration.owner().state.lock();
@@ -1307,8 +1561,14 @@ fn explicit_failed_close_requires_original_acknowledgement_then_accepted_disk_ce
     let path = directory.path().join("explicit-failed-recovery.kasumi");
     let memory = TestDiskMemory::new(256 << 20, 4096);
     let disk = disk(&path, &memory);
-    let opening =
-        RegisteredNodeOpening::prepare(&path, ID, disk.clone(), NodeOpeningMode::Create).unwrap();
+    let opening = RegisteredNodeOpening::prepare(
+        &path,
+        ID,
+        disk.clone(),
+        NodeOpeningMode::Create,
+        crate::test_utils::node_storage_config(),
+    )
+    .unwrap();
     assert_eq!(opening.open(), NodeOpeningPhase::Open);
     assert!(
         opening
@@ -1317,7 +1577,8 @@ fn explicit_failed_close_requires_original_acknowledgement_then_accepted_disk_ce
             .is_err()
     );
     let id = opening.id();
-    let physical = std::fs::read(&path).unwrap();
+    let physical = group_image(&path);
+    let file_count = disk.snapshot().open_files;
     disk.fail();
     assert_eq!(opening.retire(), StorageCensusDisposition::Retained);
     let retained = RegisteredNodeOpening::retained(memory.clone(), id).unwrap();
@@ -1333,14 +1594,17 @@ fn explicit_failed_close_requires_original_acknowledgement_then_accepted_disk_ce
         };
         let (_, native) = report.state.file.retained_file_custody().unwrap();
         let mut seen = None;
+        let mut error_count = 0;
         let (ack, allocations) = crate::allocation_tests::measure(|| {
             report.acknowledge_failed_close(|error| {
-                assert!(seen.replace(std::ptr::from_ref(error) as usize).is_none());
+                seen.get_or_insert(std::ptr::from_ref(error) as usize);
+                error_count += 1;
             })
         });
         let ack = ack.unwrap();
         assert_eq!(allocations, 0);
         assert_eq!(seen, native);
+        assert_eq!(error_count, file_count);
         assert!(!report.state.outcomes_released);
         (
             std::ptr::from_ref(shutdown),
@@ -1356,7 +1620,7 @@ fn explicit_failed_close_requires_original_acknowledgement_then_accepted_disk_ce
     assert_eq!(recovery.unwrap(), FailedOpeningRecovery::AwaitingDiskCensus);
     assert_eq!(allocations, 0);
     assert_eq!(disk.snapshot().charged_bytes, before_transfer.charged_bytes);
-    assert_eq!(disk.snapshot().open_files, 1);
+    assert_eq!(disk.snapshot().open_files, file_count);
     {
         let report = retained.report();
         assert_eq!(
@@ -1383,12 +1647,12 @@ fn explicit_failed_close_requires_original_acknowledgement_then_accepted_disk_ce
     let cancelled = crate::CensusCancellation::default();
     cancelled.cancel();
     assert!(disk.reconcile(&cancelled).is_err());
-    assert_eq!(disk.snapshot().open_files, 1);
+    assert_eq!(disk.snapshot().open_files, file_count);
     assert_eq!(
         memory.storage_census().drain_owner(id),
         StorageCensusDisposition::Retained
     );
-    assert_eq!(std::fs::read(&path).unwrap(), physical);
+    assert_eq!(group_image(&path), physical);
     disk.reconcile(&crate::CensusCancellation::default())
         .unwrap();
     assert_eq!(disk.snapshot().open_files, 0);
@@ -1411,7 +1675,7 @@ fn explicit_failed_close_requires_original_acknowledgement_then_accepted_disk_ce
     }
     assert_eq!(retained.retire(), StorageCensusDisposition::Retired);
     assert_eq!(memory.storage_census().snapshot().databases, 0);
-    assert_eq!(std::fs::read(&path).unwrap(), physical);
+    assert_eq!(group_image(&path), physical);
 }
 
 #[test]
@@ -1429,6 +1693,7 @@ fn failed_acknowledgement_cannot_cross_memory_cores_with_equal_public_owner_ids(
         ID,
         first_disk.clone(),
         NodeOpeningMode::Create,
+        crate::test_utils::node_storage_config(),
     )
     .unwrap();
     let second = RegisteredNodeOpening::prepare(
@@ -1436,6 +1701,7 @@ fn failed_acknowledgement_cannot_cross_memory_cores_with_equal_public_owner_ids(
         ID,
         second_disk.clone(),
         NodeOpeningMode::Create,
+        crate::test_utils::node_storage_config(),
     )
     .unwrap();
     assert_eq!(first.open(), NodeOpeningPhase::Open);
@@ -1489,8 +1755,14 @@ fn disposed_failed_owner_resumes_after_actual_transfer_contention_without_replay
     let path = directory.path().join("transfer-contention.kasumi");
     let memory = TestDiskMemory::new(256 << 20, 4096);
     let disk = disk(&path, &memory);
-    let opening =
-        RegisteredNodeOpening::prepare(&path, ID, disk.clone(), NodeOpeningMode::Create).unwrap();
+    let opening = RegisteredNodeOpening::prepare(
+        &path,
+        ID,
+        disk.clone(),
+        NodeOpeningMode::Create,
+        crate::test_utils::node_storage_config(),
+    )
+    .unwrap();
     assert_eq!(opening.open(), NodeOpeningPhase::Open);
     let id = opening.id();
     disk.fail();
@@ -1593,17 +1865,24 @@ fn unknown_native_opening_close_vetoes_acknowledgement_and_never_retries_the_han
     let path = directory.path().join("unknown-native-close.kasumi");
     let memory = TestDiskMemory::new(256 << 20, 4096);
     let disk = disk(&path, &memory);
-    let opening =
-        RegisteredNodeOpening::prepare(&path, ID, disk.clone(), NodeOpeningMode::Create).unwrap();
+    let opening = RegisteredNodeOpening::prepare(
+        &path,
+        ID,
+        disk.clone(),
+        NodeOpeningMode::Create,
+        crate::test_utils::node_storage_config(),
+    )
+    .unwrap();
     assert_eq!(opening.open(), NodeOpeningPhase::Open);
     let id = opening.id();
-    let physical = std::fs::read(&path).unwrap();
+    let physical = group_image(&path);
+    let file_count = disk.snapshot().open_files;
     // Fence shutdown first so the injected close belongs to backend retirement,
     // rather than a preceding temporary verification walk.
     disk.fail();
-    NodeFile::fail_next_native_close(libc::EIO);
+    crate::NodeDiskFile::fail_next_native_close(libc::EIO);
     assert_eq!(opening.retire(), StorageCensusDisposition::Retained);
-    let attempts = NodeFile::native_close_attempts();
+    let attempts = crate::NodeDiskFile::native_close_attempts();
     let retained = RegisteredNodeOpening::retained(memory.clone(), id).unwrap();
     let (backend, native_owner) = {
         let report = retained.report();
@@ -1651,17 +1930,17 @@ fn unknown_native_opening_close_vetoes_acknowledgement_and_never_retries_the_han
             TerminalObservation::NotEntered
         ));
         assert!(!report.state.outcomes_released);
-        assert_eq!(NodeFile::native_close_attempts(), attempts);
+        assert_eq!(crate::NodeDiskFile::native_close_attempts(), attempts);
         assert_eq!(disk.snapshot().charged_bytes, charged);
-        assert_eq!(std::fs::read(&path).unwrap(), physical);
+        assert_eq!(group_image(&path), physical);
     }
     drop(retained);
     assert_eq!(
         memory.storage_census().drain_owner(id),
         StorageCensusDisposition::Retained
     );
-    assert_eq!(disk.snapshot().open_files, 1);
-    assert_eq!(NodeFile::native_close_attempts(), attempts);
+    assert_eq!(disk.snapshot().open_files, file_count);
+    assert_eq!(crate::NodeDiskFile::native_close_attempts(), attempts);
 }
 
 #[test]
@@ -1675,7 +1954,15 @@ fn private_opening_arc_is_admitted_before_any_prepared_owner_allocation() {
     let baseline = memory.snapshot();
     let former_backing = add(
         arc::<DatabaseOwner>().unwrap(),
-        NodeFile::prepared_backing_bytes(&path).unwrap(),
+        add(
+            NodeSegmentGroup::prepared_backing_bytes(
+                &path,
+                crate::test_utils::node_storage_config().cached_files,
+            )
+            .unwrap(),
+            allocation::<Arc<NodeSegmentGroup>>(1).unwrap(),
+        )
+        .unwrap(),
     )
     .unwrap();
     let former_charge = TestDiskMemory::required_reservation_bytes(former_backing).unwrap();
@@ -1692,20 +1979,32 @@ fn private_opening_arc_is_admitted_before_any_prepared_owner_allocation() {
         .unwrap();
     let full = memory.snapshot();
     let (denied, allocations) = crate::allocation_tests::measure(|| {
-        RegisteredNodeOpening::prepare(&path, ID, disk.clone(), NodeOpeningMode::Create)
+        RegisteredNodeOpening::prepare(
+            &path,
+            ID,
+            disk.clone(),
+            NodeOpeningMode::Create,
+            crate::test_utils::node_storage_config(),
+        )
     });
     assert!(matches!(denied, Err(error) if error.kind() == io::ErrorKind::OutOfMemory));
     assert_eq!(
         allocations, 0,
-        "denial precedes NodeFile, path, backend and proxy allocations"
+        "denial precedes group, path, slots, backend and proxy allocations"
     );
     assert_eq!(memory.snapshot().used_bytes, full.used_bytes);
     assert_eq!(memory.storage_census().snapshot().databases, 0);
     assert_eq!(disk.snapshot().open_files, 0);
     assert!(!path.exists());
     drop(held);
-    let opening =
-        RegisteredNodeOpening::prepare(&path, ID, disk.clone(), NodeOpeningMode::Create).unwrap();
+    let opening = RegisteredNodeOpening::prepare(
+        &path,
+        ID,
+        disk.clone(),
+        NodeOpeningMode::Create,
+        crate::test_utils::node_storage_config(),
+    )
+    .unwrap();
     let id = opening.id();
     assert_eq!(
         memory.snapshot().used_bytes - baseline.used_bytes,
@@ -1731,9 +2030,14 @@ fn failed_pre_descriptor_acquisition_retires_the_registered_opening() {
     let memory = TestDiskMemory::new(256 << 20, 4096);
     let disk = disk(&configured_path, &memory);
     let initial_bytes = memory.snapshot().used_bytes;
-    let opening =
-        RegisteredNodeOpening::prepare(&outside_path, ID, disk.clone(), NodeOpeningMode::Create)
-            .unwrap();
+    let opening = RegisteredNodeOpening::prepare(
+        &outside_path,
+        ID,
+        disk.clone(),
+        NodeOpeningMode::Create,
+        crate::test_utils::node_storage_config(),
+    )
+    .unwrap();
 
     assert_eq!(opening.open(), NodeOpeningPhase::FileAcquisition);
     assert!(matches!(
@@ -1758,8 +2062,14 @@ fn failed_existing_name_acquisition_retires_the_registered_opening() {
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
     let memory = TestDiskMemory::new(256 << 20, 4096);
     let disk = disk(&path, &memory);
-    let opening =
-        RegisteredNodeOpening::prepare(&path, ID, disk.clone(), NodeOpeningMode::Create).unwrap();
+    let opening = RegisteredNodeOpening::prepare(
+        &path,
+        ID,
+        disk.clone(),
+        NodeOpeningMode::Create,
+        crate::test_utils::node_storage_config(),
+    )
+    .unwrap();
 
     assert_eq!(opening.open(), NodeOpeningPhase::FileAcquisition);
     assert!(matches!(
@@ -1783,7 +2093,14 @@ async fn production_node_create_reopen_and_shutdown_use_registered_owner() {
     let scratch_directory = private_tempdir().unwrap();
     let scratch = ScratchDisk::fixture(scratch_directory.path(), memory.clone());
 
-    let node = NodeStore::create_new(&path, ID, disk.clone(), scratch.clone()).unwrap();
+    let node = NodeStore::create_new(
+        &path,
+        ID,
+        disk.clone(),
+        scratch.clone(),
+        crate::test_utils::node_storage_config(),
+    )
+    .unwrap();
     assert_eq!(memory.storage_census().snapshot().databases, 1);
     {
         let tx = node.db.begin_read().unwrap();
@@ -1794,7 +2111,14 @@ async fn production_node_create_reopen_and_shutdown_use_registered_owner() {
     assert_eq!(memory.storage_census().snapshot().databases, 0);
     drop(node);
 
-    let reopened = NodeStore::open_existing(&path, ID, disk, scratch).unwrap();
+    let reopened = NodeStore::open_existing(
+        &path,
+        ID,
+        disk,
+        scratch,
+        crate::test_utils::node_storage_config(),
+    )
+    .unwrap();
     assert_eq!(memory.storage_census().snapshot().databases, 1);
     reopened.shutdown().await.unwrap();
     assert_eq!(memory.storage_census().snapshot().databases, 0);
@@ -1804,30 +2128,48 @@ async fn production_node_create_reopen_and_shutdown_use_registered_owner() {
 async fn production_catalog_read_registers_child_and_retains_original_table_failure() {
     let directory = private_tempdir().unwrap();
     let path = directory.path().join("production-catalog-reader.kv");
-    let (memory, entered, resume) = PausedRegistrationMemory::new();
+    let (memory, _, _) = PausedRegistrationMemory::new();
     let disk = retry_disk_registry(|| NodeDisk::fixture_for_path(&path, memory.clone())).unwrap();
     let scratch_directory = private_tempdir().unwrap();
     let scratch = ScratchDisk::fixture(scratch_directory.path(), memory.clone());
-    let node = NodeStore::create_new(&path, ID, disk.clone(), scratch).unwrap();
+    let node = NodeStore::create_new(
+        &path,
+        ID,
+        disk.clone(),
+        scratch,
+        crate::test_utils::node_storage_config(),
+    )
+    .unwrap();
     assert!(node.catalog("tenant").unwrap().is_none());
     assert_eq!(memory.storage_census().snapshot().readers, 0);
 
-    memory.pause_next.store(true, Ordering::Release);
-    let worker_node = node.clone();
-    let worker = std::thread::spawn(move || {
-        worker_node
-            .catalog("tenant")
-            .err()
-            .expect("injected reader admission denial fails catalog read")
-    });
-    entered.recv_timeout(Duration::from_secs(5)).unwrap();
-    memory.fail_next.store(true, Ordering::Release);
-    resume.send(()).unwrap();
-    let failure = worker
-        .join()
-        .unwrap()
+    // Fail the required two-byte type-tag output from check_bytes_table.
+    // Independent report, reader-cell and native snapshot grants must succeed
+    // first; their ordering or sizes do not select this injection boundary.
+    let table_output = native_output_bytes(2);
+    memory
+        .fail_installed_bytes
+        .store(table_output, Ordering::Release);
+    let failure = node
+        .catalog("tenant")
+        .err()
+        .expect("injected table output admission fails catalog read")
         .downcast::<crate::NodeCatalogReadFailure>()
         .expect("registered catalog failure retains the exact child");
+    assert_eq!(memory.fail_installed_bytes.load(Ordering::Acquire), 0);
+    assert_eq!(memory.fail_installed_denials.load(Ordering::Acquire), 1);
+    {
+        let report = failure.reader().report();
+        let begin_error = match report.begin() {
+            TerminalObservation::Returned(Err(error)) => Some(format!("{error:?}")),
+            _ => None,
+        };
+        assert!(
+            matches!(report.begin(), TerminalObservation::Returned(Ok(()))),
+            "table injection reached {:?} after native begin {begin_error:?}",
+            report.phase()
+        );
+    }
     assert_eq!(failure.stage(), "begin");
     let reader_id = failure.reader().id();
     assert_eq!(memory.storage_census().snapshot().readers, 1);
@@ -1867,7 +2209,14 @@ async fn queued_production_catalog_reader_is_cancelled_with_registered_custody()
     let disk = disk(&path, &memory);
     let scratch_directory = private_tempdir().unwrap();
     let scratch = ScratchDisk::fixture(scratch_directory.path(), memory.clone());
-    let node = NodeStore::create_new(&path, ID, disk, scratch).unwrap();
+    let node = NodeStore::create_new(
+        &path,
+        ID,
+        disk,
+        scratch,
+        crate::test_utils::node_storage_config(),
+    )
+    .unwrap();
     let reader = node.db.queue_registered_read().unwrap();
     let reader_id = reader.id();
     assert_eq!(memory.storage_census().snapshot().readers, 1);
@@ -1894,7 +2243,14 @@ async fn production_catalog_bounded_failure_retires_when_error_is_dropped() {
     let disk = disk(&path, &memory);
     let scratch_directory = private_tempdir().unwrap();
     let scratch = ScratchDisk::fixture(scratch_directory.path(), memory.clone());
-    let node = NodeStore::create_new(&path, ID, disk, scratch).unwrap();
+    let node = NodeStore::create_new(
+        &path,
+        ID,
+        disk,
+        scratch,
+        crate::test_utils::node_storage_config(),
+    )
+    .unwrap();
     let oversized = vec![0x5a; crate::MAX_KEY_CATALOG_BYTES + 1];
     let tx = node.db.begin_write().unwrap();
     tx.open_table(CATALOG)
@@ -1934,18 +2290,25 @@ async fn production_catalog_output_capacity_failure_retires_when_error_is_droppe
     let disk = retry_disk_registry(|| NodeDisk::fixture_for_path(&path, memory.clone())).unwrap();
     let scratch_directory = private_tempdir().unwrap();
     let scratch = ScratchDisk::fixture(scratch_directory.path(), memory.clone());
-    let node = NodeStore::create_new(&path, ID, disk, scratch).unwrap();
+    let node = NodeStore::create_new(
+        &path,
+        ID,
+        disk,
+        scratch,
+        crate::test_utils::node_storage_config(),
+    )
+    .unwrap();
     let outer_bound =
         crate::disk_memory::allocation::<u8>(u64::try_from(crate::MAX_KEY_CATALOG_BYTES).unwrap())
             .unwrap();
     memory.deny_bytes.store(outer_bound, Ordering::Release);
-    let error = node
-        .catalog("tenant")
+    let result = node.catalog("tenant");
+    assert_eq!(memory.deny_bytes.swap(0, Ordering::AcqRel), outer_bound);
+    let error = result
         .err()
         .unwrap()
         .downcast::<crate::NodeCatalogReadFailure>()
         .expect("catalog capacity error retains its original typed report");
-    assert_eq!(memory.deny_bytes.load(Ordering::Acquire), 0);
     assert_eq!(error.stage(), "catalog bytes");
     let id = error.reader().id();
     assert!(matches!(
@@ -1967,7 +2330,14 @@ async fn production_catalog_decode_failure_retires_its_clean_registered_reader()
     let disk = disk(&path, &memory);
     let scratch_directory = private_tempdir().unwrap();
     let scratch = ScratchDisk::fixture(scratch_directory.path(), memory.clone());
-    let node = NodeStore::create_new(&path, ID, disk, scratch).unwrap();
+    let node = NodeStore::create_new(
+        &path,
+        ID,
+        disk,
+        scratch,
+        crate::test_utils::node_storage_config(),
+    )
+    .unwrap();
     let wrapped = crate::WrappedKey {
         provider: "fixture".into(),
         key_ref: "catalog".into(),
@@ -2016,7 +2386,14 @@ async fn production_pristine_probe_classifies_large_orphan_without_value_admissi
     let disk = disk(&path, &memory);
     let scratch_directory = private_tempdir().unwrap();
     let scratch = ScratchDisk::fixture(scratch_directory.path(), memory.clone());
-    let node = NodeStore::create_new(&path, ID, disk, scratch).unwrap();
+    let node = NodeStore::create_new(
+        &path,
+        ID,
+        disk,
+        scratch,
+        crate::test_utils::node_storage_config(),
+    )
+    .unwrap();
     let hash = crate::tenant_hash("__kasumi_security");
     let mut key = hash.to_vec();
     key.push(1);
@@ -2060,7 +2437,14 @@ async fn production_long_lived_view_returns_exact_native_report_after_drop() {
     let disk = disk(&path, &memory);
     let scratch_directory = private_tempdir().unwrap();
     let scratch = ScratchDisk::fixture(scratch_directory.path(), memory.clone());
-    let node = NodeStore::create_new(&path, ID, disk, scratch).unwrap();
+    let node = NodeStore::create_new(
+        &path,
+        ID,
+        disk,
+        scratch,
+        crate::test_utils::node_storage_config(),
+    )
+    .unwrap();
     let store = crate::TenantStore::initialize_catalog(
         node.clone(),
         "__kasumi_security".into(),
@@ -2077,7 +2461,7 @@ async fn production_long_lived_view_returns_exact_native_report_after_drop() {
     let error = view.get("docs", b"key", 1).unwrap_err();
     let failure = error.downcast::<crate::NodeScopedReadFailure>().unwrap();
     drop(view);
-    assert_eq!(failure.reader().id(), id);
+    assert_eq!(failure.reader_id(), id);
     assert!(matches!(
         failure
             .body_error()
@@ -2085,7 +2469,7 @@ async fn production_long_lived_view_returns_exact_native_report_after_drop() {
         Some(NodeReadAccessError::Reported)
     ));
     assert!(matches!(
-        failure.reader().report().read_failure(),
+        failure.report().read_failure(),
         TerminalObservation::Returned(Err(kasumi_kv::BoundedReadError::BoundExceeded))
     ));
     assert_eq!(memory.storage_census().snapshot().readers, 1);
@@ -2097,9 +2481,9 @@ async fn production_long_lived_view_returns_exact_native_report_after_drop() {
     let error = view.visit("docs", 1, |_, _| Ok(())).unwrap_err();
     let failure = error.downcast::<crate::NodeScopedReadFailure>().unwrap();
     drop(view);
-    assert_eq!(failure.reader().id(), id);
+    assert_eq!(failure.reader_id(), id);
     assert!(matches!(
-        failure.reader().report().read_failure(),
+        failure.report().read_failure(),
         TerminalObservation::Returned(Err(kasumi_kv::BoundedReadError::BoundExceeded))
     ));
     drop(failure);
@@ -2117,7 +2501,14 @@ async fn production_paired_view_returns_exact_native_report_after_drop() {
     let disk = disk(&path, &memory);
     let scratch_directory = private_tempdir().unwrap();
     let scratch = ScratchDisk::fixture(scratch_directory.path(), memory.clone());
-    let node = NodeStore::create_new(&path, ID, disk, scratch).unwrap();
+    let node = NodeStore::create_new(
+        &path,
+        ID,
+        disk,
+        scratch,
+        crate::test_utils::node_storage_config(),
+    )
+    .unwrap();
     let stores = crate::TenantStorageSet::initialize_catalogs(
         node.clone(),
         "tenant".into(),
@@ -2146,9 +2537,9 @@ async fn production_paired_view_returns_exact_native_report_after_drop() {
         };
         let failure = error.downcast::<crate::NodeScopedReadFailure>().unwrap();
         drop(view);
-        assert_eq!(failure.reader().id(), id);
+        assert_eq!(failure.reader_id(), id);
         assert!(matches!(
-            failure.reader().report().read_failure(),
+            failure.report().read_failure(),
             TerminalObservation::Returned(Err(kasumi_kv::BoundedReadError::BoundExceeded))
         ));
         assert_eq!(memory.storage_census().snapshot().readers, 1);
@@ -2167,7 +2558,14 @@ async fn production_read_view_keeps_exact_child_until_explicit_close() {
     let disk = disk(&path, &memory);
     let scratch_directory = private_tempdir().unwrap();
     let scratch = ScratchDisk::fixture(scratch_directory.path(), memory.clone());
-    let node = NodeStore::create_new(&path, ID, disk, scratch).unwrap();
+    let node = NodeStore::create_new(
+        &path,
+        ID,
+        disk,
+        scratch,
+        crate::test_utils::node_storage_config(),
+    )
+    .unwrap();
     let store = crate::TenantStore::initialize_catalog(
         node.clone(),
         "__kasumi_security".into(),
@@ -2219,7 +2617,14 @@ async fn production_delete_needs_no_prior_ciphertext_headroom_and_survives_reope
     let disk = disk(&path, &memory);
     let scratch_directory = private_tempdir().unwrap();
     let scratch = ScratchDisk::fixture(scratch_directory.path(), memory.clone());
-    let node = NodeStore::create_new(&path, ID, disk.clone(), scratch.clone()).unwrap();
+    let node = NodeStore::create_new(
+        &path,
+        ID,
+        disk.clone(),
+        scratch.clone(),
+        crate::test_utils::node_storage_config(),
+    )
+    .unwrap();
     let provider = Arc::new(crate::test_utils::LocalKeyProvider::new([42; 32]));
     let store = crate::TenantStore::initialize_catalog(
         node.clone(),
@@ -2268,7 +2673,14 @@ async fn production_delete_needs_no_prior_ciphertext_headroom_and_survives_reope
     node.shutdown().await.unwrap();
     drop(node);
 
-    let reopened = NodeStore::open_existing(&path, ID, disk, scratch).unwrap();
+    let reopened = NodeStore::open_existing(
+        &path,
+        ID,
+        disk,
+        scratch,
+        crate::test_utils::node_storage_config(),
+    )
+    .unwrap();
     let reopened_store = crate::TenantStore::open_existing(
         reopened.clone(),
         "__kasumi_security".into(),
@@ -2294,7 +2706,14 @@ async fn production_visit_failure_retains_original_registered_report() {
     let disk = disk(&path, &memory);
     let scratch_directory = private_tempdir().unwrap();
     let scratch = ScratchDisk::fixture(scratch_directory.path(), memory.clone());
-    let node = NodeStore::create_new(&path, ID, disk, scratch).unwrap();
+    let node = NodeStore::create_new(
+        &path,
+        ID,
+        disk,
+        scratch,
+        crate::test_utils::node_storage_config(),
+    )
+    .unwrap();
     let store = crate::TenantStore::initialize_catalog(
         node.clone(),
         "__kasumi_security".into(),
@@ -2312,9 +2731,9 @@ async fn production_visit_failure_retains_original_registered_report() {
         .unwrap()
         .downcast::<crate::NodeScopedReadFailure>()
         .unwrap();
-    let id = error.reader().id();
+    let id = error.reader_id();
     assert!(matches!(
-        error.reader().report().read_failure(),
+        error.report().read_failure(),
         TerminalObservation::Returned(Err(kasumi_kv::BoundedReadError::BoundExceeded))
     ));
     assert_eq!(memory.storage_census().snapshot().readers, 1);
@@ -2332,7 +2751,14 @@ async fn production_paired_deployment_reads_one_registered_snapshot() {
     let disk = disk(&path, &memory);
     let scratch_directory = private_tempdir().unwrap();
     let scratch = ScratchDisk::fixture(scratch_directory.path(), memory.clone());
-    let node = NodeStore::create_new(&path, ID, disk, scratch).unwrap();
+    let node = NodeStore::create_new(
+        &path,
+        ID,
+        disk,
+        scratch,
+        crate::test_utils::node_storage_config(),
+    )
+    .unwrap();
     let stores = crate::TenantStorageSet::initialize_catalogs_fixture(
         node.clone(),
         "tenant".into(),
@@ -2371,7 +2797,14 @@ async fn production_paired_view_keeps_one_registered_generation_until_close() {
     let disk = disk(&path, &memory);
     let scratch_directory = private_tempdir().unwrap();
     let scratch = ScratchDisk::fixture(scratch_directory.path(), memory.clone());
-    let node = NodeStore::create_new(&path, ID, disk, scratch).unwrap();
+    let node = NodeStore::create_new(
+        &path,
+        ID,
+        disk,
+        scratch,
+        crate::test_utils::node_storage_config(),
+    )
+    .unwrap();
     let stores = crate::TenantStorageSet::initialize_catalogs_fixture(
         node.clone(),
         "tenant".into(),
@@ -2419,7 +2852,14 @@ async fn production_scoped_body_panic_cannot_auto_retire() {
     let disk = disk(&path, &memory);
     let scratch_directory = private_tempdir().unwrap();
     let scratch = ScratchDisk::fixture(scratch_directory.path(), memory.clone());
-    let node = NodeStore::create_new(&path, ID, disk, scratch).unwrap();
+    let node = NodeStore::create_new(
+        &path,
+        ID,
+        disk,
+        scratch,
+        crate::test_utils::node_storage_config(),
+    )
+    .unwrap();
     let error = node
         .with_registered_read::<()>(|_| std::panic::panic_any("scoped body panic"))
         .err()
@@ -2427,9 +2867,9 @@ async fn production_scoped_body_panic_cannot_auto_retire() {
         .downcast::<crate::NodeScopedReadFailure>()
         .unwrap();
     assert_eq!(error.stage(), "body panic");
-    let id = error.reader().id();
+    let id = error.reader_id();
     let original = {
-        let report = error.reader().report();
+        let report = error.report();
         let TerminalObservation::Panicked(payload) = report.body_panic() else {
             panic!("original scoped body panic missing");
         };
@@ -2467,7 +2907,14 @@ async fn production_view_drop_during_unwind_keeps_interrupted_child() {
     let disk = disk(&path, &memory);
     let scratch_directory = private_tempdir().unwrap();
     let scratch = ScratchDisk::fixture(scratch_directory.path(), memory.clone());
-    let node = NodeStore::create_new(&path, ID, disk, scratch).unwrap();
+    let node = NodeStore::create_new(
+        &path,
+        ID,
+        disk,
+        scratch,
+        crate::test_utils::node_storage_config(),
+    )
+    .unwrap();
     let store = crate::TenantStore::initialize_catalog(
         node.clone(),
         "__kasumi_security".into(),
@@ -2502,7 +2949,9 @@ async fn production_view_drop_during_unwind_keeps_interrupted_child() {
     node.shutdown().await.unwrap();
 }
 
-#[tokio::test]
+// The maximum-size synchronous write can exceed the real key lease interval;
+// keep the actual renewal worker runnable while that operation owns this thread.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn production_tenant_get_accepts_maximum_writer_value() {
     let directory = private_tempdir().unwrap();
     let path = directory.path().join("production-max-point-read.kv");
@@ -2510,7 +2959,14 @@ async fn production_tenant_get_accepts_maximum_writer_value() {
     let disk = disk(&path, &memory);
     let scratch_directory = private_tempdir().unwrap();
     let scratch = ScratchDisk::fixture(scratch_directory.path(), memory.clone());
-    let node = NodeStore::create_new(&path, ID, disk, scratch).unwrap();
+    let node = NodeStore::create_new(
+        &path,
+        ID,
+        disk,
+        scratch,
+        crate::test_utils::node_storage_config(),
+    )
+    .unwrap();
     let store = crate::TenantStore::initialize_catalog(
         node.clone(),
         "__kasumi_security".into(),
@@ -2544,7 +3000,13 @@ async fn production_record_writer_refuses_unadmitted_live_envelope_peak() -> any
     let disk = disk(&path, &memory);
     let scratch_directory = private_tempdir()?;
     let scratch = ScratchDisk::fixture(scratch_directory.path(), memory.clone());
-    let node = NodeStore::create_new(&path, ID, disk, scratch)?;
+    let node = NodeStore::create_new(
+        &path,
+        ID,
+        disk,
+        scratch,
+        crate::test_utils::node_storage_config(),
+    )?;
     let store = crate::TenantStore::initialize_catalog(
         node.clone(),
         "__kasumi_security".into(),
@@ -2597,7 +3059,13 @@ async fn production_record_writer_denies_before_output_allocation() -> anyhow::R
     let disk = disk(&path, &memory);
     let scratch_directory = private_tempdir()?;
     let scratch = ScratchDisk::fixture(scratch_directory.path(), memory.clone());
-    let node = NodeStore::create_new(&path, ID, disk, scratch)?;
+    let node = NodeStore::create_new(
+        &path,
+        ID,
+        disk,
+        scratch,
+        crate::test_utils::node_storage_config(),
+    )?;
     let store = crate::TenantStore::initialize_catalog(
         node.clone(),
         "__kasumi_security".into(),
@@ -2651,7 +3119,14 @@ async fn production_tenant_get_missing_and_tiny_rows_fit_low_headroom() {
     let disk = disk(&path, &memory);
     let scratch_directory = private_tempdir().unwrap();
     let scratch = ScratchDisk::fixture(scratch_directory.path(), memory.clone());
-    let node = NodeStore::create_new(&path, ID, disk, scratch).unwrap();
+    let node = NodeStore::create_new(
+        &path,
+        ID,
+        disk,
+        scratch,
+        crate::test_utils::node_storage_config(),
+    )
+    .unwrap();
     let store = crate::TenantStore::initialize_catalog(
         node.clone(),
         "__kasumi_security".into(),
@@ -2710,7 +3185,14 @@ async fn production_present_point_row_uses_native_credit_without_duplicate_outer
     let disk = disk(&path, &memory);
     let scratch_directory = private_tempdir().unwrap();
     let scratch = ScratchDisk::fixture(scratch_directory.path(), memory.clone());
-    let node = NodeStore::create_new(&path, ID, disk, scratch).unwrap();
+    let node = NodeStore::create_new(
+        &path,
+        ID,
+        disk,
+        scratch,
+        crate::test_utils::node_storage_config(),
+    )
+    .unwrap();
     let store = crate::TenantStore::initialize_catalog(
         node.clone(),
         "__kasumi_security".into(),
@@ -2738,14 +3220,8 @@ async fn production_present_point_row_uses_native_credit_without_duplicate_outer
     assert_eq!(memory.snapshot().used_bytes, before_probe.used_bytes);
 
     let envelope_len = 4 + store.catalog.read().active.len() + 24 + 12 + 4 + 8 + value_len + 16;
-    let native_charge = TestDiskMemory::required_reservation_bytes(
-        crate::disk_memory::add(
-            envelope_len as u64,
-            crate::disk_memory::allocation::<crate::DiskMemoryLease>(1).unwrap(),
-        )
-        .unwrap(),
-    )
-    .unwrap();
+    let native_charge =
+        TestDiskMemory::required_reservation_bytes(native_output_bytes(envelope_len)).unwrap();
     let duplicate_outer_charge = TestDiskMemory::required_reservation_bytes(
         crate::disk_memory::allocation::<u8>(envelope_len as u64).unwrap(),
     )
@@ -2790,7 +3266,14 @@ async fn production_tenant_point_read_retires_routine_failures_and_keeps_cancell
     let disk = retry_disk_registry(|| NodeDisk::fixture_for_path(&path, memory.clone())).unwrap();
     let scratch_directory = private_tempdir().unwrap();
     let scratch = ScratchDisk::fixture(scratch_directory.path(), memory.clone());
-    let node = NodeStore::create_new(&path, ID, disk, scratch).unwrap();
+    let node = NodeStore::create_new(
+        &path,
+        ID,
+        disk,
+        scratch,
+        crate::test_utils::node_storage_config(),
+    )
+    .unwrap();
     let store = crate::TenantStore::initialize_catalog(
         node.clone(),
         "__kasumi_security".into(),
@@ -2811,11 +3294,7 @@ async fn production_tenant_point_read_retires_routine_failures_and_keeps_cancell
     // Deny the native exact-length lease before it allocates ciphertext. The
     // registered child must retain the native failure observation.
     let envelope_len = 4 + store.catalog.read().active.len() + 24 + 12 + 4 + 3 + 7 + 16;
-    let native_bytes = crate::disk_memory::add(
-        envelope_len as u64,
-        crate::disk_memory::allocation::<crate::DiskMemoryLease>(1).unwrap(),
-    )
-    .unwrap();
+    let native_bytes = native_output_bytes(envelope_len);
     let before_denial = memory.backing.snapshot();
     let probe = node.db.queue_registered_read().unwrap();
     assert_eq!(probe.begin(), NodeReadPhase::Active);
@@ -2824,12 +3303,12 @@ async fn production_tenant_point_read_retires_routine_failures_and_keeps_cancell
     assert_eq!(probe.finish(), NodeReadPhase::Finished);
     assert_eq!(probe.retire(), StorageCensusDisposition::Retired);
     memory.deny_bytes.store(native_bytes, Ordering::Release);
-    let denied = store
-        .get("docs", b"key")
+    let result = store.get("docs", b"key");
+    assert_eq!(memory.deny_bytes.swap(0, Ordering::AcqRel), native_bytes);
+    let denied = result
         .unwrap_err()
         .downcast::<crate::TenantPointReadFailure>()
         .expect("native output denial must return its registered reader");
-    assert_eq!(memory.deny_bytes.load(Ordering::Acquire), 0);
     assert_eq!(denied.stage(), "record bytes");
     assert_eq!(denied.reader().phase(), NodeReadPhase::Failed);
     let denied_id = denied.reader().id();
@@ -2912,11 +3391,17 @@ async fn production_node_post_open_failure_retains_exact_registered_custody() {
     let scratch_directory = private_tempdir().unwrap();
     let scratch = ScratchDisk::fixture(scratch_directory.path(), memory.clone());
 
-    let error = NodeStore::create_new(&path, ID, disk, scratch)
-        .err()
-        .expect("child census denial must fail setup")
-        .downcast::<NodeStoreOpeningFailure>()
-        .expect("production failure retains typed custody");
+    let error = NodeStore::create_new(
+        &path,
+        ID,
+        disk,
+        scratch,
+        crate::test_utils::node_storage_config(),
+    )
+    .err()
+    .expect("child census denial must fail setup")
+    .downcast::<NodeStoreOpeningFailure>()
+    .expect("production failure retains typed custody");
     assert_eq!(error.custody().phase(), NodeStartupPhase::Failed);
     assert!(error.custody().local_error().is_some());
     assert_eq!(memory.storage_census().snapshot().databases, 1);
@@ -2948,15 +3433,28 @@ async fn production_node_rejects_wrong_identity_with_recoverable_failed_opening_
     let scratch_directory = private_tempdir().unwrap();
     let scratch = ScratchDisk::fixture(scratch_directory.path(), memory.clone());
 
-    let node = NodeStore::create_new(&path, ID, disk.clone(), scratch.clone()).unwrap();
+    let node = NodeStore::create_new(
+        &path,
+        ID,
+        disk.clone(),
+        scratch.clone(),
+        crate::test_utils::node_storage_config(),
+    )
+    .unwrap();
     node.shutdown().await.unwrap();
     drop(node);
     let other_id = Uuid::from_u128(ID.as_u128() + 1);
-    let error = NodeStore::open_existing(&path, other_id, disk, scratch)
-        .err()
-        .unwrap()
-        .downcast::<NodeStoreOpeningFailure>()
-        .unwrap();
+    let error = NodeStore::open_existing(
+        &path,
+        other_id,
+        disk,
+        scratch,
+        crate::test_utils::node_storage_config(),
+    )
+    .err()
+    .unwrap()
+    .downcast::<NodeStoreOpeningFailure>()
+    .unwrap();
     let opening_id = error.opening_id();
     assert_eq!(memory.storage_census().snapshot().databases, 1);
     assert!(matches!(
@@ -2971,3 +3469,92 @@ async fn production_node_rejects_wrong_identity_with_recoverable_failed_opening_
         kasumi_kv::TerminalObservation::Returned(Err(_))
     ));
 }
+
+#[test]
+fn native_storage_policy_is_explicit_and_preserves_large_cache_limits() {
+    let large = NodeStorageConfig::new(6_u64 << 30, 64);
+    large.validate().unwrap();
+    let encoded = serde_json::to_value(large).unwrap();
+    assert_eq!(encoded["byte_limit"].as_u64(), Some(6_u64 << 30));
+    assert_eq!(
+        serde_json::from_value::<NodeStorageConfig>(encoded.clone()).unwrap(),
+        large
+    );
+    for missing in ["byte_limit", "cached_files"] {
+        let mut incomplete = encoded.clone();
+        incomplete.as_object_mut().unwrap().remove(missing);
+        assert!(serde_json::from_value::<NodeStorageConfig>(incomplete).is_err());
+    }
+    assert!(NodeStorageConfig::new(1, 0).validate().is_err());
+    assert!(NodeStorageConfig::new(1, 4097).validate().is_err());
+    let directory = private_tempdir().unwrap();
+    let config = NodeDisk::fixture_config(directory.path().join("node.kv")).unwrap();
+    let mut encoded = serde_json::to_value(config).unwrap();
+    encoded.as_object_mut().unwrap().remove("native_storage");
+    assert!(serde_json::from_value::<crate::NodeDiskConfig>(encoded).is_err());
+}
+
+#[tokio::test]
+async fn installed_native_cache_and_descriptor_ceilings_precede_allocation_and_effects() {
+    let directory = private_tempdir().unwrap();
+    let scratch_directory = private_tempdir().unwrap();
+    let path = directory.path().join("bounded-group");
+    let memory = TestDiskMemory::new(256 << 20, 4096);
+    let mut config = NodeDisk::fixture_config(&path).unwrap();
+    config.native_storage = NodeStorageConfig::new(512 << 10, 8);
+    let disk = retry_disk_registry(|| {
+        NodeDisk::open_fixture(
+            &config,
+            memory.clone(),
+            &crate::CensusCancellation::default(),
+        )
+    })
+    .unwrap();
+    let baseline = memory.snapshot();
+    for denied in [
+        NodeStorageConfig::new((512 << 10) + 1, 8),
+        NodeStorageConfig::new(0, 9),
+    ] {
+        let (result, allocations) = crate::allocation_tests::measure(|| {
+            RegisteredNodeOpening::prepare(&path, ID, disk.clone(), NodeOpeningMode::Create, denied)
+        });
+        assert!(matches!(result, Err(error) if error.kind() == io::ErrorKind::InvalidInput));
+        assert_eq!(allocations, 0);
+        assert_eq!(memory.snapshot(), baseline);
+        assert!(!path.exists());
+    }
+    let scratch = ScratchDisk::fixture(scratch_directory.path(), memory.clone());
+    let node = NodeStore::create_new(
+        &path,
+        ID,
+        disk.clone(),
+        scratch,
+        NodeStorageConfig::new(0, 4),
+    )
+    .unwrap();
+    node.configure_cache(config.native_storage.cache).unwrap();
+    let before = node.cache_stats().unwrap();
+    assert!(
+        matches!(node.configure_cache(kasumi_kv::CacheConfig { byte_limit: (512 << 10) + 1 }), Err(kasumi_kv::StorageError::Io(error)) if error.kind() == io::ErrorKind::InvalidInput)
+    );
+    assert_eq!(node.cache_stats().unwrap(), before);
+    let retained =
+        RegisteredNodeOpening::retained(memory.clone(), node.registered_opening_id().unwrap())
+            .unwrap();
+    assert!(
+        retained
+            .configure_cache(kasumi_kv::CacheConfig {
+                byte_limit: (512 << 10) + 1
+            })
+            .is_err()
+    );
+    assert_eq!(retained.cache_stats().unwrap(), before);
+    node.configure_cache(kasumi_kv::CacheConfig { byte_limit: 0 })
+        .unwrap();
+    node.configure_cache(config.native_storage.cache).unwrap();
+    drop(retained);
+    node.shutdown().await.unwrap();
+}
+
+#[path = "routine_read_diagnostics_tests.rs"]
+mod routine_read_diagnostics;

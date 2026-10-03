@@ -15,7 +15,7 @@ impl Administration {
         // readiness group-count limit and performs no foreground quorum probes.
         for sample in coverage.details {
             let managed = if sample.tenant == crate::runtime::CONTROL_TENANT {
-                (self.control.engine().generation()?.state.incarnation == sample.incarnation)
+                (self.control.engine().generation()?.incarnation() == sample.incarnation)
                     .then(|| SelectedTenant::new(self.control.clone()))
             } else {
                 self.registry
@@ -44,29 +44,25 @@ impl Administration {
                     && managed.store.check_access().is_ok()
                     && let Ok(generation) = managed.database.engine().generation()
                 {
-                    let retention = &generation.state.audit_retention;
-                    let budget = &generation.state.limits.audit_retention;
+                    let retention = generation.audit_retention();
+                    let budget = &generation.limits().audit_retention;
                     observation.capacity = Some(CapacityObservation {
-                        documents: generation.state.document_count,
-                        logical_bytes: generation.state.logical_bytes,
-                        logical_budget_bytes: generation.state.limits.max_logical_bytes,
-                        snapshot_disk_budget_bytes: generation.state.limits.max_snapshot_bytes,
-                        permanent_staged_bytes: generation.state.permanent_staged_bytes,
-                        reserved_staged_terminal_bytes: generation
-                            .state
-                            .reserved_staged_terminal_bytes,
+                        documents: generation.document_count(),
+                        logical_bytes: generation.logical_bytes(),
+                        logical_budget_bytes: generation.limits().max_logical_bytes,
+                        snapshot_disk_budget_bytes: generation.limits().max_snapshot_bytes,
+                        permanent_staged_bytes: generation.permanent_staged_bytes(),
+                        reserved_staged_terminal_bytes: generation.reserved_staged_terminal_bytes(),
                         permanent_staged_budget_bytes: generation
-                            .state
-                            .limits
+                            .limits()
                             .atomic
                             .max_permanent_staged_bytes,
-                        schema_activation_bytes: generation.state.schema_activation_bytes,
+                        schema_activation_bytes: generation.schema_activation_bytes(),
                         schema_activation_budget_bytes: generation
-                            .state
-                            .limits
+                            .limits()
                             .max_schema_activation_bytes,
-                        retirement_bytes: generation.state.retirement_bytes,
-                        retirement_budget_bytes: generation.state.limits.max_retirement_bytes,
+                        retirement_bytes: generation.retirement_bytes(),
+                        retirement_budget_bytes: generation.limits().max_retirement_bytes,
                     });
                     observation.retention = Some(RetentionObservation {
                         next_sequence: retention.next_sequence,
@@ -79,7 +75,7 @@ impl Administration {
                             retention.hot_bytes,
                             budget,
                             retention.draining,
-                            !generation.state.retired && generation.state.pending_restore.is_none(),
+                            !generation.retired() && generation.pending_restore().is_none(),
                         ),
                         hot_budget_bytes: budget.hot_bytes,
                         archive_budget_bytes: budget.archive_bytes,

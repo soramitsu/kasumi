@@ -1,0 +1,59 @@
+Command: cargo test -p kasumi-store --all-features --lib --locked --offline --config profile.test.package.kasumi-kv.opt-level=3 --config profile.test.package.sha2.opt-level=3 -- --test-threads=1 storage_opening::reads::retirement_tests:: retained_reader_keeps_one_snapshot_and_admitted_bytes_through_close active_reader_finish_waits_for_opening_lock_before_reporting_completion inspected_reader_failure_retires_directly_after_successful_close owned_reader_point_and_range_bytes_keep_exact_credit_after_close reader_output_admission_panic_is_reported_and_seals_new_work close_during_read_registration_returns_the_exact_cancelled_request production_catalog_output_capacity_failure_retires_when_error_is_dropped production_read_view_keeps_exact_child_until_explicit_close production_paired_view_keeps_one_registered_generation_until_close production_paired_view_returns_exact_native_report_after_drop production_tenant_get_missing_and_tiny_rows_fit_low_headroom production_present_point_row_uses_native_credit_without_duplicate_outer_charge production_tenant_point_read_retires_routine_failures_and_keeps_cancelled_child paired_deployment_read_checks_domains_and_charge pinned_bootstrap_view_survives_coherent_physical_identity_replacement accepted_transaction_keeps_scratch_close_retained_until_actual_drain segmented_scratch_streams_rows_larger_than_its_explicit_cache
+CARGO_TARGET_DIR=target/disk-backed-cache
+   Compiling kasumi-kv v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-kv)
+   Compiling kasumi-types v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-types)
+   Compiling kasumi-serving v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-serving)
+   Compiling kasumi-store v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-store)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3m 31s
+     Running unittests src/lib.rs (target/disk-backed-cache/debug/deps/kasumi_store-98be0c6afb7030c8)
+
+running 24 tests
+test scratch_table::tests::accepted_transaction_keeps_scratch_close_retained_until_actual_drain ... ok
+test scratch_table::tests::segmented_scratch_streams_rows_larger_than_its_explicit_cache ... ok
+test storage_domains::tests::paired_deployment_read_checks_domains_and_charge ... ok
+test storage_domains::tests::pinned_bootstrap_view_survives_coherent_physical_identity_replacement ... ok
+test storage_opening::reads::retirement_tests::close_drains_only_its_released_routine_reader_after_opening_lock_contention ... ok
+test storage_opening::reads::retirement_tests::close_postpass_drains_routine_reader_dropped_inside_first_close ... ok
+test storage_opening::reads::retirement_tests::finished_reader_retries_a_transient_busy_census_owner ... ok
+test storage_opening::reads::retirement_tests::node_database_retirement_retry_drains_metadata_skipped_routine_child ... ok
+test storage_opening::reads::retirement_tests::parent_shutdown_waits_for_disposed_child_cell_and_exact_lease ... ok
+test storage_opening::reads::retirement_tests::routine_failure_retires_after_a_facade_reconstitutes_during_last_drop ... ok
+test storage_opening::reads::retirement_tests::routine_reader_dropped_during_close_retry_drains_on_next_close ... ok
+test storage_opening::tests::active_reader_finish_waits_for_opening_lock_before_reporting_completion ... ok
+test storage_opening::tests::close_during_read_registration_returns_the_exact_cancelled_request ... ok
+test storage_opening::tests::inspected_reader_failure_retires_directly_after_successful_close ... ok
+test storage_opening::tests::owned_reader_point_and_range_bytes_keep_exact_credit_after_close ... FAILED
+test storage_opening::tests::production_catalog_output_capacity_failure_retires_when_error_is_dropped ... ok
+test storage_opening::tests::production_paired_view_keeps_one_registered_generation_until_close ... ok
+test storage_opening::tests::production_paired_view_returns_exact_native_report_after_drop ... ok
+test storage_opening::tests::production_present_point_row_uses_native_credit_without_duplicate_outer_charge ... ok
+test storage_opening::tests::production_read_view_keeps_exact_child_until_explicit_close ... ok
+test storage_opening::tests::production_tenant_get_missing_and_tiny_rows_fit_low_headroom ... ok
+test storage_opening::tests::production_tenant_point_read_retires_routine_failures_and_keeps_cancelled_child ... FAILED
+test storage_opening::tests::reader_output_admission_panic_is_reported_and_seals_new_work ... ok
+test storage_opening::tests::retained_reader_keeps_one_snapshot_and_admitted_bytes_through_close ... ok
+
+failures:
+
+---- storage_opening::tests::owned_reader_point_and_range_bytes_keep_exact_credit_after_close stdout ----
+
+thread 'storage_opening::tests::owned_reader_point_and_range_bytes_keep_exact_credit_after_close' (10924630) panicked at crates/kasumi-store/src/storage_opening_tests.rs:341:5:
+assertion `left == right` failed
+  left: 45968
+ right: 45272
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- storage_opening::tests::production_tenant_point_read_retires_routine_failures_and_keeps_cancelled_child stdout ----
+
+thread 'storage_opening::tests::production_tenant_point_read_retires_routine_failures_and_keeps_cancelled_child' (10925355) panicked at crates/kasumi-store/src/storage_opening_tests.rs:3253:10:
+called `Result::unwrap_err()` on an `Ok` value: Some([112, 97, 121, 108, 111, 97, 100])
+
+
+failures:
+    storage_opening::tests::owned_reader_point_and_range_bytes_keep_exact_credit_after_close
+    storage_opening::tests::production_tenant_point_read_retires_routine_failures_and_keeps_cancelled_child
+
+test result: FAILED. 22 passed; 2 failed; 0 ignored; 0 measured; 588 filtered out; finished in 115.24s
+
+error: test failed, to rerun pass `-p kasumi-store --lib`
+Runner: 326.70s; exit=101; matching=713/713

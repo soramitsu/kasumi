@@ -1,0 +1,21 @@
+Command: cargo test -p kasumi-store --all-features --lib --locked --offline --config profile.test.package.kasumi-kv.opt-level=3 --config profile.test.package.sha2.opt-level=3 -- --test-threads=1 storage_domains::binding_install_tests:: binding_install_staging_denial_settles_and_the_same_install_retries
+CARGO_TARGET_DIR=target/disk-backed-cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+   Compiling kasumi-store v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-store)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 07s
+     Running unittests src/lib.rs (target/disk-backed-cache/debug/deps/kasumi_store-98be0c6afb7030c8)
+
+running 8 tests
+test storage_domains::binding_install_tests::binding_bytes_admission_refusal_precedes_native_writer_registration ... ok
+test storage_domains::binding_install_tests::close_during_settled_binding_disposal_preserves_exact_child ... ok
+test storage_domains::binding_install_tests::installed_missing_binding_uses_registered_writer_and_decodes_exact_record ... ok
+test storage_domains::binding_install_tests::native_commit_refusal_retains_original_terminal_and_never_replays ... ok
+test storage_domains::binding_install_tests::post_commit_access_failure_remains_on_exact_child_after_facade_drop ... ok
+test storage_domains::binding_install_tests::settled_binding_writer_waits_for_busy_opening_before_disposal ... ok
+test storage_domains::binding_install_tests::staged_binding_capacity_denial_settles_and_a_later_binding_put_commits ... ok
+test storage_domains::capacity_denial_tests::binding_install_staging_denial_settles_and_the_same_install_retries ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 632 filtered out; finished in 5.44s
+
+Runner: 72.63s; exit=0; matching=736/736

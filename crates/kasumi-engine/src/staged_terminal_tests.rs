@@ -2,6 +2,71 @@ use super::*;
 use kasumi_store::{NodeStore, test_utils::LocalKeyProvider};
 use std::collections::{BTreeMap, BTreeSet};
 
+#[test]
+fn fixture_staging_reuses_only_complete_exact_pairs() -> Result<()> {
+    let scratch = crate::codec_fixture::ScratchScope::new(
+        kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 64),
+    )?;
+    let initial = state();
+    let mut identity = applied(1);
+    identity.origin = AppliedOrigin::Fixture;
+    let old = View::empty(&initial.tenant, &initial.incarnation)?
+        .fixture_owner(&scratch.disk, &initial)?;
+    let (_, pending) = stop(&initial, &old, "fixture-replay", &identity);
+    let row = pending.rows[0].clone();
+    let future = pending.stage()?;
+    assert!(old.get(&row.key)?.is_none());
+    let (_, exact) = stop(&initial, &old, "fixture-replay", &identity);
+    assert_eq!(exact.stage()?.head(), future.head());
+    let mut different = identity.clone();
+    different.command_sha256 = "ef".repeat(32);
+    let (_, wrong) = stop(&initial, &old, "fixture-replay", &different);
+    assert!(
+        wrong
+            .stage()
+            .unwrap_err()
+            .to_string()
+            .contains("exact original command replay")
+    );
+    assert!(old.get(&row.key)?.is_none());
+    assert_eq!(future.row(1)?.sha256()?, row.sha256()?);
+    drop(future);
+    drop(old);
+
+    for only_index in [false, true] {
+        let old = View::empty(&initial.tenant, &initial.incarnation)?
+            .fixture_owner(&scratch.disk, &initial)?;
+        let (_, pending) = stop(&initial, &old, "fixture-partial", &identity);
+        let row = &pending.rows[0];
+        let Source::Staged(table) = old.source.as_deref().unwrap() else {
+            unreachable!("fixture owns staged rows");
+        };
+        let id = id_key(&row.key);
+        let ordinal = ordinal_key(row.ordinal);
+        if only_index {
+            table.insert(
+                &ordinal,
+                &serde_json::to_vec(&Ordinal {
+                    key: row.key.clone(),
+                    sha256: row.sha256()?,
+                })?,
+            )?;
+        } else {
+            table.insert(&id, &serde_json::to_vec(row)?)?;
+        }
+        let before = (table.get(&id)?, table.get(&ordinal)?);
+        assert!(
+            pending
+                .stage()
+                .unwrap_err()
+                .to_string()
+                .contains("partially published terminal row/index")
+        );
+        assert_eq!((table.get(&id)?, table.get(&ordinal)?), before);
+        assert_eq!(old.head().count, 0);
+    }
+    Ok(())
+}
 fn state() -> TenantState {
     crate::TenantEngine::new(
         "tenant".into(),
@@ -88,7 +153,11 @@ fn stop(
 }
 async fn durable() -> (tempfile::TempDir, Arc<TenantStore>, TenantState, View) {
     let directory = kasumi_store::test_utils::private_tempdir().unwrap();
-    let memory = kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 32);
+    // The 32-slot fixture exhausted slots at 54,004,507 used bytes. Allow
+    // bounded overlap of installed owners, replacement tables, transactions
+    // and cache leases without raising the 64 MiB cap. This is fixture
+    // headroom, not a measured minimum or provider qualification.
+    let memory = kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 128);
     kasumi_store::private_files::create_directory(&directory.path().join("persistent")).unwrap();
     let disk = ScratchDisk::fixture(directory.path().join("scratch"), memory.clone());
     let node = NodeStore::create_new_fixture(
@@ -121,7 +190,7 @@ async fn selected_physical_rows_require_current_writer_bytes_without_repair() ->
     let (_directory, store, initial, old) = durable().await;
     let key = crate::state::staging::identity("owner", "selected-writer-bytes")?;
     let (state, pending) = stop(&initial, &old, "selected-writer-bytes", &applied(1));
-    let selected = pending.persist()?;
+    let selected = pending.stage()?;
     let checkpoint = "51".repeat(32);
     store.write_batch(&selected.checkpoint_writes(&state, &checkpoint)?)?;
     let point_key = id_key(&key);
@@ -263,12 +332,12 @@ async fn durable_future_row_is_invisible_and_only_exact_original_replay_can_reus
     let (next, pending) = stop(&state, &old, "first", &identity);
     // Storage has committed, but the caller has not published the new Generation
     // or its applied cursor. The old logical view still observes absence.
-    let committed_rows = pending.persist().unwrap();
+    let committed_rows = pending.stage().unwrap();
     assert!(old.get(&key).unwrap().is_none());
     assert!(next.staged_transactions.is_empty());
     assert_eq!(committed_rows.head().count, 1);
     let (_, replay) = stop(&state, &old, "first", &identity);
-    let exact = replay.persist().unwrap();
+    let exact = replay.stage().unwrap();
     assert_eq!(exact.head(), committed_rows.head());
     assert_eq!(exact.get(&key).unwrap().unwrap().applied, identity);
     let mut changed = identity.clone();
@@ -276,7 +345,7 @@ async fn durable_future_row_is_invisible_and_only_exact_original_replay_can_reus
     let (_, substituted) = stop(&state, &old, "first", &changed);
     assert!(
         substituted
-            .persist()
+            .stage()
             .unwrap_err()
             .to_string()
             .contains("exact original command replay")
@@ -292,7 +361,7 @@ async fn encrypted_reopen_keeps_unapplied_terminal_rows_hidden_until_exact_repla
     let identity = applied(1);
     let key = crate::state::staging::identity("owner", "unapplied").unwrap();
     let (_, pending) = stop(&initial, &old, "unapplied", &identity);
-    let durable_future = pending.persist().unwrap();
+    let durable_future = pending.stage().unwrap();
     let expected = durable_future.row(1).unwrap().sha256().unwrap();
     assert!(old.get(&key).unwrap().is_none());
     drop(durable_future);
@@ -324,10 +393,10 @@ async fn encrypted_reopen_keeps_unapplied_terminal_rows_hidden_until_exact_repla
     let mut conflicting = identity.clone();
     conflicting.command_sha256 = "ef".repeat(32);
     let (_, wrong) = stop(&initial, &reopened.view, "unapplied", &conflicting);
-    assert!(wrong.persist().is_err());
+    assert!(wrong.stage().is_err());
     assert!(reopened.view.get(&key).unwrap().is_none());
     let (_, exact) = stop(&initial, &reopened.view, "unapplied", &identity);
-    let selected = exact.persist().unwrap();
+    let selected = exact.stage().unwrap();
     assert_eq!(
         selected.get(&key).unwrap().unwrap().sha256().unwrap(),
         expected
@@ -342,9 +411,9 @@ async fn encrypted_reopen_keeps_unapplied_terminal_rows_hidden_until_exact_repla
 async fn snapshot_namespace_binding_selects_exact_prefix_and_preserves_older_live_views() {
     let (_directory, store, initial, old) = durable().await;
     let (first_state, first) = stop(&initial, &old, "first", &applied(1));
-    let first = first.persist().unwrap();
+    let first = first.stage().unwrap();
     let (second_state, second) = stop(&first_state, &first, "second", &applied(2));
-    let second = second.persist().unwrap();
+    let second = second.stage().unwrap();
     let checkpoint = "20".repeat(32);
     store
         .write_batch(&first.checkpoint_writes(&first_state, &checkpoint).unwrap())
@@ -365,7 +434,7 @@ async fn snapshot_namespace_binding_selects_exact_prefix_and_preserves_older_liv
             .is_none()
     );
     let (_, replay) = stop(&first_state, &reopened.view, "second", &applied(2));
-    assert_eq!(replay.persist().unwrap().head(), second.head());
+    assert_eq!(replay.stage().unwrap().head(), second.head());
     let replaced = staged
         .prepare_install(&store, &first_state, &"30".repeat(32), false)
         .unwrap();
@@ -467,7 +536,7 @@ fn point_admission_precedes_decoding_even_for_an_unpublished_row() {
     )
     .unwrap();
     let disk = &scratch.disk;
-    let table = Arc::new(EncryptedTable::new(disk, 64 << 20).unwrap());
+    let table = Arc::new(EncryptedTable::new(disk, 64 << 20, disk.native_cache_config()).unwrap());
     let key = "12".repeat(32);
     let invalid = b"this is deliberately not a terminal row";
     table.insert(&id_key(&key), invalid).unwrap();
@@ -603,3 +672,87 @@ fn rejected_terminal_row_permanently_disqualifies_valid_prefix() {
     assert_eq!(builder.head, next.staged_terminal_head);
     assert!(builder.finish(&next.staged_terminal_head).is_err());
 }
+
+#[test]
+fn fixture_terminal_storage_is_created_only_for_new_local_rows_and_reused() -> Result<()> {
+    let scratch = crate::codec_fixture::ScratchScope::new(
+        kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 32),
+    )?;
+    let initial = state();
+    let empty = View::empty(&initial.tenant, &initial.incarnation)?;
+    let mut identity = applied(1);
+    identity.origin = AppliedOrigin::Fixture;
+    let mut unchanged = initial.clone();
+    unchanged.revision = 1;
+    let pending = Pending::prepare(&empty, &initial, &mut unchanged, &identity)?;
+    let before = scratch.disk.snapshot();
+    let still_empty = pending.stage_fixture(&scratch.disk, &initial)?;
+    assert!(still_empty.source.is_none());
+    assert_eq!(still_empty.head(), empty.head());
+    assert_eq!(scratch.disk.snapshot().live_files, before.live_files);
+    assert_eq!(scratch.disk.snapshot().charged_bytes, before.charged_bytes);
+
+    // An actual terminal transition obtains the owner and writes its real
+    // row/index pair, while the previously selected empty view stays unchanged.
+    identity.revision = 2;
+    let (completed, pending) = stop(&unchanged, &still_empty, "first", &identity);
+    let key = pending.rows[0].key.clone();
+    let selected = pending.stage_fixture(&scratch.disk, &unchanged)?;
+    assert!(selected.source.is_some());
+    assert!(still_empty.source.is_none());
+    assert!(still_empty.get(&key)?.is_none());
+    assert_eq!(selected.row(1)?.key, key);
+    selected.validate_state(&completed)?;
+
+    // A later command with no terminal row retains exactly that history owner.
+    let mut next = completed.clone();
+    next.revision = 3;
+    identity.revision = 3;
+    let pending = Pending::prepare(&selected, &completed, &mut next, &identity)?;
+    let before = scratch.disk.snapshot();
+    let unchanged_history = pending.stage_fixture(&scratch.disk, &completed)?;
+    assert!(Arc::ptr_eq(
+        selected.source.as_ref().unwrap(),
+        unchanged_history.source.as_ref().unwrap(),
+    ));
+    assert_eq!(
+        unchanged_history.row(1)?.sha256()?,
+        selected.row(1)?.sha256()?
+    );
+    assert_eq!(scratch.disk.snapshot().live_files, before.live_files);
+    assert_eq!(scratch.disk.snapshot().charged_bytes, before.charged_bytes);
+    Ok(())
+}
+
+#[test]
+fn deferred_fixture_terminal_owner_rejects_foreign_origin_and_missing_prefix() -> Result<()> {
+    let scratch = crate::codec_fixture::ScratchScope::new(
+        kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 32),
+    )?;
+    let initial = state();
+    let empty = View::empty(&initial.tenant, &initial.incarnation)?;
+    let (_, pending) = stop(&initial, &empty, "raft", &applied(1));
+    let before = scratch.disk.snapshot();
+    let error = pending.stage_fixture(&scratch.disk, &initial).unwrap_err();
+    assert!(error.to_string().contains("actual local origin"));
+    assert!(empty.source.is_none());
+    assert_eq!(scratch.disk.snapshot().live_files, before.live_files);
+    assert_eq!(scratch.disk.snapshot().charged_bytes, before.charged_bytes);
+
+    // Deferral must not turn a missing nonempty prefix into an empty no-op.
+    let mut missing = empty;
+    missing.head.count = 1;
+    let mut previous = initial;
+    previous.staged_terminal_head = missing.head.clone();
+    let mut next = previous.clone();
+    next.revision = 1;
+    let pending = Pending::prepare(&missing, &previous, &mut next, &applied(1))?;
+    let error = pending.stage_fixture(&scratch.disk, &previous).unwrap_err();
+    assert_eq!(error.to_string(), "fixture terminal prefix has no owner");
+    assert_eq!(scratch.disk.snapshot().live_files, before.live_files);
+    assert_eq!(scratch.disk.snapshot().charged_bytes, before.charged_bytes);
+    Ok(())
+}
+
+#[path = "staged_terminal_scan_tests.rs"]
+mod scan_tests;

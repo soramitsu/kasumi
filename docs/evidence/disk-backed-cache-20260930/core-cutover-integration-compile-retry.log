@@ -1,0 +1,7 @@
+   Compiling kasumi-kv v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-kv)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.58s
+  Executable unittests src/lib.rs (target/disk-backed-cache/debug/deps/kasumi_kv-e84af9029e220a8f)
+  Executable tests/commit_allocation.rs (target/disk-backed-cache/debug/deps/commit_allocation-27a3a8c41d98fb67)
+  Executable tests/crash_recovery.rs (target/disk-backed-cache/debug/deps/crash_recovery-537e2fbd50f7f8dc)
+  Executable tests/owner_fencing.rs (target/disk-backed-cache/debug/deps/owner_fencing-080d49128c77bb70)
+  Executable tests/transaction_rollback.rs (target/disk-backed-cache/debug/deps/transaction_rollback-dc57123eba679fb3)

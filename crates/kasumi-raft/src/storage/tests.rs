@@ -4,6 +4,10 @@ use kasumi_store::{
     test_utils::{FaultBackend, LocalKeyProvider, ManualClock},
 };
 
+#[path = "apply_publication_tests.rs"]
+mod apply_publication_tests;
+#[path = "group_ownership_tests.rs"]
+mod group_ownership_tests;
 #[path = "joint_publication_tests.rs"]
 mod joint_publication_tests;
 #[path = "worker_failure_tests.rs"]
@@ -17,7 +21,7 @@ impl crate::PreparedStateMachineRestore for PreparedFixtureRestore<'_> {
     fn retirement(&self) -> Option<crate::RetiredSnapshotState> {
         self.retirement.clone()
     }
-    fn application_replacements(&self) -> Vec<(&str, &kasumi_store::EncryptedTable)> {
+    fn application_replacements(&self) -> Vec<kasumi_store::NamespaceReplacement<'_>> {
         vec![]
     }
     fn application_writes(&self) -> &[kasumi_store::WriteOp] {
@@ -117,15 +121,20 @@ impl StateMachineBackend for BytesBackend {
     fn close_application(&self) {
         self.0.lock().unwrap().clear();
     }
-    fn apply(
+    fn apply_with_publisher(
         &self,
         _: &crate::AppliedEntryContext,
-        bytes: &[u8],
-    ) -> Result<crate::AppliedResponse> {
-        *self.0.lock().unwrap() = bytes.to_vec();
-        Ok(crate::AppliedResponse::application(bytes.to_vec()))
-    }
-    fn apply_metadata(&self, _position: &crate::AppliedEntryContext) -> anyhow::Result<()> {
+        input: crate::AppliedInput<'_>,
+        publisher: &mut dyn crate::ApplyPublisher,
+    ) -> Result<()> {
+        let crate::AppliedInput::Command(bytes) = input else {
+            publisher.commit(crate::AppliedResponse::application(Vec::new()), &[])?;
+            return Ok(());
+        };
+        let mut selected = self.0.lock().unwrap();
+        let prepared = bytes.to_vec();
+        publisher.commit(crate::AppliedResponse::application(bytes.to_vec()), &[])?;
+        *selected = prepared;
         Ok(())
     }
     fn capture_snapshot(&self) -> Result<crate::CapturedSnapshot> {
@@ -167,7 +176,7 @@ async fn new_fault_store(
     fixture_scratch: Arc<kasumi_store::ScratchDisk>,
 ) -> Result<Arc<TenantStore>> {
     TenantStore::initialize_catalog_fixture_with_clock(
-        NodeStore::open_with_backend(
+        NodeStore::create_with_backend(
             disk,
             kasumi_store::test_utils::storage_admission(),
             fixture_scratch.clone(),
@@ -210,14 +219,17 @@ async fn applied_metadata_does_not_block_runtime_while_snapshot_capture_holds_st
         fn close_application(&self) {
             // This fixture retains no application state.
         }
-        fn apply(
+        fn apply_with_publisher(
             &self,
             _: &crate::AppliedEntryContext,
-            bytes: &[u8],
-        ) -> Result<crate::AppliedResponse> {
-            Ok(crate::AppliedResponse::application(bytes.to_vec()))
-        }
-        fn apply_metadata(&self, _position: &crate::AppliedEntryContext) -> anyhow::Result<()> {
+            input: crate::AppliedInput<'_>,
+            publisher: &mut dyn crate::ApplyPublisher,
+        ) -> Result<()> {
+            let crate::AppliedInput::Command(bytes) = input else {
+                publisher.commit(crate::AppliedResponse::application(Vec::new()), &[])?;
+                return Ok(());
+            };
+            publisher.commit(crate::AppliedResponse::application(bytes.to_vec()), &[])?;
             Ok(())
         }
         fn capture_snapshot(&self) -> Result<crate::CapturedSnapshot> {
@@ -780,15 +792,20 @@ async fn snapshot_materialization_releases_applied_lock_and_keeps_captured_root(
     }
     impl StateMachineBackend for PausedWriter {
         fn close_application(&self) {}
-        fn apply(
+        fn apply_with_publisher(
             &self,
             _: &crate::AppliedEntryContext,
-            bytes: &[u8],
-        ) -> Result<crate::AppliedResponse> {
-            *self.bytes.lock().unwrap() = bytes.to_vec();
-            Ok(crate::AppliedResponse::application(bytes.to_vec()))
-        }
-        fn apply_metadata(&self, _position: &crate::AppliedEntryContext) -> anyhow::Result<()> {
+            input: crate::AppliedInput<'_>,
+            publisher: &mut dyn crate::ApplyPublisher,
+        ) -> Result<()> {
+            let crate::AppliedInput::Command(bytes) = input else {
+                publisher.commit(crate::AppliedResponse::application(Vec::new()), &[])?;
+                return Ok(());
+            };
+            let mut selected = self.bytes.lock().unwrap();
+            let prepared = bytes.to_vec();
+            publisher.commit(crate::AppliedResponse::application(bytes.to_vec()), &[])?;
+            *selected = prepared;
             Ok(())
         }
         fn capture_snapshot(&self) -> Result<crate::CapturedSnapshot> {
@@ -1017,18 +1034,27 @@ async fn coverage_writer_refuses_one_byte_past_reader_limit_before_staging() -> 
     };
     let mut snapshot = envelope(vec![], scratch);
     snapshot.meta.last_membership = membership(String::new());
-    let base = snapshot.encode(4 << 20)?.read_bounded(4 << 20)?;
-    assert_eq!(base[8], 1, "first snapshot frame must be metadata");
-    let base_metadata_len = usize::try_from(u64::from_be_bytes(base[9..17].try_into()?))?;
+    // Measure the actual coverage record: transport metadata carries additional
+    // authenticated fields and its size difference is not a stable constant.
+    let base_coverage = SnapshotCoverage {
+        kind: SnapshotKind::Application,
+        manifest_id: uuid::Uuid::new_v4().to_string(),
+        snapshot_sha256: "0".repeat(64),
+        backend_sha256: snapshot.backend.sha256().to_owned(),
+        meta: snapshot.meta.clone(),
+    };
+    let base_coverage_len = encode_snapshot_coverage(&base_coverage)?.len();
     let address_len = MAX_SNAPSHOT_COVERAGE_BYTES
-        .checked_sub(base_metadata_len + 192)
-        .context("base metadata exceeds coverage budget")?;
+        .checked_sub(base_coverage_len)
+        .context("base coverage exceeds record budget")?;
     snapshot.meta.last_membership = membership("x".repeat(address_len));
     let accepted_bytes = snapshot.encode(4 << 20)?.read_bounded(4 << 20)?;
     assert_eq!(
-        usize::try_from(u64::from_be_bytes(accepted_bytes[9..17].try_into()?))?,
-        MAX_SNAPSHOT_COVERAGE_BYTES - 192
+        accepted_bytes[8], 1,
+        "first snapshot frame must be metadata"
     );
+    let accepted_metadata_len =
+        usize::try_from(u64::from_be_bytes(accepted_bytes[9..17].try_into()?))?;
     persist_snapshot(&domains, &accepted_bytes, 4 << 20, &snapshot)?;
     let old_manifest = store.get(SNAPSHOT, b"current")?.context("current absent")?;
     let old_coverage = domains
@@ -1045,7 +1071,7 @@ async fn coverage_writer_refuses_one_byte_past_reader_limit_before_staging() -> 
     let oversized_bytes = oversized_image.read_bounded(4 << 20)?;
     assert_eq!(
         usize::try_from(u64::from_be_bytes(oversized_bytes[9..17].try_into()?))?,
-        MAX_SNAPSHOT_COVERAGE_BYTES - 191
+        accepted_metadata_len + 1
     );
     let error = stage_snapshot(&domains, &oversized_image, 4 << 20, &oversized)
         .err()

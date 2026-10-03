@@ -60,12 +60,19 @@ async fn panicked_cold_preparation_drains_actual_nodes_stores_and_partial_runtim
             &config,
             &crate::persistent_disk::open(&config.persistent_disk, &storage)?,
         )?;
-        let node = NodeStore::open_existing(
-            &config.database_path,
-            config.database_id,
-            storage.open_persistent(&config.persistent_disk)?,
-            storage.open_scratch(&config.scratch_disk)?,
-        )?;
+        let node = {
+            let native_path = &config.database_path;
+            let native_id = config.database_id;
+            let native_disk = storage.open_persistent(&config.persistent_disk)?;
+            let native_scratch_disk = storage.open_scratch(&config.scratch_disk)?;
+            NodeStore::open_existing(
+                native_path,
+                native_id,
+                native_disk.clone(),
+                native_scratch_disk,
+                native_disk.native_storage_config(),
+            )
+        }?;
         let store = TenantStore::open_existing(
             node.clone(),
             SECURITY_TENANT.into(),
@@ -130,12 +137,19 @@ async fn rejected_cold_audit_open_drains_storage_and_releases_the_standalone_ins
     config.admin.listen = admin;
     config.mcp.protocol = McpConfig::new(format!("https://localhost:{}/mcp", mcp.port()))?;
     let scratch = storage.open_scratch(&config.scratch_disk)?;
-    let node = NodeStore::open_existing(
-        &config.database_path,
-        config.database_id,
-        storage.open_persistent(&config.persistent_disk)?,
-        scratch.clone(),
-    )?;
+    let node = {
+        let native_path = &config.database_path;
+        let native_id = config.database_id;
+        let native_disk = storage.open_persistent(&config.persistent_disk)?;
+        let native_scratch_disk = scratch.clone();
+        NodeStore::open_existing(
+            native_path,
+            native_id,
+            native_disk.clone(),
+            native_scratch_disk,
+            native_disk.native_storage_config(),
+        )
+    }?;
     let store = TenantStore::open_existing(
         node.clone(),
         SECURITY_TENANT.into(),
@@ -166,12 +180,19 @@ async fn rejected_cold_audit_open_drains_storage_and_releases_the_standalone_ins
             &config,
             &crate::persistent_disk::open(&config.persistent_disk, &storage)?,
         )?;
-        let node = NodeStore::open_existing(
-            &config.database_path,
-            config.database_id,
-            storage.open_persistent(&config.persistent_disk)?,
-            scratch.clone(),
-        )?;
+        let node = {
+            let native_path = &config.database_path;
+            let native_id = config.database_id;
+            let native_disk = storage.open_persistent(&config.persistent_disk)?;
+            let native_scratch_disk = scratch.clone();
+            NodeStore::open_existing(
+                native_path,
+                native_id,
+                native_disk.clone(),
+                native_scratch_disk,
+                native_disk.native_storage_config(),
+            )
+        }?;
         let store = TenantStore::open_existing(
             node.clone(),
             SECURITY_TENANT.into(),
@@ -262,7 +283,7 @@ async fn completed_runtime_shutdown_failure_retains_diagnostic_and_installation_
             .issues()
             .iter()
             .zip(second.issues())
-            .all(|(a, b)| Arc::ptr_eq(a, b))
+            .all(|(a, b)| kasumi_types::drain::DrainIssueRef::ptr_eq(a, b))
     );
     assert!(
         crate::standalone::claim(
@@ -342,12 +363,19 @@ async fn actual_standalone_unpolled_serve_and_serving_panic_retain_installation_
             .is_err()
         );
         assert!(
-            NodeStore::open_existing(
-                &config.database_path,
-                config.database_id,
-                storage.open_persistent(&config.persistent_disk)?,
-                storage.open_scratch(&config.scratch_disk)?
-            )
+            {
+                let native_path = &config.database_path;
+                let native_id = config.database_id;
+                let native_disk = storage.open_persistent(&config.persistent_disk)?;
+                let native_scratch_disk = storage.open_scratch(&config.scratch_disk)?;
+                NodeStore::open_existing(
+                    native_path,
+                    native_id,
+                    native_disk.clone(),
+                    native_scratch_disk,
+                    native_disk.native_storage_config(),
+                )
+            }
             .is_err()
         );
         let mut first = Box::pin(crate::serving_owner::drain_test_instance(
@@ -400,12 +428,19 @@ async fn actual_standalone_unpolled_serve_and_serving_panic_retain_installation_
             &config,
             &crate::persistent_disk::open(&config.persistent_disk, &storage)?,
         )?;
-        let node = NodeStore::open_existing(
-            &config.database_path,
-            config.database_id,
-            storage.open_persistent(&config.persistent_disk)?,
-            storage.open_scratch(&config.scratch_disk)?,
-        )?;
+        let node = {
+            let native_path = &config.database_path;
+            let native_id = config.database_id;
+            let native_disk = storage.open_persistent(&config.persistent_disk)?;
+            let native_scratch_disk = storage.open_scratch(&config.scratch_disk)?;
+            NodeStore::open_existing(
+                native_path,
+                native_id,
+                native_disk.clone(),
+                native_scratch_disk,
+                native_disk.native_storage_config(),
+            )
+        }?;
         let store = TenantStore::open_existing(
             node.clone(),
             SECURITY_TENANT.into(),
@@ -427,6 +462,102 @@ async fn actual_standalone_unpolled_serve_and_serving_panic_retain_installation_
         .await?;
         reopened.shutdown().await?;
         drop(reopened);
+    }
+    Ok(())
+}
+
+#[test]
+fn node_cache_workers_wait_for_runtime_handoff_and_drain_if_unclaimed() -> Result<()> {
+    std::thread::Builder::new()
+        .name("runtime cache worker handoff fixture".into())
+        .stack_size(16 << 20)
+        .spawn(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(Box::pin(node_cache_workers_wait_for_runtime_handoff_impl()))
+        })
+        .unwrap()
+        .join()
+        .unwrap()
+}
+
+async fn node_cache_workers_wait_for_runtime_handoff_impl() -> Result<()> {
+    let _gate = LIFECYCLE_GATE.lock().await;
+    let directory = kasumi_store::test_utils::private_tempdir()?;
+    let (installed, storage) = tokio::time::timeout(
+        Duration::from_secs(30),
+        crate::runtime_storage_fixtures::initialize_standalone(
+            &directory.path().join("installed"),
+            "acme",
+        ),
+    )
+    .await
+    .context("cache worker handoff fixture: standalone initialization timed out")??;
+    let mut config = RuntimeConfig::load(&installed.configuration)?;
+    let [mcp, native, admin] = listening_addresses();
+    config.mcp.listen = mcp;
+    config.native.listen = native;
+    config.admin.listen = admin;
+    config.mcp.protocol = McpConfig::new(format!("https://localhost:{}/mcp", mcp.port()))?;
+    for acknowledge in [false, true] {
+        // Stop immediately before Ticket::claim's synchronous handoff. The
+        // native owners are complete and retained, but no warming is active.
+        let mut runtime = tokio::time::timeout(
+            Duration::from_secs(30),
+            NodeRuntime::open_owned(
+                config.clone(),
+                Arc::new(crate::runtime::file_secret),
+                storage.clone(),
+            ),
+        )
+        .await
+        .with_context(|| {
+            format!("cache worker handoff fixture: open timed out (acknowledge={acknowledge})")
+        })??;
+        assert!(!runtime.owned_nodes.is_empty());
+        for node in &runtime.owned_nodes {
+            let status = node.cache_worker_status();
+            assert!(status.started);
+            assert!(!status.active);
+            assert_eq!(status.steps, 0);
+        }
+        tokio::task::yield_now().await;
+        for node in &runtime.owned_nodes {
+            assert_eq!(node.cache_worker_status().steps, 0);
+        }
+        if acknowledge {
+            crate::startup_owner::Runtime::handoff(&mut runtime)?;
+            for node in &runtime.owned_nodes {
+                assert!(node.cache_worker_status().active);
+            }
+            tokio::time::timeout(Duration::from_secs(10), async {
+                while runtime
+                    .owned_nodes
+                    .iter()
+                    .any(|node| node.cache_worker_status().steps == 0)
+                {
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+            })
+            .await?;
+        }
+        tokio::time::timeout(Duration::from_secs(30), runtime.shutdown())
+            .await
+            .with_context(|| {
+                format!(
+                    "cache worker handoff fixture: shutdown timed out (acknowledge={acknowledge})"
+                )
+            })??;
+        for node in &runtime.owned_nodes {
+            let status = node.cache_worker_status();
+            assert!(status.stopped);
+            if !acknowledge {
+                assert_eq!(status.steps, 0);
+            }
+        }
+        drop(runtime);
     }
     Ok(())
 }

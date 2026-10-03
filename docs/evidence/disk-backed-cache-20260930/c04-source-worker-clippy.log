@@ -1,0 +1,97 @@
+Command: cargo clippy -p kasumi-engine -p kasumi-query --all-features --all-targets --locked --offline --no-deps -- -D clippy::all
+CARGO_TARGET_DIR=target/disk-backed-cache
+    Checking kasumi-clock v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-clock)
+    Checking kasumi-transport v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-transport)
+    Checking kasumi-kv v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-kv)
+    Checking tracing-subscriber v0.3.23
+    Checking kasumi-types v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-types)
+    Checking kasumi-serving v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-serving)
+    Checking kasumi-query v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-query)
+    Checking kasumi-store v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-store)
+    Checking kasumi-raft v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-raft)
+    Checking kasumi-engine v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-engine)
+warning: variant `Mutation` is never constructed
+  --> crates/kasumi-engine/src/security_audit_jobs.rs:26:5
+   |
+24 | enum JobEffect {
+   |      --------- variant in this enum
+25 |     Read,
+26 |     Mutation(&'static str),
+   |     ^^^^^^^^
+   |
+   = note: `JobEffect` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: struct `ReadPause` is never constructed
+  --> crates/kasumi-engine/src/security_audit_jobs.rs:57:19
+   |
+57 | pub(super) struct ReadPause {
+   |                   ^^^^^^^^^
+
+warning: method `run_mutation` is never used
+   --> crates/kasumi-engine/src/security_audit_jobs.rs:120:25
+    |
+ 62 | impl SecurityAudit {
+    | ------------------ method in this implementation
+...
+120 |     pub(super) async fn run_mutation<T, F, R>(&self, component: &'static str, run: R) -> Result<T>
+    |                         ^^^^^^^^^^^^
+
+warning: `kasumi-engine` (lib) generated 3 warnings
+warning: field `panic` is never read
+  --> crates/kasumi-engine/src/security_audit_jobs.rs:52:9
+   |
+48 | pub(super) struct RecordFault {
+   |                   ----------- field in this struct
+...
+52 |     pub panic: bool,
+   |         ^^^^^
+
+error: try not to call a closure in the expression where it is declared
+   --> crates/kasumi-engine/src/backup_phase.rs:185:52
+    |
+185 |               let result: Result<(), &'static str> = (|| {
+    |  ____________________________________________________^
+186 | |                 let _phase = VerificationPhase::start("fixture_error", None);
+187 | |                 Err("unlogged source error")
+188 | |             })();
+    | |________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#redundant_closure_call
+    = note: `-D clippy::redundant-closure-call` implied by `-D clippy::all`
+    = help: to override `-D clippy::all` add `#[allow(clippy::redundant_closure_call)]`
+help: try doing something like
+    |
+185 ~             let result: Result<(), &'static str> = {
+186 +                 let _phase = VerificationPhase::start("fixture_error", None);
+187 +                 Err("unlogged source error")
+188 ~             };
+    |
+
+error: this `if` statement can be collapsed
+   --> crates/kasumi-engine/src/query_source_work_tests.rs:350:9
+    |
+350 | /         if let Some(source) = self.source.as_mut()
+351 | |             && let Some(view) = source.view.take()
+352 | |         {
+353 | |             if let Err(error) = view.close() {
+...   |
+363 | |         }
+    | |_________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#collapsible_if
+    = note: `-D clippy::collapsible-if` implied by `-D clippy::all`
+    = help: to override `-D clippy::all` add `#[allow(clippy::collapsible_if)]`
+help: collapse nested if block
+    |
+351 ~             && let Some(view) = source.view.take()
+352 ~             && let Err(error) = view.close() {
+353 |                 let failure = error
+...
+360 |                 return Poll::Ready(DrainCompletion::Retained);
+361 ~             }
+    |
+
+warning: `kasumi-engine` (lib test) generated 4 warnings (3 duplicates)
+error: could not compile `kasumi-engine` (lib test) due to 2 previous errors; 4 warnings emitted
+Runner: 506.22s; exit=101; matching=707/707

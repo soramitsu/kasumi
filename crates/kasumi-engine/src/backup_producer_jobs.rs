@@ -272,7 +272,10 @@ mod tests {
                 .is_panic()
         );
         let repeated = jobs.drain().await.unwrap_err();
-        assert!(Arc::ptr_eq(&failure.issues()[0], &repeated.issues()[0]));
+        assert!(kasumi_types::drain::DrainIssueRef::ptr_eq(
+            &failure.issues()[0],
+            &repeated.issues()[0]
+        ));
     }
 
     #[tokio::test]
@@ -332,6 +335,9 @@ mod tests {
         let original = first.issues()[0].error().downcast_ref::<Error>().unwrap();
         assert_eq!(original.message, "original producer failure");
         let repeated = jobs.drain().await.unwrap_err();
-        assert!(Arc::ptr_eq(&first.issues()[0], &repeated.issues()[0]));
+        assert!(kasumi_types::drain::DrainIssueRef::ptr_eq(
+            &first.issues()[0],
+            &repeated.issues()[0]
+        ));
     }
 }

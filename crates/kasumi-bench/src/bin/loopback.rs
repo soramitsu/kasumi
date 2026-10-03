@@ -266,7 +266,10 @@ async fn benchmark(
     );
     let [mcp, native, admin] = addresses()?;
     let audience = format!("https://localhost:{}/mcp", mcp.port());
-    let mut config = example_config(kasumi_store::DirectoryPolicy::fixture())?;
+    let mut config = example_config(
+        kasumi_store::DirectoryPolicy::fixture(),
+        kasumi_store::FileAllocationPolicy::fixture(),
+    )?;
     // This benchmark explicitly exercises the fixture-only local deployment.
     // Its daemon must be built with kasumi-server/test-utils; production builds
     // reject this configuration instead of bypassing the serving authority.

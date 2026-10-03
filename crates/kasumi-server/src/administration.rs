@@ -224,6 +224,8 @@ mod command_jobs;
 mod configured_tenant_enrollment;
 #[path = "administration_observability.rs"]
 mod observability;
+#[path = "administration_topology.rs"]
+mod topology;
 use command_jobs::CommandJobs;
 #[path = "original_serving_runtime.rs"]
 mod original_serving_runtime;
@@ -434,15 +436,12 @@ impl Administration {
         }
         .await;
         result.map_err(|error| {
-            error
-                .downcast_ref::<kasumi_types::Error>()
-                .cloned()
-                .unwrap_or_else(|| {
-                    kasumi_types::Error::new(
-                        kasumi_types::ErrorCode::Unavailable,
-                        "administrative database unavailable",
-                    )
-                })
+            administrative_error(&error).cloned().unwrap_or_else(|| {
+                kasumi_types::Error::new(
+                    kasumi_types::ErrorCode::Unavailable,
+                    "administrative database unavailable",
+                )
+            })
         })
     }
     pub fn prepare(
@@ -451,15 +450,12 @@ impl Administration {
         command: ManagementCommand,
     ) -> kasumi_types::Result<ManagementInvocation> {
         let source = self.current(&context).map_err(|error| {
-            error
-                .downcast_ref::<kasumi_types::Error>()
-                .cloned()
-                .unwrap_or_else(|| {
-                    kasumi_types::Error::new(
-                        kasumi_types::ErrorCode::Unavailable,
-                        "administrative database unavailable",
-                    )
-                })
+            administrative_error(&error).cloned().unwrap_or_else(|| {
+                kasumi_types::Error::new(
+                    kasumi_types::ErrorCode::Unavailable,
+                    "administrative database unavailable",
+                )
+            })
         })?;
         source
             .database
@@ -556,8 +552,8 @@ impl Administration {
                     .install_archive_destination(alias.clone(), destination.clone())?;
             }
             let state = tenant.database.engine().generation()?;
-            let name = state.state.tenant.clone();
-            let incarnation = state.state.incarnation.clone();
+            let name = state.tenant().to_owned();
+            let incarnation = state.incarnation().to_owned();
             generations.insert((name, incarnation), tenant);
         }
         let control_context = crate::runtime::configured_control_context(&config.control)?;
@@ -596,12 +592,13 @@ impl Administration {
         }
         let database = self.registry.database(context)?;
         let generation = database.engine().generation()?;
-        let topology = self.committed_topology()?;
+        let topology = ControlPlane::local_topology(&self.control)?;
+        let topology = &topology.topology;
         ensure!(
             topology
                 .tenants
                 .get(&context.tenant)
-                .is_some_and(|route| route.incarnation == generation.state.incarnation),
+                .is_some_and(|route| route.incarnation == generation.incarnation()),
             kasumi_types::Error::new(
                 kasumi_types::ErrorCode::Unavailable,
                 "registered generation differs from committed control route"
@@ -746,15 +743,12 @@ impl Administration {
             error.mark_denial_audit_attempted();
         }
         let result = result.map_err(|error| {
-            error
-                .downcast_ref::<kasumi_types::Error>()
-                .cloned()
-                .unwrap_or_else(|| {
-                    kasumi_types::Error::new(
-                        kasumi_types::ErrorCode::Unavailable,
-                        "administrative operation failed; inspect status before retrying",
-                    )
-                })
+            administrative_error(&error).cloned().unwrap_or_else(|| {
+                kasumi_types::Error::new(
+                    kasumi_types::ErrorCode::Unavailable,
+                    "administrative operation failed; inspect status before retrying",
+                )
+            })
         });
         if admitted && mutation {
             crate::api::mutation_release(result)
@@ -828,12 +822,12 @@ impl Administration {
                 .await?;
                 let state = source.database.engine().generation()?;
                 Ok(
-                    serde_json::json!({"incarnation":state.state.incarnation,"revision":state.state.revision,"suspended":state.state.suspended,"pending_restore":state.state.pending_restore,
-                    "observation":"local_committed_state","retired":state.state.retired,"node_id":source.database.raft_group().raft().metrics().borrow().id,
+                    serde_json::json!({"incarnation":state.incarnation(),"revision":state.revision(),"suspended":state.suspended(),"pending_restore":state.pending_restore(),
+                    "observation":"local_committed_state","retired":state.retired(),"node_id":source.database.raft_group().raft().metrics().borrow().id,
                     "leader":source.database.raft_group().raft().metrics().borrow().current_leader,
                     "control_leader":self.control.raft_group().raft().metrics().borrow().current_leader,
                     "control_topology_version": if context.tenant==crate::runtime::CONTROL_TENANT {
-                        state.state.collections.get("topology").and_then(|c|c.documents.get("current")).map(|d|d.version)
+                        state.local_control_topology_version()
                     } else { None },
                     "routing":"select the operator-configured endpoint for the reported node ID"}),
                 )
@@ -877,7 +871,7 @@ impl Administration {
                         context.clone(),
                         action,
                         "started",
-                        source.database.engine().generation()?.state.revision,
+                        source.database.engine().generation()?.revision(),
                     )
                     .await?;
                 self.event(
@@ -911,7 +905,7 @@ impl Administration {
                         } else {
                             "unknown"
                         },
-                        source.database.engine().generation()?.state.revision,
+                        source.database.engine().generation()?.revision(),
                     )
                     .await?;
                 result?;
@@ -944,7 +938,7 @@ impl Administration {
                         context.clone(),
                         "membership",
                         "started",
-                        source.database.engine().generation()?.state.revision,
+                        source.database.engine().generation()?.revision(),
                     )
                     .await?;
                 let selected = source.clone();
@@ -982,12 +976,9 @@ impl Administration {
             }
             ManagementCommand::ChangeMembership { voters } => {
                 self.authorized(source, context, true).await?;
-                let mut topology = self.committed_topology()?;
+                let topology = self.committed_topology()?;
                 validate_voters(&topology, &voters)?;
-                if let Some(route) = topology.tenants.get_mut(&context.tenant) {
-                    route.voters = voters.clone();
-                }
-                topology.validate()?;
+                topology.validate_voter_override(&context.tenant, &voters)?;
                 let metrics = source
                     .database
                     .raft_group()
@@ -1014,7 +1005,7 @@ impl Administration {
                         context.clone(),
                         "membership",
                         "started",
-                        source.database.engine().generation()?.state.revision,
+                        source.database.engine().generation()?.revision(),
                     )
                     .await?;
                 let selected = source.clone();
@@ -1126,13 +1117,6 @@ impl Administration {
         );
         self.configured(tenant)
     }
-    fn configured_nodes(&self) -> Result<BTreeMap<u64, kasumi_engine::control::ControlNode>> {
-        if let Some(replication) = &self.config.replication {
-            replication.control_nodes()
-        } else {
-            Ok(self.committed_topology()?.nodes)
-        }
-    }
     fn provision_route(
         &self,
         target: &ManagedTenant,
@@ -1143,9 +1127,8 @@ impl Administration {
                 .database
                 .engine()
                 .generation()?
-                .state
-                .incarnation
-                .clone(),
+                .incarnation()
+                .to_owned(),
             mode: if target.bootstrap.is_some() {
                 DeploymentMode::Replicated
             } else {
@@ -1163,8 +1146,11 @@ impl Administration {
         self.require_resident_proposal(target, &proposal)?;
         proposal.digest()
     }
-    fn provision_approval(&self, tenant: &str) -> Result<String> {
-        self.approved_enrollment(tenant)?.digest()
+    fn provision_approval(
+        &self,
+        tenant: &str,
+    ) -> Result<configured_tenant_enrollment::ApprovedEnrollment> {
+        self.approved_enrollment(tenant)
     }
     async fn approve_peer_pool(
         &self,
@@ -1194,19 +1180,17 @@ impl Administration {
                 .all(|(id, node)| nodes.get(id) == Some(node)),
             "existing peer identities cannot be changed or removed"
         );
-        let mut topology = current.topology;
-        topology.nodes = nodes;
-        topology.validate()?;
+        let update = nodes.replacement(current.topology)?;
         self.event(
             context,
             SecurityEventKind::Administration,
             SecurityOutcome::Started,
         )
         .await?;
-        plane
-            .replace_topology(
+        update
+            .publish(
+                &plane,
                 context.clone(),
-                topology,
                 Precondition::Version(expected),
                 format!("approve-peer-pool-{expected}"),
             )
@@ -1228,7 +1212,7 @@ impl Administration {
         use crate::cluster::EnrollmentReadinessProvider;
         let hash = self.provision_hash(tenant, target)?;
         ensure!(
-            self.provision_approval(tenant)? == hash,
+            self.provision_approval(tenant)?.digest() == hash,
             "approved bootstrap differs"
         );
         let route = self.provision_route(target)?;
@@ -1350,19 +1334,6 @@ impl Administration {
         // replicas and never requires collocated control/tenant leaders.
         Ok(serde_json::json!({"activated":true,"tenant":tenant,"incarnation":route.incarnation}))
     }
-    pub(crate) fn committed_topology(&self) -> Result<ControlTopology> {
-        self.control.raft_group().check_access()?;
-        let state = self.control.engine().generation()?;
-        let document = state
-            .state
-            .collections
-            .get("topology")
-            .and_then(|c| c.documents.get("current"))
-            .context("control topology unavailable")?;
-        let topology: ControlTopology = serde_json::from_value(document.body.clone())?;
-        topology.validate()?;
-        Ok(topology)
-    }
     async fn close_retired_generations(&self) -> Result<()> {
         let generations = self
             .generations
@@ -1449,27 +1420,28 @@ impl Administration {
         if self.close_retired_generations().await.is_err() {
             tracing::warn!("retired generation reconciliation remains unavailable");
         }
-        let topology = self.committed_topology()?;
-        for (tenant, route) in topology.tenants {
+        let topology = ControlPlane::local_topology(&self.control)?;
+        let topology = &topology.topology;
+        for (tenant, route) in &topology.tenants {
             let original = self
                 .config
                 .tenants
                 .iter()
-                .find(|entry| entry.tenant == tenant)
+                .find(|entry| &entry.tenant == tenant)
                 .is_some_and(|entry| {
                     entry
                         .incarnation
                         .as_deref()
                         .is_none_or(|id| id == route.incarnation)
                 });
-            if original && let Err(error) = self.recover_original(&tenant, &route.incarnation).await
+            if original && let Err(error) = self.recover_original(tenant, &route.incarnation).await
             {
                 // Only fixed classes leave this boundary; the error chain may
                 // carry provider, path or transport detail and is not logged.
                 let recover_stage = error
                     .downcast_ref::<original_serving_runtime::RecoverStage>()
                     .map_or("unclassified", |stage| stage.class());
-                let closure_cause = self.record_failed_admission(&tenant, &route.incarnation);
+                let closure_cause = self.record_failed_admission(tenant, &route.incarnation);
                 tracing::warn!(
                     tenant,
                     event = "original_tenant_recovery_failed",
@@ -1494,13 +1466,13 @@ impl Administration {
                 continue;
             }
             let generation = source.database.engine().generation()?;
-            if generation.state.retired || generation.state.pending_restore.is_some() {
+            if generation.retired() || generation.pending_restore().is_some() {
                 continue;
             }
             drop(generation);
             if self
                 .registry
-                .installed_generation(&tenant, &route.incarnation)?
+                .installed_generation(tenant, &route.incarnation)?
                 .is_none()
             {
                 self.registry.insert(source.database.clone())?;
@@ -1573,7 +1545,7 @@ impl Administration {
                             .engine()
                             .generation()
                             .ok()
-                            .map(|state| state.state.incarnation.clone())
+                            .map(|state| state.incarnation().to_owned())
                     });
                 if let Some(incarnation) = incarnation
                     && let Err(error) = network.unregister_group(&format!(
@@ -1634,7 +1606,7 @@ impl crate::cluster::EnrollmentReadinessProvider for Administration {
         let expected = self.provision_hash(tenant, &target)?;
         let approval = self.provision_approval(tenant)?;
         ensure!(
-            approval == expected,
+            approval.digest() == expected,
             "provisioning approval differs from configured bootstrap"
         );
         let prepared = target
@@ -1646,18 +1618,36 @@ impl crate::cluster::EnrollmentReadinessProvider for Administration {
             "prepared tenant bootstrap differs"
         );
         ensure!(
-            state.state.pending_restore.is_none()
-                && state.state.restored_from.is_none()
-                && !state.state.retired,
+            state.pending_restore().is_none()
+                && state.restored_from().is_none()
+                && !state.retired(),
             "enrollment readiness requires the original fresh tenant"
         );
         let bootstrap_sha256 = expected;
         Ok(crate::cluster::EnrollmentReadiness {
             bootstrap_sha256,
             initialized: initialized(&target),
-            revision: state.state.revision,
+            revision: state.revision(),
         })
     }
+}
+
+// Local decoded failures retain their private payload/grant together. Preserve
+// the existing direct-error classification and add only this explicit owner;
+// the independent mutable denial-audit corridor remains unchanged.
+fn administrative_error(error: &anyhow::Error) -> Option<&kasumi_types::Error> {
+    if let Some(failure) = error.downcast_ref::<topology::Failure>() {
+        return failure.validation_error();
+    }
+
+    error
+        .downcast_ref::<kasumi_types::Error>()
+        .or_else(|| {
+            error
+                .downcast_ref::<kasumi_engine::control::LocalTopologyFailure>()
+                .and_then(kasumi_engine::control::LocalTopologyFailure::validation_error)
+        })
+        .or_else(|| configured_tenant_enrollment::approval_error(error))
 }
 
 fn hex_digest(bytes: &[u8]) -> String {

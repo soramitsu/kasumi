@@ -1,0 +1,101 @@
+Command: cargo test -p kasumi-engine --all-features --lib --locked --offline --config profile.test.package.kasumi-kv.opt-level=3 --config profile.test.package.sha2.opt-level=3 -- --test-threads=1 service::query_source_work::tests:: admission::snapshot_work::tests:: document_pool_ admission::disk_memory::tests::
+CARGO_TARGET_DIR=target/disk-backed-cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+   Compiling kasumi-query v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-query)
+   Compiling kasumi-engine v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-engine)
+warning: variant `Mutation` is never constructed
+  --> crates/kasumi-engine/src/security_audit_jobs.rs:26:5
+   |
+24 | enum JobEffect {
+   |      --------- variant in this enum
+25 |     Read,
+26 |     Mutation(&'static str),
+   |     ^^^^^^^^
+   |
+   = note: `JobEffect` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: struct `ReadPause` is never constructed
+  --> crates/kasumi-engine/src/security_audit_jobs.rs:57:19
+   |
+57 | pub(super) struct ReadPause {
+   |                   ^^^^^^^^^
+
+warning: method `run_mutation` is never used
+   --> crates/kasumi-engine/src/security_audit_jobs.rs:120:25
+    |
+ 62 | impl SecurityAudit {
+    | ------------------ method in this implementation
+...
+120 |     pub(super) async fn run_mutation<T, F, R>(&self, component: &'static str, run: R) -> Result<T>
+    |                         ^^^^^^^^^^^^
+
+warning: `kasumi-engine` (lib) generated 3 warnings
+warning: field `panic` is never read
+  --> crates/kasumi-engine/src/security_audit_jobs.rs:52:9
+   |
+48 | pub(super) struct RecordFault {
+   |                   ----------- field in this struct
+...
+52 |     pub panic: bool,
+   |         ^^^^^
+
+warning: `kasumi-engine` (lib test) generated 4 warnings (3 duplicates)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 11m 21s
+     Running unittests src/lib.rs (target/disk-backed-cache/debug/deps/kasumi_engine-b15d1192089511a8)
+
+running 48 tests
+test admission::disk_memory::tests::cache_credit_grows_in_one_slot_and_retains_its_exact_core ... ok
+test admission::disk_memory::tests::cache_growth_leaves_byte_headroom_and_cleanup_never_readmits ... ok
+test admission::disk_memory::tests::cache_preserves_audit_protection_and_never_uses_scoped_escrow ... ok
+test admission::disk_memory::tests::cache_respects_slot_headroom_on_acquisition_and_growth ... ok
+test admission::disk_memory::tests::cache_work_reserves_reject_zero_and_values_above_installed_capacity ... ok
+test admission::disk_memory::tests::default_cache_work_reserves_follow_resolved_capacity_and_caps ... ok
+test admission::disk_memory::tests::full_byte_work_reserve_disables_cache_but_preserves_required_capacity ... ok
+test admission::disk_memory::tests::headroom_may_disable_caching_without_disabling_required_work ... ok
+test admission::disk_memory::tests::installed_box_stays_charged_after_facade_drop_with_operation_slots_full ... ok
+test admission::disk_memory::tests::installed_storage_census_is_fixed_precharged_and_matches_the_exact_core ... ok
+test admission::disk_memory::tests::lease_overhead_is_admitted_before_boxing_and_denial_preserves_counters ... ok
+test admission::snapshot_work::tests::actual_run_panic_retains_original_payload_resource_and_charge_without_cleanup ... ok
+test admission::snapshot_work::tests::admission_failure_precedes_inert_builder_and_returns_the_reserved_slot ... ok
+test admission::snapshot_work::tests::cancelled_delivery_and_drain_join_the_actual_late_failure ... ok
+test admission::snapshot_work::tests::cancelled_finish_destroys_executor_waiter_after_unlock_and_before_next_poll ... ok
+test admission::snapshot_work::tests::claim_executor_panic_keeps_original_output_and_census_until_successful_retry ... ok
+test admission::snapshot_work::tests::claim_revalidates_after_reentrant_executor_already_claims_the_output ... ok
+test admission::snapshot_work::tests::cleanup_and_discard_wakes_reenter_actual_completion_only_after_owner_unlock ... ok
+test admission::snapshot_work::tests::concurrent_final_reports_cannot_reuse_credit_before_actual_owner_deallocation ... ok
+test admission::snapshot_work::tests::deferred_callback_panic_then_cancel_preserves_original_outcome_and_retry ... ok
+test admission::snapshot_work::tests::foreign_core_and_one_byte_short_plan_are_denied_before_allocation ... ok
+test admission::snapshot_work::tests::nested_owner_scopes_coalesce_wakes_and_unwind_leaves_registration_recoverable ... ok
+test admission::snapshot_work::tests::proxy_callback_panic_and_poison_preserve_borrowed_and_consumed_count_ownership ... ok
+test admission::snapshot_work::tests::proxy_waker_outlives_all_owner_views_and_keeps_credit_until_actual_deallocation ... ok
+test admission::snapshot_work::tests::ready_failure_retires_census_without_a_redundant_drain ... ok
+test admission::snapshot_work::tests::retained_cleanup_can_resolve_without_losing_the_original_failure ... ok
+test admission::snapshot_work::tests::successful_unclaimed_output_stays_owned_until_explicit_drain ... ok
+test admission::snapshot_work::tests::synchronous_claim_retires_only_its_generation_and_keeps_transferred_output ... ok
+test document_pool::allocation_tests::document_pool_aliasing_is_allocation_free_and_denial_never_clones_large_source ... ok
+test document_pool::allocation_tests::document_pool_concurrent_last_drop_frees_payload_and_pool_arcs_before_refund ... ok
+test document_pool::allocation_tests::document_pool_empty_control_quote_covers_actual_wait_and_final_retirement ... ok
+test document_pool::allocation_tests::document_pool_quotes_allocate_nothing_and_cover_control_and_compact_clones ... ok
+test document_pool::tests::document_pool_concurrent_growth_and_retirement_leave_exact_control ... ok
+test document_pool::tests::document_pool_creation_and_growth_preserve_both_slot_floors ... ok
+test document_pool::tests::document_pool_creation_preserves_work_and_protected_byte_floors ... ok
+test document_pool::tests::document_pool_denial_and_overflow_preserve_existing_credit_and_source ... ok
+test document_pool::tests::document_pool_growth_preserves_exact_work_and_protected_byte_floors ... ok
+test document_pool::tests::document_pool_thousands_of_documents_share_one_resident_slot ... ok
+test document_pool::tests::document_pool_unwind_retires_private_document_and_unpublished_credit ... ok
+test service::query_source_work::tests::canceled_successful_read_drains_source_and_unclaimed_output_before_registration ... ok
+test service::query_source_work::tests::canceled_waiter_keeps_original_native_read_and_explicit_close_failure ... ok
+test service::query_source_work::tests::cancellation_before_start_closes_unused_source_without_executing_query ... ok
+test service::query_source_work::tests::existing_grant_query_uses_one_operation_plus_one_metadata_slot_and_claims_after_close ... ok
+test service::query_source_work::tests::foreign_core_and_already_canceled_existing_grants_are_rejected_unchanged ... ok
+test service::query_source_work::tests::preclaim_drain_cancels_adopted_token_and_prevents_late_claim ... ok
+test service::query_source_work::tests::preparation_sampler_panic_returns_exact_plan_payload_and_unused_source ... ok
+test service::query_source_work::tests::rejected_metadata_admission_returns_exact_selected_source_for_cleanup ... ok
+test service::query_source_work::tests::worker_unwind_retains_actual_view_registration_and_original_payload ... ok
+
+test result: ok. 48 passed; 0 failed; 0 ignored; 0 measured; 378 filtered out; finished in 16.66s
+
+Runner: 698.21s; exit=0; matching=707/707

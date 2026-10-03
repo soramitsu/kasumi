@@ -92,16 +92,35 @@ let batch: kasumi_types::MutationBatch = serde_json::from_str(r#"{
   }]
 }"#)?;
 let receipt = database.mutate(context.clone(), batch).await?;
-let document = database.get(&context, "docs", "invoice-42").await?;
+let document: kasumi_engine::AdmittedOutput<kasumi_types::Document> =
+    database.get(&context, "docs", "invoice-42").await?;
 let outcome = database.operation_receipt(&context, "invoice-creation-42").await?;
 ```
 
-`get_shared` returns an immutable `Arc<Document>` with the same authorization,
-consistency and audit checks, avoiding a JSON-body clone. Previously returned
-owned/shared plaintext cannot be recalled after revocation. Before closing,
-await `database.shutdown()`: it stops admission, drains Raft storage workers and
-pending query/proposal work, stops the key monitors, and releases owned keys and
-resident state. A canceled shutdown can be awaited again. To reopen the same
+`get` returns an `AdmittedOutput<Document>` containing an owned document and its
+retained memory charge. Borrow the document through `as_ref()` or dereference;
+there is no raw owned extraction. `get_shared` returns an immutable
+`kasumi_types::SharedDocument`, avoiding a JSON-body clone. Cloning this handle
+retains the same document and admission owner, including decoded archive
+custody for a cold read; it does not expose an `Arc<Document>`. Deliberately
+deep-cloning a borrowed `Document`, or serializing it into another allocation,
+creates caller-owned memory requiring separate accounting.
+
+Both methods use the same authorization, consistency, key-access and audit
+checks. Previously returned owned/shared plaintext cannot be recalled after
+revocation, and retaining a result does not renew authority. Completed point
+reads release their operation count and work registration before public
+handoff. A held result therefore does not keep shutdown waiting for that read,
+but its memory charge remains until the owned result or last shared clone drops.
+This point-ownership implementation and its SDK bridge pass the selected
+Engine, API, SDK, allocation and transport checks in the
+[evidence ledger](evidence/disk-backed-cache-20260930/README.md).
+These establish no performance result or complete retained-source memory bound.
+Hot-source and archive-decoder sizing still include provisional allowances.
+
+Before closing, await `database.shutdown()`: it stops admission, drains Raft
+storage workers and pending query/proposal work, stops the key monitors, and
+releases owned keys and resident state. A canceled shutdown can be awaited again. To reopen the same
 node file, shut down every database using it, then await the shared
 `audit.shutdown()`. Drop all database, tenant-store, audit and node-store handles
 before reopening. Previously returned document handles can remain alive.
@@ -123,6 +142,13 @@ the HTTPS `endpoint`, `identity` (`kasumi_transport::TlsIdentity`),
 channel constructor. Every method takes the
 current bearer token explicitly. The client preserves structured native status
 errors and performs no implicit retries or redirects.
+
+For an already admitted decoded document,
+`AdmittedResponse<Document>::into_shared_document()` transfers the existing SDK
+owner into a `SharedDocument` without cloning the body. This bridge does not add
+a typed SDK `Get` network method; `Get` remains available through the generated
+protobuf client.
+
 For an installed standalone credential, applications can load the exact private
 profile through `kasumi_client::ClientProfile`, without linking the server crate:
 

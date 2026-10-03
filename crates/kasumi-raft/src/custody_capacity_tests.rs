@@ -1,6 +1,6 @@
 //! Cross former lifetime/transport ceilings through the real encrypted tables;
 //! only bounded records and temporary encrypted files are resident during build.
-use crate::control::tests::{fixture, group, id, retirement_entry, seed};
+use crate::control::tests::{fixture_on_disk, group, id, retirement_entry, seed};
 use crate::{ControlLog, custody_machine, custody_records, custody_tables};
 use anyhow::{Context, Result, ensure};
 use kasumi_store::{EncryptedSpool, test_utils::FaultBackend};
@@ -37,22 +37,34 @@ async fn permanent_custody_exceeds_former_count_and_snapshot_ceilings_and_reopen
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
     let memory_probe = disk_memory.clone();
     let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
+    let persistent_directory = kasumi_store::test_utils::private_tempdir()?;
+    let persistent = kasumi_store::test_utils::retry_disk_registry(|| {
+        kasumi_store::NodeDisk::fixture_for_path(
+            persistent_directory.path().join("custody-capacity.kv"),
+            disk_memory.clone(),
+        )
+    })?;
     let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
     let disk = FaultBackend::new();
-    let (domains, _, _, mut log) = fixture(disk.clone(), true, fixture_scratch.clone()).await?;
-    log.blocking_append([
-        crate::Entry {
-            initialization: None,
-            log_id: id(0),
-            payload: openraft::EntryPayload::Membership(openraft::Membership::new(
-                vec![BTreeSet::from([1])],
-                BTreeMap::from([(1, crate::BasicNode::new("local"))]),
-            )),
-        },
-        retirement_entry()?,
-    ])
+    let (domains, _, _, mut log) = fixture_on_disk(
+        disk.clone(),
+        true,
+        fixture_scratch.clone(),
+        persistent.clone(),
+    )
     .await?;
+    let membership = crate::Entry {
+        initialization: None,
+        log_id: id(0),
+        payload: openraft::EntryPayload::Membership(openraft::Membership::new(
+            vec![BTreeSet::from([1])],
+            BTreeMap::from([(1, crate::BasicNode::new("local"))]),
+        )),
+    };
+    log.blocking_append([membership.clone(), retirement_entry()?])
+        .await?;
     log.save_committed(Some(id(1))).await?;
+    custody_machine::tests::apply_membership(&domains, &membership, None)?;
     ensure!(
         ControlLog::open(domains.custody().clone(), 1, group())?.recover_retired()?,
         "retirement absent"
@@ -130,7 +142,13 @@ async fn permanent_custody_exceeds_former_count_and_snapshot_ceilings_and_reopen
         Ok::<_, anyhow::Error>((head, request, original, revision, context))
     })
     .await??;
-    let (reopened, _, _, _) = fixture(disk.crash(), false, fixture_scratch.clone()).await?;
+    let (reopened, _, _, _) = fixture_on_disk(
+        disk.crash(),
+        false,
+        fixture_scratch.clone(),
+        persistent.clone(),
+    )
+    .await?;
     tokio::task::spawn_blocking(move || -> Result<()> {
         let current = custody_tables::load(reopened.custody().store())?;
         assert_eq!(current, head);

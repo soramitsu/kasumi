@@ -272,20 +272,81 @@ async fn cancelled_restore_publication_keeps_storage_and_workspace_until_write_d
         pause: Arc<Mutex<Option<Pause>>>,
         blocked: Arc<AtomicBool>,
     }
-    impl kasumi_kv::StorageBackend for PausedBackend {
-        fn len(&self) -> std::io::Result<u64> {
-            self.inner.len()
+    impl PausedBackend {
+        fn crash(&self) -> Self {
+            Self {
+                inner: self.inner.crash(),
+                pause: Arc::new(Mutex::new(None)),
+                blocked: Arc::new(AtomicBool::new(false)),
+            }
         }
-        fn read(&self, offset: u64, bytes: &mut [u8]) -> std::io::Result<()> {
-            self.inner.read(offset, bytes)
+    }
+    impl kasumi_kv::SegmentGroupBackend for PausedBackend {
+        fn reserve_transaction(
+            &self,
+            plan: &kasumi_kv::TransactionSpacePlan,
+        ) -> std::result::Result<(), kasumi_kv::TransactionReserveError> {
+            self.inner.reserve_transaction(plan)
         }
-        fn set_len(&self, length: u64) -> std::io::Result<()> {
-            self.inner.set_len(length)
+        fn finish_transaction(&self, group_id: [u8; 16], batch_seq: u64) -> std::io::Result<()> {
+            self.inner.finish_transaction(group_id, batch_seq)
         }
-        fn sync_data(&self) -> std::io::Result<()> {
-            self.inner.sync_data()
+        fn cancel_transaction(&self, group_id: [u8; 16], batch_seq: u64) -> std::io::Result<()> {
+            self.inner.cancel_transaction(group_id, batch_seq)
         }
-        fn write(&self, offset: u64, bytes: &[u8]) -> std::io::Result<()> {
+
+        fn read_root(
+            &self,
+            slot: kasumi_kv::RootSlot,
+            out: &mut [u8; kasumi_kv::ROOT_SLOT_BYTES],
+        ) -> std::io::Result<()> {
+            self.inner.read_root(slot, out)
+        }
+        fn write_root(
+            &self,
+            slot: kasumi_kv::RootSlot,
+            bytes: &[u8; kasumi_kv::ROOT_SLOT_BYTES],
+        ) -> std::io::Result<()> {
+            self.inner.write_root(slot, bytes)
+        }
+        fn sync_root(&self) -> std::io::Result<()> {
+            self.inner.sync_root()
+        }
+        fn visit_entries(
+            &self,
+            visitor: &mut dyn FnMut(&std::ffi::OsStr) -> std::io::Result<()>,
+        ) -> std::io::Result<()> {
+            self.inner.visit_entries(visitor)
+        }
+        fn exists(&self, file: kasumi_kv::GroupFile) -> std::io::Result<bool> {
+            self.inner.exists(file)
+        }
+        fn create(&self, file: kasumi_kv::GroupFile) -> std::io::Result<()> {
+            self.inner.create(file)
+        }
+        fn len(&self, file: kasumi_kv::GroupFile) -> std::io::Result<u64> {
+            self.inner.len(file)
+        }
+        fn read(
+            &self,
+            file: kasumi_kv::GroupFile,
+            offset: u64,
+            bytes: &mut [u8],
+        ) -> std::io::Result<()> {
+            self.inner.read(file, offset, bytes)
+        }
+        fn set_len(&self, file: kasumi_kv::GroupFile, length: u64) -> std::io::Result<()> {
+            self.inner.set_len(file, length)
+        }
+        fn sync(&self, file: kasumi_kv::GroupFile) -> std::io::Result<()> {
+            self.inner.sync(file)
+        }
+        fn write(
+            &self,
+            file: kasumi_kv::GroupFile,
+            offset: u64,
+            bytes: &[u8],
+        ) -> std::io::Result<()> {
             let pause = self.pause.lock().unwrap().take();
             if let Some((started, release)) = pause {
                 self.blocked.store(true, Ordering::SeqCst);
@@ -296,9 +357,14 @@ async fn cancelled_restore_publication_keeps_storage_and_workspace_until_write_d
                 self.blocked.store(false, Ordering::SeqCst);
                 result.map_err(std::io::Error::other)?;
             }
-            self.inner.write(offset, bytes)
+            self.inner.write(file, offset, bytes)
         }
-
+        fn unlink(&self, file: kasumi_kv::GroupFile) -> std::io::Result<()> {
+            self.inner.unlink(file)
+        }
+        fn sync_names(&self) -> std::io::Result<()> {
+            self.inner.sync_names()
+        }
         fn close(&self) -> kasumi_kv::BackendCloseOutcome {
             self.inner.close()
         }
@@ -319,7 +385,7 @@ async fn cancelled_restore_publication_keeps_storage_and_workspace_until_write_d
         pause: Arc::new(Mutex::new(None)),
         blocked: Arc::new(AtomicBool::new(false)),
     };
-    let node = NodeStore::open_fixture_backend_on_disk(
+    let node = NodeStore::create_fixture_backend_on_disk(
         backend.clone(),
         kasumi_store::test_utils::storage_admission(),
         fixture.physical.storage.persistent.clone(),
@@ -378,7 +444,7 @@ async fn cancelled_restore_publication_keeps_storage_and_workspace_until_write_d
     .unwrap();
     // Cancellation before the final manifest cannot publish a partial genesis.
     let node = NodeStore::open_fixture_backend_on_disk(
-        backend,
+        backend.crash(),
         kasumi_store::test_utils::storage_admission(),
         fixture.physical.storage.persistent.clone(),
         fixture.store.scratch_disk().clone(),

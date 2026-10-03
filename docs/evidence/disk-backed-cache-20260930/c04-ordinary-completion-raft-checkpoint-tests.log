@@ -1,0 +1,175 @@
+Command: cargo test --locked --offline --config profile.test.package.kasumi-kv.opt-level=3 --config profile.test.package.sha2.opt-level=3 -p kasumi-raft --all-features --lib
+CARGO_TARGET_DIR=target/disk-backed-cache
+   Compiling kasumi-store v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-store)
+   Compiling kasumi-raft v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-raft)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 17.72s
+     Running unittests src/lib.rs (target/disk-backed-cache/debug/deps/kasumi_raft-322a2bc95e307dbb)
+
+running 159 tests
+test apply_failure::tests::admission_envelope_includes_fixed_slot_and_arc_header ... ok
+test apply_publication::completion_tests::completion_success_transfers_response_before_reset_and_reuses_real_slot ... ok
+test apply_publication::tests::caught_duplicate_after_success_is_sticky_and_never_reinvokes_sink ... ok
+test apply_failure::tests::source_and_downcast_preserve_original_contexts_after_parent_drop ... ok
+test apply_publication::completion_tests::swallowed_recursive_completion_retains_response_and_sticky_failure ... ok
+test apply_publication::tests::caught_duplicate_after_failure_keeps_the_original_failure_owner ... ok
+test apply_failure::tests::positive_shutdown_releases_bound_group_fence ... ok
+test apply_publication::completion_tests::late_completion_after_plain_commit_cannot_acknowledge_or_drop_response ... ok
+test apply_failure::tests::first_failure_is_stable_and_rejection_returns_the_exact_second_owner ... ok
+test apply_failure::tests::diagnostics_are_static_and_do_not_format_original_payloads ... ok
+test apply_failure::tests::final_diagnostic_on_another_thread_drops_error_before_charge ... ok
+test apply_publication::tests::independent_backend_and_publication_errors_keep_both_exact_owners ... ok
+test apply_publication::completion_tests::backend_error_precedes_finish_panic_and_both_survive_caller_drop ... ok
+test apply_publication::completion_tests::sink_original_and_action_panic_remain_independent_after_swallowed_notification ... ok
+test apply_publication::tests::caught_sink_panic_leaves_running_and_cannot_be_swallowed_into_success ... ok
+test apply_publication::tests::missing_callback_rejects_backend_success_without_invoking_sink ... ok
+test apply_publication::tests::postcommit_backend_failure_cannot_acknowledge_the_stored_response ... ok
+test apply_failure::tests::callback_and_non_sync_panic_survive_parent_drop_and_borrowed_inspection ... ok
+test apply_publication::tests::preparation_failure_returns_its_original_owner_without_missing_violation ... ok
+test apply_publication::completion_tests::borrowed_report_contention_wakes_drain_and_keeps_single_plus_lifecycle_original ... ok
+test apply_failure::tests::retained_diagnostic_keeps_exact_group_fence_after_facade_and_slot_drop ... ok
+test apply_publication::tests::propagated_marker_and_its_owned_context_do_not_replace_sink_error ... ok
+test apply_publication::tests::retry_after_caught_sink_panic_is_a_sticky_duplicate_without_reentry ... ok
+test apply_publication::tests::swallowed_sink_failure_retains_its_original_error_until_finish_owner_drops ... ok
+test apply_publication::tests::successful_sink_borrows_writes_and_returns_the_exact_owned_response ... ok
+test control::tests::retirement_reserves_full_width_audit_bytes_before_commitment ... ok
+test control::tests::retirement_reserves_permanent_bytes_before_a_positive_seed_can_commit ... ok
+test control::tests::target_first_membership_prebind_rejects_substitution_and_noncanonical_bytes ... ok
+test control::tests::exhausted_seed_completion_budget_cannot_promote_a_committed_candidate ... ok
+test control::tests::committed_seed_reopens_before_any_projection_without_application_key_access ... ok
+test control::tests::truncation_permanently_removes_uncommitted_seed_before_overwrite_and_restart ... ok
+test control::tests::substituted_seed_bootstrap_or_command_and_uncovered_commit_fail_closed ... ok
+test control::tests::ordinary_purge_deletes_bodies_and_nonretirement_overwrite_cannot_leave_a_seed ... ok
+test control::tests::first_applied_membership_survives_later_membership_purge_and_reopen ... ok
+test control::tests::retirement_recovery_never_selects_between_multiple_committed_successes ... ok
+test control::tests::noncanonical_recovery_scan_header_cannot_publish_retirement ... ok
+test control::tests::failed_or_already_applied_without_boundary_cannot_be_reinterpreted_as_retired ... ok
+test control::tests::raft_control_metadata_requires_current_writer_bytes_on_every_live_read ... ok
+test control::tests::interrupted_raft_append_never_persists_seed_without_matching_body_and_header ... ok
+test control::tests::first_applied_membership_and_cursor_survive_every_atomic_write_boundary ... ok
+test custody_state::tests::closed_request_rejects_payload_fields_and_cross_source_observations ... ok
+test custody_snapshot_storage::tests::closed_manifest_requires_exact_writer_json_and_valid_metadata ... ok
+test custody_state::tests::exhausted_byte_budget_publishes_no_partial_policy ... ok
+test custody_state::tests::full_byte_budget_expands_without_discarding_retained_history ... ok
+test custody_state::tests::custody_point_policy_preserves_large_administrator_sets_and_rejects_old_heads ... ok
+test custody_state::tests::rotation_replay_requires_current_admin_and_preserves_exact_original_actor ... ok
+test custody_state::tests::stale_policy_is_a_permanent_exact_failure_and_changed_identity_conflicts ... ok
+test entry::tests::current_entry_requires_explicit_initialization_field_and_rejects_retired_command ... ok
+test lifetime::tests::drain_is_not_released_until_the_last_resource_is_dropped ... ok
+test selected_application::allocation_tests::selected_application_allocation_census_covers_expanding_typed_diagnostics ... ok
+test selected_application::allocation_tests::selected_application_allocation_census_covers_membership_and_noncanonical_defaults ... ok
+test selected_application::plan_tests::producer_wire_quote_covers_arbitrary_numbers_without_reclassifying_literal_markers ... ok
+test selected_application::plan_tests::producer_wire_shape_overquotes_actual_decoder_for_escaped_unicode_and_nested_metadata ... ok
+test custody_machine::tests::closed_snapshot_rejects_prior_format_without_rewriting_permanent_storage ... ok
+test control::tests::reserved_committed_retirement_recovers_atomic_custody_after_crash_without_app_key ... ok
+test control::tests::accepted_boundary_and_exact_applied_position_publish_atomically_before_retained_purge ... ok
+test control::tests::prebound_first_membership_association_survives_later_apply_purge_and_reopen ... ok
+test custody_machine::tests::custody_point_head_receipt_audit_and_applied_cursor_survive_each_write_failure ... ok
+test custody_state::tests::point_reducer_matches_full_history_through_replay_conflicts_and_budget_expansion ... ok
+test selected_application::plan_tests::prospective_callback_prepares_before_real_producer_publication_and_keeps_original_refusal ... ok
+test selected_application::plan_tests::prospective_covered_snapshot_uses_actual_five_record_proof ... ok
+test selected_application::plan_tests::prospective_advancing_origin_refuses_real_exact_replay_before_application_effects ... ok
+test selected_application::plan_tests::prospective_covered_replay_quotes_actual_newer_cursor ... ok
+test selected_application::receipt_tests::invocation_receipt_binds_the_actual_preparer_plan_and_joint_effects ... ok
+test selected_application::receipt_tests::invocation_receipt_authenticates_advance_and_identical_covered_replays ... ok
+test custody_machine::tests::existing_quorum_runs_closed_commands_after_application_key_revocation ... ok
+test selected_application::receipt_tests::invocation_receipt_fixed_inputs_hash_and_authentic_consume_allocate_nothing ... ok
+test selected_application::plan_tests::prospective_plan_rejects_later_actual_record_and_foreign_domain_pair ... ok
+test selected_application::receipt_tests::invocation_receipt_reentrant_early_consume_cannot_change_entered_mint_state ... ok
+test selected_application::receipt_tests::invocation_receipt_rejects_concrete_retirement_seed_and_response_fields_before_effects ... ok
+test selected_application::receipt_tests::invocation_receipt_consumes_covered_replay_with_changed_and_empty_effects ... ok
+test snapshot_buffer::application_source_custody_tests::application_source_binding_is_single_use_idle_and_before_acquisition ... ok
+test snapshot_buffer::application_source_custody_tests::application_source_failed_claim_cannot_release_unclosed_idle_roots ... ok
+test snapshot_buffer::application_source_custody_tests::application_source_failed_final_check_and_cancelled_cleanup_keep_unclaimed_group ... ok
+test snapshot_buffer::application_source_custody_tests::application_source_failed_startup_waits_real_storage_lease_before_final_drain ... ok
+test snapshot_buffer::application_source_custody_tests::application_source_final_check_precedes_group_delivery ... ok
+test snapshot_buffer::application_source_custody_tests::application_source_idle_abandonment_and_cancelled_drain_keep_original_close ... ok
+test snapshot_buffer::application_source_custody_tests::application_source_nonpositive_close_keeps_original_error_and_registry ... ok
+test snapshot_buffer::application_source_custody_tests::application_source_panicked_final_check_and_cancelled_cleanup_keep_unclaimed_group ... ok
+test snapshot_buffer::application_source_custody_tests::application_source_pending_retirement_blocks_buffer_and_group_release ... ok
+test snapshot_buffer::application_source_custody_tests::application_source_retained_startup_never_seals_writer_preparation ... ok
+test snapshot_buffer::application_source_custody_tests::application_source_shutdown_during_final_check_cannot_deliver_group ... ok
+test snapshot_buffer::tests::abandoned_facade_and_cancelled_owner_drain_keep_actual_panic_and_charge ... ok
+test snapshot_buffer::tests::cancelled_close_retains_the_actual_flush_child ... ok
+test snapshot_buffer::tests::cancelled_write_and_shutdown_join_actual_child_before_freezing ... ok
+test selected_application::tests::selected_application_checks_complete_entry_and_bootstrap_identity ... ok
+test selected_application::tests::selected_application_denial_foreign_provider_and_retain_failure_keep_grant ... ok
+test snapshot_buffer::tests::failed_startup_keeps_original_error_while_actual_child_drains ... ok
+test snapshot_buffer::tests::original_io_failure_survives_io_bridge_and_repeated_typed_drain ... ok
+test snapshot_buffer::tests::unused_owner_releases_its_reservation_without_a_drain ... ok
+test snapshot_codec::initial_association_format_tests::snapshot_header_requires_explicit_initial_association_state ... ok
+test startup_owner_tests::actual_group_cleanup_poll_panic_keeps_group_outside_unwinding_generator ... ok
+test snapshot_buffer::tests::pending_child_holds_its_fixed_slot_until_actual_join ... ok
+test startup_owner_tests::cancelled_startup_and_drain_keep_actual_child_panic_and_charge ... ok
+test startup_owner_tests::cancelled_unclaimed_group_cleanup_keeps_same_actual_child ... ok
+test startup_owner_tests::cleanup_retained_result_cannot_be_promoted_to_complete_or_release_custody ... ok
+test startup_owner_tests::delivered_apply_failure_keeps_registry_and_fence_after_all_facades_drop ... ok
+test snapshot_buffer::tests::pending_read_is_joined_by_shutdown_and_cancelled_read_keeps_unread_bytes ... ok
+test startup_owner_tests::direct_abandoned_opening_poll_panic_is_never_repolled_by_drain ... ok
+test startup_owner_tests::direct_claim_poll_panic_keeps_original_payload_future_and_registry ... ok
+test startup_owner_tests::direct_cleanup_poll_panic_keeps_original_payload_and_exact_cleanup_future ... ok
+test startup_owner_tests::oversized_startup_is_rejected_before_polling_or_global_publication ... ok
+test startup_owner_tests::delivered_startup_is_not_closed_by_node_startup_census ... ok
+test startup_owner_tests::positive_delivered_shutdown_releases_existing_registry_root_and_fence ... ok
+test startup_owner_tests::retained_cleanup_keeps_exact_group_after_shutdown_future_returns ... ok
+test startup_owner_tests::startup_census_closes_delivery_before_waiting_for_active_caller ... ok
+test startup_owner_tests::synchronous_enrollment_allows_census_before_the_claimant_is_polled ... ok
+test storage::tests::applied_metadata_does_not_block_runtime_while_snapshot_capture_holds_state_lock ... ok
+test storage::tests::apply_publication_tests::canceled_apply_retains_callback_error_and_send_only_panic_after_actual_drain ... ok
+test storage::tests::apply_publication_tests::covered_replay_publishes_application_writes_without_rolling_custody_back ... ok
+test storage::tests::apply_publication_tests::failed_joint_commit_preserves_application_and_custody_after_crash ... ok
+test storage::tests::apply_publication_tests::metadata_application_write_and_cursor_publish_together ... ok
+test storage::tests::apply_publication_tests::swallowed_missing_repeated_and_metadata_refusal_never_advance_resident_state ... ok
+test custody_machine::tests::custody_point_reads_require_exact_current_writer_bytes ... ok
+test selected_application::receipt_tests::invocation_receipt_rejects_pair_context_response_and_ordered_effect_substitution_before_effects ... ok
+test selected_application::tests::selected_application_original_bounded_read_failure_retains_exact_reader ... ok
+test selected_application::tests::selected_application_exact_old_entry_and_real_covered_replay_remain_distinct ... ok
+test storage::tests::group_ownership_tests::group_fence_keeps_store_identity_until_positive_release ... ok
+test selected_application::tests::selected_application_older_image_and_entry_replay_keep_newer_snapshot_identity ... ok
+test selected_application::tests::selected_application_snapshot_uses_actual_manifest_and_snapshot_cursor ... ok
+test storage::tests::first_membership_snapshot_install_reopen_and_substitution_are_bound ... ok
+test storage::tests::invalid_backend_snapshot_never_replaces_durable_recoverable_state ... ok
+test custody_machine::tests::canonical_custody_stream_authenticates_counts_digest_and_record_order ... ok
+test startup_owner_tests::cancelled_local_initialization_drains_real_group_and_breaks_router_cycle ... ok
+test storage::tests::cancelled_log_future_retains_drain_lease_until_blocking_persistence_finishes ... ok
+test storage::tests::snapshot_custody_tests::nonretired_snapshot_discards_stale_candidate_coverage_without_retirement_projection ... ok
+test storage::tests::snapshot_custody_tests::old_snapshot_capture_cannot_regress_newer_accepted_cursor ... ok
+test startup_owner_tests::panicked_core_closes_group_access_and_drains_complete_for_reopen ... ok
+test storage::tests::raft_open_rejects_missing_initial_identity_without_publishing_it ... ok
+test custody_machine::tests::same_entry_position_snapshot_cannot_substitute_rotated_custody_state ... ok
+test storage::tests::snapshot_custody_tests::equal_index_different_term_log_and_snapshot_coverage_is_rejected ... ok
+test storage::tests::joint_publication_tests::cancelled_joint_table_publication_seals_and_reopens_exact_committed_prefix ... ok
+test storage::tests::snapshot_custody_tests::accepted_snapshot_supersedes_uncommitted_candidate_and_survives_late_truncation ... ok
+test storage::tests::snapshot_custody_tests::retired_snapshot_installs_without_original_log_and_recovers_with_only_custody_key ... ok
+test storage::tests::snapshot_materialization_releases_applied_lock_and_keeps_captured_root ... ok
+test storage::tests::snapshot_custody_tests::published_retirement_projection_substitution_fails_closed_after_reopen ... ok
+test storage::tests::snapshot_custody_tests::retirement_projection_writer_and_reader_share_the_two_megabyte_boundary ... ok
+test storage::tests::eight_mib_command_uses_compact_log_record_and_replays_after_reopen ... ok
+test storage::tests::coverage_writer_refuses_one_byte_past_reader_limit_before_staging ... ok
+test timing::tests::replicated_timing_profile_satisfies_openraft_and_retains_safety_features ... ok
+test write_errors::tests::application_capacity_denial_recognizes_only_the_pre_log_api_error ... ok
+test write_errors::tests::application_redirect_never_reclassifies_fatal_or_other_api_errors ... ok
+test write_errors::tests::application_redirect_recognizes_exact_type_through_anyhow_context ... ok
+test write_errors::tests::post_commit_access_loss_is_typed_and_never_inferred_from_text ... ok
+test storage::tests::worker_failure_tests::cancelled_snapshot_waiter_cannot_hide_failure_after_durable_publication ... ok
+test storage::tests::worker_failure_tests::cancelled_snapshot_waiter_cannot_hide_panic_after_durable_publication ... ok
+test storage::tests::snapshot_storage_metadata_requires_current_writer_bytes_and_v4_id ... ok
+test storage::tests::snapshot_custody_tests::snapshot_rejects_missing_substituted_stale_and_payload_custody_before_publication ... ok
+test custody_machine::tests::closed_custody_requires_fresh_existing_quorum_after_isolation ... ok
+test custody_machine::tests::closed_snapshot_near_metadata_limit_publishes_readable_coverage ... ok
+test storage::tests::snapshot_custody_tests::same_position_reencoding_preserves_custody_and_reuses_verified_current_image ... ok
+test storage::tests::snapshot_custody_tests::retired_snapshot_power_loss_never_tears_image_seed_boundary_or_applied_cursor ... ok
+test storage::tests::snapshot_install_power_loss_at_every_storage_operation_keeps_whole_old_or_new_snapshot ... ok
+test storage::tests::snapshot_custody_tests::same_position_cannot_substitute_matching_backend_and_custody_policy ... ok
+test control::tests::retirement_recovery_crosses_former_seed_count_ceiling_without_promoting_a_tail has been running for over 60 seconds
+test custody_capacity_tests::permanent_custody_exceeds_former_count_and_snapshot_ceilings_and_reopens has been running for over 60 seconds
+test custody_machine::tests::streamed_custody_tables_and_snapshot_coverage_publish_at_one_crash_boundary has been running for over 60 seconds
+test storage::tests::joint_publication_tests::joint_immutable_table_snapshot_power_loss_selects_complete_old_or_new_prefix has been running for over 60 seconds
+test custody_machine::tests::streamed_custody_tables_and_snapshot_coverage_publish_at_one_crash_boundary ... ok
+test storage::tests::snapshots_larger_than_store_record_limit_are_chunked_and_recovered has been running for over 60 seconds
+test storage::tests::snapshots_larger_than_store_record_limit_are_chunked_and_recovered ... ok
+test storage::tests::joint_publication_tests::joint_immutable_table_snapshot_power_loss_selects_complete_old_or_new_prefix ... ok
+error: test failed, to rerun pass `-p kasumi-raft --lib`
+
+Caused by:
+  process didn't exit successfully: `/Users/takemiyamakoto/dev/kasumi/target/disk-backed-cache/debug/deps/kasumi_raft-322a2bc95e307dbb` (signal: 2, SIGINT: terminal interrupt signal)
+Runner: 666.37s; exit=101; matching=842/842

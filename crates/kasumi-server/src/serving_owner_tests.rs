@@ -87,6 +87,8 @@ fn fixture(panic_run: bool, panic_close: bool) -> (Fixture, PhysicalOwner, Regis
         directory: directory.path().join("scratch"),
         max_bytes: 256 << 30,
         min_free_bytes: 0,
+
+        native_cache_bytes: 8 << 20,
     };
     let storage = crate::runtime_memory::RuntimeStorage::isolated_fixture(
         Default::default(),
@@ -102,6 +104,7 @@ fn fixture(panic_run: bool, panic_close: bool) -> (Fixture, PhysicalOwner, Regis
         kasumi_store::test_utils::NODE_STORE_ID,
         disk.clone(),
         scratch.clone(),
+        disk.native_storage_config(),
     )
     .unwrap();
     let held = node.clone();
@@ -146,6 +149,7 @@ impl Fixture {
                 kasumi_store::test_utils::NODE_STORE_ID,
                 self.disk.clone(),
                 self.scratch.clone(),
+                self.disk.native_storage_config()
             )
             .is_err()
         );
@@ -164,6 +168,7 @@ impl Fixture {
             kasumi_store::test_utils::NODE_STORE_ID,
             self.disk.clone(),
             self.scratch.clone(),
+            self.disk.native_storage_config(),
         )
         .unwrap();
         node.shutdown().await.unwrap();
@@ -241,7 +246,9 @@ async fn serving_poll_and_drain_panics_keep_actual_owner_and_original_failures()
     assert_eq!(failure.completion(), DrainCompletion::Complete);
     assert_eq!(failure.issues().len(), 2);
     for (original, retained) in issues.iter().zip(failure.issues()) {
-        assert!(Arc::ptr_eq(original, retained));
+        assert!(kasumi_types::drain::DrainIssueRef::ptr_eq(
+            original, retained
+        ));
     }
     fixture.reopened().await;
 }
@@ -290,7 +297,7 @@ async fn aborted_serving_supervisor_keeps_inventory_for_joined_cleanup_only() {
         .await
         .unwrap()
         .unwrap_err();
-    assert!(Arc::ptr_eq(
+    assert!(kasumi_types::drain::DrainIssueRef::ptr_eq(
         &issue,
         &failure
             .downcast_ref::<kasumi_types::drain::DrainFailure>()
@@ -346,11 +353,14 @@ async fn unacknowledged_failure_fences_only_its_installation_and_drains_refused_
         .error()
         .downcast_ref::<kasumi_types::drain::DrainFailure>()
         .unwrap();
-    assert!(Arc::ptr_eq(&issue, &prior_failure.issues()[0]));
+    assert!(kasumi_types::drain::DrainIssueRef::ptr_eq(
+        &issue,
+        &prior_failure.issues()[0]
+    ));
     refused.reopened().await;
     assert!(check_admission(&registry, identity).is_err());
     let error = drain_registry(&registry).await.unwrap_err();
-    assert!(Arc::ptr_eq(
+    assert!(kasumi_types::drain::DrainIssueRef::ptr_eq(
         &issue,
         &error
             .downcast_ref::<kasumi_types::drain::DrainFailure>()
@@ -391,6 +401,8 @@ async fn panicking_owner_destructor_retains_unavailable_census_without_respawn_c
         directory: directory.path().join("scratch"),
         max_bytes: 256 << 30,
         min_free_bytes: 0,
+
+        native_cache_bytes: 8 << 20,
     };
     let storage = crate::runtime_memory::RuntimeStorage::isolated_fixture(
         Default::default(),
@@ -406,6 +418,7 @@ async fn panicking_owner_destructor_retains_unavailable_census_without_respawn_c
         kasumi_store::test_utils::NODE_STORE_ID,
         disk.clone(),
         scratch.clone(),
+        disk.native_storage_config(),
     )
     .unwrap();
     let registry = Arc::new(Registry::default());
@@ -443,7 +456,10 @@ async fn panicking_owner_destructor_retains_unavailable_census_without_respawn_c
         assert!(job.handle.lock().unwrap().is_none());
         let state = job.state.lock().unwrap();
         assert_eq!(state.report.issues().len(), 2);
-        assert!(Arc::ptr_eq(&issues[1], &state.report.issues()[1]));
+        assert!(kasumi_types::drain::DrainIssueRef::ptr_eq(
+            &issues[1],
+            &state.report.issues()[1]
+        ));
     }
     // close actually drained the database before the destructor panicked, and
     // unwinding released its managed lock. The outer destructor census remains
@@ -452,8 +468,9 @@ async fn panicking_owner_destructor_retains_unavailable_census_without_respawn_c
     let node = NodeStore::open_existing(
         &path,
         kasumi_store::test_utils::NODE_STORE_ID,
-        disk,
+        disk.clone(),
         scratch,
+        disk.native_storage_config(),
     )
     .unwrap();
     node.shutdown().await.unwrap();

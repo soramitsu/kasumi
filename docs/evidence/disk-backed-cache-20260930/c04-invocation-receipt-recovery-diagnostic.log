@@ -1,0 +1,56 @@
+Command: cargo test --locked --offline --all-features --config profile.test.package.kasumi-kv.opt-level=3 --config profile.test.package.sha2.opt-level=3 -p kasumi-engine --test lifecycle recovery_control::recovery_journal_persists_before_dispatch_rejects_substitution_and_recovers_ambiguous_control_commit -- --exact
+CARGO_TARGET_DIR=target/disk-backed-cache
+warning: variant `Mutation` is never constructed
+  --> crates/kasumi-engine/src/security_audit_jobs.rs:26:5
+   |
+24 | enum JobEffect {
+   |      --------- variant in this enum
+25 |     Read,
+26 |     Mutation(&'static str),
+   |     ^^^^^^^^
+   |
+   = note: `JobEffect` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: struct `ReadPause` is never constructed
+  --> crates/kasumi-engine/src/security_audit_jobs.rs:57:19
+   |
+57 | pub(super) struct ReadPause {
+   |                   ^^^^^^^^^
+
+warning: method `run_mutation` is never used
+   --> crates/kasumi-engine/src/security_audit_jobs.rs:120:25
+    |
+ 62 | impl SecurityAudit {
+    | ------------------ method in this implementation
+...
+120 |     pub(super) async fn run_mutation<T, F, R>(&self, component: &'static str, run: R) -> Result<T>
+    |                         ^^^^^^^^^^^^
+
+warning: `kasumi-engine` (lib) generated 3 warnings
+   Compiling kasumi-engine v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-engine)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 20.36s
+     Running tests/lifecycle.rs (target/disk-backed-cache/debug/deps/lifecycle-d3de91a395e1641b)
+
+running 1 test
+test recovery_control::recovery_journal_persists_before_dispatch_rejects_substitution_and_recovers_ambiguous_control_commit has been running for over 60 seconds
+test recovery_control::recovery_journal_persists_before_dispatch_rejects_substitution_and_recovers_ambiguous_control_commit ... FAILED
+
+failures:
+
+---- recovery_control::recovery_journal_persists_before_dispatch_rejects_substitution_and_recovers_ambiguous_control_commit stdout ----
+kasumi-engine read quorum unavailable: cause=has to forward request to: None, None; metrics=Ref { inner: RwLockReadGuard(PhantomData<std::sync::poison::rwlock::RwLockReadGuard<'_, openraft::metrics::raft_metrics::RaftMetrics<u64, openraft::node::BasicNode>>>, RaftMetrics { running_state: Ok(()), id: 1, current_term: 2, vote: Vote { leader_id: LeaderId { term: 2, node_id: 2 }, committed: false }, last_log_index: Some(68), last_applied: Some(LogId { leader_id: LeaderId { term: 1, node_id: 1 }, index: 68 }), snapshot: None, purged: None, state: Follower, current_leader: None, millis_since_quorum_ack: None, membership_config: StoredMembership { log_id: Some(LogId { leader_id: LeaderId { term: 0, node_id: 0 }, index: 0 }), membership: Membership { configs: [{1, 2, 3}], nodes: {1: BasicNode { addr: "https://node-1.example" }, 2: BasicNode { addr: "https://node-2.example" }, 3: BasicNode { addr: "https://node-3.example" }} } }, replication: None }), has_changed: true }
+kasumi-engine recovery unknown: stage=release after recovery proposal; cause=Unavailable: read quorum unavailable
+
+thread 'recovery_control::recovery_journal_persists_before_dispatch_rejects_substitution_and_recovers_ambiguous_control_commit' (15078388) panicked at crates/kasumi-engine/tests/common/recovery_control.rs:2398:6:
+original recovery phase outcome did not resolve: Elapsed(())
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    recovery_control::recovery_journal_persists_before_dispatch_rejects_substitution_and_recovers_ambiguous_control_commit
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 15 filtered out; finished in 174.87s
+
+error: test failed, to rerun pass `-p kasumi-engine --test lifecycle`
+Runner: 195.29s; exit=101; matching=805/805

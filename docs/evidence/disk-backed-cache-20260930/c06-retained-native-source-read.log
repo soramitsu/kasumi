@@ -1,0 +1,39 @@
+Command: cargo test --locked --offline -p kasumi-kv --all-features --lib tables::read_fork_tests::source_reads:: --config profile.test.package.kasumi-kv.opt-level=3 --config profile.test.package.sha2.opt-level=3
+CARGO_TARGET_DIR=target/disk-backed-cache
+   Compiling kasumi-kv v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-kv)
+warning: unused import: `crate::cache_test::Provider`
+ --> crates/kasumi-kv/src/source_read_tests.rs:4:5
+  |
+4 | use crate::cache_test::Provider as _;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: `kasumi-kv` (lib test) generated 1 warning
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 32.85s
+     Running unittests src/lib.rs (target/disk-backed-cache/debug/deps/kasumi_kv-7c66dd9ab067962c)
+
+running 19 tests
+test tables::read_fork_tests::source_reads::source_prepared_backing_system_deallocation_precedes_its_actual_refund ... ok
+test tables::read_fork_tests::source_reads::source_prepare_capture_cancel_and_disposal_callbacks_observe_unlocked_native_gates ... ok
+test tables::read_fork_tests::source_reads::source_repeated_and_conflicting_transitions_never_reenter_or_transfer_twice ... ok
+test tables::read_fork_tests::source_reads::source_actual_backing_and_pin_refusals_retain_original_until_explicit_clean_disposal ... ok
+test tables::read_fork_tests::source_reads::source_preparation_error_survives_cleanup_panic_and_keeps_close_alias ... ok
+test tables::read_fork_tests::source_reads::source_history_owner_keeps_database_alive_after_original_reader_and_rights_facade_retire ... ok
+test tables::read_fork_tests::source_reads::source_protected_capture_survives_full_ordinary_registry_and_history_reuses_moved_lane ... ok
+test tables::read_fork_tests::source_reads::source_history_exchange_stays_committed_when_final_pin_disposal_panics ... ok
+test tables::read_fork_tests::source_reads::source_history_final_native_failure_preserves_committed_exchange_and_database ... ok
+test tables::read_fork_tests::source_reads::source_final_rights_mismatch_or_poison_retains_payload_and_database_after_arc_retirement ... ok
+test tables::read_fork_tests::source_reads::source_cancelled_and_captured_request_keep_final_native_failure_and_database ... ok
+test tables::read_fork_tests::source_reads::source_foreign_database_and_rights_with_same_group_do_not_consume_original_ticket ... ok
+test tables::read_fork_tests::source_reads::source_postcapture_error_and_panic_keep_actual_reader_and_original_observation ... ok
+test tables::read_fork_tests::source_reads::source_preparation_captures_actual_later_commit_without_new_admission_or_allocation ... ok
+test tables::read_fork_tests::source_reads::source_closing_ready_reader_cannot_later_be_taken_as_open ... ok
+test tables::read_fork_tests::source_reads::source_idle_rights_and_queued_prepared_owners_block_actual_database_close ... ok
+test tables::read_fork_tests::source_reads::source_rights_positive_lane_retirement_survives_lease_disposal_panic_as_separate_observation ... ok
+test tables::read_fork_tests::source_reads::source_unknown_ticket_cancellation_and_rights_retirement_never_acknowledge_drop ... ok
+test tables::read_fork_tests::source_reads::source_transferred_reader_and_fork_retain_final_native_mismatch_or_poison ... ok
+
+test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 490 filtered out; finished in 0.01s
+
+Runner: 32.97s; exit=0; matching=801/801

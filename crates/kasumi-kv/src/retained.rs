@@ -6,8 +6,9 @@
 use crate::core::{
     AdmissionError, AdmittedValue, BackendCloseEntry, BackendCloseOutcome,
     BackendNativeDisposition, CoreError, OwnerFailed, ResidentLease, StorageAdmission,
-    StorageBackend,
 };
+use crate::group::{GroupFile, SegmentGroupBackend};
+use crate::root::{ROOT_SLOT_BYTES, RootSlot};
 use crate::tables::{
     Builder, CommitError, Database, DatabaseError, ReadTransaction, StorageError, TableDefinition,
     TableError, TransactionError, WriteTransaction,
@@ -15,6 +16,7 @@ use crate::tables::{
 use std::alloc::{Layout, LayoutError};
 use std::any::Any;
 use std::convert::Infallible;
+use std::ffi::OsStr;
 use std::fmt;
 use std::io;
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -125,7 +127,7 @@ impl WriteTerminalReport<'_> {
     }
 
     /// The original error of a commit that settled without any effect. The
-    /// batch was rejected or rolled back whole before publication and the
+    /// batch was rejected or proved rolled back whole before publication and the
     /// writer gate was released. A retained or uncertain failure, or an
     /// unwind, is never reported here.
     pub fn rejected_no_effect(&self) -> Option<&StorageError> {
@@ -139,7 +141,7 @@ impl WriteTerminalReport<'_> {
         }
     }
 
-    /// A settled commit refused for capacity before any effect.
+    /// A settled commit refused for capacity with no published changes.
     pub fn is_capacity_denied(&self) -> bool {
         self.rejected_no_effect()
             .is_some_and(StorageError::is_capacity_denied)
@@ -202,7 +204,7 @@ impl RetainedWriteTransaction {
     }
 
     /// A terminal that returned with the writer gate released has settled:
-    /// it published, or it was rejected before any effect. A terminal that
+    /// it published, or rejection/rollback proved no published changes. A terminal that
     /// kept the gate, or unwound, stays retained with its transaction.
     fn settle_returned(&mut self) {
         if matches!(self.terminal, Attempt::Done(_))
@@ -270,6 +272,8 @@ pub struct BoundedReadRow {
 
 #[must_use]
 pub struct RetainedReadTransaction {
+    retirement_observer: Option<crate::tables::source_read::ReadRetirementObserver>,
+    native_retirement: Attempt<StorageError>,
     transaction: Option<ReadTransaction>,
     release: Attempt<StorageError>,
     disposal: Attempt<Infallible>,
@@ -281,6 +285,13 @@ pub struct ReadCloseReport<'a> {
 }
 
 impl ReadCloseReport<'_> {
+    pub fn native_retirement(&self) -> TerminalObservation<'_, StorageError> {
+        self.owner.native_retirement.view()
+    }
+    pub fn retains_database(&self) -> bool {
+        self.owner.transaction.is_some() || self.owner.retirement_observer.is_some()
+    }
+
     pub fn settlement(&self) -> ReadCloseSettlement {
         self.owner.settlement
     }
@@ -301,6 +312,8 @@ impl ReadCloseReport<'_> {
 impl ReadTransaction {
     pub fn retain(self) -> RetainedReadTransaction {
         RetainedReadTransaction {
+            retirement_observer: None,
+            native_retirement: Attempt::Pending,
             transaction: Some(self),
             release: Attempt::Pending,
             disposal: Attempt::Pending,
@@ -309,13 +322,91 @@ impl ReadTransaction {
     }
 }
 
+/// The exact native acquisition error and its terminal acquisition disposition.
+/// A clean capacity refusal means no transaction/pin was published by this
+/// attempt and all provisional backing was destroyed before the call returned.
+/// It is not a synthesized successful release or disposal of a transaction.
+#[derive(Debug)]
+pub struct ReadAcquisitionFailure {
+    original: TransactionError,
+    clean_capacity_refusal: bool,
+}
+impl ReadAcquisitionFailure {
+    pub fn original(&self) -> &TransactionError {
+        &self.original
+    }
+    pub fn is_clean_capacity_refusal(&self) -> bool {
+        self.clean_capacity_refusal
+    }
+    fn unproven(original: TransactionError) -> Self {
+        Self {
+            original,
+            clean_capacity_refusal: false,
+        }
+    }
+    // Only the canonical retained begin/fork calls may mint this disposition,
+    // after their full native call returns. SnapshotHandle admits before pin
+    // acquisition/clone; pin backing/slot denial precedes slot publication.
+    // Returning here also proves provisional destructors completed. A panic,
+    // owner failure, closed owner or post-acquisition check cannot qualify.
+    fn after_native_return(original: TransactionError) -> Self {
+        let clean_capacity_refusal = matches!(
+            original,
+            TransactionError(StorageError::Core(CoreError::CapacityDenied))
+        );
+        Self {
+            original,
+            clean_capacity_refusal,
+        }
+    }
+}
+impl fmt::Display for ReadAcquisitionFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.original, formatter)
+    }
+}
+impl std::error::Error for ReadAcquisitionFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.original)
+    }
+}
+
 impl Database {
-    pub fn begin_read_retained(&self) -> Result<RetainedReadTransaction, TransactionError> {
-        self.begin_read().map(ReadTransaction::retain)
+    pub fn begin_read_retained(&self) -> Result<RetainedReadTransaction, ReadAcquisitionFailure> {
+        self.begin_read()
+            .map(ReadTransaction::retain)
+            .map_err(ReadAcquisitionFailure::after_native_return)
     }
 }
 
 impl RetainedReadTransaction {
+    #[cfg(test)]
+    pub(crate) fn corrupt_final_release_for_test(&self, poison: bool) {
+        self.transaction
+            .as_ref()
+            .unwrap()
+            .retirement_observer()
+            .corrupt_for_test(poison);
+    }
+
+    /// Fork only an open selected reader, with independent release/disposal
+    /// state and snapshot descendants. The shared borrow cannot overlap this
+    /// owner's mutable close; an enclosing registered reader must preserve
+    /// that serialization while installing its child before invoking fork.
+    pub fn fork(&self) -> Result<Self, ReadAcquisitionFailure> {
+        if self.settlement != ReadCloseSettlement::Open {
+            return Err(ReadAcquisitionFailure::unproven(
+                StorageError::DatabaseClosed.into(),
+            ));
+        }
+        self.transaction
+            .as_ref()
+            .ok_or_else(|| ReadAcquisitionFailure::unproven(StorageError::DatabaseClosed.into()))?
+            .fork()
+            .map(ReadTransaction::retain)
+            .map_err(ReadAcquisitionFailure::after_native_return)
+    }
+
     fn readable(&self) -> Result<&ReadTransaction, BoundedReadError> {
         if self.settlement != ReadCloseSettlement::Open {
             return Err(BoundedReadError::Closed);
@@ -345,6 +436,17 @@ impl RetainedReadTransaction {
         Ok(())
     }
 
+    pub fn check_bytes_table_prepared(
+        &self,
+        definition: TableDefinition<&[u8], &[u8]>,
+        workspace: &mut crate::PreparedPointRead,
+    ) -> Result<(), BoundedReadError> {
+        Self::table_name(definition)?;
+        self.readable()?
+            .check_bytes_table_prepared(definition, workspace)
+            .map_err(BoundedReadError::Table)
+    }
+
     /// The returned value retains its resident admission until it is dropped.
     pub fn get_bytes(
         &self,
@@ -364,7 +466,50 @@ impl RetainedReadTransaction {
             })
     }
 
-    /// Consult the pinned index without materializing a value or exposing a
+    pub fn prepare_point_read(
+        &self,
+        max_value_bytes: usize,
+    ) -> Result<crate::PreparedPointRead, BoundedReadError> {
+        self.readable()?
+            .prepare_point_read(max_value_bytes)
+            .map_err(|error| BoundedReadError::Storage(error.into()))
+    }
+
+    pub fn point_length_prepared(
+        &self,
+        definition: TableDefinition<&[u8], &[u8]>,
+        key: &[u8],
+        workspace: &mut crate::PreparedPointRead,
+    ) -> Result<Option<usize>, BoundedReadError> {
+        let table = Self::table_name(definition)?;
+        if key.len() > 8192 {
+            return Err(BoundedReadError::BoundExceeded);
+        }
+        self.readable()?
+            .point_length_prepared(table, key, workspace)
+            .map_err(|error| BoundedReadError::Storage(error.into()))
+    }
+
+    pub fn get_bytes_prepared<'workspace>(
+        &self,
+        definition: TableDefinition<&[u8], &[u8]>,
+        key: &[u8],
+        max_value_bytes: usize,
+        workspace: &'workspace mut crate::PreparedPointRead,
+    ) -> Result<Option<&'workspace [u8]>, BoundedReadError> {
+        let table = Self::table_name(definition)?;
+        if key.len() > 8192 || max_value_bytes > 64 << 20 {
+            return Err(BoundedReadError::BoundExceeded);
+        }
+        self.readable()?
+            .get_bytes_prepared(table, key, max_value_bytes, workspace)
+            .map_err(|error| match error {
+                CoreError::InvalidInput(_) => BoundedReadError::BoundExceeded,
+                other => BoundedReadError::Storage(other.into()),
+            })
+    }
+
+    /// Consult the pinned disk root without materializing a value or exposing a
     /// table guard outside this retained transaction.
     pub fn key_exists(
         &self,
@@ -469,15 +614,34 @@ impl RetainedReadTransaction {
             {
                 self.settlement = ReadCloseSettlement::WaitingForGuards;
             } else {
+                // Install the actual registry/Database observer before destroying
+                // the last snapshot. This performs no allocation or callback.
+                self.retirement_observer = self
+                    .transaction
+                    .as_ref()
+                    .map(ReadTransaction::retirement_observer);
                 self.disposal.run(|| {
                     drop(self.transaction.take());
                     Ok(())
                 });
-                self.settlement = if self.disposal.succeeded() {
-                    ReadCloseSettlement::Disposed
+                let observer = self
+                    .retirement_observer
+                    .as_ref()
+                    .expect("retained retirement observer");
+                if self.disposal.succeeded() {
+                    self.native_retirement
+                        .run(|| observer.check().map_err(StorageError::from));
+                    if self.native_retirement.succeeded() {
+                        self.retirement_observer.take();
+                        self.settlement = ReadCloseSettlement::Disposed;
+                    } else {
+                        observer.fence();
+                        self.settlement = ReadCloseSettlement::Retained;
+                    }
                 } else {
-                    ReadCloseSettlement::DisposalUncertain
-                };
+                    observer.fence();
+                    self.settlement = ReadCloseSettlement::DisposalUncertain;
+                }
             }
         }
         self.report()
@@ -666,7 +830,7 @@ pub enum DatabaseOpenSettlement {
     FailedDisposed,
 }
 
-struct SharedBackend(Arc<Box<dyn StorageBackend>>);
+struct SharedBackend(Arc<Box<dyn SegmentGroupBackend>>);
 
 impl fmt::Debug for SharedBackend {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -680,27 +844,59 @@ impl Clone for SharedBackend {
     }
 }
 
-impl StorageBackend for SharedBackend {
-    fn len(&self) -> io::Result<u64> {
-        self.0.len()
+impl SegmentGroupBackend for SharedBackend {
+    fn reserve_transaction(
+        &self,
+        plan: &crate::TransactionSpacePlan,
+    ) -> std::result::Result<(), crate::TransactionReserveError> {
+        self.0.reserve_transaction(plan)
+    }
+    fn finish_transaction(&self, group_id: [u8; 16], batch_seq: u64) -> std::io::Result<()> {
+        self.0.finish_transaction(group_id, batch_seq)
+    }
+    fn cancel_transaction(&self, group_id: [u8; 16], batch_seq: u64) -> std::io::Result<()> {
+        self.0.cancel_transaction(group_id, batch_seq)
     }
 
-    fn read(&self, at: u64, out: &mut [u8]) -> io::Result<()> {
-        self.0.read(at, out)
+    fn read_root(&self, slot: RootSlot, out: &mut [u8; ROOT_SLOT_BYTES]) -> io::Result<()> {
+        self.0.read_root(slot, out)
     }
-
-    fn set_len(&self, len: u64) -> io::Result<()> {
-        self.0.set_len(len)
+    fn write_root(&self, slot: RootSlot, bytes: &[u8; ROOT_SLOT_BYTES]) -> io::Result<()> {
+        self.0.write_root(slot, bytes)
     }
-
-    fn sync_data(&self) -> io::Result<()> {
-        self.0.sync_data()
+    fn sync_root(&self) -> io::Result<()> {
+        self.0.sync_root()
     }
-
-    fn write(&self, at: u64, bytes: &[u8]) -> io::Result<()> {
-        self.0.write(at, bytes)
+    fn visit_entries(&self, visitor: &mut dyn FnMut(&OsStr) -> io::Result<()>) -> io::Result<()> {
+        self.0.visit_entries(visitor)
     }
-
+    fn exists(&self, file: GroupFile) -> io::Result<bool> {
+        self.0.exists(file)
+    }
+    fn create(&self, file: GroupFile) -> io::Result<()> {
+        self.0.create(file)
+    }
+    fn len(&self, file: GroupFile) -> io::Result<u64> {
+        self.0.len(file)
+    }
+    fn read(&self, file: GroupFile, at: u64, out: &mut [u8]) -> io::Result<()> {
+        self.0.read(file, at, out)
+    }
+    fn write(&self, file: GroupFile, at: u64, bytes: &[u8]) -> io::Result<()> {
+        self.0.write(file, at, bytes)
+    }
+    fn set_len(&self, file: GroupFile, length: u64) -> io::Result<()> {
+        self.0.set_len(file, length)
+    }
+    fn sync(&self, file: GroupFile) -> io::Result<()> {
+        self.0.sync(file)
+    }
+    fn unlink(&self, file: GroupFile) -> io::Result<()> {
+        self.0.unlink(file)
+    }
+    fn sync_names(&self) -> io::Result<()> {
+        self.0.sync_names()
+    }
     fn close(&self) -> BackendCloseOutcome {
         self.0.close()
     }
@@ -727,6 +923,16 @@ impl fmt::Debug for OpeningAdmission {
 }
 
 impl StorageAdmission for OpeningAdmission {
+    fn install_source_pool(
+        self: Arc<Self>,
+        install: &mut crate::SourcePoolInstall<'_>,
+    ) -> io::Result<()> {
+        self.check_owner()
+            .map_err(|_| io::Error::from(io::ErrorKind::Other))?;
+        self.inner.clone().install_source_pool(install)?;
+        self.check_owner().map_err(|_| io::ErrorKind::Other.into())
+    }
+
     fn check_owner(&self) -> Result<(), OwnerFailed> {
         if self.failed.load(Ordering::Acquire) {
             return Err(OwnerFailed);
@@ -739,6 +945,25 @@ impl StorageAdmission for OpeningAdmission {
             return Err(AdmissionError::OwnerFailed);
         }
         self.inner.reserve_workspace(bytes)
+    }
+
+    fn quote_cache_memory(
+        &self,
+        credit_bytes: u64,
+    ) -> Result<crate::CacheMemoryQuote, AdmissionError> {
+        self.inner.quote_cache_memory(credit_bytes)
+    }
+
+    fn reserve_cache_memory(
+        self: Arc<Self>,
+        credit_bytes: u64,
+    ) -> Result<crate::CacheMemoryLease, AdmissionError> {
+        self.check_owner()
+            .map_err(|_| AdmissionError::OwnerFailed)?;
+        let lease = self.inner.clone().reserve_cache_memory(credit_bytes)?;
+        self.check_owner()
+            .map_err(|_| AdmissionError::OwnerFailed)?;
+        Ok(lease)
     }
 
     fn reserve_growth(&self, current: u64, requested: u64) -> Result<(), AdmissionError> {
@@ -850,8 +1075,8 @@ impl Builder {
     pub fn retained_opening_allocation_layout() -> Result<Layout, LayoutError> {
         let (admission, _) =
             Layout::new::<[AtomicUsize; 2]>().extend(Layout::new::<OpeningAdmission>())?;
-        let (backend, _) =
-            Layout::new::<[AtomicUsize; 2]>().extend(Layout::new::<Box<dyn StorageBackend>>())?;
+        let (backend, _) = Layout::new::<[AtomicUsize; 2]>()
+            .extend(Layout::new::<Box<dyn SegmentGroupBackend>>())?;
         let (combined, _) = admission.pad_to_align().extend(backend.pad_to_align())?;
         // The caller turns this layout into one conservative byte reservation
         // for two separate allocations and their allocator metadata.
@@ -863,7 +1088,7 @@ impl Builder {
 
     pub fn retain_backend(
         self,
-        backend: Box<dyn StorageBackend>,
+        backend: Box<dyn SegmentGroupBackend>,
         mode: DatabaseOpenMode,
     ) -> RetainedDatabaseOpening {
         let admission = Arc::new(OpeningAdmission {
@@ -926,7 +1151,7 @@ impl RetainedDatabaseOpening {
                 // This owner already holds the exact SharedBackend and records
                 // its one-shot close. The direct Builder path closes failures
                 // itself; doing that here would re-enter the same backend.
-                DatabaseOpenMode::Create => builder.create_strict_with_backend_retained(backend),
+                DatabaseOpenMode::Create => builder.create_with_backend_retained(backend),
                 DatabaseOpenMode::Existing => builder.open_with_backend_retained(backend),
             }?;
             opened = Some(database);
@@ -1025,7 +1250,8 @@ impl RetainedDatabaseOpening {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::InMemoryBackend;
+    use crate::cache::CacheConfig;
+    use crate::group::InMemoryGroup;
 
     struct Permit;
 
@@ -1047,17 +1273,40 @@ mod tests {
         }
 
         fn owner_failed(&self) {}
+
+        fn quote_cache_memory(
+            &self,
+            bytes: u64,
+        ) -> Result<crate::CacheMemoryQuote, crate::AdmissionError> {
+            crate::cache_test::quote::<Self>(bytes)
+        }
+        fn reserve_cache_memory(
+            self: std::sync::Arc<Self>,
+            bytes: u64,
+        ) -> Result<crate::CacheMemoryLease, crate::AdmissionError> {
+            crate::cache_test::reserve(self, bytes)
+        }
+    }
+    impl crate::cache_test::Provider for Permit {
+        fn acquire_cache(&self, bytes: u64, first: bool) -> Result<(), crate::AdmissionError> {
+            let _ = first;
+            let _ = bytes;
+            Ok(())
+        }
+        fn release_cache(&self, bytes: u64, last: bool) {
+            let _ = (bytes, last);
+        }
     }
 
     fn builder() -> Builder {
-        Database::builder(Arc::new(Permit))
+        Database::builder(Arc::new(Permit), [61; 16], CacheConfig::default())
     }
 
     #[test]
     fn retained_index_existence_observes_exact_snapshot_and_tombstones() {
         let rows: TableDefinition<&[u8], &[u8]> = TableDefinition::new("index-only-rows");
         let mut opening =
-            builder().retain_backend(Box::new(InMemoryBackend::new()), DatabaseOpenMode::Create);
+            builder().retain_backend(Box::new(InMemoryGroup::new()), DatabaseOpenMode::Create);
         assert_eq!(opening.open().settlement(), DatabaseOpenSettlement::Ready);
         let writer = opening.database().unwrap().begin_write().unwrap();
         writer
@@ -1105,62 +1354,78 @@ mod tests {
     }
 
     struct ReopenableBackend {
-        bytes: Arc<Mutex<Vec<u8>>>,
+        inner: InMemoryGroup,
         closes: Arc<AtomicUsize>,
     }
 
-    impl StorageBackend for ReopenableBackend {
-        fn len(&self) -> io::Result<u64> {
-            Ok(self.bytes.lock().unwrap().len() as u64)
+    impl SegmentGroupBackend for ReopenableBackend {
+        fn reserve_transaction(
+            &self,
+            plan: &crate::TransactionSpacePlan,
+        ) -> std::result::Result<(), crate::TransactionReserveError> {
+            self.inner.reserve_transaction(plan)
+        }
+        fn finish_transaction(&self, group_id: [u8; 16], batch_seq: u64) -> std::io::Result<()> {
+            self.inner.finish_transaction(group_id, batch_seq)
+        }
+        fn cancel_transaction(&self, group_id: [u8; 16], batch_seq: u64) -> std::io::Result<()> {
+            self.inner.cancel_transaction(group_id, batch_seq)
         }
 
-        fn read(&self, at: u64, out: &mut [u8]) -> io::Result<()> {
-            let bytes = self.bytes.lock().unwrap();
-            let start = usize::try_from(at).map_err(|_| io::ErrorKind::InvalidInput)?;
-            let end = start
-                .checked_add(out.len())
-                .ok_or(io::ErrorKind::InvalidInput)?;
-            out.copy_from_slice(bytes.get(start..end).ok_or(io::ErrorKind::UnexpectedEof)?);
-            Ok(())
+        fn read_root(&self, slot: RootSlot, out: &mut [u8; ROOT_SLOT_BYTES]) -> io::Result<()> {
+            self.inner.read_root(slot, out)
         }
-
-        fn write(&self, at: u64, input: &[u8]) -> io::Result<()> {
-            let mut bytes = self.bytes.lock().unwrap();
-            let start = usize::try_from(at).map_err(|_| io::ErrorKind::InvalidInput)?;
-            let end = start
-                .checked_add(input.len())
-                .ok_or(io::ErrorKind::InvalidInput)?;
-            bytes
-                .get_mut(start..end)
-                .ok_or(io::ErrorKind::UnexpectedEof)?
-                .copy_from_slice(input);
-            Ok(())
+        fn write_root(&self, slot: RootSlot, bytes: &[u8; ROOT_SLOT_BYTES]) -> io::Result<()> {
+            self.inner.write_root(slot, bytes)
         }
-
-        fn set_len(&self, length: u64) -> io::Result<()> {
-            self.bytes.lock().unwrap().resize(
-                usize::try_from(length).map_err(|_| io::ErrorKind::InvalidInput)?,
-                0,
-            );
-            Ok(())
+        fn sync_root(&self) -> io::Result<()> {
+            self.inner.sync_root()
         }
-
-        fn sync_data(&self) -> io::Result<()> {
-            Ok(())
+        fn visit_entries(
+            &self,
+            visitor: &mut dyn FnMut(&OsStr) -> io::Result<()>,
+        ) -> io::Result<()> {
+            self.inner.visit_entries(visitor)
         }
-
+        fn exists(&self, file: GroupFile) -> io::Result<bool> {
+            self.inner.exists(file)
+        }
+        fn create(&self, file: GroupFile) -> io::Result<()> {
+            self.inner.create(file)
+        }
+        fn len(&self, file: GroupFile) -> io::Result<u64> {
+            self.inner.len(file)
+        }
+        fn read(&self, file: GroupFile, at: u64, out: &mut [u8]) -> io::Result<()> {
+            self.inner.read(file, at, out)
+        }
+        fn write(&self, file: GroupFile, at: u64, bytes: &[u8]) -> io::Result<()> {
+            self.inner.write(file, at, bytes)
+        }
+        fn set_len(&self, file: GroupFile, length: u64) -> io::Result<()> {
+            self.inner.set_len(file, length)
+        }
+        fn sync(&self, file: GroupFile) -> io::Result<()> {
+            self.inner.sync(file)
+        }
+        fn unlink(&self, file: GroupFile) -> io::Result<()> {
+            self.inner.unlink(file)
+        }
+        fn sync_names(&self) -> io::Result<()> {
+            self.inner.sync_names()
+        }
         fn close(&self) -> BackendCloseOutcome {
             self.closes.fetch_add(1, Ordering::AcqRel);
-            BackendCloseOutcome::drained(Ok(()))
+            self.inner.close()
         }
     }
 
     #[test]
     fn retained_reader_waits_for_exact_table_range_and_guards_before_restart() {
-        let bytes = Arc::new(Mutex::new(Vec::new()));
+        let group = InMemoryGroup::new();
         let closes = Arc::new(AtomicUsize::new(0));
         let backend = || ReopenableBackend {
-            bytes: bytes.clone(),
+            inner: group.clone(),
             closes: closes.clone(),
         };
         let rows: TableDefinition<&[u8], &[u8]> = TableDefinition::new("held-rows");
@@ -1237,8 +1502,13 @@ mod tests {
         assert_eq!(opening.close().settlement(), DatabaseOpenSettlement::Closed);
         assert_eq!(closes.load(Ordering::Acquire), 1);
 
-        let mut restarted =
-            builder().retain_backend(Box::new(backend()), DatabaseOpenMode::Existing);
+        let mut restarted = builder().retain_backend(
+            Box::new(ReopenableBackend {
+                inner: group.crash(),
+                closes: closes.clone(),
+            }),
+            DatabaseOpenMode::Existing,
+        );
         assert_eq!(restarted.open().settlement(), DatabaseOpenSettlement::Ready);
         let snapshot = restarted.database().unwrap().begin_read().unwrap();
         let table = snapshot.open_table(rows).unwrap();
@@ -1258,7 +1528,7 @@ mod tests {
     #[test]
     fn retained_reader_guard_wait_is_per_snapshot_not_database_wide() {
         let mut opening =
-            builder().retain_backend(Box::new(InMemoryBackend::new()), DatabaseOpenMode::Create);
+            builder().retain_backend(Box::new(InMemoryGroup::new()), DatabaseOpenMode::Create);
         assert_eq!(opening.open().settlement(), DatabaseOpenSettlement::Ready);
         let rows: TableDefinition<&[u8], &[u8]> = TableDefinition::new("held-rows");
         let writer = opening.database().unwrap().begin_write().unwrap();
@@ -1296,7 +1566,7 @@ mod tests {
     #[test]
     fn retained_read_disposal_rechecks_a_late_snapshot_descendant() {
         let mut opening =
-            builder().retain_backend(Box::new(InMemoryBackend::new()), DatabaseOpenMode::Create);
+            builder().retain_backend(Box::new(InMemoryGroup::new()), DatabaseOpenMode::Create);
         assert_eq!(opening.open().settlement(), DatabaseOpenSettlement::Ready);
         let rows: TableDefinition<&[u8], &[u8]> = TableDefinition::new("held-rows");
         let writer = opening.database().unwrap().begin_write().unwrap();
@@ -1335,33 +1605,68 @@ mod tests {
     }
 
     struct CountedBackend {
-        inner: InMemoryBackend,
+        inner: InMemoryGroup,
         closes: Arc<AtomicUsize>,
         native_uncertain: bool,
         entered_would_block: bool,
     }
 
-    impl StorageBackend for CountedBackend {
-        fn len(&self) -> io::Result<u64> {
-            self.inner.len()
+    impl SegmentGroupBackend for CountedBackend {
+        fn reserve_transaction(
+            &self,
+            plan: &crate::TransactionSpacePlan,
+        ) -> std::result::Result<(), crate::TransactionReserveError> {
+            self.inner.reserve_transaction(plan)
+        }
+        fn finish_transaction(&self, group_id: [u8; 16], batch_seq: u64) -> std::io::Result<()> {
+            self.inner.finish_transaction(group_id, batch_seq)
+        }
+        fn cancel_transaction(&self, group_id: [u8; 16], batch_seq: u64) -> std::io::Result<()> {
+            self.inner.cancel_transaction(group_id, batch_seq)
         }
 
-        fn read(&self, at: u64, out: &mut [u8]) -> io::Result<()> {
-            self.inner.read(at, out)
+        fn read_root(&self, slot: RootSlot, out: &mut [u8; ROOT_SLOT_BYTES]) -> io::Result<()> {
+            self.inner.read_root(slot, out)
         }
-
-        fn set_len(&self, len: u64) -> io::Result<()> {
-            self.inner.set_len(len)
+        fn write_root(&self, slot: RootSlot, bytes: &[u8; ROOT_SLOT_BYTES]) -> io::Result<()> {
+            self.inner.write_root(slot, bytes)
         }
-
-        fn sync_data(&self) -> io::Result<()> {
-            self.inner.sync_data()
+        fn sync_root(&self) -> io::Result<()> {
+            self.inner.sync_root()
         }
-
-        fn write(&self, at: u64, bytes: &[u8]) -> io::Result<()> {
-            self.inner.write(at, bytes)
+        fn visit_entries(
+            &self,
+            visitor: &mut dyn FnMut(&OsStr) -> io::Result<()>,
+        ) -> io::Result<()> {
+            self.inner.visit_entries(visitor)
         }
-
+        fn exists(&self, file: GroupFile) -> io::Result<bool> {
+            self.inner.exists(file)
+        }
+        fn create(&self, file: GroupFile) -> io::Result<()> {
+            self.inner.create(file)
+        }
+        fn len(&self, file: GroupFile) -> io::Result<u64> {
+            self.inner.len(file)
+        }
+        fn read(&self, file: GroupFile, at: u64, out: &mut [u8]) -> io::Result<()> {
+            self.inner.read(file, at, out)
+        }
+        fn write(&self, file: GroupFile, at: u64, bytes: &[u8]) -> io::Result<()> {
+            self.inner.write(file, at, bytes)
+        }
+        fn set_len(&self, file: GroupFile, length: u64) -> io::Result<()> {
+            self.inner.set_len(file, length)
+        }
+        fn sync(&self, file: GroupFile) -> io::Result<()> {
+            self.inner.sync(file)
+        }
+        fn unlink(&self, file: GroupFile) -> io::Result<()> {
+            self.inner.unlink(file)
+        }
+        fn sync_names(&self) -> io::Result<()> {
+            self.inner.sync_names()
+        }
         fn close(&self) -> BackendCloseOutcome {
             self.closes.fetch_add(1, Ordering::SeqCst);
             if self.entered_would_block {
@@ -1378,7 +1683,7 @@ mod tests {
     #[test]
     fn opening_waits_for_the_exact_retained_reader_before_native_close() {
         let mut opening =
-            builder().retain_backend(Box::new(InMemoryBackend::new()), DatabaseOpenMode::Create);
+            builder().retain_backend(Box::new(InMemoryGroup::new()), DatabaseOpenMode::Create);
         assert_eq!(opening.open().settlement(), DatabaseOpenSettlement::Ready);
         let mut reader = opening.database().unwrap().begin_read_retained().unwrap();
         assert_eq!(
@@ -1402,7 +1707,7 @@ mod tests {
         let closes = Arc::new(AtomicUsize::new(0));
         let mut opening = builder().retain_backend(
             Box::new(CountedBackend {
-                inner: InMemoryBackend::new(),
+                inner: InMemoryGroup::new(),
                 closes: closes.clone(),
                 native_uncertain: true,
                 entered_would_block: false,
@@ -1436,7 +1741,7 @@ mod tests {
         let retained_calls = Arc::new(AtomicUsize::new(0));
         let mut opening = builder().retain_backend(
             Box::new(CountedBackend {
-                inner: InMemoryBackend::new(),
+                inner: InMemoryGroup::new(),
                 closes: retained_calls.clone(),
                 native_uncertain: false,
                 entered_would_block: true,
@@ -1471,7 +1776,7 @@ mod tests {
         let consuming_calls = Arc::new(AtomicUsize::new(0));
         let database = builder()
             .create_with_backend(CountedBackend {
-                inner: InMemoryBackend::new(),
+                inner: InMemoryGroup::new(),
                 closes: consuming_calls.clone(),
                 native_uncertain: false,
                 entered_would_block: true,
@@ -1487,8 +1792,10 @@ mod tests {
     #[test]
     fn failed_construction_still_owns_and_closes_its_original_backend() {
         let closes = Arc::new(AtomicUsize::new(0));
-        let backend = InMemoryBackend::new();
-        backend.set_len(1).unwrap();
+        let backend = InMemoryGroup::new();
+        backend
+            .write_root(RootSlot::A, &[7; ROOT_SLOT_BYTES])
+            .unwrap();
         let mut opening = builder().retain_backend(
             Box::new(CountedBackend {
                 inner: backend,
@@ -1511,3 +1818,15 @@ mod tests {
         assert_eq!(closes.load(Ordering::SeqCst), 1);
     }
 }
+
+#[cfg(test)]
+#[path = "transaction_claim_activation_tests.rs"]
+mod transaction_claim_activation_tests;
+
+#[path = "retained_source_read.rs"]
+mod source_read;
+pub use source_read::*;
+
+#[path = "source_funding.rs"]
+mod source_funding;
+pub use source_funding::*;

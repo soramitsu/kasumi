@@ -1,0 +1,179 @@
+   Compiling kasumi-kv v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-kv)
+error[E0753]: expected outer doc comment
+ --> crates/kasumi-kv/tests/commit_allocation.rs:5:1
+  |
+5 | //! Staging and commit materialization stay within admitted workspace.
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: inner doc comments like this (starting with `//!` or `/*!`) can only appear before items
+help: you might have meant to write a regular comment
+  |
+5 - //! Staging and commit materialization stay within admitted workspace.
+5 + // Staging and commit materialization stay within admitted workspace.
+  |
+
+error[E0753]: expected outer doc comment
+ --> crates/kasumi-kv/tests/commit_allocation.rs:6:1
+  |
+6 | //!
+  | ^^^
+  |
+  = note: inner doc comments like this (starting with `//!` or `/*!`) can only appear before items
+help: you might have meant to write a regular comment
+  |
+6 - //!
+6 + //
+  |
+
+error[E0753]: expected outer doc comment
+ --> crates/kasumi-kv/tests/commit_allocation.rs:7:1
+  |
+7 | //! A counting global allocator tracks the live heap of the measuring thread
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: inner doc comments like this (starting with `//!` or `/*!`) can only appear before items
+help: you might have meant to write a regular comment
+  |
+7 - //! A counting global allocator tracks the live heap of the measuring thread
+7 + // A counting global allocator tracks the live heap of the measuring thread
+  |
+
+error[E0753]: expected outer doc comment
+ --> crates/kasumi-kv/tests/commit_allocation.rs:8:1
+  |
+8 | //! while the test admission tracks live workspace charges. Their difference
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: inner doc comments like this (starting with `//!` or `/*!`) can only appear before items
+help: you might have meant to write a regular comment
+  |
+8 - //! while the test admission tracks live workspace charges. Their difference
+8 + // while the test admission tracks live workspace charges. Their difference
+  |
+
+error[E0753]: expected outer doc comment
+ --> crates/kasumi-kv/tests/commit_allocation.rs:9:1
+  |
+9 | //! is sampled at every allocation and every lease release.
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: inner doc comments like this (starting with `//!` or `/*!`) can only appear before items
+help: you might have meant to write a regular comment
+  |
+9 - //! is sampled at every allocation and every lease release.
+9 + // is sampled at every allocation and every lease release.
+  |
+
+error[E0753]: expected outer doc comment
+  --> crates/kasumi-kv/tests/commit_allocation.rs:10:1
+   |
+10 | //!
+   | ^^^
+   |
+   = note: inner doc comments like this (starting with `//!` or `/*!`) can only appear before items
+help: you might have meant to write a regular comment
+   |
+10 - //!
+10 + //
+   |
+
+error[E0753]: expected outer doc comment
+  --> crates/kasumi-kv/tests/commit_allocation.rs:11:1
+   |
+11 | //! Staging is measured from a baseline taken before the writer begins.
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: inner doc comments like this (starting with `//!` or `/*!`) can only appear before items
+help: you might have meant to write a regular comment
+   |
+11 - //! Staging is measured from a baseline taken before the writer begins.
+11 + // Staging is measured from a baseline taken before the writer begins.
+   |
+
+error[E0753]: expected outer doc comment
+  --> crates/kasumi-kv/tests/commit_allocation.rs:12:1
+   |
+12 | //! Commit is measured from its own start, so conservative staging charges
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: inner doc comments like this (starting with `//!` or `/*!`) can only appear before items
+help: you might have meant to write a regular comment
+   |
+12 - //! Commit is measured from its own start, so conservative staging charges
+12 + // Commit is measured from its own start, so conservative staging charges
+   |
+
+error[E0753]: expected outer doc comment
+  --> crates/kasumi-kv/tests/commit_allocation.rs:13:1
+   |
+13 | //! cannot mask an unadmitted commit allocation, until the first lease that
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: inner doc comments like this (starting with `//!` or `/*!`) can only appear before items
+help: you might have meant to write a regular comment
+   |
+13 - //! cannot mask an unadmitted commit allocation, until the first lease that
+13 + // cannot mask an unadmitted commit allocation, until the first lease that
+   |
+
+error[E0753]: expected outer doc comment
+  --> crates/kasumi-kv/tests/commit_allocation.rs:14:1
+   |
+14 | //! predates the commit is released: from then on the staged batch returns
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: inner doc comments like this (starting with `//!` or `/*!`) can only appear before items
+help: you might have meant to write a regular comment
+   |
+14 - //! predates the commit is released: from then on the staged batch returns
+14 + // predates the commit is released: from then on the staged batch returns
+   |
+
+error[E0753]: expected outer doc comment
+  --> crates/kasumi-kv/tests/commit_allocation.rs:15:1
+   |
+15 | //! its over-estimated credit. Both may exceed their baseline by at most
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: inner doc comments like this (starting with `//!` or `/*!`) can only appear before items
+help: you might have meant to write a regular comment
+   |
+15 - //! its over-estimated credit. Both may exceed their baseline by at most
+15 + // its over-estimated credit. Both may exceed their baseline by at most
+   |
+
+error[E0753]: expected outer doc comment
+  --> crates/kasumi-kv/tests/commit_allocation.rs:16:1
+   |
+16 | //! `FIXED_SLACK`: the writer's own handles (its staged-batch cell, snapshot
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: inner doc comments like this (starting with `//!` or `/*!`) can only appear before items
+help: you might have meant to write a regular comment
+   |
+16 - //! `FIXED_SLACK`: the writer's own handles (its staged-batch cell, snapshot
+16 + // `FIXED_SLACK`: the writer's own handles (its staged-batch cell, snapshot
+   |
+
+error[E0753]: expected outer doc comment
+  --> crates/kasumi-kv/tests/commit_allocation.rs:17:1
+   |
+17 |   //! and table name) and the first growth of each lease vector.
+   |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+18 |
+19 | / use kasumi_kv::{
+20 | |     AdmissionError, BackendCloseOutcome, CommitError, CoreError, Database, MAX_VALUE_BYTES,
+21 | |     Operation, OwnerFailed, ResidentLease, StorageAdmission, SegmentGroupBackend, GroupFile, RootSlot, ROOT_SLOT_BYTES, ROOT_FILE_...
+22 | |     TableDefinition, WriteTerminalSettlement,
+23 | | };
+   | |__- the inner doc comment doesn't annotate this `use` import
+   |
+help: to annotate the `use` import, change the doc comment from inner to outer style
+   |
+17 - //! and table name) and the first growth of each lease vector.
+17 + /// and table name) and the first growth of each lease vector.
+   |
+
+For more information about this error, try `rustc --explain E0753`.
+error: could not compile `kasumi-kv` (test "commit_allocation") due to 13 previous errors
+warning: build failed, waiting for other jobs to finish...

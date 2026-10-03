@@ -1,0 +1,3 @@
+Command: cargo fmt --all --check
+
+Runner elapsed_seconds=17.64 exit_code=0

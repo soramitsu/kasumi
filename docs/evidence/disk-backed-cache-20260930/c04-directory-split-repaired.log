@@ -1,0 +1,95 @@
+Command: cargo test -p kasumi-kv --all-features --lib --locked --offline --config profile.test.package.kasumi-kv.opt-level=3 --config profile.test.package.sha2.opt-level=3 -- --test-threads=1 directory::
+CARGO_TARGET_DIR=target/disk-backed-cache
+   Compiling kasumi-kv v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-kv)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 43.39s
+     Running unittests src/lib.rs (target/disk-backed-cache/debug/deps/kasumi_kv-7c66dd9ab067962c)
+
+running 84 tests
+test directory::tests::batch::append_and_sync_failures_poison_only_the_private_batch_and_preserve_old_root ... ok
+test directory::tests::batch::batch_workspace_denial_and_expired_owner_do_not_start_page_effects ... ok
+test directory::tests::batch::corrupted_deeper_root_or_selected_leaf_is_not_a_declined_fast_path ... ok
+test directory::tests::batch::corrupted_root_leaf_is_an_error_not_a_declined_fast_path ... ok
+test directory::tests::batch::deeper_batches_copy_one_path_and_consume_only_the_first_leaf_prefix ... ok
+test directory::tests::batch::deeper_noop_prefix_and_new_global_minimum_preserve_ancestor_bounds ... ok
+test directory::tests::batch::invalid_batch_inputs_reject_without_reads_or_appends_and_do_not_poison ... ok
+test directory::tests::batch::nonroot_empty_and_growing_ancestor_separator_decline_before_any_append ... ok
+test directory::tests::batch::oversized_leaf_declines_before_effects_and_allows_normal_fallback ... ok
+test directory::tests::batch::root_leaf_batches_match_mixed_ordered_model_and_preserve_every_old_root ... ok
+test directory::tests::batch::root_leaf_noops_missing_deletes_and_empty_result_do_not_append_pages ... ok
+test directory::tests::canonical_root_codec_binds_the_complete_reference_and_shape ... ok
+test directory::tests::capacity_denial_precedes_page_allocation_and_outputs_remain_admitted ... ok
+test directory::tests::cow_arena_cache_composition_retains_snapshots_and_reopens_durable_pages ... ok
+test directory::tests::cow_denial_and_invalid_input_do_not_append_or_corrupt_prior_root ... ok
+test directory::tests::cow_failed_appends_only_orphan_pages_and_poison_private_batch ... ok
+test directory::tests::cow_large_tree_mutation_keeps_fixed_workspace_and_path_sized_io ... ok
+test directory::tests::cow_maximum_keys_split_remove_pages_and_shrink_root ... ok
+test directory::tests::cow_mutations_and_snapshots_match_ordered_model ... ok
+test directory::tests::cow_owner_failure_during_backend_io_cannot_return_publishable_root ... ok
+test directory::tests::cow_same_value_rewrite_copies_paths_preserving_versions_counts_and_old_roots ... ok
+test directory::tests::cow_validates_inherited_incarnation_version_and_separator_bounds ... ok
+test directory::tests::directory_reader_and_builder_check_owner_after_backend_io ... ok
+test directory::tests::empty_directory_and_owner_failure_are_checked_without_disk_reads ... ok
+test directory::tests::generation_warming_retains_final_split_pages_and_skips_private_orphans ... ok
+test directory::tests::immutable_roots_preserve_old_versions_and_incarnation_is_checked ... ok
+test directory::tests::leaves::leaf_batch_rewrites_one_path_preserving_versions_counts_siblings_and_old_roots ... ok
+test directory::tests::leaves::leaf_plans_and_rewrites_admit_before_io_and_release_on_denial ... ok
+test directory::tests::leaves::leaf_plans_find_boundaries_and_return_admitted_cursors_without_collecting_prior_keys ... ok
+test directory::tests::leaves::leaf_rewrite_append_and_sync_failures_poison_without_changing_old_roots ... ok
+test directory::tests::leaves::leaf_rewrite_rejects_foreign_root_bad_shape_and_changed_value_bytes_before_append ... ok
+test directory::tests::leaves::leaf_rewrite_revalidates_parent_and_leaf_digests_before_any_effect ... ok
+test directory::tests::ordered_successors_match_model_across_tables_and_missing_keys ... ok
+test directory::tests::packing::a_cross_parent_separator_split_propagates_multiple_carries_through_the_common_ancestor ... ok
+test directory::tests::packing::a_merged_underfull_page_remains_eligible_for_its_next_neighbor ... ok
+test directory::tests::packing::a_terminal_unary_root_chain_normalizes_without_appending_or_changing_logical_versions ... ok
+test directory::tests::packing::before_and_after_append_or_sync_failures_keep_old_roots_and_poison_the_batch ... ok
+test directory::tests::packing::both_source_pages_and_their_parent_paths_are_revalidated_before_append ... ok
+test directory::tests::packing::checksum_valid_malformed_shapes_and_nonadjacent_child_substitution_fail_closed ... ok
+test directory::tests::packing::complete_uneven_key_sweeps_match_dense_builder_at_every_reachable_level ... ok
+test directory::tests::packing::continuation_reselects_after_its_key_is_deleted_and_the_current_root_shrinks ... ok
+test directory::tests::packing::cross_parent_pairs_rebuild_both_paths_at_a_distant_common_ancestor ... ok
+test directory::tests::packing::greedy_redistribution_with_longer_separator_can_split_the_parent ... ok
+test directory::tests::packing::merging_across_unary_branches_removes_empty_ancestors_and_collapses_the_root ... ok
+test directory::tests::packing::pack_pair_rejects_foreign_or_stale_plans_without_poisoning_a_valid_retry ... ok
+test directory::tests::packing::pack_plan_denial_precedes_reads_and_each_mutation_reservation_precedes_appends ... ok
+test directory::tests::packing::same_parent_leaf_and_internal_packing_preserves_logical_records_and_old_roots ... ok
+test directory::tests::packing::unchanged_and_terminal_plans_do_not_append_or_advance_generation ... ok
+test directory::tests::page_corruption_and_noncanonical_encodings_fail_closed ... ok
+test directory::tests::parent_sha_rejects_canonical_child_substitution_with_the_same_crc ... ok
+test directory::tests::reachability::a_failed_path_read_is_not_a_proof_of_absence ... ok
+test directory::tests::reachability::a_probe_below_the_first_separator_still_checks_the_child_minimum ... ok
+test directory::tests::reachability::cow_roots_distinguish_obsolete_shared_and_newer_candidates ... ok
+test directory::tests::reachability::exact_membership_covers_leaf_internal_and_root_pages_with_one_path ... ok
+test directory::tests::reachability::malformed_candidates_fail_even_for_empty_or_older_roots_before_io ... ok
+test directory::tests::reachability::malformed_roots_and_ancestor_bounds_never_prove_absence ... ok
+test directory::tests::reachability::membership_requires_the_complete_reference_and_matching_group ... ok
+test directory::tests::reachability::proof_denial_and_owner_expiry_precede_or_fence_reads ... ok
+test directory::tests::refused_input_does_not_change_prefix_and_backend_failure_poisons_builder ... ok
+test directory::tests::splitting::cow_mixed_separator_growth_and_deletion_preserve_split_record_counts ... ok
+test directory::tests::splitting::cow_short_table_marker_descending_max_keys_keep_both_split_sides_nonunary ... ok
+test directory::tests::streaming_directory_exceeds_workspace_and_reopens_without_resident_keys ... ok
+test directory::tests::successor_branch_work_is_linear_in_fanout_including_redescent ... ok
+test directory::tests::walker_empty_table_only_and_cancellation_release_fixed_scratch ... ok
+test directory::tests::walker_operational_failures_poison_after_partial_callbacks ... ok
+test directory::tests::walker_rejects_digest_scope_parent_range_and_generation_corruption ... ok
+test directory::tests::walker_resumes_with_hard_work_limits_and_preserves_old_roots ... ok
+test directory::tests::workspace::point_membership_and_warming_reuse_one_buffer_without_new_admission ... ok
+test directory::tests::workspace::reused_workspace_preserves_candidate_validation_and_parent_bounds ... ok
+test directory::tests::workspace::reused_workspace_preserves_read_failures_and_post_io_owner_checks ... ok
+test directory::tests::workspace::workspace_construction_denial_releases_each_admitted_prefix_and_can_retry ... ok
+test directory::tests::workspace::workspace_rejects_foreign_admission_and_failed_owner_before_io ... ok
+test root::directory::tests::adjacent_slots_cannot_regress_directory_state_or_allocations ... ok
+test root::directory::tests::checksum_valid_directory_fields_must_be_canonical ... ok
+test root::directory::tests::decoded_directory_garbage_is_structural_and_still_needs_runtime_proof ... ok
+test root::directory::tests::directory_anchor_is_a_representable_commit_boundary ... ok
+test root::directory::tests::directory_garbage_uses_existing_mirrored_unlink_and_forget_protocol ... ok
+test root::directory::tests::directory_intents_are_never_reused_or_mistaken_for_orphans ... ok
+test root::directory::tests::directory_publication_faults_select_one_complete_commit ... ok
+test root::directory::tests::directory_publication_rejects_wrong_scope_versions_and_unconfirmed_arenas ... ok
+test root::directory::tests::directory_retirement_accepts_only_proven_sealed_pre_anchor_files ... ok
+test root::directory::tests::directory_retirement_batch_is_atomic_bounded_and_unique ... ok
+test root::directory::tests::directory_retirement_rejects_stale_commit_or_publication_proof ... ok
+test root::directory::tests::directory_root_and_anchor_round_trip_together ... ok
+
+test result: ok. 84 passed; 0 failed; 0 ignored; 0 measured; 375 filtered out; finished in 25.37s
+
+Runner: 69.04s; exit=0; matching=737/737

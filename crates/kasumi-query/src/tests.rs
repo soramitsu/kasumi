@@ -1,4 +1,5 @@
 use super::*;
+use crate::source_test_utils::{FixtureQueries, validate_collection_fixture};
 use serde_json::json;
 
 fn definition(fields: &[(&str, ScalarType)]) -> CollectionDefinition {
@@ -65,7 +66,11 @@ fn run(
     collections: &BTreeMap<String, CollectionState>,
     request: &QueryRequest,
 ) -> Result<QueryResponse> {
-    QueryIndexes::build(collections)?.execute(collections, request, &Limits::default())
+    QueryIndexes::build_fixture(collections)?.execute_fixture(
+        collections,
+        request,
+        &Limits::default(),
+    )
 }
 fn aggregate(
     alias: &str,
@@ -85,7 +90,7 @@ fn aggregate(
 fn indexed_boolean_filters_match_independent_reference_evaluator() {
     let collections = collection(definition(&[("/n", ScalarType::Number), ("/tag", ScalarType::String), ("/tags", ScalarType::StringArray)]),
         (0..180).map(|i| json!({"n":i % 37, "tag":if i % 3 == 0 { "a" } else { "b" }, "tags":[format!("{}",i % 4)]})).collect());
-    let indexes = QueryIndexes::build(&collections).unwrap();
+    let indexes = QueryIndexes::build_fixture(&collections).unwrap();
     // Reference uses native integers directly and does not invoke query internals.
     for low in [0, 7, 23, 36] {
         for high in [3, 17, 36, 50] {
@@ -124,7 +129,7 @@ fn indexed_boolean_filters_match_independent_reference_evaluator() {
                 .collect();
             assert_eq!(
                 ids(indexes
-                    .execute(&collections, &query, &Limits::default())
+                    .execute_fixture(&collections, &query, &Limits::default())
                     .unwrap()),
                 expected
             );
@@ -341,7 +346,7 @@ fn candidate_group_and_response_budgets_fail_closed() {
         definition(&[("/n", ScalarType::Number)]),
         (0..8).map(|i| json!({"n":i})).collect(),
     );
-    let indexes = QueryIndexes::build(&collections).unwrap();
+    let indexes = QueryIndexes::build_fixture(&collections).unwrap();
     let mut query = request();
     let mut limits = Limits {
         max_query_candidates: 4,
@@ -349,7 +354,7 @@ fn candidate_group_and_response_budgets_fail_closed() {
     };
     assert_eq!(
         indexes
-            .execute(&collections, &query, &limits)
+            .execute_fixture(&collections, &query, &limits)
             .unwrap_err()
             .code,
         ErrorCode::ResourceExhausted
@@ -359,7 +364,9 @@ fn candidate_group_and_response_budgets_fail_closed() {
         value: json!(1),
     };
     assert_eq!(
-        ids(indexes.execute(&collections, &query, &limits).unwrap()),
+        ids(indexes
+            .execute_fixture(&collections, &query, &limits)
+            .unwrap()),
         vec!["001"]
     );
     query.filter = Predicate::All;
@@ -369,7 +376,7 @@ fn candidate_group_and_response_budgets_fail_closed() {
     query.aggregates = vec![aggregate("count", AggregateFunction::Count, None, None)];
     assert_eq!(
         indexes
-            .execute(&collections, &query, &limits)
+            .execute_fixture(&collections, &query, &limits)
             .unwrap_err()
             .code,
         ErrorCode::ResourceExhausted
@@ -379,7 +386,7 @@ fn candidate_group_and_response_budgets_fail_closed() {
     limits.max_result_bytes = 10;
     assert_eq!(
         indexes
-            .execute(&collections, &query, &limits)
+            .execute_fixture(&collections, &query, &limits)
             .unwrap_err()
             .code,
         ErrorCode::ResourceExhausted
@@ -464,7 +471,7 @@ fn schemas_never_resolve_remote_or_file_resources_or_rebase_fragments() {
         let mut definition = definition(&[]);
         definition.schema = schema;
         assert_eq!(
-            validate_collection(&definition, &imbl::OrdMap::new())
+            validate_collection_fixture(&definition, &imbl::OrdMap::new())
                 .unwrap_err()
                 .code,
             ErrorCode::InvalidArgument
@@ -502,7 +509,7 @@ fn unique_indexes_are_compound_exact_and_sparse_only_for_missing() {
             json!({"group":"b","n":"1"}),
         ],
     );
-    QueryIndexes::build(&collections).unwrap();
+    QueryIndexes::build_fixture(&collections).unwrap();
     collections.get_mut("docs").unwrap().documents.insert(
         "dup".into(),
         Arc::new(Document {
@@ -512,7 +519,7 @@ fn unique_indexes_are_compound_exact_and_sparse_only_for_missing() {
         }),
     );
     assert_eq!(
-        QueryIndexes::build(&collections).unwrap_err().code,
+        QueryIndexes::build_fixture(&collections).unwrap_err().code,
         ErrorCode::Conflict
     );
 }
@@ -548,10 +555,10 @@ fn english_terms_stem_but_prefix_uses_surface_tokens_and_phrase_has_positions() 
             "shipping shipped ships",
         ],
     );
-    let indexes = QueryIndexes::build(&collections).unwrap();
+    let indexes = QueryIndexes::build_fixture(&collections).unwrap();
     let query = |text, mode| {
         ids(indexes
-            .execute(&collections, &text_query(text, mode), &Limits::default())
+            .execute_fixture(&collections, &text_query(text, mode), &Limits::default())
             .unwrap())
         .into_iter()
         .collect::<BTreeSet<_>>()
@@ -582,9 +589,9 @@ fn unicode_nfkc_and_case_normalization_and_ranked_results() {
             "unrelated",
         ],
     );
-    let indexes = QueryIndexes::build(&collections).unwrap();
+    let indexes = QueryIndexes::build_fixture(&collections).unwrap();
     let result = indexes
-        .execute(
+        .execute_fixture(
             &collections,
             &text_query("CAFE", TextMode::Terms),
             &Limits::default(),
@@ -616,10 +623,10 @@ fn japanese_lindera_terms_phrases_and_fuzzy_typos() {
             "日本語のデータベース",
         ],
     );
-    let indexes = QueryIndexes::build(&collections).unwrap();
+    let indexes = QueryIndexes::build_fixture(&collections).unwrap();
     let query = |text, mode| {
         ids(indexes
-            .execute(&collections, &text_query(text, mode), &Limits::default())
+            .execute_fixture(&collections, &text_query(text, mode), &Limits::default())
             .unwrap())
         .into_iter()
         .collect::<BTreeSet<_>>()
@@ -644,10 +651,10 @@ fn fuzzy_distance_and_expansion_limits_are_enforced() {
         Analyzer::UnicodeV1,
         &["kitten", "sitten", "kitchen", "puppy"],
     );
-    let indexes = QueryIndexes::build(&collections).unwrap();
+    let indexes = QueryIndexes::build_fixture(&collections).unwrap();
     assert_eq!(
         ids(indexes
-            .execute(
+            .execute_fixture(
                 &collections,
                 &text_query("kitten", TextMode::Fuzzy),
                 &Limits::default()
@@ -659,7 +666,7 @@ fn fuzzy_distance_and_expansion_limits_are_enforced() {
     query.text.as_mut().unwrap().distance = 3;
     assert_eq!(
         indexes
-            .execute(&collections, &query, &Limits::default())
+            .execute_fixture(&collections, &query, &Limits::default())
             .unwrap_err()
             .code,
         ErrorCode::InvalidArgument
@@ -667,7 +674,7 @@ fn fuzzy_distance_and_expansion_limits_are_enforced() {
     query.text.as_mut().unwrap().distance = 0;
     assert_eq!(
         ids(indexes
-            .execute(&collections, &query, &Limits::default())
+            .execute_fixture(&collections, &query, &Limits::default())
             .unwrap()),
         vec!["000"]
     );
@@ -687,20 +694,20 @@ fn fuzzy_distance_and_expansion_limits_are_enforced() {
 #[test]
 fn text_generation_is_immutable_and_reader_is_ready_when_published() {
     let mut collections = text_collection(Analyzer::EnglishV1, &["old contents"]);
-    let old = QueryIndexes::build(&collections).unwrap();
+    let old = QueryIndexes::build_fixture(&collections).unwrap();
     let old_collections = collections.clone();
     change_document(&mut collections, "000").body = json!({"text":"new contents"});
-    let new = QueryIndexes::build(&collections).unwrap();
+    let new = QueryIndexes::build_fixture(&collections).unwrap();
     let query = text_query("new", TextMode::Terms);
     assert!(
-        old.execute(&old_collections, &query, &Limits::default())
+        old.execute_fixture(&old_collections, &query, &Limits::default())
             .unwrap()
             .rows
             .is_empty()
     );
     assert_eq!(
         ids(new
-            .execute(&collections, &query, &Limits::default())
+            .execute_fixture(&collections, &query, &Limits::default())
             .unwrap()),
         vec!["000"]
     );
@@ -727,14 +734,14 @@ fn text_planned_postings_are_bounded_even_when_intersection_has_no_hits() {
             "common",
         ],
     );
-    let indexes = QueryIndexes::build(&collections).unwrap();
+    let indexes = QueryIndexes::build_fixture(&collections).unwrap();
     let limits = Limits {
         max_query_candidates: 1,
         ..Limits::default()
     };
     assert_eq!(
         indexes
-            .execute(
+            .execute_fixture(
                 &collections,
                 &text_query("common missing", TextMode::Terms),
                 &limits
@@ -802,7 +809,7 @@ fn validator_cache_does_not_retain_tenant_plaintext_after_generation_drop() {
     definition.schema =
         json!({"properties":{"secret":{"const":"only-this-test-schema-contains-this-secret"}}});
     let collections = collection(definition, vec![]);
-    let indexes = QueryIndexes::build(&collections).unwrap();
+    let indexes = QueryIndexes::build_fixture(&collections).unwrap();
     let validator = validation::compile(&collections["docs"].definition.schema).unwrap();
     let weak = std::sync::Arc::downgrade(&validator);
     drop(validator);
@@ -827,7 +834,7 @@ fn generation_validators_survive_cache_eviction_without_recompiling_or_retaining
         let mut value = collection(definition, vec![json!({"n":n})]);
         previous.insert(name, value.remove("docs").unwrap());
     }
-    let indexes = QueryIndexes::build(&previous).unwrap();
+    let indexes = QueryIndexes::build_fixture(&previous).unwrap();
     let validators: Vec<_> = indexes
         .collections
         .values()
@@ -856,7 +863,7 @@ fn generation_validators_survive_cache_eviction_without_recompiling_or_retaining
         );
         changed.insert(name.clone(), BTreeSet::from(["000".into()]));
     }
-    let updated = indexes.update(&previous, &next, &changed).unwrap();
+    let updated = indexes.update_fixture(&previous, &next, &changed).unwrap();
     for value in next.values() {
         updated
             .validate_document(&value.definition, &value.documents["000"].body)
@@ -878,7 +885,7 @@ fn generation_validator_never_substitutes_for_changed_or_foreign_schema() {
     let mut original = definition(&[]);
     original.schema = json!({"type":"object","required":["n"],"properties":{"n":{"const":7}}});
     let previous = collection(original.clone(), vec![json!({"n":7})]);
-    let indexes = QueryIndexes::build(&previous).unwrap();
+    let indexes = QueryIndexes::build_fixture(&previous).unwrap();
     let mut replacement = original.clone();
     replacement.schema = json!({"type":"object","required":["n"],"properties":{"n":{"const":9}}});
     assert_eq!(
@@ -905,7 +912,7 @@ fn generation_validator_never_substitutes_for_changed_or_foreign_schema() {
     replacement.name = "docs".into();
     let next = collection(replacement, vec![json!({"n":9})]);
     let updated = indexes
-        .update(
+        .update_fixture(
             &previous,
             &next,
             &BTreeMap::from([("docs".into(), BTreeSet::from(["000".into()]))]),
@@ -926,7 +933,7 @@ fn generation_validator_never_substitutes_for_changed_or_foreign_schema() {
 #[test]
 fn generation_validator_preserves_document_shape_typed_index_and_text_limits() {
     let previous = text_collection(Analyzer::EnglishV1, &["bounded text"]);
-    let indexes = QueryIndexes::build(&previous).unwrap();
+    let indexes = QueryIndexes::build_fixture(&previous).unwrap();
     let definition = &previous["docs"].definition;
     assert_eq!(
         indexes
@@ -983,7 +990,7 @@ fn incremental_postings_match_rebuild_and_share_unchanged_roots() {
     let mut unrelated = previous["docs"].clone();
     unrelated.definition.name = "untouched".into();
     previous.insert("untouched".into(), unrelated);
-    let old = QueryIndexes::build(&previous).unwrap();
+    let old = QueryIndexes::build_fixture(&previous).unwrap();
     let mut next = previous.clone();
     let documents = &mut next.get_mut("docs").unwrap().documents;
     Arc::make_mut(documents.get_mut("001").unwrap()).body["n"] = json!(10001);
@@ -1000,12 +1007,12 @@ fn incremental_postings_match_rebuild_and_share_unchanged_roots() {
         "docs".into(),
         BTreeSet::from(["001".into(), "002".into(), "new".into()]),
     )]);
-    let updated = old.update(&previous, &next, &changed).unwrap();
+    let updated = old.update_fixture(&previous, &next, &changed).unwrap();
     assert!(Arc::ptr_eq(
         &old.collections["untouched"],
         &updated.collections["untouched"]
     ));
-    let rebuilt = QueryIndexes::build(&next).unwrap();
+    let rebuilt = QueryIndexes::build_fixture(&next).unwrap();
     for n in [-1, 1, 2, 9999, 10001] {
         let mut query = request();
         query.filter = Predicate::Eq {
@@ -1013,8 +1020,12 @@ fn incremental_postings_match_rebuild_and_share_unchanged_roots() {
             value: json!(n),
         };
         assert_eq!(
-            updated.execute(&next, &query, &Limits::default()).unwrap(),
-            rebuilt.execute(&next, &query, &Limits::default()).unwrap()
+            updated
+                .execute_fixture(&next, &query, &Limits::default())
+                .unwrap(),
+            rebuilt
+                .execute_fixture(&next, &query, &Limits::default())
+                .unwrap()
         );
     }
     let mut query = request();
@@ -1023,14 +1034,18 @@ fn incremental_postings_match_rebuild_and_share_unchanged_roots() {
         value: json!(1),
     };
     assert_eq!(
-        ids(old.execute(&previous, &query, &Limits::default()).unwrap()),
+        ids(old
+            .execute_fixture(&previous, &query, &Limits::default())
+            .unwrap()),
         vec!["001"]
     );
 
     let mut fields_only = previous.clone();
     change_document(&mut fields_only, "001").body["n"] = json!(12345);
     let changed = BTreeMap::from([("docs".into(), BTreeSet::from(["001".into()]))]);
-    let fields_only = old.update(&previous, &fields_only, &changed).unwrap();
+    let fields_only = old
+        .update_fixture(&previous, &fields_only, &changed)
+        .unwrap();
     assert!(
         old.collections["docs"]
             .structured
@@ -1050,7 +1065,7 @@ fn incremental_text_updates_reuse_index_and_preserve_every_old_snapshot() {
         Analyzer::EnglishV1,
         &["first apple", "second pear", "third peach"],
     );
-    let old = QueryIndexes::build(&previous).unwrap();
+    let old = QueryIndexes::build_fixture(&previous).unwrap();
     let mut next = previous.clone();
     change_document(&mut next, "000").body = json!({"text":"fresh banana"});
     next.get_mut("docs").unwrap().documents.remove("001");
@@ -1066,19 +1081,27 @@ fn incremental_text_updates_reuse_index_and_preserve_every_old_snapshot() {
         "docs".into(),
         BTreeSet::from(["000".into(), "001".into(), "added".into()]),
     )]);
-    let mut updated = old.update(&previous, &next, &changed).unwrap();
-    let rebuilt = QueryIndexes::build(&next).unwrap();
+    let mut updated = old.update_fixture(&previous, &next, &changed).unwrap();
+    let rebuilt = QueryIndexes::build_fixture(&next).unwrap();
     for text in ["apple", "pear", "peach", "banana"] {
         let query = text_query(text, TextMode::Terms);
         let normalize = |result: QueryResponse| ids(result).into_iter().collect::<BTreeSet<_>>();
         assert_eq!(
-            normalize(updated.execute(&next, &query, &Limits::default()).unwrap()),
-            normalize(rebuilt.execute(&next, &query, &Limits::default()).unwrap())
+            normalize(
+                updated
+                    .execute_fixture(&next, &query, &Limits::default())
+                    .unwrap()
+            ),
+            normalize(
+                rebuilt
+                    .execute_fixture(&next, &query, &Limits::default())
+                    .unwrap()
+            )
         );
     }
     assert_eq!(
         ids(old
-            .execute(
+            .execute_fixture(
                 &previous,
                 &text_query("apple", TextMode::Terms),
                 &Limits::default()
@@ -1088,7 +1111,7 @@ fn incremental_text_updates_reuse_index_and_preserve_every_old_snapshot() {
     );
     assert_eq!(
         ids(old
-            .execute(
+            .execute_fixture(
                 &previous,
                 &text_query("pear", TextMode::Terms),
                 &Limits::default()
@@ -1097,7 +1120,7 @@ fn incremental_text_updates_reuse_index_and_preserve_every_old_snapshot() {
         vec!["001"]
     );
     assert!(
-        old.execute(
+        old.execute_fixture(
             &previous,
             &text_query("banana", TextMode::Terms),
             &Limits::default()
@@ -1115,14 +1138,14 @@ fn incremental_text_updates_reuse_index_and_preserve_every_old_snapshot() {
         let mut next = previous.clone();
         change_document(&mut next, "000").body = json!({"text":format!("replacement{i} banana")});
         let changed = BTreeMap::from([("docs".into(), BTreeSet::from(["000".into()]))]);
-        let current = updated.update(&previous, &next, &changed).unwrap();
+        let current = updated.update_fixture(&previous, &next, &changed).unwrap();
         retained.push((updated, previous));
         updated = current;
         previous = next;
     }
     assert_eq!(
         updated
-            .execute(
+            .execute_fixture(
                 &previous,
                 &text_query("banana", TextMode::Terms),
                 &Limits::default()
@@ -1135,7 +1158,7 @@ fn incremental_text_updates_reuse_index_and_preserve_every_old_snapshot() {
     for (i, (snapshot, documents)) in retained.iter().enumerate().skip(1) {
         assert_eq!(
             ids(snapshot
-                .execute(
+                .execute_fixture(
                     documents,
                     &text_query(&format!("replacement{}", i - 1), TextMode::Terms),
                     &Limits::default()
@@ -1149,11 +1172,11 @@ fn incremental_text_updates_reuse_index_and_preserve_every_old_snapshot() {
 #[test]
 fn unrelated_document_fields_reuse_text_reader_and_definition_change_rebuilds() {
     let previous = text_collection(Analyzer::EnglishV1, &["first apple"]);
-    let old = QueryIndexes::build(&previous).unwrap();
+    let old = QueryIndexes::build_fixture(&previous).unwrap();
     let mut next = previous.clone();
     change_document(&mut next, "000").body["unindexed"] = json!(123);
     let changed = BTreeMap::from([("docs".into(), BTreeSet::from(["000".into()]))]);
-    let updated = old.update(&previous, &next, &changed).unwrap();
+    let updated = old.update_fixture(&previous, &next, &changed).unwrap();
     assert!(Arc::ptr_eq(
         old.collections["docs"].text.as_ref().unwrap(),
         updated.collections["docs"].text.as_ref().unwrap()
@@ -1165,7 +1188,7 @@ fn unrelated_document_fields_reuse_text_reader_and_definition_change_rebuilds() 
         .unwrap()
         .analyzer = Analyzer::UnicodeV1;
     let replaced = updated
-        .update(&next, &replacement, &BTreeMap::new())
+        .update_fixture(&next, &replacement, &BTreeMap::new())
         .unwrap();
     assert!(!Arc::ptr_eq(
         updated.collections["docs"].text.as_ref().unwrap(),
@@ -1173,7 +1196,7 @@ fn unrelated_document_fields_reuse_text_reader_and_definition_change_rebuilds() 
     ));
     assert_eq!(
         ids(replaced
-            .execute(
+            .execute_fixture(
                 &replacement,
                 &text_query("apple", TextMode::Terms),
                 &Limits::default()
@@ -1191,26 +1214,29 @@ fn incremental_unique_indexes_allow_atomic_swaps_and_reject_conflicts() {
         definition,
         vec![json!({"n":"1"}), json!({"n":"2"}), json!({})],
     );
-    let old = QueryIndexes::build(&previous).unwrap();
+    let old = QueryIndexes::build_fixture(&previous).unwrap();
     let mut next = previous.clone();
     change_document(&mut next, "000").body["n"] = json!("2.00");
     change_document(&mut next, "001").body["n"] = json!("1");
     let changed = BTreeMap::from([("docs".into(), BTreeSet::from(["000".into(), "001".into()]))]);
-    old.validate_unique_changes(&previous, &next, &changed)
+    old.validate_unique_changes_fixture(&previous, &next, &changed)
         .unwrap();
-    let updated = old.update(&previous, &next, &changed).unwrap();
+    let updated = old.update_fixture(&previous, &next, &changed).unwrap();
     let mut conflict = next.clone();
     change_document(&mut conflict, "002").body = json!({"n":"1.0"});
     let changed = BTreeMap::from([("docs".into(), BTreeSet::from(["002".into()]))]);
     assert_eq!(
         updated
-            .validate_unique_changes(&next, &conflict, &changed)
+            .validate_unique_changes_fixture(&next, &conflict, &changed)
             .unwrap_err()
             .code,
         ErrorCode::Conflict
     );
     assert_eq!(
-        updated.update(&next, &conflict, &changed).unwrap_err().code,
+        updated
+            .update_fixture(&next, &conflict, &changed)
+            .unwrap_err()
+            .code,
         ErrorCode::Conflict
     );
 }
@@ -1218,18 +1244,20 @@ fn incremental_unique_indexes_allow_atomic_swaps_and_reject_conflicts() {
 #[test]
 fn text_writer_rejects_stale_branches_without_damaging_published_reader() {
     let previous = text_collection(Analyzer::UnicodeV1, &["old"]);
-    let old = QueryIndexes::build(&previous).unwrap();
+    let old = QueryIndexes::build_fixture(&previous).unwrap();
     let mut next = previous.clone();
     change_document(&mut next, "000").body = json!({"text":"new"});
     let changed = BTreeMap::from([("docs".into(), BTreeSet::from(["000".into()]))]);
-    let updated = old.update(&previous, &next, &changed).unwrap();
+    let updated = old.update_fixture(&previous, &next, &changed).unwrap();
     assert_eq!(
-        old.update(&previous, &next, &changed).unwrap_err().code,
+        old.update_fixture(&previous, &next, &changed)
+            .unwrap_err()
+            .code,
         ErrorCode::Unavailable
     );
     assert_eq!(
         ids(updated
-            .execute(
+            .execute_fixture(
                 &next,
                 &text_query("new", TextMode::Terms),
                 &Limits::default()
@@ -1239,7 +1267,7 @@ fn text_writer_rejects_stale_branches_without_damaging_published_reader() {
     );
     assert_eq!(
         ids(old
-            .execute(
+            .execute_fixture(
                 &previous,
                 &text_query("old", TextMode::Terms),
                 &Limits::default()
@@ -1255,7 +1283,7 @@ fn cooperative_cancellation_discards_partial_index_scan_sort_and_projection_resu
         definition(&[("/n", ScalarType::Number)]),
         (0..512).map(|n| json!({"n":n,"body":"payload"})).collect(),
     );
-    let indexes = QueryIndexes::build(&collections).unwrap();
+    let indexes = QueryIndexes::build_fixture(&collections).unwrap();
     for filter in [
         Predicate::All,
         Predicate::Exists {
@@ -1278,7 +1306,7 @@ fn cooperative_cancellation_discards_partial_index_scan_sort_and_projection_resu
         query.projection = vec!["/body".into()];
         for checkpoints in [0, 50, 500, 1000, 2000] {
             let cancellation = QueryCancellation::after_checks(checkpoints);
-            let result = indexes.execute_with_cancellation(
+            let result = indexes.execute_with_cancellation_fixture(
                 &collections,
                 &query,
                 &Limits::default(),
@@ -1289,7 +1317,7 @@ fn cooperative_cancellation_discards_partial_index_scan_sort_and_projection_resu
         }
         assert_eq!(
             indexes
-                .execute(&collections, &query, &Limits::default())
+                .execute_fixture(&collections, &query, &Limits::default())
                 .unwrap()
                 .rows
                 .len(),
@@ -1301,7 +1329,7 @@ fn cooperative_cancellation_discards_partial_index_scan_sort_and_projection_resu
 #[test]
 fn cooperative_cancellation_stops_text_postings_and_term_expansion() {
     let collections = text_collection(Analyzer::UnicodeV1, &vec!["prefix searchable word"; 512]);
-    let indexes = QueryIndexes::build(&collections).unwrap();
+    let indexes = QueryIndexes::build_fixture(&collections).unwrap();
     for mode in [
         TextMode::Terms,
         TextMode::Phrase,
@@ -1312,7 +1340,12 @@ fn cooperative_cancellation_stops_text_postings_and_term_expansion() {
         let cancellation = QueryCancellation::after_checks(100);
         assert_eq!(
             indexes
-                .execute_with_cancellation(&collections, &query, &Limits::default(), &cancellation)
+                .execute_with_cancellation_fixture(
+                    &collections,
+                    &query,
+                    &Limits::default(),
+                    &cancellation
+                )
                 .unwrap_err()
                 .code,
             ErrorCode::ResourceExhausted

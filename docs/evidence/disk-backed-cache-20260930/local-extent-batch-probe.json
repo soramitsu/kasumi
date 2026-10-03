@@ -1,0 +1,48 @@
+{
+  "scope": "raw-file diagnostic only; no NodeDisk qualification or universal filesystem bound",
+  "write_shape": "8192-byte header then 256 sequential 16384-byte pages; fsync after each batch",
+  "runs": [
+    {
+      "batch_pages": 2,
+      "pages": 256,
+      "events": 0,
+      "maximum_extra": 0,
+      "first_events": []
+    },
+    {
+      "batch_pages": 3,
+      "pages": 256,
+      "events": 0,
+      "maximum_extra": 0,
+      "first_events": []
+    },
+    {
+      "batch_pages": 4,
+      "pages": 256,
+      "events": 0,
+      "maximum_extra": 0,
+      "first_events": []
+    },
+    {
+      "batch_pages": 8,
+      "pages": 256,
+      "events": 0,
+      "maximum_extra": 0,
+      "first_events": []
+    },
+    {
+      "batch_pages": 16,
+      "pages": 256,
+      "events": 0,
+      "maximum_extra": 0,
+      "first_events": []
+    },
+    {
+      "batch_pages": 32,
+      "pages": 256,
+      "events": 0,
+      "maximum_extra": 0,
+      "first_events": []
+    }
+  ]
+}

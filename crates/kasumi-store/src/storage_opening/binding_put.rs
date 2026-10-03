@@ -96,11 +96,19 @@ impl BindingPutRequest {
                 .check_access()
                 .map_err(BindingInstallBodyError::CustodyAccess)?;
             let transaction = state.transaction.as_ref().unwrap().transaction().unwrap();
-            transaction
+            let mut table = transaction
                 .open_table(crate::RECORDS)
-                .map_err(BindingInstallBodyError::Table)?
-                .insert(state.plan.key().as_slice(), state.plan.envelope())
                 .map_err(BindingInstallBodyError::Table)?;
+            {
+                #[cfg(test)]
+                let _staging = crate::test_utils::BindingStagingScope::enter(
+                    self.application.node.persistent_disk().memory(),
+                );
+                table
+                    .insert(state.plan.key().as_slice(), state.plan.envelope())
+                    .map_err(BindingInstallBodyError::Table)?;
+            }
+            drop(table);
             self.application
                 .check_access()
                 .map_err(BindingInstallBodyError::ApplicationAccess)?;

@@ -35,7 +35,7 @@ impl kasumi_raft::PreparedStateMachineRestore for PreparedBackend<'_> {
     fn retirement(&self) -> Option<kasumi_raft::RetiredSnapshotState> {
         None
     }
-    fn application_replacements(&self) -> Vec<(&str, &kasumi_store::EncryptedTable)> {
+    fn application_replacements(&self) -> Vec<kasumi_store::NamespaceReplacement<'_>> {
         vec![]
     }
     fn application_writes(&self) -> &[kasumi_store::WriteOp] {
@@ -52,11 +52,16 @@ impl StateMachineBackend for Backend {
         self.data.lock().unwrap().clear();
         self.fail_apply.store(true, Ordering::Release);
     }
-    fn apply(
+    fn apply_with_publisher(
         &self,
         position: &kasumi_raft::AppliedEntryContext,
-        command: &[u8],
-    ) -> Result<kasumi_raft::AppliedResponse> {
+        input: kasumi_raft::AppliedInput<'_>,
+        publisher: &mut dyn kasumi_raft::ApplyPublisher,
+    ) -> Result<()> {
+        let kasumi_raft::AppliedInput::Command(command) = input else {
+            publisher.commit(kasumi_raft::AppliedResponse::application(Vec::new()), &[])?;
+            return Ok(());
+        };
         let index = position.log_id.index;
         ensure!(
             !self.fail_apply.load(Ordering::Acquire),
@@ -68,10 +73,13 @@ impl StateMachineBackend for Backend {
                 .is_none_or(|(&previous, _)| previous < index),
             "reapplied command"
         );
-        data.insert(index, command.to_vec());
-        Ok(kasumi_raft::AppliedResponse::application(command.to_vec()))
-    }
-    fn apply_metadata(&self, _position: &kasumi_raft::AppliedEntryContext) -> anyhow::Result<()> {
+        let mut prepared = data.clone();
+        prepared.insert(index, command.to_vec());
+        publisher.commit(
+            kasumi_raft::AppliedResponse::application(command.to_vec()),
+            &[],
+        )?;
+        *data = prepared;
         Ok(())
     }
     fn capture_snapshot(&self) -> Result<kasumi_raft::CapturedSnapshot> {

@@ -1,0 +1,18 @@
+Command: cargo test --locked --offline --config profile.test.package.kasumi-kv.opt-level=3 --config profile.test.package.sha2.opt-level=3 -p kasumi-store --all-features --lib -- scratch_workspace_capacity_after_prepare_rolls_back_without_fencing
+CARGO_TARGET_DIR=target/disk-backed-cache
+   Compiling kasumi-kv v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-kv)
+   Compiling kasumi-store v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-store)
+error[E0599]: no method named `is_capacity_denied` found for struct `CommitError` in the current scope
+   --> crates/kasumi-store/src/scratch_table_workspace_tests.rs:144:15
+    |
+144 |         error.is_capacity_denied(),
+    |               ^^^^^^^^^^^^^^^^^^ method not found in `CommitError`
+    |
+help: one of the expressions' fields has a method of the same name
+    |
+144 |         error.0.is_capacity_denied(),
+    |               ++
+
+For more information about this error, try `rustc --explain E0599`.
+error: could not compile `kasumi-store` (lib test) due to 1 previous error
+Runner: 37.46s; exit=101; matching=849/849

@@ -1,0 +1,18 @@
+Command: cargo test -p kasumi-store --all-features --lib --locked --offline --config profile.test.package.kasumi-kv.opt-level=3 --config profile.test.package.sha2.opt-level=3 -- --test-threads=1 routine_early_missing_or_wrong_typed_table exact_live_generation_rejects_historical_and_reused_key_forgery census_equals_extents_after_crash_child_restart more_than_768_segments_reopen_and_evict_within_the_descriptor_budget unlink_confirmed_before_the_garbage_update_is_idempotent_after_restart names_keys_and_values_are_absent_from_disk_and_nonce_changes_on_overwrite node_files_are_private_nofollow_and_keep_exclusive_database_ownership
+CARGO_TARGET_DIR=target/disk-backed-cache
+   Compiling kasumi-store v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-store)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 46.68s
+     Running unittests src/lib.rs (target/disk-backed-cache/debug/deps/kasumi_store-98be0c6afb7030c8)
+
+running 7 tests
+test live_trust::tests::exact_live_generation_rejects_historical_and_reused_key_forgery ... ok
+test node_file::segment_group::tests::census_equals_extents_after_crash_child_restart ... ok
+test node_file::segment_group::tests::more_than_768_segments_reopen_and_evict_within_the_descriptor_budget ... ok
+test node_file::segment_group::tests::unlink_confirmed_before_the_garbage_update_is_idempotent_after_restart ... ok
+test storage_opening::reads::fork_tests::routine_early_missing_or_wrong_typed_table_stays_retained_after_real_disposal ... ok
+test tests::names_keys_and_values_are_absent_from_disk_and_nonce_changes_on_overwrite ... ok
+test tests::node_files_are_private_nofollow_and_keep_exclusive_database_ownership ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 633 filtered out; finished in 57.60s
+
+Runner: 104.39s; exit=0; matching=736/736

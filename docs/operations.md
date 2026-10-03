@@ -10,7 +10,7 @@ chosen distribution before enabling it.
 
 ```sh
 cargo build --release --locked -p kasumi-server --bins
-target/release/kasumid example-config --directory-policy /etc/kasumi/directory-policy.json > node.example.json
+target/release/kasumid example-config --directory-policy /etc/kasumi/directory-policy.json --file-allocation-policy /etc/kasumi/file-allocation-policy.json > node.example.json
 target/release/kasumictl example-config > client.example.json
 ```
 

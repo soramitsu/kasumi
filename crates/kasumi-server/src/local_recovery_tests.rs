@@ -617,21 +617,27 @@ async fn local_stop_persists_identity_before_cleanup_and_rejects_unrelated_files
     let preserved = root.path().join("preserved-node.kv");
     recensus_physical_edit(&persistent_disk, || {
         std::fs::rename(&database, &preserved).unwrap();
-        private_files::create(&database, b"unrelated replacement inode").unwrap();
+        private_files::create_directory(&database).unwrap();
+        private_files::create(
+            &database.join("root.kvroot"),
+            b"unrelated replacement inode",
+        )
+        .unwrap();
     });
     let error = resume_with_storage(&configuration, request.operation_id, storage.clone())
         .await
         .expect_err("substituted target database must reject cleanup");
     assert!(
-        format!("{error:#}").contains("target database inode has been substituted"),
+        format!("{error:#}").contains("target database group has been substituted"),
         "{error:#}"
     );
     assert_eq!(
-        std::fs::read(&database).unwrap(),
+        std::fs::read(database.join("root.kvroot")).unwrap(),
         b"unrelated replacement inode"
     );
     recensus_physical_edit(&persistent_disk, || {
-        std::fs::remove_file(&database).unwrap();
+        std::fs::remove_file(database.join("root.kvroot")).unwrap();
+        std::fs::remove_dir(&database).unwrap();
         std::fs::rename(&preserved, &database).unwrap();
     });
     let original_cache = root.path().join("preserved-cache");
@@ -779,7 +785,7 @@ pub(super) async fn pause_open(path: &Path) {
 }
 
 async fn create_catalogs(operator: &Operator, journal: &mut Journal) {
-    let node = operator.prepare_database_file(journal).unwrap().unwrap();
+    let node = operator.prepare_database_group(journal).unwrap().unwrap();
     let tenant = &operator.config.tenants[0];
     let source = Arc::new(crate::runtime::file_secret);
     let stores = kasumi_store::TenantStorageSet::initialize_catalogs(
@@ -1006,11 +1012,12 @@ async fn local_lost_file_binding_cleanup_requires_the_original_node_identity_imp
         local_node_id(&journal).unwrap(),
         persistent.clone(),
         scratch.clone(),
+        persistent.native_storage_config(),
     )
     .unwrap();
     node.shutdown().await.unwrap();
     drop(node);
-    assert!(journal.database_file.is_none());
+    assert!(journal.database_group.is_none());
     assert!(
         operator
             .target(&mut journal, TargetOpen::Materialize)
@@ -1026,6 +1033,7 @@ async fn local_lost_file_binding_cleanup_requires_the_original_node_identity_imp
         Uuid::new_v4(),
         persistent.clone(),
         scratch,
+        persistent.native_storage_config(),
     )
     .unwrap();
     other.shutdown().await.unwrap();
@@ -1160,13 +1168,13 @@ async fn local_incomplete_catalogs_or_dispatched_restore_never_restart_creation_
                 .unwrap();
         } else {
             let node = operator
-                .prepare_database_file(&mut journal)
+                .prepare_database_group(&mut journal)
                 .unwrap()
                 .unwrap();
             node.shutdown().await.unwrap();
         }
         let path = journal.target_directory.join("node.kv");
-        let identity = private_files::file_identity(&path).unwrap();
+        let identity = kasumi_store::NodeGroupIdentity::read(&path).unwrap();
         let baseline = operator.store().persistent_disk().snapshot();
         let stage = journal.target_preparation;
         let error = operator
@@ -1187,7 +1195,10 @@ async fn local_incomplete_catalogs_or_dispatched_restore_never_restart_creation_
                 .target_preparation,
             stage
         );
-        assert_eq!(private_files::file_identity(&path).unwrap(), identity);
+        assert_eq!(
+            kasumi_store::NodeGroupIdentity::read(&path).unwrap(),
+            identity
+        );
         let observed = operator.store().persistent_disk().snapshot();
         assert_eq!(observed.open_files, baseline.open_files);
         assert_eq!(observed.open_directories, baseline.open_directories);
@@ -1205,7 +1216,10 @@ async fn local_incomplete_catalogs_or_dispatched_restore_never_restart_creation_
             .await
             .expect_err("incomplete target resume must reject");
         assert!(format!("{error:#}").contains(expected), "{error:#}");
-        assert_eq!(private_files::file_identity(&path).unwrap(), identity);
+        assert_eq!(
+            kasumi_store::NodeGroupIdentity::read(&path).unwrap(),
+            identity
+        );
         assert_eq!(
             stop_with_storage(&configuration, request.operation_id, storage.clone())
                 .await
@@ -1378,21 +1392,35 @@ async fn failed_restored_generation_startup_retains_alternate_node_through_cance
     // Preparation already unwound. No custody, pair or database from the alternate
     // node returned yet; only the external pending inventory can retain it.
     assert!(
-        NodeStore::open_existing(
-            &target_path,
-            target_id,
-            storage.open_persistent(&config.persistent_disk).unwrap(),
-            storage.open_scratch(&config.scratch_disk).unwrap()
-        )
+        {
+            let native_path = &target_path;
+            let native_id = target_id;
+            let native_disk = storage.open_persistent(&config.persistent_disk).unwrap();
+            let native_scratch_disk = storage.open_scratch(&config.scratch_disk).unwrap();
+            NodeStore::open_existing(
+                native_path,
+                native_id,
+                native_disk.clone(),
+                native_scratch_disk,
+                native_disk.native_storage_config(),
+            )
+        }
         .is_err()
     );
     assert!(
-        NodeStore::open_existing(
-            &config.database_path,
-            config.database_id,
-            storage.open_persistent(&config.persistent_disk).unwrap(),
-            storage.open_scratch(&config.scratch_disk).unwrap()
-        )
+        {
+            let native_path = &config.database_path;
+            let native_id = config.database_id;
+            let native_disk = storage.open_persistent(&config.persistent_disk).unwrap();
+            let native_scratch_disk = storage.open_scratch(&config.scratch_disk).unwrap();
+            NodeStore::open_existing(
+                native_path,
+                native_id,
+                native_disk.clone(),
+                native_scratch_disk,
+                native_disk.native_storage_config(),
+            )
+        }
         .is_err()
     );
     drop(opening);
@@ -1404,12 +1432,19 @@ async fn failed_restored_generation_startup_retains_alternate_node_through_cance
     .await;
     drop(drain);
     assert!(
-        NodeStore::open_existing(
-            &target_path,
-            target_id,
-            storage.open_persistent(&config.persistent_disk).unwrap(),
-            storage.open_scratch(&config.scratch_disk).unwrap()
-        )
+        {
+            let native_path = &target_path;
+            let native_id = target_id;
+            let native_disk = storage.open_persistent(&config.persistent_disk).unwrap();
+            let native_scratch_disk = storage.open_scratch(&config.scratch_disk).unwrap();
+            NodeStore::open_existing(
+                native_path,
+                native_id,
+                native_disk.clone(),
+                native_scratch_disk,
+                native_disk.native_storage_config(),
+            )
+        }
         .is_err()
     );
     let mut drain = Box::pin(NodeRuntime::drain_startups());
@@ -1430,12 +1465,19 @@ async fn failed_restored_generation_startup_retains_alternate_node_through_cance
     );
     drop(fault);
     drop(pause);
-    let target = NodeStore::open_existing(
-        &target_path,
-        target_id,
-        storage.open_persistent(&config.persistent_disk).unwrap(),
-        storage.open_scratch(&config.scratch_disk).unwrap(),
-    )
+    let target = {
+        let native_path = &target_path;
+        let native_id = target_id;
+        let native_disk = storage.open_persistent(&config.persistent_disk).unwrap();
+        let native_scratch_disk = storage.open_scratch(&config.scratch_disk).unwrap();
+        NodeStore::open_existing(
+            native_path,
+            native_id,
+            native_disk.clone(),
+            native_scratch_disk,
+            native_disk.native_storage_config(),
+        )
+    }
     .unwrap();
     target.shutdown().await.unwrap();
     drop(target);

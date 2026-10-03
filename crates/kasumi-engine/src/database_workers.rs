@@ -166,7 +166,10 @@ mod tests {
                 .is_some()
         );
         let repeated = child.drain().await.unwrap_err();
-        assert!(Arc::ptr_eq(original, &repeated.issues()[0]));
+        assert!(kasumi_types::drain::DrainIssueRef::ptr_eq(
+            original,
+            &repeated.issues()[0]
+        ));
         assert_eq!(child.child_finished().await, None);
     }
 }

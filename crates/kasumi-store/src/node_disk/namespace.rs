@@ -367,6 +367,27 @@ impl ParentTransition {
         second: Option<(Identity, i8)>,
         growth_work: Option<DiskWork>,
     ) -> io::Result<Self> {
+        Self::preflight_inner(disk, state, first, second, growth_work, None)
+    }
+
+    pub(super) fn preflight_transaction(
+        disk: &NodeDisk,
+        state: &mut State,
+        first: (Identity, i8),
+        permit: &super::transaction::FileCreationPermit,
+    ) -> io::Result<Self> {
+        permit.check_parent(state, first.0)?;
+        Self::preflight_inner(disk, state, first, None, None, Some(permit))
+    }
+
+    fn preflight_inner(
+        disk: &NodeDisk,
+        state: &mut State,
+        first: (Identity, i8),
+        second: Option<(Identity, i8)>,
+        growth_work: Option<DiskWork>,
+        admitted: Option<&super::transaction::FileCreationPermit>,
+    ) -> io::Result<Self> {
         if state.phase == NodeDiskPhase::Failed || !disk.device.lock().admission_ready() {
             return Err(io::ErrorKind::Other.into());
         }
@@ -374,7 +395,14 @@ impl ParentTransition {
             .namespace_generation
             .checked_add(1)
             .ok_or(io::ErrorKind::StorageFull)?;
-        if let Some(work) = growth_work {
+        // Other namespace work cannot spend generation slots already promised
+        // to complete namespace batches or transaction-file ranges.
+        generation
+            .checked_add(super::batch::reserved_entries(state) as u64)
+            .ok_or(io::ErrorKind::StorageFull)?;
+        if let Some(permit) = admitted {
+            permit.check_parent(state, first.0)?;
+        } else if let Some(work) = growth_work {
             // Full parent allowances were promised by census. This checks the
             // unchanged node/work/floor policy before consuming those promises.
             disk.reserve(state, 0, work)?;
@@ -417,7 +445,10 @@ impl ParentTransition {
             if !before.settled {
                 return Err(io::ErrorKind::InvalidData.into());
             }
-            if delta < 0 && super::batch::reserved_children(state, before.binding) != 0 {
+            let reserved_children = super::batch::reserved_children(state, before.binding)
+                .checked_add(before.transaction_children)
+                .ok_or(io::ErrorKind::InvalidData)?;
+            if delta < 0 && reserved_children != 0 {
                 return Err(io::ErrorKind::WouldBlock.into());
             }
             let children = before
@@ -426,7 +457,7 @@ impl ParentTransition {
                 .ok_or(io::ErrorKind::InvalidData)?;
             if delta > 0
                 && (children
-                    .checked_add(super::batch::reserved_children(state, before.binding))
+                    .checked_add(reserved_children)
                     .is_none_or(|n| n > disk.config.directory_policy.max_entries)
                     || before.bytes > disk.config.directory_policy.extent_bytes)
             {
@@ -490,6 +521,8 @@ impl ParentTransition {
                 .expect("prepared parent");
             *entry = AccountedDirectory {
                 live_handles: entry.live_handles,
+                transaction_children: entry.transaction_children,
+                transaction_claimed: entry.transaction_claimed,
                 ..change.before
             };
         }
@@ -596,6 +629,8 @@ impl ParentTransition {
                 .expect("prepared parent");
             *current = AccountedDirectory {
                 live_handles: current.live_handles,
+                transaction_children: current.transaction_children,
+                transaction_claimed: current.transaction_claimed,
                 ..entry
             };
         }

@@ -277,17 +277,22 @@ mod tests {
             )
             .await
             .unwrap();
-            stores
-                .write_batch(
-                    &[],
-                    &kasumi_raft::initial_storage_identity(1, &format!("tenant/{incarnation}"))
-                        .unwrap(),
-                )
-                .unwrap();
+            let image = engine.logical_snapshot(store.scratch_disk()).unwrap();
+            crate::bootstrap::persist_fixture_bootstrap(
+                &stores,
+                &image,
+                1,
+                &format!("tenant/{incarnation}"),
+            )
+            .unwrap();
+            drop(engine);
+            let engine = Arc::new(TenantEngine::from_bootstrap(store.tenant(), &image).unwrap());
+            engine.install_storage_access(&store).unwrap();
+            engine.install_audit_maintenance(&admission).unwrap();
             let database =
                 crate::service::construction::DatabaseConstruction::new(stores, audit.clone())
                     .unwrap()
-                    .start_local(engine, 1, format!("tenant/{incarnation}"))
+                    .start_local(engine, &image, 1, format!("tenant/{incarnation}"))
                     .await
                     .unwrap();
             let weak_database = Arc::downgrade(&database);
@@ -460,17 +465,22 @@ mod tests {
         )
         .await
         .unwrap();
-        stores
-            .write_batch(
-                &[],
-                &kasumi_raft::initial_storage_identity(1, &format!("tenant/{incarnation}"))
-                    .unwrap(),
-            )
-            .unwrap();
+        let image = engine.logical_snapshot(store.scratch_disk()).unwrap();
+        crate::bootstrap::persist_fixture_bootstrap(
+            &stores,
+            &image,
+            1,
+            &format!("tenant/{incarnation}"),
+        )
+        .unwrap();
+        drop(engine);
+        let engine = Arc::new(TenantEngine::from_bootstrap(store.tenant(), &image).unwrap());
+        engine.install_storage_access(&store).unwrap();
+        engine.install_audit_maintenance(&admission).unwrap();
         let database =
             crate::service::construction::DatabaseConstruction::new(stores, audit.clone())
                 .unwrap()
-                .start_local(engine.clone(), 1, format!("tenant/{incarnation}"))
+                .start_local(engine.clone(), &image, 1, format!("tenant/{incarnation}"))
                 .await
                 .unwrap();
         let group = database.raft_group().clone();

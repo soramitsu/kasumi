@@ -1,0 +1,15 @@
+Command: cargo test -p kasumi-store --all-features --lib --locked --offline --config profile.test.package.kasumi-kv.opt-level=3 --config profile.test.package.sha2.opt-level=3 -- --test-threads=1 production_tenant_point_read_retires_routine_failures_and_keeps_cancelled_child production_catalog_output_capacity_failure_retires_when_error_is_dropped owned_reader_point_and_range_bytes_keep_exact_credit_after_close production_present_point_row_uses_native_credit_without_duplicate_outer_charge
+CARGO_TARGET_DIR=target/disk-backed-cache
+   Compiling kasumi-store v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-store)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 35.37s
+     Running unittests src/lib.rs (target/disk-backed-cache/debug/deps/kasumi_store-98be0c6afb7030c8)
+
+running 4 tests
+test storage_opening::tests::owned_reader_point_and_range_bytes_keep_exact_credit_after_close ... ok
+test storage_opening::tests::production_catalog_output_capacity_failure_retires_when_error_is_dropped ... ok
+test storage_opening::tests::production_present_point_row_uses_native_credit_without_duplicate_outer_charge ... ok
+test storage_opening::tests::production_tenant_point_read_retires_routine_failures_and_keeps_cancelled_child ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 618 filtered out; finished in 3.13s
+
+Runner: 38.60s; exit=0; matching=717/717

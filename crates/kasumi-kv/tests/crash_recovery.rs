@@ -1,8 +1,14 @@
+use kasumi_kv as cache_types;
+#[path = "../src/cache_test.rs"]
+mod cache_test;
+
+use kasumi_kv::group::InMemoryGroup;
 use kasumi_kv::{
-    AdmissionError, BackendCloseOutcome, BackendNativeDisposition, Core, CoreError, Database,
-    Operation, OwnerFailed, ResidentLease, StorageAdmission, StorageBackend, StorageError,
-    TableDefinition, TransactionError,
+    AdmissionError, BackendCloseOutcome, BackendNativeDisposition, CacheConfig, Core, CoreError,
+    Database, GroupFile, Operation, OwnerFailed, ROOT_SLOT_BYTES, ResidentLease, RootSlot,
+    SegmentGroupBackend, StorageAdmission, StorageError, TableDefinition, TransactionError,
 };
+use std::ffi::OsStr;
 use std::io;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc;
@@ -30,6 +36,29 @@ impl StorageAdmission for UnlimitedAdmission {
     }
 
     fn owner_failed(&self) {}
+
+    fn quote_cache_memory(
+        &self,
+        bytes: u64,
+    ) -> Result<kasumi_kv::CacheMemoryQuote, kasumi_kv::AdmissionError> {
+        cache_test::quote::<Self>(bytes)
+    }
+    fn reserve_cache_memory(
+        self: std::sync::Arc<Self>,
+        bytes: u64,
+    ) -> Result<kasumi_kv::CacheMemoryLease, kasumi_kv::AdmissionError> {
+        cache_test::reserve(self, bytes)
+    }
+}
+impl cache_test::Provider for UnlimitedAdmission {
+    fn acquire_cache(&self, bytes: u64, first: bool) -> Result<(), kasumi_kv::AdmissionError> {
+        let _ = first;
+        let _ = bytes;
+        Ok(())
+    }
+    fn release_cache(&self, bytes: u64, last: bool) {
+        let _ = (bytes, last);
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -46,8 +75,7 @@ struct Fault {
 
 #[derive(Default)]
 struct Image {
-    volatile: Vec<u8>,
-    durable: Vec<u8>,
+    group: InMemoryGroup,
     effects: usize,
     fault: Option<Fault>,
 }
@@ -57,137 +85,138 @@ struct CrashBackend(Arc<Mutex<Image>>);
 
 impl CrashBackend {
     fn crash(&self) -> Self {
-        let bytes = self.0.lock().unwrap().durable.clone();
         Self(Arc::new(Mutex::new(Image {
-            volatile: bytes.clone(),
-            durable: bytes,
+            group: self.0.lock().unwrap().group.crash(),
             ..Image::default()
         })))
     }
-
     fn inject(&self, ordinal: usize, mode: FailureMode) {
         let mut image = self.0.lock().unwrap();
         image.effects = 0;
         image.fault = Some(Fault { ordinal, mode });
     }
-
     fn effects(&self) -> usize {
         self.0.lock().unwrap().effects
     }
-
     fn corrupt_volatile(&self, needle: &[u8]) {
-        let mut image = self.0.lock().unwrap();
-        let at = image
-            .volatile
-            .windows(needle.len())
-            .position(|window| window == needle)
-            .unwrap();
-        image.volatile[at] ^= 0x80;
-    }
-}
-
-impl StorageBackend for CrashBackend {
-    fn len(&self) -> io::Result<u64> {
-        Ok(self.0.lock().unwrap().volatile.len() as u64)
-    }
-
-    fn read(&self, at: u64, out: &mut [u8]) -> io::Result<()> {
         let image = self.0.lock().unwrap();
-        let start = usize::try_from(at).map_err(|_| io::ErrorKind::InvalidInput)?;
-        let end = start
-            .checked_add(out.len())
-            .ok_or(io::ErrorKind::InvalidInput)?;
-        out.copy_from_slice(
-            image
-                .volatile
-                .get(start..end)
-                .ok_or(io::ErrorKind::UnexpectedEof)?,
-        );
-        Ok(())
+        for name in image.group.entries().unwrap() {
+            let Some(file) = name.to_str().and_then(GroupFile::parse_name) else {
+                continue;
+            };
+            let mut bytes = vec![0; image.group.len(file).unwrap() as usize];
+            image.group.read(file, 0, &mut bytes).unwrap();
+            if let Some(at) = bytes
+                .windows(needle.len())
+                .position(|window| window == needle)
+            {
+                image
+                    .group
+                    .write(file, at as u64, &[bytes[at] ^ 0x80])
+                    .unwrap();
+                return;
+            }
+        }
+        panic!("payload not present");
     }
-
-    fn write(&self, at: u64, input: &[u8]) -> io::Result<()> {
+    fn effect(
+        &self,
+        work: impl FnOnce(&InMemoryGroup) -> io::Result<()>,
+        tear: impl FnOnce(&InMemoryGroup) -> InMemoryGroup,
+    ) -> io::Result<()> {
         let mut image = self.0.lock().unwrap();
         image.effects += 1;
         let fault = image
             .fault
             .as_ref()
-            .filter(|fault| fault.ordinal == image.effects)
-            .map(|fault| fault.mode);
+            .filter(|f| f.ordinal == image.effects)
+            .map(|f| f.mode);
         if matches!(fault, Some(FailureMode::Before)) {
-            return Err(io::Error::other("injected write failure"));
+            return Err(io::ErrorKind::Other.into());
         }
-        let start = usize::try_from(at).map_err(|_| io::ErrorKind::InvalidInput)?;
-        let count = if matches!(fault, Some(FailureMode::TornDurable)) {
-            input.len().div_ceil(2)
-        } else {
-            input.len()
-        };
-        let end = start
-            .checked_add(count)
-            .ok_or(io::ErrorKind::InvalidInput)?;
-        image
-            .volatile
-            .get_mut(start..end)
-            .ok_or(io::ErrorKind::UnexpectedEof)?
-            .copy_from_slice(&input[..count]);
+        work(&image.group)?;
         if matches!(fault, Some(FailureMode::TornDurable)) {
-            image.durable = image.volatile.clone();
+            image.group = tear(&image.group);
         }
         if fault.is_some() {
-            Err(io::Error::other("injected write failure"))
+            Err(io::ErrorKind::Other.into())
         } else {
             Ok(())
         }
-    }
-
-    fn set_len(&self, length: u64) -> io::Result<()> {
-        let mut image = self.0.lock().unwrap();
-        image.effects += 1;
-        let fault = image
-            .fault
-            .as_ref()
-            .filter(|fault| fault.ordinal == image.effects)
-            .map(|fault| fault.mode);
-        if matches!(fault, Some(FailureMode::Before)) {
-            return Err(io::Error::other("injected resize failure"));
-        }
-        image.volatile.resize(
-            usize::try_from(length).map_err(|_| io::ErrorKind::InvalidInput)?,
-            0,
-        );
-        if matches!(fault, Some(FailureMode::TornDurable)) {
-            image.durable = image.volatile.clone();
-        }
-        if fault.is_some() {
-            Err(io::Error::other("injected resize failure"))
-        } else {
-            Ok(())
-        }
-    }
-
-    fn sync_data(&self) -> io::Result<()> {
-        let mut image = self.0.lock().unwrap();
-        image.effects += 1;
-        let fault = image
-            .fault
-            .as_ref()
-            .filter(|fault| fault.ordinal == image.effects)
-            .map(|fault| fault.mode);
-        if !matches!(fault, Some(FailureMode::Before)) {
-            image.durable = image.volatile.clone();
-        }
-        if fault.is_some() {
-            Err(io::Error::other("injected sync failure"))
-        } else {
-            Ok(())
-        }
-    }
-
-    fn close(&self) -> BackendCloseOutcome {
-        BackendCloseOutcome::drained(Ok(()))
     }
 }
+impl SegmentGroupBackend for CrashBackend {
+    fn reserve_transaction(
+        &self,
+        plan: &kasumi_kv::TransactionSpacePlan,
+    ) -> std::result::Result<(), kasumi_kv::TransactionReserveError> {
+        self.0.lock().unwrap().group.reserve_transaction(plan)
+    }
+    fn finish_transaction(&self, group_id: [u8; 16], batch_seq: u64) -> std::io::Result<()> {
+        self.0
+            .lock()
+            .unwrap()
+            .group
+            .finish_transaction(group_id, batch_seq)
+    }
+    fn cancel_transaction(&self, group_id: [u8; 16], batch_seq: u64) -> std::io::Result<()> {
+        self.0
+            .lock()
+            .unwrap()
+            .group
+            .cancel_transaction(group_id, batch_seq)
+    }
+
+    fn read_root(&self, slot: RootSlot, out: &mut [u8; ROOT_SLOT_BYTES]) -> io::Result<()> {
+        self.0.lock().unwrap().group.read_root(slot, out)
+    }
+    fn write_root(&self, slot: RootSlot, bytes: &[u8; ROOT_SLOT_BYTES]) -> io::Result<()> {
+        self.effect(
+            |g| g.write_root(slot, bytes),
+            |g| g.crash_torn_root(slot, ROOT_SLOT_BYTES / 2),
+        )
+    }
+    fn sync_root(&self) -> io::Result<()> {
+        self.effect(|g| g.sync_root(), InMemoryGroup::crash)
+    }
+    fn visit_entries(&self, visitor: &mut dyn FnMut(&OsStr) -> io::Result<()>) -> io::Result<()> {
+        self.0.lock().unwrap().group.visit_entries(visitor)
+    }
+    fn exists(&self, file: GroupFile) -> io::Result<bool> {
+        self.0.lock().unwrap().group.exists(file)
+    }
+    fn create(&self, file: GroupFile) -> io::Result<()> {
+        self.effect(|g| g.create(file), InMemoryGroup::crash)
+    }
+    fn len(&self, file: GroupFile) -> io::Result<u64> {
+        self.0.lock().unwrap().group.len(file)
+    }
+    fn read(&self, file: GroupFile, at: u64, out: &mut [u8]) -> io::Result<()> {
+        self.0.lock().unwrap().group.read(file, at, out)
+    }
+    fn write(&self, file: GroupFile, at: u64, bytes: &[u8]) -> io::Result<()> {
+        self.effect(
+            |g| g.write(file, at, bytes),
+            |g| g.crash_torn(file, bytes.len() / 2),
+        )
+    }
+    fn set_len(&self, file: GroupFile, length: u64) -> io::Result<()> {
+        self.effect(|g| g.set_len(file, length), InMemoryGroup::crash)
+    }
+    fn sync(&self, file: GroupFile) -> io::Result<()> {
+        self.effect(|g| g.sync(file), InMemoryGroup::crash)
+    }
+    fn unlink(&self, file: GroupFile) -> io::Result<()> {
+        self.effect(|g| g.unlink(file), InMemoryGroup::crash)
+    }
+    fn sync_names(&self) -> io::Result<()> {
+        self.effect(|g| g.sync_names(), InMemoryGroup::crash)
+    }
+    fn close(&self) -> BackendCloseOutcome {
+        self.0.lock().unwrap().group.close()
+    }
+}
+const GROUP: [u8; 16] = [0x51; 16];
 
 fn admission() -> Arc<dyn StorageAdmission> {
     Arc::new(UnlimitedAdmission)
@@ -238,7 +267,9 @@ impl StorageAdmission for SlotAdmission {
                 Ordering::AcqRel,
                 Ordering::Acquire,
             ) {
-                Ok(_) => return Ok(Box::new(SlotLease(self.live.clone()))),
+                Ok(_) => {
+                    return Ok(Box::new(SlotLease(self.live.clone())));
+                }
                 Err(actual) => observed = actual,
             }
         }
@@ -253,6 +284,40 @@ impl StorageAdmission for SlotAdmission {
     }
 
     fn owner_failed(&self) {}
+
+    fn quote_cache_memory(
+        &self,
+        bytes: u64,
+    ) -> Result<kasumi_kv::CacheMemoryQuote, kasumi_kv::AdmissionError> {
+        cache_test::quote::<Self>(bytes)
+    }
+    fn reserve_cache_memory(
+        self: std::sync::Arc<Self>,
+        bytes: u64,
+    ) -> Result<kasumi_kv::CacheMemoryLease, kasumi_kv::AdmissionError> {
+        cache_test::reserve(self, bytes)
+    }
+}
+impl cache_test::Provider for SlotAdmission {
+    fn acquire_cache(&self, bytes: u64, first: bool) -> Result<(), kasumi_kv::AdmissionError> {
+        let _ = first;
+        let _ = bytes;
+        if first {
+            self.live
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |live| {
+                    live.checked_add(1)
+                        .filter(|next| *next <= self.limit.load(Ordering::Acquire))
+                })
+                .map_err(|_| AdmissionError::CapacityDenied)?;
+        }
+        Ok(())
+    }
+    fn release_cache(&self, bytes: u64, last: bool) {
+        let _ = (bytes, last);
+        if last {
+            self.live.fetch_sub(1, Ordering::AcqRel);
+        }
+    }
 }
 
 impl StorageAdmission for CheckpointAdmission {
@@ -279,11 +344,42 @@ impl StorageAdmission for CheckpointAdmission {
     }
 
     fn owner_failed(&self) {}
+
+    fn quote_cache_memory(
+        &self,
+        bytes: u64,
+    ) -> Result<kasumi_kv::CacheMemoryQuote, kasumi_kv::AdmissionError> {
+        cache_test::quote::<Self>(bytes)
+    }
+    fn reserve_cache_memory(
+        self: std::sync::Arc<Self>,
+        bytes: u64,
+    ) -> Result<kasumi_kv::CacheMemoryLease, kasumi_kv::AdmissionError> {
+        cache_test::reserve(self, bytes)
+    }
+}
+impl cache_test::Provider for CheckpointAdmission {
+    fn acquire_cache(&self, bytes: u64, first: bool) -> Result<(), kasumi_kv::AdmissionError> {
+        let _ = first;
+        let _ = bytes;
+        let call = self.calls.fetch_add(1, Ordering::AcqRel) + 1;
+        let fail_at = self.fail_at.load(Ordering::Acquire);
+        if fail_at != 0 && call >= fail_at {
+            Err(AdmissionError::CapacityDenied)
+        } else {
+            Ok(())
+        }
+    }
+    fn release_cache(&self, bytes: u64, last: bool) {
+        let _ = (bytes, last);
+    }
 }
 
 fn baseline() -> (Core, CrashBackend) {
     let backend = CrashBackend::default();
-    let core = Core::create_with_backend(backend.clone(), admission()).unwrap();
+    let core =
+        Core::create_with_backend(backend.clone(), admission(), GROUP, CacheConfig::default())
+            .unwrap();
     core.commit(&[
         Operation::create_table("items"),
         Operation::put("items", b"a", b"old-a"),
@@ -324,13 +420,36 @@ fn read(core: &Core, key: &[u8]) -> Option<Vec<u8>> {
 
 #[test]
 fn every_failed_commit_effect_recovers_a_whole_generation() {
+    verify_failed_commit_effects(0);
+}
+
+#[test]
+fn cached_reads_never_expose_any_failed_commit_effect() {
+    verify_failed_commit_effects(64 << 10);
+}
+
+fn prime_cache(core: &Core, byte_limit: u64) {
+    core.configure_cache(CacheConfig { byte_limit }).unwrap();
+    if byte_limit != 0 {
+        loop {
+            let progress = core.warm_cache(4).unwrap();
+            if progress.complete {
+                assert!(progress.fully_resident);
+                break;
+            }
+        }
+    }
+}
+
+fn verify_failed_commit_effects(cache_bytes: u64) {
     let (counting_core, counting_backend) = baseline();
+    prime_cache(&counting_core, cache_bytes);
     counting_backend.inject(usize::MAX, FailureMode::Before);
     counting_core.commit(&replacement()).unwrap();
     let effect_count = counting_backend.effects();
     assert!(
         effect_count > 10,
-        "expected to cover frame and header effects"
+        "expected to cover segment, directory and root effects"
     );
 
     for ordinal in 1..=effect_count {
@@ -340,12 +459,24 @@ fn every_failed_commit_effect_recovers_a_whole_generation() {
             FailureMode::TornDurable,
         ] {
             let (core, backend) = baseline();
+            prime_cache(&core, cache_bytes);
+            let snapshot = core.snapshot().unwrap();
             backend.inject(ordinal, mode);
             assert!(matches!(
                 core.commit(&replacement()),
-                Err(CoreError::UnknownCommit(_))
+                Err(CoreError::UnknownCommit(_) | CoreError::Io(_))
             ));
-            let reopened = Core::open_with_backend(backend.crash(), admission()).unwrap();
+            assert!(matches!(
+                core.get_admitted(&snapshot, "items", b"a", 16),
+                Err(CoreError::OwnerFailed)
+            ));
+            let reopened = Core::open_with_backend(
+                backend.crash(),
+                admission(),
+                GROUP,
+                CacheConfig::default(),
+            )
+            .unwrap();
             let observed = (
                 read(&reopened, b"a"),
                 read(&reopened, b"b"),
@@ -364,7 +495,7 @@ fn every_failed_commit_effect_recovers_a_whole_generation() {
 #[test]
 fn closing_wakes_a_queued_writer_even_while_another_writer_is_held() {
     let database = Arc::new(
-        Database::builder(admission())
+        Database::builder(admission(), GROUP, CacheConfig::default())
             .create_with_backend(CrashBackend::default())
             .unwrap(),
     );
@@ -396,11 +527,34 @@ fn closing_wakes_a_queued_writer_even_while_another_writer_is_held() {
     );
 }
 
+fn minimum_read_limit<T>(
+    admission: &SlotAdmission,
+    baseline: usize,
+    mut read: impl FnMut() -> Result<T, kasumi_kv::BoundedReadError>,
+) {
+    for limit in baseline + 1..=baseline + 32 {
+        admission.limit.store(limit, Ordering::Release);
+        match read() {
+            Ok(output) => {
+                drop(output);
+                assert_eq!(admission.live.load(Ordering::Acquire), baseline);
+                return;
+            }
+            Err(error) => assert!(matches!(
+                error,
+                kasumi_kv::BoundedReadError::Storage(StorageError::Core(CoreError::CapacityDenied))
+            )),
+        }
+        assert_eq!(admission.live.load(Ordering::Acquire), baseline);
+    }
+    panic!("bounded read required more than 32 transient admission slots");
+}
+
 #[test]
 fn retained_raw_read_keeps_its_output_admitted_until_drop() {
     const ITEMS: TableDefinition<&[u8], &[u8]> = TableDefinition::new("items");
     let admission = SlotAdmission::new(128);
-    let database = Database::builder(admission.clone())
+    let database = Database::builder(admission.clone(), GROUP, CacheConfig::default())
         .create_with_backend(CrashBackend::default())
         .unwrap();
     let write = database.begin_write().unwrap();
@@ -414,7 +568,10 @@ fn retained_raw_read_keeps_its_output_admitted_until_drop() {
     let retained = database.retain();
     let reader = retained.database().unwrap().begin_read_retained().unwrap();
     let baseline = admission.live.load(Ordering::Acquire);
-    admission.limit.store(baseline + 1, Ordering::Release);
+    // Find required headroom, excluding optional cache-copy allocations that
+    // can fall back to the admitted output. Retention must consume this same
+    // capacity and dropping outputs must make the identical read possible.
+    minimum_read_limit(&admission, baseline, || reader.get_bytes(ITEMS, b"key", 16));
 
     let first = reader.get_bytes(ITEMS, b"key", 16).unwrap().unwrap();
     assert_eq!(first.as_bytes(), b"value");
@@ -431,7 +588,9 @@ fn retained_raw_read_keeps_its_output_admitted_until_drop() {
         b"value"
     );
 
-    admission.limit.store(baseline + 2, Ordering::Release);
+    minimum_read_limit(&admission, baseline, || {
+        reader.next_bytes(ITEMS, b"", None, 16)
+    });
     let row = reader.next_bytes(ITEMS, b"", None, 16).unwrap().unwrap();
     assert_eq!(row.key.as_bytes(), b"key");
     assert_eq!(row.value.as_bytes(), b"value");
@@ -457,21 +616,27 @@ fn detected_corruption_fences_preexisting_snapshots() {
 }
 
 #[test]
-fn midbatch_admission_denial_rolls_back_every_provisional_version() {
+fn batch_workspace_denial_leaves_all_published_versions_unchanged() {
     let backend = CrashBackend::default();
     let admission = Arc::new(CheckpointAdmission::default());
-    let core = Core::create_with_backend(backend.clone(), admission.clone()).unwrap();
+    let core = Core::create_with_backend(
+        backend.clone(),
+        admission.clone(),
+        GROUP,
+        CacheConfig::default(),
+    )
+    .unwrap();
     core.commit(&[
         Operation::create_table("items"),
         Operation::put("items", b"a", b"old-a"),
     ])
     .unwrap();
     let generation = core.generation().unwrap();
-    let end = core.committed_end().unwrap();
+    let end = core.committed_position().unwrap();
     let effects = backend.effects();
     let start = admission.calls.load(Ordering::Acquire);
-    // The first reserve admits undo space. The second happens only after
-    // provisional versions cross the current 64 KiB index-credit chunk.
+    // Value-location and rollback workspace are both admitted before effects.
+    // Deny the second reservation and verify no prepared bytes escape.
     admission.fail_at.store(start + 2, Ordering::Release);
     let mut batch = vec![
         Operation::put("items", b"a", b"middle"),
@@ -488,10 +653,10 @@ fn midbatch_admission_denial_rolls_back_every_provisional_version() {
         core.commit(&batch),
         Err(CoreError::CapacityDenied)
     ));
-    assert!(admission.calls.load(Ordering::Acquire) >= start + 3);
+    assert!(admission.calls.load(Ordering::Acquire) >= start + 2);
     assert_eq!(backend.effects(), effects);
     assert_eq!(core.generation().unwrap(), generation);
-    assert_eq!(core.committed_end().unwrap(), end);
+    assert_eq!(core.committed_position().unwrap(), end);
     admission.fail_at.store(0, Ordering::Release);
     assert_eq!(read(&core, b"a"), Some(b"old-a".to_vec()));
     assert_eq!(read(&core, b"b0000"), None);
@@ -500,7 +665,8 @@ fn midbatch_admission_denial_rolls_back_every_provisional_version() {
     assert_eq!(read(&core, b"a"), Some(b"new-a".to_vec()));
     assert_eq!(read(&core, b"b0000"), Some(b"new-b".to_vec()));
     assert_eq!(read(&core, b"b0139"), Some(b"new-b".to_vec()));
-    let reopened = Core::open_with_backend(backend.crash(), admission).unwrap();
+    let reopened =
+        Core::open_with_backend(backend.crash(), admission, GROUP, CacheConfig::default()).unwrap();
     assert_eq!(read(&reopened, b"a"), Some(b"new-a".to_vec()));
     assert_eq!(read(&reopened, b"b0000"), Some(b"new-b".to_vec()));
     assert_eq!(read(&reopened, b"b0139"), Some(b"new-b".to_vec()));
@@ -508,13 +674,26 @@ fn midbatch_admission_denial_rolls_back_every_provisional_version() {
 
 #[test]
 fn every_failed_compaction_effect_reopens_all_live_values() {
+    verify_failed_compaction_effects(0);
+}
+
+#[test]
+fn cached_compaction_relocation_is_safe_at_every_failed_effect() {
+    verify_failed_compaction_effects(64 << 10);
+}
+
+fn verify_failed_compaction_effects(cache_bytes: u64) {
     let (counting_core, counting_backend) = churned();
-    let before_end = counting_core.committed_end().unwrap();
+    prime_cache(&counting_core, cache_bytes);
+    let before_position = counting_core.committed_position().unwrap();
     counting_backend.inject(usize::MAX, FailureMode::Before);
     counting_core.compact().unwrap();
-    assert!(counting_core.committed_end().unwrap() < before_end);
+    assert_ne!(counting_core.committed_position().unwrap(), before_position);
     let effect_count = counting_backend.effects();
-    assert!(effect_count > 10, "expected shadow and front copy effects");
+    assert!(
+        effect_count > 10,
+        "expected segment, directory, root and unlink effects"
+    );
 
     for ordinal in 1..=effect_count {
         for mode in [
@@ -523,10 +702,16 @@ fn every_failed_compaction_effect_reopens_all_live_values() {
             FailureMode::TornDurable,
         ] {
             let (core, backend) = churned();
+            prime_cache(&core, cache_bytes);
             backend.inject(ordinal, mode);
             assert!(core.compact().is_err());
-            let reopened = Core::open_with_backend(backend.crash(), admission())
-                .unwrap_or_else(|error| panic!("reopen after effect {ordinal} failed: {error}"));
+            let reopened = Core::open_with_backend(
+                backend.crash(),
+                admission(),
+                GROUP,
+                CacheConfig::default(),
+            )
+            .unwrap_or_else(|error| panic!("reopen after effect {ordinal} failed: {error}"));
             assert_eq!(read(&reopened, b"a"), Some(b"last-a".to_vec()));
             assert_eq!(read(&reopened, b"b"), None);
             assert_eq!(read(&reopened, b"c"), Some(b"last-c".to_vec()));
@@ -539,7 +724,13 @@ fn every_failed_compaction_effect_reopens_all_live_values() {
 fn many_live_keys_share_bounded_admission_slots_and_reopen() {
     let backend = CrashBackend::default();
     let admission = SlotAdmission::new(128);
-    let core = Core::create_with_backend(backend.clone(), admission.clone()).unwrap();
+    let core = Core::create_with_backend(
+        backend.clone(),
+        admission.clone(),
+        GROUP,
+        CacheConfig::default(),
+    )
+    .unwrap();
     core.commit(&[Operation::create_table("items")]).unwrap();
     let mut operations = Vec::new();
     for index in 0..500u16 {
@@ -555,7 +746,13 @@ fn many_live_keys_share_bounded_admission_slots_and_reopen() {
     drop(core);
     assert_eq!(admission.live.load(Ordering::Acquire), 0);
 
-    let reopened = Core::open_with_backend(crash, SlotAdmission::new(128)).unwrap();
+    let reopened = Core::open_with_backend(
+        crash,
+        SlotAdmission::new(128),
+        GROUP,
+        CacheConfig::default(),
+    )
+    .unwrap();
     for index in [0u16, 249, 499] {
         assert_eq!(
             read(&reopened, format!("{index:04}").as_bytes()),

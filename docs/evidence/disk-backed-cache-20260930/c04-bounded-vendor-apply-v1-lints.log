@@ -1,0 +1,20 @@
+Command: cargo +1.97.1 test --manifest-path vendor/openraft-0.9.25/openraft/Cargo.toml --locked --offline --target-dir /Users/takemiyamakoto/dev/kasumi/target/disk-backed-cache --features serde,storage-v2 --lib bounded_apply -- --test-threads=1
+CARGO_TARGET_DIR=target/disk-backed-cache
+   Compiling openraft v0.9.25 (/Users/takemiyamakoto/dev/kasumi/vendor/openraft-0.9.25/openraft)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 09s
+     Running unittests src/lib.rs (target/disk-backed-cache/debug/deps/openraft-5e17d9bd08c72f35)
+
+running 9 tests
+test core::sm::bounded_apply_tests::actual_commit_handoff_coalesces_without_channel_nodes_and_rejects_disconnected_ranges ... ok
+test core::sm::bounded_apply_tests::actual_worker_waits_for_each_consumed_prefix_before_reading_or_building_snapshot ... ok
+test core::sm::bounded_apply_tests::closed_core_before_notification_retains_the_actual_response_batch ... ok
+test core::sm::bounded_apply_tests::dropped_core_notification_retains_the_actual_opaque_responses_and_original_worker_error ... ok
+test core::sm::bounded_apply_tests::pending_snapshot_keeps_source_and_permit_after_waiter_cancel_until_safe_acceptance ... ok
+test core::sm::bounded_apply_tests::queued_command_and_pending_take_race_preserves_one_exact_preceding_obligation ... ok
+test core::sm::bounded_apply_tests::unknown_response_delivery_unwind_retains_remaining_originals_and_a_delivery_marker ... ok
+test raft::bounded_apply_test::blocked_committed_read_keeps_votes_and_appends_live_and_cancelled_snapshot_behind_exact_apply ... ok
+test raft::bounded_apply_test::cancelled_shutdown_retains_pending_snapshot_and_unconsumed_real_apply_owner ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 219 filtered out; finished in 0.06s
+
+Runner: 69.75s; exit=0; matching=1540/1540

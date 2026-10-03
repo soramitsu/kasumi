@@ -13,6 +13,9 @@ use std::{
 pub const MAX_REQUEST_BYTES: usize = (8 << 20) + (64 << 10);
 pub const MAX_RESPONSE_BYTES: usize = 16 << 20;
 
+#[path = "response_owner.rs"]
+pub mod response_owner;
+
 #[derive(Clone, Default)]
 pub struct DatabaseRegistry {
     route_epoch: Arc<AtomicU64>,
@@ -77,7 +80,7 @@ impl DatabaseRegistry {
             return Ok(None);
         };
         match database.engine().generation() {
-            Ok(generation) if generation.state.incarnation == incarnation => Ok(Some(database)),
+            Ok(generation) if generation.incarnation() == incarnation => Ok(Some(database)),
             Ok(_) => Ok(None),
             // A sealed generation is an unavailable required group, not an
             // excuse to stop counting the rest of the committed membership.
@@ -137,7 +140,7 @@ impl DatabaseRegistry {
         }
         let database = self.database(context).ok()?;
         let generation = database.engine().generation().ok()?;
-        if !generation.state.policy.grants.iter().any(|grant| {
+        if !generation.policy().grants.iter().any(|grant| {
             grant.principal == context.principal && !grant.actions.is_disjoint(&context.scopes)
         }) {
             return None;
@@ -170,13 +173,13 @@ impl DatabaseRegistry {
     pub fn insert(&self, database: Arc<Database>) -> Result<()> {
         database.check_serving()?;
         let generation = database.engine().generation()?;
-        if generation.state.retired {
+        if generation.retired() {
             return Err(Error::new(
                 ErrorCode::Sealed,
                 "retired source cannot enter data routing",
             ));
         }
-        let tenant = generation.state.tenant.clone();
+        let tenant = generation.tenant().to_owned();
         if tenant.starts_with("__kasumi_") {
             return Err(Error::new(
                 ErrorCode::Forbidden,
@@ -201,7 +204,7 @@ impl DatabaseRegistry {
         self.pending_admission
             .write()
             .map_err(|_| Error::new(ErrorCode::Unavailable, "tenant registry unavailable"))?
-            .remove(&(tenant.clone(), generation.state.incarnation.clone()));
+            .remove(&(tenant.clone(), generation.incarnation().to_owned()));
         self.advance_route_epoch();
         databases.insert(tenant, database);
         Ok(())
@@ -297,7 +300,7 @@ impl DatabaseRegistry {
         };
         context
             .authorization
-            .require_database(&database.engine().generation()?.state.incarnation)?;
+            .require_database(database.engine().generation()?.incarnation())?;
         Ok(database)
     }
 
@@ -430,6 +433,7 @@ pub(crate) fn status(error: Error) -> tonic::Status {
 
 #[cfg(test)]
 mod tests {
+    include!("api_response_owner_tests.rs");
     include!("api_resource_lineage_tests.rs");
     include!("api_staging_tests.rs");
     include!("api_guarded_staging_tests.rs");
@@ -589,8 +593,7 @@ mod tests {
             let registry = DatabaseRegistry::default();
             registry.insert(db.clone()).unwrap();
             let incarnation =
-                uuid::Uuid::parse_str(&db.engine().generation().unwrap().state.incarnation)
-                    .unwrap();
+                uuid::Uuid::parse_str(db.engine().generation().unwrap().incarnation()).unwrap();
             Self {
                 incarnation,
                 _dir: dir,
@@ -832,7 +835,7 @@ mod tests {
             // uncertain outcome through a separate authenticated adapter call.
             let committed = fixture.db.engine().generation().unwrap();
             let original = committed.state.collections["docs"].documents["one"].clone();
-            assert_eq!(committed.state.document_count, 1);
+            assert_eq!(committed.document_count(), 1);
             assert_eq!(committed.state.mutation_receipt_head.count, 1);
             let original_head = committed.state.mutation_receipt_head.clone();
             let original_batch: MutationBatch = serde_json::from_value(batch()).unwrap();
@@ -931,7 +934,7 @@ mod tests {
                 assert_eq!(decode_grpc::<proto::WriteReceipt>(&retried), receipt);
             }
             let after = fixture.db.engine().generation().unwrap();
-            assert_eq!(after.state.document_count, 1);
+            assert_eq!(after.document_count(), 1);
             assert_eq!(after.state.mutation_receipt_head, original_head);
             assert_eq!(after.state.collections["docs"].documents["one"], original);
             assert_eq!(
@@ -1718,7 +1721,7 @@ name: "docs".into(),
                     &observation,
                     kasumi_types::CredentialResource::Database {
                         incarnation: uuid::Uuid::parse_str(
-                            &fixture.db.engine().generation().unwrap().state.incarnation,
+                            fixture.db.engine().generation().unwrap().incarnation(),
                         )
                         .unwrap(),
                     },
@@ -1891,7 +1894,7 @@ name: "docs".into(),
     async fn required_audit_failure_blocks_dispatch_and_preserves_authentication_denials() {
         let fixture = Fixture::new().await;
         let token = fixture.token("person", "tenant-a", "kasumi:read kasumi:write");
-        let revision = fixture.db.engine().generation().unwrap().state.revision;
+        let revision = fixture.db.engine().generation().unwrap().revision();
         fixture.audit_store.seal();
         let error = fixture
             .data()
@@ -1935,7 +1938,7 @@ name: "docs".into(),
             StatusCode::UNAUTHORIZED
         );
         assert_eq!(
-            fixture.db.engine().generation().unwrap().state.revision,
+            fixture.db.engine().generation().unwrap().revision(),
             revision
         );
         assert!(
@@ -2027,8 +2030,11 @@ name: "docs".into(),
         }
         let retained = control.engine().generation().unwrap().state.audits.len();
         assert!(retained > 1);
-        let mut config =
-            crate::runtime::example_config(kasumi_store::DirectoryPolicy::fixture()).unwrap();
+        let mut config = crate::runtime::example_config(
+            kasumi_store::DirectoryPolicy::fixture(),
+            kasumi_store::FileAllocationPolicy::fixture(),
+        )
+        .unwrap();
         config.control.initial_policy = policy;
         let manager = Administration::new(
             config,
@@ -2049,7 +2055,7 @@ name: "docs".into(),
             Arc::new(|_| anyhow::bail!("fixture has no installed authority credential")),
         )
         .unwrap();
-        let token = fixture.resource_token("person", tenant, "kasumi:admin kasumi:read kasumi:write", Some(json!({"kind":"control","incarnation":control.engine().generation().unwrap().state.incarnation})));
+        let token = fixture.resource_token("person", tenant, "kasumi:admin kasumi:read kasumi:write", Some(json!({"kind":"control","incarnation":control.engine().generation().unwrap().incarnation()})));
         let limits = Limits {
             audit_retention: kasumi_types::AuditRetentionBudget {
                 hot_bytes: 256 << 10,
@@ -2072,7 +2078,7 @@ name: "docs".into(),
             Code::PermissionDenied
         );
         let admin = bare.with_management(manager);
-        let impostor = fixture.resource_token("reader", tenant, "kasumi:admin", Some(json!({"kind":"control","incarnation":control.engine().generation().unwrap().state.incarnation})));
+        let impostor = fixture.resource_token("reader", tenant, "kasumi:admin", Some(json!({"kind":"control","incarnation":control.engine().generation().unwrap().incarnation()})));
         assert_eq!(
             admin
                 .set_limits(native(
@@ -2100,8 +2106,7 @@ name: "docs".into(),
                 .engine()
                 .generation()
                 .unwrap()
-                .state
-                .limits
+                .limits()
                 .audit_retention
                 .hot_bytes,
             256 << 10

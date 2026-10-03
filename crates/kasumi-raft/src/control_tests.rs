@@ -229,11 +229,76 @@ pub(crate) async fn fixture_for_node(
     Arc<LocalKeyProvider>,
     LogStore,
 )> {
-    let node = NodeStore::open_with_backend(
-        disk,
-        kasumi_store::test_utils::storage_admission(),
-        fixture_scratch.clone(),
-    )?;
+    let node = if create {
+        NodeStore::create_with_backend(
+            disk,
+            kasumi_store::test_utils::storage_admission(),
+            fixture_scratch.clone(),
+        )
+    } else {
+        NodeStore::open_with_backend(
+            disk,
+            kasumi_store::test_utils::storage_admission(),
+            fixture_scratch.clone(),
+        )
+    }?;
+    fixture_with_node(node, create, node_id).await
+}
+
+// The prepared control planner needs the actual installed physical provider.
+// Reuse the same FaultBackend bytes and fault counter; no file-backed I/O is
+// substituted for the injected backend and no durability boundary is skipped.
+pub(crate) async fn fixture_on_disk(
+    disk: FaultBackend,
+    create: bool,
+    fixture_scratch: Arc<kasumi_store::ScratchDisk>,
+    persistent: Arc<kasumi_store::NodeDisk>,
+) -> Result<(
+    Arc<TenantStorageSet>,
+    Arc<LocalKeyProvider>,
+    Arc<LocalKeyProvider>,
+    LogStore,
+)> {
+    let node = fault_node_on_disk(disk, create, fixture_scratch, persistent)?;
+    fixture_with_node(node, create, 1).await
+}
+
+fn fault_node_on_disk(
+    disk: FaultBackend,
+    create: bool,
+    fixture_scratch: Arc<kasumi_store::ScratchDisk>,
+    persistent: Arc<kasumi_store::NodeDisk>,
+) -> Result<Arc<NodeStore>> {
+    let node = if create {
+        NodeStore::create_fixture_backend_on_disk(
+            disk,
+            kasumi_store::test_utils::storage_admission(),
+            persistent.clone(),
+            fixture_scratch.clone(),
+        )
+    } else {
+        NodeStore::open_fixture_backend_on_disk(
+            disk,
+            kasumi_store::test_utils::storage_admission(),
+            persistent.clone(),
+            fixture_scratch.clone(),
+        )
+    }?;
+    assert!(Arc::ptr_eq(node.persistent_disk(), &persistent));
+    assert!(Arc::ptr_eq(node.scratch_disk(), &fixture_scratch));
+    Ok(node)
+}
+
+async fn fixture_with_node(
+    node: Arc<NodeStore>,
+    create: bool,
+    node_id: u64,
+) -> Result<(
+    Arc<TenantStorageSet>,
+    Arc<LocalKeyProvider>,
+    Arc<LocalKeyProvider>,
+    LogStore,
+)> {
     let app_provider = Arc::new(LocalKeyProvider::new([11; 32]));
     let custody_provider = Arc::new(LocalKeyProvider::new([12; 32]));
     let app = (if create {
@@ -363,20 +428,25 @@ fn signed_target_serving_access(prebind: &TargetFirstMembershipPrebind) -> Resul
     StorageAccess::serving(kasumi_serving::ServingGate::new(lease)?)
 }
 
+struct TargetServingKeys {
+    application: Arc<LocalKeyProvider>,
+    custody: Arc<LocalKeyProvider>,
+}
+
 async fn target_serving_fixture(
     disk: FaultBackend,
     create: bool,
     fixture_scratch: Arc<kasumi_store::ScratchDisk>,
+    persistent: Arc<kasumi_store::NodeDisk>,
     prebind: &TargetFirstMembershipPrebind,
     access: StorageAccess,
-    app_provider: Arc<LocalKeyProvider>,
-    custody_provider: Arc<LocalKeyProvider>,
+    keys: TargetServingKeys,
 ) -> Result<(Arc<TenantStorageSet>, LogStore)> {
-    let node = NodeStore::open_with_backend(
-        disk,
-        kasumi_store::test_utils::storage_admission(),
-        fixture_scratch,
-    )?;
+    let TargetServingKeys {
+        application: app_provider,
+        custody: custody_provider,
+    } = keys;
+    let node = fault_node_on_disk(disk, create, fixture_scratch, persistent)?;
     let stores = if create {
         TenantStorageSet::initialize_catalogs(
             node,
@@ -690,7 +760,16 @@ async fn interrupted_raft_append_never_persists_seed_without_matching_body_and_h
     drop(stores);
     let mut failed = 0;
     let mut succeeded = 0;
-    for failure in 0..40 {
+    let counting = baseline.crash();
+    let (counting_stores, _, _, mut counting_log) =
+        fixture(counting.clone(), false, fixture_scratch.clone()).await?;
+    let start = counting.operations();
+    counting_log.blocking_append([retirement_entry()?]).await?;
+    let operations = counting.operations() - start;
+    drop(counting_log);
+    drop(counting_stores);
+    assert!(operations > 0);
+    for failure in 0..=operations {
         let disk = baseline.crash();
         let (stores, _, _, mut log) = fixture(disk.clone(), false, fixture_scratch.clone()).await?;
         disk.fail_after(failure);
@@ -799,9 +878,22 @@ async fn accepted_boundary_and_exact_applied_position_publish_atomically_before_
 -> Result<()> {
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
     let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
+    let persistent_directory = kasumi_store::test_utils::private_tempdir()?;
+    let persistent = kasumi_store::test_utils::retry_disk_registry(|| {
+        kasumi_store::NodeDisk::fixture_for_path(
+            persistent_directory.path().join("control-fault.kv"),
+            disk_memory.clone(),
+        )
+    })?;
     let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
     let seed_disk = FaultBackend::new();
-    let (stores, _, _, mut log) = fixture(seed_disk.clone(), true, fixture_scratch.clone()).await?;
+    let (stores, _, _, mut log) = fixture_on_disk(
+        seed_disk.clone(),
+        true,
+        fixture_scratch.clone(),
+        persistent.clone(),
+    )
+    .await?;
     let entry = retirement_entry()?;
     let EntryPayload::Normal(command) = &entry.payload else {
         unreachable!()
@@ -833,15 +925,36 @@ async fn accepted_boundary_and_exact_applied_position_publish_atomically_before_
     drop(log);
     drop(stores);
     let mut successes = 0;
-    for failure in 0..40 {
+    let counting = baseline.crash();
+    let (counting_stores, _, _, counting_log) = fixture_on_disk(
+        counting.clone(),
+        false,
+        fixture_scratch.clone(),
+        persistent.clone(),
+    )
+    .await?;
+    let start = counting.operations();
+    persist_applied(&counting_stores, &context, Some(receipt.clone()))?;
+    let operations = counting.operations() - start;
+    drop(counting_log);
+    drop(counting_stores);
+    assert!(operations > 0);
+    for failure in 0..=operations {
         let disk = baseline.crash();
-        let (stores, _, _, _) = fixture(disk.clone(), false, fixture_scratch.clone()).await?;
+        let (stores, _, _, _) = fixture_on_disk(
+            disk.clone(),
+            false,
+            fixture_scratch.clone(),
+            persistent.clone(),
+        )
+        .await?;
         disk.fail_after(failure);
         let result = persist_applied(&stores, &context, Some(receipt.clone()));
         let crash = disk.crash();
         disk.disarm();
         drop(stores);
-        let (reopened, _, _, mut log) = fixture(crash, false, fixture_scratch.clone()).await?;
+        let (reopened, _, _, mut log) =
+            fixture_on_disk(crash, false, fixture_scratch.clone(), persistent.clone()).await?;
         let applied: Option<AppliedCursor> = load(reopened.custody().store(), META, b"applied")?;
         let boundary = retired_boundary(reopened.custody())?;
         assert_eq!(
@@ -910,9 +1023,22 @@ fn membership_context(
 async fn first_applied_membership_and_cursor_survive_every_atomic_write_boundary() -> Result<()> {
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
     let scratch_directory = kasumi_store::test_utils::private_tempdir()?;
+    let persistent_directory = kasumi_store::test_utils::private_tempdir()?;
+    let persistent = kasumi_store::test_utils::retry_disk_registry(|| {
+        kasumi_store::NodeDisk::fixture_for_path(
+            persistent_directory.path().join("control-fault.kv"),
+            disk_memory.clone(),
+        )
+    })?;
     let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
     let seed_disk = FaultBackend::new();
-    let (stores, _, _, mut log) = fixture(seed_disk.clone(), true, fixture_scratch.clone()).await?;
+    let (stores, _, _, mut log) = fixture_on_disk(
+        seed_disk.clone(),
+        true,
+        fixture_scratch.clone(),
+        persistent.clone(),
+    )
+    .await?;
     let entry = membership(0);
     let context = membership_context(&entry, None)?;
     let (header, _) = LogHeader::build(&entry, &crate::storage::encode_entry(&entry)?)?;
@@ -923,15 +1049,36 @@ async fn first_applied_membership_and_cursor_survive_every_atomic_write_boundary
     drop(stores);
 
     let mut successes = 0;
-    for failure in 0..40 {
+    let counting = baseline.crash();
+    let (counting_stores, _, _, counting_log) = fixture_on_disk(
+        counting.clone(),
+        false,
+        fixture_scratch.clone(),
+        persistent.clone(),
+    )
+    .await?;
+    let start = counting.operations();
+    persist_applied(&counting_stores, &context, None)?;
+    let operations = counting.operations() - start;
+    drop(counting_log);
+    drop(counting_stores);
+    assert!(operations > 0);
+    for failure in 0..=operations {
         let disk = baseline.crash();
-        let (stores, _, _, _) = fixture(disk.clone(), false, fixture_scratch.clone()).await?;
+        let (stores, _, _, _) = fixture_on_disk(
+            disk.clone(),
+            false,
+            fixture_scratch.clone(),
+            persistent.clone(),
+        )
+        .await?;
         disk.fail_after(failure);
         let result = persist_applied(&stores, &context, None);
         let crash = disk.crash();
         disk.disarm();
         drop(stores);
-        let (reopened, _, _, _) = fixture(crash, false, fixture_scratch.clone()).await?;
+        let (reopened, _, _, _) =
+            fixture_on_disk(crash, false, fixture_scratch.clone(), persistent.clone()).await?;
         let applied: Option<AppliedCursor> = load(reopened.custody().store(), META, b"applied")?;
         let first = first_applied_membership(reopened.custody().store())?;
         assert_eq!(
@@ -955,9 +1102,22 @@ async fn first_applied_membership_and_cursor_survive_every_atomic_write_boundary
 async fn first_applied_membership_survives_later_membership_purge_and_reopen() -> Result<()> {
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
     let scratch_directory = kasumi_store::test_utils::private_tempdir()?;
+    let persistent_directory = kasumi_store::test_utils::private_tempdir()?;
+    let persistent = kasumi_store::test_utils::retry_disk_registry(|| {
+        kasumi_store::NodeDisk::fixture_for_path(
+            persistent_directory.path().join("control-fault.kv"),
+            disk_memory.clone(),
+        )
+    })?;
     let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
     let disk = FaultBackend::new();
-    let (stores, _, _, mut log) = fixture(disk.clone(), true, fixture_scratch.clone()).await?;
+    let (stores, _, _, mut log) = fixture_on_disk(
+        disk.clone(),
+        true,
+        fixture_scratch.clone(),
+        persistent.clone(),
+    )
+    .await?;
     let first = membership(0);
     let later = membership_with_address(1, "later-local");
     let first_context = membership_context(&first, None)?;
@@ -983,7 +1143,8 @@ async fn first_applied_membership_survives_later_membership_purge_and_reopen() -
     let crash = disk.crash();
     drop(log);
     drop(stores);
-    let (reopened, _, _, _) = fixture(crash, false, fixture_scratch).await?;
+    let (reopened, _, _, _) =
+        fixture_on_disk(crash, false, fixture_scratch, persistent.clone()).await?;
     assert_eq!(
         first_applied_membership(reopened.custody().store())?,
         Some(fact.clone())
@@ -1004,18 +1165,231 @@ async fn first_applied_membership_survives_later_membership_purge_and_reopen() -
     Ok(())
 }
 
+// Storage-only fixture: construct the original signed Start/Initialize history,
+// without granting a live target execution permit or synthesizing it on reopen.
+fn signed_initialization_cause(
+    prebind: &mut TargetFirstMembershipPrebind,
+) -> Result<SignedTargetInitializationAssociation> {
+    use ring::signature::{Ed25519KeyPair, KeyPair};
+    use std::collections::BTreeMap;
+    let keys = (1u64..=3)
+        .map(|node| {
+            let key = Ed25519KeyPair::from_seed_unchecked(&[u8::try_from(node)?; 32])
+                .map_err(|_| anyhow::anyhow!("fixture target signing key invalid"))?;
+            Ok((node, key))
+        })
+        .collect::<Result<BTreeMap<_, _>>>()?;
+    let checkpoint = FullBackupCheckpoint {
+        tenant: prebind.tenant.clone(),
+        source_incarnation: uuid::Uuid::from_u128(1).to_string(),
+        revision: 10,
+        resident_sha256: "11".repeat(32),
+        backup_id: uuid::Uuid::from_u128(4),
+        manifest_ciphertext_sha256: "22".repeat(32),
+        key_lineage_digest: "33".repeat(32),
+    };
+    let input = TargetMaterializationInput {
+        destination_alias: "backup".into(),
+        backup_id: checkpoint.backup_id,
+        source_purpose_sha256: "44".repeat(32),
+        target_incarnation: prebind.target_incarnation,
+        voters: prebind
+            .voters
+            .iter()
+            .map(|(node, endpoint)| {
+                (
+                    *node,
+                    TargetPeer {
+                        endpoint: endpoint.clone(),
+                        failure_domain: format!("zone-{node}"),
+                    },
+                )
+            })
+            .collect(),
+    };
+    let request = CommitLifecycleIntent {
+        command_id: uuid::Uuid::from_u128(5),
+        expected_policy_epoch: 1,
+        installation_sha256: "55".repeat(32),
+        authority_partition: format!("{}/0", uuid::Uuid::from_u128(999)),
+        tenant: prebind.tenant.clone(),
+        source_incarnation: uuid::Uuid::from_u128(1),
+        source_authority_epoch: 1,
+        target_incarnation: prebind.target_incarnation,
+        checkpoint,
+        target_nodes: keys
+            .iter()
+            .map(|(node, key)| {
+                (
+                    *node,
+                    LifecycleNode {
+                        node_id: *node,
+                        verifier: if *node == prebind.node.node_id {
+                            prebind.node.verifier.clone()
+                        } else {
+                            TrustVerifierIdentity {
+                                installation_id: uuid::Uuid::from_u128(100 + u128::from(*node)),
+                                node_id: *node,
+                            }
+                        },
+                        principal: if *node == prebind.node.node_id {
+                            prebind.node.principal.clone()
+                        } else {
+                            format!("target-{node}")
+                        },
+                        certificate_sha256: if *node == prebind.node.node_id {
+                            prebind.node.certificate_sha256.clone()
+                        } else {
+                            format!("{node:064x}")
+                        },
+                        attestation_public_key: hex::encode(key.public_key().as_ref()),
+                    },
+                )
+            })
+            .collect(),
+        phase: LifecyclePhase::Materialize,
+        phase_input_sha256: input.digest()?,
+        resume_origin: None,
+    };
+    let materialization = LifecycleIntent {
+        request_sha256: staged_digest(&request)?.0,
+        request,
+        control_incarnation: prebind.control_root.control_incarnation,
+        installation_generation: 1,
+        original_principal: "operator".into(),
+        original_credential_expires_at_ms: 1_000,
+        accepted_at_ms: 100,
+        revision: 2,
+    };
+    let origin = TargetOrigin {
+        authority_manifest_sha256: "66".repeat(32),
+        materialization,
+        input,
+    };
+    origin.validate()?;
+    let quorum = TargetQuorumInput {
+        origin_sha256: origin.digest()?,
+        materialized: keys
+            .iter()
+            .map(|(node, key)| {
+                let fact = TargetMaterializationFact {
+                    origin: origin.clone(),
+                    node_id: *node,
+                    bootstrap_sha256: prebind.bootstrap_sha256.clone(),
+                    revision_base: 11,
+                };
+                let signature = hex::encode(
+                    key.sign(&serde_json::to_vec(&(
+                        "kasumi.materialized-target.v1",
+                        &fact,
+                    ))?)
+                    .as_ref(),
+                );
+                Ok((*node, SignedTargetMaterialization { fact, signature }))
+            })
+            .collect::<Result<_>>()?,
+    };
+    let mut original_intent = origin.materialization.clone();
+    original_intent.request.command_id = uuid::Uuid::from_u128(1_009);
+    original_intent.request.phase = LifecyclePhase::Initialize;
+    original_intent.request.phase_input_sha256 = quorum.digest()?;
+    original_intent.request_sha256 = staged_digest(&original_intent.request)?.0;
+    original_intent.revision = 9;
+    original_intent.accepted_at_ms = 150;
+    let phase = |initialize: bool| -> Result<RecoveryPhaseRecord> {
+        let input = RecoveryDispatch::Target {
+            node_id: prebind.node.node_id,
+            request: Box::new(TargetRuntimeRequest {
+                tenant: prebind.tenant.clone(),
+                command_id: original_intent.request.command_id,
+                not_after_ms: 500,
+                step: if initialize {
+                    TargetRuntimeStep::Initialize(quorum.clone())
+                } else {
+                    TargetRuntimeStep::Start(TargetReplicaInput::Quorum(quorum.clone()))
+                },
+            }),
+        };
+        let digest = staged_digest(&input)?.0;
+        Ok(RecoveryPhaseRecord {
+            operation_id: prebind.dispatch.operation_id,
+            phase_id: if initialize {
+                uuid::Uuid::from_u128(711)
+            } else {
+                prebind.dispatch.phase_id
+            },
+            sequence: if initialize { 2 } else { 1 },
+            phase: RecoveryPhase::Initialize,
+            completion_scope: None,
+            previous_phase: initialize.then_some(prebind.dispatch.phase_id),
+            input,
+            input_sha256: digest.clone(),
+            principal: original_intent.original_principal.clone(),
+            admitted_at_ms: 200,
+            original_credential_expires_at_ms: 1_000,
+            prepared_revision: if initialize { 3 } else { 1 },
+            effect_attempts: BTreeMap::from([(
+                RecoveryEffect::TargetCommand,
+                RecoveryEffectAttempt {
+                    attempt_id: if initialize {
+                        uuid::Uuid::from_u128(721)
+                    } else {
+                        prebind.dispatch.attempt_id
+                    },
+                    input_sha256: digest,
+                    admitted_at_ms: 201,
+                    begun_revision: if initialize { 4 } else { 2 },
+                },
+            )]),
+            activation_acceptance: None,
+            outcome: None,
+            resolved_revision: None,
+        })
+    };
+    let start = phase(false)?;
+    let initialize = phase(true)?;
+    prebind.dispatch = TargetInitialMembershipStatusInput::dispatch_identity(&start)?;
+    let association = TargetInitializationAssociation {
+        control_root: prebind.control_root.clone(),
+        original_intent,
+        quorum,
+        start,
+        initialize,
+    };
+    let signed = SignedTargetInitializationAssociation {
+        signature: hex::encode(
+            keys[&prebind.node.node_id]
+                .sign(&serde_json::to_vec(&(
+                    "kasumi.target-initialization-association.v1",
+                    &association,
+                ))?)
+                .as_ref(),
+        ),
+        association,
+    };
+    kasumi_serving::verify_target_initialization_association(&signed)?;
+    Ok(signed)
+}
+
 #[tokio::test]
 async fn prebound_first_membership_association_survives_later_apply_purge_and_reopen() -> Result<()>
 {
     use std::collections::BTreeMap;
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
     let scratch_directory = kasumi_store::test_utils::private_tempdir()?;
+    let persistent_directory = kasumi_store::test_utils::private_tempdir()?;
+    let persistent = kasumi_store::test_utils::retry_disk_registry(|| {
+        kasumi_store::NodeDisk::fixture_for_path(
+            persistent_directory.path().join("control-fault.kv"),
+            disk_memory.clone(),
+        )
+    })?;
     let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
     let disk = FaultBackend::new();
     let voters = (1..=3)
         .map(|node| (node, format!("https://target-{node}:7400")))
         .collect::<BTreeMap<_, _>>();
-    let prebind = TargetFirstMembershipPrebind {
+    let mut prebind = TargetFirstMembershipPrebind {
         format: 1,
         control_root: ControlSigningRoot {
             control_incarnation: uuid::Uuid::new_v4(),
@@ -1043,6 +1417,7 @@ async fn prebound_first_membership_association_survives_later_apply_purge_and_re
         voters: voters.clone(),
         bootstrap_sha256: "0".repeat(64),
     };
+    let signed_cause = signed_initialization_cause(&mut prebind)?;
     let access = signed_target_serving_access(&prebind)?;
     let app_provider = Arc::new(LocalKeyProvider::new([11; 32]));
     let custody_provider = Arc::new(LocalKeyProvider::new([12; 32]));
@@ -1050,10 +1425,13 @@ async fn prebound_first_membership_association_survives_later_apply_purge_and_re
         disk.clone(),
         true,
         fixture_scratch.clone(),
+        persistent.clone(),
         &prebind,
         access.clone(),
-        app_provider.clone(),
-        custody_provider.clone(),
+        TargetServingKeys {
+            application: app_provider.clone(),
+            custody: custody_provider.clone(),
+        },
     )
     .await?;
     stores.custody().store().write_batch(&[WriteOp::put(
@@ -1062,8 +1440,8 @@ async fn prebound_first_membership_association_survives_later_apply_purge_and_re
         serde_json::to_vec(&prebind)?,
     )])?;
     let first = Entry {
-        initialization: None,
-        log_id: id(0),
+        initialization: Some(serde_json::to_vec(&signed_cause)?),
+        log_id: LogId::default(),
         payload: EntryPayload::Membership(Membership::new(
             vec![BTreeSet::from([1, 2, 3])],
             voters
@@ -1072,9 +1450,16 @@ async fn prebound_first_membership_association_survives_later_apply_purge_and_re
                 .collect::<BTreeMap<_, _>>(),
         )),
     };
+    let first_id = first.log_id;
+    let mut missing_cause = first.clone();
+    missing_cause.initialization = None;
+    assert!(
+        crate::initialization_association::validate_entry(stores.custody(), &missing_cause)
+            .is_err()
+    );
     let later = membership_with_address(1, "later-local");
     let first_context = membership_context(&first, None)?;
-    let later_context = membership_context(&later, Some(id(0)))?;
+    let later_context = membership_context(&later, Some(first_id))?;
     log.blocking_append([first, later]).await?;
     log.save_committed(Some(id(1))).await?;
     let mut wrong_voters = prebind.clone();
@@ -1108,10 +1493,13 @@ async fn prebound_first_membership_association_survives_later_apply_purge_and_re
     let association: LocalFirstMembershipAssociation =
         load(stores.custody().store(), META, LOCAL_FIRST_ASSOCIATION_KEY)?
             .context("atomic local association absent")?;
+    let committed_cause = crate::read_initialization_association(&stores)?
+        .context("atomic signed initialization cause absent")?;
+    assert_eq!(committed_cause.signed, signed_cause);
     persist_applied(&stores, &later_context, None)?;
     assert_eq!(
         read_target_first_membership_history(&stores, &prebind)?.first_log_id(),
-        id(0)
+        first_id
     );
     let original_header = stores
         .custody()
@@ -1139,10 +1527,13 @@ async fn prebound_first_membership_association_survives_later_apply_purge_and_re
         crash,
         false,
         fixture_scratch,
+        persistent,
         &prebind,
         access,
-        app_provider,
-        custody_provider,
+        TargetServingKeys {
+            application: app_provider,
+            custody: custody_provider,
+        },
     )
     .await?;
     assert_eq!(
@@ -1158,9 +1549,13 @@ async fn prebound_first_membership_association_survives_later_apply_purge_and_re
         Some(association.clone())
     );
     let history = read_target_first_membership_history(&reopened, &prebind)?;
-    assert_eq!(history.first_log_id(), id(0));
+    assert_eq!(history.first_log_id(), first_id);
     assert_eq!(history.applied_log_id(), id(1));
     assert_eq!(history.committed_log_id(), id(1));
+    assert_eq!(
+        crate::read_initialization_association(&reopened)?,
+        Some(committed_cause)
+    );
     let snapshot_meta = openraft::SnapshotMeta {
         last_log_id: Some(id(1)),
         last_membership: later_context.membership,
@@ -1204,7 +1599,7 @@ async fn prebound_first_membership_association_survives_later_apply_purge_and_re
     reopened.custody().store().write_batch(&[WriteOp::put(
         META,
         b"committed",
-        serde_json::to_vec(&Some(id(0)))?,
+        serde_json::to_vec(&Some(first_id))?,
     )])?;
     assert!(read_target_first_membership_history(&reopened, &prebind).is_err());
     reopened.custody().store().write_batch(&[WriteOp::put(

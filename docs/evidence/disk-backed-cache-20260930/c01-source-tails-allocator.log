@@ -1,0 +1,12 @@
+Command: cargo test -p kasumi-types --all-features --test drain_issue_retirement --locked --offline --config profile.test.package.kasumi-kv.opt-level=3 --config profile.test.package.sha2.opt-level=3 -- --test-threads=1
+CARGO_TARGET_DIR=target/disk-backed-cache
+   Compiling kasumi-types v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-types)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 20.92s
+     Running tests/drain_issue_retirement.rs (target/disk-backed-cache/debug/deps/drain_issue_retirement-640f0486e4234fdc)
+
+running 1 test
+test issue_shell_retires_before_original_error_with_concurrent_final_clones ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+Runner: 21.03s; exit=0; matching=768/768

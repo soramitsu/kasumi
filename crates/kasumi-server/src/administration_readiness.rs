@@ -52,14 +52,11 @@ impl Administration {
             .engine()
             .generation()
             .context(SweepFailure::ControlUnavailable)?;
-        let document = generation
-            .state
-            .collections
-            .get("topology")
-            .and_then(|c| c.documents.get("current"))
+        let topology_version = generation
+            .local_control_topology_version()
             .context(SweepFailure::ControlUnavailable)?;
         Ok(Epoch {
-            topology_version: document.version,
+            topology_version,
             installed_routes: self
                 .registry
                 .route_epoch()
@@ -112,42 +109,48 @@ impl Administration {
     async fn readiness_sweep(&self, stop: &mut watch::Receiver<bool>) -> Result<()> {
         // Retain one immutable topology document, never the complete generation
         // or all database handles. Charge its heap before retaining its Arc.
-        let (epoch, document, _reservation) = {
-            let generation = self
-                .control
-                .engine()
-                .generation()
-                .context(SweepFailure::ControlUnavailable)?;
-            let document = generation
-                .state
-                .collections
-                .get("topology")
-                .and_then(|c| c.documents.get("current"))
-                .context(SweepFailure::ControlUnavailable)?;
-            let bytes = kasumi_engine::retained_document_bytes(document)
-                .map_err(anyhow::Error::from)
-                .and_then(|bytes| Ok(u64::try_from(bytes)?))
-                .context(SweepFailure::AdmissionReserve)?
-                .checked_add(128 << 10)
-                .context(SweepFailure::AdmissionReserve)?;
-            let mut reservation = self
-                .admission
-                .reserve(bytes, None)
-                .context(SweepFailure::AdmissionReserve)?;
-            reservation.retain(bytes);
-            let epoch = Epoch {
-                topology_version: document.version,
-                installed_routes: self
-                    .registry
-                    .route_epoch()
-                    .context(SweepFailure::EpochUnavailable)?,
-                actual_membership: self
-                    .registry
-                    .membership_epoch()
-                    .context(SweepFailure::EpochUnavailable)?,
+        let (epoch, document, _reservation) =
+            {
+                let selection = ControlPlane::select_local(&self.control)
+                    .context(SweepFailure::ControlUnavailable)?;
+                selection
+                    .check_admission(&self.admission)
+                    .context(SweepFailure::AdmissionReserve)?;
+                let document =
+                    selection
+                        .topology_document()
+                        .map_err(|error| {
+                            let class = if error.downcast_ref::<kasumi_types::Error>().is_some_and(
+                                |error| error.code == kasumi_types::ErrorCode::ResourceExhausted,
+                            ) {
+                                SweepFailure::AdmissionReserve
+                            } else {
+                                SweepFailure::ControlUnavailable
+                            };
+                            error.context(class)
+                        })?
+                        .context(SweepFailure::ControlUnavailable)?;
+                // Preserve the existing route/probe scratch allowance. The source
+                // handle has its own independent current point-read custody.
+                let bytes = 128 << 10;
+                let mut reservation = self
+                    .admission
+                    .reserve(bytes, None)
+                    .context(SweepFailure::AdmissionReserve)?;
+                reservation.retain(bytes);
+                let epoch = Epoch {
+                    topology_version: document.version,
+                    installed_routes: self
+                        .registry
+                        .route_epoch()
+                        .context(SweepFailure::EpochUnavailable)?,
+                    actual_membership: self
+                        .registry
+                        .membership_epoch()
+                        .context(SweepFailure::EpochUnavailable)?,
+                };
+                (epoch, document, reservation)
             };
-            (epoch, document.clone(), reservation)
-        };
         let local_id = self.config.replication.as_ref().map_or(1, |r| r.node_id);
         let routes = document
             .body
@@ -181,9 +184,8 @@ impl Administration {
             .engine()
             .generation()
             .context(SweepFailure::ControlUnavailable)?
-            .state
-            .incarnation
-            .clone();
+            .incarnation()
+            .to_owned();
         self.probe_one(
             crate::runtime::CONTROL_TENANT.to_owned(),
             control_incarnation,

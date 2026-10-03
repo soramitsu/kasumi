@@ -1,0 +1,33 @@
+Command: cargo test -p kasumi-engine --all-features --lib --locked --offline --config profile.test.package.kasumi-kv.opt-level=3 --config profile.test.package.sha2.opt-level=3 -- --test-threads=1 selected_sources_ topology_input_ primary_tree:: primary_stage_
+CARGO_TARGET_DIR=target/disk-backed-cache
+   Compiling kasumi-types v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-types)
+   Compiling kasumi-kv v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-kv)
+   Compiling kasumi-serving v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-serving)
+   Compiling kasumi-query v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-query)
+   Compiling kasumi-store v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-store)
+   Compiling kasumi-raft v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-raft)
+   Compiling kasumi-engine v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-engine)
+error[E0034]: multiple applicable items in scope
+   --> crates/kasumi-engine/src/application_sources.rs:199:25
+    |
+199 |         self.original().fmt(f)
+    |                         ^^^ multiple `fmt` found
+    |
+note: candidate #1 is defined in the trait `Debug`
+   --> /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/fmt/mod.rs:1084:4
+note: candidate #2 is defined in the trait `std::fmt::Display`
+   --> /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/fmt/mod.rs:1212:4
+help: disambiguate the method for candidate #1
+    |
+199 -         self.original().fmt(f)
+199 +         Debug::fmt(&self.original(), f)
+    |
+help: disambiguate the method for candidate #2
+    |
+199 -         self.original().fmt(f)
+199 +         std::fmt::Display::fmt(&self.original(), f)
+    |
+
+For more information about this error, try `rustc --explain E0034`.
+error: could not compile `kasumi-engine` (lib) due to 1 previous error
+Runner: 79.77s; exit=101; matching=752/752

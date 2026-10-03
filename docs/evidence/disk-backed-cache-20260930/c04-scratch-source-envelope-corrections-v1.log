@@ -1,0 +1,84 @@
+Command: cargo test --locked --offline --config profile.test.package.kasumi-kv.opt-level=3 --config profile.test.package.sha2.opt-level=3 -p kasumi-kv -p kasumi-store -p kasumi-raft -p kasumi-engine --all-features --lib --no-fail-fast -- scratch_table::tests production_capacity_tests ordinary_envelope --nocapture
+CARGO_TARGET_DIR=target/disk-backed-cache
+   Compiling kasumi-store v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-store)
+   Compiling kasumi-raft v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-raft)
+   Compiling kasumi-engine v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-engine)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 56s
+     Running unittests src/lib.rs (target/disk-backed-cache/debug/deps/kasumi_engine-44db468831cfc59f)
+
+running 4 tests
+test admission::source_publication::protected_point_tests::production_capacity_tests::production_prepared_source_cancellation_retires_its_exact_unused_right ... ok
+test admission::source_publication::protected_point_tests::production_capacity_tests::production_current_next_source_owners_reuse_positive_retirement_under_pressure ... ok
+test admission::source_publication::protected_point_tests::production_capacity_tests::production_source_history_escape_refusal_restores_current_then_reuses_exact_lane ... ok
+test admission::source_publication::protected_point_tests::production_capacity_tests::production_source_selection_uses_exact_encrypted_root_and_preowned_small_shape ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 640 filtered out; finished in 2.69s
+
+     Running unittests src/lib.rs (target/disk-backed-cache/debug/deps/kasumi_kv-221aa5373d25965b)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 551 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/disk-backed-cache/debug/deps/kasumi_raft-8af78bc0d2a8574c)
+
+running 6 tests
+test selected_application::plan::ordinary_envelope::tests::streamed_shape_quote_matches_actual_canonical_wire_and_number_channels ... ok
+test selected_application::plan::ordinary_envelope::tests::borrowed_maximum_shape_matches_actual_cursor_schema_for_zero_single_and_joint_membership ... ok
+test selected_application::plan::ordinary_envelope::tests::ordinary_shape_preserves_the_existing_maximum_control_record_ceiling ... ok
+test selected_application::plan::ordinary_envelope::tests::ordinary_envelope_covers_actual_current_and_advancing_plans_but_not_covered_or_snapshot ... ok
+test selected_application::plan::ordinary_envelope::tests::membership_growth_requires_expanded_quote_before_actual_internal_entry_publication ... ok
+test selected_application::plan::ordinary_envelope::tests::ordinary_envelope_rejects_foreign_pair_and_changed_bootstrap_without_admission ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 176 filtered out; finished in 2.87s
+
+     Running unittests src/lib.rs (target/disk-backed-cache/debug/deps/kasumi_store-4ef75ebdc018c368)
+
+running 36 tests
+test scratch_table::tests::exact_settlement_mismatch_fences_owner_without_allocating_or_returning_credit ... ok
+test scratch_table::tests::actual_spool_close_reports_native_drain_before_retiring_adapter_owner ... ok
+test scratch_table::tests::explicit_scratch_close_retains_original_physical_failure_on_retry ... ok
+test scratch_table::tests::exact_backend_publication_io_settlement_shrink_and_close_do_not_allocate ... ok
+test scratch_table::tests::failed_bootstrap_closes_the_exact_spool_before_returning ... ok
+test scratch_table::tests::failed_bootstrap_retains_unproved_close_and_original_outcomes ... ok
+test scratch_table::tests::batch_open_retirement_keeps_actual_type_error_and_actual_lease_panic ... ok
+test scratch_table::tests::an_existing_unwind_keeps_the_actual_batch_lease_unentered_and_charged ... ok
+test scratch_table::tests::batch_reuses_one_real_typed_table_instead_of_repeating_cold_catalog_reads ... ok
+test scratch_table::tests::batch_entry_limit_rejects_before_publication_and_aborts_partial_input ... ok
+test scratch_table::tests::rejected_resize_is_wholly_reserved_before_any_logical_or_physical_change ... ok
+TestDiskMemory::reserve_installed denied: provider=0x7bd4c5cf10 requested_bytes=69680 charged_bytes=73800 bookkeeping_bytes=24224 used_bytes=1209722 next_used_bytes=1283522 max_bytes=67108864 live_reservations=32 max_reservations=32 attempts=54 error=Kind(OutOfMemory)
+TestDiskMemory::reserve_installed denied: provider=0x7bd4c5cf10 requested_bytes=6422 charged_bytes=10542 bookkeeping_bytes=24224 used_bytes=1209722 next_used_bytes=1220264 max_bytes=67108864 live_reservations=32 max_reservations=32 attempts=55 error=Kind(OutOfMemory)
+TestDiskMemory::reserve_installed denied: provider=0x7bd4c5cf10 requested_bytes=69680 charged_bytes=73800 bookkeeping_bytes=24224 used_bytes=1231048 next_used_bytes=1304848 max_bytes=67108864 live_reservations=32 max_reservations=32 attempts=83 error=Kind(OutOfMemory)
+TestDiskMemory::reserve_installed denied: provider=0x7bd4c5cf10 requested_bytes=6423 charged_bytes=10543 bookkeeping_bytes=24224 used_bytes=1231048 next_used_bytes=1241591 max_bytes=67108864 live_reservations=32 max_reservations=32 attempts=84 error=Kind(OutOfMemory)
+test scratch_table::tests::accepted_transaction_keeps_scratch_close_retained_until_actual_drain ... ok
+test scratch_table::tests::dropping_a_table_under_a_live_transaction_never_enters_close_or_returns_credit ... ok
+TestDiskMemory::reserve_installed denied: provider=0x7bd4c5c650 requested_bytes=0 charged_bytes=4120 bookkeeping_bytes=40096 used_bytes=350340 next_used_bytes=354460 max_bytes=33554432 live_reservations=64 max_reservations=64 attempts=65 error=Kind(OutOfMemory)
+TestDiskMemory::reserve_installed denied: provider=0x7bd4c5c650 requested_bytes=271576 charged_bytes=275696 bookkeeping_bytes=40096 used_bytes=350340 next_used_bytes=626036 max_bytes=33554432 live_reservations=64 max_reservations=64 attempts=66 error=Kind(OutOfMemory)
+test scratch_table::tests::scratch_group_census_rejects_namespace_mutation_and_same_slot_reuse_without_restart ... ok
+test scratch_table::tests::dropping_a_failed_table_keeps_spool_and_charge_without_allocating ... ok
+test scratch_table::tests::batch_outliving_table_observes_close_after_its_transaction_ends ... ok
+test scratch_table::tests::dropping_a_table_observes_native_close_before_returning_scratch_credit ... ok
+test scratch_table::tests::scratch_group_metadata_denial_opens_no_file_and_census_callback_failure_is_retryable ... ok
+test scratch_table::tests::dropping_an_explicitly_closed_table_never_reenters_native_close ... ok
+test scratch_table::tests::scratch_group_census_releases_owner_lock_for_admission_and_read_callbacks ... ok
+test scratch_table::tests::accepted_batch_keeps_physical_table_until_commit_and_close ... ok
+test scratch_table::tests::dropping_a_drained_table_closes_natively_once_without_allocating ... ok
+test scratch_table::tests::raw_batch_cancellation_fences_the_actual_owner_before_retirement_unwinds ... ok
+TestDiskMemory::reserve_installed denied: provider=0x7bd4c5d550 requested_bytes=4351 charged_bytes=8471 bookkeeping_bytes=24224 used_bytes=984996 next_used_bytes=993467 max_bytes=67108864 live_reservations=32 max_reservations=32 attempts=33 error=Kind(OutOfMemory)
+test scratch_table::tests::failed_explicit_close_keeps_charge_and_drop_never_reenters_close ... ok
+test scratch_table::tests::segmented_scratch_limits_aggregate_extents_before_mutation_and_reuses_drained_slots ... ok
+test scratch_table::tests::retained_typed_table_checks_the_current_native_owner_on_every_insert ... ok
+test scratch_table::tests::workspace_tests::scratch_preparation_capacity_refusal_has_no_private_effect_and_retries ... ok
+test scratch_table::tests::strict_create_rejects_a_non_empty_spool_instead_of_adopting_its_frames ... ok
+test scratch_table::tests::retained_batch_table_rejects_a_duplicate_committed_by_an_earlier_batch ... ok
+test scratch_table::tests::batch_commit_retirement_keeps_failed_and_successful_native_outcomes_unknown ... ok
+test scratch_table::tests::workspace_tests::scratch_prepared_workspace_survives_capacity_pressure_after_prepare ... ok
+test scratch_table::tests::unpublished_batch_aborts_on_drop_and_preserves_duplicate_error ... ok
+test scratch_table::tests::independently_failed_live_batches_keep_each_real_table_and_shell_charge ... ok
+test scratch_table::tests::segmented_scratch_descriptor_ceiling_is_pre_admitted_and_does_not_open_on_denial ... ok
+test scratch_table::tests::retained_batch_table_preserves_exact_byte_bound_and_abort_before_publication ... ok
+test scratch_table::tests::segmented_scratch_streams_rows_larger_than_its_explicit_cache ... ok
+
+test result: ok. 36 passed; 0 failed; 0 ignored; 0 measured; 681 filtered out; finished in 24.12s
+
+Runner: 146.78s; exit=0; matching=1546/1546

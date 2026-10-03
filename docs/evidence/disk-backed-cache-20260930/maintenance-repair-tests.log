@@ -1,0 +1,11 @@
+   Compiling kasumi-kv v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-kv)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.00s
+     Running unittests src/lib.rs (target/disk-backed-cache/debug/deps/kasumi_kv-e84af9029e220a8f)
+
+running 3 tests
+test root::tests::checksum_valid_field_changes_fail_closed ... ok
+test segment::tests::checksum_valid_field_changes_fail_closed ... ok
+test disk_state::tests::compact::compaction_admission_denial_is_retryable_without_skipping_a_key ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 307 filtered out; finished in 2.29s
+

@@ -224,7 +224,7 @@ async fn replicated_service_preserves_batches_receipts_and_cursor_fences_across_
         .query(&context(), query.clone())
         .await
         .unwrap();
-    query.cursor = first_page.cursor;
+    query.cursor = first_page.cursor.clone();
     assert!(query.cursor.is_some());
     let chunks: Vec<_> = (0..2)
         .map(|chunk| StagedChunk {

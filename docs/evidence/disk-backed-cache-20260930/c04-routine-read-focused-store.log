@@ -1,0 +1,97 @@
+Command: cargo test -p kasumi-store --all-features --lib --locked --offline --config profile.test.package.kasumi-kv.opt-level=3 --config profile.test.package.sha2.opt-level=3 -- --test-threads=1 routine_ selected_fork_ selected_view_fork_ production_ queued_production_catalog_reader reader_ unknown_native_close
+CARGO_TARGET_DIR=target/disk-backed-cache
+   Compiling kasumi-store v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-store)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 08s
+     Running unittests src/lib.rs (target/disk-backed-cache/debug/deps/kasumi_store-98be0c6afb7030c8)
+
+running 66 tests
+test catalog_budget::production_backup_catalog_clone_denies_low_headroom_and_lives_with_backup ... ok
+test catalog_budget::production_catalog_mutation_clones_deny_low_headroom_and_keep_one_resident_charge ... ok
+test catalog_budget::production_catalog_typed_admission_denial_precedes_serde_allocation ... FAILED
+test catalog_budget::production_catalog_typed_owner_retains_installed_memory_until_drop ... ok
+test catalog_budget::production_refresh_catalog_clone_denies_low_headroom_and_keeps_charge_until_probe_end ... ok
+test node_disk::tests::file_preparation_unknown_native_close_retains_slot_and_never_retries_descriptor ... ok
+test node_file::tests::unknown_native_close_cannot_mint_recovery_witness_or_retry_a_reused_descriptor ... ok
+test read_view::fork_tests::selected_view_fork_keeps_both_encrypted_domains_on_one_old_root ... ok
+test read_view::fork_tests::selected_view_fork_preserves_single_domain_point_and_range_after_parent_drop ... ok
+test read_view::fork_tests::selected_view_fork_rechecks_expiry_and_settles_post_fork_denial ... ok
+test read_view::fork_tests::selected_view_fork_rejects_foreign_database_even_with_same_provider_and_uuid ... ok
+test single_catalog::tests::production_singletons_reject_paired_capabilities_before_provider_or_catalog_effects ... ok
+test spool::native_close_tests::unknown_native_close_keeps_charge_after_aggregate_owner_drop ... ok
+test storage_domains::catalog_initialization::tests::cancelled_production_pair_waiter_drains_after_atomic_catalog_commit ... ok
+test storage_domains::catalog_initialization::tests::production_pair_rechecks_second_catalog_and_orphan_inside_one_transaction ... ok
+test storage_domains::catalog_initialization::tests::production_pair_registers_one_writer_before_waiting_for_native_gate ... ok
+test storage_opening::catalog_put::tests::production_catalog_save_uses_registered_writer_and_reopens_value ... ok
+test storage_opening::reads::fork_tests::selected_fork_keeps_old_root_and_closes_independently_in_both_orders ... ok
+test storage_opening::reads::fork_tests::selected_fork_metadata_and_native_backing_denials_preserve_parent_and_exact_child ... ok
+test storage_opening::reads::fork_tests::selected_fork_parent_close_before_install_retains_original_begin_failure ... ok
+test storage_opening::reads::fork_tests::selected_fork_read_failure_is_local_and_survives_explicit_close ... ok
+test storage_opening::reads::fork_tests::selected_fork_recovered_begin_cannot_select_current_root ... ok
+test storage_opening::reads::fork_tests::selected_fork_recovered_finish_or_retire_wins_without_installing_transaction ... ok
+test storage_opening::reads::read_report::tests::routine_report_concurrent_last_drop_releases_original_payload_before_credit ... ok
+test storage_opening::reads::read_report::tests::routine_report_one_byte_admission_boundary_funds_both_actual_arcs ... ok
+test storage_opening::reads::retirement_tests::close_drains_only_its_released_routine_reader_after_opening_lock_contention ... ok
+test storage_opening::reads::retirement_tests::close_postpass_drains_routine_reader_dropped_inside_first_close ... ok
+test storage_opening::reads::retirement_tests::finished_reader_retries_a_transient_busy_census_owner ... ok
+test storage_opening::reads::retirement_tests::node_database_retirement_retry_drains_metadata_skipped_routine_child ... ok
+test storage_opening::reads::retirement_tests::routine_failure_retires_after_a_facade_reconstitutes_during_last_drop ... ok
+test storage_opening::reads::retirement_tests::routine_permission_never_acknowledges_recovered_unknown_after_its_state_transition ... ok
+test storage_opening::reads::retirement_tests::routine_reader_dropped_during_close_retry_drains_on_next_close ... ok
+test storage_opening::tests::active_reader_finish_waits_for_opening_lock_before_reporting_completion ... ok
+test storage_opening::tests::explicit_close_waits_for_the_actual_reader_then_retries_without_consuming_the_facade ... ok
+test storage_opening::tests::inspected_reader_failure_retires_directly_after_successful_close ... ok
+test storage_opening::tests::owned_reader_point_and_range_bytes_keep_exact_credit_after_close ... ok
+test storage_opening::tests::production_catalog_bounded_failure_retires_when_error_is_dropped ... ok
+test storage_opening::tests::production_catalog_decode_failure_retires_its_clean_registered_reader ... ok
+test storage_opening::tests::production_catalog_output_capacity_failure_retires_when_error_is_dropped ... ok
+test storage_opening::tests::production_catalog_read_registers_child_and_retains_original_table_failure ... FAILED
+test storage_opening::tests::production_delete_needs_no_prior_ciphertext_headroom_and_survives_reopen ... ok
+test storage_opening::tests::production_long_lived_view_returns_exact_native_report_after_drop ... ok
+test storage_opening::tests::production_node_create_reopen_and_shutdown_use_registered_owner ... ok
+test storage_opening::tests::production_node_post_open_failure_retains_exact_registered_custody ... ok
+test storage_opening::tests::production_node_rejects_wrong_identity_with_recoverable_failed_opening_id ... ok
+test storage_opening::tests::production_paired_deployment_reads_one_registered_snapshot ... ok
+test storage_opening::tests::production_paired_view_keeps_one_registered_generation_until_close ... ok
+test storage_opening::tests::production_paired_view_returns_exact_native_report_after_drop ... ok
+test storage_opening::tests::production_present_point_row_uses_native_credit_without_duplicate_outer_charge ... ok
+test storage_opening::tests::production_pristine_probe_classifies_large_orphan_without_value_admission ... ok
+test storage_opening::tests::production_read_view_keeps_exact_child_until_explicit_close ... ok
+test storage_opening::tests::production_record_writer_denies_before_output_allocation ... ok
+test storage_opening::tests::production_record_writer_refuses_unadmitted_live_envelope_peak ... ok
+test storage_opening::tests::production_scoped_body_panic_cannot_auto_retire ... ok
+test storage_opening::tests::production_tenant_get_accepts_maximum_writer_value ... ok
+test storage_opening::tests::production_tenant_get_missing_and_tiny_rows_fit_low_headroom ... ok
+test storage_opening::tests::production_tenant_point_read_retires_routine_failures_and_keeps_cancelled_child ... ok
+test storage_opening::tests::production_view_drop_during_unwind_keeps_interrupted_child ... ok
+test storage_opening::tests::production_visit_failure_retains_original_registered_report ... ok
+test storage_opening::tests::queued_production_catalog_reader_is_cancelled_with_registered_custody ... ok
+test storage_opening::tests::reader_output_admission_panic_is_reported_and_seals_new_work ... ok
+test storage_opening::tests::retained_reader_keeps_one_snapshot_and_admitted_bytes_through_close ... ok
+test storage_opening::tests::routine_read_diagnostics::routine_read_known_clean_retirement_is_positive_after_another_exact_drainer ... ok
+test storage_opening::tests::routine_read_diagnostics::routine_read_native_and_outer_capacity_keep_exact_errors_without_cleanup_admission ... ok
+test storage_opening::tests::routine_read_diagnostics::routine_read_two_original_aliases_outlive_native_and_database_retirement ... ok
+test storage_opening::tests::routine_read_diagnostics::routine_read_unknown_io_and_original_body_panic_keep_native_custody ... ok
+
+failures:
+
+---- catalog_budget::production_catalog_typed_admission_denial_precedes_serde_allocation stdout ----
+
+thread 'catalog_budget::production_catalog_typed_admission_denial_precedes_serde_allocation' (12252037) panicked at crates/kasumi-store/src/catalog_budget.rs:107:5:
+assertion failed: format!("{error:#}").contains("key catalog typed allocation admission denied")
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- storage_opening::tests::production_catalog_read_registers_child_and_retains_original_table_failure stdout ----
+
+thread 'storage_opening::tests::production_catalog_read_registers_child_and_retains_original_table_failure' (12256705) panicked at crates/kasumi-store/src/storage_opening_tests.rs:2131:5:
+assertion failed: matches!(failure.reader().report().tables(),
+    TerminalObservation::Returned(Err(_)))
+
+
+failures:
+    catalog_budget::production_catalog_typed_admission_denial_precedes_serde_allocation
+    storage_opening::tests::production_catalog_read_registers_child_and_retains_original_table_failure
+
+test result: FAILED. 64 passed; 2 failed; 0 ignored; 0 measured; 569 filtered out; finished in 104.98s
+
+error: test failed, to rerun pass `-p kasumi-store --lib`
+Runner: 173.15s; exit=101; matching=736/736

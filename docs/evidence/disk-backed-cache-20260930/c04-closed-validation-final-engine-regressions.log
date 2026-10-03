@@ -1,0 +1,201 @@
+Command: cargo test --locked --offline --config profile.test.package.kasumi-kv.opt-level=3 --config profile.test.package.sha2.opt-level=3 -p kasumi-engine --all-features --lib -- validation_baseline_ state::snapshot_bundle::tests:: snapshot_codec:: state::snapshot_validation::tests:: restored_identity_metadata_is_validated_before_bootstrap_persistence zero_version_source_mutation_preserves_receipt_and_captured_text_reader ordered_command_ ordinary_completion_ existing_local_reopens_the_same_committed_standalone_after_complete_shutdown existing_replicas_replay_committed_state_and_membership_after_full_close serialized_authorization_never_becomes_fresh_service_or_credential_authority expired_queued_and_canceled_credentials_accept_no_effect_or_identity committed_effect_with_expired_ack_is_resolved_by_fresh_credential serving_expiry_rejects_queued_effect_and_late_read_or_committed_ack_then_reopens_exactly
+CARGO_TARGET_DIR=target/disk-backed-cache
+warning: variant `Mutation` is never constructed
+  --> crates/kasumi-engine/src/security_audit_jobs.rs:26:5
+   |
+24 | enum JobEffect {
+   |      --------- variant in this enum
+25 |     Read,
+26 |     Mutation(&'static str),
+   |     ^^^^^^^^
+   |
+   = note: `JobEffect` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: struct `ReadPause` is never constructed
+  --> crates/kasumi-engine/src/security_audit_jobs.rs:57:19
+   |
+57 | pub(super) struct ReadPause {
+   |                   ^^^^^^^^^
+
+warning: method `run_mutation` is never used
+   --> crates/kasumi-engine/src/security_audit_jobs.rs:120:25
+    |
+ 62 | impl SecurityAudit {
+    | ------------------ method in this implementation
+...
+120 |     pub(super) async fn run_mutation<T, F, R>(&self, component: &'static str, run: R) -> Result<T>
+    |                         ^^^^^^^^^^^^
+
+warning: `kasumi-engine` (lib) generated 3 warnings
+warning: field `panic` is never read
+  --> crates/kasumi-engine/src/security_audit_jobs.rs:52:9
+   |
+48 | pub(super) struct RecordFault {
+   |                   ----------- field in this struct
+...
+52 |     pub panic: bool,
+   |         ^^^^^
+
+warning: `kasumi-engine` (lib test) generated 4 warnings (3 duplicates)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.19s
+     Running unittests src/lib.rs (target/disk-backed-cache/debug/deps/kasumi_engine-b15d1192089511a8)
+
+running 80 tests
+test application_sources::tests::allocation_tails::completion_allocations::ordinary_completion_erased_binding_retires_before_its_actual_credit ... ok
+test application_sources::tests::completion_tests::ordinary_completion_drain_registers_before_busy_and_wakes_after_real_guard_release ... ok
+test snapshot_codec::frame_tests::inspection_reads_large_typed_payload_in_fixed_chunks_before_any_dto ... ok
+test snapshot_codec::frame_tests::obsolete_receipt_tuple_and_resident_header_fields_are_rejected ... ok
+test snapshot_codec::frame_tests::permanent_aggregate_does_not_become_ram_and_all_layout_arithmetic_is_checked ... ok
+test snapshot_codec::frame_tests::permanent_kind_cannot_forward_a_resident_payload_to_semantic_consumers ... ok
+test snapshot_codec::frame_tests::typed_inspection_rejects_bounds_kind_order_and_terminal_substitutions ... ok
+test snapshot_codec::literal_tests::literal_marker_documents_schema_and_staged_records_survive_canonical_snapshots ... ok
+test snapshot_codec::record_work::tests::dense_numeric_sites_are_charged_before_serde_and_independent_of_token_width ... ok
+test snapshot_codec::record_work::tests::escaped_and_duplicate_keys_are_counted_with_bounded_depth_before_decode ... ok
+test snapshot_codec::recovery_tests::activation_acceptance_rejects_wrong_attempt_binding_and_forged_signed_evidence ... ok
+test snapshot_codec::recovery_tests::activation_requires_committed_positive_signed_acceptance_before_issuer_begin ... ok
+test application_sources::tests::allocation_tails::completion_allocations::ordinary_completion_constructor_quote_covers_actual_three_allocations ... ok
+test snapshot_codec::recovery_tests::begin_effect_is_one_way_and_keeps_exact_frozen_identity ... ok
+test snapshot_codec::recovery_tests::begin_effect_marker_is_required_and_snapshot_monotone ... ok
+test snapshot_codec::recovery_tests::begin_effect_rejects_wrong_phase_input_kind_principal_and_original_deadline ... ok
+test application_sources::tests::completion_tests::ordinary_completion_outer_finish_panic_retains_original_response_after_facade_seal ... ok
+test application_sources::tests::completion_tests::ordinary_completion_is_last_selected_owner_through_real_outer_finish ... ok
+test snapshot_codec::recovery_tests::control_intent_marker_after_original_phase_timeout_is_invalid_history ... ok
+test snapshot_codec::recovery_tests::signed_activation_acceptance_is_snapshot_monotone_and_requires_explicit_field ... ok
+test snapshot_codec::recovery_tests::source_retirement_marker_blocks_second_begin_and_phase_supersession ... ok
+test application_sources::tests::completion_tests::ordinary_completion_bound_frozen_branch_keeps_source_without_new_preparation ... ok
+test snapshot_codec::tests::authenticated_duplicate_header_is_rejected ... ok
+test snapshot_codec::tests::archived_audit_prefix_preserves_absolute_sequences_and_head ... ok
+test snapshot_codec::recovery_tests::completion_history_stream_is_resident_and_counts_in_snapshot_admission_and_quota ... ok
+test snapshot_codec::tests::canonical_stream_requires_terminal_counts_digest_and_exact_eof ... ok
+test snapshot_codec::tests::oversized_record_is_rejected_before_payload_read_or_allocation ... ok
+test state::mutation_apply::tests::ordered_input::ordered_command_actual_byte_binding_success_has_zero_requested_heap ... ok
+test snapshot_codec::recovery_tests::application_backup_rejects_control_recovery_and_embedded_or_orphan_records ... FAILED
+test snapshot_codec::recovery_tests::canonical_recovery_records_roundtrip_and_point_accounting_match_stream ... ok
+test application_sources::tests::allocation_tails::completion_allocations::ordinary_completion_cell_and_credit_remain_funded_through_actual_deallocation ... ok
+test application_sources::tests::completion_tests::ordinary_completion_reuses_only_after_real_accept_reject_and_idempotent_finish ... ok
+test state::mutation_apply::tests::ordered_input::ordered_command_actual_backend_checks_digest_before_json_and_each_special_prefix ... ok
+test state::mutation_apply::tests::ordered_input::ordered_command_actual_backend_rejects_raw_digest_before_mutation_or_publication ... ok
+test application_sources::tests::completion_tests::ordinary_completion_cancelled_real_group_waiter_keeps_queued_source_and_original ... ok
+test state::mutation_apply::tests::zero_version_source_mutation_preserves_receipt_and_captured_text_reader ... ok
+test state::restore_budget_tests::restored_identity_metadata_is_validated_before_bootstrap_persistence ... FAILED
+test state::snapshot_bundle::tests::control_archive_transfer_uses_exact_reserved_domain_without_application_authority ... FAILED
+test state::snapshot_bundle::tests::incomplete_or_corrupt_bundle_never_publishes_pruned_state ... FAILED
+test state::snapshot_bundle::tests::missing_archive_and_incorrect_totals_prevent_snapshot_completion ... FAILED
+test state::primary_projection::tests::ordered_command_publication::ordered_command_frozen_refusal_keeps_actual_guard_and_encoded_sealed_outcome ... ok
+test application_sources::tests::completion_tests::ordinary_completion_capture_wake_unwind_retires_the_actual_counted_handle ... ok
+test state::snapshot_bundle::tests::replacement_receives_complete_chain_and_restart_uses_local_dependencies ... FAILED
+test state::primary_projection::tests::ordered_command_publication::ordered_command_real_sink_rejects_full_context_substitution_after_preparation ... ok
+test state::primary_projection::tests::ordered_command_publication::ordered_command_real_sink_publishes_acceptance_rejection_and_idempotent_outcome ... ok
+test state::snapshot_validation::tests::archive_free_relocation_preserves_verified_image_and_admission ... ok
+test bootstrap::existing_tests::existing_local_reopens_the_same_committed_standalone_after_complete_shutdown ... FAILED
+test state::snapshot_validation::tests::indexed_target_resolutions_preserve_linked_seals_for_one_incarnation ... ok
+test service::tests::committed_effect_with_expired_ack_is_resolved_by_fresh_credential ... ok
+test state::snapshot_validation::tests::archive_free_relocation_propagates_callbacks_and_releases_proof ... ok
+test state::snapshot_bundle::tests::public_capture_and_restore_preparation_are_complete_admitted_and_never_publish ... ok
+test state::snapshot_bundle::tests::snapshot_operations_reject_foreign_equal_policy_memory_before_dispatch ... ok
+test state::validation_baseline_tests::validation_baseline_actual_bootstrap_absence_and_public_failure_are_distinct ... ok
+test state::validation_baseline_tests::validation_baseline_control_installation_continuity_refuses_valid_rollback ... ok
+test state::validation_baseline_tests::validation_baseline_foreign_same_identity_owner_refuses_before_read ... ok
+test state::validation_baseline_tests::validation_baseline_lifecycle_intent_continuity_refuses_valid_rollback ... ok
+test state::snapshot_validation::tests::indexing_never_returns_a_proof_after_cancellation_or_corrupt_footer ... ok
+test state::validation_baseline_tests::validation_baseline_backup_binding_continuity_refuses_valid_rollback ... ok
+test state::validation_baseline_tests::validation_baseline_mutation_receipt_continuity_refuses_valid_rollback ... ok
+test state::validation_baseline_tests::validation_baseline_recovery_binding_continuity_refuses_valid_rollback ... ok
+test state::snapshot_validation::tests::indexed_validation_matches_full_restore_and_canonical_closure ... ok
+test state::validation_baseline_tests::validation_baseline_staged_terminal_continuity_refuses_valid_rollback ... ok
+test state::snapshot_validation::tests::indexed_verification_keeps_all_staging_on_the_image_owner_until_drain ... ok
+test state::snapshot_validation::tests::zero_version_snapshot_passes_indexed_validation_and_full_restore ... ok
+test state::snapshot_validation::tests::indexed_target_resolutions_reject_changed_predecessors_and_duplicate_identity ... ok
+test state::validation_baseline_tests::validation_baseline_sealed_and_poisoned_owners_refuse_before_decode ... ok
+test state::validation_baseline_tests::validation_baseline_real_ordered_retirement_uses_apply_prior_without_public_escape ... ok
+test state::validation_baseline_tests::validation_baseline_target_history_continuity_refuses_valid_rollback ... ok
+test state::validation_baseline_tests::validation_baseline_target_terminal_continuity_refuses_valid_rollback ... ok
+test state::validation_baseline_tests::validation_baseline_standalone_decode_uses_one_prior_during_real_advance ... ok
+test state::validation_baseline_tests::validation_baseline_real_prepared_restore_holds_one_checked_apply_owner ... ok
+test service::tests::expired_queued_and_canceled_credentials_accept_no_effect_or_identity ... ok
+test state::snapshot_validation::tests::indexed_terminal_provenance_retains_the_intermediate_incarnation_genesis ... ok
+test service::tests::serialized_authorization_never_becomes_fresh_service_or_credential_authority ... ok
+test application_sources::tests::completion_tests::ordinary_completion_fault_checkpoints_preserve_exact_original_and_source_phase ... ok
+test service::tests::serving_expiry_rejects_queued_effect_and_late_read_or_committed_ack_then_reopens_exactly ... FAILED
+test bootstrap::existing_replicated_tests::existing_replicas_replay_committed_state_and_membership_after_full_close has been running for over 60 seconds
+test bootstrap::existing_replicated_tests::existing_replicas_replay_committed_state_and_membership_after_full_close ... FAILED
+test state::snapshot_bundle::tests::public_restore_admits_resident_state_without_charging_permanent_stream_as_ram has been running for over 60 seconds
+test state::snapshot_validation::tests::authenticated_semantic_substitutions_fail_both_validation_paths has been running for over 60 seconds
+test state::snapshot_validation::tests::receipt_original_scope_and_position_are_checked_in_both_snapshot_paths has been running for over 60 seconds
+test state::snapshot_validation::tests::authenticated_semantic_substitutions_fail_both_validation_paths ... ok
+test state::snapshot_validation::tests::receipt_original_scope_and_position_are_checked_in_both_snapshot_paths ... ok
+test state::snapshot_bundle::tests::public_restore_admits_resident_state_without_charging_permanent_stream_as_ram ... FAILED
+
+failures:
+
+---- snapshot_codec::recovery_tests::application_backup_rejects_control_recovery_and_embedded_or_orphan_records stdout ----
+
+thread 'snapshot_codec::recovery_tests::application_backup_rejects_control_recovery_and_embedded_or_orphan_records' (19142164) panicked at crates/kasumi-engine/src/snapshot_recovery_tests.rs:732:5:
+assertion failed: error.to_string().contains("Control state")
+
+---- state::restore_budget_tests::restored_identity_metadata_is_validated_before_bootstrap_persistence stdout ----
+
+thread 'state::restore_budget_tests::restored_identity_metadata_is_validated_before_bootstrap_persistence' (19142467) panicked at crates/kasumi-engine/src/state.rs:3335:14:
+called `Result::unwrap()` on an `Err` value: scratch table setup failed: broken pipe; close: drain Retained; encrypted scratch table[0]: database backend remains retained: broken pipe
+
+Caused by:
+    0: broken pipe
+    1: broken pipe
+    2: broken pipe
+
+---- state::snapshot_bundle::tests::control_archive_transfer_uses_exact_reserved_domain_without_application_authority stdout ----
+
+thread 'state::snapshot_bundle::tests::control_archive_transfer_uses_exact_reserved_domain_without_application_authority' (19142515) panicked at crates/kasumi-engine/src/snapshot_bundle.rs:650:47:
+called `Result::unwrap()` on an `Err` value: Error { code: Corruption, message: "scratch table setup failed: storage capacity denied" }
+
+---- state::snapshot_bundle::tests::incomplete_or_corrupt_bundle_never_publishes_pruned_state stdout ----
+
+thread 'state::snapshot_bundle::tests::incomplete_or_corrupt_bundle_never_publishes_pruned_state' (19142549) panicked at crates/kasumi-engine/src/snapshot_bundle.rs:650:47:
+called `Result::unwrap()` on an `Err` value: Error { code: Corruption, message: "scratch table setup failed: storage capacity denied" }
+
+---- state::snapshot_bundle::tests::missing_archive_and_incorrect_totals_prevent_snapshot_completion stdout ----
+
+thread 'state::snapshot_bundle::tests::missing_archive_and_incorrect_totals_prevent_snapshot_completion' (19142554) panicked at crates/kasumi-engine/src/snapshot_bundle.rs:650:47:
+called `Result::unwrap()` on an `Err` value: Error { code: Corruption, message: "scratch table setup failed: storage capacity denied" }
+
+---- state::snapshot_bundle::tests::replacement_receives_complete_chain_and_restart_uses_local_dependencies stdout ----
+
+thread 'state::snapshot_bundle::tests::replacement_receives_complete_chain_and_restart_uses_local_dependencies' (19142774) panicked at crates/kasumi-engine/src/snapshot_bundle.rs:650:47:
+called `Result::unwrap()` on an `Err` value: Error { code: Corruption, message: "scratch table setup failed: storage capacity denied" }
+
+---- bootstrap::existing_tests::existing_local_reopens_the_same_committed_standalone_after_complete_shutdown stdout ----
+Error: ResourceExhausted: document source retention budget exhausted
+
+---- service::tests::serving_expiry_rejects_queued_effect_and_late_read_or_committed_ack_then_reopens_exactly stdout ----
+
+thread 'service::tests::serving_expiry_rejects_queued_effect_and_late_read_or_committed_ack_then_reopens_exactly' (19142019) panicked at crates/kasumi-engine/src/service_serving_tests.rs:318:17:
+assertion `left == right` failed
+  left: Retained
+ right: Complete
+
+---- bootstrap::existing_replicated_tests::existing_replicas_replay_committed_state_and_membership_after_full_close stdout ----
+Error: deadline has elapsed
+
+---- state::snapshot_bundle::tests::public_restore_admits_resident_state_without_charging_permanent_stream_as_ram stdout ----
+
+thread 'state::snapshot_bundle::tests::public_restore_admits_resident_state_without_charging_permanent_stream_as_ram' (19142699) panicked at crates/kasumi-engine/src/snapshot_bundle.rs:1159:14:
+called `Result::unwrap()` on an `Err` value: Error { code: Corruption, message: "backup verification deadline expired" }
+
+
+failures:
+    bootstrap::existing_replicated_tests::existing_replicas_replay_committed_state_and_membership_after_full_close
+    bootstrap::existing_tests::existing_local_reopens_the_same_committed_standalone_after_complete_shutdown
+    service::tests::serving_expiry_rejects_queued_effect_and_late_read_or_committed_ack_then_reopens_exactly
+    snapshot_codec::recovery_tests::application_backup_rejects_control_recovery_and_embedded_or_orphan_records
+    state::restore_budget_tests::restored_identity_metadata_is_validated_before_bootstrap_persistence
+    state::snapshot_bundle::tests::control_archive_transfer_uses_exact_reserved_domain_without_application_authority
+    state::snapshot_bundle::tests::incomplete_or_corrupt_bundle_never_publishes_pruned_state
+    state::snapshot_bundle::tests::missing_archive_and_incorrect_totals_prevent_snapshot_completion
+    state::snapshot_bundle::tests::public_restore_admits_resident_state_without_charging_permanent_stream_as_ram
+    state::snapshot_bundle::tests::replacement_receives_complete_chain_and_restart_uses_local_dependencies
+
+test result: FAILED. 70 passed; 10 failed; 0 ignored; 0 measured; 533 filtered out; finished in 213.05s
+
+error: test failed, to rerun pass `-p kasumi-engine --lib`
+Runner: 214.35s; exit=101; matching=848/848

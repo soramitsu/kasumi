@@ -1,4 +1,7 @@
 use crate::scalar::{Scalar, decimal, indexed_values, invalid, validate_pointer};
+use crate::{
+    CollectionRecords, ReadResult, Record, index_input::CheckedRecords, structured::Structured,
+};
 use kasumi_types::*;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -220,16 +223,30 @@ fn validate_document_fields(
     Ok(())
 }
 
-pub fn validate_collection(
-    definition: &CollectionDefinition,
-    documents: &imbl::OrdMap<String, std::sync::Arc<Document>>,
-) -> Result<()> {
-    validate_collection_and_compile(definition, documents).map(|_| ())
+pub fn validate_collection<R: CollectionRecords + ?Sized>(
+    source: &R,
+) -> ReadResult<(), R::Failure> {
+    let source = CheckedRecords::new(source)?;
+    validate_collection_and_compile(&source)?;
+    Structured::build_unique(&source)?;
+    Ok(())
 }
 
-pub(crate) fn validate_collection_and_compile(
+pub(crate) fn validate_collection_and_compile<R: CollectionRecords + ?Sized>(
+    source: &R,
+) -> ReadResult<Arc<jsonschema::Validator>, R::Failure> {
+    let validator = validate_definition_and_compile(source.definition())?;
+    source.visit_records(|_, record| {
+        if let Record::Live(document) = record {
+            validate_document_with_validator(source.definition(), &document.body, &validator)?;
+        }
+        Ok(())
+    })?;
+    Ok(validator)
+}
+
+pub(crate) fn validate_definition_and_compile(
     definition: &CollectionDefinition,
-    documents: &imbl::OrdMap<String, std::sync::Arc<Document>>,
 ) -> Result<Arc<jsonschema::Validator>> {
     validate_name(&definition.name)?;
     if definition.retention_class == CollectionRetentionClass::ArchivableHistory
@@ -282,51 +299,12 @@ pub(crate) fn validate_collection_and_compile(
             return Err(invalid("text indexes cannot be unique"));
         }
     }
-    for (id, document) in documents {
-        validate_name(id)?;
-        if id != &document.id {
-            return Err(invalid("document map key differs from its id"));
-        }
-        validate_document_with_validator(definition, &document.body, &validator)?;
-    }
-    check_unique(&CollectionState {
-        archived_documents: Default::default(),
-        archived_document_bytes: 0,
-        data_epoch: 0,
-        definition: definition.clone(),
-        documents: documents.clone(),
-    })?;
     Ok(validator)
 }
 
-pub fn check_unique(collection: &CollectionState) -> Result<()> {
-    for index in collection.definition.indexes.iter().filter(|i| i.unique) {
-        let mut seen: BTreeMap<Vec<Scalar>, &str> = BTreeMap::new();
-        for document in collection.documents.values() {
-            let mut key = Vec::new();
-            for field in &index.fields {
-                let mut values = indexed_values(document.body.pointer(&field.path), field.kind)?;
-                if values.len() != 1 {
-                    return Err(invalid("unique index has a non-scalar field"));
-                }
-                key.push(values.remove(0));
-            }
-            // Sparse uniqueness: absent fields do not participate, explicit null does.
-            if key.contains(&Scalar::Missing) {
-                continue;
-            }
-            if let Some(previous) = seen.insert(key, &document.id) {
-                return Err(Error::new(
-                    ErrorCode::Conflict,
-                    format!(
-                        "unique index {} conflicts between {} and {}",
-                        index.name, previous, document.id
-                    ),
-                ));
-            }
-        }
-    }
-    Ok(())
+pub fn check_unique<R: CollectionRecords + ?Sized>(source: &R) -> ReadResult<(), R::Failure> {
+    let source = CheckedRecords::new(source)?;
+    Structured::build_unique(&source).map(|_| ())
 }
 
 /// A bounded, canonical equality key for one unique index. Missing fields are

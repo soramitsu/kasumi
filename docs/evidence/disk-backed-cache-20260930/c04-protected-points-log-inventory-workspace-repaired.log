@@ -1,0 +1,193 @@
+Command: cargo test --locked --offline --config profile.test.package.kasumi-kv.opt-level=3 --config profile.test.package.sha2.opt-level=3 -p kasumi-kv -p kasumi-store -p kasumi-raft -p kasumi-engine --all-features --lib --no-fail-fast -- prepared_ protected_source registered_source source_publication source_funding retained_logs directory_workspace first_applied_membership accepted_boundary prebound_first_membership retirement_recovery --skip retirement_recovery_crosses_former_seed_count_ceiling_without_promoting_a_tail --nocapture
+CARGO_TARGET_DIR=target/disk-backed-cache
+   Compiling kasumi-engine v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-engine)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2m 28s
+     Running unittests src/lib.rs (target/disk-backed-cache/debug/deps/kasumi_engine-44db468831cfc59f)
+
+running 25 tests
+test admission::source_publication::registered_tests::registered_source_no_facade_close_recovers_actual_pool_and_both_prepared_readers ... ok
+test admission::source_publication::registered_tests::registered_source_busy_census_cancel_retries_without_replaying_native_cleanup ... ok
+
+thread 'admission::source_publication::registered_tests::registered_source_both_local_suffix_panics_retain_original_and_fence_lane_reuse' (22430248) panicked at crates/kasumi-store/src/storage_opening/reads/source_pool.rs:373:17:
+Box<dyn Any>
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test admission::source_publication::registered_tests::registered_source_history_native_slot_denial_cancels_whole_registered_request ... ok
+test admission::source_publication::registered_tests::registered_source_native_success_survives_actual_committed_marker_contention_once ... ok
+test admission::source_publication::tests::native_source_bank_exact_byte_boundary_preserves_cache_and_ordinary_headroom ... ok
+test admission::source_publication::registered_tests::registered_source_partial_queue_actual_registration_contention_retains_report_and_original ... ok
+test admission::source_publication::registered_tests::registered_source_funding_real_provider_counts_complete_layout_and_has_no_post_bank_reserve ... ok
+test admission::source_publication::registered_tests::registered_source_history_report_outlives_ordinary_cell_and_preserves_its_own_bytes ... ok
+test admission::source_publication::registered_tests::registered_source_control_real_capacity_failure_survives_all_facades_until_explicit_ack ... ok
+test target_completion_machine::tests::only_an_expired_exact_prepared_attempt_can_be_sealed ... ok
+test admission::source_publication::tests::native_source_bank_real_provider_two_lanes_capture_with_ordinary_bytes_full ... ok
+test admission::source_publication::tests::native_source_binding_rejects_same_policy_foreign_core_without_fallback ... ok
+
+thread 'admission::source_publication::registered_tests::registered_source_both_local_suffix_panics_retain_original_and_fence_lane_reuse' (22430248) panicked at crates/kasumi-store/src/storage_opening/reads/source_pool.rs:379:17:
+Box<dyn Any>
+test admission::source_publication::registered_tests::registered_source_both_local_suffix_panics_retain_original_and_fence_lane_reuse ... ok
+test admission::source_publication::tests::native_source_history_byte_denial_preserves_original_then_cancels_unentered_native_hold ... ok
+test admission::source_publication::tests::native_source_busy_seal_resumes_only_after_positive_account_retirement ... ok
+test admission::source_publication::tests::native_source_prepared_rights_block_actual_opening_close_before_capture ... ok
+test admission::source_publication::tests::native_source_history_transfers_actual_children_and_sealed_bank_keeps_only_fixed_credit ... ok
+test admission::source_publication::registered_tests::registered_source_no_facade_recovers_precommit_and_native_committed_pending_local_exchange ... ok
+test admission::source_publication::tests::native_source_history_slot_denial_retains_byte_grant_until_positive_cancel ... ok
+test admission::source_publication::protected_point_tests::protected_source_actual_encrypted_current_and_history_need_no_new_ordinary_grant ... ok
+test admission::source_publication::allocation_tests::source_bank_and_account_actual_arc_and_backend_box_tails_remain_funded ... ok
+test state::validation_baseline_tests::validation_baseline_real_prepared_restore_holds_one_checked_apply_owner ... ok
+test admission::source_publication::allocation_tests::registered_source_actual_bank_account_report_and_control_tails_keep_exact_credit ... ok
+test admission::source_publication::protected_point_tests::protected_source_encrypted_loans_recheck_expiry_for_hits_misses_and_absence ... ok
+test admission::source_publication::protected_point_tests::protected_source_binding_rejects_foreign_pair_provider_and_uncaptured_owner ... ok
+
+test result: ok. 25 passed; 0 failed; 0 ignored; 0 measured; 603 filtered out; finished in 11.46s
+
+     Running unittests src/lib.rs (target/disk-backed-cache/debug/deps/kasumi_kv-221aa5373d25965b)
+
+running 27 tests
+test retained::source_funding::tests::invalid_account_stamp_keeps_the_actual_bound_owner_and_sticky_rejection ... ok
+test retained::source_funding::tests::actual_child_token_and_native_outer_box_deallocate_before_final_credit ... ok
+test retained::source_funding::tests::child_foreign_and_repeated_claims_are_terminal_before_another_constructor ... ok
+test retained::source_funding::tests::funded_corridor_rejects_ordinary_foreign_database_pool_and_repeated_account_before_children ... ok
+
+thread 'retained::source_funding::tests::seal_busy_poll_can_progress_but_first_poll_panic_is_retained_without_retry' (22431120) panicked at crates/kasumi-kv/src/source_funding_tests.rs:146:13:
+Box<dyn Any>
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'retained::source_funding::tests::unbound_install_failure_disposes_exact_database_once_and_keeps_original' (22431121) panicked at crates/kasumi-kv/src/source_funding_tests.rs:60:18:
+Box<dyn Any>
+
+thread 'retained::source_funding::tests::pool_bind_retains_original_error_or_panic_and_actual_backend_without_retry' (22431119) panicked at crates/kasumi-kv/src/source_funding_tests.rs:60:18:
+Box<dyn Any>
+
+thread 'retained::source_funding::tests::account_bind_retains_original_error_or_panic_and_actual_backend_without_retry' (22431112) panicked at crates/kasumi-kv/src/source_funding_tests.rs:60:18:
+Box<dyn Any>
+
+thread 'retained::source_funding::tests::each_child_bind_keeps_original_and_pending_credit_after_provider_error_or_panic' (22431115) panicked at crates/kasumi-kv/src/source_funding_tests.rs:60:18:
+Box<dyn Any>
+
+thread 'retained::source_funding::tests::each_child_bind_keeps_original_and_pending_credit_after_provider_error_or_panic' (22431115) panicked at crates/kasumi-kv/src/source_funding_tests.rs:60:18:
+Box<dyn Any>
+
+thread 'retained::source_funding::tests::each_child_bind_keeps_original_and_pending_credit_after_provider_error_or_panic' (22431115) panicked at crates/kasumi-kv/src/source_funding_tests.rs:60:18:
+Box<dyn Any>
+
+thread 'retained::source_funding::tests::final_controller_disposal_panic_retains_original_database_and_does_not_retry' (22431116) panicked at crates/kasumi-kv/src/source_funding_tests.rs:99:13:
+Box<dyn Any>
+test retained::source_funding::tests::account_bind_retains_original_error_or_panic_and_actual_backend_without_retry ... ok
+test segment::maintenance::tests::source_change_during_copy_cannot_produce_a_prepared_commit ... ok
+test retained::source_funding::tests::each_child_bind_keeps_original_and_pending_credit_after_provider_error_or_panic ... ok
+test retained::source_funding::tests::final_controller_disposal_panic_retains_original_database_and_does_not_retry ... ok
+test retained::source_funding::tests::seal_busy_poll_can_progress_but_first_poll_panic_is_retained_without_retry ... ok
+test retained::source_funding::tests::pool_bind_retains_original_error_or_panic_and_actual_backend_without_retry ... ok
+test segment::maintenance::tests::abort_binds_synced_normal_and_maintenance_bytes_to_the_prepared_digest ... ok
+test segment::maintenance::tests::force_roll_keeps_capacity_and_cannot_interrupt_a_prepared_batch ... ok
+test page_cache::tests::read_into::prepared_directory_read_into_refused_retention_never_requests_temporary_workspace ... ok
+test retained::transaction_claim_activation_tests::transaction_claim_activation_prepared_workspace_survives_postprepare_memory_pressure ... ok
+test retained::source_funding::tests::unbound_install_failure_disposes_exact_database_once_and_keeps_original ... ok
+test snapshot_pins::allocation_tests::native_uninstalled_pin_cancel_deallocates_actual_prepared_arc_and_lease_box ... ok
+
+thread 'snapshot_pins::rights::tests::serial_exhaustion_refuses_before_capacity_changes_and_prepared_cancel_survives_poison' (22431130) panicked at crates/kasumi-kv/src/snapshot_pin_rights_tests.rs:285:9:
+poison prepared pin registry
+test segment::tests::stale_prepared_abort_never_truncates_a_changed_tail ... ok
+test tables::read_fork_tests::source_reads::source_prepared_backing_system_deallocation_precedes_its_actual_refund ... ok
+test disk_state::tests::prepared_point_shape::prepared_shape_uses_same_root_table_and_owner_without_output_or_new_grants ... ok
+test snapshot_pins::rights::tests::serial_exhaustion_refuses_before_capacity_changes_and_prepared_cancel_survives_poison ... ok
+test segment::tests::prepared_workspace_covers_exact_locations_and_streams_maximum_keys ... ok
+test segment::tests::prepared_workspace_depends_on_location_count_not_borrowed_value_size ... ok
+test tables::read_fork_tests::source_reads::source_idle_rights_and_queued_prepared_owners_block_actual_database_close ... ok
+test tables::tests::prepared_table_validation_preserves_types_snapshot_and_owner_under_denial ... ok
+test directory::tests::packing::pack_plan_and_workspace_denial_precede_effects_and_prepared_mutation_reuses_grant ... ok
+test tables::tests::prepared_points_reuse_backing_under_total_workspace_refusal_and_bind_exact_owner ... ok
+test page_cache::tests::read_into::prepared_directory_read_into_retains_all_fitting_pages_across_repeated_passes ... ok
+
+test result: ok. 27 passed; 0 failed; 0 ignored; 0 measured; 521 filtered out; finished in 0.24s
+
+     Running unittests src/lib.rs (target/disk-backed-cache/debug/deps/kasumi_raft-8af78bc0d2a8574c)
+
+running 12 tests
+test storage::retained_logs::tests::authenticated_unique_header_fold_is_order_independent_and_checks_extreme_holes ... ok
+test storage::retained_logs::tests::append_chunk_schedule_preserves_every_durable_connected_prefix ... ok
+
+thread 'storage::retained_logs::tests::point_log_reads_check_internal_metadata_commitment_and_current_custody_access' (22431174) panicked at crates/kasumi-raft/src/storage/retained_logs_tests.rs:247:5:
+assertion failed: log.try_get_log_entries(1..=1).await.is_err()
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test storage::retained_logs::tests::point_log_reads_check_internal_metadata_commitment_and_current_custody_access ... FAILED
+test storage::retained_logs::tests::streamed_open_rejects_holes_malformed_keys_and_noncanonical_headers ... ok
+test control::tests::retirement_recovery_never_selects_between_multiple_committed_successes ... ok
+test storage::retained_logs::tests::streamed_log_inventory_reopens_and_cloned_readers_follow_exact_range_changes ... ok
+test control::tests::first_applied_membership_survives_later_membership_purge_and_reopen ... ok
+test selected_application::handoff_tests::prepared_capture_actual_entry_preserves_access_failure_and_drops_queued_ownership ... ok
+test selected_application::handoff_tests::prepared_capture_actual_entry_uses_transferred_loans_when_new_installed_grants_are_denied ... ok
+test control::tests::first_applied_membership_and_cursor_survive_every_atomic_write_boundary ... ok
+test control::tests::accepted_boundary_and_exact_applied_position_publish_atomically_before_retained_purge ... ok
+test control::tests::prebound_first_membership_association_survives_later_apply_purge_and_reopen ... ok
+
+failures:
+
+failures:
+    storage::retained_logs::tests::point_log_reads_check_internal_metadata_commitment_and_current_custody_access
+
+test result: FAILED. 11 passed; 1 failed; 0 ignored; 0 measured; 158 filtered out; finished in 3.85s
+
+error: test failed, to rerun pass `-p kasumi-raft --lib`
+     Running unittests src/lib.rs (target/disk-backed-cache/debug/deps/kasumi_store-4ef75ebdc018c368)
+
+running 35 tests
+test node_file::tests::closed_prepared_node_file_cannot_acquire_a_new_descriptor ... ok
+test node_disk::directory::managed::tests::census_retires_actual_prepared_arc_backing_before_reopening_slot_admission ... ok
+test node_disk::tests::prepared_unknown_absence_revalidates_replaced_parent ... ok
+test node_disk::tests::prepared_publication_conflict_returns_inline_without_fencing_or_replacing ... ok
+test node_disk::directory::managed::tests::unknown_child_absence_retires_prepared_backing_and_descriptors_before_slot_reuse ... ok
+test node_disk::tests::prepared_publication_abandonment_retires_old_weak_registration_once_without_allocation ... ok
+test node_disk::tests::prepared_cross_directory_publication_and_physical_reclaim_do_not_allocate ... ok
+test scratch_table::group::claim::tests::scratch_claim_pristine_cancel_returns_aggregate_and_prepared_memory_without_file_effects ... ok
+test file_keys::workspace::tests::prepared_file_input_selects_one_generation_and_preserves_validation_errors ... ok
+test node_disk::tests::prepared_file_creation_registers_and_retires_without_allocating ... ok
+test read_view::prepared_points::tests::single_point_finish_keeps_original_error_and_actual_retirement_panic ... ok
+test scratch_table::tests::workspace_tests::scratch_prepared_workspace_survives_capacity_pressure_after_prepare ... ok
+test read_view::prepared_points::tests::single_points_check_expiry_on_old_root_hits_and_absence_and_clear_failed_loans ... ok
+TestDiskMemory::reserve_installed denied: provider=0x79cf1a4510 requested_bytes=4515 charged_bytes=8635 bookkeeping_bytes=71840 used_bytes=52294702 next_used_bytes=52303337 max_bytes=67108864 live_reservations=128 max_reservations=128 attempts=287 error=Kind(OutOfMemory)
+test read_view::prepared_points::tests::single_point_partial_admission_denial_keeps_actual_failure_and_has_no_allocating_fallback ... ok
+test read_view::prepared_points::tests::single_points_share_exact_root_and_reuse_backing_without_point_admission ... ok
+TestDiskMemory::reserve_installed denied: provider=0x10888f980 requested_bytes=10512 charged_bytes=14632 bookkeeping_bytes=2039968 used_bytes=266395488 next_used_bytes=266410120 max_bytes=268435456 live_reservations=16 max_reservations=4096 attempts=332 error=Kind(OutOfMemory)
+test read_view::fork_tests::prepared_pair_denial_happens_before_registration_and_keeps_original_value ... ok
+test read_view::fork_tests::prepared_pair_owns_one_census_child_before_selecting_the_published_root ... ok
+test read_view::fork_tests::prepared_pair_cancel_and_drop_retire_unbegun_actual_children ... ok
+TestDiskMemory::reserve_installed denied: provider=0x79cf1a50f0 requested_bytes=16908 charged_bytes=21028 bookkeeping_bytes=71840 used_bytes=52299124 next_used_bytes=52320152 max_bytes=268435456 live_reservations=128 max_reservations=128 attempts=462 error=Kind(OutOfMemory)
+
+thread 'storage_domains::prepared_point_read::tests::prepared_point_final_capacity_quotes_real_overlap_and_refusal_keeps_original' (22431809) panicked at crates/kasumi-store/src/storage_domains/prepared_point_read_tests.rs:561:5:
+assertion `left == right` failed
+  left: 4
+ right: 5
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test storage_domains::prepared_point_read::tests::prepared_point_final_capacity_quotes_real_overlap_and_refusal_keeps_original ... FAILED
+TestDiskMemory::reserve_installed denied: provider=0x79cf1a6b30 requested_bytes=35002 charged_bytes=39122 bookkeeping_bytes=2039968 used_bytes=266360614 next_used_bytes=266399736 max_bytes=268435456 live_reservations=5 max_reservations=4096 attempts=6 error=Kind(OutOfMemory)
+test storage_opening::tests::private_opening_arc_is_admitted_before_any_prepared_owner_allocation ... ok
+test read_view::fork_tests::prepared_pair_rejects_recovered_begin_before_application_publication ... ok
+test storage_domains::prepared_point_read::tests::prepared_point_handoff_reuses_backing_on_exact_roots_and_clears_short_suffix ... ok
+TestDiskMemory::reserve_installed denied: provider=0x79cf1a5af0 requested_bytes=4515 charged_bytes=8635 bookkeeping_bytes=71840 used_bytes=52294609 next_used_bytes=52303244 max_bytes=268435456 live_reservations=128 max_reservations=128 attempts=462 error=Kind(OutOfMemory)
+test storage_domains::prepared_point_read::tests::prepared_point_partial_construction_denial_retires_backing_and_registered_reader ... ok
+test read_view::fork_tests::prepared_pair_unknown_cancellation_keeps_exact_payload_and_census_custody ... ok
+test storage_domains::prepared_point_read::tests::prepared_points_reuse_real_encrypted_backing_with_exact_overlapping_charges ... ok
+test read_view::fork_tests::prepared_pair_rechecks_each_domain_before_native_begin_and_retires_queue ... ok
+test storage_domains::prepared_point_read::tests::prepared_finish_preserves_original_and_actual_lease_drop_panic ... ok
+test storage_domains::prepared_point_read::tests::prepared_points_keep_both_domains_on_the_same_snapshot_across_writes_and_rotation ... ok
+test storage_domains::prepared_point_read::tests::prepared_transfer_preserves_native_failure_when_backing_retirement_also_panics ... ok
+test storage_domains::prepared_point_read::tests::prepared_size_replacement_retains_actual_old_backing_drop_panic ... ok
+test storage_domains::prepared_point_read::tests::prepared_size_preflight_reuses_directory_then_authenticates_exact_snapshot ... ok
+test storage_domains::prepared_point_read::tests::prepared_point_handoff_checks_pair_authentication_and_expiry_without_admission ... ok
+test storage_domains::prepared_point_read::tests::prepared_points_check_peer_access_even_on_application_cache_hit_and_absence ... ok
+test storage_domains::prepared_point_read::tests::prepared_points_retain_full_fit_cache_and_check_expiry_on_hits_and_absence ... ok
+test storage_domains::prepared_point_read::tests::prepared_points_authenticate_and_reject_wrong_identity_trailing_and_missing_key ... ok
+
+failures:
+
+failures:
+    storage_domains::prepared_point_read::tests::prepared_point_final_capacity_quotes_real_overlap_and_refusal_keeps_original
+
+test result: FAILED. 34 passed; 1 failed; 0 ignored; 0 measured; 673 filtered out; finished in 10.72s
+
+error: test failed, to rerun pass `-p kasumi-store --lib`
+error: 2 targets failed:
+    `-p kasumi-raft --lib`
+    `-p kasumi-store --lib`
+Runner: 175.01s; exit=101; matching=1528/1528

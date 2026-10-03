@@ -1,0 +1,70 @@
+Command: cargo clippy --locked --offline --config profile.test.package.kasumi-kv.opt-level=3 --config profile.test.package.sha2.opt-level=3 -p kasumi-kv -p kasumi-store --all-features --all-targets --no-deps -- -D warnings
+CARGO_TARGET_DIR=target/disk-backed-cache
+    Checking kasumi-kv v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-kv)
+    Checking idna_adapter v1.2.2
+    Checking idna v1.1.0
+    Checking url v2.5.8
+    Checking kasumi-types v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-types)
+    Checking tower-http v0.6.11
+    Checking kasumi-transport v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-transport)
+    Checking reqwest v0.12.28
+    Checking kasumi-serving v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-serving)
+    Checking kasumi-store v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-store)
+error: this `if` statement can be collapsed
+   --> crates/kasumi-store/src/storage_opening/reads/source_pool/source_history_abort.rs:170:9
+    |
+170 | /         if let Some(exchange) = &mut source.exchange {
+171 | |             if !source.census_cancelled {
+172 | |                 source.cancellation.retry_success();
+173 | |                 source.cancellation.run(|| {
+...   |
+200 | |         }
+    | |_________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#collapsible_if
+    = note: `-D clippy::collapsible-if` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::collapsible_if)]`
+help: collapse nested if block
+    |
+170 ~         if let Some(exchange) = &mut source.exchange
+171 ~             && !source.census_cancelled {
+172 |                 source.cancellation.retry_success();
+...
+198 |                 }
+199 ~             }
+    |
+
+error: the `Err`-variant returned from this function is very large
+   --> crates/kasumi-store/src/storage_opening/reads/source_capacity.rs:160:29
+    |
+160 |     pub fn capture(self) -> Result<RegisteredNodeRead, crate::NodeScopedReadFailure> {
+    |                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 200 bytes
+    |
+    = help: try reducing the size of `registered_read_scope::NodeScopedReadFailure`, for example by boxing large elements or replacing it with `Box<registered_read_scope::NodeScopedReadFailure>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#result_large_err
+    = note: `-D clippy::result-large-err` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::result_large_err)]`
+
+error: the `Err`-variant returned from this function is very large
+   --> crates/kasumi-store/src/storage_opening/reads/source_capacity.rs:197:28
+    |
+197 |     pub fn cancel(self) -> Result<StorageCensusDisposition, crate::NodeScopedReadFailure> {
+    |                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 200 bytes
+    |
+    = help: try reducing the size of `registered_read_scope::NodeScopedReadFailure`, for example by boxing large elements or replacing it with `Box<registered_read_scope::NodeScopedReadFailure>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#result_large_err
+
+error: very complex type used. Consider factoring parts into `type` definitions
+    --> crates/kasumi-store/src/node_disk/file.rs:3134:10
+     |
+3134 |     ) -> Option<(Result<(u64, u64), io::ErrorKind>, AccountedFile)> {
+     |          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#type_complexity
+     = note: `-D clippy::type-complexity` implied by `-D warnings`
+     = help: to override `-D warnings` add `#[allow(clippy::type_complexity)]`
+
+error: could not compile `kasumi-store` (lib) due to 4 previous errors
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `kasumi-store` (lib test) due to 4 previous errors
+Runner: 17.99s; exit=101; matching=1560/1560

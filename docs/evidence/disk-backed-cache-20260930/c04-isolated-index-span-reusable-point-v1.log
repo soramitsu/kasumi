@@ -1,0 +1,11 @@
+Command: /Users/takemiyamakoto/dev/kasumi/target/disk-backed-cache/debug/deps/kasumi_engine-d180437bf90b51b9 primary_index_span_actual_rebuild_proves_aliases_branch_owners_and_every_released_ordinal --nocapture
+ISOLATED_SOURCE=/tmp/kasumi-source-cohort-validation-v1
+CARGO_TARGET_DIR=/Users/takemiyamakoto/dev/kasumi/target/disk-backed-cache
+
+running 1 test
+test state::primary_projection::tests::index_span_tests::primary_index_span_actual_rebuild_proves_aliases_branch_owners_and_every_released_ordinal has been running for over 60 seconds
+test state::primary_projection::tests::index_span_tests::primary_index_span_actual_rebuild_proves_aliases_branch_owners_and_every_released_ordinal ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 819 filtered out; finished in 777.99s
+
+Runner: 778.00s; exit=0; matching=1683/1683

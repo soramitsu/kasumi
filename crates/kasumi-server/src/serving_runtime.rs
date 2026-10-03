@@ -429,11 +429,14 @@ pub(crate) async fn acquire_tenant_access(
 mod partition_credential_tests {
     use super::*;
     fn configured() -> ServingAuthorityConfig {
-        let mut config = crate::runtime::example_config(kasumi_store::DirectoryPolicy::fixture())
-            .unwrap()
-            .serving_authorities
-            .remove("storage-fence")
-            .unwrap();
+        let mut config = crate::runtime::example_config(
+            kasumi_store::DirectoryPolicy::fixture(),
+            kasumi_store::FileAllocationPolicy::fixture(),
+        )
+        .unwrap()
+        .serving_authorities
+        .remove("storage-fence")
+        .unwrap();
         let mut partition = config.manifest.partitions[&0].clone();
         partition.group = "second-issuer".into();
         config.manifest.partitions.insert(1, partition);
@@ -492,8 +495,11 @@ mod partition_credential_tests {
 
     #[test]
     fn enrollment_input_preserves_nested_authority_endpoints_and_serialized_identity() {
-        let mut configuration =
-            crate::runtime::example_config(kasumi_store::DirectoryPolicy::fixture()).unwrap();
+        let mut configuration = crate::runtime::example_config(
+            kasumi_store::DirectoryPolicy::fixture(),
+            kasumi_store::FileAllocationPolicy::fixture(),
+        )
+        .unwrap();
         configuration
             .serving_authorities
             .insert("storage-fence".into(), configured());
@@ -517,8 +523,11 @@ mod partition_credential_tests {
 
     #[test]
     fn enrollment_endpoint_decoder_rejects_aliases_duplicates_and_overflow_at_both_levels() {
-        let mut configuration =
-            crate::runtime::example_config(kasumi_store::DirectoryPolicy::fixture()).unwrap();
+        let mut configuration = crate::runtime::example_config(
+            kasumi_store::DirectoryPolicy::fixture(),
+            kasumi_store::FileAllocationPolicy::fixture(),
+        )
+        .unwrap();
         let authority = configured();
         let endpoint = serde_json::to_string(&authority.endpoints[&0][&1]).unwrap();
         let valid = serde_json::to_string(&authority.endpoints).unwrap();

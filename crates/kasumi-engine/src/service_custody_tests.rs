@@ -350,6 +350,6 @@ async fn custody_observations_preserve_mutation_capacity_and_exhaustion_can_expa
         repeated
             .issues()
             .iter()
-            .any(|issue| Arc::ptr_eq(issue, original))
+            .any(|issue| kasumi_types::drain::DrainIssueRef::ptr_eq(issue, original))
     );
 }

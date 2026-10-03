@@ -1,0 +1,52 @@
+   Compiling kasumi-kv v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-kv)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 14.28s
+     Running unittests src/lib.rs (target/disk-backed-cache/debug/deps/kasumi_kv-e84af9029e220a8f)
+
+running 31 tests
+test cache::tests::maintenance_fill_checks_empty_cache_overhead_and_never_reads_without_headroom ... ok
+test cache::tests::maintenance_fill_and_peek_do_not_train_policy_or_demand_counters ... ok
+test cache::tests::maintenance_fill_releases_denied_failed_or_expired_loads_without_policy_training ... ok
+test arena::tests::forced_roll_rejects_expired_owner_or_poisoned_lock_before_mutation ... FAILED
+test arena::tests::forced_roll_allocates_a_durable_empty_arena_before_the_next_page ... ok
+test arena::tests::forced_roll_preserves_old_pages_after_reopen_and_never_resumes_the_empty_arena ... ok
+test arena::tests::forced_roll_workspace_denial_is_retryable_without_sync_or_reservation ... ok
+test arena::tests::forced_roll_owner_expiry_after_successful_io_stops_and_fences_the_writer ... ok
+test segment::maintenance::tests::checksum_valid_maintenance_metadata_must_be_canonical ... ok
+test segment::maintenance::tests::directory_only_batches_bind_an_exact_root_without_a_logical_write ... ok
+test segment::maintenance::tests::force_roll_keeps_capacity_and_cannot_interrupt_a_prepared_batch ... ok
+test page_cache::tests::maintenance_private_reads_reuse_hits_without_retaining_or_training_misses ... ok
+test segment::maintenance::tests::corrupt_source_fences_without_appending_or_erasing_evidence ... ok
+test segment::maintenance::tests::prior_segment_format_is_rejected_without_conversion ... ok
+test segment::maintenance::tests::relocation_preserves_original_logical_version_and_source_bytes ... ok
+test segment::maintenance::tests::root_only_replay_rejects_bad_value_bytes_and_operation_counts ... ok
+test segment::maintenance::tests::force_roll_effect_failures_fence_and_reopen_preserves_prior_commit ... ok
+test page_cache::tests::maintenance_reads_check_identity_and_owner_on_hits_and_all_miss_paths ... ok
+test segment::maintenance::tests::source_change_during_copy_cannot_produce_a_prepared_commit ... ok
+test arena::tests::forced_roll_failures_fence_all_later_writer_operations ... ok
+test segment::maintenance::tests::maintenance_prepare_and_commit_faults_reopen_at_a_complete_boundary ... ok
+test disk_state::tests::compact::compaction_admission_denial_is_retryable_without_skipping_a_key ... ok
+test segment::maintenance::tests::relocation_and_abort_stream_long_values_through_fixed_windows ... ok
+test disk_state::tests::compact::compaction_preserves_versions_pins_and_fitting_hot_values_through_reclamation ... ok
+test disk_state::tests::compact::foreground_changes_around_compaction_cursor_never_reintroduce_old_files ... ok
+test page_cache::tests::maintenance_published_reads_keep_all_fitting_pages_and_preserve_hot_pages_at_capacity ... ok
+test page_cache::tests::maintenance_reads_preserve_existing_frequency_and_recency_rank ... ok
+test directory::tests::cow_same_value_rewrite_copies_paths_preserving_versions_counts_and_old_roots ... ok
+test disk_state::tests::compact::relocation_and_unknown_publication_recover_a_value_larger_than_native_workspace ... ok
+test segment::maintenance::tests::root_only_replay_checks_every_operation_without_retaining_key_records ... ok
+test disk_state::tests::compact::compaction_effect_failures_reopen_without_changing_logical_values ... ok
+
+failures:
+
+---- arena::tests::forced_roll_rejects_expired_owner_or_poisoned_lock_before_mutation stdout ----
+
+thread 'arena::tests::forced_roll_rejects_expired_owner_or_poisoned_lock_before_mutation' (389305) panicked at crates/kasumi-kv/src/arena.rs:519:9:
+assertion failed: group.entries().unwrap().is_empty()
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    arena::tests::forced_roll_rejects_expired_owner_or_poisoned_lock_before_mutation
+
+test result: FAILED. 30 passed; 1 failed; 0 ignored; 0 measured; 278 filtered out; finished in 17.92s
+
+error: test failed, to rerun pass `-p kasumi-kv --lib`

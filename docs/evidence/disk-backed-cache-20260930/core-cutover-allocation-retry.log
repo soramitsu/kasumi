@@ -1,0 +1,13 @@
+   Compiling kasumi-kv v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-kv)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.85s
+     Running tests/commit_allocation.rs (target/disk-backed-cache/debug/deps/commit_allocation-27a3a8c41d98fb67)
+
+running 4 tests
+test largest_value_stages_and_commits_within_admitted_workspace ... ok
+test denied_operation_vector_changes_nothing_and_releases_the_writer has been running for over 60 seconds
+test many_small_puts_stage_and_commit_within_admitted_workspace has been running for over 60 seconds
+test materialization_charge_is_decided_before_any_effect has been running for over 60 seconds
+error: test failed, to rerun pass `-p kasumi-kv --test commit_allocation`
+
+Caused by:
+  process didn't exit successfully: `/Users/takemiyamakoto/dev/kasumi/target/disk-backed-cache/debug/deps/commit_allocation-27a3a8c41d98fb67 --show-output` (signal: 2, SIGINT: terminal interrupt signal)

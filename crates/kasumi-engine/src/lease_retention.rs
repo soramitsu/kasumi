@@ -40,6 +40,10 @@ pub(crate) struct SelectedSnapshot {
     pub generation: Arc<Generation>,
     pub scan_ids: Vec<String>,
     pub scan_has_more: bool,
+    // The selected generation keeps these already-admitted bytes live while
+    // page evaluation allocates its output. This is distinct from the larger
+    // reservation floor, which also provides headroom for that evaluation.
+    pub selected_input_bytes: u64,
     pub reservation: Reservation,
 }
 
@@ -744,10 +748,12 @@ impl LeaseManager {
                             receipts: root.generation.receipts.clone(),
                             backup_bindings: root.generation.backup_bindings.clone(),
                             snapshot_accounting: Default::default(),
+                            application_selection: root.generation.clone_application_selection(),
                             _read_reservations: vec![],
                         }),
                         scan_ids: ids,
                         scan_has_more: false,
+                        selected_input_bytes: root.metadata_bytes as u64,
                         reservation,
                     });
                 }
@@ -830,10 +836,12 @@ impl LeaseManager {
                 receipts: root.generation.receipts.clone(),
                 backup_bindings: root.generation.backup_bindings.clone(),
                 snapshot_accounting: Default::default(),
+                application_selection: root.generation.clone_application_selection(),
                 _read_reservations: vec![],
             }),
             scan_ids,
             scan_has_more,
+            selected_input_bytes: retained_bytes as u64,
             reservation,
         })
     }
@@ -841,4 +849,4 @@ impl LeaseManager {
 
 #[cfg(test)]
 #[path = "lease_retention_tests.rs"]
-mod tests;
+pub(crate) mod tests;

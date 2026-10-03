@@ -1,0 +1,59 @@
+Command: cargo test -p kasumi-engine --lib --test history --locked --offline --config profile.test.package.kasumi-kv.opt-level=3 --config profile.test.package.sha2.opt-level=3 -- --test-threads=1 feed_memory_ change_feed_is_atomic_ordered_resumable_and_detects_retention_gaps scoped_feed_advances_through_filtered_commit_tail_and_emits_only_real_deletions
+CARGO_TARGET_DIR=target/disk-backed-cache
+   Compiling kasumi-types v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-types)
+   Compiling kasumi-serving v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-serving)
+   Compiling kasumi-query v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-query)
+   Compiling kasumi-store v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-store)
+   Compiling kasumi-raft v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-raft)
+   Compiling kasumi-engine v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-engine)
+warning: variant `Mutation` is never constructed
+  --> crates/kasumi-engine/src/security_audit_jobs.rs:26:5
+   |
+24 | enum JobEffect {
+   |      --------- variant in this enum
+25 |     Read,
+26 |     Mutation(&'static str),
+   |     ^^^^^^^^
+   |
+   = note: `JobEffect` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: struct `ReadPause` is never constructed
+  --> crates/kasumi-engine/src/security_audit_jobs.rs:57:19
+   |
+57 | pub(super) struct ReadPause {
+   |                   ^^^^^^^^^
+
+warning: method `run_mutation` is never used
+   --> crates/kasumi-engine/src/security_audit_jobs.rs:120:25
+    |
+ 62 | impl SecurityAudit {
+    | ------------------ method in this implementation
+...
+120 |     pub(super) async fn run_mutation<T, F, R>(&self, component: &'static str, run: R) -> Result<T>
+    |                         ^^^^^^^^^^^^
+
+warning: `kasumi-engine` (lib) generated 3 warnings
+error[E0277]: the trait bound `u64: From<i32>` is not satisfied
+  --> crates/kasumi-engine/src/service_change_feed_memory_tests.rs:30:44
+   |
+30 |         commits: [(1, commit)].into_iter().collect(),
+   |                                            ^^^^^^^ the trait `From<i32>` is not implemented for `u64`
+   |
+   = help: `u64` implements trait `From<T>`:
+             From<&rend::u64_be>
+             From<&rend::u64_le>
+             From<&rend::unaligned::u64_ube>
+             From<&rend::unaligned::u64_ule>
+             From<bool>
+             From<byte_unit::byte::Byte>
+             From<char>
+             From<deranged::RangedU64<MIN, MAX>>
+           and 11 others
+   = note: required for `GenericOrdMap<u64, std::sync::Arc<kasumi_types::ChangeCommit>, ArcK>` to implement `FromIterator<(i32, std::sync::Arc<kasumi_types::ChangeCommit>)>`
+note: required by a bound in `collect`
+  --> /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/iter/traits/iterator.rs:2077:4
+
+For more information about this error, try `rustc --explain E0277`.
+error: could not compile `kasumi-engine` (lib test) due to 1 previous error
+Runner: 363.94s; exit=101; matching=699/699

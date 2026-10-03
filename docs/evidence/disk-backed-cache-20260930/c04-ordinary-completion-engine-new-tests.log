@@ -1,0 +1,84 @@
+Command: cargo test --locked --offline --config profile.test.package.kasumi-kv.opt-level=3 --config profile.test.package.sha2.opt-level=3 -p kasumi-engine --all-features --lib ordinary_completion_
+CARGO_TARGET_DIR=target/disk-backed-cache
+   Compiling kasumi-raft v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-raft)
+   Compiling kasumi-engine v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-engine)
+warning: variant `Mutation` is never constructed
+  --> crates/kasumi-engine/src/security_audit_jobs.rs:26:5
+   |
+24 | enum JobEffect {
+   |      --------- variant in this enum
+25 |     Read,
+26 |     Mutation(&'static str),
+   |     ^^^^^^^^
+   |
+   = note: `JobEffect` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: struct `ReadPause` is never constructed
+  --> crates/kasumi-engine/src/security_audit_jobs.rs:57:19
+   |
+57 | pub(super) struct ReadPause {
+   |                   ^^^^^^^^^
+
+warning: method `run_mutation` is never used
+   --> crates/kasumi-engine/src/security_audit_jobs.rs:120:25
+    |
+ 62 | impl SecurityAudit {
+    | ------------------ method in this implementation
+...
+120 |     pub(super) async fn run_mutation<T, F, R>(&self, component: &'static str, run: R) -> Result<T>
+    |                         ^^^^^^^^^^^^
+
+warning: `kasumi-engine` (lib) generated 3 warnings
+warning: field `retirement_witness` is never read
+   --> crates/kasumi-engine/src/application_source_completion.rs:469:16
+    |
+463 | pub(crate) struct CompletionSnapshot {
+    |                   ------------------ field in this struct
+...
+469 |     pub(crate) retirement_witness: Option<u64>,
+    |                ^^^^^^^^^^^^^^^^^^
+    |
+    = note: `CompletionSnapshot` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: variant `Mutation` is never constructed
+  --> crates/kasumi-engine/src/security_audit_jobs.rs:26:5
+   |
+24 | enum JobEffect {
+   |      --------- variant in this enum
+25 |     Read,
+26 |     Mutation(&'static str),
+   |     ^^^^^^^^
+   |
+   = note: `JobEffect` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+
+warning: field `panic` is never read
+  --> crates/kasumi-engine/src/security_audit_jobs.rs:52:9
+   |
+48 | pub(super) struct RecordFault {
+   |                   ----------- field in this struct
+...
+52 |     pub panic: bool,
+   |         ^^^^^
+
+warning: `kasumi-engine` (lib test) generated 5 warnings (2 duplicates)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3m 25s
+     Running unittests src/lib.rs (target/disk-backed-cache/debug/deps/kasumi_engine-b15d1192089511a8)
+
+running 11 tests
+test application_sources::tests::completion_tests::ordinary_completion_drain_registers_before_busy_and_wakes_after_real_guard_release ... ok
+test application_sources::tests::allocation_tails::completion_allocations::ordinary_completion_cell_and_credit_remain_funded_through_actual_deallocation ... ok
+test application_sources::tests::allocation_tails::completion_allocations::ordinary_completion_constructor_quote_covers_actual_three_allocations ... ok
+test application_sources::tests::completion_tests::ordinary_completion_bound_frozen_branch_keeps_source_without_new_preparation ... ok
+test application_sources::tests::completion_tests::ordinary_completion_outer_finish_panic_retains_original_response_after_facade_seal ... ok
+test application_sources::tests::completion_tests::ordinary_completion_is_last_selected_owner_through_real_outer_finish ... ok
+test application_sources::tests::allocation_tails::completion_allocations::ordinary_completion_erased_binding_retires_before_its_actual_credit ... ok
+test application_sources::tests::completion_tests::ordinary_completion_reuses_only_after_real_accept_reject_and_idempotent_finish ... ok
+test application_sources::tests::completion_tests::ordinary_completion_cancelled_real_group_waiter_keeps_queued_source_and_original ... ok
+test application_sources::tests::completion_tests::ordinary_completion_capture_wake_unwind_retires_the_actual_counted_handle ... ok
+test application_sources::tests::completion_tests::ordinary_completion_fault_checkpoints_preserve_exact_original_and_source_phase ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 588 filtered out; finished in 37.84s
+
+Runner: 243.87s; exit=0; matching=845/845

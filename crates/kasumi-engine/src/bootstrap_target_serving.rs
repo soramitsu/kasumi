@@ -118,7 +118,7 @@ pub async fn open_serving_target(
         let material = stores.clone();
         let proof = projection.clone();
         let live = gate.clone();
-        let (engine, bootstrap) = tokio::task::spawn_blocking(move || {
+        let (engine, bootstrap, bytes) = tokio::task::spawn_blocking(move || {
             let _reservation = reservation;
             proof.check(&live)?;
             let bytes =
@@ -161,7 +161,7 @@ pub async fn open_serving_target(
             engine.install_storage_access(material.application())?;
             engine.verify_bootstrap_dependencies_checked(|| proof.check(&live))?;
             proof.check(&live)?;
-            Ok::<_, anyhow::Error>((engine, bootstrap))
+            Ok::<_, anyhow::Error>((engine, bootstrap, bytes))
         })
         .await??;
         projection.check(&gate)?;
@@ -169,6 +169,7 @@ pub async fn open_serving_target(
         let database = construction
             .start_replicated(
                 engine,
+                &bytes,
                 config.node_id,
                 format!("{}/{}", projection.tenant(), bootstrap.incarnation),
                 transport,

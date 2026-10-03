@@ -1,0 +1,521 @@
+warning: variant `Mutation` is never constructed
+  --> crates/kasumi-engine/src/security_audit_jobs.rs:26:5
+   |
+24 | enum JobEffect {
+   |      --------- variant in this enum
+25 |     Read,
+26 |     Mutation(&'static str),
+   |     ^^^^^^^^
+   |
+   = note: `JobEffect` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: struct `ReadPause` is never constructed
+  --> crates/kasumi-engine/src/security_audit_jobs.rs:57:19
+   |
+57 | pub(super) struct ReadPause {
+   |                   ^^^^^^^^^
+
+warning: method `run_mutation` is never used
+   --> crates/kasumi-engine/src/security_audit_jobs.rs:120:25
+    |
+ 62 | impl SecurityAudit {
+    | ------------------ method in this implementation
+...
+120 |     pub(super) async fn run_mutation<T, F, R>(&self, component: &'static str, run: R) -> Result<T>
+    |                         ^^^^^^^^^^^^
+
+warning: `kasumi-engine` (lib) generated 3 warnings
+   Compiling kasumi-authority v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-authority)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.51s
+     Running unittests src/lib.rs (target/disk-backed-cache/debug/deps/kasumi_authority-1aa4395f2a3293d8)
+
+running 1 test
+AUTHORITY_APPLY_PHASE backend=0x10d208c30 index=0 phase=lock_begin
+AUTHORITY_APPLY_PHASE backend=0x10d208c30 index=0 phase=lock_acquired elapsed_us=2810
+AUTHORITY_APPLY_PHASE backend=0x10d208c30 index=0 phase=publish_begin writes=0 elapsed_us=17803
+AUTHORITY_APPLY_PHASE backend=0x10d2021d0 index=0 phase=lock_begin
+AUTHORITY_APPLY_PHASE backend=0x10d2021d0 index=0 phase=lock_acquired elapsed_us=51
+AUTHORITY_APPLY_PHASE backend=0x10d20c140 index=0 phase=lock_begin
+AUTHORITY_APPLY_PHASE backend=0x10d20c140 index=0 phase=lock_acquired elapsed_us=45
+AUTHORITY_APPLY_PHASE backend=0x10d2021d0 index=0 phase=publish_begin writes=0 elapsed_us=14978
+AUTHORITY_APPLY_PHASE backend=0x10d20c140 index=0 phase=publish_begin writes=0 elapsed_us=14626
+AUTHORITY_APPLY_PHASE backend=0x10d208c30 index=0 phase=publish_end ok=true elapsed_us=238048
+AUTHORITY_APPLY_PHASE backend=0x10d208c30 index=1 phase=lock_begin
+AUTHORITY_APPLY_PHASE backend=0x10d208c30 index=1 phase=lock_acquired elapsed_us=40
+AUTHORITY_APPLY_PHASE backend=0x10d208c30 index=1 phase=publish_begin writes=1 elapsed_us=7639
+AUTHORITY_APPLY_PHASE backend=0x10d20c140 index=0 phase=publish_end ok=true elapsed_us=248145
+AUTHORITY_APPLY_PHASE backend=0x10d2021d0 index=0 phase=publish_end ok=true elapsed_us=264371
+AUTHORITY_APPLY_PHASE backend=0x10d20c140 index=1 phase=lock_begin
+AUTHORITY_APPLY_PHASE backend=0x10d20c140 index=1 phase=lock_acquired elapsed_us=22
+AUTHORITY_APPLY_PHASE backend=0x10d2021d0 index=1 phase=lock_begin
+AUTHORITY_APPLY_PHASE backend=0x10d2021d0 index=1 phase=lock_acquired elapsed_us=26
+AUTHORITY_APPLY_PHASE backend=0x10d20c140 index=1 phase=publish_begin writes=1 elapsed_us=10198
+AUTHORITY_APPLY_PHASE backend=0x10d2021d0 index=1 phase=publish_begin writes=1 elapsed_us=9842
+AUTHORITY_APPLY_PHASE backend=0x10d208c30 index=1 phase=publish_end ok=true elapsed_us=120428
+AUTHORITY_APPLY_PHASE backend=0x10d20c140 index=1 phase=publish_end ok=true elapsed_us=153019
+AUTHORITY_APPLY_PHASE backend=0x10d2021d0 index=1 phase=publish_end ok=true elapsed_us=149857
+AUTHORITY_APPLY_PHASE backend=0x10d208c30 index=2 phase=lock_begin
+AUTHORITY_APPLY_PHASE backend=0x10d208c30 index=2 phase=lock_acquired elapsed_us=5446
+AUTHORITY_APPLY_PHASE backend=0x10d208c30 index=2 phase=maintenance_reduce_begin elapsed_us=5914
+AUTHORITY_APPLY_PHASE backend=0x10d2021d0 index=2 phase=lock_begin
+AUTHORITY_APPLY_PHASE backend=0x10d2021d0 index=2 phase=lock_acquired elapsed_us=44
+AUTHORITY_APPLY_PHASE backend=0x10d2021d0 index=2 phase=maintenance_reduce_begin elapsed_us=151
+AUTHORITY_APPLY_PHASE backend=0x10d20c140 index=2 phase=lock_begin
+AUTHORITY_APPLY_PHASE backend=0x10d20c140 index=2 phase=lock_acquired elapsed_us=46
+AUTHORITY_APPLY_PHASE backend=0x10d20c140 index=2 phase=maintenance_reduce_begin elapsed_us=146
+AUTHORITY_APPLY_PHASE backend=0x10d208c30 index=2 phase=maintenance_reduce_end ok=true elapsed_us=131569
+AUTHORITY_APPLY_PHASE backend=0x10d208c30 index=2 phase=maintenance_encode_end writes=3 elapsed_us=131632
+AUTHORITY_APPLY_PHASE backend=0x10d208c30 index=2 phase=publish_begin writes=3 elapsed_us=131653
+AUTHORITY_APPLY_PHASE backend=0x10d2021d0 index=2 phase=maintenance_reduce_end ok=true elapsed_us=126162
+AUTHORITY_APPLY_PHASE backend=0x10d2021d0 index=2 phase=maintenance_encode_end writes=3 elapsed_us=126216
+AUTHORITY_APPLY_PHASE backend=0x10d2021d0 index=2 phase=publish_begin writes=3 elapsed_us=126239
+AUTHORITY_APPLY_PHASE backend=0x10d20c140 index=2 phase=maintenance_reduce_end ok=true elapsed_us=128768
+AUTHORITY_APPLY_PHASE backend=0x10d20c140 index=2 phase=maintenance_encode_end writes=3 elapsed_us=128825
+AUTHORITY_APPLY_PHASE backend=0x10d20c140 index=2 phase=publish_begin writes=3 elapsed_us=128852
+AUTHORITY_APPLY_PHASE backend=0x10d208c30 index=2 phase=publish_end ok=true elapsed_us=300934
+AUTHORITY_APPLY_PHASE backend=0x10d2021d0 index=2 phase=publish_end ok=true elapsed_us=304516
+AUTHORITY_APPLY_PHASE backend=0x10d20c140 index=2 phase=publish_end ok=true elapsed_us=306886
+AUTHORITY_APPLY_PHASE backend=0x10d2021d0 index=3 phase=lock_begin
+AUTHORITY_APPLY_PHASE backend=0x10d2021d0 index=3 phase=lock_acquired elapsed_us=3105
+AUTHORITY_APPLY_PHASE backend=0x10d2021d0 index=3 phase=maintenance_reduce_begin elapsed_us=3207
+AUTHORITY_APPLY_PHASE backend=0x10d208c30 index=3 phase=lock_begin
+AUTHORITY_APPLY_PHASE backend=0x10d208c30 index=3 phase=lock_acquired elapsed_us=449
+AUTHORITY_APPLY_PHASE backend=0x10d208c30 index=3 phase=maintenance_reduce_begin elapsed_us=504
+AUTHORITY_APPLY_PHASE backend=0x10d20c140 index=3 phase=lock_begin
+AUTHORITY_APPLY_PHASE backend=0x10d20c140 index=3 phase=lock_acquired elapsed_us=32
+AUTHORITY_APPLY_PHASE backend=0x10d20c140 index=3 phase=maintenance_reduce_begin elapsed_us=122
+AUTHORITY_APPLY_PHASE backend=0x10d2021d0 index=3 phase=maintenance_reduce_end ok=true elapsed_us=125043
+AUTHORITY_APPLY_PHASE backend=0x10d2021d0 index=3 phase=maintenance_encode_end writes=3 elapsed_us=125112
+AUTHORITY_APPLY_PHASE backend=0x10d2021d0 index=3 phase=publish_begin writes=3 elapsed_us=125133
+AUTHORITY_APPLY_PHASE backend=0x10d208c30 index=3 phase=maintenance_reduce_end ok=true elapsed_us=124991
+AUTHORITY_APPLY_PHASE backend=0x10d208c30 index=3 phase=maintenance_encode_end writes=3 elapsed_us=125053
+AUTHORITY_APPLY_PHASE backend=0x10d208c30 index=3 phase=publish_begin writes=3 elapsed_us=125075
+AUTHORITY_APPLY_PHASE backend=0x10d20c140 index=3 phase=maintenance_reduce_end ok=true elapsed_us=122586
+AUTHORITY_APPLY_PHASE backend=0x10d20c140 index=3 phase=maintenance_encode_end writes=3 elapsed_us=122650
+AUTHORITY_APPLY_PHASE backend=0x10d20c140 index=3 phase=publish_begin writes=3 elapsed_us=122671
+AUTHORITY_APPLY_PHASE backend=0x10d2021d0 index=3 phase=publish_end ok=true elapsed_us=283544
+AUTHORITY_APPLY_PHASE backend=0x10d208c30 index=3 phase=publish_end ok=true elapsed_us=298525
+AUTHORITY_APPLY_PHASE backend=0x10d20c140 index=3 phase=publish_end ok=true elapsed_us=293366
+AUTHORITY_APPLY_PHASE backend=0x10d208c30 index=4 phase=lock_begin
+AUTHORITY_APPLY_PHASE backend=0x10d208c30 index=4 phase=lock_acquired elapsed_us=3843
+AUTHORITY_APPLY_PHASE backend=0x10d208c30 index=4 phase=maintenance_reduce_begin elapsed_us=3960
+AUTHORITY_APPLY_PHASE backend=0x10d2021d0 index=4 phase=lock_begin
+AUTHORITY_APPLY_PHASE backend=0x10d2021d0 index=4 phase=lock_acquired elapsed_us=39
+AUTHORITY_APPLY_PHASE backend=0x10d2021d0 index=4 phase=maintenance_reduce_begin elapsed_us=131
+AUTHORITY_APPLY_PHASE backend=0x10d20c140 index=4 phase=lock_begin
+AUTHORITY_APPLY_PHASE backend=0x10d20c140 index=4 phase=lock_acquired elapsed_us=39
+AUTHORITY_APPLY_PHASE backend=0x10d20c140 index=4 phase=maintenance_reduce_begin elapsed_us=145
+AUTHORITY_APPLY_PHASE backend=0x10d208c30 index=4 phase=maintenance_reduce_end ok=true elapsed_us=165744
+AUTHORITY_APPLY_PHASE backend=0x10d208c30 index=4 phase=maintenance_encode_end writes=3 elapsed_us=165813
+AUTHORITY_APPLY_PHASE backend=0x10d208c30 index=4 phase=publish_begin writes=3 elapsed_us=165850
+AUTHORITY_APPLY_PHASE backend=0x10d2021d0 index=4 phase=maintenance_reduce_end ok=true elapsed_us=163180
+AUTHORITY_APPLY_PHASE backend=0x10d2021d0 index=4 phase=maintenance_encode_end writes=3 elapsed_us=163248
+AUTHORITY_APPLY_PHASE backend=0x10d2021d0 index=4 phase=publish_begin writes=3 elapsed_us=163268
+AUTHORITY_APPLY_PHASE backend=0x10d20c140 index=4 phase=maintenance_reduce_end ok=true elapsed_us=161788
+AUTHORITY_APPLY_PHASE backend=0x10d20c140 index=4 phase=maintenance_encode_end writes=3 elapsed_us=161846
+AUTHORITY_APPLY_PHASE backend=0x10d20c140 index=4 phase=publish_begin writes=3 elapsed_us=161865
+AUTHORITY_APPLY_PHASE backend=0x10d208c30 index=4 phase=publish_end ok=true elapsed_us=347374
+AUTHORITY_APPLY_PHASE backend=0x10d2021d0 index=4 phase=publish_end ok=true elapsed_us=359619
+AUTHORITY_APPLY_PHASE backend=0x10d20c140 index=4 phase=publish_end ok=true elapsed_us=355908
+AUTHORITY_APPLY_PHASE backend=0x10d208c30 index=5 phase=lock_begin
+AUTHORITY_APPLY_PHASE backend=0x10d208c30 index=5 phase=lock_acquired elapsed_us=5552
+AUTHORITY_APPLY_PHASE backend=0x10d208c30 index=5 phase=maintenance_reduce_begin elapsed_us=5686
+AUTHORITY_APPLY_PHASE backend=0x10d2021d0 index=5 phase=lock_begin
+AUTHORITY_APPLY_PHASE backend=0x10d2021d0 index=5 phase=lock_acquired elapsed_us=48
+AUTHORITY_APPLY_PHASE backend=0x10d2021d0 index=5 phase=maintenance_reduce_begin elapsed_us=128
+AUTHORITY_APPLY_PHASE backend=0x10d20c140 index=5 phase=lock_begin
+AUTHORITY_APPLY_PHASE backend=0x10d20c140 index=5 phase=lock_acquired elapsed_us=33
+AUTHORITY_APPLY_PHASE backend=0x10d20c140 index=5 phase=maintenance_reduce_begin elapsed_us=124
+AUTHORITY_ROSTER_FREEZE backend=0x10d208c30 previous_revision=4 phase=begin
+AUTHORITY_ROSTER_FREEZE backend=0x10d2021d0 previous_revision=4 phase=begin
+AUTHORITY_ROSTER_FREEZE backend=0x10d20c140 previous_revision=4 phase=begin
+AUTHORITY_ROSTER_FREEZE backend=0x10d208c30 previous_revision=4 phase=end elapsed_us=679727
+AUTHORITY_ROSTER_FREEZE backend=0x10d208c30 previous_revision=4 phase=begin
+AUTHORITY_ROSTER_FREEZE backend=0x10d2021d0 previous_revision=4 phase=end elapsed_us=684555
+AUTHORITY_ROSTER_FREEZE backend=0x10d2021d0 previous_revision=4 phase=begin
+AUTHORITY_ROSTER_FREEZE backend=0x10d20c140 previous_revision=4 phase=end elapsed_us=680536
+AUTHORITY_ROSTER_FREEZE backend=0x10d20c140 previous_revision=4 phase=begin
+AUTHORITY_ROSTER_FREEZE backend=0x10d2021d0 previous_revision=4 phase=end elapsed_us=669572
+AUTHORITY_ROSTER_FREEZE backend=0x10d2021d0 previous_revision=4 phase=begin
+AUTHORITY_ROSTER_FREEZE backend=0x10d208c30 previous_revision=4 phase=end elapsed_us=696887
+AUTHORITY_ROSTER_FREEZE backend=0x10d208c30 previous_revision=4 phase=begin
+AUTHORITY_ROSTER_FREEZE backend=0x10d20c140 previous_revision=4 phase=end elapsed_us=685124
+AUTHORITY_ROSTER_FREEZE backend=0x10d20c140 previous_revision=4 phase=begin
+AUTHORITY_ROSTER_FREEZE backend=0x10d2021d0 previous_revision=4 phase=end elapsed_us=707047
+AUTHORITY_APPLY_PHASE backend=0x10d2021d0 index=5 phase=maintenance_reduce_end ok=true elapsed_us=2108430
+AUTHORITY_APPLY_PHASE backend=0x10d2021d0 index=5 phase=maintenance_encode_end writes=3 elapsed_us=2108491
+AUTHORITY_APPLY_PHASE backend=0x10d2021d0 index=5 phase=publish_begin writes=3 elapsed_us=2108508
+AUTHORITY_ROSTER_FREEZE backend=0x10d20c140 previous_revision=4 phase=end elapsed_us=686885
+AUTHORITY_ROSTER_FREEZE backend=0x10d208c30 previous_revision=4 phase=end elapsed_us=723998
+AUTHORITY_APPLY_PHASE backend=0x10d20c140 index=5 phase=maintenance_reduce_end ok=true elapsed_us=2105261
+AUTHORITY_APPLY_PHASE backend=0x10d20c140 index=5 phase=maintenance_encode_end writes=3 elapsed_us=2105334
+AUTHORITY_APPLY_PHASE backend=0x10d20c140 index=5 phase=publish_begin writes=3 elapsed_us=2105357
+AUTHORITY_APPLY_PHASE backend=0x10d208c30 index=5 phase=maintenance_reduce_end ok=true elapsed_us=2155472
+AUTHORITY_APPLY_PHASE backend=0x10d208c30 index=5 phase=maintenance_encode_end writes=3 elapsed_us=2155533
+AUTHORITY_APPLY_PHASE backend=0x10d208c30 index=5 phase=publish_begin writes=3 elapsed_us=2155564
+AUTHORITY_APPLY_PHASE backend=0x10d2021d0 index=5 phase=publish_end ok=true elapsed_us=2242766
+AUTHORITY_APPLY_PHASE backend=0x10d20c140 index=5 phase=publish_end ok=true elapsed_us=2263570
+AUTHORITY_APPLY_PHASE backend=0x10d208c30 index=5 phase=publish_end ok=true elapsed_us=2313905
+AUTHORITY_APPLY_PHASE backend=0x10d2021d0 index=6 phase=lock_begin
+AUTHORITY_APPLY_PHASE backend=0x10d2021d0 index=6 phase=lock_acquired elapsed_us=30
+AUTHORITY_APPLY_PHASE backend=0x10d2021d0 index=6 phase=maintenance_reduce_begin elapsed_us=214
+AUTHORITY_APPLY_PHASE backend=0x10d208c30 index=6 phase=lock_begin
+AUTHORITY_APPLY_PHASE backend=0x10d208c30 index=6 phase=lock_acquired elapsed_us=1967
+AUTHORITY_APPLY_PHASE backend=0x10d208c30 index=6 phase=maintenance_reduce_begin elapsed_us=2046
+AUTHORITY_APPLY_PHASE backend=0x10d20c140 index=6 phase=lock_begin
+AUTHORITY_APPLY_PHASE backend=0x10d20c140 index=6 phase=lock_acquired elapsed_us=29
+AUTHORITY_APPLY_PHASE backend=0x10d20c140 index=6 phase=maintenance_reduce_begin elapsed_us=134
+AUTHORITY_APPLY_PHASE backend=0x10d2021d0 index=6 phase=maintenance_reduce_end ok=true elapsed_us=60113
+AUTHORITY_APPLY_PHASE backend=0x10d2021d0 index=6 phase=maintenance_encode_end writes=2 elapsed_us=60200
+AUTHORITY_APPLY_PHASE backend=0x10d2021d0 index=6 phase=publish_begin writes=2 elapsed_us=60220
+AUTHORITY_APPLY_PHASE backend=0x10d208c30 index=6 phase=maintenance_reduce_end ok=true elapsed_us=62586
+AUTHORITY_APPLY_PHASE backend=0x10d208c30 index=6 phase=maintenance_encode_end writes=2 elapsed_us=62670
+AUTHORITY_APPLY_PHASE backend=0x10d208c30 index=6 phase=publish_begin writes=2 elapsed_us=62700
+AUTHORITY_APPLY_PHASE backend=0x10d20c140 index=6 phase=maintenance_reduce_end ok=true elapsed_us=60587
+AUTHORITY_APPLY_PHASE backend=0x10d20c140 index=6 phase=maintenance_encode_end writes=2 elapsed_us=60662
+AUTHORITY_APPLY_PHASE backend=0x10d20c140 index=6 phase=publish_begin writes=2 elapsed_us=60681
+AUTHORITY_APPLY_PHASE backend=0x10d2021d0 index=6 phase=publish_end ok=true elapsed_us=198847
+AUTHORITY_APPLY_PHASE backend=0x10d208c30 index=6 phase=publish_end ok=true elapsed_us=217651
+AUTHORITY_APPLY_PHASE backend=0x10d20c140 index=6 phase=publish_end ok=true elapsed_us=214640
+AUTHORITY_APPLY_PHASE backend=0x10d20c140 index=7 phase=lock_begin
+AUTHORITY_APPLY_PHASE backend=0x10d20c140 index=7 phase=lock_acquired elapsed_us=45
+AUTHORITY_APPLY_PHASE backend=0x10d20c140 index=7 phase=maintenance_reduce_begin elapsed_us=175
+AUTHORITY_APPLY_PHASE backend=0x10d2021d0 index=7 phase=lock_begin
+AUTHORITY_APPLY_PHASE backend=0x10d2021d0 index=7 phase=lock_acquired elapsed_us=67
+AUTHORITY_APPLY_PHASE backend=0x10d2021d0 index=7 phase=maintenance_reduce_begin elapsed_us=174
+AUTHORITY_APPLY_PHASE backend=0x10d20c140 index=7 phase=maintenance_reduce_end ok=true elapsed_us=48187
+AUTHORITY_APPLY_PHASE backend=0x10d20c140 index=7 phase=maintenance_encode_end writes=2 elapsed_us=52642
+AUTHORITY_APPLY_PHASE backend=0x10d20c140 index=7 phase=publish_begin writes=2 elapsed_us=52672
+AUTHORITY_APPLY_PHASE backend=0x10d2021d0 index=7 phase=maintenance_reduce_end ok=true elapsed_us=43182
+AUTHORITY_APPLY_PHASE backend=0x10d2021d0 index=7 phase=maintenance_encode_end writes=2 elapsed_us=43615
+AUTHORITY_APPLY_PHASE backend=0x10d2021d0 index=7 phase=publish_begin writes=2 elapsed_us=43637
+AUTHORITY_APPLY_PHASE backend=0x10d208c30 index=7 phase=lock_begin
+AUTHORITY_APPLY_PHASE backend=0x10d208c30 index=7 phase=lock_acquired elapsed_us=37
+AUTHORITY_APPLY_PHASE backend=0x10d208c30 index=7 phase=maintenance_reduce_begin elapsed_us=253
+AUTHORITY_APPLY_PHASE backend=0x10d208c30 index=7 phase=maintenance_reduce_end ok=true elapsed_us=37718
+AUTHORITY_APPLY_PHASE backend=0x10d208c30 index=7 phase=maintenance_encode_end writes=2 elapsed_us=37818
+AUTHORITY_APPLY_PHASE backend=0x10d208c30 index=7 phase=publish_begin writes=2 elapsed_us=37852
+AUTHORITY_APPLY_PHASE backend=0x10d20c140 index=7 phase=publish_end ok=true elapsed_us=238651
+AUTHORITY_APPLY_PHASE backend=0x10d2021d0 index=7 phase=publish_end ok=true elapsed_us=227460
+AUTHORITY_APPLY_PHASE backend=0x10d208c30 index=7 phase=publish_end ok=true elapsed_us=162610
+AUTHORITY_APPLY_PHASE backend=0x10d2021d0 index=8 phase=lock_begin
+AUTHORITY_APPLY_PHASE backend=0x10d2021d0 index=8 phase=lock_acquired elapsed_us=358
+AUTHORITY_APPLY_PHASE backend=0x10d2021d0 index=8 phase=maintenance_reduce_begin elapsed_us=463
+AUTHORITY_APPLY_PHASE backend=0x10d20c140 index=8 phase=lock_begin
+AUTHORITY_APPLY_PHASE backend=0x10d20c140 index=8 phase=lock_acquired elapsed_us=36
+AUTHORITY_APPLY_PHASE backend=0x10d20c140 index=8 phase=maintenance_reduce_begin elapsed_us=115
+AUTHORITY_ROSTER_FREEZE backend=0x10d2021d0 previous_revision=7 phase=begin
+AUTHORITY_APPLY_PHASE backend=0x10d208c30 index=8 phase=lock_begin
+AUTHORITY_APPLY_PHASE backend=0x10d208c30 index=8 phase=lock_acquired elapsed_us=28
+AUTHORITY_APPLY_PHASE backend=0x10d208c30 index=8 phase=maintenance_reduce_begin elapsed_us=118
+AUTHORITY_ROSTER_FREEZE backend=0x10d20c140 previous_revision=7 phase=begin
+AUTHORITY_ROSTER_FREEZE backend=0x10d208c30 previous_revision=7 phase=begin
+AUTHORITY_ROSTER_FREEZE backend=0x10d2021d0 previous_revision=7 phase=end elapsed_us=711583
+AUTHORITY_APPLY_PHASE backend=0x10d2021d0 index=8 phase=maintenance_reduce_end ok=true elapsed_us=748230
+AUTHORITY_APPLY_PHASE backend=0x10d2021d0 index=8 phase=maintenance_encode_end writes=2 elapsed_us=748286
+AUTHORITY_APPLY_PHASE backend=0x10d2021d0 index=8 phase=publish_begin writes=2 elapsed_us=748305
+AUTHORITY_ROSTER_FREEZE backend=0x10d20c140 previous_revision=7 phase=end elapsed_us=708381
+AUTHORITY_APPLY_PHASE backend=0x10d20c140 index=8 phase=maintenance_reduce_end ok=true elapsed_us=746936
+AUTHORITY_APPLY_PHASE backend=0x10d20c140 index=8 phase=maintenance_encode_end writes=2 elapsed_us=750660
+AUTHORITY_APPLY_PHASE backend=0x10d20c140 index=8 phase=publish_begin writes=2 elapsed_us=750696
+AUTHORITY_ROSTER_FREEZE backend=0x10d208c30 previous_revision=7 phase=end elapsed_us=704280
+AUTHORITY_APPLY_PHASE backend=0x10d208c30 index=8 phase=maintenance_reduce_end ok=true elapsed_us=750005
+AUTHORITY_APPLY_PHASE backend=0x10d208c30 index=8 phase=maintenance_encode_end writes=2 elapsed_us=750049
+AUTHORITY_APPLY_PHASE backend=0x10d208c30 index=8 phase=publish_begin writes=2 elapsed_us=750073
+AUTHORITY_APPLY_PHASE backend=0x10d2021d0 index=8 phase=publish_end ok=true elapsed_us=902946
+AUTHORITY_APPLY_PHASE backend=0x10d20c140 index=8 phase=publish_end ok=true elapsed_us=929899
+AUTHORITY_APPLY_PHASE backend=0x10d208c30 index=8 phase=publish_end ok=true elapsed_us=925144
+AUTHORITY_APPLY_PHASE backend=0x10d20c140 index=9 phase=lock_begin
+AUTHORITY_APPLY_PHASE backend=0x10d20c140 index=9 phase=lock_acquired elapsed_us=2878
+AUTHORITY_APPLY_PHASE backend=0x10d20c140 index=9 phase=maintenance_reduce_begin elapsed_us=2996
+AUTHORITY_APPLY_PHASE backend=0x10d2021d0 index=9 phase=lock_begin
+AUTHORITY_APPLY_PHASE backend=0x10d2021d0 index=9 phase=lock_acquired elapsed_us=5769
+AUTHORITY_APPLY_PHASE backend=0x10d2021d0 index=9 phase=maintenance_reduce_begin elapsed_us=5857
+AUTHORITY_APPLY_PHASE backend=0x10d208c30 index=9 phase=lock_begin
+AUTHORITY_APPLY_PHASE backend=0x10d208c30 index=9 phase=lock_acquired elapsed_us=31
+AUTHORITY_APPLY_PHASE backend=0x10d208c30 index=9 phase=maintenance_reduce_begin elapsed_us=123
+AUTHORITY_APPLY_PHASE backend=0x10d20c140 index=9 phase=maintenance_reduce_end ok=true elapsed_us=80011
+AUTHORITY_APPLY_PHASE backend=0x10d20c140 index=9 phase=maintenance_encode_end writes=2 elapsed_us=80081
+AUTHORITY_APPLY_PHASE backend=0x10d20c140 index=9 phase=publish_begin writes=2 elapsed_us=80099
+AUTHORITY_APPLY_PHASE backend=0x10d2021d0 index=9 phase=maintenance_reduce_end ok=true elapsed_us=85706
+AUTHORITY_APPLY_PHASE backend=0x10d2021d0 index=9 phase=maintenance_encode_end writes=2 elapsed_us=85769
+AUTHORITY_APPLY_PHASE backend=0x10d2021d0 index=9 phase=publish_begin writes=2 elapsed_us=85787
+AUTHORITY_APPLY_PHASE backend=0x10d208c30 index=9 phase=maintenance_reduce_end ok=true elapsed_us=75718
+AUTHORITY_APPLY_PHASE backend=0x10d208c30 index=9 phase=maintenance_encode_end writes=2 elapsed_us=75797
+AUTHORITY_APPLY_PHASE backend=0x10d208c30 index=9 phase=publish_begin writes=2 elapsed_us=75815
+AUTHORITY_APPLY_PHASE backend=0x10d20c140 index=9 phase=publish_end ok=true elapsed_us=209117
+AUTHORITY_APPLY_PHASE backend=0x10d2021d0 index=9 phase=publish_end ok=true elapsed_us=236751
+AUTHORITY_APPLY_PHASE backend=0x10d208c30 index=9 phase=publish_end ok=true elapsed_us=226602
+AUTHORITY_APPLY_PHASE backend=0x10d20c140 index=10 phase=lock_begin
+AUTHORITY_APPLY_PHASE backend=0x10d20c140 index=10 phase=lock_acquired elapsed_us=1951
+AUTHORITY_APPLY_PHASE backend=0x10d20c140 index=10 phase=maintenance_reduce_begin elapsed_us=2048
+AUTHORITY_APPLY_PHASE backend=0x10d2021d0 index=10 phase=lock_begin
+AUTHORITY_APPLY_PHASE backend=0x10d2021d0 index=10 phase=lock_acquired elapsed_us=26
+AUTHORITY_APPLY_PHASE backend=0x10d2021d0 index=10 phase=maintenance_reduce_begin elapsed_us=101
+AUTHORITY_APPLY_PHASE backend=0x10d208c30 index=10 phase=lock_begin
+AUTHORITY_APPLY_PHASE backend=0x10d208c30 index=10 phase=lock_acquired elapsed_us=22
+AUTHORITY_APPLY_PHASE backend=0x10d208c30 index=10 phase=maintenance_reduce_begin elapsed_us=125
+AUTHORITY_APPLY_PHASE backend=0x10d20c140 index=10 phase=maintenance_reduce_end ok=true elapsed_us=83169
+AUTHORITY_APPLY_PHASE backend=0x10d20c140 index=10 phase=maintenance_encode_end writes=2 elapsed_us=83243
+AUTHORITY_APPLY_PHASE backend=0x10d20c140 index=10 phase=publish_begin writes=2 elapsed_us=83266
+AUTHORITY_APPLY_PHASE backend=0x10d2021d0 index=10 phase=maintenance_reduce_end ok=true elapsed_us=82249
+AUTHORITY_APPLY_PHASE backend=0x10d2021d0 index=10 phase=maintenance_encode_end writes=2 elapsed_us=82330
+AUTHORITY_APPLY_PHASE backend=0x10d2021d0 index=10 phase=publish_begin writes=2 elapsed_us=82349
+AUTHORITY_APPLY_PHASE backend=0x10d208c30 index=10 phase=maintenance_reduce_end ok=true elapsed_us=84549
+AUTHORITY_APPLY_PHASE backend=0x10d208c30 index=10 phase=maintenance_encode_end writes=2 elapsed_us=84640
+AUTHORITY_APPLY_PHASE backend=0x10d208c30 index=10 phase=publish_begin writes=2 elapsed_us=84674
+AUTHORITY_APPLY_PHASE backend=0x10d20c140 index=10 phase=publish_end ok=true elapsed_us=259631
+AUTHORITY_APPLY_PHASE backend=0x10d2021d0 index=10 phase=publish_end ok=true elapsed_us=265110
+AUTHORITY_APPLY_PHASE backend=0x10d208c30 index=10 phase=publish_end ok=true elapsed_us=272484
+AUTHORITY_UNAVAILABLE at crates/kasumi-authority/src/service.rs:373:24: independent authority is shutting down
+AUTHORITY_APPLY_PHASE backend=0x7620ea0010 index=0 phase=lock_begin
+AUTHORITY_APPLY_PHASE backend=0x7620ea0010 index=0 phase=lock_acquired elapsed_us=43
+AUTHORITY_APPLY_PHASE backend=0x7620ea0010 index=0 phase=publish_begin writes=0 elapsed_us=7687
+AUTHORITY_APPLY_PHASE backend=0x7620ea0010 index=0 phase=publish_end ok=true elapsed_us=56965
+AUTHORITY_APPLY_PHASE backend=0x7620ea0010 index=1 phase=lock_begin
+AUTHORITY_APPLY_PHASE backend=0x7620ea0010 index=1 phase=lock_acquired elapsed_us=24
+AUTHORITY_APPLY_PHASE backend=0x7620ea0010 index=1 phase=publish_begin writes=0 elapsed_us=7576
+AUTHORITY_APPLY_PHASE backend=0x7620ea0010 index=1 phase=publish_end ok=true elapsed_us=57299
+AUTHORITY_APPLY_PHASE backend=0x7620ea0010 index=2 phase=lock_begin
+AUTHORITY_APPLY_PHASE backend=0x7620ea0010 index=2 phase=lock_acquired elapsed_us=17
+AUTHORITY_APPLY_PHASE backend=0x7620ea0010 index=2 phase=maintenance_reduce_begin elapsed_us=113
+AUTHORITY_APPLY_PHASE backend=0x7620ea0010 index=2 phase=maintenance_reduce_end ok=true elapsed_us=15395
+AUTHORITY_APPLY_PHASE backend=0x7620ea0010 index=2 phase=maintenance_encode_end writes=0 elapsed_us=15461
+AUTHORITY_APPLY_PHASE backend=0x7620ea0010 index=2 phase=publish_begin writes=0 elapsed_us=15477
+AUTHORITY_APPLY_PHASE backend=0x7620ea0010 index=2 phase=publish_end ok=true elapsed_us=62000
+AUTHORITY_APPLY_PHASE backend=0x7620ea0010 index=3 phase=lock_begin
+AUTHORITY_APPLY_PHASE backend=0x7620ea0010 index=3 phase=lock_acquired elapsed_us=10
+AUTHORITY_APPLY_PHASE backend=0x7620ea0010 index=3 phase=maintenance_reduce_begin elapsed_us=102
+AUTHORITY_APPLY_PHASE backend=0x7620ea0010 index=3 phase=maintenance_reduce_end ok=true elapsed_us=13799
+AUTHORITY_APPLY_PHASE backend=0x7620ea0010 index=3 phase=maintenance_encode_end writes=0 elapsed_us=13862
+AUTHORITY_APPLY_PHASE backend=0x7620ea0010 index=3 phase=publish_begin writes=0 elapsed_us=13879
+AUTHORITY_APPLY_PHASE backend=0x7620ea0010 index=3 phase=publish_end ok=true elapsed_us=59411
+AUTHORITY_APPLY_PHASE backend=0x7620ea0010 index=4 phase=lock_begin
+AUTHORITY_APPLY_PHASE backend=0x7620ea0010 index=4 phase=lock_acquired elapsed_us=9
+AUTHORITY_APPLY_PHASE backend=0x7620ea0010 index=4 phase=maintenance_reduce_begin elapsed_us=89
+AUTHORITY_APPLY_PHASE backend=0x7620ea0010 index=4 phase=maintenance_reduce_end ok=true elapsed_us=13671
+AUTHORITY_APPLY_PHASE backend=0x7620ea0010 index=4 phase=maintenance_encode_end writes=0 elapsed_us=13728
+AUTHORITY_APPLY_PHASE backend=0x7620ea0010 index=4 phase=publish_begin writes=0 elapsed_us=13744
+AUTHORITY_APPLY_PHASE backend=0x7620ea0010 index=4 phase=publish_end ok=true elapsed_us=60644
+AUTHORITY_APPLY_PHASE backend=0x7620ea0010 index=5 phase=lock_begin
+AUTHORITY_APPLY_PHASE backend=0x7620ea0010 index=5 phase=lock_acquired elapsed_us=11
+AUTHORITY_APPLY_PHASE backend=0x7620ea0010 index=5 phase=maintenance_reduce_begin elapsed_us=106
+AUTHORITY_APPLY_PHASE backend=0x7620ea0010 index=5 phase=maintenance_reduce_end ok=true elapsed_us=14189
+AUTHORITY_APPLY_PHASE backend=0x7620ea0010 index=5 phase=maintenance_encode_end writes=0 elapsed_us=14251
+AUTHORITY_APPLY_PHASE backend=0x7620ea0010 index=5 phase=publish_begin writes=0 elapsed_us=14267
+AUTHORITY_APPLY_PHASE backend=0x7620ea0010 index=5 phase=publish_end ok=true elapsed_us=59683
+AUTHORITY_APPLY_PHASE backend=0x7620ea0010 index=6 phase=lock_begin
+AUTHORITY_APPLY_PHASE backend=0x7620ea0010 index=6 phase=lock_acquired elapsed_us=12
+AUTHORITY_APPLY_PHASE backend=0x7620ea0010 index=6 phase=maintenance_reduce_begin elapsed_us=137
+AUTHORITY_APPLY_PHASE backend=0x7620ea0010 index=6 phase=maintenance_reduce_end ok=true elapsed_us=14336
+AUTHORITY_APPLY_PHASE backend=0x7620ea0010 index=6 phase=maintenance_encode_end writes=0 elapsed_us=14412
+AUTHORITY_APPLY_PHASE backend=0x7620ea0010 index=6 phase=publish_begin writes=0 elapsed_us=14428
+AUTHORITY_APPLY_PHASE backend=0x7620ea0010 index=6 phase=publish_end ok=true elapsed_us=59540
+AUTHORITY_APPLY_PHASE backend=0x7620ea0010 index=7 phase=lock_begin
+AUTHORITY_APPLY_PHASE backend=0x7620ea0010 index=7 phase=lock_acquired elapsed_us=9
+AUTHORITY_APPLY_PHASE backend=0x7620ea0010 index=7 phase=maintenance_reduce_begin elapsed_us=104
+AUTHORITY_APPLY_PHASE backend=0x7620ea0010 index=7 phase=maintenance_reduce_end ok=true elapsed_us=14363
+AUTHORITY_APPLY_PHASE backend=0x7620ea0010 index=7 phase=maintenance_encode_end writes=0 elapsed_us=14452
+AUTHORITY_APPLY_PHASE backend=0x7620ea0010 index=7 phase=publish_begin writes=0 elapsed_us=14470
+AUTHORITY_APPLY_PHASE backend=0x7620ea0010 index=7 phase=publish_end ok=true elapsed_us=59636
+AUTHORITY_APPLY_PHASE backend=0x7620ea0010 index=8 phase=lock_begin
+AUTHORITY_APPLY_PHASE backend=0x7620ea0010 index=8 phase=lock_acquired elapsed_us=12
+AUTHORITY_APPLY_PHASE backend=0x7620ea0010 index=8 phase=maintenance_reduce_begin elapsed_us=93
+AUTHORITY_APPLY_PHASE backend=0x7620ea0010 index=8 phase=maintenance_reduce_end ok=true elapsed_us=13644
+AUTHORITY_APPLY_PHASE backend=0x7620ea0010 index=8 phase=maintenance_encode_end writes=0 elapsed_us=13700
+AUTHORITY_APPLY_PHASE backend=0x7620ea0010 index=8 phase=publish_begin writes=0 elapsed_us=13716
+AUTHORITY_APPLY_PHASE backend=0x7620ea0010 index=8 phase=publish_end ok=true elapsed_us=62067
+AUTHORITY_APPLY_PHASE backend=0x7620ea0010 index=9 phase=lock_begin
+AUTHORITY_APPLY_PHASE backend=0x7620ea0010 index=9 phase=lock_acquired elapsed_us=11
+AUTHORITY_APPLY_PHASE backend=0x7620ea0010 index=9 phase=maintenance_reduce_begin elapsed_us=125
+AUTHORITY_APPLY_PHASE backend=0x7620ea0010 index=9 phase=maintenance_reduce_end ok=true elapsed_us=14966
+AUTHORITY_APPLY_PHASE backend=0x7620ea0010 index=9 phase=maintenance_encode_end writes=0 elapsed_us=15042
+AUTHORITY_APPLY_PHASE backend=0x7620ea0010 index=9 phase=publish_begin writes=0 elapsed_us=15070
+AUTHORITY_APPLY_PHASE backend=0x7620ea0010 index=9 phase=publish_end ok=true elapsed_us=62797
+AUTHORITY_APPLY_PHASE backend=0x7620ea0010 index=10 phase=lock_begin
+AUTHORITY_APPLY_PHASE backend=0x7620ea0010 index=10 phase=lock_acquired elapsed_us=17
+AUTHORITY_APPLY_PHASE backend=0x7620ea0010 index=10 phase=maintenance_reduce_begin elapsed_us=124
+AUTHORITY_APPLY_PHASE backend=0x7620ea0010 index=10 phase=maintenance_reduce_end ok=true elapsed_us=15564
+AUTHORITY_APPLY_PHASE backend=0x7620ea0010 index=10 phase=maintenance_encode_end writes=0 elapsed_us=15636
+AUTHORITY_APPLY_PHASE backend=0x7620ea0010 index=10 phase=publish_begin writes=0 elapsed_us=15653
+AUTHORITY_APPLY_PHASE backend=0x7620ea0010 index=10 phase=publish_end ok=true elapsed_us=65435
+AUTHORITY_APPLY_PHASE backend=0x7620ea0290 index=0 phase=lock_begin
+AUTHORITY_APPLY_PHASE backend=0x7620ea0290 index=0 phase=lock_acquired elapsed_us=31
+AUTHORITY_APPLY_PHASE backend=0x7620ea0290 index=0 phase=publish_begin writes=0 elapsed_us=11608
+AUTHORITY_APPLY_PHASE backend=0x7620ea0290 index=0 phase=publish_end ok=true elapsed_us=90448
+AUTHORITY_APPLY_PHASE backend=0x7620ea0290 index=1 phase=lock_begin
+AUTHORITY_APPLY_PHASE backend=0x7620ea0290 index=1 phase=lock_acquired elapsed_us=16
+AUTHORITY_APPLY_PHASE backend=0x7620ea0290 index=1 phase=publish_begin writes=0 elapsed_us=9800
+AUTHORITY_APPLY_PHASE backend=0x7620ea0290 index=1 phase=publish_end ok=true elapsed_us=81195
+AUTHORITY_APPLY_PHASE backend=0x7620ea0290 index=2 phase=lock_begin
+AUTHORITY_APPLY_PHASE backend=0x7620ea0290 index=2 phase=lock_acquired elapsed_us=12
+AUTHORITY_APPLY_PHASE backend=0x7620ea0290 index=2 phase=maintenance_reduce_begin elapsed_us=105
+AUTHORITY_APPLY_PHASE backend=0x7620ea0290 index=2 phase=maintenance_reduce_end ok=true elapsed_us=17545
+AUTHORITY_APPLY_PHASE backend=0x7620ea0290 index=2 phase=maintenance_encode_end writes=0 elapsed_us=17610
+AUTHORITY_APPLY_PHASE backend=0x7620ea0290 index=2 phase=publish_begin writes=0 elapsed_us=17628
+AUTHORITY_APPLY_PHASE backend=0x7620ea0290 index=2 phase=publish_end ok=true elapsed_us=91753
+AUTHORITY_APPLY_PHASE backend=0x7620ea0290 index=3 phase=lock_begin
+AUTHORITY_APPLY_PHASE backend=0x7620ea0290 index=3 phase=lock_acquired elapsed_us=14
+AUTHORITY_APPLY_PHASE backend=0x7620ea0290 index=3 phase=maintenance_reduce_begin elapsed_us=115
+AUTHORITY_APPLY_PHASE backend=0x7620ea0290 index=3 phase=maintenance_reduce_end ok=true elapsed_us=20938
+AUTHORITY_APPLY_PHASE backend=0x7620ea0290 index=3 phase=maintenance_encode_end writes=0 elapsed_us=21012
+AUTHORITY_APPLY_PHASE backend=0x7620ea0290 index=3 phase=publish_begin writes=0 elapsed_us=21034
+AUTHORITY_APPLY_PHASE backend=0x7620ea0290 index=3 phase=publish_end ok=true elapsed_us=85010
+AUTHORITY_APPLY_PHASE backend=0x7620ea0290 index=4 phase=lock_begin
+AUTHORITY_APPLY_PHASE backend=0x7620ea0290 index=4 phase=lock_acquired elapsed_us=24
+AUTHORITY_APPLY_PHASE backend=0x7620ea0290 index=4 phase=maintenance_reduce_begin elapsed_us=118
+AUTHORITY_APPLY_PHASE backend=0x7620ea0290 index=4 phase=maintenance_reduce_end ok=true elapsed_us=16803
+AUTHORITY_APPLY_PHASE backend=0x7620ea0290 index=4 phase=maintenance_encode_end writes=0 elapsed_us=16861
+AUTHORITY_APPLY_PHASE backend=0x7620ea0290 index=4 phase=publish_begin writes=0 elapsed_us=16878
+AUTHORITY_APPLY_PHASE backend=0x7620ea0290 index=4 phase=publish_end ok=true elapsed_us=75312
+AUTHORITY_APPLY_PHASE backend=0x7620ea0290 index=5 phase=lock_begin
+AUTHORITY_APPLY_PHASE backend=0x7620ea0290 index=5 phase=lock_acquired elapsed_us=12
+AUTHORITY_APPLY_PHASE backend=0x7620ea0290 index=5 phase=maintenance_reduce_begin elapsed_us=106
+AUTHORITY_APPLY_PHASE backend=0x7620ea0290 index=5 phase=maintenance_reduce_end ok=true elapsed_us=16808
+AUTHORITY_APPLY_PHASE backend=0x7620ea0290 index=5 phase=maintenance_encode_end writes=0 elapsed_us=16875
+AUTHORITY_APPLY_PHASE backend=0x7620ea0290 index=5 phase=publish_begin writes=0 elapsed_us=16894
+AUTHORITY_APPLY_PHASE backend=0x7620ea0290 index=5 phase=publish_end ok=true elapsed_us=78086
+AUTHORITY_APPLY_PHASE backend=0x7620ea0290 index=6 phase=lock_begin
+AUTHORITY_APPLY_PHASE backend=0x7620ea0290 index=6 phase=lock_acquired elapsed_us=12
+AUTHORITY_APPLY_PHASE backend=0x7620ea0290 index=6 phase=maintenance_reduce_begin elapsed_us=121
+AUTHORITY_APPLY_PHASE backend=0x7620ea0290 index=6 phase=maintenance_reduce_end ok=true elapsed_us=17509
+AUTHORITY_APPLY_PHASE backend=0x7620ea0290 index=6 phase=maintenance_encode_end writes=0 elapsed_us=17603
+AUTHORITY_APPLY_PHASE backend=0x7620ea0290 index=6 phase=publish_begin writes=0 elapsed_us=17621
+AUTHORITY_APPLY_PHASE backend=0x7620ea0290 index=6 phase=publish_end ok=true elapsed_us=72933
+AUTHORITY_APPLY_PHASE backend=0x7620ea0290 index=7 phase=lock_begin
+AUTHORITY_APPLY_PHASE backend=0x7620ea0290 index=7 phase=lock_acquired elapsed_us=12
+AUTHORITY_APPLY_PHASE backend=0x7620ea0290 index=7 phase=maintenance_reduce_begin elapsed_us=125
+AUTHORITY_APPLY_PHASE backend=0x7620ea0290 index=7 phase=maintenance_reduce_end ok=true elapsed_us=17292
+AUTHORITY_APPLY_PHASE backend=0x7620ea0290 index=7 phase=maintenance_encode_end writes=0 elapsed_us=17387
+AUTHORITY_APPLY_PHASE backend=0x7620ea0290 index=7 phase=publish_begin writes=0 elapsed_us=17414
+AUTHORITY_APPLY_PHASE backend=0x7620ea0290 index=7 phase=publish_end ok=true elapsed_us=78323
+AUTHORITY_APPLY_PHASE backend=0x7620ea0290 index=8 phase=lock_begin
+AUTHORITY_APPLY_PHASE backend=0x7620ea0290 index=8 phase=lock_acquired elapsed_us=14
+AUTHORITY_APPLY_PHASE backend=0x7620ea0290 index=8 phase=maintenance_reduce_begin elapsed_us=99
+AUTHORITY_APPLY_PHASE backend=0x7620ea0290 index=8 phase=maintenance_reduce_end ok=true elapsed_us=17704
+AUTHORITY_APPLY_PHASE backend=0x7620ea0290 index=8 phase=maintenance_encode_end writes=0 elapsed_us=17765
+AUTHORITY_APPLY_PHASE backend=0x7620ea0290 index=8 phase=publish_begin writes=0 elapsed_us=17784
+AUTHORITY_APPLY_PHASE backend=0x7620ea0290 index=8 phase=publish_end ok=true elapsed_us=77292
+AUTHORITY_APPLY_PHASE backend=0x7620ea0290 index=9 phase=lock_begin
+AUTHORITY_APPLY_PHASE backend=0x7620ea0290 index=9 phase=lock_acquired elapsed_us=13
+AUTHORITY_APPLY_PHASE backend=0x7620ea0290 index=9 phase=maintenance_reduce_begin elapsed_us=110
+AUTHORITY_APPLY_PHASE backend=0x7620ea0290 index=9 phase=maintenance_reduce_end ok=true elapsed_us=17572
+AUTHORITY_APPLY_PHASE backend=0x7620ea0290 index=9 phase=maintenance_encode_end writes=0 elapsed_us=17640
+AUTHORITY_APPLY_PHASE backend=0x7620ea0290 index=9 phase=publish_begin writes=0 elapsed_us=17660
+AUTHORITY_APPLY_PHASE backend=0x7620ea0290 index=9 phase=publish_end ok=true elapsed_us=78256
+AUTHORITY_APPLY_PHASE backend=0x7620ea0290 index=10 phase=lock_begin
+AUTHORITY_APPLY_PHASE backend=0x7620ea0290 index=10 phase=lock_acquired elapsed_us=13
+AUTHORITY_APPLY_PHASE backend=0x7620ea0290 index=10 phase=maintenance_reduce_begin elapsed_us=116
+AUTHORITY_APPLY_PHASE backend=0x7620ea0290 index=10 phase=maintenance_reduce_end ok=true elapsed_us=18951
+AUTHORITY_APPLY_PHASE backend=0x7620ea0290 index=10 phase=maintenance_encode_end writes=0 elapsed_us=19032
+AUTHORITY_APPLY_PHASE backend=0x7620ea0290 index=10 phase=publish_begin writes=0 elapsed_us=19057
+AUTHORITY_APPLY_PHASE backend=0x7620ea0290 index=10 phase=publish_end ok=true elapsed_us=89544
+AUTHORITY_APPLY_PHASE backend=0x7620ea03d0 index=0 phase=lock_begin
+AUTHORITY_APPLY_PHASE backend=0x7620ea03d0 index=0 phase=lock_acquired elapsed_us=36
+AUTHORITY_APPLY_PHASE backend=0x7620ea03d0 index=0 phase=publish_begin writes=0 elapsed_us=7498
+AUTHORITY_APPLY_PHASE backend=0x7620ea03d0 index=0 phase=publish_end ok=true elapsed_us=61230
+AUTHORITY_APPLY_PHASE backend=0x7620ea03d0 index=1 phase=lock_begin
+AUTHORITY_APPLY_PHASE backend=0x7620ea03d0 index=1 phase=lock_acquired elapsed_us=25
+AUTHORITY_APPLY_PHASE backend=0x7620ea03d0 index=1 phase=publish_begin writes=0 elapsed_us=9489
+AUTHORITY_APPLY_PHASE backend=0x7620ea03d0 index=1 phase=publish_end ok=true elapsed_us=68524
+AUTHORITY_APPLY_PHASE backend=0x7620ea03d0 index=2 phase=lock_begin
+AUTHORITY_APPLY_PHASE backend=0x7620ea03d0 index=2 phase=lock_acquired elapsed_us=40
+AUTHORITY_APPLY_PHASE backend=0x7620ea03d0 index=2 phase=maintenance_reduce_begin elapsed_us=139
+AUTHORITY_APPLY_PHASE backend=0x7620ea03d0 index=2 phase=maintenance_reduce_end ok=true elapsed_us=19372
+AUTHORITY_APPLY_PHASE backend=0x7620ea03d0 index=2 phase=maintenance_encode_end writes=0 elapsed_us=19444
+AUTHORITY_APPLY_PHASE backend=0x7620ea03d0 index=2 phase=publish_begin writes=0 elapsed_us=19461
+AUTHORITY_APPLY_PHASE backend=0x7620ea03d0 index=2 phase=publish_end ok=true elapsed_us=77237
+AUTHORITY_APPLY_PHASE backend=0x7620ea03d0 index=3 phase=lock_begin
+AUTHORITY_APPLY_PHASE backend=0x7620ea03d0 index=3 phase=lock_acquired elapsed_us=11
+AUTHORITY_APPLY_PHASE backend=0x7620ea03d0 index=3 phase=maintenance_reduce_begin elapsed_us=101
+AUTHORITY_APPLY_PHASE backend=0x7620ea03d0 index=3 phase=maintenance_reduce_end ok=true elapsed_us=14921
+AUTHORITY_APPLY_PHASE backend=0x7620ea03d0 index=3 phase=maintenance_encode_end writes=0 elapsed_us=14979
+AUTHORITY_APPLY_PHASE backend=0x7620ea03d0 index=3 phase=publish_begin writes=0 elapsed_us=15007
+AUTHORITY_APPLY_PHASE backend=0x7620ea03d0 index=3 phase=publish_end ok=true elapsed_us=65091
+AUTHORITY_APPLY_PHASE backend=0x7620ea03d0 index=4 phase=lock_begin
+AUTHORITY_APPLY_PHASE backend=0x7620ea03d0 index=4 phase=lock_acquired elapsed_us=13
+AUTHORITY_APPLY_PHASE backend=0x7620ea03d0 index=4 phase=maintenance_reduce_begin elapsed_us=96
+AUTHORITY_APPLY_PHASE backend=0x7620ea03d0 index=4 phase=maintenance_reduce_end ok=true elapsed_us=14971
+AUTHORITY_APPLY_PHASE backend=0x7620ea03d0 index=4 phase=maintenance_encode_end writes=0 elapsed_us=15022
+AUTHORITY_APPLY_PHASE backend=0x7620ea03d0 index=4 phase=publish_begin writes=0 elapsed_us=15041
+AUTHORITY_APPLY_PHASE backend=0x7620ea03d0 index=4 phase=publish_end ok=true elapsed_us=72143
+AUTHORITY_APPLY_PHASE backend=0x7620ea03d0 index=5 phase=lock_begin
+AUTHORITY_APPLY_PHASE backend=0x7620ea03d0 index=5 phase=lock_acquired elapsed_us=12
+AUTHORITY_APPLY_PHASE backend=0x7620ea03d0 index=5 phase=maintenance_reduce_begin elapsed_us=114
+AUTHORITY_APPLY_PHASE backend=0x7620ea03d0 index=5 phase=maintenance_reduce_end ok=true elapsed_us=18917
+AUTHORITY_APPLY_PHASE backend=0x7620ea03d0 index=5 phase=maintenance_encode_end writes=0 elapsed_us=19000
+AUTHORITY_APPLY_PHASE backend=0x7620ea03d0 index=5 phase=publish_begin writes=0 elapsed_us=19019
+AUTHORITY_APPLY_PHASE backend=0x7620ea03d0 index=5 phase=publish_end ok=true elapsed_us=72113
+AUTHORITY_APPLY_PHASE backend=0x7620ea03d0 index=6 phase=lock_begin
+AUTHORITY_APPLY_PHASE backend=0x7620ea03d0 index=6 phase=lock_acquired elapsed_us=11
+AUTHORITY_APPLY_PHASE backend=0x7620ea03d0 index=6 phase=maintenance_reduce_begin elapsed_us=118
+AUTHORITY_APPLY_PHASE backend=0x7620ea03d0 index=6 phase=maintenance_reduce_end ok=true elapsed_us=16495
+AUTHORITY_APPLY_PHASE backend=0x7620ea03d0 index=6 phase=maintenance_encode_end writes=0 elapsed_us=16579
+AUTHORITY_APPLY_PHASE backend=0x7620ea03d0 index=6 phase=publish_begin writes=0 elapsed_us=16602
+AUTHORITY_APPLY_PHASE backend=0x7620ea03d0 index=6 phase=publish_end ok=true elapsed_us=66712
+AUTHORITY_APPLY_PHASE backend=0x7620ea03d0 index=7 phase=lock_begin
+AUTHORITY_APPLY_PHASE backend=0x7620ea03d0 index=7 phase=lock_acquired elapsed_us=10
+AUTHORITY_APPLY_PHASE backend=0x7620ea03d0 index=7 phase=maintenance_reduce_begin elapsed_us=106
+AUTHORITY_APPLY_PHASE backend=0x7620ea03d0 index=7 phase=maintenance_reduce_end ok=true elapsed_us=14322
+AUTHORITY_APPLY_PHASE backend=0x7620ea03d0 index=7 phase=maintenance_encode_end writes=0 elapsed_us=14399
+AUTHORITY_APPLY_PHASE backend=0x7620ea03d0 index=7 phase=publish_begin writes=0 elapsed_us=14421
+AUTHORITY_APPLY_PHASE backend=0x7620ea03d0 index=7 phase=publish_end ok=true elapsed_us=60465
+AUTHORITY_APPLY_PHASE backend=0x7620ea03d0 index=8 phase=lock_begin
+AUTHORITY_APPLY_PHASE backend=0x7620ea03d0 index=8 phase=lock_acquired elapsed_us=13
+AUTHORITY_APPLY_PHASE backend=0x7620ea03d0 index=8 phase=maintenance_reduce_begin elapsed_us=100
+AUTHORITY_APPLY_PHASE backend=0x7620ea03d0 index=8 phase=maintenance_reduce_end ok=true elapsed_us=13905
+AUTHORITY_APPLY_PHASE backend=0x7620ea03d0 index=8 phase=maintenance_encode_end writes=0 elapsed_us=13967
+AUTHORITY_APPLY_PHASE backend=0x7620ea03d0 index=8 phase=publish_begin writes=0 elapsed_us=13983
+AUTHORITY_APPLY_PHASE backend=0x7620ea03d0 index=8 phase=publish_end ok=true elapsed_us=66674
+AUTHORITY_APPLY_PHASE backend=0x7620ea03d0 index=9 phase=lock_begin
+AUTHORITY_APPLY_PHASE backend=0x7620ea03d0 index=9 phase=lock_acquired elapsed_us=14
+AUTHORITY_APPLY_PHASE backend=0x7620ea03d0 index=9 phase=maintenance_reduce_begin elapsed_us=108
+AUTHORITY_APPLY_PHASE backend=0x7620ea03d0 index=9 phase=maintenance_reduce_end ok=true elapsed_us=15888
+AUTHORITY_APPLY_PHASE backend=0x7620ea03d0 index=9 phase=maintenance_encode_end writes=0 elapsed_us=15954
+AUTHORITY_APPLY_PHASE backend=0x7620ea03d0 index=9 phase=publish_begin writes=0 elapsed_us=15971
+AUTHORITY_APPLY_PHASE backend=0x7620ea03d0 index=9 phase=publish_end ok=true elapsed_us=68436
+AUTHORITY_APPLY_PHASE backend=0x7620ea03d0 index=10 phase=lock_begin
+AUTHORITY_APPLY_PHASE backend=0x7620ea03d0 index=10 phase=lock_acquired elapsed_us=11
+AUTHORITY_APPLY_PHASE backend=0x7620ea03d0 index=10 phase=maintenance_reduce_begin elapsed_us=108
+AUTHORITY_APPLY_PHASE backend=0x7620ea03d0 index=10 phase=maintenance_reduce_end ok=true elapsed_us=15809
+AUTHORITY_APPLY_PHASE backend=0x7620ea03d0 index=10 phase=maintenance_encode_end writes=0 elapsed_us=15884
+AUTHORITY_APPLY_PHASE backend=0x7620ea03d0 index=10 phase=publish_begin writes=0 elapsed_us=15904
+AUTHORITY_APPLY_PHASE backend=0x7620ea03d0 index=10 phase=publish_end ok=true elapsed_us=65140
+AUTHORITY_APPLY_PHASE backend=0x7620ea0010 index=11 phase=lock_begin
+AUTHORITY_APPLY_PHASE backend=0x7620ea0010 index=11 phase=lock_acquired elapsed_us=20588
+AUTHORITY_APPLY_PHASE backend=0x7620ea0010 index=11 phase=publish_begin writes=1 elapsed_us=32065
+AUTHORITY_APPLY_PHASE backend=0x7620ea03d0 index=11 phase=lock_begin
+AUTHORITY_APPLY_PHASE backend=0x7620ea03d0 index=11 phase=lock_acquired elapsed_us=6085
+AUTHORITY_APPLY_PHASE backend=0x7620ea03d0 index=11 phase=publish_begin writes=1 elapsed_us=14479
+AUTHORITY_APPLY_PHASE backend=0x7620ea0010 index=11 phase=publish_end ok=true elapsed_us=304854
+AUTHORITY_APPLY_PHASE backend=0x7620ea0290 index=11 phase=lock_begin
+AUTHORITY_APPLY_PHASE backend=0x7620ea0290 index=11 phase=lock_acquired elapsed_us=101
+AUTHORITY_APPLY_PHASE backend=0x7620ea03d0 index=11 phase=publish_end ok=true elapsed_us=161244
+AUTHORITY_APPLY_PHASE backend=0x7620ea0290 index=11 phase=publish_begin writes=1 elapsed_us=8206
+AUTHORITY_APPLY_PHASE backend=0x7620ea0290 index=11 phase=publish_end ok=true elapsed_us=116765
+AUTHORITY_APPLY_PHASE backend=0x7620ea0010 index=12 phase=lock_begin
+AUTHORITY_APPLY_PHASE backend=0x7620ea0010 index=12 phase=lock_acquired elapsed_us=20944
+AUTHORITY_APPLY_PHASE backend=0x7620ea0010 index=12 phase=maintenance_reduce_begin elapsed_us=21129
+AUTHORITY_APPLY_PHASE backend=0x7620ea0010 index=12 phase=maintenance_reduce_end ok=true elapsed_us=40161
+AUTHORITY_APPLY_PHASE backend=0x7620ea0010 index=12 phase=maintenance_encode_end writes=0 elapsed_us=40214
+AUTHORITY_APPLY_PHASE backend=0x7620ea0010 index=12 phase=publish_begin writes=0 elapsed_us=40233
+AUTHORITY_APPLY_PHASE backend=0x7620ea03d0 index=12 phase=lock_begin
+AUTHORITY_APPLY_PHASE backend=0x7620ea03d0 index=12 phase=lock_acquired elapsed_us=33
+AUTHORITY_APPLY_PHASE backend=0x7620ea03d0 index=12 phase=maintenance_reduce_begin elapsed_us=142
+AUTHORITY_APPLY_PHASE backend=0x7620ea03d0 index=12 phase=maintenance_reduce_end ok=true elapsed_us=25291
+AUTHORITY_APPLY_PHASE backend=0x7620ea03d0 index=12 phase=maintenance_encode_end writes=0 elapsed_us=29247
+AUTHORITY_APPLY_PHASE backend=0x7620ea03d0 index=12 phase=publish_begin writes=0 elapsed_us=29268
+AUTHORITY_APPLY_PHASE backend=0x7620ea0290 index=12 phase=lock_begin
+AUTHORITY_APPLY_PHASE backend=0x7620ea0290 index=12 phase=lock_acquired elapsed_us=6358
+AUTHORITY_APPLY_PHASE backend=0x7620ea0290 index=12 phase=maintenance_reduce_begin elapsed_us=6508
+AUTHORITY_APPLY_PHASE backend=0x7620ea0010 index=12 phase=publish_end ok=true elapsed_us=168855
+AUTHORITY_APPLY_PHASE backend=0x7620ea0290 index=12 phase=maintenance_reduce_end ok=true elapsed_us=23012
+AUTHORITY_APPLY_PHASE backend=0x7620ea0290 index=12 phase=maintenance_encode_end writes=0 elapsed_us=23048
+AUTHORITY_APPLY_PHASE backend=0x7620ea0290 index=12 phase=publish_begin writes=0 elapsed_us=23072
+AUTHORITY_APPLY_PHASE backend=0x7620ea03d0 index=12 phase=publish_end ok=true elapsed_us=140901
+AUTHORITY_APPLY_PHASE backend=0x7620ea0290 index=12 phase=publish_end ok=true elapsed_us=229584
+test service::tests::signer_directive_is_ordered_exact_finite_and_preserved_in_encrypted_snapshots ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 73 filtered out; finished in 32.48s
+

@@ -31,6 +31,7 @@ async fn selected_network_is_in_config_profiles_and_original_control_topology() 
         &directory,
         "selected",
         kasumi_store::DirectoryPolicy::fixture(),
+        kasumi_store::FileAllocationPolicy::fixture(),
         network.clone(),
         storage.clone(),
     )
@@ -91,6 +92,7 @@ async fn initialized_standalone_serves_native_mcp_and_durable_credential_lifecyc
             &root.path().join("kasumi"),
             "tenant-a",
             kasumi_store::DirectoryPolicy::fixture(),
+            kasumi_store::FileAllocationPolicy::fixture(),
             StandaloneNetwork::fixture(),
             storage.clone()
         )

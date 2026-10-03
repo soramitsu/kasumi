@@ -57,7 +57,10 @@ async fn direct_blocking_child_retains_original_result_and_join_after_cancelled_
         .unwrap();
     assert!(Arc::ptr_eq(&identity, &actual.0));
     let repeated = recovered.drain().await.unwrap_err();
-    assert!(Arc::ptr_eq(&failure.issues()[0], &repeated.issues()[0]));
+    assert!(kasumi_types::drain::DrainIssueRef::ptr_eq(
+        &failure.issues()[0],
+        &repeated.issues()[0]
+    ));
     drop(recovered);
     assert!(weak_charge.upgrade().is_none());
 }
@@ -80,7 +83,10 @@ async fn direct_blocking_panic_preserves_original_join_error() {
             .is_panic()
     );
     let repeated = worker.drain().await.unwrap_err();
-    assert!(Arc::ptr_eq(&failure.issues()[0], &repeated.issues()[0]));
+    assert!(kasumi_types::drain::DrainIssueRef::ptr_eq(
+        &failure.issues()[0],
+        &repeated.issues()[0]
+    ));
 }
 
 #[tokio::test]
@@ -138,7 +144,10 @@ async fn fallible_child_retains_original_error_after_cancelled_drain_and_facade_
     assert!(Arc::ptr_eq(&identity, &actual.0));
     assert!(!custody().lock().unwrap().contains_key(&id));
     let repeated = recovered.drain().await.unwrap_err();
-    assert!(Arc::ptr_eq(&first.issues()[0], &repeated.issues()[0]));
+    assert!(kasumi_types::drain::DrainIssueRef::ptr_eq(
+        &first.issues()[0],
+        &repeated.issues()[0]
+    ));
     assert!(
         recovered
             .start_result(async { Ok(()) }, &budget(1))
@@ -196,14 +205,20 @@ async fn repeated_and_concurrent_drains_preserve_original_join_error() {
     let first = first.unwrap_err();
     let second = second.unwrap_err();
     assert_eq!(first.completion(), DrainCompletion::Complete);
-    assert!(Arc::ptr_eq(&first.issues()[0], &second.issues()[0]));
+    assert!(kasumi_types::drain::DrainIssueRef::ptr_eq(
+        &first.issues()[0],
+        &second.issues()[0]
+    ));
     let original = first.issues()[0]
         .error()
         .downcast_ref::<tokio::task::JoinError>()
         .unwrap();
     assert!(original.is_panic());
     let again = worker.drain().await.unwrap_err();
-    assert!(Arc::ptr_eq(&first.issues()[0], &again.issues()[0]));
+    assert!(kasumi_types::drain::DrainIssueRef::ptr_eq(
+        &first.issues()[0],
+        &again.issues()[0]
+    ));
 }
 
 #[tokio::test]
@@ -224,7 +239,10 @@ async fn actual_child_abort_keeps_its_original_cancelled_join_error() {
             .is_cancelled()
     );
     let repeated = worker.drain().await.unwrap_err();
-    assert!(Arc::ptr_eq(&failed.issues()[0], &repeated.issues()[0]));
+    assert!(kasumi_types::drain::DrainIssueRef::ptr_eq(
+        &failed.issues()[0],
+        &repeated.issues()[0]
+    ));
 }
 
 #[tokio::test]

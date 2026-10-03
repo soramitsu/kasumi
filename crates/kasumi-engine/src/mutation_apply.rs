@@ -115,11 +115,10 @@ impl Permit {
         state: &mut TenantState,
         outcome: &Result<WriteReceipt>,
         applied: &crate::staged_terminal::AppliedIdentity,
-    ) -> Result<Pending> {
+    ) -> anyhow::Result<Pending> {
         let mut receipt = self.template.clone();
         receipt.outcome = outcome.clone();
-        let pending =
-            Pending::prepare(owner, state, Some(receipt), applied).map_err(terminal_error)?;
+        let pending = Pending::prepare(owner, state, Some(receipt), applied)?;
         let bytes = pending
             .head()
             .encoded_bytes
@@ -132,7 +131,8 @@ impl Permit {
             return Err(Error::new(
                 ErrorCode::Corruption,
                 "admitted receipt exceeded its terminal reservation",
-            ));
+            )
+            .into());
         }
         state.mutation_receipt_head = pending.head().clone();
         Ok(pending)
@@ -140,14 +140,14 @@ impl Permit {
 }
 
 impl TenantEngine {
-    pub(super) fn apply_mutation_ordered(
+    pub(super) fn prepare_mutation_ordered(
         &self,
         previous: &Generation,
         command: &Command,
         batch: &MutationBatch,
         applied: &crate::staged_terminal::AppliedIdentity,
         scope: &ApplyScope,
-    ) -> Result<Result<WriteReceipt>> {
+    ) -> anyhow::Result<PreparedCommand> {
         let revision = applied.revision;
         let state = &previous.state;
         let authorization = (|| {
@@ -193,12 +193,12 @@ impl TenantEngine {
             Ok(())
         })();
         if let Err(error) = authorization {
-            return self.publish_mutation_observation(previous, command, revision, Err(error));
+            return self.prepare_mutation_observation(previous, command, revision, Err(error));
         }
         let key = staged_digest(&(&command.context.principal, &batch.idempotency_key))?.0;
         let digest = batch.digest()?;
-        if let Some(row) = previous.receipts.get(&key).map_err(terminal_error)? {
-            row.validate(state).map_err(terminal_error)?;
+        if let Some(row) = previous.receipts.get(&key)? {
+            row.validate(state)?;
             let result = if row.receipt.request_digest == digest {
                 row.receipt.outcome
             } else {
@@ -207,24 +207,21 @@ impl TenantEngine {
                     "idempotency key reused for different input",
                 ))
             };
-            return self.publish_mutation_observation(previous, command, revision, result);
+            return self.prepare_mutation_observation(previous, command, revision, result);
         }
         let owner = match scope {
             ApplyScope::Committed => previous.receipts.clone(),
             #[cfg(any(test, feature = "test-utils"))]
-            ApplyScope::Fixture(disk) => previous
-                .receipts
-                .fixture_owner(disk, state)
-                .map_err(terminal_error)?,
+            ApplyScope::Fixture(disk) => previous.receipts.fixture_owner(disk, state)?,
         };
         let mut baseline = state.clone();
         baseline.revision = revision;
         let permit = match Permit::prepare(&baseline, command, batch, applied, digest) {
             Ok(permit) => permit,
             Err(error) if error.code == ErrorCode::QuotaExceeded => {
-                return self.publish_mutation_observation(previous, command, revision, Err(error));
+                return self.prepare_mutation_observation(previous, command, revision, Err(error));
             }
-            Err(error) => return Err(error),
+            Err(error) => return Err(error.into()),
         };
         // Prove the entire rejection can publish BEFORE document changes. Use
         // the longer audit outcome plus maximum head decimal widths. Unrelated
@@ -242,7 +239,7 @@ impl TenantEngine {
             || !accounting.fits(&reserved)?
             || !lifecycle::completion_fits(&reserved)?
         {
-            return self.publish_mutation_observation(
+            return self.prepare_mutation_observation(
                 previous,
                 command,
                 revision,
@@ -257,7 +254,7 @@ impl TenantEngine {
         // A storage/invariant failure is outer failure: no Generation publishes.
         let mut next = baseline.clone();
         let changed = batch_changes(batch);
-        let attempt = (|| -> Result<(WriteReceipt, Arc<QueryIndexes>)> {
+        let attempt = (|| -> Result<WriteReceipt> {
             let receipt = apply_batch(
                 &mut next,
                 batch,
@@ -265,20 +262,17 @@ impl TenantEngine {
                 command.timestamp_ms,
                 &previous.indexes,
             )?;
-            previous.indexes.validate_unique_changes(
-                &state.collections,
-                &next.collections,
-                &changed,
-            )?;
+            crate::index_source::validate_changes(&previous.indexes, state, &next, &changed)?;
             crate::change_feed_state::append(state, &mut next, &changed)?;
-            let indexes = Arc::new(previous.indexes.update(
-                &state.collections,
-                &next.collections,
-                &changed,
-            )?);
-            Ok((receipt, indexes))
+            Ok(receipt)
         })();
-        if let Ok((receipt, indexes)) = attempt.as_ref() {
+        // Captured state/index disagreements are replica failures. They cannot
+        // select a permanent rejection receipt or advance the text writer.
+        let attempt = match attempt {
+            Err(error) if error.code == ErrorCode::Corruption => return Err(error.into()),
+            outcome => outcome,
+        };
+        if let Ok(receipt) = attempt.as_ref() {
             let outcome = Ok(receipt.clone());
             let pending = permit.finalize(&owner, &mut next, &outcome, applied)?;
             append_audit(&mut next, audit(command, &baseline, "committed"))?;
@@ -290,18 +284,34 @@ impl TenantEngine {
                 && accounting.fits(&next)?
                 && lifecycle::completion_fits(&next)?
             {
-                let receipts = pending.persist().map_err(terminal_error)?;
-                self.publish_generation(Some(Arc::new(Generation {
+                // Deterministic document/index validation and every acceptance
+                // budget check have finished. Text materialization advances a
+                // shared writer generation, so it cannot precede a rejection.
+                // Any error from here is an outer replica failure; do not select
+                // a rejection receipt and continue with the old text writer.
+                let indexes = Arc::new(crate::index_source::update(
+                    &previous.indexes,
+                    state,
+                    &next,
+                    &changed,
+                )?);
+                let receipts = pending.stage()?;
+                let candidate = Arc::new(Generation {
                     state: next,
                     receipts,
                     backup_bindings: previous.backup_bindings.clone(),
                     terminals: previous.terminals.clone(),
                     target_resolutions: previous.target_resolutions.clone(),
-                    indexes: indexes.clone(),
+                    indexes,
                     snapshot_accounting: accounting,
+                    application_selection: std::sync::OnceLock::new(),
                     _read_reservations: vec![],
-                })));
-                return Ok(outcome);
+                });
+                return Ok(PreparedCommand {
+                    generation: Some(candidate),
+                    changed,
+                    outcome,
+                });
             }
         }
         let error = match attempt {
@@ -330,10 +340,11 @@ impl TenantEngine {
             return Err(Error::new(
                 ErrorCode::Corruption,
                 "reserved mutation terminal cannot publish",
-            ));
+            )
+            .into());
         }
-        let receipts = pending.persist().map_err(terminal_error)?;
-        self.publish_generation(Some(Arc::new(Generation {
+        let receipts = pending.stage()?;
+        let candidate = Arc::new(Generation {
             state: rejected,
             receipts,
             backup_bindings: previous.backup_bindings.clone(),
@@ -341,20 +352,25 @@ impl TenantEngine {
             target_resolutions: previous.target_resolutions.clone(),
             indexes: previous.indexes.clone(),
             snapshot_accounting: accounting,
+            application_selection: std::sync::OnceLock::new(),
             _read_reservations: vec![],
-        })));
-        Ok(outcome)
+        });
+        Ok(PreparedCommand {
+            generation: Some(candidate),
+            changed: ChangedIds::new(),
+            outcome,
+        })
     }
 
     /// No new identity was admitted (or this is exact replay/conflict). Required
     /// audit failure can reject release but cannot modify the selected receipt.
-    fn publish_mutation_observation(
+    fn prepare_mutation_observation(
         &self,
         previous: &Generation,
         command: &Command,
         revision: u64,
         mut outcome: Result<WriteReceipt>,
-    ) -> Result<Result<WriteReceipt>> {
+    ) -> anyhow::Result<PreparedCommand> {
         let mut next = previous.state.clone();
         next.revision = revision;
         let event = audit(
@@ -404,7 +420,7 @@ impl TenantEngine {
                 previous.snapshot_accounting.clone()
             }
         };
-        self.publish_generation(Some(Arc::new(Generation {
+        let candidate = Arc::new(Generation {
             state: next,
             receipts: previous.receipts.clone(),
             backup_bindings: previous.backup_bindings.clone(),
@@ -412,9 +428,14 @@ impl TenantEngine {
             target_resolutions: previous.target_resolutions.clone(),
             indexes: previous.indexes.clone(),
             snapshot_accounting: accounting,
+            application_selection: std::sync::OnceLock::new(),
             _read_reservations: vec![],
-        })));
-        Ok(outcome)
+        });
+        Ok(PreparedCommand {
+            generation: Some(candidate),
+            changed: ChangedIds::new(),
+            outcome,
+        })
     }
 }
 

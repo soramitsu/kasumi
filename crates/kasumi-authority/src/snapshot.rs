@@ -29,8 +29,8 @@ impl SnapshotRecords {
             visitor(std::str::from_utf8(key)?, &serde_json::from_slice(value)?)
         })
     }
-    pub(super) fn replacements(&self) -> Vec<(&str, &EncryptedTable)> {
-        vec![(NS, &self.0)]
+    pub(super) fn replacements(&self) -> Vec<kasumi_store::NamespaceReplacement<'_>> {
+        vec![kasumi_store::NamespaceReplacement::from_table(NS, &self.0)]
     }
 }
 fn disk_budget(maximum: u64) -> Result<u64> {
@@ -48,6 +48,7 @@ pub(super) fn write(view: &TenantReadView, maximum: u64, output: &mut dyn Write)
     let records = SnapshotRecords(EncryptedTable::new(
         view.scratch_disk(),
         disk_budget(maximum)?,
+        view.scratch_disk().native_cache_config(),
     )?);
     view.visit(NS, MAX_RECORD_BYTES, |key, bytes| {
         if key != META {
@@ -100,7 +101,11 @@ pub(super) fn read(
     let (mut count, mut total, mut record_bytes) = (0u64, 8u64, 0u64);
     let mut meta = None;
     let mut previous = None;
-    let records = SnapshotRecords(EncryptedTable::new(scratch_disk, disk_budget(maximum)?)?);
+    let records = SnapshotRecords(EncryptedTable::new(
+        scratch_disk,
+        disk_budget(maximum)?,
+        scratch_disk.native_cache_config(),
+    )?);
     loop {
         let mut length = [0; 8];
         input.read_exact(&mut length)?;

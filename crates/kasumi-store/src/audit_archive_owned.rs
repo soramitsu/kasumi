@@ -249,10 +249,11 @@ mod tests {
         assert!(archive.publish(&segment).await.is_err());
         let disk = archive.disk.clone();
         let before_close = disk.snapshot();
-        assert_eq!(before_close.open_files, 1);
+        let node_files = before_close.open_files;
+        assert!(node_files >= 2);
         let node_path = directory.path().join("node.kv");
-        let node_identity = private_files::file_identity(&node_path).unwrap();
-        let node_bytes = std::fs::read(&node_path).unwrap();
+        let node_identity = crate::NodeGroupIdentity::read(&node_path).unwrap();
+        let node_bytes = std::fs::read(node_path.join(kasumi_kv::ROOT_FILE_NAME)).unwrap();
         store.shutdown().await.unwrap();
         {
             let failure = store.node.shutdown().await.unwrap_err();
@@ -268,23 +269,28 @@ mod tests {
             );
             assert_eq!(failure.issues().len(), repeated.issues().len());
             for (original, repeated) in failure.issues().iter().zip(repeated.issues()) {
-                assert!(Arc::ptr_eq(original, repeated));
+                assert!(kasumi_types::drain::DrainIssueRef::ptr_eq(
+                    original, repeated
+                ));
             }
             assert!(store.node.db.begin_read().is_err());
             // The consuming close API cannot prove physical drain on a storage
             // failure. Its sticky Retained report preserves the original issues;
             // the installed FileOwner remains for explicit census recovery.
-            assert_eq!(disk.snapshot().open_files, 1);
+            assert_eq!(disk.snapshot().open_files, node_files);
             assert_eq!(
                 disk.snapshot().retained_file_attempts,
-                before_close.retained_file_attempts + 1
+                before_close.retained_file_attempts + usize::try_from(node_files).unwrap()
             );
         }
         assert_eq!(
-            private_files::file_identity(&node_path).unwrap(),
+            crate::NodeGroupIdentity::read(&node_path).unwrap(),
             node_identity
         );
-        assert_eq!(std::fs::read(&node_path).unwrap(), node_bytes);
+        assert_eq!(
+            std::fs::read(node_path.join(kasumi_kv::ROOT_FILE_NAME)).unwrap(),
+            node_bytes
+        );
         assert_eq!(disk.snapshot().open_directories, 1);
         assert_eq!(disk.snapshot().charged_bytes, before_close.charged_bytes);
         assert_eq!(disk.snapshot().pending_bytes, before_close.pending_bytes);
@@ -303,14 +309,14 @@ mod tests {
         // dropping the store facade; no store/backend owner may cross census.
         store.shutdown().await.unwrap();
         drop(store);
-        assert_eq!(disk.snapshot().open_files, 1);
+        assert_eq!(disk.snapshot().open_files, node_files);
         // The retained directory also remains a real operational owner.
         drop(archive);
         assert_eq!(disk.snapshot().open_directories, 0);
         let cancelled = crate::CensusCancellation::default();
         cancelled.cancel();
         assert!(disk.reconcile(&cancelled).is_err());
-        assert_eq!(disk.snapshot().open_files, 1);
+        assert_eq!(disk.snapshot().open_files, node_files);
         assert_eq!(disk.snapshot().retained_file_attempts, retained_attempts);
         assert_eq!(disk.snapshot().charged_bytes, retained_charge);
         assert_eq!(disk.snapshot().pending_bytes, retained_pending);
@@ -322,10 +328,13 @@ mod tests {
         assert_eq!(disk.snapshot().retained_file_attempts, 0);
         assert_eq!(disk.snapshot().phase, crate::NodeDiskPhase::Open);
         assert_eq!(
-            private_files::file_identity(&node_path).unwrap(),
+            crate::NodeGroupIdentity::read(&node_path).unwrap(),
             node_identity
         );
-        assert_eq!(std::fs::read(&node_path).unwrap(), node_bytes);
+        assert_eq!(
+            std::fs::read(node_path.join(kasumi_kv::ROOT_FILE_NAME)).unwrap(),
+            node_bytes
+        );
         let archive = FilesystemAuditArchive::open(&root, disk.clone())
             .unwrap()
             .with_publication_observer(observer.clone());

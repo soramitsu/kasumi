@@ -1,0 +1,404 @@
+{
+  "line": 807,
+  "refusal": "TestDiskMemory::reserve_installed denied: provider=0x112cd15e0 requested_bytes=12544 charged_bytes=16664 bookkeeping_bytes=24184 used_bytes=4887300 next_used_bytes=4903964 max_bytes=67108864 live_reservations=32 max_reservations=32 attempts=452 error=Kind(OutOfMemory)",
+  "reconstructed_slots": 32,
+  "reported_slots": 32,
+  "reconstructed_bytes": 4887300,
+  "inventory": [
+    {
+      "id": 1,
+      "kind": "installed",
+      "bytes": 74164,
+      "phase": "fixture_before_receipt_builder",
+      "line": 5
+    },
+    {
+      "id": 2,
+      "kind": "installed",
+      "bytes": 8264,
+      "phase": "fixture_before_receipt_builder",
+      "line": 6
+    },
+    {
+      "id": 3,
+      "kind": "installed",
+      "bytes": 12424,
+      "phase": "fixture_before_receipt_builder",
+      "line": 7
+    },
+    {
+      "id": 4,
+      "kind": "installed",
+      "bytes": 8280,
+      "phase": "fixture_before_receipt_builder",
+      "line": 8
+    },
+    {
+      "id": 5,
+      "kind": "installed",
+      "bytes": 267232,
+      "phase": "fixture_before_receipt_builder",
+      "line": 9
+    },
+    {
+      "id": 6,
+      "kind": "installed",
+      "bytes": 147552,
+      "phase": "fixture_before_receipt_builder",
+      "line": 10
+    },
+    {
+      "id": 7,
+      "kind": "installed",
+      "bytes": 57736,
+      "phase": "fixture_before_receipt_builder",
+      "line": 11
+    },
+    {
+      "id": 8,
+      "kind": "installed",
+      "bytes": 157680,
+      "phase": "fixture_before_receipt_builder",
+      "line": 12
+    },
+    {
+      "id": 9,
+      "kind": "installed",
+      "bytes": 13008,
+      "phase": "fixture_before_receipt_builder",
+      "line": 13
+    },
+    {
+      "id": 10,
+      "kind": "installed",
+      "bytes": 16792,
+      "phase": "fixture_before_receipt_builder",
+      "line": 14
+    },
+    {
+      "id": 11,
+      "kind": "installed",
+      "bytes": 43440,
+      "phase": "fixture_before_receipt_builder",
+      "line": 15
+    },
+    {
+      "id": 24,
+      "kind": "installed",
+      "bytes": 147552,
+      "phase": "fixture_before_receipt_builder",
+      "line": 31
+    },
+    {
+      "id": 25,
+      "kind": "installed",
+      "bytes": 147552,
+      "phase": "fixture_before_receipt_builder",
+      "line": 32
+    },
+    {
+      "id": 26,
+      "kind": "cache",
+      "bytes": 69656,
+      "phase": "fixture_before_receipt_builder",
+      "line": 35
+    },
+    {
+      "id": 354,
+      "kind": "installed",
+      "bytes": 267232,
+      "phase": "setup_entered:None",
+      "line": 698
+    },
+    {
+      "id": 355,
+      "kind": "installed",
+      "bytes": 147552,
+      "phase": "setup_entered:None",
+      "line": 699
+    },
+    {
+      "id": 356,
+      "kind": "installed",
+      "bytes": 57736,
+      "phase": "setup_entered:None",
+      "line": 700
+    },
+    {
+      "id": 357,
+      "kind": "installed",
+      "bytes": 157680,
+      "phase": "setup_entered:None",
+      "line": 701
+    },
+    {
+      "id": 358,
+      "kind": "installed",
+      "bytes": 13008,
+      "phase": "setup_entered:None",
+      "line": 702
+    },
+    {
+      "id": 359,
+      "kind": "installed",
+      "bytes": 16792,
+      "phase": "setup_entered:None",
+      "line": 703
+    },
+    {
+      "id": 360,
+      "kind": "installed",
+      "bytes": 43440,
+      "phase": "setup_entered:None",
+      "line": 704
+    },
+    {
+      "id": 373,
+      "kind": "installed",
+      "bytes": 147552,
+      "phase": "setup_entered:None",
+      "line": 720
+    },
+    {
+      "id": 374,
+      "kind": "installed",
+      "bytes": 147552,
+      "phase": "setup_entered:None",
+      "line": 721
+    },
+    {
+      "id": 435,
+      "kind": "installed",
+      "bytes": 73800,
+      "phase": "point_write_entered:Some(1)",
+      "line": 788
+    },
+    {
+      "id": 444,
+      "kind": "installed",
+      "bytes": 8296,
+      "phase": "point_write_entered:Some(1)",
+      "line": 797
+    },
+    {
+      "id": 445,
+      "kind": "installed",
+      "bytes": 8648,
+      "phase": "point_write_entered:Some(1)",
+      "line": 800
+    },
+    {
+      "id": 446,
+      "kind": "installed",
+      "bytes": 2412520,
+      "phase": "point_write_entered:Some(1)",
+      "line": 801
+    },
+    {
+      "id": 447,
+      "kind": "installed",
+      "bytes": 120224,
+      "phase": "point_write_entered:Some(1)",
+      "line": 802
+    },
+    {
+      "id": 448,
+      "kind": "installed",
+      "bytes": 33056,
+      "phase": "point_write_entered:Some(1)",
+      "line": 803
+    },
+    {
+      "id": 449,
+      "kind": "installed",
+      "bytes": 13648,
+      "phase": "point_write_entered:Some(1)",
+      "line": 804
+    },
+    {
+      "id": 450,
+      "kind": "installed",
+      "bytes": 22384,
+      "phase": "point_write_entered:Some(1)",
+      "line": 805
+    },
+    {
+      "id": 451,
+      "kind": "installed",
+      "bytes": 24848,
+      "phase": "point_write_entered:Some(1)",
+      "line": 806
+    }
+  ],
+  "groups": [
+    {
+      "phase": "fixture_before_receipt_builder",
+      "kind": "installed",
+      "bytes_each": 74164,
+      "count": 1
+    },
+    {
+      "phase": "fixture_before_receipt_builder",
+      "kind": "installed",
+      "bytes_each": 8264,
+      "count": 1
+    },
+    {
+      "phase": "fixture_before_receipt_builder",
+      "kind": "installed",
+      "bytes_each": 12424,
+      "count": 1
+    },
+    {
+      "phase": "fixture_before_receipt_builder",
+      "kind": "installed",
+      "bytes_each": 8280,
+      "count": 1
+    },
+    {
+      "phase": "fixture_before_receipt_builder",
+      "kind": "installed",
+      "bytes_each": 267232,
+      "count": 1
+    },
+    {
+      "phase": "fixture_before_receipt_builder",
+      "kind": "installed",
+      "bytes_each": 147552,
+      "count": 3
+    },
+    {
+      "phase": "fixture_before_receipt_builder",
+      "kind": "installed",
+      "bytes_each": 57736,
+      "count": 1
+    },
+    {
+      "phase": "fixture_before_receipt_builder",
+      "kind": "installed",
+      "bytes_each": 157680,
+      "count": 1
+    },
+    {
+      "phase": "fixture_before_receipt_builder",
+      "kind": "installed",
+      "bytes_each": 13008,
+      "count": 1
+    },
+    {
+      "phase": "fixture_before_receipt_builder",
+      "kind": "installed",
+      "bytes_each": 16792,
+      "count": 1
+    },
+    {
+      "phase": "fixture_before_receipt_builder",
+      "kind": "installed",
+      "bytes_each": 43440,
+      "count": 1
+    },
+    {
+      "phase": "fixture_before_receipt_builder",
+      "kind": "cache",
+      "bytes_each": 69656,
+      "count": 1
+    },
+    {
+      "phase": "setup_entered:None",
+      "kind": "installed",
+      "bytes_each": 267232,
+      "count": 1
+    },
+    {
+      "phase": "setup_entered:None",
+      "kind": "installed",
+      "bytes_each": 147552,
+      "count": 3
+    },
+    {
+      "phase": "setup_entered:None",
+      "kind": "installed",
+      "bytes_each": 57736,
+      "count": 1
+    },
+    {
+      "phase": "setup_entered:None",
+      "kind": "installed",
+      "bytes_each": 157680,
+      "count": 1
+    },
+    {
+      "phase": "setup_entered:None",
+      "kind": "installed",
+      "bytes_each": 13008,
+      "count": 1
+    },
+    {
+      "phase": "setup_entered:None",
+      "kind": "installed",
+      "bytes_each": 16792,
+      "count": 1
+    },
+    {
+      "phase": "setup_entered:None",
+      "kind": "installed",
+      "bytes_each": 43440,
+      "count": 1
+    },
+    {
+      "phase": "point_write_entered:Some(1)",
+      "kind": "installed",
+      "bytes_each": 73800,
+      "count": 1
+    },
+    {
+      "phase": "point_write_entered:Some(1)",
+      "kind": "installed",
+      "bytes_each": 8296,
+      "count": 1
+    },
+    {
+      "phase": "point_write_entered:Some(1)",
+      "kind": "installed",
+      "bytes_each": 8648,
+      "count": 1
+    },
+    {
+      "phase": "point_write_entered:Some(1)",
+      "kind": "installed",
+      "bytes_each": 2412520,
+      "count": 1
+    },
+    {
+      "phase": "point_write_entered:Some(1)",
+      "kind": "installed",
+      "bytes_each": 120224,
+      "count": 1
+    },
+    {
+      "phase": "point_write_entered:Some(1)",
+      "kind": "installed",
+      "bytes_each": 33056,
+      "count": 1
+    },
+    {
+      "phase": "point_write_entered:Some(1)",
+      "kind": "installed",
+      "bytes_each": 13648,
+      "count": 1
+    },
+    {
+      "phase": "point_write_entered:Some(1)",
+      "kind": "installed",
+      "bytes_each": 22384,
+      "count": 1
+    },
+    {
+      "phase": "point_write_entered:Some(1)",
+      "kind": "installed",
+      "bytes_each": 24848,
+      "count": 1
+    }
+  ],
+  "observation_mismatches": []
+}

@@ -29,7 +29,7 @@ impl ControlSignerRuntime {
     ) -> Result<Arc<Self>> {
         ensure!(
             node_id > 0
-                && control.engine().generation()?.state.tenant == crate::runtime::CONTROL_TENANT,
+                && control.engine().generation()?.tenant() == crate::runtime::CONTROL_TENANT,
             "remote signer requires the exact installed Control database"
         );
         ensure!(

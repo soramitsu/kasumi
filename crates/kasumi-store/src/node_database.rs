@@ -123,6 +123,68 @@ impl NodeDatabase {
         }
     }
 
+    pub(crate) fn physical_identity(&self) -> anyhow::Result<crate::NodeGroupIdentity> {
+        match self.accepted()? {
+            Accepted::Registered(opening) => opening.physical_identity(),
+            Accepted::Direct(_) => {
+                Err(std::io::Error::from(std::io::ErrorKind::Unsupported).into())
+            }
+        }
+    }
+
+    pub(crate) fn configure_cache(
+        &self,
+        config: kasumi_kv::CacheConfig,
+    ) -> Result<(), kasumi_kv::StorageError> {
+        match self.accepted().map_err(|error| error.0)? {
+            Accepted::Direct(database) => database.configure_cache(config),
+            Accepted::Registered(opening) => opening.configure_cache(config),
+        }
+    }
+
+    pub(crate) fn cache_stats(&self) -> Result<kasumi_kv::CacheStats, kasumi_kv::StorageError> {
+        match self.accepted().map_err(|error| error.0)? {
+            Accepted::Direct(database) => database.cache_stats(),
+            Accepted::Registered(opening) => opening.cache_stats(),
+        }
+    }
+
+    pub(crate) fn warm_cache(
+        &self,
+        work_limit: usize,
+    ) -> Result<kasumi_kv::CacheWarmup, kasumi_kv::StorageError> {
+        match self.accepted().map_err(|error| error.0)? {
+            Accepted::Direct(database) => database.warm_cache(work_limit),
+            Accepted::Registered(opening) => opening.warm_cache(work_limit),
+        }
+    }
+
+    pub(crate) fn warm_cache_if_needed(
+        &self,
+        work_limit: usize,
+    ) -> Result<kasumi_kv::CacheWarmup, kasumi_kv::StorageError> {
+        match self.accepted().map_err(|error| error.0)? {
+            Accepted::Direct(database) => database.warm_cache_if_needed(work_limit),
+            Accepted::Registered(opening) => opening.warm_cache_if_needed(work_limit),
+        }
+    }
+
+    pub(crate) fn cache_warmup_status(
+        &self,
+    ) -> Result<kasumi_kv::CacheWarmupStatus, kasumi_kv::StorageError> {
+        match self.accepted().map_err(|error| error.0)? {
+            Accepted::Direct(database) => database.cache_warmup_status(),
+            Accepted::Registered(opening) => opening.cache_warmup_status(),
+        }
+    }
+
+    pub(crate) fn request_cache_warm_retry(&self) -> Result<(), kasumi_kv::StorageError> {
+        match self.accepted().map_err(|error| error.0)? {
+            Accepted::Direct(database) => database.request_cache_warm_retry(),
+            Accepted::Registered(opening) => opening.request_cache_warm_retry(),
+        }
+    }
+
     /// A fixed read has a census child before its transaction begins. No raw
     /// transaction can escape through this installed-node path.
     pub(crate) fn queue_registered_read(&self) -> std::io::Result<RegisteredNodeRead> {
@@ -138,6 +200,61 @@ impl NodeDatabase {
                 .ok_or(std::io::ErrorKind::InvalidInput)?
         };
         opening.queue_read()
+    }
+
+    pub(crate) fn queue_source_capacity(&self) -> std::io::Result<crate::RegisteredSourceCapacity> {
+        let opening = {
+            let state = self.state.lock();
+            if self.stopped.load(Ordering::Acquire) {
+                return Err(std::io::ErrorKind::BrokenPipe.into());
+            }
+            state
+                .registered
+                .as_ref()
+                .cloned()
+                .ok_or(std::io::ErrorKind::InvalidInput)?
+        };
+        opening.queue_source_capacity()
+    }
+
+    pub(crate) fn require_registered_read(
+        &self,
+        reader: &RegisteredNodeRead,
+    ) -> std::io::Result<()> {
+        let state = self.state.lock();
+        if self.stopped.load(Ordering::Acquire) {
+            return Err(std::io::ErrorKind::BrokenPipe.into());
+        }
+        let opening = state
+            .registered
+            .as_ref()
+            .ok_or(std::io::ErrorKind::InvalidInput)?;
+        if !reader.belongs_to(opening) {
+            return Err(std::io::ErrorKind::InvalidInput.into());
+        }
+        Ok(())
+    }
+
+    pub(crate) fn fork_registered_read(
+        &self,
+        parent: &RegisteredNodeRead,
+    ) -> std::io::Result<RegisteredNodeRead> {
+        let opening = {
+            let state = self.state.lock();
+            if self.stopped.load(Ordering::Acquire) {
+                return Err(std::io::ErrorKind::BrokenPipe.into());
+            }
+            state
+                .registered
+                .as_ref()
+                .cloned()
+                .ok_or(std::io::ErrorKind::InvalidInput)?
+        };
+        if !parent.belongs_to(&opening) {
+            return Err(std::io::ErrorKind::InvalidInput.into());
+        }
+        // No NodeDatabase lock crosses reader locks, admission or callbacks.
+        parent.fork()
     }
 
     /// A catalog write is bound to the exact opening before any native effect.
@@ -429,13 +546,17 @@ impl NodeDatabase {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kasumi_kv::StorageBackend;
+    use kasumi_kv::SegmentGroupBackend;
 
     fn memory() -> NodeDatabase {
         NodeDatabase::new(
-            Database::builder(crate::test_utils::storage_admission())
-                .create_with_backend(kasumi_kv::backends::InMemoryBackend::new())
-                .unwrap(),
+            Database::builder(
+                crate::test_utils::storage_admission(),
+                *crate::test_utils::NODE_STORE_ID.as_bytes(),
+                crate::test_utils::node_storage_config().cache,
+            )
+            .create_with_backend(kasumi_kv::backends::InMemoryGroup::new())
+            .unwrap(),
             "test database",
         )
     }
@@ -450,7 +571,10 @@ mod tests {
             kasumi_types::drain::DrainCompletion::Retained
         );
         let second = database.close().unwrap_err();
-        assert!(Arc::ptr_eq(&first.issues()[0], &second.issues()[0]));
+        assert!(kasumi_types::drain::DrainIssueRef::ptr_eq(
+            &first.issues()[0],
+            &second.issues()[0]
+        ));
         assert!(database.begin_read().is_err());
         assert!(database.begin_write().is_err());
         drop(reader);
@@ -497,23 +621,70 @@ mod tests {
 
     #[derive(Debug, PartialEq)]
     struct OriginalClosePanic(u64);
-    #[derive(Debug)]
-    struct PanicBackend(kasumi_kv::backends::InMemoryBackend);
-    impl StorageBackend for PanicBackend {
-        fn len(&self) -> std::io::Result<u64> {
-            self.0.len()
+    struct PanicBackend(kasumi_kv::backends::InMemoryGroup);
+    impl SegmentGroupBackend for PanicBackend {
+        fn reserve_transaction(
+            &self,
+            plan: &kasumi_kv::TransactionSpacePlan,
+        ) -> std::result::Result<(), kasumi_kv::TransactionReserveError> {
+            self.0.reserve_transaction(plan)
         }
-        fn read(&self, at: u64, out: &mut [u8]) -> std::io::Result<()> {
-            self.0.read(at, out)
+        fn finish_transaction(&self, group_id: [u8; 16], batch_seq: u64) -> std::io::Result<()> {
+            self.0.finish_transaction(group_id, batch_seq)
         }
-        fn set_len(&self, length: u64) -> std::io::Result<()> {
-            self.0.set_len(length)
+        fn cancel_transaction(&self, group_id: [u8; 16], batch_seq: u64) -> std::io::Result<()> {
+            self.0.cancel_transaction(group_id, batch_seq)
         }
-        fn sync_data(&self) -> std::io::Result<()> {
-            self.0.sync_data()
+
+        fn read_root(
+            &self,
+            slot: kasumi_kv::RootSlot,
+            out: &mut [u8; kasumi_kv::ROOT_SLOT_BYTES],
+        ) -> std::io::Result<()> {
+            self.0.read_root(slot, out)
         }
-        fn write(&self, at: u64, bytes: &[u8]) -> std::io::Result<()> {
-            self.0.write(at, bytes)
+        fn write_root(
+            &self,
+            slot: kasumi_kv::RootSlot,
+            bytes: &[u8; kasumi_kv::ROOT_SLOT_BYTES],
+        ) -> std::io::Result<()> {
+            self.0.write_root(slot, bytes)
+        }
+        fn sync_root(&self) -> std::io::Result<()> {
+            self.0.sync_root()
+        }
+        fn visit_entries(
+            &self,
+            visitor: &mut dyn FnMut(&std::ffi::OsStr) -> std::io::Result<()>,
+        ) -> std::io::Result<()> {
+            self.0.visit_entries(visitor)
+        }
+        fn exists(&self, file: kasumi_kv::GroupFile) -> std::io::Result<bool> {
+            self.0.exists(file)
+        }
+        fn create(&self, file: kasumi_kv::GroupFile) -> std::io::Result<()> {
+            self.0.create(file)
+        }
+        fn len(&self, file: kasumi_kv::GroupFile) -> std::io::Result<u64> {
+            self.0.len(file)
+        }
+        fn read(&self, file: kasumi_kv::GroupFile, at: u64, out: &mut [u8]) -> std::io::Result<()> {
+            self.0.read(file, at, out)
+        }
+        fn write(&self, file: kasumi_kv::GroupFile, at: u64, bytes: &[u8]) -> std::io::Result<()> {
+            self.0.write(file, at, bytes)
+        }
+        fn set_len(&self, file: kasumi_kv::GroupFile, length: u64) -> std::io::Result<()> {
+            self.0.set_len(file, length)
+        }
+        fn sync(&self, file: kasumi_kv::GroupFile) -> std::io::Result<()> {
+            self.0.sync(file)
+        }
+        fn unlink(&self, file: kasumi_kv::GroupFile) -> std::io::Result<()> {
+            self.0.unlink(file)
+        }
+        fn sync_names(&self) -> std::io::Result<()> {
+            self.0.sync_names()
         }
         fn close(&self) -> kasumi_kv::BackendCloseOutcome {
             std::panic::panic_any(OriginalClosePanic(41))
@@ -523,9 +694,13 @@ mod tests {
     #[test]
     fn close_panic_retains_original_payload_and_cannot_become_clean_on_retry() {
         let database = NodeDatabase::new(
-            Database::builder(crate::test_utils::storage_admission())
-                .create_with_backend(PanicBackend(kasumi_kv::backends::InMemoryBackend::new()))
-                .unwrap(),
+            Database::builder(
+                crate::test_utils::storage_admission(),
+                *crate::test_utils::NODE_STORE_ID.as_bytes(),
+                crate::test_utils::node_storage_config().cache,
+            )
+            .create_with_backend(PanicBackend(kasumi_kv::backends::InMemoryGroup::new()))
+            .unwrap(),
             "panicking backend",
         );
         let first = database.close().unwrap_err();
@@ -534,7 +709,10 @@ mod tests {
             first.completion(),
             kasumi_types::drain::DrainCompletion::Retained
         );
-        assert!(Arc::ptr_eq(&first.issues()[0], &second.issues()[0]));
+        assert!(kasumi_types::drain::DrainIssueRef::ptr_eq(
+            &first.issues()[0],
+            &second.issues()[0]
+        ));
         let original = first.issues()[0]
             .error()
             .downcast_ref::<ClosePanic>()
@@ -546,23 +724,70 @@ mod tests {
         assert!(database.begin_read().is_err());
         assert!(database.begin_write().is_err());
     }
-    #[derive(Debug)]
-    struct UnprovedCloseBackend(kasumi_kv::backends::InMemoryBackend);
-    impl StorageBackend for UnprovedCloseBackend {
-        fn len(&self) -> std::io::Result<u64> {
-            self.0.len()
+    struct UnprovedCloseBackend(kasumi_kv::backends::InMemoryGroup);
+    impl SegmentGroupBackend for UnprovedCloseBackend {
+        fn reserve_transaction(
+            &self,
+            plan: &kasumi_kv::TransactionSpacePlan,
+        ) -> std::result::Result<(), kasumi_kv::TransactionReserveError> {
+            self.0.reserve_transaction(plan)
         }
-        fn read(&self, at: u64, bytes: &mut [u8]) -> std::io::Result<()> {
-            self.0.read(at, bytes)
+        fn finish_transaction(&self, group_id: [u8; 16], batch_seq: u64) -> std::io::Result<()> {
+            self.0.finish_transaction(group_id, batch_seq)
         }
-        fn set_len(&self, len: u64) -> std::io::Result<()> {
-            self.0.set_len(len)
+        fn cancel_transaction(&self, group_id: [u8; 16], batch_seq: u64) -> std::io::Result<()> {
+            self.0.cancel_transaction(group_id, batch_seq)
         }
-        fn sync_data(&self) -> std::io::Result<()> {
-            self.0.sync_data()
+
+        fn read_root(
+            &self,
+            slot: kasumi_kv::RootSlot,
+            out: &mut [u8; kasumi_kv::ROOT_SLOT_BYTES],
+        ) -> std::io::Result<()> {
+            self.0.read_root(slot, out)
         }
-        fn write(&self, at: u64, bytes: &[u8]) -> std::io::Result<()> {
-            self.0.write(at, bytes)
+        fn write_root(
+            &self,
+            slot: kasumi_kv::RootSlot,
+            bytes: &[u8; kasumi_kv::ROOT_SLOT_BYTES],
+        ) -> std::io::Result<()> {
+            self.0.write_root(slot, bytes)
+        }
+        fn sync_root(&self) -> std::io::Result<()> {
+            self.0.sync_root()
+        }
+        fn visit_entries(
+            &self,
+            visitor: &mut dyn FnMut(&std::ffi::OsStr) -> std::io::Result<()>,
+        ) -> std::io::Result<()> {
+            self.0.visit_entries(visitor)
+        }
+        fn exists(&self, file: kasumi_kv::GroupFile) -> std::io::Result<bool> {
+            self.0.exists(file)
+        }
+        fn create(&self, file: kasumi_kv::GroupFile) -> std::io::Result<()> {
+            self.0.create(file)
+        }
+        fn len(&self, file: kasumi_kv::GroupFile) -> std::io::Result<u64> {
+            self.0.len(file)
+        }
+        fn read(&self, file: kasumi_kv::GroupFile, at: u64, out: &mut [u8]) -> std::io::Result<()> {
+            self.0.read(file, at, out)
+        }
+        fn write(&self, file: kasumi_kv::GroupFile, at: u64, bytes: &[u8]) -> std::io::Result<()> {
+            self.0.write(file, at, bytes)
+        }
+        fn set_len(&self, file: kasumi_kv::GroupFile, length: u64) -> std::io::Result<()> {
+            self.0.set_len(file, length)
+        }
+        fn sync(&self, file: kasumi_kv::GroupFile) -> std::io::Result<()> {
+            self.0.sync(file)
+        }
+        fn unlink(&self, file: kasumi_kv::GroupFile) -> std::io::Result<()> {
+            self.0.unlink(file)
+        }
+        fn sync_names(&self) -> std::io::Result<()> {
+            self.0.sync_names()
         }
         fn close(&self) -> kasumi_kv::BackendCloseOutcome {
             kasumi_kv::BackendCloseOutcome::retained_result(Ok(()))
@@ -571,11 +796,15 @@ mod tests {
     #[test]
     fn logical_close_success_without_native_evidence_never_becomes_complete_on_retry() {
         let database = NodeDatabase::new(
-            Database::builder(crate::test_utils::storage_admission())
-                .create_with_backend(UnprovedCloseBackend(
-                    kasumi_kv::backends::InMemoryBackend::new(),
-                ))
-                .unwrap(),
+            Database::builder(
+                crate::test_utils::storage_admission(),
+                *crate::test_utils::NODE_STORE_ID.as_bytes(),
+                crate::test_utils::node_storage_config().cache,
+            )
+            .create_with_backend(UnprovedCloseBackend(
+                kasumi_kv::backends::InMemoryGroup::new(),
+            ))
+            .unwrap(),
             "unproved native drain",
         );
         let first = database.close().unwrap_err();
@@ -588,7 +817,10 @@ mod tests {
             second.completion(),
             kasumi_types::drain::DrainCompletion::Retained
         );
-        assert!(Arc::ptr_eq(&first.issues()[0], &second.issues()[0]));
+        assert!(kasumi_types::drain::DrainIssueRef::ptr_eq(
+            &first.issues()[0],
+            &second.issues()[0]
+        ));
         assert!(database.begin_read().is_err());
         assert!(database.begin_write().is_err());
         // This legacy consuming facade retains only its report on error. Actual
@@ -602,27 +834,74 @@ mod tests {
         Unproved,
         Panic,
     }
-    #[derive(Debug)]
     struct CountedClose {
-        backend: kasumi_kv::backends::InMemoryBackend,
+        backend: kasumi_kv::backends::InMemoryGroup,
         closes: Arc<std::sync::atomic::AtomicUsize>,
         mode: CloseMode,
     }
-    impl StorageBackend for CountedClose {
-        fn len(&self) -> std::io::Result<u64> {
-            self.backend.len()
+    impl SegmentGroupBackend for CountedClose {
+        fn reserve_transaction(
+            &self,
+            plan: &kasumi_kv::TransactionSpacePlan,
+        ) -> std::result::Result<(), kasumi_kv::TransactionReserveError> {
+            self.backend.reserve_transaction(plan)
         }
-        fn read(&self, at: u64, bytes: &mut [u8]) -> std::io::Result<()> {
-            self.backend.read(at, bytes)
+        fn finish_transaction(&self, group_id: [u8; 16], batch_seq: u64) -> std::io::Result<()> {
+            self.backend.finish_transaction(group_id, batch_seq)
         }
-        fn set_len(&self, len: u64) -> std::io::Result<()> {
-            self.backend.set_len(len)
+        fn cancel_transaction(&self, group_id: [u8; 16], batch_seq: u64) -> std::io::Result<()> {
+            self.backend.cancel_transaction(group_id, batch_seq)
         }
-        fn sync_data(&self) -> std::io::Result<()> {
-            self.backend.sync_data()
+
+        fn read_root(
+            &self,
+            slot: kasumi_kv::RootSlot,
+            out: &mut [u8; kasumi_kv::ROOT_SLOT_BYTES],
+        ) -> std::io::Result<()> {
+            self.backend.read_root(slot, out)
         }
-        fn write(&self, at: u64, bytes: &[u8]) -> std::io::Result<()> {
-            self.backend.write(at, bytes)
+        fn write_root(
+            &self,
+            slot: kasumi_kv::RootSlot,
+            bytes: &[u8; kasumi_kv::ROOT_SLOT_BYTES],
+        ) -> std::io::Result<()> {
+            self.backend.write_root(slot, bytes)
+        }
+        fn sync_root(&self) -> std::io::Result<()> {
+            self.backend.sync_root()
+        }
+        fn visit_entries(
+            &self,
+            visitor: &mut dyn FnMut(&std::ffi::OsStr) -> std::io::Result<()>,
+        ) -> std::io::Result<()> {
+            self.backend.visit_entries(visitor)
+        }
+        fn exists(&self, file: kasumi_kv::GroupFile) -> std::io::Result<bool> {
+            self.backend.exists(file)
+        }
+        fn create(&self, file: kasumi_kv::GroupFile) -> std::io::Result<()> {
+            self.backend.create(file)
+        }
+        fn len(&self, file: kasumi_kv::GroupFile) -> std::io::Result<u64> {
+            self.backend.len(file)
+        }
+        fn read(&self, file: kasumi_kv::GroupFile, at: u64, out: &mut [u8]) -> std::io::Result<()> {
+            self.backend.read(file, at, out)
+        }
+        fn write(&self, file: kasumi_kv::GroupFile, at: u64, bytes: &[u8]) -> std::io::Result<()> {
+            self.backend.write(file, at, bytes)
+        }
+        fn set_len(&self, file: kasumi_kv::GroupFile, length: u64) -> std::io::Result<()> {
+            self.backend.set_len(file, length)
+        }
+        fn sync(&self, file: kasumi_kv::GroupFile) -> std::io::Result<()> {
+            self.backend.sync(file)
+        }
+        fn unlink(&self, file: kasumi_kv::GroupFile) -> std::io::Result<()> {
+            self.backend.unlink(file)
+        }
+        fn sync_names(&self) -> std::io::Result<()> {
+            self.backend.sync_names()
         }
         fn close(&self) -> kasumi_kv::BackendCloseOutcome {
             self.closes.fetch_add(1, Ordering::SeqCst);
@@ -636,13 +915,17 @@ mod tests {
     fn counted(mode: CloseMode) -> (NodeDatabase, Arc<std::sync::atomic::AtomicUsize>) {
         let closes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let database = NodeDatabase::new(
-            Database::builder(crate::test_utils::storage_admission())
-                .create_strict_with_backend(CountedClose {
-                    backend: kasumi_kv::backends::InMemoryBackend::new(),
-                    closes: closes.clone(),
-                    mode,
-                })
-                .unwrap(),
+            Database::builder(
+                crate::test_utils::storage_admission(),
+                *crate::test_utils::NODE_STORE_ID.as_bytes(),
+                crate::test_utils::node_storage_config().cache,
+            )
+            .create_with_backend(CountedClose {
+                backend: kasumi_kv::backends::InMemoryGroup::new(),
+                closes: closes.clone(),
+                mode,
+            })
+            .unwrap(),
             "counted close",
         );
         // Like a scratch owner, commit once before any close. This also takes
@@ -709,7 +992,10 @@ mod tests {
         assert_eq!(allocations, 0);
         assert_eq!(closes.load(Ordering::SeqCst), 1);
         let second = database.close().unwrap_err();
-        assert!(Arc::ptr_eq(&first.issues()[0], &second.issues()[0]));
+        assert!(kasumi_types::drain::DrainIssueRef::ptr_eq(
+            &first.issues()[0],
+            &second.issues()[0]
+        ));
     }
 
     #[test]

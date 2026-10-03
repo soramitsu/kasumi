@@ -235,6 +235,20 @@ impl<T> AdmittedResponse<T> {
         }))
     }
 }
+impl kasumi_types::AdmittedDocumentOwner for Owned<kasumi_types::Document> {
+    fn document(&self) -> &kasumi_types::Document {
+        &self.value
+    }
+}
+impl AdmittedResponse<kasumi_types::Document> {
+    /// Share this already-admitted decoded document without copying its body,
+    /// allocating another owner, or detaching its real client reservation.
+    /// Existing response clones and the shared handle retain the same owner.
+    /// This conversion does not renew the original response's authority.
+    pub fn into_shared_document(self) -> kasumi_types::SharedDocument {
+        kasumi_types::SharedDocument::from_admitted_owner(self.0)
+    }
+}
 pub(crate) fn invalid(message: &'static str) -> ClientError {
     ClientError::InvalidResponse(message)
 }

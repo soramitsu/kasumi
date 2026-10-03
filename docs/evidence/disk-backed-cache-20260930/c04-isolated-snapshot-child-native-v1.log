@@ -1,0 +1,887 @@
+Command: cargo test --locked --offline --config profile.test.package.kasumi-kv.opt-level=3 --config profile.test.package.sha2.opt-level=3 -p kasumi-kv -p kasumi-store -p kasumi-raft -p kasumi-engine -p kasumi-authority --all-features --lib --no-fail-fast -- fixed_snapshot_capacity_wakes_only_after_actual_token_release_and_unregisters non_application_capacity_has_one_charged_token_and_bounded_actual_allocations snapshot_source_capacity_waiter_is_distinct_and_pending_does_not_wake_itself snapshot_prepared_child_ node_disk::publication::tests node_disk::transaction::tests node_disk::namespace::tests node_disk::directory::managed::tests --nocapture
+ISOLATED_SOURCE=/tmp/kasumi-source-cohort-validation-v1
+CARGO_TARGET_DIR=/Users/takemiyamakoto/dev/kasumi/target/disk-backed-cache
+   Compiling kasumi-store v0.1.0 (/private/tmp/kasumi-source-cohort-validation-v1/crates/kasumi-store)
+warning: unused import: `publication::PublicationSpace`
+  --> crates/kasumi-store/src/node_disk.rs:32:16
+   |
+32 | pub(crate) use publication::PublicationSpace;
+   |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `publication_generation` is never read
+   --> crates/kasumi-store/src/node_disk.rs:446:5
+    |
+425 | struct State {
+    |        ----- field in this struct
+...
+446 |     publication_generation: u64,
+    |     ^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: struct `PublicationSpace` is never constructed
+  --> crates/kasumi-store/src/node_disk/publication.rs:16:19
+   |
+16 | pub(crate) struct PublicationSpace {
+   |                   ^^^^^^^^^^^^^^^^
+
+warning: method `reserve_publication_space` is never used
+  --> crates/kasumi-store/src/node_disk/publication.rs:34:19
+   |
+29 | impl NodeDisk {
+   | ------------- method in this implementation
+...
+34 |     pub(crate) fn reserve_publication_space(
+   |                   ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: methods `check`, `take_transaction`, `finish`, `cancel`, and `release` are never used
+   --> crates/kasumi-store/src/node_disk/publication.rs:134:8
+    |
+133 | impl PublicationSpace {
+    | --------------------- methods in this implementation
+134 |     fn check(&self, state: &State) -> io::Result<()> {
+    |        ^^^^^
+...
+157 |     pub(crate) fn take_transaction(
+    |                   ^^^^^^^^^^^^^^^^
+...
+219 |     pub(crate) fn finish(&mut self) -> io::Result<()> {
+    |                   ^^^^^^
+...
+223 |     pub(crate) fn cancel(&mut self) -> io::Result<()> {
+    |                   ^^^^^^
+...
+227 |     fn release(&mut self, pristine: bool) -> io::Result<()> {
+    |        ^^^^^^^
+
+warning: methods `finish_publication`, `cancel_publication`, and `return_publication` are never used
+   --> crates/kasumi-store/src/node_disk/publication.rs:283:19
+    |
+280 | impl TransactionSpace {
+    | --------------------- methods in this implementation
+...
+283 |     pub(crate) fn finish_publication(&mut self, owner: &mut PublicationSpace) -> io::Result<()> {
+    |                   ^^^^^^^^^^^^^^^^^^
+...
+286 |     pub(crate) fn cancel_publication(&mut self, owner: &mut PublicationSpace) -> io::Result<()> {
+    |                   ^^^^^^^^^^^^^^^^^^
+...
+289 |     fn return_publication(
+    |        ^^^^^^^^^^^^^^^^^^
+
+   Compiling kasumi-raft v0.1.0 (/private/tmp/kasumi-source-cohort-validation-v1/crates/kasumi-raft)
+warning: `kasumi-store` (lib) generated 6 warnings (run `cargo fix --lib -p kasumi-store` to apply 1 suggestion)
+warning: field `0` is never read
+  --> crates/kasumi-raft/src/owned_prepared_restore.rs:24:33
+   |
+24 | struct CandidateRetirementPanic(std::sync::Mutex<Box<dyn std::any::Any + Send>>);
+   |        ------------------------ ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |        |
+   |        field in this struct
+   |
+   = help: consider removing this field
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: methods `register_snapshot_capacity_waiter` and `prepare_snapshot` are never used
+   --> crates/kasumi-raft/src/non_application_source_capacity.rs:93:19
+    |
+ 92 | impl FixedProvider {
+    | ------------------ methods in this implementation
+ 93 |     pub(crate) fn register_snapshot_capacity_waiter(&self, ready: &Waker) -> Result<()> {
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+123 |     pub(crate) fn prepare_snapshot(&self) -> CapacityPreparation {
+    |                   ^^^^^^^^^^^^^^^^
+
+warning: variant `SnapshotPublication` is never constructed
+  --> crates/kasumi-raft/src/selected_application/plan.rs:38:5
+   |
+33 | enum AppliedOrigin {
+   |      ------------- variant in this enum
+...
+38 |     SnapshotPublication,
+   |     ^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `AppliedOrigin` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+
+warning: method `observe_snapshot_writes` is never used
+   --> crates/kasumi-raft/src/selected_application/control_memory.rs:274:19
+    |
+263 | impl ControlMemory {
+    | ------------------ method in this implementation
+...
+274 |     pub(super) fn observe_snapshot_writes(
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: associated functions `for_publication` and `at` are never used
+  --> crates/kasumi-raft/src/selected_application/snapshot_source_envelope.rs:23:19
+   |
+18 | impl PreparedSnapshotSourceEnvelope {
+   | ----------------------------------- associated functions in this implementation
+...
+23 |     pub(crate) fn for_publication(
+   |                   ^^^^^^^^^^^^^^^
+...
+39 |     fn at(
+   |        ^^
+
+warning: function `write_effect` is never used
+   --> crates/kasumi-raft/src/selected_application/snapshot_source_envelope.rs:235:4
+    |
+235 | fn write_effect<'a>(
+    |    ^^^^^^^^^^^^
+
+warning: function `prospective_bound` is never used
+   --> crates/kasumi-raft/src/selected_application/snapshot_source_envelope.rs:253:4
+    |
+253 | fn prospective_bound(
+    |    ^^^^^^^^^^^^^^^^^
+
+warning: function `prospective_record` is never used
+   --> crates/kasumi-raft/src/selected_application/snapshot_source_envelope.rs:279:4
+    |
+279 | fn prospective_record<'a>(
+    |    ^^^^^^^^^^^^^^^^^^
+
+warning: fields `joint_effects` and `context_identity` are never read
+  --> crates/kasumi-raft/src/selected_application/closed_snapshot_source_envelope.rs:13:5
+   |
+10 | pub struct PreparedClosedSnapshotSourceEnvelope {
+   |            ------------------------------------ fields in this struct
+...
+13 |     joint_effects: [u8; 32],
+   |     ^^^^^^^^^^^^^
+14 |     context_identity: [u8; 32],
+   |     ^^^^^^^^^^^^^^^^
+   |
+   = note: `PreparedClosedSnapshotSourceEnvelope` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+
+warning: associated items `for_publication` and `require_producer` are never used
+  --> crates/kasumi-raft/src/selected_application/closed_snapshot_source_envelope.rs:19:19
+   |
+18 | impl PreparedClosedSnapshotSourceEnvelope {
+   | ----------------------------------------- associated items in this implementation
+19 |     pub(crate) fn for_publication(
+   |                   ^^^^^^^^^^^^^^^
+...
+60 |     pub(crate) fn require_producer(
+   |                   ^^^^^^^^^^^^^^^^
+
+warning: method `prepared_snapshot_publication` is never used
+   --> crates/kasumi-raft/src/custody_machine.rs:168:19
+    |
+134 | impl CustodyMachine {
+    | ------------------- method in this implementation
+...
+168 |     pub(crate) fn prepared_snapshot_publication(
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: field `0` is never read
+   --> crates/kasumi-raft/src/custody_snapshot_preparation.rs:168:17
+    |
+168 |     Application(StorageHandle<TenantStorageSet>),
+    |     ----------- ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |     |
+    |     field in this variant
+    |
+    = note: `StoreOwner` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+help: consider changing the field to be of unit type to suppress this warning while preserving the field numbering, or remove the field
+    |
+168 -     Application(StorageHandle<TenantStorageSet>),
+168 +     Application(()),
+    |
+
+warning: variant `Custody` is never constructed
+   --> crates/kasumi-raft/src/custody_snapshot_preparation.rs:169:5
+    |
+167 | pub(crate) enum StoreOwner {
+    |                 ---------- variant in this enum
+168 |     Application(StorageHandle<TenantStorageSet>),
+169 |     Custody(StorageHandle<CustodyStore>),
+    |     ^^^^^^^
+    |
+    = note: `StoreOwner` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+
+warning: method `custody` is never used
+   --> crates/kasumi-raft/src/custody_snapshot_preparation.rs:172:8
+    |
+171 | impl StoreOwner {
+    | --------------- method in this implementation
+172 |     fn custody(&self) -> &CustodyStore {
+    |        ^^^^^^^
+
+warning: associated items `for_application`, `for_custody`, `prepare`, `prepared_application_writes`, `publish`, and `meta` are never used
+   --> crates/kasumi-raft/src/custody_snapshot_preparation.rs:189:19
+    |
+188 | impl PreparedCustodySnapshotPublication {
+    | --------------------------------------- associated items in this implementation
+189 |     pub(crate) fn for_application(
+    |                   ^^^^^^^^^^^^^^^
+...
+201 |     pub(crate) fn for_custody(
+    |                   ^^^^^^^^^^^
+...
+215 |     pub(crate) fn prepare(
+    |                   ^^^^^^^
+...
+228 |     pub(crate) fn prepared_application_writes(
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+247 |     pub(crate) fn publish(&mut self, control: &OwnedControlGuard) -> Result<()> {
+    |                   ^^^^^^^
+...
+257 |     pub(crate) fn meta(&self) -> &openraft::SnapshotMeta<u64, crate::BasicNode> {
+    |                   ^^^^
+
+warning: variant `Open` is never constructed
+   --> crates/kasumi-raft/src/custody_snapshot_preparation.rs:327:5
+    |
+326 | enum ImageRetirement {
+    |      --------------- variant in this enum
+327 |     Open,
+    |     ^^^^
+    |
+    = note: `ImageRetirement` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `0` is never read
+   --> crates/kasumi-raft/src/custody_snapshot_preparation.rs:331:32
+    |
+331 | struct SnapshotRetirementPanic(std::sync::Mutex<Box<dyn std::any::Any + Send>>);
+    |        ----------------------- ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |        |
+    |        field in this struct
+    |
+    = help: consider removing this field
+
+warning: variants `Freezing` and `Prepared` are never constructed
+  --> crates/kasumi-raft/src/snapshot_buffer.rs:36:5
+   |
+33 | enum Backing {
+   |      ------- variants in this enum
+...
+36 |     Freezing(Option<Box<EncryptedSpool>>),
+   |     ^^^^^^^^
+37 |     Captured(SnapshotImage),
+38 |     Prepared(prepared_child::PreparedChild),
+   |     ^^^^^^^^
+   |
+   = note: `Backing` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: variants `Freeze` and `Install` are never constructed
+  --> crates/kasumi-raft/src/snapshot_buffer.rs:44:5
+   |
+41 | enum Completion {
+   |      ---------- variants in this enum
+...
+44 |     Freeze,
+   |     ^^^^^^
+...
+47 |     Install(DrainResult),
+   |     ^^^^^^^
+   |
+   = note: `Completion` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: variants `Freeze`, `Prepare`, and `Install` are never constructed
+  --> crates/kasumi-raft/src/snapshot_buffer.rs:54:5
+   |
+51 | enum Kind {
+   |      ---- variants in this enum
+...
+54 |     Freeze,
+   |     ^^^^^^
+55 |     Prepare,
+   |     ^^^^^^^
+56 |     Retire,
+57 |     Install,
+   |     ^^^^^^^
+   |
+   = note: `Kind` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: methods `prepare_fixed_snapshot_capacity` and `register_snapshot_capacity_waiter` are never used
+   --> crates/kasumi-raft/src/snapshot_buffer.rs:421:19
+    |
+340 | impl SnapshotBufferOwner {
+    | ------------------------ methods in this implementation
+...
+421 |     pub(crate) fn prepare_fixed_snapshot_capacity(
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+641 |     pub(crate) fn register_snapshot_capacity_waiter(&self, ready: &Waker) -> anyhow::Result<()> {
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: method `prepare_image` is never used
+    --> crates/kasumi-raft/src/snapshot_buffer.rs:1568:25
+     |
+1513 | impl SnapshotBuffer {
+     | ------------------- method in this implementation
+...
+1568 |     pub(crate) async fn prepare_image(&mut self) -> io::Result<SnapshotImage> {
+     |                         ^^^^^^^^^^^^^
+
+warning: variants `Pending` and `Refused` are never constructed
+  --> crates/kasumi-raft/src/snapshot_buffer/prepared_child.rs:12:5
+   |
+10 | pub(crate) enum PreparedSnapshotCapacity {
+   |                 ------------------------ variants in this enum
+11 |     Ready(openraft::storage::capacity::PreparedCapacity),
+12 |     Pending,
+   |     ^^^^^^^
+13 |     Refused(Box<dyn std::error::Error + Send + Sync>),
+   |     ^^^^^^^
+   |
+   = note: `PreparedSnapshotCapacity` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: fields `prepare_entered` and `refused` are never read
+  --> crates/kasumi-raft/src/snapshot_buffer/prepared_child.rs:63:5
+   |
+60 | pub(super) struct PreparedChild {
+   |                   ------------- fields in this struct
+...
+63 |     prepare_entered: bool,
+   |     ^^^^^^^^^^^^^^^
+...
+66 |     refused: Option<anyhow::Error>,
+   |     ^^^^^^^
+   |
+   = note: `PreparedChild` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: associated items `new`, `prepare`, and `install` are never used
+   --> crates/kasumi-raft/src/snapshot_buffer/prepared_child.rs:71:8
+    |
+ 70 | impl PreparedChild {
+    | ------------------ associated items in this implementation
+ 71 |     fn new(body: PreparedSnapshotBody) -> Self {
+    |        ^^^
+...
+111 |     fn prepare(&mut self, owner: &SnapshotBufferOwner, ready: &Waker) -> PrepareResult {
+    |        ^^^^^^^
+...
+229 |     fn install(&mut self, owner: &SnapshotBufferOwner) -> DrainResult {
+    |        ^^^^^^^
+
+warning: field `0` is never read
+   --> crates/kasumi-raft/src/snapshot_buffer/prepared_child.rs:243:19
+    |
+243 | struct ChildPanic(Mutex<Box<dyn std::any::Any + Send>>);
+    |        ---------- ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |        |
+    |        field in this struct
+    |
+    = help: consider removing this field
+
+warning: methods `begin_prepared_body`, `prepare_body`, `cancel_body`, and `install_body` are never used
+   --> crates/kasumi-raft/src/snapshot_buffer/prepared_child.rs:260:19
+    |
+256 | impl SnapshotBuffer {
+    | ------------------- methods in this implementation
+...
+260 |     pub(crate) fn begin_prepared_body(
+    |                   ^^^^^^^^^^^^^^^^^^^
+...
+283 |     pub(crate) async fn prepare_body(&mut self, ready: &Waker) -> PrepareResult {
+    |                         ^^^^^^^^^^^^
+...
+324 |     pub(crate) async fn cancel_body(&mut self) -> DrainResult {
+    |                         ^^^^^^^^^^^
+...
+334 |     pub(crate) async fn install_body(&mut self) -> DrainResult {
+    |                         ^^^^^^^^^^^^
+
+warning: method `source_capacity_seed` is never used
+   --> crates/kasumi-raft/src/snapshot_custody.rs:102:19
+    |
+ 99 | impl SnapshotRetirement {
+    | ----------------------- method in this implementation
+...
+102 |     pub(crate) fn source_capacity_seed(&self) -> &[u8] {
+    |                   ^^^^^^^^^^^^^^^^^^^^
+
+warning: method `prepare_engine_publication` is never used
+    --> crates/kasumi-raft/src/storage.rs:1118:19
+     |
+1080 | impl PendingSnapshot {
+     | -------------------- method in this implementation
+...
+1118 |     pub(crate) fn prepare_engine_publication<'backend>(
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: enum `SnapshotPublicationPhase` is never used
+    --> crates/kasumi-raft/src/storage.rs:1172:6
+     |
+1172 | enum SnapshotPublicationPhase {
+     |      ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: struct `PreparedEngineSnapshotPublication` is never constructed
+    --> crates/kasumi-raft/src/storage.rs:1178:19
+     |
+1178 | pub(crate) struct PreparedEngineSnapshotPublication<'backend> {
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: methods `source` and `publish` are never used
+    --> crates/kasumi-raft/src/storage.rs:1188:19
+     |
+1187 | impl PreparedEngineSnapshotPublication<'_> {
+     | ------------------------------------------ methods in this implementation
+1188 |     pub(crate) fn source(&self) -> &crate::PreparedSnapshotSourceEnvelope {
+     |                   ^^^^^^
+...
+1191 |     pub(crate) fn publish(&mut self, domains: &TenantStorageSet) -> Result<()> {
+     |                   ^^^^^^^
+
+warning: field `actor_role` is never read
+    --> crates/kasumi-raft/src/storage.rs:1288:5
+     |
+1287 | pub struct StateMachine {
+     |            ------------ field in this struct
+1288 |     actor_role: crate::SourceActorRole,
+     |     ^^^^^^^^^^
+     |
+     = note: `StateMachine` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+
+warning: method `require_gate` is never used
+   --> crates/kasumi-raft/src/storage/control_gate.rs:114:19
+    |
+111 | impl OwnedControlGuard {
+    | ---------------------- method in this implementation
+...
+114 |     pub(crate) fn require_gate(&self, gate: &ControlGateRef) -> anyhow::Result<()> {
+    |                   ^^^^^^^^^^^^
+
+warning: methods `ptr_eq` and `lock_owned` are never used
+   --> crates/kasumi-raft/src/storage/control_gate_registry.rs:106:19
+    |
+105 | impl ControlGateRef {
+    | ------------------- methods in this implementation
+106 |     pub(crate) fn ptr_eq(&self, other: &Self) -> bool {
+    |                   ^^^^^^
+...
+112 |     pub(crate) fn lock_owned(&self) -> Result<OwnedControlGuard, super::Poisoned> {
+    |                   ^^^^^^^^^^
+
+warning: enum `SnapshotBodyCapacity` is never used
+ --> crates/kasumi-raft/src/storage/owned_snapshot_body.rs:7:17
+  |
+7 | pub(crate) enum SnapshotBodyCapacity {
+  |                 ^^^^^^^^^^^^^^^^^^^^
+
+warning: multiple variants are never constructed
+  --> crates/kasumi-raft/src/storage/owned_snapshot_body.rs:14:5
+   |
+13 | enum Phase {
+   |      ----- variants in this enum
+14 |     Constructed,
+   |     ^^^^^^^^^^^
+15 |     Validating,
+   |     ^^^^^^^^^^
+16 |     Staging,
+   |     ^^^^^^^
+17 |     BuildingWrites,
+   |     ^^^^^^^^^^^^^^
+18 |     Certifying,
+   |     ^^^^^^^^^^
+19 |     Prepared,
+   |     ^^^^^^^^
+20 |     BindingSource,
+   |     ^^^^^^^^^^^^^
+21 |     Ready,
+   |     ^^^^^
+22 |     Publishing,
+   |     ^^^^^^^^^^
+23 |     Published,
+   |     ^^^^^^^^^
+   |
+   = note: `Phase` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+
+warning: fields `role`, `expected_meta`, `pending`, `source`, and `limit` are never read
+  --> crates/kasumi-raft/src/storage/owned_snapshot_body.rs:28:5
+   |
+27 | pub(crate) struct PreparedApplicationSnapshot {
+   |                   --------------------------- fields in this struct
+28 |     role: crate::SourceActorRole,
+   |     ^^^^
+...
+31 |     expected_meta: SnapshotMeta<u64, BasicNode>,
+   |     ^^^^^^^^^^^^^
+32 |     backend: crate::OwnedPreparedStateMachineRestore,
+33 |     pending: Option<PendingSnapshot>,
+   |     ^^^^^^^
+34 |     writes: Option<PreparedSnapshotWrites>,
+35 |     source: Option<crate::PreparedSnapshotSourceEnvelope>,
+   |     ^^^^^^
+...
+44 |     limit: u64,
+   |     ^^^^^
+
+warning: multiple associated items are never used
+   --> crates/kasumi-raft/src/storage/owned_snapshot_body.rs:60:19
+    |
+ 57 | impl PreparedApplicationSnapshot {
+    | -------------------------------- associated items in this implementation
+...
+ 60 |     pub(crate) fn new(
+    |                   ^^^
+...
+ 95 |     pub(crate) fn prepare(&mut self) -> Result<()> {
+    |                   ^^^^^^^
+...
+156 |     pub(crate) fn prepare_capacity(
+    |                   ^^^^^^^^^^^^^^^^
+...
+210 |     pub(crate) fn publish(&mut self) -> Result<()> {
+    |                   ^^^^^^^
+...
+300 |     pub(crate) fn control(&self) -> &control_gate::OwnedControlGuard {
+    |                   ^^^^^^^
+...
+303 |     pub(crate) fn meta(&self) -> &SnapshotMeta<u64, BasicNode> {
+    |                   ^^^^
+...
+306 |     pub(crate) fn source(&self) -> Option<&crate::PreparedSnapshotSourceEnvelope> {
+    |                   ^^^^^^
+
+warning: variants `Application` and `Custody` are never constructed
+   --> crates/kasumi-raft/src/storage/owned_snapshot_body.rs:314:5
+    |
+313 | pub(crate) enum ClosedSnapshotRole {
+    |                 ------------------ variants in this enum
+314 |     Application(crate::SourceActorRole),
+    |     ^^^^^^^^^^^
+315 |     Custody,
+    |     ^^^^^^^
+
+warning: fields `role`, `expected_meta`, `source`, `application`, and `limit` are never read
+   --> crates/kasumi-raft/src/storage/owned_snapshot_body.rs:319:5
+    |
+318 | pub(crate) struct PreparedClosedSnapshot {
+    |                   ---------------------- fields in this struct
+319 |     role: ClosedSnapshotRole,
+    |     ^^^^
+...
+322 |     expected_meta: SnapshotMeta<u64, BasicNode>,
+    |     ^^^^^^^^^^^^^
+323 |     source: Option<crate::PreparedClosedSnapshotSourceEnvelope>,
+    |     ^^^^^^
+...
+327 |     application: Option<(StorageHandle<dyn StateMachineBackend>, Arc<AtomicBool>)>,
+    |     ^^^^^^^^^^^
+...
+333 |     limit: u64,
+    |     ^^^^^
+
+warning: multiple associated items are never used
+   --> crates/kasumi-raft/src/storage/owned_snapshot_body.rs:346:19
+    |
+343 | impl PreparedClosedSnapshot {
+    | --------------------------- associated items in this implementation
+...
+346 |     pub(crate) fn for_application(
+    |                   ^^^^^^^^^^^^^^^
+...
+371 |     pub(crate) fn for_custody(
+    |                   ^^^^^^^^^^^
+...
+389 |     fn new(
+    |        ^^^
+...
+417 |     pub(crate) fn prepare(&mut self) -> Result<()> {
+    |                   ^^^^^^^
+...
+448 |     pub(crate) fn prepare_capacity(
+    |                   ^^^^^^^^^^^^^^^^
+...
+495 |     pub(crate) fn publish(&mut self) -> Result<()> {
+    |                   ^^^^^^^
+...
+538 |     pub(crate) fn meta(&self) -> &SnapshotMeta<u64, BasicNode> {
+    |                   ^^^^
+...
+544 |     pub(crate) fn control(&self) -> &control_gate::OwnedControlGuard {
+    |                   ^^^^^^^
+
+warning: variants `Application` and `Closed` are never constructed
+   --> crates/kasumi-raft/src/storage/owned_snapshot_body.rs:566:5
+    |
+565 | pub(crate) enum PreparedSnapshotBody {
+    |                 -------------------- variants in this enum
+566 |     Application(PreparedApplicationSnapshot),
+    |     ^^^^^^^^^^^
+567 |     Closed(PreparedClosedSnapshot),
+    |     ^^^^^^
+    |
+    = note: `PreparedSnapshotBody` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: methods `prepare`, `prepare_capacity`, `publish`, `meta`, and `control` are never used
+   --> crates/kasumi-raft/src/storage/owned_snapshot_body.rs:608:19
+    |
+569 | impl PreparedSnapshotBody {
+    | ------------------------- methods in this implementation
+...
+608 |     pub(crate) fn prepare(&mut self) -> Result<()> {
+    |                   ^^^^^^^
+...
+614 |     pub(crate) fn prepare_capacity(
+    |                   ^^^^^^^^^^^^^^^^
+...
+624 |     pub(crate) fn publish(&mut self) -> Result<()> {
+    |                   ^^^^^^^
+...
+636 |     pub(crate) fn meta(&self) -> &SnapshotMeta<u64, BasicNode> {
+    |                   ^^^^
+...
+648 |     pub(crate) fn control(&self) -> &control_gate::OwnedControlGuard {
+    |                   ^^^^^^^
+
+warning: variant `Open` is never constructed
+   --> crates/kasumi-raft/src/storage/owned_snapshot_body.rs:658:5
+    |
+657 | enum ImageRetirement {
+    |      --------------- variant in this enum
+658 |     Open,
+    |     ^^^^
+    |
+    = note: `ImageRetirement` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `0` is never read
+   --> crates/kasumi-raft/src/storage/owned_snapshot_body.rs:662:32
+    |
+662 | struct SnapshotRetirementPanic(std::sync::Mutex<Box<dyn std::any::Any + Send>>);
+    |        ----------------------- ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |        |
+    |        field in this struct
+    |
+    = help: consider removing this field
+
+   Compiling kasumi-engine v0.1.0 (/private/tmp/kasumi-source-cohort-validation-v1/crates/kasumi-engine)
+warning: method `prepared_snapshot_publication` is never used
+   --> crates/kasumi-raft/src/custody_machine.rs:168:19
+    |
+134 | impl CustodyMachine {
+    | ------------------- method in this implementation
+...
+168 |     pub(crate) fn prepared_snapshot_publication(
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: variant `Install` is never constructed
+  --> crates/kasumi-raft/src/snapshot_buffer.rs:47:5
+   |
+41 | enum Completion {
+   |      ---------- variant in this enum
+...
+47 |     Install(DrainResult),
+   |     ^^^^^^^
+   |
+   = note: `Completion` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: variant `Install` is never constructed
+  --> crates/kasumi-raft/src/snapshot_buffer.rs:57:5
+   |
+51 | enum Kind {
+   |      ---- variant in this enum
+...
+57 |     Install,
+   |     ^^^^^^^
+   |
+   = note: `Kind` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: method `install` is never used
+   --> crates/kasumi-raft/src/snapshot_buffer/prepared_child.rs:229:8
+    |
+ 70 | impl PreparedChild {
+    | ------------------ method in this implementation
+...
+229 |     fn install(&mut self, owner: &SnapshotBufferOwner) -> DrainResult {
+    |        ^^^^^^^
+
+warning: method `install_body` is never used
+   --> crates/kasumi-raft/src/snapshot_buffer/prepared_child.rs:334:25
+    |
+256 | impl SnapshotBuffer {
+    | ------------------- method in this implementation
+...
+334 |     pub(crate) async fn install_body(&mut self) -> DrainResult {
+    |                         ^^^^^^^^^^^^
+
+warning: variants `Publishing` and `Published` are never constructed
+  --> crates/kasumi-raft/src/storage/owned_snapshot_body.rs:22:5
+   |
+13 | enum Phase {
+   |      ----- variants in this enum
+...
+22 |     Publishing,
+   |     ^^^^^^^^^^
+23 |     Published,
+   |     ^^^^^^^^^
+   |
+   = note: `Phase` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+
+warning: methods `publish` and `control` are never used
+   --> crates/kasumi-raft/src/storage/owned_snapshot_body.rs:210:19
+    |
+ 57 | impl PreparedApplicationSnapshot {
+    | -------------------------------- methods in this implementation
+...
+210 |     pub(crate) fn publish(&mut self) -> Result<()> {
+    |                   ^^^^^^^
+...
+300 |     pub(crate) fn control(&self) -> &control_gate::OwnedControlGuard {
+    |                   ^^^^^^^
+
+warning: field `application` is never read
+   --> crates/kasumi-raft/src/storage/owned_snapshot_body.rs:327:5
+    |
+318 | pub(crate) struct PreparedClosedSnapshot {
+    |                   ---------------------- field in this struct
+...
+327 |     application: Option<(StorageHandle<dyn StateMachineBackend>, Arc<AtomicBool>)>,
+    |     ^^^^^^^^^^^
+
+warning: associated items `for_application`, `for_custody`, `new`, `publish`, `meta`, and `control` are never used
+   --> crates/kasumi-raft/src/storage/owned_snapshot_body.rs:346:19
+    |
+343 | impl PreparedClosedSnapshot {
+    | --------------------------- associated items in this implementation
+...
+346 |     pub(crate) fn for_application(
+    |                   ^^^^^^^^^^^^^^^
+...
+371 |     pub(crate) fn for_custody(
+    |                   ^^^^^^^^^^^
+...
+389 |     fn new(
+    |        ^^^
+...
+495 |     pub(crate) fn publish(&mut self) -> Result<()> {
+    |                   ^^^^^^^
+...
+538 |     pub(crate) fn meta(&self) -> &SnapshotMeta<u64, BasicNode> {
+    |                   ^^^^
+...
+544 |     pub(crate) fn control(&self) -> &control_gate::OwnedControlGuard {
+    |                   ^^^^^^^
+
+warning: variant `Closed` is never constructed
+   --> crates/kasumi-raft/src/storage/owned_snapshot_body.rs:567:5
+    |
+565 | pub(crate) enum PreparedSnapshotBody {
+    |                 -------------------- variant in this enum
+566 |     Application(PreparedApplicationSnapshot),
+567 |     Closed(PreparedClosedSnapshot),
+    |     ^^^^^^
+    |
+    = note: `PreparedSnapshotBody` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: methods `publish`, `meta`, and `control` are never used
+   --> crates/kasumi-raft/src/storage/owned_snapshot_body.rs:624:19
+    |
+569 | impl PreparedSnapshotBody {
+    | ------------------------- methods in this implementation
+...
+624 |     pub(crate) fn publish(&mut self) -> Result<()> {
+    |                   ^^^^^^^
+...
+636 |     pub(crate) fn meta(&self) -> &SnapshotMeta<u64, BasicNode> {
+    |                   ^^^^
+...
+648 |     pub(crate) fn control(&self) -> &control_gate::OwnedControlGuard {
+    |                   ^^^^^^^
+
+warning: `kasumi-raft` (lib) generated 46 warnings
+warning: methods `prepare` and `prepare_kind` are never used
+   --> crates/kasumi-engine/src/application_sources.rs:756:19
+    |
+648 | impl SourceRootsRef {
+    | ------------------- methods in this implementation
+...
+756 |     pub(crate) fn prepare(&self) -> Result<RootPreparation> {
+    |                   ^^^^^^^
+...
+795 |     fn prepare_kind(&self, canonical: bool) -> Result<RootPreparation> {
+    |        ^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `kasumi-store` (lib test) generated 1 warning (1 duplicate)
+warning: `kasumi-raft` (lib test) generated 15 warnings (4 duplicates)
+warning: `kasumi-engine` (lib) generated 1 warning
+   Compiling kasumi-authority v0.1.0 (/private/tmp/kasumi-source-cohort-validation-v1/crates/kasumi-authority)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4m 01s
+     Running unittests src/lib.rs (/Users/takemiyamakoto/dev/kasumi/target/disk-backed-cache/debug/deps/kasumi_authority-e63a7f831ec29de9)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 78 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (/Users/takemiyamakoto/dev/kasumi/target/disk-backed-cache/debug/deps/kasumi_engine-707e7a92ed2be845)
+
+running 1 test
+test application_sources::tests::cohort_tests::snapshot_source_capacity_waiter_is_distinct_and_pending_does_not_wake_itself ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 678 filtered out; finished in 0.95s
+
+     Running unittests src/lib.rs (/Users/takemiyamakoto/dev/kasumi/target/disk-backed-cache/debug/deps/kasumi_kv-221aa5373d25965b)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 555 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (/Users/takemiyamakoto/dev/kasumi/target/disk-backed-cache/debug/deps/kasumi_raft-80f97d1b4f50c7fa)
+
+running 6 tests
+test non_application_source_capacity::tests::non_application_capacity_has_one_charged_token_and_bounded_actual_allocations ... ok
+test non_application_source_capacity::tests::fixed_snapshot_capacity_wakes_only_after_actual_token_release_and_unregisters ... ok
+test snapshot_buffer::tests::snapshot_prepared_child_refusal_retires_actual_body_and_preserves_original_error ... ok
+test snapshot_buffer::tests::snapshot_prepared_child_pending_keeps_exact_stage_then_cancels ... ok
+test snapshot_buffer::tests::snapshot_prepared_child_complete_cleanup_keeps_original_refusal_and_native_issue ... ok
+test snapshot_buffer::tests::snapshot_prepared_child_cancel_joins_original_ready_and_retires_token ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 226 filtered out; finished in 0.73s
+
+     Running unittests src/lib.rs (/Users/takemiyamakoto/dev/kasumi/target/disk-backed-cache/debug/deps/kasumi_store-6fd2a1f28b2df75c)
+
+running 34 tests
+test node_disk::directory::managed::tests::post_mkdir_error_retains_original_failure_and_allows_only_complete_census_resolution ... ok
+test node_disk::directory::managed::tests::post_unlink_error_holds_actual_child_descriptor_and_extent_until_census ... ok
+test node_disk::namespace::tests::required_policy_and_entry_limit_reject_before_create_without_reducing_cleanup ... ok
+test node_disk::directory::managed::tests::census_retires_actual_prepared_arc_backing_before_reopening_slot_admission ... ok
+test node_disk::directory::managed::tests::generic_nonroot_open_retains_walk_close_failure_before_publication ... ok
+test node_disk::namespace::tests::create_same_parent_publish_cross_parent_publish_and_unlink_settle_actual_parents ... ok
+test node_disk::publication::tests::pristine_slice_returns_same_rights_and_keeps_positive_cancel_available ... ok
+test node_disk::publication::tests::ordinary_competitors_cannot_spend_promised_names_or_descriptors ... ok
+test node_disk::directory::managed::tests::generic_nonroot_open_uses_retained_parent_walk_and_exact_identity ... ok
+test node_disk::publication::tests::funded_slices_reuse_descriptor_pool_with_all_new_admission_denied ... ok
+test node_disk::namespace::tests::file_custody_rejects_a_replaced_intermediate_ancestor_even_when_final_inode_survives ... ok
+test node_disk::namespace::tests::failed_parent_sync_retains_all_promises_and_an_unsettled_parent_until_census ... ok
+test node_disk::transaction::tests::actual_create_parent_sync_failure_retains_claim_and_native_original_custody ... ok
+test node_disk::transaction::tests::complete_atomic_quota_denial_and_pristine_cancel_leave_no_physical_effect ... ok
+test node_disk::publication::tests::even_zero_file_allowance_prevents_parent_removal_until_positive_retirement ... ok
+test node_disk::directory::managed::tests::managed_child_creation_open_and_removal_preserve_exact_enrollment_and_charge ... ok
+test node_disk::publication::tests::unknown_slice_keeps_total_promise_until_all_witnesses_drain_and_census ... ok
+test node_disk::directory::managed::tests::managed_directory_cardinality_and_owner_capacity_deny_before_allocations_or_effects ... ok
+test node_disk::publication::tests::publication_reserves_complete_physical_rights_without_claiming_writer ... ok
+
+thread 'node_disk::transaction::tests::panic_after_entered_work_cannot_refund_the_unassigned_part_of_the_claim' (26045044) panicked at crates/kasumi-store/src/node_disk/transaction/tests.rs:264:9:
+original transaction caller panic
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test node_disk::transaction::tests::growth_transfers_to_the_exact_existing_file_without_double_charge ... ok
+test node_disk::transaction::tests::zero_file_claim_is_exclusive_and_unrelated_parent_claims_can_coexist ... ok
+test node_disk::transaction::tests::panic_after_entered_work_cannot_refund_the_unassigned_part_of_the_claim ... ok
+test node_disk::transaction::tests::active_claim_prevents_removal_of_its_empty_parent_even_with_zero_files ... ok
+test node_disk::transaction::tests::range_rounding_quote_covers_individual_rounding_and_standing_allocations ... ok
+test node_disk::directory::managed::tests::retained_child_parent_prevents_removal_with_live_descendant_custody ... ok
+test node_disk::publication::tests::slice_cannot_return_to_another_parent_or_to_replacement_allowance ... ok
+test node_disk::publication::tests::physical_denial_never_leaves_an_allowance_witness_or_namespace_claim ... ok
+test node_disk::directory::managed::tests::unknown_child_absence_retires_prepared_backing_and_descriptors_before_slot_reuse ... ok
+test node_disk::directory::managed::tests::preflight_ancestry_close_failure_keeps_new_descriptor_custody_before_mkdir ... ok
+test node_disk::transaction::tests::claimed_namespace_consumption_does_not_repeat_foreground_or_floor_admission ... ok
+test node_disk::transaction::tests::descriptor_rights_recycle_across_more_files_than_the_peak_without_readmission ... ok
+test node_disk::directory::managed::tests::uncertain_native_close_is_sticky_and_preserves_primary_error_and_custody ... ok
+test node_disk::transaction::tests::abandoned_effect_keeps_unassigned_bytes_until_real_owner_drain_and_census ... ok
+test node_disk::directory::managed::tests::managed_child_names_depth_existing_identity_and_root_removal_are_exact ... ok
+
+test result: ok. 34 passed; 0 failed; 0 ignored; 0 measured; 703 filtered out; finished in 0.68s
+
+Runner: 243.70s; exit=0; matching=1582/1582

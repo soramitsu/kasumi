@@ -1,0 +1,5 @@
+Command: cargo clippy -p kasumi-kv --all-features --all-targets --locked --offline --no-deps -- -D warnings
+    Checking kasumi-kv v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-kv)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 12.44s
+
+Runner elapsed_seconds=12.55 exit_code=0

@@ -114,7 +114,11 @@ mod tests {
     #[test]
     fn archive_installation_map_is_an_explicit_first_release_field() {
         let mut encoded = serde_json::to_value(
-            crate::runtime::example_config(kasumi_store::DirectoryPolicy::fixture()).unwrap(),
+            crate::runtime::example_config(
+                kasumi_store::DirectoryPolicy::fixture(),
+                kasumi_store::FileAllocationPolicy::fixture(),
+            )
+            .unwrap(),
         )
         .unwrap();
         serde_json::from_value::<crate::runtime::RuntimeConfig>(encoded.clone()).unwrap();
@@ -150,8 +154,11 @@ mod tests {
             )
             .unwrap(),
         );
-        let mut installed =
-            crate::runtime::example_config(kasumi_store::DirectoryPolicy::fixture()).unwrap();
+        let mut installed = crate::runtime::example_config(
+            kasumi_store::DirectoryPolicy::fixture(),
+            kasumi_store::FileAllocationPolicy::fixture(),
+        )
+        .unwrap();
         installed.tenant_audit_archives.insert(
             "tenant".into(),
             AuditDestinationConfig::Filesystem {
@@ -175,8 +182,11 @@ mod tests {
         let reopened = TenantStore::open_existing_fixture(node.clone(), "tenant".into(), provider)
             .await
             .unwrap();
-        let empty =
-            crate::runtime::example_config(kasumi_store::DirectoryPolicy::fixture()).unwrap();
+        let empty = crate::runtime::example_config(
+            kasumi_store::DirectoryPolicy::fixture(),
+            kasumi_store::FileAllocationPolicy::fixture(),
+        )
+        .unwrap();
         assert!(
             empty
                 .install_tenant_audit_archive(&reopened, Some(cache.clone()))

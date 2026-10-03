@@ -1,0 +1,112 @@
+Command: cargo test -p kasumi-server --all-features --lib --test tls_listener --locked --offline --config profile.test.package.kasumi-kv.opt-level=3 --config profile.test.package.sha2.opt-level=3 -- --test-threads=1 api::tests api::response_owner::tests mcp::credential_tests native_grpc_channel_uses_pinned_tls13_and_http2_with_no_plaintext_fallback
+CARGO_TARGET_DIR=target/disk-backed-cache
+   Compiling kasumi-store v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-store)
+   Compiling kasumi-query v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-query)
+warning: method `matches_response_id` is never used
+   --> vendor/rmcp-3.2.0/src/model.rs:251:19
+    |
+236 | impl NumberOrString {
+    | ------------------- method in this implementation
+...
+251 |     pub(crate) fn matches_response_id(&self, response_id: &Self) -> bool {
+    |                   ^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `set_client_request_metadata` is never used
+    --> vendor/rmcp-3.2.0/src/service.rs:1032:19
+     |
+ 806 | impl<R: ServiceRole> Peer<R> {
+     | ---------------------------- method in this implementation
+...
+1032 |     pub(crate) fn set_client_request_metadata(&self, metadata: ClientRequestMetadata) {
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: method `is_authorization_required` is never used
+   --> vendor/rmcp-3.2.0/src/transport.rs:275:19
+    |
+249 | impl DynamicTransportError {
+    | -------------------------- method in this implementation
+...
+275 |     pub(crate) fn is_authorization_required(&self) -> bool {
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: `rmcp` (lib) generated 3 warnings
+   Compiling kasumi-raft v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-raft)
+   Compiling kasumi-engine v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-engine)
+   Compiling kasumi-authority v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-authority)
+warning: variant `Mutation` is never constructed
+  --> crates/kasumi-engine/src/security_audit_jobs.rs:26:5
+   |
+24 | enum JobEffect {
+   |      --------- variant in this enum
+25 |     Read,
+26 |     Mutation(&'static str),
+   |     ^^^^^^^^
+   |
+   = note: `JobEffect` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: struct `ReadPause` is never constructed
+  --> crates/kasumi-engine/src/security_audit_jobs.rs:57:19
+   |
+57 | pub(super) struct ReadPause {
+   |                   ^^^^^^^^^
+
+warning: method `run_mutation` is never used
+   --> crates/kasumi-engine/src/security_audit_jobs.rs:120:25
+    |
+ 62 | impl SecurityAudit {
+    | ------------------ method in this implementation
+...
+120 |     pub(super) async fn run_mutation<T, F, R>(&self, component: &'static str, run: R) -> Result<T>
+    |                         ^^^^^^^^^^^^
+
+   Compiling kasumi-server v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-server)
+warning: `kasumi-engine` (lib) generated 3 warnings
+warning: linker stderr: ld: __eh_frame section too large (max 16MB) to encode dwarf unwind offsets in compact unwind table, performance of exception handling might be affected
+  |
+  = note: `#[warn(linker_messages)]` on by default
+
+warning: `kasumi-server` (bin "kasumid") generated 1 warning
+warning: `kasumi-server` (lib test) generated 1 warning (1 duplicate)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 21m 58s
+     Running unittests src/lib.rs (target/disk-backed-cache/debug/deps/kasumi_server-732b155e8838634f)
+
+running 52 tests
+test api::response_owner::tests::changed_serializer_cannot_grow_the_admitted_destination ... ok
+test api::response_owner::tests::pinned_unary_fixed_wrapper_inventory_fits_policy_allowance ... ok
+test api::tests::admitted_adapter_growth_denial_destroys_source_before_releasing_custody ... ok
+test api::tests::admitted_mcp_output_survives_http_handoff_and_last_frame_clone ... FAILED
+test api::tests::admitted_native_output_survives_unpolled_body_and_last_frame_clone ... FAILED
+test api::tests::both_adapters_reject_wrong_identity_tenant_scope_and_admin_escalation ... ok
+test api::tests::closed_original_route_is_retryable_only_for_its_own_incarnation ... ok
+test api::tests::committed_source_marker_with_absent_status_never_calls_mutation ... ok
+test api::tests::current_mcp_discovery_and_tool_catalog_work_without_initialize ... ok
+test api::tests::embedded_native_and_mcp_denials_have_one_durable_record_per_request ... ok
+test api::tests::encoded_response_credential_expiry_is_audited_and_preserves_committed_receipt ... ok
+test api::tests::guarded_stop_secure_sdk_preserves_exact_identity_and_native_authority ... ok
+test api::tests::long_schema_property_errors_match_native_mcp_and_durable_receipts ... ok
+test api::tests::mcp_rejects_legacy_mismatched_metadata_bad_origins_and_unauthenticated_calls ... ok
+test api::tests::native_admin_json_rejects_unknown_nested_fields_before_mutation ... ok
+test api::tests::native_and_mcp_lost_committed_responses_resolve_without_reapplying ... ok
+test api::tests::native_and_mcp_share_exact_data_receipts_query_and_authorization ... ok
+test api::tests::native_backup_proof_is_admin_only_configured_and_verified_through_secure_sdk ... ok
+test api::tests::native_history_archive_and_durable_feed_preserve_exact_rows_and_scope ... ok
+test api::tests::native_listener_reloads_complete_tls_and_rejects_invalid_replacement ... ok
+test api::tests::native_ordered_seek_encoded_release_rechecks_original_credential_deadline ... ok
+test api::tests::native_policy_limits_readback_is_admin_scoped_and_exact ... ok
+test api::tests::native_pool_replays_uncertain_batches_and_never_moves_historical_pages ... FAILED
+test api::tests::native_resources_and_two_restore_hops_preserve_immutable_issuer_facts ... ok
+test api::tests::native_schema_activation_is_atomic_scoped_permanent_and_private ... ok
+test api::tests::native_sdk_query_feed_schema_preserve_literal_values_and_admission ... ok
+test api::tests::native_snapshot_preserves_exact_data_and_its_read_set_rejects_a_stale_commit ... ok
+test api::tests::native_staged_original_scope_cannot_be_reinterpreted_by_another_authorized_principal ... ok
+test api::tests::native_staging_and_coherent_lease_pages_share_exact_state_and_authority ... ok
+test api::tests::native_status_bounds_worst_case_header_escaping ... ok
+test api::tests::native_tls_ordered_seek_preserves_literals_epochs_and_owned_continuation ... ok
+test api::tests::private_native_control_route_can_raise_a_full_audit_budget ... error: test failed, to rerun pass `-p kasumi-server --lib`
+
+Caused by:
+  process didn't exit successfully: `/Users/takemiyamakoto/dev/kasumi/target/disk-backed-cache/debug/deps/kasumi_server-732b155e8838634f --test-threads=1 'api::tests' 'api::response_owner::tests' 'mcp::credential_tests' native_grpc_channel_uses_pinned_tls13_and_http2_with_no_plaintext_fallback` (signal: 2, SIGINT: terminal interrupt signal)
+Runner: 3411.29s; exit=101; matching=698/698

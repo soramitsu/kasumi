@@ -572,7 +572,13 @@ async fn production_pair_registers_one_writer_before_waiting_for_native_gate() -
     })?;
     let scratch_directory = crate::test_utils::private_tempdir()?;
     let scratch = crate::ScratchDisk::fixture(scratch_directory.path(), memory.clone());
-    let node = NodeStore::create_new(&path, crate::test_utils::NODE_STORE_ID, disk, scratch)?;
+    let node = NodeStore::create_new(
+        &path,
+        crate::test_utils::NODE_STORE_ID,
+        disk,
+        scratch,
+        crate::test_utils::node_storage_config(),
+    )?;
     let held = node.db.begin_write()?;
     let receive = begin(input(node.clone())).await?;
     let registered = tokio::time::timeout(Duration::from_secs(3), async {
@@ -615,7 +621,13 @@ async fn production_pair_rechecks_second_catalog_and_orphan_inside_one_transacti
         })?;
         let scratch_directory = crate::test_utils::private_tempdir()?;
         let scratch = crate::ScratchDisk::fixture(scratch_directory.path(), memory.clone());
-        let node = NodeStore::create_new(&path, crate::test_utils::NODE_STORE_ID, disk, scratch)?;
+        let node = NodeStore::create_new(
+            &path,
+            crate::test_utils::NODE_STORE_ID,
+            disk,
+            scratch,
+            crate::test_utils::node_storage_config(),
+        )?;
         let hash = tenant_hash(&CustodyStore::catalog_name("new-tenant"));
         let held = node.db.begin_write()?;
         if kind == "catalog" {
@@ -675,7 +687,13 @@ async fn cancelled_production_pair_waiter_drains_after_atomic_catalog_commit() -
     })?;
     let scratch_directory = crate::test_utils::private_tempdir()?;
     let scratch = crate::ScratchDisk::fixture(scratch_directory.path(), memory.clone());
-    let node = NodeStore::create_new(&path, crate::test_utils::NODE_STORE_ID, disk, scratch)?;
+    let node = NodeStore::create_new(
+        &path,
+        crate::test_utils::NODE_STORE_ID,
+        disk,
+        scratch,
+        crate::test_utils::node_storage_config(),
+    )?;
     let held = node.db.begin_write()?;
     let receive = begin(input(node.clone())).await?;
     tokio::time::timeout(Duration::from_secs(3), async {

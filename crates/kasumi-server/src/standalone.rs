@@ -317,8 +317,7 @@ pub(crate) fn offline_context(
 ) -> Result<kasumi_types::RequestContext> {
     let generation = database.engine().generation()?;
     let principal = generation
-        .state
-        .policy
+        .policy()
         .grants
         .iter()
         .find(|grant| grant.collection.is_none() && grant.actions.contains(&Action::Admin))
@@ -328,7 +327,7 @@ pub(crate) fn offline_context(
     Ok(kasumi_types::RequestContext {
         authorization: kasumi_types::RequestAuthorization::service_identity(),
         principal,
-        tenant: generation.state.tenant.clone(),
+        tenant: generation.tenant().to_owned(),
         scopes: BTreeSet::from([Action::Read, Action::Write, Action::Admin, Action::Audit]),
         request_id: Uuid::new_v4().to_string(),
     })
@@ -392,6 +391,7 @@ async fn operator_tenants(
                         active.database_id(config, &tenant.tenant)?,
                         owner.node.persistent_disk().clone(),
                         owner.node.scratch_disk().clone(),
+                        owner.node.persistent_disk().native_storage_config(),
                     )?
                 }
                 None => owner.node.clone(),
@@ -539,8 +539,7 @@ async fn recover_administrator_owned(
             };
             let generation = database.engine().generation()?;
             let principal = generation
-                .state
-                .policy
+                .policy()
                 .grants
                 .iter()
                 .find(|grant| grant.collection.is_none() && grant.actions.contains(&Action::Admin))
@@ -974,23 +973,34 @@ pub async fn initialize(
     directory: &Path,
     tenant: &str,
     directory_policy: kasumi_store::DirectoryPolicy,
+    file_allocation_policy: kasumi_store::FileAllocationPolicy,
     network: StandaloneNetwork,
 ) -> Result<InitializedInstallation> {
     network.validate()?;
     let storage = crate::runtime_memory::RuntimeStorage::installed(
-        &example_config(directory_policy)?.admission,
+        &example_config(directory_policy, file_allocation_policy)?.admission,
     )?;
-    initialize_with_storage(directory, tenant, directory_policy, network, storage).await
+    initialize_with_storage(
+        directory,
+        tenant,
+        directory_policy,
+        file_allocation_policy,
+        network,
+        storage,
+    )
+    .await
 }
 
 pub(crate) async fn initialize_with_storage(
     directory: &Path,
     tenant: &str,
     directory_policy: kasumi_store::DirectoryPolicy,
+    file_allocation_policy: kasumi_store::FileAllocationPolicy,
     network: StandaloneNetwork,
     storage: crate::runtime_memory::RuntimeStorage,
 ) -> Result<InitializedInstallation> {
     directory_policy.validate()?;
+    file_allocation_policy.validate()?;
     network.validate()?;
     // The owned operation retains its exclusive lock and drains every database
     // even if the CLI invocation loses its reply. Installation completion is a
@@ -1002,6 +1012,7 @@ pub(crate) async fn initialize_with_storage(
             &directory,
             &tenant,
             directory_policy,
+            file_allocation_policy,
             network,
             InitializationOptions::default(),
             storage,
@@ -1020,8 +1031,10 @@ pub(crate) async fn initialize_with_storage_and_tenant_archive(
     archive: crate::audit_destination::AuditDestinationConfig,
 ) -> Result<InitializedInstallation> {
     let directory_policy = kasumi_store::DirectoryPolicy::fixture();
+    let file_allocation_policy = kasumi_store::FileAllocationPolicy::fixture();
     let network = StandaloneNetwork::fixture();
     directory_policy.validate()?;
+    file_allocation_policy.validate()?;
     network.validate()?;
     let directory = directory.to_owned();
     let tenant = tenant.to_owned();
@@ -1030,6 +1043,7 @@ pub(crate) async fn initialize_with_storage_and_tenant_archive(
             &directory,
             &tenant,
             directory_policy,
+            file_allocation_policy,
             network,
             InitializationOptions {
                 tenant_audit_archive: Some(archive),
@@ -1060,6 +1074,7 @@ pub(crate) async fn initialize_many_with_storage(
             &directory,
             "healthy-000",
             kasumi_store::DirectoryPolicy::fixture(),
+            kasumi_store::FileAllocationPolicy::fixture(),
             StandaloneNetwork::fixture(),
             InitializationOptions {
                 extra_tenants: tenant_count - 1,
@@ -1084,6 +1099,7 @@ async fn initialize_owned(
     directory: &Path,
     tenant: &str,
     directory_policy: kasumi_store::DirectoryPolicy,
+    file_allocation_policy: kasumi_store::FileAllocationPolicy,
     network: StandaloneNetwork,
     options: InitializationOptions,
     storage: crate::runtime_memory::RuntimeStorage,
@@ -1099,7 +1115,7 @@ async fn initialize_owned(
         directory.is_absolute(),
         "installation directory must be absolute"
     );
-    let mut config = example_config(directory_policy)?;
+    let mut config = example_config(directory_policy, file_allocation_policy)?;
     config.admission = storage.policy().clone();
     let admission = storage.facade(&config.admission)?;
     let mut pending = crate::startup_resources::Resources::default();
@@ -1121,6 +1137,7 @@ async fn initialize_owned(
             ("backups".into(), directory.join("backups")),
         ]),
         directory_policy,
+        file_allocation_policy,
     )?;
     let persistent_disk = crate::persistent_disk::open(&persistent_config, &storage)?;
     pending.standalone_lock = Some(create_installed_file(
@@ -1283,6 +1300,7 @@ async fn initialize_owned(
             installation.database_id,
             persistent_disk.clone(),
             storage.open_scratch(&config.scratch_disk)?,
+            persistent_disk.native_storage_config(),
         )?;
         pending.owned_nodes.push(node.clone());
         #[cfg(test)]

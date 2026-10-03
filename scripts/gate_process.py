@@ -230,7 +230,13 @@ def drain(process, grace_seconds=10):
         except ProcessLookupError:
             pass
         except OSError as error:
-            record["errors"].append(signal.Signals(number).name + ": " + repr(error))
+            # Darwin can reject killpg after the owned leader becomes a zombie.
+            # Only dismiss that race after reaping it and proving the whole
+            # group is empty; a live descendant or uncertain census still fails.
+            process.poll()
+            if not (isinstance(error, PermissionError) and process.returncode is not None
+                    and inspect() == []):
+                record["errors"].append(signal.Signals(number).name + ": " + repr(error))
         until = time.monotonic() + grace_seconds
         while time.monotonic() < until:
             process.poll()

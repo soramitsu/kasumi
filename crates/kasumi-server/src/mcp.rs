@@ -1,18 +1,21 @@
 //! MCP 2026-07-28 over the official Rust SDK's stateless HTTP transport.
+#[cfg(test)]
+use crate::api::encode_json;
 use crate::{
-    api::{DatabaseRegistry, MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES, encode_json},
+    api::{DatabaseRegistry, MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES, response_owner},
     auth::Authenticator,
 };
 use axum::{
     Json, Router,
-    body::{Body, to_bytes},
+    body::Body,
     extract::{Request, State},
     http::{HeaderValue, StatusCode, header::CONTENT_LENGTH},
     middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::get,
 };
-use hyper::body::Body as _;
+use http_body_util::BodyExt;
+use hyper::body::{Body as _, Bytes};
 use kasumi_types::{
     Action, Error, ErrorCode, MutationBatch, QueryRequest, RequestContext, validate_name,
 };
@@ -127,6 +130,7 @@ fn normalized_origin(text: &str) -> anyhow::Result<String> {
 struct Verified {
     context: RequestContext,
     mutation_dispatched: Arc<AtomicBool>,
+    source_output: Arc<Mutex<Option<response_owner::ReplyOwner>>>,
     response_fence: Arc<Mutex<Option<kasumi_engine::ResponseFence<'static>>>>,
     // A tool reply that could not be charged. The HTTP boundary replaces the
     // SDK body with a fixed-size rejection carrying this error.
@@ -137,6 +141,7 @@ impl Verified {
         Self {
             context,
             mutation_dispatched: Arc::new(AtomicBool::new(false)),
+            source_output: Arc::new(Mutex::new(None)),
             response_fence: Arc::new(Mutex::new(None)),
             withheld: Arc::new(Mutex::new(None)),
         }
@@ -206,6 +211,44 @@ impl Verified {
             }
         })
     }
+    fn retain_output<T: Send + Sync + 'static>(
+        &self,
+        value: kasumi_engine::AdmittedOutput<T>,
+    ) -> kasumi_types::Result<Arc<kasumi_engine::AdmittedOutput<T>>> {
+        self.retain_response_bytes(
+            response_owner::owner_bytes::<kasumi_engine::AdmittedOutput<T>>()?,
+            "MCP source output owner exceeds response workspace",
+        )?;
+        let mut retained = self
+            .source_output
+            .lock()
+            .map_err(|_| Error::new(ErrorCode::Unavailable, "MCP source ownership unavailable"))?;
+        if retained.is_some() {
+            return Err(Error::new(
+                ErrorCode::Unavailable,
+                "MCP source output already retained",
+            ));
+        }
+        let value = Arc::new(value);
+        *retained = Some(response_owner::ReplyOwner::new(value.clone()));
+        Ok(value)
+    }
+    fn take_source_output(&self) -> kasumi_types::Result<Option<response_owner::ReplyOwner>> {
+        Ok(self
+            .source_output
+            .lock()
+            .map_err(|_| Error::new(ErrorCode::Unavailable, "MCP source ownership unavailable"))?
+            .take())
+    }
+    fn encode_output(&self, value: &impl Serialize) -> kasumi_types::Result<Vec<u8>> {
+        let mut retained = self.response_fence.lock().map_err(|_| {
+            Error::new(ErrorCode::Unavailable, "MCP response workspace unavailable")
+        })?;
+        let fence = retained.as_mut().ok_or_else(|| {
+            Error::new(ErrorCode::Unavailable, "MCP response workspace unavailable")
+        })?;
+        response_owner::encode_json(value, fence)
+    }
     fn withhold(&self, error: Error) {
         // A poisoned slot still withholds; the boundary reports it unavailable.
         if let Ok(mut withheld) = self.withheld.lock() {
@@ -272,8 +315,17 @@ async fn authenticate(State(state): State<HttpAuth>, mut request: Request, next:
                         .ok()
                         .and_then(|mut gate| gate.take())
                 });
-            let response = next.run(request).await;
-            let fence = match invocation.take_response_fence() {
+            let mut owned = MaterializedReply {
+                response: next.run(request).await,
+                bytes: Bytes::new(),
+                source: None,
+                fence: None,
+            };
+            owned.source = match invocation.take_source_output() {
+                Ok(source) => source,
+                Err(error) => return rejected(&state, invocation.release_error(error)),
+            };
+            owned.fence = match invocation.take_response_fence() {
                 Ok(fence) => fence,
                 Err(error) => return rejected(&state, invocation.release_error(error)),
             };
@@ -283,7 +335,8 @@ async fn authenticate(State(state): State<HttpAuth>, mut request: Request, next:
                     return rejected(&state, invocation.release_error(error));
                 }
             }
-            if response
+            if owned
+                .response
                 .extensions()
                 .get::<TerminalTransportFailure>()
                 .is_some()
@@ -296,7 +349,7 @@ async fn authenticate(State(state): State<HttpAuth>, mut request: Request, next:
                     )),
                 );
             }
-            if response.status() == StatusCode::FORBIDDEN {
+            if owned.response.status() == StatusCode::FORBIDDEN {
                 let _ = state
                     .auth
                     .audit_result::<()>(
@@ -308,8 +361,8 @@ async fn authenticate(State(state): State<HttpAuth>, mut request: Request, next:
             // The SDK body may suspend even with an exact size hint. Own every
             // byte before the final fence, retaining the handler's original
             // policy epoch and admitted workspace across SDK serialization.
-            let response = match materialize_response(response).await {
-                Ok(response) => response,
+            let owned = match owned.materialize().await {
+                Ok(owned) => owned,
                 Err(error) => return rejected(&state, invocation.release_error(error)),
             };
             #[cfg(test)]
@@ -318,7 +371,7 @@ async fn authenticate(State(state): State<HttpAuth>, mut request: Request, next:
             }
             // Discovery and protocol errors have no database fence, but still
             // reuse the original credential deadline and live family guard.
-            let release = match &fence {
+            let release = match &owned.fence {
                 Some(fence) => fence.check(),
                 None => context.authorization.check_live(),
             };
@@ -326,78 +379,145 @@ async fn authenticate(State(state): State<HttpAuth>, mut request: Request, next:
             if let Err(error) = release {
                 return rejected(&state, invocation.release_error(error));
             }
-            response
+            match owned.into_response() {
+                Ok(response) => response,
+                Err(error) => rejected(&state, invocation.release_error(error)),
+            }
         }
         Err(error) => rejected(&state, error),
     }
 }
 
-async fn materialize_response(response: Response) -> kasumi_types::Result<Response> {
-    // rmcp may fall back to SSE after an intermediate handler message. No
-    // streaming response is supported, including one with a declared length.
-    let streaming = response
-        .headers()
-        .get_all("content-type")
-        .iter()
-        .any(|value| {
-            value.to_str().map_or(true, |value| {
-                value.split(';').next().is_some_and(|media_type| {
-                    media_type.trim().eq_ignore_ascii_case("text/event-stream")
+// The SDK body and its materialized copy must drop before the source and fence,
+// including while the materialization future is cancelled or unwinds.
+struct MaterializedReply {
+    response: Response,
+    bytes: Bytes,
+    source: Option<response_owner::ReplyOwner>,
+    fence: Option<kasumi_engine::ResponseFence<'static>>,
+}
+struct McpCustody {
+    _source: Option<response_owner::ReplyOwner>,
+    _fence: kasumi_engine::ResponseFence<'static>,
+}
+fn materialization_bytes(length: usize) -> kasumi_types::Result<u64> {
+    response_owner::allocation_bytes(length)?
+        .checked_add(response_owner::owner_bytes::<McpCustody>()?)
+        .ok_or_else(|| {
+            Error::new(
+                ErrorCode::ResourceExhausted,
+                "MCP output allocation overflow",
+            )
+        })
+}
+impl MaterializedReply {
+    async fn materialize(mut self) -> kasumi_types::Result<Self> {
+        let response = &self.response;
+        // rmcp may fall back to SSE after an intermediate handler message. No
+        // streaming response is supported, including one with a declared length.
+        let streaming = response
+            .headers()
+            .get_all("content-type")
+            .iter()
+            .any(|value| {
+                value.to_str().map_or(true, |value| {
+                    value.split(';').next().is_some_and(|media_type| {
+                        media_type.trim().eq_ignore_ascii_case("text/event-stream")
+                    })
                 })
-            })
-        });
-    let length = response.body().size_hint().exact();
-    if streaming || length.is_none() {
-        return Err(Error::new(
-            ErrorCode::Unavailable,
-            "MCP requires a terminal response before release",
-        ));
+            });
+        let length = response.body().size_hint().exact();
+        if streaming || length.is_none() {
+            return Err(Error::new(
+                ErrorCode::Unavailable,
+                "MCP requires a terminal response before release",
+            ));
+        }
+        if length.is_some_and(|length| length > MAX_RESPONSE_BYTES as u64) {
+            return Err(Error::new(
+                ErrorCode::ResourceExhausted,
+                "MCP response exceeds byte limit",
+            ));
+        }
+        // An explicit wire length is part of the terminal response. Reject a
+        // conflicting or ambiguous value before the final credential check, since
+        // HTTP framing could otherwise truncate a fully materialized body.
+        let mut declared_lengths = response.headers().get_all(CONTENT_LENGTH).iter();
+        if let Some(declared) = declared_lengths.next()
+            && (declared_lengths.next().is_some()
+                || declared
+                    .to_str()
+                    .ok()
+                    .and_then(|value| value.parse::<u64>().ok())
+                    != length)
+        {
+            return Err(Error::new(
+                ErrorCode::Unavailable,
+                "MCP terminal response content length conflicts with body",
+            ));
+        }
+        let length = length.expect("checked terminal length") as usize;
+        if let Some(fence) = &mut self.fence {
+            fence.retain_response_bytes(materialization_bytes(length)?)?;
+        }
+        // A terminal body can still contain many frames. Copy into one pre-admitted
+        // exact-capacity buffer instead of collecting an unbounded frame directory.
+        let mut bytes = Vec::with_capacity(length);
+        let mut body = std::mem::replace(self.response.body_mut(), Body::empty());
+        while let Some(frame) = body.frame().await {
+            let frame = frame.map_err(|_| {
+                Error::new(
+                    ErrorCode::Unavailable,
+                    "MCP terminal response could not be materialized",
+                )
+            })?;
+            if let Ok(data) = frame.into_data() {
+                if data.len() > MAX_RESPONSE_BYTES - bytes.len() {
+                    return Err(Error::new(
+                        ErrorCode::ResourceExhausted,
+                        "MCP response exceeds byte limit",
+                    ));
+                }
+                if data.len() > length - bytes.len() {
+                    return Err(Error::new(
+                        ErrorCode::Unavailable,
+                        "MCP terminal response length changed during materialization",
+                    ));
+                }
+                bytes.extend_from_slice(&data);
+            }
+        }
+        if bytes.len() != length {
+            return Err(Error::new(
+                ErrorCode::Unavailable,
+                "MCP terminal response length changed during materialization",
+            ));
+        }
+        self.bytes = Bytes::from(bytes);
+        Ok(self)
     }
-    if length.is_some_and(|length| length > MAX_RESPONSE_BYTES as u64) {
-        return Err(Error::new(
-            ErrorCode::ResourceExhausted,
-            "MCP response exceeds byte limit",
-        ));
+    fn into_response(mut self) -> kasumi_types::Result<Response> {
+        let bytes = std::mem::take(&mut self.bytes);
+        let bytes = match self.fence.take() {
+            Some(fence) => {
+                let owner = response_owner::ReplyOwner::new(McpCustody {
+                    _source: self.source.take(),
+                    _fence: fence,
+                });
+                self.response.extensions_mut().insert(owner.clone());
+                response_owner::owned_bytes(bytes, owner)
+            }
+            None if self.source.is_some() => {
+                return Err(Error::new(
+                    ErrorCode::Unavailable,
+                    "MCP source output lost its response fence",
+                ));
+            }
+            None => bytes,
+        };
+        *self.response.body_mut() = Body::from(bytes);
+        Ok(self.response)
     }
-    // An explicit wire length is part of the terminal response. Reject a
-    // conflicting or ambiguous value before the final credential check, since
-    // HTTP framing could otherwise truncate a fully materialized body.
-    let mut declared_lengths = response.headers().get_all(CONTENT_LENGTH).iter();
-    if let Some(declared) = declared_lengths.next()
-        && (declared_lengths.next().is_some()
-            || declared
-                .to_str()
-                .ok()
-                .and_then(|value| value.parse::<u64>().ok())
-                != length)
-    {
-        return Err(Error::new(
-            ErrorCode::Unavailable,
-            "MCP terminal response content length conflicts with body",
-        ));
-    }
-    let (parts, body) = response.into_parts();
-    let bytes = to_bytes(body, MAX_RESPONSE_BYTES).await.map_err(|error| {
-        use std::error::Error as _;
-        let exceeded = error
-            .source()
-            .is_some_and(|source| source.is::<http_body_util::LengthLimitError>());
-        Error::new(
-            if exceeded {
-                ErrorCode::ResourceExhausted
-            } else {
-                ErrorCode::Unavailable
-            },
-            "MCP terminal response could not be materialized",
-        )
-    })?;
-    if length != Some(bytes.len() as u64) {
-        return Err(Error::new(
-            ErrorCode::Unavailable,
-            "MCP terminal response length changed during materialization",
-        ));
-    }
-    Ok(Response::from_parts(parts, Body::from(bytes)))
 }
 
 fn rejected(state: &HttpAuth, error: Error) -> Response {
@@ -513,7 +633,7 @@ fn arguments<T: serde::de::DeserializeOwned>(value: Value) -> kasumi_types::Resu
 }
 fn output(invocation: &Verified, value: &impl Serialize) -> kasumi_types::Result<Value> {
     // Bound the structured data before constructing the final protocol envelope.
-    let bytes = encode_json(value)?;
+    let bytes = invocation.encode_output(value)?;
     // Small scalars take far more memory as a Value tree than as JSON text.
     // Charge the whole tree before decoding any of it.
     invocation.retain_response_bytes(
@@ -785,14 +905,14 @@ impl KasumiMcp {
                 let args: GetArguments = arguments(args)?;
                 validate_name(&args.collection)?;
                 validate_name(&args.id)?;
-                output(
-                    invocation,
-                    &db.get(&context, &args.collection, &args.id).await?,
-                )
+                let result = invocation
+                    .retain_output(db.get(&context, &args.collection, &args.id).await?)?;
+                output(invocation, result.as_ref())
             }
             "kasumi_query" => {
                 let args: QueryRequest = arguments(args)?;
-                output(invocation, &db.query(&context, args).await?)
+                let result = invocation.retain_output(db.query(&context, args).await?)?;
+                output(invocation, result.as_ref())
             }
             "kasumi_mutate" => {
                 let args: MutationBatch = arguments(args)?;

@@ -3,15 +3,15 @@
 use crate::{
     BasicNode,
     command::sha256,
-    control::{self, AppliedCursor, FirstAppliedMembership, LogHeader, META, load},
+    control::{self, AppliedCursor, CustodyRead, FirstAppliedMembership, LogHeader, META, load},
 };
 use anyhow::{Context, Result, ensure};
 use kasumi_store::{CustodyStore, TenantStorageSet, WriteOp};
 use kasumi_types::{SignedTargetInitializationAssociation, TargetInitialMembershipPosition};
 use openraft::SnapshotMeta;
 use serde::{Deserialize, Serialize};
-const STATE: &[u8] = b"initialization_association_state";
-const ANCHOR: &[u8] = b"initialization_association_anchor";
+pub(crate) const STATE: &[u8] = b"initialization_association_state";
+pub(crate) const ANCHOR: &[u8] = b"initialization_association_anchor";
 pub(crate) const MAX_BYTES: usize = 256 << 10;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -62,14 +62,14 @@ impl RetainedAssociation {
         cause.validate()?;
         Ok(())
     }
-    fn check_installation(&self, custody: &CustodyStore) -> Result<()> {
-        let prebind: control::TargetFirstMembershipPrebind = load(
-            custody.store(),
-            control::TARGET_PREBIND_NAMESPACE,
-            control::TARGET_PREBIND_KEY,
-        )?
-        .context("committed initialization cause lacks installed original Start prebind")?;
-        prebind.validate_custody(custody)?;
+    fn check_installation_at(&self, reads: &mut impl CustodyRead) -> Result<()> {
+        let prebind: control::TargetFirstMembershipPrebind = reads
+            .load(
+                control::TARGET_PREBIND_NAMESPACE,
+                control::TARGET_PREBIND_KEY,
+            )?
+            .context("committed initialization cause lacks installed original Start prebind")?;
+        prebind.validate_custody_at(reads)?;
         let cause = &self.value.signed.association;
         let origin = cause.origin()?;
         let voters = origin
@@ -127,8 +127,15 @@ pub(crate) fn load_state(
     custody: &CustodyStore,
     first: Option<&FirstAppliedMembership>,
 ) -> Result<Option<AssociationState>> {
-    let state: Option<AssociationState> = load(custody.store(), META, STATE)?;
-    let anchor: Option<Option<String>> = load(custody.store(), META, ANCHOR)?;
+    load_state_at(first, &mut custody.store().as_ref())
+}
+
+pub(crate) fn load_state_at(
+    first: Option<&FirstAppliedMembership>,
+    reads: &mut impl CustodyRead,
+) -> Result<Option<AssociationState>> {
+    let state: Option<AssociationState> = reads.load(META, STATE)?;
+    let anchor: Option<Option<String>> = reads.load(META, ANCHOR)?;
     ensure!(
         state.is_some() == first.is_some() && anchor.is_some() == first.is_some(),
         "first membership association state or atomic anchor missing"
@@ -141,7 +148,7 @@ pub(crate) fn load_state(
         match state {
             AssociationState::Committed(record) => {
                 record.validate(first.context("first fact absent")?)?;
-                record.check_installation(custody)?;
+                record.check_installation_at(reads)?;
             }
             AssociationState::Ordinary {} => {
                 ensure!(
@@ -152,8 +159,7 @@ pub(crate) fn load_state(
                         .is_none(),
                     "ordinary state erased original cause"
                 );
-                let prebind: Option<control::TargetFirstMembershipPrebind> = load(
-                    custody.store(),
+                let prebind: Option<control::TargetFirstMembershipPrebind> = reads.load(
                     control::TARGET_PREBIND_NAMESPACE,
                     control::TARGET_PREBIND_KEY,
                 )?;
@@ -170,8 +176,14 @@ fn initial_state(
     custody: &CustodyStore,
     first: &FirstAppliedMembership,
 ) -> Result<AssociationState> {
-    let prebind: Option<control::TargetFirstMembershipPrebind> = load(
-        custody.store(),
+    initial_state_at(first, &mut custody.store().as_ref())
+}
+
+fn initial_state_at(
+    first: &FirstAppliedMembership,
+    reads: &mut impl CustodyRead,
+) -> Result<AssociationState> {
+    let prebind: Option<control::TargetFirstMembershipPrebind> = reads.load(
         control::TARGET_PREBIND_NAMESPACE,
         control::TARGET_PREBIND_KEY,
     )?;
@@ -191,7 +203,7 @@ fn initial_state(
                 header: first.header.clone(),
             };
             record.validate(first)?;
-            record.check_installation(custody)?;
+            record.check_installation_at(reads)?;
             AssociationState::Committed(Box::new(record))
         }
         None => {
@@ -204,11 +216,11 @@ fn initial_state(
     };
     Ok(state)
 }
-pub(crate) fn initial_writes(
-    custody: &CustodyStore,
+pub(crate) fn initial_writes_at(
     first: &FirstAppliedMembership,
+    reads: &mut impl CustodyRead,
 ) -> Result<Vec<WriteOp>> {
-    initial_state(custody, first)?.writes()
+    initial_state_at(first, reads)?.writes()
 }
 /// Validate signed metadata before the first log can be flushed or replicated.
 /// This is admission validation only, never an applied or committed fact.

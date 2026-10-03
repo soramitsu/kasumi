@@ -1,0 +1,5 @@
+Command: python3 scripts/check_dependency_patches.py
+ISOLATED_SOURCE=/tmp/kasumi-source-cohort-validation-v1
+CARGO_TARGET_DIR=/Users/takemiyamakoto/dev/kasumi/target/disk-backed-cache
+dependency patch verification failed: patched input changed without review: /private/tmp/kasumi-source-cohort-validation-v1/vendor/openraft-0.9.25/memstore/src/lib.rs
+Runner: 0.09s; exit=1; matching=1748/1748

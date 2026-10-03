@@ -1,0 +1,39 @@
+Command: cargo test --manifest-path vendor/openraft-0.9.25/openraft/Cargo.toml --locked --offline --features serde,storage-v2 --lib -- storage::capacity::tests source_capacity_refusal_does_not_consume_log_ids actual_internal_noop_refusal --test-threads=1 --nocapture
+ISOLATED_SOURCE=/tmp/kasumi-source-cohort-validation-v1
+CARGO_TARGET_DIR=/Users/takemiyamakoto/dev/kasumi/target/disk-backed-cache
+   Compiling openraft v0.9.25 (/private/tmp/kasumi-source-cohort-validation-v1/vendor/openraft-0.9.25/openraft)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 32.51s
+     Running unittests src/lib.rs (/Users/takemiyamakoto/dev/kasumi/target/disk-backed-cache/debug/deps/openraft-5e17d9bd08c72f35)
+
+running 14 tests
+test engine::handler::leader_handler::append_entries_test::source_capacity_refusal_does_not_consume_log_ids_and_explicit_retry_recovers ... ok
+test raft::bounded_apply_test::actual_internal_noop_refusal_joins_and_closes_without_accepting_noop ... ok
+test storage::capacity::tests::a_reused_slots_retirement_panic_does_not_change_the_previous_obligations_outcome ... 
+thread 'storage::capacity::tests::a_reused_slots_retirement_panic_does_not_change_the_previous_obligations_outcome' (25399497) panicked at openraft/src/storage/capacity/tests.rs:173:9:
+Box<dyn Any>
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+ok
+test storage::capacity::tests::accepted_cancel_and_either_unknown_producer_keep_actual_tokens ... ok
+test storage::capacity::tests::both_original_failures_stay_inspectable_without_retiring_obligation ... ok
+test storage::capacity::tests::concurrent_real_completions_cannot_retire_twice ... ok
+test storage::capacity::tests::explicit_close_returns_same_owner_while_actual_report_is_borrowed ... ok
+test storage::capacity::tests::explicit_funding_close_preserves_payload_in_outer_preowned_shutdown_state ... 
+thread 'storage::capacity::tests::explicit_funding_close_preserves_payload_in_outer_preowned_shutdown_state' (25399504) panicked at openraft/src/storage/capacity/tests.rs:173:9:
+Box<dyn Any>
+ok
+test storage::capacity::tests::known_internal_refusal_closes_slot_and_preserves_original_in_funded_diagnostic ... ok
+test storage::capacity::tests::outer_shutdown_cell_retires_funding_without_its_mutex_and_marks_in_progress ... ok
+test storage::capacity::tests::raw_final_drop_during_existing_unwind_never_invokes_second_funding_callback ... 
+thread 'storage::capacity::tests::raw_final_drop_during_existing_unwind_never_invokes_second_funding_callback' (25399507) panicked at openraft/src/storage/capacity/tests.rs:225:9:
+Box<dyn Any>
+ok
+test storage::capacity::tests::refused_slot_returns_the_exact_unaccepted_owner_and_prepared_cancel_releases ... ok
+test storage::capacity::tests::separate_append_and_flush_success_release_once_in_either_order ... ok
+test storage::capacity::tests::successful_publication_retirement_panic_keeps_actual_payload_not_consumed_token ... 
+thread 'storage::capacity::tests::successful_publication_retirement_panic_keeps_actual_payload_not_consumed_token' (25399510) panicked at openraft/src/storage/capacity/tests.rs:173:9:
+Box<dyn Any>
+ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 228 filtered out; finished in 0.01s
+
+Runner: 32.61s; exit=0; matching=1575/1575

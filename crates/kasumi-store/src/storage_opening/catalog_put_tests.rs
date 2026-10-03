@@ -123,6 +123,7 @@ async fn paired_catalog_rejects_foreign_owner_and_identity_before_registration()
         ID,
         disk(&path, &memory),
         ScratchDisk::fixture(scratch_directory.path(), memory.clone()),
+        crate::test_utils::node_storage_config(),
     )
     .unwrap();
     let foreign_path = directory.path().join("foreign-owner.kv");
@@ -132,6 +133,7 @@ async fn paired_catalog_rejects_foreign_owner_and_identity_before_registration()
         Uuid::from_u128(0x38a5_c9c5_6a88_41f0_a1a3_a723_fe68_4536),
         disk(&foreign_path, &memory),
         ScratchDisk::fixture(foreign_scratch_directory.path(), memory.clone()),
+        crate::test_utils::node_storage_config(),
     )
     .unwrap();
     let custody_name = crate::CustodyStore::catalog_name("catalog-writer");
@@ -204,7 +206,14 @@ async fn production_catalog_save_uses_registered_writer_and_reopens_value() {
     let disk = disk(&path, &memory);
     let scratch_directory = private_tempdir().unwrap();
     let scratch = ScratchDisk::fixture(scratch_directory.path(), memory.clone());
-    let node = NodeStore::create_new(&path, ID, disk.clone(), scratch).unwrap();
+    let node = NodeStore::create_new(
+        &path,
+        ID,
+        disk.clone(),
+        scratch,
+        crate::test_utils::node_storage_config(),
+    )
+    .unwrap();
     let catalog = catalog_for_registered_write();
     let before = memory.snapshot();
     node.save_catalog("catalog-writer", &catalog).unwrap();
@@ -221,7 +230,14 @@ async fn production_catalog_save_uses_registered_writer_and_reopens_value() {
 
     let scratch_directory = private_tempdir().unwrap();
     let scratch = ScratchDisk::fixture(scratch_directory.path(), memory.clone());
-    let reopened = NodeStore::open_existing(&path, ID, disk, scratch).unwrap();
+    let reopened = NodeStore::open_existing(
+        &path,
+        ID,
+        disk,
+        scratch,
+        crate::test_utils::node_storage_config(),
+    )
+    .unwrap();
     assert!(
         reopened
             .catalog("catalog-writer")
@@ -244,7 +260,14 @@ fn clean_catalog_writer_releases_busy_report_on_exact_retirement_retry() {
     let path = directory.path().join("catalog-retirement-retry.kv");
     let memory = TestDiskMemory::new(256 << 20, 4096);
     let disk = disk(&path, &memory);
-    let opening = RegisteredNodeOpening::prepare(&path, ID, disk, NodeOpeningMode::Create).unwrap();
+    let opening = RegisteredNodeOpening::prepare(
+        &path,
+        ID,
+        disk,
+        NodeOpeningMode::Create,
+        crate::test_utils::node_storage_config(),
+    )
+    .unwrap();
     assert_eq!(opening.open(), NodeOpeningPhase::Open);
     let tables = opening.queue_node_tables().unwrap();
     assert_eq!(tables.run(), NodeWriterPhase::Finished);
@@ -286,7 +309,14 @@ fn catalog_terminal_refusal_keeps_exact_child_and_never_replays_commit() {
     let path = directory.path().join("catalog-terminal-refusal.kv");
     let memory = TestDiskMemory::new(256 << 20, 4096);
     let disk = disk(&path, &memory);
-    let opening = RegisteredNodeOpening::prepare(&path, ID, disk, NodeOpeningMode::Create).unwrap();
+    let opening = RegisteredNodeOpening::prepare(
+        &path,
+        ID,
+        disk,
+        NodeOpeningMode::Create,
+        crate::test_utils::node_storage_config(),
+    )
+    .unwrap();
     *UNCERTAIN_CATALOG_DIRECTORY.lock().unwrap() = Some(directory);
     assert_eq!(opening.open(), NodeOpeningPhase::Open);
     let tables = opening.queue_node_tables().unwrap();
@@ -357,7 +387,14 @@ async fn fresh_catalog_writer_aborts_existing_and_orphan_rows_without_replacing_
         let disk = disk(&path, &memory);
         let scratch_directory = private_tempdir().unwrap();
         let scratch = ScratchDisk::fixture(scratch_directory.path(), memory.clone());
-        let node = NodeStore::create_new(&path, ID, disk, scratch).unwrap();
+        let node = NodeStore::create_new(
+            &path,
+            ID,
+            disk,
+            scratch,
+            crate::test_utils::node_storage_config(),
+        )
+        .unwrap();
         let catalog = catalog_for_registered_write();
         let hash = crate::tenant_hash(&catalog.tenant);
         if kind == "existing" {
@@ -431,7 +468,14 @@ async fn paired_catalog_terminal_refusal_retains_one_child_and_original_outcome(
     let disk = disk(&path, &memory);
     let scratch_directory = private_tempdir().unwrap();
     let scratch = ScratchDisk::fixture(scratch_directory.path(), memory.clone());
-    let node = NodeStore::create_new(&path, ID, disk, scratch).unwrap();
+    let node = NodeStore::create_new(
+        &path,
+        ID,
+        disk,
+        scratch,
+        crate::test_utils::node_storage_config(),
+    )
+    .unwrap();
     *UNCERTAIN_PAIR_DIRECTORY.lock().unwrap() = Some(directory);
     let application_name = "catalog-writer".to_owned();
     let custody_name = crate::CustodyStore::catalog_name(&application_name);
@@ -644,8 +688,14 @@ fn catalog_capacity_child() {
     let path = PathBuf::from(path);
     let memory = TestDiskMemory::new(256 << 20, 4096);
     let disk = quota_disk(&path, &memory);
-    let opening =
-        RegisteredNodeOpening::prepare(&path, ID, disk.clone(), NodeOpeningMode::Create).unwrap();
+    let opening = RegisteredNodeOpening::prepare(
+        &path,
+        ID,
+        disk.clone(),
+        NodeOpeningMode::Create,
+        crate::test_utils::node_storage_config(),
+    )
+    .unwrap();
     assert_eq!(opening.open(), NodeOpeningPhase::Open);
     let tables = opening.queue_node_tables().unwrap();
     assert_eq!(tables.run(), NodeWriterPhase::Finished);
@@ -657,7 +707,16 @@ fn catalog_capacity_child() {
             write_plan::AdmittedCatalogPut::prepare(&catalog.tenant, catalog, provider.clone())
                 .unwrap();
         let writer = opening.queue_catalog_put(plan).unwrap();
-        assert_eq!(writer.run(), NodeWriterPhase::Finished);
+        assert_eq!(writer.run(), NodeWriterPhase::Finished, "{}", {
+            let report = writer.report();
+            crate::test_utils::native_write_diagnostic(
+                report.phase(),
+                report.begin(),
+                report.body(),
+                report.outer(),
+                report.terminal(),
+            )
+        });
         writer
     };
     let writer = put(&catalog_for_registered_write());
@@ -708,9 +767,14 @@ fn installed_catalog_capacity_denial_keeps_opening_open_and_reopens_old_catalog(
     run_capacity_child(&path);
 
     let memory = TestDiskMemory::new(256 << 20, 4096);
-    let opening =
-        RegisteredNodeOpening::prepare(&path, ID, disk(&path, &memory), NodeOpeningMode::Existing)
-            .unwrap();
+    let opening = RegisteredNodeOpening::prepare(
+        &path,
+        ID,
+        disk(&path, &memory),
+        NodeOpeningMode::Existing,
+        crate::test_utils::node_storage_config(),
+    )
+    .unwrap();
     assert_eq!(opening.open(), NodeOpeningPhase::Open);
     {
         let read = opening.begin_store_read().unwrap();

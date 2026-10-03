@@ -150,7 +150,7 @@ async fn one_epoch_expires_leases_and_credentials_but_preserves_permanent_comman
     );
     let first = database.query(&original, query()).await.unwrap();
     let mut next = query();
-    next.cursor = Some(first.cursor.unwrap());
+    next.cursor = Some(first.cursor.as_ref().unwrap().clone());
     let lease = database
         .open_snapshot_lease(&original, OpenSnapshotLease { ttl_ms: 60_000 })
         .await

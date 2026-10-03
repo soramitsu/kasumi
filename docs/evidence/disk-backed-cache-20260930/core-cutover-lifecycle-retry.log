@@ -1,0 +1,50 @@
+   Compiling kasumi-kv v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-kv)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 7.08s
+     Running unittests src/lib.rs (target/disk-backed-cache/debug/deps/kasumi_kv-e84af9029e220a8f)
+
+running 13 tests
+test core::tests::constructor_retains_uncertain_close_and_does_not_repeat_it ... ok
+test core::tests::constructor_retries_the_same_owner_after_proven_no_close_entry ... ok
+test core::tests::close_waits_for_snapshot_clones_and_retries_only_not_entered ... ok
+test core::tests::closed_snapshot_result_does_not_reenter_a_poisoned_state ... ok
+test core::tests::poisoned_state_fences_once_and_still_drains_exact_backend ... ok
+test core::tests::snapshot_limit_denial_does_not_leak_close_count_or_fence ... ok
+test core::tests::cache_hit_still_obeys_owner_and_read_bound ... ok
+test core::tests::strict_create_rejects_existing_group_and_open_requires_exact_incarnation ... ok
+test core::tests::snapshot_belongs_to_exact_owner_even_with_same_group_id ... ok
+test core::tests::lower_bound_iteration_is_not_a_prefix_scan ... ok
+test core::tests::public_output_fits_one_buffer_and_retains_its_charge_after_native_close ... ok
+test core::tests::snapshot_root_survives_overwrite_delete_and_later_table_birth ... ok
+test core::tests::preparatory_segment_roll_does_not_report_a_fabricated_commit ... ok
+
+successes:
+
+---- core::tests::closed_snapshot_result_does_not_reenter_a_poisoned_state stdout ----
+
+thread 'core::tests::closed_snapshot_result_does_not_reenter_a_poisoned_state' (2294434) panicked at crates/kasumi-kv/src/core_tests.rs:465:9:
+interrupted state holder
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- core::tests::poisoned_state_fences_once_and_still_drains_exact_backend stdout ----
+
+thread 'core::tests::poisoned_state_fences_once_and_still_drains_exact_backend' (2294438) panicked at crates/kasumi-kv/src/core_tests.rs:236:9:
+state holder
+
+
+successes:
+    core::tests::cache_hit_still_obeys_owner_and_read_bound
+    core::tests::close_waits_for_snapshot_clones_and_retries_only_not_entered
+    core::tests::closed_snapshot_result_does_not_reenter_a_poisoned_state
+    core::tests::constructor_retains_uncertain_close_and_does_not_repeat_it
+    core::tests::constructor_retries_the_same_owner_after_proven_no_close_entry
+    core::tests::lower_bound_iteration_is_not_a_prefix_scan
+    core::tests::poisoned_state_fences_once_and_still_drains_exact_backend
+    core::tests::preparatory_segment_roll_does_not_report_a_fabricated_commit
+    core::tests::public_output_fits_one_buffer_and_retains_its_charge_after_native_close
+    core::tests::snapshot_belongs_to_exact_owner_even_with_same_group_id
+    core::tests::snapshot_limit_denial_does_not_leak_close_count_or_fence
+    core::tests::snapshot_root_survives_overwrite_delete_and_later_table_birth
+    core::tests::strict_create_rejects_existing_group_and_open_requires_exact_incarnation
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 359 filtered out; finished in 0.51s
+

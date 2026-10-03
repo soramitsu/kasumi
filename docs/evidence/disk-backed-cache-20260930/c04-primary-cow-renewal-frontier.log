@@ -1,0 +1,130 @@
+Command: cargo test --locked --offline --config profile.test.package.kasumi-kv.opt-level=3 --config profile.test.package.sha2.opt-level=3 -p kasumi-engine --all-features --lib -- --nocapture application_sources::tests::primary_stage_tests:: application_sources::tests::primary_read_tests:: state::accepted_apply::tests:: state::mutation_apply::tests::
+CARGO_TARGET_DIR=target/disk-backed-cache
+warning: variant `Mutation` is never constructed
+  --> crates/kasumi-engine/src/security_audit_jobs.rs:26:5
+   |
+24 | enum JobEffect {
+   |      --------- variant in this enum
+25 |     Read,
+26 |     Mutation(&'static str),
+   |     ^^^^^^^^
+   |
+   = note: `JobEffect` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: struct `ReadPause` is never constructed
+  --> crates/kasumi-engine/src/security_audit_jobs.rs:57:19
+   |
+57 | pub(super) struct ReadPause {
+   |                   ^^^^^^^^^
+
+warning: method `run_mutation` is never used
+   --> crates/kasumi-engine/src/security_audit_jobs.rs:120:25
+    |
+ 62 | impl SecurityAudit {
+    | ------------------ method in this implementation
+...
+120 |     pub(super) async fn run_mutation<T, F, R>(&self, component: &'static str, run: R) -> Result<T>
+    |                         ^^^^^^^^^^^^
+
+warning: `kasumi-engine` (lib) generated 3 warnings
+   Compiling kasumi-engine v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-engine)
+warning: field `panic` is never read
+  --> crates/kasumi-engine/src/security_audit_jobs.rs:52:9
+   |
+48 | pub(super) struct RecordFault {
+   |                   ----------- field in this struct
+...
+52 |     pub panic: bool,
+   |         ^^^^^
+
+warning: `kasumi-engine` (lib test) generated 4 warnings (3 duplicates)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 32.41s
+     Running unittests src/lib.rs (target/disk-backed-cache/debug/deps/kasumi_engine-b15d1192089511a8)
+
+running 66 tests
+test application_sources::tests::primary_read_tests::primary_catalog_entry_is_fixed_canonical_and_context_explicit ... ok
+test application_sources::tests::primary_stage_tests::bulk_collections::primary_bulk_actual_frontier_allocation_stays_charged_through_dealloc ... ok
+test application_sources::tests::primary_stage_tests::bulk_collections::primary_bulk_frontier_denial_precedes_backing_allocation_or_source_visit ... ok
+
+thread 'application_sources::tests::primary_stage_tests::bulk_collections::primary_bulk_callback_error_survives_later_source_panic' (16446520) panicked at crates/kasumi-engine/src/primary_stage_bulk_tests.rs:143:13:
+Box<dyn Any>
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test application_sources::tests::primary_stage_tests::bulk_collections::primary_bulk_empty_stream_has_definition_manifest_and_no_empty_page ... ok
+test application_sources::tests::primary_stage_tests::bulk_collections::primary_bulk_callback_error_survives_later_source_panic ... ok
+test application_sources::tests::primary_read_tests::selected_primary_actual_decode_denial_retains_complete_wire_without_lending ... ok
+test application_sources::tests::primary_read_tests::selected_primary_actual_node_denial_precedes_lending_and_keeps_error_credit ... ok
+test application_sources::tests::primary_read_tests::selected_primary_failure_retains_original_reader_and_actual_workspace_until_drop ... ok
+test application_sources::tests::primary_read_tests::selected_primary_preserves_restored_zero_document_versions ... ok
+
+thread 'application_sources::tests::primary_read_tests::selected_primary_panic_payload_survives_as_original_failure_until_drop' (16446516) panicked at crates/kasumi-engine/src/primary_read_tests.rs:831:13:
+Box<dyn Any>
+test application_sources::tests::primary_read_tests::selected_primary_page_corruption_and_foreign_registry_are_rejected ... ok
+test application_sources::tests::primary_read_tests::selected_primary_callback_access_change_is_rechecked_before_success ... ok
+test application_sources::tests::primary_stage_tests::catalogs::primary_catalog_member_codec_is_fixed_and_contextual ... ok
+test application_sources::tests::primary_read_tests::selected_primary_panic_payload_survives_as_original_failure_until_drop ... ok
+test application_sources::tests::primary_read_tests::selected_primary_empty_tree_still_rechecks_current_storage_access ... ok
+test application_sources::tests::primary_read_tests::selected_primary_rejects_catalog_manifest_and_selector_substitution ... ok
+test application_sources::tests::primary_read_tests::selected_primary_encrypted_branch_live_archive_absence_and_old_pin ... ok
+test application_sources::tests::primary_read_tests::selected_primary_overflow_corruption_and_missing_never_lend_partial_dto ... ok
+
+thread 'application_sources::tests::primary_stage_tests::bulk_collections::primary_bulk_swallowed_callback_panic_permanently_stops_writes' (16447198) panicked at crates/kasumi-engine/src/primary_stage_bulk_tests.rs:690:17:
+Box<dyn Any>
+test application_sources::tests::primary_stage_tests::bulk_collections::primary_bulk_swallowed_callback_panic_permanently_stops_writes ... ok
+test application_sources::tests::primary_stage_tests::bulk_collections::primary_bulk_swallowed_callback_stays_closed_and_keeps_independent_source_error ... ok
+test application_sources::tests::primary_stage_tests::bulk_collections::primary_bulk_cancel_inside_large_dto_preserves_original_and_resumes_abort ... ok
+test application_sources::tests::primary_stage_tests::bulk_collections::primary_bulk_rejects_order_identity_and_epoch_without_final_manifest ... ok
+test application_sources::tests::primary_stage_tests::catalogs::primary_catalog_partial_verifier_keeps_its_exact_pin ... ok
+test application_sources::tests::primary_stage_tests::catalogs::primary_catalog_encrypted_finish_and_separate_abort_units_preserve_old_pin ... ok
+test application_sources::tests::primary_stage_tests::fixed_objects::primary_stage_fixed_objects_are_journaled_and_old_pin_survives_bounded_abort ... ok
+test application_sources::tests::primary_stage_tests::fixed_objects::primary_stage_fixed_page_buffer_returns_for_following_multichunk_dto ... ok
+test application_sources::tests::primary_stage_tests::fixed_objects::primary_stage_fixed_page_framing_refuses_even_with_matching_inventory_digest ... ok
+test application_sources::tests::primary_stage_tests::catalogs::primary_catalog_nonempty_totals_and_mapping_cow_preserve_membership ... ok
+test application_sources::tests::primary_stage_tests::catalogs::primary_catalog_real_admission_denial_precedes_append_effects ... ok
+test application_sources::tests::primary_stage_tests::primary_stage_archive_and_definition_keep_exact_dto_and_kind_identity ... ok
+test application_sources::tests::primary_stage_tests::primary_stage_native_bound_failure_keeps_original_diagnostic_through_positive_close ... ok
+test state::accepted_apply::tests::accepted_apply_definition_change_retains_actual_old_and_new_owners ... ok
+test application_sources::tests::primary_stage_tests::primary_stage_nonselection_readers_and_denied_begin_do_not_publish_or_write ... ok
+test state::accepted_apply::tests::accepted_apply_archive_placement_keeps_delta_without_advancing_data_epoch ... ok
+test application_sources::tests::primary_stage_tests::fixed_objects::primary_stage_fixed_shape_refusal_creates_no_inventory_or_counter_change ... ok
+test application_sources::tests::primary_stage_tests::fixed_objects::primary_stage_fixed_impossible_inventory_progress_refuses_without_erasing_custody ... ok
+test state::accepted_apply::tests::accepted_apply_exact_engine_and_position_required_and_failure_releases_guard ... ok
+test state::accepted_apply::tests::accepted_apply_rejection_and_replay_discard_unaccepted_record_delta ... ok
+test application_sources::tests::primary_stage_tests::primary_stage_partial_attempt_resumes_after_actual_encrypted_reopen ... ok
+test state::accepted_apply::tests::accepted_apply_retains_actual_delta_allocation_and_guard_through_publication ... ok
+test application_sources::tests::primary_stage_tests::primary_stage_partial_high_water_and_abort_resume_are_atomic ... ok
+test state::mutation_apply::tests::captured_index_corruption_is_outer_before_mutation_receipt_or_text_publication ... ok
+test application_sources::tests::primary_stage_tests::primary_stage_rejects_payload_corruption_before_lending_and_keeps_old_pin_exact ... ok
+test state::mutation_apply::tests::command_publication_keeps_candidate_private_until_commit ... ok
+test state::mutation_apply::tests::captured_index_corruption_leaves_staged_terminal_unselected_but_conflict_is_durable ... ok
+test state::mutation_apply::tests::deterministic_rejection_waits_for_publication ... ok
+test state::mutation_apply::tests::admitted_failure_survives_byte_exhaustion_expansion_and_snapshot_replay ... ok
+test state::mutation_apply::tests::failed_publication_keeps_staged_receipt_hidden_until_exact_retry ... ok
+test state::mutation_apply::tests::metadata_publication_covers_forward_and_replayed_positions ... ok
+test state::mutation_apply::tests::revision_only_audit_exhaustion_waits_for_publication ... ok
+test state::mutation_apply::tests::verified_point_history_crosses_former_count_limit_before_a_real_new_mutation ... ignored, explicit permanent-receipt capacity cohort; streams 100,000 encrypted point rows
+test state::accepted_apply::tests::accepted_apply_missing_delta_and_scope_substitution_fail_before_publication ... ok
+test state::mutation_apply::tests::terminal_reservation_covers_error_codes_escaped_versions_and_counter_widths ... ok
+test state::mutation_apply::tests::hot_audit_exhaustion_cannot_rewrite_original_or_admit_a_new_identity ... ok
+test state::mutation_apply::tests::invalid_index_inputs_remain_deterministic_rejections_before_text_materialization ... ok
+test state::mutation_apply::tests::text_materialization_failure_is_outer_and_does_not_select_a_receipt ... ok
+test state::mutation_apply::tests::snapshot_quota_rejection_preserves_text_writer_and_original_receipts ... ok
+test state::mutation_apply::tests::zero_version_source_mutation_preserves_receipt_and_captured_text_reader ... ok
+test application_sources::tests::primary_stage_tests::catalogs::primary_catalog_empty_zero_work_and_first_finish_bind_actual_records ... ok
+test state::mutation_apply::tests::recovery_seal_two_writes_three_reads_are_atomic_and_replay_original_receipts ... ok
+test application_sources::tests::primary_stage_tests::bulk_collections::primary_bulk_real_frontier_three_levels_recursive_spill_and_final_collapse has been running for over 60 seconds
+test application_sources::tests::primary_stage_tests::catalogs::primary_catalog_abort_missing_or_corrupt_owned_rows_retains_progress ... ok
+test application_sources::tests::primary_stage_tests::bulk_collections::primary_bulk_real_frontier_three_levels_recursive_spill_and_final_collapse ... ok
+test application_sources::tests::primary_stage_tests::fixed_objects::primary_stage_fixed_missing_or_corrupt_objects_refuse_before_abort_progress ... ok
+test application_sources::tests::primary_stage_tests::bulk_collections::primary_bulk_two_level_mixed_stream_zero_version_and_old_pin has been running for over 60 seconds
+test application_sources::tests::primary_stage_tests::catalogs::primary_catalog_append_refusals_preserve_durable_membership has been running for over 60 seconds
+test application_sources::tests::primary_stage_tests::catalogs::primary_catalog_verifier_refuses_mutations_and_pin_replacement has been running for over 60 seconds
+test application_sources::tests::primary_stage_tests::primary_stage_large_encrypted_object_and_old_selected_pin_survive_current_abort has been running for over 60 seconds
+test application_sources::tests::primary_stage_tests::bulk_collections::primary_bulk_two_level_mixed_stream_zero_version_and_old_pin ... ok
+test application_sources::tests::primary_stage_tests::catalogs::primary_catalog_append_refusals_preserve_durable_membership ... ok
+test application_sources::tests::primary_stage_tests::catalogs::primary_catalog_verifier_refuses_mutations_and_pin_replacement ... ok
+test application_sources::tests::primary_stage_tests::primary_stage_large_encrypted_object_and_old_selected_pin_survive_current_abort ... ok
+
+test result: ok. 65 passed; 0 failed; 1 ignored; 0 measured; 495 filtered out; finished in 130.69s
+
+Runner: 163.23s; exit=0; matching=821/821

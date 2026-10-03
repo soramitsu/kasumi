@@ -1,0 +1,24 @@
+{
+  "runner_pid": 89226,
+  "trace": "KASUMI_TEST_RESTORE_TRACE=1",
+  "sample_seconds": 3,
+  "sample_interval_ms": 10,
+  "decode_seen_elapsed_seconds": 59.84857220802223,
+  "sample_attempted": true,
+  "test_matches": [
+    [
+      89229,
+      "/Users/takemiyamakoto/dev/kasumi/target/disk-backed-cache/debug/deps/kasumi_engine-44db468831cfc59f"
+    ]
+  ],
+  "load_average": [
+    29.98779296875,
+    80.529296875,
+    115.0068359375
+  ],
+  "sampled_pid": 89229,
+  "sample_exit_code": 0,
+  "sample_sha256": "061b138843673778d1faeeaeaf26b88780a825ef35ad916feb75f4ce7a433f3a",
+  "runner_exit_code": 101,
+  "elapsed_seconds": 119.02688683301676
+}

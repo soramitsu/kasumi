@@ -1,0 +1,67 @@
+   Compiling kasumi-store v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-store)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 25.90s
+     Running unittests src/lib.rs (target/disk-backed-cache/debug/deps/kasumi_store-9e76b1ecb60de376)
+
+running 9 tests
+test cache_warmer::tests::automatic_warmer_rejects_a_runtime_lost_before_handoff ... ok
+test cache_warmer::tests::automatic_warmer_stays_dormant_until_acknowledged_activation ... ok
+test cache_warmer::tests::automatic_warmer_parks_cache_limited_pass_and_resumes_after_budget_growth ... ok
+test cache_warmer::tests::automatic_warmer_fills_cold_reopen_without_foreground_reads ... FAILED
+test cache_warmer::tests::automatic_warmer_start_denial_spawns_nothing_and_can_retry ... FAILED
+test cache_warmer::tests::automatic_warmer_retries_blocked_item_after_shared_pressure_releases ... FAILED
+test cache_warmer::tests::automatic_warmer_shutdown_cancellation_retains_blocked_child_and_charge ... FAILED
+test cache_warmer::tests::automatic_warmer_recovers_pressure_released_inside_the_denied_step ... FAILED
+test cache_warmer::tests::automatic_warmer_retains_original_native_failure_through_shutdown ... FAILED
+
+successes:
+
+successes:
+    cache_warmer::tests::automatic_warmer_parks_cache_limited_pass_and_resumes_after_budget_growth
+    cache_warmer::tests::automatic_warmer_rejects_a_runtime_lost_before_handoff
+    cache_warmer::tests::automatic_warmer_stays_dormant_until_acknowledged_activation
+
+failures:
+
+---- cache_warmer::tests::automatic_warmer_fills_cold_reopen_without_foreground_reads stdout ----
+
+thread 'cache_warmer::tests::automatic_warmer_fills_cold_reopen_without_foreground_reads' (3218522) panicked at crates/kasumi-store/src/cache_warmer_tests.rs:218:10:
+cache worker did not reach the expected state: Elapsed(())
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- cache_warmer::tests::automatic_warmer_start_denial_spawns_nothing_and_can_retry stdout ----
+
+thread 'cache_warmer::tests::automatic_warmer_start_denial_spawns_nothing_and_can_retry' (3218529) panicked at crates/kasumi-store/src/cache_warmer_tests.rs:218:10:
+cache worker did not reach the expected state: Elapsed(())
+
+---- cache_warmer::tests::automatic_warmer_retries_blocked_item_after_shared_pressure_releases stdout ----
+
+thread 'cache_warmer::tests::automatic_warmer_retries_blocked_item_after_shared_pressure_releases' (3218527) panicked at crates/kasumi-store/src/cache_warmer_tests.rs:218:10:
+cache worker did not reach the expected state: Elapsed(())
+
+---- cache_warmer::tests::automatic_warmer_shutdown_cancellation_retains_blocked_child_and_charge stdout ----
+
+thread 'cache_warmer::tests::automatic_warmer_shutdown_cancellation_retains_blocked_child_and_charge' (3218528) panicked at crates/kasumi-store/src/cache_warmer_tests.rs:427:6:
+called `Result::unwrap()` on an `Err` value: Elapsed(())
+
+---- cache_warmer::tests::automatic_warmer_recovers_pressure_released_inside_the_denied_step stdout ----
+
+thread 'cache_warmer::tests::automatic_warmer_recovers_pressure_released_inside_the_denied_step' (3218524) panicked at crates/kasumi-store/src/cache_warmer_tests.rs:218:10:
+cache worker did not reach the expected state: Elapsed(())
+
+---- cache_warmer::tests::automatic_warmer_retains_original_native_failure_through_shutdown stdout ----
+
+thread 'cache_warmer::tests::automatic_warmer_retains_original_native_failure_through_shutdown' (3218526) panicked at crates/kasumi-store/src/cache_warmer_tests.rs:218:10:
+cache worker did not reach the expected state: Elapsed(())
+
+
+failures:
+    cache_warmer::tests::automatic_warmer_fills_cold_reopen_without_foreground_reads
+    cache_warmer::tests::automatic_warmer_recovers_pressure_released_inside_the_denied_step
+    cache_warmer::tests::automatic_warmer_retains_original_native_failure_through_shutdown
+    cache_warmer::tests::automatic_warmer_retries_blocked_item_after_shared_pressure_releases
+    cache_warmer::tests::automatic_warmer_shutdown_cancellation_retains_blocked_child_and_charge
+    cache_warmer::tests::automatic_warmer_start_denial_spawns_nothing_and_can_retry
+
+test result: FAILED. 3 passed; 6 failed; 0 ignored; 0 measured; 595 filtered out; finished in 10.94s
+
+error: test failed, to rerun pass `-p kasumi-store --lib`

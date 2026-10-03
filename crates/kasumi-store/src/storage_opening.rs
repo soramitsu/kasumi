@@ -4,8 +4,8 @@
 //! registered ownership through opening, transactions, and close.
 use crate::{
     NodeDisk, NodeDiskMemoryAdmission, StorageCensusDisposition, StorageOwnerId,
-    node_file::{FailedFileTransfer, FailedFileWitness, NodeFile},
-    private_files::FileIdentity,
+    node_file::segment_group::{GroupFailedWitness, NodeSegmentGroup},
+    private_files::{DirectoryIdentity, FileIdentity},
     storage_census::{StorageOwnerKind, StoragePayload, StorageRegistration},
 };
 use kasumi_kv::{
@@ -28,18 +28,106 @@ use uuid::Uuid;
 // Fund the private engine proxy before register invokes any allocation-only
 // constructor. The public plan includes its Arc header and payload alignment;
 // disk_memory adds the same existing allocator allowance used by other owners.
-fn opening_backing_bytes(path: &Path) -> io::Result<u64> {
+fn opening_backing_bytes(path: &Path, config: NodeStorageConfig) -> io::Result<u64> {
     let layout = kasumi_kv::Builder::retained_opening_allocation_layout()
         .map_err(|_| io::ErrorKind::InvalidInput)?;
     let allocation = crate::disk_memory::allocation::<u8>(
         u64::try_from(layout.size()).map_err(|_| io::ErrorKind::InvalidInput)?,
     )?;
-    crate::disk_memory::add(NodeFile::prepared_backing_bytes(path)?, allocation)
+    crate::disk_memory::add(
+        NodeSegmentGroup::prepared_backing_bytes(path, config.cached_files)?,
+        crate::disk_memory::add(
+            allocation,
+            crate::disk_memory::allocation::<Arc<NodeSegmentGroup>>(1)?,
+        )?,
+    )
+}
+
+/// Explicit per-database shares selected by the installed memory owner.
+/// Cache bytes include retained output guards and metadata; cached files bound
+/// data descriptors independently of the group's permanently owned root.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(from = "NodeStorageConfigWire", into = "NodeStorageConfigWire")]
+pub struct NodeStorageConfig {
+    pub cache: kasumi_kv::CacheConfig,
+    pub cached_files: usize,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NodeStorageConfigWire {
+    byte_limit: u64,
+    cached_files: usize,
+}
+impl From<NodeStorageConfigWire> for NodeStorageConfig {
+    fn from(wire: NodeStorageConfigWire) -> Self {
+        Self {
+            cache: kasumi_kv::CacheConfig {
+                byte_limit: wire.byte_limit,
+            },
+            cached_files: wire.cached_files,
+        }
+    }
+}
+impl From<NodeStorageConfig> for NodeStorageConfigWire {
+    fn from(config: NodeStorageConfig) -> Self {
+        Self {
+            byte_limit: config.cache.byte_limit,
+            cached_files: config.cached_files,
+        }
+    }
+}
+impl NodeStorageConfig {
+    pub const fn new(byte_limit: u64, cached_files: usize) -> Self {
+        Self {
+            cache: kasumi_kv::CacheConfig { byte_limit },
+            cached_files,
+        }
+    }
+
+    pub fn validate_within(&self, installed: Self) -> io::Result<()> {
+        self.validate()?;
+        installed.validate()?;
+        if self.cache.byte_limit > installed.cache.byte_limit
+            || self.cached_files > installed.cached_files
+        {
+            return Err(io::ErrorKind::InvalidInput.into());
+        }
+        Ok(())
+    }
+
+    pub fn validate(&self) -> io::Result<()> {
+        if self.cached_files == 0
+            || self.cached_files > crate::node_file::segment_group::MAX_CACHED_FILES
+        {
+            return Err(io::ErrorKind::InvalidInput.into());
+        }
+        Ok(())
+    }
+}
+
+/// Exact physical identities of one installed group and its root file.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NodeGroupIdentity {
+    pub directory: DirectoryIdentity,
+    pub root: FileIdentity,
+}
+
+impl NodeGroupIdentity {
+    /// A physical observation, not ownership authority. Opening and cleanup
+    /// must still verify the acquired installed descriptors before effects.
+    pub fn read(path: &Path) -> anyhow::Result<Self> {
+        Ok(Self {
+            directory: crate::private_files::directory_identity(path)?,
+            root: crate::private_files::file_identity(&path.join(kasumi_kv::ROOT_FILE_NAME))?,
+        })
+    }
 }
 
 pub enum NodeOpeningMode {
     Create,
-    OwnedEmpty(FileIdentity),
+    OwnedEmpty(NodeGroupIdentity),
     Existing,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -83,11 +171,12 @@ impl<E> Observation<E> {
 }
 struct OpeningState {
     mode: NodeOpeningMode,
-    file: Arc<NodeFile>,
+    file: Arc<NodeSegmentGroup>,
     engine: RetainedDatabaseOpening,
     phase: NodeOpeningPhase,
     // The first accepted table request owns the only create publication proof.
-    // A failed registration may release its reservation before any request exists.
+    // A failed registration may release its reservation before any request exists,
+    // and a settled capacity denial releases it after that request published nothing.
     tables_reserved: bool,
     tables_request: Option<StorageOwnerId>,
     existing_tables_verified: bool,
@@ -95,8 +184,8 @@ struct OpeningState {
     acquisition: Observation<anyhow::Error>,
     opening_outer: Observation<std::convert::Infallible>,
     outcomes_released: bool,
-    failed_transfer: Option<FailedFileTransfer>,
-    pending_transfer: Option<FailedFileWitness>,
+    failed_transferred: bool,
+    pending_transfer: Option<GroupFailedWitness>,
     #[cfg(test)]
     after_failed_disposal: Option<Box<dyn FnOnce() + Send>>,
     #[cfg(test)]
@@ -145,7 +234,7 @@ fn settled_capacity_denial<E>(
 }
 impl OpeningState {
     fn transfer_failed(&mut self) -> FailedOpeningRecovery {
-        if self.failed_transfer.is_some() {
+        if self.failed_transferred {
             return FailedOpeningRecovery::AwaitingDiskCensus;
         }
         if self.engine.report().settlement() != DatabaseOpenSettlement::FailedDisposed
@@ -158,17 +247,18 @@ impl OpeningState {
         };
         self.failed_recovery = Observation::Entered;
         match catch_unwind(AssertUnwindSafe(|| self.file.transfer_failed(witness))) {
-            Ok(Ok(Some(transfer))) => {
-                self.failed_transfer = Some(transfer);
+            Ok(Ok(true)) => {
+                self.failed_transferred = true;
                 self.pending_transfer = None;
                 self.failed_recovery = Observation::Returned(Ok(()));
                 self.outcomes_released = true;
                 FailedOpeningRecovery::AwaitingDiskCensus
             }
-            Ok(Ok(None)) => {
-                // Typed pre-effect contention enters no transfer operation and
-                // produces no new original failure. Keep the exact prior ack;
-                // a later nonblocking attempt never repeats engine disposal.
+            Ok(Ok(false)) => {
+                // Contention produces no new original failure. Earlier group
+                // members may already have transferred; keep their receipts
+                // and the exact prior ack for only the remaining owners. A
+                // later nonblocking attempt never repeats engine disposal.
                 self.failed_recovery = Observation::NotEntered;
                 FailedOpeningRecovery::PendingTransfer
             }
@@ -200,6 +290,8 @@ impl OpeningState {
     }
 }
 struct DatabaseOwner {
+    provider: Arc<dyn NodeDiskMemoryAdmission>,
+    census_id: std::sync::OnceLock<StorageOwnerId>,
     stopped: AtomicBool,
     serial: Mutex<()>,
     state: Mutex<OpeningState>,
@@ -247,7 +339,7 @@ impl DatabaseOwner {
             let _ = state.transfer_failed();
         }
         let settlement = state.engine.report().settlement();
-        if state.failed_transfer.is_none()
+        if !state.failed_transferred
             && !matches!(
                 settlement,
                 DatabaseOpenSettlement::Closed
@@ -267,6 +359,9 @@ impl StoragePayload for DatabaseOwner {
     const KIND: StorageOwnerKind = StorageOwnerKind::Database;
     fn drive(&self) -> bool {
         self.stopped.store(true, Ordering::Release);
+        if let Some(id) = self.census_id.get().copied() {
+            reads::drain_source_owners(&self.provider, id);
+        }
         let Some(mut state) = self.state.try_lock() else {
             return false;
         };
@@ -276,11 +371,11 @@ impl StoragePayload for DatabaseOwner {
         if observed_failure(state.ready_publication.borrow()) {
             return false;
         }
-        if let Some(transfer) = &state.failed_transfer {
+        if state.failed_transferred {
             return settlement == DatabaseOpenSettlement::FailedDisposed
                 && state.failed_recovery.success()
                 && state.outcomes_released
-                && state.file.disk().accepted_failure_transfer(transfer);
+                && state.file.failed_transfer_accepted();
         }
         if matches!(
             settlement,
@@ -313,25 +408,31 @@ impl RegisteredNodeOpening {
         id: Uuid,
         disk: Arc<NodeDisk>,
         mode: NodeOpeningMode,
+        config: NodeStorageConfig,
     ) -> io::Result<Self> {
         if id.is_nil() {
             return Err(io::ErrorKind::InvalidInput.into());
         }
+        config.validate_within(disk.native_storage_config())?;
         let provider = disk.memory().clone();
-        let known_backing = opening_backing_bytes(path)?;
+        let known_backing = opening_backing_bytes(path, config)?;
         let registration =
             provider
                 .storage_census()
                 .register(provider.clone(), known_backing, || {
-                    let file = NodeFile::retained_prepared(path, id, disk);
+                    let file =
+                        NodeSegmentGroup::retained_prepared(path, id, disk, config.cached_files);
                     let engine_mode = if matches!(mode, NodeOpeningMode::Existing) {
                         DatabaseOpenMode::Existing
                     } else {
                         DatabaseOpenMode::Create
                     };
-                    let engine = kasumi_kv::Database::builder(file.clone())
-                        .retain_backend(Box::new(file.backend()), engine_mode);
+                    let engine =
+                        kasumi_kv::Database::builder(file.clone(), *id.as_bytes(), config.cache)
+                            .retain_backend(Box::new(file.clone()), engine_mode);
                     DatabaseOwner {
+                        provider: provider.clone(),
+                        census_id: std::sync::OnceLock::new(),
                         stopped: AtomicBool::new(false),
                         serial: Mutex::new(()),
                         state: Mutex::new(OpeningState {
@@ -346,7 +447,7 @@ impl RegisteredNodeOpening {
                             acquisition: Observation::NotEntered,
                             opening_outer: Observation::NotEntered,
                             outcomes_released: false,
-                            failed_transfer: None,
+                            failed_transferred: false,
                             pending_transfer: None,
                             #[cfg(test)]
                             after_failed_disposal: None,
@@ -358,6 +459,7 @@ impl RegisteredNodeOpening {
                         }),
                     }
                 })?;
+        let _ = registration.owner().census_id.set(registration.id());
         Ok(Self { registration })
     }
     pub fn id(&self) -> StorageOwnerId {
@@ -421,6 +523,7 @@ impl RegisteredNodeOpening {
             };
             state.file.disk().memory().clone()
         };
+        reads::drain_source_owners(&provider, self.registration.id());
         Self::drain_released_routine_readers(&provider, self.registration.id());
         let Some(mut state) = owner.state.try_lock() else {
             return Err(io::ErrorKind::WouldBlock.into());
@@ -431,6 +534,7 @@ impl RegisteredNodeOpening {
             // A last error facade can drop while close held the opening lock,
             // after the pre-close pass. Give only this opening's routine readers
             // a post-close pass and retry the existing busy close once.
+            reads::drain_source_owners(&provider, self.registration.id());
             Self::drain_released_routine_readers(&provider, self.registration.id());
             let Some(mut state) = owner.state.try_lock() else {
                 return Err(io::ErrorKind::WouldBlock.into());
@@ -495,6 +599,107 @@ impl RegisteredNodeOpening {
                 .transaction_admission()
         };
         admission.begin_write()
+    }
+
+    pub fn physical_identity(&self) -> anyhow::Result<NodeGroupIdentity> {
+        let owner = self.registration.owner();
+        let state = owner.state.lock();
+        if owner.stopped.load(Ordering::Acquire) || state.phase != NodeOpeningPhase::Open {
+            return Err(io::Error::from(io::ErrorKind::BrokenPipe).into());
+        }
+        state.file.identity()
+    }
+
+    pub fn configure_cache(
+        &self,
+        config: kasumi_kv::CacheConfig,
+    ) -> Result<(), kasumi_kv::StorageError> {
+        let owner = self.registration.owner();
+        let state = owner.state.lock();
+        if owner.stopped.load(Ordering::Acquire) || state.phase != NodeOpeningPhase::Open {
+            return Err(kasumi_kv::StorageError::DatabaseClosed);
+        }
+        if config.byte_limit > state.file.disk().native_storage_config().cache.byte_limit {
+            return Err(io::Error::from(io::ErrorKind::InvalidInput).into());
+        }
+        state
+            .engine
+            .database()
+            .ok_or(kasumi_kv::StorageError::DatabaseClosed)?
+            .configure_cache(config)
+    }
+
+    pub fn cache_stats(&self) -> Result<kasumi_kv::CacheStats, kasumi_kv::StorageError> {
+        let owner = self.registration.owner();
+        let state = owner.state.lock();
+        if owner.stopped.load(Ordering::Acquire) || state.phase != NodeOpeningPhase::Open {
+            return Err(kasumi_kv::StorageError::DatabaseClosed);
+        }
+        state
+            .engine
+            .database()
+            .ok_or(kasumi_kv::StorageError::DatabaseClosed)?
+            .cache_stats()
+    }
+
+    pub fn warm_cache(
+        &self,
+        work_limit: usize,
+    ) -> Result<kasumi_kv::CacheWarmup, kasumi_kv::StorageError> {
+        let owner = self.registration.owner();
+        let state = owner.state.lock();
+        if owner.stopped.load(Ordering::Acquire) || state.phase != NodeOpeningPhase::Open {
+            return Err(kasumi_kv::StorageError::DatabaseClosed);
+        }
+        state
+            .engine
+            .database()
+            .ok_or(kasumi_kv::StorageError::DatabaseClosed)?
+            .warm_cache(work_limit)
+    }
+
+    pub fn warm_cache_if_needed(
+        &self,
+        work_limit: usize,
+    ) -> Result<kasumi_kv::CacheWarmup, kasumi_kv::StorageError> {
+        let owner = self.registration.owner();
+        let state = owner.state.lock();
+        if owner.stopped.load(Ordering::Acquire) || state.phase != NodeOpeningPhase::Open {
+            return Err(kasumi_kv::StorageError::DatabaseClosed);
+        }
+        state
+            .engine
+            .database()
+            .ok_or(kasumi_kv::StorageError::DatabaseClosed)?
+            .warm_cache_if_needed(work_limit)
+    }
+
+    pub fn cache_warmup_status(
+        &self,
+    ) -> Result<kasumi_kv::CacheWarmupStatus, kasumi_kv::StorageError> {
+        let owner = self.registration.owner();
+        let state = owner.state.lock();
+        if owner.stopped.load(Ordering::Acquire) || state.phase != NodeOpeningPhase::Open {
+            return Err(kasumi_kv::StorageError::DatabaseClosed);
+        }
+        state
+            .engine
+            .database()
+            .ok_or(kasumi_kv::StorageError::DatabaseClosed)?
+            .cache_warmup_status()
+    }
+
+    pub fn request_cache_warm_retry(&self) -> Result<(), kasumi_kv::StorageError> {
+        let owner = self.registration.owner();
+        let state = owner.state.lock();
+        if owner.stopped.load(Ordering::Acquire) || state.phase != NodeOpeningPhase::Open {
+            return Err(kasumi_kv::StorageError::DatabaseClosed);
+        }
+        state
+            .engine
+            .database()
+            .ok_or(kasumi_kv::StorageError::DatabaseClosed)?
+            .request_cache_warm_retry()
     }
 
     /// Fixed, closed operation shape with no user callback or raw transaction
@@ -631,7 +836,7 @@ impl RegisteredNodeOpening {
         // before operational disposal or any acknowledgement mutation.
         state
             .file
-            .with_failed_close_report(&acknowledgement.file, |_| ())?;
+            .with_failed_close_reports(&acknowledgement.file, |_| ())?;
         owner.stopped.store(true, Ordering::Release);
         state.outcomes_released = false;
         state.pending_transfer = Some(acknowledgement.file);
@@ -653,7 +858,7 @@ impl RegisteredNodeOpening {
         let Some(mut state) = owner.state.try_lock() else {
             return Err(io::ErrorKind::WouldBlock.into());
         };
-        if state.pending_transfer.is_none() && state.failed_transfer.is_none() {
+        if state.pending_transfer.is_none() && !state.failed_transferred {
             return Err(io::ErrorKind::InvalidInput.into());
         }
         Ok(state.transfer_failed())
@@ -675,8 +880,9 @@ impl RegisteredNodeOpening {
 /// Private, non-Clone fields retain the actual registration, preventing address
 /// reuse and cross-memory-core substitution even when public IDs coincide.
 pub struct FailedOpeningAcknowledgement {
+    // Release the private identity before the registration that funds it.
+    file: GroupFailedWitness,
     owner: StorageRegistration<DatabaseOwner>,
-    file: FailedFileWitness,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FailedOpeningRecovery {
@@ -703,7 +909,7 @@ impl NodeOpeningReport<'_> {
             return Err(io::ErrorKind::WouldBlock.into());
         }
         let file = self.state.file.failed_close_witness()?;
-        self.state.file.with_failed_close_report(&file, |report| {
+        self.state.file.with_failed_close_reports(&file, |report| {
             report.visit_errors(&mut inspect_file_error);
         })?;
         Ok(FailedOpeningAcknowledgement {
@@ -756,6 +962,24 @@ impl WriterState {
                 .transaction
                 .as_ref()
                 .is_some_and(|transaction| transaction_failure(&transaction.report()))
+    }
+    fn capacity_denied(&self) -> bool {
+        settled_capacity_denial(
+            self.phase,
+            &self.begin,
+            &self.body,
+            &self.outer,
+            self.transaction
+                .as_ref()
+                .map(RetainedWriteTransaction::report),
+            |error| {
+                matches!(
+                    error,
+                    NodeTablesBodyError::Catalog(error) | NodeTablesBodyError::Records(error)
+                        if error.is_capacity_denied()
+                )
+            },
+        )
     }
 }
 struct NodeTablesRequest {
@@ -891,6 +1115,18 @@ impl RegisteredNodeTables {
                     .store(true, Ordering::Release);
             }
         }
+        if state.capacity_denied() {
+            // The whole batch rolled back before publication and the writer
+            // was disposed. Release this request's create reservation so the
+            // open database can queue table creation again. The denied request
+            // itself can never publish Ready: that proof needs its own commit.
+            // Writer then database is the same lock order as execute.
+            let mut database = request.database.owner().state.lock();
+            if database.tables_request == Some(self.id()) {
+                database.tables_reserved = false;
+                database.tables_request = None;
+            }
+        }
         state.phase
     }
     pub fn id(&self) -> StorageOwnerId {
@@ -936,30 +1172,21 @@ impl NodeTablesReport<'_> {
             .map(RetainedWriteTransaction::report)
     }
     /// The table creation was refused for capacity before publication. The
-    /// writer was rolled back whole and disposed; the opening stays open.
+    /// writer was rolled back whole and disposed; the opening stays open and
+    /// a Create-mode opening may queue table creation again.
     pub fn is_capacity_denied(&self) -> bool {
-        settled_capacity_denial(
-            self.state.phase,
-            &self.state.begin,
-            &self.state.body,
-            &self.state.outer,
-            self.terminal(),
-            |error| {
-                matches!(
-                    error,
-                    NodeTablesBodyError::Catalog(error) | NodeTablesBodyError::Records(error)
-                        if error.is_capacity_denied()
-                )
-            },
-        )
+        self.state.capacity_denied()
     }
 }
 
 mod reads;
+pub(crate) use reads::AdmittedReadReport;
 pub use reads::{
     AdmittedReadBytes, NodeReadAccessError, NodeReadPhase, NodeReadReport, NodeReadTablesError,
-    OwnedEncryptedRow, RegisteredNodeRead,
+    OwnedEncryptedRow, RegisteredNodeRead, SourceHistoryAbort, SourceHistoryRefusal,
 };
+#[cfg(any(test, feature = "test-utils"))]
+pub use reads::{RegisteredSourceFundingFixture, SourceCompletionFault, SourceReadDiagnostic};
 
 mod catalog_put;
 pub use catalog_put::{NodeCatalogPutBodyError, NodeCatalogWriteReport, RegisteredCatalogPut};
@@ -975,3 +1202,16 @@ mod tests;
 
 mod startup;
 pub use startup::{NodeStartupFailureCustody, NodeStartupPhase, RegisteredNodeStartup};
+
+#[cfg(any(test, feature = "test-utils"))]
+#[path = "native_source_funding_fixture.rs"]
+mod native_source_funding_fixture;
+#[cfg(any(test, feature = "test-utils"))]
+pub use native_source_funding_fixture::{
+    NativeSlotBlockers, NativeSourceFixtureError, NativeSourceFundingFixture,
+};
+
+pub use reads::{
+    PreparedRegisteredSource, RegisteredSourceCapacity, SourceCapacityClose, SourceCapacityFailure,
+    SourceCapacityReport, SourceCapacityRetirement, SourcePoolPhase,
+};

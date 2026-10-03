@@ -1,0 +1,91 @@
+
+running 12 tests
+test startup_owner_tests::direct_cleanup_poll_panic_keeps_original_payload_and_exact_cleanup_future ... FAILED
+test control::tests::prebound_first_membership_association_survives_later_apply_purge_and_reopen ... FAILED
+test custody_machine::tests::closed_snapshot_rejects_prior_format_without_rewriting_permanent_storage ... FAILED
+test custody_capacity_tests::permanent_custody_exceeds_former_count_and_snapshot_ceilings_and_reopens ... FAILED
+test custody_machine::tests::closed_snapshot_near_metadata_limit_publishes_readable_coverage ... FAILED
+test custody_machine::tests::closed_custody_requires_fresh_existing_quorum_after_isolation ... FAILED
+test custody_machine::tests::existing_quorum_runs_closed_commands_after_application_key_revocation ... FAILED
+test storage::tests::snapshot_custody_tests::retirement_projection_writer_and_reader_share_the_two_megabyte_boundary ... FAILED
+test custody_machine::tests::streamed_custody_tables_and_snapshot_coverage_publish_at_one_crash_boundary ... FAILED
+test custody_machine::tests::canonical_custody_stream_authenticates_counts_digest_and_record_order ... FAILED
+test custody_machine::tests::same_entry_position_snapshot_cannot_substitute_rotated_custody_state ... FAILED
+test storage::tests::coverage_writer_refuses_one_byte_past_reader_limit_before_staging ... FAILED
+
+failures:
+
+---- startup_owner_tests::direct_cleanup_poll_panic_keeps_original_payload_and_exact_cleanup_future stdout ----
+
+thread 'startup_owner_tests::direct_cleanup_poll_panic_keeps_original_payload_and_exact_cleanup_future' (5467347) panicked at crates/kasumi-raft/src/startup_owner_tests.rs:386:9:
+Box<dyn Any>
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'startup_owner_tests::direct_cleanup_poll_panic_keeps_original_payload_and_exact_cleanup_future' (5467347) panicked at crates/kasumi-raft/src/startup_owner_tests.rs:457:5:
+assertion `left == right` failed: exact poisoned future was dropped
+  left: 1
+ right: 0
+
+---- control::tests::prebound_first_membership_association_survives_later_apply_purge_and_reopen stdout ----
+Error: when Write Store: std::io::error::Error: target first membership lacks original signed cause
+
+Caused by:
+    std::io::error::Error: target first membership lacks original signed cause
+
+---- custody_machine::tests::closed_snapshot_rejects_prior_format_without_rewriting_permanent_storage stdout ----
+Error: snapshot lacks immutable first applied membership
+
+---- custody_capacity_tests::permanent_custody_exceeds_former_count_and_snapshot_ceilings_and_reopens stdout ----
+Error: snapshot lacks immutable first applied membership
+
+---- custody_machine::tests::closed_snapshot_near_metadata_limit_publishes_readable_coverage stdout ----
+Error: snapshot lacks immutable first applied membership
+
+---- custody_machine::tests::closed_custody_requires_fresh_existing_quorum_after_isolation stdout ----
+Error: drain Complete; Raft startup[0]: snapshot lacks immutable first applied membership
+
+Caused by:
+    snapshot lacks immutable first applied membership
+
+---- custody_machine::tests::existing_quorum_runs_closed_commands_after_application_key_revocation stdout ----
+Error: drain Complete; Raft startup[0]: snapshot lacks immutable first applied membership
+
+Caused by:
+    snapshot lacks immutable first applied membership
+
+---- storage::tests::snapshot_custody_tests::retirement_projection_writer_and_reader_share_the_two_megabyte_boundary stdout ----
+Error: snapshot metadata limit exceeded
+
+---- custody_machine::tests::streamed_custody_tables_and_snapshot_coverage_publish_at_one_crash_boundary stdout ----
+Error: snapshot lacks immutable first applied membership
+
+---- custody_machine::tests::canonical_custody_stream_authenticates_counts_digest_and_record_order stdout ----
+Error: snapshot lacks immutable first applied membership
+
+---- custody_machine::tests::same_entry_position_snapshot_cannot_substitute_rotated_custody_state stdout ----
+Error: snapshot lacks immutable first applied membership
+
+---- storage::tests::coverage_writer_refuses_one_byte_past_reader_limit_before_staging stdout ----
+
+thread 'storage::tests::coverage_writer_refuses_one_byte_past_reader_limit_before_staging' (5467348) panicked at crates/kasumi-raft/src/storage/tests.rs:1054:5:
+assertion `left == right` failed
+  left: 2097094
+ right: 2097152
+
+
+failures:
+    control::tests::prebound_first_membership_association_survives_later_apply_purge_and_reopen
+    custody_capacity_tests::permanent_custody_exceeds_former_count_and_snapshot_ceilings_and_reopens
+    custody_machine::tests::canonical_custody_stream_authenticates_counts_digest_and_record_order
+    custody_machine::tests::closed_custody_requires_fresh_existing_quorum_after_isolation
+    custody_machine::tests::closed_snapshot_near_metadata_limit_publishes_readable_coverage
+    custody_machine::tests::closed_snapshot_rejects_prior_format_without_rewriting_permanent_storage
+    custody_machine::tests::existing_quorum_runs_closed_commands_after_application_key_revocation
+    custody_machine::tests::same_entry_position_snapshot_cannot_substitute_rotated_custody_state
+    custody_machine::tests::streamed_custody_tables_and_snapshot_coverage_publish_at_one_crash_boundary
+    startup_owner_tests::direct_cleanup_poll_panic_keeps_original_payload_and_exact_cleanup_future
+    storage::tests::coverage_writer_refuses_one_byte_past_reader_limit_before_staging
+    storage::tests::snapshot_custody_tests::retirement_projection_writer_and_reader_share_the_two_megabyte_boundary
+
+test result: FAILED. 0 passed; 12 failed; 0 ignored; 0 measured; 106 filtered out; finished in 5.44s
+

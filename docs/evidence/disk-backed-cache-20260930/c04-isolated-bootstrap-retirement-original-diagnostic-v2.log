@@ -1,0 +1,21 @@
+Command: /Users/takemiyamakoto/dev/kasumi/target/disk-backed-cache/debug/deps/kasumi_engine-707e7a92ed2be845 --exact application_sources::tests::selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_identity --nocapture
+ISOLATED_SOURCE=/tmp/kasumi-source-cohort-validation-v1
+CARGO_TARGET_DIR=/Users/takemiyamakoto/dev/kasumi/target/disk-backed-cache
+
+running 1 test
+bootstrap_retirement owners_before_drop=1 handles=0 preparing=false closing=false inflight=0 view=false protected=false native_retained=true cache_installed=false
+bootstrap_retirement close: registered read StorageOwnerId { index: 2, generation: 29 } failed at finish
+
+thread 'application_sources::tests::selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_identity' (27627458) panicked at crates/kasumi-engine/src/application_sources_tests.rs:1262:9:
+assertion failed: state.closed
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test application_sources::tests::selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_identity ... FAILED
+
+failures:
+
+failures:
+    application_sources::tests::selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_identity
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 719 filtered out; finished in 8.85s
+
+Runner: 8.88s; exit=101; matching=1639/1639

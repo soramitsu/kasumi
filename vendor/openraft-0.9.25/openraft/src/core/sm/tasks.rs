@@ -62,12 +62,13 @@ pub(crate) fn fatal<C: RaftTypeConfig>(error: &TaskError<C>) -> Fatal<C::NodeId>
     }
 }
 
-/// Two cells are sufficient: the engine admits at most one snapshot build, and
+/// Two task cells are sufficient: the engine admits at most one snapshot build, and
 /// a completed successful builder is joined before its cell can be reused.
 /// Errors are never replaced, so metadata does not grow with snapshot history.
 pub(crate) struct Tasks<C: RaftTypeConfig> {
     pub(crate) worker: Arc<Mutex<Task<C>>>,
     pub(crate) snapshot: Arc<Mutex<Option<Task<C>>>>,
+    pub(crate) apply_batch: Arc<super::apply_batch::ApplyBatch<C>>,
 }
 
 impl<C: RaftTypeConfig> Tasks<C> {
@@ -88,6 +89,7 @@ impl<C: RaftTypeConfig> Tasks<C> {
         Self {
             worker: Arc::new(Mutex::new(Task::Done(Ok(())))),
             snapshot: Arc::new(Mutex::new(None)),
+            apply_batch: super::apply_batch::ApplyBatch::new(),
         }
     }
 }

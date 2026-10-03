@@ -1392,6 +1392,8 @@ mod tests {
             fail_on: AtomicUsize,
         }
 
+        impl kasumi_kv::SourceMemoryProvider for FailBundleMemory {}
+
         impl NodeDiskMemoryAdmission for FailBundleMemory {
             fn storage_census(&self) -> &crate::StorageCensus {
                 self.backing.storage_census()
@@ -1403,6 +1405,33 @@ mod tests {
                     return Err(std::io::Error::other("installed owner failed"));
                 }
                 self.backing.clone().reserve_installed(bytes)
+            }
+
+            fn quote_cache_memory(
+                &self,
+                bytes: u64,
+            ) -> std::io::Result<kasumi_kv::CacheMemoryQuote> {
+                crate::test_utils::cache_memory::disk_quote(self, bytes)
+            }
+            fn reserve_cache_memory(
+                self: Arc<Self>,
+                bytes: u64,
+            ) -> std::io::Result<kasumi_kv::CacheMemoryLease> {
+                crate::test_utils::cache_memory::disk_reserve(self, bytes)
+            }
+        }
+        impl crate::test_utils::cache_memory::DiskProvider for FailBundleMemory {
+            fn backing(&self) -> Arc<dyn NodeDiskMemoryAdmission> {
+                self.backing.clone()
+            }
+            fn admit(&self, bytes: u64) -> std::io::Result<()> {
+                let _ = bytes;
+
+                let call = self.calls.fetch_add(1, Ordering::SeqCst);
+                if call == self.fail_on.load(Ordering::SeqCst) {
+                    return Err(std::io::Error::other("installed owner failed"));
+                }
+                Ok(())
             }
         }
 

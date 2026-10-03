@@ -4,10 +4,17 @@
 //! a failure stays sticky therefore observes the core's own fence, not a
 //! failure remembered by the admission owner.
 
+use kasumi_kv as cache_types;
+#[path = "../src/cache_test.rs"]
+mod cache_test;
+
+use kasumi_kv::group::{FileKind, GroupFile, InMemoryGroup, SegmentGroupBackend};
 use kasumi_kv::{
-    AdmissionError, BackendCloseOutcome, BackendNativeDisposition, Core, CoreError, CorePanic,
-    Operation, OwnerFailed, ResidentLease, StorageAdmission, StorageBackend,
+    AdmissionError, BackendCloseOutcome, BackendNativeDisposition, CacheConfig, Core, CoreError,
+    CorePanic, Operation, OwnerFailed, ROOT_SLOT_BYTES, ResidentLease, RootSlot, StorageAdmission,
 };
+use std::collections::BTreeMap;
+use std::ffi::OsStr;
 use std::io;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -16,9 +23,7 @@ use std::sync::{Arc, Mutex};
 struct FencingAdmission {
     fail_check: AtomicBool,
     fail_workspace: AtomicBool,
-    fail_growth: AtomicBool,
-    deny_growth: AtomicBool,
-    fail_settle: AtomicBool,
+    deny_workspace: AtomicBool,
     panic_owner_failed: AtomicBool,
     owner_failed_calls: AtomicUsize,
 }
@@ -33,13 +38,7 @@ impl FencingAdmission {
     }
 
     fn heal(&self) {
-        for flag in [
-            &self.fail_check,
-            &self.fail_workspace,
-            &self.fail_growth,
-            &self.deny_growth,
-            &self.fail_settle,
-        ] {
+        for flag in [&self.fail_check, &self.fail_workspace, &self.deny_workspace] {
             flag.store(false, Ordering::Release);
         }
     }
@@ -57,27 +56,19 @@ impl StorageAdmission for FencingAdmission {
     fn reserve_workspace(&self, _bytes: u64) -> Result<Box<dyn ResidentLease>, AdmissionError> {
         if self.fail_workspace.load(Ordering::Acquire) {
             Err(AdmissionError::OwnerFailed)
+        } else if self.deny_workspace.load(Ordering::Acquire) {
+            Err(AdmissionError::CapacityDenied)
         } else {
             Ok(Box::new(()))
         }
     }
 
     fn reserve_growth(&self, _current: u64, _requested: u64) -> Result<(), AdmissionError> {
-        if self.fail_growth.load(Ordering::Acquire) {
-            Err(AdmissionError::OwnerFailed)
-        } else if self.deny_growth.load(Ordering::Acquire) {
-            Err(AdmissionError::CapacityDenied)
-        } else {
-            Ok(())
-        }
+        Ok(())
     }
 
     fn settle_growth(&self, _actual: u64) -> Result<(), OwnerFailed> {
-        if self.fail_settle.load(Ordering::Acquire) {
-            Err(OwnerFailed)
-        } else {
-            Ok(())
-        }
+        Ok(())
     }
 
     fn owner_failed(&self) {
@@ -85,6 +76,35 @@ impl StorageAdmission for FencingAdmission {
         if self.panic_owner_failed.load(Ordering::Acquire) {
             panic!("injected owner_failed panic");
         }
+    }
+
+    fn quote_cache_memory(
+        &self,
+        bytes: u64,
+    ) -> Result<kasumi_kv::CacheMemoryQuote, kasumi_kv::AdmissionError> {
+        cache_test::quote::<Self>(bytes)
+    }
+    fn reserve_cache_memory(
+        self: std::sync::Arc<Self>,
+        bytes: u64,
+    ) -> Result<kasumi_kv::CacheMemoryLease, kasumi_kv::AdmissionError> {
+        cache_test::reserve(self, bytes)
+    }
+}
+impl cache_test::Provider for FencingAdmission {
+    fn acquire_cache(&self, bytes: u64, first: bool) -> Result<(), kasumi_kv::AdmissionError> {
+        let _ = first;
+        let _ = bytes;
+        if self.fail_workspace.load(Ordering::Acquire) {
+            Err(AdmissionError::OwnerFailed)
+        } else if self.deny_workspace.load(Ordering::Acquire) {
+            Err(AdmissionError::CapacityDenied)
+        } else {
+            Ok(())
+        }
+    }
+    fn release_cache(&self, bytes: u64, last: bool) {
+        let _ = (bytes, last);
     }
 }
 
@@ -98,33 +118,36 @@ enum PanicPoint {
 
 #[derive(Default)]
 struct Image {
-    volatile: Vec<u8>,
-    durable: Vec<u8>,
     effects: usize,
     panic_at: Option<(usize, PanicPoint)>,
     panic_next_len: bool,
     panic_next_read: bool,
     close_attempts: usize,
     panic_next_close: bool,
+    fail_owner_after_segment_sync: Option<Arc<FencingAdmission>>,
 }
 
-/// Effects are the mutating backend calls: `set_len`, `write` and `sync_data`.
+/// All group mutations are counted, including namespace and root publication.
+/// The underlying group independently models volatile and durable images.
 #[derive(Clone, Default)]
-struct PanicBackend(Arc<Mutex<Image>>);
+struct PanicBackend {
+    group: InMemoryGroup,
+    control: Arc<Mutex<Image>>,
+}
 
 impl PanicBackend {
     fn crash(&self) -> Self {
-        let bytes = self.image().durable.clone();
-        Self(Arc::new(Mutex::new(Image {
-            volatile: bytes.clone(),
-            durable: bytes,
-            ..Image::default()
-        })))
+        Self {
+            group: self.group.crash(),
+            control: Arc::new(Mutex::new(Image::default())),
+        }
     }
 
     fn image(&self) -> std::sync::MutexGuard<'_, Image> {
         // Injected panics release this lock before unwinding.
-        self.0.lock().unwrap_or_else(|poison| poison.into_inner())
+        self.control
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
     }
 
     fn panic_at(&self, ordinal: usize, point: PanicPoint) {
@@ -136,129 +159,151 @@ impl PanicBackend {
     fn effects(&self) -> usize {
         self.image().effects
     }
-
     fn close_attempts(&self) -> usize {
         self.image().close_attempts
     }
 
-    fn durable_len(&self) -> usize {
-        self.image().durable.len()
+    fn durable_image(&self) -> BTreeMap<String, Vec<u8>> {
+        let durable = self.group.crash();
+        let mut images = BTreeMap::new();
+        for slot in [RootSlot::A, RootSlot::B] {
+            let mut bytes = [0; ROOT_SLOT_BYTES];
+            durable.read_root(slot, &mut bytes).unwrap();
+            images.insert(format!("root-{slot:?}"), bytes.to_vec());
+        }
+        for name in durable.entries().unwrap() {
+            let Some(file) = name.to_str().and_then(GroupFile::parse_name) else {
+                continue;
+            };
+            images.insert(file.file_name(), durable.durable_image(file).unwrap());
+        }
+        images
     }
 
     fn durable_contains(&self, needle: &[u8]) -> bool {
-        self.image()
-            .durable
-            .windows(needle.len())
-            .any(|window| window == needle)
+        self.durable_image()
+            .values()
+            .any(|bytes| bytes.windows(needle.len()).any(|window| window == needle))
     }
 
-    /// Count one effect and report whether it must unwind at this point.
     fn effect(&self, point: PanicPoint) -> bool {
         let mut image = self.image();
         if point == PanicPoint::Before {
             image.effects += 1;
         }
-        let ordinal = image.effects;
-        image.panic_at == Some((ordinal, point))
+        image.panic_at == Some((image.effects, point))
+    }
+
+    fn mutate(&self, operation: impl FnOnce() -> io::Result<()>) -> io::Result<()> {
+        if self.effect(PanicPoint::Before) {
+            panic!("injected effect panic");
+        }
+        operation()?;
+        if self.effect(PanicPoint::After) {
+            panic!("injected effect panic");
+        }
+        Ok(())
+    }
+
+    fn before_read(&self) {
+        let should_panic = std::mem::take(&mut self.image().panic_next_read);
+        if should_panic {
+            panic!("injected read panic");
+        }
     }
 }
 
-impl StorageBackend for PanicBackend {
-    fn len(&self) -> io::Result<u64> {
-        let mut image = self.image();
-        if std::mem::take(&mut image.panic_next_len) {
-            drop(image);
+impl SegmentGroupBackend for PanicBackend {
+    fn reserve_transaction(
+        &self,
+        plan: &kasumi_kv::TransactionSpacePlan,
+    ) -> std::result::Result<(), kasumi_kv::TransactionReserveError> {
+        self.group.reserve_transaction(plan)
+    }
+    fn finish_transaction(&self, group_id: [u8; 16], batch_seq: u64) -> std::io::Result<()> {
+        self.group.finish_transaction(group_id, batch_seq)
+    }
+    fn cancel_transaction(&self, group_id: [u8; 16], batch_seq: u64) -> std::io::Result<()> {
+        self.group.cancel_transaction(group_id, batch_seq)
+    }
+
+    fn read_root(&self, slot: RootSlot, out: &mut [u8; ROOT_SLOT_BYTES]) -> io::Result<()> {
+        self.before_read();
+        self.group.read_root(slot, out)
+    }
+    fn write_root(&self, slot: RootSlot, bytes: &[u8; ROOT_SLOT_BYTES]) -> io::Result<()> {
+        self.mutate(|| self.group.write_root(slot, bytes))
+    }
+    fn sync_root(&self) -> io::Result<()> {
+        self.mutate(|| self.group.sync_root())
+    }
+    fn visit_entries(&self, visitor: &mut dyn FnMut(&OsStr) -> io::Result<()>) -> io::Result<()> {
+        self.group.visit_entries(visitor)
+    }
+    fn exists(&self, file: GroupFile) -> io::Result<bool> {
+        self.group.exists(file)
+    }
+    fn create(&self, file: GroupFile) -> io::Result<()> {
+        self.mutate(|| self.group.create(file))
+    }
+    fn len(&self, file: GroupFile) -> io::Result<u64> {
+        let should_panic = std::mem::take(&mut self.image().panic_next_len);
+        if should_panic {
             panic!("injected length panic");
         }
-        Ok(image.volatile.len() as u64)
+        self.group.len(file)
     }
-
-    fn read(&self, at: u64, out: &mut [u8]) -> io::Result<()> {
-        let mut image = self.image();
-        if std::mem::take(&mut image.panic_next_read) {
-            drop(image);
-            panic!("injected read panic");
-        }
-        let start = usize::try_from(at).map_err(|_| io::ErrorKind::InvalidInput)?;
-        let end = start
-            .checked_add(out.len())
-            .ok_or(io::ErrorKind::InvalidInput)?;
-        out.copy_from_slice(
-            image
-                .volatile
-                .get(start..end)
-                .ok_or(io::ErrorKind::UnexpectedEof)?,
-        );
-        Ok(())
+    fn read(&self, file: GroupFile, at: u64, out: &mut [u8]) -> io::Result<()> {
+        self.before_read();
+        self.group.read(file, at, out)
     }
-
-    fn write(&self, at: u64, input: &[u8]) -> io::Result<()> {
-        if self.effect(PanicPoint::Before) {
-            panic!("injected effect panic");
-        }
-        {
-            let mut image = self.image();
-            let start = usize::try_from(at).map_err(|_| io::ErrorKind::InvalidInput)?;
-            let end = start
-                .checked_add(input.len())
-                .ok_or(io::ErrorKind::InvalidInput)?;
-            image
-                .volatile
-                .get_mut(start..end)
-                .ok_or(io::ErrorKind::UnexpectedEof)?
-                .copy_from_slice(input);
-        }
-        if self.effect(PanicPoint::After) {
-            panic!("injected effect panic");
+    fn write(&self, file: GroupFile, at: u64, bytes: &[u8]) -> io::Result<()> {
+        self.mutate(|| self.group.write(file, at, bytes))
+    }
+    fn set_len(&self, file: GroupFile, length: u64) -> io::Result<()> {
+        self.mutate(|| self.group.set_len(file, length))
+    }
+    fn sync(&self, file: GroupFile) -> io::Result<()> {
+        self.mutate(|| self.group.sync(file))?;
+        if file.kind == FileKind::Segment {
+            let admission = self.image().fail_owner_after_segment_sync.take();
+            if let Some(admission) = admission {
+                admission.fail_check.store(true, Ordering::Release);
+            }
         }
         Ok(())
     }
-
-    fn set_len(&self, length: u64) -> io::Result<()> {
-        if self.effect(PanicPoint::Before) {
-            panic!("injected effect panic");
-        }
-        self.image().volatile.resize(
-            usize::try_from(length).map_err(|_| io::ErrorKind::InvalidInput)?,
-            0,
-        );
-        if self.effect(PanicPoint::After) {
-            panic!("injected effect panic");
-        }
-        Ok(())
+    fn unlink(&self, file: GroupFile) -> io::Result<()> {
+        self.mutate(|| self.group.unlink(file))
     }
-
-    fn sync_data(&self) -> io::Result<()> {
-        if self.effect(PanicPoint::Before) {
-            panic!("injected effect panic");
-        }
-        {
-            let mut image = self.image();
-            image.durable = image.volatile.clone();
-        }
-        if self.effect(PanicPoint::After) {
-            panic!("injected effect panic");
-        }
-        Ok(())
+    fn sync_names(&self) -> io::Result<()> {
+        self.mutate(|| self.group.sync_names())
     }
-
     fn close(&self) -> BackendCloseOutcome {
         let mut image = self.image();
         image.close_attempts += 1;
-        if std::mem::take(&mut image.panic_next_close) {
-            drop(image);
+        let should_panic = std::mem::take(&mut image.panic_next_close);
+        drop(image);
+        if should_panic {
             panic!("injected close panic");
         }
-        BackendCloseOutcome::drained(Ok(()))
+        self.group.close()
     }
 }
 
+const GROUP: [u8; 16] = [61; 16];
 const OLD: &[u8] = b"old-acknowledged";
 const NEW: &[u8] = b"new-unacknowledged";
 
 fn baseline(admission: &Arc<FencingAdmission>) -> (Core, PanicBackend) {
     let backend = PanicBackend::default();
-    let core = Core::create_with_backend(backend.clone(), admission.clone()).unwrap();
+    let core = Core::create_with_backend(
+        backend.clone(),
+        admission.clone(),
+        GROUP,
+        CacheConfig::default(),
+    )
+    .unwrap();
     core.commit(&[
         Operation::create_table("items"),
         Operation::put("items", b"key", OLD),
@@ -287,7 +332,13 @@ fn read(core: &Core, key: &[u8]) -> Option<Vec<u8>> {
 }
 
 fn reopen(backend: &PanicBackend) -> Core {
-    Core::open_with_backend(backend.crash(), FencingAdmission::new()).unwrap()
+    Core::open_with_backend(
+        backend.crash(),
+        FencingAdmission::new(),
+        GROUP,
+        CacheConfig::default(),
+    )
+    .unwrap()
 }
 
 fn payload(panic: &CorePanic) -> Option<&'static str> {
@@ -309,9 +360,11 @@ fn assert_sticky(core: &Core, admission: &FencingAdmission, backend: &PanicBacke
     assert!(core.is_fenced());
     assert!(matches!(core.snapshot(), Err(CoreError::OwnerFailed)));
     assert!(matches!(core.generation(), Err(CoreError::OwnerFailed)));
-    assert!(matches!(core.committed_end(), Err(CoreError::OwnerFailed)));
+    assert!(matches!(
+        core.committed_position(),
+        Err(CoreError::OwnerFailed)
+    ));
     assert!(matches!(core.compact(), Err(CoreError::OwnerFailed)));
-    assert!(matches!(core.prepare_write(), Err(CoreError::OwnerFailed)));
     assert!(matches!(
         core.commit(&[Operation::put("items", b"key", b"retry")]),
         Err(CoreError::OwnerFailed)
@@ -333,23 +386,20 @@ fn close_drains(core: &Core) {
 #[test]
 fn failed_pre_commit_owner_calls_fence_once_without_any_backend_effect() {
     type Inject = fn(&FencingAdmission);
-    let cases: [(&str, Inject); 3] = [
+    let cases: [(&str, Inject); 2] = [
         ("check_owner", |admission| {
             admission.fail_check.store(true, Ordering::Release)
         }),
         ("reserve_workspace", |admission| {
             admission.fail_workspace.store(true, Ordering::Release)
         }),
-        ("reserve_growth", |admission| {
-            admission.fail_growth.store(true, Ordering::Release)
-        }),
     ];
     for (site, inject) in cases {
         let admission = FencingAdmission::new();
         let (core, backend) = baseline(&admission);
         let generation = core.generation().unwrap();
-        let end = core.committed_end().unwrap();
-        let durable = backend.durable_len();
+        let end = core.committed_position().unwrap();
+        let durable = backend.durable_image();
         backend.panic_at(usize::MAX, PanicPoint::Before);
 
         inject(&admission);
@@ -368,11 +418,11 @@ fn failed_pre_commit_owner_calls_fence_once_without_any_backend_effect() {
         close_drains(&core);
         assert_eq!(admission.owner_failed_calls(), 1, "{site}");
 
-        assert_eq!(backend.durable_len(), durable);
+        assert_eq!(backend.durable_image(), durable);
         let reopened = reopen(&backend);
         assert!(!reopened.is_fenced());
         assert_eq!(reopened.generation().unwrap(), generation, "{site}");
-        assert_eq!(reopened.committed_end().unwrap(), end, "{site}");
+        assert_eq!(reopened.committed_position().unwrap(), end, "{site}");
         assert_eq!(read(&reopened, b"key"), Some(OLD.to_vec()), "{site}");
     }
 }
@@ -425,7 +475,7 @@ fn unfenced_capacity_denial_has_no_effect_and_leaves_the_owner_usable() {
     let (core, backend) = baseline(&admission);
     let generation = core.generation().unwrap();
     backend.panic_at(usize::MAX, PanicPoint::Before);
-    admission.deny_growth.store(true, Ordering::Release);
+    admission.deny_workspace.store(true, Ordering::Release);
     assert!(matches!(
         core.commit(&[Operation::put("items", b"key", NEW)]),
         Err(CoreError::CapacityDenied)
@@ -435,9 +485,8 @@ fn unfenced_capacity_denial_has_no_effect_and_leaves_the_owner_usable() {
     assert_eq!(backend.effects(), 0);
     assert_eq!(admission.owner_failed_calls(), 0);
     assert_eq!(core.generation().unwrap(), generation);
-    assert_eq!(read(&core, b"key"), Some(OLD.to_vec()));
-
     admission.heal();
+    assert_eq!(read(&core, b"key"), Some(OLD.to_vec()));
     core.commit(&[Operation::put("items", b"key", NEW)])
         .unwrap();
     assert_eq!(read(&core, b"key"), Some(NEW.to_vec()));
@@ -446,33 +495,53 @@ fn unfenced_capacity_denial_has_no_effect_and_leaves_the_owner_usable() {
 }
 
 #[test]
-fn settle_failure_fences_and_restart_truncates_the_unpublished_frame() {
+fn owner_failure_after_prepare_fences_and_restart_truncates_the_unpublished_records() {
     let admission = FencingAdmission::new();
     let (core, backend) = baseline(&admission);
     let generation = core.generation().unwrap();
-    let end = core.committed_end().unwrap();
-    admission.fail_settle.store(true, Ordering::Release);
-    assert!(matches!(
-        core.commit(&[Operation::put("items", b"key", NEW)]),
-        Err(CoreError::OwnerFailed)
-    ));
+    let end = core.committed_position().unwrap().unwrap();
+    backend.image().fail_owner_after_segment_sync = Some(admission.clone());
+    let error = core
+        .commit(&[Operation::put("items", b"key", NEW)])
+        .unwrap_err();
+    // The checked group observes expiry immediately after the successful sync.
+    // It preserves that owner-failure cause through the backend's I/O boundary.
+    assert!(matches!(error, CoreError::Io(ref error)
+        if error.get_ref().is_some_and(|cause| cause.is::<OwnerFailed>())));
     assert_eq!(admission.owner_failed_calls(), 1);
     admission.heal();
     assert_sticky(&core, &admission, &backend);
 
-    // Negative control: the synchronized frame is durable past the last
-    // published header before restart.
-    assert!(backend.durable_len() as u64 > end);
+    // The synchronized operation records are durable past the selected commit.
+    assert!(
+        backend
+            .group
+            .durable_len(GroupFile::segment(end.segment_id))
+            .unwrap() as u64
+            > end.offset
+    );
     assert!(backend.durable_contains(NEW));
     close_drains(&core);
 
     let restarted = backend.crash();
-    let reopened = Core::open_with_backend(restarted.clone(), FencingAdmission::new()).unwrap();
+    let reopened = Core::open_with_backend(
+        restarted.clone(),
+        FencingAdmission::new(),
+        GROUP,
+        CacheConfig::default(),
+    )
+    .unwrap();
     assert_eq!(reopened.generation().unwrap(), generation);
-    assert_eq!(reopened.committed_end().unwrap(), end);
+    assert_eq!(reopened.committed_position().unwrap(), Some(end));
     assert_eq!(read(&reopened, b"key"), Some(OLD.to_vec()));
     // Reopen durably truncated the unpublished tail before exposing the core.
-    assert_eq!(restarted.durable_len() as u64, end);
+    assert_eq!(
+        restarted
+            .group
+            .durable_len(GroupFile::segment(end.segment_id))
+            .unwrap() as u64,
+        end.offset
+    );
     assert!(!restarted.durable_contains(NEW));
     reopened
         .commit(&[Operation::put("items", b"key", b"after-restart")])
@@ -496,7 +565,10 @@ fn panic_at_every_commit_effect_fences_once_and_reopens_a_whole_generation() {
         ])
         .unwrap();
     let effect_count = counting_backend.effects();
-    assert!(effect_count > 6, "expected frame and both header effects");
+    assert!(
+        effect_count > 6,
+        "expected operation, directory, commit and root effects"
+    );
 
     for ordinal in 1..=effect_count {
         for point in [PanicPoint::Before, PanicPoint::After] {
@@ -540,7 +612,10 @@ fn panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value() {
     counting_backend.panic_at(usize::MAX, PanicPoint::Before);
     counting.compact().unwrap();
     let effect_count = counting_backend.effects();
-    assert!(effect_count > 6, "expected shadow and front copy effects");
+    assert!(
+        effect_count > 6,
+        "expected segment relocation, directory and retirement effects"
+    );
 
     for ordinal in 1..=effect_count {
         for point in [PanicPoint::Before, PanicPoint::After] {
@@ -548,16 +623,25 @@ fn panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value() {
             let (core, backend) = churned(&admission);
             backend.panic_at(ordinal, point);
             let error = core.compact().unwrap_err();
-            let CoreError::Panicked(panic) = &error else {
-                panic!("effect {ordinal}: compaction unwind must be retained: {error:?}");
-            };
-            assert_eq!(payload(panic), Some("injected effect panic"));
+            assert_eq!(
+                match &error {
+                    CoreError::Panicked(panic) => payload(panic),
+                    _ => unknown_commit_payload(&error),
+                },
+                Some("injected effect panic"),
+                "effect {ordinal}: compaction unwind must be retained: {error:?}"
+            );
             assert_eq!(admission.owner_failed_calls(), 1, "effect {ordinal}");
             assert_sticky(&core, &admission, &backend);
             close_drains(&core);
 
-            let reopened = Core::open_with_backend(backend.crash(), FencingAdmission::new())
-                .unwrap_or_else(|error| panic!("reopen after effect {ordinal}: {error}"));
+            let reopened = Core::open_with_backend(
+                backend.crash(),
+                FencingAdmission::new(),
+                GROUP,
+                CacheConfig::default(),
+            )
+            .unwrap_or_else(|error| panic!("reopen after effect {ordinal}: {error}"));
             assert_eq!(read(&reopened, b"key"), Some(OLD.to_vec()));
             assert_eq!(read(&reopened, b"other"), Some(b"stable".to_vec()));
             assert_eq!(read(&reopened, b"scratch"), None);

@@ -1,0 +1,15 @@
+Command: cargo test -p kasumi-query --test output_allocation --locked --offline -- --test-threads=1
+CARGO_TARGET_DIR=target/disk-backed-cache
+   Compiling kasumi-types v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-types)
+   Compiling kasumi-query v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-query)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 37.70s
+     Running tests/output_allocation.rs (target/disk-backed-cache/debug/deps/output_allocation-57b3144dae95a9d0)
+
+running 3 tests
+test object_node_cost_is_visible_despite_a_small_wire_result ... ok
+test typed_feed_quotes_borrow_and_cover_owned_cursor_and_after_image_clones ... ok
+test typed_page_quotes_allocate_nothing_and_cover_real_clone_peaks ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+Runner: 37.84s; exit=0; matching=20/20

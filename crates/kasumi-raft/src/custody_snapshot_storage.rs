@@ -55,6 +55,7 @@ pub(crate) fn stage(image: &SnapshotImage, limit: u64) -> Result<(EncryptedTable
             .checked_mul(4)
             .and_then(|n| n.checked_add(64 << 20))
             .context("closed snapshot staging overflow")?,
+        image.disk().native_cache_config(),
     )?;
     let manifest = Manifest {
         version: 1,

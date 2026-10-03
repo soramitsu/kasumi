@@ -1,0 +1,97 @@
+
+running 44 tests
+test scratch_disk::tests::scratch_cache_limit_is_required_explicit_and_round_trips_large_values ... ok
+test scratch_disk::tests::physical_filesystem_capacity_is_measured_on_the_installed_directory ... ok
+test scratch_disk::registry_busy_tests::busy_scratch_registry_does_not_allocate_admit_or_create_directory ... ok
+test scratch_disk::memory_tests::fixture_directory_custody_stays_with_caller_while_metadata_stays_installed ... ok
+test scratch_disk::memory_tests::installed_scratch_reuse_keeps_metadata_funded_after_public_strong_handles_drop ... ok
+test scratch_disk::tests::pinned_directory_survives_path_substitution_without_using_replacement ... ok
+test scratch_disk::memory_tests::scratch_file_release_does_not_release_installed_owner_or_registry_memory ... ok
+test scratch_disk::memory_tests::scratch_metadata_denial_precedes_directory_creation ... ok
+test scratch_disk::tests::immutable_image_readers_retain_capacity_until_the_last_owner_drains ... ok
+test scratch_disk::tests::pending_files_share_filesystem_promises_and_keep_recovery_reserve ... ok
+test scratch_disk::tests::rejects_symlinks_and_overflowing_configuration ... ok
+test scratch_disk::tests::physical_directory_reopens_share_budget_and_cannot_change_it ... ok
+test scratch_disk::tests::concurrent_spools_cannot_each_spend_the_aggregate_budget ... ok
+test scratch_disk::tests::separate_governors_cannot_double_spend_filesystem_promises ... ok
+test scratch_table::tests::actual_spool_close_reports_native_drain_before_retiring_adapter_owner ... ok
+test node_disk::tests::persistent_and_scratch_cannot_spend_the_same_filesystem_promise ... ok
+test node_disk::tests::unknown_filesystem_observation_fences_scratch_until_a_drained_census ... ok
+test scratch_disk::tests::truncation_and_rejected_growth_preserve_exact_file_charges ... ok
+test scratch_table::tests::exact_settlement_mismatch_fences_owner_without_allocating_or_returning_credit ... ok
+test scratch_table::tests::explicit_scratch_close_retains_original_physical_failure_on_retry ... ok
+test scratch_table::tests::failed_bootstrap_closes_the_exact_spool_before_returning ... ok
+test scratch_table::tests::rejected_resize_is_wholly_reserved_before_any_logical_or_physical_change ... ok
+test scratch_table::tests::scratch_group_census_rejects_namespace_mutation_and_same_slot_reuse_without_restart ... ok
+test scratch_table::tests::scratch_group_census_releases_owner_lock_for_admission_and_read_callbacks ... ok
+test scratch_table::tests::scratch_group_metadata_denial_opens_no_file_and_census_callback_failure_is_retryable ... ok
+test scratch_table::tests::failed_bootstrap_retains_unproved_close_and_original_outcomes ... ok
+test scratch_table::tests::exact_backend_publication_io_settlement_shrink_and_close_do_not_allocate ... ok
+test spool::native_close_tests::uncertain_native_close_retains_one_attempt_and_fences_scratch_owner ... ok
+test scratch_table::tests::segmented_scratch_limits_aggregate_extents_before_mutation_and_reuses_drained_slots ... ok
+test scratch_table::tests::dropping_a_failed_table_keeps_spool_and_charge_without_allocating ... ok
+test scratch_table::tests::dropping_a_table_under_a_live_transaction_never_enters_close_or_returns_credit ... ok
+test scratch_table::tests::batch_outliving_table_observes_close_after_its_transaction_ends ... ok
+test scratch_table::tests::dropping_a_table_observes_native_close_before_returning_scratch_credit ... ok
+test scratch_table::tests::accepted_batch_keeps_physical_table_until_commit_and_close ... ok
+test scratch_table::tests::dropping_a_drained_table_closes_natively_once_without_allocating ... ok
+test scratch_table::tests::accepted_transaction_keeps_scratch_close_retained_until_actual_drain ... ok
+test scratch_table::tests::batch_entry_limit_rejects_before_publication_and_aborts_partial_input ... ok
+test scratch_table::tests::dropping_an_explicitly_closed_table_never_reenters_native_close ... ok
+test scratch_table::tests::strict_create_rejects_a_non_empty_spool_instead_of_adopting_its_frames ... ok
+test scratch_table::tests::failed_explicit_close_keeps_charge_and_drop_never_reenters_close ... ok
+test scratch_table::tests::unpublished_batch_aborts_on_drop_and_preserves_duplicate_error ... ok
+test tests::separate_node_stores_and_pinned_reads_share_one_scratch_budget ... ok
+test scratch_table::tests::segmented_scratch_descriptor_ceiling_is_pre_admitted_and_does_not_open_on_denial ... ok
+test scratch_table::tests::segmented_scratch_streams_rows_larger_than_its_explicit_cache ... ok
+
+successes:
+
+successes:
+    node_disk::tests::persistent_and_scratch_cannot_spend_the_same_filesystem_promise
+    node_disk::tests::unknown_filesystem_observation_fences_scratch_until_a_drained_census
+    scratch_disk::memory_tests::fixture_directory_custody_stays_with_caller_while_metadata_stays_installed
+    scratch_disk::memory_tests::installed_scratch_reuse_keeps_metadata_funded_after_public_strong_handles_drop
+    scratch_disk::memory_tests::scratch_file_release_does_not_release_installed_owner_or_registry_memory
+    scratch_disk::memory_tests::scratch_metadata_denial_precedes_directory_creation
+    scratch_disk::registry_busy_tests::busy_scratch_registry_does_not_allocate_admit_or_create_directory
+    scratch_disk::tests::concurrent_spools_cannot_each_spend_the_aggregate_budget
+    scratch_disk::tests::immutable_image_readers_retain_capacity_until_the_last_owner_drains
+    scratch_disk::tests::pending_files_share_filesystem_promises_and_keep_recovery_reserve
+    scratch_disk::tests::physical_directory_reopens_share_budget_and_cannot_change_it
+    scratch_disk::tests::physical_filesystem_capacity_is_measured_on_the_installed_directory
+    scratch_disk::tests::pinned_directory_survives_path_substitution_without_using_replacement
+    scratch_disk::tests::rejects_symlinks_and_overflowing_configuration
+    scratch_disk::tests::scratch_cache_limit_is_required_explicit_and_round_trips_large_values
+    scratch_disk::tests::separate_governors_cannot_double_spend_filesystem_promises
+    scratch_disk::tests::truncation_and_rejected_growth_preserve_exact_file_charges
+    scratch_table::tests::accepted_batch_keeps_physical_table_until_commit_and_close
+    scratch_table::tests::accepted_transaction_keeps_scratch_close_retained_until_actual_drain
+    scratch_table::tests::actual_spool_close_reports_native_drain_before_retiring_adapter_owner
+    scratch_table::tests::batch_entry_limit_rejects_before_publication_and_aborts_partial_input
+    scratch_table::tests::batch_outliving_table_observes_close_after_its_transaction_ends
+    scratch_table::tests::dropping_a_drained_table_closes_natively_once_without_allocating
+    scratch_table::tests::dropping_a_failed_table_keeps_spool_and_charge_without_allocating
+    scratch_table::tests::dropping_a_table_observes_native_close_before_returning_scratch_credit
+    scratch_table::tests::dropping_a_table_under_a_live_transaction_never_enters_close_or_returns_credit
+    scratch_table::tests::dropping_an_explicitly_closed_table_never_reenters_native_close
+    scratch_table::tests::exact_backend_publication_io_settlement_shrink_and_close_do_not_allocate
+    scratch_table::tests::exact_settlement_mismatch_fences_owner_without_allocating_or_returning_credit
+    scratch_table::tests::explicit_scratch_close_retains_original_physical_failure_on_retry
+    scratch_table::tests::failed_bootstrap_closes_the_exact_spool_before_returning
+    scratch_table::tests::failed_bootstrap_retains_unproved_close_and_original_outcomes
+    scratch_table::tests::failed_explicit_close_keeps_charge_and_drop_never_reenters_close
+    scratch_table::tests::rejected_resize_is_wholly_reserved_before_any_logical_or_physical_change
+    scratch_table::tests::scratch_group_census_rejects_namespace_mutation_and_same_slot_reuse_without_restart
+    scratch_table::tests::scratch_group_census_releases_owner_lock_for_admission_and_read_callbacks
+    scratch_table::tests::scratch_group_metadata_denial_opens_no_file_and_census_callback_failure_is_retryable
+    scratch_table::tests::segmented_scratch_descriptor_ceiling_is_pre_admitted_and_does_not_open_on_denial
+    scratch_table::tests::segmented_scratch_limits_aggregate_extents_before_mutation_and_reuses_drained_slots
+    scratch_table::tests::segmented_scratch_streams_rows_larger_than_its_explicit_cache
+    scratch_table::tests::strict_create_rejects_a_non_empty_spool_instead_of_adopting_its_frames
+    scratch_table::tests::unpublished_batch_aborts_on_drop_and_preserves_duplicate_error
+    spool::native_close_tests::uncertain_native_close_retains_one_attempt_and_fences_scratch_owner
+    tests::separate_node_stores_and_pinned_reads_share_one_scratch_budget
+
+test result: ok. 44 passed; 0 failed; 0 ignored; 0 measured; 560 filtered out; finished in 41.75s
+

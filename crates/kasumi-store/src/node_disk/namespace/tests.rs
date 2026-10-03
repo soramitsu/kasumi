@@ -155,8 +155,16 @@ fn failed_parent_sync_retains_all_promises_and_an_unsettled_parent_until_census(
     assert!(root.path().join("uncertain").exists());
     assert!(!entry(&disk, root.path()).settled);
     assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
-    assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes);
-    assert_eq!(disk.snapshot().pending_bytes, before.pending_bytes);
+    let allowance =
+        super::super::file_ceiling(0, disk.unit, config.file_allocation_policy).unwrap();
+    assert_eq!(
+        disk.snapshot().charged_bytes,
+        before.charged_bytes + allowance
+    );
+    assert_eq!(
+        disk.snapshot().pending_bytes,
+        before.pending_bytes + allowance
+    );
     assert_eq!(disk.snapshot().open_files, 0);
     assert_eq!(entry(&disk, root.path()).live_handles, 0);
     assert!(disk.open_directory("fixture", Path::new("")).is_err());

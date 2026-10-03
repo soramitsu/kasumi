@@ -1,9 +1,9 @@
 //! Public capture and staged restore own admitted blocking work. Publishing a
 //! generation is exclusively the responsibility of the Raft/storage coordinator.
-use super::{TenantEngine, snapshot_bundle};
+use super::{TenantEngine, snapshot_bundle, validation_baseline::OwnedValidation};
 use crate::{
     admission::{CancelOnDrop, NodeAdmission, Reservation},
-    backup_verify::VerificationDeadline,
+    backup_verify::{VerificationDeadline, VerificationPhase},
 };
 use kasumi_query::QueryCancellation;
 use kasumi_store::{SnapshotImage, TenantStore};
@@ -165,33 +165,39 @@ impl TenantEngine {
         let deadline = VerificationDeadline::new(timeout_ms).map_err(error)?;
         let token = QueryCancellation::default();
         let _cancel = CancelOnDrop(token.clone());
-        let engine = self.clone();
+        let prior = OwnedValidation::capture(self.clone())?;
         let mut work = Work {
             store,
             token: token.clone(),
             deadline,
             reservation: admission.reserve(WORKSPACE, Some(token))?,
         };
+        let wait_phase = VerificationPhase::start("public_restore.wait", Some(deadline));
         let output = deadline
             .run(tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
                 work.check()?;
+                let phase = VerificationPhase::start("public_restore.framing", Some(deadline));
                 let layout = snapshot_bundle::inspect(&mut CheckedIo {
                     io: image.reader(),
                     work: &work,
                 })?;
+                phase.complete();
                 let additional = layout
                     .materialization_workspace()?
                     .checked_sub(WORKSPACE)
                     .ok_or_else(|| anyhow::anyhow!("snapshot workspace overflow"))?;
                 work.reservation.reserve_additional(additional)?;
+                let phase = VerificationPhase::start("public_restore.decode", Some(deadline));
                 let generation = snapshot_bundle::read(
-                    &engine,
+                    prior.engine(),
+                    &prior.baseline(),
                     &mut CheckedIo {
                         io: image.reader(),
                         work: &work,
                     },
                     Some(layout),
                 )?;
+                phase.complete();
                 work.check()?;
                 let prepared = PreparedSnapshotRestore {
                     image,
@@ -201,7 +207,10 @@ impl TenantEngine {
                 };
                 // The unpublished logical state drops before returning a small image
                 // handle; its proportional reservation does not become a long lease.
+                let phase = VerificationPhase::start("public_restore.discard", Some(deadline));
                 drop(generation);
+                drop(prior);
+                phase.complete();
                 Ok((prepared, work))
             }))
             .await
@@ -209,6 +218,7 @@ impl TenantEngine {
             .map_err(|e| error(e.into()))?
             .map_err(error)?;
         output.1.check().map_err(error)?;
+        wait_phase.complete();
         Ok(output.0)
     }
 

@@ -2,8 +2,11 @@ use crate::{BasicNode, Raft, TypeConfig};
 use anyhow::{Result, bail};
 use async_trait::async_trait;
 use openraft::{
-    RaftNetwork, RaftNetworkFactory,
-    error::{InstallSnapshotError, RPCError, RaftError, RemoteError, Unreachable},
+    LogId, RaftNetwork, RaftNetworkFactory,
+    error::{
+        CheckIsLeaderError, ForwardToLeader, InstallSnapshotError, RPCError, RaftError,
+        RemoteError, Unreachable,
+    },
     network::{Backoff, RPCOption},
     raft::{
         AppendEntriesRequest, AppendEntriesResponse, InstallSnapshotRequest,
@@ -51,12 +54,36 @@ impl std::fmt::Display for RpcPayloadTooLarge {
 impl std::error::Error for RpcPayloadTooLarge {}
 
 #[derive(Debug, Serialize, Deserialize)]
-#[serde(tag = "rpc", content = "payload", rename_all = "snake_case")]
+#[serde(
+    tag = "rpc",
+    content = "payload",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
 pub enum RpcRequest {
     Append(AppendEntriesRequest<TypeConfig>),
     Vote(VoteRequest<u64>),
     Snapshot(InstallSnapshotRequest<TypeConfig>),
+    /// Read-only leader confirmation for a follower or learner observation,
+    /// bound to the requester's current term. It carries no vote and grants
+    /// no authority to propose; transports admit only current group members.
+    ReadIndex {
+        term: u64,
+    },
 }
+
+/// A leader's answer to [`RpcRequest::ReadIndex`]. The leader confirmed its
+/// leadership in `term` by a fresh quorum heartbeat round after the request
+/// arrived; a requester that applied through `read_log_id` in the same term
+/// observes every write acknowledged before the request.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReadIndexResponse {
+    pub term: u64,
+    pub read_log_id: Option<LogId<u64>>,
+}
+
+pub type ReadIndexError = RaftError<u64, CheckIsLeaderError<u64, BasicNode>>;
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "rpc", content = "payload", rename_all = "snake_case")]
@@ -64,9 +91,12 @@ pub enum RpcResponse {
     Append(Result<AppendEntriesResponse<u64>, RaftError<u64>>),
     Vote(Result<VoteResponse<u64>, RaftError<u64>>),
     Snapshot(Result<InstallSnapshotResponse<u64>, RaftError<u64, InstallSnapshotError>>),
+    ReadIndex(Result<ReadIndexResponse, ReadIndexError>),
 }
 
 /// Call only after transport authentication and group/node authorization.
+/// A read-index request additionally requires the authenticated requester to
+/// be a current voter or learner of the group.
 pub async fn dispatch_rpc(raft: &Raft, request: RpcRequest) -> RpcResponse {
     match request {
         RpcRequest::Append(request) => RpcResponse::Append(raft.append_entries(request).await),
@@ -74,7 +104,29 @@ pub async fn dispatch_rpc(raft: &Raft, request: RpcRequest) -> RpcResponse {
         RpcRequest::Snapshot(request) => {
             RpcResponse::Snapshot(raft.install_snapshot(request).await)
         }
+        RpcRequest::ReadIndex { term } => RpcResponse::ReadIndex(read_index(raft, term).await),
     }
+}
+
+/// OpenRaft captures the read log id and then confirms leadership with a
+/// fresh quorum heartbeat round; a follower answers not-leader. A requester in
+/// another term, or a term change around the round, never gets a read index,
+/// so a stale peer cannot drive leader heartbeat rounds either.
+async fn read_index(raft: &Raft, term: u64) -> Result<ReadIndexResponse, ReadIndexError> {
+    let not_leader = || {
+        RaftError::APIError(CheckIsLeaderError::ForwardToLeader(ForwardToLeader {
+            leader_id: raft.metrics().borrow().current_leader,
+            leader_node: None,
+        }))
+    };
+    if raft.metrics().borrow().current_term != term {
+        return Err(not_leader());
+    }
+    let (read_log_id, _) = raft.get_read_log_id().await?;
+    if raft.metrics().borrow().current_term != term {
+        return Err(not_leader());
+    }
+    Ok(ReadIndexResponse { term, read_log_id })
 }
 
 pub(crate) struct NetworkFactory {

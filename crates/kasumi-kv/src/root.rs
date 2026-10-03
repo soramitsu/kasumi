@@ -39,8 +39,13 @@ use crate::segment::{
     crc32c, le_u32, le_u64, reject_legacy,
 };
 
-pub(crate) const ROOT_SLOT_BYTES: usize = 4096;
-pub(crate) const ROOT_MAGIC: [u8; 16] = *b"KASUMI-KVROOT001";
+#[path = "root_directory.rs"]
+mod directory;
+pub(crate) use directory::DirectoryCommit;
+use directory::{DIRECTORY_AT, DIRECTORY_END, decode_directory, encode_directory};
+
+pub const ROOT_SLOT_BYTES: usize = 4096;
+pub(crate) const ROOT_MAGIC: [u8; 16] = *b"KASUMI-KVROOT003";
 pub(crate) const MAX_GARBAGE: usize = 128;
 const CHECKPOINT_AT: usize = 72;
 const SEALED_AT: usize = 128;
@@ -52,7 +57,7 @@ const CHECKSUM_AT: usize = ROOT_SLOT_BYTES - 4;
 const _: () = assert!(GARBAGE_AT + MAX_GARBAGE * GARBAGE_ENTRY_BYTES <= CHECKSUM_AT);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum RootSlot {
+pub enum RootSlot {
     A,
     B,
 }
@@ -94,6 +99,9 @@ pub(crate) struct Superblock {
     sealed: Option<SealedSegment>,
     next_checkpoint_id: u64,
     checkpoint: Option<CheckpointRef>,
+    next_directory_id: u64,
+    last_directory_id: u64,
+    directory: Option<DirectoryCommit>,
     /// Sorted, unique files awaiting unlink.
     garbage: Vec<GroupFile>,
 }
@@ -115,6 +123,7 @@ pub(crate) enum FileRole {
 /// garbage file, listed or not, leaves the root only through
 /// `Superblock::unlink_garbage` and `publish_forget`.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[cfg(test)]
 pub(crate) struct Census {
     pub(crate) live_segments: Vec<u64>,
     pub(crate) orphans: Vec<GroupFile>,
@@ -124,6 +133,14 @@ pub(crate) struct Census {
     /// synchronization failed looks the same and may return after power loss,
     /// so its space is not credited and its unlink is still owed.
     pub(crate) garbage_unlink_pending: Vec<GroupFile>,
+}
+
+/// One streaming census observation. Missing garbage is still owed an exact
+/// unlink and parent synchronization; its absent name does not prove disposal.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CensusEntry {
+    Present(GroupFile, FileRole),
+    GarbageUnlinkPending(GroupFile),
 }
 
 /// Proof that the unlink of one recorded garbage file, including the parent
@@ -148,12 +165,24 @@ impl Superblock {
             sealed: None,
             next_checkpoint_id: 1,
             checkpoint: None,
+            next_directory_id: 1,
+            last_directory_id: 0,
+            directory: None,
             garbage: Vec::new(),
         }
     }
 
     pub(crate) fn generation(&self) -> u64 {
         self.generation
+    }
+
+    /// Publish an empty incarnation before any data/arena allocation. The
+    /// caller has established an empty owned group and selects no prior root.
+    pub(crate) fn initialized(&self) -> Result<Self, CoreError> {
+        if self.generation != 0 {
+            return Err(CoreError::InvalidInput("group root is already initialized"));
+        }
+        self.successor()
     }
 
     pub(crate) fn group_id(&self) -> &[u8; 16] {
@@ -245,6 +274,11 @@ impl Superblock {
     /// Reference a written, synchronized checkpoint. The replaced checkpoint
     /// becomes garbage in the same publication.
     pub(crate) fn install_checkpoint(&self, reference: CheckpointRef) -> Result<Self, CoreError> {
+        if self.directory.is_some() {
+            return Err(CoreError::InvalidInput(
+                "directory root already owns replay",
+            ));
+        }
         if reference.id == 0
             || reference.id >= self.next_checkpoint_id
             || self
@@ -285,6 +319,11 @@ impl Superblock {
         segment_id: u64,
         checkpoint: &CheckpointSummary,
     ) -> Result<Self, CoreError> {
+        if self.directory.is_some() {
+            return Err(CoreError::InvalidInput(
+                "segment retirement needs directory reachability proof",
+            ));
+        }
         let Some(current) = self.checkpoint else {
             return Err(CoreError::InvalidInput(
                 "no installed checkpoint covers the segment",
@@ -422,14 +461,19 @@ impl Superblock {
                 self.next_checkpoint_id,
                 self.checkpoint.map(|reference| reference.id),
             ),
+            FileKind::Directory => (self.next_directory_id, None),
         };
         if file.id == 0 || file.id >= next {
             FileRole::Unexpected
         } else if self.garbage.binary_search(&file).is_ok() {
             FileRole::Garbage
-        } else if file.kind == FileKind::Segment && self.pending_segment() == Some(file.id) {
+        } else if (file.kind == FileKind::Segment && self.pending_segment() == Some(file.id))
+            || (file.kind == FileKind::Directory && self.pending_directory() == Some(file.id))
+        {
             FileRole::PendingCreate
-        } else if file.kind == FileKind::Segment || current == Some(file.id) {
+        } else if matches!(file.kind, FileKind::Segment | FileKind::Directory)
+            || current == Some(file.id)
+        {
             FileRole::Live
         } else {
             FileRole::Orphan
@@ -439,55 +483,112 @@ impl Superblock {
     /// Classify every directory entry. An entry that is neither the root nor
     /// a group file, a file this root never allocated, or a missing root or
     /// referenced checkpoint fails closed.
-    pub(crate) fn census(&self, backend: &dyn SegmentGroupBackend) -> Result<Census, CoreError> {
-        let mut census = Census::default();
-        let mut root = false;
-        let mut present = Vec::new();
-        for entry in backend.entries()? {
-            if entry == ROOT_FILE_NAME {
-                root = true;
-                continue;
+    pub(crate) fn visit_census(
+        &self,
+        backend: &dyn SegmentGroupBackend,
+        mut visit: impl FnMut(CensusEntry) -> Result<(), CoreError>,
+    ) -> Result<(), CoreError> {
+        #[derive(Debug)]
+        struct VisitorStopped;
+        impl std::fmt::Display for VisitorStopped {
+            fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                out.write_str("group census visitor stopped")
             }
-            let file = entry
-                .to_str()
-                .and_then(GroupFile::parse_name)
-                .ok_or(CoreError::Corrupt(
-                    "group directory holds an entry that is not a group file",
-                ))?;
-            present.push(file);
+        }
+        impl std::error::Error for VisitorStopped {}
+
+        let mut root = false;
+        let mut checkpoint_found = self.checkpoint.is_none();
+        let directory = self.directory.and_then(|commit| commit.root.page);
+        let mut directory_found = directory.is_none();
+        let mut garbage_found = [false; MAX_GARBAGE];
+        let mut visit_error = None;
+        let result = backend.visit_entries(&mut |entry| {
+            let result =
+                (|| {
+                    if entry == ROOT_FILE_NAME {
+                        root = true;
+                        return Ok(());
+                    }
+                    let file = entry.to_str().and_then(GroupFile::parse_name).ok_or(
+                        CoreError::Corrupt(
+                            "group directory holds an entry that is not a group file",
+                        ),
+                    )?;
+                    let role = self.classify(file);
+                    if role == FileRole::Unexpected {
+                        return Err(CoreError::Corrupt(
+                            "group holds a file its root never allocated",
+                        ));
+                    }
+                    checkpoint_found |= self
+                        .checkpoint
+                        .is_some_and(|reference| file == GroupFile::checkpoint(reference.id));
+                    directory_found |=
+                        directory.is_some_and(|page| file == GroupFile::directory(page.arena_id));
+                    if let Ok(index) = self.garbage.binary_search(&file) {
+                        garbage_found[index] = true;
+                    }
+                    visit(CensusEntry::Present(file, role))
+                })();
+            if let Err(error) = result {
+                visit_error = Some(error);
+                return Err(std::io::Error::other(VisitorStopped));
+            }
+            Ok(())
+        });
+        match (result, visit_error) {
+            // Only our exact callback sentinel restores its CoreError. The
+            // backend may replace it with an independent cursor-close error;
+            // that failure must retain precedence and fence the outer owner.
+            (Err(error), Some(visit_error))
+                if error
+                    .get_ref()
+                    .is_some_and(|error| error.is::<VisitorStopped>()) =>
+            {
+                return Err(visit_error);
+            }
+            (Err(error), _) => return Err(error.into()),
+            (Ok(()), Some(error)) => return Err(error),
+            (Ok(()), None) => {}
         }
         if !root {
             return Err(CoreError::Corrupt("group root file is missing"));
         }
-        present.sort_unstable();
-        for file in &present {
-            match self.classify(*file) {
-                FileRole::Unexpected => {
-                    return Err(CoreError::Corrupt(
-                        "group holds a file its root never allocated",
-                    ));
-                }
-                FileRole::Live if file.kind == FileKind::Segment => {
-                    census.live_segments.push(file.id);
-                }
-                FileRole::Live | FileRole::PendingCreate => {}
-                FileRole::Garbage => census.garbage_present.push(*file),
-                FileRole::Orphan => census.orphans.push(*file),
-            }
-        }
-        if let Some(reference) = self.checkpoint
-            && present
-                .binary_search(&GroupFile::checkpoint(reference.id))
-                .is_err()
-        {
+        if !checkpoint_found {
             return Err(CoreError::Corrupt("referenced checkpoint is missing"));
         }
-        census.garbage_unlink_pending = self
-            .garbage
-            .iter()
-            .filter(|file| present.binary_search(file).is_err())
-            .copied()
-            .collect();
+        if !directory_found {
+            return Err(CoreError::Corrupt("referenced directory arena is missing"));
+        }
+        for (index, file) in self.garbage.iter().enumerate() {
+            if !garbage_found[index] {
+                visit(CensusEntry::GarbageUnlinkPending(*file))?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Test-only materialization for convenient assertions. Production census
+    /// retains only the fixed garbage-presence bitmap and a borrowed entry.
+    #[cfg(test)]
+    pub(crate) fn census(&self, backend: &dyn SegmentGroupBackend) -> Result<Census, CoreError> {
+        let mut census = Census::default();
+        self.visit_census(backend, |entry| {
+            match entry {
+                CensusEntry::Present(file, FileRole::Live) if file.kind == FileKind::Segment => {
+                    census.live_segments.push(file.id)
+                }
+                CensusEntry::Present(file, FileRole::Garbage) => census.garbage_present.push(file),
+                CensusEntry::Present(file, FileRole::Orphan) => census.orphans.push(file),
+                CensusEntry::GarbageUnlinkPending(file) => census.garbage_unlink_pending.push(file),
+                CensusEntry::Present(_, _) => {}
+            }
+            Ok(())
+        })?;
+        census.live_segments.sort_unstable();
+        census.garbage_present.sort_unstable();
+        census.orphans.sort_unstable();
         Ok(census)
     }
 
@@ -525,18 +626,30 @@ impl Superblock {
         {
             return Some("root checkpoint reference is invalid");
         }
+        if let Some(reason) = self.directory_invariant_violation() {
+            return Some(reason);
+        }
         let start = self
             .checkpoint
             .map_or(0, |reference| reference.start_segment_id);
         if self.garbage.len() > MAX_GARBAGE
             || self.garbage.windows(2).any(|pair| pair[0] >= pair[1])
             || self.garbage.iter().any(|file| match file.kind {
-                FileKind::Segment => file.id == 0 || file.id >= start,
+                FileKind::Segment => {
+                    if self.directory.is_some() {
+                        !self.directory_file_is_retirable(*file)
+                    } else {
+                        file.id == 0 || file.id >= start
+                    }
+                }
                 FileKind::Checkpoint => {
                     file.id == 0
                         || file.id >= self.next_checkpoint_id
                         || self.checkpoint.is_some_and(|current| current.id == file.id)
                 }
+                // These are structural guards only. Runtime recovery checks
+                // complete root reachability before unlinking decoded garbage.
+                FileKind::Directory => !self.directory_file_is_retirable(*file),
             })
         {
             return Some("root garbage list is invalid");
@@ -576,6 +689,7 @@ impl Superblock {
             bytes[at] = file.kind.tag();
             bytes[at + 8..at + 16].copy_from_slice(&file.id.to_le_bytes());
         }
+        encode_directory(self, &mut bytes[DIRECTORY_AT..DIRECTORY_END]);
         let checksum = crc32c(&bytes[..CHECKSUM_AT]);
         bytes[CHECKSUM_AT..].copy_from_slice(&checksum.to_le_bytes());
         Ok(bytes)
@@ -587,6 +701,9 @@ fn sealed_len_is_valid(len: u64) -> bool {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+// Two fixed-size slot images are read at a time. Keep their bounded metadata
+// inline rather than add a fallible, separately admitted allocation per slot.
+#[allow(clippy::large_enum_variant)]
 enum SlotImage {
     Unwritten,
     /// Torn or damaged: wrong magic or checksum.
@@ -596,6 +713,9 @@ enum SlotImage {
 
 fn decode_slot(bytes: &[u8; ROOT_SLOT_BYTES]) -> Result<SlotImage, CoreError> {
     reject_legacy(bytes)?;
+    if bytes[..16] == *b"KASUMI-KVROOT001" || bytes[..16] == *b"KASUMI-KVROOT002" {
+        return Err(CoreError::Corrupt("retired root format is unsupported"));
+    }
     if bytes.iter().all(|&byte| byte == 0) {
         return Ok(SlotImage::Unwritten);
     }
@@ -610,7 +730,10 @@ fn decode_slot(bytes: &[u8; ROOT_SLOT_BYTES]) -> Result<SlotImage, CoreError> {
             .iter()
             .any(|&byte| byte != 0)
         || garbage_count > MAX_GARBAGE
-        || bytes[GARBAGE_AT + garbage_count * GARBAGE_ENTRY_BYTES..CHECKSUM_AT]
+        || bytes[GARBAGE_AT + garbage_count * GARBAGE_ENTRY_BYTES..DIRECTORY_AT]
+            .iter()
+            .any(|&byte| byte != 0)
+        || bytes[DIRECTORY_END..CHECKSUM_AT]
             .iter()
             .any(|&byte| byte != 0)
     {
@@ -663,6 +786,10 @@ fn decode_slot(bytes: &[u8; ROOT_SLOT_BYTES]) -> Result<SlotImage, CoreError> {
             id: le_u64(&bytes[at + 8..at + 16]),
         });
     }
+    let (next_directory_id, last_directory_id, directory) = decode_directory(
+        &bytes[DIRECTORY_AT..DIRECTORY_END],
+        bytes[24..40].try_into().expect("16 bytes"),
+    )?;
     let superblock = Superblock {
         generation: le_u64(&bytes[40..48]),
         group_id: bytes[24..40].try_into().expect("16 bytes"),
@@ -671,6 +798,9 @@ fn decode_slot(bytes: &[u8; ROOT_SLOT_BYTES]) -> Result<SlotImage, CoreError> {
         sealed,
         next_checkpoint_id: le_u64(&bytes[64..72]),
         checkpoint,
+        next_directory_id,
+        last_directory_id,
+        directory,
         garbage,
     };
     if let Some(reason) = superblock.invariant_violation() {
@@ -680,6 +810,9 @@ fn decode_slot(bytes: &[u8; ROOT_SLOT_BYTES]) -> Result<SlotImage, CoreError> {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+// Selection holds exactly one bounded root, never a data-sized collection.
+// Boxing it would introduce another allocation on the recovery/publication path.
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum RootSelection {
     /// No publication completed. Valid only for a group with no files.
     Empty,
@@ -710,8 +843,17 @@ fn read_selection(backend: &dyn SegmentGroupBackend) -> Result<RootSelection, Co
     let mut b = [0u8; ROOT_SLOT_BYTES];
     backend.read_root(RootSlot::A, &mut a)?;
     backend.read_root(RootSlot::B, &mut b)?;
-    let a = decode_slot(&a)?;
-    let b = decode_slot(&b)?;
+    select_root_images(&a, &b)
+}
+
+/// Apply the canonical mirrored-slot rules to caller-owned images without
+/// taking another backend lock or performing a synchronization callback.
+fn select_root_images(
+    a: &[u8; ROOT_SLOT_BYTES],
+    b: &[u8; ROOT_SLOT_BYTES],
+) -> Result<RootSelection, CoreError> {
+    let a = decode_slot(a)?;
+    let b = decode_slot(b)?;
     let selected = |superblock: Superblock, slot, mirrored| {
         Ok(RootSelection::Selected {
             superblock,
@@ -742,6 +884,11 @@ fn read_selection(backend: &dyn SegmentGroupBackend) -> Result<RootSelection, Co
                     "root slots are not adjacent publications",
                 ));
             }
+            if !is_successor(&older, &newer) {
+                return Err(CoreError::Corrupt(
+                    "root slots are not successive publications",
+                ));
+            }
             selected(newer, newer_slot, false)
         }
         (SlotImage::Valid(valid), SlotImage::Invalid) => selected(valid, RootSlot::A, false),
@@ -762,6 +909,76 @@ fn read_selection(backend: &dyn SegmentGroupBackend) -> Result<RootSelection, Co
             Err(CoreError::Corrupt("no intact root slot"))
         }
     }
+}
+
+/// Maximum additional heap backing while the pure transaction-space validator
+/// decodes both bounded garbage lists. Caller-owned slot images and scalar
+/// stack frames are separate. Installed callers preadmit this before decoding.
+pub const TRANSACTION_SPACE_ROOTS_HEAP_BYTES: u64 =
+    (2 * (MAX_GARBAGE * std::mem::size_of::<GroupFile>() + 128)) as u64;
+
+/// Check a space plan against the canonical selection from two protected root
+/// images. This reads no backend and proves no I/O settlement or authorization.
+/// The caller preadmits `TRANSACTION_SPACE_ROOTS_HEAP_BYTES`, obtains both images
+/// under its actual group owner, and keeps that owner serialized through claim
+/// installation. Plan shape/extent/cardinality checks remain mandatory too.
+pub fn validate_transaction_space_roots(
+    plan: &crate::group::TransactionSpacePlan,
+    a: &[u8; ROOT_SLOT_BYTES],
+    b: &[u8; ROOT_SLOT_BYTES],
+) -> Result<(), CoreError> {
+    let RootSelection::Selected {
+        superblock: root, ..
+    } = select_root_images(a, b)?
+    else {
+        return Err(CoreError::InvalidInput(
+            "transaction space requires an initialized root",
+        ));
+    };
+    if root.group_id != plan.group_id
+        || root.generation != plan.root_generation
+        || root.pending_segment().is_some()
+        || root.pending_directory().is_some()
+        || plan.batch_seq == u64::MAX
+        || plan.batch_seq <= root.directory.map_or(0, |commit| commit.start.batch_seq)
+    {
+        return Err(CoreError::InvalidInput(
+            "transaction space differs from selected root",
+        ));
+    }
+    // A caller-supplied floor cannot turn a Store envelope plus a truncated
+    // native header into a completed physical file. These are canonical native
+    // header widths; the installed backend adds its own envelope separately.
+    if (plan.new_segments.count != 0
+        && plan.new_segments.minimum_len != crate::segment::SEGMENT_HEADER_BYTES)
+        || (plan.new_directories.count != 0
+            && plan.new_directories.minimum_len != crate::arena::HEADER_BYTES as u64)
+        || plan
+            .segment
+            .is_some_and(|tail| tail.initial_len < crate::segment::SEGMENT_HEADER_BYTES)
+        || plan
+            .directory
+            .is_some_and(|tail| tail.initial_len < crate::arena::HEADER_BYTES as u64)
+    {
+        return Err(CoreError::InvalidInput(
+            "transaction space native header minimum differs",
+        ));
+    }
+    // Reopened directory writers intentionally start a fresh arena. An existing
+    // tail, when supplied, must still be this group's newest confirmed file.
+    if plan.segment.is_some_and(|tail| {
+        tail.file != GroupFile::segment(root.last_segment_id) || root.last_segment_id == 0
+    }) || plan.directory.is_some_and(|tail| {
+        tail.file != GroupFile::directory(root.last_directory_id) || root.last_directory_id == 0
+    }) || (plan.new_segments.count != 0 && plan.new_segments.first_id != root.next_segment_id)
+        || (plan.new_directories.count != 0
+            && plan.new_directories.first_id != root.next_directory_id)
+    {
+        return Err(CoreError::InvalidInput(
+            "transaction space names a stale file range",
+        ));
+    }
+    Ok(())
 }
 
 /// Publish `next` as the successor of the durable root `previous`
@@ -862,6 +1079,9 @@ fn is_successor(previous: &Superblock, next: &Superblock) -> bool {
         && next.next_segment_id >= previous.next_segment_id
         && next.last_segment_id >= previous.last_segment_id
         && next.next_checkpoint_id >= previous.next_checkpoint_id
+        && next.next_directory_id >= previous.next_directory_id
+        && next.last_directory_id >= previous.last_directory_id
+        && directory::directory_successor(previous.directory, next.directory)
         && !checkpoint_regressed
         && (next.next_segment_id != previous.next_segment_id || next.sealed == previous.sealed)
 }
@@ -1287,7 +1507,11 @@ mod tests {
         let bytes = rich().encode().unwrap();
         let entry = |index: usize| GARBAGE_AT + index * GARBAGE_ENTRY_BYTES;
         let cases: [(&str, usize, u8); 18] = [
-            ("root slot has an unsupported layout", 16, 3),
+            (
+                "root slot has an unsupported layout",
+                16,
+                (FORMAT_VERSION + 1) as u8,
+            ),
             ("root slot has an unsupported layout", 21, 1),
             (
                 "root slot has an unsupported layout",
@@ -1402,6 +1626,27 @@ mod tests {
     }
 
     #[test]
+    fn retired_root_is_never_treated_as_a_torn_or_missing_publication() {
+        let (_, root) = published(1);
+        let current = root.encode().unwrap();
+        let mut retired = current;
+        retired[..16].copy_from_slice(b"KASUMI-KVROOT001");
+        reseal(&mut retired);
+        for other in [[0; ROOT_SLOT_BYTES], current, retired] {
+            for slot in [RootSlot::A, RootSlot::B] {
+                let group = InMemoryGroup::new();
+                group.write_root(slot, &retired).unwrap();
+                group.write_root(slot.other(), &other).unwrap();
+                group.sync_root().unwrap();
+                assert_eq!(
+                    corrupt_reason(select_root(&group)),
+                    "retired root format is unsupported"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn legacy_single_file_header_is_rejected() {
         let mut legacy = [0u8; ROOT_SLOT_BYTES];
         legacy[..16].copy_from_slice(&LEGACY_MAGIC);
@@ -1489,6 +1734,156 @@ mod tests {
             corrupt_reason(next.census(&group)),
             "referenced checkpoint is missing"
         );
+    }
+
+    struct CensusCleanupBackend {
+        group: InMemoryGroup,
+        replacement: Option<&'static str>,
+    }
+
+    impl SegmentGroupBackend for CensusCleanupBackend {
+        fn reserve_transaction(
+            &self,
+            plan: &crate::TransactionSpacePlan,
+        ) -> std::result::Result<(), crate::TransactionReserveError> {
+            self.group.reserve_transaction(plan)
+        }
+        fn finish_transaction(&self, group_id: [u8; 16], batch_seq: u64) -> std::io::Result<()> {
+            self.group.finish_transaction(group_id, batch_seq)
+        }
+        fn cancel_transaction(&self, group_id: [u8; 16], batch_seq: u64) -> std::io::Result<()> {
+            self.group.cancel_transaction(group_id, batch_seq)
+        }
+
+        fn read_root(
+            &self,
+            slot: RootSlot,
+            out: &mut [u8; ROOT_SLOT_BYTES],
+        ) -> std::io::Result<()> {
+            self.group.read_root(slot, out)
+        }
+        fn write_root(&self, slot: RootSlot, bytes: &[u8; ROOT_SLOT_BYTES]) -> std::io::Result<()> {
+            self.group.write_root(slot, bytes)
+        }
+        fn sync_root(&self) -> std::io::Result<()> {
+            self.group.sync_root()
+        }
+        fn visit_entries(
+            &self,
+            visitor: &mut dyn FnMut(&std::ffi::OsStr) -> std::io::Result<()>,
+        ) -> std::io::Result<()> {
+            let result = self.group.visit_entries(visitor);
+            if let Some(message) = self.replacement {
+                Err(std::io::Error::other(message))
+            } else {
+                result
+            }
+        }
+        fn exists(&self, file: GroupFile) -> std::io::Result<bool> {
+            self.group.exists(file)
+        }
+        fn create(&self, file: GroupFile) -> std::io::Result<()> {
+            self.group.create(file)
+        }
+        fn len(&self, file: GroupFile) -> std::io::Result<u64> {
+            self.group.len(file)
+        }
+        fn read(&self, file: GroupFile, at: u64, out: &mut [u8]) -> std::io::Result<()> {
+            self.group.read(file, at, out)
+        }
+        fn write(&self, file: GroupFile, at: u64, bytes: &[u8]) -> std::io::Result<()> {
+            self.group.write(file, at, bytes)
+        }
+        fn set_len(&self, file: GroupFile, length: u64) -> std::io::Result<()> {
+            self.group.set_len(file, length)
+        }
+        fn sync(&self, file: GroupFile) -> std::io::Result<()> {
+            self.group.sync(file)
+        }
+        fn unlink(&self, file: GroupFile) -> std::io::Result<()> {
+            self.group.unlink(file)
+        }
+        fn sync_names(&self) -> std::io::Result<()> {
+            self.group.sync_names()
+        }
+        fn close(&self) -> crate::core::BackendCloseOutcome {
+            self.group.close()
+        }
+    }
+
+    #[test]
+    fn census_preserves_callback_error_only_when_its_sentinel_returns() {
+        let group = InMemoryGroup::new();
+        let root = grown(&Superblock::genesis(GROUP));
+        group.insert_foreign(GroupFile::segment(1), Vec::new());
+        let backend = CensusCleanupBackend {
+            group,
+            replacement: None,
+        };
+        assert!(matches!(
+            root.visit_census(&backend, |_| Err(CoreError::CapacityDenied)),
+            Err(CoreError::CapacityDenied)
+        ));
+        for message in ["cursor close failed", "group census visitor stopped"] {
+            let backend = CensusCleanupBackend {
+                group: backend.group.clone(),
+                replacement: Some(message),
+            };
+            let error = root
+                .visit_census(&backend, |_| Err(CoreError::CapacityDenied))
+                .unwrap_err();
+            assert!(error.fences_owner());
+            assert!(matches!(error, CoreError::Io(ref error) if error.to_string() == message));
+        }
+    }
+
+    #[test]
+    fn empty_initialization_is_mirrored_and_cannot_run_twice() {
+        let group = InMemoryGroup::new();
+        let genesis = Superblock::genesis(GROUP);
+        let initialized = genesis.initialized().unwrap();
+        assert_eq!(initialized.generation(), 1);
+        assert_eq!(initialized.last_segment_id(), 0);
+        assert!(initialized.directory().is_none());
+        publish_root(&group, &genesis, &initialized).unwrap();
+        assert!(
+            matches!(select_root(&group).unwrap(), RootSelection::Selected { superblock, mirrored: true, .. } if superblock == initialized)
+        );
+        initialized.visit_census(&group, |_| Ok(())).unwrap();
+        let before = [
+            slot_bytes(&group, RootSlot::A),
+            slot_bytes(&group, RootSlot::B),
+        ];
+        assert!(matches!(
+            initialized.initialized(),
+            Err(CoreError::InvalidInput(_))
+        ));
+        assert_eq!(
+            before,
+            [
+                slot_bytes(&group, RootSlot::A),
+                slot_bytes(&group, RootSlot::B)
+            ]
+        );
+    }
+
+    #[test]
+    fn retired_root_slots_are_rejected_even_beside_current_root() {
+        for magic in [b"KASUMI-KVROOT001", b"KASUMI-KVROOT002"] {
+            for slot in [RootSlot::A, RootSlot::B] {
+                let (group, root) = published(2);
+                let mut bytes = root.encode().unwrap();
+                bytes[..16].copy_from_slice(magic);
+                let checksum = crc32c(&bytes[..CHECKSUM_AT]);
+                bytes[CHECKSUM_AT..].copy_from_slice(&checksum.to_le_bytes());
+                group.write_root(slot, &bytes).unwrap();
+                group.sync_root().unwrap();
+                assert_eq!(
+                    corrupt_reason(select_root(&group)),
+                    "retired root format is unsupported"
+                );
+            }
+        }
     }
 
     #[test]
@@ -1994,3 +2389,7 @@ mod tests {
         assert_eq!(slots(&group), before);
     }
 }
+
+#[cfg(test)]
+#[path = "root_space_tests.rs"]
+mod space_tests;

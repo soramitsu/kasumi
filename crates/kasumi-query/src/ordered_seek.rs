@@ -1,12 +1,13 @@
 //! Bounded traversal of the maintained unique tuple map, without candidate sets.
 use crate::{
-    QueryCancellation, QueryIndexes, ResultBudget,
+    BorrowedRow, DocumentSource, QueryCancellation, QueryIndexes, ReadResult, ResultBudget,
+    document_source,
     scalar::{Scalar, invalid, scalar},
 };
 use kasumi_types::*;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::{collections::BTreeMap, ops::Bound};
+use std::ops::Bound;
 
 pub struct OrderedSeekPage {
     pub rows: Vec<QueryRow>,
@@ -125,14 +126,16 @@ fn upper_stricter(a: Bound<Vec<Scalar>>, b: Bound<Vec<Scalar>>) -> Bound<Vec<Sca
     }
 }
 impl QueryIndexes {
-    pub fn ordered_seek_with_cancellation(
+    pub fn ordered_seek_with_cancellation<S: DocumentSource + ?Sized>(
         &self,
-        collections: &BTreeMap<String, CollectionState>,
+        source: &S,
         request: &OrderedSeekRequest,
         limits: &Limits,
         cancellation: &QueryCancellation,
-    ) -> Result<OrderedSeekPage> {
+    ) -> ReadResult<OrderedSeekPage, S::Failure> {
         cancellation.check()?;
+        document_source::check_source(source, self, &request.collection)?;
+        let source = &document_source::BoundSource::new(source);
         request_shape(request)?;
         validate_name(&request.collection)?;
         validate_name(&request.index)?;
@@ -143,11 +146,9 @@ impl QueryIndexes {
                 .checked_add(1)
                 .is_none_or(|count| count > limits.max_query_candidates)
         {
-            return Err(invalid("ordered seek page outside allowed bound"));
+            return Err(invalid("ordered seek page outside allowed bound").into());
         }
-        let collection = collections
-            .get(&request.collection)
-            .ok_or_else(|| Error::new(ErrorCode::NotFound, "ordered seek collection absent"))?;
+
         let indexes = self
             .collections
             .get(&request.collection)
@@ -163,7 +164,7 @@ impl QueryIndexes {
                 )
             })?;
         if index.fields.is_empty() || index.fields.len() > 8 {
-            return Err(invalid("ordered seek index field bound"));
+            return Err(invalid("ordered seek index field bound").into());
         }
         let prefix = values(&request.prefix, &index.fields, false)?;
         let mut high = prefix.clone();
@@ -173,7 +174,7 @@ impl QueryIndexes {
         if let Some(bound) = &request.lower {
             let key = values(&bound.key, &index.fields, true)?;
             if !key.starts_with(&prefix) {
-                return Err(invalid("ordered seek lower key leaves prefix"));
+                return Err(invalid("ordered seek lower key leaves prefix").into());
             }
             lower = lower_stricter(
                 lower,
@@ -187,7 +188,7 @@ impl QueryIndexes {
         if let Some(bound) = &request.upper {
             let key = values(&bound.key, &index.fields, true)?;
             if !key.starts_with(&prefix) {
-                return Err(invalid("ordered seek upper key leaves prefix"));
+                return Err(invalid("ordered seek upper key leaves prefix").into());
             }
             upper = upper_stricter(
                 upper,
@@ -202,11 +203,11 @@ impl QueryIndexes {
             if cursor.revision == 0
                 || cursor.request_sha256 != ordered_seek_request_sha256(request)?
             {
-                return Err(invalid("ordered seek continuation request differs"));
+                return Err(invalid("ordered seek continuation request differs").into());
             }
             let key = values(&cursor.after_key, &index.fields, true)?;
             if !key.starts_with(&prefix) {
-                return Err(invalid("ordered seek continuation leaves prefix"));
+                return Err(invalid("ordered seek continuation leaves prefix").into());
             }
             match request.direction {
                 Direction::Asc => lower = lower_stricter(lower, Bound::Excluded(key)),
@@ -240,32 +241,29 @@ impl QueryIndexes {
                 more = true;
                 break;
             }
-            let document = collection.documents.get(id).ok_or_else(|| {
-                Error::new(
-                    ErrorCode::Unavailable,
-                    "ordered seek selected archived content requires bounded hydration",
-                )
-            })?;
-            let mut raw_key = Vec::with_capacity(index.fields.len());
-            for (field, expected) in index.fields.iter().zip(key) {
-                let value = document.body.pointer(&field.path).ok_or_else(|| {
-                    Error::new(ErrorCode::Corruption, "ordered seek indexed field absent")
+            let (row, raw_key) =
+                document_source::with_live(source, id, None, cancellation, |document| {
+                    let borrowed = BorrowedRow {
+                        document,
+                        projection: &[],
+                        score: None,
+                    };
+                    budget.account(&borrowed)?;
+                    let mut raw_key = Vec::with_capacity(index.fields.len());
+                    for (field, expected) in index.fields.iter().zip(key) {
+                        let value = document.body.pointer(&field.path).ok_or_else(|| {
+                            Error::new(ErrorCode::Corruption, "ordered seek indexed field absent")
+                        })?;
+                        if scalar(Some(value), Some(field.kind))? != *expected {
+                            return Err(Error::new(
+                                ErrorCode::Corruption,
+                                "ordered seek index/body differs",
+                            ));
+                        }
+                        raw_key.push(value.clone());
+                    }
+                    Ok((borrowed.into_owned(), raw_key))
                 })?;
-                if scalar(Some(value), Some(field.kind))? != *expected {
-                    return Err(Error::new(
-                        ErrorCode::Corruption,
-                        "ordered seek index/body differs",
-                    ));
-                }
-                raw_key.push(value.clone());
-            }
-            let row = QueryRow {
-                id: document.id.clone(),
-                version: document.version,
-                body: document.body.clone(),
-                score: None,
-            };
-            budget.account(&row)?;
             rows.push(row);
             last = Some(raw_key);
         }
@@ -281,7 +279,9 @@ impl QueryIndexes {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::source_test_utils::FixtureQueries;
     use serde_json::json;
+    use std::collections::BTreeMap;
     use std::sync::Arc;
     fn setup() -> (BTreeMap<String, CollectionState>, OrderedSeekRequest) {
         let definition = CollectionDefinition {
@@ -345,17 +345,25 @@ mod tests {
     #[test]
     fn bounded_named_tuple_seek_examines_only_page_and_lookahead_at_volume() {
         let (collections, mut request) = setup();
-        let indexes = QueryIndexes::build(&collections).unwrap();
+        let indexes = QueryIndexes::build_fixture(&collections).unwrap();
+        // Each body loan checks cancellation six times across the source and
+        // lending boundary. Each visited index entry checks once, including
+        // one lookahead, and query entry/exit add two. This allowance depends
+        // only on page size, never on the collection's 10,005 documents.
+        const CHECKS_PER_BODY_LOAN: usize = 6;
+        const QUERY_ENTRY_EXIT_CHECKS: usize = 2;
+        let checkpoint_budget =
+            request.limit * (CHECKS_PER_BODY_LOAN + 1) + 1 + QUERY_ENTRY_EXIT_CHECKS;
         let limits = Limits {
             max_query_candidates: 3,
             ..Limits::default()
         };
         let page = indexes
-            .ordered_seek_with_cancellation(
+            .ordered_seek_with_cancellation_fixture(
                 &collections,
                 &request,
                 &limits,
-                &QueryCancellation::after_checks(8),
+                &QueryCancellation::after_checks(checkpoint_budget),
             )
             .unwrap();
         assert_eq!(page.index_entries_visited, 3);
@@ -369,11 +377,11 @@ mod tests {
         );
         request.continuation = Some(continuation(&request, page.after_key.unwrap()));
         let next = indexes
-            .ordered_seek_with_cancellation(
+            .ordered_seek_with_cancellation_fixture(
                 &collections,
                 &request,
                 &limits,
-                &QueryCancellation::after_checks(8),
+                &QueryCancellation::after_checks(checkpoint_budget),
             )
             .unwrap();
         assert_eq!(next.rows[0].body["at"], "00000000000000010002");
@@ -381,11 +389,11 @@ mod tests {
         request.direction = Direction::Asc;
         request.continuation = None;
         let first = indexes
-            .ordered_seek_with_cancellation(
+            .ordered_seek_with_cancellation_fixture(
                 &collections,
                 &request,
                 &limits,
-                &QueryCancellation::after_checks(8),
+                &QueryCancellation::after_checks(checkpoint_budget),
             )
             .unwrap();
         assert_eq!(first.rows[0].body["at"], "00000000000000000000");
@@ -398,11 +406,11 @@ mod tests {
             inclusive: true,
         });
         let last = indexes
-            .ordered_seek_with_cancellation(
+            .ordered_seek_with_cancellation_fixture(
                 &collections,
                 &request,
                 &limits,
-                &QueryCancellation::after_checks(8),
+                &QueryCancellation::after_checks(checkpoint_budget),
             )
             .unwrap();
         assert_eq!(last.rows.len(), 1);
@@ -412,10 +420,10 @@ mod tests {
     #[test]
     fn boundaries_request_replay_and_index_requirements_fail_without_scanning() {
         let (collections, mut request) = setup();
-        let indexes = QueryIndexes::build(&collections).unwrap();
+        let indexes = QueryIndexes::build_fixture(&collections).unwrap();
         request.prefix = vec![json!("absent")];
         let empty = indexes
-            .ordered_seek_with_cancellation(
+            .ordered_seek_with_cancellation_fixture(
                 &collections,
                 &request,
                 &Limits::default(),
@@ -430,7 +438,7 @@ mod tests {
         });
         assert!(
             indexes
-                .ordered_seek_with_cancellation(
+                .ordered_seek_with_cancellation_fixture(
                     &collections,
                     &request,
                     &Limits::default(),
@@ -442,7 +450,7 @@ mod tests {
         request.prefix = vec![json!(42)];
         assert!(
             indexes
-                .ordered_seek_with_cancellation(
+                .ordered_seek_with_cancellation_fixture(
                     &collections,
                     &request,
                     &Limits::default(),
@@ -454,7 +462,7 @@ mod tests {
         request.index = "missing".into();
         assert_eq!(
             indexes
-                .ordered_seek_with_cancellation(
+                .ordered_seek_with_cancellation_fixture(
                     &collections,
                     &request,
                     &Limits::default(),
@@ -473,7 +481,7 @@ mod tests {
         request.limit = 3;
         assert!(
             indexes
-                .ordered_seek_with_cancellation(
+                .ordered_seek_with_cancellation_fixture(
                     &collections,
                     &request,
                     &Limits::default(),

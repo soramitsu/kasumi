@@ -29,6 +29,13 @@ pub struct AdmissionConfig {
     pub max_inflight_operations: usize,
     /// Fixed charge ledger capacity, including facade and resident reservations.
     pub max_reservations: usize,
+    /// Shared bytes optional cache credit must leave for required work, in
+    /// addition to installed audit protection. None: min(total / 4, 64 MiB).
+    /// This preserves bounded read/maintenance room, not every maximum batch.
+    pub cache_work_reserve_bytes: Option<u64>,
+    /// Shared ledger slots optional cache credit must leave for required work.
+    /// None: max(1, min(max_reservations / 4, 64)).
+    pub cache_work_reserve_slots: Option<usize>,
     /// Fixed startup-owner inventory per independent runtime facade.
     pub max_snapshot_startups: usize,
     /// Fixed strong census of admitted startup lifecycles on this memory core.
@@ -44,6 +51,8 @@ impl Default for AdmissionConfig {
             max_inflight_bytes: None,
             max_inflight_operations: 64,
             max_reservations: 4096,
+            cache_work_reserve_bytes: None,
+            cache_work_reserve_slots: None,
             max_snapshot_startups: 64,
             max_startup_scopes: 64,
             sample_interval_ms: 250,
@@ -69,7 +78,21 @@ impl AdmissionConfig {
             high > 0 && low < high && total > 0 && total <= high,
             "invalid resolved admission budgets"
         );
+        anyhow::ensure!(
+            self.cache_work_reserve_bytes
+                .is_none_or(|bytes| bytes <= total),
+            "cache mandatory-work byte reserve exceeds total admission"
+        );
         Ok((low, total))
+    }
+
+    pub(crate) fn cache_work_headroom(&self, total: u64) -> (u64, usize) {
+        (
+            self.cache_work_reserve_bytes
+                .unwrap_or((total / 4).min(64 << 20)),
+            self.cache_work_reserve_slots
+                .unwrap_or((self.max_reservations / 4).clamp(1, 64)),
+        )
     }
 
     /// Resolve the current total without allocating a governor or adding any
@@ -87,6 +110,12 @@ impl AdmissionConfig {
                 && self.max_snapshot_startups > 0
                 && self.max_startup_scopes > 0,
             "admission ledger or startup inventory capacity is invalid"
+        );
+        anyhow::ensure!(
+            self.cache_work_reserve_slots
+                .is_none_or(|slots| slots > 0 && slots <= self.max_reservations)
+                && self.cache_work_reserve_bytes != Some(0),
+            "cache mandatory-work reserve is invalid"
         );
         MemoryCore::required_bookkeeping_bytes(self)?;
         NodeAdmission::inventory_bytes(self)?;
@@ -118,7 +147,7 @@ mod installed;
 pub mod snapshot_work;
 pub mod startup;
 
-trait MemorySource: Send + Sync {
+pub(crate) trait MemorySource: Send + Sync {
     fn resident_bytes(&self) -> anyhow::Result<u64>;
 }
 struct ProcessMemory;
@@ -252,11 +281,22 @@ enum ChargeOrigin {
     OrdinaryOperation,
     OtherOrdinary,
     AuditMaintenance,
+    ScopedApplicationSource,
+    NativeCache,
+    // Retained selected-source metadata and logical document backing preserve
+    // the same mandatory work and installed maintenance floors.
+    DocumentSource,
+}
+impl ChargeOrigin {
+    fn preserves_cache_headroom(self) -> bool {
+        matches!(self, Self::NativeCache | Self::DocumentSource)
+    }
 }
 #[derive(Clone, Copy)]
 enum ReserveKindError {
     Exhausted,
     IdentifierExhausted,
+    Missing,
 }
 struct Charge {
     bytes: u64,
@@ -363,6 +403,46 @@ struct PreparedCore {
     resident: u64,
     sampled_at: Duration,
 }
+
+impl MemoryState {
+    fn cache_headroom_fits(&self, state: &State, total: u64, additional_slots: usize) -> bool {
+        self.cache_headroom_fits_with_protection(
+            state,
+            total,
+            additional_slots,
+            state.ordinary_protected,
+            state.ordinary_protected_slots,
+        )
+    }
+    // The proposed protection is the complete new floor, including existing
+    // protection. Substituting it once keeps installation and later source/cache
+    // admission consistent without adding the existing floor twice.
+    fn cache_headroom_fits_with_protection(
+        &self,
+        state: &State,
+        total: u64,
+        additional_slots: usize,
+        protected_bytes: u64,
+        protected_slots: usize,
+    ) -> bool {
+        let (bytes, slots) = self.config.cache_work_headroom(self.max_bytes);
+        let available_bytes = bytes
+            .checked_add(protected_bytes)
+            .and_then(|reserve| total.checked_add(reserve));
+        let available_slots = slots
+            .checked_add(protected_slots)
+            .and_then(|reserve| state.live.checked_add(reserve))
+            .and_then(|reserved| reserved.checked_add(additional_slots));
+        available_bytes.is_some_and(|reserved| {
+            reserved <= self.max_bytes
+                && state
+                    .resident
+                    .checked_add(reserved)
+                    .is_some_and(|observed| observed < self.high)
+        }) && available_slots.is_some_and(|reserved| reserved <= state.slots.len())
+    }
+}
+
 impl MemoryCore {
     /// Select the one installed process governor. Runtime replacements construct
     /// a fresh NodeAdmission facade on this same retained resource core.
@@ -675,20 +755,10 @@ impl MemoryCore {
         let protected_slots = state.ordinary_protected_slots.checked_add(slots);
         if !state.usable
             || state.pressured
-            || protected_slots.is_none_or(|slots| {
-                state
-                    .live
-                    .checked_add(slots)
-                    .is_none_or(|live| live > state.slots.len())
-            })
-            || protected.is_none_or(|protected| {
-                state.bytes.checked_add(protected).is_none_or(|total| {
-                    total > self.data.max_bytes
-                        || state
-                            .resident
-                            .checked_add(total)
-                            .is_none_or(|observed| observed >= self.data.high)
-                })
+            || protected.zip(protected_slots).is_none_or(|(bytes, slots)| {
+                !self
+                    .data
+                    .cache_headroom_fits_with_protection(&state, state.bytes, 0, bytes, slots)
             })
         {
             return Err(Error::new(
@@ -731,6 +801,9 @@ impl MemoryCore {
                 ReserveKindError::IdentifierExhausted => {
                     Error::new(ErrorCode::Unavailable, "admission identifier exhausted")
                 }
+                ReserveKindError::Missing => {
+                    Error::new(ErrorCode::Unavailable, "admission reservation absent")
+                }
             })
     }
     fn reserve_audit_escrow(self: &Arc<Self>, bytes: u64) -> Result<Reservation> {
@@ -748,11 +821,15 @@ impl MemoryCore {
             ReserveKindError::IdentifierExhausted => {
                 Error::new(ErrorCode::Unavailable, "admission identifier exhausted")
             }
+            ReserveKindError::Missing => {
+                Error::new(ErrorCode::Unavailable, "admission reservation absent")
+            }
         })
     }
     // Installed storage needs a typed refusal before its first resident buffer
     // allocation or physical read. This path avoids constructing a rich Error
     // for the refusal; the existing sampler may have its own workspace.
+    #[cfg_attr(any(test, feature = "test-utils"), track_caller)]
     fn reserve_kind_raw(
         self: &Arc<Self>,
         bytes: u64,
@@ -790,8 +867,45 @@ impl MemoryCore {
                                         .is_none_or(|observed| observed >= self.data.high)
                             },
                         ))
+                    || (origin.preserves_cache_headroom()
+                        && !self.data.cache_headroom_fits(&state, total, 1))
             })
         {
+            #[cfg(any(test, feature = "test-utils"))]
+            if origin == ChargeOrigin::DocumentSource
+                && std::env::var_os("KASUMI_TEST_SOURCE_GRANT_TRACE").is_some()
+            {
+                let (source_bytes, source_slots) = state
+                    .slots
+                    .iter()
+                    .filter_map(|slot| slot.charge.as_ref())
+                    .filter(|charge| charge.origin == ChargeOrigin::DocumentSource)
+                    .fold((0u64, 0usize), |(bytes, slots), charge| {
+                        (bytes.saturating_add(charge.bytes), slots + 1)
+                    });
+                let (cache_bytes, cache_slots) =
+                    self.data.config.cache_work_headroom(self.data.max_bytes);
+                eprintln!(
+                    "kasumi source grant refused caller={} requested={} charged={} limit={} source_bytes={} source_slots={} live_slots={} total_slots={} free_slot={} cache_reserve_bytes={} cache_reserve_slots={} ordinary_protected_bytes={} ordinary_protected_slots={} resident={} high={} usable={} pressured={}",
+                    std::panic::Location::caller(),
+                    bytes,
+                    state.bytes,
+                    self.data.max_bytes,
+                    source_bytes,
+                    source_slots,
+                    state.live,
+                    state.slots.len(),
+                    state.free.is_some(),
+                    cache_bytes,
+                    cache_slots,
+                    state.ordinary_protected,
+                    state.ordinary_protected_slots,
+                    state.resident,
+                    self.data.high,
+                    state.usable,
+                    state.pressured,
+                );
+            }
             return Err(ReserveKindError::Exhausted);
         }
         let id = state.next;
@@ -903,7 +1017,9 @@ impl NodeAdmission {
     pub fn snapshot(&self) -> AdmissionSnapshot {
         self.core.snapshot()
     }
-    pub(crate) fn check_release(&self, token: &QueryCancellation) -> Result<()> {
+    /// Recheck current memory pressure for an already-admitted operation.
+    /// This grants no bytes, storage authority, or source/provider provenance.
+    pub fn check_release(&self, token: &QueryCancellation) -> Result<()> {
         self.core.check_release(token)
     }
     pub fn reserve(
@@ -920,12 +1036,62 @@ impl NodeAdmission {
     pub(crate) fn reserve_audit_escrow(self: &Arc<Self>, bytes: u64) -> Result<Reservation> {
         self.core.reserve_audit_escrow(bytes)
     }
+    /// Selected publication during actual synchronous audit apply may spend
+    /// the existing free Raft/archive protection. The concrete ledger charge
+    /// remains owned by the selected metadata; installing a pool is not enough.
+    #[cfg_attr(any(test, feature = "test-utils"), track_caller)]
+    pub(crate) fn reserve_application_source(self: &Arc<Self>, bytes: u64) -> Result<Reservation> {
+        if crate::audit_maintenance::NodeAuditMaintenance::current_for(&self.core).is_none() {
+            return self.reserve_document_source(bytes);
+        }
+        self.core
+            .reserve_kind_raw(
+                bytes,
+                None,
+                ChargeKind::Resident,
+                ChargeOrigin::ScopedApplicationSource,
+            )
+            .map_err(|error| match error {
+                ReserveKindError::Exhausted => Error::new(
+                    ErrorCode::ResourceExhausted,
+                    "application source maintenance publication budget exhausted",
+                ),
+                ReserveKindError::IdentifierExhausted | ReserveKindError::Missing => Error::new(
+                    ErrorCode::Unavailable,
+                    "application source admission owner unavailable",
+                ),
+            })
+    }
+    /// Retained logical document backing, independent of native disk leases.
+    /// Its origin preserves shared cache headroom plus installed ordinary-work
+    /// protection on both acquisition and every growth, and bypasses audit escrow.
+    #[cfg_attr(any(test, feature = "test-utils"), track_caller)]
+    pub(crate) fn reserve_document_source(self: &Arc<Self>, bytes: u64) -> Result<Reservation> {
+        self.core
+            .reserve_kind_raw(
+                bytes,
+                None,
+                ChargeKind::Resident,
+                ChargeOrigin::DocumentSource,
+            )
+            .map_err(|error| match error {
+                ReserveKindError::Exhausted => Error::new(
+                    ErrorCode::ResourceExhausted,
+                    "document source retention budget exhausted",
+                ),
+                ReserveKindError::IdentifierExhausted | ReserveKindError::Missing => Error::new(
+                    ErrorCode::Unavailable,
+                    "document source admission owner unavailable",
+                ),
+            })
+    }
+
     #[cfg(test)]
     fn refresh(&self) {
         self.core.refresh();
     }
     #[cfg(test)]
-    fn create(
+    pub(crate) fn create(
         config: AdmissionConfig,
         high: u64,
         memory: Arc<dyn MemorySource>,
@@ -1047,6 +1213,31 @@ pub struct Reservation {
     slot: usize,
     id: u64,
 }
+
+impl kasumi_query::QueryWorkspace for Reservation {
+    fn ensure_peak(&mut self, total_bytes: u64) -> Result<()> {
+        let state = self
+            .core
+            .data
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let charge = state
+            .charge(self.slot, self.id)
+            .ok_or_else(|| Error::new(ErrorCode::Unavailable, "admission reservation absent"))?;
+        if let Some(cancellation) = &charge.cancellation {
+            cancellation.check()?;
+        }
+        let charged = charge.bytes;
+        drop(state);
+        // An existing reservation is the physical floor. A fitting query
+        // neither obtains another slot nor refreshes pressure as a new charge.
+        if total_bytes > charged {
+            self.reserve_additional(total_bytes - charged)?;
+        }
+        Ok(())
+    }
+}
 /// An installed maintenance owner holds this guard for its full lifetime.
 /// Its bytes and ledger slots remain free for Raft and archive work while
 /// ordinary Operation charges, including retained descendants, cannot grow
@@ -1070,6 +1261,25 @@ impl Drop for OrdinaryProtection {
 }
 impl Reservation {
     pub(crate) fn reserve_additional(&mut self, bytes: u64) -> Result<()> {
+        self.reserve_additional_raw(bytes)
+            .map_err(|error| match error {
+                ReserveKindError::Exhausted => Error::new(
+                    ErrorCode::ResourceExhausted,
+                    "node rebuild workspace budget exhausted",
+                ),
+                ReserveKindError::IdentifierExhausted | ReserveKindError::Missing => {
+                    Error::new(ErrorCode::Unavailable, "admission reservation absent")
+                }
+            })
+    }
+
+    fn reserve_additional_raw(&mut self, bytes: u64) -> std::result::Result<(), ReserveKindError> {
+        // A retained selected source cannot carry maintenance growth authority
+        // into later unscoped work. Check the actual installed-core scope before
+        // taking the ledger mutex; dropping the scope alias invokes no callback
+        // under that mutex.
+        let active_maintenance =
+            crate::audit_maintenance::NodeAuditMaintenance::current_for(&self.core).is_some();
         let mut state = self
             .core
             .data
@@ -1078,9 +1288,10 @@ impl Reservation {
             .unwrap_or_else(|p| p.into_inner());
         self.core.data.refresh_stale(&mut state);
         let total = state.bytes.checked_add(bytes);
-        let ordinary_operation = state
+        let origin = state
             .charge(self.slot, self.id)
-            .is_some_and(|charge| charge.origin == ChargeOrigin::OrdinaryOperation);
+            .ok_or(ReserveKindError::Missing)?
+            .origin;
         if !state.usable
             || state.pressured
             || total.is_none_or(|total| {
@@ -1089,7 +1300,7 @@ impl Reservation {
                         .resident
                         .checked_add(total)
                         .is_none_or(|observed| observed >= self.core.data.high)
-                    || (ordinary_operation
+                    || (origin == ChargeOrigin::OrdinaryOperation
                         && total.checked_add(state.ordinary_protected).is_none_or(
                             |protected_total| {
                                 protected_total > self.core.data.max_bytes
@@ -1099,19 +1310,21 @@ impl Reservation {
                                         .is_none_or(|observed| observed >= self.core.data.high)
                             },
                         ))
+                    || ((origin.preserves_cache_headroom()
+                        || (origin == ChargeOrigin::ScopedApplicationSource
+                            && !active_maintenance))
+                        && !self.core.data.cache_headroom_fits(&state, total, 0))
             })
         {
-            return Err(Error::new(
-                ErrorCode::ResourceExhausted,
-                "node rebuild workspace budget exhausted",
-            ));
+            return Err(ReserveKindError::Exhausted);
         }
         let charge = state
             .charge_mut(self.slot, self.id)
-            .ok_or_else(|| Error::new(ErrorCode::Unavailable, "admission reservation absent"))?;
-        charge.bytes = charge.bytes.checked_add(bytes).ok_or_else(|| {
-            Error::new(ErrorCode::ResourceExhausted, "admission workspace overflow")
-        })?;
+            .ok_or(ReserveKindError::Missing)?;
+        charge.bytes = charge
+            .bytes
+            .checked_add(bytes)
+            .ok_or(ReserveKindError::Exhausted)?;
         state.bytes = total.expect("checked additional reservation");
         Ok(())
     }
@@ -1199,6 +1412,9 @@ impl Reservation {
         state.operations -= usize::from(operation);
     }
 }
+#[cfg(test)]
+pub(crate) mod installed_drop_probe;
+
 impl Drop for Reservation {
     fn drop(&mut self) {
         let mut state = self
@@ -1226,6 +1442,11 @@ impl Drop for Reservation {
         state.live -= 1;
         state.slots[self.slot].next_free = state.free;
         state.free = Some(self.slot);
+        #[cfg(test)]
+        {
+            drop(state);
+            installed_drop_probe::retired(self);
+        }
     }
 }
 #[derive(Default)]
@@ -1377,6 +1598,8 @@ mod tests {
             max_inflight_bytes: None,
             max_inflight_operations: 2,
             max_reservations: 16,
+            cache_work_reserve_bytes: None,
+            cache_work_reserve_slots: None,
             max_snapshot_startups: 2,
             max_startup_scopes: 2,
             sample_interval_ms: 10,
@@ -1920,7 +2143,10 @@ mod tests {
                 failure.completion(),
                 kasumi_types::drain::DrainCompletion::Complete
             );
-            assert!(Arc::ptr_eq(&failure.issues()[0], &issue));
+            assert!(kasumi_types::drain::DrainIssueRef::ptr_eq(
+                &failure.issues()[0],
+                &issue
+            ));
             assert_eq!(node.snapshot().bookkeeping_bytes, initial);
             let startups = node.snapshot_startups.lock().unwrap();
             assert!(
@@ -2068,3 +2294,9 @@ mod tests {
         assert!(physical_capacity().unwrap() > 0);
     }
 }
+
+mod source_publication;
+
+#[cfg(test)]
+#[path = "admission/ordinary_protection_tests.rs"]
+mod ordinary_protection_tests;

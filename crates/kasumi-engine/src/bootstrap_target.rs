@@ -351,7 +351,7 @@ fn persist_target(
             .application()
             .write_batch(&[WriteOp::put(NS, i.to_be_bytes(), chunk)])?;
     }
-    let manifest = Manifest {
+    let manifest = ApplicationBootstrapManifest {
         format: 2,
         bytes: bytes.len(),
         chunks,

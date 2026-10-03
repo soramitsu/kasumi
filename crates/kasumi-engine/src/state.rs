@@ -1,7 +1,24 @@
+#[path = "accepted_apply.rs"]
+mod accepted_apply;
+use accepted_apply::{AcceptedGeneration, ApplyOwner, ChangedIds};
+#[path = "validation_baseline.rs"]
+mod validation_baseline;
+use validation_baseline::{CapturedValidation, UninitializedEngine, ValidationBaseline};
+#[path = "ordered_command.rs"]
+mod ordered_command;
+#[cfg(test)]
+#[path = "validation_baseline_tests.rs"]
+mod validation_baseline_tests;
+use ordered_command::ByteBoundCommand;
+#[cfg(test)]
+use ordered_command::PreparedOrderedCommand;
 #[path = "custody_snapshot.rs"]
 mod custody_snapshot;
 #[path = "mutation_apply.rs"]
 mod mutation_apply;
+#[cfg(test)]
+#[path = "primary_projection.rs"]
+pub(crate) mod primary_projection;
 #[path = "snapshot_api.rs"]
 mod snapshot_api;
 #[path = "snapshot_bundle.rs"]
@@ -41,11 +58,22 @@ pub struct Generation {
     pub(crate) backup_bindings: crate::backup_binding::View,
     pub(crate) terminals: crate::staged_terminal::View,
     pub(crate) target_resolutions: crate::target_resolution::View,
-    pub indexes: Arc<QueryIndexes>,
+    pub(crate) indexes: Arc<QueryIndexes>,
     snapshot_accounting: SnapshotAccounting,
+    pub(crate) application_selection:
+        std::sync::OnceLock<crate::application_sources::SelectedApplication>,
     _read_reservations: Vec<crate::admission::Reservation>,
 }
 impl Generation {
+    pub(crate) fn clone_application_selection(
+        &self,
+    ) -> std::sync::OnceLock<crate::application_sources::SelectedApplication> {
+        match self.application_selection.get() {
+            Some(selection) => std::sync::OnceLock::from(selection.clone()),
+            None => std::sync::OnceLock::new(),
+        }
+    }
+
     /// Share persistent document roots and fixed point-history owners without
     /// retaining resident staging, audit history, or prior secondary/text indexes.
     pub(crate) fn lease_view(&self) -> Self {
@@ -60,6 +88,7 @@ impl Generation {
             state,
             indexes: Arc::new(QueryIndexes::default()),
             snapshot_accounting: SnapshotAccounting::default(),
+            application_selection: self.clone_application_selection(),
             _read_reservations: Vec::new(),
         }
     }
@@ -79,6 +108,7 @@ impl Generation {
             state,
             indexes: self.indexes.clone(),
             snapshot_accounting: self.snapshot_accounting.clone(),
+            application_selection: self.clone_application_selection(),
             _read_reservations: reservations,
         }
     }
@@ -87,11 +117,109 @@ impl Generation {
     }
 }
 
+/// A private candidate does not become visible until its response and custody
+/// transition have crossed the adapter's durable publication barrier.
+struct PreparedCommand {
+    // None is the distinct permanently frozen result, not a new candidate.
+    generation: Option<Arc<Generation>>,
+    outcome: Result<WriteReceipt>,
+    changed: ChangedIds,
+}
+
 /// Terminal state prepared for the current command, before budget acceptance.
 struct PreparedTerminals<'a> {
     applied: &'a crate::staged_terminal::AppliedIdentity,
     pending: &'a crate::staged_terminal::Pending,
     owner: &'a crate::staged_terminal::View,
+    scope: &'a ApplyScope,
+}
+
+/// Validate configuration with the same empty genesis metadata and snapshot
+/// quota as the runtime constructor, without building indexes or publishing a
+/// serving Generation. Inputs are checked before cloning their bounded policy
+/// metadata; no existing TenantState, document body, or governor is copied.
+pub fn validate_genesis_inputs(
+    tenant: &str,
+    incarnation: &str,
+    policy: &Policy,
+    limits: &Limits,
+) -> Result<()> {
+    validate_name(tenant)?;
+    validate_name(incarnation)?;
+    validate_limits(limits)?;
+    validate_policy(policy, limits)?;
+    let state = genesis_metadata(tenant, incarnation, policy.clone(), limits.clone())?;
+    genesis_snapshot_accounting(&state).map(|_| ())
+}
+
+fn genesis_metadata(
+    tenant: &str,
+    incarnation: &str,
+    policy: Policy,
+    limits: Limits,
+) -> Result<TenantState> {
+    validate_name(tenant)?;
+    validate_name(incarnation)?;
+    validate_limits(&limits)?;
+    validate_policy(&policy, &limits)?;
+    let state = TenantState {
+        tenant: tenant.to_owned(),
+        incarnation: incarnation.to_owned(),
+        revision: 0,
+        revision_base: 0,
+        policy_epoch: 0,
+        schema_epoch: 0,
+        suspended: false,
+        retired: false,
+        pending_restore: None,
+        restored_from: None,
+        restore_lineage: Vec::new(),
+        lifecycle_control: None,
+        target_lifecycle: Default::default(),
+        recovery_control: Default::default(),
+        document_count: 0,
+        logical_bytes: 0,
+        policy,
+        limits,
+        collections: BTreeMap::new(),
+        mutation_receipt_head: MutationReceiptHead::empty(tenant, incarnation)?,
+        backup_binding_head: BackupBindingHead::empty(incarnation)?,
+        staged_transactions: imbl::OrdMap::new(),
+        active_staged_transactions: BTreeSet::new(),
+        permanent_staged_bytes: 0,
+        reserved_staged_terminal_bytes: 0,
+        staged_terminal_head: StagedTerminalHead::empty(tenant, incarnation)?,
+        target_resolution_head: TargetResolutionPrefixHead::empty(tenant, incarnation)?,
+        target_completion_head: None,
+        change_feed: ChangeFeedState::empty(),
+        history_archives: imbl::OrdMap::new(),
+        history_archive_bytes: 0,
+        schema_activations: imbl::OrdMap::new(),
+        schema_activation_bytes: 0,
+        retirements: imbl::OrdMap::new(),
+        retirement_bytes: 0,
+        audit_retention: AuditRetentionState::empty(uuid::Uuid::from_bytes(
+            Sha256::digest(
+                serde_json::to_vec(&("kasumi.audit-stream.v1", &tenant, &incarnation))
+                    .expect("identity serializes"),
+            )[..16]
+                .try_into()
+                .expect("digest width"),
+        )),
+        audits: imbl::Vector::new(),
+    };
+    Ok(state)
+}
+
+fn genesis_snapshot_accounting(state: &TenantState) -> Result<SnapshotAccounting> {
+    let accounting = SnapshotAccounting::rebuild(state)?;
+    if !accounting.fits(state)? {
+        return Err(Error::new(
+            ErrorCode::QuotaExceeded,
+            "bootstrap exceeds snapshot byte budget",
+        ));
+    }
+    Ok(accounting)
 }
 
 /// Only ordered consensus application may publish generations.
@@ -106,6 +234,7 @@ pub struct TenantEngine {
     revision_base: u64,
     restoration_identity: String,
     bootstrap_sha256: std::sync::OnceLock<String>,
+    application_sources: std::sync::OnceLock<crate::application_sources::SourceRootsRef>,
     access: std::sync::OnceLock<kasumi_store::StorageAccess>,
     pub(crate) snapshot_store: std::sync::OnceLock<Arc<kasumi_store::TenantStore>>,
     pub(crate) audit_maintenance:
@@ -116,6 +245,19 @@ enum ApplyScope {
     Committed,
     #[cfg(any(test, feature = "test-utils"))]
     Fixture(Arc<kasumi_store::ScratchDisk>),
+}
+impl ApplyScope {
+    fn stage_terminals(
+        &self,
+        pending: crate::staged_terminal::Pending,
+        _previous_state: &TenantState,
+    ) -> anyhow::Result<crate::staged_terminal::View> {
+        match self {
+            Self::Committed => pending.stage(),
+            #[cfg(any(test, feature = "test-utils"))]
+            Self::Fixture(disk) => pending.stage_fixture(disk, _previous_state),
+        }
+    }
 }
 
 /// Raft stores exact first-release command bytes. A decoded predecessor shape
@@ -153,103 +295,31 @@ impl kasumi_raft::StateMachineBackend for TenantEngine {
     fn close_application(&self) {
         self.seal();
     }
-    fn apply(
+    fn apply_with_publisher(
         &self,
         position: &kasumi_raft::AppliedEntryContext,
-        bytes: &[u8],
-    ) -> anyhow::Result<kasumi_raft::AppliedResponse> {
+        input: kasumi_raft::AppliedInput<'_>,
+        publisher: &mut dyn kasumi_raft::ApplyPublisher,
+    ) -> anyhow::Result<()> {
+        let bytes = match input {
+            kasumi_raft::AppliedInput::Metadata => {
+                return self.publish_metadata(position, publisher);
+            }
+            kasumi_raft::AppliedInput::Command(bytes) => bytes,
+        };
+        let input = ByteBoundCommand::check(position, bytes)?;
+        let position = input.position();
+        let bytes = input.bytes();
         if bytes.starts_with(recovery::PREFIX) {
-            return self.apply_recovery(position, bytes);
+            return self.apply_recovery(position, bytes, publisher);
         }
         if bytes.starts_with(target::PREFIX) {
-            return self.apply_target(position, bytes);
+            return self.apply_target(position, bytes, publisher);
         }
         if bytes.starts_with(tenant_audit::PREFIX) {
-            return self.apply_audit_prune(position, bytes);
+            return self.apply_audit_prune(position, bytes, publisher);
         }
-        let command = decode_committed_command(bytes)?;
-        anyhow::ensure!(
-            !matches!(&command.operation, Operation::RetireSource(prepared) if prepared.observation.is_some())
-                || position.retirement_seed.is_some(),
-            "prepared retirement is missing its custody seed"
-        );
-        if let Some(seed) = &position.retirement_seed {
-            seed.reserve_success_capacity()?;
-            let expected = kasumi_raft::RetirementLogSeed::prepare(
-                &command,
-                self.retirement_replay_state(&command)?,
-            )?;
-            anyhow::ensure!(
-                expected.encoded()? == seed.encoded()?,
-                "committed retirement seed differs from ordered source state"
-            );
-        }
-        let revision = self
-            .revision_base
-            .checked_add(position.log_id.index)
-            .ok_or_else(|| anyhow::anyhow!("logical revision exhausted"))?;
-        let reference = position
-            .retirement_seed
-            .as_ref()
-            .map(|seed| seed.request().reference())
-            .transpose()?;
-        let actor = command.context.clone();
-        let applied = crate::staged_terminal::AppliedIdentity::ordered(
-            &self.incarnation,
-            revision,
-            command.timestamp_ms,
-            position,
-        )?;
-        let outcome =
-            self.apply_command_ordered(revision, command, applied, ApplyScope::Committed)?;
-        let retirement = if outcome.is_ok() {
-            if let Some(reference) = reference {
-                let generation = self.generation()?;
-                Some(
-                    retirement::lookup(&generation.state, &actor, &reference)?
-                        .ok_or_else(|| anyhow::anyhow!("successful retirement outcome missing"))?
-                        .outcome
-                        .clone()?,
-                )
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-        Ok(kasumi_raft::AppliedResponse {
-            data: serde_json::to_vec(&outcome)?,
-            retirement,
-        })
-    }
-    fn apply_metadata(&self, position: &kasumi_raft::AppliedEntryContext) -> anyhow::Result<()> {
-        let _guard = self
-            .apply_lock
-            .lock()
-            .map_err(|_| anyhow::anyhow!("tenant apply lock poisoned"))?;
-        let revision = self
-            .revision_base
-            .checked_add(position.log_id.index)
-            .ok_or_else(|| anyhow::anyhow!("consensus metadata revision overflow"))?;
-        let previous = self.generation()?;
-        // Reopen replays the durable prefix before reaching the current cursor.
-        // Metadata has no application effect and may never lower that cursor.
-        if revision <= previous.state.revision {
-            return Ok(());
-        }
-        let mut state = previous.state.clone();
-        state.revision = revision;
-        self.publish_generation(Some(Arc::new(Generation {
-            state,
-            receipts: previous.receipts.clone(),
-            backup_bindings: previous.backup_bindings.clone(),
-            terminals: previous.terminals.clone(),
-            target_resolutions: previous.target_resolutions.clone(),
-            indexes: previous.indexes.clone(),
-            snapshot_accounting: previous.snapshot_accounting.clone(),
-            _read_reservations: vec![],
-        })));
-        Ok(())
+        ordered_command::apply_ordinary(self, input, publisher)
     }
     fn capture_snapshot(&self) -> anyhow::Result<kasumi_raft::CapturedSnapshot> {
         let generation = self.generation()?;
@@ -289,7 +359,8 @@ impl kasumi_raft::StateMachineBackend for TenantEngine {
         &self,
         bytes: &mut dyn std::io::Read,
     ) -> anyhow::Result<Option<kasumi_raft::RetiredSnapshotState>> {
-        let generation = snapshot_bundle::read(self, bytes, None)?;
+        let prior = CapturedValidation::capture(self)?;
+        let generation = snapshot_bundle::read(self, &prior.baseline(), bytes, None)?;
         custody_snapshot::retired(&generation.state).map_err(Into::into)
     }
     fn prepare_restore<'a>(
@@ -297,11 +368,16 @@ impl kasumi_raft::StateMachineBackend for TenantEngine {
         context: &kasumi_raft::SnapshotRestoreContext,
         bytes: &mut dyn std::io::Read,
     ) -> anyhow::Result<Box<dyn kasumi_raft::PreparedStateMachineRestore + 'a>> {
-        let guard = self
-            .apply_lock
-            .lock()
-            .map_err(|_| anyhow::anyhow!("tenant apply lock poisoned"))?;
-        let mut generation = snapshot_bundle::read(self, bytes, None)?;
+        let apply = ApplyOwner::lock(self, || anyhow::anyhow!("tenant apply lock poisoned"))?;
+        let selection = self
+            .application_sources
+            .get()
+            .map(|sources| {
+                sources.prepare_restore(context, std::mem::size_of::<PreparedTenantRestore<'_>>())
+            })
+            .transpose()?;
+        let mut generation =
+            snapshot_bundle::read(self, &ValidationBaseline::from_apply(&apply), bytes, None)?;
         let expected_revision = self
             .revision_base
             .checked_add(context.meta.last_log_id.map_or(0, |id| id.index))
@@ -347,16 +423,22 @@ impl kasumi_raft::StateMachineBackend for TenantEngine {
         writes.extend_from_slice(installation.writes());
         writes.extend_from_slice(target_installation.writes());
         let retirement = custody_snapshot::retired(&generation.state)?;
+        #[cfg(test)]
+        let retirement_probe =
+            validation_baseline_tests::restore_retirement_probe(self, &generation);
         Ok(Box::new(PreparedTenantRestore {
             engine: self,
             generation,
+            selection,
             receipt_installation,
             binding_installation,
             installation,
             target_installation,
             writes,
             retirement,
-            _apply_guard: guard,
+            #[cfg(test)]
+            _retirement_probe: retirement_probe,
+            _apply: apply,
         }))
     }
 }
@@ -364,19 +446,22 @@ impl kasumi_raft::StateMachineBackend for TenantEngine {
 struct PreparedTenantRestore<'a> {
     engine: &'a TenantEngine,
     generation: Generation,
+    selection: Option<crate::application_sources::RestoreSelection>,
     receipt_installation: crate::mutation_receipt::Installation,
     binding_installation: crate::backup_binding::Installation,
     installation: crate::staged_terminal::Installation,
     target_installation: crate::target_resolution::Installation,
     writes: Vec<kasumi_store::WriteOp>,
     retirement: Option<kasumi_raft::RetiredSnapshotState>,
-    _apply_guard: std::sync::MutexGuard<'a, ()>,
+    #[cfg(test)]
+    _retirement_probe: Option<validation_baseline_tests::RestoreRetirementProbe<'a>>,
+    _apply: ApplyOwner<'a>,
 }
 impl kasumi_raft::PreparedStateMachineRestore for PreparedTenantRestore<'_> {
     fn retirement(&self) -> Option<kasumi_raft::RetiredSnapshotState> {
         self.retirement.clone()
     }
-    fn application_replacements(&self) -> Vec<(&str, &kasumi_store::EncryptedTable)> {
+    fn application_replacements(&self) -> Vec<kasumi_store::NamespaceReplacement<'_>> {
         let mut replacements = self.receipt_installation.replacements();
         replacements.extend(self.binding_installation.replacements());
         replacements.extend(self.installation.replacements());
@@ -390,7 +475,9 @@ impl kasumi_raft::PreparedStateMachineRestore for PreparedTenantRestore<'_> {
         let Self {
             engine,
             generation,
-            _apply_guard,
+            selection,
+            // Keep the owner in the partially moved box. On an error, moved
+            // locals retire first, then installations/writes, then the owner.
             ..
         } = *self;
         engine
@@ -398,22 +485,170 @@ impl kasumi_raft::PreparedStateMachineRestore for PreparedTenantRestore<'_> {
             .get()
             .ok_or_else(|| anyhow::anyhow!("snapshot storage not installed"))?
             .check_access()?;
+        if let Some(selection) = selection {
+            let selected = selection.capture(generation.state.retired)?;
+            generation
+                .application_selection
+                .set(selected)
+                .map_err(|_| anyhow::anyhow!("restored application selection already installed"))?;
+        }
         engine.leases.replace(&engine.current, Arc::new(generation));
         Ok(())
     }
 }
 
 impl TenantEngine {
+    pub(crate) fn install_application_sources(
+        &self,
+        sources: crate::application_sources::SourceRootsRef,
+        image: &kasumi_store::SnapshotImage,
+    ) -> anyhow::Result<()> {
+        // Source-installed production ordinary commands require the actual
+        // paired completion binding before bootstrap can acquire a source.
+        sources.completion()?;
+        let apply = ApplyOwner::lock(self, || anyhow::anyhow!("tenant apply lock poisoned"))?;
+        anyhow::ensure!(
+            self.application_sources.get().is_none(),
+            "application source already installed"
+        );
+        let generation = apply.current();
+        anyhow::ensure!(
+            generation.state.revision == generation.state.revision_base,
+            "application source bootstrap must precede replay"
+        );
+        anyhow::ensure!(
+            self.bootstrap_sha256.get().map(String::as_str) == Some(image.sha256()),
+            "application source differs from authenticated bootstrap image"
+        );
+        let selection = sources.prepare_initial()?.capture(
+            kasumi_raft::ApplicationBoundaryRef::Bootstrap(image),
+            generation.state.retired,
+        )?;
+        generation
+            .application_selection
+            .set(selection)
+            .map_err(|_| anyhow::anyhow!("bootstrap selection already installed"))?;
+        self.application_sources
+            .set(sources)
+            .map_err(|_| anyhow::anyhow!("application source already installed"))?;
+        Ok(())
+    }
+    pub(crate) fn seal_application_source_consumers(&self) {
+        if let Some(sources) = self.application_sources.get() {
+            kasumi_raft::ApplicationSourceCustody::seal_consumers(sources.as_ref());
+        }
+    }
+    /// Preparation, response encoding, and immutable row staging precede the
+    /// durable callback. The current Generation changes only after it succeeds.
+    fn publish_prepared_generation(
+        &self,
+        accepted: AcceptedGeneration<'_>,
+        response: kasumi_raft::AppliedResponse,
+        position: Option<&kasumi_raft::AppliedEntryContext>,
+        publisher: &mut dyn kasumi_raft::ApplyPublisher,
+    ) -> anyhow::Result<()> {
+        accepted.require_publication(self, position)?;
+        let candidate = accepted.candidate();
+        let sources = self.application_sources.get();
+        anyhow::ensure!(
+            sources.is_none() || position.is_some(),
+            "runtime publication lacks actual applied position"
+        );
+        if let Some(sources) = sources {
+            let expectation = sources.publication_expectation(
+                position.expect("checked applied position"),
+                &[],
+                &response,
+            )?;
+            let mut prepared = sources.publication_preparation();
+            let receipt = publisher.commit_with_selection(
+                response,
+                &[],
+                &mut prepared,
+                expectation.challenge()?,
+            )?;
+            let selection = prepared
+                .finish_publication(&expectation, receipt)?
+                .capture(
+                    kasumi_raft::ApplicationBoundaryRef::Entry(
+                        position.expect("checked applied position"),
+                    ),
+                    candidate.state.retired,
+                )?;
+            candidate
+                .application_selection
+                .set(selection)
+                .map_err(|_| {
+                    anyhow::anyhow!("candidate application selection already installed")
+                })?;
+        } else {
+            publisher.commit(response, &[])?;
+        }
+        accepted.publish();
+        Ok(())
+    }
+
+    fn publish_metadata(
+        &self,
+        position: &kasumi_raft::AppliedEntryContext,
+        publisher: &mut dyn kasumi_raft::ApplyPublisher,
+    ) -> anyhow::Result<()> {
+        let apply = ApplyOwner::lock(self, || anyhow::anyhow!("tenant apply lock poisoned"))?;
+        let revision = self
+            .revision_base
+            .checked_add(position.log_id.index)
+            .ok_or_else(|| anyhow::anyhow!("consensus metadata revision overflow"))?;
+        let previous = apply.current();
+        let response = kasumi_raft::AppliedResponse::application(Vec::new());
+        // Covered replay still crosses the adapter's publication barrier.
+        if revision <= previous.state.revision {
+            publisher.commit(response, &[])?;
+            return Ok(());
+        }
+        let mut state = previous.state.clone();
+        state.revision = revision;
+        let candidate = Arc::new(Generation {
+            state,
+            receipts: previous.receipts.clone(),
+            backup_bindings: previous.backup_bindings.clone(),
+            terminals: previous.terminals.clone(),
+            target_resolutions: previous.target_resolutions.clone(),
+            indexes: previous.indexes.clone(),
+            snapshot_accounting: previous.snapshot_accounting.clone(),
+            application_selection: std::sync::OnceLock::new(),
+            _read_reservations: vec![],
+        });
+        self.publish_prepared_generation(
+            apply.accept(candidate, ChangedIds::new())?,
+            response,
+            Some(position),
+            publisher,
+        )
+    }
+
     fn publish_generation(&self, next: Option<Arc<Generation>>) {
         self.leases.publish(&self.current, next);
     }
 
     pub(crate) fn check_operation_access(&self, operation: &Operation) -> Result<()> {
         let generation = self.generation()?;
-        if generation
-            .state
+        self.check_operation_access_from(&generation.state, operation)
+    }
+
+    // Both service preflight and ordered apply evaluate one exact prior state.
+    // The latter already validated its ApplyOwner; do not acquire a public
+    // generation/history owner while that serialization guard is held.
+    fn check_operation_access_from(
+        &self,
+        state: &TenantState,
+        operation: &Operation,
+    ) -> Result<()> {
+        // The access grant may expire after ApplyOwner acquisition. Keep the
+        // current access/presence check at this entry without cloning an owner.
+        self.require_current_access()?;
+        if state
             .target_lifecycle
-            .get(&generation.state.incarnation)
+            .get(&state.incarnation)
             .is_some_and(|target| target.activation.is_none())
         {
             return Err(Error::new(
@@ -421,18 +656,14 @@ impl TenantEngine {
                 "native target activation must commit before tenant commands",
             ));
         }
-        drop(generation);
         if let Some(access) = self.access.get() {
             access
                 .check()
                 .map_err(|_| Error::new(ErrorCode::Sealed, "independent access grant expired"))?;
             if access.check_serving().is_err() {
-                let generation = self.generation()?;
-                if generation
-                    .state
-                    .target_lifecycle
-                    .contains_key(&generation.state.incarnation)
-                    || !generation.state.suspended
+                self.require_current_access()?;
+                if state.target_lifecycle.contains_key(&state.incarnation)
+                    || !state.suspended
                     || !matches!(operation, Operation::MaintenanceAudit(event) if event.action == "restore" && event.outcome == "completed")
                 {
                     return Err(Error::new(
@@ -491,21 +722,15 @@ impl TenantEngine {
             )
         })?;
         self.install_terminal_bootstrap(store)?;
-        if self.generation().is_err() {
+        if let Err(error) = self.require_current_access() {
             self.seal();
-            return Err(Error::new(
-                ErrorCode::Sealed,
-                "serving authority expired during materialization",
-            ));
+            return Err(error);
         }
         Ok(())
     }
     fn install_terminal_bootstrap(&self, store: &Arc<kasumi_store::TenantStore>) -> Result<()> {
-        let _guard = self
-            .apply_lock
-            .lock()
-            .map_err(|_| Error::new(ErrorCode::Unavailable, "tenant apply lock poisoned"))?;
-        let previous = self.generation()?;
+        let apply = ApplyOwner::lock_validation(self)?;
+        let previous = apply.current();
         if previous.state.revision != previous.state.revision_base {
             return Err(Error::new(
                 ErrorCode::Conflict,
@@ -516,7 +741,7 @@ impl TenantEngine {
         if self.bootstrap_sha256.get().is_none()
             && store.storage_access().purpose().is_local_fixture()
         {
-            let image = self.logical_snapshot(store.scratch_disk())?;
+            let image = Self::logical_snapshot_of(previous, store.scratch_disk())?;
             self.bootstrap_sha256
                 .set(image.sha256().into())
                 .map_err(|_| {
@@ -594,6 +819,7 @@ impl TenantEngine {
             target_resolutions: target_installation.view,
             indexes: previous.indexes.clone(),
             snapshot_accounting: previous.snapshot_accounting.clone(),
+            application_selection: std::sync::OnceLock::new(),
             _read_reservations: vec![],
         })));
         Ok(())
@@ -602,13 +828,26 @@ impl TenantEngine {
         &self,
         command: &Command,
     ) -> Result<kasumi_raft::RetirementReplayState> {
+        if !matches!(&command.operation, Operation::RetireSource(_)) {
+            return Err(Error::new(
+                ErrorCode::InvalidArgument,
+                "retirement replay state requires retirement",
+            ));
+        }
+        let generation = self.generation()?;
+        Self::retirement_replay_from(&generation, command)
+    }
+
+    fn retirement_replay_from(
+        generation: &Generation,
+        command: &Command,
+    ) -> Result<kasumi_raft::RetirementReplayState> {
         let Operation::RetireSource(prepared) = &command.operation else {
             return Err(Error::new(
                 ErrorCode::InvalidArgument,
                 "retirement replay state requires retirement",
             ));
         };
-        let generation = self.generation()?;
         let state = &generation.state;
         let existing_identity =
             retirement::lookup(state, &command.context, &prepared.request.reference()?)?.cloned();
@@ -666,75 +905,21 @@ impl TenantEngine {
         limits: Limits,
         control: Option<&crate::ControlGenesis>,
     ) -> Result<Self> {
-        validate_name(&tenant)?;
-        validate_name(&incarnation)?;
-        validate_limits(&limits)?;
-        validate_policy(&policy, &limits)?;
-        let mut state = TenantState {
-            tenant: tenant.clone(),
-            incarnation: incarnation.clone(),
-            revision: 0,
-            revision_base: 0,
-            policy_epoch: 0,
-            schema_epoch: 0,
-            suspended: false,
-            retired: false,
-            pending_restore: None,
-            restored_from: None,
-            restore_lineage: Vec::new(),
-            lifecycle_control: None,
-            target_lifecycle: Default::default(),
-            recovery_control: Default::default(),
-            document_count: 0,
-            logical_bytes: 0,
-            policy,
-            limits,
-            collections: BTreeMap::new(),
-            mutation_receipt_head: MutationReceiptHead::empty(&tenant, &incarnation)?,
-            backup_binding_head: BackupBindingHead::empty(&incarnation)?,
-            staged_transactions: imbl::OrdMap::new(),
-            active_staged_transactions: BTreeSet::new(),
-            permanent_staged_bytes: 0,
-            reserved_staged_terminal_bytes: 0,
-            staged_terminal_head: StagedTerminalHead::empty(&tenant, &incarnation)?,
-            target_resolution_head: TargetResolutionPrefixHead::empty(&tenant, &incarnation)?,
-            target_completion_head: None,
-            change_feed: ChangeFeedState::empty(),
-            history_archives: imbl::OrdMap::new(),
-            history_archive_bytes: 0,
-            schema_activations: imbl::OrdMap::new(),
-            schema_activation_bytes: 0,
-            retirements: imbl::OrdMap::new(),
-            retirement_bytes: 0,
-            audit_retention: AuditRetentionState::empty(uuid::Uuid::from_bytes(
-                Sha256::digest(
-                    serde_json::to_vec(&("kasumi.audit-stream.v1", &tenant, &incarnation))
-                        .expect("identity serializes"),
-                )[..16]
-                    .try_into()
-                    .expect("digest width"),
-            )),
-            audits: imbl::Vector::new(),
-        };
+        let mut state = genesis_metadata(&tenant, &incarnation, policy, limits)?;
         if let Some(control) = control {
             control.seed(&mut state)?;
             validate_metadata_budget(&state.collections, &state.limits)?;
             lifecycle::validate(&state)?;
         }
         let revision_base = state.revision_base;
-        let indexes = Arc::new(QueryIndexes::build(&state.collections)?);
-        let snapshot_accounting = SnapshotAccounting::rebuild(&state)?;
-        if !snapshot_accounting.fits(&state)? {
-            return Err(Error::new(
-                ErrorCode::QuotaExceeded,
-                "bootstrap exceeds snapshot byte budget",
-            ));
-        }
+        let indexes = Arc::new(crate::index_source::build(&state)?);
+        let snapshot_accounting = genesis_snapshot_accounting(&state)?;
         let restoration_identity =
             staged_digest(&(&state.restored_from, &state.restore_lineage))?.0;
         Ok(Self {
             restoration_identity,
             bootstrap_sha256: std::sync::OnceLock::new(),
+            application_sources: std::sync::OnceLock::new(),
             access: std::sync::OnceLock::new(),
             snapshot_store: std::sync::OnceLock::new(),
             audit_maintenance: Mutex::new(None),
@@ -754,6 +939,7 @@ impl TenantEngine {
                 state,
                 indexes,
                 snapshot_accounting,
+                application_selection: std::sync::OnceLock::new(),
                 _read_reservations: vec![],
             }),
             apply_lock: Mutex::new(()),
@@ -800,30 +986,17 @@ impl TenantEngine {
                 "tenant bootstrap identity or revision invalid",
             ));
         }
-        let engine = Self {
-            access: std::sync::OnceLock::new(),
-            snapshot_store: std::sync::OnceLock::new(),
-            audit_maintenance: Mutex::new(None),
-            leases: lease_retention::LeaseManager::default(),
-            tenant: state.tenant.clone(),
-            incarnation: state.incarnation.clone(),
-            revision_base: state.revision_base,
-            restoration_identity: staged_digest(&(&state.restored_from, &state.restore_lineage))?.0,
-            bootstrap_sha256: std::sync::OnceLock::new(),
-            apply_lock: Mutex::new(()),
-            #[cfg(any(test, feature = "test-utils"))]
-            sealed_restore_observation: Mutex::new(None),
-            current: ArcSwapOption::empty(),
-        };
+        let uninitialized = UninitializedEngine::new(&state)?;
+        let engine = uninitialized.engine();
         let generation = engine.prepare_state(
+            &uninitialized.baseline(),
             state,
             receipts,
             backup_bindings,
             terminals,
             target_resolutions,
         )?;
-        engine.publish_generation(Some(Arc::new(generation)));
-        Ok(engine)
+        Ok(uninitialized.finish(generation))
     }
 
     #[cfg(test)]
@@ -846,7 +1019,14 @@ impl TenantEngine {
         if state.tenant != expected_tenant {
             return Err(Error::new(ErrorCode::Forbidden, "backup tenant mismatch"));
         }
-        Self::verify_logical_snapshot(bytes, &state)?;
+        Self::verify_decoded_logical_state(
+            &UninitializedEngine::new(&state)?,
+            &state,
+            &receipts,
+            &backup_bindings,
+            &terminals,
+            &target_resolutions,
+        )?;
         Self::rebind_restored_state(&mut state, incarnation, checkpoint, target_origin)?;
         kasumi_store::SnapshotImage::capture(
             bytes.disk(),
@@ -954,10 +1134,16 @@ impl TenantEngine {
         if source.header().tenant != expected_tenant {
             return Err(Error::new(ErrorCode::Forbidden, "backup tenant mismatch"));
         }
+        use crate::backup_verify::VerificationPhase;
+        let phase = VerificationPhase::start("restore.release_validation_indexes", None);
         let image = source.into_image();
+        phase.complete();
+        let phase = VerificationPhase::start("restore.materialization_admission", None);
         // Both encrypted point-table caches are now destroyed. Reserve the
         // actual target allocation before decoding, under the same owned job.
         handoff_workspace()?;
+        phase.complete();
+        let phase = VerificationPhase::start("restore.snapshot_decode", None);
         let scratch_disk = image.disk().clone();
         let crate::snapshot_codec::Decoded {
             mut state,
@@ -969,7 +1155,11 @@ impl TenantEngine {
         } = crate::snapshot_codec::read(image.disk(), &mut image.reader())
             .map_err(|error| Error::new(ErrorCode::Corruption, error.to_string()))?;
         drop(image);
+        phase.complete();
+        let phase = VerificationPhase::start("restore.rebind", None);
         Self::rebind_restored_state(&mut state, incarnation, checkpoint, target_origin)?;
+        phase.complete();
+        let phase = VerificationPhase::start("restore.prepare_generation", None);
         let engine = Self::from_bootstrap_state(
             expected_tenant,
             state,
@@ -978,11 +1168,14 @@ impl TenantEngine {
             terminals,
             target_resolutions,
         )?;
+        phase.complete();
+        let phase = VerificationPhase::start("restore.genesis_snapshot", None);
         let image = engine.logical_snapshot(&scratch_disk)?;
         engine
             .bootstrap_sha256
             .set(image.sha256().into())
             .map_err(|_| Error::new(ErrorCode::Corruption, "duplicate target bootstrap digest"))?;
+        phase.complete();
         Ok((image, engine))
     }
 
@@ -999,6 +1192,39 @@ impl TenantEngine {
     }
 
     pub fn generation(&self) -> Result<Arc<Generation>> {
+        #[cfg(test)]
+        validation_baseline_tests::observe_public_generation()?;
+        let generation = self.current_generation()?;
+        if let Some(selection) = generation.application_selection.get() {
+            selection
+                .retain_public_history()
+                .map_err(|error| Error::new(ErrorCode::ResourceExhausted, error.to_string()))?;
+        }
+        self.check_current_access()?;
+        Ok(generation)
+    }
+
+    // Private apply acquisition bypasses no access checks and does not use a
+    // future public history-escape API. Only ApplyOwner lends this owner.
+    fn current_generation(&self) -> Result<Arc<Generation>> {
+        self.check_current_access()?;
+        self.current
+            .load_full()
+            .ok_or_else(|| Error::new(ErrorCode::Sealed, "tenant requires authorized recovery"))
+    }
+
+    fn require_current_access(&self) -> Result<()> {
+        self.check_current_access()?;
+        if self.current.load().is_none() {
+            return Err(Error::new(
+                ErrorCode::Sealed,
+                "tenant requires authorized recovery",
+            ));
+        }
+        Ok(())
+    }
+
+    fn check_current_access(&self) -> Result<()> {
         if let Some(access) = self.access.get() {
             access.check().map_err(|_| {
                 Error::new(
@@ -1007,9 +1233,7 @@ impl TenantEngine {
                 )
             })?;
         }
-        self.current
-            .load_full()
-            .ok_or_else(|| Error::new(ErrorCode::Sealed, "tenant requires authorized recovery"))
+        Ok(())
     }
 
     /// A full logical backup can be captured at any committed revision. It is
@@ -1020,29 +1244,38 @@ impl TenantEngine {
         _bytes: &kasumi_store::SnapshotImage,
         state: &TenantState,
     ) -> Result<()> {
-        let verifier = Self {
-            access: std::sync::OnceLock::new(),
-            snapshot_store: std::sync::OnceLock::new(),
-            audit_maintenance: Mutex::new(None),
-            leases: lease_retention::LeaseManager::default(),
-            tenant: state.tenant.clone(),
-            incarnation: state.incarnation.clone(),
-            revision_base: state.revision_base,
-            restoration_identity: staged_digest(&(&state.restored_from, &state.restore_lineage))?.0,
-            bootstrap_sha256: std::sync::OnceLock::new(),
-            apply_lock: Mutex::new(()),
-            #[cfg(any(test, feature = "test-utils"))]
-            sealed_restore_observation: Mutex::new(None),
-            current: ArcSwapOption::empty(),
-        };
+        let uninitialized = UninitializedEngine::new(state)?;
         let decoded = crate::snapshot_codec::read(_bytes.disk(), &mut _bytes.reader())
             .map_err(terminal_error)?;
+        Self::verify_decoded_logical_state(
+            &uninitialized,
+            state,
+            &decoded.receipts,
+            &decoded.backup_bindings,
+            &decoded.terminals,
+            &decoded.target_resolutions,
+        )
+    }
+
+    #[cfg(test)]
+    fn verify_decoded_logical_state(
+        uninitialized: &UninitializedEngine,
+        state: &TenantState,
+        receipts: &crate::mutation_receipt::View,
+        backup_bindings: &crate::backup_binding::View,
+        terminals: &crate::staged_terminal::View,
+        target_resolutions: &crate::target_resolution::View,
+    ) -> Result<()> {
+        let verifier = uninitialized.engine();
+        // These views retain the already authenticated decoded owners. Full
+        // state validation needs no second decoding or duplicate scratch core.
         verifier.prepare_state(
+            &uninitialized.baseline(),
             state.clone(),
-            decoded.receipts,
-            decoded.backup_bindings,
-            decoded.terminals,
-            decoded.target_resolutions,
+            receipts.clone(),
+            backup_bindings.clone(),
+            terminals.clone(),
+            target_resolutions.clone(),
         )?;
         Ok(())
     }
@@ -1134,7 +1367,7 @@ impl TenantEngine {
         disk: &Arc<kasumi_store::ScratchDisk>,
         revision: u64,
         command: Command,
-    ) -> Result<Result<WriteReceipt>> {
+    ) -> anyhow::Result<Result<WriteReceipt>> {
         if self
             .snapshot_store
             .get()
@@ -1143,7 +1376,8 @@ impl TenantEngine {
             return Err(Error::new(
                 ErrorCode::Forbidden,
                 "fixture application cannot mutate production storage",
-            ));
+            )
+            .into());
         }
         let applied = crate::staged_terminal::AppliedIdentity {
             incarnation: self.incarnation.clone(),
@@ -1154,49 +1388,86 @@ impl TenantEngine {
             )?)),
             origin: crate::staged_terminal::AppliedOrigin::Fixture,
         };
-        self.apply_command_ordered(
-            revision,
-            command,
-            applied,
-            ApplyScope::Fixture(disk.clone()),
-        )
+        let response = crate::test_utils::capture_application(|publisher| {
+            self.apply_fixture_command(
+                command,
+                applied,
+                ApplyScope::Fixture(disk.clone()),
+                publisher,
+            )
+        })?;
+        Ok(serde_json::from_slice(&response.data)?)
     }
-    fn apply_command_ordered(
+    #[cfg(any(test, feature = "test-utils"))]
+    fn apply_fixture_command(
         &self,
-        revision: u64,
         command: Command,
         applied: crate::staged_terminal::AppliedIdentity,
         scope: ApplyScope,
-    ) -> Result<Result<WriteReceipt>> {
-        let _guard = self
-            .apply_lock
-            .lock()
-            .map_err(|_| Error::new(ErrorCode::Unavailable, "tenant apply lock poisoned"))?;
-        let previous = self.generation()?;
-        self.check_operation_access(&command.operation)?;
+        publisher: &mut dyn kasumi_raft::ApplyPublisher,
+    ) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            matches!(&scope, ApplyScope::Fixture(_))
+                && matches!(
+                    &applied.origin,
+                    crate::staged_terminal::AppliedOrigin::Fixture
+                ),
+            "fixture application requires its actual local origin"
+        );
+        let apply = ApplyOwner::lock(self, || anyhow::anyhow!("tenant apply lock poisoned"))?;
+        let prepared = self.prepare_command_ordered(&apply, &command, &applied, &scope)?;
+        let response =
+            kasumi_raft::AppliedResponse::application(serde_json::to_vec(&prepared.outcome)?);
+        match prepared.generation {
+            None => {
+                let outcome = publisher.commit(response, &[]);
+                drop(apply);
+                outcome.map_err(Into::into)
+            }
+            Some(candidate) => self.publish_prepared_generation(
+                apply.accept(candidate, prepared.changed)?,
+                response,
+                None,
+                publisher,
+            ),
+        }
+    }
+
+    fn prepare_command_ordered(
+        &self,
+        apply: &ApplyOwner<'_>,
+        command: &Command,
+        applied: &crate::staged_terminal::AppliedIdentity,
+        scope: &ApplyScope,
+    ) -> anyhow::Result<PreparedCommand> {
+        apply.require_engine(self)?;
+        let previous = apply.current();
+        let revision = applied.revision;
+        self.check_operation_access_from(&previous.state, &command.operation)?;
         if revision <= previous.state.revision {
-            return Err(Error::new(
-                ErrorCode::Corruption,
-                "applied revision must increase",
-            ));
+            return Err(Error::new(ErrorCode::Corruption, "applied revision must increase").into());
         }
         if previous.state.retired {
-            return Ok(Err(Error::new(
-                ErrorCode::Sealed,
-                "application state is permanently frozen after retirement",
-            )));
+            return Ok(PreparedCommand {
+                generation: None,
+                changed: ChangedIds::new(),
+                outcome: Err(Error::new(
+                    ErrorCode::Sealed,
+                    "application state is permanently frozen after retirement",
+                )),
+            });
         }
         if let Operation::Mutate(batch) = &command.operation {
-            return self.apply_mutation_ordered(&previous, &command, batch, &applied, &scope);
+            return self.prepare_mutation_ordered(previous, command, batch, applied, scope);
         }
-        let terminal_owner = match &scope {
-            ApplyScope::Committed => previous.terminals.clone(),
-            #[cfg(any(test, feature = "test-utils"))]
-            ApplyScope::Fixture(disk) => previous
-                .terminals
-                .fixture_owner(disk, &previous.state)
-                .map_err(terminal_error)?,
-        };
+        #[cfg(any(test, feature = "test-utils"))]
+        if matches!(scope, ApplyScope::Fixture(_)) {
+            previous.terminals.check_fixture_source()?;
+        }
+        // Reads and preparation use the selected history directly. A fixture
+        // obtains append storage only after a nonempty terminal overlay passes
+        // validation and budget checks.
+        let terminal_owner = previous.terminals.clone();
         let mut next = previous.state.clone();
         next.revision = revision;
         let result = if command.context.tenant != next.tenant {
@@ -1210,22 +1481,27 @@ impl TenantEngine {
         } else if let Err(error) = authorize_resource(&next, &command.context) {
             Err(error)
         } else {
-            if let Some(key) = staged_command_key(&command)?
+            if let Some(key) = staged_command_key(command)?
                 && !next.staged_transactions.contains_key(&key)
-                && let Some(row) = terminal_owner.get(&key).map_err(terminal_error)?
+                && let Some(row) = terminal_owner.get(&key)?
             {
-                row.validate(&previous.state).map_err(terminal_error)?;
+                row.validate(&previous.state)?;
                 next.staged_transactions.insert(key, row.stage);
             }
             apply_operation(
                 &mut next,
-                &command,
+                command,
                 revision,
                 previous.state.revision,
                 &previous.indexes,
             )
         };
         let (outcome, changed_documents) = match result {
+            // Invariant failures must leave the entire publication private,
+            // including staged/schema outcomes and their audit/revision metadata.
+            Ok((Err(error), _)) | Err(error) if error.code == ErrorCode::Corruption => {
+                return Err(error.into());
+            }
             Ok(value) => value,
             Err(error) => (Err(error), false),
         };
@@ -1275,7 +1551,7 @@ impl TenantEngine {
         if !crate::accounting::audit_fits(&next) {
             let mut rejected = previous.state.clone();
             rejected.revision = revision;
-            self.publish_generation(Some(Arc::new(Generation {
+            let candidate = Arc::new(Generation {
                 receipts: previous.receipts.clone(),
                 backup_bindings: previous.backup_bindings.clone(),
                 terminals: previous.terminals.clone(),
@@ -1283,30 +1559,41 @@ impl TenantEngine {
                 state: rejected,
                 indexes: previous.indexes.clone(),
                 snapshot_accounting: previous.snapshot_accounting.clone(),
+                application_selection: std::sync::OnceLock::new(),
                 _read_reservations: vec![],
-            })));
-            return Ok(Err(Error::new(
-                ErrorCode::AuditUnavailable,
-                "hot audit byte budget exhausted",
-            )));
+            });
+            return Ok(PreparedCommand {
+                generation: Some(candidate),
+                changed: ChangedIds::new(),
+                outcome: Err(Error::new(
+                    ErrorCode::AuditUnavailable,
+                    "hot audit byte budget exhausted",
+                )),
+            });
         }
         let terminal_pending = crate::staged_terminal::Pending::prepare(
             &terminal_owner,
             &previous.state,
             &mut next,
-            &applied,
-        )
-        .map_err(terminal_error)?;
+            applied,
+        )?;
         let terminals = PreparedTerminals {
-            applied: &applied,
+            applied,
             pending: &terminal_pending,
             owner: &terminal_owner,
+            scope,
         };
         if let Err(error) = staging::validate_budget(&next, &next.limits) {
-            return self.reject_resource_budget(&previous, next, &command, Some(error), &terminals);
+            return self.prepare_resource_rejection(
+                previous,
+                next,
+                command,
+                Some(error),
+                &terminals,
+            );
         }
         let changed = if changed_documents {
-            operation_changes(&previous.state, &command)?
+            operation_changes(&previous.state, command)?
         } else {
             BTreeMap::new()
         };
@@ -1315,30 +1602,37 @@ impl TenantEngine {
             && let Err(error) =
                 crate::change_feed_state::append(&previous.state, &mut next, &changed)
         {
-            return self.reject_resource_budget(&previous, next, &command, Some(error), &terminals);
+            return self.prepare_resource_rejection(
+                previous,
+                next,
+                command,
+                Some(error),
+                &terminals,
+            );
         }
         let snapshot_accounting = previous.snapshot_accounting.updated(
             &previous.state,
             &next,
             &changed,
-            &staged_changes(&previous.state, &command)?,
+            &staged_changes(&previous.state, command)?,
         )?;
         if !snapshot_accounting.fits(&next)? || !lifecycle::completion_fits(&next)? {
-            return self.reject_resource_budget(&previous, next, &command, None, &terminals);
+            return self.prepare_resource_rejection(previous, next, command, None, &terminals);
         }
         let indexes = if changed_documents
             && !matches!(command.operation, Operation::PublishHistoryArchive(_))
         {
-            Arc::new(previous.indexes.update(
-                &previous.state.collections,
-                &next.collections,
+            Arc::new(crate::index_source::update(
+                &previous.indexes,
+                &previous.state,
+                &next,
                 &changed,
             )?)
         } else {
             previous.indexes.clone()
         };
-        let terminals = terminal_pending.persist().map_err(terminal_error)?;
-        self.publish_generation(Some(Arc::new(Generation {
+        let terminals = scope.stage_terminals(terminal_pending, &previous.state)?;
+        let candidate = Arc::new(Generation {
             receipts: previous.receipts.clone(),
             backup_bindings: previous.backup_bindings.clone(),
             target_resolutions: previous.target_resolutions.clone(),
@@ -1346,19 +1640,24 @@ impl TenantEngine {
             state: next,
             indexes,
             snapshot_accounting,
+            application_selection: std::sync::OnceLock::new(),
             _read_reservations: vec![],
-        })));
-        Ok(outcome)
+        });
+        Ok(PreparedCommand {
+            generation: Some(candidate),
+            changed,
+            outcome,
+        })
     }
 
-    fn reject_resource_budget(
+    fn prepare_resource_rejection(
         &self,
         previous: &Generation,
         next: TenantState,
         command: &Command,
         failure: Option<Error>,
         terminals: &PreparedTerminals<'_>,
-    ) -> Result<Result<WriteReceipt>> {
+    ) -> anyhow::Result<PreparedCommand> {
         let revision = next.revision;
         let error = failure.unwrap_or_else(|| {
             Error::new(
@@ -1383,7 +1682,7 @@ impl TenantEngine {
                     .staged_transactions
                     .get(&key)
                     .is_some_and(StagedTransaction::is_active)
-                    && let Some(completed) = terminals.pending.get(&key).map_err(terminal_error)?
+                    && let Some(completed) = terminals.pending.get(&key)?
                     && !completed.is_active()
                 {
                     let mut completed = completed.clone();
@@ -1405,8 +1704,7 @@ impl TenantEngine {
                 &previous.state,
                 &mut rejected,
                 terminals.applied,
-            )
-            .map_err(terminal_error)?;
+            )?;
             let accounting = previous.snapshot_accounting.updated(
                 &previous.state,
                 &rejected,
@@ -1417,8 +1715,10 @@ impl TenantEngine {
                 && accounting.fits(&rejected)?
                 && lifecycle::completion_fits(&rejected)?
             {
-                let terminals = rejected_terminals.persist().map_err(terminal_error)?;
-                self.publish_generation(Some(Arc::new(Generation {
+                let terminals = terminals
+                    .scope
+                    .stage_terminals(rejected_terminals, &previous.state)?;
+                let candidate = Arc::new(Generation {
                     receipts: previous.receipts.clone(),
                     backup_bindings: previous.backup_bindings.clone(),
                     target_resolutions: previous.target_resolutions.clone(),
@@ -1426,16 +1726,21 @@ impl TenantEngine {
                     state: rejected,
                     indexes: previous.indexes.clone(),
                     snapshot_accounting: accounting,
+                    application_selection: std::sync::OnceLock::new(),
                     _read_reservations: vec![],
-                })));
-                return Ok(Err(error));
+                });
+                return Ok(PreparedCommand {
+                    generation: Some(candidate),
+                    changed: ChangedIds::new(),
+                    outcome: Err(error),
+                });
             }
         }
         // Required audit/receipt storage is exhausted. Nothing from the command
         // takes effect. The revision-only cursor fits its pre-reserved headroom.
         let mut rejected = previous.state.clone();
         rejected.revision = revision;
-        self.publish_generation(Some(Arc::new(Generation {
+        let candidate = Arc::new(Generation {
             receipts: previous.receipts.clone(),
             backup_bindings: previous.backup_bindings.clone(),
             terminals: previous.terminals.clone(),
@@ -1443,12 +1748,17 @@ impl TenantEngine {
             state: rejected,
             indexes: previous.indexes.clone(),
             snapshot_accounting: previous.snapshot_accounting.clone(),
+            application_selection: std::sync::OnceLock::new(),
             _read_reservations: vec![],
-        })));
-        Ok(Err(Error::new(
-            ErrorCode::AuditUnavailable,
-            "required audit cannot fit serialized tenant budget",
-        )))
+        });
+        Ok(PreparedCommand {
+            generation: Some(candidate),
+            changed: ChangedIds::new(),
+            outcome: Err(Error::new(
+                ErrorCode::AuditUnavailable,
+                "required audit cannot fit serialized tenant budget",
+            )),
+        })
     }
 
     pub(crate) fn write_generation(
@@ -1477,11 +1787,18 @@ impl TenantEngine {
         scratch_disk: &Arc<kasumi_store::ScratchDisk>,
     ) -> Result<kasumi_store::SnapshotImage> {
         let generation = self.generation()?;
+        Self::logical_snapshot_of(&generation, scratch_disk)
+    }
+
+    fn logical_snapshot_of(
+        generation: &Generation,
+        scratch_disk: &Arc<kasumi_store::ScratchDisk>,
+    ) -> Result<kasumi_store::SnapshotImage> {
         kasumi_store::SnapshotImage::capture(
             scratch_disk,
             crate::target_resolution::snapshot_limit(&generation.state)
                 .map_err(|e| Error::new(ErrorCode::Corruption, e.to_string()))?,
-            |writer| Ok(Self::write_generation(&generation, writer)?),
+            |writer| Ok(Self::write_generation(generation, writer)?),
         )
         .map_err(|e| Error::new(ErrorCode::Corruption, e.to_string()))
     }
@@ -1493,11 +1810,13 @@ impl TenantEngine {
 
     #[cfg(any(test, feature = "test-utils"))]
     pub(crate) fn restore_candidate(&self, bytes: &kasumi_store::SnapshotImage) -> Result<()> {
-        let _guard = self
-            .apply_lock
-            .lock()
-            .map_err(|_| Error::new(ErrorCode::Unavailable, "tenant apply lock poisoned"))?;
-        let generation = self.prepare_snapshot_reader(bytes.disk(), &mut bytes.reader(), None)?;
+        let apply = ApplyOwner::lock_validation(self)?;
+        let generation = self.prepare_snapshot_reader(
+            &ValidationBaseline::from_apply(&apply),
+            bytes.disk(),
+            &mut bytes.reader(),
+            None,
+        )?;
         if generation.state.audit_retention.archive_head.is_some() {
             let store = self.snapshot_store.get().ok_or_else(|| {
                 Error::new(
@@ -1514,10 +1833,12 @@ impl TenantEngine {
 
     fn prepare_snapshot_reader(
         &self,
+        baseline: &ValidationBaseline<'_>,
         disk: &Arc<kasumi_store::ScratchDisk>,
         reader: &mut dyn std::io::Read,
         expected: Option<crate::snapshot_codec::StreamSummary>,
     ) -> Result<Generation> {
+        baseline.current_for(self)?;
         let crate::snapshot_codec::Decoded {
             state,
             receipts,
@@ -1534,6 +1855,7 @@ impl TenantEngine {
             ));
         }
         self.prepare_state(
+            baseline,
             state,
             receipts,
             backup_bindings,
@@ -1544,12 +1866,14 @@ impl TenantEngine {
 
     fn prepare_state(
         &self,
+        baseline: &ValidationBaseline<'_>,
         state: TenantState,
         receipts: crate::mutation_receipt::View,
         backup_bindings: crate::backup_binding::View,
         terminals: crate::staged_terminal::View,
         target_resolutions: crate::target_resolution::View,
     ) -> Result<Generation> {
+        let prior = baseline.current_for(self)?;
         if state.tenant != self.tenant
             || state.incarnation != self.incarnation
             || state.revision_base != self.revision_base
@@ -1566,7 +1890,7 @@ impl TenantEngine {
         validate_policy(&state.policy, &state.limits)?;
         lifecycle::validate(&state)?;
         recovery::validate(&state)?;
-        if let Ok(current) = self.generation() {
+        if let Some(current) = prior {
             recovery::validate_successor(&current.state, &state)?;
         }
         validate_target_history(&state)?;
@@ -1590,7 +1914,7 @@ impl TenantEngine {
                 }
             }
         }
-        if let Ok(current) = self.generation() {
+        if let Some(current) = prior {
             for (id, old) in &current.state.target_lifecycle {
                 let new = state.target_lifecycle.get(id).ok_or_else(|| {
                     Error::new(ErrorCode::Corruption, "snapshot removed target history")
@@ -1612,7 +1936,7 @@ impl TenantEngine {
                 }
             }
         }
-        if let Ok(current) = self.generation()
+        if let Some(current) = prior
             && let Some(installed) = &current.state.lifecycle_control
             && state.lifecycle_control.as_ref().is_none_or(|incoming| {
                 incoming.installation != installed.installation
@@ -1628,7 +1952,7 @@ impl TenantEngine {
                 "snapshot substituted the immutable control installation",
             ));
         }
-        if let Ok(current) = self.generation()
+        if let Some(current) = prior
             && let (Some(old), Some(incoming)) =
                 (&current.state.lifecycle_control, &state.lifecycle_control)
         {
@@ -1705,8 +2029,9 @@ impl TenantEngine {
                     "snapshot collection identity mismatch",
                 ));
             }
-            validate_collection(&collection.definition, &collection.documents)?;
-            check_unique(collection)?;
+            let source = crate::index_source::StateCollection::new(&state, name, collection);
+            validate_collection(&source).map_err(kasumi_query::ReadFailure::into_query_error)?;
+            check_unique(&source).map_err(kasumi_query::ReadFailure::into_query_error)?;
             for (id, document) in &collection.documents {
                 validate_name(id)?;
                 if id != &document.id || document.version > collection.data_epoch {
@@ -1761,7 +2086,7 @@ impl TenantEngine {
                 "terminal snapshot owner differs",
             ));
         }
-        if let Ok(current) = self.generation() {
+        if let Some(current) = prior {
             let old = current.terminals.head();
             if old.origin_incarnation != state.staged_terminal_head.origin_incarnation
                 || old.count > state.staged_terminal_head.count
@@ -1788,7 +2113,7 @@ impl TenantEngine {
                 "target history lost reserved completion capacity",
             ));
         }
-        if let Ok(current) = self.generation() {
+        if let Some(current) = prior {
             if let Some(old_head) = &current.state.target_completion_head {
                 let incoming = state.target_completion_head.as_ref().ok_or_else(|| {
                     Error::new(
@@ -1863,7 +2188,7 @@ impl TenantEngine {
                 .validate(&state)
                 .map_err(terminal_error)?;
         }
-        if let Ok(current) = self.generation() {
+        if let Some(current) = prior {
             let old = current.backup_bindings.head();
             if old.origin_incarnation != state.backup_binding_head.origin_incarnation
                 || old.count > state.backup_binding_head.count
@@ -1887,7 +2212,7 @@ impl TenantEngine {
                 .validate(&state)
                 .map_err(terminal_error)?;
         }
-        if let Ok(current) = self.generation() {
+        if let Some(current) = prior {
             let old = current.receipts.head();
             if old.origin_incarnation != state.mutation_receipt_head.origin_incarnation
                 || old.count > state.mutation_receipt_head.count
@@ -1935,7 +2260,7 @@ impl TenantEngine {
                 "snapshot exceeds serialized byte quota",
             ));
         }
-        let indexes = Arc::new(QueryIndexes::build(&state.collections)?);
+        let indexes = Arc::new(crate::index_source::build(&state)?);
         Ok(Generation {
             receipts,
             backup_bindings,
@@ -1944,6 +2269,7 @@ impl TenantEngine {
             state,
             indexes,
             snapshot_accounting,
+            application_selection: std::sync::OnceLock::new(),
             _read_reservations: vec![],
         })
     }
@@ -2067,6 +2393,7 @@ fn apply_operation(
                 Action::Admin,
             )?;
             let collection = schema::prepare_collection(
+                state,
                 state.collections.get(&definition.name),
                 definition,
                 matches!(command.operation, Operation::CreateCollection(_)),
@@ -2843,8 +3170,9 @@ mod first_release_command_tests {
             },
             signature: "dd".repeat(64),
         };
-        // The signed record has a complete wire shape. The test stops at
-        // replay decoding, before authority verification or mutation.
+        // The signed record has a complete wire shape. Noncanonical input
+        // stops at replay decoding; the canonical arm below reaches input
+        // validation, before authority verification.
         let grant = kasumi_serving::SignedLifecycleLease {
             claims: kasumi_serving::LifecycleLeaseClaims {
                 request: kasumi_serving::LifecycleLeaseRequest {
@@ -2948,15 +3276,52 @@ mod first_release_command_tests {
             command_sha256: hex::encode(Sha256::digest(&noncanonical)),
             retirement_seed: None,
         };
-        let Err(failure) =
-            kasumi_raft::StateMachineBackend::apply(&engine, &position, &noncanonical)
-        else {
+        let Err(failure) = kasumi_raft::StateMachineBackend::apply_with_publisher(
+            &engine,
+            &position,
+            kasumi_raft::AppliedInput::Command(&noncanonical),
+            &mut crate::test_utils::CaptureApplyPublisher::default(),
+        ) else {
             panic!("noncanonical target command was applied");
         };
         assert!(format!("{failure:#}").contains("noncanonical committed command"));
         let after = engine.generation().unwrap();
         assert!(Arc::ptr_eq(&before, &after));
         assert_eq!(after.state.revision, 0);
+
+        // The matching canonical prefix reaches the real target producer.
+        // Its one/two-byte budgets fail input validation before installed
+        // authority is checked. That deterministic rejection is published;
+        // this does not claim signed target activation.
+        let position = kasumi_raft::AppliedEntryContext {
+            command_sha256: hex::encode(Sha256::digest(&canonical)),
+            ..position
+        };
+        let response = crate::test_utils::capture_application(|publisher| {
+            kasumi_raft::StateMachineBackend::apply_with_publisher(
+                &engine,
+                &position,
+                kasumi_raft::AppliedInput::Command(&canonical),
+                publisher,
+            )
+        })
+        .unwrap();
+        assert!(response.retirement.is_none());
+        let outcome: Result<target::TargetOutcome> =
+            serde_json::from_slice(&response.data).unwrap();
+        let rejection = outcome.unwrap_err();
+        assert_eq!(rejection.code, ErrorCode::InvalidArgument);
+        assert_eq!(
+            rejection.message,
+            "target metadata budget cannot preserve an attempt terminal reserve"
+        );
+        let current = engine.generation().unwrap();
+        assert_eq!(current.state.revision, 1);
+        assert_eq!(before.state.revision, 0);
+        assert!(current.state.target_lifecycle.is_empty());
+        let event = current.state.audits.back().unwrap();
+        assert_eq!(event.action, "target_resolution_budget");
+        assert_eq!(event.outcome, "rejected");
     }
 }
 
@@ -2992,6 +3357,7 @@ mod restore_budget_tests {
             Limits::default(),
         )
         .unwrap();
+        let before_collection = disk.snapshot();
         engine
             .apply_command(
                 disk,
@@ -3011,6 +3377,13 @@ mod restore_budget_tests {
             )
             .unwrap()
             .unwrap();
+        let after_collection = disk.snapshot();
+        assert_eq!(after_collection.live_files, before_collection.live_files);
+        assert_eq!(
+            after_collection.charged_bytes,
+            before_collection.charged_bytes
+        );
+        assert_eq!(engine.generation().unwrap().terminals.head().count, 0);
         engine
             .apply_command(
                 disk,
@@ -3043,6 +3416,7 @@ mod restore_budget_tests {
                 + 20;
         let source = engine
             .prepare_state(
+                &CapturedValidation::capture(&engine).unwrap().baseline(),
                 state,
                 current.receipts.clone(),
                 current.backup_bindings.clone(),
@@ -3051,23 +3425,133 @@ mod restore_budget_tests {
             )
             .unwrap();
         let bytes = crate::test_utils::encode_snapshot_candidate(disk, &source, 64 << 20).unwrap();
+        let checkpoint = FullBackupCheckpoint {
+            tenant: source.state.tenant.clone(),
+            source_incarnation: source.state.incarnation.clone(),
+            revision: source.state.revision,
+            resident_sha256: bytes.sha256().to_owned(),
+            backup_id: uuid::Uuid::new_v4(),
+            manifest_ciphertext_sha256: "00".repeat(32),
+            key_lineage_digest: "00".repeat(32),
+        };
         engine.restore_candidate(&bytes).unwrap(); // Source itself is a valid recoverable snapshot.
+        // Both original handles protect the old receipt table through restore.
+        // Their fixture work is now complete; the engine owns the restored table.
+        drop(source);
+        drop(current);
         let outcome = TenantEngine::restored_bootstrap(
             &bytes,
             "tenant",
             uuid::Uuid::new_v4().to_string(),
-            FullBackupCheckpoint {
-                tenant: source.state.tenant.clone(),
-                source_incarnation: source.state.incarnation.clone(),
-                revision: source.state.revision,
-                resident_sha256: bytes.sha256().to_owned(),
-                backup_id: uuid::Uuid::new_v4(),
-                manifest_ciphertext_sha256: "00".repeat(32),
-                key_lineage_digest: "00".repeat(32),
-            },
+            checkpoint,
             None,
         );
         assert_eq!(outcome.unwrap_err().code, ErrorCode::QuotaExceeded);
         assert_eq!(engine.logical_snapshot(bytes.disk()).unwrap(), bytes);
+    }
+}
+
+// The prototype's authority is constructed in the owning state module. Private
+// fields prevent a caller from substituting another mutex or source registry.
+#[cfg(test)]
+pub(crate) struct PrimaryApplyGuard<'engine> {
+    roots: &'engine crate::application_sources::SourceRootsRef,
+    scope: [u8; 32],
+    bootstrap: [u8; 32],
+    _guard: PrimaryApplyLock<'engine>,
+}
+#[cfg(test)]
+enum PrimaryApplyLock<'engine> {
+    Owned(std::sync::MutexGuard<'engine, ()>),
+    Borrowed(&'engine std::sync::MutexGuard<'engine, ()>),
+}
+#[cfg(test)]
+impl PrimaryApplyLock<'_> {
+    fn held(&self) -> &() {
+        match self {
+            Self::Owned(guard) => guard,
+            Self::Borrowed(guard) => guard,
+        }
+    }
+}
+#[cfg(test)]
+impl PrimaryApplyGuard<'_> {
+    pub(crate) fn roots(&self) -> &crate::application_sources::SourceRootsRef {
+        let _held = self._guard.held();
+        self.roots
+    }
+    pub(crate) fn scope(&self) -> [u8; 32] {
+        self.scope
+    }
+    pub(crate) fn bootstrap(&self) -> [u8; 32] {
+        self.bootstrap
+    }
+}
+#[cfg(test)]
+impl TenantEngine {
+    pub(crate) fn lock_primary_apply(&self) -> anyhow::Result<PrimaryApplyGuard<'_>> {
+        use crate::primary_tree::records;
+        use anyhow::Context as _;
+        let guard = self
+            .apply_lock
+            .lock()
+            .map_err(|_| anyhow::anyhow!("application apply lock poisoned"))?;
+        let roots = self
+            .application_sources
+            .get()
+            .context("application sources not installed")?;
+        let bootstrap = self
+            .bootstrap_sha256
+            .get()
+            .context("authenticated application bootstrap absent")?;
+        let digest = records::boundary::raw_digest(bootstrap)
+            .map_err(|error| anyhow::anyhow!("primary record invalid: {error:?}"))?;
+        let scope = records::scope_hash(&self.tenant, &self.incarnation, digest)
+            .map_err(|error| anyhow::anyhow!("primary record invalid: {error:?}"))?;
+        roots.primary_installation().0.check_access()?;
+        Ok(PrimaryApplyGuard {
+            roots,
+            scope,
+            bootstrap: digest,
+            _guard: PrimaryApplyLock::Owned(guard),
+        })
+    }
+}
+
+#[cfg(test)]
+impl TenantEngine {
+    pub(crate) fn application_guard_available_for_test(&self) -> bool {
+        self.apply_lock.try_lock().is_ok()
+    }
+    /// Manufactured Frozen-branch fixture only; confers no retirement authority.
+    /// Return the prior owner too so its actual retained reservations stay alive.
+    pub(crate) fn freeze_current_for_completion_test(
+        &self,
+    ) -> anyhow::Result<(Arc<Generation>, Arc<Generation>)> {
+        let old = self.generation()?;
+        let apply = ApplyOwner::lock(self, || anyhow::anyhow!("tenant apply lock poisoned"))?;
+        anyhow::ensure!(
+            std::ptr::eq(old.as_ref(), apply.current()),
+            "completion fixture current owner changed before serialization"
+        );
+        let mut state = old.state.clone();
+        state.retired = true;
+        let selected = std::sync::OnceLock::new();
+        if let Some(source) = old.application_selection.get() {
+            assert!(selected.set(source.clone()).is_ok());
+        }
+        let frozen = Arc::new(Generation {
+            state,
+            receipts: old.receipts.clone(),
+            backup_bindings: old.backup_bindings.clone(),
+            terminals: old.terminals.clone(),
+            target_resolutions: old.target_resolutions.clone(),
+            indexes: old.indexes.clone(),
+            snapshot_accounting: old.snapshot_accounting.clone(),
+            application_selection: selected,
+            _read_reservations: vec![],
+        });
+        self.publish_generation(Some(frozen.clone()));
+        Ok((old, frozen))
     }
 }

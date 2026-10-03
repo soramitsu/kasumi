@@ -207,6 +207,7 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
                     directory: directory.join("scratch"),
                     max_bytes: 64 << 30,
                     min_free_bytes: 256 << 20,
+                    native_cache_bytes: 8 << 20,
                 },
                 verifier: config.clone(),
                 initial_certificates: vec![certificate.clone()],

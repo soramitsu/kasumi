@@ -435,7 +435,7 @@ async fn fatal_snapshot_capture_blocks_even_local_generation_access() -> Result<
         repeated
             .issues()
             .iter()
-            .any(|next| Arc::ptr_eq(next, issue))
+            .any(|next| kasumi_types::drain::DrainIssueRef::ptr_eq(next, issue))
     );
     drop(group);
     drop(store);

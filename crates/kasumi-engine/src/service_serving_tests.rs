@@ -1,6 +1,73 @@
 // The issuer reducer and pinned native issuer have separate actual-quorum tests.
 // This fixture signs real opaque capabilities to isolate the encrypted engine's
 // queue, materialization and release boundaries under a deterministic clock.
+fn report_serving_opening_failure(error: &anyhow::Error) {
+    use kasumi_kv::TerminalObservation;
+    use std::io::Write as _;
+    let Some(failure) = error.downcast_ref::<kasumi_store::NodeStoreOpeningFailure>() else {
+        return;
+    };
+    let custody = failure.custody();
+    let report = custody.opening().report();
+    let engine = report.engine();
+    let mut stderr = std::io::stderr().lock();
+    let _ = writeln!(
+        stderr,
+        "serving fixture opening failure: id={:?} startup={:?} child={:?} child_disposition={:?} close_error={:?} engine_phase={:?} engine_opening_phase={:?} engine_settlement={:?} native={:?}",
+        failure.opening_id(),
+        custody.phase(),
+        custody.child_id(),
+        custody.child_disposition(),
+        failure.close_error(),
+        engine.phase(),
+        engine.opening_phase(),
+        engine.settlement(),
+        engine.native_disposition()
+    );
+    fn observation<E: std::fmt::Debug>(
+        stderr: &mut impl std::io::Write,
+        name: &str,
+        observed: TerminalObservation<'_, E>,
+    ) {
+        match observed {
+            TerminalObservation::NotEntered => {
+                let _ = writeln!(stderr, "{name}: NotEntered");
+            }
+            TerminalObservation::Entered => {
+                let _ = writeln!(stderr, "{name}: Entered");
+            }
+            TerminalObservation::Returned(Ok(())) => {
+                let _ = writeln!(stderr, "{name}: Returned(Ok)");
+            }
+            TerminalObservation::Returned(Err(original)) => {
+                let _ = writeln!(stderr, "{name}: Returned(Err({original:#?}))");
+            }
+            TerminalObservation::Panicked(_) => {
+                let _ = writeln!(stderr, "{name}: Panicked (original retained)");
+            }
+        }
+    }
+    observation(&mut stderr, "physical acquisition", report.acquisition());
+    observation(&mut stderr, "native opening", engine.opening());
+    observation(&mut stderr, "partial native close", engine.partial_close());
+    observation(&mut stderr, "failed disposal", engine.failed_disposal());
+    if let Some(close) = engine.database_close() {
+        let _ = writeln!(
+            stderr,
+            "database close: settlement={:?} native={:?}",
+            close.settlement(),
+            close.native_disposition()
+        );
+        observation(&mut stderr, "database shutdown", close.shutdown());
+        observation(&mut stderr, "database backend close", close.backend());
+        observation(
+            &mut stderr,
+            "database failed disposal",
+            close.failed_disposal(),
+        );
+    }
+}
+
 struct ServingFixture {
     storage: Vec<crate::test_utils::FixtureStorage>,
     nodes: Vec<Arc<kasumi_store::NodeStore>>,
@@ -165,6 +232,7 @@ impl ServingFixture {
             } else {
                 storage.open_existing(&path, kasumi_store::test_utils::NODE_STORE_ID)
             })
+            .inspect_err(report_serving_opening_failure)
             .unwrap();
             self.nodes.push(node.clone());
             let audit_store = (if create {
@@ -229,8 +297,7 @@ impl ServingFixture {
                 .await
             }
             .unwrap();
-            crate::test_utils::install_local_replica_audit_placement(stores.application())
-                .unwrap();
+            crate::test_utils::install_local_replica_audit_placement(stores.application()).unwrap();
             let db = crate::open_replicated(
                 id,
                 stores,
@@ -316,9 +383,36 @@ impl ServingFixture {
                 "fixture lease must be expired"
             );
             if let Err(failure) = db.shutdown().await {
-                assert_eq!(failure.completion(), DrainCompletion::Complete);
-                assert_eq!(failure.issues().len(), 1, "{failure:?}");
+                assert_eq!(
+                    failure.completion(),
+                    DrainCompletion::Complete,
+                    "original serving-expiry shutdown report: {failure:#?}; retained apply observation: {:?}",
+                    crate::test_utils::retained_apply_diagnostic(&db.group)
+                );
+                let retained_expiry = assert_completed_expiry_report(&db.group);
+                assert_eq!(
+                    failure.issues().len(),
+                    1 + usize::from(retained_expiry),
+                    "{failure:?}"
+                );
+                assert_eq!(
+                    failure
+                        .issues()
+                        .iter()
+                        .filter(|issue| issue.component() == "Raft apply")
+                        .count(),
+                    usize::from(retained_expiry)
+                );
                 for issue in failure.issues() {
+                    if issue.component() == "Raft apply" {
+                        assert!(retained_expiry);
+                        assert_eq!(issue.instance(), 0);
+                        assert_eq!(
+                            issue.error().to_string(),
+                            "Raft apply failed; original failure retained"
+                        );
+                        continue;
+                    }
                     assert_eq!(issue.component(), "OpenRaft runtime");
                     assert_eq!(issue.instance(), 0);
                     let original = issue.error()
@@ -334,12 +428,18 @@ impl ServingFixture {
                         let openraft::error::Fatal::StorageError(error) = core else {
                             panic!("unexpected expired core failure: {core:?}");
                         };
-                        assert!(is_serving_expiry_write(error), "{error:?}");
+                        assert!(
+                            is_serving_expiry_or_retained_apply(error, retained_expiry),
+                            "{error:?}"
+                        );
                         observed += 1;
                     }
                     if let Some(worker) = original.state_machine() {
                         let error = worker.storage_error().expect("original storage error");
-                        assert!(is_serving_expiry_write(error), "{error:?}");
+                        assert!(
+                            is_serving_expiry_or_retained_apply(error, retained_expiry),
+                            "{error:?}"
+                        );
                         observed += 1;
                     }
                     for replication in original.replications() {
@@ -351,7 +451,10 @@ impl ServingFixture {
                             .as_ref()
                             .and_then(|stream| stream.storage_error())
                             .expect("original replication storage error");
-                        assert!(is_serving_expiry_write(error), "{error:?}");
+                        assert!(
+                            is_serving_expiry_or_retained_apply(error, retained_expiry),
+                            "{error:?}"
+                        );
                         observed += 1;
                     }
                     assert!(observed > 0, "no original expiry failure: {original:?}");
@@ -364,7 +467,7 @@ impl ServingFixture {
                         repeated
                             .issues()
                             .iter()
-                            .any(|next| Arc::ptr_eq(issue, next))
+                            .any(|next| kasumi_types::drain::DrainIssueRef::ptr_eq(issue, next))
                     );
                 }
             }
@@ -385,6 +488,46 @@ impl ServingFixture {
         self.leader(phase).await;
         self.disable_automatic_elections();
     }
+}
+
+// Inspect the exact preserved original only after the positive shutdown census.
+// The failed response remains owned and cannot become an acknowledgment.
+fn assert_completed_expiry_report(group: &kasumi_raft::RaftGroup) -> bool {
+    use kasumi_raft::{ApplyObservationRef as O, RetainedApplyReport};
+    group.try_with_retained_apply_report(|report| {
+        let RetainedApplyReport::Ordinary(report) = report else {
+            panic!("expected the actual ordinary committed-expiry report");
+        };
+        assert!(report.single.is_none());
+        assert!(report.violation.is_none());
+        assert!(report.response.is_some());
+        assert!(report.wake_panic.is_none());
+        let O::Error(original) = report.sink else {
+            panic!("expired publication must retain its original sink error");
+        };
+        assert_eq!(original.to_string(), "domain transaction committed; access expired before acknowledgment; outcome unknown");
+        assert_eq!(original.root_cause().to_string(), "tenant is sealed: key-access lease unavailable or expired");
+        assert!(matches!(report.action, O::Returned));
+        assert!(matches!(report.backend, O::Returned));
+        assert!(matches!(report.finish, O::Returned));
+        assert!(matches!(report.cleanup, O::Refused(kasumi_raft::CompletionSettleError::Retained)));
+        assert!(matches!(report.drain, O::Returned));
+    }).unwrap().is_some()
+}
+
+fn is_serving_expiry_or_retained_apply(
+    error: &openraft::StorageError<u64>,
+    retained_expiry: bool,
+) -> bool {
+    if is_serving_expiry_write(error) {
+        return true;
+    }
+    let marker = openraft::StorageError::<u64>::from_io_error(
+        openraft::ErrorSubject::Store,
+        openraft::ErrorVerb::Write,
+        std::io::Error::other("Raft apply failed; original failure retained"),
+    );
+    retained_expiry && error.to_string() == marker.to_string()
 }
 
 fn is_serving_expiry_write(error: &openraft::StorageError<u64>) -> bool {

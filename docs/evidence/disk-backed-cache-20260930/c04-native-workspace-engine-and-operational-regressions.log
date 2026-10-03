@@ -1,0 +1,820 @@
+Command: cargo test --locked --offline --config profile.test.package.kasumi-kv.opt-level=3 --config profile.test.package.sha2.opt-level=3 -p kasumi-store -p kasumi-raft -p kasumi-engine --all-features --lib --no-fail-fast -- scratch_prepared_workspace_survives_capacity_pressure_after_prepare scratch_preparation_capacity_refusal_has_no_private_effect_and_retries restored_identity_metadata_is_validated_before_bootstrap_persistence permanent_staged_point_capacity_transfers_to_outcome_and_can_expand_without_identity_reuse missing_archive_and_incorrect_totals_prevent_snapshot_completion control_archive_transfer_uses_exact_reserved_domain_without_application_authority incomplete_or_corrupt_bundle_never_publishes_pruned_state replacement_receives_complete_chain_and_restart_uses_local_dependencies serving_expiry_rejects_queued_effect_and_late_read_or_committed_ack_then_reopens_exactly existing_replicas_replay_committed_state_and_membership_after_full_close security_audit::jobs::tests --nocapture
+CARGO_TARGET_DIR=target/disk-backed-cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+   Compiling kasumi-kv v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-kv)
+   Compiling kasumi-store v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-store)
+   Compiling kasumi-raft v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-raft)
+   Compiling kasumi-engine v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-engine)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 10m 33s
+     Running unittests src/lib.rs (target/disk-backed-cache/debug/deps/kasumi_engine-44db468831cfc59f)
+
+running 10 tests
+TestDiskMemory::reserve_installed denied: provider=0x7bbf488690 requested_bytes=143432 charged_bytes=147544 bookkeeping_bytes=24184 used_bytes=4748203 next_used_bytes=4895747 max_bytes=67108864 live_reservations=32 max_reservations=32 attempts=215 error=Kind(OutOfMemory)
+
+thread 'state::staging::capacity_tests::permanent_staged_point_capacity_transfers_to_outcome_and_can_expand_without_identity_reuse' (21590746) panicked at crates/kasumi-engine/src/staging_capacity_tests.rs:208:10:
+called `Result::unwrap()` on an `Err` value: scratch table setup failed: storage capacity denied
+
+Caused by:
+    0: storage capacity denied
+    1: storage capacity denied
+    2: storage capacity denied
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test state::staging::capacity_tests::permanent_staged_point_capacity_transfers_to_outcome_and_can_expand_without_identity_reuse ... FAILED
+TestDiskMemory::reserve_installed denied: provider=0x7bbf488590 requested_bytes=143432 charged_bytes=147544 bookkeeping_bytes=24184 used_bytes=4748203 next_used_bytes=4895747 max_bytes=67108864 live_reservations=32 max_reservations=32 attempts=375 error=Kind(OutOfMemory)
+
+thread 'state::restore_budget_tests::restored_identity_metadata_is_validated_before_bootstrap_persistence' (21590741) panicked at crates/kasumi-engine/src/state.rs:3393:42:
+called `Result::unwrap()` on an `Err` value: Error { code: Corruption, message: "invalid tenant snapshot" }
+test state::restore_budget_tests::restored_identity_metadata_is_validated_before_bootstrap_persistence ... FAILED
+physical acquisition failed: stage=existing-root-open
+
+thread 'tokio-rt-worker' (21590989) panicked at crates/kasumi-engine/src/security_audit.rs:296:13:
+injected real blocking audit record panic
+test security_audit::jobs::tests::cancelled_record_and_drain_retain_actual_blocking_panic_before_physical_reopen ... ok
+test state::snapshot_bundle::tests::missing_archive_and_incorrect_totals_prevent_snapshot_completion ... ok
+ INFO openraft::engine::engine_impl: startup begin: state: RaftState { vote: UTime { data: Vote { leader_id: LeaderId { term: 0, node_id: 0 }, committed: false }, utime: Some(Instant { tv_sec: 148798, tv_nsec: 300617666 }) }, committed: None, purged_next: 0, log_ids: LogIdList { key_log_ids: [] }, membership_state: MembershipState { committed: EffectiveMembership { log_id: None, membership: Membership { configs: [], nodes: {} }, voter_ids: {} }, effective: EffectiveMembership { log_id: None, membership: Membership { configs: [], nodes: {} }, voter_ids: {} }, observer: MembershipObserverSlot { observer: Mutex { data: None, poisoned: false, .. } } }, snapshot_meta: SnapshotMeta { last_log_id: None, last_membership: StoredMembership { log_id: None, membership: Membership { configs: [], nodes: {} } }, snapshot_id: "" }, server_state: Learner, accepted: Accepted { leader_id: LeaderId { term: 0, node_id: 0 }, log_id: None }, io_state: IOState { building_snapshot: false, vote: Vote { leader_id: LeaderId { term: 0, node_id: 0 }, committed: false }, flushed: LogIOId { committed_leader_id: LeaderId { term: 0, node_id: 0 }, log_id: None }, applied: None, snapshot: None, purged: None }, purge_upto: None }, is_leader: false, is_voter: false
+ INFO openraft::engine::engine_impl: startup done: id=1 target_state: Learner
+test state::snapshot_bundle::tests::control_archive_transfer_uses_exact_reserved_domain_without_application_authority ... ok
+test state::snapshot_bundle::tests::replacement_receives_complete_chain_and_restart_uses_local_dependencies ... ok
+test state::snapshot_bundle::tests::incomplete_or_corrupt_bundle_never_publishes_pruned_state ... ok
+ INFO openraft::engine::engine_impl: startup begin: state: RaftState { vote: UTime { data: Vote { leader_id: LeaderId { term: 0, node_id: 0 }, committed: false }, utime: Some(Instant { tv_sec: 148801, tv_nsec: 405709750 }) }, committed: None, purged_next: 0, log_ids: LogIdList { key_log_ids: [] }, membership_state: MembershipState { committed: EffectiveMembership { log_id: None, membership: Membership { configs: [], nodes: {} }, voter_ids: {} }, effective: EffectiveMembership { log_id: None, membership: Membership { configs: [], nodes: {} }, voter_ids: {} }, observer: MembershipObserverSlot { observer: Mutex { data: None, poisoned: false, .. } } }, snapshot_meta: SnapshotMeta { last_log_id: None, last_membership: StoredMembership { log_id: None, membership: Membership { configs: [], nodes: {} } }, snapshot_id: "" }, server_state: Learner, accepted: Accepted { leader_id: LeaderId { term: 0, node_id: 0 }, log_id: None }, io_state: IOState { building_snapshot: false, vote: Vote { leader_id: LeaderId { term: 0, node_id: 0 }, committed: false }, flushed: LogIOId { committed_leader_id: LeaderId { term: 0, node_id: 0 }, log_id: None }, applied: None, snapshot: None, purged: None }, purge_upto: None }, is_leader: false, is_voter: false
+ INFO openraft::engine::engine_impl: startup done: id=1 target_state: Learner
+ INFO openraft::engine::engine_impl: startup begin: state: RaftState { vote: UTime { data: Vote { leader_id: LeaderId { term: 0, node_id: 0 }, committed: false }, utime: Some(Instant { tv_sec: 148805, tv_nsec: 29753708 }) }, committed: None, purged_next: 0, log_ids: LogIdList { key_log_ids: [] }, membership_state: MembershipState { committed: EffectiveMembership { log_id: None, membership: Membership { configs: [], nodes: {} }, voter_ids: {} }, effective: EffectiveMembership { log_id: None, membership: Membership { configs: [], nodes: {} }, voter_ids: {} }, observer: MembershipObserverSlot { observer: Mutex { data: None, poisoned: false, .. } } }, snapshot_meta: SnapshotMeta { last_log_id: None, last_membership: StoredMembership { log_id: None, membership: Membership { configs: [], nodes: {} } }, snapshot_id: "" }, server_state: Learner, accepted: Accepted { leader_id: LeaderId { term: 0, node_id: 0 }, log_id: None }, io_state: IOState { building_snapshot: false, vote: Vote { leader_id: LeaderId { term: 0, node_id: 0 }, committed: false }, flushed: LogIOId { committed_leader_id: LeaderId { term: 0, node_id: 0 }, log_id: None }, applied: None, snapshot: None, purged: None }, purge_upto: None }, is_leader: false, is_voter: false
+ INFO openraft::engine::engine_impl: startup done: id=2 target_state: Learner
+ INFO openraft::engine::engine_impl: startup begin: state: RaftState { vote: UTime { data: Vote { leader_id: LeaderId { term: 0, node_id: 0 }, committed: false }, utime: Some(Instant { tv_sec: 148807, tv_nsec: 403221125 }) }, committed: None, purged_next: 0, log_ids: LogIdList { key_log_ids: [] }, membership_state: MembershipState { committed: EffectiveMembership { log_id: None, membership: Membership { configs: [], nodes: {} }, voter_ids: {} }, effective: EffectiveMembership { log_id: None, membership: Membership { configs: [], nodes: {} }, voter_ids: {} }, observer: MembershipObserverSlot { observer: Mutex { data: None, poisoned: false, .. } } }, snapshot_meta: SnapshotMeta { last_log_id: None, last_membership: StoredMembership { log_id: None, membership: Membership { configs: [], nodes: {} } }, snapshot_id: "" }, server_state: Learner, accepted: Accepted { leader_id: LeaderId { term: 0, node_id: 0 }, log_id: None }, io_state: IOState { building_snapshot: false, vote: Vote { leader_id: LeaderId { term: 0, node_id: 0 }, committed: false }, flushed: LogIOId { committed_leader_id: LeaderId { term: 0, node_id: 0 }, log_id: None }, applied: None, snapshot: None, purged: None }, purge_upto: None }, is_leader: false, is_voter: false
+ INFO openraft::engine::engine_impl: startup done: id=2 target_state: Learner
+ INFO openraft::engine::engine_impl: startup begin: state: RaftState { vote: UTime { data: Vote { leader_id: LeaderId { term: 0, node_id: 0 }, committed: false }, utime: Some(Instant { tv_sec: 148810, tv_nsec: 394053333 }) }, committed: None, purged_next: 0, log_ids: LogIdList { key_log_ids: [] }, membership_state: MembershipState { committed: EffectiveMembership { log_id: None, membership: Membership { configs: [], nodes: {} }, voter_ids: {} }, effective: EffectiveMembership { log_id: None, membership: Membership { configs: [], nodes: {} }, voter_ids: {} }, observer: MembershipObserverSlot { observer: Mutex { data: None, poisoned: false, .. } } }, snapshot_meta: SnapshotMeta { last_log_id: None, last_membership: StoredMembership { log_id: None, membership: Membership { configs: [], nodes: {} } }, snapshot_id: "" }, server_state: Learner, accepted: Accepted { leader_id: LeaderId { term: 0, node_id: 0 }, log_id: None }, io_state: IOState { building_snapshot: false, vote: Vote { leader_id: LeaderId { term: 0, node_id: 0 }, committed: false }, flushed: LogIOId { committed_leader_id: LeaderId { term: 0, node_id: 0 }, log_id: None }, applied: None, snapshot: None, purged: None }, purge_upto: None }, is_leader: false, is_voter: false
+ INFO openraft::engine::engine_impl: startup done: id=3 target_state: Learner
+ INFO openraft::engine::engine_impl: startup begin: state: RaftState { vote: UTime { data: Vote { leader_id: LeaderId { term: 0, node_id: 0 }, committed: false }, utime: Some(Instant { tv_sec: 148812, tv_nsec: 652762416 }) }, committed: None, purged_next: 0, log_ids: LogIdList { key_log_ids: [] }, membership_state: MembershipState { committed: EffectiveMembership { log_id: None, membership: Membership { configs: [], nodes: {} }, voter_ids: {} }, effective: EffectiveMembership { log_id: None, membership: Membership { configs: [], nodes: {} }, voter_ids: {} }, observer: MembershipObserverSlot { observer: Mutex { data: None, poisoned: false, .. } } }, snapshot_meta: SnapshotMeta { last_log_id: None, last_membership: StoredMembership { log_id: None, membership: Membership { configs: [], nodes: {} } }, snapshot_id: "" }, server_state: Learner, accepted: Accepted { leader_id: LeaderId { term: 0, node_id: 0 }, log_id: None }, io_state: IOState { building_snapshot: false, vote: Vote { leader_id: LeaderId { term: 0, node_id: 0 }, committed: false }, flushed: LogIOId { committed_leader_id: LeaderId { term: 0, node_id: 0 }, log_id: None }, applied: None, snapshot: None, purged: None }, purge_upto: None }, is_leader: false, is_voter: false
+ INFO openraft::engine::engine_impl: startup done: id=3 target_state: Learner
+DEBUG elect: openraft::engine::engine_impl: new
+ INFO elect: openraft::engine::engine_impl: openraft::engine::engine_impl::Engine<_>::elect, new candidate: {T1-N1:uncommitted@11:09:29.454976, last_log_id:T0-N0-0 progress:{1: false, 2: false, 3: false}}
+DEBUG elect: openraft::engine::engine_impl: close
+TRACE spawn_parallel_vote_requests{vote="{vote:T1-N1:uncommitted, last_log:T0-N0-0}"}: openraft::core::raft_core: new
+DEBUG spawn_parallel_vote_requests{vote="{vote:T1-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=2}: openraft::core::raft_core: new
+DEBUG spawn_parallel_vote_requests{vote="{vote:T1-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=3}: openraft::core::raft_core: new
+DEBUG spawn_parallel_vote_requests{vote="{vote:T1-N1:uncommitted, last_log:T0-N0-0}"}:vote_round_collector: openraft::core::raft_core: new
+DEBUG handle_vote_resp{target=1}: openraft::engine::engine_impl: new
+ INFO handle_vote_resp{target=1}: openraft::engine::engine_impl: openraft::engine::engine_impl::Engine<_>::handle_vote_resp resp={T1-N1:uncommitted, last_log:None} target=1 my_vote=T1-N1:uncommitted my_last_log_id=Some(T0-N0-0)
+DEBUG handle_vote_resp{target=1}: openraft::engine::engine_impl: close
+DEBUG handle_vote_request: openraft::core::raft_core: new
+DEBUG handle_vote_request:handle_vote_req: openraft::engine::engine_impl: new
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: Engine::handle_vote_req req={vote:T1-N1:uncommitted, last_log:T0-N0-0}
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: Engine::handle_vote_req my_vote=T0-N0:uncommitted my_last_log_id=None
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: now; 11:09:29.987061, vote is updated at: 11:09:24.176934, vote is updated before 5.810127416s, leader lease(3s) will expire after 0ns
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: handle vote request result req={vote:T1-N1:uncommitted, last_log:T0-N0-0} result=Ok(())
+DEBUG handle_vote_request:handle_vote_req: openraft::engine::engine_impl: close
+DEBUG handle_vote_request: openraft::core::raft_core: close
+DEBUG handle_vote_request: openraft::core::raft_core: new
+DEBUG handle_vote_request:handle_vote_req: openraft::engine::engine_impl: new
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: Engine::handle_vote_req req={vote:T1-N1:uncommitted, last_log:T0-N0-0}
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: Engine::handle_vote_req my_vote=T0-N0:uncommitted my_last_log_id=None
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: now; 11:09:29.987211, vote is updated at: 11:09:29.426475, vote is updated before 560.736667ms, leader lease(3s) will expire after 2.439263333s
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: handle vote request result req={vote:T1-N1:uncommitted, last_log:T0-N0-0} result=Ok(())
+DEBUG handle_vote_request:handle_vote_req: openraft::engine::engine_impl: close
+DEBUG handle_vote_request: openraft::core::raft_core: close
+ WARN openraft::core::raft_core: A message will be ignored because vote changed: msg sent by vote: T1-N1:uncommitted; current my vote: None; when (VoteResponse)
+DEBUG spawn_parallel_vote_requests{vote="{vote:T1-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=2}: openraft::core::raft_core: close
+DEBUG handle_vote_resp{target=2}: openraft::engine::engine_impl: new
+ INFO handle_vote_resp{target=2}: openraft::engine::engine_impl: openraft::engine::engine_impl::Engine<_>::handle_vote_resp resp={T1-N1:uncommitted, last_log:None} target=2 my_vote=T1-N1:uncommitted my_last_log_id=Some(T0-N0-0)
+ INFO handle_vote_resp{target=2}: openraft::engine::engine_impl: a quorum granted my vote
+ INFO handle_vote_resp{target=2}: openraft::engine::engine_impl: openraft::engine::engine_impl::Engine<_>::establish_leader
+DEBUG handle_vote_resp{target=2}: openraft::engine::engine_impl: close
+ WARN openraft::core::raft_core: A message will be ignored because vote changed: msg sent by vote: T1-N1:uncommitted; current my vote: None; when (VoteResponse)
+DEBUG spawn_parallel_vote_requests{vote="{vote:T1-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=3}: openraft::core::raft_core: close
+DEBUG spawn_parallel_vote_requests{vote="{vote:T1-N1:uncommitted, last_log:T0-N0-0}"}:vote_round_collector: openraft::core::raft_core: close
+TRACE spawn_parallel_vote_requests{vote="{vote:T1-N1:uncommitted, last_log:T0-N0-0}"}: openraft::core::raft_core: close
+ WARN openraft::core::raft_core: A message will be ignored because vote changed: msg sent by vote: T1-N1:uncommitted; current my vote: None; when (VoteResponse)
+DEBUG handle_vote_resp{target=1}: openraft::engine::engine_impl: new
+ INFO handle_vote_resp{target=1}: openraft::engine::engine_impl: openraft::engine::engine_impl::Engine<_>::handle_vote_resp resp={T1-N1:committed, last_log:None} target=1 my_vote=T1-N1:committed my_last_log_id=Some(T1-N1-1)
+DEBUG handle_vote_resp{target=1}: openraft::engine::engine_impl: close
+ WARN openraft::core::raft_core: A message will be ignored because vote changed: msg sent by vote: T1-N1:committed; current my vote: None; when (VoteResponse)
+ WARN openraft::core::raft_core: A message will be ignored because vote changed: msg sent by vote: T1-N1:committed; current my vote: None; when (VoteResponse)
+ INFO openraft::engine::engine_impl: startup begin: state: RaftState { vote: UTime { data: Vote { leader_id: LeaderId { term: 0, node_id: 0 }, committed: false }, utime: Some(Instant { tv_sec: 148815, tv_nsec: 9237916 }) }, committed: None, purged_next: 0, log_ids: LogIdList { key_log_ids: [] }, membership_state: MembershipState { committed: EffectiveMembership { log_id: None, membership: Membership { configs: [], nodes: {} }, voter_ids: {} }, effective: EffectiveMembership { log_id: None, membership: Membership { configs: [], nodes: {} }, voter_ids: {} }, observer: MembershipObserverSlot { observer: Mutex { data: None, poisoned: false, .. } } }, snapshot_meta: SnapshotMeta { last_log_id: None, last_membership: StoredMembership { log_id: None, membership: Membership { configs: [], nodes: {} } }, snapshot_id: "" }, server_state: Learner, accepted: Accepted { leader_id: LeaderId { term: 0, node_id: 0 }, log_id: None }, io_state: IOState { building_snapshot: false, vote: Vote { leader_id: LeaderId { term: 0, node_id: 0 }, committed: false }, flushed: LogIOId { committed_leader_id: LeaderId { term: 0, node_id: 0 }, log_id: None }, applied: None, snapshot: None, purged: None }, purge_upto: None }, is_leader: false, is_voter: false
+ INFO openraft::engine::engine_impl: startup done: id=4 target_state: Learner
+DEBUG elect: openraft::engine::engine_impl: new
+ INFO elect: openraft::engine::engine_impl: openraft::engine::engine_impl::Engine<_>::elect, new candidate: {T1-N1:uncommitted@11:09:31.812814, last_log_id:T0-N0-0 progress:{1: false, 2: false, 3: false}}
+DEBUG elect: openraft::engine::engine_impl: close
+TRACE spawn_parallel_vote_requests{vote="{vote:T1-N1:uncommitted, last_log:T0-N0-0}"}: openraft::core::raft_core: new
+DEBUG spawn_parallel_vote_requests{vote="{vote:T1-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=2}: openraft::core::raft_core: new
+DEBUG spawn_parallel_vote_requests{vote="{vote:T1-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=3}: openraft::core::raft_core: new
+DEBUG spawn_parallel_vote_requests{vote="{vote:T1-N1:uncommitted, last_log:T0-N0-0}"}:vote_round_collector: openraft::core::raft_core: new
+DEBUG elect: openraft::engine::engine_impl: new
+ INFO elect: openraft::engine::engine_impl: openraft::engine::engine_impl::Engine<_>::elect, new candidate: {T2-N1:uncommitted@11:09:32.470646, last_log_id:T0-N0-0 progress:{1: false, 2: false, 3: false}}
+DEBUG elect: openraft::engine::engine_impl: close
+DEBUG handle_vote_request: openraft::core::raft_core: new
+DEBUG handle_vote_request:handle_vote_req: openraft::engine::engine_impl: new
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: Engine::handle_vote_req req={vote:T1-N1:uncommitted, last_log:T0-N0-0}
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: Engine::handle_vote_req my_vote=T0-N0:uncommitted my_last_log_id=None
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: now; 11:09:32.470795, vote is updated at: 11:09:27.167784, vote is updated before 5.303010625s, leader lease(400ms) will expire after 0ns
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: handle vote request result req={vote:T1-N1:uncommitted, last_log:T0-N0-0} result=Ok(())
+DEBUG handle_vote_request:handle_vote_req: openraft::engine::engine_impl: close
+DEBUG handle_vote_request: openraft::core::raft_core: close
+DEBUG handle_vote_request: openraft::core::raft_core: new
+DEBUG handle_vote_request:handle_vote_req: openraft::engine::engine_impl: new
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: Engine::handle_vote_req req={vote:T1-N1:uncommitted, last_log:T0-N0-0}
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: Engine::handle_vote_req my_vote=T0-N0:uncommitted my_last_log_id=None
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: now; 11:09:32.475333, vote is updated at: 11:09:21.803484, vote is updated before 10.671850458s, leader lease(400ms) will expire after 0ns
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: handle vote request result req={vote:T1-N1:uncommitted, last_log:T0-N0-0} result=Ok(())
+DEBUG handle_vote_request:handle_vote_req: openraft::engine::engine_impl: close
+DEBUG handle_vote_request: openraft::core::raft_core: close
+ERROR spawn_parallel_vote_requests{vote="{vote:T1-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=2}: openraft::core::raft_core: while requesting vote error=Unreachable node: std::io::error::Error: deadline has elapsed target=2
+DEBUG spawn_parallel_vote_requests{vote="{vote:T1-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=2}: openraft::core::raft_core: close
+ERROR spawn_parallel_vote_requests{vote="{vote:T1-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=3}: openraft::core::raft_core: while requesting vote error=Unreachable node: std::io::error::Error: deadline has elapsed target=3
+DEBUG spawn_parallel_vote_requests{vote="{vote:T1-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=3}: openraft::core::raft_core: close
+DEBUG spawn_parallel_vote_requests{vote="{vote:T1-N1:uncommitted, last_log:T0-N0-0}"}:vote_round_collector: openraft::core::raft_core: close
+TRACE spawn_parallel_vote_requests{vote="{vote:T1-N1:uncommitted, last_log:T0-N0-0}"}: openraft::core::raft_core: close
+TRACE spawn_parallel_vote_requests{vote="{vote:T2-N1:uncommitted, last_log:T0-N0-0}"}: openraft::core::raft_core: new
+DEBUG spawn_parallel_vote_requests{vote="{vote:T2-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=2}: openraft::core::raft_core: new
+DEBUG spawn_parallel_vote_requests{vote="{vote:T2-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=3}: openraft::core::raft_core: new
+DEBUG spawn_parallel_vote_requests{vote="{vote:T2-N1:uncommitted, last_log:T0-N0-0}"}:vote_round_collector: openraft::core::raft_core: new
+DEBUG elect: openraft::engine::engine_impl: new
+ INFO elect: openraft::engine::engine_impl: openraft::engine::engine_impl::Engine<_>::elect, new candidate: {T3-N1:uncommitted@11:09:32.863475, last_log_id:T0-N0-0 progress:{1: false, 2: false, 3: false}}
+DEBUG elect: openraft::engine::engine_impl: close
+DEBUG handle_vote_request: openraft::core::raft_core: new
+DEBUG handle_vote_request:handle_vote_req: openraft::engine::engine_impl: new
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: Engine::handle_vote_req req={vote:T2-N1:uncommitted, last_log:T0-N0-0}
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: Engine::handle_vote_req my_vote=T1-N1:uncommitted my_last_log_id=None
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: now; 11:09:33.031326, vote is updated at: 11:09:32.475623, vote is updated before 555.702209ms, leader lease(400ms) will expire after 0ns
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: handle vote request result req={vote:T2-N1:uncommitted, last_log:T0-N0-0} result=Ok(())
+DEBUG handle_vote_request:handle_vote_req: openraft::engine::engine_impl: close
+DEBUG handle_vote_request: openraft::core::raft_core: close
+ERROR spawn_parallel_vote_requests{vote="{vote:T2-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=2}: openraft::core::raft_core: while requesting vote error=Unreachable node: std::io::error::Error: deadline has elapsed target=2
+DEBUG spawn_parallel_vote_requests{vote="{vote:T2-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=2}: openraft::core::raft_core: close
+ERROR spawn_parallel_vote_requests{vote="{vote:T2-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=3}: openraft::core::raft_core: while requesting vote error=Unreachable node: std::io::error::Error: deadline has elapsed target=3
+DEBUG spawn_parallel_vote_requests{vote="{vote:T2-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=3}: openraft::core::raft_core: close
+DEBUG spawn_parallel_vote_requests{vote="{vote:T2-N1:uncommitted, last_log:T0-N0-0}"}:vote_round_collector: openraft::core::raft_core: close
+TRACE spawn_parallel_vote_requests{vote="{vote:T2-N1:uncommitted, last_log:T0-N0-0}"}: openraft::core::raft_core: close
+DEBUG handle_vote_request: openraft::core::raft_core: new
+DEBUG handle_vote_request:handle_vote_req: openraft::engine::engine_impl: new
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: Engine::handle_vote_req req={vote:T2-N1:uncommitted, last_log:T0-N0-0}
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: Engine::handle_vote_req my_vote=T1-N1:uncommitted my_last_log_id=None
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: now; 11:09:33.074337, vote is updated at: 11:09:32.470828, vote is updated before 603.508334ms, leader lease(400ms) will expire after 0ns
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: handle vote request result req={vote:T2-N1:uncommitted, last_log:T0-N0-0} result=Ok(())
+DEBUG handle_vote_request:handle_vote_req: openraft::engine::engine_impl: close
+DEBUG handle_vote_request: openraft::core::raft_core: close
+TRACE spawn_parallel_vote_requests{vote="{vote:T3-N1:uncommitted, last_log:T0-N0-0}"}: openraft::core::raft_core: new
+DEBUG spawn_parallel_vote_requests{vote="{vote:T3-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=2}: openraft::core::raft_core: new
+DEBUG spawn_parallel_vote_requests{vote="{vote:T3-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=3}: openraft::core::raft_core: new
+DEBUG spawn_parallel_vote_requests{vote="{vote:T3-N1:uncommitted, last_log:T0-N0-0}"}:vote_round_collector: openraft::core::raft_core: new
+DEBUG elect: openraft::engine::engine_impl: new
+ INFO elect: openraft::engine::engine_impl: openraft::engine::engine_impl::Engine<_>::elect, new candidate: {T4-N1:uncommitted@11:09:33.261683, last_log_id:T0-N0-0 progress:{1: false, 2: false, 3: false}}
+DEBUG elect: openraft::engine::engine_impl: close
+DEBUG handle_vote_request: openraft::core::raft_core: new
+DEBUG handle_vote_request:handle_vote_req: openraft::engine::engine_impl: new
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: Engine::handle_vote_req req={vote:T3-N1:uncommitted, last_log:T0-N0-0}
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: Engine::handle_vote_req my_vote=T2-N1:uncommitted my_last_log_id=None
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: now; 11:09:33.276455, vote is updated at: 11:09:33.031556, vote is updated before 244.900292ms, leader lease(400ms) will expire after 155.099708ms
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: handle vote request result req={vote:T3-N1:uncommitted, last_log:T0-N0-0} result=Ok(())
+DEBUG handle_vote_request:handle_vote_req: openraft::engine::engine_impl: close
+DEBUG handle_vote_request: openraft::core::raft_core: close
+ERROR spawn_parallel_vote_requests{vote="{vote:T3-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=2}: openraft::core::raft_core: while requesting vote error=Unreachable node: std::io::error::Error: deadline has elapsed target=2
+DEBUG spawn_parallel_vote_requests{vote="{vote:T3-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=2}: openraft::core::raft_core: close
+ERROR spawn_parallel_vote_requests{vote="{vote:T3-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=3}: openraft::core::raft_core: while requesting vote error=Unreachable node: std::io::error::Error: deadline has elapsed target=3
+DEBUG spawn_parallel_vote_requests{vote="{vote:T3-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=3}: openraft::core::raft_core: close
+DEBUG spawn_parallel_vote_requests{vote="{vote:T3-N1:uncommitted, last_log:T0-N0-0}"}:vote_round_collector: openraft::core::raft_core: close
+TRACE spawn_parallel_vote_requests{vote="{vote:T3-N1:uncommitted, last_log:T0-N0-0}"}: openraft::core::raft_core: close
+DEBUG handle_vote_request: openraft::core::raft_core: new
+DEBUG handle_vote_request:handle_vote_req: openraft::engine::engine_impl: new
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: Engine::handle_vote_req req={vote:T3-N1:uncommitted, last_log:T0-N0-0}
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: Engine::handle_vote_req my_vote=T2-N1:uncommitted my_last_log_id=None
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: now; 11:09:33.550633, vote is updated at: 11:09:33.074393, vote is updated before 476.240042ms, leader lease(400ms) will expire after 0ns
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: handle vote request result req={vote:T3-N1:uncommitted, last_log:T0-N0-0} result=Ok(())
+DEBUG handle_vote_request:handle_vote_req: openraft::engine::engine_impl: close
+DEBUG handle_vote_request: openraft::core::raft_core: close
+ WARN openraft::core::raft_core: A message will be ignored because vote changed: msg sent by vote: T1-N1:uncommitted; current my vote: None; when (VoteResponse)
+ WARN openraft::core::raft_core: A message will be ignored because vote changed: msg sent by vote: T2-N1:uncommitted; current my vote: None; when (VoteResponse)
+ WARN openraft::core::raft_core: A message will be ignored because vote changed: msg sent by vote: T3-N1:uncommitted; current my vote: None; when (VoteResponse)
+TRACE spawn_parallel_vote_requests{vote="{vote:T4-N1:uncommitted, last_log:T0-N0-0}"}: openraft::core::raft_core: new
+DEBUG spawn_parallel_vote_requests{vote="{vote:T4-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=2}: openraft::core::raft_core: new
+DEBUG spawn_parallel_vote_requests{vote="{vote:T4-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=3}: openraft::core::raft_core: new
+DEBUG spawn_parallel_vote_requests{vote="{vote:T4-N1:uncommitted, last_log:T0-N0-0}"}:vote_round_collector: openraft::core::raft_core: new
+DEBUG elect: openraft::engine::engine_impl: new
+ INFO elect: openraft::engine::engine_impl: openraft::engine::engine_impl::Engine<_>::elect, new candidate: {T5-N1:uncommitted@11:09:33.828342, last_log_id:T0-N0-0 progress:{1: false, 2: false, 3: false}}
+DEBUG elect: openraft::engine::engine_impl: close
+DEBUG handle_vote_request: openraft::core::raft_core: new
+DEBUG handle_vote_request:handle_vote_req: openraft::engine::engine_impl: new
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: Engine::handle_vote_req req={vote:T4-N1:uncommitted, last_log:T0-N0-0}
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: Engine::handle_vote_req my_vote=T3-N1:uncommitted my_last_log_id=None
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: now; 11:09:33.828636, vote is updated at: 11:09:33.276545, vote is updated before 552.090834ms, leader lease(400ms) will expire after 0ns
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: handle vote request result req={vote:T4-N1:uncommitted, last_log:T0-N0-0} result=Ok(())
+DEBUG handle_vote_request:handle_vote_req: openraft::engine::engine_impl: close
+DEBUG handle_vote_request: openraft::core::raft_core: close
+DEBUG handle_vote_request: openraft::core::raft_core: new
+DEBUG handle_vote_request:handle_vote_req: openraft::engine::engine_impl: new
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: Engine::handle_vote_req req={vote:T4-N1:uncommitted, last_log:T0-N0-0}
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: Engine::handle_vote_req my_vote=T3-N1:uncommitted my_last_log_id=None
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: now; 11:09:33.911460, vote is updated at: 11:09:33.550691, vote is updated before 360.768625ms, leader lease(400ms) will expire after 39.231375ms
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: handle vote request result req={vote:T4-N1:uncommitted, last_log:T0-N0-0} result=Ok(())
+DEBUG handle_vote_request:handle_vote_req: openraft::engine::engine_impl: close
+DEBUG handle_vote_request: openraft::core::raft_core: close
+ERROR spawn_parallel_vote_requests{vote="{vote:T4-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=2}: openraft::core::raft_core: while requesting vote error=Unreachable node: std::io::error::Error: deadline has elapsed target=2
+DEBUG spawn_parallel_vote_requests{vote="{vote:T4-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=2}: openraft::core::raft_core: close
+ERROR spawn_parallel_vote_requests{vote="{vote:T4-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=3}: openraft::core::raft_core: while requesting vote error=Unreachable node: std::io::error::Error: deadline has elapsed target=3
+DEBUG spawn_parallel_vote_requests{vote="{vote:T4-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=3}: openraft::core::raft_core: close
+DEBUG spawn_parallel_vote_requests{vote="{vote:T4-N1:uncommitted, last_log:T0-N0-0}"}:vote_round_collector: openraft::core::raft_core: close
+TRACE spawn_parallel_vote_requests{vote="{vote:T4-N1:uncommitted, last_log:T0-N0-0}"}: openraft::core::raft_core: close
+ WARN openraft::core::raft_core: A message will be ignored because vote changed: msg sent by vote: T4-N1:uncommitted; current my vote: None; when (VoteResponse)
+TRACE spawn_parallel_vote_requests{vote="{vote:T5-N1:uncommitted, last_log:T0-N0-0}"}: openraft::core::raft_core: new
+DEBUG spawn_parallel_vote_requests{vote="{vote:T5-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=2}: openraft::core::raft_core: new
+DEBUG spawn_parallel_vote_requests{vote="{vote:T5-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=3}: openraft::core::raft_core: new
+DEBUG spawn_parallel_vote_requests{vote="{vote:T5-N1:uncommitted, last_log:T0-N0-0}"}:vote_round_collector: openraft::core::raft_core: new
+DEBUG elect: openraft::engine::engine_impl: new
+ INFO elect: openraft::engine::engine_impl: openraft::engine::engine_impl::Engine<_>::elect, new candidate: {T6-N1:uncommitted@11:09:34.293901, last_log_id:T0-N0-0 progress:{1: false, 2: false, 3: false}}
+DEBUG elect: openraft::engine::engine_impl: close
+DEBUG handle_vote_request: openraft::core::raft_core: new
+DEBUG handle_vote_request:handle_vote_req: openraft::engine::engine_impl: new
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: Engine::handle_vote_req req={vote:T5-N1:uncommitted, last_log:T0-N0-0}
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: Engine::handle_vote_req my_vote=T4-N1:uncommitted my_last_log_id=None
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: now; 11:09:34.294124, vote is updated at: 11:09:33.828955, vote is updated before 465.169875ms, leader lease(400ms) will expire after 0ns
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: handle vote request result req={vote:T5-N1:uncommitted, last_log:T0-N0-0} result=Ok(())
+DEBUG handle_vote_request:handle_vote_req: openraft::engine::engine_impl: close
+DEBUG handle_vote_request: openraft::core::raft_core: close
+DEBUG handle_vote_request: openraft::core::raft_core: new
+DEBUG handle_vote_request:handle_vote_req: openraft::engine::engine_impl: new
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: Engine::handle_vote_req req={vote:T5-N1:uncommitted, last_log:T0-N0-0}
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: Engine::handle_vote_req my_vote=T4-N1:uncommitted my_last_log_id=None
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: now; 11:09:34.472494, vote is updated at: 11:09:33.911566, vote is updated before 560.928917ms, leader lease(400ms) will expire after 0ns
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: handle vote request result req={vote:T5-N1:uncommitted, last_log:T0-N0-0} result=Ok(())
+DEBUG handle_vote_request:handle_vote_req: openraft::engine::engine_impl: close
+DEBUG handle_vote_request: openraft::core::raft_core: close
+ERROR spawn_parallel_vote_requests{vote="{vote:T5-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=2}: openraft::core::raft_core: while requesting vote error=Unreachable node: std::io::error::Error: deadline has elapsed target=2
+DEBUG spawn_parallel_vote_requests{vote="{vote:T5-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=2}: openraft::core::raft_core: close
+ERROR spawn_parallel_vote_requests{vote="{vote:T5-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=3}: openraft::core::raft_core: while requesting vote error=Unreachable node: std::io::error::Error: deadline has elapsed target=3
+DEBUG spawn_parallel_vote_requests{vote="{vote:T5-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=3}: openraft::core::raft_core: close
+DEBUG spawn_parallel_vote_requests{vote="{vote:T5-N1:uncommitted, last_log:T0-N0-0}"}:vote_round_collector: openraft::core::raft_core: close
+TRACE spawn_parallel_vote_requests{vote="{vote:T5-N1:uncommitted, last_log:T0-N0-0}"}: openraft::core::raft_core: close
+ WARN openraft::core::raft_core: A message will be ignored because vote changed: msg sent by vote: T5-N1:uncommitted; current my vote: None; when (VoteResponse)
+ WARN openraft::core::raft_core: A message will be ignored because vote changed: msg sent by vote: T1-N1:uncommitted; current my vote: None; when (VoteResponse)
+ WARN openraft::core::raft_core: A message will be ignored because vote changed: msg sent by vote: T2-N1:uncommitted; current my vote: None; when (VoteResponse)
+ WARN openraft::core::raft_core: A message will be ignored because vote changed: msg sent by vote: T3-N1:uncommitted; current my vote: None; when (VoteResponse)
+ WARN openraft::core::raft_core: A message will be ignored because vote changed: msg sent by vote: T4-N1:uncommitted; current my vote: None; when (VoteResponse)
+ WARN openraft::core::raft_core: A message will be ignored because vote changed: msg sent by vote: T5-N1:uncommitted; current my vote: None; when (VoteResponse)
+TRACE spawn_parallel_vote_requests{vote="{vote:T6-N1:uncommitted, last_log:T0-N0-0}"}: openraft::core::raft_core: new
+DEBUG spawn_parallel_vote_requests{vote="{vote:T6-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=2}: openraft::core::raft_core: new
+DEBUG spawn_parallel_vote_requests{vote="{vote:T6-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=3}: openraft::core::raft_core: new
+DEBUG spawn_parallel_vote_requests{vote="{vote:T6-N1:uncommitted, last_log:T0-N0-0}"}:vote_round_collector: openraft::core::raft_core: new
+DEBUG elect: openraft::engine::engine_impl: new
+ INFO elect: openraft::engine::engine_impl: openraft::engine::engine_impl::Engine<_>::elect, new candidate: {T7-N1:uncommitted@11:09:34.868509, last_log_id:T0-N0-0 progress:{1: false, 2: false, 3: false}}
+DEBUG elect: openraft::engine::engine_impl: close
+DEBUG handle_vote_request: openraft::core::raft_core: new
+DEBUG handle_vote_request:handle_vote_req: openraft::engine::engine_impl: new
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: Engine::handle_vote_req req={vote:T6-N1:uncommitted, last_log:T0-N0-0}
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: Engine::handle_vote_req my_vote=T5-N1:uncommitted my_last_log_id=None
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: now; 11:09:34.868770, vote is updated at: 11:09:34.473403, vote is updated before 395.366625ms, leader lease(400ms) will expire after 4.633375ms
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: handle vote request result req={vote:T6-N1:uncommitted, last_log:T0-N0-0} result=Ok(())
+DEBUG handle_vote_request:handle_vote_req: openraft::engine::engine_impl: close
+DEBUG handle_vote_request: openraft::core::raft_core: close
+DEBUG handle_vote_request: openraft::core::raft_core: new
+DEBUG handle_vote_request:handle_vote_req: openraft::engine::engine_impl: new
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: Engine::handle_vote_req req={vote:T6-N1:uncommitted, last_log:T0-N0-0}
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: Engine::handle_vote_req my_vote=T5-N1:uncommitted my_last_log_id=None
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: now; 11:09:34.871075, vote is updated at: 11:09:34.294187, vote is updated before 576.888292ms, leader lease(400ms) will expire after 0ns
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: handle vote request result req={vote:T6-N1:uncommitted, last_log:T0-N0-0} result=Ok(())
+DEBUG handle_vote_request:handle_vote_req: openraft::engine::engine_impl: close
+DEBUG handle_vote_request: openraft::core::raft_core: close
+ERROR spawn_parallel_vote_requests{vote="{vote:T6-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=2}: openraft::core::raft_core: while requesting vote error=Unreachable node: std::io::error::Error: deadline has elapsed target=2
+DEBUG spawn_parallel_vote_requests{vote="{vote:T6-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=2}: openraft::core::raft_core: close
+ERROR spawn_parallel_vote_requests{vote="{vote:T6-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=3}: openraft::core::raft_core: while requesting vote error=Unreachable node: std::io::error::Error: deadline has elapsed target=3
+DEBUG spawn_parallel_vote_requests{vote="{vote:T6-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=3}: openraft::core::raft_core: close
+DEBUG spawn_parallel_vote_requests{vote="{vote:T6-N1:uncommitted, last_log:T0-N0-0}"}:vote_round_collector: openraft::core::raft_core: close
+TRACE spawn_parallel_vote_requests{vote="{vote:T6-N1:uncommitted, last_log:T0-N0-0}"}: openraft::core::raft_core: close
+TRACE spawn_parallel_vote_requests{vote="{vote:T7-N1:uncommitted, last_log:T0-N0-0}"}: openraft::core::raft_core: new
+DEBUG spawn_parallel_vote_requests{vote="{vote:T7-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=2}: openraft::core::raft_core: new
+DEBUG spawn_parallel_vote_requests{vote="{vote:T7-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=3}: openraft::core::raft_core: new
+DEBUG spawn_parallel_vote_requests{vote="{vote:T7-N1:uncommitted, last_log:T0-N0-0}"}:vote_round_collector: openraft::core::raft_core: new
+DEBUG elect: openraft::engine::engine_impl: new
+ INFO elect: openraft::engine::engine_impl: openraft::engine::engine_impl::Engine<_>::elect, new candidate: {T8-N1:uncommitted@11:09:35.347865, last_log_id:T0-N0-0 progress:{1: false, 2: false, 3: false}}
+DEBUG elect: openraft::engine::engine_impl: close
+DEBUG handle_vote_request: openraft::core::raft_core: new
+DEBUG handle_vote_request:handle_vote_req: openraft::engine::engine_impl: new
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: Engine::handle_vote_req req={vote:T7-N1:uncommitted, last_log:T0-N0-0}
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: Engine::handle_vote_req my_vote=T6-N1:uncommitted my_last_log_id=None
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: now; 11:09:35.366535, vote is updated at: 11:09:34.868839, vote is updated before 497.694917ms, leader lease(400ms) will expire after 0ns
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: handle vote request result req={vote:T7-N1:uncommitted, last_log:T0-N0-0} result=Ok(())
+DEBUG handle_vote_request:handle_vote_req: openraft::engine::engine_impl: close
+DEBUG handle_vote_request: openraft::core::raft_core: close
+DEBUG handle_vote_request: openraft::core::raft_core: new
+DEBUG handle_vote_request:handle_vote_req: openraft::engine::engine_impl: new
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: Engine::handle_vote_req req={vote:T7-N1:uncommitted, last_log:T0-N0-0}
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: Engine::handle_vote_req my_vote=T6-N1:uncommitted my_last_log_id=None
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: now; 11:09:35.374026, vote is updated at: 11:09:34.871131, vote is updated before 502.895167ms, leader lease(400ms) will expire after 0ns
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: handle vote request result req={vote:T7-N1:uncommitted, last_log:T0-N0-0} result=Ok(())
+DEBUG handle_vote_request:handle_vote_req: openraft::engine::engine_impl: close
+DEBUG handle_vote_request: openraft::core::raft_core: close
+ERROR spawn_parallel_vote_requests{vote="{vote:T7-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=2}: openraft::core::raft_core: while requesting vote error=Unreachable node: std::io::error::Error: deadline has elapsed target=2
+DEBUG spawn_parallel_vote_requests{vote="{vote:T7-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=2}: openraft::core::raft_core: close
+ERROR spawn_parallel_vote_requests{vote="{vote:T7-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=3}: openraft::core::raft_core: while requesting vote error=Unreachable node: std::io::error::Error: deadline has elapsed target=3
+DEBUG spawn_parallel_vote_requests{vote="{vote:T7-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=3}: openraft::core::raft_core: close
+DEBUG spawn_parallel_vote_requests{vote="{vote:T7-N1:uncommitted, last_log:T0-N0-0}"}:vote_round_collector: openraft::core::raft_core: close
+TRACE spawn_parallel_vote_requests{vote="{vote:T7-N1:uncommitted, last_log:T0-N0-0}"}: openraft::core::raft_core: close
+ WARN openraft::core::raft_core: A message will be ignored because vote changed: msg sent by vote: T6-N1:uncommitted; current my vote: None; when (VoteResponse)
+ WARN openraft::core::raft_core: A message will be ignored because vote changed: msg sent by vote: T7-N1:uncommitted; current my vote: None; when (VoteResponse)
+ WARN openraft::core::raft_core: A message will be ignored because vote changed: msg sent by vote: T6-N1:uncommitted; current my vote: None; when (VoteResponse)
+ WARN openraft::core::raft_core: A message will be ignored because vote changed: msg sent by vote: T7-N1:uncommitted; current my vote: None; when (VoteResponse)
+TRACE spawn_parallel_vote_requests{vote="{vote:T8-N1:uncommitted, last_log:T0-N0-0}"}: openraft::core::raft_core: new
+DEBUG spawn_parallel_vote_requests{vote="{vote:T8-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=2}: openraft::core::raft_core: new
+DEBUG spawn_parallel_vote_requests{vote="{vote:T8-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=3}: openraft::core::raft_core: new
+DEBUG spawn_parallel_vote_requests{vote="{vote:T8-N1:uncommitted, last_log:T0-N0-0}"}:vote_round_collector: openraft::core::raft_core: new
+DEBUG elect: openraft::engine::engine_impl: new
+ INFO elect: openraft::engine::engine_impl: openraft::engine::engine_impl::Engine<_>::elect, new candidate: {T9-N1:uncommitted@11:09:35.902954, last_log_id:T0-N0-0 progress:{1: false, 2: false, 3: false}}
+DEBUG elect: openraft::engine::engine_impl: close
+DEBUG handle_vote_request: openraft::core::raft_core: new
+DEBUG handle_vote_request:handle_vote_req: openraft::engine::engine_impl: new
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: Engine::handle_vote_req req={vote:T8-N1:uncommitted, last_log:T0-N0-0}
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: Engine::handle_vote_req my_vote=T7-N1:uncommitted my_last_log_id=None
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: now; 11:09:35.903226, vote is updated at: 11:09:35.366669, vote is updated before 536.557375ms, leader lease(400ms) will expire after 0ns
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: handle vote request result req={vote:T8-N1:uncommitted, last_log:T0-N0-0} result=Ok(())
+DEBUG handle_vote_request:handle_vote_req: openraft::engine::engine_impl: close
+DEBUG handle_vote_request: openraft::core::raft_core: close
+DEBUG handle_vote_request: openraft::core::raft_core: new
+DEBUG handle_vote_request:handle_vote_req: openraft::engine::engine_impl: new
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: Engine::handle_vote_req req={vote:T8-N1:uncommitted, last_log:T0-N0-0}
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: Engine::handle_vote_req my_vote=T7-N1:uncommitted my_last_log_id=None
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: now; 11:09:35.910413, vote is updated at: 11:09:35.374082, vote is updated before 536.331459ms, leader lease(400ms) will expire after 0ns
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: handle vote request result req={vote:T8-N1:uncommitted, last_log:T0-N0-0} result=Ok(())
+DEBUG handle_vote_request:handle_vote_req: openraft::engine::engine_impl: close
+DEBUG handle_vote_request: openraft::core::raft_core: close
+ERROR spawn_parallel_vote_requests{vote="{vote:T8-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=2}: openraft::core::raft_core: while requesting vote error=Unreachable node: std::io::error::Error: deadline has elapsed target=2
+DEBUG spawn_parallel_vote_requests{vote="{vote:T8-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=2}: openraft::core::raft_core: close
+ERROR spawn_parallel_vote_requests{vote="{vote:T8-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=3}: openraft::core::raft_core: while requesting vote error=Unreachable node: std::io::error::Error: deadline has elapsed target=3
+DEBUG spawn_parallel_vote_requests{vote="{vote:T8-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=3}: openraft::core::raft_core: close
+DEBUG spawn_parallel_vote_requests{vote="{vote:T8-N1:uncommitted, last_log:T0-N0-0}"}:vote_round_collector: openraft::core::raft_core: close
+TRACE spawn_parallel_vote_requests{vote="{vote:T8-N1:uncommitted, last_log:T0-N0-0}"}: openraft::core::raft_core: close
+ WARN openraft::core::raft_core: A message will be ignored because vote changed: msg sent by vote: T8-N1:uncommitted; current my vote: None; when (VoteResponse)
+ WARN openraft::core::raft_core: A message will be ignored because vote changed: msg sent by vote: T8-N1:uncommitted; current my vote: None; when (VoteResponse)
+TRACE spawn_parallel_vote_requests{vote="{vote:T9-N1:uncommitted, last_log:T0-N0-0}"}: openraft::core::raft_core: new
+DEBUG spawn_parallel_vote_requests{vote="{vote:T9-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=2}: openraft::core::raft_core: new
+DEBUG spawn_parallel_vote_requests{vote="{vote:T9-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=3}: openraft::core::raft_core: new
+DEBUG spawn_parallel_vote_requests{vote="{vote:T9-N1:uncommitted, last_log:T0-N0-0}"}:vote_round_collector: openraft::core::raft_core: new
+ WARN openraft::core::raft_core: A message will be ignored because vote changed: msg sent by vote: T1-N1:uncommitted; current my vote: T9-N1:uncommitted; when (VoteResponse)
+DEBUG elect: openraft::engine::engine_impl: new
+ INFO elect: openraft::engine::engine_impl: openraft::engine::engine_impl::Engine<_>::elect, new candidate: {T10-N1:uncommitted@11:09:36.347074, last_log_id:T0-N0-0 progress:{1: false, 2: false, 3: false}}
+DEBUG elect: openraft::engine::engine_impl: close
+DEBUG handle_vote_request: openraft::core::raft_core: new
+DEBUG handle_vote_request:handle_vote_req: openraft::engine::engine_impl: new
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: Engine::handle_vote_req req={vote:T9-N1:uncommitted, last_log:T0-N0-0}
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: Engine::handle_vote_req my_vote=T8-N1:uncommitted my_last_log_id=None
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: now; 11:09:36.347483, vote is updated at: 11:09:35.903260, vote is updated before 444.222791ms, leader lease(400ms) will expire after 0ns
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: handle vote request result req={vote:T9-N1:uncommitted, last_log:T0-N0-0} result=Ok(())
+DEBUG handle_vote_request:handle_vote_req: openraft::engine::engine_impl: close
+DEBUG handle_vote_request: openraft::core::raft_core: close
+DEBUG handle_vote_request: openraft::core::raft_core: new
+DEBUG handle_vote_request:handle_vote_req: openraft::engine::engine_impl: new
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: Engine::handle_vote_req req={vote:T9-N1:uncommitted, last_log:T0-N0-0}
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: Engine::handle_vote_req my_vote=T8-N1:uncommitted my_last_log_id=None
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: now; 11:09:36.349478, vote is updated at: 11:09:35.910481, vote is updated before 438.997334ms, leader lease(400ms) will expire after 0ns
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: handle vote request result req={vote:T9-N1:uncommitted, last_log:T0-N0-0} result=Ok(())
+DEBUG handle_vote_request:handle_vote_req: openraft::engine::engine_impl: close
+DEBUG handle_vote_request: openraft::core::raft_core: close
+ERROR spawn_parallel_vote_requests{vote="{vote:T9-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=2}: openraft::core::raft_core: while requesting vote error=Unreachable node: std::io::error::Error: deadline has elapsed target=2
+DEBUG spawn_parallel_vote_requests{vote="{vote:T9-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=2}: openraft::core::raft_core: close
+ERROR spawn_parallel_vote_requests{vote="{vote:T9-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=3}: openraft::core::raft_core: while requesting vote error=Unreachable node: std::io::error::Error: deadline has elapsed target=3
+DEBUG spawn_parallel_vote_requests{vote="{vote:T9-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=3}: openraft::core::raft_core: close
+DEBUG spawn_parallel_vote_requests{vote="{vote:T9-N1:uncommitted, last_log:T0-N0-0}"}:vote_round_collector: openraft::core::raft_core: close
+TRACE spawn_parallel_vote_requests{vote="{vote:T9-N1:uncommitted, last_log:T0-N0-0}"}: openraft::core::raft_core: close
+ WARN openraft::core::raft_core: A message will be ignored because vote changed: msg sent by vote: T9-N1:uncommitted; current my vote: None; when (VoteResponse)
+ WARN openraft::core::raft_core: A message will be ignored because vote changed: msg sent by vote: T9-N1:uncommitted; current my vote: None; when (VoteResponse)
+TRACE spawn_parallel_vote_requests{vote="{vote:T10-N1:uncommitted, last_log:T0-N0-0}"}: openraft::core::raft_core: new
+DEBUG spawn_parallel_vote_requests{vote="{vote:T10-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=2}: openraft::core::raft_core: new
+DEBUG spawn_parallel_vote_requests{vote="{vote:T10-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=3}: openraft::core::raft_core: new
+DEBUG spawn_parallel_vote_requests{vote="{vote:T10-N1:uncommitted, last_log:T0-N0-0}"}:vote_round_collector: openraft::core::raft_core: new
+DEBUG elect: openraft::engine::engine_impl: new
+ INFO elect: openraft::engine::engine_impl: openraft::engine::engine_impl::Engine<_>::elect, new candidate: {T11-N1:uncommitted@11:09:36.909152, last_log_id:T0-N0-0 progress:{1: false, 2: false, 3: false}}
+DEBUG elect: openraft::engine::engine_impl: close
+DEBUG handle_vote_request: openraft::core::raft_core: new
+DEBUG handle_vote_request:handle_vote_req: openraft::engine::engine_impl: new
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: Engine::handle_vote_req req={vote:T10-N1:uncommitted, last_log:T0-N0-0}
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: Engine::handle_vote_req my_vote=T9-N1:uncommitted my_last_log_id=None
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: now; 11:09:36.909445, vote is updated at: 11:09:36.347524, vote is updated before 561.921625ms, leader lease(400ms) will expire after 0ns
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: handle vote request result req={vote:T10-N1:uncommitted, last_log:T0-N0-0} result=Ok(())
+DEBUG handle_vote_request:handle_vote_req: openraft::engine::engine_impl: close
+DEBUG handle_vote_request: openraft::core::raft_core: close
+DEBUG handle_vote_request: openraft::core::raft_core: new
+DEBUG handle_vote_request:handle_vote_req: openraft::engine::engine_impl: new
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: Engine::handle_vote_req req={vote:T10-N1:uncommitted, last_log:T0-N0-0}
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: Engine::handle_vote_req my_vote=T9-N1:uncommitted my_last_log_id=None
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: now; 11:09:36.909984, vote is updated at: 11:09:36.349548, vote is updated before 560.435791ms, leader lease(400ms) will expire after 0ns
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: handle vote request result req={vote:T10-N1:uncommitted, last_log:T0-N0-0} result=Ok(())
+DEBUG handle_vote_request:handle_vote_req: openraft::engine::engine_impl: close
+DEBUG handle_vote_request: openraft::core::raft_core: close
+ERROR spawn_parallel_vote_requests{vote="{vote:T10-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=2}: openraft::core::raft_core: while requesting vote error=Unreachable node: std::io::error::Error: deadline has elapsed target=2
+DEBUG spawn_parallel_vote_requests{vote="{vote:T10-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=2}: openraft::core::raft_core: close
+ERROR spawn_parallel_vote_requests{vote="{vote:T10-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=3}: openraft::core::raft_core: while requesting vote error=Unreachable node: std::io::error::Error: deadline has elapsed target=3
+DEBUG spawn_parallel_vote_requests{vote="{vote:T10-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=3}: openraft::core::raft_core: close
+DEBUG spawn_parallel_vote_requests{vote="{vote:T10-N1:uncommitted, last_log:T0-N0-0}"}:vote_round_collector: openraft::core::raft_core: close
+TRACE spawn_parallel_vote_requests{vote="{vote:T10-N1:uncommitted, last_log:T0-N0-0}"}: openraft::core::raft_core: close
+ WARN openraft::core::raft_core: A message will be ignored because vote changed: msg sent by vote: T10-N1:uncommitted; current my vote: None; when (VoteResponse)
+TRACE spawn_parallel_vote_requests{vote="{vote:T11-N1:uncommitted, last_log:T0-N0-0}"}: openraft::core::raft_core: new
+DEBUG spawn_parallel_vote_requests{vote="{vote:T11-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=2}: openraft::core::raft_core: new
+DEBUG spawn_parallel_vote_requests{vote="{vote:T11-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=3}: openraft::core::raft_core: new
+DEBUG spawn_parallel_vote_requests{vote="{vote:T11-N1:uncommitted, last_log:T0-N0-0}"}:vote_round_collector: openraft::core::raft_core: new
+ WARN openraft::core::raft_core: A message will be ignored because vote changed: msg sent by vote: T2-N1:uncommitted; current my vote: T11-N1:uncommitted; when (VoteResponse)
+ WARN openraft::core::raft_core: A message will be ignored because vote changed: msg sent by vote: T3-N1:uncommitted; current my vote: T11-N1:uncommitted; when (VoteResponse)
+ WARN openraft::core::raft_core: A message will be ignored because vote changed: msg sent by vote: T4-N1:uncommitted; current my vote: T11-N1:uncommitted; when (VoteResponse)
+ WARN openraft::core::raft_core: A message will be ignored because vote changed: msg sent by vote: T5-N1:uncommitted; current my vote: T11-N1:uncommitted; when (VoteResponse)
+ WARN openraft::core::raft_core: A message will be ignored because vote changed: msg sent by vote: T6-N1:uncommitted; current my vote: T11-N1:uncommitted; when (VoteResponse)
+ WARN openraft::core::raft_core: A message will be ignored because vote changed: msg sent by vote: T7-N1:uncommitted; current my vote: T11-N1:uncommitted; when (VoteResponse)
+ WARN openraft::core::raft_core: A message will be ignored because vote changed: msg sent by vote: T8-N1:uncommitted; current my vote: T11-N1:uncommitted; when (VoteResponse)
+ WARN openraft::core::raft_core: A message will be ignored because vote changed: msg sent by vote: T9-N1:uncommitted; current my vote: T11-N1:uncommitted; when (VoteResponse)
+ WARN openraft::core::raft_core: A message will be ignored because vote changed: msg sent by vote: T10-N1:uncommitted; current my vote: T11-N1:uncommitted; when (VoteResponse)
+DEBUG handle_vote_resp{target=1}: openraft::engine::engine_impl: new
+ INFO handle_vote_resp{target=1}: openraft::engine::engine_impl: openraft::engine::engine_impl::Engine<_>::handle_vote_resp resp={T11-N1:uncommitted, last_log:None} target=1 my_vote=T11-N1:uncommitted my_last_log_id=Some(T0-N0-0)
+DEBUG handle_vote_resp{target=1}: openraft::engine::engine_impl: close
+DEBUG handle_vote_request: openraft::core::raft_core: new
+DEBUG handle_vote_request:handle_vote_req: openraft::engine::engine_impl: new
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: Engine::handle_vote_req req={vote:T11-N1:uncommitted, last_log:T0-N0-0}
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: Engine::handle_vote_req my_vote=T10-N1:uncommitted my_last_log_id=None
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: now; 11:09:37.187871, vote is updated at: 11:09:36.909480, vote is updated before 278.390458ms, leader lease(400ms) will expire after 121.609542ms
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: handle vote request result req={vote:T11-N1:uncommitted, last_log:T0-N0-0} result=Ok(())
+DEBUG handle_vote_request:handle_vote_req: openraft::engine::engine_impl: close
+DEBUG handle_vote_request: openraft::core::raft_core: close
+DEBUG handle_vote_request: openraft::core::raft_core: new
+DEBUG handle_vote_request:handle_vote_req: openraft::engine::engine_impl: new
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: Engine::handle_vote_req req={vote:T11-N1:uncommitted, last_log:T0-N0-0}
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: Engine::handle_vote_req my_vote=T10-N1:uncommitted my_last_log_id=None
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: now; 11:09:37.247694, vote is updated at: 11:09:36.910016, vote is updated before 337.678833ms, leader lease(400ms) will expire after 62.321167ms
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: handle vote request result req={vote:T11-N1:uncommitted, last_log:T0-N0-0} result=Ok(())
+DEBUG handle_vote_request:handle_vote_req: openraft::engine::engine_impl: close
+DEBUG handle_vote_request: openraft::core::raft_core: close
+DEBUG elect: openraft::engine::engine_impl: new
+ INFO elect: openraft::engine::engine_impl: openraft::engine::engine_impl::Engine<_>::elect, new candidate: {T12-N1:uncommitted@11:09:37.295944, last_log_id:T0-N0-0 progress:{1: false, 2: false, 3: false}}
+DEBUG elect: openraft::engine::engine_impl: close
+ERROR spawn_parallel_vote_requests{vote="{vote:T11-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=2}: openraft::core::raft_core: while requesting vote error=Unreachable node: std::io::error::Error: deadline has elapsed target=2
+DEBUG spawn_parallel_vote_requests{vote="{vote:T11-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=2}: openraft::core::raft_core: close
+ERROR spawn_parallel_vote_requests{vote="{vote:T11-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=3}: openraft::core::raft_core: while requesting vote error=Unreachable node: std::io::error::Error: deadline has elapsed target=3
+DEBUG spawn_parallel_vote_requests{vote="{vote:T11-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=3}: openraft::core::raft_core: close
+DEBUG spawn_parallel_vote_requests{vote="{vote:T11-N1:uncommitted, last_log:T0-N0-0}"}:vote_round_collector: openraft::core::raft_core: close
+TRACE spawn_parallel_vote_requests{vote="{vote:T11-N1:uncommitted, last_log:T0-N0-0}"}: openraft::core::raft_core: close
+ WARN openraft::core::raft_core: A message will be ignored because vote changed: msg sent by vote: T11-N1:uncommitted; current my vote: None; when (VoteResponse)
+TRACE spawn_parallel_vote_requests{vote="{vote:T12-N1:uncommitted, last_log:T0-N0-0}"}: openraft::core::raft_core: new
+DEBUG spawn_parallel_vote_requests{vote="{vote:T12-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=2}: openraft::core::raft_core: new
+DEBUG spawn_parallel_vote_requests{vote="{vote:T12-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=3}: openraft::core::raft_core: new
+DEBUG spawn_parallel_vote_requests{vote="{vote:T12-N1:uncommitted, last_log:T0-N0-0}"}:vote_round_collector: openraft::core::raft_core: new
+DEBUG handle_vote_resp{target=1}: openraft::engine::engine_impl: new
+ INFO handle_vote_resp{target=1}: openraft::engine::engine_impl: openraft::engine::engine_impl::Engine<_>::handle_vote_resp resp={T12-N1:uncommitted, last_log:None} target=1 my_vote=T12-N1:uncommitted my_last_log_id=Some(T0-N0-0)
+DEBUG handle_vote_resp{target=1}: openraft::engine::engine_impl: close
+DEBUG handle_vote_request: openraft::core::raft_core: new
+DEBUG handle_vote_request:handle_vote_req: openraft::engine::engine_impl: new
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: Engine::handle_vote_req req={vote:T12-N1:uncommitted, last_log:T0-N0-0}
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: Engine::handle_vote_req my_vote=T11-N1:uncommitted my_last_log_id=None
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: now; 11:09:37.597744, vote is updated at: 11:09:37.187954, vote is updated before 409.79025ms, leader lease(400ms) will expire after 0ns
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: handle vote request result req={vote:T12-N1:uncommitted, last_log:T0-N0-0} result=Ok(())
+DEBUG handle_vote_request:handle_vote_req: openraft::engine::engine_impl: close
+DEBUG handle_vote_request: openraft::core::raft_core: close
+DEBUG handle_vote_request: openraft::core::raft_core: new
+DEBUG handle_vote_request:handle_vote_req: openraft::engine::engine_impl: new
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: Engine::handle_vote_req req={vote:T12-N1:uncommitted, last_log:T0-N0-0}
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: Engine::handle_vote_req my_vote=T11-N1:uncommitted my_last_log_id=None
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: now; 11:09:37.626207, vote is updated at: 11:09:37.247761, vote is updated before 378.445959ms, leader lease(400ms) will expire after 21.554041ms
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: handle vote request result req={vote:T12-N1:uncommitted, last_log:T0-N0-0} result=Ok(())
+DEBUG handle_vote_request:handle_vote_req: openraft::engine::engine_impl: close
+DEBUG handle_vote_request: openraft::core::raft_core: close
+DEBUG elect: openraft::engine::engine_impl: new
+ INFO elect: openraft::engine::engine_impl: openraft::engine::engine_impl::Engine<_>::elect, new candidate: {T13-N1:uncommitted@11:09:37.686818, last_log_id:T0-N0-0 progress:{1: false, 2: false, 3: false}}
+DEBUG elect: openraft::engine::engine_impl: close
+ERROR spawn_parallel_vote_requests{vote="{vote:T12-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=2}: openraft::core::raft_core: while requesting vote error=Unreachable node: std::io::error::Error: deadline has elapsed target=2
+DEBUG spawn_parallel_vote_requests{vote="{vote:T12-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=2}: openraft::core::raft_core: close
+ERROR spawn_parallel_vote_requests{vote="{vote:T12-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=3}: openraft::core::raft_core: while requesting vote error=Unreachable node: std::io::error::Error: deadline has elapsed target=3
+DEBUG spawn_parallel_vote_requests{vote="{vote:T12-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=3}: openraft::core::raft_core: close
+DEBUG spawn_parallel_vote_requests{vote="{vote:T12-N1:uncommitted, last_log:T0-N0-0}"}:vote_round_collector: openraft::core::raft_core: close
+TRACE spawn_parallel_vote_requests{vote="{vote:T12-N1:uncommitted, last_log:T0-N0-0}"}: openraft::core::raft_core: close
+ WARN openraft::core::raft_core: A message will be ignored because vote changed: msg sent by vote: T12-N1:uncommitted; current my vote: None; when (VoteResponse)
+ WARN openraft::core::raft_core: A message will be ignored because vote changed: msg sent by vote: T10-N1:uncommitted; current my vote: None; when (VoteResponse)
+ WARN openraft::core::raft_core: A message will be ignored because vote changed: msg sent by vote: T11-N1:uncommitted; current my vote: None; when (VoteResponse)
+ WARN openraft::core::raft_core: A message will be ignored because vote changed: msg sent by vote: T12-N1:uncommitted; current my vote: None; when (VoteResponse)
+TRACE spawn_parallel_vote_requests{vote="{vote:T13-N1:uncommitted, last_log:T0-N0-0}"}: openraft::core::raft_core: new
+DEBUG spawn_parallel_vote_requests{vote="{vote:T13-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=2}: openraft::core::raft_core: new
+DEBUG spawn_parallel_vote_requests{vote="{vote:T13-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=3}: openraft::core::raft_core: new
+DEBUG spawn_parallel_vote_requests{vote="{vote:T13-N1:uncommitted, last_log:T0-N0-0}"}:vote_round_collector: openraft::core::raft_core: new
+DEBUG elect: openraft::engine::engine_impl: new
+ INFO elect: openraft::engine::engine_impl: openraft::engine::engine_impl::Engine<_>::elect, new candidate: {T14-N1:uncommitted@11:09:38.081915, last_log_id:T0-N0-0 progress:{1: false, 2: false, 3: false}}
+DEBUG elect: openraft::engine::engine_impl: close
+DEBUG handle_vote_request: openraft::core::raft_core: new
+DEBUG handle_vote_request:handle_vote_req: openraft::engine::engine_impl: new
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: Engine::handle_vote_req req={vote:T13-N1:uncommitted, last_log:T0-N0-0}
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: Engine::handle_vote_req my_vote=T12-N1:uncommitted my_last_log_id=None
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: now; 11:09:38.082239, vote is updated at: 11:09:37.597795, vote is updated before 484.444333ms, leader lease(400ms) will expire after 0ns
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: handle vote request result req={vote:T13-N1:uncommitted, last_log:T0-N0-0} result=Ok(())
+DEBUG handle_vote_request:handle_vote_req: openraft::engine::engine_impl: close
+DEBUG handle_vote_request: openraft::core::raft_core: close
+DEBUG handle_vote_request: openraft::core::raft_core: new
+DEBUG handle_vote_request:handle_vote_req: openraft::engine::engine_impl: new
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: Engine::handle_vote_req req={vote:T13-N1:uncommitted, last_log:T0-N0-0}
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: Engine::handle_vote_req my_vote=T12-N1:uncommitted my_last_log_id=None
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: now; 11:09:38.083616, vote is updated at: 11:09:37.626327, vote is updated before 457.289917ms, leader lease(400ms) will expire after 0ns
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: handle vote request result req={vote:T13-N1:uncommitted, last_log:T0-N0-0} result=Ok(())
+DEBUG handle_vote_request:handle_vote_req: openraft::engine::engine_impl: close
+DEBUG handle_vote_request: openraft::core::raft_core: close
+ERROR spawn_parallel_vote_requests{vote="{vote:T13-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=2}: openraft::core::raft_core: while requesting vote error=Unreachable node: std::io::error::Error: deadline has elapsed target=2
+DEBUG spawn_parallel_vote_requests{vote="{vote:T13-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=2}: openraft::core::raft_core: close
+ERROR spawn_parallel_vote_requests{vote="{vote:T13-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=3}: openraft::core::raft_core: while requesting vote error=Unreachable node: std::io::error::Error: deadline has elapsed target=3
+DEBUG spawn_parallel_vote_requests{vote="{vote:T13-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=3}: openraft::core::raft_core: close
+DEBUG spawn_parallel_vote_requests{vote="{vote:T13-N1:uncommitted, last_log:T0-N0-0}"}:vote_round_collector: openraft::core::raft_core: close
+TRACE spawn_parallel_vote_requests{vote="{vote:T13-N1:uncommitted, last_log:T0-N0-0}"}: openraft::core::raft_core: close
+TRACE spawn_parallel_vote_requests{vote="{vote:T14-N1:uncommitted, last_log:T0-N0-0}"}: openraft::core::raft_core: new
+DEBUG spawn_parallel_vote_requests{vote="{vote:T14-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=2}: openraft::core::raft_core: new
+DEBUG spawn_parallel_vote_requests{vote="{vote:T14-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=3}: openraft::core::raft_core: new
+DEBUG spawn_parallel_vote_requests{vote="{vote:T14-N1:uncommitted, last_log:T0-N0-0}"}:vote_round_collector: openraft::core::raft_core: new
+ WARN openraft::core::raft_core: A message will be ignored because vote changed: msg sent by vote: T13-N1:uncommitted; current my vote: T14-N1:uncommitted; when (VoteResponse)
+DEBUG handle_vote_resp{target=1}: openraft::engine::engine_impl: new
+ INFO handle_vote_resp{target=1}: openraft::engine::engine_impl: openraft::engine::engine_impl::Engine<_>::handle_vote_resp resp={T14-N1:uncommitted, last_log:None} target=1 my_vote=T14-N1:uncommitted my_last_log_id=Some(T0-N0-0)
+DEBUG handle_vote_resp{target=1}: openraft::engine::engine_impl: close
+DEBUG elect: openraft::engine::engine_impl: new
+ INFO elect: openraft::engine::engine_impl: openraft::engine::engine_impl::Engine<_>::elect, new candidate: {T15-N1:uncommitted@11:09:38.441063, last_log_id:T0-N0-0 progress:{1: false, 2: false, 3: false}}
+DEBUG elect: openraft::engine::engine_impl: close
+DEBUG handle_vote_request: openraft::core::raft_core: new
+DEBUG handle_vote_request:handle_vote_req: openraft::engine::engine_impl: new
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: Engine::handle_vote_req req={vote:T14-N1:uncommitted, last_log:T0-N0-0}
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: Engine::handle_vote_req my_vote=T13-N1:uncommitted my_last_log_id=None
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: now; 11:09:38.441361, vote is updated at: 11:09:38.082317, vote is updated before 359.044541ms, leader lease(400ms) will expire after 40.955459ms
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: handle vote request result req={vote:T14-N1:uncommitted, last_log:T0-N0-0} result=Ok(())
+DEBUG handle_vote_request:handle_vote_req: openraft::engine::engine_impl: close
+DEBUG handle_vote_request: openraft::core::raft_core: close
+DEBUG handle_vote_request: openraft::core::raft_core: new
+DEBUG handle_vote_request:handle_vote_req: openraft::engine::engine_impl: new
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: Engine::handle_vote_req req={vote:T14-N1:uncommitted, last_log:T0-N0-0}
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: Engine::handle_vote_req my_vote=T13-N1:uncommitted my_last_log_id=None
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: now; 11:09:38.475908, vote is updated at: 11:09:38.083698, vote is updated before 392.210625ms, leader lease(400ms) will expire after 7.789375ms
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: handle vote request result req={vote:T14-N1:uncommitted, last_log:T0-N0-0} result=Ok(())
+DEBUG handle_vote_request:handle_vote_req: openraft::engine::engine_impl: close
+DEBUG handle_vote_request: openraft::core::raft_core: close
+ERROR spawn_parallel_vote_requests{vote="{vote:T14-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=2}: openraft::core::raft_core: while requesting vote error=Unreachable node: std::io::error::Error: deadline has elapsed target=2
+DEBUG spawn_parallel_vote_requests{vote="{vote:T14-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=2}: openraft::core::raft_core: close
+ERROR spawn_parallel_vote_requests{vote="{vote:T14-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=3}: openraft::core::raft_core: while requesting vote error=Unreachable node: std::io::error::Error: deadline has elapsed target=3
+DEBUG spawn_parallel_vote_requests{vote="{vote:T14-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=3}: openraft::core::raft_core: close
+DEBUG spawn_parallel_vote_requests{vote="{vote:T14-N1:uncommitted, last_log:T0-N0-0}"}:vote_round_collector: openraft::core::raft_core: close
+TRACE spawn_parallel_vote_requests{vote="{vote:T14-N1:uncommitted, last_log:T0-N0-0}"}: openraft::core::raft_core: close
+ WARN openraft::core::raft_core: A message will be ignored because vote changed: msg sent by vote: T13-N1:uncommitted; current my vote: None; when (VoteResponse)
+ WARN openraft::core::raft_core: A message will be ignored because vote changed: msg sent by vote: T14-N1:uncommitted; current my vote: None; when (VoteResponse)
+TRACE spawn_parallel_vote_requests{vote="{vote:T15-N1:uncommitted, last_log:T0-N0-0}"}: openraft::core::raft_core: new
+DEBUG spawn_parallel_vote_requests{vote="{vote:T15-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=2}: openraft::core::raft_core: new
+DEBUG spawn_parallel_vote_requests{vote="{vote:T15-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=3}: openraft::core::raft_core: new
+DEBUG spawn_parallel_vote_requests{vote="{vote:T15-N1:uncommitted, last_log:T0-N0-0}"}:vote_round_collector: openraft::core::raft_core: new
+DEBUG elect: openraft::engine::engine_impl: new
+ INFO elect: openraft::engine::engine_impl: openraft::engine::engine_impl::Engine<_>::elect, new candidate: {T16-N1:uncommitted@11:09:38.790477, last_log_id:T0-N0-0 progress:{1: false, 2: false, 3: false}}
+DEBUG elect: openraft::engine::engine_impl: close
+DEBUG handle_vote_request: openraft::core::raft_core: new
+DEBUG handle_vote_request:handle_vote_req: openraft::engine::engine_impl: new
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: Engine::handle_vote_req req={vote:T15-N1:uncommitted, last_log:T0-N0-0}
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: Engine::handle_vote_req my_vote=T14-N1:uncommitted my_last_log_id=None
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: now; 11:09:38.790892, vote is updated at: 11:09:38.441401, vote is updated before 349.49075ms, leader lease(400ms) will expire after 50.50925ms
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: handle vote request result req={vote:T15-N1:uncommitted, last_log:T0-N0-0} result=Ok(())
+DEBUG handle_vote_request:handle_vote_req: openraft::engine::engine_impl: close
+DEBUG handle_vote_request: openraft::core::raft_core: close
+DEBUG handle_vote_request: openraft::core::raft_core: new
+DEBUG handle_vote_request:handle_vote_req: openraft::engine::engine_impl: new
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: Engine::handle_vote_req req={vote:T15-N1:uncommitted, last_log:T0-N0-0}
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: Engine::handle_vote_req my_vote=T14-N1:uncommitted my_last_log_id=None
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: now; 11:09:38.799508, vote is updated at: 11:09:38.475963, vote is updated before 323.545375ms, leader lease(400ms) will expire after 76.454625ms
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: handle vote request result req={vote:T15-N1:uncommitted, last_log:T0-N0-0} result=Ok(())
+DEBUG handle_vote_request:handle_vote_req: openraft::engine::engine_impl: close
+DEBUG handle_vote_request: openraft::core::raft_core: close
+ERROR spawn_parallel_vote_requests{vote="{vote:T15-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=2}: openraft::core::raft_core: while requesting vote error=Unreachable node: std::io::error::Error: deadline has elapsed target=2
+DEBUG spawn_parallel_vote_requests{vote="{vote:T15-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=2}: openraft::core::raft_core: close
+ERROR spawn_parallel_vote_requests{vote="{vote:T15-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=3}: openraft::core::raft_core: while requesting vote error=Unreachable node: std::io::error::Error: deadline has elapsed target=3
+DEBUG spawn_parallel_vote_requests{vote="{vote:T15-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=3}: openraft::core::raft_core: close
+DEBUG spawn_parallel_vote_requests{vote="{vote:T15-N1:uncommitted, last_log:T0-N0-0}"}:vote_round_collector: openraft::core::raft_core: close
+TRACE spawn_parallel_vote_requests{vote="{vote:T15-N1:uncommitted, last_log:T0-N0-0}"}: openraft::core::raft_core: close
+TRACE spawn_parallel_vote_requests{vote="{vote:T16-N1:uncommitted, last_log:T0-N0-0}"}: openraft::core::raft_core: new
+DEBUG spawn_parallel_vote_requests{vote="{vote:T16-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=2}: openraft::core::raft_core: new
+DEBUG spawn_parallel_vote_requests{vote="{vote:T16-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=3}: openraft::core::raft_core: new
+DEBUG spawn_parallel_vote_requests{vote="{vote:T16-N1:uncommitted, last_log:T0-N0-0}"}:vote_round_collector: openraft::core::raft_core: new
+DEBUG elect: openraft::engine::engine_impl: new
+ INFO elect: openraft::engine::engine_impl: openraft::engine::engine_impl::Engine<_>::elect, new candidate: {T17-N1:uncommitted@11:09:39.166990, last_log_id:T0-N0-0 progress:{1: false, 2: false, 3: false}}
+DEBUG elect: openraft::engine::engine_impl: close
+DEBUG handle_vote_request: openraft::core::raft_core: new
+DEBUG handle_vote_request:handle_vote_req: openraft::engine::engine_impl: new
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: Engine::handle_vote_req req={vote:T16-N1:uncommitted, last_log:T0-N0-0}
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: Engine::handle_vote_req my_vote=T15-N1:uncommitted my_last_log_id=None
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: now; 11:09:39.173904, vote is updated at: 11:09:38.790970, vote is updated before 382.944833ms, leader lease(400ms) will expire after 17.055167ms
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: handle vote request result req={vote:T16-N1:uncommitted, last_log:T0-N0-0} result=Ok(())
+DEBUG handle_vote_request:handle_vote_req: openraft::engine::engine_impl: close
+DEBUG handle_vote_request: openraft::core::raft_core: close
+DEBUG handle_vote_request: openraft::core::raft_core: new
+DEBUG handle_vote_request:handle_vote_req: openraft::engine::engine_impl: new
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: Engine::handle_vote_req req={vote:T16-N1:uncommitted, last_log:T0-N0-0}
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: Engine::handle_vote_req my_vote=T15-N1:uncommitted my_last_log_id=None
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: now; 11:09:39.186458, vote is updated at: 11:09:38.799563, vote is updated before 386.896208ms, leader lease(400ms) will expire after 13.103792ms
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: handle vote request result req={vote:T16-N1:uncommitted, last_log:T0-N0-0} result=Ok(())
+DEBUG handle_vote_request:handle_vote_req: openraft::engine::engine_impl: close
+DEBUG handle_vote_request: openraft::core::raft_core: close
+ INFO openraft::engine::engine_impl: startup begin: state: RaftState { vote: UTime { data: Vote { leader_id: LeaderId { term: 1, node_id: 1 }, committed: true }, utime: Some(Instant { tv_sec: 148822, tv_nsec: 454798791 }) }, committed: Some(LogId { leader_id: LeaderId { term: 1, node_id: 1 }, index: 2 }), purged_next: 0, log_ids: LogIdList { key_log_ids: [LogId { leader_id: LeaderId { term: 0, node_id: 0 }, index: 0 }, LogId { leader_id: LeaderId { term: 1, node_id: 1 }, index: 1 }, LogId { leader_id: LeaderId { term: 1, node_id: 1 }, index: 2 }] }, membership_state: MembershipState { committed: EffectiveMembership { log_id: Some(LogId { leader_id: LeaderId { term: 0, node_id: 0 }, index: 0 }), membership: Membership { configs: [{1, 2, 3}], nodes: {1: BasicNode { addr: "node-1" }, 2: BasicNode { addr: "node-2" }, 3: BasicNode { addr: "node-3" }} }, voter_ids: {1, 2, 3} }, effective: EffectiveMembership { log_id: Some(LogId { leader_id: LeaderId { term: 0, node_id: 0 }, index: 0 }), membership: Membership { configs: [{1, 2, 3}], nodes: {1: BasicNode { addr: "node-1" }, 2: BasicNode { addr: "node-2" }, 3: BasicNode { addr: "node-3" }} }, voter_ids: {1, 2, 3} }, observer: MembershipObserverSlot { observer: Mutex { data: None, poisoned: false, .. } } }, snapshot_meta: SnapshotMeta { last_log_id: None, last_membership: StoredMembership { log_id: None, membership: Membership { configs: [], nodes: {} } }, snapshot_id: "" }, server_state: Learner, accepted: Accepted { leader_id: LeaderId { term: 0, node_id: 0 }, log_id: None }, io_state: IOState { building_snapshot: false, vote: Vote { leader_id: LeaderId { term: 1, node_id: 1 }, committed: true }, flushed: LogIOId { committed_leader_id: LeaderId { term: 0, node_id: 0 }, log_id: None }, applied: Some(LogId { leader_id: LeaderId { term: 1, node_id: 1 }, index: 2 }), snapshot: None, purged: None }, purge_upto: None }, is_leader: true, is_voter: true
+ERROR spawn_parallel_vote_requests{vote="{vote:T16-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=2}: openraft::core::raft_core: while requesting vote error=Unreachable node: std::io::error::Error: deadline has elapsed target=2
+DEBUG spawn_parallel_vote_requests{vote="{vote:T16-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=2}: openraft::core::raft_core: close
+ERROR spawn_parallel_vote_requests{vote="{vote:T16-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=3}: openraft::core::raft_core: while requesting vote error=Unreachable node: std::io::error::Error: deadline has elapsed target=3
+DEBUG spawn_parallel_vote_requests{vote="{vote:T16-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=3}: openraft::core::raft_core: close
+DEBUG spawn_parallel_vote_requests{vote="{vote:T16-N1:uncommitted, last_log:T0-N0-0}"}:vote_round_collector: openraft::core::raft_core: close
+TRACE spawn_parallel_vote_requests{vote="{vote:T16-N1:uncommitted, last_log:T0-N0-0}"}: openraft::core::raft_core: close
+TRACE spawn_parallel_vote_requests{vote="{vote:T17-N1:uncommitted, last_log:T0-N0-0}"}: openraft::core::raft_core: new
+DEBUG spawn_parallel_vote_requests{vote="{vote:T17-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=2}: openraft::core::raft_core: new
+DEBUG spawn_parallel_vote_requests{vote="{vote:T17-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=3}: openraft::core::raft_core: new
+DEBUG spawn_parallel_vote_requests{vote="{vote:T17-N1:uncommitted, last_log:T0-N0-0}"}:vote_round_collector: openraft::core::raft_core: new
+ WARN openraft::core::raft_core: A message will be ignored because vote changed: msg sent by vote: T15-N1:uncommitted; current my vote: T17-N1:uncommitted; when (VoteResponse)
+ WARN openraft::core::raft_core: A message will be ignored because vote changed: msg sent by vote: T16-N1:uncommitted; current my vote: T17-N1:uncommitted; when (VoteResponse)
+DEBUG handle_vote_resp{target=1}: openraft::engine::engine_impl: new
+ INFO handle_vote_resp{target=1}: openraft::engine::engine_impl: openraft::engine::engine_impl::Engine<_>::handle_vote_resp resp={T17-N1:uncommitted, last_log:None} target=1 my_vote=T17-N1:uncommitted my_last_log_id=Some(T0-N0-0)
+DEBUG handle_vote_resp{target=1}: openraft::engine::engine_impl: close
+DEBUG elect: openraft::engine::engine_impl: new
+ INFO elect: openraft::engine::engine_impl: openraft::engine::engine_impl::Engine<_>::elect, new candidate: {T18-N1:uncommitted@11:09:39.527462, last_log_id:T0-N0-0 progress:{1: false, 2: false, 3: false}}
+DEBUG elect: openraft::engine::engine_impl: close
+DEBUG handle_vote_request: openraft::core::raft_core: new
+DEBUG handle_vote_request:handle_vote_req: openraft::engine::engine_impl: new
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: Engine::handle_vote_req req={vote:T17-N1:uncommitted, last_log:T0-N0-0}
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: Engine::handle_vote_req my_vote=T16-N1:uncommitted my_last_log_id=None
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: now; 11:09:39.546297, vote is updated at: 11:09:39.174085, vote is updated before 372.212292ms, leader lease(400ms) will expire after 27.787708ms
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: handle vote request result req={vote:T17-N1:uncommitted, last_log:T0-N0-0} result=Ok(())
+DEBUG handle_vote_request:handle_vote_req: openraft::engine::engine_impl: close
+DEBUG handle_vote_request: openraft::core::raft_core: close
+DEBUG handle_vote_request: openraft::core::raft_core: new
+DEBUG handle_vote_request:handle_vote_req: openraft::engine::engine_impl: new
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: Engine::handle_vote_req req={vote:T17-N1:uncommitted, last_log:T0-N0-0}
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: Engine::handle_vote_req my_vote=T16-N1:uncommitted my_last_log_id=None
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: now; 11:09:39.546650, vote is updated at: 11:09:39.186699, vote is updated before 359.951209ms, leader lease(400ms) will expire after 40.048791ms
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: handle vote request result req={vote:T17-N1:uncommitted, last_log:T0-N0-0} result=Ok(())
+DEBUG handle_vote_request:handle_vote_req: openraft::engine::engine_impl: close
+DEBUG handle_vote_request: openraft::core::raft_core: close
+ERROR spawn_parallel_vote_requests{vote="{vote:T17-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=2}: openraft::core::raft_core: while requesting vote error=Unreachable node: std::io::error::Error: deadline has elapsed target=2
+DEBUG spawn_parallel_vote_requests{vote="{vote:T17-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=2}: openraft::core::raft_core: close
+ERROR spawn_parallel_vote_requests{vote="{vote:T17-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=3}: openraft::core::raft_core: while requesting vote error=Unreachable node: std::io::error::Error: deadline has elapsed target=3
+DEBUG spawn_parallel_vote_requests{vote="{vote:T17-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=3}: openraft::core::raft_core: close
+DEBUG spawn_parallel_vote_requests{vote="{vote:T17-N1:uncommitted, last_log:T0-N0-0}"}:vote_round_collector: openraft::core::raft_core: close
+TRACE spawn_parallel_vote_requests{vote="{vote:T17-N1:uncommitted, last_log:T0-N0-0}"}: openraft::core::raft_core: close
+TRACE spawn_parallel_vote_requests{vote="{vote:T18-N1:uncommitted, last_log:T0-N0-0}"}: openraft::core::raft_core: new
+DEBUG spawn_parallel_vote_requests{vote="{vote:T18-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=2}: openraft::core::raft_core: new
+DEBUG spawn_parallel_vote_requests{vote="{vote:T18-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=3}: openraft::core::raft_core: new
+DEBUG spawn_parallel_vote_requests{vote="{vote:T18-N1:uncommitted, last_log:T0-N0-0}"}:vote_round_collector: openraft::core::raft_core: new
+DEBUG handle_vote_resp{target=1}: openraft::engine::engine_impl: new
+ INFO handle_vote_resp{target=1}: openraft::engine::engine_impl: openraft::engine::engine_impl::Engine<_>::handle_vote_resp resp={T18-N1:uncommitted, last_log:None} target=1 my_vote=T18-N1:uncommitted my_last_log_id=Some(T0-N0-0)
+DEBUG handle_vote_resp{target=1}: openraft::engine::engine_impl: close
+DEBUG handle_vote_request: openraft::core::raft_core: new
+DEBUG handle_vote_request:handle_vote_req: openraft::engine::engine_impl: new
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: Engine::handle_vote_req req={vote:T18-N1:uncommitted, last_log:T0-N0-0}
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: Engine::handle_vote_req my_vote=T17-N1:uncommitted my_last_log_id=None
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: now; 11:09:39.864699, vote is updated at: 11:09:39.546683, vote is updated before 318.015709ms, leader lease(400ms) will expire after 81.984291ms
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: handle vote request result req={vote:T18-N1:uncommitted, last_log:T0-N0-0} result=Ok(())
+DEBUG handle_vote_request:handle_vote_req: openraft::engine::engine_impl: close
+DEBUG handle_vote_request: openraft::core::raft_core: close
+DEBUG handle_vote_request: openraft::core::raft_core: new
+DEBUG handle_vote_request:handle_vote_req: openraft::engine::engine_impl: new
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: Engine::handle_vote_req req={vote:T18-N1:uncommitted, last_log:T0-N0-0}
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: Engine::handle_vote_req my_vote=T17-N1:uncommitted my_last_log_id=None
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: now; 11:09:39.872032, vote is updated at: 11:09:39.546495, vote is updated before 325.53725ms, leader lease(400ms) will expire after 74.46275ms
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: handle vote request result req={vote:T18-N1:uncommitted, last_log:T0-N0-0} result=Ok(())
+DEBUG handle_vote_request:handle_vote_req: openraft::engine::engine_impl: close
+DEBUG handle_vote_request: openraft::core::raft_core: close
+DEBUG elect: openraft::engine::engine_impl: new
+ INFO elect: openraft::engine::engine_impl: openraft::engine::engine_impl::Engine<_>::elect, new candidate: {T19-N1:uncommitted@11:09:39.925506, last_log_id:T0-N0-0 progress:{1: false, 2: false, 3: false}}
+DEBUG elect: openraft::engine::engine_impl: close
+ERROR spawn_parallel_vote_requests{vote="{vote:T18-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=2}: openraft::core::raft_core: while requesting vote error=Unreachable node: std::io::error::Error: deadline has elapsed target=2
+DEBUG spawn_parallel_vote_requests{vote="{vote:T18-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=2}: openraft::core::raft_core: close
+ERROR spawn_parallel_vote_requests{vote="{vote:T18-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=3}: openraft::core::raft_core: while requesting vote error=Unreachable node: std::io::error::Error: deadline has elapsed target=3
+DEBUG spawn_parallel_vote_requests{vote="{vote:T18-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=3}: openraft::core::raft_core: close
+DEBUG spawn_parallel_vote_requests{vote="{vote:T18-N1:uncommitted, last_log:T0-N0-0}"}:vote_round_collector: openraft::core::raft_core: close
+TRACE spawn_parallel_vote_requests{vote="{vote:T18-N1:uncommitted, last_log:T0-N0-0}"}: openraft::core::raft_core: close
+ WARN openraft::core::raft_core: A message will be ignored because vote changed: msg sent by vote: T15-N1:uncommitted; current my vote: None; when (VoteResponse)
+ WARN openraft::core::raft_core: A message will be ignored because vote changed: msg sent by vote: T16-N1:uncommitted; current my vote: None; when (VoteResponse)
+ WARN openraft::core::raft_core: A message will be ignored because vote changed: msg sent by vote: T17-N1:uncommitted; current my vote: None; when (VoteResponse)
+ WARN openraft::core::raft_core: A message will be ignored because vote changed: msg sent by vote: T18-N1:uncommitted; current my vote: None; when (VoteResponse)
+TRACE spawn_parallel_vote_requests{vote="{vote:T19-N1:uncommitted, last_log:T0-N0-0}"}: openraft::core::raft_core: new
+DEBUG spawn_parallel_vote_requests{vote="{vote:T19-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=2}: openraft::core::raft_core: new
+DEBUG spawn_parallel_vote_requests{vote="{vote:T19-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=3}: openraft::core::raft_core: new
+DEBUG spawn_parallel_vote_requests{vote="{vote:T19-N1:uncommitted, last_log:T0-N0-0}"}:vote_round_collector: openraft::core::raft_core: new
+DEBUG handle_vote_resp{target=1}: openraft::engine::engine_impl: new
+ INFO handle_vote_resp{target=1}: openraft::engine::engine_impl: openraft::engine::engine_impl::Engine<_>::handle_vote_resp resp={T19-N1:uncommitted, last_log:None} target=1 my_vote=T19-N1:uncommitted my_last_log_id=Some(T0-N0-0)
+DEBUG handle_vote_resp{target=1}: openraft::engine::engine_impl: close
+DEBUG handle_vote_request: openraft::core::raft_core: new
+DEBUG handle_vote_request:handle_vote_req: openraft::engine::engine_impl: new
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: Engine::handle_vote_req req={vote:T19-N1:uncommitted, last_log:T0-N0-0}
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: Engine::handle_vote_req my_vote=T18-N1:uncommitted my_last_log_id=None
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: now; 11:09:40.258955, vote is updated at: 11:09:39.872087, vote is updated before 386.868833ms, leader lease(400ms) will expire after 13.131167ms
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: handle vote request result req={vote:T19-N1:uncommitted, last_log:T0-N0-0} result=Ok(())
+DEBUG handle_vote_request:handle_vote_req: openraft::engine::engine_impl: close
+DEBUG handle_vote_request: openraft::core::raft_core: close
+DEBUG handle_vote_request: openraft::core::raft_core: new
+DEBUG handle_vote_request:handle_vote_req: openraft::engine::engine_impl: new
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: Engine::handle_vote_req req={vote:T19-N1:uncommitted, last_log:T0-N0-0}
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: Engine::handle_vote_req my_vote=T18-N1:uncommitted my_last_log_id=None
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: now; 11:09:40.275596, vote is updated at: 11:09:39.864788, vote is updated before 410.808792ms, leader lease(400ms) will expire after 0ns
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: handle vote request result req={vote:T19-N1:uncommitted, last_log:T0-N0-0} result=Ok(())
+DEBUG handle_vote_request:handle_vote_req: openraft::engine::engine_impl: close
+DEBUG handle_vote_request: openraft::core::raft_core: close
+DEBUG elect: openraft::engine::engine_impl: new
+ INFO elect: openraft::engine::engine_impl: openraft::engine::engine_impl::Engine<_>::elect, new candidate: {T20-N1:uncommitted@11:09:40.319639, last_log_id:T0-N0-0 progress:{1: false, 2: false, 3: false}}
+DEBUG elect: openraft::engine::engine_impl: close
+ERROR spawn_parallel_vote_requests{vote="{vote:T19-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=2}: openraft::core::raft_core: while requesting vote error=Unreachable node: std::io::error::Error: deadline has elapsed target=2
+DEBUG spawn_parallel_vote_requests{vote="{vote:T19-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=2}: openraft::core::raft_core: close
+ERROR spawn_parallel_vote_requests{vote="{vote:T19-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=3}: openraft::core::raft_core: while requesting vote error=Unreachable node: std::io::error::Error: deadline has elapsed target=3
+DEBUG spawn_parallel_vote_requests{vote="{vote:T19-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=3}: openraft::core::raft_core: close
+DEBUG spawn_parallel_vote_requests{vote="{vote:T19-N1:uncommitted, last_log:T0-N0-0}"}:vote_round_collector: openraft::core::raft_core: close
+TRACE spawn_parallel_vote_requests{vote="{vote:T19-N1:uncommitted, last_log:T0-N0-0}"}: openraft::core::raft_core: close
+ WARN openraft::core::raft_core: A message will be ignored because vote changed: msg sent by vote: T13-N1:uncommitted; current my vote: None; when (VoteResponse)
+ WARN openraft::core::raft_core: A message will be ignored because vote changed: msg sent by vote: T14-N1:uncommitted; current my vote: None; when (VoteResponse)
+ WARN openraft::core::raft_core: A message will be ignored because vote changed: msg sent by vote: T15-N1:uncommitted; current my vote: None; when (VoteResponse)
+ WARN openraft::core::raft_core: A message will be ignored because vote changed: msg sent by vote: T16-N1:uncommitted; current my vote: None; when (VoteResponse)
+ WARN openraft::core::raft_core: A message will be ignored because vote changed: msg sent by vote: T17-N1:uncommitted; current my vote: None; when (VoteResponse)
+ WARN openraft::core::raft_core: A message will be ignored because vote changed: msg sent by vote: T18-N1:uncommitted; current my vote: None; when (VoteResponse)
+ WARN openraft::core::raft_core: A message will be ignored because vote changed: msg sent by vote: T19-N1:uncommitted; current my vote: None; when (VoteResponse)
+ WARN openraft::core::raft_core: A message will be ignored because vote changed: msg sent by vote: T19-N1:uncommitted; current my vote: None; when (VoteResponse)
+TRACE spawn_parallel_vote_requests{vote="{vote:T20-N1:uncommitted, last_log:T0-N0-0}"}: openraft::core::raft_core: new
+DEBUG spawn_parallel_vote_requests{vote="{vote:T20-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=2}: openraft::core::raft_core: new
+DEBUG spawn_parallel_vote_requests{vote="{vote:T20-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=3}: openraft::core::raft_core: new
+DEBUG spawn_parallel_vote_requests{vote="{vote:T20-N1:uncommitted, last_log:T0-N0-0}"}:vote_round_collector: openraft::core::raft_core: new
+DEBUG elect: openraft::engine::engine_impl: new
+ INFO elect: openraft::engine::engine_impl: openraft::engine::engine_impl::Engine<_>::elect, new candidate: {T21-N1:uncommitted@11:09:41.484844, last_log_id:T0-N0-0 progress:{1: false, 2: false, 3: false}}
+DEBUG elect: openraft::engine::engine_impl: close
+DEBUG handle_vote_request: openraft::core::raft_core: new
+DEBUG handle_vote_request:handle_vote_req: openraft::engine::engine_impl: new
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: Engine::handle_vote_req req={vote:T20-N1:uncommitted, last_log:T0-N0-0}
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: Engine::handle_vote_req my_vote=T19-N1:uncommitted my_last_log_id=None
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: now; 11:09:41.485021, vote is updated at: 11:09:40.259065, vote is updated before 1.225956375s, leader lease(400ms) will expire after 0ns
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: handle vote request result req={vote:T20-N1:uncommitted, last_log:T0-N0-0} result=Ok(())
+DEBUG handle_vote_request:handle_vote_req: openraft::engine::engine_impl: close
+DEBUG handle_vote_request: openraft::core::raft_core: new
+DEBUG handle_vote_request: openraft::core::raft_core: close
+DEBUG handle_vote_request:handle_vote_req: openraft::engine::engine_impl: new
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: Engine::handle_vote_req req={vote:T20-N1:uncommitted, last_log:T0-N0-0}
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: Engine::handle_vote_req my_vote=T19-N1:uncommitted my_last_log_id=None
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: now; 11:09:41.485089, vote is updated at: 11:09:40.275688, vote is updated before 1.209401s, leader lease(400ms) will expire after 0ns
+ INFO handle_vote_request:handle_vote_req: openraft::engine::engine_impl: handle vote request result req={vote:T20-N1:uncommitted, last_log:T0-N0-0} result=Ok(())
+DEBUG handle_vote_request:handle_vote_req: openraft::engine::engine_impl: close
+DEBUG handle_vote_request: openraft::core::raft_core: close
+ERROR spawn_parallel_vote_requests{vote="{vote:T20-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=2}: openraft::core::raft_core: while requesting vote error=Unreachable node: std::io::error::Error: deadline has elapsed target=2
+DEBUG spawn_parallel_vote_requests{vote="{vote:T20-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=2}: openraft::core::raft_core: close
+ERROR spawn_parallel_vote_requests{vote="{vote:T20-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=3}: openraft::core::raft_core: while requesting vote error=Unreachable node: std::io::error::Error: deadline has elapsed target=3
+DEBUG spawn_parallel_vote_requests{vote="{vote:T20-N1:uncommitted, last_log:T0-N0-0}"}:send_vote_req{target=3}: openraft::core::raft_core: close
+DEBUG spawn_parallel_vote_requests{vote="{vote:T20-N1:uncommitted, last_log:T0-N0-0}"}:vote_round_collector: openraft::core::raft_core: close
+TRACE spawn_parallel_vote_requests{vote="{vote:T20-N1:uncommitted, last_log:T0-N0-0}"}: openraft::core::raft_core: close
+ERROR openraft::core::raft_core: quit RaftCore::main on error error=when Write Store: std::io::error::Error: durable encrypted batch commit failed; outcome may be unknown
+ INFO openraft::engine::engine_impl: startup begin: state: RaftState { vote: UTime { data: Vote { leader_id: LeaderId { term: 1, node_id: 1 }, committed: true }, utime: Some(Instant { tv_sec: 148825, tv_nsec: 18246875 }) }, committed: Some(LogId { leader_id: LeaderId { term: 1, node_id: 1 }, index: 2 }), purged_next: 0, log_ids: LogIdList { key_log_ids: [LogId { leader_id: LeaderId { term: 0, node_id: 0 }, index: 0 }, LogId { leader_id: LeaderId { term: 1, node_id: 1 }, index: 1 }, LogId { leader_id: LeaderId { term: 1, node_id: 1 }, index: 2 }] }, membership_state: MembershipState { committed: EffectiveMembership { log_id: Some(LogId { leader_id: LeaderId { term: 0, node_id: 0 }, index: 0 }), membership: Membership { configs: [{1, 2, 3}], nodes: {1: BasicNode { addr: "node-1" }, 2: BasicNode { addr: "node-2" }, 3: BasicNode { addr: "node-3" }} }, voter_ids: {1, 2, 3} }, effective: EffectiveMembership { log_id: Some(LogId { leader_id: LeaderId { term: 0, node_id: 0 }, index: 0 }), membership: Membership { configs: [{1, 2, 3}], nodes: {1: BasicNode { addr: "node-1" }, 2: BasicNode { addr: "node-2" }, 3: BasicNode { addr: "node-3" }} }, voter_ids: {1, 2, 3} }, observer: MembershipObserverSlot { observer: Mutex { data: None, poisoned: false, .. } } }, snapshot_meta: SnapshotMeta { last_log_id: None, last_membership: StoredMembership { log_id: None, membership: Membership { configs: [], nodes: {} } }, snapshot_id: "" }, server_state: Learner, accepted: Accepted { leader_id: LeaderId { term: 0, node_id: 0 }, log_id: None }, io_state: IOState { building_snapshot: false, vote: Vote { leader_id: LeaderId { term: 1, node_id: 1 }, committed: true }, flushed: LogIOId { committed_leader_id: LeaderId { term: 0, node_id: 0 }, log_id: None }, applied: Some(LogId { leader_id: LeaderId { term: 1, node_id: 1 }, index: 2 }), snapshot: None, purged: None }, purge_upto: None }, is_leader: false, is_voter: true
+ INFO openraft::engine::engine_impl: startup done: id=2 target_state: Follower
+ERROR openraft::core::raft_core: quit RaftCore::main on error error=when Write Store: std::io::error::Error: durable encrypted batch commit failed; outcome may be unknown
+ERROR openraft::core::raft_core: quit RaftCore::main on error error=when Write Store: std::io::error::Error: durable encrypted batch commit failed; outcome may be unknown
+Error: elect initial leader with a successful linearizable barrier
+
+Caused by:
+    0: linearizable leader barrier did not complete; ["node 1: running=Ok(()); Metrics{id:1, Candidate, term:19, vote:T19-N1:uncommitted, last_log:0, last_applied:None, leader:None(since_last_ack:None ms), membership:{log_id:T0-N0-0, {voters:[{1:BasicNode { addr: \"replica-1\" },2:BasicNode { addr: \"replica-2\" },3:BasicNode { addr: \"replica-3\" }}], learners:[]}}, snapshot:None, purged:None, replication:{}}; retained_apply=Ok(None)", "node 2: running=Ok(()); Metrics{id:2, Learner, term:19, vote:T19-N1:uncommitted, last_log:None, last_applied:None, leader:None(since_last_ack:None ms), membership:{log_id:None, {voters:[], learners:[]}}, snapshot:None, purged:None, replication:{}}; retained_apply=Ok(None)", "node 3: running=Ok(()); Metrics{id:3, Learner, term:19, vote:T19-N1:uncommitted, last_log:None, last_applied:None, leader:None(since_last_ack:None ms), membership:{log_id:None, {voters:[], learners:[]}}, snapshot:None, purged:None, replication:{}}; retained_apply=Ok(None)", "node 4: running=Ok(()); Metrics{id:4, Learner, term:0, vote:T0-N0:uncommitted, last_log:None, last_applied:None, leader:None(since_last_ack:None ms), membership:{log_id:None, {voters:[], learners:[]}}, snapshot:None, purged:None, replication:{}}; retained_apply=Ok(None)"]
+    1: deadline has elapsed
+test bootstrap::existing_replicated_tests::existing_replicas_replay_committed_state_and_membership_after_full_close ... FAILED
+ INFO openraft::engine::engine_impl: startup begin: state: RaftState { vote: UTime { data: Vote { leader_id: LeaderId { term: 1, node_id: 1 }, committed: true }, utime: Some(Instant { tv_sec: 148831, tv_nsec: 56616458 }) }, committed: Some(LogId { leader_id: LeaderId { term: 1, node_id: 1 }, index: 2 }), purged_next: 0, log_ids: LogIdList { key_log_ids: [LogId { leader_id: LeaderId { term: 0, node_id: 0 }, index: 0 }, LogId { leader_id: LeaderId { term: 1, node_id: 1 }, index: 1 }, LogId { leader_id: LeaderId { term: 1, node_id: 1 }, index: 2 }] }, membership_state: MembershipState { committed: EffectiveMembership { log_id: Some(LogId { leader_id: LeaderId { term: 0, node_id: 0 }, index: 0 }), membership: Membership { configs: [{1, 2, 3}], nodes: {1: BasicNode { addr: "node-1" }, 2: BasicNode { addr: "node-2" }, 3: BasicNode { addr: "node-3" }} }, voter_ids: {1, 2, 3} }, effective: EffectiveMembership { log_id: Some(LogId { leader_id: LeaderId { term: 0, node_id: 0 }, index: 0 }), membership: Membership { configs: [{1, 2, 3}], nodes: {1: BasicNode { addr: "node-1" }, 2: BasicNode { addr: "node-2" }, 3: BasicNode { addr: "node-3" }} }, voter_ids: {1, 2, 3} }, observer: MembershipObserverSlot { observer: Mutex { data: None, poisoned: false, .. } } }, snapshot_meta: SnapshotMeta { last_log_id: None, last_membership: StoredMembership { log_id: None, membership: Membership { configs: [], nodes: {} } }, snapshot_id: "" }, server_state: Learner, accepted: Accepted { leader_id: LeaderId { term: 0, node_id: 0 }, log_id: None }, io_state: IOState { building_snapshot: false, vote: Vote { leader_id: LeaderId { term: 1, node_id: 1 }, committed: true }, flushed: LogIOId { committed_leader_id: LeaderId { term: 0, node_id: 0 }, log_id: None }, applied: Some(LogId { leader_id: LeaderId { term: 1, node_id: 1 }, index: 2 }), snapshot: None, purged: None }, purge_upto: None }, is_leader: false, is_voter: true
+ INFO openraft::engine::engine_impl: startup done: id=3 target_state: Follower
+ERROR openraft::core::raft_core: quit RaftCore::main on error error=when Write Store: std::io::error::Error: Raft apply failed; original failure retained
+ERROR openraft::core::raft_core: quit RaftCore::main on error error=when Write Store: std::io::error::Error: Raft apply failed; original failure retained
+ INFO openraft::engine::engine_impl: startup begin: state: RaftState { vote: UTime { data: Vote { leader_id: LeaderId { term: 1, node_id: 1 }, committed: true }, utime: Some(Instant { tv_sec: 148840, tv_nsec: 490402875 }) }, committed: Some(LogId { leader_id: LeaderId { term: 1, node_id: 1 }, index: 3 }), purged_next: 0, log_ids: LogIdList { key_log_ids: [LogId { leader_id: LeaderId { term: 0, node_id: 0 }, index: 0 }, LogId { leader_id: LeaderId { term: 1, node_id: 1 }, index: 1 }, LogId { leader_id: LeaderId { term: 1, node_id: 1 }, index: 3 }] }, membership_state: MembershipState { committed: EffectiveMembership { log_id: Some(LogId { leader_id: LeaderId { term: 0, node_id: 0 }, index: 0 }), membership: Membership { configs: [{1, 2, 3}], nodes: {1: BasicNode { addr: "node-1" }, 2: BasicNode { addr: "node-2" }, 3: BasicNode { addr: "node-3" }} }, voter_ids: {1, 2, 3} }, effective: EffectiveMembership { log_id: Some(LogId { leader_id: LeaderId { term: 0, node_id: 0 }, index: 0 }), membership: Membership { configs: [{1, 2, 3}], nodes: {1: BasicNode { addr: "node-1" }, 2: BasicNode { addr: "node-2" }, 3: BasicNode { addr: "node-3" }} }, voter_ids: {1, 2, 3} }, observer: MembershipObserverSlot { observer: Mutex { data: None, poisoned: false, .. } } }, snapshot_meta: SnapshotMeta { last_log_id: None, last_membership: StoredMembership { log_id: None, membership: Membership { configs: [], nodes: {} } }, snapshot_id: "" }, server_state: Learner, accepted: Accepted { leader_id: LeaderId { term: 0, node_id: 0 }, log_id: None }, io_state: IOState { building_snapshot: false, vote: Vote { leader_id: LeaderId { term: 1, node_id: 1 }, committed: true }, flushed: LogIOId { committed_leader_id: LeaderId { term: 0, node_id: 0 }, log_id: None }, applied: Some(LogId { leader_id: LeaderId { term: 1, node_id: 1 }, index: 3 }), snapshot: None, purged: None }, purge_upto: None }, is_leader: true, is_voter: true
+ INFO openraft::engine::engine_impl: startup begin: state: RaftState { vote: UTime { data: Vote { leader_id: LeaderId { term: 1, node_id: 1 }, committed: true }, utime: Some(Instant { tv_sec: 148847, tv_nsec: 45044916 }) }, committed: Some(LogId { leader_id: LeaderId { term: 1, node_id: 1 }, index: 3 }), purged_next: 0, log_ids: LogIdList { key_log_ids: [LogId { leader_id: LeaderId { term: 0, node_id: 0 }, index: 0 }, LogId { leader_id: LeaderId { term: 1, node_id: 1 }, index: 1 }, LogId { leader_id: LeaderId { term: 1, node_id: 1 }, index: 3 }] }, membership_state: MembershipState { committed: EffectiveMembership { log_id: Some(LogId { leader_id: LeaderId { term: 0, node_id: 0 }, index: 0 }), membership: Membership { configs: [{1, 2, 3}], nodes: {1: BasicNode { addr: "node-1" }, 2: BasicNode { addr: "node-2" }, 3: BasicNode { addr: "node-3" }} }, voter_ids: {1, 2, 3} }, effective: EffectiveMembership { log_id: Some(LogId { leader_id: LeaderId { term: 0, node_id: 0 }, index: 0 }), membership: Membership { configs: [{1, 2, 3}], nodes: {1: BasicNode { addr: "node-1" }, 2: BasicNode { addr: "node-2" }, 3: BasicNode { addr: "node-3" }} }, voter_ids: {1, 2, 3} }, observer: MembershipObserverSlot { observer: Mutex { data: None, poisoned: false, .. } } }, snapshot_meta: SnapshotMeta { last_log_id: None, last_membership: StoredMembership { log_id: None, membership: Membership { configs: [], nodes: {} } }, snapshot_id: "" }, server_state: Learner, accepted: Accepted { leader_id: LeaderId { term: 0, node_id: 0 }, log_id: None }, io_state: IOState { building_snapshot: false, vote: Vote { leader_id: LeaderId { term: 1, node_id: 1 }, committed: true }, flushed: LogIOId { committed_leader_id: LeaderId { term: 0, node_id: 0 }, log_id: None }, applied: Some(LogId { leader_id: LeaderId { term: 1, node_id: 1 }, index: 3 }), snapshot: None, purged: None }, purge_upto: None }, is_leader: false, is_voter: true
+ INFO openraft::engine::engine_impl: startup done: id=2 target_state: Follower
+test security_audit::jobs::tests::cancelled_maintenance_retains_publication_panic_and_unpruned_history has been running for over 60 seconds
+test service::tests::serving_expiry_rejects_queued_effect_and_late_read_or_committed_ack_then_reopens_exactly has been running for over 60 seconds
+
+thread 'security_audit::jobs::tests::cancelled_maintenance_retains_publication_panic_and_unpruned_history' (21590738) panicked at crates/kasumi-engine/src/security_audit_jobs.rs:311:45:
+called `Result::unwrap()` on an `Err` value: drain Retained; audit persistence[0]: batch committed but key access was lost before acknowledgment; outcome unknown
+
+Caused by:
+    0: batch committed but key access was lost before acknowledgment; outcome unknown
+    1: tenant is sealed: key-access lease unavailable or expired
+test security_audit::jobs::tests::cancelled_maintenance_retains_publication_panic_and_unpruned_history ... FAILED
+ INFO openraft::engine::engine_impl: startup begin: state: RaftState { vote: UTime { data: Vote { leader_id: LeaderId { term: 1, node_id: 1 }, committed: true }, utime: Some(Instant { tv_sec: 148863, tv_nsec: 32503833 }) }, committed: Some(LogId { leader_id: LeaderId { term: 1, node_id: 1 }, index: 3 }), purged_next: 0, log_ids: LogIdList { key_log_ids: [LogId { leader_id: LeaderId { term: 0, node_id: 0 }, index: 0 }, LogId { leader_id: LeaderId { term: 1, node_id: 1 }, index: 1 }, LogId { leader_id: LeaderId { term: 1, node_id: 1 }, index: 3 }] }, membership_state: MembershipState { committed: EffectiveMembership { log_id: Some(LogId { leader_id: LeaderId { term: 0, node_id: 0 }, index: 0 }), membership: Membership { configs: [{1, 2, 3}], nodes: {1: BasicNode { addr: "node-1" }, 2: BasicNode { addr: "node-2" }, 3: BasicNode { addr: "node-3" }} }, voter_ids: {1, 2, 3} }, effective: EffectiveMembership { log_id: Some(LogId { leader_id: LeaderId { term: 0, node_id: 0 }, index: 0 }), membership: Membership { configs: [{1, 2, 3}], nodes: {1: BasicNode { addr: "node-1" }, 2: BasicNode { addr: "node-2" }, 3: BasicNode { addr: "node-3" }} }, voter_ids: {1, 2, 3} }, observer: MembershipObserverSlot { observer: Mutex { data: None, poisoned: false, .. } } }, snapshot_meta: SnapshotMeta { last_log_id: None, last_membership: StoredMembership { log_id: None, membership: Membership { configs: [], nodes: {} } }, snapshot_id: "" }, server_state: Learner, accepted: Accepted { leader_id: LeaderId { term: 0, node_id: 0 }, log_id: None }, io_state: IOState { building_snapshot: false, vote: Vote { leader_id: LeaderId { term: 1, node_id: 1 }, committed: true }, flushed: LogIOId { committed_leader_id: LeaderId { term: 0, node_id: 0 }, log_id: None }, applied: Some(LogId { leader_id: LeaderId { term: 1, node_id: 1 }, index: 3 }), snapshot: None, purged: None }, purge_upto: None }, is_leader: false, is_voter: true
+ INFO openraft::engine::engine_impl: startup done: id=3 target_state: Follower
+test service::tests::serving_expiry_rejects_queued_effect_and_late_read_or_committed_ack_then_reopens_exactly ... ok
+
+failures:
+
+failures:
+    bootstrap::existing_replicated_tests::existing_replicas_replay_committed_state_and_membership_after_full_close
+    security_audit::jobs::tests::cancelled_maintenance_retains_publication_panic_and_unpruned_history
+    state::restore_budget_tests::restored_identity_metadata_is_validated_before_bootstrap_persistence
+    state::staging::capacity_tests::permanent_staged_point_capacity_transfers_to_outcome_and_can_expand_without_identity_reuse
+
+test result: FAILED. 6 passed; 4 failed; 0 ignored; 0 measured; 606 filtered out; finished in 78.15s
+
+error: test failed, to rerun pass `-p kasumi-engine --lib`
+     Running unittests src/lib.rs (target/disk-backed-cache/debug/deps/kasumi_raft-8af78bc0d2a8574c)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 160 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/disk-backed-cache/debug/deps/kasumi_store-4ef75ebdc018c368)
+
+running 2 tests
+TestDiskMemory::reserve_installed denied: provider=0x106f941b0 requested_bytes=4351 charged_bytes=8463 bookkeeping_bytes=24184 used_bytes=976308 next_used_bytes=984771 max_bytes=67108864 live_reservations=32 max_reservations=32 attempts=33 error=Kind(OutOfMemory)
+TestDiskMemory::reserve_installed denied: provider=0x106f94130 requested_bytes=8336 charged_bytes=12448 bookkeeping_bytes=24184 used_bytes=3865219 next_used_bytes=3877667 max_bytes=67108864 live_reservations=32 max_reservations=32 attempts=36 error=Kind(OutOfMemory)
+
+thread 'scratch_table::tests::workspace_tests::scratch_prepared_workspace_survives_capacity_pressure_after_prepare' (21597022) panicked at crates/kasumi-store/src/scratch_table_workspace_tests.rs:145:17:
+called `Result::unwrap()` on an `Err` value: CommitError(Core(CapacityDenied))
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test scratch_table::tests::workspace_tests::scratch_prepared_workspace_survives_capacity_pressure_after_prepare ... FAILED
+test scratch_table::tests::workspace_tests::scratch_preparation_capacity_refusal_has_no_private_effect_and_retries ... ok
+
+failures:
+
+failures:
+    scratch_table::tests::workspace_tests::scratch_prepared_workspace_survives_capacity_pressure_after_prepare
+
+test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 694 filtered out; finished in 1.82s
+
+error: test failed, to rerun pass `-p kasumi-store --lib`
+error: 2 targets failed:
+    `-p kasumi-engine --lib`
+    `-p kasumi-store --lib`
+Runner: 714.37s; exit=101; matching=852/852

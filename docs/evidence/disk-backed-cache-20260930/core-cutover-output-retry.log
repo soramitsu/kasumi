@@ -1,0 +1,26 @@
+   Compiling kasumi-kv v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-kv)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.31s
+     Running tests/crash_recovery.rs (target/disk-backed-cache/debug/deps/crash_recovery-537e2fbd50f7f8dc)
+
+running 1 test
+test retained_raw_read_keeps_its_output_admitted_until_drop ... FAILED
+
+successes:
+
+successes:
+
+failures:
+
+---- retained_raw_read_keeps_its_output_admitted_until_drop stdout ----
+
+thread 'retained_raw_read_keeps_its_output_admitted_until_drop' (2298600) panicked at crates/kasumi-kv/tests/crash_recovery.rs:383:5:
+assertion failed: reader.get_bytes(ITEMS, b"key", 16).is_err()
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    retained_raw_read_keeps_its_output_admitted_until_drop
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.06s
+
+error: test failed, to rerun pass `-p kasumi-kv --test crash_recovery`

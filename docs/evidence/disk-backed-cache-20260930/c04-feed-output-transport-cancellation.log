@@ -1,0 +1,102 @@
+Command: cargo test -p kasumi-engine -p kasumi-server --all-features --lib --locked --offline --config profile.test.package.kasumi-kv.opt-level=3 --config profile.test.package.sha2.opt-level=3 -- --test-threads=1 feed_memory_cancelled_public_read_retains_admitted_audit_until_completion admitted_native_feed_survives_unpolled_body_and_last_frame_clone native_history_archive_and_durable_feed_preserve_exact_rows_and_scope native_sdk_query_feed_schema_preserve_literal_values_and_admission
+CARGO_TARGET_DIR=target/disk-backed-cache
+   Compiling kasumi-types v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-types)
+warning: method `matches_response_id` is never used
+   --> vendor/rmcp-3.2.0/src/model.rs:251:19
+    |
+236 | impl NumberOrString {
+    | ------------------- method in this implementation
+...
+251 |     pub(crate) fn matches_response_id(&self, response_id: &Self) -> bool {
+    |                   ^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `set_client_request_metadata` is never used
+    --> vendor/rmcp-3.2.0/src/service.rs:1032:19
+     |
+ 806 | impl<R: ServiceRole> Peer<R> {
+     | ---------------------------- method in this implementation
+...
+1032 |     pub(crate) fn set_client_request_metadata(&self, metadata: ClientRequestMetadata) {
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: method `is_authorization_required` is never used
+   --> vendor/rmcp-3.2.0/src/transport.rs:275:19
+    |
+249 | impl DynamicTransportError {
+    | -------------------------- method in this implementation
+...
+275 |     pub(crate) fn is_authorization_required(&self) -> bool {
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: `rmcp` (lib) generated 3 warnings
+   Compiling kasumi-serving v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-serving)
+   Compiling kasumi-query v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-query)
+   Compiling kasumi-store v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-store)
+   Compiling kasumi-client v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-client)
+   Compiling kasumi-raft v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-raft)
+   Compiling kasumi-engine v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-engine)
+   Compiling kasumi-authority v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-authority)
+warning: variant `Mutation` is never constructed
+  --> crates/kasumi-engine/src/security_audit_jobs.rs:26:5
+   |
+24 | enum JobEffect {
+   |      --------- variant in this enum
+25 |     Read,
+26 |     Mutation(&'static str),
+   |     ^^^^^^^^
+   |
+   = note: `JobEffect` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: struct `ReadPause` is never constructed
+  --> crates/kasumi-engine/src/security_audit_jobs.rs:57:19
+   |
+57 | pub(super) struct ReadPause {
+   |                   ^^^^^^^^^
+
+warning: method `run_mutation` is never used
+   --> crates/kasumi-engine/src/security_audit_jobs.rs:120:25
+    |
+ 62 | impl SecurityAudit {
+    | ------------------ method in this implementation
+...
+120 |     pub(super) async fn run_mutation<T, F, R>(&self, component: &'static str, run: R) -> Result<T>
+    |                         ^^^^^^^^^^^^
+
+warning: `kasumi-engine` (lib) generated 3 warnings
+   Compiling kasumi-server v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-server)
+warning: field `panic` is never read
+  --> crates/kasumi-engine/src/security_audit_jobs.rs:52:9
+   |
+48 | pub(super) struct RecordFault {
+   |                   ----------- field in this struct
+...
+52 |     pub panic: bool,
+   |         ^^^^^
+
+warning: `kasumi-engine` (lib test) generated 4 warnings (3 duplicates)
+warning: linker stderr: ld: __eh_frame section too large (max 16MB) to encode dwarf unwind offsets in compact unwind table, performance of exception handling might be affected
+  |
+  = note: `#[warn(linker_messages)]` on by default
+
+warning: `kasumi-server` (lib test) generated 1 warning
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 18m 58s
+     Running unittests src/lib.rs (target/disk-backed-cache/debug/deps/kasumi_engine-33d5bcb170c7603e)
+
+running 1 test
+test service::tests::feed_memory_cancelled_public_read_retains_admitted_audit_until_completion ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 399 filtered out; finished in 12.80s
+
+     Running unittests src/lib.rs (target/disk-backed-cache/debug/deps/kasumi_server-732b155e8838634f)
+
+running 3 tests
+test api::tests::admitted_native_feed_survives_unpolled_body_and_last_frame_clone ... ok
+test api::tests::native_history_archive_and_durable_feed_preserve_exact_rows_and_scope ... ok
+test api::tests::native_sdk_query_feed_schema_preserve_literal_values_and_admission ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 280 filtered out; finished in 54.65s
+
+Runner: 1206.62s; exit=0; matching=699/699

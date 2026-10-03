@@ -6,6 +6,141 @@ use kasumi_store::{SnapshotImage, TenantStorageSet};
 use kasumi_types::{Error, ErrorCode, Limits, Policy, Result, TenantState};
 use std::sync::Arc;
 
+/// Format a single borrowed observation only after a fixture already failed.
+/// None and Busy remain distinct and neither proves successful apply or drain.
+/// The closure never waits, retries, clears, or moves an original out of custody.
+#[cfg(test)]
+pub(crate) fn retained_apply_diagnostic(
+    group: &kasumi_raft::RaftGroup,
+) -> std::result::Result<Option<String>, kasumi_raft::ReportBusy> {
+    use kasumi_raft::{ApplyObservationRef, RetainedApplyReport};
+    use std::fmt::Write as _;
+
+    group.try_with_retained_apply_report(|report| match report {
+        RetainedApplyReport::Single(error) => format!("single original: {error:#}"),
+        RetainedApplyReport::Ordinary(report) => {
+            let mut text = format!(
+                "ordinary ordinal={}; violation={:?}; response_retained={}; wake_panic_retained={}",
+                report.ordinal,
+                report.violation,
+                report.response.is_some(),
+                report.wake_panic.is_some(),
+            );
+            if let Some(error) = report.single {
+                let _ = write!(&mut text, "; prior single: {error:#}");
+            }
+            for (phase, observation) in [
+                ("sink", report.sink),
+                ("action", report.action),
+                ("backend", report.backend),
+                ("finish", report.finish),
+                ("cleanup", report.cleanup),
+                ("drain", report.drain),
+            ] {
+                let _ = write!(&mut text, "; {phase}: ");
+                match observation {
+                    ApplyObservationRef::NotEntered => text.push_str("not entered"),
+                    ApplyObservationRef::Running => text.push_str("running"),
+                    ApplyObservationRef::Returned => text.push_str("returned"),
+                    ApplyObservationRef::Error(error) => {
+                        let _ = write!(&mut text, "original error: {error:#}");
+                    }
+                    ApplyObservationRef::Unwound(_) => text.push_str("original panic retained"),
+                    ApplyObservationRef::Refused(reason) => {
+                        let _ = write!(&mut text, "refused: {reason:?}");
+                    }
+                }
+            }
+            text
+        }
+    })
+}
+
+/// Evaluate against the exact captured fixture generation and its own indexes
+/// and limits. This is an unaudited ordered-apply test observation, not a
+/// production Database read or an authorization bypass for serving callers.
+/// The caller supplies real workspace admission and retains it until its result
+/// is destroyed. Neither the raw runtime state nor its index owner is returned.
+pub fn fixture_query<W: kasumi_query::QueryWorkspace>(
+    generation: &Arc<crate::Generation>,
+    request: &kasumi_types::QueryRequest,
+    memory: &mut kasumi_query::QueryMemory<W>,
+) -> Result<kasumi_types::QueryResponse> {
+    let source = generation.document_source(&request.collection)?;
+    generation
+        .indexes
+        .execute(&source, request, generation.limits(), memory)
+        .map_err(kasumi_query::ReadFailure::into_query_error)
+}
+
+/// Local fixture sink. Production publication always uses Raft's custody sink.
+#[derive(Default)]
+pub struct CaptureApplyPublisher {
+    pub response: Option<kasumi_raft::AppliedResponse>,
+    attempted: bool,
+    invalid: bool,
+}
+
+impl kasumi_raft::ApplyPublisher for CaptureApplyPublisher {
+    fn with_completion(
+        &mut self,
+        _: &kasumi_raft::CompletionIdentity,
+        _: &mut dyn kasumi_raft::CompletionAction,
+    ) -> std::result::Result<(), kasumi_raft::CompletionCallError> {
+        Err(kasumi_raft::CompletionCallError::Unsupported)
+    }
+
+    fn commit_with_selection<'call>(
+        &mut self,
+        _: kasumi_raft::AppliedResponse,
+        _: &[kasumi_store::WriteOp],
+        _: &mut dyn kasumi_raft::SelectionPreparer,
+        _: kasumi_raft::PublicationChallenge<'call>,
+    ) -> std::result::Result<
+        kasumi_raft::JointPublicationReceipt<'call>,
+        kasumi_raft::PublishCallError,
+    > {
+        let repeated = self.attempted;
+        self.attempted = true;
+        self.invalid = true;
+        Err(if repeated {
+            kasumi_raft::PublishCallError::Repeated
+        } else {
+            kasumi_raft::PublishCallError::Failed
+        })
+    }
+
+    fn commit(
+        &mut self,
+        response: kasumi_raft::AppliedResponse,
+        application_writes: &[kasumi_store::WriteOp],
+    ) -> std::result::Result<(), kasumi_raft::PublishCallError> {
+        if self.attempted {
+            self.invalid = true;
+            return Err(kasumi_raft::PublishCallError::Repeated);
+        }
+        self.attempted = true;
+        if !application_writes.is_empty() {
+            self.invalid = true;
+            return Err(kasumi_raft::PublishCallError::Failed);
+        }
+        self.response = Some(response);
+        Ok(())
+    }
+}
+
+/// Run the canonical publication path with a local response-only fixture sink.
+pub fn capture_application(
+    apply: impl FnOnce(&mut dyn kasumi_raft::ApplyPublisher) -> anyhow::Result<()>,
+) -> anyhow::Result<kasumi_raft::AppliedResponse> {
+    let mut publisher = CaptureApplyPublisher::default();
+    apply(&mut publisher)?;
+    anyhow::ensure!(!publisher.invalid, "invalid fixture publication attempt");
+    publisher
+        .response
+        .ok_or_else(|| anyhow::anyhow!("fixture application did not publish"))
+}
+
 // Replay requires an installed tenant audit placement and never selects one.
 // These fixture entry points make the explicit local-replica-only opt-in that
 // a production installer performs from configuration before bootstrap.
@@ -179,6 +314,7 @@ pub fn fixture_disk_configs(
             directory: root.join("scratch"),
             max_bytes: 256 << 30,
             min_free_bytes: 0,
+            native_cache_bytes: 8 << 20,
         },
     ))
 }
@@ -238,7 +374,13 @@ impl FixtureStorage {
         path: impl AsRef<std::path::Path>,
         id: uuid::Uuid,
     ) -> anyhow::Result<std::sync::Arc<kasumi_store::NodeStore>> {
-        kasumi_store::NodeStore::create_new(path, id, self.persistent.clone(), self.scratch.clone())
+        kasumi_store::NodeStore::create_new(
+            path,
+            id,
+            self.persistent.clone(),
+            self.scratch.clone(),
+            self.persistent.native_storage_config(),
+        )
     }
 
     pub fn open_existing(
@@ -251,6 +393,7 @@ impl FixtureStorage {
             id,
             self.persistent.clone(),
             self.scratch.clone(),
+            self.persistent.native_storage_config(),
         )
     }
 }

@@ -34,8 +34,12 @@ fn census_charges_directory_ceilings_and_records_actual_blocks_and_remaining_pro
     file.sync_all().unwrap();
     let disk = open(&config, &memory);
     let directories = blocks(directory.path()) + blocks(&child);
-    let (file_bytes, file_pending) =
-        super::super::extent(&file.metadata().unwrap(), disk.unit).unwrap();
+    let (file_bytes, file_pending) = super::super::file_extent(
+        &file.metadata().unwrap(),
+        disk.unit,
+        config.file_allocation_policy,
+    )
+    .unwrap();
     let snapshot = disk.snapshot();
     assert_eq!(snapshot.persistent_directories, 2);
     assert_eq!(snapshot.observed_directory_bytes, directories);

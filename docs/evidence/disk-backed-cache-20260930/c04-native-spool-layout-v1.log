@@ -1,0 +1,111 @@
+Command: cargo test --locked --offline --config profile.test.package.kasumi-kv.opt-level=3 --config profile.test.package.sha2.opt-level=3 -p kasumi-kv -p kasumi-store -p kasumi-raft -p kasumi-engine --all-features --lib --no-fail-fast -- spool:: scratch_table scratch_claim --nocapture
+CARGO_TARGET_DIR=target/disk-backed-cache
+   Compiling kasumi-store v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-store)
+   Compiling kasumi-raft v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-raft)
+   Compiling kasumi-engine v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-engine)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2m 06s
+     Running unittests src/lib.rs (target/disk-backed-cache/debug/deps/kasumi_engine-44db468831cfc59f)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 644 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/disk-backed-cache/debug/deps/kasumi_kv-221aa5373d25965b)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 551 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/disk-backed-cache/debug/deps/kasumi_raft-8af78bc0d2a8574c)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 182 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/disk-backed-cache/debug/deps/kasumi_store-4ef75ebdc018c368)
+
+running 62 tests
+TestDiskMemory::reserve_installed denied: provider=0x7647428150 requested_bytes=0 charged_bytes=4120 bookkeeping_bytes=2039968 used_bytes=17524388 next_used_bytes=17528508 max_bytes=268435456 live_reservations=4096 max_reservations=4096 attempts=4097 error=Kind(OutOfMemory)
+TestDiskMemory::reserve_installed denied: provider=0x7647428150 requested_bytes=20552 charged_bytes=24672 bookkeeping_bytes=2039968 used_bytes=17544940 next_used_bytes=17569612 max_bytes=268435456 live_reservations=4096 max_reservations=4096 attempts=4104 error=Kind(OutOfMemory)
+TestDiskMemory::reserve_installed denied: provider=0x7647428010 requested_bytes=0 charged_bytes=4120 bookkeeping_bytes=2039968 used_bytes=17524388 next_used_bytes=17528508 max_bytes=268435456 live_reservations=4096 max_reservations=4096 attempts=4097 error=Kind(OutOfMemory)
+TestDiskMemory::reserve_installed denied: provider=0x7647428010 requested_bytes=12544 charged_bytes=16664 bookkeeping_bytes=2039968 used_bytes=17524388 next_used_bytes=17541052 max_bytes=268435456 live_reservations=4096 max_reservations=4096 attempts=4098 error=Kind(OutOfMemory)
+test scratch_table::group::claim::tests::scratch_claim_partial_native_acquisition_retains_exact_error_descriptor_and_all_rights ... ok
+test scratch_table::group::claim::tests::scratch_claim_pristine_cancel_returns_aggregate_and_prepared_memory_without_file_effects ... ok
+test scratch_table::group::claim::tests::scratch_claim_reuses_completed_root_validation_slot_before_preparing_files ... ok
+test scratch_table::group::claim::tests::scratch_claim_capacity_denial_is_before_namespace_or_root_mutation ... ok
+test scratch_table::group::claim::tests::scratch_claim_corrupt_protected_roots_fence_the_real_owner_and_keep_original_core_error ... ok
+test scratch_table::group::claim::tests::scratch_claim_wrong_native_header_minimum_fails_before_effects ... ok
+test scratch_table::group::claim::tests::scratch_claim_does_not_finish_an_empty_created_file_below_its_promised_minimum ... ok
+test scratch_table::group::claim::tests::scratch_claim_consumes_real_quota_without_readmission_and_finishes_complete_private_prefix ... ok
+test scratch_table::tests::actual_spool_close_reports_native_drain_before_retiring_adapter_owner ... ok
+test scratch_table::tests::an_existing_unwind_keeps_the_actual_batch_lease_unentered_and_charged ... ok
+test scratch_table::tests::batch_entry_limit_rejects_before_publication_and_aborts_partial_input ... ok
+test scratch_table::tests::batch_open_retirement_keeps_actual_type_error_and_actual_lease_panic ... ok
+test scratch_table::tests::explicit_scratch_close_retains_original_physical_failure_on_retry ... ok
+test scratch_table::tests::exact_settlement_mismatch_fences_owner_without_allocating_or_returning_credit ... ok
+test scratch_table::tests::batch_outliving_table_observes_close_after_its_transaction_ends ... ok
+test scratch_table::tests::failed_bootstrap_closes_the_exact_spool_before_returning ... ok
+test scratch_table::tests::accepted_transaction_keeps_scratch_close_retained_until_actual_drain ... ok
+test scratch_table::tests::accepted_batch_keeps_physical_table_until_commit_and_close ... ok
+test scratch_table::tests::failed_bootstrap_retains_unproved_close_and_original_outcomes ... ok
+test scratch_table::tests::dropping_a_table_under_a_live_transaction_never_enters_close_or_returns_credit ... ok
+test scratch_table::tests::dropping_an_explicitly_closed_table_never_reenters_native_close ... ok
+test scratch_table::tests::batch_reuses_one_real_typed_table_instead_of_repeating_cold_catalog_reads ... ok
+test scratch_table::tests::dropping_a_failed_table_keeps_spool_and_charge_without_allocating ... ok
+TestDiskMemory::reserve_installed denied: provider=0x7647428790 requested_bytes=0 charged_bytes=4120 bookkeeping_bytes=test scratch_table::tests::dropping_a_drained_table_closes_natively_once_without_allocating ... ok
+40096 used_bytes=350340 next_used_bytes=354460 max_bytes=33554432 live_reservations=64 max_reservations=64 attempts=65 error=Kind(OutOfMemory)
+TestDiskMemory::reserve_installed denied: provider=0x7647428790 requested_bytes=273632 charged_bytes=277752 bookkeeping_bytes=40096 used_bytes=350340 next_used_bytes=628092 max_bytes=33554432 live_reservations=64 max_reservations=64 attempts=66 error=Kind(OutOfMemory)
+test scratch_table::tests::scratch_group_census_rejects_namespace_mutation_and_same_slot_reuse_without_restart ... ok
+test scratch_table::tests::dropping_a_table_observes_native_close_before_returning_scratch_credit ... ok
+test scratch_table::tests::scratch_group_census_releases_owner_lock_for_admission_and_read_callbacks ... ok
+test scratch_table::tests::scratch_group_metadata_denial_opens_no_file_and_census_callback_failure_is_retryable ... ok
+test scratch_table::tests::exact_backend_publication_io_settlement_shrink_and_close_do_not_allocate ... ok
+
+thread 'spool::native_close_tests::native_close_unwind_retains_original_payload_and_never_retries_number' (23937800) panicked at crates/kasumi-store/src/spool_native_close_tests.rs:117:13:
+Box<dyn Any>
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test scratch_table::tests::rejected_resize_is_wholly_reserved_before_any_logical_or_physical_change ... ok
+TestDiskMemory::reserve_installed denied: provider=0x7647429b90 requested_bytes=4351 charged_bytes=8471 bookkeeping_bytes=24224 used_bytes=864172 next_used_bytes=872643 max_bytes=67108864 live_reservations=32 max_reservations=32 attempts=33 error=Kind(OutOfMemory)
+test spool::native_close_tests::native_close_unwind_retains_original_payload_and_never_retries_number ... ok
+test spool::native_close_tests::original_sync_error_retains_open_spool_without_claiming_native_drain ... ok
+test spool::native_close_tests::retained_spool_retires_actual_descriptor_before_releasing_its_charge ... ok
+
+thread 'spool::native_close_tests::sync_unwind_fences_owner_and_preserves_original_payload_without_native_entry' (23937810) panicked at crates/kasumi-store/src/spool_native_close_tests.rs:152:43:
+Box<dyn Any>
+test spool::native_close_tests::sync_unwind_fences_owner_and_preserves_original_payload_without_native_entry ... ok
+test spool::native_close_tests::uncertain_native_close_retains_one_attempt_and_fences_scratch_owner ... ok
+test scratch_table::tests::raw_batch_cancellation_fences_the_actual_owner_before_retirement_unwinds ... ok
+TestDiskMemory::reserve_installed denied: provider=0x76474294b0 requested_bytes=69680 charged_bytes=73800 bookkeeping_bytes=24224 used_bytes=843138 next_used_bytes=916938 max_bytes=67108864 live_reservations=32 max_reservations=32 attempts=54 error=Kind(OutOfMemory)
+TestDiskMemory::reserve_installed denied: provider=0x76474294b0 requested_bytes=6422 charged_bytes=10542 bookkeeping_bytes=24224 used_bytes=843138 next_used_bytes=853680 max_bytes=67108864 live_reservations=32 max_reservations=32 attempts=55 error=Kind(OutOfMemory)
+TestDiskMemory::reserve_installed denied: provider=0x76474294b0 requested_bytes=69680 charged_bytes=73800 bookkeeping_bytes=24224 used_bytes=864464 next_used_bytes=938264 max_bytes=67108864 live_reservations=32 max_reservations=32 attempts=83 error=Kind(OutOfMemory)
+TestDiskMemory::reserve_installed denied: provider=0x76474294b0 requested_bytes=6423 charged_bytes=10543 bookkeeping_bytes=24224 used_bytes=864464 next_used_bytes=875007 max_bytes=67108864 live_reservations=32 max_reservations=32 attempts=84 error=Kind(OutOfMemory)
+test spool::native_close_tests::unknown_native_close_keeps_charge_after_aggregate_owner_drop ... ok
+test scratch_table::tests::retained_typed_table_checks_the_current_native_owner_on_every_insert ... ok
+test spool::native_layout_tests::native_layout_authenticates_ciphertext_and_block_position ... ok
+test scratch_table::tests::failed_explicit_close_keeps_charge_and_drop_never_reenters_close ... ok
+test spool::native_layout_tests::prepared_native_layout_transfers_exact_buffers_and_claim_without_readmission ... ok
+test spool::native_layout_tests::native_layout_overwrite_truncate_and_regrow_preserves_prefix_and_zeroes_suffix ... ok
+test scratch_table::tests::independently_failed_live_batches_keep_each_real_table_and_shell_charge ... ok
+test scratch_table::tests::segmented_scratch_limits_aggregate_extents_before_mutation_and_reuses_drained_slots ... ok
+test scratch_table::tests::retained_batch_table_rejects_a_duplicate_committed_by_an_earlier_batch ... ok
+test scratch_table::tests::strict_create_rejects_a_non_empty_spool_instead_of_adopting_its_frames ... ok
+test spool::tests::corrupted_or_reordered_blocks_fail_authentication ... ok
+test spool::retained_spool::tests::group_root_and_data_files_are_independently_encrypted_anonymous_spools ... ok
+test scratch_table::tests::workspace_tests::scratch_preparation_capacity_refusal_has_no_private_effect_and_retries ... ok
+test spool::tests::unused_reservation_and_denied_growth_preserve_authenticated_physical_extent ... ok
+test spool::tests::encrypted_spool_seek_overwrite_and_bounds ... ok
+test spool::retained_spool::tests::file_key_and_each_buffer_retire_before_extent_credit_is_reusable ... ok
+test scratch_table::tests::workspace_tests::scratch_prepared_workspace_survives_capacity_pressure_after_prepare ... ok
+test scratch_table::tests::unpublished_batch_aborts_on_drop_and_preserves_duplicate_error ... ok
+test scratch_table::tests::batch_commit_retirement_keeps_failed_and_successful_native_outcomes_unknown ... ok
+test spool::native_layout_tests::native_layout_bounds_actual_crypto_reads_for_alternating_header_and_page ... ok
+test spool::retained_spool::tests::actual_final_sync_panic_reaches_database_with_same_payload_and_spool_still_present ... ok
+test spool::retained_spool::tests::original_sync_error_moves_once_to_database_while_spool_and_charge_stay_owned ... ok
+test scratch_table::tests::segmented_scratch_descriptor_ceiling_is_pre_admitted_and_does_not_open_on_denial ... ok
+test spool::tests::interleaved_record_appends_preserve_admission_and_authentication ... ok
+test scratch_table::tests::retained_batch_table_preserves_exact_byte_bound_and_abort_before_publication ... ok
+test scratch_table::tests::segmented_scratch_streams_rows_larger_than_its_explicit_cache ... ok
+
+test result: ok. 62 passed; 0 failed; 0 ignored; 0 measured; 659 filtered out; finished in 13.57s
+
+Runner: 139.96s; exit=0; matching=1547/1547

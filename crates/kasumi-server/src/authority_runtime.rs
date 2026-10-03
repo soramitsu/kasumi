@@ -327,8 +327,10 @@ impl AuthorityRuntime {
                 config.database_id,
                 persistent_disk.clone(),
                 scratch_disk.clone(),
+                persistent_disk.native_storage_config(),
             )?;
             pending.owned_nodes.push(node.clone());
+            node.prepare_cache_warming().await?;
             let audit_store = TenantStore::open_existing(
                 node.clone(),
                 kasumi_engine::SECURITY_TENANT.into(),
@@ -547,6 +549,11 @@ impl AuthorityRuntime {
 }
 
 impl crate::startup_owner::Runtime for AuthorityRuntime {
+    fn handoff(&mut self) -> Result<()> {
+        self.node.activate_cache_warming()?;
+        self.signer_verifier.activate_cache_warming()
+    }
+
     fn close(
         &mut self,
     ) -> std::pin::Pin<

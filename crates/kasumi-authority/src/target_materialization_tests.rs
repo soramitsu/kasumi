@@ -65,7 +65,10 @@ fn assert_target_close_outcomes(
     assert_eq!(failure.issues().len(), 1, "{failure:?}");
     assert_eq!(repeated.issues().len(), 1, "{repeated:?}");
     let issue = &failure.issues()[0];
-    assert!(Arc::ptr_eq(issue, &repeated.issues()[0]));
+    assert!(kasumi_types::drain::DrainIssueRef::ptr_eq(
+        issue,
+        &repeated.issues()[0]
+    ));
     assert_eq!(issue.component(), "OpenRaft runtime");
     assert_eq!(issue.instance(), 0);
     let runtime = issue
@@ -566,6 +569,10 @@ impl MaterialFixture {
             .await
         }
         .unwrap();
+        // Select the fixture's local-replica-only audit placement before replay,
+        // just as the production installer does for this target-purpose store.
+        kasumi_engine::test_utils::install_local_replica_audit_placement(stores.application())
+            .unwrap();
         (scope, stores, security)
     }
     async fn shutdown_target_node(&self, id: u64) {
@@ -906,6 +913,8 @@ struct InitialStartFixture {
 impl RunningTarget {
     async fn initialize(
         &self,
+        control: &SignedControlIntent,
+        signer: &TargetSigner,
     ) -> anyhow::Result<(
         kasumi_types::RecoveryPhaseRecord,
         kasumi_types::TargetRuntimeRequest,
@@ -938,6 +947,8 @@ impl RunningTarget {
         marker.input_sha256 = phase.input_sha256.clone();
         marker.begun_revision = phase.prepared_revision + 1;
         let lease = self.operation.invocation().gate().current()?;
+        let control =
+            ControlTrust::install(lease.commitment().root.clone())?.verify_intent(control)?;
         let kasumi_engine::InitialDispatchReservation::NewlyAccepted(candidate) =
             start.journal.reserve_initial_dispatch(
                 &lease.commitment().root,
@@ -951,7 +962,15 @@ impl RunningTarget {
         let permit = candidate
             .verify_initial_membership(self.id, LifecyclePhase::Initialize)?
             .bind_initialize(&start.journal, &self.operation, &self.owner)?;
-        self.owner.initialize(&self.operation, permit).await?;
+        let association = permit.prove(
+            &self.owner,
+            start.journal.clone(),
+            control,
+            phase.clone(),
+            &self.operation,
+        )?;
+        let signed = signer.sign_initialization_association(&association, &self.operation)?;
+        association.commit(&signed, &self.operation).await?;
         Ok((phase, request))
     }
 }
@@ -1497,7 +1516,10 @@ async fn initialize_association_reopens_and_requires_exact_start_and_custody_own
         .unwrap();
     let router = Arc::new(InProcessRouter::default());
     let mut targets = f.open_targets(&signed, &input, &router).await;
-    let (phase, request) = targets[0].initialize().await.unwrap();
+    let (phase, request) = targets[0]
+        .initialize(&signed, &f.signers[&targets[0].id])
+        .await
+        .unwrap();
     let identity = TargetInitialDispatchIdentity {
         operation_id: phase.operation_id,
         phase_id: phase.phase_id,
@@ -1672,7 +1694,10 @@ async fn three_actual_materializations_initialize_and_commit_completion_with_res
     let initialize = f.commit_phase(LifecyclePhase::Initialize, &input).await;
     let router = Arc::new(InProcessRouter::default());
     let targets = f.open_targets(&initialize, &input, &router).await;
-    targets[0].initialize().await.unwrap();
+    targets[0]
+        .initialize(&initialize, &f.signers[&targets[0].id])
+        .await
+        .unwrap();
     current_target(&targets).await;
     // Initialization cannot dispatch an ordinary Data command or Complete phase.
     assert!(
@@ -1769,7 +1794,10 @@ async fn exercise_target_activation(maintenance: bool) {
     let initialize = f.commit_phase(LifecyclePhase::Initialize, &input).await;
     let router = Arc::new(InProcessRouter::default());
     let targets = f.open_targets(&initialize, &input, &router).await;
-    targets[0].initialize().await.unwrap();
+    targets[0]
+        .initialize(&initialize, &f.signers[&targets[0].id])
+        .await
+        .unwrap();
     current_target(&targets).await;
     f.close_targets(targets, &router).await;
     let complete = f.commit_phase(LifecyclePhase::Complete, &input).await;
@@ -2167,7 +2195,10 @@ async fn expired_completion_with_missing_journal_recovers_only_exact_inspection_
     let initialize = f.commit_phase(LifecyclePhase::Initialize, &input).await;
     let router = Arc::new(InProcessRouter::default());
     let targets = f.open_targets(&initialize, &input, &router).await;
-    targets[0].initialize().await.unwrap();
+    targets[0]
+        .initialize(&initialize, &f.signers[&targets[0].id])
+        .await
+        .unwrap();
     current_target(&targets).await;
     f.close_targets(targets, &router).await;
     let complete = f
@@ -2237,7 +2268,12 @@ async fn expired_completion_with_missing_journal_recovers_only_exact_inspection_
     let index = current_target(&targets).await;
     let selected = &targets[index];
     let db = selected.owner.database();
-    assert!(selected.initialize().await.is_err());
+    assert!(
+        selected
+            .initialize(&inspection, &f.signers[&selected.id])
+            .await
+            .is_err()
+    );
     assert!(
         db.complete_target(&selected.operation, initial_complete(&input))
             .await
@@ -2858,7 +2894,7 @@ async fn target_file_creation_outcome_distinguishes_original_creation_from_stric
         repeated
             .issues()
             .iter()
-            .any(|again| Arc::ptr_eq(again, issue))
+            .any(|again| kasumi_types::drain::DrainIssueRef::ptr_eq(again, issue))
     );
     drop(node);
     f.issuer.close().await;

@@ -1,0 +1,98 @@
+   Compiling kasumi-store v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-store)
+   Compiling kasumi-query v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-query)
+   Compiling kasumi-raft v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-raft)
+   Compiling kasumi-engine v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-engine)
+warning: variant `Mutation` is never constructed
+  --> crates/kasumi-engine/src/security_audit_jobs.rs:26:5
+   |
+24 | enum JobEffect {
+   |      --------- variant in this enum
+25 |     Read,
+26 |     Mutation(&'static str),
+   |     ^^^^^^^^
+   |
+   = note: `JobEffect` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: struct `ReadPause` is never constructed
+  --> crates/kasumi-engine/src/security_audit_jobs.rs:57:19
+   |
+57 | pub(super) struct ReadPause {
+   |                   ^^^^^^^^^
+
+warning: method `run_mutation` is never used
+   --> crates/kasumi-engine/src/security_audit_jobs.rs:120:25
+    |
+ 62 | impl SecurityAudit {
+    | ------------------ method in this implementation
+...
+120 |     pub(super) async fn run_mutation<T, F, R>(&self, component: &'static str, run: R) -> Result<T>
+    |                         ^^^^^^^^^^^^
+
+warning: `kasumi-engine` (lib) generated 3 warnings
+warning: field `panic` is never read
+  --> crates/kasumi-engine/src/security_audit_jobs.rs:52:9
+   |
+48 | pub(super) struct RecordFault {
+   |                   ----------- field in this struct
+...
+52 |     pub panic: bool,
+   |         ^^^^^
+
+warning: `kasumi-engine` (lib test) generated 4 warnings (3 duplicates)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4m 14s
+     Running unittests src/lib.rs (target/disk-backed-cache/debug/deps/kasumi_engine-3656345440c90b6a)
+
+running 6 tests
+test document_source::tests::headers_merge_live_archive_and_hydrated_rows_once_in_exclusive_order ... FAILED
+test document_source::tests::identity_retains_actual_generation_collection_and_exact_indexes ... FAILED
+test document_source::tests::absent_records_require_presence_only_when_a_version_is_expected ... FAILED
+test document_source::tests::cancellation_is_checked_before_lending_and_after_the_callback ... FAILED
+test document_source::tests::corrupt_ids_versions_and_disagreeing_hydration_never_reach_the_loan ... FAILED
+test document_source::tests::later_overlay_cannot_change_the_captured_records_or_indexes ... FAILED
+
+failures:
+
+---- document_source::tests::headers_merge_live_archive_and_hydrated_rows_once_in_exclusive_order stdout ----
+
+thread 'document_source::tests::headers_merge_live_archive_and_hydrated_rows_once_in_exclusive_order' (6599614) panicked at crates/kasumi-engine/src/document_source_tests.rs:39:6:
+called `Result::unwrap()` on an `Err` value: Error { code: InvalidArgument, message: "tenant needs an administrator" }
+
+---- document_source::tests::identity_retains_actual_generation_collection_and_exact_indexes stdout ----
+
+thread 'document_source::tests::identity_retains_actual_generation_collection_and_exact_indexes' (6599615) panicked at crates/kasumi-engine/src/document_source_tests.rs:39:6:
+called `Result::unwrap()` on an `Err` value: Error { code: InvalidArgument, message: "tenant needs an administrator" }
+
+---- document_source::tests::absent_records_require_presence_only_when_a_version_is_expected stdout ----
+
+thread 'document_source::tests::absent_records_require_presence_only_when_a_version_is_expected' (6599611) panicked at crates/kasumi-engine/src/document_source_tests.rs:39:6:
+called `Result::unwrap()` on an `Err` value: Error { code: InvalidArgument, message: "tenant needs an administrator" }
+
+---- document_source::tests::cancellation_is_checked_before_lending_and_after_the_callback stdout ----
+
+thread 'document_source::tests::cancellation_is_checked_before_lending_and_after_the_callback' (6599612) panicked at crates/kasumi-engine/src/document_source_tests.rs:39:6:
+called `Result::unwrap()` on an `Err` value: Error { code: InvalidArgument, message: "tenant needs an administrator" }
+
+---- document_source::tests::corrupt_ids_versions_and_disagreeing_hydration_never_reach_the_loan stdout ----
+
+thread 'document_source::tests::corrupt_ids_versions_and_disagreeing_hydration_never_reach_the_loan' (6599613) panicked at crates/kasumi-engine/src/document_source_tests.rs:39:6:
+called `Result::unwrap()` on an `Err` value: Error { code: InvalidArgument, message: "tenant needs an administrator" }
+
+---- document_source::tests::later_overlay_cannot_change_the_captured_records_or_indexes stdout ----
+
+thread 'document_source::tests::later_overlay_cannot_change_the_captured_records_or_indexes' (6599616) panicked at crates/kasumi-engine/src/document_source_tests.rs:39:6:
+called `Result::unwrap()` on an `Err` value: Error { code: InvalidArgument, message: "tenant needs an administrator" }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    document_source::tests::absent_records_require_presence_only_when_a_version_is_expected
+    document_source::tests::cancellation_is_checked_before_lending_and_after_the_callback
+    document_source::tests::corrupt_ids_versions_and_disagreeing_hydration_never_reach_the_loan
+    document_source::tests::headers_merge_live_archive_and_hydrated_rows_once_in_exclusive_order
+    document_source::tests::identity_retains_actual_generation_collection_and_exact_indexes
+    document_source::tests::later_overlay_cannot_change_the_captured_records_or_indexes
+
+test result: FAILED. 0 passed; 6 failed; 0 ignored; 0 measured; 350 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p kasumi-engine --lib`

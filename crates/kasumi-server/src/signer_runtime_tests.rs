@@ -3,6 +3,76 @@ use kasumi_store::FileKeyProvider;
 use std::future::Future;
 use uuid::Uuid;
 
+fn group_image(path: &Path) -> Result<BTreeMap<std::ffi::OsString, Vec<u8>>> {
+    std::fs::read_dir(path)?
+        .map(|entry| {
+            let entry = entry?;
+            ensure!(
+                entry.file_type()?.is_file(),
+                "fixture group has a foreign entry"
+            );
+            Ok((entry.file_name(), std::fs::read(entry.path())?))
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn runtime_verifier_rejects_legacy_file_and_symlink_before_worker_admission() {
+    let fixture = Fixture::new();
+    let persistent = fixture.persistent().unwrap();
+    let scratch = fixture.scratch().unwrap();
+    let admission = fixture.admission().unwrap();
+    let before = admission.snapshot().reserved_bytes;
+    let path = &fixture.input.verifier.database_path;
+    private_files::create(path, b"obsolete single-file verifier").unwrap();
+    let domain = fixture.manifest.signing_domain(0).unwrap();
+    let result = fixture
+        .input
+        .verifier
+        .open(
+            BTreeMap::from([(domain.digest().unwrap(), domain.clone())]),
+            Arc::new(file_secret),
+            persistent.clone(),
+            scratch.clone(),
+            admission.clone(),
+        )
+        .await;
+    assert!(result.is_err());
+    assert_eq!(
+        std::fs::read(path).unwrap(),
+        b"obsolete single-file verifier"
+    );
+    assert_eq!(admission.snapshot().reserved_bytes, before);
+    std::fs::remove_file(path).unwrap();
+    let actual = fixture._directory.path().join("uninstalled-group");
+    private_files::create_directory(&actual).unwrap();
+    std::os::unix::fs::symlink(&actual, path).unwrap();
+    let result = fixture
+        .input
+        .verifier
+        .open(
+            BTreeMap::from([(domain.digest().unwrap(), domain)]),
+            Arc::new(file_secret),
+            persistent.clone(),
+            scratch,
+            admission.clone(),
+        )
+        .await;
+    assert!(result.is_err());
+    assert!(
+        std::fs::symlink_metadata(path)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    assert_eq!(admission.snapshot().reserved_bytes, before);
+    assert_eq!(
+        persistent.snapshot().phase,
+        kasumi_store::NodeDiskPhase::Open
+    );
+    std::fs::remove_file(path).unwrap();
+}
+
 #[tokio::test]
 async fn complete_domain_worker_budget_is_reserved_before_verifier_storage_open() {
     let fixture = Fixture::with_policy(kasumi_engine::admission::AdmissionConfig {
@@ -10,7 +80,7 @@ async fn complete_domain_worker_budget_is_reserved_before_verifier_storage_open(
         ..Default::default()
     });
     fixture.initialize().await.unwrap();
-    let before = std::fs::read(&fixture.input.verifier.database_path).unwrap();
+    let before = group_image(&fixture.input.verifier.database_path).unwrap();
     // Reuse the exact installed disk/core identity. A real resident reservation
     // leaves the original 1024-byte rejection boundary without spending the
     // only operation slot or substituting another governor.
@@ -45,7 +115,7 @@ async fn complete_domain_worker_budget_is_reserved_before_verifier_storage_open(
             .is_err()
     );
     assert_eq!(
-        std::fs::read(&fixture.input.verifier.database_path).unwrap(),
+        group_image(&fixture.input.verifier.database_path).unwrap(),
         before
     );
     assert_eq!(cap - admission.snapshot().reserved_bytes, 1024);
@@ -207,6 +277,7 @@ impl Fixture {
             directory: directory.path().join("scratch"),
             max_bytes: 64 << 30,
             min_free_bytes: 256 << 20,
+            native_cache_bytes: 8 << 20,
         };
         let storage = crate::runtime_memory::RuntimeStorage::isolated_fixture(
             policy,
@@ -828,12 +899,19 @@ async fn panicked_verifier_initialization_drains_each_acquired_encrypted_owner()
                 .is_some(),
             "{phase}: {error:#}"
         );
-        let node = NodeStore::open_existing(
-            &fixture.input.verifier.database_path,
-            id,
-            fixture.persistent().unwrap(),
-            fixture.scratch()?,
-        )?;
+        let node = {
+            let native_path = &fixture.input.verifier.database_path;
+            let native_id = id;
+            let native_disk = fixture.persistent().unwrap();
+            let native_scratch_disk = fixture.scratch()?;
+            NodeStore::open_existing(
+                native_path,
+                native_id,
+                native_disk.clone(),
+                native_scratch_disk,
+                native_disk.native_storage_config(),
+            )
+        }?;
         if phase != "verifier-storage-node" {
             let store = TenantStore::open_existing(
                 node.clone(),
@@ -862,12 +940,9 @@ async fn panicked_verifier_initialization_drains_each_acquired_encrypted_owner()
         node.drain_initializers().await?;
         node.shutdown().await?;
         drop(node);
-        let before = std::fs::read(&fixture.input.verifier.database_path)?;
+        let before = group_image(&fixture.input.verifier.database_path)?;
         assert!(fixture.initialize().await.is_err());
-        assert_eq!(
-            std::fs::read(&fixture.input.verifier.database_path)?,
-            before
-        );
+        assert_eq!(group_image(&fixture.input.verifier.database_path)?, before);
         if phase == "verifier-installation-complete" {
             let installed = fixture.open().await?;
             fixture.operational.open(&installed)?.check()?;
@@ -909,11 +984,16 @@ async fn cancelled_verifier_initialization_retains_physical_owner_and_unclaimed_
         tokio::time::timeout(std::time::Duration::from_secs(10), pause.entered()).await?;
         drop(initialize);
         let reopen = || {
+            let native_path = &fixture.input.verifier.database_path;
+            let native_id = id;
+            let native_disk = fixture.persistent().unwrap();
+            let native_scratch_disk = fixture.scratch()?;
             NodeStore::open_existing(
-                &fixture.input.verifier.database_path,
-                id,
-                fixture.persistent().unwrap(),
-                fixture.scratch()?,
+                native_path,
+                native_id,
+                native_disk.clone(),
+                native_scratch_disk,
+                native_disk.native_storage_config(),
             )
         };
         assert!(

@@ -1,0 +1,69 @@
+Command: cargo clippy --workspace --all-features --all-targets --locked --offline --no-deps -- -D clippy::all
+CARGO_TARGET_DIR=target/disk-backed-cache
+    Checking kasumi-clock v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-clock)
+    Checking kasumi-transport v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-transport)
+    Checking kasumi-kv v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-kv)
+   Compiling kasumi-client v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-client)
+warning: method `matches_response_id` is never used
+   --> vendor/rmcp-3.2.0/src/model.rs:251:19
+    |
+236 | impl NumberOrString {
+    | ------------------- method in this implementation
+...
+251 |     pub(crate) fn matches_response_id(&self, response_id: &Self) -> bool {
+    |                   ^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `set_client_request_metadata` is never used
+    --> vendor/rmcp-3.2.0/src/service.rs:1032:19
+     |
+ 806 | impl<R: ServiceRole> Peer<R> {
+     | ---------------------------- method in this implementation
+...
+1032 |     pub(crate) fn set_client_request_metadata(&self, metadata: ClientRequestMetadata) {
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: method `is_authorization_required` is never used
+   --> vendor/rmcp-3.2.0/src/transport.rs:275:19
+    |
+249 | impl DynamicTransportError {
+    | -------------------------- method in this implementation
+...
+275 |     pub(crate) fn is_authorization_required(&self) -> bool {
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: `rmcp` (lib) generated 3 warnings
+    Checking kasumi-types v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-types)
+    Checking kasumi-serving v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-serving)
+    Checking kasumi-query v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-query)
+    Checking kasumi-store v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-store)
+    Checking kasumi-private-evidence v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-private-evidence)
+    Checking kasumi-taira-journal v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-taira-journal)
+    Checking kasumi-raft v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-raft)
+error: this `if` statement can be collapsed
+   --> crates/kasumi-raft/src/selected_application/allocation.rs:333:9
+    |
+333 | /         if matches!(
+334 | |             byte,
+335 | |             b'"' | b'{' | b'[' | b'}' | b']' | b',' | b':' | b' ' | b'\n' | b'\r' | b'\t'
+336 | |         ) {
+...   |
+340 | |         }
+    | |_________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#collapsible_if
+    = note: `-D clippy::collapsible-if` implied by `-D clippy::all`
+    = help: to override `-D clippy::all` add `#[allow(clippy::collapsible_if)]`
+help: collapse nested if block
+    |
+336 ~         )
+337 ~             && let Some(start) = scalar.take() {
+338 |                 quote_scalar(&mut shape, &bytes[start..index])?;
+339 ~             }
+    |
+
+error: could not compile `kasumi-raft` (lib) due to 1 previous error
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `kasumi-raft` (lib test) due to 1 previous error
+Runner: 150.79s; exit=101; matching=776/776

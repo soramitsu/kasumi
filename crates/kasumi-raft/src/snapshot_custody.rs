@@ -542,8 +542,16 @@ pub(crate) fn covers_seed(store: &TenantStore, record: &RetainedSeed) -> Result<
 /// log store's committed cursor so a crash before Raft's log purge does not
 /// fabricate physical log entries or change the log-store recovery contract.
 pub(crate) fn committed_snapshot(store: &TenantStore) -> Result<Option<crate::LogId<u64>>> {
-    let Some(coverage) = crate::storage::load_snapshot_coverage(store)? else {
-        return Ok(None);
-    };
-    Ok(coverage.meta.last_log_id)
+    committed_snapshot_at(&mut &*store)
 }
+
+pub(crate) fn committed_snapshot_at(
+    reads: &mut impl crate::control::CustodyRead,
+) -> Result<Option<crate::LogId<u64>>> {
+    Ok(crate::storage::load_snapshot_coverage_at(reads)?
+        .and_then(|coverage| coverage.meta.last_log_id))
+}
+
+#[cfg(test)]
+#[path = "snapshot_projection_tests.rs"]
+pub(crate) mod projection_tests;

@@ -1,7 +1,11 @@
 use super::*;
+use anyhow::Context as _;
 use kasumi_raft::InProcessRouter;
 use kasumi_store::{NodeStore, test_utils::LocalKeyProvider};
 use std::time::Duration;
+
+#[path = "bootstrap_replica_budget.rs"]
+mod replica_budget;
 
 const NODE_STORE_ID: uuid::Uuid = uuid::Uuid::from_u128(0xa1f9_93e5_2727_480a_9e7c_6e39_eb51_5f01);
 
@@ -14,22 +18,18 @@ struct Replica {
 }
 impl Replica {
     async fn new() -> anyhow::Result<Self> {
+        Self::with_config(replica_budget::planned_config).await
+    }
+    async fn with_config(
+        config: impl FnOnce(
+            &kasumi_store::NodeDiskConfig,
+            &kasumi_store::ScratchDiskConfig,
+        ) -> anyhow::Result<crate::admission::AdmissionConfig>,
+    ) -> anyhow::Result<Self> {
         let directory = kasumi_store::test_utils::private_tempdir()?;
         let (persistent_config, scratch_config) =
             crate::test_utils::fixture_disk_configs(directory.path())?;
-        // Keep the 128 MiB ordinary margin available alongside the installed
-        // security audit and maintenance owners. Add the physical metadata.
-        let config = crate::admission::AdmissionConfig {
-            max_inflight_bytes: Some(
-                (384_u64 << 20)
-                    .checked_add(crate::test_utils::isolated_disk_metadata_bytes(
-                        &persistent_config,
-                        &scratch_config,
-                    )?)
-                    .ok_or_else(|| anyhow::anyhow!("fixture metadata budget overflow"))?,
-            ),
-            ..Default::default()
-        };
+        let config = config(&persistent_config, &scratch_config)?;
         let admission = crate::admission::NodeAdmission::with_fixed_memory(config, 2 << 30, 0)?;
         let storage = crate::test_utils::FixtureStorage::with_admission(
             &persistent_config,
@@ -205,8 +205,8 @@ impl Replica {
     }
 }
 
-fn manifest_for(image: &SnapshotImage) -> Manifest {
-    Manifest {
+fn manifest_for(image: &SnapshotImage) -> ApplicationBootstrapManifest {
+    ApplicationBootstrapManifest {
         format: 2,
         bytes: image.len(),
         chunks: image.len().div_ceil(CHUNK as u64),
@@ -932,7 +932,10 @@ async fn leader(nodes: &BTreeMap<u64, Arc<Database>>) -> anyhow::Result<u64> {
     Ok(tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             for (&id, node) in nodes {
-                if node.raft_group().raft().metrics().borrow().current_leader == Some(id)
+                // Release the metrics read lock before awaiting a barrier;
+                // the Raft worker may need to publish metrics to make progress.
+                let current_leader = node.raft_group().raft().metrics().borrow().current_leader;
+                if current_leader == Some(id)
                     && matches!(
                         tokio::time::timeout(
                             Duration::from_millis(200),
@@ -948,7 +951,21 @@ async fn leader(nodes: &BTreeMap<u64, Arc<Database>>) -> anyhow::Result<u64> {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     })
-    .await?)
+    .await
+    .with_context(|| {
+        let observations: Vec<_> = nodes
+            .iter()
+            .map(|(id, node)| {
+                let metrics = node.raft_group().raft().metrics().borrow().clone();
+                let retained = crate::test_utils::retained_apply_diagnostic(node.raft_group());
+                format!(
+                    "node {id}: running={:?}; {metrics}; retained_apply={retained:?}",
+                    metrics.running_state
+                )
+            })
+            .collect();
+        format!("linearizable leader barrier did not complete; {observations:?}")
+    })?)
 }
 
 #[tokio::test]
@@ -988,13 +1005,55 @@ async fn initialize_replicated_keeps_custody_binding_before_membership() -> anyh
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn existing_replicas_replay_committed_state_and_membership_after_full_close()
 -> anyhow::Result<()> {
+    use anyhow::Context as _;
+
+    // Observe actual vote collectors and engine decisions across runtime tasks.
+    // Keep raw command/append payload tracing outside this fixed diagnostic set.
+    if std::env::var_os("KASUMI_TEST_REPLICA_TRACE").as_deref() == Some(std::ffi::OsStr::new("1")) {
+        use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+        tracing_subscriber::registry()
+            .with(tracing_subscriber::filter::filter_fn(|metadata| {
+                let target = metadata.target();
+                (target == "openraft::core::raft_core" && *metadata.level() <= tracing::Level::WARN)
+                    || (target == "openraft::engine::engine_impl"
+                        && *metadata.level() <= tracing::Level::INFO)
+                    || (metadata.is_span()
+                        && (target == "openraft::core::raft_core"
+                            || target == "openraft::engine::engine_impl")
+                        && matches!(
+                            metadata.name(),
+                            "spawn_parallel_vote_requests"
+                                | "send_vote_req"
+                                | "vote_round_collector"
+                                | "handle_vote_request"
+                                | "elect"
+                                | "handle_vote_req"
+                                | "handle_vote_resp"
+                        ))
+            }))
+            .with(
+                tracing_subscriber::fmt::layer()
+                    .with_ansi(false)
+                    .without_time()
+                    .with_span_events(
+                        tracing_subscriber::fmt::format::FmtSpan::NEW
+                            | tracing_subscriber::fmt::format::FmtSpan::CLOSE,
+                    )
+                    .with_writer(std::io::stderr),
+            )
+            .try_init()
+            .expect("replica vote diagnostics require the test's sole global subscriber");
+    }
+
     let installed = bootstrap();
     let group = format!("replica/{}", installed.incarnation);
     let router = Arc::new(InProcessRouter::default());
     let mut fixtures = BTreeMap::new();
     let mut nodes = BTreeMap::new();
     for id in 1..=4 {
-        let fixture = Replica::new().await?;
+        let fixture = Replica::new()
+            .await
+            .with_context(|| format!("create initial replica {id} fixture"))?;
         let database = fixtures::open_fixture_replicated(
             id,
             fixture.stores.clone(),
@@ -1003,13 +1062,18 @@ async fn existing_replicas_replay_committed_state_and_membership_after_full_clos
             raft_config(),
             fixture.audit.clone(),
         )
-        .await?;
+        .await
+        .with_context(|| format!("open initial replica {id}"))?;
         router.register(group.clone(), id, database.raft_group().raft().clone());
         nodes.insert(id, database);
         fixtures.insert(id, fixture);
     }
-    initialize_replicated(&nodes[&1], &installed).await?;
-    let first = leader(&nodes).await?;
+    initialize_replicated(&nodes[&1], &installed)
+        .await
+        .context("initialize original replicated membership")?;
+    let first = leader(&nodes)
+        .await
+        .context("elect initial leader with a successful linearizable barrier")?;
     nodes[&first]
         .administer(
             RequestContext {
@@ -1028,12 +1092,19 @@ async fn existing_replicas_replay_committed_state_and_membership_after_full_clos
                 strict_read_audit: false,
             }),
         )
-        .await?;
-    let revision = nodes[&first].engine().generation()?.state.revision;
+        .await
+        .context("commit retained collection on initial leader")?;
+    let collection_generation = nodes[&first].engine().generation()?;
+    let collection_revision = collection_generation.state.revision;
+    let revision_base = collection_generation.state.revision_base;
+    let retained_collection =
+        serde_json::to_vec(&collection_generation.state.collections["retained"])?;
+    drop(collection_generation);
     nodes[&first]
         .raft_group()
         .add_learner(4, BasicNode::new("relocated-4"))
-        .await?;
+        .await
+        .context("add relocated replica 4 as learner")?;
     // Keep the current leader in the replacement voter set, avoiding an
     // intentionally ambiguous leader-removal response in this reopen fixture.
     let removed = (1..=3).find(|id| *id != first).unwrap();
@@ -1041,14 +1112,34 @@ async fn existing_replicas_replay_committed_state_and_membership_after_full_clos
     nodes[&first]
         .raft_group()
         .change_membership(voters.clone())
-        .await?;
+        .await
+        .context("commit replacement voter membership")?;
+    let membership_log = (*nodes[&first]
+        .raft_group()
+        .raft()
+        .metrics()
+        .borrow()
+        .membership_config
+        .log_id())
+    .context("committed replacement membership has no log position")?;
+    let revision = revision_base
+        .checked_add(membership_log.index)
+        .context("replacement membership revision overflow")?;
+    assert!(revision > collection_revision);
+    // Blank and membership entries publish their own exact Engine revision.
+    // The collection remains unchanged while the metadata cursor advances.
     tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             if voters.iter().all(|id| {
                 let node = &nodes[id];
                 node.engine()
                     .generation()
-                    .is_ok_and(|generation| generation.state.revision == revision)
+                    .is_ok_and(|generation| {
+                        generation.state.revision == revision
+                            && generation.state.collections.get("retained").is_some_and(|collection| {
+                                serde_json::to_vec(collection).is_ok_and(|bytes| bytes == retained_collection)
+                            })
+                    })
                     && node
                         .raft_group()
                         .raft()
@@ -1065,10 +1156,43 @@ async fn existing_replicas_replay_committed_state_and_membership_after_full_clos
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     })
-    .await?;
+    .await
+    .with_context(|| {
+        let observations = nodes
+            .iter()
+            .map(|(id, node)| {
+                let metrics = node.raft_group().raft().metrics().borrow().clone();
+                let retained = crate::test_utils::retained_apply_diagnostic(node.raft_group());
+                let actual_revision = node.engine().generation().map(|g| g.state.revision);
+                format!(
+                    "node {id}: running={:?}; {metrics}; engine_revision={actual_revision:?}; expected_revision={revision}; retained_apply={retained:?}",
+                    metrics.running_state
+                )
+            })
+            .collect::<Vec<_>>();
+        format!(
+            "wait for replacement voters to apply collection revision and membership; observations={observations:?}"
+        )
+    })?;
+    let mut closed_positions = BTreeMap::new();
     for (&id, node) in &nodes {
         router.unregister(&group, id);
-        node.shutdown().await?;
+        node.shutdown()
+            .await
+            .with_context(|| format!("shut down original replica {id}"))?;
+        // A still-running peer can commit a later blank entry during sequential
+        // shutdown. Compare recovery with each actual final applied position.
+        let position = node
+            .raft_group()
+            .raft()
+            .metrics()
+            .borrow()
+            .last_applied
+            .context("closed replica has no applied position")?;
+        if voters.contains(&id) {
+            assert!(position >= membership_log);
+        }
+        closed_positions.insert(id, position);
     }
     nodes.clear();
     let mut directories = BTreeMap::new();
@@ -1081,7 +1205,9 @@ async fn existing_replicas_replay_committed_state_and_membership_after_full_clos
             drop(directory);
             continue;
         }
-        let fixture = Replica::existing(directory).await?;
+        let fixture = Replica::existing(directory)
+            .await
+            .with_context(|| format!("reopen replica {id} storage fixture"))?;
         let pinned = fixture.stores.read_view()?;
         let installed_identity = Some((id, group.clone()));
         assert_eq!(
@@ -1120,7 +1246,8 @@ async fn existing_replicas_replay_committed_state_and_membership_after_full_clos
             raft_config(),
             fixture.audit.clone(),
         )
-        .await?;
+        .await
+        .with_context(|| format!("open existing replicated database {id}"))?;
         assert_eq!(
             serde_json::to_vec(&opened.bootstrap)?,
             serde_json::to_vec(&installed)?
@@ -1135,12 +1262,23 @@ async fn existing_replicas_replay_committed_state_and_membership_after_full_clos
         let database = opened.database;
         assert_eq!(database.raft_group().raft().metrics().borrow().id, id);
         // This is a no-op for recovered membership, even at an original voter.
-        initialize_replicated(&database, &opened.bootstrap).await?;
+        initialize_replicated(&database, &opened.bootstrap)
+            .await
+            .with_context(|| format!("verify recovered replica {id} initialization is a no-op"))?;
         let generation = database.engine().generation()?;
         assert_eq!(generation.state.incarnation, installed.incarnation);
-        assert_eq!(generation.state.revision, revision);
-        assert!(generation.state.collections.contains_key("retained"));
+        assert_eq!(
+            generation.state.revision,
+            revision_base
+                .checked_add(closed_positions[&id].index)
+                .context("closed replica revision overflow")?
+        );
+        assert_eq!(
+            serde_json::to_vec(&generation.state.collections["retained"])?,
+            retained_collection
+        );
         let metrics = database.raft_group().raft().metrics().borrow().clone();
+        assert_eq!(metrics.last_applied, Some(closed_positions[&id]));
         assert_eq!(
             metrics
                 .membership_config
@@ -1162,14 +1300,39 @@ async fn existing_replicas_replay_committed_state_and_membership_after_full_clos
         nodes.insert(id, database);
         reopened.insert(id, fixture);
     }
-    leader(&nodes).await?;
+    leader(&nodes)
+        .await
+        .context("elect reopened leader with a successful linearizable barrier")?;
     for (&id, node) in &nodes {
         router.unregister(&group, id);
-        node.shutdown().await?;
+        node.shutdown()
+            .await
+            .with_context(|| format!("shut down reopened replica {id}"))?;
     }
     nodes.clear();
     for (_, fixture) in reopened {
         drop(fixture.close().await);
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn legacy_replica_total_refuses_maintenance_without_consuming_existing_owners()
+-> anyhow::Result<()> {
+    let fixture = Replica::with_config(replica_budget::legacy_invalid_config).await?;
+    let quiescent = fixture.audit.quiescent_jobs_for_test().await;
+    let before = fixture.storage.admission.snapshot();
+    let error = crate::audit_maintenance::NodeAuditMaintenance::install(&fixture.storage.admission)
+        .err()
+        .expect("legacy total has no room for constructor bookkeeping beyond its four floors");
+    assert_eq!(error.code, ErrorCode::ResourceExhausted);
+    assert!(error.message.contains("maintenance headroom unavailable"));
+    let after = fixture.storage.admission.snapshot();
+    assert_eq!(after.reserved_bytes, before.reserved_bytes);
+    assert_eq!(after.live_reservations, before.live_reservations);
+    // Refusal dropped only its uninstalled escrow; the real prior security
+    // audit and physical stores still complete their normal close paths.
+    drop(quiescent);
+    drop(fixture.close().await);
     Ok(())
 }

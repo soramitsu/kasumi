@@ -92,7 +92,7 @@ fn permits_transfer_exactly_once_without_charging_extent_twice() {
         .admit_namespace(&requests(), DiskWork::Foreground)
         .unwrap();
     let promised = 3 * config.directory_policy.extent_bytes
-        + 2 * super::super::rounded(4096, disk.unit).unwrap();
+        + 2 * super::super::file_ceiling(4096, disk.unit, config.file_allocation_policy).unwrap();
     assert_eq!(
         disk.snapshot().charged_bytes,
         before.charged_bytes + promised

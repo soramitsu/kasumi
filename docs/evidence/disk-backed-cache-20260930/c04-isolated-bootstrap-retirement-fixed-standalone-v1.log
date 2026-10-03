@@ -1,0 +1,10 @@
+Command: /Users/takemiyamakoto/dev/kasumi/target/disk-backed-cache/debug/deps/kasumi_engine-707e7a92ed2be845 --exact application_sources::tests::selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_identity --nocapture
+ISOLATED_SOURCE=/tmp/kasumi-source-cohort-validation-v1
+CARGO_TARGET_DIR=/Users/takemiyamakoto/dev/kasumi/target/disk-backed-cache
+
+running 1 test
+test application_sources::tests::selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_identity ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 728 filtered out; finished in 8.51s
+
+Runner: 8.54s; exit=0; matching=1643/1643

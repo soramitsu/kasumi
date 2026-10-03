@@ -196,6 +196,7 @@ fn activate(state: &mut TenantState, request: &SchemaChangeSet) -> Result<()> {
             ));
         }
         let collection = prepare_collection(
+            state,
             current,
             definition,
             matches!(change, SchemaChange::Create { .. }),
@@ -213,6 +214,7 @@ fn activate(state: &mut TenantState, request: &SchemaChangeSet) -> Result<()> {
 /// Shared semantics for explicit single-collection administration and atomic
 /// application activation. Never change document versions or data epochs.
 pub(crate) fn prepare_collection(
+    state: &TenantState,
     current: Option<&CollectionState>,
     definition: &CollectionDefinition,
     create: bool,
@@ -258,7 +260,6 @@ pub(crate) fn prepare_collection(
     let documents = current
         .map(|collection| collection.documents.clone())
         .unwrap_or_default();
-    validate_collection(definition, &documents)?;
     let collection = CollectionState {
         definition: definition.clone(),
         data_epoch: current.map_or(0, |collection| collection.data_epoch),
@@ -266,7 +267,9 @@ pub(crate) fn prepare_collection(
         archived_documents: Default::default(),
         archived_document_bytes: 0,
     };
-    check_unique(&collection)?;
+    let source = crate::index_source::StateCollection::new(state, &definition.name, &collection);
+    validate_collection(&source).map_err(kasumi_query::ReadFailure::into_query_error)?;
+    check_unique(&source).map_err(kasumi_query::ReadFailure::into_query_error)?;
     Ok(collection)
 }
 

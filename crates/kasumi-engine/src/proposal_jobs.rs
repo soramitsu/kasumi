@@ -1,7 +1,7 @@
 //! Exact proposal children outlive cancelled callers under process-local custody.
 //! No join/reaper task exists: callers, subsequent admission and typed drain
 //! observe the original BackgroundWork handle directly.
-use super::{Command, ProposalWork, Reservation, WorkRegistration};
+use super::{ProposalWork, Reservation, WorkRegistration, proposal_input::ProposalCommand};
 use crate::admission::NodeAdmission;
 use kasumi_serving::{BackgroundWork, BackgroundWorkBudget};
 use kasumi_types::{Error, ErrorCode, Result, drain::*};
@@ -121,7 +121,7 @@ impl Jobs {
     pub(super) fn start(
         &self,
         mut work: ProposalWork,
-        command: Command,
+        command: ProposalCommand,
         max_bytes: usize,
     ) -> Result<Call<Response>> {
         self.start_task(Box::pin(async move {

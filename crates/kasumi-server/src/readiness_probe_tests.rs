@@ -116,7 +116,10 @@ async fn cancelled_probe_drain_retains_original_future_charge_and_typed_failure(
     ));
     assert_eq!(admission.snapshot().reserved_bytes, bookkeeping);
     let repeated = slot.drain_after_group_shutdown().await.unwrap_err();
-    assert!(Arc::ptr_eq(issue, &repeated.issues()[0]));
+    assert!(kasumi_types::drain::DrainIssueRef::ptr_eq(
+        issue,
+        &repeated.issues()[0]
+    ));
 }
 
 #[tokio::test]
@@ -148,5 +151,8 @@ async fn panicked_probe_keeps_original_payload_and_charge_until_core_shutdown() 
     assert_eq!(admission.snapshot().reserved_bytes, bookkeeping);
     assert!(weak.upgrade().is_some());
     let repeated = slot.drain_after_group_shutdown().await.unwrap_err();
-    assert!(Arc::ptr_eq(&failure.issues()[0], &repeated.issues()[0]));
+    assert!(kasumi_types::drain::DrainIssueRef::ptr_eq(
+        &failure.issues()[0],
+        &repeated.issues()[0]
+    ));
 }

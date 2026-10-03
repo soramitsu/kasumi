@@ -399,8 +399,11 @@ pub(super) async fn exercise(f: Fixture<'_>) {
         planned_digest
     );
     request.dispatch_configuration_sha256 = frozen_digest;
-    let mut runtime =
-        crate::runtime::example_config(kasumi_store::DirectoryPolicy::fixture()).unwrap();
+    let mut runtime = crate::runtime::example_config(
+        kasumi_store::DirectoryPolicy::fixture(),
+        kasumi_store::FileAllocationPolicy::fixture(),
+    )
+    .unwrap();
     runtime.control.lifecycle = Some(crate::lifecycle_runtime::LifecycleRuntimeConfig {
         command_id: Uuid::new_v4(),
         installation: f.installation.clone(),

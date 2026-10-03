@@ -1,0 +1,20 @@
+Executable SHA256: 7e109b65360fe05d06c67dafbf3640f42353fbe451c21a07fc074a5c15e203d9
+Build source pins: c04-native-workspace-engine-and-operational-regressions-selected.sha256
+Command: /Users/takemiyamakoto/dev/kasumi/target/disk-backed-cache/debug/deps/kasumi_engine-44db468831cfc59f bootstrap::existing_replicated_tests::existing_replicas_replay_committed_state_and_membership_after_full_close --exact --nocapture
+No Cargo rebuild; this is not current-source qualification.
+
+running 1 test
+Error: wait for replacement voters to apply collection revision and membership; observations=["node 1: running=Ok(()); Metrics{id:1, Candidate, term:43, vote:T43-N1:uncommitted, last_log:5, last_applied:T3-N1-5, leader:None(since_last_ack:None ms), membership:{log_id:T3-N1-5, {voters:[{1:BasicNode { addr: \"replica-1\" },3:BasicNode { addr: \"replica-3\" },4:BasicNode { addr: \"relocated-4\" }}], learners:[]}}, snapshot:None, purged:None, replication:{}}; retained_apply=Ok(None)", "node 2: running=Ok(()); Metrics{id:2, Candidate, term:41, vote:T41-N2:uncommitted, last_log:4, last_applied:T3-N1-4, leader:None(since_last_ack:None ms), membership:{log_id:T3-N1-4, {voters:[{1:BasicNode { addr: \"replica-1\" },2:BasicNode { addr: \"replica-2\" },3:BasicNode { addr: \"replica-3\" }},{1:BasicNode { addr: \"replica-1\" },3:BasicNode { addr: \"replica-3\" },4:BasicNode { addr: \"relocated-4\" }}], learners:[]}}, snapshot:None, purged:None, replication:{}}; retained_apply=Ok(None)", "node 3: running=Ok(()); Metrics{id:3, Follower, term:39, vote:T39-N1:uncommitted, last_log:5, last_applied:T3-N1-5, leader:None(since_last_ack:None ms), membership:{log_id:T3-N1-5, {voters:[{1:BasicNode { addr: \"replica-1\" },3:BasicNode { addr: \"replica-3\" },4:BasicNode { addr: \"relocated-4\" }}], learners:[]}}, snapshot:None, purged:None, replication:{}}; retained_apply=Ok(None)", "node 4: running=Ok(()); Metrics{id:4, Follower, term:45, vote:T45-N1:uncommitted, last_log:4, last_applied:T3-N1-4, leader:None(since_last_ack:None ms), membership:{log_id:T3-N1-4, {voters:[{1:BasicNode { addr: \"replica-1\" },2:BasicNode { addr: \"replica-2\" },3:BasicNode { addr: \"replica-3\" }},{1:BasicNode { addr: \"replica-1\" },3:BasicNode { addr: \"replica-3\" },4:BasicNode { addr: \"relocated-4\" }}], learners:[]}}, snapshot:None, purged:None, replication:{}}; retained_apply=Ok(None)"]
+
+Caused by:
+    deadline has elapsed
+test bootstrap::existing_replicated_tests::existing_replicas_replay_committed_state_and_membership_after_full_close ... FAILED
+
+failures:
+
+failures:
+    bootstrap::existing_replicated_tests::existing_replicas_replay_committed_state_and_membership_after_full_close
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 615 filtered out; finished in 38.21s
+
+Runner: 38.23s; exit=101; unchanged_binary=True

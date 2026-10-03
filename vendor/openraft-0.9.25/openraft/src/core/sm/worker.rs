@@ -3,6 +3,8 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::sync::Mutex;
 
+use super::apply_batch::ApplyBatch;
+use super::pending_apply::PendingApply;
 use crate::async_runtime::AsyncOneshotSendExt;
 use crate::core::notify::Notify;
 use crate::core::raft_msg::ResultSender;
@@ -27,42 +29,68 @@ use crate::RaftSnapshotBuilder;
 use crate::RaftTypeConfig;
 use crate::Snapshot;
 use crate::StorageError;
+use crate::{LogId, RaftLogReader, StorageIOError};
 
-pub(crate) struct Worker<C, SM>
+pub(crate) struct Worker<C, SM, LR>
 where
     C: RaftTypeConfig,
     SM: RaftStateMachine<C>,
+    LR: RaftLogReader<C>,
 {
     state_machine: SM,
+    log_reader: LR,
+    max_entries: u64,
+    apply_batch: Arc<ApplyBatch<C>>,
 
     snapshot: Arc<Mutex<Option<Task<C>>>>,
 
     cmd_rx: mpsc::UnboundedReceiver<Command<C>>,
+    pending_apply: Arc<PendingApply<C>>,
 
     resp_tx: mpsc::UnboundedSender<Notify<C>>,
 }
 
-impl<C, SM> Worker<C, SM>
+impl<C, SM, LR> Worker<C, SM, LR>
 where
     C: RaftTypeConfig,
     SM: RaftStateMachine<C>,
+    LR: RaftLogReader<C>,
 {
     /// Spawn a new state machine worker, return a controlling handle.
-    pub(crate) fn spawn(state_machine: SM, resp_tx: mpsc::UnboundedSender<Notify<C>>) -> (Handle<C>, Tasks<C>) {
+    pub(crate) fn spawn(
+        state_machine: SM,
+        log_reader: LR,
+        max_entries: u64,
+        resp_tx: mpsc::UnboundedSender<Notify<C>>,
+    ) -> (Handle<C>, Tasks<C>) {
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
         let snapshot = Arc::new(Mutex::new(None));
+        let apply_batch = ApplyBatch::new();
+        let pending_apply = PendingApply::new();
         let worker = Worker {
             state_machine,
+            log_reader,
+            max_entries,
+            apply_batch: apply_batch.clone(),
             snapshot: snapshot.clone(),
             cmd_rx,
+            pending_apply: pending_apply.clone(),
             resp_tx,
         };
         let task = Arc::new(Mutex::new(Task::Running(worker.do_spawn())));
         let handle = Handle {
             cmd_tx,
+            pending_apply,
             task: task.clone(),
         };
-        (handle, Tasks { worker: task, snapshot })
+        (
+            handle,
+            Tasks {
+                worker: task,
+                snapshot,
+                apply_batch,
+            },
+        )
     }
 
     fn do_spawn(mut self) -> JoinHandleOf<C, Result<(), TaskError<C>>> {
@@ -80,13 +108,28 @@ where
                         _ => std::future::pending().await,
                     }
                 };
+                // Preserve completed-builder failure priority even under a
+                // continuous stream of coalesced application work.
+                let pending_apply = &self.pending_apply;
+                let cmd_rx = &mut self.cmd_rx;
+                let command = async {
+                    match pending_apply.take_next(cmd_rx) {
+                        Ok(command) => Some(command),
+                        Err(mpsc::error::TryRecvError::Disconnected) => None,
+                        Err(mpsc::error::TryRecvError::Empty) => match cmd_rx.recv().await {
+                            Some(command) => Some(command),
+                            None => pending_apply.take_next(cmd_rx).ok(),
+                        },
+                    }
+                };
                 tokio::select! {
                     biased;
                     outcome = completed => {
                         outcome?;
                         continue;
                     }
-                    cmd = self.cmd_rx.recv() => cmd,
+                    command = command => command,
+                    _ = pending_apply.ready.notified() => continue,
                 }
             };
             let cmd = match cmd {
@@ -99,6 +142,9 @@ where
 
             tracing::debug!("{}: received command: {:?}", func_name!(), cmd);
 
+            if let Some(range) = cmd.apply_before {
+                self.apply_range(range.seq, range.since, range.upto).await?;
+            }
             match cmd.payload {
                 CommandPayload::BuildSnapshot => {
                     tracing::info!("{}: build snapshot", func_name!());
@@ -131,13 +177,74 @@ where
                     let _ = tx.send(Ok(snapshot_data));
                     // No response to RaftCore
                 }
-                CommandPayload::Apply { entries } => {
-                    let resp = self.apply(entries).await?;
-                    let res = CommandResult::new(cmd.seq, Ok(Response::Apply(resp)));
-                    let _ = self.resp_tx.send(Notify::sm(res));
+                CommandPayload::Apply { since, upto } => {
+                    self.apply_range(cmd.seq, since, upto).await?;
                 }
             };
         }
+    }
+    async fn apply_range(
+        &mut self,
+        seq: CommandSeq,
+        mut since: u64,
+        upto: LogId<C::NodeId>,
+    ) -> Result<(), StorageError<C::NodeId>> {
+        let invalid = || {
+            StorageIOError::apply(
+                upto.clone(),
+                anyerror::AnyError::error("committed apply range has a missing, unordered or mismatched log entry"),
+            )
+        };
+        let end = upto.index.checked_add(1).ok_or_else(&invalid)?;
+        if self.max_entries == 0 || since > end {
+            return Err(invalid().into());
+        }
+        while since < end {
+            let requested_end = end.min(since.saturating_add(self.max_entries));
+            let entries = self.log_reader.limited_get_log_entries(since, requested_end).await?;
+            if entries.is_empty() {
+                return Err(invalid().into());
+            }
+            let mut next = since;
+            for entry in &entries {
+                if entry.get_log_id().index != next || next >= requested_end {
+                    return Err(invalid().into());
+                }
+                next = next.checked_add(1).ok_or_else(&invalid)?;
+            }
+            let final_batch = next == end;
+            if final_batch && entries.last().unwrap().get_log_id() != &upto {
+                return Err(invalid().into());
+            }
+            let response = self.apply(entries).await?;
+            self.apply_batch.publish(response);
+            // Validate response cardinality only after actual opaque replies have
+            // entered their fixed retained cell, including a violating backend.
+            self.apply_batch.progress()?;
+            let (consumed, consumed_rx) = C::AsyncRuntime::oneshot();
+            let response = Response::Apply {
+                batch: self.apply_batch.clone(),
+                final_batch,
+                consumed,
+            };
+            self.resp_tx.send(Notify::sm(CommandResult::new(seq, Ok(response)))).map_err(|_| {
+                StorageIOError::apply(
+                    upto.clone(),
+                    anyerror::AnyError::error("core closed before applied response delivery"),
+                )
+            })?;
+            consumed_rx.await.map_err(|_| {
+                StorageIOError::apply(
+                    upto.clone(),
+                    anyerror::AnyError::error("core did not complete applied response consumption"),
+                )
+            })?;
+            if self.apply_batch.retained().is_some() {
+                return Err(invalid().into());
+            }
+            since = next;
+        }
+        Ok(())
     }
     #[tracing::instrument(level = "debug", skip_all)]
     async fn apply(&mut self, entries: Vec<C::Entry>) -> Result<ApplyResult<C>, StorageError<C::NodeId>> {
@@ -156,17 +263,7 @@ where
             .map(|e| ApplyingEntry::new(e.get_log_id().clone(), e.get_membership().cloned()))
             .collect::<Vec<_>>();
 
-        let n_entries = applying_entries.len();
-
         let apply_results = self.state_machine.apply(entries).await?;
-
-        let n_replies = apply_results.len();
-
-        debug_assert_eq!(
-            n_entries, n_replies,
-            "n_entries: {} should equal n_replies: {}",
-            n_entries, n_replies
-        );
 
         let resp = ApplyResult {
             since,

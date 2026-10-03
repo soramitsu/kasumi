@@ -1,0 +1,30 @@
+Command: cargo clippy --locked --offline --config profile.test.package.kasumi-kv.opt-level=3 --config profile.test.package.sha2.opt-level=3 -p kasumi-store --no-default-features --lib -- -D warnings
+CARGO_TARGET_DIR=target/disk-backed-cache
+    Checking kasumi-kv v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-kv)
+    Checking kasumi-types v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-types)
+    Checking kasumi-transport v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-transport)
+    Checking kasumi-serving v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-serving)
+    Checking kasumi-store v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-store)
+error[E0405]: cannot find trait `Any` in this scope
+   --> crates/kasumi-store/src/registered_read_scope.rs:22:46
+    |
+ 22 |     retirement_panic: OnceLock<Mutex<Box<dyn Any + Send>>>,
+    |                                              ^^^ not found in this scope
+    |
+note: found an item that was configured out
+   --> crates/kasumi-store/src/lib.rs:137:10
+    |
+135 | #[cfg(any(test, feature = "test-utils"))]
+    |          ------------------------------ the item is gated here
+136 | use std::{
+137 |     any::Any,
+    |          ^^^
+    = note: trait `crate::storage_opening::binding_put::Any` exists but is inaccessible
+help: consider importing this trait
+    |
+  2 + use std::any::Any;
+    |
+
+For more information about this error, try `rustc --explain E0405`.
+error: could not compile `kasumi-store` (lib) due to 1 previous error
+Runner: 33.11s; exit=101; matching=821/821

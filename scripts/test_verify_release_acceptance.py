@@ -39,6 +39,8 @@ class AcceptanceTests(unittest.TestCase):
         started = "2026-01-02T00:00:00+00:00"
         finished = "2026-01-02T00:00:10+00:00"
         output = self.root / (attempt_id + "-output")
+        attempt_index.create(self.root, "acceptance-unit-journal", "acceptance-unit-host",
+                             acceptance.REFERENCE)
         attempt_index.begin(self.root, attempt_id, "repeatable-assembly", output, started)
         output.mkdir()
         evidence = self.value(attempt_id + "-output/launcher.json", {

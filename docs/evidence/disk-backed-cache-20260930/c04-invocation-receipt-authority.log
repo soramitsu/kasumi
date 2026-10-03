@@ -1,0 +1,54 @@
+Command: cargo test --locked --offline --all-features --config profile.test.package.kasumi-kv.opt-level=3 --config profile.test.package.sha2.opt-level=3 -p kasumi-authority --lib state::apply_publication_tests::
+CARGO_TARGET_DIR=target/disk-backed-cache
+   Compiling kasumi-types v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-types)
+   Compiling kasumi-serving v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-serving)
+   Compiling kasumi-query v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-query)
+   Compiling kasumi-store v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-store)
+   Compiling kasumi-client v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-client)
+   Compiling kasumi-raft v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-raft)
+   Compiling kasumi-engine v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-engine)
+warning: variant `Mutation` is never constructed
+  --> crates/kasumi-engine/src/security_audit_jobs.rs:26:5
+   |
+24 | enum JobEffect {
+   |      --------- variant in this enum
+25 |     Read,
+26 |     Mutation(&'static str),
+   |     ^^^^^^^^
+   |
+   = note: `JobEffect` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: struct `ReadPause` is never constructed
+  --> crates/kasumi-engine/src/security_audit_jobs.rs:57:19
+   |
+57 | pub(super) struct ReadPause {
+   |                   ^^^^^^^^^
+
+warning: method `run_mutation` is never used
+   --> crates/kasumi-engine/src/security_audit_jobs.rs:120:25
+    |
+ 62 | impl SecurityAudit {
+    | ------------------ method in this implementation
+...
+120 |     pub(super) async fn run_mutation<T, F, R>(&self, component: &'static str, run: R) -> Result<T>
+    |                         ^^^^^^^^^^^^
+
+warning: `kasumi-engine` (lib) generated 3 warnings
+   Compiling kasumi-authority v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-authority)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3m 52s
+     Running unittests src/lib.rs (target/disk-backed-cache/debug/deps/kasumi_authority-1aa4395f2a3293d8)
+
+running 8 tests
+test state::apply_publication_tests::maintenance_publication_refusal_preserves_original_capacity_and_receipt_absence ... ok
+test state::apply_publication_tests::metadata_publishes_once_for_future_and_covered_positions ... ok
+test state::apply_publication_tests::effect_and_maintenance_record_decode_failures_never_publish_a_rejection ... ok
+test state::apply_publication_tests::private_partial_writes_are_discarded_when_final_quota_rejects ... ok
+test state::apply_publication_tests::command_response_and_writes_are_prepared_before_single_guarded_publication ... ok
+test state::apply_publication_tests::signer_activation_roster_failure_remains_outer_without_publishing_rejection ... ok
+test state::apply_publication_tests::signer_stage_preserves_coverage_rejection_order_and_permanent_replay ... ok
+test state::apply_publication_tests::signer_stage_keeps_prepared_roster_private_and_replays_exact_publication ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 69 filtered out; finished in 14.24s
+
+Runner: 247.04s; exit=0; matching=805/805

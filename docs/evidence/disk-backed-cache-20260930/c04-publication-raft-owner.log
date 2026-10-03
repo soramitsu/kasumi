@@ -1,0 +1,24 @@
+   Compiling kasumi-raft v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-raft)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 15.64s
+     Running unittests src/lib.rs (target/disk-backed-cache/debug/deps/kasumi_raft-9f4f6e59afebc73e)
+
+running 16 tests
+test apply_publication::tests::successful_sink_borrows_writes_and_returns_the_exact_owned_response ... ok
+test apply_publication::tests::caught_duplicate_after_success_is_sticky_and_never_reinvokes_sink ... ok
+test apply_publication::tests::independent_backend_and_publication_errors_keep_both_exact_owners ... ok
+test apply_publication::tests::caught_duplicate_after_failure_keeps_the_original_failure_owner ... ok
+test apply_publication::tests::preparation_failure_returns_its_original_owner_without_missing_violation ... ok
+test apply_publication::tests::swallowed_sink_failure_retains_its_original_error_until_finish_owner_drops ... ok
+test apply_publication::tests::missing_callback_rejects_backend_success_without_invoking_sink ... ok
+test apply_publication::tests::propagated_marker_and_its_owned_context_do_not_replace_sink_error ... ok
+test apply_publication::tests::postcommit_backend_failure_cannot_acknowledge_the_stored_response ... ok
+test apply_publication::tests::caught_sink_panic_leaves_running_and_cannot_be_swallowed_into_success ... ok
+test apply_publication::tests::retry_after_caught_sink_panic_is_a_sticky_duplicate_without_reentry ... ok
+test storage::tests::apply_publication_tests::canceled_apply_retains_callback_error_and_send_only_panic_after_actual_drain ... ok
+test storage::tests::apply_publication_tests::metadata_application_write_and_cursor_publish_together ... ok
+test storage::tests::apply_publication_tests::failed_joint_commit_preserves_application_and_custody_after_crash ... ok
+test storage::tests::apply_publication_tests::covered_replay_publishes_application_writes_without_rolling_custody_back ... ok
+test storage::tests::apply_publication_tests::swallowed_missing_repeated_and_metadata_refusal_never_advance_resident_state ... ok
+
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 102 filtered out; finished in 0.12s
+

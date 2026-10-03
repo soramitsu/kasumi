@@ -2,7 +2,8 @@ mod tls_support;
 
 use anyhow::{Context, Result, ensure};
 use kasumi_raft::{
-    BasicNode, Config, RaftGroup, RaftTransport, RpcRequest, SnapshotPolicy, StateMachineBackend,
+    BasicNode, Config, RaftGroup, RaftTransport, RpcRequest, RpcResponse, SnapshotPolicy,
+    StateMachineBackend,
 };
 use kasumi_server::{
     cluster::{ClusterNetwork, PeerConfig, PeerLimits},
@@ -28,7 +29,7 @@ impl kasumi_raft::PreparedStateMachineRestore for PreparedRestore<'_> {
     fn retirement(&self) -> Option<kasumi_raft::RetiredSnapshotState> {
         None
     }
-    fn application_replacements(&self) -> Vec<(&str, &kasumi_store::EncryptedTable)> {
+    fn application_replacements(&self) -> Vec<kasumi_store::NamespaceReplacement<'_>> {
         vec![]
     }
     fn application_writes(&self) -> &[kasumi_store::WriteOp] {
@@ -48,16 +49,25 @@ impl StateMachineBackend for Backend {
     fn close_application(&self) {
         self.0.lock().unwrap().clear();
     }
-    fn apply(
+    fn apply_with_publisher(
         &self,
         position: &kasumi_raft::AppliedEntryContext,
-        command: &[u8],
-    ) -> Result<kasumi_raft::AppliedResponse> {
-        let index = position.log_id.index;
-        self.0.lock().unwrap().insert(index, command.to_vec());
-        Ok(kasumi_raft::AppliedResponse::application(command.to_vec()))
-    }
-    fn apply_metadata(&self, _position: &kasumi_raft::AppliedEntryContext) -> Result<()> {
+        input: kasumi_raft::AppliedInput<'_>,
+        publisher: &mut dyn kasumi_raft::ApplyPublisher,
+    ) -> Result<()> {
+        match input {
+            kasumi_raft::AppliedInput::Command(command) => {
+                let mut current = self.0.lock().unwrap();
+                let mut candidate = current.clone();
+                candidate.insert(position.log_id.index, command.to_vec());
+                let response = kasumi_raft::AppliedResponse::application(command.to_vec());
+                publisher.commit(response, &[])?;
+                *current = candidate;
+            }
+            kasumi_raft::AppliedInput::Metadata => {
+                publisher.commit(kasumi_raft::AppliedResponse::application(Vec::new()), &[])?;
+            }
+        }
         Ok(())
     }
     fn capture_snapshot(&self) -> Result<kasumi_raft::CapturedSnapshot> {
@@ -104,13 +114,14 @@ fn physical(root: &std::path::Path) -> Result<kasumi_engine::test_utils::Fixture
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn real_three_node_raft_replicates_over_pinned_mutual_tls_http() -> Result<()> {
+async fn real_three_voter_raft_and_learner_replicate_and_read_over_pinned_mutual_tls_http()
+-> Result<()> {
     let ca = Authority::new()?;
     let dir = kasumi_store::test_utils::private_tempdir()?;
     let mut listeners = Vec::new();
     let mut identities = Vec::new();
     let mut peers = Vec::new();
-    for id in 1..=3 {
+    for id in 1..=4 {
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let identity = ca.issue("127.0.0.1")?.tls()?;
         peers.push(PeerConfig {
@@ -176,7 +187,7 @@ async fn real_three_node_raft_replicates_over_pinned_mutual_tls_http() -> Result
         network.register_group(
             "tenant-a".into(),
             group.raft().clone(),
-            BTreeSet::from([1, 2, 3]),
+            BTreeSet::from([1, 2, 3, 4]),
         )?;
         let observed = http_versions.clone();
         let router = network.router().layer(axum::middleware::from_fn(
@@ -223,6 +234,25 @@ async fn real_three_node_raft_replicates_over_pinned_mutual_tls_http() -> Result
     })
     .await
     .context("no leader over authenticated network")?;
+    let term = groups[leader].raft().metrics().borrow().current_term;
+    let prospective_read = networks[3]
+        .send(
+            "tenant-a",
+            4,
+            leader as u64 + 1,
+            &BasicNode::new("http://untrusted.invalid"),
+            RpcRequest::ReadIndex { term },
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(
+        prospective_read.to_string(),
+        "RPC source is not authorized for this request",
+        "a configured peer must join membership before requesting a read index"
+    );
+    groups[leader]
+        .add_learner(4, BasicNode::new("http://untrusted.invalid"))
+        .await?;
     ensure!(
         groups[leader]
             .write(b"quorum-durable-over-tls".to_vec())
@@ -254,6 +284,23 @@ async fn real_three_node_raft_replicates_over_pinned_mutual_tls_http() -> Result
                 .collect::<Vec<_>>(),
             vec![b"quorum-durable-over-tls".to_vec()]
         );
+        if index != leader {
+            let term = group.raft().metrics().borrow().current_term;
+            let response = networks[index]
+                .send(
+                    "tenant-a",
+                    index as u64 + 1,
+                    leader as u64 + 1,
+                    &BasicNode::new("http://untrusted.invalid"),
+                    RpcRequest::ReadIndex { term },
+                )
+                .await?;
+            let RpcResponse::ReadIndex(Ok(response)) = response else {
+                anyhow::bail!("current voter or learner read index was rejected: {response:?}")
+            };
+            assert_eq!(response.term, term);
+            assert!(response.read_log_id.is_some_and(|read| read >= target));
+        }
     }
     {
         let versions = http_versions.lock().unwrap();
@@ -436,6 +483,18 @@ async fn peer_requests_bind_certificate_source_candidate_target_and_group_and_li
             .await?
             .status(),
         reqwest::StatusCode::OK
+    );
+    let mut read_index = normal.clone();
+    read_index["request"] = serde_json::json!({"rpc":"read_index","payload":{"term":100}});
+    assert_eq!(
+        authorized
+            .post(&endpoint)
+            .json(&read_index)
+            .send()
+            .await?
+            .status(),
+        reqwest::StatusCode::FORBIDDEN,
+        "a pinned, group-authorized peer outside current membership cannot request a read index"
     );
     assert!(
         network

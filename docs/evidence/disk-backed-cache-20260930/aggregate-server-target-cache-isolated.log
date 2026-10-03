@@ -1,0 +1,6 @@
+
+running 1 test
+test target_runtime::shutdown_tests::target_cache_workers_wait_for_parent_handoff_and_drain_late_generation ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 273 filtered out; finished in 1.66s
+

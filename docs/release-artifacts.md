@@ -9,6 +9,10 @@ functional run made with this source's runner and packager:
 python3 scripts/release_gate.py \
   --output /absolute/evidence/final-functional \
   --execution-description 'Describe the actual pinned native host or VM' --jobs 2
+mkdir -p /absolute/artifacts
+python3 -B -S /absolute/evidence/final-functional/source/scripts/attempt_index.py create \
+  --root /absolute/artifacts --journal-id <unique-journal-id> \
+  --host <native-host-id> --target <target>
 python3 -I -B -S /absolute/evidence/final-functional/source/scripts/run_repeatable_assembly_owned.py \
   --evidence /absolute/evidence/final-functional \
   --native-inputs /absolute/native-inputs/inputs.json \
@@ -24,6 +28,12 @@ python3 -B -S /absolute/evidence/final-functional/source/scripts/transport_assem
   --expected-target <target> --expected-source-commit <commit> \
   --expected-source-tree <tree>
 ```
+
+Create one journal per native host and target before its first attempt, and
+retain its printed head outside the candidate bundle. Reuse that journal for
+later attempts and retain each new head with
+`attempt_index.py head --root /absolute/artifacts`; an existing journal must
+have the same identity.
 
 The native input declaration is mandatory; there is no ambient Cargo/Rustup
 fallback. See [the assembly input contract](repeatable-assembly.md). The owned
@@ -283,7 +293,7 @@ the dedicated user and parent directory, and initialize as that same user:
 ```sh
 sudo useradd --system --user-group --home-dir /var/lib/kasumi --shell /usr/sbin/nologin kasumi
 sudo install -d -o kasumi -g kasumi -m 0700 /var/lib/kasumi
-sudo -u kasumi /usr/local/bin/kasumid init --mode standalone /var/lib/kasumi/installation --directory-policy /etc/kasumi/directory-policy.json --network /etc/kasumi/standalone-network.json
+sudo -u kasumi /usr/local/bin/kasumid init --mode standalone /var/lib/kasumi/installation --directory-policy /etc/kasumi/directory-policy.json --file-allocation-policy /etc/kasumi/file-allocation-policy.json --network /etc/kasumi/standalone-network.json
 sudo install -m 0644 systemd/kasumid.service /etc/systemd/system/kasumid.service
 sudo systemctl daemon-reload
 sudo systemctl enable --now kasumid

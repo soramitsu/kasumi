@@ -68,12 +68,19 @@ async fn initialize_owned(
         &installed.node.verifier,
     )?;
     let prepared = crate::startup_preparation::capture("target journal installation", async {
-        let node = NodeStore::create_new(
-            &installed.journal_path,
-            id,
-            crate::persistent_disk::open(&config.persistent_disk, &storage)?,
-            scratch,
-        )?;
+        let node = {
+            let native_arg_0 = &installed.journal_path;
+            let native_arg_1 = id;
+            let native_arg_2 = crate::persistent_disk::open(&config.persistent_disk, &storage)?;
+            let native_arg_3 = scratch;
+            NodeStore::create_new(
+                native_arg_0,
+                native_arg_1,
+                native_arg_2.clone(),
+                native_arg_3,
+                native_arg_2.native_storage_config(),
+            )
+        }?;
         pending.owned_nodes.push(node.clone());
         let store = TenantStore::initialize_catalog(
             node.clone(),

@@ -110,6 +110,7 @@ impl Fixture {
             directory: root.join("scratch"),
             max_bytes: 64 << 20,
             min_free_bytes: 0,
+            native_cache_bytes: 8 << 20,
         };
         let persistent_disk = crate::persistent_disk::fixture_config(&root.join("data"));
         let signer_verifier = SignerVerifierConfig {
@@ -219,12 +220,19 @@ impl Fixture {
         })
     }
     fn node(&self) -> Result<Arc<NodeStore>> {
-        NodeStore::open_existing(
-            &self.config.database_path,
-            self.config.database_id,
-            self.storage.open_persistent(&self.config.persistent_disk)?,
-            self.storage.open_scratch(&self.config.scratch_disk)?,
-        )
+        {
+            let native_path = &self.config.database_path;
+            let native_id = self.config.database_id;
+            let native_disk = self.storage.open_persistent(&self.config.persistent_disk)?;
+            let native_scratch_disk = self.storage.open_scratch(&self.config.scratch_disk)?;
+            NodeStore::open_existing(
+                native_path,
+                native_id,
+                native_disk.clone(),
+                native_scratch_disk,
+                native_disk.native_storage_config(),
+            )
+        }
     }
     async fn verifier(&self) -> Result<Arc<crate::signer_runtime::InstalledSignerVerifier>> {
         let domain = self.config.installation.manifest.signing_domain(0)?;
@@ -355,6 +363,21 @@ pub(super) fn blocking_checkpoint(id: Uuid) {
     }
 }
 
+fn group_image(
+    path: &std::path::Path,
+) -> Result<std::collections::BTreeMap<std::ffi::OsString, Vec<u8>>> {
+    std::fs::read_dir(path)?
+        .map(|entry| {
+            let entry = entry?;
+            anyhow::ensure!(
+                entry.file_type()?.is_file(),
+                "fixture group has a foreign entry"
+            );
+            Ok((entry.file_name(), std::fs::read(entry.path())?))
+        })
+        .collect()
+}
+
 #[tokio::test]
 async fn authority_enrollment_panics_drain_owned_nodes_verifier_and_both_domains() -> Result<()> {
     for (phase, pair, genesis, complete) in [
@@ -381,14 +404,14 @@ async fn authority_enrollment_panics_drain_owned_nodes_verifier_and_both_domains
         fixture
             .verify_retained_state(pair, genesis, complete)
             .await?;
-        let before = std::fs::read(&fixture.config.database_path)?;
+        let before = group_image(&fixture.config.database_path)?;
         assert!(
             initialize_with_storage(fixture.config.clone(), fixture.storage.clone())
                 .await
                 .is_err()
         );
         assert_eq!(
-            std::fs::read(&fixture.config.database_path)?,
+            group_image(&fixture.config.database_path)?,
             before,
             "rejected reenrollment cannot replace partial or complete state"
         );

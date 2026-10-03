@@ -1,0 +1,16 @@
+
+running 1 test
+AUTHORITY_UNKNOWN at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/ops/function.rs:250:5: deadline has elapsed
+
+thread 'service::tests::signer_directive_is_ordered_exact_finite_and_preserved_in_encrypted_snapshots' (5831188) panicked at crates/kasumi-authority/src/signer_directive_tests.rs:25:100:
+called `Result::unwrap()` on an `Err` value: Error { code: UnknownOutcome, message: "authority acknowledgement unavailable; resolve the exact permanent command identity" }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test service::tests::signer_directive_is_ordered_exact_finite_and_preserved_in_encrypted_snapshots ... FAILED
+
+failures:
+
+failures:
+    service::tests::signer_directive_is_ordered_exact_finite_and_preserved_in_encrypted_snapshots
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 73 filtered out; finished in 17.00s
+

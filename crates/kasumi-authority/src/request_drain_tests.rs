@@ -179,7 +179,7 @@ async fn timed_out_waiter_keeps_original_rejection_until_exact_shutdown_drain() 
         again
             .issues()
             .iter()
-            .any(|candidate| Arc::ptr_eq(candidate, issue))
+            .any(|candidate| kasumi_types::drain::DrainIssueRef::ptr_eq(candidate, issue))
     );
 }
 
@@ -257,7 +257,7 @@ async fn actual_child_panic_fences_admission_and_cancelled_drain_keeps_original_
         first
             .issues()
             .iter()
-            .any(|issue| Arc::ptr_eq(issue, &original.issues()[0]))
+            .any(|issue| kasumi_types::drain::DrainIssueRef::ptr_eq(issue, &original.issues()[0]))
     );
     let again = authority.shutdown().await.unwrap_err();
     assert_eq!(again.completion(), DrainCompletion::Complete);
@@ -265,7 +265,7 @@ async fn actual_child_panic_fences_admission_and_cancelled_drain_keeps_original_
         again
             .issues()
             .iter()
-            .any(|issue| Arc::ptr_eq(issue, &original.issues()[0]))
+            .any(|issue| kasumi_types::drain::DrainIssueRef::ptr_eq(issue, &original.issues()[0]))
     );
     for service in &fixture.services {
         if !Arc::ptr_eq(service, &authority) {

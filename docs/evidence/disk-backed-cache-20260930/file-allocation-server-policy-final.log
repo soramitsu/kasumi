@@ -1,0 +1,5 @@
+
+running 2 tests
+
+thread 'standalone_cli::file_allocation_policy_tests::init_without_explicit_file_allowance_cannot_create_an_installation' (5098153) has overflowed its stack
+fatal runtime error: stack overflow, aborting
