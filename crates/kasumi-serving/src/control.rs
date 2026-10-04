@@ -144,25 +144,43 @@ impl ControlTrust {
     /// its actual request, caller and original pre-dispatch elapsed deadline.
     pub fn verify_topology(&self, signed: &SignedControlTopology) -> Result<()> {
         signed.observation.validate()?;
-        ensure!(signed.observation.root == self.root, "Control topology root differs");
-        ensure!(serde_json::to_vec(signed)?.len() <= MAX_CONTROL_TOPOLOGY_BYTES,
-            "Control topology exceeds its complete response bound");
-        verify(&self.root.public_key, "kasumi.control-topology.v1",
-            &signed.observation, &signed.signature)
+        ensure!(
+            signed.observation.root == self.root,
+            "Control topology root differs"
+        );
+        ensure!(
+            serde_json::to_vec(signed)?.len() <= MAX_CONTROL_TOPOLOGY_BYTES,
+            "Control topology exceeds its complete response bound"
+        );
+        verify(
+            &self.root.public_key,
+            "kasumi.control-topology.v1",
+            &signed.observation,
+            &signed.signature,
+        )
     }
     pub fn verify_topology_release(
-        &self, original: &SignedControlTopology, request_id: uuid::Uuid,
+        &self,
+        original: &SignedControlTopology,
+        request_id: uuid::Uuid,
         signed: &SignedControlTopologyRelease,
     ) -> Result<()> {
         self.verify_topology(original)?;
         let release = &signed.release;
-        ensure!(!request_id.is_nil() && release.request_id == request_id
-            && release.original_sha256 == digest(original)?
-            && release.revision >= original.observation.revision
-            && release.not_after_ms == original.observation.not_after_ms,
-            "Control topology release differs from its original read");
-        verify(&self.root.public_key, "kasumi.control-topology-release.v1",
-            release, &signed.signature)
+        ensure!(
+            !request_id.is_nil()
+                && release.request_id == request_id
+                && release.original_sha256 == digest(original)?
+                && release.revision >= original.observation.revision
+                && release.not_after_ms == original.observation.not_after_ms,
+            "Control topology release differs from its original read"
+        );
+        verify(
+            &self.root.public_key,
+            "kasumi.control-topology-release.v1",
+            release,
+            &signed.signature,
+        )
     }
     pub fn verify_intent(&self, signed: &SignedControlIntent) -> Result<VerifiedControlIntent> {
         let observation = &signed.observation;

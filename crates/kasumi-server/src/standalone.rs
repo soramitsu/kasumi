@@ -1209,7 +1209,10 @@ async fn initialize_owned(
             &backup_directory,
             kasumi_store::MAX_BACKUP_BUNDLE_BYTES,
             persistent_disk.clone(),
-            &TrustVerifierIdentity { installation_id, node_id: STANDALONE_ORIGIN_NODE_ID },
+            &TrustVerifierIdentity {
+                installation_id,
+                node_id: STANDALONE_ORIGIN_NODE_ID,
+            },
             Uuid::new_v4(),
         )?;
         let namespace_binding = kasumi_store::BackupDestination::namespace_binding(&backup)?;

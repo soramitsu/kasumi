@@ -24,8 +24,12 @@ impl ControlQuorumFence {
     pub fn installation(&self) -> &LifecycleInstallation {
         &self.installation
     }
-    pub(super) fn term(&self) -> u64 { self.term }
-    pub(super) fn policy_epoch(&self) -> u64 { self.policy_epoch }
+    pub(super) fn term(&self) -> u64 {
+        self.term
+    }
+    pub(super) fn policy_epoch(&self) -> u64 {
+        self.policy_epoch
+    }
     pub fn local_node_id(&self) -> u64 {
         self.node_id
     }
@@ -118,14 +122,30 @@ pub struct ControlAdministrativeFence {
     partition: ControlAuthorityPartition,
 }
 impl ControlAdministrativeFence {
-    pub fn context(&self) -> &RequestContext { self.quorum.context() }
-    pub fn installation(&self) -> &LifecycleInstallation { self.quorum.installation() }
-    pub fn partition(&self) -> &ControlAuthorityPartition { &self.partition }
-    pub fn local_node_id(&self) -> u64 { self.quorum.local_node_id() }
-    pub fn members(&self) -> impl Iterator<Item = u64> + '_ { self.quorum.members() }
-    pub fn voters(&self) -> impl Iterator<Item = u64> + '_ { self.quorum.voters() }
-    pub fn check(&self) -> Result<()> { self.quorum.check() }
-    pub async fn release(&self) -> Result<()> { self.quorum.release().await }
+    pub fn context(&self) -> &RequestContext {
+        self.quorum.context()
+    }
+    pub fn installation(&self) -> &LifecycleInstallation {
+        self.quorum.installation()
+    }
+    pub fn partition(&self) -> &ControlAuthorityPartition {
+        &self.partition
+    }
+    pub fn local_node_id(&self) -> u64 {
+        self.quorum.local_node_id()
+    }
+    pub fn members(&self) -> impl Iterator<Item = u64> + '_ {
+        self.quorum.members()
+    }
+    pub fn voters(&self) -> impl Iterator<Item = u64> + '_ {
+        self.quorum.voters()
+    }
+    pub fn check(&self) -> Result<()> {
+        self.quorum.check()
+    }
+    pub async fn release(&self) -> Result<()> {
+        self.quorum.release().await
+    }
 }
 
 struct ReleaseAttempt<'a> {
@@ -154,14 +174,17 @@ impl Database {
         partition.validate()?;
         let quorum = self.authorize_control_quorum(context).await?;
         if quorum.installation.partitions.get(&partition.key()) != Some(&partition) {
-            return Err(Error::new(ErrorCode::Forbidden,
-                "issuer partition differs from current Control installation"));
+            return Err(Error::new(
+                ErrorCode::Forbidden,
+                "issuer partition differs from current Control installation",
+            ));
         }
         Ok(Arc::new(ControlAdministrativeFence { quorum, partition }))
     }
 
     pub(super) async fn authorize_control_quorum(
-        self: &Arc<Self>, context: RequestContext,
+        self: &Arc<Self>,
+        context: RequestContext,
     ) -> Result<Arc<ControlQuorumFence>> {
         context.authorization.check_live()?;
         if context.authorization.expires_at_ms().is_none() {

@@ -4,8 +4,7 @@ mod common;
 use anyhow::Result;
 use kasumi_raft::{LogStore, SnapshotBuffer, StateMachine, TypeConfig};
 use openraft::{
-    EntryPayload, LogId, RaftLogReader, RaftSnapshotBuilder, StorageError, StorageIOError,
-    Vote,
+    EntryPayload, LogId, RaftLogReader, RaftSnapshotBuilder, StorageError, StorageIOError, Vote,
     storage::{RaftLogStorage, RaftLogStorageExt, RaftStateMachine},
     testing::{StoreBuilder, Suite},
 };

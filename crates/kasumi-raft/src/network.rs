@@ -67,7 +67,9 @@ pub enum RpcRequest {
     /// Read-only leader confirmation for a follower or learner observation,
     /// bound to the requester's current term. It carries no vote and grants
     /// no authority to propose; transports admit only current group members.
-    ReadIndex { term: u64 },
+    ReadIndex {
+        term: u64,
+    },
 }
 
 /// A leader's answer to [`RpcRequest::ReadIndex`]. The leader confirmed its

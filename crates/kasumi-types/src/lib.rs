@@ -1,9 +1,9 @@
 //! Transport-independent, exact JSON contracts shared by every Kasumi interface.
 // Shared contract modules name their serde helpers by the public crate path.
 extern crate self as kasumi_types;
-pub mod drain;
 pub mod control_topology;
 mod control_topology_protocol;
+pub mod drain;
 pub use control_topology_protocol::*;
 mod ordered_seek;
 pub use ordered_seek::*;
