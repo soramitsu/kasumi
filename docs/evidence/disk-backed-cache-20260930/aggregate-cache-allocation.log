@@ -1,9 +1,0 @@
-   Compiling kasumi-kv v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-kv)
-    Finished `release` profile [optimized] target(s) in 11.96s
-     Running tests/cache_allocation.rs (target/disk-backed-cache/release/deps/cache_allocation-383c7b8d1adf62b4)
-
-running 1 test
-test aggregate_cache_heap_stays_admitted_until_cross_thread_final_guard_retirement ... ok
-
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
-

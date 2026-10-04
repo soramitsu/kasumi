@@ -7,6 +7,7 @@ use imbl::{OrdMap, OrdSet};
 use kasumi_types::*;
 use serde_json::Value;
 use std::collections::BTreeMap;
+use std::ops::{Bound, RangeBounds};
 
 pub(crate) type IdSet = OrdSet<String>;
 
@@ -148,57 +149,6 @@ impl Structured {
         self.unique_delta(changes).map(|_| ())
     }
 
-    /// Validate independently of hits, so empty collections and short-circuiting
-    /// cannot turn malformed queries into successful responses.
-    pub fn validate(&self, predicate: &Predicate, allow_scan: bool) -> Result<()> {
-        match predicate {
-            Predicate::All => Ok(()),
-            Predicate::And { predicates } | Predicate::Or { predicates } => {
-                for predicate in predicates {
-                    self.validate(predicate, allow_scan)?;
-                }
-                Ok(())
-            }
-            Predicate::Not { predicate } => self.validate(predicate, allow_scan),
-            _ => {
-                let kind =
-                    self.field_kind(predicate_path(predicate).expect("leaf field"), allow_scan)?;
-                let check = |value: &Value| -> Result<()> {
-                    if let Some(kind) = kind {
-                        check_operator_type(predicate, kind, value)?;
-                    }
-                    if matches!(predicate, Predicate::Contains { .. }) && value.is_null() {
-                        return Err(invalid("array membership requires a non-null scalar"));
-                    }
-                    let value = scalar(Some(value), kind)?;
-                    if matches!(predicate, Predicate::Compare { .. }) && value == Scalar::Null {
-                        return Err(invalid("ordered comparison requires a non-null scalar"));
-                    }
-                    Ok(())
-                };
-                match predicate {
-                    Predicate::Eq { value, .. }
-                    | Predicate::Contains { value, .. }
-                    | Predicate::Compare { value, .. } => check(value),
-                    Predicate::In { values, .. } => {
-                        if matches!(
-                            kind,
-                            Some(ScalarType::StringArray | ScalarType::NumberArray)
-                        ) {
-                            return Err(invalid("array fields require the contains operator"));
-                        }
-                        for value in values {
-                            check(value)?;
-                        }
-                        Ok(())
-                    }
-                    Predicate::Exists { .. } => Ok(()),
-                    _ => unreachable!(),
-                }
-            }
-        }
-    }
-
     fn empty_unique(definition: &CollectionDefinition) -> BTreeMap<String, UniqueIndex> {
         definition
             .indexes
@@ -276,178 +226,6 @@ impl Structured {
             )),
         }
     }
-
-    pub fn candidates<S: DocumentSource + ?Sized>(
-        &self,
-        source: &S,
-        predicate: &Predicate,
-        universe: &IdSet,
-        allow_scan: bool,
-        cap: usize,
-        cancellation: &QueryCancellation,
-    ) -> ReadResult<IdSet, S::Failure> {
-        cancellation.check()?;
-        match predicate {
-            Predicate::All => {
-                check_size(universe.len(), cap)?;
-                Ok(universe.clone())
-            }
-            Predicate::And { predicates } => {
-                if predicates.is_empty() {
-                    return self.candidates(
-                        source,
-                        &Predicate::All,
-                        universe,
-                        allow_scan,
-                        cap,
-                        cancellation,
-                    );
-                }
-                let mut candidates = self.candidates(
-                    source,
-                    &predicates[0],
-                    universe,
-                    allow_scan,
-                    cap,
-                    cancellation,
-                )?;
-                for predicate in &predicates[1..] {
-                    candidates = self.candidates(
-                        source,
-                        predicate,
-                        &candidates,
-                        allow_scan,
-                        cap,
-                        cancellation,
-                    )?;
-                }
-                Ok(candidates)
-            }
-            Predicate::Or { predicates } => {
-                let mut candidates = IdSet::new();
-                for predicate in predicates {
-                    for id in
-                        self.candidates(source, predicate, universe, allow_scan, cap, cancellation)?
-                    {
-                        cancellation.check()?;
-                        candidates.insert(id);
-                    }
-                    check_size(candidates.len(), cap)?;
-                }
-                Ok(candidates)
-            }
-            Predicate::Not { predicate } => {
-                check_size(universe.len(), cap)?;
-                let excluded =
-                    self.candidates(source, predicate, universe, allow_scan, cap, cancellation)?;
-                let mut candidates = IdSet::new();
-                for id in universe {
-                    cancellation.check()?;
-                    if !excluded.contains(id) {
-                        candidates.insert(id.clone());
-                    }
-                }
-                Ok(candidates)
-            }
-            _ => {
-                let path = predicate_path(predicate).expect("leaf has a field");
-                let kind = self.field_kind(path, allow_scan)?;
-                if let Some(index) = self.fields.get(path) {
-                    let mut candidates = IdSet::new();
-                    let mut add = |ids: &IdSet| -> Result<()> {
-                        let (shorter, longer) = if ids.len() <= universe.len() {
-                            (ids, universe)
-                        } else {
-                            (universe, ids)
-                        };
-                        for id in shorter {
-                            cancellation.check()?;
-                            if longer.contains(id) {
-                                candidates.insert(id.clone());
-                                check_size(candidates.len(), cap)?;
-                            }
-                        }
-                        Ok(())
-                    };
-                    match predicate {
-                        Predicate::Exists { exists, .. } => {
-                            if *exists {
-                                add(&index.present)?;
-                            } else {
-                                for id in universe {
-                                    cancellation.check()?;
-                                    if !index.present.contains(id) {
-                                        candidates.insert(id.clone());
-                                        check_size(candidates.len(), cap)?;
-                                    }
-                                }
-                            }
-                        }
-                        Predicate::Eq { value, .. } | Predicate::Contains { value, .. } => {
-                            check_operator_type(predicate, index.kind, value)?;
-                            let key = scalar(Some(value), kind)?;
-                            if let Some(ids) = index.entries.get(&key) {
-                                add(ids)?;
-                            }
-                        }
-                        Predicate::In { values, .. } => {
-                            for value in values {
-                                cancellation.check()?;
-                                check_operator_type(predicate, index.kind, value)?;
-                                if let Some(ids) = index.entries.get(&scalar(Some(value), kind)?) {
-                                    add(ids)?;
-                                }
-                            }
-                        }
-                        Predicate::Compare {
-                            comparison, value, ..
-                        } => {
-                            check_operator_type(predicate, index.kind, value)?;
-                            let key = scalar(Some(value), kind)?;
-                            if matches!(key, Scalar::Missing | Scalar::Null) {
-                                return Err(invalid(
-                                    "ordered comparison requires a non-null scalar",
-                                )
-                                .into());
-                            }
-                            use std::ops::Bound::{Excluded, Included, Unbounded};
-                            let bounds = match comparison {
-                                Comparison::Lt => (Unbounded, Excluded(key)),
-                                Comparison::Lte => (Unbounded, Included(key)),
-                                Comparison::Gt => (Excluded(key), Unbounded),
-                                Comparison::Gte => (Included(key), Unbounded),
-                            };
-                            for (visited, (key, ids)) in index.entries.range(bounds).enumerate() {
-                                cancellation.check()?;
-                                check_size(visited + 1, cap)?;
-                                if !matches!(key, Scalar::Missing | Scalar::Null) {
-                                    add(ids)?;
-                                }
-                            }
-                        }
-                        _ => unreachable!(),
-                    }
-                    Ok(candidates)
-                } else {
-                    check_size(universe.len(), cap)?;
-                    let mut selected = IdSet::new();
-                    for id in universe {
-                        let matched = document_source::with_live(
-                            source,
-                            id,
-                            None,
-                            cancellation,
-                            |document| evaluate_leaf(predicate, &document.body, None, cancellation),
-                        )?;
-                        if matched {
-                            selected.insert(id.clone());
-                        }
-                    }
-                    Ok(selected)
-                }
-            }
-        }
-    }
 }
 
 pub(crate) fn check_size(size: usize, limit: usize) -> Result<()> {
@@ -458,77 +236,263 @@ pub(crate) fn check_size(size: usize, limit: usize) -> Result<()> {
     }
 }
 
-fn check_operator_type(predicate: &Predicate, kind: ScalarType, value: &Value) -> Result<()> {
-    let array = matches!(kind, ScalarType::StringArray | ScalarType::NumberArray);
-    match predicate {
-        Predicate::Contains { .. } if !array => Err(invalid("contains requires an array field")),
-        Predicate::Contains { .. } if value.is_null() => {
-            Err(invalid("array membership requires a non-null scalar"))
-        }
-        Predicate::Eq { .. } if array && value.is_null() => Ok(()),
-        Predicate::Contains { .. } => Ok(()),
-        _ if array => Err(invalid("array fields require the contains operator")),
-        _ => Ok(()),
-    }
+const MAX_FILTER_DEPTH: usize = 16;
+const MAX_FILTER_NODES: usize = 256;
+/// Index entries a range estimate may visit before it is ranked as broad.
+const RANGE_ESTIMATE_BUDGET: usize = 4096;
+
+/// A filter normalized to one node per test. A field's bounds form a single
+/// range, so `{"gte": a, "lt": b}` is one ordered index walk.
+#[derive(Debug)]
+pub(crate) enum Node<'a> {
+    All,
+    Leaf { path: &'a str, test: Test<'a> },
+    And(Vec<Node<'a>>),
+    Or(Vec<Node<'a>>),
+    Not(Box<Node<'a>>),
 }
 
-pub(crate) fn predicate_path(predicate: &Predicate) -> Option<&str> {
-    match predicate {
-        Predicate::Eq { field, .. }
-        | Predicate::In { field, .. }
-        | Predicate::Compare { field, .. }
-        | Predicate::Exists { field, .. }
-        | Predicate::Contains { field, .. } => Some(field),
-        _ => None,
-    }
+#[derive(Debug)]
+pub(crate) enum Test<'a> {
+    Eq(&'a Value),
+    In(&'a [Value]),
+    Range {
+        lower: Bound<&'a Value>,
+        upper: Bound<&'a Value>,
+    },
+    Exists(bool),
+    Contains(&'a Value),
 }
 
-pub(crate) fn validate_predicate(
-    predicate: &Predicate,
-    depth: usize,
-    nodes: &mut usize,
-) -> Result<()> {
+/// Shape checks and normalization, independent of indexes and documents, so
+/// empty collections and short-circuiting cannot accept malformed filters.
+pub(crate) fn plan(filter: &Filter) -> Result<Node<'_>> {
+    plan_filter(filter, 0, &mut 0)
+}
+
+fn count(nodes: &mut usize) -> Result<()> {
     *nodes += 1;
-    if depth > 16 || *nodes > 256 {
-        return Err(invalid("query predicate exceeds depth/node budget"));
-    }
-    if let Some(path) = predicate_path(predicate) {
-        validate_pointer(path)?;
-    }
-    match predicate {
-        Predicate::And { predicates } | Predicate::Or { predicates } => {
-            for predicate in predicates {
-                validate_predicate(predicate, depth + 1, nodes)?;
-            }
-        }
-        Predicate::Not { predicate } => validate_predicate(predicate, depth + 1, nodes)?,
-        Predicate::In { values, .. } if values.len() > 256 => {
-            return Err(invalid("in is limited to 256 values"));
-        }
-        _ => {}
+    if *nodes > MAX_FILTER_NODES {
+        return Err(invalid("filter exceeds 256 conditions"));
     }
     Ok(())
 }
 
-pub(crate) fn evaluate_leaf(
-    predicate: &Predicate,
-    body: &Value,
+fn plan_filter<'a>(filter: &'a Filter, depth: usize, nodes: &mut usize) -> Result<Node<'a>> {
+    if depth > MAX_FILTER_DEPTH {
+        return Err(invalid("filter exceeds 16 nesting levels"));
+    }
+    let mut children = Vec::new();
+    for (path, condition) in &filter.fields {
+        validate_pointer(path)?;
+        plan_condition(path, condition, nodes, &mut children)?;
+    }
+    for nested in &filter.and {
+        count(nodes)?;
+        children.push(plan_filter(nested, depth + 1, nodes)?);
+    }
+    if !filter.or.is_empty() {
+        count(nodes)?;
+        let alternatives = filter
+            .or
+            .iter()
+            .map(|alternative| plan_filter(alternative, depth + 1, nodes))
+            .collect::<Result<_>>()?;
+        children.push(Node::Or(alternatives));
+    }
+    if let Some(negated) = &filter.not {
+        count(nodes)?;
+        children.push(Node::Not(Box::new(plan_filter(negated, depth + 1, nodes)?)));
+    }
+    Ok(match children.len() {
+        0 => Node::All,
+        1 => children.pop().expect("one child"),
+        _ => Node::And(children),
+    })
+}
+
+fn plan_condition<'a>(
+    path: &'a str,
+    condition: &'a Condition,
+    nodes: &mut usize,
+    out: &mut Vec<Node<'a>>,
+) -> Result<()> {
+    if condition.is_empty() {
+        return Err(invalid(format!("{path}: empty field condition")));
+    }
+    if condition.gt.is_some() && condition.gte.is_some() {
+        return Err(invalid(format!("{path}: use either gt or gte")));
+    }
+    if condition.lt.is_some() && condition.lte.is_some() {
+        return Err(invalid(format!("{path}: use either lt or lte")));
+    }
+    let leaf = |test| Node::Leaf { path, test };
+    let mut push = |node| -> Result<()> {
+        count(nodes)?;
+        out.push(node);
+        Ok(())
+    };
+    if let Some(value) = &condition.eq {
+        push(leaf(Test::Eq(value)))?;
+    }
+    if let Some(value) = &condition.ne {
+        push(Node::Not(Box::new(leaf(Test::Eq(value)))))?;
+    }
+    let lower = match (&condition.gt, &condition.gte) {
+        (Some(value), _) => Bound::Excluded(value),
+        (_, Some(value)) => Bound::Included(value),
+        _ => Bound::Unbounded,
+    };
+    let upper = match (&condition.lt, &condition.lte) {
+        (Some(value), _) => Bound::Excluded(value),
+        (_, Some(value)) => Bound::Included(value),
+        _ => Bound::Unbounded,
+    };
+    if !matches!((lower, upper), (Bound::Unbounded, Bound::Unbounded)) {
+        push(leaf(Test::Range { lower, upper }))?;
+    }
+    for (values, negated) in [(&condition.r#in, false), (&condition.nin, true)] {
+        if let Some(values) = values {
+            if values.len() > MAX_FILTER_IN_VALUES {
+                return Err(invalid("in/nin are limited to 256 values"));
+            }
+            let node = leaf(Test::In(values));
+            push(if negated {
+                Node::Not(Box::new(node))
+            } else {
+                node
+            })?;
+        }
+    }
+    if let Some(exists) = condition.exists {
+        push(leaf(Test::Exists(exists)))?;
+    }
+    if let Some(value) = &condition.contains {
+        push(leaf(Test::Contains(value)))?;
+    }
+    Ok(())
+}
+
+fn bound_value<'a>(bound: &Bound<&'a Value>) -> Option<&'a Value> {
+    match bound {
+        Bound::Included(value) | Bound::Excluded(value) => Some(value),
+        Bound::Unbounded => None,
+    }
+}
+
+fn scalar_bound(bound: Bound<&Value>, kind: Option<ScalarType>) -> Result<Bound<Scalar>> {
+    Ok(match bound {
+        Bound::Included(value) => Bound::Included(scalar(Some(value), kind)?),
+        Bound::Excluded(value) => Bound::Excluded(scalar(Some(value), kind)?),
+        Bound::Unbounded => Bound::Unbounded,
+    })
+}
+
+/// Index range for a validated test. Absent and null entries sort first and
+/// never satisfy a range, so an open lower bound starts after them.
+fn index_range(
+    lower: Bound<&Value>,
+    upper: Bound<&Value>,
+    kind: Option<ScalarType>,
+) -> Result<(Bound<Scalar>, Bound<Scalar>)> {
+    let lower = match scalar_bound(lower, kind)? {
+        Bound::Unbounded => Bound::Excluded(Scalar::Null),
+        bound => bound,
+    };
+    Ok((lower, scalar_bound(upper, kind)?))
+}
+
+fn empty_range(range: &(Bound<Scalar>, Bound<Scalar>)) -> bool {
+    use Bound::{Excluded, Included};
+    match range {
+        (Included(lower), Included(upper)) => lower > upper,
+        (Included(lower) | Excluded(lower), Included(upper) | Excluded(upper)) => lower >= upper,
+        _ => false,
+    }
+}
+
+fn validate_test(path: &str, test: &Test<'_>, kind: Option<ScalarType>) -> Result<()> {
+    let array = matches!(
+        kind,
+        Some(ScalarType::StringArray | ScalarType::NumberArray)
+    );
+    let array_error = || {
+        invalid(format!(
+            "{path} is an array field; use contains to match its elements"
+        ))
+    };
+    match test {
+        Test::Exists(_) => Ok(()),
+        Test::Contains(value) => {
+            if kind.is_some() && !array {
+                return Err(invalid(format!("{path}: contains requires an array field")));
+            }
+            if value.is_null() {
+                return Err(invalid("array membership requires a non-null scalar"));
+            }
+            scalar(Some(value), kind).map(drop)
+        }
+        Test::Eq(value) => {
+            if array && !value.is_null() {
+                return Err(array_error());
+            }
+            scalar(Some(value), kind).map(drop)
+        }
+        Test::In(values) => {
+            if array {
+                return Err(array_error());
+            }
+            values
+                .iter()
+                .try_for_each(|value| scalar(Some(value), kind).map(drop))
+        }
+        Test::Range { lower, upper } => {
+            if array {
+                return Err(array_error());
+            }
+            let mut first: Option<Scalar> = None;
+            for value in [bound_value(lower), bound_value(upper)]
+                .into_iter()
+                .flatten()
+            {
+                let key = scalar(Some(value), kind)?;
+                if key == Scalar::Null {
+                    return Err(invalid("ordered comparison requires a non-null scalar"));
+                }
+                if let Some(first) = &first
+                    && std::mem::discriminant(first) != std::mem::discriminant(&key)
+                {
+                    return Err(invalid(format!("{path}: range bounds must have one type")));
+                }
+                first = Some(key);
+            }
+            Ok(())
+        }
+    }
+}
+
+/// Unindexed values that cannot be compared never match a scanned leaf.
+fn scanned_scalar(value: Option<&Value>, kind: Option<ScalarType>) -> Option<Scalar> {
+    scalar(value, kind).ok()
+}
+
+pub(crate) fn evaluate(
+    test: &Test<'_>,
+    actual: Option<&Value>,
     kind: Option<ScalarType>,
     cancellation: &QueryCancellation,
 ) -> Result<bool> {
-    let field = predicate_path(predicate).ok_or_else(|| invalid("not a leaf predicate"))?;
-    let actual = body.pointer(field);
-    if let Predicate::Exists { exists, .. } = predicate {
+    if let Test::Exists(exists) = test {
         return Ok(actual.is_some() == *exists);
     }
-    if let Predicate::Contains { value, .. } = predicate {
-        let Some(Value::Array(values)) = actual else {
+    if let Test::Contains(value) = test {
+        let Some(Value::Array(elements)) = actual else {
             return Ok(false);
         };
         let expected = scalar(Some(value), kind)?;
-        for value in values {
+        for element in elements {
             cancellation.check()?;
-            if scalar(Some(value), kind)? == expected {
+            if scanned_scalar(Some(element), kind).as_ref() == Some(&expected) {
                 return Ok(true);
             }
         }
@@ -537,11 +501,13 @@ pub(crate) fn evaluate_leaf(
     if actual.is_none() {
         return Ok(false);
     }
-    let actual = scalar(actual, kind)?;
-    match predicate {
-        Predicate::Eq { value, .. } => Ok(actual == scalar(Some(value), kind)?),
-        Predicate::In { values, .. } => {
-            for value in values {
+    let Some(actual) = scanned_scalar(actual, kind) else {
+        return Ok(false);
+    };
+    match test {
+        Test::Eq(value) => Ok(actual == scalar(Some(value), kind)?),
+        Test::In(values) => {
+            for value in *values {
                 cancellation.check()?;
                 if actual == scalar(Some(value), kind)? {
                     return Ok(true);
@@ -549,25 +515,347 @@ pub(crate) fn evaluate_leaf(
             }
             Ok(false)
         }
-        Predicate::Compare {
-            comparison, value, ..
-        } => {
-            let expected = scalar(Some(value), kind)?;
-            if matches!(expected, Scalar::Missing | Scalar::Null) {
-                return Err(invalid("ordered comparison requires a non-null scalar"));
-            }
-            if matches!(actual, Scalar::Missing | Scalar::Null)
-                || std::mem::discriminant(&actual) != std::mem::discriminant(&expected)
-            {
+        Test::Range { lower, upper } => {
+            if matches!(actual, Scalar::Missing | Scalar::Null) {
                 return Ok(false);
             }
-            Ok(match comparison {
-                Comparison::Lt => actual < expected,
-                Comparison::Lte => actual <= expected,
-                Comparison::Gt => actual > expected,
-                Comparison::Gte => actual >= expected,
-            })
+            let (lower, upper) = (scalar_bound(*lower, kind)?, scalar_bound(*upper, kind)?);
+            for bound in [&lower, &upper] {
+                if let Bound::Included(key) | Bound::Excluded(key) = bound
+                    && std::mem::discriminant(key) != std::mem::discriminant(&actual)
+                {
+                    return Ok(false);
+                }
+            }
+            Ok((lower, upper).contains(&actual))
         }
-        _ => Err(invalid("unsupported predicate")),
+        Test::Exists(_) | Test::Contains(_) => unreachable!("handled above"),
+    }
+}
+
+impl Structured {
+    /// Type-check every leaf against declared indexes before any evaluation.
+    pub(crate) fn validate(&self, node: &Node<'_>, allow_scan: bool) -> Result<()> {
+        match node {
+            Node::All => Ok(()),
+            Node::And(children) | Node::Or(children) => children
+                .iter()
+                .try_for_each(|child| self.validate(child, allow_scan)),
+            Node::Not(child) => self.validate(child, allow_scan),
+            Node::Leaf { path, test } => {
+                validate_test(path, test, self.field_kind(path, allow_scan)?)
+            }
+        }
+    }
+
+    /// Upper bound on matching IDs, read from index cardinalities without
+    /// touching documents. `None` means the node needs document scans or a
+    /// complement over its input; such nodes are evaluated last.
+    fn estimate(&self, node: &Node<'_>, universe: usize, budget: usize) -> Result<Option<usize>> {
+        Ok(match node {
+            Node::All => Some(universe),
+            Node::Not(_) => None,
+            Node::And(children) => {
+                let mut best = None;
+                for child in children {
+                    if let Some(estimate) = self.estimate(child, universe, budget)? {
+                        best = Some(best.map_or(estimate, |best: usize| best.min(estimate)));
+                    }
+                }
+                best
+            }
+            Node::Or(children) => {
+                let mut total = 0usize;
+                for child in children {
+                    match self.estimate(child, universe, budget)? {
+                        Some(estimate) => total = total.saturating_add(estimate),
+                        None => return Ok(None),
+                    }
+                }
+                Some(total.min(universe))
+            }
+            Node::Leaf { path, test } => {
+                let Some(index) = self.fields.get(*path) else {
+                    return Ok(None);
+                };
+                let kind = Some(index.kind);
+                let ids = |value: &Value| -> Result<usize> {
+                    Ok(index
+                        .entries
+                        .get(&scalar(Some(value), kind)?)
+                        .map_or(0, IdSet::len))
+                };
+                Some(match test {
+                    Test::Eq(value) | Test::Contains(value) => ids(value)?,
+                    Test::In(values) => values.iter().try_fold(0usize, |total, value| {
+                        ids(value).map(|count| total.saturating_add(count))
+                    })?,
+                    Test::Exists(true) => index.present.len(),
+                    Test::Exists(false) => universe.saturating_sub(index.present.len()),
+                    Test::Range { lower, upper } => {
+                        let range = index_range(*lower, *upper, kind)?;
+                        if empty_range(&range) {
+                            return Ok(Some(0));
+                        }
+                        let limit = budget.min(RANGE_ESTIMATE_BUDGET);
+                        let mut total = 0usize;
+                        for (visited, (_, ids)) in index.entries.range(range).enumerate() {
+                            total = total.saturating_add(ids.len());
+                            if total > limit || visited >= limit {
+                                return Ok(Some(universe.max(total)));
+                            }
+                        }
+                        total
+                    }
+                })
+            }
+        })
+    }
+
+    /// Conjuncts run from the most selective indexed test to scans and
+    /// complements, each over the survivors of the previous ones.
+    fn conjunct_order(&self, children: &[Node<'_>], universe: usize) -> Result<Vec<usize>> {
+        let mut ranked = Vec::with_capacity(children.len());
+        let mut budget = universe;
+        // Exact posting sizes first, so range walks stop at the best of them.
+        let range = |node: &Node<'_>| {
+            matches!(
+                node,
+                Node::Leaf {
+                    test: Test::Range { .. },
+                    ..
+                }
+            )
+        };
+        for pass in [false, true] {
+            for (position, child) in children.iter().enumerate() {
+                if range(child) != pass {
+                    continue;
+                }
+                let estimate = self.estimate(child, universe, budget)?;
+                if let Some(estimate) = estimate {
+                    budget = budget.min(estimate);
+                }
+                ranked.push((estimate.is_none(), estimate.unwrap_or(usize::MAX), position));
+            }
+        }
+        ranked.sort_unstable();
+        Ok(ranked
+            .into_iter()
+            .map(|(_, _, position)| position)
+            .collect())
+    }
+
+    pub(crate) fn candidates<S: DocumentSource + ?Sized>(
+        &self,
+        source: &S,
+        node: &Node<'_>,
+        universe: &IdSet,
+        allow_scan: bool,
+        cap: usize,
+        cancellation: &QueryCancellation,
+    ) -> ReadResult<IdSet, S::Failure> {
+        cancellation.check()?;
+        match node {
+            Node::All => {
+                check_size(universe.len(), cap)?;
+                Ok(universe.clone())
+            }
+            Node::And(children) => {
+                let mut survivors: Option<IdSet> = None;
+                for position in self.conjunct_order(children, universe.len())? {
+                    let input = survivors.as_ref().unwrap_or(universe);
+                    let next = self.candidates(
+                        source,
+                        &children[position],
+                        input,
+                        allow_scan,
+                        cap,
+                        cancellation,
+                    )?;
+                    let empty = next.is_empty();
+                    survivors = Some(next);
+                    if empty {
+                        break;
+                    }
+                }
+                Ok(survivors.unwrap_or_else(|| universe.clone()))
+            }
+            Node::Or(children) => {
+                let mut candidates = IdSet::new();
+                for child in children {
+                    for id in
+                        self.candidates(source, child, universe, allow_scan, cap, cancellation)?
+                    {
+                        cancellation.check()?;
+                        candidates.insert(id);
+                    }
+                    check_size(candidates.len(), cap)?;
+                }
+                Ok(candidates)
+            }
+            Node::Not(child) => {
+                check_size(universe.len(), cap)?;
+                let excluded =
+                    self.candidates(source, child, universe, allow_scan, cap, cancellation)?;
+                Ok(complement(universe, &excluded, cancellation)?)
+            }
+            Node::Leaf { path, test } => {
+                let kind = self.field_kind(path, allow_scan)?;
+                match self.fields.get(*path) {
+                    Some(index) => Ok(index.candidates(
+                        test,
+                        universe,
+                        universe.ptr_eq(&self.ids),
+                        cap,
+                        cancellation,
+                    )?),
+                    None => {
+                        check_size(universe.len(), cap)?;
+                        let mut selected = IdSet::new();
+                        for id in universe {
+                            let matched = document_source::with_live(
+                                source,
+                                id,
+                                None,
+                                cancellation,
+                                |document| {
+                                    evaluate(
+                                        test,
+                                        crate::allocation::pointer(&document.body, path),
+                                        kind,
+                                        cancellation,
+                                    )
+                                },
+                            )?;
+                            if matched {
+                                selected.insert(id.clone());
+                            }
+                        }
+                        Ok(selected)
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// `universe` without `excluded` (a subset of it). A small exclusion shares
+/// the universe's persistent nodes instead of copying every surviving ID.
+fn complement(
+    universe: &IdSet,
+    excluded: &IdSet,
+    cancellation: &QueryCancellation,
+) -> Result<IdSet> {
+    if excluded.len() <= universe.len() / 2 {
+        let mut candidates = universe.clone();
+        for id in excluded {
+            cancellation.check()?;
+            candidates.remove(id);
+        }
+        return Ok(candidates);
+    }
+    let mut candidates = IdSet::new();
+    for id in universe {
+        cancellation.check()?;
+        if !excluded.contains(id) {
+            candidates.insert(id.clone());
+        }
+    }
+    Ok(candidates)
+}
+
+impl FieldIndex {
+    /// `whole` means `universe` is the collection's complete ID set, so every
+    /// index entry is already a subset of it and can be shared in O(1).
+    fn candidates(
+        &self,
+        test: &Test<'_>,
+        universe: &IdSet,
+        whole: bool,
+        cap: usize,
+        cancellation: &QueryCancellation,
+    ) -> Result<IdSet> {
+        let kind = Some(self.kind);
+        let mut candidates = IdSet::new();
+        let mut add = |ids: &IdSet| -> Result<()> {
+            if whole {
+                check_size(
+                    candidates
+                        .len()
+                        .saturating_add(ids.len())
+                        .min(universe.len()),
+                    cap,
+                )?;
+                if candidates.len() < ids.len() {
+                    let previous = std::mem::replace(&mut candidates, ids.clone());
+                    for id in previous {
+                        cancellation.check()?;
+                        candidates.insert(id);
+                    }
+                } else {
+                    for id in ids {
+                        cancellation.check()?;
+                        candidates.insert(id.clone());
+                    }
+                }
+                return check_size(candidates.len(), cap);
+            }
+            let (shorter, longer) = if ids.len() <= universe.len() {
+                (ids, universe)
+            } else {
+                (universe, ids)
+            };
+            for id in shorter {
+                cancellation.check()?;
+                if longer.contains(id) {
+                    candidates.insert(id.clone());
+                    check_size(candidates.len(), cap)?;
+                }
+            }
+            Ok(())
+        };
+        match test {
+            Test::Exists(true) => add(&self.present)?,
+            Test::Exists(false) if whole => {
+                candidates = complement(universe, &self.present, cancellation)?;
+                check_size(candidates.len(), cap)?;
+            }
+            Test::Exists(false) => {
+                for id in universe {
+                    cancellation.check()?;
+                    if !self.present.contains(id) {
+                        candidates.insert(id.clone());
+                        check_size(candidates.len(), cap)?;
+                    }
+                }
+            }
+            Test::Eq(value) | Test::Contains(value) => {
+                if let Some(ids) = self.entries.get(&scalar(Some(value), kind)?) {
+                    add(ids)?;
+                }
+            }
+            Test::In(values) => {
+                for value in *values {
+                    cancellation.check()?;
+                    if let Some(ids) = self.entries.get(&scalar(Some(value), kind)?) {
+                        add(ids)?;
+                    }
+                }
+            }
+            Test::Range { lower, upper } => {
+                let range = index_range(*lower, *upper, kind)?;
+                if !empty_range(&range) {
+                    for (visited, (key, ids)) in self.entries.range(range).enumerate() {
+                        cancellation.check()?;
+                        check_size(visited + 1, cap)?;
+                        if !matches!(key, Scalar::Missing | Scalar::Null) {
+                            add(ids)?;
+                        }
+                    }
+                }
+            }
+        }
+        Ok(candidates)
     }
 }

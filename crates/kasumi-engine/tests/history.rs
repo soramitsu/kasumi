@@ -367,7 +367,11 @@ async fn archived_prefixes_keep_logical_reads_unique_indexes_and_dedup_after_res
             .unwrap()
             .revision;
     }
-    let before = db.get(&context(), "docs", "r0599").await.unwrap();
+    let before = db
+        .get(&context(), "docs", "r0599")
+        .await
+        .unwrap()
+        .expect("document exists");
     let request = ArchiveHistory {
         archive_id: "period-one".into(),
         collection: "docs".into(),
@@ -396,7 +400,11 @@ async fn archived_prefixes_keep_logical_reads_unique_indexes_and_dedup_after_res
     let archive = state.state.history_archives["period-one"].clone();
     drop(state);
     assert_eq!(
-        db.get(&context(), "docs", "r0599").await.unwrap().as_ref(),
+        db.get(&context(), "docs", "r0599")
+            .await
+            .unwrap()
+            .expect("document exists")
+            .as_ref(),
         before.as_ref()
     );
     assert_eq!(
@@ -485,8 +493,8 @@ async fn archived_prefixes_keep_logical_reads_unique_indexes_and_dedup_after_res
     );
     let query: QueryRequest = serde_json::from_value(json!({
         "collection":"docs", "limit":10,
-        "filter":{"op":"compare","field":"/n","comparison":"gte","value":598},
-        "sort":[{"field":"/n","direction":"asc"}]
+        "filter":{"/n":{"gte":598}},
+        "sort":["/n"]
     }))
     .unwrap();
     let rows = db.query(&context(), query.clone()).await.unwrap();
@@ -572,7 +580,11 @@ async fn archived_prefixes_keep_logical_reads_unique_indexes_and_dedup_after_res
     db.install_archive_destination("cold".into(), destination.clone())
         .unwrap();
     assert_eq!(
-        db.get(&context(), "docs", "r0599").await.unwrap().as_ref(),
+        db.get(&context(), "docs", "r0599")
+            .await
+            .unwrap()
+            .expect("document exists")
+            .as_ref(),
         before.as_ref()
     );
     assert_eq!(
@@ -904,6 +916,7 @@ async fn chunked_full_backup_restores_cold_history_and_permanent_identity_withou
             .get(&context(), "docs", "r0011")
             .await
             .unwrap()
+            .expect("document exists")
             .body["payload"]
             .as_str()
             .unwrap()
@@ -1267,7 +1280,11 @@ async fn shutdown_cancels_pending_archive_upload_and_keeps_source_rows_on_restar
     drop(audit);
     let (db, audit, node) = open(&physical, &path, Limits::default(), false).await;
     assert_eq!(
-        db.get(&context(), "docs", "r0000").await.unwrap().version,
+        db.get(&context(), "docs", "r0000")
+            .await
+            .unwrap()
+            .expect("document exists")
+            .version,
         cutoff
     );
     assert!(

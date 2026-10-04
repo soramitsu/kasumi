@@ -1,11 +1,12 @@
 //! Immutable indexes and bounded, exact queries for one published tenant generation.
 //!
 //! `execute` returns the complete bounded result, in stable order. The engine owns
-//! snapshot pagination and fills in the generation revision. Projection produces an
-//! object keyed by the requested JSON Pointers; absent values are omitted. Aggregate
-//! entries are `{ "group": { pointer: value }, "values": { alias: value } }`.
-//! Numbers produced by numeric aggregates are exact decimal strings. `count` is a
-//! JSON integer; missing/null inputs are ignored, except fieldless count counts rows.
+//! snapshot pagination and fills in the generation revision. `select` keeps the
+//! selected members' nesting; absent values are omitted. Aggregate queries return
+//! only `{ "group": {...}, "values": { alias: value } }` entries. Numeric results
+//! keep the field's declared type (exact numbers, or decimal strings for decimal
+//! fields). `count` is a JSON integer; missing/null inputs are ignored, except
+//! `count` of `*` counts rows.
 
 mod index_input;
 pub use index_input::{CollectionRecords, DocumentChanges, DocumentDelta, IndexUpdate};
@@ -20,13 +21,17 @@ pub use workspace::{QueryMemory, QueryWorkspace, query_workspace_estimate};
 mod allocation;
 pub use allocation::{
     change_event_clone_bytes, change_feed_page_workspace_bytes, document_clone_bytes,
-    document_parts_clone_bytes, query_response_clone_bytes,
+    document_parts_clone_bytes, query_response_clone_bytes, vec_bytes,
 };
-mod ordered_seek;
+mod page;
+use page::PageWriter;
+pub use page::{PageBound, copy_page};
 mod scalar;
 mod search;
+mod seek;
+mod select;
 mod structured;
-pub use ordered_seek::{OrderedSeekPage, ordered_seek_request_sha256};
+pub use seek::SeekPage;
 mod validation;
 
 pub use validation::{check_unique, unique_index_key, validate_collection, validate_document};
@@ -39,9 +44,10 @@ use bigdecimal::{BigDecimal, Signed, Zero, num_bigint::BigInt};
 use kasumi_types::*;
 use serde_json::{Map, Value};
 
-use scalar::{Scalar, exhausted, invalid, numeric_value, scalar, validate_pointer};
+use scalar::{Scalar, exhausted, invalid, numeric_value, scalar};
 use search::TextSnapshot;
-use structured::{IdSet, Structured, validate_predicate};
+use select::Selection;
+use structured::{IdSet, Structured};
 
 #[derive(Debug)]
 struct CollectionIndexes {
@@ -140,12 +146,12 @@ impl QueryIndexes {
         document_source::check_source(source, self, &request.collection)?;
         let source = &document_source::BoundSource::new(source);
         validate_name(&request.collection)?;
-        validate_predicate(&request.filter, 0, &mut 0)?;
+        let filter = structured::plan(&request.filter)?;
         let indexes = self
             .collections
             .get(&request.collection)
             .ok_or_else(|| Error::new(ErrorCode::Unavailable, "collection index not ready"))?;
-        if request.text.is_some() {
+        if request.search.is_some() {
             return Err(Error::new(
                 ErrorCode::IndexRequired,
                 "cold text queries require a supported archive text index",
@@ -159,10 +165,10 @@ impl QueryIndexes {
             workspace::bytes(limits.max_query_candidates)?,
             128,
         )?)?;
-        indexes.structured.validate(&request.filter, false)?;
+        indexes.structured.validate(&filter, false)?;
         let candidates = indexes.structured.candidates(
             source,
-            &request.filter,
+            &filter,
             &indexes.structured.ids,
             false,
             limits.max_query_candidates,
@@ -400,8 +406,9 @@ impl QueryIndexes {
         Ok(())
     }
 
-    /// The source must bind these indexes and records to one retained view.
-    /// A cursor is consumed by the engine and cannot be evaluated here directly.
+    /// Every matching row, in order, without a cursor: the complete result must
+    /// fit in `max_cursor_bytes`. The source must bind these indexes and
+    /// records to one retained view. Cursors belong to the tenant engine.
     pub fn execute<S: DocumentSource + ?Sized, W: QueryWorkspace>(
         &self,
         source: &S,
@@ -426,17 +433,61 @@ impl QueryIndexes {
         cancellation: &QueryCancellation,
         memory: &mut QueryMemory<W>,
     ) -> ReadResult<QueryResponse, S::Failure> {
-        memory.scope(|memory| self.execute_in(source, request, limits, cancellation, memory))
+        let bound = PageBound {
+            rows: usize::MAX,
+            bytes: limits.max_cursor_bytes,
+        };
+        let (response, ()) = self.execute_page(
+            source,
+            request,
+            limits,
+            bound,
+            cancellation,
+            memory,
+            |remaining, _| {
+                if remaining.len() != 0 {
+                    return Err(exhausted(
+                        "query result exceeds max_cursor_bytes; narrow the filter or select fewer fields",
+                    ));
+                }
+                Ok(((), 0))
+            },
+        )?;
+        Ok(response)
     }
 
-    fn execute_in<S: DocumentSource + ?Sized, W: QueryWorkspace>(
+    /// Evaluate a query but copy only the rows of its first page, at most
+    /// `bound`. `retain` then receives the rows after that page in result
+    /// order, typically to keep them for a cursor, and returns what it kept
+    /// with the bytes it admitted in `memory` for that. Only the first page's
+    /// documents are copied; ordering reads sort keys, never whole bodies.
+    #[allow(clippy::too_many_arguments)]
+    pub fn execute_page<S: DocumentSource + ?Sized, W: QueryWorkspace, T>(
         &self,
         source: &S,
         request: &QueryRequest,
         limits: &Limits,
+        bound: PageBound,
         cancellation: &QueryCancellation,
         memory: &mut QueryMemory<W>,
-    ) -> ReadResult<(QueryResponse, u64), S::Failure> {
+        retain: impl FnOnce(RemainingRows<'_>, &mut QueryMemory<W>) -> Result<(T, u64)>,
+    ) -> ReadResult<(QueryResponse, T), S::Failure> {
+        memory.scope(|memory| {
+            self.execute_in(source, request, limits, bound, cancellation, memory, retain)
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn execute_in<S: DocumentSource + ?Sized, W: QueryWorkspace, T>(
+        &self,
+        source: &S,
+        request: &QueryRequest,
+        limits: &Limits,
+        bound: PageBound,
+        cancellation: &QueryCancellation,
+        memory: &mut QueryMemory<W>,
+        retain: impl FnOnce(RemainingRows<'_>, &mut QueryMemory<W>) -> Result<(T, u64)>,
+    ) -> ReadResult<((QueryResponse, T), u64), S::Failure> {
         cancellation.check()?;
         document_source::check_source(source, self, &request.collection)?;
         let source = &document_source::BoundSource::new(source);
@@ -444,28 +495,24 @@ impl QueryIndexes {
         if request.cursor.is_some() {
             return Err(invalid("cursor continuation requires the tenant engine").into());
         }
-        if request.limit == 0 || request.limit > limits.max_page_size {
-            return Err(invalid("page limit outside allowed range").into());
+        if request.paging == kasumi_types::Paging::Seek {
+            return Err(invalid("seek paging requires the seek page evaluator").into());
         }
+        check_shape(request, limits)?;
         let indexes = self
             .collections
             .get(&request.collection)
             .ok_or_else(|| Error::new(ErrorCode::Unavailable, "collection index is not ready"))?;
         let structured = &indexes.structured;
-        validate_predicate(&request.filter, 0, &mut 0)?;
-        if request.sort.len() > 8
-            || request.projection.len() > 64
-            || request.aggregates.len() > 16
-            || request.group_by.len() > 8
-        {
-            return Err(
-                invalid("query exceeds sort/projection/aggregate/group field limits").into(),
-            );
-        }
+        let filter = structured::plan(&request.filter)?;
+        let selection = (!request.select.is_empty())
+            .then(|| Selection::new(&request.select, "select"))
+            .transpose()?;
+        Selection::new(&request.group_by, "group_by")?;
         // Recursive planner/group/search work remains provisional. The concrete
         // metadata, selected rows and output copies below have separate claims.
         memory.reserve(query_workspace_estimate(limits, request)?)?;
-        structured.validate(&request.filter, request.allow_scan)?;
+        structured.validate(&filter, request.allow_scan)?;
         let scalar_kind = |path: &str| -> Result<Option<ScalarType>> {
             let kind = structured.field_kind(path, request.allow_scan)?;
             if matches!(
@@ -481,7 +528,7 @@ impl QueryIndexes {
                 allocation::vec_bytes::<Option<ScalarType>>(request.sort.len())?,
                 allocation::vec_bytes::<Option<ScalarType>>(request.group_by.len())?,
             )?,
-            allocation::vec_bytes::<Option<ScalarType>>(request.aggregates.len())?,
+            allocation::vec_bytes::<Option<ScalarType>>(request.aggregate.len())?,
         )?)?;
         let sort_kinds = request
             .sort
@@ -493,32 +540,9 @@ impl QueryIndexes {
             .iter()
             .map(|field| scalar_kind(field))
             .collect::<Result<Vec<_>>>()?;
-        for (index, path) in request.projection.iter().enumerate() {
-            validate_pointer(path)?;
-            if request.projection[..index].contains(path) {
-                return Err(invalid("duplicate projection field").into());
-            }
-        }
-        if request
-            .group_by
-            .iter()
-            .enumerate()
-            .any(|(index, path)| request.group_by[..index].contains(path))
-        {
-            return Err(invalid("duplicate group field").into());
-        }
-        if !request.group_by.is_empty() && request.aggregates.is_empty() {
-            return Err(invalid("group_by requires an aggregation").into());
-        }
-        let mut aggregate_kinds = Vec::with_capacity(request.aggregates.len());
-        for (index, aggregate) in request.aggregates.iter().enumerate() {
-            validate_name(&aggregate.alias)?;
-            if request.aggregates[..index]
-                .iter()
-                .any(|previous| previous.alias == aggregate.alias)
-            {
-                return Err(invalid("duplicate aggregate alias").into());
-            }
+        let mut aggregate_kinds = Vec::with_capacity(request.aggregate.len());
+        for (alias, aggregate) in &request.aggregate {
+            validate_name(alias)?;
             let kind = aggregate
                 .field
                 .as_deref()
@@ -560,16 +584,16 @@ impl QueryIndexes {
         }
 
         let scores = request
-            .text
+            .search
             .as_ref()
-            .map(|text| {
+            .map(|search| {
                 indexes
                     .text
                     .as_ref()
                     .ok_or_else(|| {
                         Error::new(ErrorCode::IndexRequired, "collection has no text index")
                     })?
-                    .search(text, limits.max_query_candidates, cancellation)
+                    .search(search, limits.max_query_candidates, cancellation)
             })
             .transpose()?;
         let text_ids = scores
@@ -586,207 +610,368 @@ impl QueryIndexes {
         let universe = text_ids.as_ref().unwrap_or(&structured.ids);
         let candidates = structured.candidates(
             source,
-            &request.filter,
+            &filter,
             universe,
             request.allow_scan,
             limits.max_query_candidates,
             cancellation,
         )?;
-        // Candidate metadata owns no document body or cache guard. Each loan
-        // ends before another read, and output reloads the exact selected version.
-        let selected_bytes = allocation::vec_bytes::<SelectedRow>(candidates.len())?;
-        memory.reserve(selected_bytes)?;
-        let mut selected = Vec::with_capacity(candidates.len());
-        let mut groups: BTreeMap<Vec<Scalar>, Vec<Accumulator>> = BTreeMap::new();
-        if !request.aggregates.is_empty() && request.group_by.is_empty() {
-            if limits.max_query_groups == 0 {
-                return Err(exhausted("query group budget exceeded").into());
-            }
-            groups.insert(
-                Vec::new(),
-                vec![Accumulator::default(); request.aggregates.len()],
-            );
-        }
-        let iterator_bytes = workspace::imbl_iterator_bytes()?;
-        memory.reserve(iterator_bytes)?;
-        let mut has_numeric_sort_key = false;
-        for candidate in &candidates {
-            cancellation.check()?;
-            let id_bytes = allocation::string_clone_bytes(candidate)?;
-            memory.reserve(id_bytes)?;
-            let id = candidate.clone();
-            let (version, keys, keys_bytes) =
-                document_source::with_live(source, &id, None, cancellation, |document| {
-                    let mut keys_bytes = allocation::vec_bytes::<Scalar>(request.sort.len())?;
-                    memory.reserve(keys_bytes)?;
-                    let mut keys = Vec::with_capacity(request.sort.len());
-                    for (sort, kind) in request.sort.iter().zip(&sort_kinds) {
-                        let (key, bytes) = scalar::query_scalar(
-                            allocation::pointer(&document.body, &sort.field),
-                            *kind,
-                            memory,
-                        )?;
-                        has_numeric_sort_key |= matches!(key, Scalar::Number(_));
-                        keys_bytes = allocation::add(keys_bytes, bytes)?;
-                        keys.push(key);
-                    }
-                    if !request.aggregates.is_empty() {
-                        let key = request
-                            .group_by
-                            .iter()
-                            .zip(&group_kinds)
-                            .map(|(path, kind)| {
-                                scalar(allocation::pointer(&document.body, path), *kind)
-                            })
-                            .collect::<Result<Vec<_>>>()?;
-                        if !groups.contains_key(&key) && groups.len() >= limits.max_query_groups {
-                            return Err(exhausted("query group budget exceeded"));
-                        }
-                        let values = groups.entry(key).or_insert_with(|| {
-                            vec![Accumulator::default(); request.aggregates.len()]
-                        });
-                        for ((accumulator, aggregate), kind) in values
-                            .iter_mut()
-                            .zip(&request.aggregates)
-                            .zip(&aggregate_kinds)
-                        {
-                            accumulator.add(
-                                aggregate,
-                                aggregate
-                                    .field
-                                    .as_deref()
-                                    .and_then(|path| allocation::pointer(&document.body, path)),
-                                *kind,
-                            )?;
-                        }
-                    }
-                    Ok((document.version, keys, keys_bytes))
-                })?;
-            let score = scores.as_ref().and_then(|scores| scores.get(&id)).copied();
-            selected.push(SelectedRow {
-                id,
-                version,
-                keys,
-                score,
-                id_bytes,
-                keys_bytes,
-            });
-        }
-        // The borrowed iterator drops at the end of the loop; its candidate
-        // root can now go too. Never consume a shared imbl root to obtain IDs.
-        memory.release(iterator_bytes)?;
-        drop(candidates);
-        // Candidate IDs are already ordered. Preserve that order without an
-        // extra sort when no field ordering or text ranking was requested.
-        if !request.sort.is_empty() || scores.is_some() {
-            let decimal_scratch = if has_numeric_sort_key {
-                scalar::PROVISIONAL_DECIMAL_SCRATCH_BYTES
-            } else {
-                0
-            };
-            memory.reserve(decimal_scratch)?;
-            cancellation::sort(&mut selected, cancellation, |left, right| {
-                for ((a, b), order) in left.keys.iter().zip(&right.keys).zip(&request.sort) {
-                    let ordering = a.cmp(b);
-                    let ordering = if order.direction == Direction::Desc {
-                        ordering.reverse()
-                    } else {
-                        ordering
-                    };
-                    if !ordering.is_eq() {
-                        return ordering;
-                    }
-                }
-                // Explicit field sorting takes precedence. Search defaults to rank.
-                if request.sort.is_empty() {
-                    let rank = right
-                        .score
-                        .unwrap_or_default()
-                        .total_cmp(&left.score.unwrap_or_default());
-                    if !rank.is_eq() {
-                        return rank;
-                    }
-                }
-                left.id.cmp(&right.id)
-            })?;
-            memory.release(decimal_scratch)?;
+        if request.is_aggregate() {
+            let (response, retained) = aggregate(
+                source,
+                request,
+                &candidates,
+                &group_kinds,
+                &aggregate_kinds,
+                limits,
+                cancellation,
+                memory,
+            )?;
+            let (kept, kept_bytes) = retain(RemainingRows::empty(), memory)?;
+            return Ok(((response, kept), allocation::add(retained, kept_bytes)?));
         }
 
-        let mut aggregates = Vec::with_capacity(groups.len());
-        let mut budget = ResultBudget::new(limits.max_result_bytes);
-        for (keys, accumulators) in groups {
-            cancellation.check()?;
-            let mut group = Map::new();
-            for ((path, key), kind) in request.group_by.iter().zip(keys).zip(&group_kinds) {
-                if let Some(value) = group_value(key, *kind)? {
-                    group.insert(path.clone(), value);
+        let mut page = PageWriter::new(selection.as_ref(), bound, candidates.len(), memory)?;
+        let iterator_bytes = workspace::imbl_iterator_bytes()?;
+        memory.reserve(iterator_bytes)?;
+        let (kept, kept_bytes) = if request.sort.is_empty() && scores.is_none() {
+            // Candidate IDs are already in result order: copy the first page
+            // and pass the rest on without reading them.
+            let mut ids = candidates.iter().peekable();
+            let mut copied = 0;
+            while let Some(id) = ids.peek() {
+                cancellation.check()?;
+                if page.is_full()
+                    || !document_source::with_live(source, id, None, cancellation, |document| {
+                        page.push(document, None, memory)
+                    })?
+                {
+                    break;
                 }
+                ids.next();
+                copied += 1;
             }
-            let mut values = Map::new();
-            for (accumulator, aggregate) in accumulators.into_iter().zip(&request.aggregates) {
-                values.insert(aggregate.alias.clone(), accumulator.finish(aggregate));
-            }
-            let entry = serde_json::json!({"group": group, "values": values});
-            budget.account(&entry)?;
-            aggregates.push(entry);
-        }
-        let mut retained_rows = allocation::vec_bytes::<QueryRow>(selected.len())?;
-        memory.reserve(retained_rows)?;
-        let mut rows = Vec::with_capacity(selected.len());
-        for SelectedRow {
-            id,
-            version,
-            keys,
-            score,
-            id_bytes,
-            keys_bytes,
-        } in selected
-        {
-            drop(keys);
-            memory.release(keys_bytes)?;
-            let (row, row_bytes) =
-                document_source::with_live(source, &id, Some(version), cancellation, |document| {
-                    let borrowed = BorrowedRow {
-                        document,
-                        projection: &request.projection,
-                        score,
-                    };
-                    budget.account(&borrowed)?;
-                    let bytes = borrowed.clone_bytes()?;
-                    memory.reserve(bytes)?;
-                    Ok((borrowed.into_owned(), bytes))
-                })?;
-            rows.push(row);
-            retained_rows = allocation::add(retained_rows, row_bytes)?;
-            drop(id);
-            memory.release(id_bytes)?;
-        }
-        // Vec::IntoIter retains its whole backing allocation until the loop
-        // ends, even as individual selected IDs/keys are destroyed above.
-        memory.release(selected_bytes)?;
-        let retained_aggregates = if aggregates.is_empty() {
-            0
+            let remaining = RemainingRows {
+                rows: Remaining::Candidates(ids),
+                len: candidates.len() - copied,
+            };
+            retain(remaining, memory)?
         } else {
-            let mut aggregate_output = ResultBudget::new(limits.max_result_bytes);
-            aggregate_output.account(&aggregates)?;
-            workspace::product(workspace::bytes(aggregate_output.bytes)?, 3)?
+            let (ordered, ordered_bytes) = order(
+                source,
+                request,
+                &candidates,
+                scores.as_ref(),
+                &sort_kinds,
+                cancellation,
+                memory,
+            )?;
+            let mut copied = 0;
+            for row in &ordered {
+                cancellation.check()?;
+                if page.is_full()
+                    || !document_source::with_live(
+                        source,
+                        row.id,
+                        None,
+                        cancellation,
+                        |document| page.push(document, row.score, memory),
+                    )?
+                {
+                    break;
+                }
+                copied += 1;
+            }
+            let remaining = RemainingRows {
+                rows: Remaining::Ordered(ordered[copied..].iter()),
+                len: ordered.len() - copied,
+            };
+            let kept = retain(remaining, memory)?;
+            drop(ordered);
+            memory.release(ordered_bytes)?;
+            kept
         };
+        memory.release(iterator_bytes)?;
+        drop(candidates);
+        let (rows, retained) = page.finish();
         let response = QueryResponse {
             revision: 0,
             rows,
-            aggregates,
+            aggregates: Vec::new(),
             cursor: None,
         };
-        // Include the envelope and separators in the exact wire-size bound too.
-        let mut output = ResultBudget::new(limits.max_result_bytes);
-        output.account(&response)?;
         cancellation.check()?;
-        // Row clones retain their admitted backing, including container slack.
-        // Aggregate formatting/group output still use the separate provisional
-        // allowance; physical peak custody remains unchanged on all outcomes.
-        let retained = allocation::add(retained_rows, retained_aggregates)?;
-        Ok((response, retained))
+        Ok(((response, kept), allocation::add(retained, kept_bytes)?))
     }
+}
+
+/// Result order for sorted and ranked queries. Reads only each candidate's
+/// sort keys; bodies are copied later for the rows a page actually returns.
+/// Returns the ordered rows and their admitted bytes, which stay live.
+fn order<'a, S: DocumentSource + ?Sized, W: QueryWorkspace>(
+    source: &S,
+    request: &QueryRequest,
+    candidates: &'a IdSet,
+    scores: Option<&BTreeMap<String, f32>>,
+    sort_kinds: &[Option<ScalarType>],
+    cancellation: &QueryCancellation,
+    memory: &mut QueryMemory<W>,
+) -> ReadResult<(Vec<OrderedRow<'a>>, u64), S::Failure> {
+    let ordered_bytes = allocation::vec_bytes::<OrderedRow<'_>>(candidates.len())?;
+    memory.reserve(ordered_bytes)?;
+    let mut ordered = Vec::with_capacity(candidates.len());
+    let mut keys_bytes = 0u64;
+    let mut has_numeric_sort_key = false;
+    for id in candidates {
+        cancellation.check()?;
+        let score = scores.and_then(|scores| scores.get(id)).copied();
+        let keys = if request.sort.is_empty() {
+            Vec::new()
+        } else {
+            document_source::with_live(source, id, None, cancellation, |document| {
+                let mut bytes = allocation::vec_bytes::<Scalar>(request.sort.len())?;
+                memory.reserve(bytes)?;
+                let mut keys = Vec::with_capacity(request.sort.len());
+                for (sort, kind) in request.sort.iter().zip(sort_kinds) {
+                    let (key, key_bytes) = scalar::query_scalar(
+                        allocation::pointer(&document.body, &sort.field),
+                        *kind,
+                        memory,
+                    )?;
+                    has_numeric_sort_key |= matches!(key, Scalar::Number(_));
+                    bytes = allocation::add(bytes, key_bytes)?;
+                    keys.push(key);
+                }
+                keys_bytes = allocation::add(keys_bytes, bytes)?;
+                Ok(keys)
+            })?
+        };
+        ordered.push(OrderedRow { id, score, keys });
+    }
+    let decimal_scratch = if has_numeric_sort_key {
+        scalar::PROVISIONAL_DECIMAL_SCRATCH_BYTES
+    } else {
+        0
+    };
+    memory.reserve(decimal_scratch)?;
+    cancellation::sort(&mut ordered, cancellation, |left, right| {
+        for ((a, b), order) in left.keys.iter().zip(&right.keys).zip(&request.sort) {
+            let ordering = a.cmp(b);
+            let ordering = if order.direction == Direction::Desc {
+                ordering.reverse()
+            } else {
+                ordering
+            };
+            if !ordering.is_eq() {
+                return ordering;
+            }
+        }
+        // Explicit field sorting takes precedence. Search defaults to rank.
+        if request.sort.is_empty() {
+            let rank = right
+                .score
+                .unwrap_or_default()
+                .total_cmp(&left.score.unwrap_or_default());
+            if !rank.is_eq() {
+                return rank;
+            }
+        }
+        left.id.cmp(right.id)
+    })?;
+    memory.release(decimal_scratch)?;
+    // Keys are only needed to sort; the rows keep IDs borrowed from candidates.
+    for row in &mut ordered {
+        drop(std::mem::take(&mut row.keys));
+    }
+    memory.release(keys_bytes)?;
+    Ok((ordered, ordered_bytes))
+}
+
+struct OrderedRow<'a> {
+    id: &'a str,
+    score: Option<f32>,
+    keys: Vec<Scalar>,
+}
+
+/// The rows after a page, in result order: each item is a document ID and its
+/// search score. Borrowed from the query's candidates, so nothing is copied
+/// until the caller decides what to keep.
+pub struct RemainingRows<'a> {
+    rows: Remaining<'a>,
+    len: usize,
+}
+enum Remaining<'a> {
+    Candidates(
+        std::iter::Peekable<imbl::ordset::Iter<'a, String, imbl::shared_ptr::DefaultSharedPtr>>,
+    ),
+    Ordered(std::slice::Iter<'a, OrderedRow<'a>>),
+}
+impl RemainingRows<'_> {
+    fn empty() -> Self {
+        Self {
+            rows: Remaining::Ordered([].iter()),
+            len: 0,
+        }
+    }
+}
+impl<'a> Iterator for RemainingRows<'a> {
+    type Item = (&'a str, Option<f32>);
+    fn next(&mut self) -> Option<Self::Item> {
+        let row = match &mut self.rows {
+            Remaining::Candidates(ids) => ids.next().map(|id| (id.as_str(), None)),
+            Remaining::Ordered(rows) => rows.next().map(|row| (row.id, row.score)),
+        };
+        self.len = self.len.saturating_sub(usize::from(row.is_some()));
+        row
+    }
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.len, Some(self.len))
+    }
+}
+impl ExactSizeIterator for RemainingRows<'_> {}
+
+fn check_shape(request: &QueryRequest, limits: &Limits) -> Result<()> {
+    if request.sort.len() > 8
+        || request.select.len() > 64
+        || request.aggregate.len() > 16
+        || request.group_by.len() > 8
+    {
+        return Err(invalid(
+            "query exceeds its sort (8), select (64), aggregate (16) or group_by (8) limit",
+        ));
+    }
+    if request.is_aggregate() {
+        if !request.sort.is_empty() || !request.select.is_empty() || request.limit.is_some() {
+            return Err(invalid(
+                "aggregate queries return groups, not rows; remove sort, select and limit",
+            ));
+        }
+    } else {
+        if !request.group_by.is_empty() {
+            return Err(invalid("group_by requires an aggregate"));
+        }
+        let limit = request.page_size();
+        if limit == 0 || limit > limits.max_page_size {
+            return Err(invalid(format!(
+                "limit must be between 1 and {}",
+                limits.max_page_size
+            )));
+        }
+    }
+    if let Some(search) = &request.search
+        && search.distance.is_some()
+        && search.mode != TextMode::Fuzzy
+    {
+        return Err(invalid("distance applies only to fuzzy search"));
+    }
+    Ok(())
+}
+
+/// Aggregate queries return only their groups: no row is copied, and counts
+/// of matching documents do not read document bodies at all.
+#[allow(clippy::too_many_arguments)]
+fn aggregate<S: DocumentSource + ?Sized, W: QueryWorkspace>(
+    source: &S,
+    request: &QueryRequest,
+    candidates: &IdSet,
+    group_kinds: &[Option<ScalarType>],
+    aggregate_kinds: &[Option<ScalarType>],
+    limits: &Limits,
+    cancellation: &QueryCancellation,
+    memory: &mut QueryMemory<W>,
+) -> ReadResult<(QueryResponse, u64), S::Failure> {
+    let aggregates: Vec<&Aggregation> = request.aggregate.values().collect();
+    let mut groups: BTreeMap<Vec<Scalar>, Vec<Accumulator>> = BTreeMap::new();
+    if request.group_by.is_empty() {
+        if limits.max_query_groups == 0 {
+            return Err(exhausted("query group budget exceeded").into());
+        }
+        groups.insert(Vec::new(), vec![Accumulator::default(); aggregates.len()]);
+    }
+    let documents_only = request.group_by.is_empty()
+        && aggregates.iter().all(|aggregate| {
+            aggregate.function == AggregateFunction::Count && aggregate.field.is_none()
+        });
+    if documents_only {
+        let matched = u64::try_from(candidates.len()).map_err(|_| exhausted("count overflow"))?;
+        for accumulator in groups.values_mut().flatten() {
+            accumulator.count = matched;
+        }
+    } else {
+        let iterator_bytes = workspace::imbl_iterator_bytes()?;
+        memory.reserve(iterator_bytes)?;
+        for id in candidates {
+            cancellation.check()?;
+            document_source::with_live(source, id, None, cancellation, |document| {
+                let key = request
+                    .group_by
+                    .iter()
+                    .zip(group_kinds)
+                    .map(|(path, kind)| scalar(allocation::pointer(&document.body, path), *kind))
+                    .collect::<Result<Vec<_>>>()?;
+                if !groups.contains_key(&key) && groups.len() >= limits.max_query_groups {
+                    return Err(exhausted("query group budget exceeded"));
+                }
+                let values = groups
+                    .entry(key)
+                    .or_insert_with(|| vec![Accumulator::default(); aggregates.len()]);
+                for ((accumulator, aggregate), kind) in
+                    values.iter_mut().zip(&aggregates).zip(aggregate_kinds)
+                {
+                    accumulator.add(
+                        aggregate,
+                        aggregate
+                            .field
+                            .as_deref()
+                            .and_then(|path| allocation::pointer(&document.body, path)),
+                        *kind,
+                    )?;
+                }
+                Ok(())
+            })?;
+        }
+        memory.release(iterator_bytes)?;
+    }
+    let mut output = Vec::with_capacity(groups.len());
+    let mut budget = ResultBudget::new(limits.max_result_bytes);
+    for (keys, accumulators) in groups {
+        cancellation.check()?;
+        let mut group = Map::new();
+        for ((path, key), kind) in request.group_by.iter().zip(keys).zip(group_kinds) {
+            if let Some(value) = group_value(key, *kind)? {
+                Selection::insert(&mut group, path, value)?;
+            }
+        }
+        let mut values = Map::new();
+        for (((alias, aggregate), accumulator), kind) in request
+            .aggregate
+            .iter()
+            .zip(accumulators)
+            .zip(aggregate_kinds)
+        {
+            values.insert(alias.clone(), accumulator.finish(aggregate, *kind)?);
+        }
+        let entry = serde_json::json!({"group": group, "values": values});
+        budget.account(&entry)?;
+        output.push(entry);
+    }
+    let retained = if output.is_empty() {
+        0
+    } else {
+        let mut bytes = ResultBudget::new(limits.max_result_bytes);
+        bytes.account(&output)?;
+        workspace::product(workspace::bytes(bytes.bytes)?, 3)?
+    };
+    cancellation.check()?;
+    Ok((
+        QueryResponse {
+            revision: 0,
+            rows: Vec::new(),
+            aggregates: output,
+            cursor: None,
+        },
+        retained,
+    ))
 }
 
 struct PreparedIndexCollection<'a, R: CollectionRecords, D: DocumentChanges> {
@@ -802,19 +987,10 @@ enum PreparedIndexInput<'a, R: CollectionRecords, D: DocumentChanges> {
     },
 }
 
-struct SelectedRow {
-    id: String,
-    version: u64,
-    keys: Vec<Scalar>,
-    score: Option<f32>,
-    id_bytes: u64,
-    keys_bytes: u64,
-}
-
 /// Serializes borrowed values for exact capacity checks before any body clone.
 struct BorrowedRow<'a> {
     document: &'a Document,
-    projection: &'a [String],
+    selection: Option<&'a Selection>,
     score: Option<f32>,
 }
 impl serde::Serialize for BorrowedRow<'_> {
@@ -826,75 +1002,31 @@ impl serde::Serialize for BorrowedRow<'_> {
         let mut row = serializer.serialize_struct("QueryRow", 4)?;
         row.serialize_field("id", &self.document.id)?;
         row.serialize_field("version", &self.document.version)?;
-        row.serialize_field(
-            "body",
-            &BorrowedProjection {
-                body: &self.document.body,
-                paths: self.projection,
-            },
-        )?;
+        match self.selection {
+            Some(selection) => row.serialize_field("body", &selection.view(&self.document.body))?,
+            None => row.serialize_field("body", &self.document.body)?,
+        }
         row.serialize_field("score", &self.score)?;
         row.end()
     }
 }
-struct BorrowedProjection<'a> {
-    body: &'a Value,
-    paths: &'a [String],
-}
-impl serde::Serialize for BorrowedProjection<'_> {
-    fn serialize<S: serde::Serializer>(
-        &self,
-        serializer: S,
-    ) -> std::result::Result<S::Ok, S::Error> {
-        use serde::ser::SerializeMap;
-        if self.paths.is_empty() {
-            return serde::Serialize::serialize(self.body, serializer);
-        }
-        let mut map = serializer.serialize_map(None)?;
-        for path in self.paths {
-            if let Some(value) = allocation::pointer(self.body, path) {
-                map.serialize_entry(path, value)?;
-            }
-        }
-        map.end()
-    }
-}
 impl BorrowedRow<'_> {
     fn clone_bytes(&self) -> Result<u64> {
-        let mut bytes = allocation::string_clone_bytes(&self.document.id)?;
-        if self.projection.is_empty() {
-            return allocation::add(bytes, allocation::json_clone_bytes(&self.document.body)?);
-        }
-        for path in self.projection {
-            if let Some(value) = allocation::pointer(&self.document.body, path) {
-                // Each pointer is a distinct output key. Overlapping subtrees
-                // are copied independently and must each retain a full claim.
-                bytes = allocation::add(bytes, allocation::object_entry_bytes()?)?;
-                bytes = allocation::add(bytes, allocation::string_clone_bytes(path)?)?;
-                bytes = allocation::add(bytes, allocation::json_clone_bytes(value)?)?;
-            }
-        }
-        Ok(bytes)
+        let body = match self.selection {
+            Some(selection) => selection.clone_bytes(&self.document.body)?,
+            None => allocation::json_clone_bytes(&self.document.body)?,
+        };
+        allocation::add(allocation::string_clone_bytes(&self.document.id)?, body)
     }
 
     fn into_owned(self) -> QueryRow {
-        let body = if self.projection.is_empty() {
-            self.document.body.clone()
-        } else {
-            // Avoid Map::from_iter's temporary collector/sort storage. The
-            // preflight counts each inserted node, key and cloned subtree.
-            let mut projected = Map::new();
-            for path in self.projection {
-                if let Some(value) = allocation::pointer(&self.document.body, path) {
-                    projected.insert(path.clone(), value.clone());
-                }
-            }
-            Value::Object(projected)
-        };
         QueryRow {
             id: self.document.id.clone(),
             version: self.document.version,
-            body,
+            body: match self.selection {
+                Some(selection) => selection.project(&self.document.body),
+                None => self.document.body.clone(),
+            },
             score: self.score,
         }
     }
@@ -938,19 +1070,32 @@ impl Accumulator {
         Ok(())
     }
 
-    fn finish(self, aggregate: &Aggregation) -> Value {
-        match aggregate.function {
+    /// Results keep the field's declared type: decimal fields produce decimal
+    /// strings and number fields exact JSON numbers. Counts are integers.
+    fn finish(self, aggregate: &Aggregation, kind: Option<ScalarType>) -> Result<Value> {
+        let value = |number: &BigDecimal| numeric_value(number, kind);
+        Ok(match aggregate.function {
             AggregateFunction::Count => Value::from(self.count),
-            AggregateFunction::Sum => numeric_value(&self.sum),
-            AggregateFunction::Min => self.min.as_ref().map(numeric_value).unwrap_or(Value::Null),
-            AggregateFunction::Max => self.max.as_ref().map(numeric_value).unwrap_or(Value::Null),
+            AggregateFunction::Sum => value(&self.sum)?,
+            AggregateFunction::Min => self
+                .min
+                .as_ref()
+                .map(value)
+                .transpose()?
+                .unwrap_or(Value::Null),
+            AggregateFunction::Max => self
+                .max
+                .as_ref()
+                .map(value)
+                .transpose()?
+                .unwrap_or(Value::Null),
             AggregateFunction::Avg if self.count == 0 => Value::Null,
-            AggregateFunction::Avg => numeric_value(&exact_average(
+            AggregateFunction::Avg => value(&exact_average(
                 &self.sum,
                 self.count,
                 aggregate.scale.expect("validated average scale"),
-            )),
-        }
+            ))?,
+        })
     }
 }
 
@@ -981,11 +1126,7 @@ fn group_value(key: Scalar, kind: Option<ScalarType>) -> Result<Option<Value>> {
         Scalar::Boolean(value) => Some(Value::Bool(value)),
         Scalar::String(value) => Some(Value::String(value)),
         Scalar::UpperBound => return Err(invalid("internal bound cannot be a stored value")),
-        Scalar::Number(value) if kind == Some(ScalarType::Decimal) => Some(numeric_value(&value)),
-        Scalar::Number(value) => Some(
-            serde_json::from_str(&value.normalized().to_string())
-                .map_err(|_| invalid("cannot encode exact group number"))?,
-        ),
+        Scalar::Number(value) => Some(numeric_value(&value, kind)?),
     })
 }
 
@@ -1026,3 +1167,6 @@ mod source_test_utils;
 
 #[cfg(test)]
 mod index_input_tests;
+
+#[cfg(test)]
+mod bench_tests;

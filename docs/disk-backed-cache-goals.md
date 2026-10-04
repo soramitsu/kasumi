@@ -43,16 +43,16 @@ formats, with no migration, fallback reader or dual writer.
 
 **C01–C07 remain open.** The native key directory is disk-backed, but production
 still uses resident document maps and structured/text indexes. Application changes are being
-implemented and tested in an isolated integration cohort; they have not been
+implemented and tested in isolated integration cohorts; they have not been
 promoted to the live checkout. No combination of component passes closes
 a production goal.
 
 | Component | Verified progress | Remaining production dependency |
 | --- | --- | --- |
-| Native lookup/publication | Complete 598-test native selection; actual 100,000-row and >96 MiB atomic images. Both large encrypted Store workloads pass on their recorded source, including 65,539 operations under the original 8 MiB staging cache. | Final installed workloads, sustained reclamation and the unresolved physical-enrollment mismatch below. |
+| Native lookup/publication | Earlier pinned selections pass 598 native tests and actual 100,000-row / >96 MiB images. The contraction correction passes all 191 NodeDisk tests and the original large byte-bound Store image. The original 65,539-operation Store rerun, with its unchanged 8 MiB staging cache, is currently pending on the unchanged v1 baseline. | Remaining operational reproduction, final installed workloads and sustained reclamation. The filesystem cause is unproven. |
 | Documents and writes | Protected current/old sources, accepted primary edits, mandatory structured catalogs and an actual indexed Edit commit/selected receipt have scoped passes. Primary command staging and fixed point backing are allocated before candidate construction. | Complete candidate/journal/index/verification ownership before local Raft acceptance, all ingress/recovery paths, full index graph proof and activation. |
-| Query and text | All 119 Query tests (including the schema streaming preflight) and the earlier 11 encrypted Engine ordered/catalog/query checks pass. The expanded original-history baseline passes with a real Stats branch, independent physical statistics and graph checks. All 12 original-source journal ownership checks pass. Accepted-row/component and complete LiveTerms semantics, mixed/empty group retirement, and actual selected metadata/ID headers pass their encrypted checks. | Sparse edits, repeated disk merge execution, native allocation admission and final atomic all-role publication remain open. Complete lease-page replacement and release of resident generation ownership remain pending. These component proofs do not grant publication authority or activate serving. |
-| Cache and refill | Large-cache sampling/churn, same-Core reclamation and collection protection have focused passes. Primary/structured phases, refusal ownership and RSS callbacks pass their recorded selections. All 30 latest refill/worker/child checks pass, including the nine new retained-Session races, one-slot full-fit and shutdown cases. Structured traversal verifies a zero-new-read second pass. | Finish text traversal, exact native-warmer completion join, all-role completion, automatic service startup/shutdown and final accounting/workload qualification. PrimaryAndStructured cannot claim whole-database residency. |
+| Query and text | All 120 Query tests (including the schema streaming preflight and native flush-group geometry) and the earlier 11 encrypted Engine ordered/catalog/query checks pass. The expanded original-history baseline passes with a real Stats branch, independent physical statistics and graph checks. All 12 original-source journal ownership checks pass. Accepted-row/component and complete LiveTerms semantics, mixed/empty group retirement, and actual selected metadata/ID headers pass their encrypted checks. | Sparse edits, repeated disk merge execution, native allocation admission and final atomic all-role publication remain open. Complete lease-page replacement and release of resident generation ownership remain pending. These component proofs do not grant publication authority or activate serving. |
+| Cache and refill | Large-cache sampling/churn, same-Core reclamation and collection protection have focused passes. All 58 latest refill/worker/child checks pass, now including the finite selected-lease Session phase and mutation races. Three closed Generation-handle and six actual control/weak-tail accounting tests pass. Structured traversal verifies a zero-new-read second pass. | Finish text traversal, the funded census of all retained public generations, all-role completion, automatic service startup/shutdown and final accounting/workload qualification. PrimaryAndStructured cannot claim whole-database residency. |
 | Operations and consensus | Snapshot install/reopen, source-retirement, audit cancellation and selected recovery repairs have scoped evidence. Reviewed canonical OpenRaft inventory passes 251 library tests and 18 verifier regressions. | Engine-wide admission before acceptance, unresolved operational cases, final feature/platform/release checks on one promoted source. |
 
 The new point pressure fixture initially used an API that preserves ordinary
@@ -81,18 +81,232 @@ The active execution goal is to finish the implementation and its final evidence
 not merely write this plan. The following milestones divide the remaining code
 into reviewable production changes. They do not replace or weaken C01–C07.
 
+### Production milestones
+
+| Milestone and C goals | Production outcome still needed | Executable exit gate |
+|---|---|---|
+| **M01: Repair current failures** — C05, C06, C07 | Preserve the metadata-slot repair and finish startup-source, election/membership and capture/restore repairs; preserve original failures and real cleanup. Keep independent M02/M03 implementation moving when it supplies a named repair. | Each valid scenario reaches its intended assertion on the integrated source. Preserve invalid configurations as negative cases; derive separate positive fixtures from canonical constructor costs and explicit workload capacity. Do not mask defects with changed caps, deadlines, assertions or row counts, accept unknown outcomes as success, or release old roots prematurely. Final operational selection passes, including exact reopen. |
+| **M02: Reusable encrypted reads** — C01, C05, C06; supports C02 | Route earlier control planning, selected capture and installed terminal scans through their actual operation-owned point backing. Finish constructor/retirement custody and the exact read-owner handoff. | Real encrypted reads reuse bounded backing without mandatory per-record reservations; snapshot, table, provider, authentication and current expiry checks remain exact. Two distinct cleanup failures retain both originals. Verify the large capture path separately from fixture setup. This does not yet prove postcommit capacity. |
+| **M03: Protected publication capacity** — C01, C05, C06 | Activate real current/next source rights and reusable workspace; fund escaped historical sources before return. Bind complete successor capacity to local leader/follower acceptance, recovered accepted suffixes, membership/catalog changes and snapshot installation. | After accepted admission, saturating ordinary capacity cannot introduce a new mandatory source/planner/capture refusal. Several writes progress while old snapshots stay readable and charged. Refusal happens before local acceptance; canceled waiters cannot release accepted capacity. Recovery and all ingress paths use the same owned guarantee. |
+| **M04: Authoritative disk documents** — C03, C04, C05, C06 | Wire primary construction, edits, deletes and recovery into actual ordered publication. Switch document queries to exact durable roots and activate full-fit document caching. Remove the resident all-document serving alternative. | The real service performs point reads, scans, CAS, batches, idempotent replay, retained-version reads and restart with documents larger in total than RAM. Fitting new/updated/rarely read documents stay resident after warm-up. Document publication and all associated metadata are atomic. Coordinate the cutover with M05 so existing index features remain available. |
+| **M05: Disk indexes and growing metadata** — C01, C03, C04, C05, C06 | Persist structured/unique/text indexes and bound their build/edit/query work. Replace remaining data-sized resident history, archive references and active staging. Preserve the implemented scalar retained-log endpoints and streaming header fold; qualify their exact immutable-source proof through append, truncate and snapshot transitions. Finish bounds for protocol-owned term metadata, requested entry batches and opaque response bytes; retain the exact active window needed for consensus. Keep already-disk-backed receipts/terminal rows on their canonical paths. | All supported filters, ordering, projections, aggregates, pagination and text analyzers/ranking agree below and above the bound. Documents and index roots commit together; schema/uniqueness behavior is preserved. Startup, log/header traversal and builders do not materialize a full data-sized map/vector. |
+| **M06: Complete residency and accounting** — C01, C03, C05, C07 | Integrate one total budget across native and decoded caches, query/output work, protected sources, retained versions and bounded collection reservations. Expose finite preload/refill completion and budget-change behavior. Develop this alongside M04/M05. | A complete fitting dataset has zero serving document/index/directory fetches and no capacity eviction after warm-up, including after writes. Growth through the bound evicts gradually; cold scans preserve the hot set; deletion/budget growth refills everything that fits. Actual live and weak/pinned tails stay charged until release. RSS/swap are measured separately from cache accounting. |
+| **M07: Final operational qualification** — all C01–C07 | Run the final canonical implementation through standalone/replicated operation, restart, snapshots, backup/restore, archive/audit, maintenance, security and shutdown. Validate deployment defaults and document measured limits. | The five existing workload classes pass on final source, together with repository/release gates. Preserve the completed 100,000-row recovery and 4,200-command permanent-custody snapshot/reopen results; rerun affected checks on final source. Demonstrate bounded maintenance progress and actual physical reclamation; reject older formats. Publish measured cache/RSS/swap/latency results without a universal hit-rate or disk-size claim. |
+
+Security, durability, snapshot correctness and memory ownership apply during
+every milestone. M01 can expose dependencies on M02/M03; carry a specifically
+identified failure into the relevant repair instead of repeatedly rerunning it
+or declaring the whole milestone blocked. A component test or test-only path
+cannot close a production milestone. Mark a milestone complete only when its
+code is active in the supported production paths and its acceptance gate passes.
+
+### Current integration checkpoint
+
+The current integration checkpoint has five specific completion gates:
+
+- **Entered-planner cleanup:** keep the original error, Cell and credit after
+  positive source close and point return. A transient Cell lock conflict must
+  remain retryable without replaying retirement, and an active wake callback
+  cannot authorize completed custody. Count waiter registration before cloning
+  a Waker, and keep it counted through replacement/destruction callbacks. Test
+  contention, concurrent registration, delayed callbacks and original panics.
+  Qualify the supported serialized async drain and diagnostic-observer race: a
+  temporary retained result must become complete on a real retry after normal
+  callback return; a caught original panic remains retained.
+- **Published-capture cleanup:** the original expiry scenario already committed
+  its durable publication, then failed to capture a selected reader. Join only
+  the exact returned capture error to positively retired point backing and the
+  registered reader. Retain its response, forbid acknowledgment, and require the
+  original reopen assertions. Earlier planner refusal proof cannot cover this
+  later failure.
+- **Native schema memory:** fund the actual private node controls, compiler and
+  final vectors, sorting workspace, locations/URIs and supported validator boxes.
+  Quote input vector capacity independently of length. Actual allocator tests
+  must cover spare capacity; complete compiler admission stays open until every
+  remaining term is funded.
+- **Text counter ownership:** qualify the single original native write transaction
+  and fixed-u64 update, preserving absent-zero insertion, overflow, rollback,
+  pinned readers and exact failure identity. This removes duplicate reads; it
+  does not satisfy native writer funding before Raft acceptance.
+- **Selected text refill:** traverse all ten actual catalog roles, canonical
+  component directories and every file chunk through the original selected
+  source. Qualify repeated hot reads, corrupt tails, expiry, cancellation and
+  pressure/refill. Byte residency alone leaves native parsing, semantic proof
+  and the text completion gate open.
+
+These gates extend the prepared sparse-text/catalog, early-expiry, QueryMemory
+planner and draft-credit batch. The latest successor retains 2,052 source/config
+pins. Its scoped results now include all five selected text-warming cases, the
+actual async callback test (four cases), original cancellation and checkpoint
+checks, all seven standing scratch-backing cases, all 124 Query tests, 141 native
+reference tests and 1,727 native schema tests. Original setup/compile/accounting
+failures and exact corrections remain in the evidence ledger. These passes
+qualify the tested components; they do not activate production serving.
+
+The service expiry scenario still fails. The earlier 2,049-pin run observed an
+ordinal-2 sink failure with no preparation remaining. The expanded 2,052-pin
+run instead observes an ordinal-1 action error after successful publication,
+with a positively closed failed-capture cell. The existing binder-only receipt
+cannot cover a later selection-validation failure. Add only a proof tied to the
+actual validation's normal returned error, exact cell, positive native close
+and original point-bank return; panic, foreign errors and unknown native
+outcomes must remain retained. Preserve both observed failures and the original
+shutdown/reopen assertions.
+
+The unchanged eight ordered-index and two sparse-text checks are running on
+successor v2. The original 65,539-operation Store case still runs on frozen v1
+(2,036 pins) with its original 8 MiB staging cache. Neither checkout is promoted
+to production. Recovery checkpoints preserve both sources and the 29 external
+native inputs; source-specific runner logs establish qualification. No performance
+conclusion about the intended large-cache deployment follows from the
+zero-native-cache component fixtures.
+
+Reusable scratch backing now passes its scoped runtime checks. Both transaction
+creation and maintenance roll consume the original leases; only positive
+physical file retirement returns a lease to its slot. The prospective-byte test
+also distinguishes an adopted file's reusable lease from its two ordinary setup
+leases, which retire on actual close. Engine counters do not yet activate this
+bank. Next, qualify the actual native maintenance codec buffers, then complete
+leaf/directory/cache/reclamation workspace and the owner-bound fixed-u64 write.
+The actual Engine budget headroom and admission before acceptance remain
+required; neither prerequisite alone closes M03 or authorizes publication.
+
 The next concrete deliverables, in dependency order, are:
 
 | Deliverable | Required proof before proceeding |
 | --- | --- |
-| Close the text statistics spool accounting failure | Preserve the actual multi-chunk 2/1/0/2 rounds, file identity and original reservation; preprepare the two mandatory file owners causing the observed 124,608-byte excess. A direct sequential spool must preserve positive retirement receipts even when construction fails. No larger allowance or weaker equality. |
+| Integrate the qualified statistics spool | The direct prepared stream now passes all seven regressions, including unchanged multi-chunk 2/1/0/2 rounds, file identity, exact original/aggregate credits and saturated slots. All nine registered-spool custody tests pass. Connect this preparation to the actual command before acceptance; other native index allocations remain an independent gate. |
 | Join every index role to one durable source | The complete structured/unique/text catalog, exact component origins, semantic graph and released-object census authorize one final publication. Sparse edits and repeated merges use that same proof. |
-| Install bounded metadata and lease pages | Transfer actual validator and archive metadata credit; retain no resident document/index graph. Close validator access so concurrency cannot grow hidden regex pools outside the budget, and prove recursive compiled nodes retire. Exact snapshot pages preserve authorization, expiry and original cleanup. Selected metadata refuses resident-only APIs. |
-| Complete the full-fit refill proof | The retained worker now passes pressure/checkpoint and shutdown checks. Five fresh native current/pinned status checks now pass. Add the existing warmer's completion wake and actual text traversal for that same source before reporting all data resident. |
+| Install bounded metadata and lease pages | The recursive owner repair and all 1,718 native schema tests now pass. Derive the remaining compiler/validator/validation-work bounds and transfer the original validator and archive metadata credit. The closed serialized owner prevents concurrent calls from growing hidden regex pools; parser scratch and literal classification pass all 240 native regex tests. Exact snapshot pages preserve authorization, expiry and original cleanup. Selected metadata refuses resident-only APIs. |
+| Complete the full-fit refill proof | All 58 integrated refill checks now pass, including the lease phase and mutation revision. Add text traversal and the complete historical-generation census. Closed Generation handles and their prospective control/weak-tail credit pass nine checks in isolation; selected metadata funding remains separate. Current-generation filling and native current/pinned completion alone cannot declare complete historical residency. |
 | Activate the production path | Connect startup, writes, reads, leases, every replica's preacceptance funding and joined shutdown; remove resident serving alternatives together. |
 | Qualify one final source | Run below-bound, crossing-bound and refill workloads plus feature, operational and release checks. Only these results can close C01–C07/M01–M07. |
 
-The latest complete-catalog fixture aborts with a stack overflow during native scratch creation; its five native-status companions pass before the abort. The new join remains unqualified. Separate fixture phases and fund the large owner before repeating the unchanged catalog/census assertions; do not increase thread stacks or memory limits.
+### Recorded integration history
+
+The following records preserve earlier source-specific results. The current
+checkpoint above and the evidence ledger determine the latest status; historical
+passes do not promote an isolated component into production.
+
+The complete-catalog fixture now passes all three cases on 1,991 unchanged source/config pins: positive semantic replay, missing-LiveTerms rejection and original failed-join custody. Every original catalog/census assertion and the normal stack limit are preserved; the actual component heap is prospectively funded. The joined index owner remains Unverified until native allocation admission and production publication are qualified.
+
+The original native schema probe established a real ownership defect: compiling
+`{"$ref":"#","unevaluatedProperties":false}` leaves one original pending
+properties cell strongly owned after the validator is dropped. The original runtime and
+parity cases passed, but this retirement case failed on unchanged source.
+The reviewed acyclic repair and immutable shared auxiliary payloads now pass
+the full 1,709-test native library suite, including the unchanged failing probe,
+actual compiler-created payload sharing and clone/error lifetime cases.
+The remaining metadata goal requires the actual allocation model; shared
+payloads do not bound repeated context-dependent compiler work.
+All 239 native regex tests also pass, including actual parser scratch versus
+its prospective layout quote. This closes the demonstrated cycle defect for
+the qualified source, while complete native admission remains open. The same
+cohort also contains native writer flush-group parity, exact borrowed sparse
+text inputs, command-wide text-update detection and distinct original removal
+and unchanged-projection capabilities. These are implementation steps, not
+selected publication authority.
+
+The latest combined qualification passed on 2,007 unchanged source/config pins:
+1,709 native schema tests, 120 Query tests, three accepted-text Edit checks,
+54 refill checks, four selected-lease checks and eight source-cohort checks.
+The `source_registry_` filter matched no tests and supplies no evidence. All
+18 external schema and four external regex test inputs remained unchanged.
+
+The selected-lease census has a finite UUID cursor, exact manager/source
+identity, original retention credit and mutation revisions. Its Session phase
+now passes its qualification in isolation. Public Generation
+ownership now uses closed handles there, with separately reviewed prospective
+control and weak-tail credit. The remaining historical-generation census must
+carry original metadata/validator/control credit through the last owner; a
+permanently strong registry or relabelled history credit cannot close that gate.
+
+The preceding integration checkpoint was applied only in the isolated 2,015-file
+cohort and remains partially qualified. It adds the selected-lease Session phase,
+sparse text framing, structural schema-planning prerequisites and the narrow
+same-file physical contraction reconciliation. Its exit gates are concrete:
+
+- The six unchanged text tests that failed with `text directory still has live
+  aliases` must pass after synchronous native compression, together with the
+  actual LZ4 writer geometry/semantic checks. The preceding complete text run
+  passed 59/65; no failed cleanup is accepted as a positive join.
+- All NodeDisk tests must pass, including the original negative enrollment
+  drift case and both observed contraction geometries. Reproduce the affected
+  operational workloads before closing physical enrollment; unit fixtures
+  cannot establish the filesystem cause or production recovery.
+- The finite lease Session must finish current and leased primary/structured
+  traversal plus the same native source union, and reject mutation races.
+  Text and arbitrary public historical generations must remain explicitly
+  pending until their real traversal and funded census are installed.
+- Qualify structural planning against the actual native compiler/reference
+  implementation, including recursive presence-only references and original
+  errors. This prerequisite does not yet admit the complete compiler graph.
+
+The first validation of this cohort passed all 120 Query tests, then stopped
+at a Store cursor borrow type error before Engine tests ran. The one-call
+borrow correction is being validated without changing its safety predicates.
+The Store correction passes all 191 NodeDisk tests and the unchanged original
+large encrypted byte-image case (786.66s). The original operation-count check is queued behind the full text suite.
+The Engine expiry/reopen check currently fails earlier at retained ordinary
+completion cleanup; diagnose its original owner before retrying physical reopen.
+Engine compilation then
+found two missing test error conversions and two calls to a private Session
+helper; their narrow corrections are reviewed, with Engine execution pending.
+The new native structural checks pass in all 1,713 schema tests. The standalone
+reference library has one failing bundled-metadata ownership fixture (136/137).
+The reviewed closed Generation-handle migration, sparse physical graph checks
+and main schema operation cursor are now applied to the isolated 2,020-file
+cohort. Engine test compilation found two remaining mechanical substitutions;
+no new Engine pass is inferred. Native main-schedule/classifier qualification
+passes all 1,715 schema and 240 regex tests on that exact source. The legacy
+handle constructor cannot stand in for funded selected metadata, weak-control
+tails or a complete history census.
+
+The 2,023-pin cohort combines
+the narrow compile/reference/reentry corrections, prospectively funded Generation
+control and weak tails using the existing allocator allowance, and sparse Edit
+physical-statistics verification from the original accepted snapshot. All 137
+native reference tests pass. Its Engine selection passes 79/80: all control,
+handle, refill, Session and accepted Edit checks pass; one document corruption
+fixture incorrectly classifies restored version zero as corrupt. The reviewed
+test-only repair preserves every corruption assertion using an invalid upper
+boundary and adds valid zero-revision loans. The next 2,026-pin cohort includes
+that repair, actual schema-cache scheduling and shared sparse/Baseline component
+comparison. All 1,718 native schema and eight document/revision checks pass;
+the complete original text suite now passes all 65 tests in 5,834.71s. The following Store operation-count case started but has no terminal result; its runner is absent and the case requires a new run. The original expiry scenario
+currently fails at retained cleanup before reopen and remains a required repair. These pieces do not yet authorize final index publication, selected
+metadata construction, or production full-residency completion. The subsequent
+2,036-pin cohort installs the funded Generation registry/Session and native
+structural executor; 140 reference and 1,722 native schema tests pass. After a narrow test-helper return conversion, the Engine selection passes
+98/100, including all six registered-generation Session cases. Two preexisting
+empty-database fixtures stop at missing audit placement before refill enters;
+the explicit fixture setup repair is prepared. Both ordered verification cases pass (1,453.62s). The original expiry case still
+fails at post-publication capture/action cleanup; its exact witness is recorded
+below. All 2,036 source/config pins match at the runner exit.
+
+The next reviewable completion gates are:
+
+| Work | Required next result |
+| --- | --- |
+| Operational cleanup | The unchanged expiry witness shows sink success followed by an action/capture error: Cell closed with no views, loans or native failure, but the exact failed owner still blocks completion. Add positive post-publication capture retirement and exact original action-error custody; preserve the failed response and no acknowledgment. Qualify early refusal and entered-planner retirement separately. Finish the original large Store operation-count case and exact shutdown/reopen. |
+| Historical residency | Qualify the reviewed registry/Session integration over current, leased and registered historical generations, including last-strong-owner retirement, same-source native pages, mutation races and zero-read repeat traversal. Keep public-generation and text completion pending until the actual selected metadata constructor and text traversal use funded owners. |
+| Native schema ownership | Qualify the reviewed structural executor on actual resolver transitions, then install the real QueryMemory-funded driver. Schedule exhaustion remains incomplete: URI/pointer, regex, vocabulary, registry, context, compiler output and validation/error work need prospective original credits before complete admission. |
+| Sparse text publication | Qualify the actual ordered primary + carry/replace/delete/insert + complete catalog/Manifest replay. Retain the original pending primary draft across typed errors and panics. Move its credit into preaccepted workspace and fund native writer/parser/counter work before production publication; the distinct test-only unverified result supplies no publication authority. |
+| Production activation | Install the completed document/index/metadata owners, finite all-role refill and every replica's preacceptance capacity together; then remove resident alternatives and run the final workload matrix. |
+
+All five rows are open. Reviewed or passing test-only prerequisites are not
+production completion. The detailed source hashes and original failures remain
+in the evidence ledger; future progress must name which gate it closes.
+
+Qualification also retains a concrete performance gate: the original eight-document
+text group-merge case finished within a 5,834.71-second passing 65-test
+unoptimized run. One-second stack samples observe statistics replay,
+immutable index replacement/retirement and encrypted native writes. This does
+not establish a deadlock or a filesystem cause. The original fixture explicitly
+sets persistent and scratch native cache bytes to zero; this is not a measurement
+of the intended large-cache production mode. Identify repeated work from source before changing it; preserve its data,
+assertions, configured budgets and durability. Component correctness alone
+cannot close C07.
 
 The immediate critical path is now explicit:
 
@@ -113,7 +327,9 @@ The immediate critical path is now explicit:
    actual text traversal finishes and the existing native directory/value-page
    warmer proves completion for the same current/pinned source set. An
    unrelated source's refused cache offer must not prevent a fitting source
-   from completing its finite pass.
+   from completing its finite pass. Retained snapshot generations need their own
+   closed census and original retention credit; a raw Generation Arc or a
+   current-only traversal cannot certify their complete residency.
 5. Promote one coherent source and run its repository, operational and release
    gates. Earlier component passes remain evidence for their exact source only.
 
@@ -130,7 +346,11 @@ The current code gates are narrower than those five release milestones:
   collection and captured-source workspace before candidate construction.
   Its input is already a committed command: this does not establish capacity
   before durable local Raft acceptance. Candidate/journal/index allocations
-  and every replica acceptance/recovery corridor remain M03 requirements.
+  and every replica acceptance/recovery corridor remain M03 requirements. The
+  actual sparse primary draft must enter the operation owner before fallible
+  index work; its distinct draft credit also still needs to move from accepted
+  edit_collection execution into the original preaccepted workspace. Keeping a
+  draft on failure does not prove that this credit was admitted before acceptance.
 - **Pressure and refill:** all selected document-pool tests now pass, including
   callbacks that reenter during credit release. The constructor fixtures account
   for its three actual fixed owners; former insufficient slot caps remain
@@ -266,23 +486,6 @@ the required behavior; they do not qualify disk text parity. A baseline must
 preserve existing physical text statistics, including mixed-deletion segments.
 An explicit schema rebuild can use its existing fresh-live-row semantics.
 Treating both as a rebuild from live rows would change ranking at cutover.
-
-| Milestone and C goals | Production outcome still needed | Executable exit gate |
-|---|---|---|
-| **M01: Repair current failures** — C05, C06, C07 | Preserve the metadata-slot repair and finish startup-source, election/membership and capture/restore repairs; preserve original failures and real cleanup. Keep independent M02/M03 implementation moving when it supplies a named repair. | Each valid scenario reaches its intended assertion on the integrated source. Preserve invalid configurations as negative cases; derive separate positive fixtures from canonical constructor costs and explicit workload capacity. Do not mask defects with changed caps, deadlines, assertions or row counts, accept unknown outcomes as success, or release old roots prematurely. Final operational selection passes, including exact reopen. |
-| **M02: Reusable encrypted reads** — C01, C05, C06; supports C02 | Route earlier control planning, selected capture and installed terminal scans through their actual operation-owned point backing. Finish constructor/retirement custody and the exact read-owner handoff. | Real encrypted reads reuse bounded backing without mandatory per-record reservations; snapshot, table, provider, authentication and current expiry checks remain exact. Two distinct cleanup failures retain both originals. Verify the large capture path separately from fixture setup. This does not yet prove postcommit capacity. |
-| **M03: Protected publication capacity** — C01, C05, C06 | Activate real current/next source rights and reusable workspace; fund escaped historical sources before return. Bind complete successor capacity to local leader/follower acceptance, recovered accepted suffixes, membership/catalog changes and snapshot installation. | After accepted admission, saturating ordinary capacity cannot introduce a new mandatory source/planner/capture refusal. Several writes progress while old snapshots stay readable and charged. Refusal happens before local acceptance; canceled waiters cannot release accepted capacity. Recovery and all ingress paths use the same owned guarantee. |
-| **M04: Authoritative disk documents** — C03, C04, C05, C06 | Wire primary construction, edits, deletes and recovery into actual ordered publication. Switch document queries to exact durable roots and activate full-fit document caching. Remove the resident all-document serving alternative. | The real service performs point reads, scans, CAS, batches, idempotent replay, retained-version reads and restart with documents larger in total than RAM. Fitting new/updated/rarely read documents stay resident after warm-up. Document publication and all associated metadata are atomic. Coordinate the cutover with M05 so existing index features remain available. |
-| **M05: Disk indexes and growing metadata** — C01, C03, C04, C05, C06 | Persist structured/unique/text indexes and bound their build/edit/query work. Replace remaining data-sized resident history, archive references and active staging. Preserve the implemented scalar retained-log endpoints and streaming header fold; qualify their exact immutable-source proof through append, truncate and snapshot transitions. Finish bounds for protocol-owned term metadata, requested entry batches and opaque response bytes; retain the exact active window needed for consensus. Keep already-disk-backed receipts/terminal rows on their canonical paths. | All supported filters, ordering, projections, aggregates, pagination and text analyzers/ranking agree below and above the bound. Documents and index roots commit together; schema/uniqueness behavior is preserved. Startup, log/header traversal and builders do not materialize a full data-sized map/vector. |
-| **M06: Complete residency and accounting** — C01, C03, C05, C07 | Integrate one total budget across native and decoded caches, query/output work, protected sources, retained versions and bounded collection reservations. Expose finite preload/refill completion and budget-change behavior. Develop this alongside M04/M05. | A complete fitting dataset has zero serving document/index/directory fetches and no capacity eviction after warm-up, including after writes. Growth through the bound evicts gradually; cold scans preserve the hot set; deletion/budget growth refills everything that fits. Actual live and weak/pinned tails stay charged until release. RSS/swap are measured separately from cache accounting. |
-| **M07: Final operational qualification** — all C01–C07 | Run the final canonical implementation through standalone/replicated operation, restart, snapshots, backup/restore, archive/audit, maintenance, security and shutdown. Validate deployment defaults and document measured limits. | The five existing workload classes pass on final source, together with repository/release gates. Preserve the completed 100,000-row recovery and 4,200-command permanent-custody snapshot/reopen results; rerun affected checks on final source. Demonstrate bounded maintenance progress and actual physical reclamation; reject older formats. Publish measured cache/RSS/swap/latency results without a universal hit-rate or disk-size claim. |
-
-Security, durability, snapshot correctness and memory ownership apply during
-every milestone. M01 can expose dependencies on M02/M03; carry a specifically
-identified failure into the relevant repair instead of repeatedly rerunning it
-or declaring the whole milestone blocked. A component test or test-only path
-cannot close a production milestone. Mark a milestone complete only when its
-code is active in the supported production paths and its acceptance gate passes.
 
 ### Immediate integration gates
 
@@ -666,6 +869,15 @@ These remain release gates even when related component reruns pass:
   retaining an uncharged validator clone is not a memory-accounting solution.
   The existing schema input limits alone do not establish compiler or retained
   allocation bounds, including reference expansion, regex work and weak tails.
+  The isolated closed native owner serializes compilation/meta-validation and
+  each validator's calls without exposing a raw native validator. Its three
+  runtime/parity/concurrency-poison tests pass. The acyclic owner repair now
+  passes all 1,713 native cases, including the unchanged Weak-only recursive-drop
+  probe, actual compiler-created auxiliary sharing and clone/error lifetime fixtures. All 239 native
+  regex tests pass with a source-derived parser-scratch quote; that quote does
+  not establish the full compiler or regex-engine bound. Compilation workspace,
+  repeated auxiliary reference trees, containers, regex construction/retention
+  and validation/error workspace each need source-derived prospective funding.
   Snapshot leases currently share resident ID trees and select/size rows from
   resident maps. Replace the entire page-selection path with bounded headers and
   exact same-snapshot live/archive loans; replacing only ID enumeration is
@@ -707,6 +919,11 @@ evidence from the actual final implementation at the stated scope.
 - Give the cache a large explicit byte allocation within the installed memory
   owner. Choose and justify the default using the available deployment budget;
   do not invent a fixed RAM fraction before accounting for other owners.
+- Make the configured cache capacity usable across its native and decoded
+  layers. Internal per-group or per-tier ceilings must be explicit configured
+  constraints, or reconcile with the total so they do not evict a fitting
+  database merely because one collection or index holds most of the bytes.
+  Unused collection reservations must not strand capacity needed for full fit.
 - Count decoded object capacity, keys, indexes, directory pages, cache policy
   metadata, shared allocations and retained historical versions. Count each
   shared allocation once and keep its charge until its last holder releases it.
@@ -737,6 +954,9 @@ evidence from the actual final implementation at the stated scope.
    Verify full residency, no pressure evictions and no document/index fetches
    from storage. Authorization, strict-read audit and durability I/O are
    measured separately and remain enforced.
+   Include an uneven distribution with one large collection/index and many
+   small ones, proving that independent internal ceilings do not leave data
+   cold while the complete eligible set fits the declared configuration.
    Include never-revisited records and a one-pass scan. After warm-up, exercise
    inserts, replacements, deletes and compaction while the selected/pinned
    allocation union and required workspace remain within their admitted bounds.

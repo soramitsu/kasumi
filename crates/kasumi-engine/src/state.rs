@@ -2585,13 +2585,74 @@ fn apply_batch(
         evaluated_at_ms,
         512,
     )?;
+    let patch_expansion_limit = state.limits.max_batch_bytes;
     apply_mutations(
         state,
         &batch.operations.iter().collect::<Vec<_>>(),
         revision,
         true,
         indexes,
+        patch_expansion_limit,
     )
+}
+
+/// Extra workspace for copying patch source documents, independently of the
+/// encoded patch input. The 1 MiB document ceiling is enforced by validate_limits.
+/// Callers use immutable operation ceilings when admitting queued proposals;
+/// ordered apply enforces the current, possibly narrower, byte limit.
+pub(crate) fn merge_patch_workspace(patch_count: usize, expansion_limit: usize) -> usize {
+    patch_count
+        .saturating_mul(1 << 20)
+        .min(expansion_limit)
+        .saturating_mul(3)
+}
+
+fn validate_merge_patch_expansion(
+    state: &TenantState,
+    operations: &[&Mutation],
+    expansion_limit: usize,
+) -> Result<()> {
+    let patch_count = operations
+        .iter()
+        .filter(|mutation| matches!(mutation, Mutation::Patch { .. }))
+        .count();
+    let workspace = merge_patch_workspace(patch_count, expansion_limit) as u64;
+    let mut encoded = 0usize;
+    let mut cloned = 0u64;
+    for mutation in operations {
+        let Mutation::Patch { collection, id, .. } = mutation else {
+            continue;
+        };
+        let Some(document) = state
+            .collections
+            .get(collection)
+            .and_then(|collection| collection.documents.get(id))
+        else {
+            // Preserve ordinary missing-document/precondition validation below.
+            continue;
+        };
+        encoded = encoded
+            .checked_add(encoded_len(&document.body)?)
+            .filter(|bytes| *bytes <= expansion_limit)
+            .ok_or_else(|| {
+                Error::new(
+                    ErrorCode::ResourceExhausted,
+                    "merge patch source documents exceed byte limit",
+                )
+            })?;
+        // Encoded size alone cannot bound allocations for object-heavy JSON.
+        // Quote all source clones before copying even the first document.
+        cloned = cloned
+            .checked_add(kasumi_query::document_clone_bytes(document)?)
+            .filter(|bytes| *bytes <= workspace)
+            .ok_or_else(|| {
+                Error::new(
+                    ErrorCode::ResourceExhausted,
+                    "merge patch source documents exceed workspace limit",
+                )
+            })?;
+    }
+    Ok(())
 }
 
 fn apply_mutations(
@@ -2600,7 +2661,9 @@ fn apply_mutations(
     revision: u64,
     include_versions: bool,
     indexes: &QueryIndexes,
+    patch_expansion_limit: usize,
 ) -> Result<WriteReceipt> {
+    validate_merge_patch_expansion(state, operations, patch_expansion_limit)?;
     let mut targets = BTreeSet::new();
     let mut versions = BTreeMap::new();
     for &mutation in operations {
@@ -2643,16 +2706,31 @@ fn apply_mutations(
             }
         }
         let old_bytes = old.map(|d| encoded_len(&d.body)).transpose()?.unwrap_or(0) as u64;
-        match mutation {
-            Mutation::Put { body, .. } => {
-                let bytes = encoded_len(body)?;
+        let replacement = match mutation {
+            Mutation::Put { body, .. } => Some(std::borrow::Cow::Borrowed(body)),
+            Mutation::Patch { patch, .. } => {
+                let Some(old) = old else {
+                    return Err(Error::new(
+                        ErrorCode::NotFound,
+                        "patch requires an existing document; use put to create it",
+                    ));
+                };
+                let mut body = old.body.clone();
+                kasumi_types::apply_merge_patch(&mut body, patch)?;
+                Some(std::borrow::Cow::Owned(body))
+            }
+            Mutation::Delete { .. } => None,
+        };
+        match replacement {
+            Some(body) => {
+                let bytes = encoded_len(&*body)?;
                 if bytes > state.limits.max_document_bytes {
                     return Err(Error::new(
                         ErrorCode::ResourceExhausted,
                         "document exceeds byte limit",
                     ));
                 }
-                indexes.validate_document(&collection.definition, body)?;
+                indexes.validate_document(&collection.definition, &body)?;
                 if old.is_none() {
                     state.document_count += 1;
                 }
@@ -2666,7 +2744,7 @@ fn apply_mutations(
                     Arc::new(Document {
                         id: id.to_owned(),
                         version: revision,
-                        body: body.clone(),
+                        body: body.into_owned(),
                     }),
                 );
                 collection.data_epoch = revision;
@@ -2674,7 +2752,7 @@ fn apply_mutations(
                     versions.insert(document_path(name, id), revision);
                 }
             }
-            Mutation::Delete { .. } => {
+            None => {
                 if collection.documents.remove(id).is_some() {
                     state.document_count -= 1;
                     state.logical_bytes -= old_bytes;

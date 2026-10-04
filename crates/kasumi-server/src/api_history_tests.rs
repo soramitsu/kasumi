@@ -40,7 +40,7 @@ async fn native_history_archive_and_durable_feed_preserve_exact_rows_and_scope()
         .await
         .unwrap();
     let data = fixture.data();
-    let batch: kasumi_types::MutationBatch = serde_json::from_str(r#"{"idempotency_key":"native-history","read_set":[],"operations":[{"op":"put","collection":"history","id":"h1","expected":{"kind":"absent"},"body":{"amount":90071992547409931234567890.123456789}}]}"#).unwrap();
+    let batch: kasumi_types::MutationBatch = serde_json::from_str(r#"{"idempotency_key":"native-history","read_set":[],"operations":[{"op":"put","collection":"history","id":"h1","expected":"absent","body":{"amount":90071992547409931234567890.123456789}}]}"#).unwrap();
     let receipt = data
         .mutate(native(
             proto::MutateRequest {
@@ -114,7 +114,9 @@ async fn native_history_archive_and_durable_feed_preserve_exact_rows_and_scope()
         ))
         .await
         .unwrap()
-        .into_inner();
+        .into_inner()
+        .document
+        .unwrap();
     let body: serde_json::Value = serde_json::from_slice(&document.body_json).unwrap();
     assert_eq!(
         body["amount"].to_string(),

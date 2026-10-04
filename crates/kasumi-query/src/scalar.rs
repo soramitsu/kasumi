@@ -143,7 +143,12 @@ pub(crate) fn validate_pointer(path: &str) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn numeric_value(n: &BigDecimal) -> Value {
-    // Exact numbers are returned as decimal strings, including aggregate values.
-    Value::String(n.normalized().to_string())
+/// An exact computed number in its field's declared form: a decimal string
+/// for `decimal` fields and an exact JSON number otherwise.
+pub(crate) fn numeric_value(n: &BigDecimal, kind: Option<ScalarType>) -> Result<Value> {
+    let text = n.normalized().to_string();
+    if kind == Some(ScalarType::Decimal) {
+        return Ok(Value::String(text));
+    }
+    serde_json::from_str(&text).map_err(|_| invalid("cannot encode exact number"))
 }

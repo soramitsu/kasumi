@@ -32,7 +32,8 @@ fn allocation_bytes(requested: u64) -> Result<u64> {
     )
 }
 
-pub(crate) fn vec_bytes<T>(len: usize) -> Result<u64> {
+/// Backing for a vector of exactly `len` elements, with allocation slack.
+pub fn vec_bytes<T>(len: usize) -> Result<u64> {
     let requested = len.checked_mul(size_of::<T>()).ok_or_else(overflow)?;
     allocation_bytes(u64::try_from(requested).map_err(|_| overflow())?)
 }

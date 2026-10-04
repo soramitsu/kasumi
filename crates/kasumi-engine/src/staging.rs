@@ -631,7 +631,15 @@ pub(super) fn apply(
                     command.timestamp_ms,
                     staged.limits.atomic.max_read_assertions,
                 )?;
-                let receipt = apply_mutations(&mut staged, &operations, revision, false, indexes)?;
+                let patch_expansion_limit = staged.limits.atomic.max_transaction_bytes;
+                let receipt = apply_mutations(
+                    &mut staged,
+                    &operations,
+                    revision,
+                    false,
+                    indexes,
+                    patch_expansion_limit,
+                )?;
                 crate::index_source::validate_changes(indexes, state, &staged, &changes(&stage))?;
                 Ok(receipt)
             });
@@ -716,8 +724,8 @@ pub(super) fn validate_chunk(chunk: &StagedChunk, limits: &Limits) -> Result<()>
     for mutation in &chunk.operations {
         validate_name(mutation.target().0)?;
         validate_name(mutation.target().1)?;
-        if let Mutation::Put { body, .. } = mutation
-            && encoded_len(body)? > limits.max_document_bytes
+        if let Mutation::Put { body: value, .. } | Mutation::Patch { patch: value, .. } = mutation
+            && encoded_len(value)? > limits.max_document_bytes
         {
             return Err(Error::new(
                 ErrorCode::ResourceExhausted,

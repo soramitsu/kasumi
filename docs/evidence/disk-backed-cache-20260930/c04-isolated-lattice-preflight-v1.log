@@ -1,5 +1,0 @@
-Command: cargo test --locked -p lindera-dictionary --lib -- normal_lattice_ common_prefix
-ISOLATED_SOURCE=/tmp/kasumi-source-cohort-validation-v1
-CARGO_TARGET_DIR=/Users/takemiyamakoto/dev/kasumi/target/disk-backed-cache
-error: package `lindera-dictionary` cannot be tested because it requires dev-dependencies and is not a member of the workspace
-Runner: 0.25s; exit=101; matching=1798/1798

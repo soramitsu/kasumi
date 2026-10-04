@@ -284,13 +284,6 @@ pub(crate) trait FixtureQueries {
         limits: &Limits,
         cancellation: &QueryCancellation,
     ) -> Result<QueryResponse>;
-    fn ordered_seek_with_cancellation_fixture(
-        &self,
-        collections: &BTreeMap<String, CollectionState>,
-        request: &OrderedSeekRequest,
-        limits: &Limits,
-        cancellation: &QueryCancellation,
-    ) -> Result<OrderedSeekPage>;
 }
 impl FixtureQueries for QueryIndexes {
     fn build_fixture(collections: &BTreeMap<String, CollectionState>) -> Result<Self> {
@@ -391,27 +384,6 @@ impl FixtureQueries for QueryIndexes {
             limits,
             cancellation,
             &mut query_memory(),
-        )
-        .map_err(ReadFailure::into_query_error)
-    }
-    fn ordered_seek_with_cancellation_fixture(
-        &self,
-        collections: &BTreeMap<String, CollectionState>,
-        request: &OrderedSeekRequest,
-        limits: &Limits,
-        cancellation: &QueryCancellation,
-    ) -> Result<OrderedSeekPage> {
-        let collection = collections
-            .get(&request.collection)
-            .ok_or_else(|| Error::new(ErrorCode::NotFound, "fixture collection absent"))?;
-        self.ordered_seek_with_cancellation(
-            &ResidentSource {
-                collection,
-                indexes: self,
-            },
-            request,
-            limits,
-            cancellation,
         )
         .map_err(ReadFailure::into_query_error)
     }

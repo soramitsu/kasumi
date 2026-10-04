@@ -324,6 +324,160 @@ fn read_assertions_block_write_skew_and_require_read_authority() {
 }
 
 #[test]
+fn merge_patches_validate_the_merged_document_and_apply_atomically() {
+    let db = engine(false, Limits::default());
+    db.apply_command(
+        &db.disk,
+        1,
+        command(Operation::CreateCollection(definition())),
+    )
+    .unwrap()
+    .unwrap();
+    let seed = MutationBatch::with_key("seed")
+        .insert(
+            "people",
+            "a",
+            json!({"email":"a","age":30,"nick":"al","prefs":{"dark":true}}),
+        )
+        .insert("people", "b", json!({"email":"b","age":40}));
+    db.apply_command(&db.disk, 2, command(Operation::Mutate(seed)))
+        .unwrap()
+        .unwrap();
+    let document = |id: &str| {
+        db.generation().unwrap().state.collections["people"].documents[id]
+            .as_ref()
+            .clone()
+    };
+    let receipt = db
+        .apply_command(
+            &db.disk,
+            3,
+            command(Operation::Mutate(
+                MutationBatch::with_key("patch").patch_version(
+                    "people",
+                    "a",
+                    json!({"age":31,"nick":null,"prefs":{"lang":"ja"}}),
+                    2,
+                ),
+            )),
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(receipt.versions.values().copied().collect::<Vec<_>>(), [3]);
+    assert_eq!(
+        document("a").body,
+        json!({"email":"a","age":31,"prefs":{"dark":true,"lang":"ja"}})
+    );
+    assert_eq!(document("a").version, 3);
+    // Each failure rejects the whole batch, including its valid first write.
+    for (revision, mutation, code) in [
+        (
+            4,
+            Mutation::patch("people", "missing", json!({"age":1}), Precondition::Any),
+            ErrorCode::NotFound,
+        ),
+        (
+            5,
+            Mutation::patch("people", "a", json!({"age":-1}), Precondition::Any),
+            ErrorCode::SchemaViolation,
+        ),
+        (
+            6,
+            Mutation::patch("people", "a", json!({"email":null}), Precondition::Any),
+            ErrorCode::SchemaViolation,
+        ),
+        (
+            7,
+            Mutation::patch("people", "a", json!({"age":32}), Precondition::Version(2)),
+            ErrorCode::Conflict,
+        ),
+        (
+            8,
+            Mutation::patch("people", "a", json!({"email":"b"}), Precondition::Any),
+            ErrorCode::Conflict,
+        ),
+        (
+            9,
+            Mutation::patch(
+                "people",
+                "a",
+                json!(["not", "an", "object"]),
+                Precondition::Any,
+            ),
+            ErrorCode::InvalidArgument,
+        ),
+    ] {
+        let batch = MutationBatch::with_key(format!("rejected-{revision}"))
+            .patch("people", "b", json!({"age":41}))
+            .push(mutation);
+        assert_eq!(
+            db.apply_command(&db.disk, revision, command(Operation::Mutate(batch)))
+                .unwrap()
+                .unwrap_err()
+                .code,
+            code,
+            "revision {revision}"
+        );
+        assert_eq!(document("b").body["age"], json!(40));
+        assert_eq!(document("a").version, 3);
+    }
+    // Unique keys may move between documents within one atomic batch.
+    db.apply_command(
+        &db.disk,
+        10,
+        command(Operation::Mutate(
+            MutationBatch::with_key("swap")
+                .patch("people", "a", json!({"email":"b"}))
+                .patch("people", "b", json!({"email":"a"})),
+        )),
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        (
+            document("a").body["email"].clone(),
+            document("b").body["email"].clone()
+        ),
+        (json!("b"), json!("a"))
+    );
+
+    let mut immutable = definition();
+    immutable.name = "ledger".into();
+    immutable.write_mode = CollectionWriteMode::AppendOnly;
+    db.apply_command(
+        &db.disk,
+        11,
+        command(Operation::CreateCollection(immutable)),
+    )
+    .unwrap()
+    .unwrap();
+    db.apply_command(
+        &db.disk,
+        12,
+        command(Operation::Mutate(MutationBatch::with_key("ledger").insert(
+            "ledger",
+            "x",
+            json!({"email":"x","age":1}),
+        ))),
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        db.apply_command(
+            &db.disk,
+            13,
+            command(Operation::Mutate(
+                MutationBatch::with_key("ledger-patch").patch("ledger", "x", json!({"age":2})),
+            )),
+        )
+        .unwrap()
+        .unwrap_err()
+        .code,
+        ErrorCode::Forbidden
+    );
+}
+
+#[test]
 fn append_only_mode_rejects_overwrite_delete_and_schema_weakening_atomically() {
     let db = engine(false, Limits::default());
     let mut immutable = definition();
@@ -1057,10 +1211,7 @@ fn unique_index_swap_is_atomic_and_old_generation_remains_coherent() {
     let current = db.generation().unwrap();
     let mut request = query();
     request.allow_scan = false;
-    request.filter = Predicate::Eq {
-        field: "/email".into(),
-        value: json!("a"),
-    };
+    request.filter = Filter::new().eq("/email", "a");
     assert_eq!(
         kasumi_engine::test_utils::fixture_query(&previous, &request, &mut common::query_memory())
             .unwrap()
@@ -1297,7 +1448,11 @@ async fn actual_raft_writes_queries_and_snapshot_pagination() {
     assert_eq!(second.revision, first.revision);
     assert_eq!(second.rows[0].body["email"], "b");
     assert_eq!(
-        db.get(&context("owner"), "people", "b").await.unwrap().body["email"],
+        db.get(&context("owner"), "people", "b")
+            .await
+            .unwrap()
+            .expect("document exists")
+            .body["email"],
         "new-b"
     );
     db.shutdown().await.unwrap();
@@ -1426,7 +1581,7 @@ async fn snapshot_reads_reject_partial_queries_cursors_and_foreign_authority() {
             .code,
         ErrorCode::ResourceExhausted
     );
-    request.queries[0].limit = 2;
+    request.queries[0].limit = Some(2);
     assert_eq!(
         db.read_snapshot(&context("other"), request.clone())
             .await
@@ -1435,6 +1590,15 @@ async fn snapshot_reads_reject_partial_queries_cursors_and_foreign_authority() {
         ErrorCode::Forbidden
     );
     request.queries[0].cursor = Some("cursor".into());
+    assert_eq!(
+        db.read_snapshot(&context("owner"), request.clone())
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::InvalidArgument
+    );
+    request.queries[0].cursor = None;
+    request.queries[0].paging = Paging::Seek;
     assert_eq!(
         db.read_snapshot(&context("owner"), request)
             .await
@@ -1456,7 +1620,10 @@ async fn strict_read_audit_is_committed_before_return_and_tied_to_data_revision(
         )
         .await
         .unwrap();
-    db.get(&context("owner"), "people", "a").await.unwrap();
+    db.get(&context("owner"), "people", "a")
+        .await
+        .unwrap()
+        .expect("document exists");
     let generation = db.engine().generation().unwrap();
     let event = generation.state.audits.back().unwrap();
     assert_eq!(event.action, "read");
@@ -1519,7 +1686,8 @@ async fn shared_get_uses_the_same_audit_and_authorization_and_keeps_historical_v
     let shared = db
         .get_shared(&context("owner"), "people", "a")
         .await
-        .unwrap();
+        .unwrap()
+        .expect("document exists");
     let generation = db.engine().generation().unwrap();
     assert!(std::ptr::eq(
         shared.as_ref(),
@@ -1546,7 +1714,8 @@ async fn shared_get_uses_the_same_audit_and_authorization_and_keeps_historical_v
     let current = db
         .get_shared(&context("owner"), "people", "a")
         .await
-        .unwrap();
+        .unwrap()
+        .expect("document exists");
     assert_eq!(shared.body["email"], "before");
     assert_eq!(current.body["email"], "after");
     assert!(!std::ptr::eq(shared.as_ref(), current.as_ref()));
@@ -1554,7 +1723,11 @@ async fn shared_get_uses_the_same_audit_and_authorization_and_keeps_historical_v
     detached.body["email"] = json!("client-only");
     assert_eq!(current.body["email"], "after");
     assert_eq!(
-        db.get(&context("owner"), "people", "a").await.unwrap().body["email"],
+        db.get(&context("owner"), "people", "a")
+            .await
+            .unwrap()
+            .expect("document exists")
+            .body["email"],
         "after"
     );
     store.seal();
@@ -1957,6 +2130,7 @@ async fn logical_backup_restores_suspended_with_new_incarnation_and_increasing_r
             .get(&context("owner"), "people", "a")
             .await
             .unwrap()
+            .expect("document exists")
             .body["email"],
         "original"
     );
@@ -2125,7 +2299,11 @@ async fn killed_process_recovers_acknowledged_documents_receipts_and_bootstrap_p
     .await
     .unwrap();
     assert_eq!(
-        db.get(&context("owner"), "people", "a").await.unwrap().body["email"],
+        db.get(&context("owner"), "people", "a")
+            .await
+            .unwrap()
+            .expect("document exists")
+            .body["email"],
         "survives"
     );
     assert_eq!(

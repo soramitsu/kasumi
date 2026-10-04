@@ -19,7 +19,7 @@ async fn seed_admitted_output(fixture: &Fixture) -> Value {
             serde_json::from_value(json!({
                 "read_set":[],"idempotency_key":"owned-output-seed",
                 "operations":[{"op":"put","collection":"docs","id":"one","body":body,
-                "expected":{"kind":"absent"}}]
+                "expected":"absent"}]
             }))
             .unwrap(),
         )
@@ -458,7 +458,8 @@ async fn admitted_native_point_survives_unpolled_body_and_last_frame_clone() {
         .db
         .get(&admitted_query_context(), "docs", "one")
         .await
-        .unwrap();
+        .unwrap()
+            .expect("document exists");
     let expected_version = warm.version;
     drop(warm);
     let node = &fixture.physical.admission;
@@ -521,7 +522,10 @@ async fn admitted_native_point_survives_unpolled_body_and_last_frame_clone() {
             u32::from_be_bytes(bytes[1..5].try_into().unwrap()) as usize,
             bytes.len() - 5
         );
-        let document = proto::Document::decode(&bytes[5..]).unwrap();
+        let document = proto::GetResponse::decode(&bytes[5..])
+            .unwrap()
+            .document
+            .unwrap();
         assert_eq!(document.id, "one");
         assert_eq!(document.version, expected_version);
         assert_eq!(
@@ -575,7 +579,8 @@ async fn admitted_mcp_point_survives_http_handoff_and_last_frame_clone() {
         .db
         .get(&admitted_query_context(), "docs", "one")
         .await
-        .unwrap();
+        .unwrap()
+            .expect("document exists");
     let expected_version = warm.version;
     drop(warm);
     let node = &fixture.physical.admission;

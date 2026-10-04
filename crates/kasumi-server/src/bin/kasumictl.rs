@@ -60,6 +60,14 @@ async fn main() -> Result<()> {
 }
 
 async fn run(arguments: &[String]) -> Result<()> {
+    if let [flag, profile, command @ ..] = arguments
+        && flag == "--profile"
+    {
+        // Parse before loading the profile, so mistakes never connect.
+        let command = kasumi_server::data_cli::parse(command)?;
+        let db = kasumi_client::Kasumi::from_profile(profile).await?;
+        return kasumi_server::data_cli::execute(command, &db, &mut std::io::stdout().lock()).await;
+    }
     if let [operation, path] = arguments
         && operation == "schema-reference"
     {
@@ -83,7 +91,8 @@ async fn run(arguments: &[String]) -> Result<()> {
     }
     let [flag, path, operation, rest @ ..] = arguments else {
         bail!(
-            "usage: kasumictl schema-reference <operation.json> | kasumictl --config <client.json> activate-schema|read-schema|read-policy-limits|schema-status|create-collection|replace-collection|set-policy|set-limits <operation.json>, or suspend|resume, or manage <command.json>, or authority-maintenance <request.json>"
+            "usage: kasumictl schema-reference <operation.json> | kasumictl --config <client.json> activate-schema|read-schema|read-policy-limits|schema-status|create-collection|replace-collection|set-policy|set-limits <operation.json>, or suspend|resume, or manage <command.json>, or authority-maintenance <request.json>\n\nData commands:\n{}",
+            kasumi_server::data_cli::USAGE
         );
     };
     ensure!(flag == "--config", "first argument must be --config");
@@ -366,6 +375,35 @@ mod tests {
             ])
             .await
             .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn data_commands_are_parsed_before_the_profile_is_read() {
+        let error = run(&[
+            "--profile".into(),
+            "/nonexistent/profile.json".into(),
+            "fetch".into(),
+            "docs".into(),
+        ])
+        .await
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("unknown data command"),
+            "{error}"
+        );
+        let error = run(&[
+            "--profile".into(),
+            "/nonexistent/profile.json".into(),
+            "get".into(),
+            "docs".into(),
+            "a".into(),
+        ])
+        .await
+        .unwrap_err();
+        assert!(
+            error.downcast_ref::<kasumi_client::ClientError>().is_some(),
+            "a valid command reaches profile loading: {error:#}"
         );
     }
 

@@ -265,7 +265,7 @@ impl Fixture {
     async fn put(&self, key: &str, documents: impl IntoIterator<Item = (String, Value)>) {
         let operations = documents
             .into_iter()
-            .map(|(id, body)| json!({"op":"put", "collection":"docs", "id":id, "body":body, "expected":{"kind":"absent"}}))
+            .map(|(id, body)| json!({"op":"put", "collection":"docs", "id":id, "body":body, "expected":"absent"}))
             .collect::<Vec<_>>();
         self.database
             .mutate(
@@ -645,7 +645,7 @@ async fn dispatched_mutation_response_wait_reports_unknown_outcome_after_revocat
     let gate = ReleaseGate::new();
     let arguments = json!({
             "read_set":[], "idempotency_key":"original-mcp-mutation",
-            "operations":[{"op":"put", "collection":"docs", "id":"one", "body":{"value":"retained"}, "expected":{"kind":"absent"}}],
+            "operations":[{"op":"put", "collection":"docs", "id":"one", "body":{"value":"retained"}, "expected":"absent"}],
     });
     let mut pending_request = request(
         &issued.token,
@@ -689,6 +689,7 @@ async fn dispatched_mutation_response_wait_reports_unknown_outcome_after_revocat
             .get(&Fixture::context(), "docs", "one")
             .await
             .unwrap()
+            .expect("document exists")
             .body,
         json!({"value":"retained"})
     );
@@ -733,7 +734,7 @@ async fn dispatched_mutation_response_keeps_original_deadline_after_family_renew
     let gate = ReleaseGate::new();
     let arguments = json!({
         "read_set":[], "idempotency_key":"renewed-mcp-mutation",
-        "operations":[{"op":"put", "collection":"docs", "id":"renewal", "body":{"value":"committed"}, "expected":{"kind":"absent"}}],
+        "operations":[{"op":"put", "collection":"docs", "id":"renewal", "body":{"value":"committed"}, "expected":"absent"}],
     });
     let mut pending_request = request(
         &issued.token,
@@ -1209,7 +1210,7 @@ async fn refused_body_charge_after_dispatch_is_unknown_outcome_resolved_by_recei
     let gate = ReleaseGate::new();
     let arguments = json!({
         "read_set":[], "idempotency_key":"uncharged-mcp-mutation",
-        "operations":[{"op":"put", "collection":"docs", "id":"charged", "body":{"value":"committed once"}, "expected":{"kind":"absent"}}],
+        "operations":[{"op":"put", "collection":"docs", "id":"charged", "body":{"value":"committed once"}, "expected":"absent"}],
     });
     let mut pending_request = request(
         &issued.token,
@@ -1232,7 +1233,8 @@ async fn refused_body_charge_after_dispatch_is_unknown_outcome_resolved_by_recei
         .database
         .get(&Fixture::context(), "docs", "charged")
         .await
-        .unwrap();
+        .unwrap()
+        .expect("document exists");
     assert_eq!(committed.body, json!({"value":"committed once"}));
     let committed_version = committed.version;
     // This direct observation is separately admitted; it must not become part
@@ -1298,7 +1300,8 @@ async fn refused_body_charge_after_dispatch_is_unknown_outcome_resolved_by_recei
         .database
         .get(&Fixture::context(), "docs", "charged")
         .await
-        .unwrap();
+        .unwrap()
+        .expect("document exists");
     assert_eq!(retained.version, committed_version);
     assert_eq!(retained.body, json!({"value":"committed once"}));
     drop(retained);
@@ -1328,7 +1331,8 @@ async fn exact_response_charges_are_retained_until_http_release() {
         .database
         .get(&Fixture::context(), "docs", "held")
         .await
-        .unwrap();
+        .unwrap()
+        .expect("document exists");
     let source_charge = mcp_non_cache_reserved(&fixture)
         .checked_sub(baseline_bytes)
         .unwrap();

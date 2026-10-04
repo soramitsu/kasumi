@@ -630,12 +630,11 @@ async fn serving_expiry_rejects_queued_effect_and_late_read_or_committed_ack_the
             .unwrap()
             .is_none()
     );
-    assert_eq!(
+    assert!(
         db.get(&fixture.context, "docs", "queued")
             .await
-            .unwrap_err()
-            .code,
-        ErrorCode::NotFound
+            .unwrap()
+            .is_none()
     );
     let accepted = db
         .mutate(fixture.context.clone(), credential_batch("accepted"))
@@ -643,7 +642,8 @@ async fn serving_expiry_rejects_queued_effect_and_late_read_or_committed_ack_the
         .unwrap();
     let encoded = serde_json::to_vec(&Ok::<_, Error>(accepted.clone())).unwrap();
     let response = db.response_fence(&fixture.context).unwrap();
-    let read = db.get(&fixture.context, "docs", "accepted").await.unwrap();
+    let read = db.get(&fixture.context, "docs", "accepted").await.unwrap()
+            .expect("document exists");
     assert_eq!(read.version, accepted.revision);
     fixture.clock.0.store(2000, Ordering::SeqCst);
     assert_eq!(response.check().unwrap_err().code, ErrorCode::Sealed);

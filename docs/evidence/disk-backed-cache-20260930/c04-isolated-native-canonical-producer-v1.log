@@ -1,5 +1,0 @@
-Command: cargo test --locked --offline --config profile.test.package.kasumi-kv.opt-level=3 --config profile.test.package.sha2.opt-level=3 -p kasumi-kv -p kasumi-store -p kasumi-query -p kasumi-raft -p kasumi-engine -p kasumi-authority -p openraft --all-features --lib --no-fail-fast -- publication_inventory_ native_publication_backend_ snapshot_actor_ storage::snapshot_conflict::tests group_publication prepared_publication::tests streamed_publication_ core::sm::pending_snapshot::funding_tests raft::bounded_apply_test core::sm::bounded_apply_tests --nocapture
-ISOLATED_SOURCE=/tmp/kasumi-source-cohort-validation-v1
-CARGO_TARGET_DIR=/Users/takemiyamakoto/dev/kasumi/target/disk-backed-cache
-error: package `openraft` cannot be tested because it requires dev-dependencies and is not a member of the workspace
-Runner: 0.71s; exit=101; matching=1602/1602

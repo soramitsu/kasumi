@@ -29,7 +29,6 @@ struct LoanSource {
     missing_output: bool,
     fail_at: usize,
     failure: Arc<()>,
-    wrong_output_version: bool,
     archived: bool,
     expected: RefCell<Vec<Option<u64>>>,
 }
@@ -80,7 +79,6 @@ impl LoanSource {
             missing_output: false,
             fail_at: usize::MAX,
             failure: Arc::new(()),
-            wrong_output_version: false,
             archived: false,
             expected: RefCell::new(vec![]),
         }
@@ -169,7 +167,7 @@ fn long_string_sort_key_is_admitted_even_when_projection_is_tiny() {
     source.set_body(serde_json::json!({ "sort": "x".repeat(64 << 10), "tiny": true }));
     let query: QueryRequest = serde_json::from_value(serde_json::json!({
         "collection": "docs", "allow_scan": true, "limit": 1,
-        "sort": [{"field": "/sort", "direction": "asc"}], "projection": ["/tiny"]
+        "sort": ["/sort"], "select": ["/tiny"]
     }))
     .unwrap();
     let limits = Limits {
@@ -222,62 +220,51 @@ fn many_small_json_members_require_owned_nodes_before_the_row_clone() {
             ..
         }))
     ));
-    // All ID-only selection loans complete. The first output loan cannot copy
-    // its object, even though every row fits the configured wire-byte budget.
-    assert_eq!(&*source.expected.borrow(), &[None, None, None, Some(7)]);
+    // The first loan cannot copy its object, even though every row fits the
+    // configured wire-byte budget; no later document is read.
+    assert_eq!(&*source.expected.borrow(), &[None]);
     assert!(!source.active.get());
     assert_eq!(memory.live_bytes(), 0);
 }
 
 #[test]
-fn overlapping_projection_paths_each_keep_their_complete_owned_clone() {
+fn nested_select_retains_its_complete_owned_clone_and_rejects_overlaps() {
     let mut source = LoanSource::new();
-    source.set_body(serde_json::json!({ "nested": { "text": "x".repeat(8192) } }));
+    source.set_body(serde_json::json!({ "nested": { "text": "x".repeat(8192), "other": 1 } }));
     let mut query = source.query();
-    query.projection = vec!["/nested".into()];
+    query.select = vec!["/nested/text".into()];
     let limits = Limits {
         max_query_candidates: 3,
         max_query_groups: 0,
         ..Limits::default()
     };
-    let mut single = query_memory();
+    let mut memory = query_memory();
     let response = source
         .indexes
-        .execute(&source, &query, &limits, &mut single)
+        .execute(&source, &query, &limits, &mut memory)
         .unwrap();
-    let single_peak = single.peak_bytes();
-    let single_retained = single.live_bytes();
     assert_eq!(
-        single_retained,
+        memory.live_bytes(),
         query_response_clone_bytes(&response, 0..response.rows.len()).unwrap()
     );
+    assert!(memory.live_bytes() > 3 * 8192);
+    assert_eq!(
+        response.rows[0].body,
+        serde_json::json!({"nested": {"text": "x".repeat(8192)}})
+    );
     drop(response);
-    query.projection.push("/nested/text".into());
-    let mut denied = QueryMemory::new(LimitedWorkspace(single_peak), 0).unwrap();
+    query.select.push("/nested".into());
+    let mut denied = query_memory();
     assert!(matches!(
         source
             .indexes
             .execute(&source, &query, &limits, &mut denied),
         Err(ReadFailure::Query(Error {
-            code: ErrorCode::ResourceExhausted,
+            code: ErrorCode::InvalidArgument,
             ..
         }))
     ));
-    assert_eq!(denied.live_bytes(), 0);
-    let mut complete = query_memory();
-    let response = source
-        .indexes
-        .execute(&source, &query, &limits, &mut complete)
-        .unwrap();
-    assert_eq!(
-        complete.live_bytes(),
-        query_response_clone_bytes(&response, 0..response.rows.len()).unwrap()
-    );
-    assert!(complete.live_bytes() > single_retained + 3 * 8192);
-    assert_eq!(
-        response.rows[0].body["/nested"]["text"],
-        response.rows[0].body["/nested/text"]
-    );
+    assert_eq!(source.calls.get(), 3);
 }
 
 #[test]
@@ -390,10 +377,7 @@ impl DocumentSource for LoanSource {
             .encoded
             .get(id)
             .map(|encoded| serde_json::from_str(encoded).unwrap());
-        if self.wrong_output_version && expected_version.is_some() {
-            document.as_mut().unwrap().version += 1;
-        }
-        if self.missing_output && expected_version.is_some() {
+        if self.missing_output {
             document = None;
         }
         if self.cancel_after_read {
@@ -452,18 +436,32 @@ impl DocumentSource for LoanSource {
 }
 
 #[test]
-fn lending_scan_sort_projection_and_aggregate_reload_exact_versions_without_truncation() {
+fn lending_scan_sort_select_and_aggregate_read_each_document_once() {
     let source = LoanSource::new();
     let query: QueryRequest = serde_json::from_value(serde_json::json!({
         "collection":"docs","allow_scan":true,"limit":1,
-        "filter":{"op":"eq","field":"/group","value":"g"},
-        "sort":[{"field":"/order","direction":"asc"}], "projection":["/n"],
-        "aggregates":[{"alias":"total","function":"sum","field":"/n"}]
+        "filter":{"/group":"g"}, "sort":["/order"], "select":["/n"]
     }))
     .unwrap();
-    let response = source
+    let (response, remaining) = source
         .indexes
-        .execute(&source, &query, &Limits::default(), &mut query_memory())
+        .execute_page(
+            &source,
+            &query,
+            &Limits::default(),
+            crate::PageBound {
+                rows: 1,
+                bytes: usize::MAX,
+            },
+            &QueryCancellation::default(),
+            &mut query_memory(),
+            |remaining, _| {
+                Ok((
+                    remaining.map(|(id, _)| id.to_owned()).collect::<Vec<_>>(),
+                    0,
+                ))
+            },
+        )
         .unwrap();
     assert_eq!(
         response
@@ -471,18 +469,28 @@ fn lending_scan_sort_projection_and_aggregate_reload_exact_versions_without_trun
             .iter()
             .map(|row| row.id.as_str())
             .collect::<Vec<_>>(),
-        vec!["d2", "d1", "d0"]
+        vec!["d2"]
     );
-    assert_eq!(response.rows[0].body, serde_json::json!({"/n":2}));
-    assert_eq!(response.aggregates[0]["values"]["total"], "3");
+    assert_eq!(remaining, ["d1", "d0"]);
+    assert_eq!(response.rows[0].body, serde_json::json!({"n":2}));
+    assert!(response.aggregates.is_empty());
+    // The scanned filter reads each document, ordering reads each one's sort
+    // key, and only the page's row is read again to copy it.
+    assert_eq!(source.calls.get(), 7);
+    assert!(source.expected.borrow().iter().all(Option::is_none));
+    let totals: QueryRequest = serde_json::from_value(serde_json::json!({
+        "collection":"docs","allow_scan":true,
+        "filter":{"/group":"g"}, "aggregate":{"total":{"sum":"/n"},"n":{"count":"*"}}
+    }))
+    .unwrap();
+    let response = source
+        .indexes
+        .execute(&source, &totals, &Limits::default(), &mut query_memory())
+        .unwrap();
+    assert!(response.rows.is_empty());
     assert_eq!(
-        source
-            .expected
-            .borrow()
-            .iter()
-            .filter(|version| **version == Some(7))
-            .count(),
-        3
+        response.aggregates,
+        vec![serde_json::json!({"group":{},"values":{"n":3,"total":3}})]
     );
     assert!(!source.active.get());
 }
@@ -529,25 +537,20 @@ fn cancellation_after_source_read_prevents_lending_or_next_read() {
 }
 
 #[test]
-fn lending_rejects_wrong_output_version_and_unhydrated_archive() {
-    for archived in [false, true] {
-        let mut source = LoanSource::new();
-        source.archived = archived;
-        source.wrong_output_version = !archived;
-        let error = source
-            .indexes
-            .execute(
-                &source,
-                &source.query(),
-                &Limits::default(),
-                &mut query_memory(),
-            )
-            .unwrap_err();
-        assert!(
-            matches!(error, ReadFailure::Query(error) if error.code == if archived { ErrorCode::Unavailable } else { ErrorCode::Corruption })
-        );
-        assert!(!source.active.get());
-    }
+fn lending_rejects_unhydrated_archive() {
+    let mut source = LoanSource::new();
+    source.archived = true;
+    let error = source
+        .indexes
+        .execute(
+            &source,
+            &source.query(),
+            &Limits::default(),
+            &mut query_memory(),
+        )
+        .unwrap_err();
+    assert!(matches!(error, ReadFailure::Query(error) if error.code == ErrorCode::Unavailable));
+    assert!(!source.active.get());
 }
 
 #[test]
@@ -589,13 +592,19 @@ fn borrowed_projection_wire_accounting_matches_owned_rows_before_clone() {
         version: 1,
         body: serde_json::json!({"a":{"b":[null,"escaped\n"]},"none":null}),
     };
-    for projection in [
-        vec![],
-        vec!["/a/b".to_owned(), "/none".to_owned(), "/absent".to_owned()],
+    for select in [
+        None,
+        Some(
+            crate::select::Selection::new(
+                &["/a/b".to_owned(), "/none".to_owned(), "/absent".to_owned()],
+                "select",
+            )
+            .unwrap(),
+        ),
     ] {
         let row = BorrowedRow {
             document: &document,
-            projection: &projection,
+            selection: select.as_ref(),
             score: Some(0.25),
         };
         let encoded = serde_json::to_vec(&row).unwrap();
@@ -612,7 +621,7 @@ fn borrowed_projection_wire_accounting_matches_owned_rows_before_clone() {
 }
 
 #[test]
-fn canceled_completed_loan_and_missing_selected_version_discard_partial_results() {
+fn canceled_completed_loan_and_missing_selected_document_discard_partial_results() {
     let mut source = LoanSource::new();
     source.cancel_after_loan = true;
     assert!(
@@ -626,7 +635,7 @@ fn canceled_completed_loan_and_missing_selected_version_discard_partial_results(
         matches!(source.indexes.execute(&source, &source.query(), &Limits::default(), &mut query_memory()),
         Err(ReadFailure::Query(error)) if error.code == ErrorCode::Corruption)
     );
-    assert_eq!(source.expected.borrow().last(), Some(&Some(7)));
+    assert_eq!(source.calls.get(), 1);
 }
 
 #[test]

@@ -240,7 +240,12 @@ async fn one_epoch_expires_leases_and_credentials_but_preserves_permanent_comman
         ErrorCode::Conflict
     );
     assert_eq!(
-        database.get(&fresh, "docs", "0").await.unwrap().body["version"],
+        database
+            .get(&fresh, "docs", "0")
+            .await
+            .unwrap()
+            .expect("document exists")
+            .body["version"],
         1
     );
     let mut next_command = batch(2);
@@ -248,7 +253,12 @@ async fn one_epoch_expires_leases_and_credentials_but_preserves_permanent_comman
     let replacement = database.mutate(fresh.clone(), next_command).await.unwrap();
     assert!(replacement.revision > receipt.revision);
     assert_eq!(
-        database.get(&fresh, "docs", "0").await.unwrap().body["version"],
+        database
+            .get(&fresh, "docs", "0")
+            .await
+            .unwrap()
+            .expect("document exists")
+            .body["version"],
         2
     );
     assert_eq!(

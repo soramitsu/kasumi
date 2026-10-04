@@ -1,8 +1,0 @@
-Command: python3 -m unittest discover -s scripts -p test_verify_release_acceptance.py
-CARGO_TARGET_DIR=target/disk-backed-cache
-.............................
-----------------------------------------------------------------------
-Ran 29 tests in 1.813s
-
-OK
-Runner: 2.22s; exit=0; matching=45/45

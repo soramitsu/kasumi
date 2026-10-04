@@ -494,7 +494,7 @@ async fn existing_grant_query_uses_one_operation_plus_one_metadata_slot_and_clai
         .unwrap_or_else(|_| panic!("positive source close permits claim"))
         .into_output();
     assert_eq!(
-        output.response.as_ref().unwrap().rows[0].body,
+        output.response.as_ref().unwrap().0.rows[0].body,
         json!({"actual_disk_body": "x".repeat(4096)})
     );
     fence_pending(&fence).await;
@@ -511,7 +511,7 @@ async fn existing_grant_query_uses_one_operation_plus_one_metadata_slot_and_clai
     );
     // Force provider consultation even if spare logical peak remains, and
     // exercise a real next-stage page clone under the claimed grant.
-    let response = output.response.as_ref().unwrap();
+    let response = &output.response.as_ref().unwrap().0;
     let page_bytes =
         kasumi_query::query_response_clone_bytes(response, 0..response.rows.len()).unwrap();
     let growth = output

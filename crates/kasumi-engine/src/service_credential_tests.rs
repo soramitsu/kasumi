@@ -320,9 +320,9 @@ async fn expired_queued_and_canceled_credentials_accept_no_effect_or_identity() 
                 .db
                 .get(&fixture.context, "docs", id)
                 .await
-                .unwrap_err()
-                .code,
-            ErrorCode::NotFound
+                .unwrap()
+                .map(|document| document.version),
+            None
         );
         assert!(
             fixture
@@ -399,7 +399,8 @@ async fn committed_effect_with_expired_ack_is_resolved_by_fresh_credential() {
         .db
         .get(&fixture.context, "docs", "committed")
         .await
-        .unwrap();
+        .unwrap()
+            .expect("document exists");
     assert_eq!(document.version, receipt.revision);
     assert_eq!(
         fixture
@@ -530,7 +531,8 @@ async fn long_backup_verification_and_encoded_read_recheck_original_credential()
     let context = fixture.credential_with_validity(clock.clone(), LONG_BACKUP_CREDENTIAL_MS);
     let fence = fixture.db.response_fence(&context).unwrap();
     let _encoded =
-        serde_json::to_vec(&fixture.db.get(&context, "docs", "read").await.unwrap()).unwrap();
+        serde_json::to_vec(&fixture.db.get(&context, "docs", "read").await.unwrap()
+            .expect("document exists")).unwrap();
     let result = {
         let mut verify = std::pin::pin!(fixture.db.verify_backup_checkpoint(
             context,

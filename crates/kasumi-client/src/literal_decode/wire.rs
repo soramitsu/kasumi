@@ -94,7 +94,18 @@ fn row<'a>(input: &'a [u8], call: &Call) -> Result<Row<'a>, ClientError> {
             _ => return Err(invalid("unknown/duplicate query row field")),
         }
     }
-    let mut fields = Fields(document.ok_or_else(|| invalid("missing query document"))?);
+    document_fields(
+        document.ok_or_else(|| invalid("missing query document"))?,
+        score,
+        call,
+    )
+}
+fn document_fields<'a>(
+    input: &'a [u8],
+    score: Option<f32>,
+    call: &Call,
+) -> Result<Row<'a>, ClientError> {
+    let mut fields = Fields(input);
     let mut id = None;
     let mut version = None;
     let mut body = None;
@@ -118,6 +129,62 @@ fn row<'a>(input: &'a [u8], call: &Call) -> Result<Row<'a>, ClientError> {
         score,
     })
 }
+/// `CollectionsResponse`: authorized definitions as exact JSON documents.
+pub(crate) fn collections(
+    input: &[u8],
+    call: &Call,
+) -> Result<Vec<kasumi_types::CollectionDefinition>, ClientError> {
+    let mut fields = Fields(input);
+    let mut definitions = Vec::new();
+    let mut budget = TokenBudget::default();
+    while let Some((key, value)) = fields.next()? {
+        call.check()?;
+        match (key, value) {
+            (1, Value::Bytes(value)) => {
+                if definitions.len() >= call.limits.max_rows {
+                    return Err(exhausted());
+                }
+                tokens::admit_with(value, call, &mut budget)?;
+                let raw: &serde_json::value::RawValue = serde_json::from_slice(value)?;
+                definitions.push(super::json::definition(raw, call)?);
+            }
+            _ => return Err(invalid("unknown collections response field")),
+        }
+    }
+    Ok(definitions)
+}
+
+/// `GetResponse`: an absent document field means the document does not exist.
+pub(crate) fn document(
+    input: &[u8],
+    expected_id: &str,
+    call: &Call,
+) -> Result<Option<kasumi_types::Document>, ClientError> {
+    let mut fields = Fields(input);
+    let mut document = None;
+    while let Some((key, value)) = fields.next()? {
+        call.check()?;
+        match (key, value) {
+            (1, Value::Bytes(value)) if document.is_none() => document = Some(value),
+            _ => return Err(invalid("unknown/duplicate get response field")),
+        }
+    }
+    let Some(document) = document else {
+        return Ok(None);
+    };
+    let row = document_fields(document, None, call)?;
+    if row.id != expected_id {
+        return Err(invalid("get response document identity differs"));
+    }
+    let mut budget = TokenBudget::default();
+    budget.metadata(row.id.len(), 8, call)?;
+    tokens::admit_with(row.body, call, &mut budget)?;
+    Ok(Some(kasumi_types::Document {
+        id: row.id.to_owned(),
+        version: row.version,
+        body: tokens::literal(row.body, call)?,
+    }))
+}
 pub(super) fn query(
     input: &[u8],
     request: &QueryRequest,
@@ -136,7 +203,10 @@ pub(super) fn query(
             (1, Value::Varint(value)) if revision.is_none() => revision = Some(value),
             (2, Value::Bytes(value)) => {
                 rows = rows.checked_add(1).ok_or_else(exhausted)?;
-                if rows > request.limit.min(call.limits.max_rows) {
+                if request.is_aggregate() {
+                    return Err(invalid("aggregate query returned rows"));
+                }
+                if rows > request.page_size().min(call.limits.max_rows) {
                     return Err(exhausted());
                 }
                 let value = row(value, call)?;
@@ -145,6 +215,9 @@ pub(super) fn query(
             }
             (3, Value::Bytes(value)) => {
                 aggregates = aggregates.checked_add(1).ok_or_else(exhausted)?;
+                if !request.is_aggregate() {
+                    return Err(invalid("row query returned aggregates"));
+                }
                 if aggregates > call.limits.max_rows {
                     return Err(exhausted());
                 }
@@ -156,6 +229,9 @@ pub(super) fn query(
             }
             _ => return Err(invalid("unknown/duplicate query response field")),
         }
+    }
+    if request.is_aggregate() && cursor.is_some() {
+        return Err(invalid("aggregate query returned a cursor"));
     }
     let revision = revision.unwrap_or(0); // Protobuf's canonical omitted zero.
     if expected_revision.is_some_and(|expected| expected != revision) {

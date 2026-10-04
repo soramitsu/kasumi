@@ -382,7 +382,7 @@ async fn benchmark(
         let mut value = body(ordinal);
         value["version"] = json!(1);
         std::fs::write(&mutation, serde_json::to_vec(&value)?)?;
-        targets.push(json!({"token_file":token_file,"collection":"docs","id":ordinal.to_string(),"query":QueryRequest{collection:"docs".into(),filter:Predicate::Eq{field:"/ordinal".into(),value:json!(ordinal)},sort:Vec::new(),projection:vec!["/ordinal".into()],aggregates:Vec::new(),group_by:Vec::new(),text:None,limit:1000,cursor:None,allow_scan:false},"mutation_body":mutation}));
+        targets.push(json!({"token_file":token_file,"collection":"docs","id":ordinal.to_string(),"query":QueryRequest::new("docs").filter(Filter::new().eq("/ordinal", ordinal)).select(["/ordinal"]).limit(1000),"mutation_body":mutation}));
     }
     config.validate()?;
     let config_path = path.join("node.json");
@@ -641,7 +641,9 @@ async fn benchmark(
                 token,
             )?)
             .await?
-            .into_inner();
+            .into_inner()
+            .document
+            .ok_or_else(|| anyhow::anyhow!("recovered document is absent"))?;
         let document: Value = serde_json::from_slice(&document.body_json)?;
         ensure!(
             document["ordinal"] == json!(tenant),

@@ -62,6 +62,66 @@ class DependencyPatchTests(unittest.TestCase):
     def test_complete_workspace_and_selected_sibling_are_verified(self):
         self.verify()
 
+    def reviewed_checkpoint(self):
+        inventory = self.manifest["inventories"][0]
+        directory = "vendor/reviews/openraft"
+        source = [{"path": name, **record} for name, record in inventory["files"].items()]
+        source_record = self.write(directory + "/source-inventory.json", json.dumps(source))
+        checkpoint = {
+            "source_inventory": "source-inventory.json",
+            "source_inventory_sha256": source_record["sha256"],
+            "source_files": len(source),
+            "source_bytes": sum(item["bytes"] for item in source),
+        }
+        checkpoint_record = self.write(directory + "/custody-checkpoint.json", json.dumps(checkpoint))
+        for name, record in [("source-inventory.json", source_record),
+                             ("custody-checkpoint.json", checkpoint_record)]:
+            self.manifest["support_files"]["reviews/openraft/" + name] = record
+        inventory["review"] = {
+            "kind": "openraft-checkpoint",
+            "path": directory + "/custody-checkpoint.json",
+            "sha256": checkpoint_record["sha256"],
+            "inventory_path": directory + "/source-inventory.json",
+            "inventory_sha256": source_record["sha256"],
+        }
+        self.save_manifest()
+
+    def test_dependency_checkpoint_is_verified_without_archived_evidence(self):
+        self.reviewed_checkpoint()
+        self.verify()
+        self.assertFalse((self.root / "docs/evidence").exists())
+
+    def test_changed_dependency_checkpoint_is_rejected(self):
+        self.reviewed_checkpoint()
+        self.write("vendor/reviews/openraft/custody-checkpoint.json", "{}")
+        with self.assertRaisesRegex(ValueError, "review evidence changed"):
+            self.verify()
+
+    def test_unrecorded_review_file_is_rejected(self):
+        self.reviewed_checkpoint()
+        self.write("vendor/reviews/openraft/unreviewed.json", "{}")
+        with self.assertRaisesRegex(ValueError, "vendor tree"):
+            self.verify()
+
+    def test_nested_support_files_are_limited_to_review_inputs(self):
+        self.manifest["support_files"]["other/input.json"] = self.write("vendor/other/input.json", "{}")
+        self.save_manifest()
+        with self.assertRaisesRegex(ValueError, "invalid vendor support file"):
+            self.verify()
+
+    def test_support_file_cannot_overlap_a_package_inventory(self):
+        inventory = self.manifest["inventories"][0]
+        old = self.root / "vendor/workspace"
+        old.rename(self.root / "vendor/reviews")
+        inventory["path"] = "vendor/reviews"
+        for package in inventory["packages"]:
+            package["path"] = package["path"].replace("vendor/workspace", "vendor/reviews")
+        self.write("Cargo.toml", self.cargo.replace("vendor/workspace", "vendor/reviews"))
+        self.manifest["support_files"]["reviews/extra.json"] = self.write("vendor/reviews/extra.json", "{}")
+        self.save_manifest()
+        with self.assertRaisesRegex(ValueError, "invalid vendor support file"):
+            checker.verify_sources(self.root)
+
     def test_missing_patch_is_rejected_even_if_metadata_still_names_local_source(self):
         self.write("Cargo.toml", "[workspace]\n")
         with self.assertRaisesRegex(ValueError, "patch roster"):

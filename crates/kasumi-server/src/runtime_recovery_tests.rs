@@ -28,7 +28,7 @@ fn recovery_step_error(error: &kasumi_client::ClientError) -> String {
             status.code(),
             status.message().chars().take(384).collect::<String>()
         ),
-        ClientError::DecodeRejected { code, reason } => format!("decode {code:?}: {reason}"),
+        ClientError::DecodeRejected { code, reason, .. } => format!("decode {code:?}: {reason}"),
         ClientError::InvalidResponse(reason) => format!("invalid response: {reason}"),
         ClientError::Connection(_) => "connection".into(),
         ClientError::Json(_) => "json".into(),

@@ -1,7 +1,0 @@
-{
-  "binary": "target/disk-backed-cache/debug/deps/kasumi_engine-44db468831cfc59f",
-  "sha256": "15e6ee7c8ea6fdc6e70365b211a4e89bf43c600ff37a96385b6173f4cb3af478",
-  "build_source_pins": "c04-control-planner-and-retirement-current-selected.sha256",
-  "build_source_pins_sha256": "70da8c51efbd6ca1c0032d746fb1d7c0639e3e827aa4a4db48057f17f8b22547",
-  "scope": "Exact compiled Engine executable from ongoing 865-source gate, whose Engine test run is complete. Metadata diagnostic runs separately while the large Raft test continues; no performance claim."
-}

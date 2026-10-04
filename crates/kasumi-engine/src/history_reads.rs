@@ -318,7 +318,7 @@ impl Database {
                     Err(error)
                         if error.code == ErrorCode::IndexRequired
                             && query.allow_scan
-                            && query.text.is_none() =>
+                            && query.search.is_none() =>
                     {
                         if collection
                             .documents

@@ -418,7 +418,9 @@ impl Client {
                         target,
                     )?)
                     .await?
-                    .into_inner();
+                    .into_inner()
+                    .document
+                    .ok_or_else(|| anyhow::anyhow!("native document is absent"))?;
                 let _: Value = serde_json::from_slice(&result.body_json)?;
                 ensure!(
                     result.id == target.id,

@@ -173,17 +173,18 @@ fn sum(left: u64, right: u64) -> Result<u64> {
 /// Lindera remain unqualified. A continuation's existing allowance remains
 /// provisional until its caller admits the actual page clone.
 pub fn query_workspace_estimate(limits: &Limits, request: &QueryRequest) -> Result<u64> {
-    if request.cursor.is_some() {
+    // Continuations and seek pages copy one bounded page without candidates.
+    if request.cursor.is_some() || request.paging == kasumi_types::Paging::Seek {
         return product(bytes(limits.max_result_bytes)?, 2);
     }
     let candidates = product(bytes(limits.max_query_candidates)?, 128)?;
-    if request.aggregates.is_empty() {
+    if !request.is_aggregate() {
         return Ok(candidates);
     }
     let output = product(bytes(limits.max_result_bytes)?, 3)?;
     let groups = product(
         bytes(limits.max_query_groups)?,
-        sum(128, product(bytes(request.aggregates.len())?, 96)?)?,
+        sum(128, product(bytes(request.aggregate.len())?, 96)?)?,
     )?;
     sum(sum(output, candidates)?, groups)
 }

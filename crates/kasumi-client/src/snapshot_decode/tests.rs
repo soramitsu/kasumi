@@ -319,7 +319,8 @@ async fn parser_error_payload_drops_before_worker_admission_is_released() {
         error,
         ClientError::DecodeRejected {
             code: tonic::Code::DataLoss,
-            reason: "native JSON failed validation"
+            reason: "native JSON failed validation",
+            database: None,
         }
     ));
     assert_eq!(options.resources.usage(), ClientResourceUsage::default());
@@ -344,10 +345,20 @@ fn transport_error_retains_code_without_peer_message_details_or_metadata() {
         error,
         ClientError::DecodeRejected {
             code: tonic::Code::Unavailable,
-            reason: "native transport failed"
+            reason: "native transport failed",
+            database: None,
         }
     ));
     assert_eq!(options.resources.usage(), ClientResourceUsage::default());
+    // A Kasumi status keeps its closed error code, never its peer message.
+    let status = tonic::Status::with_details(
+        tonic::Code::FailedPrecondition,
+        "peer text",
+        Bytes::from(br#"{"code":"INDEX_REQUIRED","message":"declare an index"}"#.to_vec()),
+    );
+    let error = normalize(ClientError::Transport(status));
+    assert_eq!(error.code(), Some(kasumi_types::ErrorCode::IndexRequired));
+    assert!(!error.to_string().contains("peer text"));
 }
 
 #[test]
@@ -357,10 +368,8 @@ fn query_rows_cannot_advance_beyond_their_collection_epoch() {
     let input = ReadSnapshotRequest {
         documents: vec![],
         queries: vec![
-            serde_json::from_value(
-                json!({"collection":"docs", "filter":{"op":"all"}, "limit":2, "allow_scan":true}),
-            )
-            .unwrap(),
+            serde_json::from_value(json!({"collection":"docs", "limit":2, "allow_scan":true}))
+                .unwrap(),
         ],
         time_bounds: None,
     };

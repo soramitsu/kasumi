@@ -1,6 +1,0 @@
-
-running 1 test
-test runtime::lifecycle_tests::node_cache_workers_wait_for_runtime_handoff_and_drain_if_unclaimed ... ok
-
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 276 filtered out; finished in 12.09s
-

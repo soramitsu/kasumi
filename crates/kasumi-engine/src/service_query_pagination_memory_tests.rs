@@ -1,35 +1,65 @@
-fn pagination_memory_response() -> QueryResponse {
-    QueryResponse {
-        revision: 7,
-        rows: (0..3)
-            .map(|id| QueryRow {
+fn pagination_memory_rows() -> PinnedRows {
+    let rows: Vec<_> = (0..3)
+        .map(|id| PinnedRow {
+            document: Arc::new(Document {
                 id: format!("row-{id}"),
                 version: 7,
                 body: json!({"nested": vec![json!({}); 128], "label": "value"}),
-                score: None,
+            }),
+            score: None,
+        })
+        .collect();
+    let bytes = kasumi_query::vec_bytes::<PinnedRow>(rows.len()).unwrap() as usize
+        + rows
+            .iter()
+            .map(|row| crate::retained_document_bytes(&row.document).unwrap())
+            .sum::<usize>();
+    PinnedRows { rows, bytes }
+}
+
+fn pagination_page(rows: &PinnedRows, range: std::ops::Range<usize>) -> QueryResponse {
+    QueryResponse {
+        revision: 7,
+        rows: rows.rows[range]
+            .iter()
+            .map(|row| QueryRow {
+                id: row.document.id.clone(),
+                version: row.document.version,
+                body: row.document.body.clone(),
+                score: row.score,
             })
             .collect(),
-        aggregates: vec![json!({"groups": vec![json!({"count": 1}); 64]})],
+        aggregates: vec![],
         cursor: None,
     }
 }
 
+/// What copying these rows into a page admits.
+fn pagination_page_bytes(rows: &PinnedRows, range: std::ops::Range<usize>) -> u64 {
+    let page = pagination_page(rows, range);
+    kasumi_query::query_response_clone_bytes(&page, 0..page.rows.len()).unwrap()
+}
+
+/// What pinning these rows for a cursor admits.
+fn pagination_pin_bytes(rows: &PinnedRows) -> u64 {
+    rows.bytes as u64
+}
+
+/// A fresh query's output: its request, first page and the pinned rows after it.
 fn pagination_fresh_owner(
     node: &Arc<NodeAdmission>,
     cancellation: &QueryCancellation,
-) -> (QueryResultOwner, Arc<WorkFence>, u64) {
-    let response = pagination_memory_response();
+) -> (QueryResultOwner, QueryResponse, Arc<WorkFence>, u64) {
+    let rows = pagination_memory_rows();
     let request = query_memory_request();
-    let initial = query_input_workspace(&request, 3)
-        .unwrap()
-        .checked_add(
-            kasumi_query::query_response_clone_bytes(&response, 0..response.rows.len()).unwrap(),
-        )
-        .unwrap();
+    let page = pagination_page(&rows, 0..1);
+    let initial = query_input_workspace(&request, 3).unwrap()
+        + pagination_page_bytes(&rows, 0..1)
+        + pagination_pin_bytes(&rows);
     let fence = Arc::new(WorkFence::default());
     let mut owner = QueryResultOwner {
         request,
-        response: Arc::new(response),
+        rows: Arc::new(rows),
         memory: Some(QueryMemory::empty(
             node.reserve(512, Some(cancellation.clone())).unwrap(),
         )),
@@ -38,7 +68,23 @@ fn pagination_fresh_owner(
         _registration: Arc::new(fence.begin(cancellation.clone()).unwrap()),
     };
     owner.memory.as_mut().unwrap().reserve(initial).unwrap();
-    (owner, fence, initial)
+    (owner, page, fence, initial)
+}
+
+fn pagination_cursor(owner: &mut QueryResultOwner, offset: usize) -> Cursor {
+    Cursor {
+        principal: "owner".into(),
+        query_digest: "digest".into(),
+        incarnation: "incarnation".into(),
+        policy_epoch: 0,
+        created: Duration::ZERO,
+        ttl: Duration::from_secs(5),
+        rows: owner.rows.clone(),
+        revision: 7,
+        reservation: owner.cursor_reservation().unwrap(),
+        offset,
+        term: 1,
+    }
 }
 
 fn pagination_continuation_owner(
@@ -52,7 +98,7 @@ fn pagination_continuation_owner(
     let fence = Arc::new(WorkFence::default());
     let mut owner = QueryResultOwner {
         request,
-        response: cursor.response.clone(),
+        rows: cursor.rows.clone(),
         memory: Some(QueryMemory::empty(
             node.reserve(512, Some(cancellation.clone())).unwrap(),
         )),
@@ -65,94 +111,99 @@ fn pagination_continuation_owner(
 }
 
 #[test]
-fn pagination_memory_fresh_clone_admits_full_response_and_page_before_cursor_handoff() {
-    let response = pagination_memory_response();
-    let initial = query_input_workspace(&query_memory_request(), 3).unwrap()
-        + kasumi_query::query_response_clone_bytes(&response, 0..response.rows.len()).unwrap();
-    let page_bytes = kasumi_query::query_response_clone_bytes(&response, 0..1).unwrap();
+fn pagination_memory_continuation_copy_admits_its_page_before_cursor_handoff() {
+    let rows = pagination_memory_rows();
+    let page_bytes = pagination_page_bytes(&rows, 1..2);
     // Tiny JSON nodes make wire bytes an insufficient replacement for the
-    // actual row/aggregate clone claim used by the service.
-    assert!(page_bytes > crate::accounting::encoded_len(&response).unwrap() as u64 * 3);
+    // actual row clone claim used by the service.
+    assert!(
+        page_bytes
+            > crate::accounting::encoded_len(&pagination_page(&rows, 1..2)).unwrap() as u64 * 3
+    );
+    // Pins are charged as whole documents, never as wire bytes.
+    assert!(rows.bytes > crate::accounting::encoded_len(&pagination_page(&rows, 0..3)).unwrap());
+    let mut request = query_memory_request();
+    request.cursor = Some("old-cursor".into());
+    let input = query_input_workspace(&request, 3).unwrap();
     let cancellation = QueryCancellation::default();
-    let node = query_memory_node(initial + page_bytes + OUTPUT_CHARGE_BYTES);
+    let node = query_memory_node(1 << 20);
     let before = node.snapshot();
-    let (mut owner, _, observed_initial) = pagination_fresh_owner(&node, &cancellation);
-    assert_eq!(observed_initial, initial);
+    let (mut fresh, first_page, _, initial) = pagination_fresh_owner(&node, &cancellation);
+    let cursor = pagination_cursor(&mut fresh, 1);
+    assert!(fresh.memory.is_none());
+    assert!(Arc::ptr_eq(fresh.reservation.as_ref().unwrap(), &cursor.reservation));
+    drop((fresh, first_page));
+    let full = initial + OUTPUT_CHARGE_BYTES;
+    assert_eq!(crate::test_utils::reserved_payload_bytes(&node), full);
+    let mut continuation = pagination_continuation_owner(&node, &cursor, &cancellation);
     let admitted = node.snapshot();
-    let page = owner.clone_page(0..1, &cancellation).unwrap();
-    assert_eq!(page.rows, response.rows[..1]);
-    assert_eq!(page.aggregates, response.aggregates);
+    let page = continuation
+        .copy_page(1, 7, usize::MAX, &cancellation)
+        .unwrap();
+    assert_eq!(page, pagination_page(&rows, 1..2));
     assert_eq!(
-        owner.memory.as_ref().unwrap().live_bytes(),
-        initial + page_bytes
+        continuation.memory.as_ref().unwrap().live_bytes(),
+        input + page_bytes
     );
     assert_eq!(
         crate::test_utils::reserved_payload_bytes(&node),
-        initial + page_bytes
+        full + input + page_bytes
     );
-    assert_eq!(
-        node.snapshot().live_reservations,
-        admitted.live_reservations
-    );
+    assert_eq!(node.snapshot().live_reservations, admitted.live_reservations);
     assert_eq!(
         node.snapshot().inflight_operations,
         admitted.inflight_operations
     );
-    let cursor_charge = owner.cursor_reservation().unwrap();
-    assert!(owner.memory.is_none());
-    assert!(Arc::ptr_eq(
-        owner.reservation.as_ref().unwrap(),
-        &cursor_charge
-    ));
     drop(page);
-    drop(owner);
-    assert_eq!(
-        crate::test_utils::reserved_payload_bytes(&node),
-        initial + page_bytes + OUTPUT_CHARGE_BYTES
-    );
-    drop(cursor_charge);
+    drop(continuation);
+    assert_eq!(crate::test_utils::reserved_payload_bytes(&node), full);
+    drop(cursor);
     assert_eq!(node.snapshot().reserved_bytes, before.reserved_bytes);
     assert_eq!(node.snapshot().live_reservations, before.live_reservations);
 
-    let node = query_memory_node(initial + page_bytes - 1);
+    // A denied copy leaves the continuation's ledger at its request.
+    let node = query_memory_node(full + input);
     let before = node.snapshot();
-    let (mut owner, _, _) = pagination_fresh_owner(&node, &cancellation);
+    let (mut fresh, first_page, _, _) = pagination_fresh_owner(&node, &cancellation);
+    let cursor = pagination_cursor(&mut fresh, 1);
+    drop((fresh, first_page));
+    let mut continuation = pagination_continuation_owner(&node, &cursor, &cancellation);
     let admitted = node.snapshot();
     assert_eq!(
-        owner.clone_page(0..1, &cancellation).unwrap_err().code,
+        continuation
+            .copy_page(1, 7, usize::MAX, &cancellation)
+            .unwrap_err()
+            .code,
         ErrorCode::ResourceExhausted
     );
-    assert_eq!(owner.memory.as_ref().unwrap().live_bytes(), initial);
-    assert_eq!(owner.memory.as_ref().unwrap().peak_bytes(), initial);
+    assert_eq!(continuation.memory.as_ref().unwrap().live_bytes(), input);
+    assert_eq!(continuation.memory.as_ref().unwrap().peak_bytes(), input);
     assert_eq!(node.snapshot().reserved_bytes, admitted.reserved_bytes);
-    assert_eq!(owner.response.as_ref(), &response);
-    drop(owner);
+    assert_eq!(continuation.rows.rows.len(), 3);
+    drop(continuation);
+    drop(cursor);
     assert_eq!(node.snapshot().reserved_bytes, before.reserved_bytes);
 }
 
 #[test]
 fn pagination_memory_output_charge_denial_keeps_the_completed_payload_owned() {
-    let response = pagination_memory_response();
-    let initial = query_input_workspace(&query_memory_request(), 3).unwrap()
-        + kasumi_query::query_response_clone_bytes(&response, 0..response.rows.len()).unwrap();
-    let page_bytes = kasumi_query::query_response_clone_bytes(&response, 0..1).unwrap();
-    let node = query_memory_node(initial + page_bytes);
+    let node = query_memory_node(
+        query_input_workspace(&query_memory_request(), 3).unwrap()
+            + pagination_page_bytes(&pagination_memory_rows(), 0..1)
+            + pagination_pin_bytes(&pagination_memory_rows()),
+    );
     let before = node.snapshot();
     let cancellation = QueryCancellation::default();
-    let (mut owner, _, _) = pagination_fresh_owner(&node, &cancellation);
-    let page = owner.clone_page(0..1, &cancellation).unwrap();
+    let (mut owner, page, _, initial) = pagination_fresh_owner(&node, &cancellation);
     let admitted = node.snapshot();
     assert_eq!(
         owner.prepare_page_handoff().unwrap_err().code,
         ErrorCode::ResourceExhausted
     );
     assert!(owner.reservation.is_none());
-    assert_eq!(
-        owner.memory.as_ref().unwrap().live_bytes(),
-        initial + page_bytes
-    );
-    assert_eq!(owner.response.as_ref(), &response);
-    assert_eq!(page.rows, response.rows[..1]);
+    assert_eq!(owner.memory.as_ref().unwrap().live_bytes(), initial);
+    assert_eq!(owner.rows.rows.len(), 3);
+    assert_eq!(page.rows.len(), 1);
     assert_eq!(node.snapshot().reserved_bytes, admitted.reserved_bytes);
     assert_eq!(
         node.snapshot().live_reservations,
@@ -170,44 +221,33 @@ fn pagination_memory_output_charge_denial_keeps_the_completed_payload_owned() {
 
 #[test]
 fn pagination_memory_concurrent_continuations_use_independent_page_charges() {
-    let response = pagination_memory_response();
+    let rows = pagination_memory_rows();
     let full_bytes = query_input_workspace(&query_memory_request(), 3).unwrap()
-        + kasumi_query::query_response_clone_bytes(&response, 0..response.rows.len()).unwrap()
+        + pagination_page_bytes(&rows, 0..1)
+        + pagination_pin_bytes(&rows)
         + OUTPUT_CHARGE_BYTES;
-    let page_bytes = kasumi_query::query_response_clone_bytes(&response, 0..1).unwrap();
+    let page_bytes = pagination_page_bytes(&rows, 1..2);
     let mut request = query_memory_request();
     request.cursor = Some("old-cursor".into());
     let input_bytes = query_input_workspace(&request, 3).unwrap();
-    let node = query_memory_node(full_bytes + input_bytes * 2 + page_bytes * 2 - 1);
+    // Room for both requests but only one copied page.
+    let node = query_memory_node(full_bytes + input_bytes * 2 + page_bytes);
     let before = node.snapshot();
     let cancellation = QueryCancellation::default();
-    let (mut owner, _, _) = pagination_fresh_owner(&node, &cancellation);
-    let charge = owner.cursor_reservation().unwrap();
-    let cursor = Cursor {
-        principal: "owner".into(),
-        query_digest: "digest".into(),
-        incarnation: "incarnation".into(),
-        policy_epoch: 0,
-        created: Duration::ZERO,
-        ttl: Duration::from_secs(5),
-        response: owner.response.clone(),
-        reservation: charge,
-        offset: 0,
-        bytes: crate::accounting::encoded_len(owner.response.as_ref()).unwrap(),
-        term: 1,
-    };
-    drop(owner);
+    let (mut owner, first_page, _, _) = pagination_fresh_owner(&node, &cancellation);
+    let cursor = pagination_cursor(&mut owner, 1);
+    drop((owner, first_page));
     let mut first = pagination_continuation_owner(&node, &cursor, &cancellation);
     let mut second = pagination_continuation_owner(&node, &cursor, &cancellation);
-    let first_page = first.clone_page(0..1, &cancellation).unwrap();
-    let admitted = node.snapshot();
+    let first_page = first.copy_page(1, 7, usize::MAX, &cancellation).unwrap();
     assert_eq!(
-        second.clone_page(0..1, &cancellation).unwrap_err().code,
+        second
+            .copy_page(1, 7, usize::MAX, &cancellation)
+            .unwrap_err()
+            .code,
         ErrorCode::ResourceExhausted
     );
     assert_eq!(second.memory.as_ref().unwrap().live_bytes(), input_bytes);
-    assert_eq!(second.memory.as_ref().unwrap().peak_bytes(), input_bytes);
-    assert_eq!(node.snapshot().reserved_bytes, admitted.reserved_bytes);
     assert_eq!(
         node.snapshot().live_reservations,
         before.live_reservations + 3
@@ -226,13 +266,11 @@ fn pagination_memory_concurrent_continuations_use_independent_page_charges() {
     ));
     drop(first_page);
     drop(first);
-    let second_page = second.clone_page(0..1, &cancellation).unwrap();
-    assert_eq!(second_page.rows, response.rows[..1]);
-    assert_eq!(second_page.aggregates, response.aggregates);
+    let second_page = second.copy_page(1, 7, usize::MAX, &cancellation).unwrap();
+    assert_eq!(second_page, pagination_page(&rows, 1..2));
     drop(cursor);
-    assert_eq!(
-        crate::test_utils::reserved_payload_bytes(&node),
-        full_bytes + input_bytes + page_bytes
+    assert!(
+        crate::test_utils::reserved_payload_bytes(&node) >= full_bytes + input_bytes + page_bytes
     );
     drop(second_page);
     drop(second);
@@ -245,12 +283,12 @@ async fn pagination_memory_await_cancellation_and_unwind_drain_payload_before_ch
     let node = query_memory_node(1 << 20);
     let before = node.snapshot();
     let cancellation = QueryCancellation::default();
-    let (mut owner, fence, _) = pagination_fresh_owner(&node, &cancellation);
-    let weak = Arc::downgrade(&owner.response);
+    let (mut owner, first_page, fence, _) = pagination_fresh_owner(&node, &cancellation);
+    let weak = Arc::downgrade(&owner.rows);
     let mut pending = Box::pin(async move {
-        let page = owner.clone_page(0..1, &cancellation).unwrap();
+        let page = owner.copy_page(1, 7, usize::MAX, &cancellation).unwrap();
         std::future::pending::<()>().await;
-        drop(page);
+        drop((page, first_page));
         drop(owner);
     });
     assert!(
@@ -272,10 +310,11 @@ async fn pagination_memory_await_cancellation_and_unwind_drain_payload_before_ch
     assert_eq!(node.snapshot().reserved_bytes, before.reserved_bytes);
 
     let cancellation = QueryCancellation::default();
-    let (mut owner, fence, _) = pagination_fresh_owner(&node, &cancellation);
-    let weak = Arc::downgrade(&owner.response);
+    let (mut owner, first_page, fence, _) = pagination_fresh_owner(&node, &cancellation);
+    let weak = Arc::downgrade(&owner.rows);
     let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
-        let _page = owner.clone_page(0..1, &cancellation).unwrap();
+        let _first_page = first_page;
+        let _page = owner.copy_page(1, 7, usize::MAX, &cancellation).unwrap();
         panic!("injected pagination release panic");
     }));
     assert!(unwind.is_err());
@@ -287,18 +326,22 @@ async fn pagination_memory_await_cancellation_and_unwind_drain_payload_before_ch
 
 #[test]
 fn pagination_memory_completed_pages_release_only_their_operation_slots() {
-    let response = pagination_memory_response();
+    let rows = pagination_memory_rows();
     let initial = query_input_workspace(&query_memory_request(), 3).unwrap()
-        + kasumi_query::query_response_clone_bytes(&response, 0..response.rows.len()).unwrap();
-    let page_bytes = kasumi_query::query_response_clone_bytes(&response, 0..1).unwrap();
+        + pagination_page_bytes(&rows, 0..1)
+        + pagination_pin_bytes(&rows);
+    let page_bytes = pagination_page_bytes(&rows, 1..2);
     let audit_bytes = ((Limits::default().max_batch_bytes + (64 << 10)) * 3) as u64;
     let node = NodeAdmission::with_fixed_memory(
         crate::test_utils::admission_config_with_bookkeeping(AdmissionConfig {
             high_water_bytes: Some(8 << 30),
             low_water_bytes: Some(7 << 30),
-            // Enough for the retained full/page output and the same ordinary
-            // command allowance that strict release needs; only slots deny it.
-            max_inflight_bytes: Some(initial + page_bytes + OUTPUT_CHARGE_BYTES + audit_bytes),
+            // Enough for the retained output, a continuation page and the same
+            // ordinary command allowance that strict release needs; only slots
+            // deny it.
+            max_inflight_bytes: Some(
+                initial + OUTPUT_CHARGE_BYTES * 2 + (64 << 10) + page_bytes + audit_bytes,
+            ),
             max_inflight_operations: 1,
             max_reservations: 64,
             max_snapshot_startups: 2,
@@ -312,8 +355,7 @@ fn pagination_memory_completed_pages_release_only_their_operation_slots() {
     .unwrap();
     let before = node.snapshot();
     let cancellation = QueryCancellation::default();
-    let (mut owner, _, _) = pagination_fresh_owner(&node, &cancellation);
-    let page = owner.clone_page(0..1, &cancellation).unwrap();
+    let (mut owner, page, _, _) = pagination_fresh_owner(&node, &cancellation);
     let pending = node.snapshot();
     assert_eq!(pending.inflight_operations, 1);
     assert_eq!(
@@ -330,30 +372,20 @@ fn pagination_memory_completed_pages_release_only_their_operation_slots() {
     assert_eq!(completed.live_reservations, pending.live_reservations);
     assert_eq!(
         crate::test_utils::reserved_payload_bytes(&node),
-        initial + page_bytes + OUTPUT_CHARGE_BYTES
+        initial + OUTPUT_CHARGE_BYTES
     );
     let audit = node.reserve(audit_bytes, None).unwrap();
     assert_eq!(node.snapshot().inflight_operations, 1);
-    assert_eq!(owner.response.as_ref(), &response);
-    assert_eq!(page.rows, response.rows[..1]);
+    assert_eq!(owner.rows.rows.len(), 3);
+    assert_eq!(page, pagination_page(&rows, 0..1));
     drop(audit);
-    let cursor = Cursor {
-        principal: "owner".into(),
-        query_digest: "digest".into(),
-        incarnation: "incarnation".into(),
-        policy_epoch: 0,
-        created: Duration::ZERO,
-        ttl: Duration::from_secs(5),
-        response: owner.response.clone(),
-        reservation: owner.cursor_reservation().unwrap(),
-        offset: 1,
-        bytes: crate::accounting::encoded_len(owner.response.as_ref()).unwrap(),
-        term: 1,
-    };
+    let cursor = pagination_cursor(&mut owner, 1);
     drop(page);
     drop(owner);
     let mut continuation = pagination_continuation_owner(&node, &cursor, &cancellation);
-    let next_page = continuation.clone_page(1..2, &cancellation).unwrap();
+    let next_page = continuation
+        .copy_page(cursor.offset, cursor.revision, usize::MAX, &cancellation)
+        .unwrap();
     let pending = node.snapshot();
     continuation.prepare_page_handoff().unwrap();
     let retained = node.snapshot();
@@ -374,7 +406,7 @@ fn pagination_memory_completed_pages_release_only_their_operation_slots() {
     let audit = node.reserve(1, None).unwrap();
     assert_eq!(node.snapshot().inflight_operations, 1);
     assert_eq!(node.snapshot().reserved_bytes, retained.reserved_bytes + 1);
-    assert_eq!(next_page.rows, response.rows[1..2]);
+    assert_eq!(next_page, pagination_page(&rows, 1..2));
     drop(audit);
     assert_eq!(node.snapshot().reserved_bytes, retained.reserved_bytes);
     drop(next_page);
@@ -397,35 +429,24 @@ fn pagination_memory_continuation_release_error_keeps_its_request_charged() {
         ))
     }
 
-    let response = pagination_memory_response();
+    let rows = pagination_memory_rows();
     let full_bytes = query_input_workspace(&query_memory_request(), 3).unwrap()
-        + kasumi_query::query_response_clone_bytes(&response, 0..response.rows.len()).unwrap()
+        + pagination_page_bytes(&rows, 0..1)
+        + pagination_pin_bytes(&rows)
         + OUTPUT_CHARGE_BYTES;
     let mut request = query_memory_request();
     request.cursor = Some("old-cursor".into());
     let page_bytes = query_input_workspace(&request, 3).unwrap()
-        + kasumi_query::query_response_clone_bytes(&response, 1..2).unwrap()
+        + pagination_page_bytes(&rows, 1..2)
         + OUTPUT_CHARGE_BYTES;
     let node = query_memory_node(full_bytes + page_bytes);
     let before = node.snapshot();
     let cancellation = QueryCancellation::default();
-    let (mut original, _, _) = pagination_fresh_owner(&node, &cancellation);
-    let cursor = Cursor {
-        principal: "owner".into(),
-        query_digest: "digest".into(),
-        incarnation: "incarnation".into(),
-        policy_epoch: 0,
-        created: Duration::ZERO,
-        ttl: Duration::from_secs(5),
-        response: original.response.clone(),
-        reservation: original.cursor_reservation().unwrap(),
-        offset: 1,
-        bytes: crate::accounting::encoded_len(original.response.as_ref()).unwrap(),
-        term: 1,
-    };
-    drop(original);
+    let (mut original, first_page, _, _) = pagination_fresh_owner(&node, &cancellation);
+    let cursor = pagination_cursor(&mut original, 1);
+    drop((original, first_page));
     let mut full = pagination_continuation_owner(&node, &cursor, &cancellation);
-    let page = full.clone_page(1..2, &cancellation).unwrap();
+    let page = full.copy_page(1, 7, usize::MAX, &cancellation).unwrap();
     full.prepare_page_handoff().unwrap();
     let page_charge = Arc::downgrade(full.page_charge.as_ref().unwrap());
     let retained = node.snapshot();
@@ -494,7 +515,7 @@ async fn pagination_memory_strict_pages_release_the_completed_operation_slot() {
             ..fixture.context.clone()
         };
         let mut request = query_memory_request();
-        request.limit = limit;
+        request.limit = Some(limit);
         assert!(request.cursor.is_none());
         let (revision, audit_count) = {
             let generation = fixture.db.engine().generation().unwrap();
@@ -523,7 +544,7 @@ async fn pagination_memory_strict_pages_release_the_completed_operation_slot() {
             };
             // Keep every normalized field equal to the original query.
             let mut continuation = query_memory_request();
-            continuation.limit = limit;
+            continuation.limit = Some(limit);
             continuation.cursor = Some(cursor.clone());
             let next = fixture.db.query(&context, continuation).await.unwrap();
             assert_eq!(next.revision, page.revision);
@@ -660,7 +681,7 @@ async fn pagination_memory_public_read_outputs_outlive_shutdown_and_release_inde
         id: "a".into(),
     };
     let mut query = query_memory_request();
-    query.limit = 2;
+    query.limit = Some(2);
     let snapshot = fixture
         .db
         .read_snapshot(

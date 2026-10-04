@@ -258,7 +258,12 @@ async fn missing_stop_has_no_upload_lease_and_defeats_delayed_begin_after_encryp
             .code,
         ErrorCode::Conflict
     );
-    assert!(db.get(&context(), "docs", "missing").await.is_err());
+    assert!(
+        db.get(&context(), "docs", "missing")
+            .await
+            .unwrap()
+            .is_none()
+    );
     close(db, audit, node).await;
 }
 
@@ -368,7 +373,11 @@ async fn committed_original_survives_receipt_absence_admission_failure_and_fresh
             .code,
         ErrorCode::Conflict
     );
-    let receipt = db.get(&context(), "receipts", "committed").await.unwrap();
+    let receipt = db
+        .get(&context(), "receipts", "committed")
+        .await
+        .unwrap()
+        .expect("document exists");
     let mut current = stop(&db, &original);
     current.admission.retain(
         |a| !matches!(a, ReadAssertion::Document { collection, .. } if collection == "receipts"),
@@ -389,7 +398,11 @@ async fn committed_original_survives_receipt_absence_admission_failure_and_fresh
         }
     );
     assert_eq!(
-        db.get(&context(), "docs", "committed").await.unwrap().body["exact_minor_units"],
+        db.get(&context(), "docs", "committed")
+            .await
+            .unwrap()
+            .expect("document exists")
+            .body["exact_minor_units"],
         "100"
     );
     close(db, audit, node).await;
@@ -512,11 +525,21 @@ async fn concurrent_original_and_stop_keep_exactly_one_permanent_outcome() {
                 outcome: Ok(receipt),
             } => {
                 assert_eq!(finished.unwrap(), receipt);
-                assert!(db.get(&context(), "receipts", &name).await.is_ok());
+                assert!(
+                    db.get(&context(), "receipts", &name)
+                        .await
+                        .unwrap()
+                        .is_some()
+                );
             }
             StagedOutcome::Aborted { .. } => {
                 assert!(finished.is_err());
-                assert!(db.get(&context(), "receipts", &name).await.is_err());
+                assert!(
+                    db.get(&context(), "receipts", &name)
+                        .await
+                        .unwrap()
+                        .is_none()
+                );
             }
             other => panic!("unexpected terminal outcome: {other:?}"),
         }
@@ -628,7 +651,8 @@ async fn stopped_resolution_preserves_original_failed_finalize() {
     assert!(
         db.get(&context(), "receipts", "failed-finalize")
             .await
-            .is_err()
+            .unwrap()
+            .is_none()
     );
     close(db, audit, node).await;
 }

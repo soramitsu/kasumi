@@ -49,13 +49,15 @@ fn native_mutation_query_and_canonical_command_keep_literal_values() {
     let encoded = serde_json::to_vec(&chunk).unwrap();
     let observed: AppendStagedChunk = crate::api::decode_json(&encoded).unwrap();
     assert_eq!(observed.chunk.operations, expected.operations);
-    let predicate = Predicate::Eq {
-        field: "/x".into(),
-        value: json!({"$serde_json::private::Number":"7"}),
-    };
-    let encoded = serde_json::to_vec(&predicate).unwrap();
-    let observed: Predicate = crate::api::decode_json(&encoded).unwrap();
-    assert_eq!(observed, predicate);
+    let filter = Filter::new().eq("/x", json!({"$serde_json::private::Number":"7"}));
+    let encoded = serde_json::to_vec(&filter).unwrap();
+    let observed: Filter = crate::api::decode_json(&encoded).unwrap();
+    assert_eq!(observed, filter);
+    let shorthand: Filter = crate::api::decode_json(br#"{"/x":7.000000000000000000001}"#).unwrap();
+    assert_eq!(
+        serde_json::to_vec(&shorthand).unwrap(),
+        br#"{"/x":7.000000000000000000001}"#
+    );
     let command = Command {
         context: RequestContext {
             authorization: RequestAuthorization::service_identity(),

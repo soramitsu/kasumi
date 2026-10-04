@@ -58,6 +58,24 @@ impl<'a> Object<'a> {
     ) -> Result<T, ClientError> {
         Ok(serde_json::from_str(self.raw(name)?.get())?)
     }
+    /// Remove an optional member, distinguishing absence from JSON null.
+    pub(super) fn optional_raw(&mut self, name: &'static str) -> Option<&'a RawValue> {
+        self.0.remove(name)
+    }
+    // Call sites use only metadata types without any Value-bearing field.
+    pub(super) fn optional<T: Deserialize<'a> + Default>(
+        &mut self,
+        name: &'static str,
+    ) -> Result<T, ClientError> {
+        self.0.remove(name).map_or_else(
+            || Ok(T::default()),
+            |raw| Ok(serde_json::from_str(raw.get())?),
+        )
+    }
+    /// Every remaining member, for maps keyed by caller-chosen names.
+    pub(super) fn into_entries(self) -> BTreeMap<String, &'a RawValue> {
+        self.0
+    }
     pub(super) fn finish(self) -> Result<(), ClientError> {
         if self.0.is_empty() {
             Ok(())
@@ -115,7 +133,7 @@ fn feed_document(
         body: tokens::literal(body.get().as_bytes(), call)?,
     })
 }
-pub(super) fn definition(raw: &RawValue, call: &Call) -> Result<CollectionDefinition, ClientError> {
+pub(crate) fn definition(raw: &RawValue, call: &Call) -> Result<CollectionDefinition, ClientError> {
     call.check()?;
     let mut object = Object::new(raw)?;
     let result = CollectionDefinition {

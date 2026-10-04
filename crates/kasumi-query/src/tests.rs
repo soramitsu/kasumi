@@ -72,19 +72,6 @@ fn run(
         &Limits::default(),
     )
 }
-fn aggregate(
-    alias: &str,
-    function: AggregateFunction,
-    field: Option<&str>,
-    scale: Option<i64>,
-) -> Aggregation {
-    Aggregation {
-        alias: alias.into(),
-        function,
-        field: field.map(str::to_owned),
-        scale,
-    }
-}
 
 #[test]
 fn indexed_boolean_filters_match_independent_reference_evaluator() {
@@ -94,37 +81,38 @@ fn indexed_boolean_filters_match_independent_reference_evaluator() {
     // Reference uses native integers directly and does not invoke query internals.
     for low in [0, 7, 23, 36] {
         for high in [3, 17, 36, 50] {
-            let mut query = request();
-            query.filter = Predicate::And {
-                predicates: vec![
-                    Predicate::Compare {
-                        field: "/n".into(),
-                        comparison: Comparison::Gte,
-                        value: json!(low),
-                    },
-                    Predicate::Or {
-                        predicates: vec![
-                            Predicate::Compare {
-                                field: "/n".into(),
-                                comparison: Comparison::Lt,
-                                value: json!(high),
-                            },
-                            Predicate::Contains {
-                                field: "/tags".into(),
-                                value: json!("2"),
-                            },
-                        ],
-                    },
-                    Predicate::Not {
-                        predicate: Box::new(Predicate::Eq {
-                            field: "/tag".into(),
-                            value: json!("a"),
-                        }),
-                    },
-                ],
-            };
+            let query = request().filter(
+                Filter::new()
+                    .gte("/n", low)
+                    .and(Filter::or([
+                        Filter::new().lt("/n", high),
+                        Filter::new().contains("/tags", "2"),
+                    ]))
+                    .and(!Filter::new().eq("/tag", "a")),
+            );
             let expected: Vec<String> = (0..180)
                 .filter(|i| i % 37 >= low && (i % 37 < high || i % 4 == 2) && i % 3 != 0)
+                .map(|i| format!("{i:03}"))
+                .collect();
+            assert_eq!(
+                ids(indexes
+                    .execute_fixture(&collections, &query, &Limits::default())
+                    .unwrap()),
+                expected
+            );
+            // Merged bounds, negations and membership against the same reference.
+            let query = request().filter(
+                Filter::new()
+                    .gte("/n", low)
+                    .lt("/n", high)
+                    .ne("/tag", "a")
+                    .not_in("/n", [5, 6]),
+            );
+            let expected: Vec<String> = (0..180)
+                .filter(|i| {
+                    let n = i % 37;
+                    n >= low && n < high && i % 3 != 0 && n != 5 && n != 6
+                })
                 .map(|i| format!("{i:03}"))
                 .collect();
             assert_eq!(
@@ -152,31 +140,23 @@ fn decimal_sort_range_and_sum_preserve_more_than_f64_precision() {
             .unwrap(),
         ],
     );
-    let mut query = request();
-    query.sort = vec![Sort {
-        field: "/n".into(),
-        direction: Direction::Asc,
-    }];
-    query.aggregates = vec![aggregate("sum", AggregateFunction::Sum, Some("/d"), None)];
+    let mut query = request().sort_asc("/n");
     let result = run(&collections, &query).unwrap();
     assert_eq!(
         result.rows.iter().map(|row| &row.id).collect::<Vec<_>>(),
         vec!["001", "000"]
     );
+    let totals = request()
+        .aggregate("sum", Aggregation::sum("/d"))
+        .aggregate("total", Aggregation::sum("/n"));
+    let exact: Value = serde_json::from_str("1801439850948198624691357802.5").unwrap();
     assert_eq!(
-        result.aggregates,
-        vec![json!({"group":{},"values":{"sum":"1801439850948198624691357802.5"}})]
+        run(&collections, &totals).unwrap().aggregates,
+        vec![json!({"group":{},"values":{"sum":"1801439850948198624691357802.5","total":exact}})]
     );
-    query.filter = Predicate::Compare {
-        field: "/d".into(),
-        comparison: Comparison::Gt,
-        value: json!("900719925474099312345678901.2"),
-    };
+    query.filter = Filter::new().gt("/d", "900719925474099312345678901.2");
     assert_eq!(ids(run(&collections, &query).unwrap()), vec!["000"]);
-    query.filter = Predicate::Eq {
-        field: "/d".into(),
-        value: json!(1),
-    };
+    query.filter = Filter::new().eq("/d", 1);
     assert_eq!(
         run(&collections, &query).unwrap_err().code,
         ErrorCode::InvalidArgument
@@ -184,7 +164,7 @@ fn decimal_sort_range_and_sum_preserve_more_than_f64_precision() {
 }
 
 #[test]
-fn missing_null_empty_array_and_projection_remain_distinct() {
+fn missing_null_empty_array_and_select_remain_distinct() {
     let collections = collection(
         definition(&[
             ("/value", ScalarType::String),
@@ -198,34 +178,28 @@ fn missing_null_empty_array_and_projection_remain_distinct() {
         ],
     );
     let mut query = request();
-    query.filter = Predicate::Eq {
-        field: "/value".into(),
-        value: Value::Null,
-    };
+    query.filter = Filter::new().eq("/value", Value::Null);
     assert_eq!(ids(run(&collections, &query).unwrap()), vec!["001"]);
-    query.filter = Predicate::Exists {
-        field: "/tags".into(),
-        exists: false,
-    };
+    query.filter = Filter::new().missing("/tags");
     assert_eq!(ids(run(&collections, &query).unwrap()), vec!["000"]);
-    query.filter = Predicate::Exists {
-        field: "/tags".into(),
-        exists: true,
-    };
+    query.filter = Filter::new().exists("/tags");
     assert_eq!(
         ids(run(&collections, &query).unwrap()),
         vec!["001", "002", "003"]
     );
-    query.filter = Predicate::Contains {
-        field: "/tags".into(),
-        value: json!("x"),
-    };
+    query.filter = Filter::new().contains("/tags", "x");
     assert_eq!(ids(run(&collections, &query).unwrap()), vec!["003"]);
-    query.filter = Predicate::All;
-    query.projection = vec!["/value".into(), "/absent".into()];
+    // ne is the negation of eq, so absent and null values match it.
+    query.filter = Filter::new().ne("/value", "a");
+    assert_eq!(
+        ids(run(&collections, &query).unwrap()),
+        vec!["000", "001", "003"]
+    );
+    query.filter = Filter::new();
+    query.select = vec!["/value".into(), "/absent".into()];
     let result = run(&collections, &query).unwrap();
     assert_eq!(result.rows[0].body, json!({}));
-    assert_eq!(result.rows[1].body, json!({"/value":null}));
+    assert_eq!(result.rows[1].body, json!({"value":null}));
 }
 
 #[test]
@@ -240,23 +214,22 @@ fn groups_distinguish_absent_and_null_and_skip_empty_numeric_inputs() {
             json!({"group":"a"}),
         ],
     );
-    let mut query = request();
-    query.group_by = vec!["/group".into()];
-    query.aggregates = vec![
-        aggregate("rows", AggregateFunction::Count, None, None),
-        aggregate("numbers", AggregateFunction::Count, Some("/n"), None),
-        aggregate("sum", AggregateFunction::Sum, Some("/n"), None),
-        aggregate("min", AggregateFunction::Min, Some("/n"), None),
-        aggregate("max", AggregateFunction::Max, Some("/n"), None),
-        aggregate("avg", AggregateFunction::Avg, Some("/n"), Some(0)),
-    ];
+    let query = request()
+        .group_by(["/group"])
+        .aggregate("rows", Aggregation::count())
+        .aggregate("numbers", Aggregation::count_of("/n"))
+        .aggregate("sum", Aggregation::sum("/n"))
+        .aggregate("min", Aggregation::min("/n"))
+        .aggregate("max", Aggregation::max("/n"))
+        .aggregate("avg", Aggregation::avg("/n", 0));
     let result = run(&collections, &query).unwrap();
+    assert!(result.rows.is_empty());
     assert_eq!(
         result.aggregates,
         vec![
-            json!({"group":{},"values":{"rows":1,"numbers":1,"sum":"3","min":"3","max":"3","avg":"3"}}),
-            json!({"group":{"/group":null},"values":{"rows":1,"numbers":0,"sum":"0","min":null,"max":null,"avg":null}}),
-            json!({"group":{"/group":"a"},"values":{"rows":3,"numbers":2,"sum":"9","min":"4","max":"5","avg":"4"}}),
+            json!({"group":{},"values":{"rows":1,"numbers":1,"sum":3,"min":3,"max":3,"avg":3}}),
+            json!({"group":{"group":null},"values":{"rows":1,"numbers":0,"sum":0,"min":null,"max":null,"avg":null}}),
+            json!({"group":{"group":"a"},"values":{"rows":3,"numbers":2,"sum":9,"min":4,"max":5,"avg":4}}),
         ]
     );
 }
@@ -288,50 +261,57 @@ fn average_is_half_even_at_requested_scale_including_negative_ties() {
 #[test]
 fn aggregate_validation_and_empty_collection_are_data_independent() {
     let collections = collection(definition(&[("/n", ScalarType::Number)]), vec![]);
-    let mut query = request();
-    query.filter = Predicate::Eq {
-        field: "/n".into(),
-        value: json!("wrong type"),
-    };
+    let mut query = request().filter(Filter::new().eq("/n", "wrong type"));
     assert_eq!(
         run(&collections, &query).unwrap_err().code,
         ErrorCode::InvalidArgument
     );
-    query.filter = Predicate::All;
-    query.aggregates = vec![aggregate("avg", AggregateFunction::Avg, Some("/n"), None)];
+    query.filter = Filter::new();
+    query.aggregate = BTreeMap::from([(
+        "avg".into(),
+        Aggregation {
+            scale: None,
+            ..Aggregation::avg("/n", 0)
+        },
+    )]);
     assert_eq!(
         run(&collections, &query).unwrap_err().code,
         ErrorCode::InvalidArgument
     );
-    query.aggregates = vec![
-        aggregate("sum", AggregateFunction::Sum, Some("/n"), None),
-        aggregate("count", AggregateFunction::Count, None, None),
-    ];
+    query.aggregate = BTreeMap::from([
+        ("sum".into(), Aggregation::sum("/n")),
+        ("count".into(), Aggregation::count()),
+    ]);
     assert_eq!(
         run(&collections, &query).unwrap().aggregates,
-        vec![json!({"group":{},"values":{"sum":"0","count":0}})]
+        vec![json!({"group":{},"values":{"sum":0,"count":0}})]
     );
+    // Aggregates return groups only; row options are rejected, not ignored.
+    for invalid in [
+        query.clone().limit(5),
+        query.clone().sort_asc("/n"),
+        query.clone().select(["/n"]),
+        request().group_by(["/n"]),
+    ] {
+        assert_eq!(
+            run(&collections, &invalid).unwrap_err().code,
+            ErrorCode::InvalidArgument
+        );
+    }
 }
 
 #[test]
 fn declared_indexes_and_explicit_scan_admission_are_enforced() {
     let collections = collection(definition(&[]), vec![json!({"n":2}), json!({"n":1})]);
-    let mut query = request();
-    query.filter = Predicate::Eq {
-        field: "/n".into(),
-        value: json!(1),
-    };
+    let mut query = request().filter(Filter::new().eq("/n", 1));
     assert_eq!(
         run(&collections, &query).unwrap_err().code,
         ErrorCode::IndexRequired
     );
     query.allow_scan = true;
     assert_eq!(ids(run(&collections, &query).unwrap()), vec!["001"]);
-    query.filter = Predicate::All;
-    query.sort = vec![Sort {
-        field: "/n".into(),
-        direction: Direction::Asc,
-    }];
+    query.filter = Filter::new();
+    query.sort = vec![Sort::asc("/n")];
     assert_eq!(ids(run(&collections, &query).unwrap()), vec!["001", "000"]);
     query.allow_scan = false;
     assert_eq!(
@@ -359,21 +339,18 @@ fn candidate_group_and_response_budgets_fail_closed() {
             .code,
         ErrorCode::ResourceExhausted
     );
-    query.filter = Predicate::Eq {
-        field: "/n".into(),
-        value: json!(1),
-    };
+    query.filter = Filter::new().eq("/n", 1);
     assert_eq!(
         ids(indexes
             .execute_fixture(&collections, &query, &limits)
             .unwrap()),
         vec!["001"]
     );
-    query.filter = Predicate::All;
+    query.filter = Filter::new();
     limits.max_query_candidates = 10;
     limits.max_query_groups = 2;
     query.group_by = vec!["/n".into()];
-    query.aggregates = vec![aggregate("count", AggregateFunction::Count, None, None)];
+    query.aggregate = BTreeMap::from([("count".into(), Aggregation::count())]);
     assert_eq!(
         indexes
             .execute_fixture(&collections, &query, &limits)
@@ -382,8 +359,9 @@ fn candidate_group_and_response_budgets_fail_closed() {
         ErrorCode::ResourceExhausted
     );
     query.group_by.clear();
-    query.aggregates.clear();
-    limits.max_result_bytes = 10;
+    query.aggregate.clear();
+    // A complete result without a cursor must fit in max_cursor_bytes.
+    limits.max_cursor_bytes = 10;
     assert_eq!(
         indexes
             .execute_fixture(&collections, &query, &limits)
@@ -396,12 +374,17 @@ fn candidate_group_and_response_budgets_fail_closed() {
 #[test]
 fn engine_owns_pagination_and_query_does_not_truncate_snapshot() {
     let collections = collection(definition(&[]), vec![json!({}), json!({}), json!({})]);
-    let mut query = request();
-    query.limit = 1;
+    let mut query = request().limit(1);
     let result = run(&collections, &query).unwrap();
     assert_eq!(result.rows.len(), 3);
     assert!(result.cursor.is_none());
     query.cursor = Some("untrusted-token".into());
+    assert_eq!(
+        run(&collections, &query).unwrap_err().code,
+        ErrorCode::InvalidArgument
+    );
+    query.cursor = None;
+    query.paging = Paging::Seek;
     assert_eq!(
         run(&collections, &query).unwrap_err().code,
         ErrorCode::InvalidArgument
@@ -414,17 +397,14 @@ fn json_pointer_escapes_and_invalid_pointers() {
         definition(&[("/a~1b/~0key", ScalarType::Number)]),
         vec![json!({"a/b":{"~key":42}})],
     );
-    let mut query = request();
-    query.filter = Predicate::Eq {
-        field: "/a~1b/~0key".into(),
-        value: json!(42),
-    };
-    query.projection = vec!["/a~1b/~0key".into()];
+    let mut query = request()
+        .filter(Filter::new().eq("/a~1b/~0key", 42))
+        .select(["/a~1b/~0key"]);
     assert_eq!(
         run(&collections, &query).unwrap().rows[0].body,
-        json!({"/a~1b/~0key":42})
+        json!({"a/b":{"~key":42}})
     );
-    query.projection = vec!["/bad~2escape".into()];
+    query.select = vec!["/bad~2escape".into()];
     assert_eq!(
         run(&collections, &query).unwrap_err().code,
         ErrorCode::InvalidArgument
@@ -534,14 +514,7 @@ fn text_collection(analyzer: Analyzer, values: &[&str]) -> BTreeMap<String, Coll
     )
 }
 fn text_query(query: &str, mode: TextMode) -> QueryRequest {
-    let mut request = request();
-    request.text = Some(TextSearch {
-        index: "text".into(),
-        query: query.into(),
-        mode,
-        distance: 1,
-    });
-    request
+    request().search(TextSearch::new("text", query).mode(mode))
 }
 
 #[test]
@@ -663,7 +636,7 @@ fn fuzzy_distance_and_expansion_limits_are_enforced() {
         vec!["000", "001"]
     );
     let mut query = text_query("kitten", TextMode::Fuzzy);
-    query.text.as_mut().unwrap().distance = 3;
+    query.search.as_mut().unwrap().distance = Some(3);
     assert_eq!(
         indexes
             .execute_fixture(&collections, &query, &Limits::default())
@@ -671,7 +644,7 @@ fn fuzzy_distance_and_expansion_limits_are_enforced() {
             .code,
         ErrorCode::InvalidArgument
     );
-    query.text.as_mut().unwrap().distance = 0;
+    query.search.as_mut().unwrap().distance = Some(0);
     assert_eq!(
         ids(indexes
             .execute_fixture(&collections, &query, &Limits::default())
@@ -761,33 +734,29 @@ fn invalid_queries_fail_without_hits_and_json_recursion_is_bounded() {
         ]),
         vec![],
     );
-    for predicate in [
-        Predicate::In {
-            field: "/tags".into(),
-            values: vec![],
-        },
-        Predicate::Compare {
-            field: "/n".into(),
-            comparison: Comparison::Gt,
-            value: Value::Null,
-        },
-        Predicate::Contains {
-            field: "/tags".into(),
-            value: Value::Null,
+    for filter in [
+        Filter::new().is_in("/tags", Vec::<Value>::new()),
+        Filter::new().gt("/n", Value::Null),
+        Filter::new().contains("/tags", Value::Null),
+        Filter::new().contains("/n", 1),
+        Filter::new().gt("/n", 1).lt("/n", "z"),
+        Filter::new().gt("/n", 1).gte("/n", 2),
+        Filter::new().is_in("/n", (0..257).collect::<Vec<_>>()),
+        Filter {
+            fields: BTreeMap::from([("/n".into(), Condition::default())]),
+            ..Filter::default()
         },
     ] {
-        let mut query = request();
-        query.filter = predicate;
+        let query = request().filter(filter);
         assert_eq!(
             run(&collections, &query).unwrap_err().code,
-            ErrorCode::InvalidArgument
+            ErrorCode::InvalidArgument,
+            "{query:?}"
         );
     }
     let mut query = request();
     for _ in 0..17 {
-        query.filter = Predicate::Not {
-            predicate: Box::new(query.filter),
-        };
+        query.filter = !query.filter;
     }
     assert_eq!(
         run(&collections, &query).unwrap_err().code,
@@ -1014,11 +983,7 @@ fn incremental_postings_match_rebuild_and_share_unchanged_roots() {
     ));
     let rebuilt = QueryIndexes::build_fixture(&next).unwrap();
     for n in [-1, 1, 2, 9999, 10001] {
-        let mut query = request();
-        query.filter = Predicate::Eq {
-            field: "/n".into(),
-            value: json!(n),
-        };
+        let query = request().filter(Filter::new().eq("/n", n));
         assert_eq!(
             updated
                 .execute_fixture(&next, &query, &Limits::default())
@@ -1028,11 +993,7 @@ fn incremental_postings_match_rebuild_and_share_unchanged_roots() {
                 .unwrap()
         );
     }
-    let mut query = request();
-    query.filter = Predicate::Eq {
-        field: "/n".into(),
-        value: json!(1),
-    };
+    let query = request().filter(Filter::new().eq("/n", 1));
     assert_eq!(
         ids(old
             .execute_fixture(&previous, &query, &Limits::default())
@@ -1278,32 +1239,22 @@ fn text_writer_rejects_stale_branches_without_damaging_published_reader() {
 }
 
 #[test]
-fn cooperative_cancellation_discards_partial_index_scan_sort_and_projection_results() {
+fn cooperative_cancellation_discards_partial_index_scan_sort_and_select_results() {
     let collections = collection(
         definition(&[("/n", ScalarType::Number)]),
         (0..512).map(|n| json!({"n":n,"body":"payload"})).collect(),
     );
     let indexes = QueryIndexes::build_fixture(&collections).unwrap();
     for filter in [
-        Predicate::All,
-        Predicate::Exists {
-            field: "/missing".into(),
-            exists: false,
-        },
-        Predicate::Compare {
-            field: "/n".into(),
-            comparison: Comparison::Gte,
-            value: json!(0),
-        },
+        Filter::new(),
+        Filter::new().missing("/missing"),
+        Filter::new().gte("/n", 0),
     ] {
-        let mut query = request();
-        query.filter = filter;
-        query.allow_scan = true;
-        query.sort = vec![Sort {
-            field: "/n".into(),
-            direction: Direction::Desc,
-        }];
-        query.projection = vec!["/body".into()];
+        let query = request()
+            .filter(filter)
+            .allow_scan()
+            .sort_desc("/n")
+            .select(["/body"]);
         for checkpoints in [0, 50, 500, 1000, 2000] {
             let cancellation = QueryCancellation::after_checks(checkpoints);
             let result = indexes.execute_with_cancellation_fixture(
@@ -1434,4 +1385,114 @@ fn shared_document_representation_preserves_snapshot_bytes_and_historical_values
         &old["docs"].documents["001"],
         &next["docs"].documents["001"]
     ));
+}
+
+#[test]
+fn pages_copy_only_their_rows_and_enforce_the_byte_bound() {
+    use crate::source_test_utils::{ResidentSource, query_memory};
+    // The third document alone exceeds a 1000-byte page.
+    let collections = collection(
+        definition(&[("/n", ScalarType::Number)]),
+        [10, 10, 5000, 10, 10]
+            .iter()
+            .enumerate()
+            .map(|(n, bytes)| json!({"n": n, "x": "y".repeat(*bytes)}))
+            .collect(),
+    );
+    let indexes = QueryIndexes::build_fixture(&collections).unwrap();
+    let docs = &collections["docs"];
+    let source = ResidentSource {
+        collection: docs,
+        indexes: &indexes,
+    };
+    let page = |request: &QueryRequest, rows: usize, bytes: usize| {
+        let (response, remaining) = indexes
+            .execute_page(
+                &source,
+                request,
+                &Limits::default(),
+                PageBound { rows, bytes },
+                &QueryCancellation::default(),
+                &mut query_memory(),
+                |remaining, _| Ok((remaining.map(|(id, _)| id.to_owned()).collect(), 0)),
+            )
+            .map_err(ReadFailure::into_query_error)
+            .unwrap();
+        (ids(response), remaining)
+    };
+    let strings = |ids: &[&str]| ids.iter().map(|id| id.to_string()).collect::<Vec<_>>();
+    let unlimited = usize::MAX;
+    assert_eq!(
+        page(&request(), 2, unlimited),
+        (strings(&["000", "001"]), strings(&["002", "003", "004"]))
+    );
+    assert_eq!(
+        page(&request(), 100, unlimited),
+        (strings(&["000", "001", "002", "003", "004"]), vec![])
+    );
+    // The large third row ends the first page early.
+    assert_eq!(
+        page(&request(), 100, 1000),
+        (strings(&["000", "001"]), strings(&["002", "003", "004"]))
+    );
+    let sorted = request().sort_desc("/n");
+    assert_eq!(
+        page(&sorted, 2, unlimited),
+        (strings(&["004", "003"]), strings(&["002", "001", "000"]))
+    );
+    // Continuations enforce the same bound even for their first row, so an
+    // oversized document cannot bypass the configured response limit.
+    let mut memory = query_memory();
+    let error = copy_page(
+        ["002", "003", "004"]
+            .iter()
+            .map(|id| (&*docs.documents[*id], None)),
+        &[],
+        PageBound {
+            rows: 100,
+            bytes: 1000,
+        },
+        &QueryCancellation::default(),
+        &mut memory,
+    )
+    .unwrap_err();
+    assert_eq!(error.code, ErrorCode::ResourceExhausted);
+    assert_eq!(memory.live_bytes(), 0);
+    let next = |from: &[&str], select: &[String], rows: usize, bytes: usize| {
+        copy_page(
+            from.iter().map(|id| (&*docs.documents[*id], None)),
+            select,
+            PageBound { rows, bytes },
+            &QueryCancellation::default(),
+            &mut query_memory(),
+        )
+        .unwrap()
+    };
+    assert_eq!(next(&["003", "004"], &[], 100, 1000).len(), 2);
+    assert_eq!(next(&["003", "004"], &[], 1, 1000).len(), 1);
+    // Bounds apply to the selected fields that the page actually returns.
+    let rows = next(&["002", "003", "004"], &["/n".into()], 100, 1000);
+    assert_eq!(
+        rows.iter().map(|row| row.body.clone()).collect::<Vec<_>>(),
+        [json!({"n": 2}), json!({"n": 3}), json!({"n": 4})]
+    );
+    // The byte bound includes the envelope and a cursor-sized token.
+    let response = QueryResponse {
+        revision: u64::MAX,
+        rows: ["000", "001"]
+            .iter()
+            .map(|id| {
+                let document = &docs.documents[*id];
+                QueryRow {
+                    id: document.id.clone(),
+                    version: document.version,
+                    body: document.body.clone(),
+                    score: None,
+                }
+            })
+            .collect(),
+        aggregates: vec![],
+        cursor: Some("00000000-0000-0000-0000-000000000000".into()),
+    };
+    assert!(serde_json::to_vec(&response).unwrap().len() <= 1000);
 }

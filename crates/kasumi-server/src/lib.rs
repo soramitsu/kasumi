@@ -11,6 +11,7 @@ mod backup_cli;
 mod backup_destination_installation;
 pub mod cluster;
 mod control_genesis;
+pub mod data_cli;
 mod data_node_enrollment;
 mod installed_clients;
 #[cfg(test)]

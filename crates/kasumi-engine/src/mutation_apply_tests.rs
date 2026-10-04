@@ -110,6 +110,167 @@ fn apply(engine: &CodecFixture, revision: u64, operation: Operation) -> Result<W
         .unwrap()
 }
 
+fn patch_expansion_fixture() -> (CodecFixture, usize) {
+    let engine = engine(fixture_memory(), 2 << 20);
+    for (revision, id) in [(2, "a"), (3, "b")] {
+        apply(&engine, revision, Operation::Mutate(batch(id, id, 8192))).unwrap();
+    }
+    let bytes = engine.generation().unwrap().state.collections["docs"]
+        .documents
+        .values()
+        .map(|document| encoded_len(&document.body).unwrap())
+        .sum();
+    (engine, bytes)
+}
+
+fn expansion_patch(key: &str) -> MutationBatch {
+    MutationBatch::with_key(key)
+        .upsert("docs", "marker", json!({"created":true}))
+        .patch("docs", "a", json!({"patched":true}))
+        .patch("docs", "b", json!({"patched":true}))
+}
+
+fn assert_patch_sources_unchanged(engine: &CodecFixture, before: &Arc<Generation>) {
+    let after = engine.generation().unwrap();
+    let documents = &after.state.collections["docs"].documents;
+    assert!(!documents.contains_key("marker"));
+    for id in ["a", "b"] {
+        assert!(Arc::ptr_eq(
+            &documents[id],
+            &before.state.collections["docs"].documents[id]
+        ));
+    }
+}
+
+#[test]
+fn merge_patch_expansion_rejects_atomically_and_accepts_the_exact_source_byte_boundary() {
+    let (engine, source_bytes) = patch_expansion_fixture();
+    let mut limits = engine.generation().unwrap().state.limits.clone();
+    limits.max_document_bytes = source_bytes / 2;
+    limits.max_batch_bytes = source_bytes - 1;
+    apply(&engine, 4, Operation::SetLimits(limits.clone())).unwrap();
+    let before = engine.generation().unwrap();
+    let patch = expansion_patch("too-large");
+    assert!(encoded_len(&patch).unwrap() < limits.max_batch_bytes);
+    let error = apply(&engine, 5, Operation::Mutate(patch.clone())).unwrap_err();
+    assert_eq!(error.code, ErrorCode::ResourceExhausted);
+    assert!(error.message.contains("source documents exceed byte limit"));
+    assert_patch_sources_unchanged(&engine, &before);
+
+    limits.max_batch_bytes = source_bytes;
+    // Leave room for the new field while the source-byte bound remains exact.
+    limits.max_document_bytes += 64;
+    apply(&engine, 6, Operation::SetLimits(limits)).unwrap();
+    assert_eq!(
+        apply(&engine, 7, Operation::Mutate(patch)).unwrap_err(),
+        error,
+        "raising the budget must not replace a permanent rejection"
+    );
+    assert_patch_sources_unchanged(&engine, &before);
+    apply(
+        &engine,
+        8,
+        Operation::Mutate(expansion_patch("at-boundary")),
+    )
+    .unwrap();
+    let after = engine.generation().unwrap();
+    for id in ["a", "b"] {
+        assert_eq!(
+            after.state.collections["docs"].documents[id].body["patched"],
+            true
+        );
+        assert_eq!(after.state.collections["docs"].documents[id].version, 8);
+    }
+}
+
+#[test]
+fn merge_patch_expansion_checks_decoded_clone_cost_before_mutating_object_heavy_documents() {
+    let engine = engine(fixture_memory(), 2 << 20);
+    let body = serde_json::Value::Object(
+        (0..100)
+            .map(|index| (format!("k{index:03}"), json!(0)))
+            .collect(),
+    );
+    apply(
+        &engine,
+        2,
+        Operation::Mutate(MutationBatch::with_key("seed").insert("docs", "a", body)),
+    )
+    .unwrap();
+    let mut limits = engine.generation().unwrap().state.limits.clone();
+    limits.max_document_bytes = 4096;
+    limits.max_batch_bytes = 4096;
+    apply(&engine, 3, Operation::SetLimits(limits)).unwrap();
+    let before = engine.generation().unwrap();
+    let source = &before.state.collections["docs"].documents["a"];
+    assert!(encoded_len(&source.body).unwrap() < 4096);
+    assert!(kasumi_query::document_clone_bytes(source).unwrap() > 3 * 4096);
+    let error = apply(
+        &engine,
+        4,
+        Operation::Mutate(MutationBatch::with_key("patch").patch("docs", "a", json!({}))),
+    )
+    .unwrap_err();
+    assert_eq!(error.code, ErrorCode::ResourceExhausted);
+    assert!(
+        error
+            .message
+            .contains("source documents exceed workspace limit")
+    );
+    assert!(Arc::ptr_eq(
+        source,
+        &engine.generation().unwrap().state.collections["docs"].documents["a"]
+    ));
+}
+
+#[test]
+fn staged_merge_patch_expansion_uses_transaction_limit_and_keeps_rejection_permanent() {
+    let (engine, source_bytes) = patch_expansion_fixture();
+    let mut limits = engine.generation().unwrap().state.limits.clone();
+    limits.max_document_bytes = source_bytes / 2;
+    limits.max_batch_bytes = source_bytes / 2;
+    limits.atomic.max_transaction_bytes = source_bytes - 1;
+    apply(&engine, 4, Operation::SetLimits(limits.clone())).unwrap();
+    let before = engine.generation().unwrap();
+    let reference = upload_stage_operations(
+        &engine,
+        "too-large",
+        5,
+        expansion_patch("unused").operations,
+    );
+    let error = apply(&engine, 7, Operation::FinalizeStaged(reference.clone())).unwrap_err();
+    assert_eq!(error.code, ErrorCode::ResourceExhausted);
+    assert!(error.message.contains("source documents exceed byte limit"));
+    assert_patch_sources_unchanged(&engine, &before);
+
+    limits.atomic.max_transaction_bytes = source_bytes;
+    // Patches below remove a field, so individual document sizes cannot grow.
+    apply(&engine, 8, Operation::SetLimits(limits)).unwrap();
+    assert_eq!(
+        apply(&engine, 9, Operation::FinalizeStaged(reference)).unwrap_err(),
+        error
+    );
+    assert_patch_sources_unchanged(&engine, &before);
+    let reference = upload_stage_operations(
+        &engine,
+        "at-boundary",
+        10,
+        MutationBatch::new()
+            .patch("docs", "a", json!({"value":null}))
+            .patch("docs", "b", json!({"value":null}))
+            .operations,
+    );
+    apply(&engine, 12, Operation::FinalizeStaged(reference)).unwrap();
+    let after = engine.generation().unwrap();
+    for id in ["a", "b"] {
+        assert_eq!(
+            after.state.collections["docs"].documents[id].body,
+            json!({})
+        );
+        assert_eq!(after.state.collections["docs"].documents[id].version, 12);
+    }
+}
+
 fn text_engine(max_snapshot_bytes: u64) -> CodecFixture {
     let engine = engine(fixture_memory(), max_snapshot_bytes);
     let mut definition = engine.generation().unwrap().state.collections["docs"]
@@ -169,7 +330,7 @@ fn text_matches(generation: &Arc<Generation>, text: &str) -> Vec<(String, u64)> 
     }
     let query: QueryRequest = serde_json::from_value(json!({
         "collection": "docs",
-        "text": {"index": "text", "query": text, "mode": "terms"}
+        "search": {"index": "text", "query": text}
     }))
     .unwrap();
     let input_bytes = u64::try_from(crate::accounting::encoded_len(&query).unwrap())
@@ -1351,9 +1512,18 @@ fn upload_stage(
     revision: u64,
     mutation: Mutation,
 ) -> StagedTransactionRef {
+    upload_stage_operations(engine, id, revision, vec![mutation])
+}
+
+fn upload_stage_operations(
+    engine: &CodecFixture,
+    id: &str,
+    revision: u64,
+    operations: Vec<Mutation>,
+) -> StagedTransactionRef {
     let chunk = StagedChunk {
         read_set: vec![],
-        operations: vec![mutation],
+        operations,
     };
     let begin = BeginStagedTransaction {
         scope: StagedTransactionScope {

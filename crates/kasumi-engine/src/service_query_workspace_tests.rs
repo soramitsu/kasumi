@@ -157,7 +157,7 @@ async fn snapshot_query_memory_keeps_points_and_prior_results_live_and_denies_se
     // A same-size invalid second query stops before its allocations, exposing
     // the completed first query's peak without duplicating planner internals.
     let mut prefix = request.clone();
-    prefix.queries[1].limit = 0;
+    prefix.queries[1].limit = Some(0);
     assert_eq!(query_input_workspace(&prefix, 1).unwrap(), initial);
     let prefix_node = query_memory_node(1 << 20);
     let (prefix_work, _, _) =
@@ -279,7 +279,7 @@ async fn query_memory_success_and_source_error_outputs_hold_custody_until_abando
             );
             assert_eq!(output.memory.live_bytes(), initial);
         } else {
-            assert_eq!(output.response.as_ref().unwrap().rows.len(), 1);
+            assert_eq!(output.response.as_ref().unwrap().0.rows.len(), 1);
             assert!(output.memory.live_bytes() > initial);
         }
         assert!(weak.upgrade().is_none());

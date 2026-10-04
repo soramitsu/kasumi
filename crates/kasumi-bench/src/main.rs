@@ -751,12 +751,7 @@ async fn database_case(
                 queries(
                     &databases,
                     options,
-                    Some(TextSearch {
-                        index: index.into(),
-                        query: query.into(),
-                        mode,
-                        distance: 1,
-                    }),
+                    Some(TextSearch::new(index, query).mode(mode)),
                 )
                 .await,
             );
@@ -812,7 +807,8 @@ async fn database_case(
         let result = database
             .get(&context(tenant), "docs", &tenant.to_string())
             .await
-            .with_context(|| format!("recovery verification, tenant {tenant}"))?;
+            .with_context(|| format!("recovery verification, tenant {tenant}"))?
+            .with_context(|| format!("recovered document absent, tenant {tenant}"))?;
         ensure!(
             result.body["ordinal"] == json!(tenant),
             "recovery document mismatch"
@@ -906,25 +902,15 @@ async fn queries(
                 break;
             }
         };
-        let mut page = QueryRequest {
-            collection: "docs".into(),
-            filter: if text.is_none() {
-                Predicate::Eq {
-                    field: "/ordinal".into(),
-                    value: json!(ordinal),
-                }
-            } else {
-                Predicate::All
-            },
-            sort: Vec::new(),
-            projection: vec!["/ordinal".into()],
-            aggregates: Vec::new(),
-            group_by: Vec::new(),
-            text: text.clone(),
-            limit: 1000,
-            cursor: None,
-            allow_scan: false,
+        let filter = match &text {
+            None => Filter::new().eq("/ordinal", ordinal),
+            Some(_) => Filter::new(),
         };
+        let mut page = QueryRequest::new("docs")
+            .filter(filter)
+            .select(["/ordinal"])
+            .limit(1000);
+        page.search = text.clone();
         let identity = context(tenant);
         let start = Instant::now();
         let result: Result<()> = async {

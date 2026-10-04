@@ -1,7 +1,7 @@
 //! Snapshot-only framing. HTTP/2/TLS frames and headers are already allocated
 //! when this adapter sees them; this bounds bytes admitted into tonic, not RSS.
 use super::resources::{Call, invalid};
-use crate::{ClientError, proto};
+use crate::ClientError;
 use bytes::{Buf, Bytes};
 use http_body::Frame;
 use std::{
@@ -20,19 +20,21 @@ use tower_service::Service;
 #[derive(Clone, Copy)]
 pub(crate) enum Format {
     JsonEnvelope,
-    QueryProtobuf,
+    /// A complete protobuf reply, traversed without allocation before decoding.
+    Protobuf,
 }
 
 pub(crate) struct Wire {
     pub bytes: Bytes,
     pub call: Call,
 }
-struct SnapshotCodec {
+struct SnapshotCodec<M> {
     call: Call,
     format: Format,
+    request: std::marker::PhantomData<fn(M)>,
 }
-struct SnapshotEncoder {
-    inner: tonic_prost::ProstEncoder<proto::ReadSnapshotRequest>,
+struct SnapshotEncoder<M> {
+    inner: tonic_prost::ProstEncoder<M>,
     _call: Call,
 }
 struct SnapshotDecoder {
@@ -40,10 +42,10 @@ struct SnapshotDecoder {
     format: Format,
     seen: bool,
 }
-impl Codec for SnapshotCodec {
-    type Encode = proto::ReadSnapshotRequest;
+impl<M: prost::Message + Send + 'static> Codec for SnapshotCodec<M> {
+    type Encode = M;
     type Decode = Wire;
-    type Encoder = SnapshotEncoder;
+    type Encoder = SnapshotEncoder<M>;
     type Decoder = SnapshotDecoder;
     fn encoder(&mut self) -> Self::Encoder {
         SnapshotEncoder {
@@ -59,8 +61,8 @@ impl Codec for SnapshotCodec {
         }
     }
 }
-impl Encoder for SnapshotEncoder {
-    type Item = proto::ReadSnapshotRequest;
+impl<M: prost::Message> Encoder for SnapshotEncoder<M> {
+    type Item = M;
     type Error = Status;
     fn encode(&mut self, value: Self::Item, output: &mut EncodeBuf<'_>) -> Result<(), Status> {
         self.inner.encode(value, output)
@@ -81,7 +83,7 @@ impl Decoder for SnapshotDecoder {
         Ok(Some(Wire {
             bytes: match self.format {
                 Format::JsonEnvelope => envelope(input, self.call.limits.max_json_bytes)?,
-                Format::QueryProtobuf => {
+                Format::Protobuf => {
                     let length = input.remaining();
                     if length > self.call.limits.max_wire_bytes {
                         return Err(Status::resource_exhausted(
@@ -133,7 +135,7 @@ fn envelope(input: &mut impl Buf, maximum: usize) -> Result<Bytes, Status> {
 fn status(error: ClientError) -> Status {
     match error {
         ClientError::Transport(status) => status,
-        ClientError::DecodeRejected { code, reason } => Status::new(code, reason),
+        ClientError::DecodeRejected { code, reason, .. } => Status::new(code, reason),
         _ => Status::data_loss("invalid admitted snapshot response"),
     }
 }
@@ -336,9 +338,9 @@ impl http_body::Body for ErrorBody {
         Poll::Ready(self.error.take().map(Err))
     }
 }
-pub(crate) async fn receive(
+pub(crate) async fn receive<M: prost::Message + Send + 'static>(
     channel: Channel,
-    mut request: tonic::Request<proto::ReadSnapshotRequest>,
+    mut request: tonic::Request<M>,
     path: &'static str,
     format: Format,
     call: Call,
@@ -371,6 +373,7 @@ pub(crate) async fn receive(
                 SnapshotCodec {
                     call: call.clone(),
                     format,
+                    request: std::marker::PhantomData,
                 },
             )
             .await?;

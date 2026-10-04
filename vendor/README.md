@@ -60,24 +60,30 @@ The complete 600-file workspace is retained; Cargo selects `openraft` from its
 `openraft/` package and `openraft-macros` from the sibling `macros/` package.
 The fork retains actual runtime children, incoming snapshot owners and original
 shutdown failures across cancellation, and exposes the membership observer used
-by readiness. Its historical bytes and permissions matched the preserved
-[final custody checkpoint](../docs/evidence/openraft-canonical-20260920/custody-checkpoint.json)
+by readiness. Its historical bytes and permissions matched the archived
+final custody checkpoint described by the
+[evidence retention policy](../docs/evidence/README.md)
 and final-49 inventory SHA-256
 `70cce233f67865044d8550bd613c7696abfbe0b47f7fa0d436199a9a709bffa6`.
 Upstream licenses and the workspace `Cargo.lock` remain inputs even though the
 upstream ignore rules omit that lockfile. Stage/package the recorded lockfile
 explicitly; do not recreate it during verification. The
-[custody evidence](../docs/evidence/openraft-canonical-20260920/README.md) qualifies
-that upstream checkpoint, not the integrated Kasumi release.
+[archived custody evidence](../docs/evidence/README.md) qualifies that upstream
+checkpoint, not the integrated Kasumi release.
 
 The later G09 atomic-initialization development cutover changes four OpenRaft
 source files to preserve an application-defined first membership entry through
 initialization. Its source archive and focused library/API evidence are retained
-in [the atomic-entry lane](../docs/evidence/g09-atomic-initial-entry-development-20260927/README.md).
+in the archived atomic-entry lane; see the
+[evidence retention policy](../docs/evidence/README.md).
 The old custody inventory above does not qualify these new bytes. The
-[independent source review](../docs/evidence/openraft-atomic-initial-entry-review-20260927/README.md)
+[current dependency checkpoint](reviews/openraft-0.9.25/custody-checkpoint.json)
 records the exact four-file change and deliberately advances the 600-file source
-inventory. It preserves the old manifest/checkpoint and explicitly remains a
+inventory, retained as a required verification input in
+[the reviewed source inventory](reviews/openraft-0.9.25/source-inventory.json).
+These two small inputs are inventoried in `patch-manifest.json` and remain in Git
+because the dependency verifier reads them. The checkpoint records the archived
+predecessor and explicitly remains a
 development dependency checkpoint. Its recorded 296 upstream cases and scoped
 Kasumi cases do not replace the remaining frozen upstream, platform, fault or
 integrated release gates. No release qualification is asserted by this source
@@ -107,7 +113,8 @@ package's local source, version, manifest path and resolved package identity.
 It checks the entire vendor tree, including hidden/ignored files and sibling
 packages; extra files, symlinks, special files and changed executable modes
 fail verification. Ordinary empty directories do not affect qualification because
-Git does not preserve them. Root-level support documents are inventoried too. The manifest
+Git does not preserve them. Root-level support documents and required inputs
+under `reviews/` are inventoried too. The manifest
 is the reviewed policy input and is checked unchanged across Cargo metadata;
 its own bytes are not recursively hashed into itself. Verification never updates
 inventories or substitutes registry packages for missing local inputs.

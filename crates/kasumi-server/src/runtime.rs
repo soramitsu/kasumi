@@ -4258,7 +4258,12 @@ mod lifecycle_tests {
                 assert_eq!(incarnation, Some(current));
             }
             assert_eq!(
-                database.get(&context, "docs", "first").await.unwrap().body["exact"],
+                database
+                    .get(&context, "docs", "first")
+                    .await
+                    .unwrap()
+                    .expect("document exists")
+                    .body["exact"],
                 serde_json::json!(9007199254740993u64)
             );
             let attacker = RequestContext {
@@ -4323,7 +4328,12 @@ mod lifecycle_tests {
                     .await
                     .unwrap();
                 assert_eq!(
-                    database.get(&context, "docs", "first").await.unwrap().body["exact"],
+                    database
+                        .get(&context, "docs", "first")
+                        .await
+                        .unwrap()
+                        .expect("document exists")
+                        .body["exact"],
                     serde_json::json!(9007199254740993u64)
                 );
             }
@@ -5568,7 +5578,7 @@ mod lifecycle_tests {
                 loop {
                     for index in [0, 1, 3] {
                         if let Ok(db) = registries[index].database(&context)
-                            && let Ok(doc) = db.get(&context, "docs", "a").await
+                            && let Ok(Some(doc)) = db.get(&context, "docs", "a").await
                         {
                             return doc;
                         }
@@ -5895,7 +5905,10 @@ mod lifecycle_tests {
             })
         })
         .await;
-        assert_eq!(document.body["durable"], serde_json::json!(true));
+        assert_eq!(
+            document.expect("restored document").body["durable"],
+            serde_json::json!(true)
+        );
         assert!(
             databases[leader]
                 .get(&source_context, "docs", "a")
@@ -6095,7 +6108,7 @@ mod lifecycle_tests {
             loop {
                 for registry in &second_registries {
                     let db = registry.database(&context).unwrap();
-                    if let Ok(doc) = db.get(&context, "docs", "a").await {
+                    if let Ok(Some(doc)) = db.get(&context, "docs", "a").await {
                         return doc;
                     }
                 }
@@ -6237,7 +6250,7 @@ mod lifecycle_tests {
         tokio::time::timeout(Duration::from_secs(20), async {
             loop {
                 for registry in &second_registries {
-                    if let Ok(document) = registry
+                    if let Ok(Some(document)) = registry
                         .database(&context)
                         .unwrap()
                         .get(&context, "docs", "a")

@@ -354,8 +354,14 @@ pub(crate) fn decode_json<T: DeserializeOwned>(bytes: &[u8]) -> Result<T> {
             "request body too large",
         ));
     }
-    serde_json::from_slice(bytes)
-        .map_err(|_| Error::new(ErrorCode::InvalidArgument, "invalid request JSON"))
+    // The parser's reason (bounded by Error::new) names the caller's own
+    // mistake, such as an unknown filter key and its correct spelling.
+    serde_json::from_slice(bytes).map_err(|error| {
+        Error::new(
+            ErrorCode::InvalidArgument,
+            format!("invalid request JSON: {error}"),
+        )
+    })
 }
 
 pub(crate) fn encode_json(value: &impl Serialize) -> Result<Vec<u8>> {
@@ -443,7 +449,8 @@ mod tests {
     include!("api_routing_tests.rs");
     include!("api_tls_reload_tests.rs");
     include!("api_sdk_literal_tests.rs");
-    include!("rpc_ordered_seek_tests.rs");
+    include!("api_facade_tests.rs");
+    include!("rpc_seek_paging_tests.rs");
     use super::*;
     use crate::{
         auth::{AuthConfig, Authenticator},
@@ -714,7 +721,7 @@ mod tests {
         )
     }
     fn batch() -> Value {
-        serde_json::from_str(r#"{"read_set":[],"idempotency_key":"write-once","operations":[{"op":"put","collection":"docs","id":"one","body":{"n":90071992547409931234567890.123456789},"expected":{"kind":"absent"}}]}"#).unwrap()
+        serde_json::from_str(r#"{"read_set":[],"idempotency_key":"write-once","operations":[{"op":"put","collection":"docs","id":"one","body":{"n":90071992547409931234567890.123456789},"expected":"absent"}]}"#).unwrap()
     }
 
     // Model the delivery boundary deterministically: run the complete adapter,
@@ -1096,7 +1103,9 @@ name: "docs".into(),
             ))
             .await
             .unwrap()
-            .into_inner();
+            .into_inner()
+            .document
+            .unwrap();
         assert_eq!(
             serde_json::from_slice::<Value>(&fetched.body_json).unwrap()["n"].to_string(),
             "90071992547409931234567890.123456789"
@@ -1129,7 +1138,7 @@ name: "docs".into(),
             receipt.outcome,
             Some(proto::receipt_response::Outcome::Committed(_))
         ));
-        let query = json!({"collection":"docs","filter":{"op":"all"},"aggregates":[{"alias":"sum","function":"sum","field":"/n"}]});
+        let query = json!({"collection":"docs","aggregate":{"sum":{"sum":"/n"}}});
         let response = native_api
             .query(native(
                 proto::QueryRequest {
@@ -1140,10 +1149,11 @@ name: "docs".into(),
             .await
             .unwrap()
             .into_inner();
-        assert_eq!(response.rows.len(), 1);
+        assert!(response.rows.is_empty());
+        // A number field's exact sum stays an exact JSON number on the wire.
         assert_eq!(
             serde_json::from_slice::<Value>(&response.aggregates_json[0]).unwrap()["values"]["sum"],
-            json!("90071992547409931234567890.123456789")
+            serde_json::from_str::<Value>("90071992547409931234567890.123456789").unwrap()
         );
         let collections = native_api
             .collections(native(proto::CollectionsRequest {}, &token))
@@ -1190,8 +1200,15 @@ name: "docs".into(),
             .iter()
             .find(|tool| tool["name"] == "kasumi_query")
             .unwrap();
-        assert!(query["inputSchema"]["$defs"]["predicate"]["oneOf"].is_array());
+        let filter = &query["inputSchema"]["$defs"]["filter"];
+        assert_eq!(filter["additionalProperties"], false);
+        assert!(filter["patternProperties"]["^/"]["anyOf"].is_array());
+        assert!(filter["properties"]["or"]["items"]["$ref"].is_string());
         assert_eq!(query["inputSchema"]["additionalProperties"], false);
+        assert_eq!(
+            query["inputSchema"]["properties"]["sort"]["items"]["pattern"],
+            "^-?/"
+        );
         fixture.close().await;
     }
 
@@ -1231,7 +1248,7 @@ name: "docs".into(),
             snapshot.documents[0].document.as_ref().unwrap().body["n"].to_string(),
             "90071992547409931234567890.123456789"
         );
-        let conditional = json!({"idempotency_key":"conditional-native","read_set":snapshot.read_assertions(),"operations":[{"op":"put","collection":"docs","id":"one","body":{"n":2},"expected":{"kind":"any"}}]});
+        let conditional = json!({"idempotency_key":"conditional-native","read_set":snapshot.read_assertions(),"operations":[{"op":"put","collection":"docs","id":"one","body":{"n":2},"expected":"any"}]});
         api.mutate(native(
             proto::MutateRequest {
                 batch_json: serde_json::to_vec(&conditional).unwrap(),

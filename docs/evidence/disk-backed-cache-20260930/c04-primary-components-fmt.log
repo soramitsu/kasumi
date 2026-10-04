@@ -1,3 +1,0 @@
-Command: cargo fmt --all --check
-CARGO_TARGET_DIR=target/disk-backed-cache
-Runner: 14.37s; exit=0; matching=787/787

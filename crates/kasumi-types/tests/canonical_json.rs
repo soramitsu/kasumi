@@ -66,7 +66,7 @@ fn operation(reverse: bool) -> Mutation {
 
 fn mutation_json() -> String {
     format!(
-        r#"{{"op":"put","collection":"docs","id":"row","body":{BODY},"expected":{{"kind":"version","version":7}}}}"#
+        r#"{{"op":"put","collection":"docs","id":"row","body":{BODY},"expected":{{"version":7}}}}"#
     )
 }
 
@@ -130,7 +130,7 @@ fn mutation_replay_and_staging_manifest_are_feature_independent() {
         assert_eq!(batch.digest().unwrap(), digest);
         assert_eq!(
             digest,
-            "208fa37019dbd9ac50c00ea58b11fee223b75f3b18c3fcef0d103260b3e3ac1a"
+            "78d373aebcc01d3f8678b2aa1259e496a60e4d5bc3ede006ddd72c3b029373b8"
         );
         let chunk = StagedChunk {
             read_set: batch.read_set,
@@ -143,7 +143,7 @@ fn mutation_replay_and_staging_manifest_are_feature_independent() {
         let chunk_digest = assert_encoding(&chunk, &expected_chunk);
         assert_eq!(
             chunk_digest,
-            "40a75569fb16d6aefa589e060b89f632874c38ed59fbcb9664db459665904a4f"
+            "ab758fb478e8c6db80976e88a93ad7c5e3f851ebdba6cd926a028dfb088633bd"
         );
         let manifest = StagedManifest::from_chunks(&[chunk]).unwrap();
         assert_eq!(manifest.chunk_digests, [chunk_digest]);

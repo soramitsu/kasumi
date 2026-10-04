@@ -99,7 +99,7 @@ Change [`QueryIndexes`](../crates/kasumi-query/src/lib.rs) and
 bounded schema/validator metadata. Mutation preparation receives admitted old/new
 documents for changed IDs, not two full collection maps. Remove all changed old
 unique mappings before inserting replacements, preserving atomic swaps. Route
-[`ordered_seek.rs`](../crates/kasumi-query/src/ordered_seek.rs),
+[`seek.rs`](../crates/kasumi-query/src/seek.rs),
 [`service.rs`](../crates/kasumi-engine/src/service.rs),
 [`snapshot_leases.rs`](../crates/kasumi-engine/src/snapshot_leases.rs) and
 [`history_reads.rs`](../crates/kasumi-engine/src/history_reads.rs) through point
@@ -1402,7 +1402,7 @@ the maintained `imbl` index representation is unchanged. The initial query
 estimate, 128-byte-per-candidate estimate and three-times-wire-output retained
 estimate remain **provisional**, not decoded heap bounds. The provider retains
 the entire admitted peak even when a successful query records a smaller logical
-output allowance. Ordered seeks do not yet use this ledger.
+output allowance. Seek-paged queries (`"paging": "seek"`) use the same ledger.
 
 Engine integration uses the existing reservation and grows its actual charge
 only when the requested peak exceeds it, without taking a new operation slot

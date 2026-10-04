@@ -628,8 +628,13 @@ struct ReceiptArguments {
 struct EmptyArguments {}
 
 fn arguments<T: serde::de::DeserializeOwned>(value: Value) -> kasumi_types::Result<T> {
-    serde_json::from_value(value)
-        .map_err(|_| Error::new(ErrorCode::InvalidArgument, "invalid tool arguments"))
+    // Agents correct their own arguments from this bounded parser reason.
+    serde_json::from_value(value).map_err(|error| {
+        Error::new(
+            ErrorCode::InvalidArgument,
+            format!("invalid tool arguments: {error}"),
+        )
+    })
 }
 fn output(invocation: &Verified, value: &impl Serialize) -> kasumi_types::Result<Value> {
     // Bound the structured data before constructing the final protocol envelope.
@@ -905,9 +910,13 @@ impl KasumiMcp {
                 let args: GetArguments = arguments(args)?;
                 validate_name(&args.collection)?;
                 validate_name(&args.id)?;
-                let result = invocation
-                    .retain_output(db.get(&context, &args.collection, &args.id).await?)?;
-                output(invocation, result.as_ref())
+                match db.get(&context, &args.collection, &args.id).await? {
+                    Some(document) => {
+                        let result = invocation.retain_output(document)?;
+                        output(invocation, result.as_ref())
+                    }
+                    None => output(invocation, &Value::Null),
+                }
             }
             "kasumi_query" => {
                 let args: QueryRequest = arguments(args)?;
@@ -953,7 +962,7 @@ impl ServerHandler for KasumiMcp {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_protocol_version(ProtocolVersion::V_2026_07_28)
             .with_server_info(Implementation::new("kasumi", env!("CARGO_PKG_VERSION")))
-            .with_instructions("Use collection discovery, exact JSON queries, and atomic idempotent mutations. Identity and tenant are determined by the access token. Administration uses the separate native admin service.")
+            .with_instructions("Call kasumi_collections first to learn schemas and indexed fields. Query with JSON Pointer filters such as {\"/status\":\"open\"}; write with atomic, idempotent kasumi_mutate batches. Identity and tenant come from the access token. Administration uses the separate native admin service.")
     }
     fn get_tool(&self, name: &str) -> Option<Tool> {
         tools().iter().find(|tool| tool.name == name).cloned()
@@ -1083,25 +1092,54 @@ fn tools() -> &'static Vec<Tool> {
     static TOOLS: OnceLock<Vec<Tool>> = OnceLock::new();
     TOOLS.get_or_init(|| {
         let name = json!({"type":"string","minLength":1,"maxLength":256});
-        let pointer = json!({"type":"string","maxLength":1024,"description":"JSON Pointer; number fields use exact JSON numbers, decimal fields use decimal strings"});
+        let pointer = json!({"type":"string","pattern":"^/","maxLength":1024,"description":"JSON Pointer such as /amount or /customer/name. Number fields take exact JSON numbers; decimal fields take decimal strings"});
         let scalar = json!({"type":["string","number","boolean","null"]});
-        let predicate_ref = json!({"$ref":"#/$defs/predicate"});
-        let mut alternatives = vec![object(json!({"op":{"const":"all"}}), json!(["op"]))];
-        for op in ["eq","contains"] { alternatives.push(object(json!({"op":{"const":op},"field":pointer,"value":scalar}),json!(["op","field","value"]))); }
-        alternatives.push(object(json!({"op":{"const":"in"},"field":pointer,"values":{"type":"array","items":scalar,"maxItems":256}}),json!(["op","field","values"])));
-        alternatives.push(object(json!({"op":{"const":"compare"},"field":pointer,"comparison":{"enum":["lt","lte","gt","gte"]},"value":scalar}),json!(["op","field","comparison","value"])));
-        alternatives.push(object(json!({"op":{"const":"exists"},"field":pointer,"exists":{"type":"boolean"}}),json!(["op","field","exists"])));
-        for op in ["and","or"] { alternatives.push(object(json!({"op":{"const":op},"predicates":{"type":"array","items":predicate_ref,"maxItems":256}}),json!(["op","predicates"]))); }
-        alternatives.push(object(json!({"op":{"const":"not"},"predicate":predicate_ref}),json!(["op","predicate"])));
-        let sort = object(json!({"field":pointer,"direction":{"enum":["asc","desc"]}}),json!(["field","direction"]));
-        let aggregate = object(json!({"alias":name,"function":{"enum":["count","sum","min","max","avg"]},"field":pointer,"scale":{"type":"integer","minimum":0,"maximum":1000}}),json!(["alias","function"]));
-        let text = object(json!({"index":name,"query":{"type":"string","maxLength":4096},"mode":{"enum":["terms","phrase","prefix","fuzzy"]},"distance":{"type":"integer","minimum":0,"maximum":2,"default":1}}),json!(["index","query","mode"]));
-        let mut query = object(json!({"collection":name,"filter":predicate_ref,"sort":{"type":"array","items":sort,"maxItems":8},"projection":{"type":"array","items":pointer,"maxItems":64},"aggregates":{"type":"array","items":aggregate,"maxItems":16},"group_by":{"type":"array","items":pointer,"maxItems":8},"text":text,"limit":{"type":"integer","minimum":1,"maximum":1000,"default":100},"cursor":{"type":"string"},"allow_scan":{"type":"boolean","default":false}}),json!(["collection"]));
-        query["$defs"] = json!({"predicate":{"oneOf":alternatives}});
-        let precondition = json!({"oneOf":[object(json!({"kind":{"enum":["any","absent"]}}),json!(["kind"])),object(json!({"kind":{"const":"version"},"version":{"type":"integer","minimum":0}}),json!(["kind","version"]))]});
+        let values = json!({"type":"array","items":scalar,"maxItems":kasumi_types::MAX_FILTER_IN_VALUES});
+        let mut operators = object(
+            json!({"eq":scalar,"ne":scalar,"gt":scalar,"gte":scalar,"lt":scalar,"lte":scalar,
+                "in":values,"nin":values,"exists":{"type":"boolean"},"contains":scalar}),
+            json!([]),
+        );
+        operators["minProperties"] = json!(1);
+        let filter_ref = json!({"$ref":"#/$defs/filter"});
+        let filters = json!({"type":"array","minItems":1,"maxItems":256,"items":filter_ref});
+        let filter = json!({
+            "type":"object",
+            "description":"Every entry must match. Keys starting with / are fields: map one to a value for equality, or to operators (eq, ne, gt, gte, lt, lte, in, nin, exists, contains). and/or take lists of filters; not takes one filter. ne and nin also match absent fields. Example: {\"/status\":\"open\",\"/amount\":{\"gte\":10,\"lt\":100}}",
+            "patternProperties":{"^/":{"anyOf":[scalar,operators]}},
+            "properties":{"and":filters,"or":filters,"not":filter_ref},
+            "additionalProperties":false
+        });
+        let sort = json!({"type":"string","pattern":"^-?/","maxLength":1025,"description":"JSON Pointer, prefixed with - for descending order, e.g. -/amount"});
+        let count = json!({"type":"string","maxLength":1024,"description":"* counts matching documents; a JSON Pointer counts non-null values","anyOf":[{"const":"*"},{"pattern":"^/"}]});
+        let mut aggregates = vec![object(json!({"count":count}),json!(["count"]))];
+        for function in ["sum","min","max"] {
+            aggregates.push(object(json!({function:pointer}),json!([function])));
+        }
+        aggregates.push(object(json!({"avg":pointer,"scale":{"type":"integer","minimum":0,"maximum":1000}}),json!(["avg","scale"])));
+        let aggregate = json!({"type":"object","maxProperties":16,"propertyNames":name,"additionalProperties":{"oneOf":aggregates},
+            "description":"Named aggregates; the query then returns groups instead of rows. Example: {\"total\":{\"sum\":\"/amount\"},\"n\":{\"count\":\"*\"}}"});
+        let search = object(json!({"index":name,"query":{"type":"string","maxLength":4096},"mode":{"enum":["terms","phrase","prefix","fuzzy"],"default":"terms"},"distance":{"type":"integer","minimum":0,"maximum":2,"description":"fuzzy mode only; default 1"}}),json!(["index","query"]));
+        let mut query = object(json!({
+            "collection":name,
+            "filter":filter_ref,
+            "search":search,
+            "sort":{"type":"array","items":sort,"maxItems":8},
+            "select":{"type":"array","items":pointer,"maxItems":64,"description":"Return only these fields, keeping their nesting"},
+            "group_by":{"type":"array","items":pointer,"maxItems":8},
+            "aggregate":aggregate,
+            "limit":{"type":"integer","minimum":1,"maximum":1000,"default":100},
+            "cursor":{"type":"string","description":"From the previous page; resubmit the otherwise identical query"},
+            "paging":{"enum":["snapshot","seek"],"default":"snapshot","description":"snapshot: every page reads the first page's snapshot; cursors expire after about a minute and results are size-bounded. seek: walk a unique index without limits; the filter fixes its leading fields with equality (plus one range on the next field) and sort lists the rest"},
+            "allow_scan":{"type":"boolean","default":false,"description":"Permit fields without a declared index; scans are bounded and slower"}
+        }),json!(["collection"]));
+        query["$defs"] = json!({"filter":filter});
+        let precondition = json!({"oneOf":[{"enum":["any","absent"]},object(json!({"version":{"type":"integer","minimum":0}}),json!(["version"]))],
+            "description":"Expected current state: any (default), absent, or {\"version\":n}"});
         let put = object(json!({"op":{"const":"put"},"collection":name,"id":name,"body":{"type":"object"},"expected":precondition}),json!(["op","collection","id","body"]));
+        let patch = object(json!({"op":{"const":"patch"},"collection":name,"id":name,"patch":{"type":"object","description":"RFC 7396 JSON Merge Patch for an existing document: null removes a member, objects merge"},"expected":precondition}),json!(["op","collection","id","patch"]));
         let delete = object(json!({"op":{"const":"delete"},"collection":name,"id":name,"expected":precondition}),json!(["op","collection","id"]));
-        let read_expected = json!({"oneOf":[object(json!({"kind":{"const":"absent"}}),json!(["kind"])),object(json!({"kind":{"const":"version"},"version":{"type":"integer","minimum":0}}),json!(["kind","version"]))]});
+        let read_expected = json!({"oneOf":[{"const":"absent"},object(json!({"version":{"type":"integer","minimum":0}}),json!(["version"]))]});
         let read_assertion = json!({"oneOf":[
             object(json!({"kind":{"const":"before"},"not_after_ms":{"type":"integer","minimum":0}}),json!(["kind","not_after_ms"])),
             object(json!({"kind":{"const":"not_before"},"not_before_ms":{"type":"integer","minimum":0}}),json!(["kind","not_before_ms"])),
@@ -1109,12 +1147,12 @@ fn tools() -> &'static Vec<Tool> {
             object(json!({"kind":{"const":"document"},"collection":name,"id":name,"expected":read_expected}),json!(["kind","collection","id","expected"])),
             object(json!({"kind":{"const":"collection"},"collection":name,"data_epoch":{"type":"integer","minimum":0}}),json!(["kind","collection","data_epoch"]))
         ]});
-        let mutate = object(json!({"idempotency_key":name,"read_set":{"type":"array","maxItems":512,"items":read_assertion},"operations":{"type":"array","minItems":1,"maxItems":256,"items":{"oneOf":[put,delete]}}}),json!(["idempotency_key","read_set","operations"]));
+        let mutate = object(json!({"idempotency_key":name,"read_set":{"type":"array","maxItems":512,"items":read_assertion},"operations":{"type":"array","minItems":1,"maxItems":256,"items":{"oneOf":[put,patch,delete]}}}),json!(["idempotency_key","operations"]));
         vec![
-            make_tool("kasumi_collections","Discover authorized collection schemas and declared indexes.",object(json!({}),json!([])),true),
-            make_tool("kasumi_get","Read one document by collection/id after a read barrier.",object(json!({"collection":name,"id":name}),json!(["collection","id"])),true),
-            make_tool("kasumi_query","Query an immutable snapshot. Use declared typed JSON Pointer fields; averages require a scale. Continue pages with the same query and returned cursor.",query,true),
-            make_tool("kasumi_mutate","Apply one atomic tenant batch with schema, CAS, uniqueness and quotas. Reuse the same idempotency key and identical batch after UNKNOWN_OUTCOME.",mutate,false),
+            make_tool("kasumi_collections","Discover authorized collections, their JSON schemas and declared indexes. Filter, sort and group on indexed fields.",object(json!({}),json!([])),true),
+            make_tool("kasumi_get","Read one document by collection and id after a read barrier. Returns null when the document does not exist.",object(json!({"collection":name,"id":name}),json!(["collection","id"])),true),
+            make_tool("kasumi_query","Query one collection. filter: {\"/status\":\"open\",\"/amount\":{\"gte\":10}}, combined with and/or/not. sort: [\"-/amount\"]. select returns only the listed fields. aggregate returns groups instead of rows, optionally with group_by. Fields need declared indexes unless allow_scan is true. For the next page, resubmit the identical query with the returned cursor.",query,true),
+            make_tool("kasumi_mutate","Apply one atomic, idempotent tenant batch with schema, CAS, uniqueness and quota checks. Use put with expected \"absent\" to create, patch to change some fields, and {\"version\":n} to update safely. After UNKNOWN_OUTCOME, retry the identical batch with the same idempotency key.",mutate,false),
             make_tool("kasumi_receipt","Resolve this principal's retained mutation receipt; null means no receipt is currently available.",object(json!({"idempotency_key":name}),json!(["idempotency_key"])),true),
         ]
     })
@@ -1182,6 +1220,18 @@ mod response_tests {
                 .unwrap()
                 .contains("90071992547409931234567890")
         );
+    }
+
+    #[test]
+    fn malformed_tool_arguments_explain_the_fix() {
+        let error = arguments::<QueryRequest>(json!({
+            "collection": "docs",
+            "filter": {"status": "open"}
+        }))
+        .unwrap_err();
+        assert_eq!(error.code, ErrorCode::InvalidArgument);
+        assert!(error.message.contains("`/status`"), "{}", error.message);
+        assert!(error.message.len() <= Error::MAX_MESSAGE_BYTES);
     }
 
     #[test]

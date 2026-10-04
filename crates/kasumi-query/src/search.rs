@@ -351,7 +351,7 @@ impl TextSnapshot {
         })?;
         let fuzzy = request.mode == TextMode::Fuzzy;
         let surface_query = fuzzy || request.mode == TextMode::Prefix;
-        if fuzzy && request.distance > 2 {
+        if fuzzy && request.fuzzy_distance() > 2 {
             return Err(invalid("fuzzy distance must be 0, 1, or 2"));
         }
         let terms = tokens(fields.analyzer, &request.query, surface_query, 64)?;
@@ -405,7 +405,7 @@ impl TextSnapshot {
                     cancellation.check()?;
                     let query: Box<dyn Query> = if fuzzy {
                         let japanese = fields.analyzer == Analyzer::JapaneseV1;
-                        if !japanese && request.distance > 0 && text.chars().count() < 3 {
+                        if !japanese && request.fuzzy_distance() > 0 && text.chars().count() < 3 {
                             return Err(invalid("fuzzy term is too short"));
                         }
                         // Single-character Japanese particles remain exact; editing
@@ -413,7 +413,7 @@ impl TextSnapshot {
                         let distance = if japanese && text.chars().count() < 2 {
                             0
                         } else {
-                            request.distance
+                            request.fuzzy_distance()
                         };
                         let dfa = Arc::new(
                             levenshtein_automata::LevenshteinAutomatonBuilder::new(distance, true)
@@ -846,12 +846,7 @@ mod lending_tests {
     fn hits(snapshot: &TextSnapshot, query: &str) -> Vec<String> {
         snapshot
             .search(
-                &TextSearch {
-                    index: "text".to_owned(),
-                    query: query.to_owned(),
-                    mode: TextMode::Terms,
-                    distance: 1,
-                },
+                &TextSearch::new("text", query),
                 10,
                 &QueryCancellation::default(),
             )

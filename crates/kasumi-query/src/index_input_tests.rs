@@ -447,12 +447,7 @@ fn later_collection_rejection_never_advances_an_earlier_shared_text_writer() {
             Changes::new(&old_text, &new_text, &indexes, &["x"]),
         )
         .unwrap();
-        let request = TextSearch {
-            index: "text".to_owned(),
-            query: "after".to_owned(),
-            mode: TextMode::Terms,
-            distance: 1,
-        };
+        let request = TextSearch::new("text", "after");
         assert!(
             indexes.collections["a"]
                 .text

@@ -1,9 +1,0 @@
-Command: cargo test --locked -p kasumi-store -p kasumi-serving --lib -- automatic_warmer_ registered_spool_ background_work::tests
-ISOLATED_SOURCE=/tmp/kasumi-source-cohort-validation-v1
-CARGO_TARGET_DIR=/Users/takemiyamakoto/dev/kasumi/target/disk-backed-cache
-   Compiling sha2 v0.10.9
-   Compiling kasumi-types v0.1.0 (/private/tmp/kasumi-source-cohort-validation-v1/crates/kasumi-types)
-   Compiling kasumi-transport v0.1.0 (/private/tmp/kasumi-source-cohort-validation-v1/crates/kasumi-transport)
-   Compiling kasumi-kv v0.1.0 (/private/tmp/kasumi-source-cohort-validation-v1/crates/kasumi-kv)
-   Compiling kasumi-serving v0.1.0 (/private/tmp/kasumi-source-cohort-validation-v1/crates/kasumi-serving)
-   Compiling kasumi-store v0.1.0 (/private/tmp/kasumi-source-cohort-validation-v1/crates/kasumi-store)

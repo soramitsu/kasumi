@@ -1,5 +1,0 @@
-Command: cargo clippy --locked --offline --config profile.test.package.kasumi-kv.opt-level=3 --config profile.test.package.sha2.opt-level=3 -p kasumi-kv --all-targets -- -D warnings
-CARGO_TARGET_DIR=target/disk-backed-cache
-    Checking kasumi-kv v0.1.0 (/Users/takemiyamakoto/dev/kasumi/crates/kasumi-kv)
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 59.08s
-Runner: 59.24s; exit=0; matching=814/814

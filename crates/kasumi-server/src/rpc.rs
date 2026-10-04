@@ -209,7 +209,7 @@ impl kasumi_data_server::KasumiData for NativeData {
             .release(&self.auth, &context)
             .await
     }
-    async fn get(&self, request: Request<GetRequest>) -> Result<Response<Document>, Status> {
+    async fn get(&self, request: Request<GetRequest>) -> Result<Response<GetResponse>, Status> {
         let context = verified(&self.auth, &request).await?;
         let request = request.into_inner();
         validate_name(&request.collection).map_err(status)?;
@@ -223,13 +223,27 @@ impl kasumi_data_server::KasumiData for NativeData {
         let result = database
             .get(&context, &request.collection, &request.id)
             .await;
-        let result = result.map_err(|error| self.registry.status(&context, error))?;
+        let Some(result) = result.map_err(|error| self.registry.status(&context, error))? else {
+            return Ok(Response::new(
+                release_response(
+                    &self.auth,
+                    &context,
+                    fence,
+                    GetResponse { document: None },
+                    false,
+                )
+                .await
+                .map_err(status)?,
+            ));
+        };
         response_owner::PendingReply::new(result, fence)
             .convert(|result, fence| {
-                Ok(Document {
-                    id: response_owner::clone_string(fence, &result.id)?,
-                    version: result.version,
-                    body_json: response_owner::encode_json(&result.body, fence)?,
+                Ok(GetResponse {
+                    document: Some(Document {
+                        id: response_owner::clone_string(fence, &result.id)?,
+                        version: result.version,
+                        body_json: response_owner::encode_json(&result.body, fence)?,
+                    }),
                 })
             })
             .map_err(status)?
@@ -285,31 +299,6 @@ impl kasumi_data_server::KasumiData for NativeData {
             .map_err(status)?
             .release(&self.auth, &context)
             .await
-    }
-    async fn ordered_seek(
-        &self,
-        request: Request<OrderedSeekRequest>,
-    ) -> Result<Response<OrderedSeekResponse>, Status> {
-        let context = verified(&self.auth, &request).await?;
-        let input = decode_json(&request.into_inner().request_json).map_err(status)?;
-        let database = routed(&self.registry, &self.auth, &context).await?;
-        let fence = self
-            .auth
-            .audit_result(&context, database.response_fence(&context))
-            .await
-            .map_err(status)?;
-        let result = database
-            .ordered_seek(&context, input)
-            .await
-            .map_err(|error| self.registry.status(&context, error))?;
-        let response = OrderedSeekResponse {
-            response_json: encode_json(&result).map_err(status)?,
-        };
-        Ok(Response::new(
-            release_response(&self.auth, &context, fence, response, false)
-                .await
-                .map_err(status)?,
-        ))
     }
     async fn read_restore_lineage(
         &self,

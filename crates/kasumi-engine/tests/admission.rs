@@ -240,7 +240,12 @@ async fn explicit_local_bootstrap_reads_the_complete_committed_generation() {
         .await
         .unwrap();
     assert_eq!(
-        database.get(&context, "docs", "a").await.unwrap().body,
+        database
+            .get(&context, "docs", "a")
+            .await
+            .unwrap()
+            .expect("document exists")
+            .body,
         body
     );
     let query: QueryRequest = serde_json::from_value(json!({"collection":"docs"})).unwrap();

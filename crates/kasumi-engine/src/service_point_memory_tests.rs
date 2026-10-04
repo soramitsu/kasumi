@@ -86,7 +86,8 @@ async fn point_memory_public_hot_outputs_release_strict_slots_and_outlive_shutdo
         .db
         .get_shared(&fixture.context, "docs", "a")
         .await
-        .unwrap();
+        .unwrap()
+            .expect("document exists");
     assert!(std::ptr::eq(
         earlier.as_ref(),
         generation.state.collections["docs"].documents["a"].as_ref()
@@ -114,7 +115,8 @@ async fn point_memory_public_hot_outputs_release_strict_slots_and_outlive_shutdo
         let generation = fixture.db.engine().generation().unwrap();
         (generation.state.revision, generation.state.audits.len())
     };
-    let owned = fixture.db.get(&fixture.context, "docs", "a").await.unwrap();
+    let owned = fixture.db.get(&fixture.context, "docs", "a").await.unwrap()
+            .expect("document exists");
     {
         let generation = fixture.db.engine().generation().unwrap();
         let event = generation.state.audits.back().unwrap();
@@ -126,7 +128,8 @@ async fn point_memory_public_hot_outputs_release_strict_slots_and_outlive_shutdo
         .db
         .get_shared(&fixture.context, "docs", "a")
         .await
-        .unwrap();
+        .unwrap()
+            .expect("document exists");
     assert_eq!(
         fixture.db.engine().generation().unwrap().state.audits.len(),
         audit_count + 2
@@ -220,7 +223,8 @@ async fn point_memory_cold_shared_clone_keeps_archive_charge_after_shutdown() {
         .db
         .get_shared(&fixture.context, "history", "cold")
         .await
-        .unwrap();
+        .unwrap()
+            .expect("document exists");
     let last = shared.clone();
     assert!(std::ptr::eq(shared.as_ref(), last.as_ref()));
     assert_eq!(shared.version, version);
@@ -326,10 +330,12 @@ async fn point_memory_cancelled_public_outputs_retain_admitted_audit_until_compl
                     .db
                     .get_shared(&fixture.context, "docs", "a")
                     .await
-                    .unwrap(),
+                    .unwrap()
+            .expect("document exists"),
             );
         } else {
-            drop(fixture.db.get(&fixture.context, "docs", "a").await.unwrap());
+            drop(fixture.db.get(&fixture.context, "docs", "a").await.unwrap()
+            .expect("document exists"));
         }
         let node = fixture.db.admission().clone();
         fixture.db.proposals.prepare(&node).unwrap();

@@ -103,6 +103,8 @@ impl<S: QuerySourceOwner> SnapshotOperation for QuerySourceWork<S> {
     fn run(&mut self) -> std::result::Result<Self::Output, Self::Failure> {
         let input = self.input.as_mut().expect("query runs once");
         let source = self.source.source();
+        // A lending source cannot pin documents for a cursor, so the query
+        // runs to completion here.
         let response = match source.indexes().execute_with_cancellation(
             source,
             &input.request,
@@ -110,7 +112,7 @@ impl<S: QuerySourceOwner> SnapshotOperation for QuerySourceWork<S> {
             &self.cancellation,
             &mut input.memory,
         ) {
-            Ok(response) => Ok(response),
+            Ok(response) => Ok((response, super::PinnedRows::default())),
             Err(ReadFailure::Query(error)) => Err(error),
             Err(ReadFailure::Source(error)) => return Err(error),
         };

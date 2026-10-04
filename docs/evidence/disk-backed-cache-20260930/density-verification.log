@@ -1,3 +1,0 @@
-PASS: 35 selected source hashes unchanged after library, integration, store, Clippy and formatting checks.
-PASS: selected source final newlines and trailing whitespace.
-PASS: scoped git diff --check; unrelated staged/unstaged work preserved.

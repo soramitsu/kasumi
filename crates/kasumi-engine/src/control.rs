@@ -219,10 +219,8 @@ impl ControlPlane {
         self.database
             .engine()
             .authorize(context, None, Action::Admin)?;
-        let document = match self.database.get(context, COLLECTION, DOCUMENT).await {
-            Ok(document) => document,
-            Err(error) if error.code == ErrorCode::NotFound => return Ok(None),
-            Err(error) => return Err(error),
+        let Some(document) = self.database.get(context, COLLECTION, DOCUMENT).await? else {
+            return Ok(None);
         };
         let topology: ControlTopology =
             <ControlTopology as serde::Deserialize>::deserialize(&document.body)

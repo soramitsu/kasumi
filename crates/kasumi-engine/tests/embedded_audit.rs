@@ -94,7 +94,7 @@ async fn every_embedded_request_boundary_durably_audits_denials_and_sealed_tenan
         db.query(
             &visitor,
             serde_json::from_value(json!({
-                "collection":"docs", "filter":{"op":"eq","field":"/private","value":"query-secret"},
+                "collection":"docs", "filter":{"/private":"query-secret"},
                 "allow_scan":true
             }))
             .unwrap()

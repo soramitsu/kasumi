@@ -781,10 +781,9 @@ fn atomic_bundle_publishes_all_indexes_once_and_preserves_read_generations() {
             new.state.collections[name].documents
         );
     }
-    let query: QueryRequest = serde_json::from_value(
-        json!({"collection":"journal","filter":{"op":"eq","field":"/n","value":1},"limit":10}),
-    )
-    .unwrap();
+    let query: QueryRequest =
+        serde_json::from_value(json!({"collection":"journal","filter":{"/n":1},"limit":10}))
+            .unwrap();
     assert_eq!(
         kasumi_engine::test_utils::fixture_query(&new, &query, &mut common::query_memory())
             .unwrap()
@@ -1195,7 +1194,10 @@ fn text_and_structured_indexes_publish_together_after_existing_documents_validat
     );
     apply(&db, Operation::ActivateSchema(upgrade)).unwrap();
     let current = db.generation().unwrap();
-    let query: QueryRequest = serde_json::from_value(json!({"collection":"journal","text":{"index":"search","query":"ledger","mode":"terms"},"limit":10})).unwrap();
+    let query: QueryRequest = serde_json::from_value(
+        json!({"collection":"journal","search":{"index":"search","query":"ledger"},"limit":10}),
+    )
+    .unwrap();
     assert_eq!(
         kasumi_engine::test_utils::fixture_query(&current, &query, &mut common::query_memory())
             .unwrap()

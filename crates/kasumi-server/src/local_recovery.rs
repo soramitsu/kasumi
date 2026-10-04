@@ -1516,7 +1516,7 @@ impl Operator {
                 .replace_topology(
                     context,
                     publication.topology.clone(),
-                    publication.expected.clone(),
+                    publication.expected,
                     publication.id.to_string(),
                 )
                 .await?;

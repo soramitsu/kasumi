@@ -1,8 +1,0 @@
-
-running 1 test
-AUTHORITY_UNAVAILABLE at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/ops/function.rs:250:5: read quorum deadline exceeded
-AUTHORITY_UNAVAILABLE at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/ops/function.rs:250:5: read quorum deadline exceeded
-test service::tests::actual_authority_quorum_loss_rejects_lease_and_activation_without_source_fallback ... ok
-
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 73 filtered out; finished in 18.18s
-

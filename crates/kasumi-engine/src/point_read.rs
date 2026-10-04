@@ -108,12 +108,14 @@ struct PendingPoint<T> {
 }
 
 impl Database {
+    /// Read one document after a read barrier. A missing document is
+    /// `Ok(None)`; a missing collection or denied access is an error.
     pub async fn get(
         &self,
         context: &RequestContext,
         collection: &str,
         id: &str,
-    ) -> Result<AdmittedOutput<Document>> {
+    ) -> Result<Option<AdmittedOutput<Document>>> {
         let result = self
             .read_document(context, collection, id, PointRead::owned)
             .await;
@@ -130,7 +132,7 @@ impl Database {
         context: &RequestContext,
         collection: &str,
         id: &str,
-    ) -> Result<SharedDocument> {
+    ) -> Result<Option<SharedDocument>> {
         let result = self
             .read_document(context, collection, id, PointRead::shared)
             .await;
@@ -145,7 +147,7 @@ impl Database {
         collection: &str,
         id: &str,
         select: impl FnOnce(&mut PointRead) -> Result<T>,
-    ) -> Result<RegisteredPoint<T>> {
+    ) -> Result<RegisteredPoint<Option<T>>> {
         self.access()?;
         self.engine
             .authorize(context, Some(collection), Action::Read)?;
@@ -181,13 +183,22 @@ impl Database {
         let policy_epoch = generation.state.policy_epoch;
         let strict =
             generation.state.policy.strict_read_audit || selected.definition.strict_read_audit;
-        read.document = Some(
-            self.history_document(generation, collection, id, &cancellation, &mut read.history)
-                .await?
-                .ok_or_else(|| Error::new(ErrorCode::NotFound, "document not found"))?,
-        );
+        let Some(document) = self
+            .history_document(generation, collection, id, &cancellation, &mut read.history)
+            .await?
+        else {
+            // Absence releases no document body. It returns where the former
+            // NOT_FOUND outcome did: before the read-release audit and fences.
+            read.retain_charge();
+            return Ok(RegisteredPoint {
+                response: None,
+                _registration: read.registration.clone().expect("point registration"),
+                _charge: read.charge.clone().expect("retained point charge"),
+            });
+        };
+        read.document = Some(document);
         cancellation.check()?;
-        let response = select(&mut read)?;
+        let response = Some(select(&mut read)?);
         let mut pending = PendingPoint { response, read };
         // A hot returned handle retains only its exact Document, never the
         // complete Generation and unrelated indexes/history/state roots.

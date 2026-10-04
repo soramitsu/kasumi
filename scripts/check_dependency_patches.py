@@ -165,7 +165,10 @@ def verify_sources(root):
             if package["patch"]:
                 patches[package["name"]] = {"path": package["path"]}
     for name, record in manifest["support_files"].items():
-        if len(relative_path(name).parts) != 1 or name in expected_files:
+        relative = relative_path(name)
+        if (len(relative.parts) != 1 and relative.parts[0] != "reviews"
+                or name in expected_files
+                or any((PurePosixPath("vendor") / relative).is_relative_to(path) for path in roots)):
             raise ValueError("invalid vendor support file")
         check_file(owned_path(root, "vendor/" + name), record)
         expected_files.add(name)

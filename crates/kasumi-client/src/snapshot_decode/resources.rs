@@ -256,20 +256,24 @@ pub(crate) fn exhausted() -> ClientError {
     ClientError::DecodeRejected {
         code: tonic::Code::ResourceExhausted,
         reason: "native client resource budget exceeded",
+        database: None,
     }
 }
 pub(crate) fn deadline() -> ClientError {
     ClientError::DecodeRejected {
         code: tonic::Code::DeadlineExceeded,
         reason: "native operation deadline elapsed",
+        database: None,
     }
 }
 
 /// Drop peer-controlled parser/transport payloads while the receive/worker owner
-/// still exists. Returned failure values contain no newly owned diagnostic data.
+/// still exists. Returned failure values contain no newly owned diagnostic data;
+/// the closed Kasumi error code survives because it carries no peer bytes.
 pub(crate) fn normalize(error: ClientError) -> ClientError {
+    let database = error.code();
     let (code, reason) = match error {
-        ClientError::DecodeRejected { code, reason } => (code, reason),
+        ClientError::DecodeRejected { code, reason, .. } => (code, reason),
         ClientError::Transport(status) => (status.code(), "native transport failed"),
         ClientError::Json(_) => (tonic::Code::DataLoss, "native JSON failed validation"),
         ClientError::Connection(_) => (tonic::Code::Unavailable, "native connection failed"),
@@ -282,5 +286,9 @@ pub(crate) fn normalize(error: ClientError) -> ClientError {
             "native request exceeds its byte limit",
         ),
     };
-    ClientError::DecodeRejected { code, reason }
+    ClientError::DecodeRejected {
+        code,
+        reason,
+        database,
+    }
 }
