@@ -22,7 +22,7 @@ use rcgen::{
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     net::SocketAddr,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
@@ -313,7 +313,7 @@ async fn benchmark(
             key_name: key.into(),
             token_file: path.join(env).to_string_lossy().into_owned(),
             namespace: None,
-            ca_certificate: Some(bao.ca_path.clone()),
+            ca_certificate: bao.ca_path.clone(),
             derived: false,
         })
     };
@@ -332,10 +332,18 @@ async fn benchmark(
     secrets.push(("KASUMI_BENCH_SECURITY".to_owned(), Zeroizing::new(security)));
     config.security_audit.keys = transit("security", "KASUMI_BENCH_SECURITY");
     config.tenants.clear();
+    config.tenant_audit_placements = BTreeMap::from([(
+        kasumi_server::runtime::CONTROL_TENANT.into(),
+        kasumi_server::audit_destination::TenantAuditPlacementConfig::LocalReplicaOnly,
+    )]);
     let mut oauth = Vec::new();
     let mut targets = Vec::new();
     for tenant in 0..tenants {
         let name = format!("bench-{tenant:04}");
+        config.tenant_audit_placements.insert(
+            name.clone(),
+            kasumi_server::audit_destination::TenantAuditPlacementConfig::LocalReplicaOnly,
+        );
         let incarnation = uuid::Uuid::new_v4();
         let env = format!("KASUMI_BENCH_TRANSIT_{tenant}");
         let secret = bao.provision_key(&name, false).await?;

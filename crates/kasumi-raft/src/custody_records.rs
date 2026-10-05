@@ -5,7 +5,7 @@ use crate::custody_state::CustodyAudit;
 use crate::custody_state::CustodyState;
 use crate::custody_tables::{AUDIT, COMMANDS, CustodyHead, HEAD, HEAD_BYTES, RECORD_BYTES};
 use anyhow::{Context, Result, ensure};
-use kasumi_store::{EncryptedTable, EncryptedTableBatch, TenantStore};
+use kasumi_store::{EncryptedTable, EncryptedTableBatch, ScratchOperationFailure, TenantStore};
 use kasumi_types::{CustodyReceipt, validate_name};
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
@@ -30,15 +30,16 @@ impl Builder {
     pub(crate) fn new(
         scratch_disk: &Arc<kasumi_store::ScratchDisk>,
         head: CustodyHead,
-    ) -> Result<Self> {
-        head.validate()?;
-        let disk = head
-            .policy
-            .limits
-            .max_state_bytes
-            .checked_mul(8)
-            .and_then(|n| n.checked_add(64 << 20))
-            .context("custody staging quota overflow")?;
+    ) -> std::result::Result<Self, kasumi_store::ScratchOperationFailure> {
+        let disk = kasumi_store::ScratchOperationFailure::ordinary(|| {
+            head.validate()?;
+            head.policy
+                .limits
+                .max_state_bytes
+                .checked_mul(8)
+                .and_then(|n| n.checked_add(64 << 20))
+                .context("custody staging quota overflow")
+        })?;
         Ok(Self {
             records: Records {
                 head,
@@ -246,7 +247,7 @@ impl Builder {
     }
 }
 impl Records {
-    pub(crate) fn capture(store: &Arc<TenantStore>) -> Result<Arc<Self>> {
+    pub(crate) fn capture(store: &Arc<TenantStore>) -> Result<Arc<Self>, ScratchOperationFailure> {
         let view = store.read_view()?;
         let head = crate::custody_tables::decode_canonical(
             &view
@@ -263,7 +264,7 @@ impl Records {
             builder.command(bytes)
         })?;
         view.visit(AUDIT, RECORD_BYTES, |key, bytes| builder.audit(key, bytes))?;
-        builder.finish()
+        builder.finish().map_err(ScratchOperationFailure::Operation)
     }
     pub(crate) fn sha256(&self) -> &str {
         &self.sha256
@@ -279,14 +280,17 @@ impl Records {
     pub(crate) fn from_state(
         state: &CustodyState,
         disk: &Arc<kasumi_store::ScratchDisk>,
-    ) -> Result<Arc<Self>> {
-        let mut builder = Builder::new(disk, CustodyHead::from_state(state)?)?;
+    ) -> Result<Arc<Self>, ScratchOperationFailure> {
+        let mut builder = Builder::new(
+            disk,
+            CustodyHead::from_state(state).map_err(anyhow::Error::from)?,
+        )?;
         for receipt in state.commands.values() {
             builder.command(&serde_json::to_vec(receipt)?)?;
         }
         for (index, event) in state.audit.iter().enumerate() {
             builder.audit(&(index as u64).to_be_bytes(), &serde_json::to_vec(event)?)?;
         }
-        builder.finish()
+        builder.finish().map_err(ScratchOperationFailure::Operation)
     }
 }

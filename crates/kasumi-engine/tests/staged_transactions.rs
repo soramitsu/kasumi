@@ -575,7 +575,7 @@ async fn open(
 ) -> (
     Arc<kasumi_engine::Database>,
     Arc<kasumi_engine::SecurityAudit>,
-    Arc<NodeStore>,
+    NodeStore,
 ) {
     let node = (if create {
         physical

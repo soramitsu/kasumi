@@ -114,38 +114,47 @@ pub async fn prepare_replicated_restore(
     replica: ReplicaRestoreConfig,
     transport: Arc<dyn RaftTransport>,
     security_audit: Arc<SecurityAudit>,
-) -> anyhow::Result<PreparedReplicaRestore> {
+) -> std::result::Result<PreparedReplicaRestore, crate::SnapshotFailure> {
     security_audit.require_admission(&replica.admission)?;
     let construction = DatabaseConstruction::new(targets.clone(), security_audit.clone())?;
     let target = targets.application().clone();
     if let Some(gate) = target.storage_access().serving_gate() {
-        anyhow::ensure!(
-            gate.identity().incarnation == replica.incarnation,
-            "restore target incarnation differs from its signed serving authority"
-        );
+        crate::SnapshotFailure::ordinary(|| {
+            anyhow::ensure!(
+                gate.identity().incarnation == replica.incarnation,
+                "restore target incarnation differs from its signed serving authority"
+            );
+            Ok(())
+        })?;
     }
     let deadline = source.deadline()?;
     let cancellation = kasumi_query::QueryCancellation::default();
     let _cancel = crate::admission::CancelOnDrop(cancellation.clone());
     let _gate = deadline.run(BOOTSTRAP_GATE.lock()).await?;
     restore_access(&target, &security_audit, &context).await?;
-    anyhow::ensure!(
-        target
-            .get_bounded(NS, b"manifest", MAX_BOOTSTRAP_MANIFEST_BYTES)?
-            .is_none()
-            && targets
-                .custody()
-                .store()
-                .get("raft.meta", b"node_id")?
-                .is_none(),
-        "restore target is already initialized"
-    );
-    anyhow::ensure!(
-        replica.node_id > 0
-            && replica.voters.contains_key(&replica.node_id)
-            && !replica.incarnation.is_nil(),
-        "invalid restore replica identity"
-    );
+    crate::SnapshotFailure::ordinary(|| {
+        anyhow::ensure!(
+            target
+                .get_bounded(NS, b"manifest", MAX_BOOTSTRAP_MANIFEST_BYTES)?
+                .is_none()
+                && targets
+                    .custody()
+                    .store()
+                    .get("raft.meta", b"node_id")?
+                    .is_none(),
+            "restore target is already initialized"
+        );
+        Ok(())
+    })?;
+    crate::SnapshotFailure::ordinary(|| {
+        anyhow::ensure!(
+            replica.node_id > 0
+                && replica.voters.contains_key(&replica.node_id)
+                && !replica.incarnation.is_nil(),
+            "invalid restore replica identity"
+        );
+        Ok(())
+    })?;
     let verified = deadline
         .run(Box::pin(backup_restore::load_authorized(
             source,
@@ -161,10 +170,13 @@ pub async fn prepare_replicated_restore(
         .await??;
     let source_revision = verified.state.metadata().revision;
     let original = verified.state.metadata();
-    anyhow::ensure!(
-        replica.incarnation.to_string() != original.incarnation,
-        "restore requires a fresh incarnation"
-    );
+    crate::SnapshotFailure::ordinary(|| {
+        anyhow::ensure!(
+            replica.incarnation.to_string() != original.incarnation,
+            "restore requires a fresh incarnation"
+        );
+        Ok(())
+    })?;
     let bootstrap = ReplicatedBootstrap {
         genesis: ReplicatedGenesis::Application,
         incarnation: replica.incarnation.to_string(),
@@ -323,7 +335,7 @@ pub async fn open_replicated(
     transport: Arc<dyn RaftTransport>,
     config: Config,
     security_audit: Arc<SecurityAudit>,
-) -> anyhow::Result<Arc<Database>> {
+) -> std::result::Result<Arc<Database>, crate::SnapshotFailure> {
     let (database, _, _) = open_replicated_inner(
         node_id,
         stores,
@@ -374,7 +386,7 @@ pub async fn open_existing_replicated(
     transport: Arc<dyn RaftTransport>,
     config: Config,
     security_audit: Arc<SecurityAudit>,
-) -> anyhow::Result<OpenedReplica> {
+) -> std::result::Result<OpenedReplica, crate::SnapshotFailure> {
     let (database, bootstrap, verified_identity) = open_replicated_inner(
         node_id,
         stores,
@@ -460,18 +472,27 @@ async fn open_replicated_inner<'a>(
     config: Config,
     security_audit: Arc<SecurityAudit>,
     runtime: ReplicaRuntime<'a>,
-) -> anyhow::Result<(
-    Arc<Database>,
-    Cow<'a, ReplicatedBootstrap>,
-    Option<VerifiedInitialBootstrap>,
-)> {
+) -> std::result::Result<
+    (
+        Arc<Database>,
+        Cow<'a, ReplicatedBootstrap>,
+        Option<VerifiedInitialBootstrap>,
+    ),
+    crate::SnapshotFailure,
+> {
     let construction = DatabaseConstruction::new(stores.clone(), security_audit.clone())?;
     let store = stores.application().clone();
-    anyhow::ensure!(
-        store.storage_access().lifecycle_gate().is_none(),
-        "closed target runner required for lifecycle storage"
-    );
-    anyhow::ensure!(node_id > 0, "node ID must be positive");
+    crate::SnapshotFailure::ordinary(|| {
+        anyhow::ensure!(
+            store.storage_access().lifecycle_gate().is_none(),
+            "closed target runner required for lifecycle storage"
+        );
+        Ok(())
+    })?;
+    crate::SnapshotFailure::ordinary(|| {
+        anyhow::ensure!(node_id > 0, "node ID must be positive");
+        Ok(())
+    })?;
     let _gate = BOOTSTRAP_GATE.lock().await;
     reject_retired_serving_open(&stores)?;
     let existing_view = matches!(runtime, ReplicaRuntime::Existing(_))
@@ -496,11 +517,14 @@ async fn open_replicated_inner<'a>(
     }
     bootstrap.genesis.require_domain(&store)?;
     if let Some(gate) = store.storage_access().serving_gate() {
-        anyhow::ensure!(
-            gate.identity().incarnation.to_string() == bootstrap.incarnation
-                && gate.identity().node.node_id == node_id,
-            "replicated node or incarnation differs from its signed serving authority"
-        );
+        crate::SnapshotFailure::ordinary(|| {
+            anyhow::ensure!(
+                gate.identity().incarnation.to_string() == bootstrap.incarnation
+                    && gate.identity().node.node_id == node_id,
+                "replicated node or incarnation differs from its signed serving authority"
+            );
+            Ok(())
+        })?;
     }
     if !matches!(runtime, ReplicaRuntime::Existing(_)) {
         bind_deployment(
@@ -515,10 +539,13 @@ async fn open_replicated_inner<'a>(
     let bytes = match loaded {
         Some(bytes) => bytes,
         None => {
-            anyhow::ensure!(
-                !matches!(runtime, ReplicaRuntime::Existing(_)),
-                "replicated bootstrap is not initialized"
-            );
+            crate::SnapshotFailure::ordinary(|| {
+                anyhow::ensure!(
+                    !matches!(runtime, ReplicaRuntime::Existing(_)),
+                    "replicated bootstrap is not initialized"
+                );
+                Ok(())
+            })?;
             let engine = bootstrap.genesis.engine(store.tenant(), &bootstrap)?;
             let bytes = engine.logical_snapshot(store.scratch_disk())?;
             let identity = kasumi_raft::initial_storage_identity(
@@ -548,26 +575,40 @@ async fn open_replicated_inner<'a>(
     drop(existing_view);
     let engine = Arc::new(TenantEngine::from_bootstrap(store.tenant(), &bytes)?);
     let generation = engine.generation()?;
-    anyhow::ensure!(
-        generation.state.incarnation == bootstrap.incarnation,
-        "replicated incarnation differs from bootstrap"
-    );
-    anyhow::ensure!(
-        canonical_digest(&generation.state.policy)? == canonical_digest(&bootstrap.initial_policy)?,
-        "replicated initial policy differs from bootstrap image"
-    );
-    anyhow::ensure!(
-        canonical_digest(&generation.state.limits)? == canonical_digest(&bootstrap.initial_limits)?,
-        "replicated initial limits differ from bootstrap image"
-    );
+    crate::SnapshotFailure::ordinary(|| {
+        anyhow::ensure!(
+            generation.state.incarnation == bootstrap.incarnation,
+            "replicated incarnation differs from bootstrap"
+        );
+        Ok(())
+    })?;
+    crate::SnapshotFailure::ordinary(|| {
+        anyhow::ensure!(
+            canonical_digest(&generation.state.policy)?
+                == canonical_digest(&bootstrap.initial_policy)?,
+            "replicated initial policy differs from bootstrap image"
+        );
+        Ok(())
+    })?;
+    crate::SnapshotFailure::ordinary(|| {
+        anyhow::ensure!(
+            canonical_digest(&generation.state.limits)?
+                == canonical_digest(&bootstrap.initial_limits)?,
+            "replicated initial limits differ from bootstrap image"
+        );
+        Ok(())
+    })?;
     if let Some(installed) = installed_control {
         let (installed_node_id, installed_group) = installed
             .ok_or_else(|| anyhow::anyhow!("replicated consensus identity is not initialized"))?;
-        anyhow::ensure!(
-            installed_node_id == node_id
-                && installed_group == format!("{}/{}", store.tenant(), bootstrap.incarnation),
-            "replicated consensus identity differs from installed configuration"
-        );
+        crate::SnapshotFailure::ordinary(|| {
+            anyhow::ensure!(
+                installed_node_id == node_id
+                    && installed_group == format!("{}/{}", store.tenant(), bootstrap.incarnation),
+                "replicated consensus identity differs from installed configuration"
+            );
+            Ok(())
+        })?;
     }
     engine.install_storage_access(&store)?;
     engine
@@ -765,14 +806,19 @@ fn validate_bootstrap_control(
 }
 
 #[cfg(test)]
-fn persist_new(stores: &TenantStorageSet, bytes: &SnapshotImage) -> anyhow::Result<()> {
+fn persist_new(
+    stores: &TenantStorageSet,
+    bytes: &SnapshotImage,
+) -> std::result::Result<(), crate::SnapshotFailure> {
     let engine = TenantEngine::from_bootstrap(stores.application().tenant(), bytes)?;
     let incarnation = engine.generation()?.state.incarnation.clone();
     let identity = kasumi_raft::initial_storage_identity(
         1,
         &format!("{}/{}", stores.application().tenant(), incarnation),
     )?;
-    persist_new_checked(stores, bytes, identity, || stores.check_access())
+    Ok(persist_new_checked(stores, bytes, identity, || {
+        stores.check_access()
+    })?)
 }
 
 fn persist_new_checked(
@@ -830,7 +876,7 @@ pub async fn open_local(
     initial_policy: Policy,
     initial_limits: Limits,
     security_audit: Arc<SecurityAudit>,
-) -> anyhow::Result<Arc<Database>> {
+) -> std::result::Result<Arc<Database>, crate::SnapshotFailure> {
     open_local_inner(
         DatabaseConstruction::new(stores, security_audit)?,
         initial_policy,
@@ -848,17 +894,23 @@ pub async fn open_existing_local(
     stores: Arc<TenantStorageSet>,
     security_audit: Arc<SecurityAudit>,
     expected_incarnation: uuid::Uuid,
-) -> anyhow::Result<Arc<Database>> {
+) -> std::result::Result<Arc<Database>, crate::SnapshotFailure> {
     let construction = DatabaseConstruction::new(stores.clone(), security_audit)?;
-    anyhow::ensure!(!expected_incarnation.is_nil(), "nil local incarnation");
-    anyhow::ensure!(
-        stores
-            .application()
-            .storage_access()
-            .serving_gate()
-            .is_none(),
-        "independent serving authority requires replicated storage; local downgrade is forbidden"
-    );
+    crate::SnapshotFailure::ordinary(|| {
+        anyhow::ensure!(!expected_incarnation.is_nil(), "nil local incarnation");
+        Ok(())
+    })?;
+    crate::SnapshotFailure::ordinary(|| {
+        anyhow::ensure!(
+            stores
+                .application()
+                .storage_access()
+                .serving_gate()
+                .is_none(),
+            "independent serving authority requires replicated storage; local downgrade is forbidden"
+        );
+        Ok(())
+    })?;
     let _gate = BOOTSTRAP_GATE.lock().await;
     reject_retired_serving_open(&stores)?;
     require_deployment(&stores, b"local-v1")?;
@@ -882,8 +934,11 @@ pub async fn open_local_with_incarnation(
     initial_limits: Limits,
     security_audit: Arc<SecurityAudit>,
     incarnation: uuid::Uuid,
-) -> anyhow::Result<Arc<Database>> {
-    anyhow::ensure!(!incarnation.is_nil(), "nil local incarnation");
+) -> std::result::Result<Arc<Database>, crate::SnapshotFailure> {
+    crate::SnapshotFailure::ordinary(|| {
+        anyhow::ensure!(!incarnation.is_nil(), "nil local incarnation");
+        Ok(())
+    })?;
     open_local_inner(
         DatabaseConstruction::new(stores, security_audit)?,
         initial_policy,
@@ -905,15 +960,18 @@ pub async fn open_fixture_with_epoch_clock(
     security_audit: Arc<SecurityAudit>,
     admission: Arc<crate::admission::NodeAdmission>,
     clock: Arc<kasumi_clock::EpochClock>,
-) -> anyhow::Result<Arc<Database>> {
+) -> std::result::Result<Arc<Database>, crate::SnapshotFailure> {
     security_audit.require_admission(&admission)?;
-    anyhow::ensure!(
-        matches!(
-            stores.application().storage_access().purpose(),
-            kasumi_store::StoragePurpose::LocalFixture
-        ),
-        "fixture clock cannot open production storage"
-    );
+    crate::SnapshotFailure::ordinary(|| {
+        anyhow::ensure!(
+            matches!(
+                stores.application().storage_access().purpose(),
+                kasumi_store::StoragePurpose::LocalFixture
+            ),
+            "fixture clock cannot open production storage"
+        );
+        Ok(())
+    })?;
     let construction = DatabaseConstruction::with_fixture_clock(stores, security_audit, clock)?;
     open_local_inner(
         construction,
@@ -941,13 +999,16 @@ async fn open_local_inner(
     initial_limits: Limits,
     incarnation: Option<uuid::Uuid>,
     runtime: LocalRuntime,
-) -> anyhow::Result<Arc<Database>> {
+) -> std::result::Result<Arc<Database>, crate::SnapshotFailure> {
     let stores = construction.stores().clone();
     let store = stores.application().clone();
-    anyhow::ensure!(
-        store.storage_access().serving_gate().is_none(),
-        "independent serving authority requires replicated storage; local downgrade is forbidden"
-    );
+    crate::SnapshotFailure::ordinary(|| {
+        anyhow::ensure!(
+            store.storage_access().serving_gate().is_none(),
+            "independent serving authority requires replicated storage; local downgrade is forbidden"
+        );
+        Ok(())
+    })?;
     let _gate = BOOTSTRAP_GATE.lock().await;
     reject_retired_serving_open(&stores)?;
     bind_deployment(&stores, b"local-v1")?;
@@ -981,7 +1042,7 @@ async fn start(
     bytes: &SnapshotImage,
     runtime: LocalRuntime,
     expected_incarnation: Option<uuid::Uuid>,
-) -> anyhow::Result<Arc<Database>> {
+) -> std::result::Result<Arc<Database>, crate::SnapshotFailure> {
     let stores = construction.stores();
     validate_bootstrap_control(stores, bytes)?;
     let engine = Arc::new(TenantEngine::from_bootstrap(
@@ -989,10 +1050,13 @@ async fn start(
         bytes,
     )?);
     if let Some(expected) = expected_incarnation {
-        anyhow::ensure!(
-            engine.generation()?.state.incarnation == expected.to_string(),
-            "local incarnation differs from installed identity"
-        );
+        crate::SnapshotFailure::ordinary(|| {
+            anyhow::ensure!(
+                engine.generation()?.state.incarnation == expected.to_string(),
+                "local incarnation differs from installed identity"
+            );
+            Ok(())
+        })?;
     }
     if let kasumi_store::StoragePurpose::Standalone {
         tenant,
@@ -1001,11 +1065,14 @@ async fn start(
     } = stores.application().storage_access().purpose()
     {
         let generation = engine.generation()?;
-        anyhow::ensure!(
-            generation.state.tenant == *tenant
-                && generation.state.incarnation == incarnation.to_string(),
-            "local bootstrap differs from authenticated standalone identity"
-        );
+        crate::SnapshotFailure::ordinary(|| {
+            anyhow::ensure!(
+                generation.state.tenant == *tenant
+                    && generation.state.incarnation == incarnation.to_string(),
+                "local bootstrap differs from authenticated standalone identity"
+            );
+            Ok(())
+        })?;
     }
     start_prepared(construction, engine, bytes, runtime).await
 }
@@ -1015,7 +1082,7 @@ async fn start_prepared(
     engine: Arc<TenantEngine>,
     bytes: &SnapshotImage,
     runtime: LocalRuntime,
-) -> anyhow::Result<Arc<Database>> {
+) -> std::result::Result<Arc<Database>, crate::SnapshotFailure> {
     let store = construction.stores().application().clone();
     engine.install_storage_access(&store)?;
     let admission = construction.admission().clone();
@@ -1056,7 +1123,7 @@ pub async fn restore_local(
     request: LocalRestoreRequest,
     admission: Arc<crate::admission::NodeAdmission>,
     security_audit: Arc<SecurityAudit>,
-) -> anyhow::Result<Arc<Database>> {
+) -> std::result::Result<Arc<Database>, crate::SnapshotFailure> {
     let construction = DatabaseConstruction::new(targets.clone(), security_audit.clone())?;
     request.checkpoint.validate()?;
     security_audit.require_admission(&admission)?;
@@ -1070,15 +1137,22 @@ pub async fn restore_local(
         .target_context
         .authorization
         .require_database(&incarnation.to_string())?;
-    anyhow::ensure!(
-        !incarnation.is_nil() && incarnation.to_string() != request.checkpoint.source_incarnation,
-        "local restore requires a fresh target incarnation"
-    );
+    crate::SnapshotFailure::ordinary(|| {
+        anyhow::ensure!(
+            !incarnation.is_nil()
+                && incarnation.to_string() != request.checkpoint.source_incarnation,
+            "local restore requires a fresh target incarnation"
+        );
+        Ok(())
+    })?;
     let target = targets.application().clone();
-    anyhow::ensure!(
-        target.storage_access().serving_gate().is_none(),
-        "independent restore authority requires replicated storage; local downgrade is forbidden"
-    );
+    crate::SnapshotFailure::ordinary(|| {
+        anyhow::ensure!(
+            target.storage_access().serving_gate().is_none(),
+            "independent restore authority requires replicated storage; local downgrade is forbidden"
+        );
+        Ok(())
+    })?;
     use crate::backup_verify::VerificationPhase;
     let deadline = source.deadline()?;
     let total = VerificationPhase::start("restore.local_total", Some(deadline));
@@ -1090,17 +1164,20 @@ pub async fn restore_local(
     let phase = VerificationPhase::start("restore.initial_access", Some(deadline));
     let authorization = backup_restore::RestoreAuthorization::Local(&request);
     authorization.check_access(&target, &security_audit).await?;
-    anyhow::ensure!(
-        target
-            .get_bounded(NS, b"manifest", MAX_BOOTSTRAP_MANIFEST_BYTES)?
-            .is_none()
-            && targets
-                .custody()
-                .store()
-                .get("raft.meta", b"node_id")?
-                .is_none(),
-        "restore target is already initialized"
-    );
+    crate::SnapshotFailure::ordinary(|| {
+        anyhow::ensure!(
+            target
+                .get_bounded(NS, b"manifest", MAX_BOOTSTRAP_MANIFEST_BYTES)?
+                .is_none()
+                && targets
+                    .custody()
+                    .store()
+                    .get("raft.meta", b"node_id")?
+                    .is_none(),
+            "restore target is already initialized"
+        );
+        Ok(())
+    })?;
     phase.complete();
     let phase = VerificationPhase::start("restore.load_authorized", Some(deadline));
     let verified = deadline
@@ -1117,16 +1194,22 @@ pub async fn restore_local(
         )))
         .await??;
     phase.complete();
-    anyhow::ensure!(
-        verified.checkpoint == request.checkpoint,
-        "verified local backup differs from exact checkpoint"
-    );
+    crate::SnapshotFailure::ordinary(|| {
+        anyhow::ensure!(
+            verified.checkpoint == request.checkpoint,
+            "verified local backup differs from exact checkpoint"
+        );
+        Ok(())
+    })?;
     let source_revision = verified.state.metadata().revision;
     let original = verified.state.metadata();
-    anyhow::ensure!(
-        !incarnation.is_nil() && incarnation.to_string() != original.incarnation,
-        "restore requires a fresh database incarnation"
-    );
+    crate::SnapshotFailure::ordinary(|| {
+        anyhow::ensure!(
+            !incarnation.is_nil() && incarnation.to_string() != original.incarnation,
+            "restore requires a fresh database incarnation"
+        );
+        Ok(())
+    })?;
     let restored = verified
         .into_genesis(
             deadline,

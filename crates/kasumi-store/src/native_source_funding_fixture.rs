@@ -43,7 +43,7 @@ impl RegisteredNodeOpening {
             .database()
             .ok_or(NativeSourceFixtureError::Closed)?;
         let provider: Arc<dyn kasumi_kv::SourceMemoryProvider> =
-            expected.unwrap_or_else(|| state.file.disk().memory().clone());
+            expected.unwrap_or_else(|| owner.provider.clone());
         Ok(NativeSourceFundingFixture {
             registration: self.registration.clone(),
             pool: database.queue_native_source_pool(provider),
@@ -204,8 +204,8 @@ pub struct NativeSlotBlockers {
 impl RegisteredNodeOpening {
     pub fn queue_native_slot_blockers_fixture(&self) -> io::Result<NativeSlotBlockers> {
         let provider = {
-            let state = self.registration.owner().state.lock();
-            state.file.disk().memory().clone()
+            let _state = self.registration.owner().state.lock();
+            self.registration.owner().provider.clone()
         };
         // 256 actual native slots minus the exact two protected rights. The
         // vector's actual backing is admitted before allocation, independently

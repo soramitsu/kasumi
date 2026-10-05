@@ -57,7 +57,7 @@ where
 
     // TODO(xp): it does not need to be a async mutex.
     #[allow(clippy::type_complexity)]
-    pub(in crate::raft) tx_shutdown: Mutex<Option<OneshotSenderOf<C, ()>>>,
+    pub(in crate::raft) tx_shutdown: Mutex<Option<OneshotSenderOf<C, crate::core::ShutdownMode>>>,
     pub(in crate::raft) core_state: Mutex<CoreState<C::NodeId, C::AsyncRuntime>>,
 
     /// The ongoing snapshot transmission.

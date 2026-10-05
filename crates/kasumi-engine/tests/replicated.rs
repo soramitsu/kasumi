@@ -59,7 +59,7 @@ async fn store(
 ) -> (
     Arc<TenantStore>,
     Arc<kasumi_engine::SecurityAudit>,
-    Arc<NodeStore>,
+    NodeStore,
 ) {
     let node = (if create {
         physical
@@ -97,7 +97,7 @@ async fn store(
 async fn shutdown_nodes(
     nodes: &mut BTreeMap<u64, Arc<Database>>,
     audits: &mut BTreeMap<u64, Arc<kasumi_engine::SecurityAudit>>,
-    node_owners: &mut BTreeMap<u64, Arc<NodeStore>>,
+    node_owners: &mut BTreeMap<u64, NodeStore>,
     router: &InProcessRouter,
     group: &str,
 ) {

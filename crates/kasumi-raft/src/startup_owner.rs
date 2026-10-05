@@ -3,6 +3,7 @@
 //! task can be aborted while it owns those handles.
 use crate::{CustodyRaftGroup, RaftGroup, SnapshotBufferOwner};
 use anyhow::{Result, ensure};
+use kasumi_store::ScratchOperationFailure;
 use kasumi_types::drain::{DrainCompletion, DrainFailure, DrainResult};
 use std::{
     any::Any,
@@ -14,7 +15,28 @@ use std::{
 };
 
 pub(crate) const STARTUP_WORKSPACE: u64 = 64 << 10;
-type Opening = Pin<Box<dyn Future<Output = Result<StartedGroup>> + Send>>;
+type Opening = Pin<Box<dyn Future<Output = Result<StartedGroup, ScratchOperationFailure>> + Send>>;
+
+enum OpeningFailure {
+    Recorded(DrainFailure),
+    Preparation {
+        original: ScratchOperationFailure,
+        diagnostic: DrainFailure,
+    },
+}
+impl OpeningFailure {
+    fn diagnostic(&self) -> &DrainFailure {
+        match self {
+            Self::Recorded(diagnostic) | Self::Preparation { diagnostic, .. } => diagnostic,
+        }
+    }
+    fn into_operation(self) -> ScratchOperationFailure {
+        match self {
+            Self::Recorded(diagnostic) => ScratchOperationFailure::Operation(diagnostic.into()),
+            Self::Preparation { original, .. } => original,
+        }
+    }
+}
 pub(crate) struct Cleaning {
     future: Pin<Box<dyn Future<Output = DrainResult> + Send>>,
     // Independent of the async generator: unwinding its poll must not drop
@@ -155,7 +177,7 @@ impl StartupState {
     }
     pub(crate) fn install<F>(&mut self, future: F) -> Result<()>
     where
-        F: Future<Output = Result<StartedGroup>> + Send + 'static,
+        F: Future<Output = Result<StartedGroup, ScratchOperationFailure>> + Send + 'static,
     {
         ensure!(
             matches!(self, Self::Idle),
@@ -208,40 +230,66 @@ impl StartupState {
         &mut self,
         owner: &SnapshotBufferOwner,
         cx: &mut Context<'_>,
-    ) -> Poll<std::result::Result<StartedGroup, DrainFailure>> {
+    ) -> Poll<std::result::Result<StartedGroup, OpeningFailure>> {
         let result = match self {
             Self::Opening(future) => catch_unwind(AssertUnwindSafe(|| future.as_mut().poll(cx))),
-            Self::Retained { failure, .. } => return Poll::Ready(Err(failure.clone())),
+            Self::Retained { failure, .. } => {
+                return Poll::Ready(Err(OpeningFailure::Recorded(failure.clone())));
+            }
             _ => unreachable!("opening future expected"),
         };
         match result {
-            Err(payload) => Poll::Ready(Err(self.panic(owner, payload, "Raft startup"))),
+            Err(payload) => Poll::Ready(Err(OpeningFailure::Recorded(self.panic(
+                owner,
+                payload,
+                "Raft startup",
+            )))),
             Ok(Poll::Pending) => Poll::Pending,
             Ok(Poll::Ready(Ok(group))) => Poll::Ready(Ok(group)),
             Ok(Poll::Ready(Err(error))) => {
-                let failure = owner.record_startup_error(error);
-                if failure.completion() == DrainCompletion::Retained {
-                    self.retain(failure.clone());
+                let failure = match error {
+                    ScratchOperationFailure::Operation(error) => {
+                        OpeningFailure::Recorded(owner.record_startup_error(error))
+                    }
+                    original @ (ScratchOperationFailure::Creation(_)
+                    | ScratchOperationFailure::AdmissionRefused(_)) => {
+                        let diagnostic = owner.record_startup_preparation(&original);
+                        OpeningFailure::Preparation {
+                            original,
+                            diagnostic,
+                        }
+                    }
+                };
+                let diagnostic = failure.diagnostic();
+                if diagnostic.completion() == DrainCompletion::Retained {
+                    self.retain(diagnostic.clone());
                 } else {
-                    *self = Self::Finished(Err(failure.clone()));
+                    *self = Self::Finished(Err(diagnostic.clone()));
                 }
                 Poll::Ready(Err(failure))
             }
         }
     }
-    pub(crate) async fn claim(&mut self, owner: &SnapshotBufferOwner) -> Result<StartedGroup> {
+    pub(crate) async fn claim(
+        &mut self,
+        owner: &SnapshotBufferOwner,
+    ) -> Result<StartedGroup, ScratchOperationFailure> {
         // Synchronous enrollment can be followed by a census before this
         // claimant is first polled. Never poll an already completed operation.
         if !matches!(self, Self::Opening(_) | Self::Retained { .. }) {
-            return Err(match self.drain(owner).await {
-                Err(failure) => failure,
-                Ok(()) => owner.record_startup_error(anyhow::anyhow!(
-                    "Raft startup result was reclaimed by shutdown"
-                )),
-            }
-            .into());
+            return Err(ScratchOperationFailure::Operation(
+                match self.drain(owner).await {
+                    Err(failure) => failure,
+                    Ok(()) => owner.record_startup_error(anyhow::anyhow!(
+                        "Raft startup result was reclaimed by shutdown"
+                    )),
+                }
+                .into(),
+            ));
         }
-        let group = std::future::poll_fn(|cx| self.poll_opening(owner, cx)).await?;
+        let group = std::future::poll_fn(|cx| self.poll_opening(owner, cx))
+            .await
+            .map_err(OpeningFailure::into_operation)?;
         // Full Opening includes replay and, for a local group, initialization
         // and its linearizable barrier. Validate source reconstruction before
         // transferring this actual group; a refusal enters retained cleanup
@@ -265,7 +313,9 @@ impl StartupState {
             let failure = owner.record_startup_error(error);
             *self = Self::Cleaning(cleanup(group));
             let cleanup = self.drain(owner).await;
-            return Err(cleanup.err().unwrap_or(failure).into());
+            return Err(ScratchOperationFailure::Operation(
+                cleanup.err().unwrap_or(failure).into(),
+            ));
         }
         *self = Self::Delivered;
         Ok(group)
@@ -282,7 +332,9 @@ impl StartupState {
                     Self::Opening(_) => match self.poll_opening(owner, cx) {
                         Poll::Pending => return Poll::Pending,
                         Poll::Ready(Ok(group)) => *self = Self::Cleaning(cleanup(group)),
-                        Poll::Ready(Err(failure)) => return Poll::Ready(Err(failure)),
+                        Poll::Ready(Err(failure)) => {
+                            return Poll::Ready(Err(failure.diagnostic().clone()));
+                        }
                     },
                     Self::Cleaning(future) => {
                         match catch_unwind(AssertUnwindSafe(|| future.future.as_mut().poll(cx))) {

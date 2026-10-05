@@ -230,12 +230,9 @@ fn registered_source_history_native_slot_denial_cancels_whole_registered_request
     source.prepare_history(0);
     assert!(
         source
-            .with_native_report(0, |read| matches!(
-                read.history_report().unwrap().preparation(),
-                TerminalObservation::Returned(Err(kasumi_kv::StorageError::Core(
-                    kasumi_kv::CoreError::CapacityDenied
-                )))
-            ))
+            .with_native_report(0, |read| matches!(&(read.history_report().unwrap().preparation()), TerminalObservation::Returned(Err(kasumi_kv::StorageError::Core(
+                    native_error
+                ))) if matches!(native_error.rejected_cause(), Some(kasumi_kv::CoreErrorCause::CapacityDenied))))
             .unwrap()
     );
     assert!(fixture.core().snapshot().reserved_bytes > before.reserved_bytes);

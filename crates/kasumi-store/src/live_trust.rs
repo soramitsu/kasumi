@@ -150,14 +150,18 @@ impl EncryptedTrust {
         let state = self.store.state.read();
         self.store.require_access(&state)?;
         let catalog = self.store.catalog.read();
-        let tx = self.store.node.db.begin_write()?;
-        write_domain(&tx, &self.store, &state, &catalog, &operations)?;
-        self.store.require_access(&state)?;
-        tx.commit()
-            .context("local signer trust commit outcome may be unknown")?;
-        self.store
-            .require_access(&state)
-            .context("local signer trust committed but key access was lost")
+        self.store.node.with_registered_write(
+            &mut (),
+            |tx, _| {
+                write_domain(tx, &self.store, &state, &catalog, &operations)?;
+                self.store.require_access(&state)
+            },
+            |_| {
+                self.store
+                    .require_access(&state)
+                    .context("local signer trust committed but key access was lost")
+            },
+        )
     }
 }
 

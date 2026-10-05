@@ -132,7 +132,11 @@ fn ordered_command_actual_backend_rejects_raw_digest_before_mutation_or_publicat
         let error = engine
             .apply_with_publisher(&context, AppliedInput::Command(&bytes), &mut publisher)
             .unwrap_err();
-        mismatch(&error);
+        mismatch(
+            error
+                .operation_error()
+                .expect("actual byte-binding operation failure"),
+        );
         assert_eq!((publisher.plain, publisher.selected), (0, 0));
         unchanged(&engine, &original);
     }
@@ -162,7 +166,11 @@ fn ordered_command_actual_backend_checks_digest_before_json_and_each_special_pre
         let error = engine
             .apply_with_publisher(&context, AppliedInput::Command(&bytes), &mut publisher)
             .unwrap_err();
-        mismatch(&error);
+        mismatch(
+            error
+                .operation_error()
+                .expect("actual byte-binding operation failure"),
+        );
         assert_eq!((publisher.plain, publisher.selected), (0, 0));
         unchanged(&engine, &original);
     }
@@ -175,6 +183,8 @@ fn ordered_command_actual_backend_checks_digest_before_json_and_each_special_pre
         .apply_with_publisher(&context, AppliedInput::Command(bytes), &mut publisher)
         .unwrap_err();
     let decoder = error
+        .operation_error()
+        .expect("matching digest reached the ordinary decoder")
         .root_cause()
         .downcast_ref::<serde_json::Error>()
         .expect("matching raw digest must reach the canonical JSON decoder");

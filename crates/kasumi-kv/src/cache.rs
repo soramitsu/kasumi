@@ -7,7 +7,10 @@
 //! Authorization, expiry and snapshot selection belong to the caller and must
 //! run before a lookup. This cache does not make those decisions.
 
-use crate::{AdmissionError, ResidentLease, StorageAdmission};
+#[cfg(test)]
+use crate::ResidentLease;
+use crate::core::NativeResidentLease;
+use crate::{AdmissionError, StorageAdmission};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::mem::{size_of, take};
 use std::ops::Deref;
@@ -121,7 +124,7 @@ struct Payload {
 
 enum PayloadLease {
     Pool(pool::Credit),
-    Workspace(Option<Box<dyn ResidentLease>>),
+    Workspace(Option<NativeResidentLease>),
 }
 
 impl Drop for PayloadLease {
@@ -1084,12 +1087,20 @@ impl<K: Copy + Eq + Hash> NativeCache<K> {
                 Ok(credit) => PayloadLease::Pool(credit),
                 Err(AdmissionError::CapacityDenied) => {
                     retain = false;
-                    PayloadLease::Workspace(Some(self.admission.reserve_workspace(charge)?))
+                    PayloadLease::Workspace(Some(
+                        self.admission
+                            .reserve_workspace(charge)
+                            .map(NativeResidentLease::new)?,
+                    ))
                 }
                 Err(error) => return Err(error.into()),
             }
         } else {
-            PayloadLease::Workspace(Some(self.admission.reserve_workspace(charge)?))
+            PayloadLease::Workspace(Some(
+                self.admission
+                    .reserve_workspace(charge)
+                    .map(NativeResidentLease::new)?,
+            ))
         };
         let mut bytes = Vec::new();
         bytes

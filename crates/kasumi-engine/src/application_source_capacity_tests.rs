@@ -4,7 +4,7 @@ use super::*;
 use crate::admission::AdmissionConfig;
 
 fn node() -> Result<Arc<NodeAdmission>> {
-    Ok(NodeAdmission::with_fixed_memory(
+    NodeAdmission::with_fixed_memory(
         AdmissionConfig {
             max_inflight_bytes: Some(64 << 20),
             max_reservations: 64,
@@ -14,13 +14,13 @@ fn node() -> Result<Arc<NodeAdmission>> {
         },
         1 << 30,
         0,
-    )?)
+    )
 }
 
 #[test]
 fn source_lane_waits_for_the_actual_last_weak_credit_tail() -> Result<()> {
     let node = node()?;
-    let funding = LaneFunding::new(node.clone(), 64 << 10)?;
+    let funding = LaneFunding::reserve(node.clone(), 64 << 10)?;
     let baseline = node.snapshot();
     let credit = SourceCredit::publication(&funding, 0)?;
     let payload = Strong::new(vec![0u8; 256], credit.clone());
@@ -54,7 +54,7 @@ fn source_lane_waits_for_the_actual_last_weak_credit_tail() -> Result<()> {
 fn history_credit_uses_a_real_new_slot_before_lane_transfer_and_does_not_refill_on_refusal()
 -> Result<()> {
     let node = node()?;
-    let funding = LaneFunding::new(node.clone(), 64 << 10)?;
+    let funding = LaneFunding::reserve(node.clone(), 64 << 10)?;
     let old = SourceCredit::publication(&funding, 0)?;
     let old_payload = Strong::new(vec![1u8; 256], old.clone());
     let old_tail = old_payload.downgrade();
@@ -107,7 +107,7 @@ fn history_credit_uses_a_real_new_slot_before_lane_transfer_and_does_not_refill_
 fn source_lane_clean_history_cancel_restores_current_but_unknown_drop_does_not_free_it()
 -> Result<()> {
     let node = node()?;
-    let funding = LaneFunding::new(node.clone(), 64 << 10)?;
+    let funding = LaneFunding::reserve(node.clone(), 64 << 10)?;
     let current = SourceCredit::publication(&funding, 0)?;
     let before = node.snapshot();
     assert!(current.prepare_history()?);

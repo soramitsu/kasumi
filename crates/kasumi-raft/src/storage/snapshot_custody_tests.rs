@@ -3,12 +3,13 @@
 use super::*;
 use crate::control::tests::{fixture, group, id, ordinary, retirement_entry};
 use crate::control::{self, AppliedCursor, AppliedEntryContext, ControlLog, RetainedSeed, SEEDS};
+use crate::test_utils::FixtureResult;
 use crate::{RetiredSnapshotState, StateMachineBackend};
 use openraft::storage::RaftLogStorageExt;
 
 async fn accepted_snapshot(
     fixture_scratch: Arc<kasumi_store::ScratchDisk>,
-) -> Result<SnapshotEnvelope> {
+) -> FixtureResult<SnapshotEnvelope> {
     let (domains, _, _, mut log) =
         fixture(FaultBackend::new(), true, fixture_scratch.clone()).await?;
     let entry = retirement_entry()?;
@@ -65,15 +66,19 @@ impl StateMachineBackend for ClosedBackend {
         _: &crate::AppliedEntryContext,
         input: crate::AppliedInput<'_>,
         publisher: &mut dyn crate::ApplyPublisher,
-    ) -> Result<()> {
+    ) -> std::result::Result<(), kasumi_store::ScratchOperationFailure> {
         ensure!(
             matches!(input, crate::AppliedInput::Metadata),
             "metadata test cannot apply payload"
         );
-        publisher.commit(crate::AppliedResponse::application(Vec::new()), &[])?;
+        publisher
+            .commit(crate::AppliedResponse::application(Vec::new()), &[])
+            .map_err(anyhow::Error::from)?;
         Ok(())
     }
-    fn capture_snapshot(&self) -> Result<crate::CapturedSnapshot> {
+    fn capture_snapshot(
+        &self,
+    ) -> std::result::Result<crate::CapturedSnapshot, kasumi_store::ScratchOperationFailure> {
         let retirement = self.0.lock().unwrap().clone();
         Ok(crate::CapturedSnapshot::new(
             retirement.clone(),
@@ -86,7 +91,8 @@ impl StateMachineBackend for ClosedBackend {
     fn validate_snapshot(
         &self,
         bytes: &mut dyn std::io::Read,
-    ) -> Result<Option<RetiredSnapshotState>> {
+    ) -> std::result::Result<Option<RetiredSnapshotState>, kasumi_store::ScratchOperationFailure>
+    {
         let mut captured = Vec::new();
         bytes.read_to_end(&mut captured)?;
         if captured == b"not-retired" {
@@ -98,7 +104,10 @@ impl StateMachineBackend for ClosedBackend {
         &'a self,
         _context: &crate::SnapshotRestoreContext,
         bytes: &mut dyn std::io::Read,
-    ) -> Result<Box<dyn crate::PreparedStateMachineRestore + 'a>> {
+    ) -> std::result::Result<
+        Box<dyn crate::PreparedStateMachineRestore + 'a>,
+        kasumi_store::ScratchOperationFailure,
+    > {
         let retirement = self.validate_snapshot(bytes)?;
         Ok(Box::new(PreparedFixtureRestore {
             retirement: retirement.clone(),
@@ -111,8 +120,8 @@ impl StateMachineBackend for ClosedBackend {
 }
 
 #[tokio::test]
-async fn same_position_reencoding_preserves_custody_and_reuses_verified_current_image() -> Result<()>
-{
+async fn same_position_reencoding_preserves_custody_and_reuses_verified_current_image()
+-> FixtureResult<()> {
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
     let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
@@ -167,7 +176,8 @@ async fn same_position_reencoding_preserves_custody_and_reuses_verified_current_
 }
 
 #[tokio::test]
-async fn same_position_cannot_substitute_matching_backend_and_custody_policy() -> Result<()> {
+async fn same_position_cannot_substitute_matching_backend_and_custody_policy() -> FixtureResult<()>
+{
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
     let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
@@ -242,7 +252,7 @@ async fn same_position_cannot_substitute_matching_backend_and_custody_policy() -
 
 #[tokio::test]
 async fn retired_snapshot_installs_without_original_log_and_recovers_with_only_custody_key()
--> Result<()> {
+-> FixtureResult<()> {
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
     let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
@@ -297,7 +307,8 @@ async fn retired_snapshot_installs_without_original_log_and_recovers_with_only_c
             crash,
             kasumi_store::test_utils::storage_admission(),
             fixture_scratch.clone(),
-        )?,
+        )
+        .expect("explicit synthetic snapshot fixture must open its admitted native node"),
         "tenant".into(),
         custody_provider,
     )
@@ -311,7 +322,7 @@ async fn retired_snapshot_installs_without_original_log_and_recovers_with_only_c
 
 #[tokio::test]
 async fn snapshot_rejects_missing_substituted_stale_and_payload_custody_before_publication()
--> Result<()> {
+-> FixtureResult<()> {
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
     let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
@@ -384,7 +395,7 @@ async fn snapshot_rejects_missing_substituted_stale_and_payload_custody_before_p
 
 #[tokio::test]
 async fn accepted_snapshot_supersedes_uncommitted_candidate_and_survives_late_truncation()
--> Result<()> {
+-> FixtureResult<()> {
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
     let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
@@ -429,7 +440,7 @@ async fn accepted_snapshot_supersedes_uncommitted_candidate_and_survives_late_tr
 
 #[tokio::test]
 async fn nonretired_snapshot_discards_stale_candidate_coverage_without_retirement_projection()
--> Result<()> {
+-> FixtureResult<()> {
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
     let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
@@ -466,7 +477,7 @@ async fn nonretired_snapshot_discards_stale_candidate_coverage_without_retiremen
 
 #[tokio::test]
 async fn retired_snapshot_power_loss_never_tears_image_seed_boundary_or_applied_cursor()
--> Result<()> {
+-> FixtureResult<()> {
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
     let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
@@ -525,7 +536,7 @@ async fn retired_snapshot_power_loss_never_tears_image_seed_boundary_or_applied_
 }
 
 #[tokio::test]
-async fn equal_index_different_term_log_and_snapshot_coverage_is_rejected() -> Result<()> {
+async fn equal_index_different_term_log_and_snapshot_coverage_is_rejected() -> FixtureResult<()> {
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
     let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
@@ -550,7 +561,7 @@ async fn equal_index_different_term_log_and_snapshot_coverage_is_rejected() -> R
 }
 
 #[tokio::test]
-async fn old_snapshot_capture_cannot_regress_newer_accepted_cursor() -> Result<()> {
+async fn old_snapshot_capture_cannot_regress_newer_accepted_cursor() -> FixtureResult<()> {
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
     let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
@@ -584,7 +595,8 @@ async fn old_snapshot_capture_cannot_regress_newer_accepted_cursor() -> Result<(
 }
 
 #[tokio::test]
-async fn published_retirement_projection_substitution_fails_closed_after_reopen() -> Result<()> {
+async fn published_retirement_projection_substitution_fails_closed_after_reopen()
+-> FixtureResult<()> {
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
     let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
@@ -640,7 +652,8 @@ async fn published_retirement_projection_substitution_fails_closed_after_reopen(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn retirement_projection_writer_and_reader_share_the_two_megabyte_boundary() -> Result<()> {
+async fn retirement_projection_writer_and_reader_share_the_two_megabyte_boundary()
+-> FixtureResult<()> {
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
     let scratch_directory = kasumi_store::test_utils::private_tempdir()?;
     let scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);

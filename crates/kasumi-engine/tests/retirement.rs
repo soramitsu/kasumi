@@ -29,7 +29,7 @@ fn policy() -> Policy {
 }
 
 async fn reopen_custody(
-    node: Arc<NodeStore>,
+    node: NodeStore,
     audit: Arc<SecurityAudit>,
 ) -> Arc<kasumi_engine::RetiredCustody> {
     let store = kasumi_store::CustodyStore::open(
@@ -70,7 +70,7 @@ struct Fixture {
     db: Arc<Database>,
     audit: Arc<SecurityAudit>,
     store: Arc<TenantStore>,
-    node: Arc<NodeStore>,
+    node: NodeStore,
     destination: Arc<FilesystemBackupDestination>,
 }
 impl Fixture {
@@ -340,6 +340,8 @@ async fn exact_retirement_seals_source_once_and_retains_proof_after_encrypted_re
             .retire_source(context(), wrong)
             .await
             .unwrap_err()
+            .operation_error()
+            .expect("ordinary retirement validation original")
             .code,
         ErrorCode::Conflict
     );
@@ -452,6 +454,8 @@ async fn post_checkpoint_payload_or_rejected_mutation_identity_blocks_retirement
                 .retire_source(context(), request.clone())
                 .await
                 .unwrap_err()
+                .operation_error()
+                .expect("ordinary retirement validation original")
                 .code,
             ErrorCode::Conflict
         );
@@ -469,6 +473,8 @@ async fn post_checkpoint_payload_or_rejected_mutation_identity_blocks_retirement
                 .retire_source(context(), request)
                 .await
                 .unwrap_err()
+                .operation_error()
+                .expect("ordinary retirement validation original")
                 .code,
             ErrorCode::Conflict
         );
@@ -489,6 +495,8 @@ async fn caller_checkpoint_observation_is_not_backup_authority() {
             .retire_source(context(), request)
             .await
             .unwrap_err()
+            .operation_error()
+            .expect("ordinary retirement validation original")
             .code,
         ErrorCode::Conflict
     );
@@ -538,15 +546,26 @@ async fn retired_source_rotates_custody_without_reopening_data_or_rewriting_orig
     );
     assert_eq!(fence.check().unwrap_err().code, ErrorCode::Forbidden);
     drop(fence);
-    for result in [
+    assert_eq!(
         fixture
             .db
             .verify_retirement_receipt(context(), &reference)
-            .await,
-        fixture.db.retire_source(context(), request.clone()).await,
-    ] {
-        assert_eq!(result.unwrap_err().code, ErrorCode::Forbidden);
-    }
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::Forbidden
+    );
+    assert_eq!(
+        fixture
+            .db
+            .retire_source(context(), request.clone())
+            .await
+            .unwrap_err()
+            .operation_error()
+            .expect("ordinary retirement validation original")
+            .code,
+        ErrorCode::Forbidden
+    );
     assert_eq!(
         fixture
             .db
@@ -703,6 +722,8 @@ async fn permanent_retirement_quota_fails_before_backup_io_and_exact_failure_rep
             .retire_source(context(), request.clone())
             .await
             .unwrap_err()
+            .operation_error()
+            .expect("ordinary retirement validation original")
             .code,
         ErrorCode::Conflict
     );
@@ -731,6 +752,8 @@ async fn permanent_retirement_quota_fails_before_backup_io_and_exact_failure_rep
             .retire_source(context(), request.clone())
             .await
             .unwrap_err()
+            .operation_error()
+            .expect("ordinary retirement validation original")
             .code,
         ErrorCode::Conflict
     );
@@ -752,6 +775,8 @@ async fn permanent_retirement_quota_fails_before_backup_io_and_exact_failure_rep
             .retire_source(context(), request.clone())
             .await
             .unwrap_err()
+            .operation_error()
+            .expect("ordinary retirement validation original")
             .code,
         ErrorCode::QuotaExceeded
     );
@@ -786,6 +811,8 @@ async fn permanent_retirement_quota_fails_before_backup_io_and_exact_failure_rep
             .retire_source(context(), request)
             .await
             .unwrap_err()
+            .operation_error()
+            .expect("ordinary retirement validation original")
             .code,
         ErrorCode::Conflict
     );
@@ -900,7 +927,13 @@ async fn durable_retirement_stop_defeats_inflight_backup_verification_and_surviv
     let stable = stopped.status().clone();
     paused.release.notify_one();
     assert_eq!(
-        pending.await.unwrap().unwrap_err().code,
+        pending
+            .await
+            .unwrap()
+            .unwrap_err()
+            .operation_error()
+            .expect("ordinary retirement validation original")
+            .code,
         ErrorCode::Conflict
     );
     assert!(!fixture.db.engine().generation().unwrap().state.retired);
@@ -910,6 +943,8 @@ async fn durable_retirement_stop_defeats_inflight_backup_verification_and_surviv
             .retire_source(context(), request.clone())
             .await
             .unwrap_err()
+            .operation_error()
+            .expect("ordinary retirement validation original")
             .code,
         ErrorCode::Conflict
     );
@@ -967,7 +1002,12 @@ async fn durable_retirement_stop_defeats_inflight_backup_verification_and_surviv
     };
     assert_eq!(replayed.status(), &stable);
     assert_eq!(
-        db.retire_source(context(), request).await.unwrap_err().code,
+        db.retire_source(context(), request)
+            .await
+            .unwrap_err()
+            .operation_error()
+            .expect("ordinary retirement validation original")
+            .code,
         ErrorCode::Conflict
     );
     db.shutdown().await.unwrap();
@@ -1025,6 +1065,8 @@ async fn invisible_staged_identity_after_checkpoint_is_not_lost_by_retirement() 
             .retire_source(context(), request.clone())
             .await
             .unwrap_err()
+            .operation_error()
+            .expect("ordinary retirement validation original")
             .code,
         ErrorCode::Conflict
     );

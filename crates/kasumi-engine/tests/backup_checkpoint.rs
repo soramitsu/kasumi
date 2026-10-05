@@ -487,7 +487,7 @@ struct Fixture {
     db: Arc<Database>,
     audit: Arc<SecurityAudit>,
     store: Arc<TenantStore>,
-    node: Arc<NodeStore>,
+    node: NodeStore,
     destination: Arc<FilesystemBackupDestination>,
 }
 impl Fixture {
@@ -874,6 +874,8 @@ async fn missing_corrupt_resident_or_cold_dependency_and_history_subset_never_yi
             )
             .await
             .unwrap_err()
+            .operation_error()
+            .expect("ordinary backup checkpoint original")
             .code,
         ErrorCode::NotFound
     );
@@ -929,6 +931,8 @@ async fn missing_corrupt_resident_or_cold_dependency_and_history_subset_never_yi
                     .verify_backup_checkpoint(context(), &destination, proof.backup_id())
                     .await
                     .unwrap_err()
+                    .operation_error()
+                    .expect("ordinary backup checkpoint original")
                     .code,
                 expected
             );
@@ -1019,6 +1023,8 @@ async fn verification_requires_current_global_admin_and_rechecks_policy_during_r
             .verify_backup_checkpoint(read_only, fixture.destination.as_ref(), proof.backup_id())
             .await
             .unwrap_err()
+            .operation_error()
+            .expect("ordinary backup checkpoint original")
             .code,
         ErrorCode::Forbidden
     );
@@ -1061,7 +1067,12 @@ async fn verification_requires_current_global_admin_and_rechecks_policy_during_r
     drop(fence);
     paused.release.notify_one();
     assert!(matches!(
-        task.await.unwrap().unwrap_err().code,
+        task.await
+            .unwrap()
+            .unwrap_err()
+            .operation_error()
+            .expect("ordinary backup verification original")
+            .code,
         ErrorCode::Conflict | ErrorCode::Forbidden
     ));
     fixture.close().await;
@@ -1221,7 +1232,13 @@ async fn aborted_session_cleanup_is_bounded_and_catches_late_uploads() {
         .backup_checkpoint(context(), &fault, session)
         .await
         .unwrap_err();
-    assert_eq!(error.code, ErrorCode::UnknownOutcome);
+    assert_eq!(
+        error
+            .operation_error()
+            .expect("ordinary backup publication original")
+            .code,
+        ErrorCode::UnknownOutcome
+    );
     let status = fixture
         .db
         .abort_backup_session(
@@ -1318,6 +1335,8 @@ async fn aborted_session_cleanup_is_bounded_and_catches_late_uploads() {
             .backup_checkpoint_named(context(), "approved", session)
             .await
             .unwrap_err()
+            .operation_error()
+            .expect("ordinary backup checkpoint original")
             .code,
         ErrorCode::Conflict
     );
@@ -1340,6 +1359,8 @@ async fn abort_resolves_published_root_before_considering_cleanup() {
             .backup_checkpoint(context(), &fault, session)
             .await
             .unwrap_err()
+            .operation_error()
+            .expect("ordinary backup checkpoint original")
             .code,
         ErrorCode::UnknownOutcome
     );
@@ -1349,6 +1370,8 @@ async fn abort_resolves_published_root_before_considering_cleanup() {
             .verify_backup_checkpoint_named(context(), "approved", session)
             .await
             .unwrap_err()
+            .operation_error()
+            .expect("ordinary backup checkpoint original")
             .code,
         ErrorCode::UnknownOutcome
     );
@@ -1480,7 +1503,9 @@ async fn archived_audit_backup_is_self_contained_and_source_unavailable_restore_
             let result = fixture
                 .db
                 .raft_group()
-                .write(serde_json::to_vec(&command).unwrap())
+                .write(kasumi_raft::ApplicationProposal::generated(
+                    serde_json::to_vec(&command).unwrap(),
+                ))
                 .await
                 .unwrap();
             serde_json::from_slice::<Result<WriteReceipt>>(&result)
@@ -1493,7 +1518,12 @@ async fn archived_audit_backup_is_self_contained_and_source_unavailable_restore_
             .unwrap()
             .unwrap()
             .unwrap();
-        let result = fixture.db.raft_group().write(command).await.unwrap();
+        let result = fixture
+            .db
+            .raft_group()
+            .write(kasumi_raft::ApplicationProposal::stored(command))
+            .await
+            .unwrap();
         serde_json::from_slice::<Result<()>>(&result)
             .unwrap()
             .unwrap();
@@ -1676,9 +1706,16 @@ async fn archived_audit_backup_is_self_contained_and_source_unavailable_restore_
     .err()
     .unwrap();
     assert!(
-        unplaced.chain().any(|cause| cause
-            .downcast_ref::<Error>()
-            .is_some_and(|error| error.code == ErrorCode::Unavailable)),
+        unplaced
+            .operation_error()
+            .is_some_and(|error| error.code == ErrorCode::Unavailable)
+            || unplaced.source_error().is_some_and(|source| {
+                source.chain().any(|cause| {
+                    cause
+                        .downcast_ref::<Error>()
+                        .is_some_and(|error| error.code == ErrorCode::Unavailable)
+                })
+            }),
         "{unplaced:#}"
     );
     assert!(target.scan("engine.bootstrap").unwrap().is_empty());
@@ -1787,10 +1824,11 @@ async fn archived_audit_backup_is_self_contained_and_source_unavailable_restore_
         .tenant_audit_archive()
         .unwrap()
         .cache()
-        .publish_blocking(&kasumi_store::PreparedAuditSegment {
-            reference: head.clone(),
-            ciphertext,
-        })
+        .publish_blocking(
+            &reopened_store
+                .copy_audit_segment(head.clone(), &ciphertext)
+                .unwrap(),
+        )
         .unwrap();
     let reopened = kasumi_engine::open_local(
         reopened_domains,

@@ -22,7 +22,7 @@ impl WallClock for Clock {
 struct Fixture {
     backend: Arc<Backend>,
     stores: Arc<TenantStorageSet>,
-    node: Arc<NodeStore>,
+    node: NodeStore,
     context: RequestContext,
     signing_root: InstallationSigningRoot,
     _storage: kasumi_engine::test_utils::FixtureStorage,
@@ -283,7 +283,7 @@ impl std::error::Error for RefusedPublication {}
 
 struct LocalPublisher<'a> {
     backend: &'a Backend,
-    before: Vec<u8>,
+    before: kasumi_store::PlaintextValue,
     calls: usize,
     writes: usize,
     response: Option<AppliedResponse>,
@@ -304,9 +304,13 @@ impl<'a> LocalPublisher<'a> {
             failure: refuse.then(|| RefusedPublication.into()),
         }
     }
-    fn finish(mut self, result: Result<()>) -> Result<AppliedResponse> {
+    fn finish(mut self, result: ScratchResult<()>) -> ScratchResult<AppliedResponse> {
+        let result = match result {
+            Err(original) if original.operation_error().is_none() => return Err(original),
+            ordinary => ordinary,
+        };
         if let Some(error) = self.failure.take() {
-            return Err(error);
+            return Err(ScratchOperationFailure::Operation(error));
         }
         result?;
         assert_eq!(self.calls, 1);
@@ -383,7 +387,14 @@ async fn command_response_and_writes_are_prepared_before_single_guarded_publicat
         AppliedInput::Command(&bytes),
         &mut denied,
     );
-    assert!(result.as_ref().unwrap_err().is::<PublishCallError>());
+    assert!(
+        result
+            .as_ref()
+            .unwrap_err()
+            .operation_error()
+            .unwrap()
+            .is::<PublishCallError>()
+    );
     assert_eq!(denied.calls, 1);
     assert!(denied.writes >= 3);
     let receipt: kasumi_types::Result<AuthorityReceipt> =
@@ -396,6 +407,8 @@ async fn command_response_and_writes_are_prepared_before_single_guarded_publicat
         denied
             .finish(result)
             .err()
+            .unwrap()
+            .operation_error()
             .unwrap()
             .is::<RefusedPublication>()
     );
@@ -450,6 +463,8 @@ async fn metadata_publishes_once_for_future_and_covered_positions() {
             .finish(result)
             .err()
             .unwrap()
+            .operation_error()
+            .unwrap()
             .is::<RefusedPublication>()
     );
     assert_eq!(fixture.backend.meta().unwrap().revision, 0);
@@ -495,6 +510,8 @@ async fn maintenance_publication_refusal_preserves_original_capacity_and_receipt
         publisher
             .finish(result)
             .err()
+            .unwrap()
+            .operation_error()
             .unwrap()
             .is::<RefusedPublication>()
     );
@@ -596,7 +613,7 @@ async fn effect_and_maintenance_record_decode_failures_never_publish_a_rejection
             .apply_with_publisher(&position(4), AppliedInput::Command(&bytes), &mut publisher)
             .unwrap_err();
         assert!(
-            error.is::<serde_json::Error>(),
+            error.operation_error().unwrap().is::<serde_json::Error>(),
             "original decoding error must survive: {error:#}"
         );
         assert_eq!(publisher.calls, 0);
@@ -612,6 +629,8 @@ async fn effect_and_maintenance_record_decode_failures_never_publish_a_rejection
                 &mut publisher
             )
             .unwrap_err()
+            .operation_error()
+            .unwrap()
             .is::<serde_json::Error>()
     );
     assert_eq!(publisher.calls, 0);
@@ -635,7 +654,14 @@ async fn signer_stage_keeps_prepared_roster_private_and_replays_exact_publicatio
         AppliedInput::Command(&bytes),
         &mut denied,
     );
-    assert!(result.as_ref().unwrap_err().is::<PublishCallError>());
+    assert!(
+        result
+            .as_ref()
+            .unwrap_err()
+            .operation_error()
+            .unwrap()
+            .is::<PublishCallError>()
+    );
     assert_eq!(denied.calls, 1);
     assert_eq!(denied.writes, 3);
     let prepared_response = denied.response.as_ref().unwrap().data.clone();
@@ -649,6 +675,8 @@ async fn signer_stage_keeps_prepared_roster_private_and_replays_exact_publicatio
         denied
             .finish(result)
             .err()
+            .unwrap()
+            .operation_error()
             .unwrap()
             .is::<RefusedPublication>()
     );
@@ -821,7 +849,7 @@ async fn signer_activation_roster_failure_remains_outer_without_publishing_rejec
         .backend
         .apply_with_publisher(&position(5), AppliedInput::Command(&bytes), &mut publisher)
         .unwrap_err();
-    assert!(error.is::<PreparedRejection>());
+    assert!(error.operation_error().unwrap().is::<PreparedRejection>());
     assert_eq!(publisher.calls, 0);
     assert!(
         fixture
@@ -833,6 +861,132 @@ async fn signer_activation_roster_failure_remains_outer_without_publishing_rejec
     assert_eq!(
         serde_json::to_vec(&fixture.backend.meta().unwrap()).unwrap(),
         serde_json::to_vec(&before).unwrap()
+    );
+    fixture.close().await;
+}
+
+fn registered_creation_identity(
+    fixture: &Fixture,
+    failure: &ScratchOperationFailure,
+) -> (kasumi_store::StorageOwnerId, usize) {
+    assert!(failure.operation_error().is_none());
+    let creation = failure.creation().expect("creation remained typed");
+    let id = creation.owner_id().expect("actual creation was registered");
+    let census = fixture._storage.scratch.memory().storage_census();
+    assert!((0..census.snapshot().capacity).any(|index| census.owner_at(index) == Some(id)));
+    let original = creation.with_diagnostic(|report| {
+        let report = report.expect("registered original report is inspectable");
+        assert!(report.opening_error().is_none());
+        assert!(report.setup_begin().is_none());
+        report
+            .admission_error()
+            .expect("original directory refusal") as *const std::io::Error as usize
+    });
+    (id, original)
+}
+
+fn retire_creation(failure: ScratchOperationFailure) {
+    let ScratchOperationFailure::Creation(creation) = failure else {
+        panic!("creation was replaced with an ordinary error")
+    };
+    assert_eq!(
+        creation.retire().disposition(),
+        kasumi_store::StorageCensusDisposition::Retired
+    );
+}
+
+#[tokio::test]
+async fn signer_stage_creation_refusal_retains_registered_original_before_publication() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let fixture = Fixture::new().await;
+    fixture.enroll_signer_verifiers(1);
+    let before = serde_json::to_vec(&fixture.backend.meta().unwrap()).unwrap();
+    let prepared = fixture.maintenance(AuthorityMaintenanceAction::StageSignerGeneration {
+        certificate: fixture.certificate(2),
+    });
+    let operation_id = prepared.transition.operation_id();
+    let bytes = serde_json::to_vec(&PreparedOperation::Maintenance(Box::new(prepared))).unwrap();
+    let mut publisher = LocalPublisher::new(&fixture.backend, false);
+    let directory = fixture._scratch_directory.path();
+    let original_permissions = std::fs::metadata(directory).unwrap().permissions();
+    std::fs::set_permissions(directory, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let failure = fixture
+        .backend
+        .apply_with_publisher(&position(4), AppliedInput::Command(&bytes), &mut publisher)
+        .unwrap_err();
+    std::fs::set_permissions(directory, original_permissions).unwrap();
+
+    let identity = registered_creation_identity(&fixture, &failure);
+    // Both the semantic classification seam and the enclosing publisher join
+    // must return the same registered owner and original diagnostic object.
+    let failure = prepared_scratch_outcome::<()>(Err(failure)).unwrap_err();
+    assert_eq!(registered_creation_identity(&fixture, &failure), identity);
+    assert_eq!(publisher.calls, 0);
+    assert_eq!(publisher.writes, 0);
+    let failure = publisher
+        .finish(Err(failure))
+        .err()
+        .expect("original constructor failure");
+    assert_eq!(registered_creation_identity(&fixture, &failure), identity);
+    assert!(
+        fixture
+            .backend
+            .maintenance_status(operation_id)
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        serde_json::to_vec(&fixture.backend.meta().unwrap()).unwrap(),
+        before
+    );
+    retire_creation(failure);
+    fixture.close().await;
+}
+
+#[tokio::test]
+async fn snapshot_creation_refusals_keep_original_registered_custody_through_outer_methods() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let fixture = Fixture::new().await;
+    let before = serde_json::to_vec(&fixture.backend.meta().unwrap()).unwrap();
+    let mut bytes = Vec::new();
+    fixture.backend.snapshot(&mut bytes).unwrap();
+    let captured = fixture.backend.capture_snapshot().unwrap();
+    let directory = fixture._scratch_directory.path();
+    let original_permissions = std::fs::metadata(directory).unwrap().permissions();
+    std::fs::set_permissions(directory, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let mut output = Vec::new();
+    let write = captured.write(&mut output).unwrap_err();
+    drop(captured);
+    let validate = fixture
+        .backend
+        .validate_snapshot(&mut bytes.as_slice())
+        .unwrap_err();
+    let restore = match fixture
+        .backend
+        .prepare_restore(&restore_test_context(&bytes), &mut bytes.as_slice())
+    {
+        Err(failure) => failure,
+        Ok(_) => panic!("restore accepted a refused scratch creation"),
+    };
+    std::fs::set_permissions(directory, original_permissions).unwrap();
+
+    assert!(output.is_empty());
+    let mut ids = Vec::new();
+    for failure in [write, validate, restore] {
+        let identity = registered_creation_identity(&fixture, &failure);
+        assert!(
+            !ids.contains(&identity.0),
+            "each actual constructor owns its exact slot"
+        );
+        ids.push(identity.0);
+        assert_eq!(registered_creation_identity(&fixture, &failure), identity);
+        retire_creation(failure);
+    }
+    assert_eq!(
+        serde_json::to_vec(&fixture.backend.meta().unwrap()).unwrap(),
+        before
     );
     fixture.close().await;
 }

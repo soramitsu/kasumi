@@ -1,8 +1,10 @@
 //! Cross former lifetime/transport ceilings through the real encrypted tables;
 //! only bounded records and temporary encrypted files are resident during build.
 use crate::control::tests::{fixture_on_disk, group, id, retirement_entry, seed};
+use crate::ensure_result as ensure;
+use crate::test_utils::FixtureResult;
 use crate::{ControlLog, custody_machine, custody_records, custody_tables};
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result};
 use kasumi_store::{EncryptedSpool, test_utils::FaultBackend};
 use kasumi_types::{CustodyAction, CustodyRequest};
 use openraft::storage::{RaftLogStorage, RaftLogStorageExt};
@@ -33,7 +35,8 @@ fn visit_spool(
     Ok(())
 }
 #[tokio::test]
-async fn permanent_custody_exceeds_former_count_and_snapshot_ceilings_and_reopens() -> Result<()> {
+async fn permanent_custody_exceeds_former_count_and_snapshot_ceilings_and_reopens()
+-> FixtureResult<()> {
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
     let memory_probe = disk_memory.clone();
     let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
@@ -139,7 +142,7 @@ async fn permanent_custody_exceeds_former_count_and_snapshot_ceilings_and_reopen
         drop(log);
         drop(domains);
         let (request, original) = original.context("original receipt absent")?;
-        Ok::<_, anyhow::Error>((head, request, original, revision, context))
+        Ok::<_, crate::test_utils::FixtureFailure>((head, request, original, revision, context))
     })
     .await??;
     let (reopened, _, _, _) = fixture_on_disk(
@@ -149,7 +152,7 @@ async fn permanent_custody_exceeds_former_count_and_snapshot_ceilings_and_reopen
         persistent.clone(),
     )
     .await?;
-    tokio::task::spawn_blocking(move || -> Result<()> {
+    tokio::task::spawn_blocking(move || -> FixtureResult<()> {
         let current = custody_tables::load(reopened.custody().store())?;
         assert_eq!(current, head);
         let prior = custody_tables::receipt(reopened.custody().store(), &request.command_id)?;

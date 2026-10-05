@@ -14,7 +14,7 @@ struct Uninstalled {
     _directory: tempfile::TempDir,
     _scratch_directory: tempfile::TempDir,
     memory: Arc<TestDiskMemory>,
-    node: Arc<NodeStore>,
+    node: NodeStore,
     app: Arc<TenantStore>,
     custody: Arc<TenantStore>,
     app_clock: Arc<ManualClock>,
@@ -32,7 +32,8 @@ async fn uninstalled() -> Result<Uninstalled> {
         disk,
         scratch,
         crate::test_utils::node_storage_config(),
-    )?;
+    )
+    .unwrap_or_else(|original| std::panic::panic_any(original));
     let app_clock = Arc::new(ManualClock::new());
     let app = TenantStore::initialize_catalog_fixture_with_clock(
         node.clone(),
@@ -115,12 +116,12 @@ async fn installed_missing_binding_uses_registered_writer_and_decodes_exact_reco
 #[tokio::test]
 async fn settled_binding_writer_waits_for_busy_opening_before_disposal() -> Result<()> {
     let pair = uninstalled().await?;
-    let writer = pair.node.db.queue_registered_binding_put(
+    let writer = pair.node.body().db.queue_registered_binding_put(
         plan(&pair)?,
         pair.app.clone(),
         pair.custody.clone(),
     )?;
-    let queued_behind = pair.node.db.queue_registered_binding_put(
+    let queued_behind = pair.node.body().db.queue_registered_binding_put(
         plan(&pair)?,
         pair.app.clone(),
         pair.custody.clone(),
@@ -197,16 +198,18 @@ async fn settled_binding_writer_waits_for_busy_opening_before_disposal() -> Resu
 #[tokio::test]
 async fn close_during_settled_binding_disposal_preserves_exact_child() -> Result<()> {
     let pair = uninstalled().await?;
-    let writer = pair.node.db.queue_registered_binding_put(
+    let writer = pair.node.body().db.queue_registered_binding_put(
         plan(&pair)?,
         pair.app.clone(),
         pair.custody.clone(),
     )?;
     let provider: Arc<dyn NodeDiskMemoryAdmission> = pair.memory.clone();
     let observer = RegisteredBindingPut::retained(provider.clone(), writer.id()).unwrap();
-    let opening =
-        RegisteredNodeOpening::retained(provider, pair.node.db.registered_opening_id().unwrap())
-            .unwrap();
+    let opening = RegisteredNodeOpening::retained(
+        provider,
+        pair.node.body().db.registered_opening_id().unwrap(),
+    )
+    .unwrap();
     let (start_tx, start_rx) = mpsc::channel::<()>();
     let (held_tx, held_rx) = mpsc::channel::<()>();
     let (release_tx, release_rx) = mpsc::channel::<()>();
@@ -266,7 +269,7 @@ async fn close_during_settled_binding_disposal_preserves_exact_child() -> Result
 #[tokio::test]
 async fn post_commit_access_failure_remains_on_exact_child_after_facade_drop() -> Result<()> {
     let pair = uninstalled().await?;
-    let writer = pair.node.db.queue_registered_binding_put(
+    let writer = pair.node.body().db.queue_registered_binding_put(
         plan(&pair)?,
         pair.app.clone(),
         pair.custody.clone(),
@@ -325,7 +328,7 @@ async fn post_commit_access_failure_remains_on_exact_child_after_facade_drop() -
 #[tokio::test]
 async fn native_commit_refusal_retains_original_terminal_and_never_replays() -> Result<()> {
     let pair = uninstalled().await?;
-    let writer = pair.node.db.queue_registered_binding_put(
+    let writer = pair.node.body().db.queue_registered_binding_put(
         plan(&pair)?,
         pair.app.clone(),
         pair.custody.clone(),
@@ -383,7 +386,7 @@ async fn native_commit_refusal_retains_original_terminal_and_never_replays() -> 
 async fn staged_binding_capacity_denial_settles_and_a_later_binding_put_commits() -> Result<()> {
     let pair = uninstalled().await?;
     let before = pair.memory.snapshot();
-    let writer = pair.node.db.queue_registered_binding_put(
+    let writer = pair.node.body().db.queue_registered_binding_put(
         plan(&pair)?,
         pair.app.clone(),
         pair.custody.clone(),
@@ -443,7 +446,7 @@ async fn staged_binding_capacity_denial_settles_and_a_later_binding_put_commits(
     assert!(pair.custody.get(BINDING_NS, BINDING_KEY)?.is_none());
 
     // The opening stayed open: the same binding now commits.
-    let writer = pair.node.db.queue_registered_binding_put(
+    let writer = pair.node.body().db.queue_registered_binding_put(
         plan(&pair)?,
         pair.app.clone(),
         pair.custody.clone(),

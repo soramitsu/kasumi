@@ -20,14 +20,20 @@ impl TenantStorageSet {
     pub fn prepare_read_view(&self) -> Result<PreparedTenantStorageReadView> {
         self.check_access()?;
         #[cfg(any(test, feature = "test-utils"))]
-        if self.application.node.db.has_fixture_direct_database() {
+        if self
+            .application
+            .node
+            .body()
+            .db
+            .has_fixture_direct_database()
+        {
             return Ok(PreparedTenantStorageReadView {
                 application: self.application.clone(),
                 custody: self.custody.store.clone(),
                 queued: Some(Queued::Fixture),
             });
         }
-        let queued = self.application.node.db.queue_registered_read()?;
+        let queued = self.application.node.body().db.queue_registered_read()?;
         if let Err(error) = self.check_access() {
             return self
                 .application

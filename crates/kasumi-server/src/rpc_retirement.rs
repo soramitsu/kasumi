@@ -155,10 +155,13 @@ impl NativeAdmin {
         let database = self
             .retirement_source(&context, &request.expected_source_incarnation)
             .await?;
-        let proof = database
-            .retire_source(context.clone(), request)
-            .await
-            .map_err(|error| self.registry.status(&context, error))?;
+        let proof = self
+            .snapshot_call(
+                &context,
+                true,
+                database.retire_source(context.clone(), request),
+            )
+            .await?;
         // Retirement intentionally changes the policy epoch. This is the
         // committed epoch fence, while the original live credential is retained.
         let fence = self

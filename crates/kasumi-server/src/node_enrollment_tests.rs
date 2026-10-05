@@ -1,7 +1,7 @@
 use super::*;
 use kasumi_store::{NodeStore, StorageAccess, test_utils::LocalKeyProvider};
 
-async fn fixture() -> Result<(tempfile::TempDir, Arc<NodeStore>, Arc<TenantStore>, Input)> {
+async fn fixture() -> Result<(tempfile::TempDir, NodeStore, Arc<TenantStore>, Input)> {
     let directory = kasumi_store::test_utils::private_tempdir()?;
     let mut configuration = crate::runtime::example_config(
         kasumi_store::DirectoryPolicy::fixture(),
@@ -32,7 +32,8 @@ async fn fixture() -> Result<(tempfile::TempDir, Arc<NodeStore>, Arc<TenantStore
             native_scratch_disk,
             native_disk.native_storage_config(),
         )
-    }?;
+    }
+    .expect("node enrollment fixture must create its installed native node");
     let store = TenantStore::initialize_catalog(
         node.clone(),
         kasumi_engine::SECURITY_TENANT.into(),
@@ -165,7 +166,7 @@ async fn completed_genesis_requires_all_tenant_records_and_rejects_the_old_head_
     let before = records(&store)?;
     assert!(require_complete(&store, id, Kind::Data).is_err());
     assert_eq!(records(&store)?, before);
-    store.write_batch(&[WriteOp::put(NS, key.as_bytes(), record)])?;
+    store.write_batch(&[WriteOp::put(NS, key.as_bytes(), record.as_bytes())])?;
     let mut head: Head = serde_json::from_slice(&store.get(NS, b"head")?.unwrap())?;
     head.format = 1;
     store.write_batch(&[WriteOp::put(NS, b"head", serde_json::to_vec(&head)?)])?;
@@ -271,7 +272,7 @@ fn respelled(current: &[u8]) -> Result<[Vec<u8>; 2]> {
     Ok([spaced, reordered])
 }
 
-async fn reopen(node: &Arc<NodeStore>) -> Result<Arc<TenantStore>> {
+async fn reopen(node: &NodeStore) -> Result<Arc<TenantStore>> {
     TenantStore::open_existing(
         node.clone(),
         kasumi_engine::SECURITY_TENANT.into(),
@@ -311,7 +312,7 @@ async fn noncanonical_enrollment_records_fail_closed_across_restart_without_rewr
         .unwrap_err();
         assert_eq!(format!("{error:#}"), "noncanonical node enrollment head");
         assert_eq!(records(&store)?, before);
-        store.write_batch(&[WriteOp::put(NS, b"head", head.clone())])?;
+        store.write_batch(&[WriteOp::put(NS, b"head", head.as_bytes())])?;
     }
     assert_eq!(records(&store)?, begun);
     enrollment.complete(&store)?;
@@ -369,9 +370,9 @@ async fn noncanonical_enrollment_records_fail_closed_across_restart_without_rewr
         assert_eq!(records(&store)?, before);
         // Current-writer bytes restart the completed enrollment unchanged.
         store.write_batch(&[
-            WriteOp::put(NS, b"head", head.clone()),
-            WriteOp::put(NS, b"input", current_input.clone()),
-            WriteOp::put(NS, tenant_key.as_bytes(), genesis.clone()),
+            WriteOp::put(NS, b"head", head.as_bytes()),
+            WriteOp::put(NS, b"input", current_input.as_bytes()),
+            WriteOp::put(NS, tenant_key.as_bytes(), genesis.as_bytes()),
         ])?;
         store.shutdown().await.unwrap();
         drop(store);

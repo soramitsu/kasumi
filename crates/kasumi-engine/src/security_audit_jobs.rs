@@ -158,7 +158,8 @@ mod tests {
         let node = storage
             .create_new(&path, kasumi_store::test_utils::NODE_STORE_ID)
             .unwrap();
-        let weak = Arc::downgrade(&node);
+        let weak = node.locator();
+        let mut weak_retirement = node.clone().retire();
         let store = TenantStore::initialize_catalog_fixture(
             node.clone(),
             SECURITY_TENANT.into(),
@@ -221,7 +222,13 @@ mod tests {
         drop(audit);
         drop(store);
         drop(node);
-        assert!(weak.upgrade().is_none());
+        assert!({
+            assert_eq!(
+                weak_retirement.retry(),
+                kasumi_store::StorageCensusDisposition::Retired
+            );
+            matches!(weak.try_borrow(), kasumi_store::NodeStoreLookup::Missing)
+        });
         let reopened = TenantStore::open_existing_fixture(
             storage
                 .open_existing(&path, kasumi_store::test_utils::NODE_STORE_ID)
@@ -276,7 +283,8 @@ mod tests {
         let node = storage
             .create_new(&path, kasumi_store::test_utils::NODE_STORE_ID)
             .unwrap();
-        let weak = Arc::downgrade(&node);
+        let weak = node.locator();
+        let mut weak_retirement = node.clone().retire();
         let store = TenantStore::initialize_catalog_fixture_with_clock(
             node.clone(),
             SECURITY_TENANT.into(),
@@ -355,7 +363,13 @@ mod tests {
         drop(audit);
         drop(store);
         drop(node);
-        assert!(weak.upgrade().is_none());
+        assert!({
+            assert_eq!(
+                weak_retirement.retry(),
+                kasumi_store::StorageCensusDisposition::Retired
+            );
+            matches!(weak.try_borrow(), kasumi_store::NodeStoreLookup::Missing)
+        });
         let reopened = TenantStore::open_existing_fixture_with_clock(
             storage
                 .open_existing(&path, kasumi_store::test_utils::NODE_STORE_ID)

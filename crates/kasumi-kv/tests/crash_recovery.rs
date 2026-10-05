@@ -4,8 +4,8 @@ mod cache_test;
 
 use kasumi_kv::group::InMemoryGroup;
 use kasumi_kv::{
-    AdmissionError, BackendCloseOutcome, BackendNativeDisposition, CacheConfig, Core, CoreError,
-    Database, GroupFile, Operation, OwnerFailed, ROOT_SLOT_BYTES, ResidentLease, RootSlot,
+    AdmissionError, BackendCloseOutcome, BackendNativeDisposition, CacheConfig, Core, Database,
+    GroupFile, Operation, OwnerFailed, ROOT_SLOT_BYTES, ResidentLease, RootSlot,
     SegmentGroupBackend, StorageAdmission, StorageError, TableDefinition, TransactionError,
 };
 use std::ffi::OsStr;
@@ -464,12 +464,12 @@ fn verify_failed_commit_effects(cache_bytes: u64) {
             backend.inject(ordinal, mode);
             assert!(matches!(
                 core.commit(&replacement()),
-                Err(CoreError::UnknownCommit(_) | CoreError::Io(_))
+                Err(original) if original.is_unknown_commit()
+                    || matches!(original.rejected_cause(), Some(kasumi_kv::CoreErrorCause::Io(_)))
             ));
-            assert!(matches!(
-                core.get_admitted(&snapshot, "items", b"a", 16),
-                Err(CoreError::OwnerFailed)
-            ));
+            assert!(
+                matches!(&(core.get_admitted(&snapshot, "items", b"a", 16)), Err(native_error) if matches!(native_error.rejected_cause(), Some(kasumi_kv::CoreErrorCause::OwnerFailed)))
+            );
             let reopened = Core::open_with_backend(
                 backend.crash(),
                 admission(),
@@ -540,10 +540,9 @@ fn minimum_read_limit<T>(
                 assert_eq!(admission.live.load(Ordering::Acquire), baseline);
                 return;
             }
-            Err(error) => assert!(matches!(
-                error,
-                kasumi_kv::BoundedReadError::Storage(StorageError::Core(CoreError::CapacityDenied))
-            )),
+            Err(error) => assert!(
+                matches!(&(error), kasumi_kv::BoundedReadError::Storage(StorageError::Core(native_error)) if matches!(native_error.rejected_cause(), Some(kasumi_kv::CoreErrorCause::CapacityDenied)))
+            ),
         }
         assert_eq!(admission.live.load(Ordering::Acquire), baseline);
     }
@@ -605,14 +604,12 @@ fn detected_corruption_fences_preexisting_snapshots() {
     let (core, backend) = baseline();
     let view = core.snapshot().unwrap();
     backend.corrupt_volatile(b"old-a");
-    assert!(matches!(
-        core.get_admitted(&view, "items", b"a", 16),
-        Err(CoreError::Corrupt(_))
-    ));
-    assert!(matches!(
-        core.get_admitted(&view, "items", b"b", 16),
-        Err(CoreError::OwnerFailed)
-    ));
+    assert!(
+        matches!(&(core.get_admitted(&view, "items", b"a", 16)), Err(native_error) if matches!(native_error.rejected_cause(), Some(kasumi_kv::CoreErrorCause::Corrupt(_))))
+    );
+    assert!(
+        matches!(&(core.get_admitted(&view, "items", b"b", 16)), Err(native_error) if matches!(native_error.rejected_cause(), Some(kasumi_kv::CoreErrorCause::OwnerFailed)))
+    );
 }
 
 #[test]
@@ -649,10 +646,9 @@ fn batch_workspace_denial_leaves_all_published_versions_unchanged() {
             b"new-b",
         ));
     }
-    assert!(matches!(
-        core.commit(&batch),
-        Err(CoreError::CapacityDenied)
-    ));
+    assert!(
+        matches!(&(core.commit(&batch)), Err(native_error) if matches!(native_error.rejected_cause(), Some(kasumi_kv::CoreErrorCause::CapacityDenied)))
+    );
     assert!(admission.calls.load(Ordering::Acquire) >= start + 2);
     assert_eq!(backend.effects(), effects);
     assert_eq!(core.generation().unwrap(), generation);
@@ -743,7 +739,15 @@ fn many_live_keys_share_bounded_admission_slots_and_reopen() {
     core.commit(&operations).unwrap();
     assert!(admission.live.load(Ordering::Acquire) <= 128);
     let crash = backend.crash();
-    drop(core);
+    let closed = core.close();
+    assert_eq!(
+        closed.native_disposition(),
+        BackendNativeDisposition::Drained
+    );
+    closed.into_result().unwrap();
+    let mut disposal = core.into_disposal();
+    assert!(disposal.dispose().complete());
+    drop(disposal);
     assert_eq!(admission.live.load(Ordering::Acquire), 0);
 
     let reopened = Core::open_with_backend(

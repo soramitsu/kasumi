@@ -191,10 +191,9 @@ fn admitted_cached_length_and_checksum_mismatches_are_typed_corruption_before_co
         }
         let before = reads.count();
         let result = state.get_admitted(&pin, "accounts", b"a", 128);
-        assert!(matches!(
-            result,
-            Err(CoreError::Corrupt("cached value identity differs"))
-        ));
+        assert!(
+            matches!(&(result), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::Corrupt("cached value identity differs"))))
+        );
         assert_eq!(reads.count(), before, "corrupt cache was retried from disk");
         drop(pin);
         drop(state);

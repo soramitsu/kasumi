@@ -8,6 +8,8 @@
 //! retired pins and new pins of the already-scanned current root.
 //! This module never closes the group or notifies admission of owner failure.
 
+#[cfg(test)]
+use crate::core::ResidentLease;
 use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
@@ -20,7 +22,7 @@ mod rights;
 pub(crate) use rights::retained::{PendingSourceRights, RightsRetirement};
 pub(crate) use rights::{HistoryPinRight, PreparedProtectedPin};
 
-use crate::core::{AdmissionError, CoreError, ResidentLease, StorageAdmission};
+use crate::core::{AdmissionError, CoreError, NativeResidentLease, StorageAdmission};
 use crate::directory::DirectoryRoot;
 
 const ALLOCATION_ALLOWANCE: usize = 64;
@@ -112,7 +114,7 @@ impl<T> Drop for RetiredArc<T> {
         }
     }
 }
-struct LeaseCharge(Option<Box<dyn ResidentLease>>);
+struct LeaseCharge(Option<NativeResidentLease>);
 impl Drop for LeaseCharge {
     fn drop(&mut self) {
         if let Some(lease) = self.0.take() {
@@ -135,6 +137,10 @@ struct RegistryInner {
 pub(crate) struct SnapshotPins {
     inner: RegistryRef,
 }
+
+#[path = "snapshot_pins_opening.rs"]
+mod opening;
+pub(crate) use opening::SnapshotPinsOpening;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct PinIdentity {
@@ -171,11 +177,11 @@ impl SnapshotPins {
         let state = self.inner.state.lock().map_err(|poisoned| {
             self.inner.failed.store(true, Ordering::Release);
             drop(poisoned.into_inner());
-            CoreError::OwnerFailed
+            CoreError::new(crate::CoreErrorCause::OwnerFailed)
         })?;
         drop(state);
         if self.inner.failed.load(Ordering::Acquire) {
-            Err(CoreError::OwnerFailed)
+            Err(CoreError::new(crate::CoreErrorCause::OwnerFailed))
         } else {
             Ok(())
         }
@@ -229,59 +235,26 @@ impl SnapshotPins {
         RetiredArc::ptr_eq(&self.inner, &other.inner)
     }
 
+    #[cfg(test)]
+    #[allow(
+        clippy::result_large_err,
+        reason = "The fixture retains the actual opening and cleanup inline until observed disposal."
+    )]
     pub(crate) fn new(
         admission: Arc<dyn StorageAdmission>,
         group_id: [u8; 16],
         max_pins: usize,
-    ) -> Result<Self, CoreError> {
-        admission
-            .check_owner()
-            .map_err(|_| CoreError::OwnerFailed)?;
-        if max_pins == 0 {
-            return Err(CoreError::InvalidInput(
-                "snapshot pin limit must be positive",
-            ));
-        }
-        let charge = backing_charge::<Entry>(
-            max_pins,
-            std::mem::size_of::<RegistryInner>()
-                + std::mem::size_of::<Self>()
-                + ARC_HEADER_BYTES
-                + 2 * ALLOCATION_ALLOWANCE
-                + LEASE_ALLOWANCE,
-        )?;
-        // Admit both fixed owners and the whole slot backing before allocation.
-        let lease = LeaseCharge(Some(admission.reserve_workspace(charge)?));
-        admission
-            .check_owner()
-            .map_err(|_| CoreError::OwnerFailed)?;
-        let mut slots = bounded_vec(max_pins)?;
-        slots.resize(max_pins, Entry::Empty);
-        let registry = Self {
-            inner: RetiredArc::new(RegistryInner {
-                admission,
-                group_id,
-                max_pins,
-                state: Mutex::new(RegistryState {
-                    slots: slots.into_boxed_slice(),
-                    epoch: 0,
-                    serial: 0,
-                }),
-                failed: AtomicBool::new(false),
-                _lease: lease,
-            }),
-        };
-        registry.inner.check()?;
-        Ok(registry)
+    ) -> Result<Self, opening::SnapshotPinsOpeningFailure> {
+        opening::fixture_new(admission, group_id, max_pins)
     }
 
     /// The enclosing owner supplies only its current, published root.
     pub(crate) fn acquire(&self, root: DirectoryRoot) -> Result<SnapshotPin, CoreError> {
         self.inner.check()?;
         if root.group_id != self.inner.group_id {
-            return Err(CoreError::InvalidInput(
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
                 "snapshot root belongs to another group",
-            ));
+            )));
         }
         root.validate()?;
         let lease = self.inner.reserve(Self::pin_backing_request_bytes())?;
@@ -299,7 +272,7 @@ impl SnapshotPins {
             .slots
             .iter()
             .position(Entry::is_empty)
-            .ok_or(CoreError::CapacityDenied)?;
+            .ok_or(CoreError::new(crate::CoreErrorCause::CapacityDenied))?;
         let token = self.inner.next_epoch(&state)?;
         pin.inner
             .identity
@@ -319,9 +292,9 @@ impl SnapshotPins {
     pub(crate) fn validate(&self, pin: &SnapshotPin) -> Result<DirectoryRoot, CoreError> {
         self.inner.check()?;
         if !RetiredArc::ptr_eq(&self.inner, &pin.inner.registry) {
-            return Err(CoreError::InvalidInput(
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
                 "snapshot pin belongs to another owner",
-            ));
+            )));
         }
         let identity = pin.identity();
         let state = self.inner.lock()?;
@@ -333,7 +306,7 @@ impl SnapshotPins {
         drop(state);
         if !valid {
             self.inner.failed.store(true, Ordering::Release);
-            return Err(CoreError::OwnerFailed);
+            return Err(CoreError::new(crate::CoreErrorCause::OwnerFailed));
         }
         self.inner.check()?;
         Ok(pin.root())
@@ -369,9 +342,9 @@ impl SnapshotPins {
     pub(crate) fn validate_capture(&self, capture: &SnapshotRoots) -> Result<(), CoreError> {
         self.inner.check()?;
         if !RetiredArc::ptr_eq(&self.inner, &capture.registry) {
-            return Err(CoreError::InvalidInput(
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
                 "snapshot capture belongs to another owner",
-            ));
+            )));
         }
         let state = self.inner.lock()?;
         let current = state.epoch == capture.epoch;
@@ -380,7 +353,9 @@ impl SnapshotPins {
         if current {
             Ok(())
         } else {
-            Err(CoreError::InvalidInput("snapshot capture is stale"))
+            Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
+                "snapshot capture is stale",
+            )))
         }
     }
 
@@ -396,14 +371,14 @@ impl SnapshotPins {
     ) -> Result<(), CoreError> {
         self.inner.check()?;
         if !RetiredArc::ptr_eq(&self.inner, &capture.registry) {
-            return Err(CoreError::InvalidInput(
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
                 "snapshot capture belongs to another owner",
-            ));
+            )));
         }
         if current.group_id != self.inner.group_id {
-            return Err(CoreError::InvalidInput(
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
                 "current snapshot root belongs to another group",
-            ));
+            )));
         }
         current.validate()?;
         let state = self.inner.lock()?;
@@ -417,9 +392,9 @@ impl SnapshotPins {
         if covered {
             Ok(())
         } else {
-            Err(CoreError::InvalidInput(
+            Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
                 "snapshot capture does not cover active roots",
-            ))
+            )))
         }
     }
 
@@ -442,9 +417,9 @@ impl SnapshotPins {
     ) -> Result<bool, CoreError> {
         self.inner.check()?;
         if current.group_id != self.inner.group_id {
-            return Err(CoreError::InvalidInput(
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
                 "warm baseline belongs to another group",
-            ));
+            )));
         }
         let state = self.inner.lock()?;
         let retired = baseline.iter().flatten().any(|root| {
@@ -470,9 +445,9 @@ impl SnapshotPins {
     ) -> Result<bool, CoreError> {
         self.inner.check()?;
         if baseline.len() < self.inner.max_pins || current.group_id != self.inner.group_id {
-            return Err(CoreError::InvalidInput(
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
                 "warm baseline bounds or owner differ",
-            ));
+            )));
         }
         let state = self.inner.lock()?;
         let retired = baseline.iter().flatten().any(|root| {
@@ -539,11 +514,11 @@ impl SnapshotPin {
 impl RegistryInner {
     fn check(&self) -> Result<(), CoreError> {
         if self.failed.load(Ordering::Acquire) {
-            return Err(CoreError::OwnerFailed);
+            return Err(CoreError::new(crate::CoreErrorCause::OwnerFailed));
         }
         if self.admission.check_owner().is_err() {
             self.failed.store(true, Ordering::Release);
-            return Err(CoreError::OwnerFailed);
+            return Err(CoreError::new(crate::CoreErrorCause::OwnerFailed));
         }
         Ok(())
     }
@@ -553,6 +528,7 @@ impl RegistryInner {
         let result = self
             .admission
             .reserve_workspace(bytes)
+            .map(NativeResidentLease::new)
             .map(|lease| LeaseCharge(Some(lease)));
         if matches!(&result, Err(AdmissionError::OwnerFailed)) {
             self.failed.store(true, Ordering::Release);
@@ -566,10 +542,10 @@ impl RegistryInner {
         let guard = self.state.lock().map_err(|poisoned| {
             self.failed.store(true, Ordering::Release);
             drop(poisoned.into_inner());
-            CoreError::OwnerFailed
+            CoreError::new(crate::CoreErrorCause::OwnerFailed)
         })?;
         if self.failed.load(Ordering::Acquire) {
-            return Err(CoreError::OwnerFailed);
+            return Err(CoreError::new(crate::CoreErrorCause::OwnerFailed));
         }
         Ok(guard)
     }
@@ -577,7 +553,7 @@ impl RegistryInner {
     fn next_epoch(&self, state: &RegistryState) -> Result<u64, CoreError> {
         state.epoch.checked_add(1).ok_or_else(|| {
             self.failed.store(true, Ordering::Release);
-            CoreError::OwnerFailed
+            CoreError::new(crate::CoreErrorCause::OwnerFailed)
         })
     }
 }
@@ -617,17 +593,17 @@ fn backing_charge<T>(count: usize, overhead: usize) -> Result<u64, CoreError> {
         .checked_mul(std::mem::size_of::<T>())
         .and_then(|bytes| bytes.checked_add(overhead))
         .and_then(|bytes| u64::try_from(bytes).ok())
-        .ok_or(CoreError::CapacityDenied)
+        .ok_or(CoreError::new(crate::CoreErrorCause::CapacityDenied))
 }
 
 fn bounded_vec<T>(capacity: usize) -> Result<Vec<T>, CoreError> {
     let mut values = Vec::new();
     values
         .try_reserve_exact(capacity)
-        .map_err(|_| CoreError::CapacityDenied)?;
+        .map_err(|_| CoreError::new(crate::CoreErrorCause::CapacityDenied))?;
     // Do not retain allocator-supplied excess beyond the admitted backing.
     if values.capacity() != capacity {
-        return Err(CoreError::CapacityDenied);
+        return Err(CoreError::new(crate::CoreErrorCause::CapacityDenied));
     }
     Ok(values)
 }
@@ -804,26 +780,22 @@ mod tests {
     #[test]
     fn backing_is_admitted_before_allocation_and_constructor_failures_release_it() {
         let admission = Arc::new(Admission::default());
-        assert!(matches!(
-            SnapshotPins::new(admission.clone(), GROUP_ID, 0),
-            Err(CoreError::InvalidInput(_))
-        ));
-        assert!(matches!(
-            SnapshotPins::new(admission.clone(), GROUP_ID, usize::MAX),
-            Err(CoreError::CapacityDenied)
-        ));
+        assert!(
+            matches!(&(SnapshotPins::new(admission.clone(), GROUP_ID, 0)), Err(native_error) if matches!(native_error.original_error().rejected_cause(), Some(crate::CoreErrorCause::InvalidInput(_))))
+        );
+        assert!(
+            matches!(&(SnapshotPins::new(admission.clone(), GROUP_ID, usize::MAX)), Err(native_error) if matches!(native_error.original_error().rejected_cause(), Some(crate::CoreErrorCause::CapacityDenied)))
+        );
         assert_eq!(admission.reserves.load(Ordering::Acquire), 0);
         admission.limit.store(0, Ordering::Release);
-        assert!(matches!(
-            SnapshotPins::new(admission.clone(), GROUP_ID, 1),
-            Err(CoreError::CapacityDenied)
-        ));
+        assert!(
+            matches!(&(SnapshotPins::new(admission.clone(), GROUP_ID, 1)), Err(native_error) if matches!(native_error.original_error().rejected_cause(), Some(crate::CoreErrorCause::CapacityDenied)))
+        );
         admission.limit.store(u64::MAX, Ordering::Release);
         admission.expire_on_reserve.store(true, Ordering::Release);
-        assert!(matches!(
-            SnapshotPins::new(admission.clone(), GROUP_ID, 1),
-            Err(CoreError::OwnerFailed)
-        ));
+        assert!(
+            matches!(&(SnapshotPins::new(admission.clone(), GROUP_ID, 1)), Err(native_error) if matches!(native_error.original_error().rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+        );
         assert_eq!(admission.used.load(Ordering::Acquire), 0);
     }
 
@@ -841,18 +813,16 @@ mod tests {
         assert_eq!(admission.reserves.load(Ordering::Acquire), reserves);
         assert_eq!(admission.used.load(Ordering::Acquire), retained);
         assert_eq!(pins.epoch().unwrap(), epoch);
-        assert!(matches!(
-            pins.acquire(root(2)),
-            Err(CoreError::CapacityDenied)
-        ));
+        assert!(
+            matches!(&(pins.acquire(root(2))), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::CapacityDenied)))
+        );
         assert_eq!(admission.used.load(Ordering::Acquire), retained);
         drop(pin);
         assert_eq!(pins.validate(&clone).unwrap(), root(1));
         assert_eq!(pins.epoch().unwrap(), epoch);
-        assert!(matches!(
-            pins.acquire(root(2)),
-            Err(CoreError::CapacityDenied)
-        ));
+        assert!(
+            matches!(&(pins.acquire(root(2))), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::CapacityDenied)))
+        );
         drop(clone);
         assert_eq!(admission.used.load(Ordering::Acquire), backing);
         assert_eq!(pins.epoch().unwrap(), epoch + 1);
@@ -866,20 +836,17 @@ mod tests {
         let (_, second) = setup(2);
         let pin = first.acquire(root(1)).unwrap();
         let capture = first.capture().unwrap();
-        assert!(matches!(
-            second.validate(&pin),
-            Err(CoreError::InvalidInput(_))
-        ));
-        assert!(matches!(
-            second.validate_capture(&capture),
-            Err(CoreError::InvalidInput(_))
-        ));
+        assert!(
+            matches!(&(second.validate(&pin)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput(_))))
+        );
+        assert!(
+            matches!(&(second.validate_capture(&capture)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput(_))))
+        );
         let mut foreign = root(1);
         foreign.group_id = [38; 16];
-        assert!(matches!(
-            first.acquire(foreign),
-            Err(CoreError::InvalidInput(_))
-        ));
+        assert!(
+            matches!(&(first.acquire(foreign)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput(_))))
+        );
         assert_eq!(first.validate(&pin).unwrap(), root(1));
         assert_eq!(second.epoch().unwrap(), 0);
     }
@@ -899,17 +866,15 @@ mod tests {
         drop(first);
         pins.validate_capture(&capture).unwrap();
         drop(duplicate);
-        assert!(matches!(
-            pins.validate_capture(&capture),
-            Err(CoreError::InvalidInput(_))
-        ));
+        assert!(
+            matches!(&(pins.validate_capture(&capture)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput(_))))
+        );
         let fresh = pins.capture().unwrap();
         assert_eq!(fresh.roots(), &[root(1), root(2)]);
         let replacement = pins.acquire(root(3)).unwrap();
-        assert!(matches!(
-            pins.validate_capture(&fresh),
-            Err(CoreError::InvalidInput(_))
-        ));
+        assert!(
+            matches!(&(pins.validate_capture(&fresh)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput(_))))
+        );
         drop((clone, other, replacement));
         assert!(pins.capture().unwrap().roots().is_empty());
     }
@@ -930,10 +895,9 @@ mod tests {
             drop((first, duplicate));
             pins.validate_coverage(&capture, root(2)).unwrap();
         }
-        assert!(matches!(
-            pins.validate_capture(&capture),
-            Err(CoreError::InvalidInput("snapshot capture is stale"))
-        ));
+        assert!(
+            matches!(&(pins.validate_capture(&capture)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput("snapshot capture is stale"))))
+        );
         assert_eq!(pins.validate(&historical).unwrap(), root(1));
     }
 
@@ -956,12 +920,11 @@ mod tests {
         let historical = pins.acquire(root(2)).unwrap();
         let capture = pins.capture().unwrap();
         let unscanned = pins.acquire(root(1)).unwrap();
-        assert!(matches!(
-            pins.validate_coverage(&capture, root(3)),
-            Err(CoreError::InvalidInput(
+        assert!(
+            matches!(&(pins.validate_coverage(&capture, root(3))), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput(
                 "snapshot capture does not cover active roots"
-            ))
-        ));
+            ))))
+        );
         drop(unscanned);
         pins.validate_coverage(&capture, root(3)).unwrap();
         assert_eq!(pins.validate(&historical).unwrap(), root(2));
@@ -972,20 +935,18 @@ mod tests {
         let (_, first) = setup(1);
         let (_, second) = setup(1);
         let capture = first.capture().unwrap();
-        assert!(matches!(
-            second.validate_coverage(&capture, root(1)),
-            Err(CoreError::InvalidInput(
+        assert!(
+            matches!(&(second.validate_coverage(&capture, root(1))), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput(
                 "snapshot capture belongs to another owner"
-            ))
-        ));
+            ))))
+        );
         let mut foreign = root(1);
         foreign.group_id = [38; 16];
-        assert!(matches!(
-            first.validate_coverage(&capture, foreign),
-            Err(CoreError::InvalidInput(
+        assert!(
+            matches!(&(first.validate_coverage(&capture, foreign)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput(
                 "current snapshot root belongs to another group"
-            ))
-        ));
+            ))))
+        );
         first.validate_coverage(&capture, root(1)).unwrap();
     }
 
@@ -994,11 +955,12 @@ mod tests {
         let (admission, pins) = setup(2);
         let backing = admission.used.load(Ordering::Acquire);
         admission.limit.store(backing, Ordering::Release);
-        assert!(matches!(
-            pins.acquire(root(1)),
-            Err(CoreError::CapacityDenied)
-        ));
-        assert!(matches!(pins.capture(), Err(CoreError::CapacityDenied)));
+        assert!(
+            matches!(&(pins.acquire(root(1))), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::CapacityDenied)))
+        );
+        assert!(
+            matches!(&(pins.capture()), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::CapacityDenied)))
+        );
         assert_eq!(pins.epoch().unwrap(), 0);
         assert_eq!(admission.used.load(Ordering::Acquire), backing);
         admission.limit.store(u64::MAX, Ordering::Release);
@@ -1060,19 +1022,25 @@ mod tests {
         let pin = pins.acquire(root(1)).unwrap();
         let capture = pins.capture().unwrap();
         admission.expired.store(true, Ordering::Release);
-        assert!(matches!(pins.validate(&pin), Err(CoreError::OwnerFailed)));
+        assert!(
+            matches!(&(pins.validate(&pin)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+        );
         admission.expired.store(false, Ordering::Release);
-        assert!(matches!(pins.acquire(root(2)), Err(CoreError::OwnerFailed)));
-        assert!(matches!(pins.capture(), Err(CoreError::OwnerFailed)));
-        assert!(matches!(
-            pins.validate_capture(&capture),
-            Err(CoreError::OwnerFailed)
-        ));
-        assert!(matches!(
-            pins.validate_coverage(&capture, root(2)),
-            Err(CoreError::OwnerFailed)
-        ));
-        assert!(matches!(pins.epoch(), Err(CoreError::OwnerFailed)));
+        assert!(
+            matches!(&(pins.acquire(root(2))), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+        );
+        assert!(
+            matches!(&(pins.capture()), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+        );
+        assert!(
+            matches!(&(pins.validate_capture(&capture)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+        );
+        assert!(
+            matches!(&(pins.validate_coverage(&capture, root(2))), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+        );
+        assert!(
+            matches!(&(pins.epoch()), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+        );
         drop((capture, pin, pins));
         assert_eq!(admission.used.load(Ordering::Acquire), 0);
         assert_eq!(admission.notifications.load(Ordering::Acquire), 0);
@@ -1088,14 +1056,18 @@ mod tests {
             } else {
                 admission.expire_on_reserve.store(true, Ordering::Release);
             }
-            assert!(matches!(pins.acquire(root(1)), Err(CoreError::OwnerFailed)));
+            assert!(
+                matches!(&(pins.acquire(root(1))), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+            );
             assert_eq!(admission.used.load(Ordering::Acquire), backing);
             let state = pins.inner.state.lock().unwrap();
             assert!(state.slots.iter().all(Entry::is_empty));
             assert_eq!(state.epoch, 0);
             drop(state);
             admission.expired.store(false, Ordering::Release);
-            assert!(matches!(pins.acquire(root(1)), Err(CoreError::OwnerFailed)));
+            assert!(
+                matches!(&(pins.acquire(root(1))), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+            );
             drop(pins);
             assert_eq!(admission.used.load(Ordering::Acquire), 0);
         }
@@ -1111,7 +1083,9 @@ mod tests {
             panic!("poison registry");
         }));
         assert!(result.is_err());
-        assert!(matches!(pins.validate(&pin), Err(CoreError::OwnerFailed)));
+        assert!(
+            matches!(&(pins.validate(&pin)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+        );
         drop(pin);
         assert_eq!(admission.used.load(Ordering::Acquire), backing);
         let state = pins
@@ -1121,7 +1095,9 @@ mod tests {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         assert!(state.slots.iter().all(Entry::is_empty));
         drop(state);
-        assert!(matches!(pins.capture(), Err(CoreError::OwnerFailed)));
+        assert!(
+            matches!(&(pins.capture()), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+        );
         drop(pins);
         assert_eq!(admission.used.load(Ordering::Acquire), 0);
         assert_eq!(admission.notifications.load(Ordering::Acquire), 0);
@@ -1132,7 +1108,9 @@ mod tests {
         let (admission, pins) = setup(1);
         let backing = admission.used.load(Ordering::Acquire);
         pins.inner.state.lock().unwrap().epoch = u64::MAX;
-        assert!(matches!(pins.acquire(root(1)), Err(CoreError::OwnerFailed)));
+        assert!(
+            matches!(&(pins.acquire(root(1))), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+        );
         assert_eq!(admission.used.load(Ordering::Acquire), backing);
         let (_, dropping) = setup(1);
         dropping.inner.state.lock().unwrap().epoch = u64::MAX - 1;
@@ -1140,10 +1118,9 @@ mod tests {
         let capture = dropping.capture().unwrap();
         assert_eq!(capture.epoch(), u64::MAX);
         drop(pin);
-        assert!(matches!(
-            dropping.validate_capture(&capture),
-            Err(CoreError::OwnerFailed)
-        ));
+        assert!(
+            matches!(&(dropping.validate_capture(&capture)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+        );
         let state = dropping.inner.state.lock().unwrap();
         assert_eq!(state.epoch, u64::MAX);
         assert!(state.slots.iter().all(Entry::is_empty));

@@ -1,92 +1,187 @@
 # kasumi-kv
 
-Kasumi's native byte-key transaction log. It uses no embedded database library.
+Kasumi's native Rust key-value engine. It owns its transactional disk format,
+ordered directory, snapshots, cache, recovery, and reclamation. It uses no
+embedded database library.
 
-## Disk format
+## Disk format and commits
 
-Two 4 KiB checksummed commit headers occupy offsets 0 and 4096 of the backend
-payload. The active transaction log normally begins at offset 8192. Every frame
-contains a generation, prior end offset, operation count, bounded payload size,
-and checksums for its header, payload, and individual values. A commit writes
-and synchronizes the whole frame, then writes and synchronizes the alternate
-commit header and mirrors it to the previous slot, synchronizing each header
-before returning success. A failed write or sync fences the live core; the caller
-must reopen the same owned backend to learn the outcome. Recovery selects the
-newest valid header and validates **all** committed frames. A valid newest
-header with corrupt committed data fails closed instead of falling back to old
-state.
+One database is a file group under an owned directory. `root.kvroot` contains
+two checksummed 4 KiB superblock slots. Create-only files use never-reused
+identifiers and deterministic names: `0000000000000001.kvseg` for a value-log
+segment and `0000000000000001.kvdir` for a directory arena. The group contract
+also recognizes checkpoint files; the current Core rejects roots carrying a
+checkpoint reference from the retired storage path.
 
-Compaction writes a complete snapshot of live tables and keys to a shadow
-extent after the active log, synchronizes it, and publishes an alternate header
-pointing to the shadow. Only then does it copy the snapshot into the front
-extent. It synchronizes the front copy, publishes its header, mirrors that
-header to the other slot, then truncates the shadow tail. Reopening a
-published shadow finishes the front relocation.
-Each copy may contain multiple bounded frames, and values move through an
-8 KiB buffer with their checksums verified. A failed physical effect fences
-the live core; reopening selects and verifies the durable header.
+The current root magic is `KASUMI-KVROOT003`, the segment magic is
+`KASUMI-KVSEG0004`, and directory pages use `KASUMI-KVDIR0002` inside
+`KASUMI-KVARENA01` arenas. Segment and arena files each have a 64 MiB bound.
+Segments have a 64-byte header; arenas have a 4 KiB header followed by immutable
+16 KiB directory pages. Page references include their SHA-256 digest. Directory
+leaves hold table markers and ordered keys with value locations, lengths,
+versions, and checksums. Values remain in log segments rather than a resident
+map of the whole database.
 
-The payload is a Kasumi-specific format. It rejects redb files and earlier
-Kasumi payload versions. This first release has no migration path. The
-embedding store owns the surrounding node-file envelope.
+`Core::commit(&[Operation])` applies one batch atomically across named tables.
+The serialized writer performs these durability steps:
 
-## API and admission
+1. Reserve the batch's physical extents, new names, and descriptor rights, and
+   acquire mandatory commit/abort workspace before its first effect.
+2. Append and synchronize the operation records, then build and synchronize
+   the new immutable directory pages.
+3. Append and synchronize a directory preparation record, then a batch commit
+   carrying the directory root, operation digest, and commit chain.
+4. Publish the root to its parity slot and synchronize it, then mirror it to
+   the other slot and synchronize again. Settle the physical reservation
+   before reporting success.
 
-`StorageBackend` supplies exact-offset `len`, `read`, `write`, `set_len`,
-`sync_data`, and explicit `close`. `StorageAdmission` checks the physical owner
-and reserves resident index/workspace and physical growth before allocation or
-I/O. `Core::create_with_backend` creates an empty payload or reopens an existing
-one; strict create/open constructors are also available.
+Operation records may span segments; an individual value never does. Record
+checksums bind their group, physical position, batch, and preceding commit.
+Segment and arena creation first publishes an allocation intent in the root,
+then establishes the file and durable name before confirming it. Identifiers
+are never reused after an uncertain effect.
 
-Direct `Core` and `Builder` constructors explicitly close their backend when
-opening fails. A clean native drain returns the original error. If close fails
-or cannot enter, `CoreError::OpeningFailure` retains the original error, the
-first close report, and any backend whose drain is unproved. Its `retry_close`
-method retries only a close that never entered. Callers must keep the failure
-report when native drain remains unproved. A callback panic remains inspectable
-as `CorePanic`; a panic during close is recorded with the failed opening and
-does not trigger a second close attempt.
+## Recovery and failure outcomes
 
-The production API accepts an already owned `StorageBackend`; it does not
-create a named file, adopt a raw descriptor, or authenticate a filesystem
-namespace. The embedding owner must establish the exact installed file and
-directory binding, private single-link regular-file type, parent durability,
-and explicit close custody before passing its backend to KV. The store's
-`NodeFile` supplies that production boundary. Native KV keeps a private
-file-backed fixture for exercising its close and failure reports; that fixture
-does not provide a production constructor or namespace-ownership claim.
+Opening synchronizes and selects the newest intact root, checks the expected
+group incarnation, and repairs an incomplete mirror. It checks the directory
+census, resolves allocation intents, validates the root's exact log commit,
+and replays any later complete batches. An interrupted uncommitted tail is
+discarded only after the replay rules prove it cannot contain a committed
+batch. Recovery adopts disk roots without reconstructing every key in memory.
 
-`Core::commit(&[Operation])` publishes one atomic batch across named ordered
-tables. `Core::snapshot()` pins a generation. `get_admitted`, `next_admitted`,
-and `ReadSnapshot::next_key_admitted` return owned bytes with resident leases.
-The index stores only keys, generations, value offsets, lengths, and checksums;
-value bytes stay on the backend. One mutex serializes commits and backend I/O.
-Old index versions remain while a snapshot may need them, then are pruned.
-Resident index nodes consume byte credits from admitted 64 KiB chunks, which
-keeps the physical owner's reservation count bounded as the key count grows.
-Unused chunks return to admission when their credits are no longer needed.
-`Core::compact()` requests reclamation when no snapshots are active. Before a
-new commit, the core also checks for reclamation after at least 1 MiB of new
-log bytes; it compacts when the active log is at least twice the live snapshot
-size. This work happens before the user commit starts, so a maintenance error
-cannot change an already published commit result.
+The selected root's initial directory path is checked before opening returns.
+Each later descent verifies page digests, and value reads verify their
+checksums before returning bytes. Opening is not a full scan of every live
+page and value. Detected corruption, uncertain I/O, admission owner failure,
+and callback panics fence the exact live Core, including its existing
+snapshots. Reopen must determine an uncertain commit's outcome; callers cannot
+infer rollback from an error. `CapacityDenied` remains retryable only when no
+batch was published and any private log effects were proved aborted.
 
-The tenant API's plaintext value limit is 32 MiB. The physical core accepts up
-to 40 MiB per value and 96 MiB per frame to fit encrypted envelopes and batch
-metadata. The table facade supplies byte-table transactions and ordered range
-iteration. The retained facade records one-shot opening, terminal, and close
-outcomes for physical ownership.
+The first release has no migration or fallback reader. It rejects the former
+single-file payload, earlier segmented formats, and retired root layouts.
+The store's `NodeSegmentGroup` surrounds each native file with the
+`KASUMI-NODE-SEG1` envelope and rejects the older single-file node layout.
 
-## Current limits
+## Ownership and admission
 
-The shadow copy requires temporary physical headroom equal to the live
-snapshot size. Disk admission may deny compaction near quota; a denial leaves
-the original committed log readable, and later writes remain subject to their
-own growth admission. Long-lived snapshots defer reclamation. The embedding
-node owner is responsible for exclusive file ownership, envelope identity,
-and its durability assumptions. The format and maintenance path still require
-broader capacity, soak, and performance qualification before a production
-release.
+Native synchronization admission follows Rust 1.97.1's reviewed pthread and
+inline futex implementations. On pthread Unix targets, the constructor grant
+includes each mutex and condition variable's platform backing and allocation
+allowance, and initializes it before concurrent aliases escape. These controls
+retire before their original grant is refunded. Normal macOS, Linux, and Windows
+targets are covered; unreviewed synchronization backends fail compilation rather
+than receiving a zero backing quote. This is a platform boundary, not a claim
+that every Rust target is supported.
 
-Run `cargo test -p kasumi-kv --locked` and
-`cargo clippy -p kasumi-kv --all-targets --locked -- -D warnings`.
+The production constructors accept an already owned `SegmentGroupBackend`,
+`StorageAdmission`, explicit group incarnation, and `CacheConfig`.
+`Core::create_with_backend` strictly initializes an empty group;
+`Core::open_with_backend` strictly opens an existing one. KV does not establish
+filesystem namespace ownership itself. The embedding owner supplies exact
+installed directory/file identities, private regular files, parent durability,
+growth admission, and observed descriptor close. Kasumi Store supplies that
+boundary through `NodeSegmentGroup` and `NodeDisk`; record encryption belongs
+to the embedding store.
+
+`StorageAdmission` charges resident workspace, outputs, and optional cache
+credit. `SegmentGroupBackend::reserve_transaction` owns the complete physical
+promise for a foreground batch; `finish_transaction` settles consumed rights,
+and `cancel_transaction` is permitted only for an untouched reservation.
+Successful create and unlink include parent directory synchronization.
+
+Direct Core and Builder constructors return `NativeOpenFailure<B>` inline.
+`Body` retains the original `CoreError`; `Cleanup` retains a successful body
+result and its separate cleanup failure. The original sized backend remains
+inline until one combined shell grant admits its body and authoritative cell.
+First and retry close outcomes remain distinct; only an actual `NotEntered`
+outcome permits another close attempt. Owning failures do not implement
+`std::error::Error`, so they cannot silently enter an allocating error wrapper.
+
+Native close and owned-resource disposal are separate observations. After
+native drain, `Core::into_disposal` and `Database::into_disposal` retain the exact
+owners until explicit `dispose` confirms actual controls, body, and original
+grants retired. The retained opening and database report ordinary `Disposed`
+or `FailedDisposed` only after that positive boundary. Their observations
+preserve original errors and panic payloads without replaying native effects.
+Returned value guards retain their memory charge until final drop.
+
+`CoreError` records a commit disposition alongside its original inline cause.
+Callers borrow the cause with `cause`, `io_error`, or `panic`; an unknown commit
+keeps the same original I/O error or panic payload and cannot qualify as a clean
+capacity refusal. Error source traversal borrows these original owners.
+
+## Snapshots and cache
+
+`Core::snapshot()` pins an immutable directory root. Later overwrites,
+deletions, table creation, and compaction preserve that snapshot's ordered
+view. Pins belong to the exact Core owner, even when group IDs match. The
+bounded registry has 256 slots; cloning a snapshot shares its slot and adds
+no allocation. Protected source rights also use registry capacity.
+
+The table facade provides typed byte-table transactions, ordered ranges,
+admitted value guards, and prepared reads into caller-owned workspace. It
+serializes writers and stages a bounded batch before the durable Core commit.
+A staging capacity denial rolls back the whole staged writer and releases its
+gate; uncertain ownership retains the transaction for terminal custody.
+
+`CacheConfig::byte_limit` bounds retained value and directory-page allocations,
+including metadata and evicted payloads still held by readers. Zero disables
+retention. Reads above the bound use disk and separately admitted request
+buffers. The cache verifies complete physical identities and does not replace
+snapshot or owner checks. Fitting writes are retained, while bounded warm-up
+passes can populate current and pinned roots after reopen. Warm-up reports
+whether it completed and whether the live set is fully resident.
+
+## Maintenance and limits
+
+Compaction incrementally rotates the appenders, relocates old live values,
+packs sparse directory pages, and proves file reachability across current and
+pinned roots. Only a complete, still-current proof can publish garbage. Each
+unlink requires the selected mirrored root and confirmed parent synchronization
+before its garbage record and disk charge are released. Recovery rechecks
+recorded garbage before finishing an interrupted reclaim operation.
+
+The table facade advances bounded maintenance before a new write after at
+least 1 MiB of append growth. `Core::compact()` synchronously finishes a cycle
+using bounded steps, so its total duration can scale with the dataset. Old
+snapshots retain reachable files; compaction can proceed while they remain
+open. Temporary copies and retained generations still require admitted disk
+headroom. Provider pressure can return a retryable capacity denial.
+
+| Native Core bound | Limit |
+| --- | --- |
+| Table name | 1 KiB, nonempty |
+| Key | 4 KiB |
+| Value | 40 MiB |
+| Table/key/value bytes in one batch | 96 MiB |
+| Operations in one batch | 65,536 |
+| Log segment / directory arena | 64 MiB each |
+| Directory page | 16 KiB |
+
+The encrypted tenant record limit is 32 MiB; the larger physical value bound
+allows its envelope. Maintenance work counts are not wall-clock bounds: one
+oversized value can require copying up to the native value limit in a step.
+Capacity, recovery duration, sustained overwrite performance, and soak
+qualification remain part of the broader production release gates.
+
+## Verification
+
+The native tests exercise whole-generation recovery at each injected commit
+effect, torn durable writes, owner callback panics, cache visibility after
+failed publication, multi-table snapshots and ordered iteration, capacity
+rollback, and close custody. Compaction and reclamation tests inject failures
+at relocation, publication, unlink, and garbage-forget boundaries, including
+held snapshots and values larger than maintenance workspace. Allocation tests
+check cache and transaction accounting, and restart tests check that opening
+above admitted memory does not rebuild a resident key map.
+
+Run the focused native checks:
+
+```sh
+cargo test -p kasumi-kv --locked
+cargo clippy -p kasumi-kv --all-targets --locked -- -D warnings
+```
+
+The complete repository gate is in [CONTRIBUTING.md](../../CONTRIBUTING.md).

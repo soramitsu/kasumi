@@ -56,7 +56,8 @@ Apache-2.0 license is retained.
 
 ## OpenRaft 0.9.25
 
-The complete 600-file workspace is retained; Cargo selects `openraft` from its
+The complete workspace is retained; the current development inventory contains
+605 files. Cargo selects `openraft` from its
 `openraft/` package and `openraft-macros` from the sibling `macros/` package.
 The fork retains actual runtime children, incoming snapshot owners and original
 shutdown failures across cancellation, and exposes the membership observer used
@@ -77,17 +78,29 @@ initialization. Its source archive and focused library/API evidence are retained
 in the archived atomic-entry lane; see the
 [evidence retention policy](../docs/evidence/README.md).
 The old custody inventory above does not qualify these new bytes. The
-[current dependency checkpoint](reviews/openraft-0.9.25/custody-checkpoint.json)
-records the exact four-file change and deliberately advances the 600-file source
+[dependency checkpoint](reviews/openraft-0.9.25/custody-checkpoint.json)
+retains that historical four-file change and its 600-file source
 inventory, retained as a required verification input in
 [the reviewed source inventory](reviews/openraft-0.9.25/source-inventory.json).
 These two small inputs are inventoried in `patch-manifest.json` and remain in Git
-because the dependency verifier reads them. The checkpoint records the archived
-predecessor and explicitly remains a
-development dependency checkpoint. Its recorded 296 upstream cases and scoped
-Kasumi cases do not replace the remaining frozen upstream, platform, fault or
-integrated release gates. No release qualification is asserted by this source
-inventory update.
+because the dependency verifier reads them. The checkpoint keeps the archived
+predecessor's 296 upstream cases and scoped Kasumi cases under
+`historical_checkpoint`; they do not validate the current development sources.
+
+The current development delta includes bounded committed application, exact
+retained apply/snapshot handoffs, and a separate graceful shutdown used by the
+Kasumi serving Raft group. Immediate OpenRaft shutdown preserves its original
+stop and failure behavior. Graceful shutdown closes actor and snapshot-offer
+admission, freezes new protocol transitions, and drains actual accepted work
+through a terminal worker boundary covering the coalesced pending range.
+Cancelling a shutdown waiter leaves the chosen policy and original task owners
+installed; failures are retained by the same shutdown census.
+
+The current source inventory records exact bytes and permissions, with focused
+review and new tests explicitly pending in the checkpoint. Refreshing these
+hashes does not establish independent complete source review, upstream
+conformance, platform, fault or integrated release acceptance. No release
+qualification is asserted.
 
 ## Verification
 

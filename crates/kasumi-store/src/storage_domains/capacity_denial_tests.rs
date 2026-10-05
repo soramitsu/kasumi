@@ -59,7 +59,7 @@ struct Installed {
     memory: Arc<TestDiskMemory>,
     disk: Arc<NodeDisk>,
     scratch: Arc<ScratchDisk>,
-    node: Arc<NodeStore>,
+    node: NodeStore,
 }
 impl Installed {
     fn new() -> Result<Self> {
@@ -75,7 +75,8 @@ impl Installed {
             disk.clone(),
             scratch.clone(),
             crate::test_utils::node_storage_config(),
-        )?;
+        )
+        .unwrap_or_else(|original| std::panic::panic_any(original));
         Ok(Self {
             directory,
             scratch_directory,
@@ -97,7 +98,8 @@ impl Installed {
             self.disk.clone(),
             self.scratch.clone(),
             crate::test_utils::node_storage_config(),
-        )?;
+        )
+        .unwrap_or_else(|original| std::panic::panic_any(original));
         Ok(())
     }
 
@@ -121,7 +123,7 @@ fn custody_provider() -> Arc<dyn KeyProvider> {
     Arc::new(LocalKeyProvider::new([32; 32]))
 }
 
-async fn singleton(node: &Arc<NodeStore>) -> Result<Arc<TenantStore>> {
+async fn singleton(node: &NodeStore) -> Result<Arc<TenantStore>> {
     TenantStore::initialize_catalog_fixture_with_clock(
         node.clone(),
         "tenant".into(),
@@ -132,7 +134,7 @@ async fn singleton(node: &Arc<NodeStore>) -> Result<Arc<TenantStore>> {
 }
 
 async fn reopen(
-    node: &Arc<NodeStore>,
+    node: &NodeStore,
     tenant: String,
     provider: Arc<dyn KeyProvider>,
 ) -> Result<Arc<TenantStore>> {
@@ -145,7 +147,7 @@ async fn reopen(
     .await
 }
 
-async fn catalogs(node: &Arc<NodeStore>) -> Result<(Arc<TenantStore>, Arc<TenantStore>)> {
+async fn catalogs(node: &NodeStore) -> Result<(Arc<TenantStore>, Arc<TenantStore>)> {
     let app = TenantStore::initialize_catalog_fixture_with_clock(
         node.clone(),
         "tenant".into(),
@@ -283,7 +285,10 @@ async fn save_catalog_commit_denial_retires_its_child_and_retries_after_space_is
     fixture.restart().await?;
     let store = reopen(&fixture.node, "tenant".into(), app_provider()).await?;
     assert!(*store.catalog.read() == rotated);
-    assert_eq!(store.get("docs", b"key")?, Some(b"value".to_vec()));
+    assert_eq!(
+        store.get("docs", b"key")?.as_deref(),
+        Some(b"value".as_slice())
+    );
     store.shutdown().await?;
     fixture.node.shutdown().await?;
     assert_eq!(fixture.memory.storage_census().snapshot().databases, 0);
@@ -438,7 +443,8 @@ fn create_mode_table_denial_releases_the_reservation_and_requeues() -> Result<()
         disk.clone(),
         NodeOpeningMode::Create,
         crate::test_utils::node_storage_config(),
-    )?;
+    )
+    .unwrap_or_else(|original| std::panic::panic_any(original));
     assert_eq!(opening.open(), NodeOpeningPhase::Open);
 
     let filler = fill_disk(&disk);
@@ -498,7 +504,8 @@ fn create_mode_table_denial_releases_the_reservation_and_requeues() -> Result<()
         disk,
         NodeOpeningMode::Existing,
         crate::test_utils::node_storage_config(),
-    )?;
+    )
+    .unwrap_or_else(|original| std::panic::panic_any(original));
     assert_eq!(opening.open(), NodeOpeningPhase::Open);
     {
         let read = opening.begin_store_read()?;
@@ -522,7 +529,8 @@ fn owner_failure_during_table_creation_keeps_the_create_reservation() -> Result<
         disk.clone(),
         NodeOpeningMode::Create,
         crate::test_utils::node_storage_config(),
-    )?;
+    )
+    .unwrap_or_else(|original| std::panic::panic_any(original));
     assert_eq!(opening.open(), NodeOpeningPhase::Open);
     let _filler = fill_disk(&disk);
     disk.fail();
@@ -569,7 +577,7 @@ async fn owner_failure_at_binding_commit_is_fenced_and_never_reported_as_capacit
     let fixture = Installed::new()?;
     let (app, custody) = catalogs(&fixture.node).await?;
     let _filler = fill_disk(&fixture.disk);
-    let writer = fixture.node.db.queue_registered_binding_put(
+    let writer = fixture.node.body().db.queue_registered_binding_put(
         binding_plan(&app, &custody, fixture.memory.clone())?,
         app.clone(),
         custody.clone(),

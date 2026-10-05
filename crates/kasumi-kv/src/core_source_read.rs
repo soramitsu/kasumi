@@ -14,7 +14,7 @@ impl ReadSnapshot {
 }
 
 pub(crate) struct SourceReadContext {
-    shared: Arc<Shared>,
+    shared: NativeOwnedArc<Shared>,
     pub(crate) pins: SnapshotPins,
 }
 impl Core {
@@ -26,7 +26,14 @@ impl Core {
     pub(crate) fn source_probe_for_test(&self) -> Box<dyn Fn() -> bool + Send + Sync> {
         let context = self.source_context().expect("test source context");
         Box::new(move || {
-            context.shared.state.try_lock().is_ok() && context.pins.source_lock_available_for_test()
+            context
+                .shared
+                .state
+                .as_ref()
+                .expect("live native state")
+                .try_lock()
+                .is_ok()
+                && context.pins.source_lock_available_for_test()
         })
     }
     pub(crate) fn source_context(&self) -> Result<SourceReadContext, CoreError> {
@@ -43,28 +50,33 @@ impl Core {
         Ok(context)
     }
     fn source_lock(&self) -> Result<MutexGuard<'_, State>, CoreError> {
-        self.shared.state.lock().map_err(|poisoned| {
-            drop(poisoned.into_inner());
-            // Fence notification is deliberately deferred to the retained owner.
-            CoreError::OwnerFailed
-        })
+        self.shared
+            .state
+            .as_ref()
+            .expect("live native state")
+            .lock()
+            .map_err(|poisoned| {
+                drop(poisoned.into_inner());
+                // Fence notification is deliberately deferred to the retained owner.
+                CoreError::new(crate::CoreErrorCause::OwnerFailed)
+            })
     }
 }
 fn check_local(shared: &Shared, state: &State) -> Result<(), CoreError> {
     if shared.fenced.load(Ordering::Acquire) {
-        return Err(CoreError::OwnerFailed);
+        return Err(CoreError::new(crate::CoreErrorCause::OwnerFailed));
     }
     if state.closed || shared.stopped.load(Ordering::Acquire) {
-        return Err(CoreError::Closed);
+        return Err(CoreError::new(crate::CoreErrorCause::Closed));
     }
     Ok(())
 }
 impl SourceReadContext {
     pub(crate) fn same_owner(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.shared, &other.shared)
+        NativeOwnedArc::ptr_eq(&self.shared, &other.shared)
     }
     pub(crate) fn admission(&self) -> Arc<dyn StorageAdmission> {
-        self.shared.admission.clone()
+        Arc::clone(&self.shared.admission)
     }
     pub(crate) fn check(&self) -> Result<(), CoreError> {
         self.check_local()?;
@@ -72,20 +84,25 @@ impl SourceReadContext {
     }
     pub(crate) fn check_local(&self) -> Result<(), CoreError> {
         if self.shared.fenced.load(Ordering::Acquire) {
-            return Err(CoreError::OwnerFailed);
+            return Err(CoreError::new(crate::CoreErrorCause::OwnerFailed));
         }
         if self.shared.stopped.load(Ordering::Acquire) {
-            return Err(CoreError::Closed);
+            return Err(CoreError::new(crate::CoreErrorCause::Closed));
         }
         Ok(())
     }
     pub(crate) fn reserve_into(
         &self,
-        target: &mut Option<Box<dyn ResidentLease>>,
+        target: &mut Option<NativeResidentLease>,
         bytes: u64,
     ) -> Result<(), CoreError> {
         self.check()?;
-        *target = Some(self.shared.admission.reserve_workspace(bytes)?);
+        *target = Some(
+            self.shared
+                .admission
+                .reserve_workspace(bytes)
+                .map(NativeResidentLease::new)?,
+        );
         self.check()
     }
     pub(crate) fn capture_into(
@@ -94,25 +111,33 @@ impl SourceReadContext {
         target: &OnceLock<ReadSnapshot>,
     ) -> Result<(), CoreError> {
         if target.get().is_some() {
-            return Err(CoreError::InvalidInput(
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
                 "source snapshot already initialized",
-            ));
+            )));
         }
-        let mut state = self.shared.state.lock().map_err(|poisoned| {
-            drop(poisoned.into_inner());
-            CoreError::OwnerFailed
-        })?;
+        let mut state = self
+            .shared
+            .state
+            .as_ref()
+            .expect("live native state")
+            .lock()
+            .map_err(|poisoned| {
+                drop(poisoned.into_inner());
+                CoreError::new(crate::CoreErrorCause::OwnerFailed)
+            })?;
         check_local(&self.shared, &state)?;
         let disk = state.disk()?;
         if !self.pins.same_owner(&disk.source_pins()) {
-            return Err(CoreError::InvalidInput("source registry changed"));
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
+                "source registry changed",
+            )));
         }
         // Check counter room before installing; acquisitions are serialized by
         // this gate. Ordinary snapshot clones can race, hence use checked CAS.
         self.shared
             .snapshots
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| n.checked_add(1))
-            .map_err(|_| CoreError::CapacityDenied)?;
+            .map_err(|_| CoreError::new(crate::CoreErrorCause::CapacityDenied))?;
         let pin = match disk.install_source_pin(prepared) {
             Ok(pin) => pin,
             Err(error) => {

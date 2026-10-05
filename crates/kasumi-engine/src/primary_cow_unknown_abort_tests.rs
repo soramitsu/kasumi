@@ -255,7 +255,7 @@ fn require_delete(write: &WriteOp, namespace: &str, expected_key: &[u8]) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn primary_cow_unknown_abort_reopens_complete_progress_resource_and_settlement_batches()
--> Result<()> {
+-> crate::test_fixture_failure::FixtureResult<()> {
     for boundary in [
         Boundary::ChunkProgress,
         Boundary::ResourceRemoval,
@@ -367,10 +367,7 @@ async fn primary_cow_unknown_abort_reopens_complete_progress_resource_and_settle
             )
             .unwrap_err();
         assert!(
-            retry.chain().any(|cause| matches!(
-                cause.downcast_ref::<kasumi_kv::CoreError>(),
-                Some(kasumi_kv::CoreError::OwnerFailed)
-            )),
+            retry.chain().any(|cause| matches!(&(cause.downcast_ref::<kasumi_kv::CoreError>()), Some(native_error) if matches!(native_error.rejected_cause(), Some(kasumi_kv::CoreErrorCause::OwnerFailed)))),
             "fenced abort retry lost owner failure: {retry:#}"
         );
         drop(retry);

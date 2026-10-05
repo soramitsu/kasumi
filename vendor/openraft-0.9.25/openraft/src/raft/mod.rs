@@ -555,10 +555,15 @@ where
             }
         };
         let (tx, rx) = C::AsyncRuntime::oneshot();
-        self.inner.pending_snapshot.offer(
+        if let Err(unadmitted) = self.inner.pending_snapshot.offer(
             crate::core::sm::pending_snapshot::IncomingSnapshot { vote, snapshot, tx },
             permit,
-        );
+        ) {
+            // The actor never acquired this owner. Its original data is still
+            // disposed in this caller; an earlier accepted offer stays retained.
+            drop(unadmitted);
+            return Err(Fatal::Stopped);
+        }
         let res = self.inner.call_core(RaftMsg::InstallFullSnapshot, rx).await;
         match res {
             Ok(x) => Ok(x),
@@ -1010,11 +1015,29 @@ where
     /// preserves the same errors. Application/network/storage implementations may
     /// own additional resources; this is not an all-resources census.
     pub async fn shutdown(&self) -> Result<(), ShutdownError<C::NodeId, <C::AsyncRuntime as AsyncRuntime>::JoinError>> {
+        self.shutdown_with_mode(crate::core::ShutdownMode::Immediate).await
+    }
+
+    /// Close actor ingress, finish already committed application and received
+    /// snapshot handoffs, then join the same retained runtime owners as shutdown.
+    /// No new protocol notifications advance the committed horizon during drain.
+    /// Cancelling this waiter leaves the drain policy in the running core. The
+    /// first shutdown signal, immediate or graceful, owns the policy on retry.
+    pub async fn shutdown_gracefully(
+        &self,
+    ) -> Result<(), ShutdownError<C::NodeId, <C::AsyncRuntime as AsyncRuntime>::JoinError>> {
+        self.shutdown_with_mode(crate::core::ShutdownMode::Graceful).await
+    }
+
+    async fn shutdown_with_mode(
+        &self,
+        mode: crate::core::ShutdownMode,
+    ) -> Result<(), ShutdownError<C::NodeId, <C::AsyncRuntime as AsyncRuntime>::JoinError>> {
         if let Some(tx) = self.inner.tx_shutdown.lock().await.take() {
             // A failure to send means the RaftCore is already shutdown. Continue to check the task
             // return value.
-            let send_res = tx.send(());
-            tracing::info!("sending shutdown signal to RaftCore, sending res: {:?}", send_res);
+            let failed = tx.send(mode).is_err();
+            tracing::info!(failed, "sending shutdown signal to RaftCore");
         }
         self.inner.tick_handle.stop();
         let outcome = self.inner.join_core_task().await;

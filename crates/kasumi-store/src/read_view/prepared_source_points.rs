@@ -47,7 +47,7 @@ impl PreparedTenantReadWorkspace {
                 }
             };
             session.workspace.require_memory(&reader.provider())?;
-            store.node.db.require_registered_read(reader)?;
+            store.node.body().db.require_registered_read(reader)?;
             session
                 .workspace
                 .backing
@@ -123,12 +123,9 @@ impl TenantStore {
         let _access = AccessGuard(self);
         self.check_access()?;
         ensure!(
-            Arc::ptr_eq(
-                self.persistent_disk().memory(),
-                self.scratch_disk().memory()
-            ),
+            Arc::ptr_eq(self.node.memory(), self.scratch_disk().memory()),
             "source capacity domain uses different providers"
         );
-        Ok(self.node.db.queue_source_capacity()?)
+        Ok(self.node.body().db.queue_source_capacity()?)
     }
 }

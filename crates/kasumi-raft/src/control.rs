@@ -114,18 +114,33 @@ impl TargetFirstMembershipPrebind {
     pub fn validate_prebind_storage(&self, stores: &TenantStorageSet) -> Result<()> {
         self.validate_storage(stores)?;
         let store = stores.custody().store();
-        ensure!(
-            store.scan(META)?
-                == vec![
-                    (
-                        b"application_bootstrap_sha256".to_vec(),
-                        serde_json::to_vec(&self.bootstrap_sha256)?,
-                    ),
-                    (b"group".to_vec(), serde_json::to_vec(&self.group)?),
-                    (b"node_id".to_vec(), serde_json::to_vec(&self.node.node_id)?),
-                ],
-            "target Raft metadata is not a pristine materialized identity"
-        );
+        {
+            let metadata = store.scan(META)?;
+            // The tenant name is bounded to 256 bytes; the group adds '/' and
+            // a UUID. Preserve exact JSON spelling, including escaped names,
+            // while borrowing the admitted row and using only inline workspace.
+            let mut text_json = [0u8; 6 * (256 + 1 + 36) + 2];
+            let mut quoted = |bytes: &[u8], expected: &str| -> Result<bool> {
+                let mut cursor = std::io::Cursor::new(text_json.as_mut_slice());
+                serde_json::to_writer(&mut cursor, expected)?;
+                let len = usize::try_from(cursor.position())?;
+                Ok(bytes == &text_json[..len])
+            };
+            let mut node_json = [0u8; 20];
+            let mut cursor = std::io::Cursor::new(node_json.as_mut_slice());
+            serde_json::to_writer(&mut cursor, &self.node.node_id)?;
+            let node_len = usize::try_from(cursor.position())?;
+            ensure!(
+                metadata.len() == 3
+                    && metadata[0].key() == b"application_bootstrap_sha256"
+                    && quoted(metadata[0].value(), &self.bootstrap_sha256)?
+                    && metadata[1].key() == b"group"
+                    && quoted(metadata[1].value(), &self.group)?
+                    && metadata[2].key() == b"node_id"
+                    && metadata[2].value() == &node_json[..node_len],
+                "target Raft metadata is not a pristine materialized identity"
+            );
+        }
         for namespace in [
             HEADERS,
             SEEDS,
@@ -241,60 +256,66 @@ impl TargetFirstMembershipHistory {
 pub fn read_target_first_membership_history(
     stores: &TenantStorageSet,
     expected: &TargetFirstMembershipPrebind,
-) -> Result<TargetFirstMembershipHistory> {
+) -> std::result::Result<TargetFirstMembershipHistory, kasumi_store::ScratchOperationFailure> {
     let control_gate = crate::storage::control_gate(stores.custody())?;
     let _control = control_gate
         .lock()
         .map_err(|_| anyhow::anyhow!("target history control gate poisoned"))?;
-    read_target_first_membership_prebind(stores, expected)?;
-    let custody = stores.custody();
-    let store = custody.store();
-    let first =
-        first_applied_membership(store)?.context("target first applied membership absent")?;
-    local_first_association_write(custody, Some(&first), None)?;
-    crate::initialization_association::load_state(custody, Some(&first))?;
-    if let Some(active) =
-        load::<LogHeader>(store, HEADERS, &first.header.log_id.index.to_be_bytes())?
-    {
-        ensure!(
-            active == first.header,
-            "target first membership active header differs"
-        );
-    } else {
-        let purged: Option<LogId<u64>> = load(store, META, b"purged")?;
-        let snapshot = crate::storage::load_snapshot_coverage(store)?;
-        ensure!(
-            purged.is_some_and(|id| id.index >= first.header.log_id.index)
-                || snapshot
-                    .as_ref()
-                    .and_then(|coverage| coverage.meta.last_log_id)
-                    .is_some_and(|id| id >= first.header.log_id),
-            "target first membership lacks purged or snapshot log coverage"
-        );
-    }
-    let applied =
-        load::<AppliedCursor>(store, META, b"applied")?.context("target applied cursor absent")?;
-    let applied_log_id = applied
-        .log_id()
-        .context("target applied cursor lacks log coverage")?;
-    let latest = match &applied {
-        AppliedCursor::Entry(position) => &position.membership,
-        AppliedCursor::Snapshot { meta, .. } => &meta.last_membership,
-    };
-    first.validate_covered(Some(applied_log_id), latest)?;
-    let committed_log_id =
-        committed_coverage(store)?.context("target committed coverage absent")?;
-    ensure!(
-        committed_log_id >= applied_log_id,
-        "target applied cursor exceeds committed coverage"
-    );
+    let (first, applied, applied_log_id, committed_log_id) =
+        kasumi_store::ScratchOperationFailure::ordinary(|| {
+            read_target_first_membership_prebind(stores, expected)?;
+            let custody = stores.custody();
+            let store = custody.store();
+            let first = first_applied_membership(store)?
+                .context("target first applied membership absent")?;
+            local_first_association_write(custody, Some(&first), None)?;
+            crate::initialization_association::load_state(custody, Some(&first))?;
+            if let Some(active) =
+                load::<LogHeader>(store, HEADERS, &first.header.log_id.index.to_be_bytes())?
+            {
+                ensure!(
+                    active == first.header,
+                    "target first membership active header differs"
+                );
+            } else {
+                let purged: Option<LogId<u64>> = load(store, META, b"purged")?;
+                let snapshot = crate::storage::load_snapshot_coverage(store)?;
+                ensure!(
+                    purged.is_some_and(|id| id.index >= first.header.log_id.index)
+                        || snapshot
+                            .as_ref()
+                            .and_then(|coverage| coverage.meta.last_log_id)
+                            .is_some_and(|id| id >= first.header.log_id),
+                    "target first membership lacks purged or snapshot log coverage"
+                );
+            }
+            let applied = load::<AppliedCursor>(store, META, b"applied")?
+                .context("target applied cursor absent")?;
+            let applied_log_id = applied
+                .log_id()
+                .context("target applied cursor lacks log coverage")?;
+            let latest = match &applied {
+                AppliedCursor::Entry(position) => &position.membership,
+                AppliedCursor::Snapshot { meta, .. } => &meta.last_membership,
+            };
+            first.validate_covered(Some(applied_log_id), latest)?;
+            let committed_log_id =
+                committed_coverage(store)?.context("target committed coverage absent")?;
+            ensure!(
+                committed_log_id >= applied_log_id,
+                "target applied cursor exceeds committed coverage"
+            );
+            Ok((first, applied, applied_log_id, committed_log_id))
+        })?;
     crate::storage::validate_target_history_snapshot(stores, &first, &applied)?;
-    stores.check_access()?;
-    Ok(TargetFirstMembershipHistory {
-        first_fact_sha256: sha256(&serde_json::to_vec(&first)?),
-        first_log_id: first.header.log_id,
-        applied_log_id,
-        committed_log_id,
+    kasumi_store::ScratchOperationFailure::ordinary(|| {
+        stores.check_access()?;
+        Ok(TargetFirstMembershipHistory {
+            first_fact_sha256: sha256(&serde_json::to_vec(&first)?),
+            first_log_id: first.header.log_id,
+            applied_log_id,
+            committed_log_id,
+        })
     })
 }
 
@@ -809,7 +830,7 @@ impl ControlLog {
     /// Completes only an independently committed, deterministically successful
     /// retirement seed. This is installed startup recovery, never current Admin
     /// authorization or proof release. No application record is read.
-    pub fn recover_retired(&self) -> Result<bool> {
+    pub fn recover_retired(&self) -> Result<bool, kasumi_store::ScratchOperationFailure> {
         let gate = crate::storage::control_gate(&self.custody)?;
         let _gate = gate
             .lock()
@@ -866,7 +887,7 @@ impl ControlLog {
             return Ok(false);
         };
         let old = load::<AppliedCursor>(store, META, b"applied")?;
-        ensure!(
+        crate::ensure_result!(
             old.as_ref()
                 .and_then(AppliedCursor::log_id)
                 .is_none_or(|id| id.index < committed.log_id.index),
@@ -918,7 +939,7 @@ impl ControlLog {
             }
             Ok(())
         })?;
-        ensure!(
+        crate::ensure_result!(
             previous.is_some_and(|id| id.index.checked_add(1) == Some(committed.log_id.index))
                 && membership.membership().voter_ids().next().is_some(),
             "committed retirement predecessor or membership unavailable"
@@ -946,10 +967,13 @@ impl ControlLog {
                 receipt: boundary.receipt.clone(),
             },
             kasumi_types::CustodyLimits::default(),
-        )?;
+        )
+        .map_err(anyhow::Error::from)?;
         store.write_batch(&[
             WriteOp::put(META, b"retired_boundary", serde_json::to_vec(&boundary)?),
-            crate::custody_tables::CustodyHead::from_state(&state)?.write()?,
+            crate::custody_tables::CustodyHead::from_state(&state)
+                .map_err(anyhow::Error::from)?
+                .write()?,
             WriteOp::put(
                 META,
                 b"applied",

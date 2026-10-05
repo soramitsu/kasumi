@@ -1,9 +1,9 @@
 //! One admitted node worker, with independently retained exact task handles.
 //!
-//! The supervisor holds only a weak node while idle. Every blocking step owns
+//! The supervisor holds only an exact nonowning node locator while idle. Every blocking step owns
 //! the node until the serialized native operation returns; BackgroundWork keeps
 //! its actual JoinHandle even if a waiter or the last public node is dropped.
-use crate::{NodeStore, disk_memory};
+use crate::{NodeStore, NodeStoreLocator, NodeStoreLookup, disk_memory};
 use anyhow::{Result, ensure};
 #[cfg(test)]
 use kasumi_kv::CacheWarmupState;
@@ -11,8 +11,8 @@ use kasumi_kv::{CacheWarmup, CacheWarmupStatus};
 use kasumi_serving::{BackgroundWork, BackgroundWorkBudget};
 use kasumi_types::drain::{DrainCompletion, DrainReport, DrainResult};
 use parking_lot::Mutex;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Weak};
 use std::time::Duration;
 
 const STEP_WORK: usize = 1;
@@ -55,19 +55,28 @@ struct Worker {
 }
 
 impl CacheWarmer {
-    pub(crate) fn prepare(&self, node: &Arc<NodeStore>) -> Result<()> {
+    pub(crate) fn prepare(&self, node: &NodeStore) -> Result<()> {
         // This explicit activation, unlike a synchronous node constructor,
         // requires the caller's installed runtime.
         tokio::runtime::Handle::try_current()?;
         {
             let state = self.state.lock();
-            ensure!(!state.stopped && !node.db.is_stopped(), "node is stopping");
+            ensure!(
+                !state.stopped && !node.body().db.is_stopped(),
+                "node is stopping"
+            );
             if state.worker.is_some() {
                 return Ok(());
             }
         }
         let bytes = disk_memory::add(
-            BackgroundWorkBudget::required_bytes(2, 1)?,
+            disk_memory::add(
+                disk_memory::add(
+                    BackgroundWorkBudget::required_bytes(2, 1)?,
+                    u64::try_from(std::mem::size_of::<NodeStoreLocator>())?,
+                )?,
+                kasumi_types::SharedBudgetCharge::required_bytes::<crate::DiskMemoryLease>()?,
+            )?,
             disk_memory::add(
                 std::mem::size_of::<Self>() as u64,
                 disk_memory::add(
@@ -77,11 +86,11 @@ impl CacheWarmer {
             )?,
         )?;
         let lease = node
-            .scratch_disk
+            .scratch_disk()
             .memory()
             .clone()
             .reserve_installed(bytes)?;
-        let budget = BackgroundWorkBudget::new(2, Arc::new(lease))?;
+        let budget = BackgroundWorkBudget::new(2, kasumi_types::SharedBudgetCharge::new(lease))?;
         let worker = Arc::new(Worker {
             active: AtomicBool::new(false),
             supervisor: Arc::new(BackgroundWork::default()),
@@ -90,7 +99,10 @@ impl CacheWarmer {
             budget,
         });
         let mut state = self.state.lock();
-        ensure!(!state.stopped && !node.db.is_stopped(), "node is stopping");
+        ensure!(
+            !state.stopped && !node.body().db.is_stopped(),
+            "node is stopping"
+        );
         if state.worker.is_some() {
             return Ok(());
         }
@@ -98,7 +110,7 @@ impl CacheWarmer {
         // this gate until the actual supervisor handle has entered custody.
         state.worker = Some(worker.clone());
         let run = worker.clone();
-        let node = Arc::downgrade(node);
+        let node = node.locator();
         if let Err(error) = worker
             .supervisor
             .start_result(async move { run.run(node).await }, &worker.budget)
@@ -114,7 +126,10 @@ impl CacheWarmer {
 
     fn activate(&self, node: &NodeStore) -> Result<()> {
         let state = self.state.lock();
-        ensure!(!state.stopped && !node.db.is_stopped(), "node is stopping");
+        ensure!(
+            !state.stopped && !node.body().db.is_stopped(),
+            "node is stopping"
+        );
         let worker = state
             .worker
             .as_ref()
@@ -133,7 +148,7 @@ impl CacheWarmer {
     pub(crate) fn stop(&self, node: &NodeStore) {
         let mut state = self.state.lock();
         state.stopped = true;
-        node.db.stop();
+        node.body().db.stop();
         if let Some(worker) = &state.worker {
             worker.status.lock().stopped = true;
             worker.supervisor.close();
@@ -200,7 +215,7 @@ impl Drop for CacheWarmer {
 }
 
 impl Worker {
-    async fn run(self: Arc<Self>, weak_node: Weak<NodeStore>) -> Result<()> {
+    async fn run(self: Arc<Self>, locator: NodeStoreLocator) -> Result<()> {
         let wake = self.supervisor.wake();
         loop {
             if self.supervisor.is_closed() {
@@ -210,12 +225,26 @@ impl Worker {
                 wake.notified().await;
                 continue;
             }
-            let Some(node) = weak_node.upgrade() else {
-                return Ok(());
+            let node = match locator.try_borrow() {
+                NodeStoreLookup::Active(node) => node,
+                NodeStoreLookup::Busy => {
+                    // Metadata contention is not owner disappearance. Keep the
+                    // same accepted supervisor and its original fee while idle.
+                    tokio::select! {
+                        _ = wake.notified() => {},
+                        _ = tokio::time::sleep(IDLE_DELAY) => {},
+                    }
+                    continue;
+                }
+                NodeStoreLookup::Missing => {
+                    // A stale locator is not a clean disposal witness. The
+                    // actual worker keeps this original failure for drain.
+                    return Err(std::io::Error::from(std::io::ErrorKind::BrokenPipe).into());
+                }
             };
             let child = {
-                let state = node.cache_warmer.state.lock();
-                if state.stopped || node.db.is_stopped() || self.supervisor.is_closed() {
+                let state = node.body().cache_warmer.state.lock();
+                if state.stopped || node.body().db.is_stopped() || self.supervisor.is_closed() {
                     return Ok(());
                 }
                 ensure!(
@@ -230,19 +259,19 @@ impl Worker {
                 // Database stop uses the same gate, so it cannot race dispatch.
                 child.start_blocking_result(
                     move || {
-                        let progress = match work_node.db.warm_cache_if_needed(STEP_WORK) {
+                        let progress = match work_node.body().db.warm_cache_if_needed(STEP_WORK) {
                             Ok(progress) => progress,
                             Err(kasumi_kv::StorageError::DatabaseClosed)
-                                if work_node.db.is_stopped() =>
+                                if work_node.body().db.is_stopped() =>
                             {
                                 return Ok(());
                             }
                             Err(error) => return Err(error.into()),
                         };
-                        let native = match work_node.db.cache_warmup_status() {
+                        let native = match work_node.body().db.cache_warmup_status() {
                             Ok(native) => native,
                             Err(kasumi_kv::StorageError::DatabaseClosed)
-                                if work_node.db.is_stopped() =>
+                                if work_node.body().db.is_stopped() =>
                             {
                                 return Ok(());
                             }
@@ -293,18 +322,18 @@ impl NodeStore {
     /// in startup custody. No native work or headroom polling starts until the
     /// acknowledged owner calls `activate_cache_warming`. Repeated preparation
     /// is idempotent; synchronous constructors never start a runtime.
-    pub async fn prepare_cache_warming(self: &Arc<Self>) -> Result<()> {
-        self.cache_warmer.prepare(self)
+    pub async fn prepare_cache_warming(&self) -> Result<()> {
+        self.body().cache_warmer.prepare(self)
     }
 
     /// Open the prepared worker's ready gate at acknowledged handoff. Success
     /// allocates nothing; missing preparation or stopped ownership is an error.
     pub fn activate_cache_warming(&self) -> Result<()> {
-        self.cache_warmer.activate(self)
+        self.body().cache_warmer.activate(self)
     }
 
     pub fn cache_worker_status(&self) -> CacheWorkerStatus {
-        self.cache_warmer.status()
+        self.body().cache_warmer.status()
     }
 }
 

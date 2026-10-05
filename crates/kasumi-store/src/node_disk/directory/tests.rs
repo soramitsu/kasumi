@@ -244,9 +244,24 @@ fn failed_directory_census_replacement_retains_previous_entries_and_charge() {
         .iter()
         .map(|(key, entry)| (*key, *entry))
         .collect::<std::collections::BTreeMap<_, _>>();
+    let unentered = CensusCancellation::default();
+    unentered.cancel();
+    assert!(disk.reconcile(&unentered).is_err());
+    assert_eq!(disk.snapshot().phase, NodeDiskPhase::Open);
+    assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes);
     let cancel = CensusCancellation::default();
-    cancel.cancel();
+    // Checkpoint 1 rejects before pending diagnostic retirement. Checkpoint 2
+    // is inside the real census, after State has sealed new directory ingress.
+    cancel
+        .cancel_at
+        .store(2, std::sync::atomic::Ordering::Relaxed);
     assert!(disk.reconcile(&cancel).is_err());
+    assert_eq!(
+        cancel
+            .checkpoints
+            .load(std::sync::atomic::Ordering::Relaxed),
+        2
+    );
     assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes);
     assert_eq!(
         disk.lock_state()

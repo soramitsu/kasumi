@@ -17,9 +17,9 @@
 //! and table name) and the first growth of each lease vector.
 
 use kasumi_kv::{
-    AdmissionError, BackendCloseOutcome, CacheConfig, CommitError, CoreError, Database, FileKind,
-    GroupFile, MAX_VALUE_BYTES, Operation, OwnerFailed, ROOT_FILE_NAME, ROOT_SLOT_BYTES,
-    ResidentLease, RootSlot, SegmentGroupBackend, StorageAdmission, StorageError, TableDefinition,
+    AdmissionError, BackendCloseOutcome, CacheConfig, CommitError, Database, FileKind, GroupFile,
+    MAX_VALUE_BYTES, Operation, OwnerFailed, ROOT_FILE_NAME, ROOT_SLOT_BYTES, ResidentLease,
+    RootSlot, SegmentGroupBackend, StorageAdmission, StorageError, TableDefinition,
     WriteTerminalSettlement,
 };
 use std::alloc::{GlobalAlloc, Layout, System};
@@ -791,10 +791,9 @@ fn denied_operation_vector_changes_nothing_and_releases_the_writer() {
         let report = writer.commit();
         assert_eq!(report.settlement(), WriteTerminalSettlement::Settled);
         assert!(report.is_capacity_denied());
-        assert!(matches!(
-            report.rejected_no_effect(),
-            Some(StorageError::Core(CoreError::CapacityDenied))
-        ));
+        assert!(
+            matches!(&(report.rejected_no_effect()), Some(StorageError::Core(native_error)) if matches!(native_error.rejected_cause(), Some(kasumi_kv::CoreErrorCause::CapacityDenied)))
+        );
     }
     admission.deny_at_least.store(u64::MAX, Ordering::Release);
     assert_eq!(admission.denials.load(Ordering::Acquire), 1);
@@ -845,10 +844,9 @@ fn materialization_charge_is_decided_before_any_effect() {
     let before = backend.bytes();
     let write = stage_puts(&database);
     admission.deny_at_least.store(1 << 20, Ordering::Release);
-    assert!(matches!(
-        write.commit(),
-        Err(CommitError(StorageError::Core(CoreError::CapacityDenied)))
-    ));
+    assert!(
+        matches!(&(write.commit()), Err(CommitError(StorageError::Core(native_error))) if matches!(native_error.rejected_cause(), Some(kasumi_kv::CoreErrorCause::CapacityDenied)))
+    );
     admission.deny_at_least.store(u64::MAX, Ordering::Release);
     assert_eq!(backend.bytes(), before);
     // The consumed writer is gone; the next one begins on this thread.

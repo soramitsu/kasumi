@@ -17,7 +17,11 @@ use tokio::sync::{Mutex as AsyncMutex, oneshot, watch};
 pub(super) const COMMAND_SLOTS: usize = 16;
 
 pub(super) fn metadata_bytes() -> Result<u64> {
-    BackgroundWorkBudget::required_bytes(COMMAND_SLOTS, 1)
+    BackgroundWorkBudget::required_bytes(COMMAND_SLOTS, 1)?
+        .checked_add(kasumi_types::SharedBudgetCharge::required_bytes::<
+            kasumi_engine::admission::Reservation,
+        >()?)
+        .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::InvalidInput).into())
 }
 
 fn unknown(message: &'static str) -> anyhow::Error {
@@ -120,7 +124,10 @@ impl CommandJobs {
         // Charge the installed memory core, not the facade: the budget lives in
         // Administration and must not form an admission-facade ownership cycle.
         let charge = admission.memory().reserve_resident(metadata_bytes()?)?;
-        let budget = BackgroundWorkBudget::new(COMMAND_SLOTS, Arc::new(charge))?;
+        let budget = BackgroundWorkBudget::new(
+            COMMAND_SLOTS,
+            kasumi_types::SharedBudgetCharge::new(charge),
+        )?;
         ensure!(
             budget.max_registered() == COMMAND_SLOTS,
             "membership command inventory differs from its admitted budget"

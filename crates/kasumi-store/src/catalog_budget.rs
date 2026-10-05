@@ -19,7 +19,8 @@ async fn production_catalog_typed_owner_retains_installed_memory_until_drop() ->
         disk,
         scratch,
         crate::test_utils::node_storage_config(),
-    )?;
+    )
+    .unwrap_or_else(|original| std::panic::panic_any(original));
     let wrapped = WrappedKey {
         provider: "fixture".into(),
         key_ref: "catalog".into(),
@@ -68,7 +69,8 @@ async fn production_catalog_typed_admission_denial_precedes_serde_allocation() -
         disk,
         scratch,
         crate::test_utils::node_storage_config(),
-    )?;
+    )
+    .unwrap_or_else(|original| std::panic::panic_any(original));
     let wrapped = WrappedKey {
         provider: "fixture".into(),
         key_ref: "catalog".into(),
@@ -149,6 +151,34 @@ impl crate::NodeDiskMemoryAdmission for TypedCatalogDenialMemory {
         }
         self.backing.clone().reserve_installed(bytes)
     }
+    fn install_native_constructor(
+        self: Arc<Self>,
+        install: &mut crate::NativeConstructorInstall<'_>,
+    ) -> std::io::Result<()> {
+        let provider: Arc<dyn crate::NodeDiskMemoryAdmission> = self.clone();
+        let permit = install
+            .try_begin_bind(provider)
+            .map_err(|_| std::io::ErrorKind::InvalidInput)?;
+        let requested_bytes = permit.request_bytes();
+        if requested_bytes != 0 && self.deny_bytes.load(Ordering::Acquire) == requested_bytes {
+            self.denials.fetch_add(1, Ordering::AcqRel);
+            return Err(permit.refuse_capacity(std::io::ErrorKind::OutOfMemory.into()));
+        }
+        let bytes = crate::disk_memory::add(
+            requested_bytes,
+            crate::DiskMemoryLease::token_allocation_bytes::<crate::DiskMemoryLease>()?,
+        )?;
+        match self.backing.clone().reserve_installed(bytes) {
+            Ok(token) => {
+                permit.bind(token);
+                Ok(())
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::OutOfMemory => {
+                Err(permit.refuse_capacity(error))
+            }
+            Err(error) => Err(error),
+        }
+    }
     fn quote_cache_memory(&self, bytes: u64) -> std::io::Result<kasumi_kv::CacheMemoryQuote> {
         crate::test_utils::cache_memory::disk_quote(self, bytes)
     }
@@ -211,7 +241,8 @@ async fn production_refresh_catalog_clone_denies_low_headroom_and_keeps_charge_u
         disk,
         scratch,
         crate::test_utils::node_storage_config(),
-    )?;
+    )
+    .unwrap_or_else(|original| std::panic::panic_any(original));
     let provider = Arc::new(ObservedRefreshProvider {
         inner: LocalKeyProvider::new([87; 32]),
         memory: memory.clone(),
@@ -282,7 +313,8 @@ async fn production_catalog_mutation_clones_deny_low_headroom_and_keep_one_resid
         disk,
         scratch,
         crate::test_utils::node_storage_config(),
-    )?;
+    )
+    .unwrap_or_else(|original| std::panic::panic_any(original));
     let store = TenantStore::initialize_catalog_fixture_with_clock(
         node.clone(),
         "tenant".into(),
@@ -355,7 +387,8 @@ async fn production_backup_catalog_clone_denies_low_headroom_and_lives_with_back
         disk,
         scratch,
         crate::test_utils::node_storage_config(),
-    )?;
+    )
+    .unwrap_or_else(|original| std::panic::panic_any(original));
     let store = TenantStore::initialize_catalog_fixture_with_clock(
         node.clone(),
         "tenant".into(),
@@ -549,7 +582,7 @@ async fn exact_catalog_boundary_leaves_room_for_worst_case_manifest_tenant_encod
     assert!(node.save_catalog(&tenant, &catalog).is_err());
     // Untrusted/old on-disk metadata is checked before parsing or contacting KMS.
     let oversized = serde_json::to_vec(&catalog).unwrap();
-    let tx = node.db.begin_write().unwrap();
+    let tx = node.body().db.begin_write().unwrap();
     tx.open_table(CATALOG)
         .unwrap()
         .insert(tenant_hash(&tenant).as_slice(), oversized.as_slice())

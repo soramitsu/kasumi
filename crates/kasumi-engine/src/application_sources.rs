@@ -30,6 +30,9 @@ use cohort::SourceCohort;
 #[path = "application_source_completion.rs"]
 pub(crate) mod completion;
 pub(crate) use completion::CompletionLoan;
+#[cfg(test)]
+#[path = "application_source_capture_access_test_hook.rs"]
+mod capture_access_test_hook;
 // Quotation-only foundation; no current source acquisition uses it.
 #[cfg(test)]
 #[path = "application_source_memory_quote.rs"]
@@ -73,7 +76,7 @@ fn cell_bytes() -> Result<u64> {
 
 /// Real installed-provider workspace. The proof keeps its own mutable grant;
 /// the independently charged cell remains funded even if a decoder unwinds.
-struct Workspace {
+pub(crate) struct Workspace {
     core: Arc<MemoryCore>,
     baseline: u64,
     // Capture cannot grow beyond the complete producer-owned prospective quote.
@@ -254,6 +257,24 @@ impl SourceFailure {
     fn original(&self) -> &(dyn std::error::Error + 'static) {
         self.owner.original.as_ref()
     }
+}
+
+/// Borrow the exact outer captured failure and one of its two canonical owners:
+/// a bare Store denial, or the actual selection failure's own bare Store denial.
+/// The immutable selection owner keeps its original workspace grant throughout.
+/// This carries no retirement authority and follows no arbitrary source chain.
+#[cfg(test)]
+pub(crate) fn captured_key_access_denied(
+    error: &anyhow::Error,
+) -> Option<&kasumi_store::KeyAccessDenied> {
+    let outer: &(dyn std::error::Error + Send + Sync) = error.as_ref();
+    let original = outer.downcast_ref::<SourceFailure>()?.original();
+    if let Some(denial) = original.downcast_ref::<kasumi_store::KeyAccessDenied>() {
+        return Some(denial);
+    }
+    let selection = original.downcast_ref::<kasumi_raft::SelectionFailure<Workspace>>()?;
+    let original: &(dyn std::error::Error + Send + Sync) = selection.original_error().as_ref();
+    original.downcast_ref::<kasumi_store::KeyAccessDenied>()
 }
 impl std::fmt::Debug for SourceFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -486,6 +507,11 @@ impl PublicationPreparation<'_> {
     }
 }
 impl SourceRoots {
+    /// The exact admission core already bound to this installed source root.
+    /// This borrows no primary graph or test-only publication capability.
+    pub(crate) fn memory_owner(&self) -> &Arc<MemoryCore> {
+        self.admission.memory()
+    }
     fn registry_bytes() -> Result<u64> {
         let registry = allocated(std::mem::size_of::<Self>() + 2 * std::mem::size_of::<usize>())?;
         let credit = SourceCredit::required_bytes()?;
@@ -629,8 +655,11 @@ impl SourceRootsRef {
         assert!(self.completion.set(completion).is_ok());
         Ok(())
     }
-    /// Called only by construction after accepted replay/ingress coverage has
-    /// been certified. Installing capacity is not itself acceptance authority.
+    /// Isolated construction check only. Production must first certify accepted
+    /// replay and every ingress path; its current snapshot/covered replay paths
+    /// are outside this ordinary envelope. Installing capacity cannot certify
+    /// that missing acceptance authority.
+    #[cfg(test)]
     pub(crate) fn install_source_cohort(
         &self,
         envelope: kasumi_raft::PreparedOrdinarySourceEnvelope,
@@ -1027,11 +1056,12 @@ impl RootPreparation {
         );
         // The ordinary completion already owns self before this provider call.
         // Store retains its actual request on a failed pre-return acquisition.
+        #[cfg(test)]
         if let Some(cohort) = self.roots.cohort.get() {
             self.queued_source = Some(cohort.queue(&self.cell._reservation)?);
-        } else {
-            self.queued = Some(self.roots.stores.prepare_read_view()?);
+            return Ok(());
         }
+        self.queued = Some(self.roots.stores.prepare_read_view()?);
         Ok(())
     }
     pub(crate) fn capture(
@@ -1101,6 +1131,8 @@ impl RootPreparation {
                 }
                 return Ok(());
             }
+            #[cfg(test)]
+            let originally_queued = self.queued.is_some();
             let acquired = match self.queued.take() {
                 Some(queued) => queued.begin(),
                 None if self.plan.is_none() => self.roots.stores.read_view(),
@@ -1114,6 +1146,13 @@ impl RootPreparation {
                         .lock()
                         .unwrap_or_else(|p| p.into_inner())
                         .view = Some(view.clone());
+                    #[cfg(test)]
+                    if originally_queued {
+                        capture_access_test_hook::after_queued_begin(
+                            &view,
+                            self.roots.stores.application(),
+                        );
+                    }
                     let workspace = self
                         .cell
                         .workspace
@@ -1143,7 +1182,11 @@ impl RootPreparation {
                         Ok(position) => {
                             let _ = self.cell.position.set(position);
                         }
-                        Err(error) => self.cell.record_failure(error.into(), false),
+                        Err(error) => {
+                            #[cfg(test)]
+                            let error = capture_access_test_hook::selection_failure(error);
+                            self.cell.record_failure(error.into(), false);
+                        }
                     }
                     drop(view);
                 }

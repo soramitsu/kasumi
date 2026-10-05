@@ -42,6 +42,59 @@ impl RetainedParent {
                 .take(),
         );
     }
+    pub(super) fn directory_close_errors(&mut self) -> [Option<(i32, &io::Error)>; 3] {
+        let walk = self
+            .walk
+            .get_mut()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let [current, next] = walk.close_errors();
+        [
+            self.close_outcome
+                .as_ref()
+                .map(|outcome| (outcome.descriptor, &outcome.error)),
+            current,
+            next,
+        ]
+    }
+    pub(super) fn take_directory_failure(&mut self) -> Option<io::Error> {
+        self.walk
+            .get_mut()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .failure
+            .take()
+    }
+    pub(super) fn has_directory_failure(&self) -> bool {
+        self.walk
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .failure
+            .is_some()
+    }
+    pub(super) fn retire_directory_backing(&mut self) {
+        assert!(
+            self.known_drained(),
+            "directory parent requires positive native drain"
+        );
+        let walk = self
+            .walk
+            .get_mut()
+            .unwrap_or_else(|poison| poison.into_inner());
+        assert!(
+            walk.failure.is_none(),
+            "parent original retirement precedes backing"
+        );
+        drop(std::mem::replace(&mut self.ancestors, Box::new([])));
+    }
+    #[cfg(test)]
+    pub(super) fn descriptor_for_test(&self) -> Option<i32> {
+        use std::os::fd::AsRawFd;
+        self.file.as_ref().map(AsRawFd::as_raw_fd)
+    }
+    #[cfg(test)]
+    pub(super) fn record_closed_descriptor_for_test(&mut self, descriptor: i32, error: io::Error) {
+        assert!(self.file.is_none() && self.close_outcome.is_none());
+        self.close_outcome = Some(CloseOutcome { descriptor, error });
+    }
     pub(super) fn known_drained(&self) -> bool {
         let Ok(walk) = self.walk.try_lock() else {
             return false;
@@ -290,9 +343,6 @@ impl RetainedParent {
         entry.live_handles = next;
         self.registered = true;
         Ok(())
-    }
-    pub(super) fn take_descriptor(&mut self) -> Option<File> {
-        self.file.take()
     }
     /// Move the scalar registration across the resources' scope boundary.
     /// Actual FD and ancestor allocation destruction precede returned credit.

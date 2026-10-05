@@ -14,10 +14,14 @@
 //! before `finish` returns, but only the owner's durable root publication
 //! makes those pages authoritative. Failed builds leave unreferenced pages.
 
+#[cfg(test)]
+use crate::core::ResidentLease;
 use std::cmp::Ordering;
 use std::sync::Arc;
 
-use crate::core::{CoreError, MAX_KEY_BYTES, MAX_TABLE_BYTES, ResidentLease, StorageAdmission};
+use crate::core::{
+    CoreError, MAX_KEY_BYTES, MAX_TABLE_BYTES, NativeResidentLease, StorageAdmission,
+};
 use crate::segment::{ValueLocation, le_u16, le_u32, le_u64};
 use sha2::{Digest, Sha256};
 
@@ -84,7 +88,9 @@ pub(crate) struct DirectoryPageRef {
 impl DirectoryPageRef {
     fn validate(self) -> Result<(), CoreError> {
         if self.arena_id == 0 || self.arena_id == u64::MAX || self.page_index == u64::MAX {
-            return Err(CoreError::Corrupt("directory page reference is invalid"));
+            return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                "directory page reference is invalid",
+            )));
         }
         Ok(())
     }
@@ -142,6 +148,18 @@ impl<T: DirectoryBackend + ?Sized> DirectoryBackend for Arc<T> {
     }
 }
 
+impl<T: DirectoryBackend> DirectoryBackend for crate::native_owned_arc::NativeOwnedArc<T> {
+    fn read_page(&self, reference: DirectoryPageRef, out: &mut [u8]) -> Result<(), CoreError> {
+        (**self).read_page(reference, out)
+    }
+    fn append_page(&self, bytes: &[u8]) -> Result<DirectoryPageRef, CoreError> {
+        (**self).append_page(bytes)
+    }
+    fn sync_pages(&self) -> Result<(), CoreError> {
+        (**self).sync_pages()
+    }
+}
+
 /// The owner persists all fields together with the corresponding log commit.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct DirectoryRoot {
@@ -175,7 +193,9 @@ impl DirectoryRoot {
             || bytes[88..].iter().any(|&byte| byte != 0)
             || (bytes[25] == 0 && bytes[40..88].iter().any(|&byte| byte != 0))
         {
-            return Err(CoreError::Corrupt("directory root is noncanonical"));
+            return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                "directory root is noncanonical",
+            )));
         }
         let root = Self {
             group_id: bytes[..16].try_into().expect("16-byte group"),
@@ -198,7 +218,9 @@ impl DirectoryRoot {
             || (self.page.is_some()
                 && (self.height == 0 || self.height as usize > MAX_HEIGHT || self.entries == 0))
         {
-            return Err(CoreError::Corrupt("directory root is invalid"));
+            return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                "directory root is invalid",
+            )));
         }
         if let Some(page) = self.page {
             page.validate()?;
@@ -232,9 +254,9 @@ impl<'a> DirectoryKey<'a> {
             || self.table.len() > MAX_TABLE_BYTES
             || self.row.is_some_and(|key| key.len() > MAX_KEY_BYTES)
         {
-            return Err(CoreError::InvalidInput(
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
                 "directory key exceeds storage limits",
-            ));
+            )));
         }
         Ok(())
     }
@@ -272,7 +294,9 @@ impl PartialOrd for DirectoryKey<'_> {
 
 fn decode_key(bytes: &[u8]) -> Result<(DirectoryKey<'_>, usize), CoreError> {
     if bytes.len() < KEY_HEADER_BYTES {
-        return Err(CoreError::Corrupt("directory key header is truncated"));
+        return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+            "directory key header is truncated",
+        )));
     }
     let table_len = le_u16(&bytes[..2]) as usize;
     let key_len = le_u16(&bytes[2..4]) as usize;
@@ -284,11 +308,16 @@ fn decode_key(bytes: &[u8]) -> Result<(DirectoryKey<'_>, usize), CoreError> {
         || (bytes[4] == 0 && key_len != 0)
         || end > bytes.len()
     {
-        return Err(CoreError::Corrupt("directory key is invalid"));
+        return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+            "directory key is invalid",
+        )));
     }
     let table_end = KEY_HEADER_BYTES + table_len;
-    let table = std::str::from_utf8(&bytes[KEY_HEADER_BYTES..table_end])
-        .map_err(|_| CoreError::Corrupt("directory table name is not UTF-8"))?;
+    let table = std::str::from_utf8(&bytes[KEY_HEADER_BYTES..table_end]).map_err(|_| {
+        CoreError::new(crate::CoreErrorCause::Corrupt(
+            "directory table name is not UTF-8",
+        ))
+    })?;
     Ok((
         DirectoryKey {
             table,
@@ -317,10 +346,16 @@ impl DirectoryValue {
                 value.validate()?;
                 batch_seq
             }
-            _ => return Err(CoreError::Corrupt("directory key and value kinds differ")),
+            _ => {
+                return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                    "directory key and value kinds differ",
+                )));
+            }
         };
         if seq == 0 || seq > generation {
-            return Err(CoreError::Corrupt("directory version exceeds its page"));
+            return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                "directory version exceeds its page",
+            )));
         }
         Ok(())
     }
@@ -342,7 +377,9 @@ impl DirectoryValue {
     fn decode(key: DirectoryKey<'_>, bytes: &[u8], generation: u64) -> Result<Self, CoreError> {
         let value = if key.row.is_none() {
             if bytes[8..].iter().any(|&byte| byte != 0) {
-                return Err(CoreError::Corrupt("directory table value is noncanonical"));
+                return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                    "directory table value is noncanonical",
+                )));
             }
             Self::Table {
                 birth_seq: le_u64(&bytes[..8]),
@@ -366,23 +403,24 @@ impl DirectoryValue {
 fn reserve(
     admission: &Arc<dyn StorageAdmission>,
     bytes: usize,
-) -> Result<Box<dyn ResidentLease>, CoreError> {
+) -> Result<NativeResidentLease, CoreError> {
     admission
         .check_owner()
-        .map_err(|_| CoreError::OwnerFailed)?;
+        .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?;
     // Every reservation returns an owned boxed lease, including scratch
     // reservations whose payload itself stays on the caller's stack.
     let bytes = bytes
         .checked_add(LEASE_ALLOWANCE)
-        .ok_or(CoreError::CapacityDenied)?;
+        .ok_or(CoreError::new(crate::CoreErrorCause::CapacityDenied))?;
     admission
         .reserve_workspace(bytes as u64)
+        .map(NativeResidentLease::new)
         .map_err(Into::into)
 }
 
 struct PageBuffer {
     bytes: Vec<u8>,
-    _lease: Box<dyn ResidentLease>,
+    _lease: NativeResidentLease,
 }
 
 impl PageBuffer {
@@ -394,9 +432,9 @@ impl PageBuffer {
         let mut bytes = Vec::new();
         bytes
             .try_reserve_exact(DIRECTORY_PAGE_BYTES)
-            .map_err(|_| CoreError::CapacityDenied)?;
+            .map_err(|_| CoreError::new(crate::CoreErrorCause::CapacityDenied))?;
         if bytes.capacity() != DIRECTORY_PAGE_BYTES {
-            return Err(CoreError::CapacityDenied);
+            return Err(CoreError::new(crate::CoreErrorCause::CapacityDenied));
         }
         bytes.resize(DIRECTORY_PAGE_BYTES, 0);
         Ok(Self {
@@ -467,10 +505,9 @@ impl<B: AsRef<[u8]> + AsMut<[u8]>> PendingPage<B> {
         value: &[u8],
         entries: u64,
     ) -> Result<(), CoreError> {
-        let total = self
-            .entries
-            .checked_add(entries)
-            .ok_or(CoreError::InvalidInput("directory entry count overflow"))?;
+        let total = self.entries.checked_add(entries).ok_or(CoreError::new(
+            crate::CoreErrorCause::InvalidInput("directory entry count overflow"),
+        ))?;
         let key_end = self.used + key.encoded_len();
         key.encode(&mut self.buffer.as_mut()[self.used..key_end]);
         self.buffer.as_mut()[key_end..key_end + value.len()].copy_from_slice(value);
@@ -508,7 +545,7 @@ pub(crate) struct DirectoryBuilder<'a> {
     last_key_len: usize,
     entries: u64,
     failed: bool,
-    _lease: Box<dyn ResidentLease>,
+    _lease: NativeResidentLease,
 }
 
 impl<'a> DirectoryBuilder<'a> {
@@ -542,24 +579,25 @@ impl<'a> DirectoryBuilder<'a> {
         value: DirectoryValue,
     ) -> Result<(), CoreError> {
         if self.failed {
-            return Err(CoreError::OwnerFailed);
+            return Err(CoreError::new(crate::CoreErrorCause::OwnerFailed));
         }
         self.admission
             .check_owner()
-            .map_err(|_| CoreError::OwnerFailed)?;
+            .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?;
         key.validate()?;
-        value
-            .validate(key, self.generation)
-            .map_err(|_| CoreError::InvalidInput("directory value is invalid"))?;
+        value.validate(key, self.generation).map_err(|_| {
+            CoreError::new(crate::CoreErrorCause::InvalidInput(
+                "directory value is invalid",
+            ))
+        })?;
         if self.last_key_len != 0 && decode_key(&self.last_key[..self.last_key_len])?.0 >= key {
-            return Err(CoreError::InvalidInput(
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
                 "directory input is not strictly ordered",
-            ));
+            )));
         }
-        let entries = self
-            .entries
-            .checked_add(1)
-            .ok_or(CoreError::InvalidInput("directory entry count overflow"))?;
+        let entries = self.entries.checked_add(1).ok_or(CoreError::new(
+            crate::CoreErrorCause::InvalidInput("directory entry count overflow"),
+        ))?;
         let result = self.push_validated(key, value);
         if result.is_err() {
             // A failed carry can have appended pages or changed pending
@@ -575,7 +613,9 @@ impl<'a> DirectoryBuilder<'a> {
 
     fn ensure_level(&mut self, level: usize) -> Result<(), CoreError> {
         if level >= MAX_HEIGHT {
-            return Err(CoreError::InvalidInput("directory exceeds maximum height"));
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
+                "directory exceeds maximum height",
+            )));
         }
         if self.pages[level].is_none() {
             self.pages[level] = Some(PendingPage::new(&self.admission)?);
@@ -651,14 +691,16 @@ impl<'a> DirectoryBuilder<'a> {
         let sha256 = page_digest(bytes);
         self.admission
             .check_owner()
-            .map_err(|_| CoreError::OwnerFailed)?;
+            .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?;
         let reference = self.backend.append_page(bytes)?;
         self.admission
             .check_owner()
-            .map_err(|_| CoreError::OwnerFailed)?;
+            .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?;
         reference.validate()?;
         if reference.sha256 != sha256 {
-            return Err(CoreError::Corrupt("appended directory page digest differs"));
+            return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                "appended directory page digest differs",
+            )));
         }
         let carry = Carry {
             key,
@@ -674,11 +716,11 @@ impl<'a> DirectoryBuilder<'a> {
     /// until the owner publishes it atomically with its log commit boundary.
     pub(crate) fn finish(mut self) -> Result<DirectoryRoot, CoreError> {
         if self.failed {
-            return Err(CoreError::OwnerFailed);
+            return Err(CoreError::new(crate::CoreErrorCause::OwnerFailed));
         }
         self.admission
             .check_owner()
-            .map_err(|_| CoreError::OwnerFailed)?;
+            .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?;
         let (page, height) = loop {
             let Some(level) = self
                 .pages
@@ -693,7 +735,9 @@ impl<'a> DirectoryBuilder<'a> {
             let carry = self.flush(level)?;
             if !higher {
                 if carry.entries != self.entries {
-                    return Err(CoreError::Corrupt("directory build entry count differs"));
+                    return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                        "directory build entry count differs",
+                    )));
                 }
                 break (Some(carry.page), (level + 1) as u8);
             }
@@ -702,7 +746,7 @@ impl<'a> DirectoryBuilder<'a> {
         self.backend.sync_pages()?;
         self.admission
             .check_owner()
-            .map_err(|_| CoreError::OwnerFailed)?;
+            .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?;
         Ok(DirectoryRoot {
             group_id: self.group_id,
             generation: self.generation,
@@ -742,12 +786,16 @@ fn page_entry(bytes: &[u8], at: usize, used: usize) -> Result<(Entry<'_>, usize)
         }
     });
     if at > used {
-        return Err(CoreError::Corrupt("directory entry exceeds page"));
+        return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+            "directory entry exceeds page",
+        )));
     }
     let (key, key_len) = decode_key(&bytes[at..used])?;
     let end = at + key_len + value_bytes(bytes[44]);
     if end > used {
-        return Err(CoreError::Corrupt("directory value exceeds page"));
+        return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+            "directory value exceeds page",
+        )));
     }
     Ok((
         Entry {
@@ -766,7 +814,9 @@ fn validate_page(
 ) -> Result<PageInfo, CoreError> {
     reference.validate()?;
     if bytes.len() != DIRECTORY_PAGE_BYTES || page_digest(bytes) != reference.sha256 {
-        return Err(CoreError::Corrupt("directory page digest differs"));
+        return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+            "directory page digest differs",
+        )));
     }
     if bytes[..16] != MAGIC
         || le_u32(&bytes[16..20]) != FORMAT_VERSION
@@ -774,7 +824,9 @@ fn validate_page(
         || bytes[45] != 0
         || bytes[60..64].iter().any(|&byte| byte != 0)
     {
-        return Err(CoreError::Corrupt("directory page header is invalid"));
+        return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+            "directory page header is invalid",
+        )));
     }
     let info = PageInfo {
         generation: le_u64(&bytes[36..44]),
@@ -791,7 +843,9 @@ fn validate_page(
         || info.used > DIRECTORY_PAGE_BYTES
         || bytes[info.used..].iter().any(|&byte| byte != 0)
     {
-        return Err(CoreError::Corrupt("directory page bounds are invalid"));
+        return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+            "directory page bounds are invalid",
+        )));
     }
     let mut at = HEADER_BYTES;
     let mut previous = None;
@@ -799,9 +853,9 @@ fn validate_page(
     for _ in 0..info.count {
         let (entry, end) = page_entry(bytes, at, info.used)?;
         if previous.is_some_and(|previous| previous >= entry.key) {
-            return Err(CoreError::Corrupt(
+            return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
                 "directory page keys are not strictly ordered",
-            ));
+            )));
         }
         previous = Some(entry.key);
         let count = if info.level == 0 {
@@ -811,24 +865,33 @@ fn validate_page(
             DirectoryPageRef::decode(&entry.value[..PAGE_REF_BYTES])?;
             let count = le_u64(&entry.value[PAGE_REF_BYTES..]);
             if count == 0 {
-                return Err(CoreError::Corrupt("directory child is empty"));
+                return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                    "directory child is empty",
+                )));
             }
             count
         };
-        entries = entries
-            .checked_add(count)
-            .ok_or(CoreError::Corrupt("directory entry count overflows"))?;
+        entries =
+            entries
+                .checked_add(count)
+                .ok_or(CoreError::new(crate::CoreErrorCause::Corrupt(
+                    "directory entry count overflows",
+                )))?;
         at = end;
     }
     if at != info.used || entries != info.entries {
-        return Err(CoreError::Corrupt("directory page totals differ"));
+        return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+            "directory page totals differ",
+        )));
     }
     Ok(info)
 }
 
 fn nth_entry(bytes: &[u8], info: PageInfo, index: usize) -> Result<Entry<'_>, CoreError> {
     if index >= info.count {
-        return Err(CoreError::Corrupt("directory child index exceeds page"));
+        return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+            "directory child index exceeds page",
+        )));
     }
     let mut at = HEADER_BYTES;
     for i in 0..info.count {
@@ -898,22 +961,24 @@ impl Bounds {
             || info.entries != self.entries
             || info.generation > self.generation
         {
-            return Err(CoreError::Corrupt(
+            return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
                 "directory child shape differs from parent",
-            ));
+            )));
         }
         if self.lower_len != 0
             && nth_entry(bytes, info, 0)?.key != decode_key(&self.lower[..self.lower_len])?.0
         {
-            return Err(CoreError::Corrupt(
+            return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
                 "directory child minimum differs from parent",
-            ));
+            )));
         }
         if self.upper_len != 0
             && nth_entry(bytes, info, info.count - 1)?.key
                 >= decode_key(&self.upper[..self.upper_len])?.0
         {
-            return Err(CoreError::Corrupt("directory child exceeds parent range"));
+            return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                "directory child exceeds parent range",
+            )));
         }
         Ok(())
     }
@@ -924,7 +989,7 @@ impl Bounds {
 pub(crate) struct DirectoryRecord {
     key: Vec<u8>,
     pub(crate) value: DirectoryValue,
-    _lease: Box<dyn ResidentLease>,
+    _lease: NativeResidentLease,
 }
 
 impl DirectoryRecord {
@@ -951,7 +1016,7 @@ pub(crate) struct DirectoryReadWorkspace {
     // Field order retires the allocation before its exact lease.
     buffer: Vec<u8>,
     admission: Arc<dyn StorageAdmission>,
-    _lease: Box<dyn ResidentLease>,
+    _lease: NativeResidentLease,
 }
 
 impl DirectoryReadWorkspace {
@@ -980,24 +1045,24 @@ impl DirectoryReadWorkspace {
     ) -> Result<Self, CoreError> {
         let extra_shell = std::mem::size_of::<T>()
             .checked_sub(std::mem::size_of::<Self>())
-            .ok_or(CoreError::InvalidInput(
+            .ok_or(CoreError::new(crate::CoreErrorCause::InvalidInput(
                 "enclosing directory owner is smaller than workspace",
-            ))?;
+            )))?;
         let bytes = Self::payload_request_bytes()
             .checked_add(extra_shell)
-            .ok_or(CoreError::CapacityDenied)?;
+            .ok_or(CoreError::new(crate::CoreErrorCause::CapacityDenied))?;
         let lease = reserve(admission, bytes)?;
         let mut buffer = Vec::new();
         buffer
             .try_reserve_exact(DIRECTORY_PAGE_BYTES)
-            .map_err(|_| CoreError::CapacityDenied)?;
+            .map_err(|_| CoreError::new(crate::CoreErrorCause::CapacityDenied))?;
         if buffer.capacity() != DIRECTORY_PAGE_BYTES {
-            return Err(CoreError::CapacityDenied);
+            return Err(CoreError::new(crate::CoreErrorCause::CapacityDenied));
         }
         buffer.resize(DIRECTORY_PAGE_BYTES, 0);
         admission
             .check_owner()
-            .map_err(|_| CoreError::OwnerFailed)?;
+            .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?;
         Ok(Self {
             buffer,
             admission: admission.clone(),
@@ -1007,11 +1072,13 @@ impl DirectoryReadWorkspace {
 
     fn check(&self, admission: &Arc<dyn StorageAdmission>) -> Result<(), CoreError> {
         if !Arc::ptr_eq(&self.admission, admission) {
-            return Err(CoreError::InvalidInput(
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
                 "directory workspace belongs to another admission owner",
-            ));
+            )));
         }
-        admission.check_owner().map_err(|_| CoreError::OwnerFailed)
+        admission
+            .check_owner()
+            .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))
     }
 }
 
@@ -1037,11 +1104,11 @@ impl<'a> DirectoryReader<'a> {
     ) -> Result<PageInfo, CoreError> {
         self.admission
             .check_owner()
-            .map_err(|_| CoreError::OwnerFailed)?;
+            .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?;
         self.backend.read_page(reference, buffer)?;
         self.admission
             .check_owner()
-            .map_err(|_| CoreError::OwnerFailed)?;
+            .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?;
         let info = validate_page(buffer, root, reference)?;
         bounds.check(buffer, info)?;
         Ok(info)
@@ -1066,12 +1133,12 @@ impl<'a> DirectoryReader<'a> {
     ) -> Result<(), CoreError> {
         self.admission
             .check_owner()
-            .map_err(|_| CoreError::OwnerFailed)?;
+            .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?;
         root.validate()?;
         if generation > root.generation {
-            return Err(CoreError::InvalidInput(
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
                 "warm generation exceeds directory root",
-            ));
+            )));
         }
         let Some(reference) = root.page else {
             return Ok(());
@@ -1097,9 +1164,9 @@ impl<'a> DirectoryReader<'a> {
         workspace.check(&self.admission)?;
         root.validate()?;
         if generation > root.generation {
-            return Err(CoreError::InvalidInput(
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
                 "warm generation exceeds directory root",
-            ));
+            )));
         }
         let Some(reference) = root.page else {
             return Ok(());
@@ -1143,7 +1210,9 @@ impl<'a> DirectoryReader<'a> {
                 for frame in frames[..depth].iter().flatten() {
                     let info = self.load(buffer, root, frame.reference, &bounds)?;
                     if info.count != frame.count {
-                        return Err(CoreError::Corrupt("directory changed during cache warming"));
+                        return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                            "directory changed during cache warming",
+                        )));
                     }
                     reference = bounds.child(buffer, info, frame.next_child - 1)?;
                 }
@@ -1159,7 +1228,7 @@ impl<'a> DirectoryReader<'a> {
     ) -> Result<Option<DirectoryValue>, CoreError> {
         self.admission
             .check_owner()
-            .map_err(|_| CoreError::OwnerFailed)?;
+            .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?;
         root.validate()?;
         key.validate()?;
         let Some(reference) = root.page else {
@@ -1236,7 +1305,7 @@ impl<'a> DirectoryReader<'a> {
     ) -> Result<Option<DirectoryRecord>, CoreError> {
         self.admission
             .check_owner()
-            .map_err(|_| CoreError::OwnerFailed)?;
+            .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?;
         root.validate()?;
         lower.validate()?;
         let Some(root_page) = root.page else {
@@ -1266,9 +1335,9 @@ impl<'a> DirectoryReader<'a> {
                         )?;
                         let mut key = Vec::new();
                         key.try_reserve_exact(entry.key_bytes.len())
-                            .map_err(|_| CoreError::CapacityDenied)?;
+                            .map_err(|_| CoreError::new(crate::CoreErrorCause::CapacityDenied))?;
                         if key.capacity() != entry.key_bytes.len() {
-                            return Err(CoreError::CapacityDenied);
+                            return Err(CoreError::new(crate::CoreErrorCause::CapacityDenied));
                         }
                         key.extend_from_slice(entry.key_bytes);
                         let value =
@@ -1381,15 +1450,17 @@ mod tests {
             let pages = self.pages.lock().unwrap();
             let page = pages
                 .get(reference.page_index as usize)
-                .ok_or(CoreError::Corrupt("test page is absent"))?;
+                .ok_or(CoreError::new(crate::CoreErrorCause::Corrupt(
+                    "test page is absent",
+                )))?;
             out.copy_from_slice(page);
             Ok(())
         }
 
         fn append_page(&self, bytes: &[u8]) -> Result<DirectoryPageRef, CoreError> {
             if self.fail.load(AtomicOrdering::Relaxed) {
-                return Err(CoreError::Io(std::io::Error::other(
-                    "injected append failure",
+                return Err(CoreError::new(crate::CoreErrorCause::Io(
+                    std::io::Error::other("injected append failure"),
                 )));
             }
             let mut pages = self.pages.lock().unwrap();
@@ -1405,8 +1476,8 @@ mod tests {
         fn sync_pages(&self) -> Result<(), CoreError> {
             self.syncs.fetch_add(1, AtomicOrdering::Relaxed);
             if self.fail.load(AtomicOrdering::Relaxed) {
-                return Err(CoreError::Io(std::io::Error::other(
-                    "injected sync failure",
+                return Err(CoreError::new(crate::CoreErrorCause::Io(
+                    std::io::Error::other("injected sync failure"),
                 )));
             }
             Ok(())
@@ -1643,10 +1714,9 @@ mod tests {
         validate_page(page, root, changed).unwrap();
         drop(pages);
         let reader = DirectoryReader::new(&backend, admission);
-        assert!(matches!(
-            reader.get(root, DirectoryKey::row("t", &long_key(0))),
-            Err(CoreError::Corrupt("directory page digest differs"))
-        ));
+        assert!(
+            matches!(&(reader.get(root, DirectoryKey::row("t", &long_key(0)))), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::Corrupt("directory page digest differs"))))
+        );
     }
 
     #[test]
@@ -1953,10 +2023,9 @@ mod tests {
         drop(walker);
         assert_eq!(admission.0.used.load(AtomicOrdering::Relaxed), 0);
         let denied = Admission::new(1);
-        assert!(matches!(
-            DirectoryWalker::new(root, denied.clone()),
-            Err(CoreError::CapacityDenied)
-        ));
+        assert!(
+            matches!(&(DirectoryWalker::new(root, denied.clone())), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::CapacityDenied)))
+        );
         assert_eq!(denied.0.used.load(AtomicOrdering::Relaxed), 0);
         let mut cancelled = DirectoryWalker::new(root, admission.clone()).unwrap();
         cancelled.step(&backend, 1, |_| Ok(()), |_| Ok(())).unwrap();
@@ -1980,7 +2049,7 @@ mod tests {
             ) -> Result<(), CoreError> {
                 let call = self.calls.fetch_add(1, AtomicOrdering::Relaxed);
                 if call == 1 && self.mode == 0 {
-                    return Err(CoreError::CapacityDenied);
+                    return Err(CoreError::new(crate::CoreErrorCause::CapacityDenied));
                 }
                 self.backend.read_page(reference, out)?;
                 if call == 1 && self.mode == 1 {
@@ -2024,14 +2093,16 @@ mod tests {
                     |_| {
                         pages += 1;
                         if mode == 2 && pages == 2 {
-                            Err(CoreError::CapacityDenied)
+                            Err(CoreError::new(crate::CoreErrorCause::CapacityDenied))
                         } else {
                             Ok(())
                         }
                     },
                     |_| {
                         if mode == 3 {
-                            Err(CoreError::Corrupt("callback refused value"))
+                            Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                                "callback refused value",
+                            )))
                         } else {
                             Ok(())
                         }
@@ -2040,18 +2111,19 @@ mod tests {
                 .unwrap_err();
             assert!(pages > 0);
             assert!(matches!(
-                error,
-                CoreError::CapacityDenied | CoreError::OwnerFailed | CoreError::Corrupt(_)
+                error.rejected_cause(),
+                Some(
+                    crate::CoreErrorCause::CapacityDenied
+                        | crate::CoreErrorCause::OwnerFailed
+                        | crate::CoreErrorCause::Corrupt(_)
+                )
             ));
-            assert!(matches!(
-                walker.step(
+            assert!(matches!(&(walker.step(
                     &fault,
                     1,
                     |_| panic!("poisoned page"),
                     |_| panic!("poisoned value")
-                ),
-                Err(CoreError::OwnerFailed)
-            ));
+                )), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed))));
             drop(walker);
             assert_eq!(admission.0.used.load(AtomicOrdering::Relaxed), 0);
         }
@@ -2101,10 +2173,7 @@ mod tests {
             drop(pages);
             let mut walker = DirectoryWalker::new(root, admission.clone()).unwrap();
             assert!(
-                matches!(
-                    walker.step(&backend, 1000, |_| Ok(()), |_| Ok(())),
-                    Err(CoreError::Corrupt(_))
-                ),
+                matches!(&(walker.step(&backend, 1000, |_| Ok(()), |_| Ok(()))), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::Corrupt(_)))),
                 "corruption {corruption}"
             );
             drop(walker);
@@ -2324,10 +2393,9 @@ mod tests {
             group_id: [9; 16],
             ..old
         };
-        assert!(matches!(
-            reader.get(substituted, DirectoryKey::row("t", b"key")),
-            Err(CoreError::Corrupt(_))
-        ));
+        assert!(
+            matches!(&(reader.get(substituted, DirectoryKey::row("t", b"key"))), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::Corrupt(_))))
+        );
         // A COW successor may keep an unchanged older page.
         let shared = DirectoryRoot {
             generation: 3,
@@ -2350,13 +2418,10 @@ mod tests {
                 DirectoryValue::Table { birth_seq: 1 },
             )
             .unwrap();
-        assert!(matches!(
-            builder.push(
+        assert!(matches!(&(builder.push(
                 DirectoryKey::table("t"),
                 DirectoryValue::Table { birth_seq: 1 }
-            ),
-            Err(CoreError::InvalidInput(_))
-        ));
+            )), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput(_)))));
         for id in 0..3 {
             builder
                 .push(DirectoryKey::row("t", &long_key(id)), value(1, id as u64))
@@ -2369,11 +2434,12 @@ mod tests {
                 .is_err()
         );
         backend.fail.store(false, AtomicOrdering::Relaxed);
-        assert!(matches!(
-            builder.push(DirectoryKey::row("t", &long_key(4)), value(1, 4)),
-            Err(CoreError::OwnerFailed)
-        ));
-        assert!(matches!(builder.finish(), Err(CoreError::OwnerFailed)));
+        assert!(
+            matches!(&(builder.push(DirectoryKey::row("t", &long_key(4)), value(1, 4))), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+        );
+        assert!(
+            matches!(&(builder.finish()), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+        );
         assert_eq!(admission.0.used.load(AtomicOrdering::Relaxed), 0);
     }
 
@@ -2401,24 +2467,21 @@ mod tests {
         );
         assert_eq!(backend.reads.load(AtomicOrdering::Relaxed), 0);
         admission.0.failed.store(true, AtomicOrdering::Relaxed);
-        assert!(matches!(
-            reader.get(root, DirectoryKey::table("t")),
-            Err(CoreError::OwnerFailed)
-        ));
-        assert!(matches!(
-            reader.next(root, DirectoryKey::table("t"), false),
-            Err(CoreError::OwnerFailed)
-        ));
+        assert!(
+            matches!(&(reader.get(root, DirectoryKey::table("t"))), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+        );
+        assert!(
+            matches!(&(reader.next(root, DirectoryKey::table("t"), false)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+        );
     }
 
     #[test]
     fn capacity_denial_precedes_page_allocation_and_outputs_remain_admitted() {
         let backend = MemoryPages::default();
         let admission = Admission::new(1);
-        assert!(matches!(
-            DirectoryBuilder::new(&backend, admission.clone(), GROUP, 1),
-            Err(CoreError::CapacityDenied)
-        ));
+        assert!(
+            matches!(&(DirectoryBuilder::new(&backend, admission.clone(), GROUP, 1)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::CapacityDenied)))
+        );
         assert!(backend.pages.lock().unwrap().is_empty());
         assert_eq!(admission.0.used.load(AtomicOrdering::Relaxed), 0);
 
@@ -2432,10 +2495,9 @@ mod tests {
             .unwrap();
         let root = builder.finish().unwrap();
         let reader = DirectoryReader::new(&backend, admission.clone());
-        assert!(matches!(
-            reader.get(root, DirectoryKey::table("t")),
-            Err(CoreError::CapacityDenied)
-        ));
+        assert!(
+            matches!(&(reader.get(root, DirectoryKey::table("t"))), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::CapacityDenied)))
+        );
         assert_eq!(backend.reads.load(AtomicOrdering::Relaxed), 0);
         assert_eq!(admission.0.used.load(AtomicOrdering::Relaxed), 0);
 
@@ -2450,10 +2512,9 @@ mod tests {
             + LEASE_ALLOWANCE;
         let admission = Admission::new(workspace as u64);
         let reader = DirectoryReader::new(&backend, admission.clone());
-        assert!(matches!(
-            reader.next(root, DirectoryKey::table("t"), false),
-            Err(CoreError::CapacityDenied)
-        ));
+        assert!(
+            matches!(&(reader.next(root, DirectoryKey::table("t"), false)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::CapacityDenied)))
+        );
         assert_eq!(backend.reads.load(AtomicOrdering::Relaxed), 1);
         assert_eq!(admission.0.used.load(AtomicOrdering::Relaxed), 0);
     }
@@ -2493,10 +2554,7 @@ mod tests {
             drop(pages);
             let reader = DirectoryReader::new(&backend, admission);
             assert!(
-                matches!(
-                    reader.get(root, DirectoryKey::row("t", b"k")),
-                    Err(CoreError::Corrupt(_))
-                ),
+                matches!(&(reader.get(root, DirectoryKey::row("t", b"k"))), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::Corrupt(_)))),
                 "corruption {corruption}"
             );
         }
@@ -2854,8 +2912,8 @@ mod tests {
     impl DirectoryBackend for FailingPages {
         fn read_page(&self, reference: DirectoryPageRef, out: &mut [u8]) -> Result<(), CoreError> {
             if self.fail_reads.load(AtomicOrdering::Relaxed) {
-                return Err(CoreError::Io(std::io::Error::other(
-                    "injected read failure",
+                return Err(CoreError::new(crate::CoreErrorCause::Io(
+                    std::io::Error::other("injected read failure"),
                 )));
             }
             self.inner.read_page(reference, out)
@@ -2868,14 +2926,16 @@ mod tests {
                     |remaining| remaining.checked_sub(1),
                 )
                 .map_err(|_| {
-                    CoreError::Io(std::io::Error::other("injected late append failure"))
+                    CoreError::new(crate::CoreErrorCause::Io(std::io::Error::other(
+                        "injected late append failure",
+                    )))
                 })?;
             self.inner.append_page(bytes)
         }
         fn sync_pages(&self) -> Result<(), CoreError> {
             if self.fail_sync.load(AtomicOrdering::Relaxed) {
-                return Err(CoreError::Io(std::io::Error::other(
-                    "injected sync failure",
+                return Err(CoreError::new(crate::CoreErrorCause::Io(
+                    std::io::Error::other("injected sync failure"),
                 )));
             }
             self.inner.sync_pages()
@@ -2917,15 +2977,18 @@ mod tests {
                     assert_eq!(next.entries, root.entries + 1);
                     successes += 1;
                 }
-                Err(CoreError::Io(_)) => {
+                Err(error)
+                    if matches!(error.rejected_cause(), Some(crate::CoreErrorCause::Io(_))) =>
+                {
                     if backend.inner.pages.lock().unwrap().len() > before {
                         failures_after_writes += 1;
                     }
-                    assert!(matches!(mutator.finish(root), Err(CoreError::OwnerFailed)));
-                    assert!(matches!(
-                        mutator.set(root, 3, DirectoryKey::table("t"), None),
-                        Err(CoreError::OwnerFailed)
-                    ));
+                    assert!(
+                        matches!(&(mutator.finish(root)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+                    );
+                    assert!(
+                        matches!(&(mutator.set(root, 3, DirectoryKey::table("t"), None)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+                    );
                 }
                 Err(error) => panic!("unexpected error: {error:?}"),
             }
@@ -2963,21 +3026,26 @@ mod tests {
             )
             .unwrap();
         backend.fail_sync.store(true, AtomicOrdering::Relaxed);
-        assert!(matches!(mutator.finish(next), Err(CoreError::Io(_))));
+        assert!(
+            matches!(&(mutator.finish(next)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::Io(_))))
+        );
         backend.fail_sync.store(false, AtomicOrdering::Relaxed);
-        assert!(matches!(mutator.finish(next), Err(CoreError::OwnerFailed)));
+        assert!(
+            matches!(&(mutator.finish(next)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+        );
         drop(mutator_workspace);
         let mut mutator_workspace = DirectoryWriteWorkspace::for_edits(admission.clone()).unwrap();
         let mut mutator = DirectoryMutator::new(&backend, &mut mutator_workspace).unwrap();
         backend.fail_reads.store(true, AtomicOrdering::Relaxed);
         let before = backend.inner.pages.lock().unwrap().len();
-        assert!(matches!(
-            mutator.set(root, 2, DirectoryKey::row(&table, &long_key(1)), None),
-            Err(CoreError::Io(_))
-        ));
+        assert!(
+            matches!(&(mutator.set(root, 2, DirectoryKey::row(&table, &long_key(1)), None)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::Io(_))))
+        );
         assert_eq!(backend.inner.pages.lock().unwrap().len(), before);
         backend.fail_reads.store(false, AtomicOrdering::Relaxed);
-        assert!(matches!(mutator.finish(root), Err(CoreError::OwnerFailed)));
+        assert!(
+            matches!(&(mutator.finish(root)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+        );
     }
 
     #[test]
@@ -2996,19 +3064,16 @@ mod tests {
             .unwrap();
         let before = backend.pages.lock().unwrap().len();
         for generation in [0, 1] {
-            assert!(matches!(
-                mutator.set(root, generation, DirectoryKey::table("t"), None),
-                Err(CoreError::InvalidInput(_))
-            ));
+            assert!(
+                matches!(&(mutator.set(root, generation, DirectoryKey::table("t"), None)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput(_))))
+            );
         }
-        assert!(matches!(
-            mutator.set(root, 3, DirectoryKey::row("t", b"k"), Some(value(4, 0))),
-            Err(CoreError::InvalidInput(_))
-        ));
-        assert!(matches!(
-            mutator.set(root, 3, DirectoryKey::table("t"), Some(value(3, 0))),
-            Err(CoreError::InvalidInput(_))
-        ));
+        assert!(
+            matches!(&(mutator.set(root, 3, DirectoryKey::row("t", b"k"), Some(value(4, 0)))), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput(_))))
+        );
+        assert!(
+            matches!(&(mutator.set(root, 3, DirectoryKey::table("t"), Some(value(3, 0)))), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput(_))))
+        );
         let unchanged = mutator
             .set(root, 3, DirectoryKey::row("t", b"missing"), None)
             .unwrap();
@@ -3028,19 +3093,17 @@ mod tests {
         drop(mutator_workspace);
         for limit in [1, 4096, 64 << 10, 96 << 10] {
             let bounded = Admission::new(limit);
-            assert!(matches!(
-                DirectoryWriteWorkspace::for_edits(bounded.clone()),
-                Err(CoreError::CapacityDenied)
-            ));
+            assert!(
+                matches!(&(DirectoryWriteWorkspace::for_edits(bounded.clone())), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::CapacityDenied)))
+            );
             assert_eq!(bounded.0.used.load(AtomicOrdering::Relaxed), 0);
             assert_eq!(backend.pages.lock().unwrap().len(), before);
         }
         let blocker = admission.reserve_workspace(64 << 10).unwrap();
         let reads = backend.reads.load(AtomicOrdering::Relaxed);
-        assert!(matches!(
-            DirectoryWriteWorkspace::for_edits(admission.clone()),
-            Err(CoreError::CapacityDenied)
-        ));
+        assert!(
+            matches!(&(DirectoryWriteWorkspace::for_edits(admission.clone())), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::CapacityDenied)))
+        );
         assert_eq!(backend.reads.load(AtomicOrdering::Relaxed), reads);
         assert_eq!(backend.pages.lock().unwrap().len(), before);
         admission.check_owner().unwrap();
@@ -3053,10 +3116,9 @@ mod tests {
         assert_eq!(retried.entries, root.entries + 1);
         let reader = DirectoryReader::new(&backend, admission.clone());
         admission.0.failed.store(true, AtomicOrdering::Relaxed);
-        assert!(matches!(
-            mutator.set(root, 3, DirectoryKey::table("t"), None),
-            Err(CoreError::OwnerFailed)
-        ));
+        assert!(
+            matches!(&(mutator.set(root, 3, DirectoryKey::table("t"), None)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+        );
         admission.0.failed.store(false, AtomicOrdering::Relaxed);
         assert_eq!(
             reader.get(root, DirectoryKey::table("t")).unwrap(),
@@ -3099,14 +3161,13 @@ mod tests {
             let mut mutator_workspace = DirectoryWriteWorkspace::for_edits(admission).unwrap();
             let mut mutator = DirectoryMutator::new(&backend, &mut mutator_workspace).unwrap();
             assert!(
-                matches!(
-                    mutator.set(root, 3, DirectoryKey::row("t", &long_key(1)), None),
-                    Err(CoreError::Corrupt(_))
-                ),
+                matches!(&(mutator.set(root, 3, DirectoryKey::row("t", &long_key(1)), None)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::Corrupt(_)))),
                 "corruption {corruption}"
             );
             assert_eq!(backend.pages.lock().unwrap().len(), before);
-            assert!(matches!(mutator.finish(root), Err(CoreError::OwnerFailed)));
+            assert!(
+                matches!(&(mutator.finish(root)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+            );
         }
     }
 
@@ -3160,14 +3221,17 @@ mod tests {
             let mut mutator = DirectoryMutator::new(&backend, &mut mutator_workspace).unwrap();
             let result = mutator.set(root, 2, DirectoryKey::row("t", b"k"), Some(value(2, 2)));
             if operation == 3 {
-                assert!(matches!(
-                    mutator.finish(result.unwrap()),
-                    Err(CoreError::OwnerFailed)
-                ));
+                assert!(
+                    matches!(&(mutator.finish(result.unwrap())), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+                );
             } else {
-                assert!(matches!(result, Err(CoreError::OwnerFailed)));
+                assert!(
+                    matches!(&(result), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+                );
             }
-            assert!(matches!(mutator.finish(root), Err(CoreError::OwnerFailed)));
+            assert!(
+                matches!(&(mutator.finish(root)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+            );
             drop(mutator_workspace);
             assert_eq!(admission.0.used.load(AtomicOrdering::Relaxed), 0);
             let reader = DirectoryReader::new(&backend.inner, Admission::new(128 << 10));
@@ -3195,13 +3259,14 @@ mod tests {
                 let root = builder.finish().unwrap();
                 backend.operation.store(operation, AtomicOrdering::Relaxed);
                 let reader = DirectoryReader::new(&backend, admission.clone());
-                assert!(matches!(
-                    reader.get(root, DirectoryKey::row("t", b"k")),
-                    Err(CoreError::OwnerFailed)
-                ));
+                assert!(
+                    matches!(&(reader.get(root, DirectoryKey::row("t", b"k"))), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+                );
             } else {
                 backend.operation.store(operation, AtomicOrdering::Relaxed);
-                assert!(matches!(builder.finish(), Err(CoreError::OwnerFailed)));
+                assert!(
+                    matches!(&(builder.finish()), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+                );
             }
             assert_eq!(admission.0.used.load(AtomicOrdering::Relaxed), 0);
         }

@@ -39,13 +39,15 @@ pub(crate) fn inspect_cached_value_identity<'a>(
     let table_len = usize::from(table_len);
     let key_len = usize::from(key_len);
     if table_len == 0 || table_len > MAX_TABLE_BYTES || key_len > MAX_KEY_BYTES {
-        return Err(CoreError::InvalidInput(
+        return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
             "cached value locator lengths are invalid",
-        ));
+        )));
     }
     location.validate()?;
     if cached_payload.len() != location.len as usize || crc32c(cached_payload) != location.crc {
-        return Err(CoreError::Corrupt("cached value payload identity differs"));
+        return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+            "cached value payload identity differs",
+        )));
     }
     let suffix_len = table_len + key_len;
     let put_bytes = RECORD_HEADER_BYTES + PUT_PREFIX_BYTES + suffix_len;
@@ -53,9 +55,9 @@ pub(crate) fn inspect_cached_value_identity<'a>(
         .offset
         .checked_sub(put_bytes as u64)
         .filter(|&at| at >= SEGMENT_HEADER_BYTES)
-        .ok_or(CoreError::Corrupt(
+        .ok_or(CoreError::new(crate::CoreErrorCause::Corrupt(
             "cached value envelope precedes its segment",
-        ))?;
+        )))?;
     let relocation_bytes = RECORD_HEADER_BYTES + RELOCATE_PREFIX_BYTES + suffix_len;
     let earliest_relocation = location
         .offset
@@ -66,7 +68,9 @@ pub(crate) fn inspect_cached_value_identity<'a>(
     let file = GroupFile::segment(location.segment_id);
     let file_len = backend.len(file)?;
     if file_len > SEGMENT_BYTES || location.end() > file_len {
-        return Err(CoreError::Corrupt("cached value exceeds its segment"));
+        return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+            "cached value exceeds its segment",
+        )));
     }
     backend.read(file, start, &mut workspace[..visible])?;
     let bytes = &workspace[..visible];
@@ -93,20 +97,33 @@ pub(crate) fn inspect_cached_value_identity<'a>(
             // The other fixed position can start in arbitrary predecessor
             // bytes. Even a checksum-valid malformed header there is not
             // evidence against a fully verified envelope at the real position.
-            Err(CoreError::Corrupt(_)) => None,
+            Err(error)
+                if matches!(
+                    error.rejected_cause(),
+                    Some(crate::CoreErrorCause::Corrupt(_))
+                ) =>
+            {
+                None
+            }
             Err(error) => return Err(error),
         };
         if let Some(logical_batch_seq) = inspected
             && sequence.replace(logical_batch_seq).is_some()
         {
-            return Err(CoreError::Corrupt("cached value envelope is ambiguous"));
+            return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                "cached value envelope is ambiguous",
+            )));
         }
     }
-    let logical_batch_seq =
-        sequence.ok_or(CoreError::Corrupt("cached value envelope identity differs"))?;
+    let logical_batch_seq = sequence.ok_or(CoreError::new(crate::CoreErrorCause::Corrupt(
+        "cached value envelope identity differs",
+    )))?;
     let suffix = &bytes[visible - suffix_len..];
-    let table = std::str::from_utf8(&suffix[..table_len])
-        .map_err(|_| CoreError::Corrupt("cached value table is not UTF-8"))?;
+    let table = std::str::from_utf8(&suffix[..table_len]).map_err(|_| {
+        CoreError::new(crate::CoreErrorCause::Corrupt(
+            "cached value table is not UTF-8",
+        ))
+    })?;
     Ok(CachedValueIdentity {
         table,
         key: &suffix[table_len..],
@@ -147,16 +164,18 @@ fn inspect_envelope(
         || inline[12..16].iter().any(|&byte| byte != 0)
         || head.body_len as usize != inline.len() + cached_payload.len()
     {
-        return Err(CoreError::Corrupt("cached value envelope fields differ"));
+        return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+            "cached value envelope fields differ",
+        )));
     }
     let logical_batch_seq = if kind == RecordKind::Put {
         head.batch_seq
     } else {
         let sequence = le_u64(&inline[PUT_PREFIX_BYTES..RELOCATE_PREFIX_BYTES]);
         if sequence == 0 || sequence > head.base_seq {
-            return Err(CoreError::Corrupt(
+            return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
                 "cached value logical version is invalid",
-            ));
+            )));
         }
         sequence
     };
@@ -164,7 +183,9 @@ fn inspect_envelope(
     checksum.update(inline);
     checksum.update(cached_payload);
     if checksum.finish() != head.body_crc {
-        return Err(CoreError::Corrupt("cached value envelope checksum differs"));
+        return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+            "cached value envelope checksum differs",
+        )));
     }
     Ok(Some(logical_batch_seq))
 }

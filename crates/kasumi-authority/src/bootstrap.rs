@@ -2,7 +2,7 @@
 use crate::{AuthorityBootstrap, AuthorityInstallation};
 use anyhow::{Context, Result, ensure};
 use kasumi_serving::{SigningCertificateVerification, TrustVerifierIdentity};
-use kasumi_store::{TenantStorageSet, WriteOp};
+use kasumi_store::{PlaintextValue, TenantStorageSet, WriteOp};
 use serde::{Deserialize, Serialize};
 
 const NS: &str = "authority.installation";
@@ -24,7 +24,7 @@ enum LocalBinding {
 
 pub(crate) struct Installed {
     pub bootstrap: AuthorityBootstrap,
-    pub binding: Vec<u8>,
+    pub binding: PlaintextValue,
     pub resource_floor: u64,
 }
 
@@ -97,7 +97,7 @@ pub(crate) fn load(
 ) -> Result<Installed> {
     installation.validate()?;
     verifier.validate()?;
-    let read_pair = |key: &[u8], limit| -> Result<Vec<u8>> {
+    let read_pair = |key: &[u8], limit| -> Result<PlaintextValue> {
         let app = stores
             .application()
             .get_bounded(NS, key, limit)?

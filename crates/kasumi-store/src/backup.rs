@@ -156,6 +156,7 @@ impl std::ops::Deref for AdmittedBackupBundle {
 /// latter path does not claim admission for that upstream read allocation.
 pub enum BackupUpload {
     Generated(AdmittedBackupBundle),
+    Audit(crate::AuditCiphertext),
     Received(Vec<u8>),
 }
 
@@ -167,6 +168,7 @@ impl BackupUpload {
     pub fn as_bytes(&self) -> &[u8] {
         match self {
             Self::Generated(bundle) => bundle.as_bytes(),
+            Self::Audit(ciphertext) => ciphertext.as_bytes(),
             Self::Received(bytes) => bytes,
         }
     }
@@ -174,6 +176,7 @@ impl BackupUpload {
     fn into_http_body(self) -> reqwest::Body {
         match self {
             Self::Generated(bundle) => reqwest::Body::from(bytes::Bytes::from_owner(bundle)),
+            Self::Audit(ciphertext) => reqwest::Body::from(bytes::Bytes::from_owner(ciphertext)),
             Self::Received(bytes) => reqwest::Body::from(bytes),
         }
     }
@@ -182,6 +185,12 @@ impl BackupUpload {
 impl From<AdmittedBackupBundle> for BackupUpload {
     fn from(bundle: AdmittedBackupBundle) -> Self {
         Self::Generated(bundle)
+    }
+}
+
+impl From<crate::AuditCiphertext> for BackupUpload {
+    fn from(ciphertext: crate::AuditCiphertext) -> Self {
+        Self::Audit(ciphertext)
     }
 }
 
@@ -1289,6 +1298,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn audit_http_body_keeps_shared_ciphertext_charge_after_origin_drops() {
+        let fixture = ManifestAdmissionFixture::new().await;
+        let baseline = fixture.memory.snapshot();
+        let mut builder = crate::AuditSegmentBuilder::new(Uuid::new_v4(), 0, None).unwrap();
+        builder
+            .push(0, b"audit retained by HTTP transport")
+            .unwrap();
+        let segment = fixture.store.encrypt_audit_segment(builder).unwrap();
+        let pointer = segment.ciphertext.as_ptr();
+        let body = BackupUpload::from(segment.ciphertext.share()).into_http_body();
+        drop(segment);
+        assert_eq!(body.as_bytes().unwrap().as_ptr(), pointer);
+        assert!(fixture.memory.snapshot().used_bytes > baseline.used_bytes);
+        drop(body);
+        assert_eq!(fixture.memory.snapshot().used_bytes, baseline.used_bytes);
+        assert_eq!(
+            fixture.memory.snapshot().live_reservations,
+            baseline.live_reservations
+        );
+    }
+
+    #[tokio::test]
     async fn serialized_bundle_requires_owner_headroom_and_retains_it_through_http_body() {
         let fixture = ManifestAdmissionFixture::new().await;
         let original = fixture.store.encrypt_backup(1, b"seed").unwrap();
@@ -1407,6 +1438,34 @@ mod tests {
                 self.backing.clone().reserve_installed(bytes)
             }
 
+            fn install_native_constructor(
+                self: Arc<Self>,
+                install: &mut crate::NativeConstructorInstall<'_>,
+            ) -> std::io::Result<()> {
+                let provider: Arc<dyn NodeDiskMemoryAdmission> = self.clone();
+                let permit = install
+                    .try_begin_bind(provider)
+                    .map_err(|_| std::io::ErrorKind::InvalidInput)?;
+                let requested_bytes = permit.request_bytes();
+                let call = self.calls.fetch_add(1, Ordering::SeqCst);
+                if call == self.fail_on.load(Ordering::SeqCst) {
+                    return Err(std::io::Error::other("installed owner failed"));
+                }
+                let bytes = crate::disk_memory::add(
+                    requested_bytes,
+                    crate::DiskMemoryLease::token_allocation_bytes::<crate::DiskMemoryLease>()?,
+                )?;
+                match self.backing.clone().reserve_installed(bytes) {
+                    Ok(token) => {
+                        permit.bind(token);
+                        Ok(())
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::OutOfMemory => {
+                        Err(permit.refuse_capacity(error))
+                    }
+                    Err(error) => Err(error),
+                }
+            }
             fn quote_cache_memory(
                 &self,
                 bytes: u64,

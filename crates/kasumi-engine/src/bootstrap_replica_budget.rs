@@ -83,7 +83,7 @@ impl Plan {
     }
 }
 
-pub(super) fn planned_config(
+pub(in crate::bootstrap) fn planned_config(
     persistent: &NodeDiskConfig,
     scratch: &ScratchDiskConfig,
 ) -> Result<AdmissionConfig> {

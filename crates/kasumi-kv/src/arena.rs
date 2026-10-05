@@ -6,12 +6,17 @@
 //! growth/descriptor custody belongs to the installed group backend. Root
 //! publication and reachability reclamation belong to its transaction owner.
 
+use crate::core::NativeResidentLease;
+#[cfg(test)]
+use crate::core::ResidentLease;
+use crate::native_owned_arc::NativeOwnedArc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use crate::core::{CoreError, ResidentLease, StorageAdmission};
+use crate::core::{CoreError, StorageAdmission};
 use crate::directory::{DIRECTORY_PAGE_BYTES, DirectoryBackend, DirectoryPageRef, page_digest};
 use crate::group::{GroupFile, SegmentGroupBackend};
+use crate::native_backend::BackendRef;
 use crate::segment::{crc32c, le_u32, le_u64};
 
 const MAGIC: [u8; 16] = *b"KASUMI-KVARENA01";
@@ -30,6 +35,23 @@ const ALLOCATION_ALLOWANCE: usize = 64;
 pub(crate) trait DirectoryArenaRoll: Send + Sync {
     fn reserve(&self) -> Result<u64, CoreError>;
     fn confirm(&self, arena_id: u64) -> Result<(), CoreError>;
+}
+
+impl<T: DirectoryArenaRoll + ?Sized> DirectoryArenaRoll for Arc<T> {
+    fn reserve(&self) -> Result<u64, CoreError> {
+        (**self).reserve()
+    }
+    fn confirm(&self, id: u64) -> Result<(), CoreError> {
+        (**self).confirm(id)
+    }
+}
+impl<T: DirectoryArenaRoll> DirectoryArenaRoll for NativeOwnedArc<T> {
+    fn reserve(&self) -> Result<u64, CoreError> {
+        (**self).reserve()
+    }
+    fn confirm(&self, id: u64) -> Result<(), CoreError> {
+        (**self).confirm(id)
+    }
 }
 
 struct ActiveArena {
@@ -73,8 +95,8 @@ pub(crate) struct DirectoryArenaStats {
 }
 
 pub(crate) struct DirectoryArenaBackend {
-    backend: Arc<dyn SegmentGroupBackend>,
-    roll: Arc<dyn DirectoryArenaRoll>,
+    backend: BackendRef,
+    roll: Box<dyn DirectoryArenaRoll>,
     admission: Arc<dyn StorageAdmission>,
     group_id: [u8; 16],
     writer: Mutex<Writer>,
@@ -86,34 +108,48 @@ pub(crate) struct DirectoryArenaBackend {
     pages_read: AtomicU64,
     pages_written: AtomicU64,
     syncs: AtomicU64,
-    _lease: Box<dyn ResidentLease>,
+    _lease: Option<NativeResidentLease>,
 }
 
+#[path = "arena_opening.rs"]
+mod opening;
+pub(crate) use opening::ArenaOpening;
+
 impl DirectoryArenaBackend {
-    pub(crate) fn new(
+    #[cfg(test)]
+    pub(crate) fn _lease_address_for_test(&self) -> usize {
+        self._lease
+            .as_ref()
+            .expect("original arena grant")
+            .allocation_address_for_test()
+    }
+    #[cfg(test)]
+    pub(crate) fn roll_address_for_test(&self) -> usize {
+        self.roll.as_ref() as *const dyn DirectoryArenaRoll as *const () as usize
+    }
+    // The erased roll allocation belongs to this adapter's grant, which
+    // remains alive through its actual Box disposal. Its root owner retains
+    // the independent admission for the original root allocation.
+    pub(crate) const fn request_bytes<R: DirectoryArenaRoll>() -> u64 {
+        (std::mem::size_of::<Self>()
+            + 2 * std::mem::size_of::<usize>()
+            + std::mem::size_of::<R>()
+            + LEASE_ALLOWANCE
+            + 2 * ALLOCATION_ALLOWANCE
+            + 2 * crate::native_sync::mutex_backing_bytes()) as u64
+    }
+    #[cfg(test)]
+    #[allow(
+        clippy::result_large_err,
+        reason = "The fixture retains the actual opening and cleanup inline until observed disposal."
+    )]
+    pub(crate) fn new<R: DirectoryArenaRoll + 'static>(
         backend: Arc<dyn SegmentGroupBackend>,
-        roll: Arc<dyn DirectoryArenaRoll>,
+        roll: R,
         admission: Arc<dyn StorageAdmission>,
         group_id: [u8; 16],
-    ) -> Result<Self, CoreError> {
-        check_owner(&admission)?;
-        let lease = admission.reserve_workspace(
-            (std::mem::size_of::<Self>() + LEASE_ALLOWANCE + ALLOCATION_ALLOWANCE) as u64,
-        )?;
-        check_owner(&admission)?;
-        Ok(Self {
-            backend,
-            roll,
-            admission,
-            group_id,
-            writer: Mutex::new(Writer::default()),
-            read_header: Mutex::new([0; HEADER_BYTES]),
-            max_pages: MAX_PAGES,
-            pages_read: AtomicU64::new(0),
-            pages_written: AtomicU64::new(0),
-            syncs: AtomicU64::new(0),
-            _lease: lease,
-        })
+    ) -> Result<Self, opening::ArenaOpeningFailure<R>> {
+        opening::fixture_new(backend, roll, admission, group_id)
     }
 
     /// Observe counters without allocation, reservation, or backend I/O.
@@ -133,10 +169,13 @@ impl DirectoryArenaBackend {
     /// append has an identity beyond its recorded evacuation cutoff.
     pub(crate) fn force_roll(&self) -> Result<(), CoreError> {
         check_owner(&self.admission)?;
-        let mut writer = self.writer.lock().map_err(|_| CoreError::OwnerFailed)?;
+        let mut writer = self
+            .writer
+            .lock()
+            .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?;
         check_owner(&self.admission)?;
         if writer.poisoned {
-            return Err(CoreError::OwnerFailed);
+            return Err(CoreError::new(crate::CoreErrorCause::OwnerFailed));
         }
         let result = self.roll(&mut writer);
         if result.is_err() {
@@ -154,9 +193,9 @@ impl DirectoryArenaBackend {
         let id = self.roll.reserve()?;
         check_owner(&self.admission)?;
         if id == 0 || id == u64::MAX {
-            return Err(CoreError::Corrupt(
+            return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
                 "directory owner allocated an invalid identifier",
-            ));
+            )));
         }
         let file = GroupFile::directory(id);
         self.backend.create(file)?;
@@ -203,19 +242,23 @@ impl DirectoryBackend for DirectoryArenaBackend {
     fn read_page(&self, reference: DirectoryPageRef, out: &mut [u8]) -> Result<(), CoreError> {
         check_owner(&self.admission)?;
         if out.len() != DIRECTORY_PAGE_BYTES {
-            return Err(CoreError::InvalidInput("directory read requires one page"));
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
+                "directory read requires one page",
+            )));
         }
         if reference.arena_id == 0
             || reference.arena_id == u64::MAX
             || reference.page_index >= MAX_PAGES
         {
-            return Err(CoreError::Corrupt("directory page is outside its arena"));
+            return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                "directory page is outside its arena",
+            )));
         }
         let file = GroupFile::directory(reference.arena_id);
         let mut header = self
             .read_header
             .lock()
-            .map_err(|_| CoreError::OwnerFailed)?;
+            .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?;
         // The owner may have expired while this reader waited for scratch.
         check_owner(&self.admission)?;
         self.backend.read(file, 0, &mut *header)?;
@@ -226,13 +269,17 @@ impl DirectoryBackend for DirectoryArenaBackend {
         let len = self.backend.len(file)?;
         check_owner(&self.admission)?;
         if len < at + DIRECTORY_PAGE_BYTES as u64 || len > ARENA_BYTES {
-            return Err(CoreError::Corrupt("directory arena length is invalid"));
+            return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                "directory arena length is invalid",
+            )));
         }
         self.backend.read(file, at, out)?;
         record_io(&self.pages_read);
         check_owner(&self.admission)?;
         if page_digest(out) != reference.sha256 {
-            return Err(CoreError::Corrupt("directory page digest differs"));
+            return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                "directory page digest differs",
+            )));
         }
         Ok(())
     }
@@ -240,14 +287,17 @@ impl DirectoryBackend for DirectoryArenaBackend {
     fn append_page(&self, bytes: &[u8]) -> Result<DirectoryPageRef, CoreError> {
         check_owner(&self.admission)?;
         if bytes.len() != DIRECTORY_PAGE_BYTES {
-            return Err(CoreError::InvalidInput(
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
                 "directory append requires one page",
-            ));
+            )));
         }
-        let mut writer = self.writer.lock().map_err(|_| CoreError::OwnerFailed)?;
+        let mut writer = self
+            .writer
+            .lock()
+            .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?;
         check_owner(&self.admission)?;
         if writer.poisoned {
-            return Err(CoreError::OwnerFailed);
+            return Err(CoreError::new(crate::CoreErrorCause::OwnerFailed));
         }
         let result = self.append(&mut writer, bytes);
         // Even an error after a private append fences this writer: retrying
@@ -260,9 +310,12 @@ impl DirectoryBackend for DirectoryArenaBackend {
 
     fn sync_pages(&self) -> Result<(), CoreError> {
         check_owner(&self.admission)?;
-        let mut writer = self.writer.lock().map_err(|_| CoreError::OwnerFailed)?;
+        let mut writer = self
+            .writer
+            .lock()
+            .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?;
         if writer.poisoned {
-            return Err(CoreError::OwnerFailed);
+            return Err(CoreError::new(crate::CoreErrorCause::OwnerFailed));
         }
         let result = (|| {
             if let Some(active) = &writer.active {
@@ -298,11 +351,13 @@ pub(crate) fn recover_directory_intent(
 ) -> Result<(), CoreError> {
     check_owner(admission)?;
     if arena_id == 0 || arena_id == u64::MAX {
-        return Err(CoreError::InvalidInput(
+        return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
             "directory intent identifier is invalid",
-        ));
+        )));
     }
-    let _workspace = admission.reserve_workspace((2 * HEADER_BYTES + LEASE_ALLOWANCE) as u64)?;
+    let _workspace = admission
+        .reserve_workspace((2 * HEADER_BYTES + LEASE_ALLOWANCE) as u64)
+        .map(NativeResidentLease::new)?;
     check_owner(admission)?;
     let expected = encode_header(group_id, arena_id);
     let file = GroupFile::directory(arena_id);
@@ -312,17 +367,17 @@ pub(crate) fn recover_directory_intent(
         let len = backend.len(file)?;
         check_owner(admission)?;
         if len > HEADER_BYTES as u64 {
-            return Err(CoreError::Corrupt(
+            return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
                 "unconfirmed directory holds page payload",
-            ));
+            )));
         }
         let mut observed = [0u8; HEADER_BYTES];
         backend.read(file, 0, &mut observed[..len as usize])?;
         check_owner(admission)?;
         if observed[..len as usize] != expected[..len as usize] {
-            return Err(CoreError::Corrupt(
+            return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
                 "unconfirmed directory holds bytes other than its header",
-            ));
+            )));
         }
         // A prior create may have failed after establishing a visible name
         // whose parent sync was not durable. Validate before adopting it.
@@ -339,7 +394,9 @@ pub(crate) fn recover_directory_intent(
 }
 
 fn check_owner(admission: &Arc<dyn StorageAdmission>) -> Result<(), CoreError> {
-    admission.check_owner().map_err(|_| CoreError::OwnerFailed)
+    admission
+        .check_owner()
+        .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))
 }
 
 fn encode_header(group_id: [u8; 16], arena_id: u64) -> [u8; HEADER_BYTES] {
@@ -373,7 +430,9 @@ fn validate_header(
         || bytes[52..CHECKSUM_AT].iter().any(|&byte| byte != 0)
         || le_u32(&bytes[CHECKSUM_AT..]) != crc32c(&bytes[..CHECKSUM_AT])
     {
-        return Err(CoreError::Corrupt("directory arena header is invalid"));
+        return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+            "directory arena header is invalid",
+        )));
     }
     Ok(())
 }
@@ -508,8 +567,7 @@ mod tests {
         assert_eq!(admission.workspace_calls.load(Ordering::SeqCst), 1);
         assert_eq!(
             admission.last_workspace_bytes.load(Ordering::SeqCst),
-            (std::mem::size_of::<DirectoryArenaBackend>() + LEASE_ALLOWANCE + ALLOCATION_ALLOWANCE)
-                as u64
+            DirectoryArenaBackend::request_bytes::<Arc<Roll>>()
         );
         assert!(admission.last_workspace_bytes.load(Ordering::SeqCst) >= HEADER_BYTES as u64);
         let references = [1, 2, 3].map(|byte| {
@@ -552,10 +610,9 @@ mod tests {
             )
             .unwrap();
         let mut out = [0; DIRECTORY_PAGE_BYTES];
-        assert!(matches!(
-            arena.read_page(reference, &mut out),
-            Err(CoreError::Corrupt(_))
-        ));
+        assert!(
+            matches!(&(arena.read_page(reference, &mut out)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::Corrupt(_))))
+        );
         assert_eq!(out, [0; DIRECTORY_PAGE_BYTES]);
         group
             .write(
@@ -579,7 +636,9 @@ mod tests {
             expire: Mutex::new(None),
             effects: Mutex::new(Vec::new()),
         });
-        arena.backend = backend.clone();
+        arena.backend = BackendRef::Original(
+            crate::native_backend::OriginalBackend::ComponentFixture(backend.clone()),
+        );
         assert!(
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 let _header = arena.read_header.lock().unwrap();
@@ -589,10 +648,9 @@ mod tests {
         );
         let mut out = [0; DIRECTORY_PAGE_BYTES];
         for _ in 0..2 {
-            assert!(matches!(
-                arena.read_page(reference, &mut out),
-                Err(CoreError::OwnerFailed)
-            ));
+            assert!(
+                matches!(&(arena.read_page(reference, &mut out)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+            );
         }
         assert!(backend.effects.lock().unwrap().is_empty());
         assert_eq!(out, [0; DIRECTORY_PAGE_BYTES]);
@@ -622,10 +680,9 @@ mod tests {
         }
         let mut wrong = first;
         wrong.sha256[0] ^= 1;
-        assert!(matches!(
-            arena.read_page(wrong, &mut bytes),
-            Err(CoreError::Corrupt(_))
-        ));
+        assert!(
+            matches!(&(arena.read_page(wrong, &mut bytes)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::Corrupt(_))))
+        );
         assert_eq!(
             arena.stats().unwrap(),
             DirectoryArenaStats {
@@ -714,7 +771,9 @@ mod tests {
             }
         );
         admission.owner_failed();
-        assert!(matches!(arena.stats(), Err(CoreError::OwnerFailed)));
+        assert!(
+            matches!(&(arena.stats()), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+        );
     }
 
     #[test]
@@ -824,12 +883,15 @@ mod tests {
                     group.fail(op, 1, timing);
                     assert!(arena.force_roll().is_err(), "{existing} {op:?} {timing:?}");
                     assert!(arena.writer.lock().unwrap().poisoned);
-                    assert!(matches!(arena.force_roll(), Err(CoreError::OwnerFailed)));
-                    assert!(matches!(
-                        arena.append_page(&[2; DIRECTORY_PAGE_BYTES]),
-                        Err(CoreError::OwnerFailed)
-                    ));
-                    assert!(matches!(arena.sync_pages(), Err(CoreError::OwnerFailed)));
+                    assert!(
+                        matches!(&(arena.force_roll()), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+                    );
+                    assert!(
+                        matches!(&(arena.append_page(&[2; DIRECTORY_PAGE_BYTES])), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+                    );
+                    assert!(
+                        matches!(&(arena.sync_pages()), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+                    );
                 }
             }
         }
@@ -840,7 +902,9 @@ mod tests {
         let (group, roll, admission, arena) = setup();
         let names = group.entries().unwrap();
         admission.owner_failed();
-        assert!(matches!(arena.force_roll(), Err(CoreError::OwnerFailed)));
+        assert!(
+            matches!(&(arena.force_roll()), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+        );
         assert_eq!(group.entries().unwrap(), names);
         assert_eq!(roll.root.lock().unwrap().generation(), 0);
 
@@ -853,7 +917,9 @@ mod tests {
             }))
             .is_err()
         );
-        assert!(matches!(arena.force_roll(), Err(CoreError::OwnerFailed)));
+        assert!(
+            matches!(&(arena.force_roll()), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+        );
         assert_eq!(group.entries().unwrap(), names);
         assert_eq!(roll.root.lock().unwrap().generation(), 0);
     }
@@ -903,7 +969,9 @@ mod tests {
                 } else {
                     arena.append_page(&[3; DIRECTORY_PAGE_BYTES]).map(|_| ())
                 };
-                assert!(matches!(result, Err(CoreError::OwnerFailed)));
+                assert!(
+                    matches!(&(result), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+                );
                 assert_eq!(*roll.root.lock().unwrap(), before);
                 assert_eq!(group.entries().unwrap(), names);
                 assert_eq!(group.durable_len(GroupFile::directory(1)), durable);
@@ -918,15 +986,12 @@ mod tests {
         let names = group.entries().unwrap();
         let before = roll.root.lock().unwrap().clone();
         admission.deny_workspace.store(true, Ordering::SeqCst);
-        assert!(matches!(
-            DirectoryArenaBackend::new(
+        assert!(matches!(&(DirectoryArenaBackend::new(
                 Arc::new(group.clone()),
                 roll.clone(),
                 admission.clone(),
                 GROUP
-            ),
-            Err(CoreError::CapacityDenied)
-        ));
+            )), Err(native_error) if matches!(native_error.original_error().rejected_cause(), Some(crate::CoreErrorCause::CapacityDenied))));
         assert_eq!(group.entries().unwrap(), names);
         assert_eq!(*roll.root.lock().unwrap(), before);
         admission.deny_workspace.store(false, Ordering::SeqCst);
@@ -951,10 +1016,7 @@ mod tests {
                     let (group, roll, _, arena) = setup();
                     group.fail(op, occurrence, timing);
                     assert!(
-                        matches!(
-                            arena.append_page(&[1; DIRECTORY_PAGE_BYTES]),
-                            Err(CoreError::UnknownCommit(_))
-                        ),
+                        matches!(&(arena.append_page(&[1; DIRECTORY_PAGE_BYTES])), Err(native_error) if native_error.is_unknown_commit()),
                         "{op:?} {timing:?} {occurrence}"
                     );
                     assert_eq!(
@@ -967,11 +1029,12 @@ mod tests {
                     );
                     assert_eq!(roll.root.lock().unwrap().pending_directory(), Some(1));
                     assert!(arena.writer.lock().unwrap().active.is_none());
-                    assert!(matches!(
-                        arena.append_page(&[2; DIRECTORY_PAGE_BYTES]),
-                        Err(CoreError::OwnerFailed)
-                    ));
-                    assert!(matches!(arena.sync_pages(), Err(CoreError::OwnerFailed)));
+                    assert!(
+                        matches!(&(arena.append_page(&[2; DIRECTORY_PAGE_BYTES])), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+                    );
+                    assert!(
+                        matches!(&(arena.sync_pages()), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+                    );
                     assert!(!group.exists(GroupFile::directory(2)).unwrap());
                 }
             }
@@ -1001,11 +1064,12 @@ mod tests {
                         }
                 )
             );
-            assert!(matches!(
-                arena.append_page(&[4; DIRECTORY_PAGE_BYTES]),
-                Err(CoreError::OwnerFailed)
-            ));
-            assert!(matches!(arena.sync_pages(), Err(CoreError::OwnerFailed)));
+            assert!(
+                matches!(&(arena.append_page(&[4; DIRECTORY_PAGE_BYTES])), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+            );
+            assert!(
+                matches!(&(arena.sync_pages()), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+            );
         }
     }
 
@@ -1135,8 +1199,12 @@ mod tests {
                     expire: Mutex::new(Some(effect)),
                     effects: Mutex::new(Vec::new()),
                 });
-                arena.backend = backend.clone();
-                assert!(matches!(arena.force_roll(), Err(CoreError::OwnerFailed)));
+                arena.backend = BackendRef::Original(
+                    crate::native_backend::OriginalBackend::ComponentFixture(backend.clone()),
+                );
+                assert!(
+                    matches!(&(arena.force_roll()), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+                );
                 assert_eq!(*backend.effects.lock().unwrap(), effects[..=index]);
                 assert!(arena.writer.lock().unwrap().poisoned);
                 if existing {
@@ -1144,11 +1212,12 @@ mod tests {
                 } else {
                     assert_eq!(roll.root.lock().unwrap().pending_directory(), Some(1));
                 }
-                assert!(matches!(arena.force_roll(), Err(CoreError::OwnerFailed)));
-                assert!(matches!(
-                    arena.append_page(&[2; DIRECTORY_PAGE_BYTES]),
-                    Err(CoreError::OwnerFailed)
-                ));
+                assert!(
+                    matches!(&(arena.force_roll()), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+                );
+                assert!(
+                    matches!(&(arena.append_page(&[2; DIRECTORY_PAGE_BYTES])), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+                );
                 assert_eq!(*backend.effects.lock().unwrap(), effects[..=index]);
             }
         }
@@ -1170,11 +1239,12 @@ mod tests {
                 expire: Mutex::new(Some(effect)),
                 effects: Mutex::new(Vec::new()),
             });
-            arena.backend = backend.clone();
-            assert!(matches!(
-                arena.append_page(&[1; DIRECTORY_PAGE_BYTES]),
-                Err(CoreError::OwnerFailed)
-            ));
+            arena.backend = BackendRef::Original(
+                crate::native_backend::OriginalBackend::ComponentFixture(backend.clone()),
+            );
+            assert!(
+                matches!(&(arena.append_page(&[1; DIRECTORY_PAGE_BYTES])), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+            );
             assert_eq!(*backend.effects.lock().unwrap(), write_effects[..=index]);
             assert!(arena.writer.lock().unwrap().poisoned);
             assert_eq!(
@@ -1185,10 +1255,9 @@ mod tests {
                     Some(1)
                 }
             );
-            assert!(matches!(
-                arena.append_page(&[2; DIRECTORY_PAGE_BYTES]),
-                Err(CoreError::OwnerFailed)
-            ));
+            assert!(
+                matches!(&(arena.append_page(&[2; DIRECTORY_PAGE_BYTES])), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+            );
             assert_eq!(*backend.effects.lock().unwrap(), write_effects[..=index]);
         }
 
@@ -1202,12 +1271,13 @@ mod tests {
                 expire: Mutex::new(Some(effect)),
                 effects: Mutex::new(Vec::new()),
             });
-            arena.backend = backend.clone();
+            arena.backend = BackendRef::Original(
+                crate::native_backend::OriginalBackend::ComponentFixture(backend.clone()),
+            );
             let mut bytes = [0; DIRECTORY_PAGE_BYTES];
-            assert!(matches!(
-                arena.read_page(reference, &mut bytes),
-                Err(CoreError::OwnerFailed)
-            ));
+            assert!(
+                matches!(&(arena.read_page(reference, &mut bytes)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+            );
             assert_eq!(*backend.effects.lock().unwrap(), read_effects[..=index]);
         }
     }
@@ -1288,11 +1358,12 @@ mod tests {
                     arena.append_page(&[3; DIRECTORY_PAGE_BYTES]).is_err(),
                     "{op:?} {timing:?}"
                 );
-                assert!(matches!(
-                    arena.append_page(&[4; DIRECTORY_PAGE_BYTES]),
-                    Err(CoreError::OwnerFailed)
-                ));
-                assert!(matches!(arena.sync_pages(), Err(CoreError::OwnerFailed)));
+                assert!(
+                    matches!(&(arena.append_page(&[4; DIRECTORY_PAGE_BYTES])), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+                );
+                assert!(
+                    matches!(&(arena.sync_pages()), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+                );
             }
         }
         for timing in [FaultTiming::BeforeEffect, FaultTiming::AfterEffect] {
@@ -1300,15 +1371,16 @@ mod tests {
             arena.append_page(&[3; DIRECTORY_PAGE_BYTES]).unwrap();
             group.fail(GroupOp::Write, 1, timing);
             assert!(arena.append_page(&[4; DIRECTORY_PAGE_BYTES]).is_err());
-            assert!(matches!(arena.sync_pages(), Err(CoreError::OwnerFailed)));
+            assert!(
+                matches!(&(arena.sync_pages()), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+            );
             let (group, _, _, arena) = setup();
             arena.append_page(&[3; DIRECTORY_PAGE_BYTES]).unwrap();
             group.fail(GroupOp::Sync, 1, timing);
             assert!(arena.sync_pages().is_err());
-            assert!(matches!(
-                arena.append_page(&[4; DIRECTORY_PAGE_BYTES]),
-                Err(CoreError::OwnerFailed)
-            ));
+            assert!(
+                matches!(&(arena.append_page(&[4; DIRECTORY_PAGE_BYTES])), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+            );
         }
     }
 
@@ -1320,16 +1392,14 @@ mod tests {
         let mut out = [0; DIRECTORY_PAGE_BYTES];
         let mut wrong = reference;
         wrong.sha256[0] ^= 1;
-        assert!(matches!(
-            arena.read_page(wrong, &mut out),
-            Err(CoreError::Corrupt(_))
-        ));
+        assert!(
+            matches!(&(arena.read_page(wrong, &mut out)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::Corrupt(_))))
+        );
         wrong = reference;
         wrong.page_index = u64::MAX;
-        assert!(matches!(
-            arena.read_page(wrong, &mut out),
-            Err(CoreError::Corrupt(_))
-        ));
+        assert!(
+            matches!(&(arena.read_page(wrong, &mut out)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::Corrupt(_))))
+        );
         group
             .write(
                 GroupFile::directory(reference.arena_id),
@@ -1337,15 +1407,13 @@ mod tests {
                 &encode_header([9; 16], reference.arena_id),
             )
             .unwrap();
-        assert!(matches!(
-            arena.read_page(reference, &mut out),
-            Err(CoreError::Corrupt(_))
-        ));
+        assert!(
+            matches!(&(arena.read_page(reference, &mut out)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::Corrupt(_))))
+        );
         admission.owner_failed();
-        assert!(matches!(
-            arena.read_page(reference, &mut out),
-            Err(CoreError::OwnerFailed)
-        ));
+        assert!(
+            matches!(&(arena.read_page(reference, &mut out)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+        );
     }
 
     #[test]
@@ -1377,10 +1445,9 @@ mod tests {
         ] {
             let group = InMemoryGroup::new();
             group.insert_foreign(file, image.clone());
-            assert!(matches!(
-                recover_directory_intent(&group, &admission, GROUP, file.id),
-                Err(CoreError::Corrupt(_))
-            ));
+            assert!(
+                matches!(&(recover_directory_intent(&group, &admission, GROUP, file.id)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::Corrupt(_))))
+            );
             assert_eq!(group.durable_image(file), Some(image));
         }
     }
@@ -1424,10 +1491,9 @@ mod tests {
         let concrete = Arc::new(Admission::default());
         let admission: Arc<dyn StorageAdmission> = concrete.clone();
         concrete.deny_workspace.store(true, Ordering::SeqCst);
-        assert!(matches!(
-            recover_directory_intent(&group, &admission, GROUP, 1),
-            Err(CoreError::CapacityDenied)
-        ));
+        assert!(
+            matches!(&(recover_directory_intent(&group, &admission, GROUP, 1)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::CapacityDenied)))
+        );
         assert!(!group.exists(GroupFile::directory(1)).unwrap());
         concrete.deny_workspace.store(false, Ordering::SeqCst);
         for effect in [
@@ -1454,10 +1520,9 @@ mod tests {
                     encode_header(GROUP, 1)[..40].to_vec(),
                 );
             }
-            assert!(matches!(
-                recover_directory_intent(&backend, &admission, GROUP, 1),
-                Err(CoreError::OwnerFailed)
-            ));
+            assert!(
+                matches!(&(recover_directory_intent(&backend, &admission, GROUP, 1)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+            );
             assert_eq!(backend.effects.lock().unwrap().last(), Some(&effect));
         }
     }
@@ -1530,16 +1595,14 @@ mod tests {
             assert_eq!(*roll.root.lock().unwrap(), root);
         }
         arena.writer.lock().unwrap().poisoned = true;
-        assert!(matches!(
-            arena.transaction_space(1, 1),
-            Err(CoreError::OwnerFailed)
-        ));
+        assert!(
+            matches!(&(arena.transaction_space(1, 1)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+        );
         assert_eq!(*roll.root.lock().unwrap(), root);
         admission.failed.store(true, Ordering::SeqCst);
-        assert!(matches!(
-            arena.transaction_space(1, 0),
-            Err(CoreError::OwnerFailed)
-        ));
+        assert!(
+            matches!(&(arena.transaction_space(1, 0)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+        );
     }
 }
 

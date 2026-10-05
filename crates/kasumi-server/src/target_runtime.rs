@@ -12,8 +12,8 @@ use crate::{
 };
 use anyhow::{Context, Result, ensure};
 use kasumi_engine::{
-    TargetJournal, TargetJournalInstallation, TargetOperation, TargetReplica,
-    TargetRequestAdmission, TargetSigner, admission::NodeAdmission,
+    SnapshotFailure, TargetJournal, TargetOperation, TargetReplica, TargetRequestAdmission,
+    TargetSigner, admission::NodeAdmission,
 };
 use kasumi_serving::*;
 use kasumi_store::{
@@ -51,8 +51,8 @@ fn trace_owned_stage<T, E: std::fmt::Display>(
                 "target owned stage command={command_id} stage={stage} elapsed_ms={} outcome=ok",
                 elapsed.as_millis()
             ),
-            Err(error) => eprintln!(
-                "target owned stage command={command_id} stage={stage} elapsed_ms={} error={error:#}",
+            Err(_error) => eprintln!(
+                "target owned stage command={command_id} stage={stage} elapsed_ms={} outcome=error",
                 elapsed.as_millis()
             ),
         }
@@ -61,6 +61,23 @@ fn trace_owned_stage<T, E: std::fmt::Display>(
 #[path = "target_call_jobs.rs"]
 mod target_call_jobs;
 use target_call_jobs::TargetCallJobs;
+#[path = "target_call_failure.rs"]
+mod target_call_failure;
+pub(crate) use target_call_failure::TargetCallFailure;
+pub use target_call_failure::TargetCallReport;
+use target_call_failure::{TargetCallSeat, TargetTaskFailure};
+type SnapshotResult<T> = std::result::Result<T, SnapshotFailure>;
+type TargetTaskResult<T> = std::result::Result<T, TargetTaskFailure>;
+macro_rules! snapshot_ensure {
+    ($condition:expr, $($message:tt)*) => {
+        if !$condition { return Err(missing_target_owner(format!($($message)*)).into()); }
+    };
+}
+// These are local guard producers. No incoming source error is replaced.
+// The ordinary HTTP adapter previously used Unavailable for these messages.
+fn missing_target_owner(message: impl Into<String>) -> Error {
+    Error::new(ErrorCode::Unavailable, message)
+}
 #[path = "target_membership_status.rs"]
 mod initial_membership_status;
 #[path = "target_start_status.rs"]
@@ -79,7 +96,9 @@ struct Generation {
     lease: Option<Arc<crate::serving_runtime::RuntimeLease>>,
     registered_data: Option<(GenerationKey, Arc<kasumi_engine::Database>)>,
     phase: Option<Arc<RuntimeTargetPhase>>,
-    node: Option<Arc<NodeStore>>,
+    node: Option<NodeStore>,
+    // Same original census disposition after releasing the live facade.
+    node_retirement: Option<kasumi_store::NodeRetirement>,
     // Consumed only from the journal's original Created outcome. A lost
     // attempt cannot recover creation permission from missing catalogs.
     fresh_catalogs: bool,
@@ -310,20 +329,25 @@ impl Generation {
             }
         }
         self.fresh_catalogs = false;
-        if retained.is_none()
-            && let Some(node) = self.node.take()
-        {
-            match Arc::try_unwrap(node) {
-                Ok(node) => drop(node),
-                Err(node) => {
-                    self.node = Some(node);
-                    retained = Some(DrainFailure::retained(self.report.record(
-                        "target physical owner",
-                        0,
-                        anyhow::anyhow!("target file still has an actual detached owner"),
-                    )));
-                }
+        if retained.is_none() {
+            if let Some(original) = &mut self.node_retirement {
+                original.retry();
+            } else if let Some(node) = self.node.take() {
+                self.node_retirement = Some(node.retire());
             }
+            if let Some(original) = &self.node_retirement
+                && !original.is_retired()
+            {
+                // Only the exact census receipt closes this boundary.
+                // Busy, aliases and a missing body remain unproved.
+                retained = Some(DrainFailure::retained(self.report.record(
+                    "target physical owner",
+                    0,
+                    anyhow::anyhow!("target node original allocation remains retained"),
+                )));
+            }
+            // Keep the actual positive receipt in this generation. An earlier
+            // independent locator cannot recover it from a now-vacant cell.
         }
         self.report.outcome(retained)
     }
@@ -348,10 +372,18 @@ pub(crate) struct TargetRuntimeReply {
     bearer: Zeroizing<String>,
     evidence: ResponseEvidence,
     permit: Option<tokio::sync::OwnedSemaphorePermit>,
+    failure: TargetCallSeat,
 }
 impl TargetRuntimeReply {
-    pub(crate) async fn release(&self) -> Result<()> {
-        ensure!(
+    pub(crate) async fn release(&self) -> std::result::Result<(), TargetCallFailure> {
+        self.failure
+            .begin()?
+            .run(self.release_inner())
+            .await?
+            .claim()
+    }
+    async fn release_inner(&self) -> SnapshotResult<()> {
+        snapshot_ensure!(
             !self.runtime.closing.load(Ordering::Acquire),
             "target runtime closing"
         );
@@ -384,17 +416,23 @@ impl TargetRuntimeReply {
                 let key = (query.request.tenant.clone(), query.target_incarnation);
                 let owner = self
                     .operation
-                    .run(async {
-                        self.runtime
+                    .run::<_, SnapshotFailure>(async {
+                        Ok(self
+                            .runtime
                             .generations
                             .lock()
                             .await
                             .get(&key)
                             .cloned()
-                            .context("original Start generation is no longer owned")
+                            .ok_or_else(|| {
+                                missing_target_owner("original Start generation is no longer owned")
+                            })?)
                     })
                     .await?;
-                let generation = self.operation.run(async { Ok(owner.lock().await) }).await?;
+                let generation = self
+                    .operation
+                    .run::<_, SnapshotFailure>(async { Ok(owner.lock().await) })
+                    .await?;
                 self.runtime
                     .check_initial_start_status(
                         &generation,
@@ -409,17 +447,23 @@ impl TargetRuntimeReply {
                 let key = (query.request.tenant.clone(), query.target_incarnation);
                 let owner = self
                     .operation
-                    .run(async {
-                        self.runtime
+                    .run::<_, SnapshotFailure>(async {
+                        Ok(self
+                            .runtime
                             .generations
                             .lock()
                             .await
                             .get(&key)
                             .cloned()
-                            .context("original Start generation is no longer owned")
+                            .ok_or_else(|| {
+                                missing_target_owner("original Start generation is no longer owned")
+                            })?)
                     })
                     .await?;
-                let generation = self.operation.run(async { Ok(owner.lock().await) }).await?;
+                let generation = self
+                    .operation
+                    .run::<_, SnapshotFailure>(async { Ok(owner.lock().await) })
+                    .await?;
                 self.runtime
                     .check_initial_membership_status(
                         &generation,
@@ -433,7 +477,7 @@ impl TargetRuntimeReply {
             ResponseEvidence::Stopped(stop, key) => {
                 self.runtime.journal.stop(&self.operation, stop)?;
                 let path = self.runtime.path(key)?;
-                ensure!(
+                snapshot_ensure!(
                     !target_file_exists(&path)?,
                     "target storage reappeared after stop"
                 );
@@ -461,7 +505,7 @@ pub struct TargetRecoveryRuntime {
     installed: TargetRecoveryConfig,
     credential: CredentialSource,
     journal: Arc<TargetJournal>,
-    journal_node: Arc<NodeStore>,
+    journal_node: NodeStore,
     signer: TargetSigner,
     cleanup_key: Ed25519KeyPair,
     admission: Arc<NodeAdmission>,
@@ -687,6 +731,10 @@ impl TargetRecoveryRuntime {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::result_large_err,
+        reason = "the same prepaid startup inventory receives the whole inline native original"
+    )]
     pub(crate) async fn open(
         config: RuntimeConfig,
         authority_trusts: BTreeMap<String, AuthorityTrust>,
@@ -696,17 +744,25 @@ impl TargetRecoveryRuntime {
         cluster: Arc<ClusterNetwork>,
         destinations: BTreeMap<String, Arc<dyn BackupDestination>>,
         registry: crate::api::DatabaseRegistry,
+        original_recoveries: &crate::administration::OriginalRecoveries,
     ) -> Result<Arc<Self>> {
         let installed = config
             .target_recovery
             .clone()
             .context("target recovery not configured")?;
         installed.validate(&config)?;
-        let monitor_bytes = kasumi_serving::BackgroundWorkBudget::required_bytes(1, 1)?;
+        let journal_installation = crate::target_journal_installation::installation(&installed)?;
+        let monitor_bytes = kasumi_serving::BackgroundWorkBudget::required_bytes(1, 1)?
+            .checked_add(kasumi_types::SharedBudgetCharge::required_bytes::<
+                kasumi_engine::admission::Reservation,
+            >()?)
+            .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
         let mut monitor_charge = admission.reserve(monitor_bytes, None)?;
         monitor_charge.retain(monitor_bytes);
-        let monitor_budget =
-            kasumi_serving::BackgroundWorkBudget::new(1, Arc::new(monitor_charge))?;
+        let monitor_budget = kasumi_serving::BackgroundWorkBudget::new(
+            1,
+            kasumi_types::SharedBudgetCharge::new(monitor_charge),
+        )?;
         let call_jobs = TargetCallJobs::new(&admission)?;
         // Finish fallible filesystem setup before a journal catalog can start
         // renewal workers. This directory is under an already-censused NodeDisk;
@@ -730,16 +786,25 @@ impl TargetRecoveryRuntime {
             Ed25519KeyPair::from_pkcs8(&key).map_err(|_| anyhow::anyhow!("invalid target key"))?;
         // Only the independent journal KMS provider is constructed at startup.
         let provider = installed.journal_keys.provider(credential.clone())?;
-        let node = NodeStore::open_existing(
-            &installed.journal_path,
-            kasumi_store::node_store_ids::target_journal(
-                installed.control_root.control_incarnation,
-                &installed.node.verifier,
-            )?,
-            audit.store().persistent_disk().clone(),
-            audit.store().scratch_disk().clone(),
-            audit.store().persistent_disk().native_storage_config(),
+        let node_id = kasumi_store::node_store_ids::target_journal(
+            installed.control_root.control_incarnation,
+            &installed.node.verifier,
         )?;
+        let node = {
+            let mut seat = original_recoveries.claim(0).await;
+            seat.begin_node()
+                .map_err(|observed| observed.foreign_error())?
+                .run_node(|| {
+                    NodeStore::open_existing(
+                        &installed.journal_path,
+                        node_id,
+                        audit.store().persistent_disk().clone(),
+                        audit.store().scratch_disk().clone(),
+                        audit.store().persistent_disk().native_storage_config(),
+                    )
+                })
+                .map_err(|observed| observed.foreign_error())?
+        };
         let access = StorageAccess::target_journal(&installed.control_root, &installed.node)?;
         let store = TenantStore::open_existing(
             node.clone(),
@@ -764,10 +829,7 @@ impl TargetRecoveryRuntime {
         };
         let journal = TargetJournal::open_existing(
             store.clone(),
-            TargetJournalInstallation {
-                root: installed.control_root.clone(),
-                node: installed.node.clone(),
-            },
+            journal_installation,
             installed.limits.journal.clone(),
             admission.clone(),
         );
@@ -872,6 +934,28 @@ impl TargetRecoveryRuntime {
     pub(crate) fn node_id(&self) -> u64 {
         self.installed.node.node_id
     }
+    /// Borrow the exact original retained in this runtime's paid call seat.
+    /// This supplies a diagnostic only; it grants no native disposal authority.
+    pub fn with_retained_call_failure<R>(
+        &self,
+        seat: usize,
+        inspect: impl for<'a> FnOnce(Option<&'a SnapshotFailure>) -> R,
+    ) -> R {
+        match self.call_jobs.original_failure(seat) {
+            Some(original) => original.with_original(inspect),
+            None => inspect(None),
+        }
+    }
+    pub fn with_retained_call_report<R>(
+        &self,
+        seat: usize,
+        inspect: impl for<'a> FnOnce(Option<TargetCallReport<'a>>) -> R,
+    ) -> R {
+        match self.call_jobs.original_failure(seat) {
+            Some(original) => original.with_report(inspect),
+            None => inspect(None),
+        }
+    }
     /// Read an existing generation's exact committed/applied first membership.
     /// This status path never reserves another dispatch or constructs a child.
     pub(crate) async fn execute(
@@ -879,57 +963,55 @@ impl TargetRecoveryRuntime {
         context: RequestContext,
         bearer: Zeroizing<String>,
         envelope: TargetExecuteRequest,
-    ) -> Result<TargetRuntimeReply> {
-        let admission = TargetRequestAdmission::capture_until(
-            context.clone(),
-            self.installed.limits.operation_timeout_ms,
-            envelope.request.not_after_ms,
-        )?;
-        let deadline = admission.response_deadline()?;
-        context
-            .authorization
-            .require_control(&self.installed.control_root.control_incarnation.to_string())?;
-        ensure!(
-            context.tenant == "__kasumi_control" && context.scopes.contains(&Action::Admin),
-            "target requires current Control Admin"
-        );
-        envelope.validate_for_node(self.installed.node.node_id)?;
-        ensure!(
-            !self.closing.load(Ordering::Acquire),
-            "target runtime closing"
-        );
-        let permit = self
-            .calls
-            .clone()
-            .try_acquire_owned()
-            .context("target invocation capacity exhausted")?;
-        ensure!(
-            !self.closing.load(Ordering::Acquire),
-            "target runtime closing"
-        );
-        let this = self.clone();
-        // The response deadline was captured before authority acquisition and
-        // cannot extend the coordinator's original not_after cap.
-        let receive = self
-            .call_jobs
-            .submit(deadline, async move {
-                #[cfg(test)]
-                let command_id = envelope.request.command_id;
-                let result = this
-                    .execute_owned(context, bearer, envelope, admission)
-                    .await;
-                #[cfg(test)]
-                if let Err(failure) = &result {
-                    eprintln!("target call child command={command_id} error={failure:#}");
-                }
-                let mut reply = result?;
-                reply.permit = Some(permit);
-                Ok::<_, anyhow::Error>(reply)
+    ) -> std::result::Result<TargetRuntimeReply, TargetCallFailure> {
+        let seat = self.call_jobs.acquire_failure()?;
+        let (admission, deadline, permit) = seat
+            .begin()?
+            .run(async {
+                let admission = TargetRequestAdmission::capture_until(
+                    context.clone(),
+                    self.installed.limits.operation_timeout_ms,
+                    envelope.request.not_after_ms,
+                )?;
+                let deadline = admission.response_deadline()?;
+                context.authorization.require_control(
+                    &self.installed.control_root.control_incarnation.to_string(),
+                )?;
+                snapshot_ensure!(
+                    context.tenant == "__kasumi_control" && context.scopes.contains(&Action::Admin),
+                    "target requires current Control Admin"
+                );
+                envelope.validate_for_node(self.installed.node.node_id)?;
+                snapshot_ensure!(
+                    !self.closing.load(Ordering::Acquire),
+                    "target runtime closing"
+                );
+                let permit = self
+                    .calls
+                    .clone()
+                    .try_acquire_owned()
+                    .context("target invocation capacity exhausted")?;
+                snapshot_ensure!(
+                    !self.closing.load(Ordering::Acquire),
+                    "target runtime closing"
+                );
+                Ok::<_, SnapshotFailure>((admission, deadline, permit))
             })
+            .await?
+            .claim()?;
+        let submission = self
+            .call_jobs
+            .acquire_submission::<TargetRuntimeReply>(deadline, seat)
             .await?;
-        // A lost waiter returns UnknownOutcome. The private ticket owns a
-        // completed result until a synchronous claim; the child retires any
-        // unclaimed reply and preserves its exact terminal outcome.
+        let failure = submission.seat().clone();
+        let this = self.clone();
+        let receive = submission.submit(async move {
+            let mut reply = this
+                .execute_owned(context, bearer, envelope, admission, failure)
+                .await?;
+            reply.permit = Some(permit);
+            Ok::<_, TargetTaskFailure>(reply)
+        })?;
         let reply = self.call_jobs.await_reply(deadline, receive).await?;
         #[cfg(test)]
         if matches!(reply.evidence, ResponseEvidence::InitialStarted(_))
@@ -937,9 +1019,7 @@ impl TargetRecoveryRuntime {
                 .fail_next_initial_start_reply
                 .swap(false, Ordering::AcqRel)
         {
-            return Err(unknown(
-                "fixture discarded the actual successful Start reply",
-            ));
+            return Err(TargetCallFailure::ResponseLost);
         }
         #[cfg(test)]
         if matches!(reply.evidence, ResponseEvidence::Initialized(_))
@@ -947,9 +1027,7 @@ impl TargetRecoveryRuntime {
                 .fail_next_initialize_reply
                 .swap(false, Ordering::AcqRel)
         {
-            return Err(unknown(
-                "fixture discarded the actual successful Initialize reply",
-            ));
+            return Err(TargetCallFailure::ResponseLost);
         }
         Ok(reply)
     }
@@ -959,7 +1037,8 @@ impl TargetRecoveryRuntime {
         bearer: Zeroizing<String>,
         envelope: TargetExecuteRequest,
         admission: TargetRequestAdmission,
-    ) -> Result<TargetRuntimeReply> {
+        failure: TargetCallSeat,
+    ) -> TargetTaskResult<TargetRuntimeReply> {
         let TargetExecuteRequest {
             request,
             initial_dispatch,
@@ -968,13 +1047,13 @@ impl TargetRecoveryRuntime {
             .installed
             .tenants
             .get(&request.tenant)
-            .context("target template not installed")?
+            .ok_or_else(|| missing_target_owner("target template not installed"))?
             .clone();
         let authority = self
             .config
             .serving_authorities
             .get(&template.authority)
-            .context("target issuer missing")?;
+            .ok_or_else(|| missing_target_owner("target issuer missing"))?;
         #[cfg(test)]
         let started = std::time::Instant::now();
         let phase = RuntimeTargetPhase::acquire(
@@ -983,7 +1062,7 @@ impl TargetRecoveryRuntime {
             authority,
             self.authority_trusts
                 .get(&template.authority)
-                .context("live phase verifier absent")?
+                .ok_or_else(|| missing_target_owner("live phase verifier absent"))?
                 .clone(),
             self.credential.clone(),
             self.installed.node.node_id,
@@ -1000,7 +1079,7 @@ impl TargetRecoveryRuntime {
         trace_owned_stage(request.command_id, "acquire_phase", started, &phase);
         let (phase, initial_start) = phase?;
         let intent = phase.original().observation().intent.clone();
-        ensure!(
+        snapshot_ensure!(
             intent.request.tenant == request.tenant,
             "target request tenant differs from committed phase"
         );
@@ -1008,8 +1087,8 @@ impl TargetRecoveryRuntime {
             .request
             .target_nodes
             .get(&self.installed.node.node_id)
-            .context("target node missing")?;
-        ensure!(
+            .ok_or_else(|| missing_target_owner("target node missing"))?;
+        snapshot_ensure!(
             node.attestation_public_key == self.signer.public_key(),
             "installed target attestation key differs"
         );
@@ -1019,7 +1098,7 @@ impl TargetRecoveryRuntime {
         #[cfg(test)]
         trace_owned_stage(request.command_id, "validate_input", started, &input);
         let (expected_phase, input_hash) = input?;
-        ensure!(
+        snapshot_ensure!(
             intent.request.phase == expected_phase
                 && intent.request.phase_input_sha256 == input_hash,
             "target operation differs from exact committed phase"
@@ -1034,9 +1113,9 @@ impl TargetRecoveryRuntime {
         #[cfg(test)]
         let started = std::time::Instant::now();
         let target = admission
-            .run(async {
+            .run::<_, SnapshotFailure>(async {
                 let mut all = self.generations.lock().await;
-                ensure!(
+                snapshot_ensure!(
                     !self.closing.load(Ordering::Acquire),
                     "target runtime closing"
                 );
@@ -1045,7 +1124,7 @@ impl TargetRecoveryRuntime {
                 }
                 let bound = self.installed.limits.max_live_generations as usize
                     + usize::from(expected_phase == LifecyclePhase::StopLocal);
-                ensure!(
+                snapshot_ensure!(
                     all.len() < bound,
                     "target live generation capacity exhausted"
                 );
@@ -1059,7 +1138,9 @@ impl TargetRecoveryRuntime {
         let target = target?;
         #[cfg(test)]
         let started = std::time::Instant::now();
-        let locked = admission.run(async { Ok(target.lock().await) }).await;
+        let locked = admission
+            .run::<_, SnapshotFailure>(async { Ok(target.lock().await) })
+            .await;
         #[cfg(test)]
         trace_owned_stage(request.command_id, "lock_generation", started, &locked);
         let mut generation = locked?;
@@ -1071,23 +1152,17 @@ impl TargetRecoveryRuntime {
             let operation = phase.scope().begin_admitted(admission)?;
             let proof = phase.target_stop(&operation, reference).await?;
             self.journal.stop(&operation, &proof)?;
+            failure.accepted();
             operation
-                .run(async {
+                .run::<_, SnapshotFailure>(async {
                     generation
                         .close(&self.cluster, &self.registry)
                         .await
                         .map_err(Into::into)
                 })
-                .await
-                .map_err(unknown)?;
-            let outcome = self
-                .cleanup(&operation, &proof, &key)
-                .await
-                .map_err(unknown)?;
-            phase
-                .check_operation(&operation, &bearer)
-                .await
-                .map_err(unknown)?;
+                .await?;
+            let outcome = self.cleanup(&operation, &proof, &key).await?;
+            phase.check_operation(&operation, &bearer).await?;
             drop(generation);
             self.generations.lock().await.remove(&key);
             let reply = TargetRuntimeReply {
@@ -1102,8 +1177,9 @@ impl TargetRecoveryRuntime {
                 bearer,
                 evidence: ResponseEvidence::Stopped(Box::new(proof), key),
                 permit: None,
+                failure: failure.clone(),
             };
-            reply.release().await.map_err(unknown)?;
+            reply.release_inner().await?;
             return Ok(reply);
         }
         // Reuse only a continuously live phase. A new request retains its own
@@ -1144,7 +1220,7 @@ impl TargetRecoveryRuntime {
             #[cfg(test)]
             let started = std::time::Instant::now();
             let closed = admission
-                .run(async {
+                .run::<_, SnapshotFailure>(async {
                     generation
                         .close(&self.cluster, &self.registry)
                         .await
@@ -1170,6 +1246,7 @@ impl TargetRecoveryRuntime {
         checked?;
         let operation = phase.scope().begin_followup(admission)?;
         self.journal.prepare(&operation, &input_hash)?;
+        failure.accepted();
         // From this accepted durable identity onward, any local failure is an
         // unresolved effect. No caller infers abort from absence or an RPC error.
         #[cfg(test)]
@@ -1189,21 +1266,14 @@ impl TargetRecoveryRuntime {
             .await;
         #[cfg(test)]
         trace_owned_stage(request.command_id, "perform", started, &performed);
-        let (outcome, evidence) = performed.map_err(|failure| {
-            #[cfg(test)]
-            eprintln!(
-                "target perform command={} error={failure:#}",
-                request.command_id
-            );
-            unknown(failure)
-        })?;
+        let (outcome, evidence) = performed?;
         #[cfg(test)]
         let started = std::time::Instant::now();
         let checked = phase.check_operation(&operation, &bearer).await;
         #[cfg(test)]
         trace_owned_stage(request.command_id, "check_operation", started, &checked);
-        checked.map_err(unknown)?;
-        operation.check().map_err(unknown)?;
+        checked?;
+        operation.check()?;
         drop(generation);
         let reply = TargetRuntimeReply {
             response: TargetRuntimeResponse {
@@ -1217,20 +1287,14 @@ impl TargetRecoveryRuntime {
             bearer,
             evidence,
             permit: None,
+            failure: failure.clone(),
         };
         #[cfg(test)]
         let started = std::time::Instant::now();
-        let released = reply.release().await;
+        let released = reply.release_inner().await;
         #[cfg(test)]
         trace_owned_stage(request.command_id, "release_reply", started, &released);
-        released.map_err(|failure| {
-            #[cfg(test)]
-            eprintln!(
-                "target owned release command={} error={failure:#}",
-                request.command_id
-            );
-            unknown(failure)
-        })?;
+        released?;
         Ok(reply)
     }
     async fn prune_expired(&self, admission: &TargetRequestAdmission) -> Result<()> {
@@ -1238,7 +1302,7 @@ impl TargetRecoveryRuntime {
         // only fully drained owners with no queued holder of the generation Arc;
         // otherwise a delayed opener could become an untracked live Raft group.
         let candidates = admission
-            .run(async {
+            .run::<_, anyhow::Error>(async {
                 Ok(self
                     .generations
                     .lock()
@@ -1268,7 +1332,7 @@ impl TargetRecoveryRuntime {
                 continue;
             }
             admission
-                .run(async {
+                .run::<_, anyhow::Error>(async {
                     generation
                         .close(&self.cluster, &self.registry)
                         .await
@@ -1277,7 +1341,7 @@ impl TargetRecoveryRuntime {
                 .await?;
             drop(generation);
             let mut all = admission
-                .run(async { Ok(self.generations.lock().await) })
+                .run::<_, anyhow::Error>(async { Ok(self.generations.lock().await) })
                 .await?;
             if Arc::strong_count(&owner) == 2
                 && all
@@ -1445,7 +1509,7 @@ impl TargetRecoveryRuntime {
         initial_dispatch: Option<&'a TargetInitialDispatchIdentity>,
         request: &'a TargetRuntimeRequest,
         bearer: &'a Zeroizing<String>,
-    ) -> impl std::future::Future<Output = Result<(TargetRuntimeOutcome, ResponseEvidence)>> + 'a
+    ) -> impl std::future::Future<Output = TargetTaskResult<(TargetRuntimeOutcome, ResponseEvidence)>> + 'a
     {
         // Construct the large dispatch future outside execute_owned's poll
         // frame. It stays in the same admitted task and cancellation scope.
@@ -1473,13 +1537,23 @@ impl TargetRecoveryRuntime {
         initial_dispatch: Option<&TargetInitialDispatchIdentity>,
         request: &TargetRuntimeRequest,
         bearer: &Zeroizing<String>,
-    ) -> Result<(TargetRuntimeOutcome, ResponseEvidence)> {
+    ) -> TargetTaskResult<(TargetRuntimeOutcome, ResponseEvidence)> {
         let intent = &phase.original().observation().intent;
         let key = (
             intent.request.tenant.clone(),
             intent.request.target_incarnation,
         );
+        if !g
+            .node_retirement
+            .as_ref()
+            .is_none_or(kasumi_store::NodeRetirement::is_retired)
+        {
+            return Err(anyhow::anyhow!("target node original retirement remains unproved").into());
+        }
         if g.node.is_none() {
+            // A new accepted acquisition follows the actual prior receipt.
+            // Missing alone never clears retained custody.
+            g.node_retirement.take();
             op.check()?;
             let path = self.path(&key)?;
             let scratch = self.audit.store().scratch_disk().clone();
@@ -1525,7 +1599,7 @@ impl TargetRecoveryRuntime {
             let node = g.node.as_ref().unwrap().clone();
             let access = phase.access()?;
             g.stores = Some(if std::mem::take(&mut g.fresh_catalogs) {
-                ensure!(
+                snapshot_ensure!(
                     matches!(step, TargetRuntimeStep::Materialize(_)),
                     "only original materialization may initialize catalogs"
                 );
@@ -1550,8 +1624,9 @@ impl TargetRecoveryRuntime {
         }
 
         let stores = g.stores.as_ref().unwrap().clone();
-        self.config
-            .install_tenant_audit_archive(stores.application(), None)?;
+        template
+            .audit_placement
+            .install(stores.application(), None)?;
         let materialization = match step {
             TargetRuntimeStep::Materialize(input) => Some((input, None)),
             TargetRuntimeStep::ResumeMaterialization(origin) => Some((&origin.input, Some(origin))),
@@ -1562,8 +1637,10 @@ impl TargetRecoveryRuntime {
             let source = template
                 .source_backups
                 .get(&intent.request.source_incarnation)
-                .context("source backup key lineage is not installed")?;
-            ensure!(
+                .ok_or_else(|| {
+                    missing_target_owner("source backup key lineage is not installed")
+                })?;
+            snapshot_ensure!(
                 source.destination_alias == input.destination_alias,
                 "backup destination differs from installed lineage"
             );
@@ -1573,7 +1650,7 @@ impl TargetRecoveryRuntime {
                 destination: self
                     .destinations
                     .get(&source.destination_alias)
-                    .context("backup destination missing")?
+                    .ok_or_else(|| missing_target_owner("backup destination missing"))?
                     .clone(),
                 keys: source.keys.provider(self.credential.clone())?,
                 timeout_ms: self.installed.limits.operation_timeout_ms,
@@ -1674,16 +1751,16 @@ impl TargetRecoveryRuntime {
             .materialized
             .values()
             .next()
-            .context("target materializations missing")?;
+            .ok_or_else(|| missing_target_owner("target materializations missing"))?;
         self.placement(&first.fact.origin.input)?;
-        ensure!(
+        snapshot_ensure!(
             !matches!(
                 step,
                 TargetRuntimeStep::Start(TargetReplicaInput::Quorum(_))
             ) || g.replica.is_none(),
             "accepted Start cannot replace a live target child"
         );
-        ensure!(
+        snapshot_ensure!(
             !matches!(step, TargetRuntimeStep::Initialize(_)) || g.replica.is_some(),
             "Initialize requires the continuously owned original Start child"
         );
@@ -1744,7 +1821,8 @@ impl TargetRecoveryRuntime {
         }
         let replica = g.replica.as_ref().unwrap();
         if let TargetRuntimeStep::Start(TargetReplicaInput::Quorum(_)) = step {
-            let identity = initial_dispatch.context("initial Start dispatch identity absent")?;
+            let identity = initial_dispatch
+                .ok_or_else(|| missing_target_owner("initial Start dispatch identity absent"))?;
             let (original, marked) = observe_initial_dispatch_from_control(
                 &self.installed,
                 op.context(),
@@ -1782,9 +1860,10 @@ impl TargetRecoveryRuntime {
             )),
             TargetRuntimeStep::Initialize(_) => {
                 let permit = initial_candidate
-                    .context("accepted Initialize candidate absent")?
+                    .ok_or_else(|| missing_target_owner("accepted Initialize candidate absent"))?
                     .bind_initialize(&self.journal, op, replica)?;
-                let identity = initial_dispatch.context("Initialize dispatch identity absent")?;
+                let identity = initial_dispatch
+                    .ok_or_else(|| missing_target_owner("Initialize dispatch identity absent"))?;
                 let (original, marked) = observe_initial_dispatch_from_control(
                     &self.installed,
                     op.context(),
@@ -1845,15 +1924,17 @@ impl TargetRecoveryRuntime {
                     ResponseEvidence::Receiver(Box::new(proof)),
                 ))
             }
-            TargetRuntimeStep::InspectInitialMembership(input) => {
-                self.perform_initial_membership_inspection(
+            TargetRuntimeStep::InspectInitialMembership(input) => self
+                .perform_initial_membership_inspection(
                     replica.database(),
                     op,
-                    inspection_control.context("initial inspection current Control absent")?,
+                    inspection_control.ok_or_else(|| {
+                        missing_target_owner("initial inspection current Control absent")
+                    })?,
                     input,
                 )
                 .await
-            }
+                .map_err(Into::into),
             TargetRuntimeStep::InspectCompletionAttempt(input) => {
                 let proof = replica
                     .database()
@@ -1979,7 +2060,7 @@ impl TargetRecoveryRuntime {
         op: &'a TargetOperation,
         control: kasumi_serving::VerifiedControlIntent,
         input: &'a kasumi_types::TargetInitialMembershipStatusInput,
-    ) -> impl std::future::Future<Output = Result<(TargetRuntimeOutcome, ResponseEvidence)>> + 'a
+    ) -> impl std::future::Future<Output = SnapshotResult<(TargetRuntimeOutcome, ResponseEvidence)>> + 'a
     {
         Box::pin(async move {
             let proof = database
@@ -2229,13 +2310,4 @@ fn target_absence_from_installed_disk(
         }
         Err(error) => Err(error.into()),
     }
-}
-
-fn unknown(error: impl std::fmt::Display) -> anyhow::Error {
-    let _ = error;
-    Error::new(
-        ErrorCode::UnknownOutcome,
-        "target outcome unresolved; recover the exact committed identity",
-    )
-    .into()
 }

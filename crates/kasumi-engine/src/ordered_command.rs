@@ -52,74 +52,94 @@ impl<'engine, 'entry> PreparedOrderedCommand<'engine, 'entry> {
     pub(super) fn prepare(
         engine: &'engine TenantEngine,
         input: ByteBoundCommand<'entry>,
-    ) -> anyhow::Result<Self> {
+    ) -> std::result::Result<Self, kasumi_store::ScratchOperationFailure> {
+        Self::prepare_with_input(engine, input, None)
+    }
+    fn prepare_with_input(
+        engine: &'engine TenantEngine,
+        input: ByteBoundCommand<'entry>,
+        mut input_retention: Option<kasumi_raft::AdmittedApplicationInput>,
+    ) -> std::result::Result<Self, kasumi_store::ScratchOperationFailure> {
         let position = input.position;
-        let command = decode_committed_command(input.bytes)?;
-        let revision = engine
-            .revision_base
-            .checked_add(position.log_id.index)
-            .ok_or_else(|| anyhow::anyhow!("logical revision exhausted"))?;
-        let applied = crate::staged_terminal::AppliedIdentity::ordered(
-            &engine.incarnation,
-            revision,
-            command.timestamp_ms,
-            position,
-        )?;
-        let apply = ApplyOwner::lock(engine, || anyhow::anyhow!("tenant apply lock poisoned"))?;
-        let previous = apply.current();
-        anyhow::ensure!(
-            !matches!(&command.operation, Operation::RetireSource(prepared)
+        let (command, applied, apply, reference) =
+            kasumi_store::ScratchOperationFailure::ordinary(|| {
+                let command = decode_committed_command(input.bytes)?;
+                let revision = engine
+                    .revision_base
+                    .checked_add(position.log_id.index)
+                    .ok_or_else(|| anyhow::anyhow!("logical revision exhausted"))?;
+                let applied = crate::staged_terminal::AppliedIdentity::ordered(
+                    &engine.incarnation,
+                    revision,
+                    command.timestamp_ms,
+                    position,
+                )?;
+                let mut apply =
+                    ApplyOwner::lock(engine, || anyhow::anyhow!("tenant apply lock poisoned"))?;
+                // The exact original alias is installed before preparation can
+                // allocate any known change tree, including error/unwind paths.
+                apply.retain_input(input_retention.take(), position.log_id);
+                let previous = apply.current();
+                anyhow::ensure!(
+                    !matches!(&command.operation, Operation::RetireSource(prepared)
                 if prepared.observation.is_some())
-                || position.retirement_seed.is_some(),
-            "prepared retirement is missing its custody seed"
-        );
-        if let Some(seed) = &position.retirement_seed {
-            seed.reserve_success_capacity()?;
-            let expected = kasumi_raft::RetirementLogSeed::prepare(
-                &command,
-                TenantEngine::retirement_replay_from(previous, &command)?,
-            )?;
-            anyhow::ensure!(
-                expected.encoded()? == seed.encoded()?,
-                "committed retirement seed differs from ordered source state"
-            );
-        }
-        let reference = position
-            .retirement_seed
-            .as_ref()
-            .map(|seed| seed.request().reference())
-            .transpose()?;
+                        || position.retirement_seed.is_some(),
+                    "prepared retirement is missing its custody seed"
+                );
+                if let Some(seed) = &position.retirement_seed {
+                    seed.reserve_success_capacity()?;
+                    let expected = kasumi_raft::RetirementLogSeed::prepare(
+                        &command,
+                        TenantEngine::retirement_replay_from(previous, &command)?,
+                    )?;
+                    anyhow::ensure!(
+                        expected.encoded()? == seed.encoded()?,
+                        "committed retirement seed differs from ordered source state"
+                    );
+                }
+                let reference = position
+                    .retirement_seed
+                    .as_ref()
+                    .map(|seed| seed.request().reference())
+                    .transpose()?;
+                Ok((command, applied, apply, reference))
+            })?;
         let prepared =
             engine.prepare_command_ordered(&apply, &command, &applied, &ApplyScope::Committed)?;
-        let retirement = if prepared.outcome.is_ok() {
-            reference
-                .map(|reference| -> anyhow::Result<RetirementReceipt> {
-                    retirement::lookup(
-                        &prepared.generation.as_deref().unwrap_or(previous).state,
-                        &command.context,
-                        &reference,
-                    )?
-                    .ok_or_else(|| anyhow::anyhow!("successful retirement outcome missing"))?
-                    .outcome
-                    .clone()
-                    .map_err(Into::into)
-                })
-                .transpose()?
-        } else {
-            None
-        };
-        let response = kasumi_raft::AppliedResponse {
-            data: serde_json::to_vec(&prepared.outcome)?,
-            retirement,
-        };
-        let owner = match prepared.generation {
-            Some(candidate) => OutcomeOwner::Candidate(apply.accept(candidate, prepared.changed)?),
-            None => OutcomeOwner::Frozen(apply),
-        };
-        Ok(Self {
-            position,
-            response,
-            owner,
+        kasumi_store::ScratchOperationFailure::ordinary(|| {
+            let previous = apply.current();
+            let retirement = if prepared.outcome.is_ok() {
+                reference
+                    .map(|reference| -> anyhow::Result<RetirementReceipt> {
+                        retirement::lookup(
+                            &prepared.generation.as_deref().unwrap_or(previous).state,
+                            &command.context,
+                            &reference,
+                        )?
+                        .ok_or_else(|| anyhow::anyhow!("successful retirement outcome missing"))?
+                        .outcome
+                        .clone()
+                        .map_err(Into::into)
+                    })
+                    .transpose()?
+            } else {
+                None
+            };
+            let response = kasumi_raft::AppliedResponse {
+                data: serde_json::to_vec(&prepared.outcome)?,
+                retirement,
+            };
+            let owner = match prepared.generation {
+                Some(candidate) => {
+                    OutcomeOwner::Candidate(apply.accept(candidate, prepared.changed)?)
+                }
+                None => OutcomeOwner::Frozen(apply),
+            };
+            Ok(Self {
+                position,
+                response,
+                owner,
+            })
         })
     }
 
@@ -259,28 +279,48 @@ impl kasumi_raft::CompletionAction for OrdinaryAction<'_, '_> {
         &mut self,
         invocation: &kasumi_raft::CompletionInvocation<'_>,
         publisher: &mut dyn kasumi_raft::ApplyPublisher,
-    ) -> anyhow::Result<()> {
+    ) -> std::result::Result<(), kasumi_store::ScratchOperationFailure> {
         let mut completion = self.sources.completion()?.enter(invocation)?;
         let input = self
             .input
             .take()
             .context("ordinary completion action repeated")?;
+        let retained_input = if let Some(input_loan) = invocation.input_retention() {
+            let memory: Arc<dyn kasumi_store::NodeDiskMemoryAdmission> =
+                self.sources.memory_owner().clone();
+            input_loan
+                .require_memory(&memory)
+                .map_err(|_| anyhow::anyhow!("apply input memory owner differs"))?;
+            input_loan
+                .require_bytes(input.position.log_id, input.bytes)
+                .map_err(|_| {
+                    anyhow::anyhow!("apply input differs from its accepted encoded owner")
+                })?;
+            Some(input_loan.retained_input())
+        } else {
+            // Explicit unsupported producer frontier: transport, stored and
+            // reopen entries have no encoded-input custody bank in this cut.
+            // Their old model remains unproved; this does not donate credit.
+            None
+        };
         // Decode/reducer and its borrowed guard begin only inside the actual
         // installed invocation, and end on this same worker before outer finish.
-        PreparedOrderedCommand::prepare(self.engine, input)?.publish_inner(
-            self.engine,
-            publisher,
-            Some(&mut completion),
-        )
+        let prepared =
+            PreparedOrderedCommand::prepare_with_input(self.engine, input, retained_input)?;
+        prepared
+            .publish_inner(self.engine, publisher, Some(&mut completion))
+            .map_err(Into::into)
     }
 }
 pub(super) fn apply_ordinary(
     engine: &TenantEngine,
     input: ByteBoundCommand<'_>,
     publisher: &mut dyn kasumi_raft::ApplyPublisher,
-) -> anyhow::Result<()> {
+) -> std::result::Result<(), kasumi_store::ScratchOperationFailure> {
     let Some(sources) = engine.application_sources.get() else {
-        return PreparedOrderedCommand::prepare(engine, input)?.publish(engine, publisher);
+        return PreparedOrderedCommand::prepare(engine, input)?
+            .publish(engine, publisher)
+            .map_err(Into::into);
     };
     let expected = sources.completion()?.identity();
     let mut action = OrdinaryAction {
@@ -290,6 +330,8 @@ pub(super) fn apply_ordinary(
     };
     match publisher.with_completion(expected, &mut action) {
         Ok(()) | Err(kasumi_raft::CompletionCallError::Recorded) => Ok(()),
-        Err(error) => Err(error.into()),
+        Err(error) => Err(kasumi_store::ScratchOperationFailure::Operation(
+            error.into(),
+        )),
     }
 }

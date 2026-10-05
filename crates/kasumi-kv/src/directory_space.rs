@@ -16,9 +16,9 @@ impl DirectoryRoot {
     pub(crate) fn transaction_page_bound(self, edits: usize) -> Result<u64, CoreError> {
         self.validate()?;
         if edits > crate::segment::MAX_BATCH_OPERATIONS {
-            return Err(CoreError::InvalidInput(
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
                 "directory transaction exceeds operation bound",
-            ));
+            )));
         }
         let mut height = usize::from(self.height.max(1));
         let mut remaining = edits;
@@ -38,17 +38,20 @@ impl DirectoryRoot {
             pages = per_edit
                 .checked_mul(count as u64)
                 .and_then(|additional| pages.checked_add(additional))
-                .ok_or(CoreError::InvalidInput(
+                .ok_or(CoreError::new(crate::CoreErrorCause::InvalidInput(
                     "directory transaction page bound overflow",
-                ))?;
+                )))?;
             remaining -= count;
             if remaining == 0 {
                 break;
             }
             height = (height + 1).min(MAX_HEIGHT);
-            width = width.checked_mul(2).ok_or(CoreError::InvalidInput(
-                "directory transaction page bound overflow",
-            ))?;
+            width =
+                width
+                    .checked_mul(2)
+                    .ok_or(CoreError::new(crate::CoreErrorCause::InvalidInput(
+                        "directory transaction page bound overflow",
+                    )))?;
         }
         Ok(pages)
     }

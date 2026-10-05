@@ -18,8 +18,8 @@ Control handle, and its ordered owner drain closes stores after database workers
 
 `kasumid tenant stage /absolute/installation/kasumi.json request.json` requires the
 exclusive stopped installation and its canonical configuration path. The request
-has five required fields: `operation_id`, `tenant`, `incarnation`, `initial_policy`
-and `initial_limits`. This example creates a complete request by copying the
+has six required fields: `operation_id`, `tenant`, `incarnation`, `initial_policy`,
+`initial_limits` and `audit_placement`. This example creates a complete request by copying the
 existing tenant's explicit policy and limits for operator review:
 
 ```sh
@@ -33,6 +33,7 @@ request = {
     "incarnation": str(uuid.uuid4()),
     "initial_policy": installed["tenants"][0]["initial_policy"],
     "initial_limits": installed["tenants"][0]["initial_limits"],
+    "audit_placement": {"kind": "local_replica_only"},
 }
 fd = os.open(sys.argv[2], os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
 with os.fdopen(fd, "w", encoding="utf-8") as output:
@@ -40,8 +41,11 @@ with os.fdopen(fd, "w", encoding="utf-8") as output:
 PYTHON
 ```
 
-Review and edit both policy and limits before running `tenant stage`. The server
-validates those supplied objects and adds no policy grants. Reusing an operation
+Review the policy, limits and explicit audit placement before running `tenant stage`.
+The example opts this tenant into local replica only; an external choice instead
+uses `{"kind":"external","destination":{...}}`. See
+[tenant audit retention](tenant-audit-retention.md) for destination configuration.
+The server validates the supplied objects and adds no policy grants. Reusing an operation
 UUID with different input is rejected.
 
 The retained operation records its exact inputs, original configuration digest,
@@ -49,7 +53,8 @@ intended configuration bytes and generated private namespace before creating fil
 It creates separate application/custody File keyrings beneath
 `operator/tenant-stage-<operation_id>/`, verifies their bytes and writes an encrypted
 receipt containing their digests. Only then may it atomically publish the new
-configuration. The CLI creates no tenant catalogs, routes, credentials or profiles.
+configuration, adding the tenant and its exact `tenant_audit_placements` row in
+one publication. A retry cannot change that retained placement. The CLI creates no tenant catalogs, routes, credentials or profiles.
 
 Run the same command with the same request to resolve a lost result. A FilesReady
 receipt permits exact key verification and configuration publication; an already

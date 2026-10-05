@@ -7,7 +7,8 @@ use crate::{
 };
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn ordinary_completion_constructor_quote_covers_actual_three_allocations() -> Result<()> {
+async fn ordinary_completion_constructor_quote_covers_actual_three_allocations()
+-> crate::test_fixture_failure::FixtureResult<()> {
     let _serial = SERIAL.lock().await;
     let fixture = Fixture::new().await?;
     let before = fixture.storage.admission.snapshot();
@@ -43,7 +44,7 @@ async fn ordinary_completion_constructor_quote_covers_actual_three_allocations()
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn ordinary_completion_cell_and_credit_remain_funded_through_actual_deallocation()
--> Result<()> {
+-> crate::test_fixture_failure::FixtureResult<()> {
     let _serial = SERIAL.lock().await;
     let fixture = Fixture::new().await?;
     for block_credit in [false, true] {
@@ -67,7 +68,8 @@ async fn ordinary_completion_cell_and_credit_remain_funded_through_actual_deallo
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn ordinary_completion_erased_binding_retires_before_its_actual_credit() -> Result<()> {
+async fn ordinary_completion_erased_binding_retires_before_its_actual_credit()
+-> crate::test_fixture_failure::FixtureResult<()> {
     let _serial = SERIAL.lock().await;
     let fixture = Fixture::new().await?;
     for block_credit in [false, true] {

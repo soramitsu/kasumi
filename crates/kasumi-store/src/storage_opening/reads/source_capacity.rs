@@ -123,11 +123,11 @@ impl PreparedRegisteredSource {
         );
         let provider = self.reader.provider();
         anyhow::ensure!(
-            Arc::ptr_eq(store.persistent_disk().memory(), &provider)
+            Arc::ptr_eq(store.node.memory(), &provider)
                 && Arc::ptr_eq(store.scratch_disk().memory(), &provider),
             "publication source provider differs"
         );
-        store.node.db.require_registered_read(&self.reader)?;
+        store.node.body().db.require_registered_read(&self.reader)?;
         Ok(())
     }
 

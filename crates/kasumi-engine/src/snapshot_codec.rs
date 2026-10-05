@@ -676,13 +676,17 @@ pub(crate) fn inspect(reader: &mut dyn Read) -> anyhow::Result<StreamSummary> {
 /// proves framing, canonical encoding, strict order, terminal authentication and
 /// contiguous lineage/audit sequences. Cross-record semantic checks belong to the
 /// caller; observing a record before the terminal proof never authorizes publish.
-pub(crate) fn visit(
+pub(crate) fn visit<E: From<anyhow::Error>>(
     reader: &mut dyn Read,
-    mut visitor: impl FnMut(RecordPosition, Record) -> anyhow::Result<()>,
-) -> anyhow::Result<StreamSummary> {
+    mut visitor: impl FnMut(RecordPosition, Record) -> std::result::Result<(), E>,
+) -> std::result::Result<StreamSummary, E> {
     let mut magic = [0; 8];
-    reader.read_exact(&mut magic)?;
-    anyhow::ensure!(&magic == MAGIC, "unsupported tenant snapshot format");
+    (|| -> anyhow::Result<()> {
+        reader.read_exact(&mut magic)?;
+        anyhow::ensure!(&magic == MAGIC, "unsupported tenant snapshot format");
+        Ok(())
+    })()
+    .map_err(E::from)?;
     let mut digest = Sha256::new();
     digest.update(magic);
     let mut summary = StreamSummary::empty();
@@ -692,124 +696,134 @@ pub(crate) fn visit(
     let mut audit_next = 0u64;
     loop {
         let mut length = [0; 8];
-        reader.read_exact(&mut length)?;
-        let size = u64::from_be_bytes(length);
+        let size = (|| -> anyhow::Result<u64> {
+            reader.read_exact(&mut length)?;
+            Ok(u64::from_be_bytes(length))
+        })()
+        .map_err(E::from)?;
         if size == 0 {
-            anyhow::ensure!(audit == Some(audit_next), "audit final sequence differs");
-            return finish_summary(reader, digest, summary);
+            return (|| -> anyhow::Result<StreamSummary> {
+                anyhow::ensure!(audit == Some(audit_next), "audit final sequence differs");
+                finish_summary(reader, digest, summary)
+            })()
+            .map_err(E::from);
         }
-        let mut kind = [0];
-        reader.read_exact(&mut kind)?;
-        anyhow::ensure!(
-            size <= record_limit(kind[0])?,
-            "snapshot typed record exceeds byte limit"
-        );
-        let position = RecordPosition {
-            offset: summary
-                .bytes
-                .checked_add(FRAME_HEADER_BYTES as u64)
-                .ok_or_else(|| anyhow::anyhow!("snapshot offset overflow"))?,
-            bytes: size,
-        };
-        let mut bytes = vec![0; size as usize];
-        reader.read_exact(&mut bytes)?;
-        digest.update(length);
-        digest.update(kind);
-        digest.update(&bytes);
-        let work = record_work::measure(&bytes)?;
-        let record = decode_record(&bytes)?;
-        let order = record.order();
-        anyhow::ensure!(
-            order.0 == kind[0],
-            "snapshot frame kind differs from decoded record"
-        );
-        // Only a matching typed payload can spend its declared class's budget
-        // or reach a caller that builds resident state / permanent tables.
-        summary.add(kind[0], size)?;
-        summary.record_work(kind[0], work)?;
-        anyhow::ensure!(
-            previous.as_ref().is_none_or(|p| p < &order),
-            "snapshot records duplicated or unordered"
-        );
-        previous = Some(order);
-        match &record {
-            Record::Header(header) => {
-                anyhow::ensure!(
-                    summary.records == 1 && empty_records(header),
-                    "snapshot header contains embedded records"
-                );
-                header.audit_retention.validate()?;
-                audit = Some(header.audit_retention.pruned_before);
-                audit_next = header.audit_retention.next_sequence;
+        let (position, record) = (|| -> anyhow::Result<(RecordPosition, Record)> {
+            let mut kind = [0];
+            reader.read_exact(&mut kind)?;
+            anyhow::ensure!(
+                size <= record_limit(kind[0])?,
+                "snapshot typed record exceeds byte limit"
+            );
+            let position = RecordPosition {
+                offset: summary
+                    .bytes
+                    .checked_add(FRAME_HEADER_BYTES as u64)
+                    .ok_or_else(|| anyhow::anyhow!("snapshot offset overflow"))?,
+                bytes: size,
+            };
+            let mut bytes = vec![0; size as usize];
+            reader.read_exact(&mut bytes)?;
+            digest.update(length);
+            digest.update(kind);
+            digest.update(&bytes);
+            let work = record_work::measure(&bytes)?;
+            let record = decode_record(&bytes)?;
+            let order = record.order();
+            anyhow::ensure!(
+                order.0 == kind[0],
+                "snapshot frame kind differs from decoded record"
+            );
+            // Only a matching typed payload can spend its declared class's budget
+            // or reach a caller that builds resident state / permanent tables.
+            summary.add(kind[0], size)?;
+            summary.record_work(kind[0], work)?;
+            anyhow::ensure!(
+                previous.as_ref().is_none_or(|p| p < &order),
+                "snapshot records duplicated or unordered"
+            );
+            previous = Some(order);
+            match &record {
+                Record::Header(header) => {
+                    anyhow::ensure!(
+                        summary.records == 1 && empty_records(header),
+                        "snapshot header contains embedded records"
+                    );
+                    header.audit_retention.validate()?;
+                    audit = Some(header.audit_retention.pruned_before);
+                    audit_next = header.audit_retention.next_sequence;
+                }
+                _ if audit.is_none() => anyhow::bail!("snapshot metadata must be first"),
+                Record::Lineage(i, _) => {
+                    anyhow::ensure!(*i == lineage, "lineage sequence differs");
+                    lineage = lineage
+                        .checked_add(1)
+                        .ok_or_else(|| anyhow::anyhow!("lineage sequence overflow"))?;
+                }
+                Record::Audit(i, _) => {
+                    anyhow::ensure!(Some(*i) == audit, "audit sequence differs");
+                    audit = Some(
+                        i.checked_add(1)
+                            .ok_or_else(|| anyhow::anyhow!("audit sequence overflow"))?,
+                    );
+                }
+                Record::Collection(_, collection) => anyhow::ensure!(
+                    collection.documents.is_empty() && collection.archived_documents.is_empty(),
+                    "collection contains embedded documents"
+                ),
+                Record::Stage(_, stage) => {
+                    anyhow::ensure!(stage.chunks.is_empty(), "stage contains embedded chunks")
+                }
+                Record::Terminal(row) => anyhow::ensure!(
+                    row.ordinal > 0 && !row.stage.is_active() && row.stage.chunks.is_empty(),
+                    "invalid terminal staged record"
+                ),
+                Record::BackupBinding(row) => {
+                    row.framed_bytes()?;
+                }
+                Record::TargetResolution(row) => {
+                    row.record.validate()?;
+                    row.framed_bytes()?;
+                }
+                Record::Change(_, commit) => anyhow::ensure!(
+                    commit.records.is_empty(),
+                    "change commit contains embedded records"
+                ),
+                Record::RecoveryOperation(key, value) => {
+                    value.validate()?;
+                    anyhow::ensure!(
+                        *key == value.request.operation_id.to_string(),
+                        "recovery operation key differs"
+                    );
+                }
+                Record::RecoveryCompletionHistory(key, value) => {
+                    value.validate()?;
+                    anyhow::ensure!(
+                        *key == value.scope.intent.to_string(),
+                        "closed completion key differs"
+                    );
+                }
+                Record::RecoveryPhase(key, value) => {
+                    value.validate()?;
+                    anyhow::ensure!(
+                        *key == value.phase_id.to_string(),
+                        "recovery phase key differs"
+                    );
+                }
+                Record::RecoveryTarget(key, operation) => {
+                    let id = uuid::Uuid::parse_str(key)?;
+                    anyhow::ensure!(
+                        !id.is_nil() && id.to_string() == *key && !operation.is_nil(),
+                        "recovery target key differs"
+                    );
+                }
+                _ => {}
             }
-            _ if audit.is_none() => anyhow::bail!("snapshot metadata must be first"),
-            Record::Lineage(i, _) => {
-                anyhow::ensure!(*i == lineage, "lineage sequence differs");
-                lineage = lineage
-                    .checked_add(1)
-                    .ok_or_else(|| anyhow::anyhow!("lineage sequence overflow"))?;
-            }
-            Record::Audit(i, _) => {
-                anyhow::ensure!(Some(*i) == audit, "audit sequence differs");
-                audit = Some(
-                    i.checked_add(1)
-                        .ok_or_else(|| anyhow::anyhow!("audit sequence overflow"))?,
-                );
-            }
-            Record::Collection(_, collection) => anyhow::ensure!(
-                collection.documents.is_empty() && collection.archived_documents.is_empty(),
-                "collection contains embedded documents"
-            ),
-            Record::Stage(_, stage) => {
-                anyhow::ensure!(stage.chunks.is_empty(), "stage contains embedded chunks")
-            }
-            Record::Terminal(row) => anyhow::ensure!(
-                row.ordinal > 0 && !row.stage.is_active() && row.stage.chunks.is_empty(),
-                "invalid terminal staged record"
-            ),
-            Record::BackupBinding(row) => {
-                row.framed_bytes()?;
-            }
-            Record::TargetResolution(row) => {
-                row.record.validate()?;
-                row.framed_bytes()?;
-            }
-            Record::Change(_, commit) => anyhow::ensure!(
-                commit.records.is_empty(),
-                "change commit contains embedded records"
-            ),
-            Record::RecoveryOperation(key, value) => {
-                value.validate()?;
-                anyhow::ensure!(
-                    *key == value.request.operation_id.to_string(),
-                    "recovery operation key differs"
-                );
-            }
-            Record::RecoveryCompletionHistory(key, value) => {
-                value.validate()?;
-                anyhow::ensure!(
-                    *key == value.scope.intent.to_string(),
-                    "closed completion key differs"
-                );
-            }
-            Record::RecoveryPhase(key, value) => {
-                value.validate()?;
-                anyhow::ensure!(
-                    *key == value.phase_id.to_string(),
-                    "recovery phase key differs"
-                );
-            }
-            Record::RecoveryTarget(key, operation) => {
-                let id = uuid::Uuid::parse_str(key)?;
-                anyhow::ensure!(
-                    !id.is_nil() && id.to_string() == *key && !operation.is_nil(),
-                    "recovery target key differs"
-                );
-            }
-            _ => {}
-        }
-        // The raw bytes are no longer retained while semantic/index consumers run.
-        drop(bytes);
+            // The raw bytes are no longer retained while semantic/index consumers run.
+            drop(bytes);
+            Ok((position, record))
+        })()
+        .map_err(E::from)?;
         visitor(position, record)?;
     }
 }
@@ -848,7 +862,7 @@ pub(crate) struct Decoded {
 pub(crate) fn read(
     disk: &Arc<kasumi_store::ScratchDisk>,
     reader: &mut dyn Read,
-) -> anyhow::Result<Decoded> {
+) -> std::result::Result<Decoded, kasumi_store::ScratchOperationFailure> {
     let mut state: Option<TenantState> = None;
     let mut receipts: Option<crate::mutation_receipt::Builder> = None;
     let mut backup_bindings: Option<crate::backup_binding::Builder> = None;
@@ -856,10 +870,13 @@ pub(crate) fn read(
     let mut target_resolutions: Option<crate::target_resolution::Builder> = None;
     let summary = visit(reader, |_, record| {
         if let Record::Header(header) = record {
-            anyhow::ensure!(
-                state.is_none() && empty_records(&header),
-                "snapshot header contains embedded records"
-            );
+            kasumi_store::ScratchOperationFailure::ordinary(|| {
+                anyhow::ensure!(
+                    state.is_none() && empty_records(&header),
+                    "snapshot header contains embedded records"
+                );
+                Ok(())
+            })?;
             if header.backup_binding_head.count > 0 {
                 backup_bindings = Some(crate::backup_binding::Builder::new(
                     disk,
@@ -898,254 +915,259 @@ pub(crate) fn read(
             state = Some(*header);
             return Ok(());
         }
-        let state = state
-            .as_mut()
-            .ok_or_else(|| anyhow::anyhow!("snapshot metadata must be first"))?;
-        match record {
-            Record::Header(_) => unreachable!(),
-            Record::Lineage(i, link) => {
-                anyhow::ensure!(
-                    i == state.restore_lineage.len() as u64,
-                    "lineage sequence differs"
-                );
-                state.restore_lineage.push(link);
-            }
-            Record::Collection(k, collection) => {
-                anyhow::ensure!(
-                    collection.documents.is_empty() && collection.archived_documents.is_empty(),
-                    "collection contains embedded documents"
-                );
-                state.collections.insert(k, collection);
-            }
-            Record::Document(k, document) => {
-                state
-                    .collections
-                    .get_mut(&k)
-                    .ok_or_else(|| anyhow::anyhow!("document collection missing"))?
-                    .documents
-                    .insert(document.id.clone(), document);
-            }
-            Record::Archived(k, id, reference) => {
-                state
-                    .collections
-                    .get_mut(&k)
-                    .ok_or_else(|| anyhow::anyhow!("archive collection missing"))?
-                    .archived_documents
-                    .insert(id, reference);
-            }
-            Record::BackupBinding(row) => {
-                backup_bindings
-                    .as_mut()
-                    .ok_or_else(|| {
-                        anyhow::anyhow!("backup binding row without authenticated prefix")
-                    })?
-                    .push(&row, state)?;
-            }
-            Record::Receipt(row) => {
-                receipts
-                    .as_mut()
-                    .ok_or_else(|| anyhow::anyhow!("receipt row without authenticated prefix"))?
-                    .push(&row, state)?;
-            }
-            Record::Stage(k, stage) => {
-                anyhow::ensure!(
-                    stage.is_active() && stage.chunks.is_empty(),
-                    "resident stage must be an active upload header"
-                );
-                state.staged_transactions.insert(k, stage);
-            }
-            Record::StageChunk(k, i, chunk) => {
-                state
-                    .staged_transactions
-                    .get_mut(&k)
-                    .ok_or_else(|| anyhow::anyhow!("stage missing"))?
-                    .chunks
-                    .insert(i, chunk);
-            }
-            Record::ActiveStage(k) => {
-                state.active_staged_transactions.insert(k);
-            }
-            Record::Change(i, commit) => {
-                anyhow::ensure!(
-                    commit.records.is_empty(),
-                    "change commit contains embedded records"
-                );
-                state.change_feed.commits.insert(i, commit);
-            }
-            Record::ChangeItem(i, index, change) => {
-                let commit = state
-                    .change_feed
-                    .commits
-                    .get_mut(&i)
-                    .ok_or_else(|| anyhow::anyhow!("change commit missing"))?;
-                let commit = Arc::make_mut(commit);
-                anyhow::ensure!(
-                    index == commit.records.len() as u64,
-                    "change record sequence differs"
-                );
-                commit.records.push(change);
-            }
-            Record::Archive(k, archive) => {
-                state.history_archives.insert(k, archive);
-            }
-            Record::Activation(k, activation) => {
-                state.schema_activations.insert(k, activation);
-            }
-            Record::Retirement(k, retirement) => {
-                state.retirements.insert(k, *retirement);
-            }
-            Record::Audit(i, event) => {
-                anyhow::ensure!(
-                    Some(i)
-                        == state
-                            .audit_retention
-                            .pruned_before
-                            .checked_add(state.audits.len() as u64),
-                    "audit sequence differs"
-                );
-                state.audits.push_back(event);
-            }
-            Record::Intent(id, intent) => {
-                state
-                    .lifecycle_control
-                    .as_mut()
-                    .ok_or_else(|| anyhow::anyhow!("control installation missing"))?
-                    .intents
-                    .insert(id, intent);
-            }
-            Record::Target(key, target) => {
-                state.target_lifecycle.insert(key, *target);
-            }
-            Record::RecoveryOperation(key, record) => {
-                anyhow::ensure!(
-                    state.tenant == crate::control::CONTROL_TENANT
-                        && state.lifecycle_control.is_some(),
-                    "recovery coordinator requires installed Control state"
-                );
-                state.recovery_control.operations.insert(key, *record);
-            }
-            Record::RecoveryPhase(key, record) => {
-                anyhow::ensure!(
+        kasumi_store::ScratchOperationFailure::ordinary(|| {
+            let state = state
+                .as_mut()
+                .ok_or_else(|| anyhow::anyhow!("snapshot metadata must be first"))?;
+            match record {
+                Record::Header(_) => unreachable!(),
+                Record::Lineage(i, link) => {
+                    anyhow::ensure!(
+                        i == state.restore_lineage.len() as u64,
+                        "lineage sequence differs"
+                    );
+                    state.restore_lineage.push(link);
+                }
+                Record::Collection(k, collection) => {
+                    anyhow::ensure!(
+                        collection.documents.is_empty() && collection.archived_documents.is_empty(),
+                        "collection contains embedded documents"
+                    );
+                    state.collections.insert(k, collection);
+                }
+                Record::Document(k, document) => {
+                    state
+                        .collections
+                        .get_mut(&k)
+                        .ok_or_else(|| anyhow::anyhow!("document collection missing"))?
+                        .documents
+                        .insert(document.id.clone(), document);
+                }
+                Record::Archived(k, id, reference) => {
+                    state
+                        .collections
+                        .get_mut(&k)
+                        .ok_or_else(|| anyhow::anyhow!("archive collection missing"))?
+                        .archived_documents
+                        .insert(id, reference);
+                }
+                Record::BackupBinding(row) => {
+                    backup_bindings
+                        .as_mut()
+                        .ok_or_else(|| {
+                            anyhow::anyhow!("backup binding row without authenticated prefix")
+                        })?
+                        .push(&row, state)?;
+                }
+                Record::Receipt(row) => {
+                    receipts
+                        .as_mut()
+                        .ok_or_else(|| anyhow::anyhow!("receipt row without authenticated prefix"))?
+                        .push(&row, state)?;
+                }
+                Record::Stage(k, stage) => {
+                    anyhow::ensure!(
+                        stage.is_active() && stage.chunks.is_empty(),
+                        "resident stage must be an active upload header"
+                    );
+                    state.staged_transactions.insert(k, stage);
+                }
+                Record::StageChunk(k, i, chunk) => {
+                    state
+                        .staged_transactions
+                        .get_mut(&k)
+                        .ok_or_else(|| anyhow::anyhow!("stage missing"))?
+                        .chunks
+                        .insert(i, chunk);
+                }
+                Record::ActiveStage(k) => {
+                    state.active_staged_transactions.insert(k);
+                }
+                Record::Change(i, commit) => {
+                    anyhow::ensure!(
+                        commit.records.is_empty(),
+                        "change commit contains embedded records"
+                    );
+                    state.change_feed.commits.insert(i, commit);
+                }
+                Record::ChangeItem(i, index, change) => {
+                    let commit = state
+                        .change_feed
+                        .commits
+                        .get_mut(&i)
+                        .ok_or_else(|| anyhow::anyhow!("change commit missing"))?;
+                    let commit = Arc::make_mut(commit);
+                    anyhow::ensure!(
+                        index == commit.records.len() as u64,
+                        "change record sequence differs"
+                    );
+                    commit.records.push(change);
+                }
+                Record::Archive(k, archive) => {
+                    state.history_archives.insert(k, archive);
+                }
+                Record::Activation(k, activation) => {
+                    state.schema_activations.insert(k, activation);
+                }
+                Record::Retirement(k, retirement) => {
+                    state.retirements.insert(k, *retirement);
+                }
+                Record::Audit(i, event) => {
+                    anyhow::ensure!(
+                        Some(i)
+                            == state
+                                .audit_retention
+                                .pruned_before
+                                .checked_add(state.audits.len() as u64),
+                        "audit sequence differs"
+                    );
+                    state.audits.push_back(event);
+                }
+                Record::Intent(id, intent) => {
+                    state
+                        .lifecycle_control
+                        .as_mut()
+                        .ok_or_else(|| anyhow::anyhow!("control installation missing"))?
+                        .intents
+                        .insert(id, intent);
+                }
+                Record::Target(key, target) => {
+                    state.target_lifecycle.insert(key, *target);
+                }
+                Record::RecoveryOperation(key, record) => {
+                    anyhow::ensure!(
+                        state.tenant == crate::control::CONTROL_TENANT
+                            && state.lifecycle_control.is_some(),
+                        "recovery coordinator requires installed Control state"
+                    );
+                    state.recovery_control.operations.insert(key, *record);
+                }
+                Record::RecoveryPhase(key, record) => {
+                    anyhow::ensure!(
+                        state
+                            .recovery_control
+                            .operations
+                            .contains_key(&record.operation_id.to_string()),
+                        "recovery phase operation missing"
+                    );
+                    state.recovery_control.phases.insert(key, *record);
+                }
+                Record::RecoveryCompletionHistory(key, history) => {
+                    anyhow::ensure!(
+                        state
+                            .recovery_control
+                            .operations
+                            .contains_key(&history.operation_id.to_string()),
+                        "closed completion operation missing"
+                    );
                     state
                         .recovery_control
-                        .operations
-                        .contains_key(&record.operation_id.to_string()),
-                    "recovery phase operation missing"
-                );
-                state.recovery_control.phases.insert(key, *record);
-            }
-            Record::RecoveryCompletionHistory(key, history) => {
-                anyhow::ensure!(
+                        .completion_history
+                        .insert(key, *history);
+                }
+                Record::RecoveryTarget(key, operation) => {
+                    anyhow::ensure!(
+                        state
+                            .recovery_control
+                            .operations
+                            .contains_key(&operation.to_string()),
+                        "recovery target operation missing"
+                    );
+                    state.recovery_control.targets.insert(key, operation);
+                }
+                Record::Terminal(row) => {
+                    anyhow::ensure!(
+                        !state.staged_transactions.contains_key(&row.key),
+                        "staged identity is both active and terminal"
+                    );
+                    terminals
+                        .as_mut()
+                        .ok_or_else(|| anyhow::anyhow!("terminal stream header missing"))?
+                        .push(&row, state)?;
+                }
+                Record::TargetResolution(row) => {
+                    target_resolutions
+                        .as_mut()
+                        .ok_or_else(|| anyhow::anyhow!("target resolution rows without header"))?
+                        .push(&row, state)?;
+                }
+                Record::ControlChange(id, change) => {
                     state
-                        .recovery_control
-                        .operations
-                        .contains_key(&history.operation_id.to_string()),
-                    "closed completion operation missing"
-                );
-                state
-                    .recovery_control
-                    .completion_history
-                    .insert(key, *history);
+                        .lifecycle_control
+                        .as_mut()
+                        .ok_or_else(|| anyhow::anyhow!("control installation missing"))?
+                        .changes
+                        .insert(id, change);
+                }
             }
-            Record::RecoveryTarget(key, operation) => {
-                anyhow::ensure!(
-                    state
-                        .recovery_control
-                        .operations
-                        .contains_key(&operation.to_string()),
-                    "recovery target operation missing"
-                );
-                state.recovery_control.targets.insert(key, operation);
-            }
-            Record::Terminal(row) => {
-                anyhow::ensure!(
-                    !state.staged_transactions.contains_key(&row.key),
-                    "staged identity is both active and terminal"
-                );
-                terminals
-                    .as_mut()
-                    .ok_or_else(|| anyhow::anyhow!("terminal stream header missing"))?
-                    .push(&row, state)?;
-            }
-            Record::TargetResolution(row) => {
-                target_resolutions
-                    .as_mut()
-                    .ok_or_else(|| anyhow::anyhow!("target resolution rows without header"))?
-                    .push(&row, state)?;
-            }
-            Record::ControlChange(id, change) => {
-                state
-                    .lifecycle_control
-                    .as_mut()
-                    .ok_or_else(|| anyhow::anyhow!("control installation missing"))?
-                    .changes
-                    .insert(id, change);
-            }
-        }
-        Ok(())
+            Ok(())
+        })
     })?;
-    let state = state.ok_or_else(|| anyhow::anyhow!("snapshot metadata absent"))?;
-    let backup_bindings = match backup_bindings {
-        Some(builder) => builder.finish(&state.backup_binding_head)?,
-        None => {
-            let empty =
-                crate::backup_binding::View::empty(&state.backup_binding_head.origin_incarnation)?;
-            anyhow::ensure!(
-                empty.head() == &state.backup_binding_head,
-                "backup binding history missing from snapshot"
-            );
-            empty
-        }
-    };
-    let receipts = match receipts {
-        Some(builder) => builder.finish(&state.mutation_receipt_head)?,
-        None => {
-            let empty = crate::mutation_receipt::View::empty(
-                &state.tenant,
-                &state.mutation_receipt_head.origin_incarnation,
-            )?;
-            anyhow::ensure!(
-                empty.head() == &state.mutation_receipt_head,
-                "receipt history missing from snapshot"
-            );
-            empty
-        }
-    };
-    let terminals = match terminals {
-        Some(builder) => builder.finish(&state.staged_terminal_head)?,
-        None => {
-            let empty = crate::staged_terminal::View::empty(
-                &state.tenant,
-                &state.staged_terminal_head.origin_incarnation,
-            )?;
-            anyhow::ensure!(
-                empty.head() == &state.staged_terminal_head,
-                "empty terminal descriptor differs"
-            );
-            empty
-        }
-    };
-    let target_resolutions = match target_resolutions {
-        Some(builder) => builder.finish(&state)?,
-        None => {
-            let empty = crate::target_resolution::View::empty(
-                &state.tenant,
-                &state.target_resolution_head.origin_incarnation,
-            )?;
-            anyhow::ensure!(
-                empty.head() == &state.target_resolution_head,
-                "empty target terminal descriptor differs"
-            );
-            empty
-        }
-    };
-    Ok(Decoded {
-        state,
-        receipts,
-        backup_bindings,
-        summary,
-        terminals,
-        target_resolutions,
+    kasumi_store::ScratchOperationFailure::ordinary(|| {
+        let state = state.ok_or_else(|| anyhow::anyhow!("snapshot metadata absent"))?;
+        let backup_bindings = match backup_bindings {
+            Some(builder) => builder.finish(&state.backup_binding_head)?,
+            None => {
+                let empty = crate::backup_binding::View::empty(
+                    &state.backup_binding_head.origin_incarnation,
+                )?;
+                anyhow::ensure!(
+                    empty.head() == &state.backup_binding_head,
+                    "backup binding history missing from snapshot"
+                );
+                empty
+            }
+        };
+        let receipts = match receipts {
+            Some(builder) => builder.finish(&state.mutation_receipt_head)?,
+            None => {
+                let empty = crate::mutation_receipt::View::empty(
+                    &state.tenant,
+                    &state.mutation_receipt_head.origin_incarnation,
+                )?;
+                anyhow::ensure!(
+                    empty.head() == &state.mutation_receipt_head,
+                    "receipt history missing from snapshot"
+                );
+                empty
+            }
+        };
+        let terminals = match terminals {
+            Some(builder) => builder.finish(&state.staged_terminal_head)?,
+            None => {
+                let empty = crate::staged_terminal::View::empty(
+                    &state.tenant,
+                    &state.staged_terminal_head.origin_incarnation,
+                )?;
+                anyhow::ensure!(
+                    empty.head() == &state.staged_terminal_head,
+                    "empty terminal descriptor differs"
+                );
+                empty
+            }
+        };
+        let target_resolutions = match target_resolutions {
+            Some(builder) => builder.finish(&state)?,
+            None => {
+                let empty = crate::target_resolution::View::empty(
+                    &state.tenant,
+                    &state.target_resolution_head.origin_incarnation,
+                )?;
+                anyhow::ensure!(
+                    empty.head() == &state.target_resolution_head,
+                    "empty target terminal descriptor differs"
+                );
+                empty
+            }
+        };
+        Ok(Decoded {
+            state,
+            receipts,
+            backup_bindings,
+            summary,
+            terminals,
+            target_resolutions,
+        })
     })
 }
 
@@ -1165,7 +1187,7 @@ mod tests {
     fn read(
         disk: &Arc<kasumi_store::ScratchDisk>,
         reader: &mut dyn Read,
-    ) -> anyhow::Result<TenantState> {
+    ) -> std::result::Result<TenantState, kasumi_store::ScratchOperationFailure> {
         Ok(super::read(disk, reader)?.state)
     }
     pub(super) fn state() -> TenantState {

@@ -252,12 +252,11 @@ fn selected_fork_metadata_and_native_backing_denials_preserve_parent_and_exact_c
         let slot_blockers = slots.then(|| fixture.fill_slots());
         let before = fixture.memory.snapshot();
         assert_eq!(child.begin_fork(&parent), NodeReadPhase::Failed);
-        assert!(matches!(
-            child.report().begin(),
-            TerminalObservation::Returned(Err(kasumi_kv::TransactionError(
-                kasumi_kv::StorageError::Core(kasumi_kv::CoreError::CapacityDenied)
-            )))
-        ));
+        assert!(
+            matches!(&(child.report().begin()), TerminalObservation::Returned(Err(kasumi_kv::TransactionError(
+                kasumi_kv::StorageError::Core(native_error)
+            ))) if matches!(native_error.rejected_cause(), Some(kasumi_kv::CoreErrorCause::CapacityDenied)))
+        );
         let after = fixture.memory.snapshot();
         assert_eq!(after.used_bytes, before.used_bytes);
         assert_eq!(after.live_reservations, before.live_reservations);

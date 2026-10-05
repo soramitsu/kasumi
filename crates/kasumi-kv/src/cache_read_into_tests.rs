@@ -164,12 +164,11 @@ fn read_into_loader_original_and_capacity_are_never_retried_or_counted_successfu
         assert_eq!(calls.get(), 1);
         let result = cache.load_or_read_into(11, &mut destination, |_| {
             calls.set(calls.get() + 1);
-            Err(crate::CoreError::CapacityDenied)
+            Err(crate::CoreError::new(crate::CoreErrorCause::CapacityDenied))
         });
-        assert!(matches!(
-            result,
-            Err(CacheLoadError::Load(crate::CoreError::CapacityDenied))
-        ));
+        assert!(
+            matches!(&(result), Err(CacheLoadError::Load(native_error)) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::CapacityDenied)))
+        );
         assert_eq!(calls.get(), 2);
         let stats = cache.stats();
         assert_eq!(

@@ -2,10 +2,12 @@
 //! independently keyed custody store and never constructs an application backend.
 use crate::Entry;
 use crate::control::{self, AppliedCursor, AppliedEntryContext, META, load};
+use crate::ensure_result as ensure;
 use crate::lifetime::{StorageHandle, StorageLease};
 use crate::storage::{SnapshotCoverage, SnapshotEnvelope, SnapshotKind, as_snapshot};
 use crate::{BasicNode, LogId, SnapshotBuffer, TypeConfig};
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result};
+use kasumi_store::ScratchOperationFailure;
 use kasumi_store::{CustodyStore, WriteOp};
 use openraft::{
     EntryPayload, OptionalSend, RaftSnapshotBuilder, Snapshot, SnapshotMeta, StorageError,
@@ -33,7 +35,7 @@ pub(crate) fn applied(custody: &CustodyStore) -> Result<AppliedState> {
     })
 }
 
-pub(crate) fn capture(custody: &CustodyStore) -> Result<SnapshotEnvelope> {
+pub(crate) fn capture(custody: &CustodyStore) -> Result<SnapshotEnvelope, ScratchOperationFailure> {
     let state = control::custody_head(custody)?.policy;
     let (last_log_id, last_membership) = applied(custody)?;
     let committed = control::committed_coverage(custody.store())?
@@ -67,7 +69,7 @@ pub(crate) fn publish(
     custody: &CustodyStore,
     snapshot: &SnapshotEnvelope,
     limit: u64,
-) -> Result<()> {
+) -> Result<(), ScratchOperationFailure> {
     crate::custody_snapshot_storage::check_format(custody)?;
     ensure!(
         snapshot.kind == SnapshotKind::Custody
@@ -120,12 +122,13 @@ pub(crate) fn publish(
     custody
         .store()
         .replace_namespaces(&replacements, &install.writes)
+        .map_err(Into::into)
 }
 
 pub(crate) fn load_snapshot(
     custody: &CustodyStore,
     limit: u64,
-) -> Result<Option<SnapshotEnvelope>> {
+) -> Result<Option<SnapshotEnvelope>, ScratchOperationFailure> {
     let Some(bytes) = crate::custody_snapshot_storage::load_image(custody, limit)? else {
         return Ok(None);
     };
@@ -177,22 +180,27 @@ impl CustodyMachine {
         ownership: Arc<AtomicBool>,
         snapshot_limit: u64,
         snapshot_buffers: Arc<crate::SnapshotBufferOwner>,
-    ) -> Result<Self> {
+    ) -> Result<Self, ScratchOperationFailure> {
         let control_gate = crate::storage::control_gate(&custody)?;
         let store = custody.clone();
         let gate = control_gate.clone();
         let startup_lease = lease.clone();
         let startup_ownership = ownership.clone();
-        tokio::task::spawn_blocking(move || -> Result<()> {
-            let _lease = startup_lease;
-            let _ownership = startup_ownership;
-            let _gate = gate
-                .lock()
-                .map_err(|_| anyhow::anyhow!("control gate poisoned"))?;
-            control::custody_head(&store)?;
-            // This atomically records the latest durable closed state as a
-            // snapshot before OpenRaft is allowed to purge its covered log prefix.
-            publish(&store, &capture(&store)?, snapshot_limit)
+        let opening_buffers = snapshot_buffers.clone();
+        tokio::task::spawn_blocking(move || -> Result<(), ScratchOperationFailure> {
+            let scratch_guard = opening_buffers.scratch_failure_guard()?;
+            let result = (|| -> Result<_, ScratchOperationFailure> {
+                let _lease = startup_lease;
+                let _ownership = startup_ownership;
+                let _gate = gate
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("control gate poisoned"))?;
+                control::custody_head(&store)?;
+                // This atomically records the latest durable closed state as a
+                // snapshot before OpenRaft is allowed to purge its covered log prefix.
+                publish(&store, &capture(&store)?, snapshot_limit)
+            })();
+            scratch_guard.capture_result(result)
         })
         .await??;
         Ok(Self {
@@ -215,39 +223,49 @@ impl CustodyMachine {
 
 pub(crate) struct CustodySnapshotBuilder {
     machine: CustodyMachine,
-    captured: Result<Arc<SnapshotEnvelope>>,
+    captured: Result<Arc<SnapshotEnvelope>, ScratchOperationFailure>,
 }
 impl RaftSnapshotBuilder<TypeConfig> for CustodySnapshotBuilder {
     async fn build_snapshot(&mut self) -> Result<Snapshot<TypeConfig>, StorageError<u64>> {
         let snapshot = self.captured.as_ref().map_err(err)?.clone();
         let machine = self.machine.clone();
-        tokio::task::spawn_blocking(move || -> Result<_> {
-            let _gate = machine
-                .control_gate
-                .lock()
-                .map_err(|_| anyhow::anyhow!("control gate poisoned"))?;
-            machine.custody.store().check_access()?;
-            if let Some(current) = load_snapshot(&machine.custody, machine.snapshot_limit)?
-                && current.meta.last_log_id.map(|id| id.index)
-                    >= snapshot.meta.last_log_id.map(|id| id.index)
-            {
-                if current.meta.last_log_id.map(|id| id.index)
-                    == snapshot.meta.last_log_id.map(|id| id.index)
+        tokio::task::spawn_blocking(move || -> Result<_, ScratchOperationFailure> {
+            let scratch_guard = machine.snapshot_buffers.scratch_failure_guard()?;
+            let result = (|| -> Result<_, ScratchOperationFailure> {
+                let _gate = machine
+                    .control_gate
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("control gate poisoned"))?;
+                machine.custody.store().check_access()?;
+                if let Some(current) = load_snapshot(&machine.custody, machine.snapshot_limit)?
+                    && current.meta.last_log_id.map(|id| id.index)
+                        >= snapshot.meta.last_log_id.map(|id| id.index)
                 {
-                    ensure!(
-                        current.meta.last_log_id == snapshot.meta.last_log_id
-                            && current.meta.last_membership == snapshot.meta.last_membership,
-                        "closed snapshot position differs"
-                    );
-                    crate::snapshot_custody::check_same_retirement(
-                        current.retirement.as_ref(),
-                        snapshot.retirement.as_ref(),
-                    )?;
+                    if current.meta.last_log_id.map(|id| id.index)
+                        == snapshot.meta.last_log_id.map(|id| id.index)
+                    {
+                        ensure!(
+                            current.meta.last_log_id == snapshot.meta.last_log_id
+                                && current.meta.last_membership == snapshot.meta.last_membership,
+                            "closed snapshot position differs"
+                        );
+                        crate::snapshot_custody::check_same_retirement(
+                            current.retirement.as_ref(),
+                            snapshot.retirement.as_ref(),
+                        )?;
+                    }
+                    return as_snapshot(
+                        &current,
+                        machine.snapshot_limit,
+                        &machine.snapshot_buffers,
+                    )
+                    .map_err(Into::into);
                 }
-                return as_snapshot(&current, machine.snapshot_limit, &machine.snapshot_buffers);
-            }
-            publish(&machine.custody, &snapshot, machine.snapshot_limit)?;
-            as_snapshot(&snapshot, machine.snapshot_limit, &machine.snapshot_buffers)
+                publish(&machine.custody, &snapshot, machine.snapshot_limit)?;
+                as_snapshot(&snapshot, machine.snapshot_limit, &machine.snapshot_buffers)
+                    .map_err(Into::into)
+            })();
+            scratch_guard.capture_result(result)
         })
         .await
         .map_err(|error| self.machine.failure(error))?
@@ -328,17 +346,22 @@ impl RaftStateMachine<TypeConfig> for CustodyMachine {
     }
     async fn get_snapshot_builder(&mut self) -> Self::SnapshotBuilder {
         let machine = self.clone();
-        let captured = tokio::task::spawn_blocking(move || {
-            let _gate = machine
-                .control_gate
-                .lock()
-                .map_err(|_| anyhow::anyhow!("control gate poisoned"))?;
-            capture(&machine.custody)
-        })
-        .await
-        .map_err(anyhow::Error::from)
-        .and_then(|result| result)
-        .map(Arc::new);
+        let captured =
+            tokio::task::spawn_blocking(move || -> Result<_, ScratchOperationFailure> {
+                let scratch_guard = machine.snapshot_buffers.scratch_failure_guard()?;
+                let result = (|| -> Result<_, ScratchOperationFailure> {
+                    let _gate = machine
+                        .control_gate
+                        .lock()
+                        .map_err(|_| anyhow::anyhow!("control gate poisoned"))?;
+                    capture(&machine.custody)
+                })();
+                scratch_guard.capture_result(result)
+            })
+            .await
+            .map_err(ScratchOperationFailure::from)
+            .and_then(|result| result)
+            .map(Arc::new);
         CustodySnapshotBuilder {
             machine: self.clone(),
             captured,
@@ -362,28 +385,32 @@ impl RaftStateMachine<TypeConfig> for CustodyMachine {
     ) -> Result<(), StorageError<u64>> {
         let meta = meta.clone();
         let machine = self.clone();
-        tokio::task::spawn_blocking(move || -> Result<()> {
-            ensure!(
-                snapshot.len() <= machine.snapshot_limit,
-                "closed snapshot byte budget exceeded"
-            );
-            let image = snapshot.into_image()?;
-            let envelope = SnapshotEnvelope::decode(
-                image.disk(),
-                &mut image.reader(),
-                machine.snapshot_limit,
-            )?;
-            ensure!(envelope.meta == meta, "closed snapshot metadata differs");
-            let _gate = machine
-                .control_gate
-                .lock()
-                .map_err(|_| anyhow::anyhow!("control gate poisoned"))?;
-            let (previous, _) = applied(&machine.custody)?;
-            ensure!(
-                meta.last_log_id.map(|id| id.index) >= previous.map(|id| id.index),
-                "closed snapshot reverts applied state"
-            );
-            publish(&machine.custody, &envelope, machine.snapshot_limit)
+        tokio::task::spawn_blocking(move || -> Result<(), ScratchOperationFailure> {
+            let scratch_guard = machine.snapshot_buffers.scratch_failure_guard()?;
+            let result = (|| -> Result<_, ScratchOperationFailure> {
+                ensure!(
+                    snapshot.len() <= machine.snapshot_limit,
+                    "closed snapshot byte budget exceeded"
+                );
+                let image = snapshot.into_image()?;
+                let envelope = SnapshotEnvelope::decode(
+                    image.disk(),
+                    &mut image.reader(),
+                    machine.snapshot_limit,
+                )?;
+                ensure!(envelope.meta == meta, "closed snapshot metadata differs");
+                let _gate = machine
+                    .control_gate
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("control gate poisoned"))?;
+                let (previous, _) = applied(&machine.custody)?;
+                ensure!(
+                    meta.last_log_id.map(|id| id.index) >= previous.map(|id| id.index),
+                    "closed snapshot reverts applied state"
+                );
+                publish(&machine.custody, &envelope, machine.snapshot_limit)
+            })();
+            scratch_guard.capture_result(result)
         })
         .await
         .map_err(|error| self.failure(error))?
@@ -396,13 +423,18 @@ impl RaftStateMachine<TypeConfig> for CustodyMachine {
         let gate = self.control_gate.clone();
         let limit = self.snapshot_limit;
         let snapshot_buffers = self.snapshot_buffers.clone();
-        tokio::task::spawn_blocking(move || {
-            let _gate = gate
-                .lock()
-                .map_err(|_| anyhow::anyhow!("control gate poisoned"))?;
-            load_snapshot(&custody, limit)?
-                .map(|snapshot| as_snapshot(&snapshot, limit, &snapshot_buffers))
-                .transpose()
+        tokio::task::spawn_blocking(move || -> Result<_, ScratchOperationFailure> {
+            let scratch_guard = snapshot_buffers.scratch_failure_guard()?;
+            let result = (|| -> Result<_, ScratchOperationFailure> {
+                let _gate = gate
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("control gate poisoned"))?;
+                load_snapshot(&custody, limit)?
+                    .map(|snapshot| as_snapshot(&snapshot, limit, &snapshot_buffers))
+                    .transpose()
+                    .map_err(ScratchOperationFailure::Operation)
+            })();
+            scratch_guard.capture_result(result)
         })
         .await
         .map_err(err)?
@@ -413,12 +445,18 @@ impl RaftStateMachine<TypeConfig> for CustodyMachine {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use crate::test_utils::FixtureResult;
     const MAX_CLOSED_SNAPSHOT_BYTES: u64 = 64 << 20;
-    fn publish(custody: &CustodyStore, snapshot: &SnapshotEnvelope) -> Result<()> {
-        super::publish(custody, snapshot, MAX_CLOSED_SNAPSHOT_BYTES)
+    fn publish(
+        custody: &CustodyStore,
+        snapshot: &SnapshotEnvelope,
+    ) -> crate::test_utils::FixtureResult<()> {
+        super::publish(custody, snapshot, MAX_CLOSED_SNAPSHOT_BYTES).map_err(Into::into)
     }
-    fn load_snapshot(custody: &CustodyStore) -> Result<Option<SnapshotEnvelope>> {
-        super::load_snapshot(custody, MAX_CLOSED_SNAPSHOT_BYTES)
+    fn load_snapshot(
+        custody: &CustodyStore,
+    ) -> crate::test_utils::FixtureResult<Option<SnapshotEnvelope>> {
+        super::load_snapshot(custody, MAX_CLOSED_SNAPSHOT_BYTES).map_err(Into::into)
     }
     use crate::control::tests::{fixture, fixture_for_node, group, id, retirement_entry, seed};
     use kasumi_store::test_utils::FaultBackend;
@@ -487,30 +525,43 @@ pub(crate) mod tests {
         store: &kasumi_store::TenantStore,
         namespace: &str,
         key: &[u8],
-    ) -> Result<Vec<u8>> {
+    ) -> Result<kasumi_store::PlaintextValue> {
         let original = store
             .get(namespace, key)?
             .context("expected current custody point row")?;
-        let mut alternate = vec![b' '];
-        alternate.extend_from_slice(&original);
+        let alternate = kasumi_store::test_utils::FixturePlaintextCopy::with_suffix(
+            store,
+            b" ",
+            original.as_bytes(),
+        )?;
         ensure!(
             serde_json::from_slice::<serde_json::Value>(&alternate)?
                 == serde_json::from_slice::<serde_json::Value>(&original)?,
             "alternate JSON changed custody point value"
         );
-        store.write_batch(&[WriteOp::put(namespace, key, alternate)])?;
+        kasumi_store::test_utils::write_plaintext_copy_for_fixture(
+            store,
+            namespace,
+            key,
+            alternate.as_bytes(),
+        )?;
         Ok(original)
     }
     fn restore_json(
         store: &kasumi_store::TenantStore,
         namespace: &str,
         key: &[u8],
-        original: Vec<u8>,
+        original: kasumi_store::PlaintextValue,
     ) -> Result<()> {
-        store.write_batch(&[WriteOp::put(namespace, key, original)])
+        kasumi_store::test_utils::write_plaintext_copy_for_fixture(
+            store,
+            namespace,
+            key,
+            original.as_bytes(),
+        )
     }
     #[tokio::test]
-    async fn custody_point_reads_require_exact_current_writer_bytes() -> Result<()> {
+    async fn custody_point_reads_require_exact_current_writer_bytes() -> FixtureResult<()> {
         let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
         let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
         let fixture_scratch =
@@ -580,7 +631,8 @@ pub(crate) mod tests {
         Ok(())
     }
     #[tokio::test]
-    async fn same_entry_position_snapshot_cannot_substitute_rotated_custody_state() -> Result<()> {
+    async fn same_entry_position_snapshot_cannot_substitute_rotated_custody_state()
+    -> FixtureResult<()> {
         let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
         let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
         let fixture_scratch =
@@ -651,7 +703,8 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn existing_quorum_runs_closed_commands_after_application_key_revocation() -> Result<()> {
+    async fn existing_quorum_runs_closed_commands_after_application_key_revocation()
+    -> FixtureResult<()> {
         let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
         let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
         let fixture_scratch =
@@ -698,7 +751,7 @@ pub(crate) mod tests {
         Ok(())
     }
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn closed_custody_requires_fresh_existing_quorum_after_isolation() -> Result<()> {
+    async fn closed_custody_requires_fresh_existing_quorum_after_isolation() -> FixtureResult<()> {
         let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
         let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
         let fixture_scratch =
@@ -777,7 +830,7 @@ pub(crate) mod tests {
     }
     #[tokio::test]
     async fn custody_point_head_receipt_audit_and_applied_cursor_survive_each_write_failure()
-    -> Result<()> {
+    -> FixtureResult<()> {
         let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
         let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
         let fixture_scratch =
@@ -848,8 +901,8 @@ pub(crate) mod tests {
         Ok(())
     }
     #[tokio::test]
-    async fn closed_snapshot_rejects_prior_format_without_rewriting_permanent_storage() -> Result<()>
-    {
+    async fn closed_snapshot_rejects_prior_format_without_rewriting_permanent_storage()
+    -> FixtureResult<()> {
         let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
         let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
         let fixture_scratch =
@@ -878,13 +931,18 @@ pub(crate) mod tests {
             Some(original)
         );
         assert_eq!(
-            domains.custody().store().get(CLOSED_SNAPSHOT, b"current")?,
-            Some(b"KASUMIS2".to_vec())
+            domains
+                .custody()
+                .store()
+                .get(CLOSED_SNAPSHOT, b"current")?
+                .as_deref(),
+            Some(b"KASUMIS2".as_slice())
         );
         Ok(())
     }
     #[tokio::test]
-    async fn canonical_custody_stream_authenticates_counts_digest_and_record_order() -> Result<()> {
+    async fn canonical_custody_stream_authenticates_counts_digest_and_record_order()
+    -> FixtureResult<()> {
         let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
         let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
         let fixture_scratch =
@@ -987,7 +1045,7 @@ pub(crate) mod tests {
     }
     #[tokio::test]
     async fn streamed_custody_tables_and_snapshot_coverage_publish_at_one_crash_boundary()
-    -> Result<()> {
+    -> FixtureResult<()> {
         let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
         let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
         let fixture_scratch =
@@ -1061,7 +1119,8 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn closed_snapshot_near_metadata_limit_publishes_readable_coverage() -> Result<()> {
+    async fn closed_snapshot_near_metadata_limit_publishes_readable_coverage() -> FixtureResult<()>
+    {
         let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
         let scratch_directory = kasumi_store::test_utils::private_tempdir()?;
         let scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);

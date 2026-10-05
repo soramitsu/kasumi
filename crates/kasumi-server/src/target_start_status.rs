@@ -73,7 +73,7 @@ impl TargetRecoveryRuntime {
             })
             .await?;
         let generation = admission
-            .run(async { Ok(owner.lock_owned().await) })
+            .run(async { Ok::<_, anyhow::Error>(owner.lock_owned().await) })
             .await?;
         let status = self
             .check_initial_start_status(&generation, &query, &context, &bearer, &admission)

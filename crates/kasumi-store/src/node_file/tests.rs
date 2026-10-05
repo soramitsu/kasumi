@@ -159,8 +159,8 @@ fn unrelated_clean_and_unclean_old_format_rejection_is_byte_exact() {
     }
 }
 
-#[test]
-fn recognized_store_recovers_after_actual_process_exit_without_close() {
+#[tokio::test]
+async fn recognized_store_recovers_after_actual_process_exit_without_close() {
     let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
     let scratch_directory = crate::test_utils::private_tempdir().unwrap();
     let fixture_scratch =
@@ -189,7 +189,7 @@ fn recognized_store_recovers_after_actual_process_exit_without_close() {
         fixture_scratch.clone(),
     )
     .unwrap();
-    let transaction = node.db.begin_read().unwrap();
+    let transaction = node.body().db.begin_read().unwrap();
     let table = transaction.open_table(PROBE).unwrap();
     assert_eq!(
         table.get(b"key".as_slice()).unwrap().unwrap().value(),
@@ -206,7 +206,8 @@ fn recognized_store_recovers_after_actual_process_exit_without_close() {
         )
         .is_err()
     );
-    drop(node);
+    node.shutdown().await.unwrap();
+    assert!(node.retire().is_retired());
     let reopened = NodeStore::open_existing_fixture(
         &path,
         ID,
@@ -214,7 +215,8 @@ fn recognized_store_recovers_after_actual_process_exit_without_close() {
         fixture_scratch.clone(),
     )
     .unwrap();
-    drop(reopened);
+    reopened.shutdown().await.unwrap();
+    assert!(reopened.retire().is_retired());
 }
 
 #[test]
@@ -358,8 +360,8 @@ fn previous_node_format_is_rejected_without_changing_its_bytes() {
     );
 }
 
-#[test]
-fn initialization_requires_exact_journal_owned_empty_inode() {
+#[tokio::test]
+async fn initialization_requires_exact_journal_owned_empty_inode() {
     let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
     let scratch_directory = crate::test_utils::private_tempdir().unwrap();
     let fixture_scratch =
@@ -412,16 +414,17 @@ fn initialization_requires_exact_journal_owned_empty_inode() {
         private_files::file_identity(&path.join(kasumi_kv::ROOT_FILE_NAME)).unwrap(),
         identity.root
     );
-    drop(node);
-    drop(
-        NodeStore::open_existing_fixture(
-            &path,
-            ID,
-            fixture_memory.clone(),
-            fixture_scratch.clone(),
-        )
-        .unwrap(),
-    );
+    node.shutdown().await.unwrap();
+    assert!(node.retire().is_retired());
+    let reopened = NodeStore::open_existing_fixture(
+        &path,
+        ID,
+        fixture_memory.clone(),
+        fixture_scratch.clone(),
+    )
+    .unwrap();
+    reopened.shutdown().await.unwrap();
+    assert!(reopened.retire().is_retired());
     assert!(
         NodeStore::initialize_owned_empty_fixture(
             &path,
@@ -700,7 +703,7 @@ fn crash_child() {
             .unwrap();
             let node =
                 NodeStore::create_new_fixture(&path, ID, fixture_memory.clone(), scratch).unwrap();
-            commit_probe(node.db.begin_write().unwrap());
+            commit_probe(node.body().db.begin_write().unwrap());
             std::process::exit(77);
         }
         _ => panic!("unexpected node crash child mode"),
@@ -871,6 +874,11 @@ fn retained_database_retries_node_close_only_after_proved_pre_entry_contention()
         NodeFile::native_close_attempts(),
         attempts + shutdown_walk + 2 * u64::from(files)
     );
+    assert_eq!(
+        opening.dispose().settlement(),
+        kasumi_kv::DatabaseOpenSettlement::Disposed
+    );
+    assert!(opening.report().disposal().complete());
 }
 
 #[test]
@@ -900,10 +908,27 @@ fn retained_partial_opening_retries_node_close_after_pre_entry_contention() {
         kasumi_kv::DatabaseOpenSettlement::WaitingForTransactions
     );
     assert_eq!(NodeFile::native_close_attempts(), attempts);
-    assert!(matches!(
-        opening.report().partial_close(),
-        kasumi_kv::TerminalObservation::NotEntered
-    ));
+    let original_error = opening
+        .report()
+        .with_partial_close_observation(|observation| {
+            let kasumi_kv::TerminalObservation::Returned(Err(original)) = observation else {
+                panic!("the partial close wrapper returned its original pre-entry refusal");
+            };
+            assert_eq!(original.kind(), io::ErrorKind::WouldBlock);
+            std::ptr::from_ref(original)
+        });
+    let first_address = {
+        let report = opening.report();
+        let first = report.partial_close_outcome().unwrap();
+        assert_eq!(first.entry(), kasumi_kv::BackendCloseEntry::NotEntered);
+        report.with_partial_close_observation(|observation| {
+            let kasumi_kv::TerminalObservation::Returned(Err(original)) = observation else {
+                panic!("the same original pre-entry refusal remains retained");
+            };
+            assert!(std::ptr::eq(original, original_error));
+        });
+        std::ptr::from_ref(first)
+    };
     assert_eq!(owner.disk().snapshot().open_files, files);
     assert_eq!(
         opening.close().settlement(),
@@ -914,6 +939,20 @@ fn retained_partial_opening_retries_node_close_after_pre_entry_contention() {
         attempts + 2 * u64::from(files)
     );
     assert_eq!(owner.disk().snapshot().open_files, 0);
+    let report = opening.report();
+    assert_eq!(
+        std::ptr::from_ref(report.partial_close_outcome().unwrap()),
+        first_address
+    );
+    assert_eq!(
+        report.partial_close_retry_outcome().unwrap().entry(),
+        kasumi_kv::BackendCloseEntry::Entered
+    );
+    assert_eq!(
+        opening.dispose().settlement(),
+        kasumi_kv::DatabaseOpenSettlement::Disposed
+    );
+    assert!(opening.report().disposal().complete());
 }
 
 #[test]
@@ -973,6 +1012,11 @@ fn retained_database_retries_node_close_after_lower_arc_pre_entry_contention() {
     assert_eq!(after.retained_file_attempts, 0);
     assert_eq!(after.charged_bytes, before.charged_bytes);
     assert_eq!(after.pending_bytes, before.pending_bytes);
+    assert_eq!(
+        opening.dispose().settlement(),
+        kasumi_kv::DatabaseOpenSettlement::Disposed
+    );
+    assert!(opening.report().disposal().complete());
 }
 
 #[test]
@@ -1296,7 +1340,7 @@ fn read_items_key(core: &kasumi_kv::Core) -> Option<Vec<u8>> {
 
 #[test]
 fn substituted_inode_stays_owner_failed_until_drain_and_census_then_reopens_last_ack() {
-    use kasumi_kv::{BackendNativeDisposition, Core, CoreError, Operation};
+    use kasumi_kv::{BackendNativeDisposition, Core, Operation};
     let memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
     let directory = directory();
     let path = directory.path().join("substituted");
@@ -1327,10 +1371,9 @@ fn substituted_inode_stays_owner_failed_until_drain_and_census_then_reopens_last
     replacement.write_all_at(&acknowledged, 0).unwrap();
     replacement.sync_all().unwrap();
     drop(replacement);
-    assert!(matches!(
-        core.commit(&[Operation::put("items", b"key", b"lost")]),
-        Err(CoreError::OwnerFailed)
-    ));
+    assert!(
+        matches!(&(core.commit(&[Operation::put("items", b"key", b"lost")])), Err(native_error) if matches!(native_error.rejected_cause(), Some(kasumi_kv::CoreErrorCause::OwnerFailed)))
+    );
     assert!(core.is_fenced());
     assert_eq!(disk.snapshot().phase, crate::NodeDiskPhase::Failed);
     assert_eq!(std::fs::read(&moved).unwrap(), acknowledged);
@@ -1341,12 +1384,15 @@ fn substituted_inode_stays_owner_failed_until_drain_and_census_then_reopens_last
     std::fs::remove_file(&root_path).unwrap();
     std::fs::rename(&moved, &root_path).unwrap();
     assert_eq!(private_files::file_identity(&root_path).unwrap(), identity);
-    assert!(matches!(core.snapshot(), Err(CoreError::OwnerFailed)));
-    assert!(matches!(core.generation(), Err(CoreError::OwnerFailed)));
-    assert!(matches!(
-        core.commit(&[Operation::put("items", b"key", b"lost")]),
-        Err(CoreError::OwnerFailed)
-    ));
+    assert!(
+        matches!(&(core.snapshot()), Err(native_error) if matches!(native_error.rejected_cause(), Some(kasumi_kv::CoreErrorCause::OwnerFailed)))
+    );
+    assert!(
+        matches!(&(core.generation()), Err(native_error) if matches!(native_error.rejected_cause(), Some(kasumi_kv::CoreErrorCause::OwnerFailed)))
+    );
+    assert!(
+        matches!(&(core.commit(&[Operation::put("items", b"key", b"lost")])), Err(native_error) if matches!(native_error.rejected_cause(), Some(kasumi_kv::CoreErrorCause::OwnerFailed)))
+    );
     assert!(owner.check_owner().is_err());
     assert_eq!(disk.snapshot().phase, crate::NodeDiskPhase::Failed);
     assert!(disk.pause().is_err());
@@ -1363,8 +1409,12 @@ fn substituted_inode_stays_owner_failed_until_drain_and_census_then_reopens_last
         BackendNativeDisposition::Drained
     );
     assert!(closed.into_result().is_err());
-    assert!(matches!(core.snapshot(), Err(CoreError::Closed)));
-    drop(core);
+    assert!(
+        matches!(&(core.snapshot()), Err(native_error) if matches!(native_error.rejected_cause(), Some(kasumi_kv::CoreErrorCause::Closed)))
+    );
+    let mut disposal = core.into_disposal();
+    assert!(disposal.dispose().complete());
+    drop(disposal);
     drop(owner);
     // The failed outcome stays in installed custody until the census.
     assert!(disk.pause().is_err());
@@ -1408,4 +1458,6 @@ fn substituted_inode_stays_owner_failed_until_drain_and_census_then_reopens_last
     );
     closed.into_result().unwrap();
     assert_eq!(disk.snapshot().phase, crate::NodeDiskPhase::Open);
+    let mut disposal = reopened.into_disposal();
+    assert!(disposal.dispose().complete());
 }

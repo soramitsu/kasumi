@@ -5,7 +5,8 @@
 
 use crate::core::{
     AdmissionError, AdmittedValue, BackendCloseEntry, BackendCloseOutcome,
-    BackendNativeDisposition, CoreError, OwnerFailed, ResidentLease, StorageAdmission,
+    BackendNativeDisposition, CoreError, CorePanic, NativeDisposal, NativeDisposalReport,
+    OpeningCustody, OwnerFailed, ResidentLease, StorageAdmission,
 };
 use crate::group::{GroupFile, SegmentGroupBackend};
 use crate::root::{ROOT_SLOT_BYTES, RootSlot};
@@ -21,7 +22,7 @@ use std::fmt;
 use std::io;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, OnceLock};
 
 /// A view of the first attempted call. The original error or unwind payload
 /// remains owned by its retained operation.
@@ -61,6 +62,10 @@ impl<E> Attempt<E> {
         };
     }
 
+    fn view_is_panic(&self) -> bool {
+        matches!(self, Self::Unwound(_))
+    }
+
     fn succeeded(&self) -> bool {
         matches!(self, Self::Done(Ok(())))
     }
@@ -75,6 +80,9 @@ pub enum WriteTerminalOperation {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WriteTerminalSettlement {
     Unstarted,
+    /// A positively successful commit still owns its original writer token.
+    /// Capture must finish before matching-database disposal releases it.
+    HoldingWriter,
     Settled,
     Retained,
 }
@@ -174,16 +182,36 @@ impl RetainedWriteTransaction {
     }
 
     pub fn commit(&mut self) -> WriteTerminalReport<'_> {
+        self.commit_with_writer(false)
+    }
+
+    /// Publish once and retain the original successful writer token through
+    /// preowned source capture. Every refusal, unknown result and panic retains
+    /// the same original terminal observation; none can mint HoldingWriter.
+    pub fn commit_holding_writer(&mut self) -> WriteTerminalReport<'_> {
+        self.commit_with_writer(true)
+    }
+
+    fn commit_with_writer(&mut self, hold_success: bool) -> WriteTerminalReport<'_> {
         if self.operation.is_none() {
             self.operation = Some(WriteTerminalOperation::Commit);
             self.settlement = WriteTerminalSettlement::Retained;
             let transaction = self.transaction.as_mut().expect("retained writer");
             self.terminal.run(|| {
                 transaction
-                    .commit_inner()
+                    .commit_inner_with_writer(hold_success)
                     .map_err(|error| WriteTerminalError::Commit(error.into()))
             });
             self.settle_returned();
+            if hold_success
+                && self.terminal.succeeded()
+                && self
+                    .transaction
+                    .as_ref()
+                    .is_some_and(WriteTransaction::holds_writer)
+            {
+                self.settlement = WriteTerminalSettlement::HoldingWriter;
+            }
         }
         self.report()
     }
@@ -218,8 +246,10 @@ impl RetainedWriteTransaction {
     }
 
     pub fn dispose_settled(&mut self, database: &RetainedDatabase) -> WriteTerminalReport<'_> {
-        if self.settlement == WriteTerminalSettlement::Settled
-            && matches!(self.disposal, Attempt::Pending)
+        if matches!(
+            self.settlement,
+            WriteTerminalSettlement::Settled | WriteTerminalSettlement::HoldingWriter
+        ) && matches!(self.disposal, Attempt::Pending)
             && self
                 .transaction
                 .as_ref()
@@ -229,6 +259,13 @@ impl RetainedWriteTransaction {
                 drop(self.transaction.take());
                 Ok(())
             });
+            if self.settlement == WriteTerminalSettlement::HoldingWriter {
+                self.settlement = if self.disposal.succeeded() {
+                    WriteTerminalSettlement::Settled
+                } else {
+                    WriteTerminalSettlement::Retained
+                };
+            }
         }
         self.report()
     }
@@ -350,10 +387,7 @@ impl ReadAcquisitionFailure {
     // Returning here also proves provisional destructors completed. A panic,
     // owner failure, closed owner or post-acquisition check cannot qualify.
     fn after_native_return(original: TransactionError) -> Self {
-        let clean_capacity_refusal = matches!(
-            original,
-            TransactionError(StorageError::Core(CoreError::CapacityDenied))
-        );
+        let clean_capacity_refusal = matches!(&(original), TransactionError(StorageError::Core(native_error)) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::CapacityDenied)));
         Self {
             original,
             clean_capacity_refusal,
@@ -461,7 +495,14 @@ impl RetainedReadTransaction {
         self.readable()?
             .get_bytes(table, key, max_value_bytes)
             .map_err(|error| match error {
-                CoreError::InvalidInput(_) => BoundedReadError::BoundExceeded,
+                error
+                    if matches!(
+                        error.rejected_cause(),
+                        Some(crate::CoreErrorCause::InvalidInput(_))
+                    ) =>
+                {
+                    BoundedReadError::BoundExceeded
+                }
                 other => BoundedReadError::Storage(other.into()),
             })
     }
@@ -504,7 +545,14 @@ impl RetainedReadTransaction {
         self.readable()?
             .get_bytes_prepared(table, key, max_value_bytes, workspace)
             .map_err(|error| match error {
-                CoreError::InvalidInput(_) => BoundedReadError::BoundExceeded,
+                error
+                    if matches!(
+                        error.rejected_cause(),
+                        Some(crate::CoreErrorCause::InvalidInput(_))
+                    ) =>
+                {
+                    BoundedReadError::BoundExceeded
+                }
                 other => BoundedReadError::Storage(other.into()),
             })
     }
@@ -558,7 +606,14 @@ impl RetainedReadTransaction {
             .next_bytes(table, prefix, after, max_value_bytes)
             .map(|row| row.map(|(key, value)| BoundedReadRow { key, value }))
             .map_err(|error| match error {
-                CoreError::InvalidInput(_) => BoundedReadError::BoundExceeded,
+                error
+                    if matches!(
+                        error.rejected_cause(),
+                        Some(crate::CoreErrorCause::InvalidInput(_))
+                    ) =>
+                {
+                    BoundedReadError::BoundExceeded
+                }
                 other => BoundedReadError::Storage(other.into()),
             })
     }
@@ -656,6 +711,7 @@ pub enum DatabaseCloseSettlement {
     Retained,
     DrainedWithFailure,
     FailedDisposed,
+    Disposed,
 }
 
 /// The database stays installed even after native closure so diagnostics keep
@@ -663,6 +719,10 @@ pub enum DatabaseCloseSettlement {
 #[must_use]
 pub struct RetainedDatabase {
     database: Option<Database>,
+    disposal: NativeDisposal,
+    first_not_entered: Option<BackendCloseOutcome>,
+    retry_not_entered: Option<BackendCloseOutcome>,
+    pending_close: Option<BackendCloseOutcome>,
     admission: Arc<dyn StorageAdmission>,
     shutdown: Attempt<StorageError>,
     backend: Attempt<StorageError>,
@@ -695,12 +755,25 @@ impl DatabaseCloseReport<'_> {
     pub fn native_disposition(&self) -> BackendNativeDisposition {
         self.owner.native
     }
+    pub fn disposal(&self) -> NativeDisposalReport<'_> {
+        self.owner.disposal.report()
+    }
+    pub fn first_not_entered_outcome(&self) -> Option<&BackendCloseOutcome> {
+        self.owner.first_not_entered.as_ref()
+    }
+    pub fn retry_not_entered_outcome(&self) -> Option<&BackendCloseOutcome> {
+        self.owner.retry_not_entered.as_ref()
+    }
 }
 
 impl RetainedDatabase {
     fn new(database: Database, admission: Arc<dyn StorageAdmission>) -> Self {
         Self {
             database: Some(database),
+            disposal: NativeDisposal::default(),
+            first_not_entered: None,
+            retry_not_entered: None,
+            pending_close: None,
             admission,
             shutdown: Attempt::Pending,
             backend: Attempt::Pending,
@@ -744,7 +817,7 @@ impl RetainedDatabase {
         self.shutdown.run(|| {
             self.admission
                 .check_owner()
-                .map_err(|_| StorageError::from(CoreError::OwnerFailed))
+                .map_err(|_| StorageError::from(CoreError::new(crate::CoreErrorCause::OwnerFailed)))
         });
         let Some(database) = self.database.as_ref() else {
             self.settlement = DatabaseCloseSettlement::Retained;
@@ -755,6 +828,22 @@ impl RetainedDatabase {
             Ok(outcome) => {
                 self.native = outcome.native_disposition();
                 if outcome.entry() == BackendCloseEntry::NotEntered {
+                    self.pending_close = Some(outcome);
+                    if self.first_not_entered.is_none() {
+                        self.first_not_entered = self.pending_close.take();
+                    } else {
+                        if self.retry_not_entered.is_some() {
+                            self.disposal.retry_diagnostic_disposal =
+                                crate::native_backend::DisposalObservation::NotEntered;
+                            let prior = self.retry_not_entered.take();
+                            self.disposal.retry_diagnostic_disposal.run(|| drop(prior));
+                            if !self.disposal.retry_diagnostic_disposal.returned() {
+                                self.settlement = DatabaseCloseSettlement::Retained;
+                                return self.report();
+                            }
+                        }
+                        self.retry_not_entered = self.pending_close.take();
+                    }
                     self.settlement = DatabaseCloseSettlement::WaitingForTransactions;
                     return self.report();
                 }
@@ -782,17 +871,26 @@ impl RetainedDatabase {
         self.report()
     }
 
-    pub fn dispose_failed(&mut self) -> DatabaseCloseReport<'_> {
-        if self.settlement == DatabaseCloseSettlement::DrainedWithFailure {
-            self.failed_disposal.run(|| {
-                drop(self.database.take());
-                Ok(())
-            });
-            if self.failed_disposal.succeeded() {
-                self.settlement = DatabaseCloseSettlement::FailedDisposed;
+    /// Native closure and positive owned-resource disposal are independent.
+    pub fn dispose(&mut self) -> DatabaseCloseReport<'_> {
+        let failed = self.settlement == DatabaseCloseSettlement::DrainedWithFailure;
+        if !matches!(
+            self.settlement,
+            DatabaseCloseSettlement::Settled | DatabaseCloseSettlement::DrainedWithFailure
+        ) {
+            return self.report();
+        }
+        if let Some(database) = self.database.take() {
+            self.disposal.adopt_database(database);
+        }
+        self.disposal.mark_native_drained();
+        if self.disposal.dispose() {
+            self.failed_disposal = Attempt::Done(Ok(()));
+            self.settlement = if failed {
+                DatabaseCloseSettlement::FailedDisposed
             } else {
-                self.settlement = DatabaseCloseSettlement::Retained;
-            }
+                DatabaseCloseSettlement::Disposed
+            };
         }
         self.report()
     }
@@ -828,9 +926,10 @@ pub enum DatabaseOpenSettlement {
     Closed,
     DrainedWithFailure,
     FailedDisposed,
+    Disposed,
 }
 
-struct SharedBackend(Arc<Box<dyn SegmentGroupBackend>>);
+struct SharedBackend(crate::native_owned_arc::NativeOwnedArc<Box<dyn SegmentGroupBackend>>);
 
 impl fmt::Debug for SharedBackend {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -904,7 +1003,7 @@ impl SegmentGroupBackend for SharedBackend {
 
 enum FenceOutcome {
     Returned,
-    Unwound(Mutex<Box<dyn Any + Send>>),
+    Unwound(CorePanic),
 }
 
 struct OpeningAdmission {
@@ -986,7 +1085,7 @@ impl StorageAdmission for OpeningAdmission {
         }
         let outcome = match catch_unwind(AssertUnwindSafe(|| self.inner.owner_failed())) {
             Ok(()) => FenceOutcome::Returned,
-            Err(payload) => FenceOutcome::Unwound(Mutex::new(payload)),
+            Err(payload) => FenceOutcome::Unwound(CorePanic::new(payload)),
         };
         let _ = self.fence.set(outcome);
     }
@@ -997,20 +1096,30 @@ pub struct OpeningFenceReport<'a> {
 }
 
 impl OpeningFenceReport<'_> {
-    pub fn observation(&self) -> Option<TerminalObservation<'_, Infallible>> {
-        Some(match self.owner.fence.get() {
-            None if self.owner.failed.load(Ordering::Acquire) => TerminalObservation::Entered,
-            None => TerminalObservation::NotEntered,
-            Some(FenceOutcome::Returned) => TerminalObservation::Returned(Ok(())),
-            Some(FenceOutcome::Unwound(payload)) => TerminalObservation::Panicked(payload),
-        })
+    pub fn with_observation<R>(
+        &self,
+        inspect: impl FnOnce(TerminalObservation<'_, Infallible>) -> R,
+    ) -> R {
+        match self.owner.fence.get() {
+            None if self.owner.failed.load(Ordering::Acquire) => {
+                inspect(TerminalObservation::Entered)
+            }
+            None => inspect(TerminalObservation::NotEntered),
+            Some(FenceOutcome::Returned) => inspect(TerminalObservation::Returned(Ok(()))),
+            Some(FenceOutcome::Unwound(original)) => {
+                original.with_payload(|payload| inspect(TerminalObservation::Panicked(payload)))
+            }
+        }
     }
 }
 
 #[must_use]
 pub struct RetainedDatabaseOpening {
     builder: Option<Builder>,
-    backend: SharedBackend,
+    backend: Option<SharedBackend>,
+    failed_opening: Option<OpeningCustody<SharedBackend>>,
+    prepared_disposal: NativeDisposal,
+    prepared_close: crate::core::opening::CloseObservation,
     admission: Arc<OpeningAdmission>,
     mode: DatabaseOpenMode,
     database: Option<RetainedDatabase>,
@@ -1018,7 +1127,6 @@ pub struct RetainedDatabaseOpening {
     opening_phase: DatabaseOpenPhase,
     settlement: DatabaseOpenSettlement,
     opening: Attempt<DatabaseError>,
-    partial_close: Attempt<StorageError>,
     partial_native: BackendNativeDisposition,
     failed_disposal: Attempt<StorageError>,
 }
@@ -1055,8 +1163,36 @@ impl DatabaseOpenReport<'_> {
             .map_or(self.owner.partial_native, |database| database.native)
     }
 
-    pub fn partial_close(&self) -> TerminalObservation<'_, StorageError> {
-        self.owner.partial_close.view()
+    pub fn with_partial_close_observation<R>(
+        &self,
+        inspect: impl FnOnce(TerminalObservation<'_, io::Error>) -> R,
+    ) -> R {
+        match self.owner.failed_opening.as_ref() {
+            Some(custody) => custody.with_close_observation(inspect),
+            None => self.owner.prepared_close.with_observation(inspect),
+        }
+    }
+    pub fn partial_close_outcome(&self) -> Option<&BackendCloseOutcome> {
+        self.owner
+            .failed_opening
+            .as_ref()
+            .and_then(OpeningCustody::first_close_outcome)
+            .or_else(|| self.owner.prepared_close.outcome())
+    }
+    pub fn partial_close_retry_outcome(&self) -> Option<&BackendCloseOutcome> {
+        self.owner
+            .failed_opening
+            .as_ref()
+            .and_then(OpeningCustody::retry_close_outcome)
+    }
+    pub fn disposal(&self) -> NativeDisposalReport<'_> {
+        if let Some(database) = self.owner.database.as_ref() {
+            return database.disposal.report();
+        }
+        if let Some(custody) = self.owner.failed_opening.as_ref() {
+            return custody.admitted.report();
+        }
+        self.owner.prepared_disposal.report()
     }
 
     pub fn failed_disposal(&self) -> TerminalObservation<'_, StorageError> {
@@ -1098,7 +1234,12 @@ impl Builder {
         });
         RetainedDatabaseOpening {
             builder: Some(self.with_admission(admission.clone())),
-            backend: SharedBackend(Arc::new(backend)),
+            backend: Some(SharedBackend(crate::native_owned_arc::NativeOwnedArc::new(
+                backend,
+            ))),
+            failed_opening: None,
+            prepared_disposal: NativeDisposal::default(),
+            prepared_close: crate::core::opening::CloseObservation::NotEntered,
             admission,
             mode,
             database: None,
@@ -1106,7 +1247,6 @@ impl Builder {
             opening_phase: DatabaseOpenPhase::Prepared,
             settlement: DatabaseOpenSettlement::Prepared,
             opening: Attempt::Pending,
-            partial_close: Attempt::Pending,
             partial_native: BackendNativeDisposition::Retained,
             failed_disposal: Attempt::Pending,
         }
@@ -1142,29 +1282,44 @@ impl RetainedDatabaseOpening {
         self.phase = DatabaseOpenPhase::Opening;
         self.opening_phase = self.phase;
         self.settlement = DatabaseOpenSettlement::Retained;
+        self.opening = Attempt::Running;
         let builder = self.builder.take().expect("first opening attempt");
-        let backend = self.backend.clone();
-        let mode = self.mode;
-        let mut opened = None;
-        self.opening.run(|| {
-            let database = match mode {
-                // This owner already holds the exact SharedBackend and records
-                // its one-shot close. The direct Builder path closes failures
-                // itself; doing that here would re-enter the same backend.
-                DatabaseOpenMode::Create => builder.create_with_backend_retained(backend),
-                DatabaseOpenMode::Existing => builder.open_with_backend_retained(backend),
-            }?;
-            opened = Some(database);
-            Ok(())
-        });
-        if self.opening.succeeded() {
-            self.database =
-                opened.map(|database| RetainedDatabase::new(database, self.admission.clone()));
-            self.phase = DatabaseOpenPhase::Ready;
-            self.opening_phase = self.phase;
-            self.settlement = DatabaseOpenSettlement::Ready;
-        } else if matches!(self.opening, Attempt::Unwound(_)) {
-            self.admission.owner_failed();
+        // Move the exact prepaid owner. No extra retained alias survives the
+        // opening and no raw backend erasure is allocated before admission.
+        let backend = self.backend.take().expect("exact prepared backend");
+        let opened = match self.mode {
+            DatabaseOpenMode::Create => builder.create_with_backend_retained(backend),
+            DatabaseOpenMode::Existing => builder.open_with_backend_retained(backend),
+        };
+        match opened {
+            Ok(database) => {
+                self.opening = Attempt::Done(Ok(()));
+                self.database = Some(RetainedDatabase::new(database, self.admission.clone()));
+                self.phase = DatabaseOpenPhase::Ready;
+                self.opening_phase = self.phase;
+                self.settlement = DatabaseOpenSettlement::Ready;
+            }
+            Err(failure) => {
+                let binding: Arc<dyn StorageAdmission> = self.admission.clone();
+                match failure.install(&binding, &mut self.failed_opening) {
+                    Ok(Some(original)) => {
+                        self.opening = Attempt::Done(Err(DatabaseError::from(original)));
+                    }
+                    Ok(None) => {
+                        self.opening = Attempt::Done(Ok(()));
+                    }
+                    Err(original) => {
+                        // A mismatched witness does not release actual custody.
+                        // This branch cannot occur with the exact Builder above.
+                        std::mem::forget(original);
+                    }
+                }
+                if self.opening.view_is_panic()
+                    || matches!(&self.opening, Attempt::Done(Err(DatabaseError(StorageError::Core(original) | StorageError::UnknownCommit(original)))) if original.panic().is_some())
+                {
+                    self.admission.owner_failed();
+                }
+            }
         }
         self.report()
     }
@@ -1175,6 +1330,7 @@ impl RetainedDatabaseOpening {
             DatabaseOpenSettlement::Closed
                 | DatabaseOpenSettlement::DrainedWithFailure
                 | DatabaseOpenSettlement::FailedDisposed
+                | DatabaseOpenSettlement::Disposed
         ) {
             return self.report();
         }
@@ -1189,37 +1345,41 @@ impl RetainedDatabaseOpening {
                     DatabaseOpenSettlement::DrainedWithFailure
                 }
                 DatabaseCloseSettlement::FailedDisposed => DatabaseOpenSettlement::FailedDisposed,
+                DatabaseCloseSettlement::Disposed => DatabaseOpenSettlement::Disposed,
                 DatabaseCloseSettlement::Open | DatabaseCloseSettlement::Retained => {
                     DatabaseOpenSettlement::Retained
                 }
             };
-        } else if matches!(self.partial_close, Attempt::Pending) {
-            let outcome = catch_unwind(AssertUnwindSafe(|| self.backend.close()));
-            match outcome {
-                Ok(outcome) => {
-                    self.partial_native = outcome.native_disposition();
-                    if outcome.entry() == BackendCloseEntry::NotEntered {
-                        self.settlement = DatabaseOpenSettlement::WaitingForTransactions;
-                        return self.report();
-                    }
-                    self.partial_close =
-                        Attempt::Done(outcome.into_result().map_err(StorageError::Io));
-                    self.settlement = match (&self.partial_close, self.partial_native) {
-                        (Attempt::Done(Ok(())), BackendNativeDisposition::Drained) => {
-                            DatabaseOpenSettlement::Closed
-                        }
-                        (Attempt::Done(Err(_)), BackendNativeDisposition::Drained) => {
-                            DatabaseOpenSettlement::DrainedWithFailure
-                        }
-                        _ => DatabaseOpenSettlement::Retained,
-                    };
-                }
-                Err(payload) => {
-                    self.partial_close = Attempt::Unwound(payload);
-                    self.settlement = DatabaseOpenSettlement::Retained;
-                }
+        } else if let Some(custody) = self.failed_opening.as_mut() {
+            if matches!(
+                custody.first_close,
+                crate::core::opening::CloseObservation::NotEntered
+            ) {
+                custody.close();
+            } else {
+                custody.retry_close();
             }
+            self.partial_native = custody.native_disposition();
+            self.settlement = custody.with_close_observation(|observation| {
+                match (observation, self.partial_native) {
+                    (TerminalObservation::Returned(Ok(())), BackendNativeDisposition::Drained) => {
+                        DatabaseOpenSettlement::Closed
+                    }
+                    (TerminalObservation::Returned(Err(_)), BackendNativeDisposition::Drained) => {
+                        DatabaseOpenSettlement::DrainedWithFailure
+                    }
+                    (TerminalObservation::Returned(_), _) if custody.close_may_retry() => {
+                        DatabaseOpenSettlement::WaitingForTransactions
+                    }
+                    _ => DatabaseOpenSettlement::Retained,
+                }
+            });
+        } else if let Some(backend) = self.backend.take() {
+            let binding: Arc<dyn StorageAdmission> = self.admission.clone();
+            self.failed_opening = Some(OpeningCustody::prepared(backend, binding));
+            return self.close();
         }
+
         if matches!(
             self.settlement,
             DatabaseOpenSettlement::Retained | DatabaseOpenSettlement::DrainedWithFailure
@@ -1229,19 +1389,32 @@ impl RetainedDatabaseOpening {
         self.report()
     }
 
-    pub fn dispose_failed(&mut self) -> DatabaseOpenReport<'_> {
-        if self.settlement != DatabaseOpenSettlement::DrainedWithFailure {
+    pub fn dispose(&mut self) -> DatabaseOpenReport<'_> {
+        let failed = self.settlement == DatabaseOpenSettlement::DrainedWithFailure;
+        if !matches!(
+            self.settlement,
+            DatabaseOpenSettlement::Closed | DatabaseOpenSettlement::DrainedWithFailure
+        ) {
             return self.report();
         }
-        self.settlement = DatabaseOpenSettlement::Retained;
-        if let Some(database) = self.database.as_mut()
-            && database.dispose_failed().settlement() != DatabaseCloseSettlement::FailedDisposed
-        {
-            return self.report();
-        }
-        self.failed_disposal.run(|| Ok(()));
-        if self.failed_disposal.succeeded() {
-            self.settlement = DatabaseOpenSettlement::FailedDisposed;
+        let complete = if let Some(database) = self.database.as_mut() {
+            matches!(
+                database.dispose().settlement(),
+                DatabaseCloseSettlement::Disposed | DatabaseCloseSettlement::FailedDisposed
+            ) && database.disposal.complete()
+        } else if let Some(custody) = self.failed_opening.as_mut() {
+            custody.dispose()
+        } else {
+            self.prepared_disposal.mark_native_drained();
+            self.prepared_disposal.dispose_inline(&mut self.backend)
+        };
+        if complete {
+            self.failed_disposal = Attempt::Done(Ok(()));
+            self.settlement = if failed {
+                DatabaseOpenSettlement::FailedDisposed
+            } else {
+                DatabaseOpenSettlement::Disposed
+            };
         }
         self.report()
     }

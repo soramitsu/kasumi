@@ -80,6 +80,11 @@ pub struct CacheMemoryLease {
 }
 
 impl CacheMemoryLease {
+    #[cfg(test)]
+    pub(crate) fn allocation_address_for_test(&self) -> usize {
+        self.reservation.as_deref().expect("original cache grant") as *const dyn ErasedReservation
+            as *const () as usize
+    }
     /// The provider must already have admitted the complete quoted charge,
     /// including `size_of::<T>()` and its allocator allowance, before calling.
     pub fn new<T: CacheMemoryReservation + 'static>(

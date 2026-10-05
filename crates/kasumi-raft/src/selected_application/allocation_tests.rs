@@ -4,6 +4,7 @@ use super::*;
 use std::{
     alloc::{GlobalAlloc, Layout, System},
     cell::Cell,
+    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 thread_local! {
     static ACTIVE: Cell<bool> = const { Cell::new(false) };
@@ -11,6 +12,18 @@ thread_local! {
     static PEAK: Cell<usize> = const { Cell::new(0) };
     static REQUESTS: Cell<usize> = const { Cell::new(0) };
     static INVALID: Cell<bool> = const { Cell::new(false) };
+    static ADDRESS_CAPTURE: Cell<bool> = const { Cell::new(false) };
+    static LAST_ADDRESS: Cell<usize> = const { Cell::new(0) };
+    static ADDRESS_COUNT: Cell<usize> = const { Cell::new(0) };
+    static DEALLOCATION_ADDRESS: Cell<usize> = const { Cell::new(0) };
+    static DEALLOCATION_OBSERVER: Cell<*const DeallocationObservation> = const { Cell::new(std::ptr::null()) };
+}
+
+fn allocation_returned(pointer: *mut u8) {
+    if !pointer.is_null() && ADDRESS_CAPTURE.try_with(Cell::get).unwrap_or(false) {
+        let _ = LAST_ADDRESS.try_with(|address| address.set(pointer as usize));
+        let _ = ADDRESS_COUNT.try_with(|count| count.set(count.get() + 1));
+    }
 }
 struct Observed;
 #[global_allocator]
@@ -51,6 +64,7 @@ unsafe impl GlobalAlloc for Observed {
         if !result.is_null() {
             allocated(layout.size());
         }
+        allocation_returned(result);
         result
     }
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
@@ -58,6 +72,7 @@ unsafe impl GlobalAlloc for Observed {
         if !result.is_null() {
             allocated(layout.size());
         }
+        allocation_returned(result);
         result
     }
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, size: usize) -> *mut u8 {
@@ -66,12 +81,126 @@ unsafe impl GlobalAlloc for Observed {
             allocated(size);
             retired(layout.size());
         }
+        allocation_returned(result);
         result
     }
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        let observation = before_deallocation(ptr, layout);
         unsafe { System.dealloc(ptr, layout) };
         retired(layout.size());
+        if let Some(observation) = observation {
+            // SAFETY: observe_deallocation retains the borrowed observer for
+            // this complete synchronous allocator call, including its pause.
+            unsafe { &*observation }
+                .finished
+                .store(true, Ordering::Release);
+        }
     }
+}
+
+/// Capture real allocation addresses during one closed synchronous constructor.
+/// The caller owns its result until a later exact deallocation observation.
+pub(crate) fn observe_last_allocation<T>(work: impl FnOnce() -> T) -> (T, usize, usize) {
+    struct ResetAddress;
+    impl Drop for ResetAddress {
+        fn drop(&mut self) {
+            ADDRESS_CAPTURE.with(|active| active.set(false));
+        }
+    }
+    ADDRESS_CAPTURE.with(|active| assert!(!active.replace(true), "nested address capture"));
+    LAST_ADDRESS.with(|address| address.set(0));
+    ADDRESS_COUNT.with(|count| count.set(0));
+    let reset = ResetAddress;
+    let result = work();
+    drop(reset);
+    (
+        result,
+        LAST_ADDRESS.with(Cell::get),
+        ADDRESS_COUNT.with(Cell::get),
+    )
+}
+
+pub(crate) struct DeallocationObservation {
+    block: bool,
+    entered: AtomicBool,
+    released: AtomicBool,
+    finished: AtomicBool,
+    count: AtomicUsize,
+}
+impl DeallocationObservation {
+    pub(crate) fn new(block: bool) -> Self {
+        Self {
+            block,
+            entered: AtomicBool::new(false),
+            released: AtomicBool::new(false),
+            finished: AtomicBool::new(false),
+            count: AtomicUsize::new(0),
+        }
+    }
+    pub(crate) fn entered(&self) -> bool {
+        self.entered.load(Ordering::Acquire)
+    }
+    pub(crate) fn finished(&self) -> bool {
+        self.finished.load(Ordering::Acquire)
+    }
+    pub(crate) fn count(&self) -> usize {
+        self.count.load(Ordering::Acquire)
+    }
+    pub(crate) fn release(&self) {
+        self.released.store(true, Ordering::Release);
+    }
+}
+fn before_deallocation(
+    pointer: *mut u8,
+    _layout: Layout,
+) -> Option<*const DeallocationObservation> {
+    let observed = DEALLOCATION_ADDRESS
+        .try_with(|address| {
+            if address.get() == pointer as usize {
+                address.set(0);
+                true
+            } else {
+                false
+            }
+        })
+        .unwrap_or(false);
+    if !observed {
+        return None;
+    }
+    let observer = DEALLOCATION_OBSERVER.try_with(Cell::get).ok()?;
+    if observer.is_null() {
+        return None;
+    }
+    // SAFETY: observe_deallocation installs the pointer from a live borrow and
+    // clears it before returning/unwinding. This same-thread allocator call is
+    // synchronous; the raw pointer is never exposed or retained beyond it.
+    let state = unsafe { &*observer };
+    state.count.fetch_add(1, Ordering::AcqRel);
+    state.entered.store(true, Ordering::Release);
+    while state.block && !state.released.load(Ordering::Acquire) {
+        std::thread::yield_now();
+    }
+    Some(observer)
+}
+pub(crate) fn observe_deallocation<T>(
+    address: usize,
+    observer: &DeallocationObservation,
+    work: impl FnOnce() -> T,
+) -> T {
+    assert_ne!(address, 0);
+    DEALLOCATION_OBSERVER
+        .with(|current| assert!(current.get().is_null(), "nested deallocation observation"));
+    struct ResetObserver;
+    impl Drop for ResetObserver {
+        fn drop(&mut self) {
+            DEALLOCATION_ADDRESS.with(|address| address.set(0));
+            DEALLOCATION_OBSERVER.with(|observer| observer.set(std::ptr::null()));
+        }
+    }
+    DEALLOCATION_OBSERVER.with(|current| current.set(std::ptr::from_ref(observer)));
+    DEALLOCATION_ADDRESS.with(|current| current.set(address));
+    let _reset = ResetObserver;
+    work()
 }
 struct Reset;
 impl Drop for Reset {

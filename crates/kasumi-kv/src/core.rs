@@ -7,6 +7,8 @@
 use crate::cache::{CacheConfig, CacheStats};
 use crate::disk_state::DiskState;
 use crate::group::SegmentGroupBackend;
+use crate::native_owned_arc::NativeOwnedArc;
+pub(crate) use crate::native_resident_lease::NativeResidentLease;
 use crate::snapshot_pins::SnapshotPin;
 use std::any::Any;
 use std::fmt;
@@ -199,85 +201,195 @@ pub trait StorageAdmission: Send + Sync {
     fn owner_failed(&self);
 }
 
+/// Native commit disposition recorded alongside the original failure. Unknown
+/// outcomes never prove abort. Rejected alone does not prove native drain;
+/// retained transactions expose their actual terminal and disposal observations.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CoreErrorDisposition {
+    Rejected,
+    UnknownCommit,
+}
+
+/// Original inline failure. I/O errors and panic payloads retain their existing
+/// owners; changing commit disposition adds no diagnostic allocation.
 #[derive(Debug)]
-pub enum CoreError {
+pub enum CoreErrorCause {
     Io(io::Error),
+    /// A prospectively admitted allocation refused before a native effect.
+    /// Keep its actual error separate from uncertain physical I/O.
+    AllocationRefused(io::Error),
     Corrupt(&'static str),
     CapacityDenied,
     OwnerFailed,
     Closed,
     InvalidInput(&'static str),
     MissingTable,
-    UnknownCommit(io::Error),
-    Panicked(Box<CorePanic>),
-    OpeningFailure(Box<CoreOpenFailure>),
+    Panicked(CorePanic),
+}
+#[derive(Debug)]
+pub struct CoreError {
+    disposition: CoreErrorDisposition,
+    cause: CoreErrorCause,
+}
+impl CoreError {
+    pub fn new(cause: CoreErrorCause) -> Self {
+        Self {
+            disposition: CoreErrorDisposition::Rejected,
+            cause,
+        }
+    }
+    pub fn disposition(&self) -> CoreErrorDisposition {
+        self.disposition
+    }
+    pub fn cause(&self) -> &CoreErrorCause {
+        &self.cause
+    }
+    /// Borrow a failure only when no unknown commit disposition was recorded.
+    pub fn rejected_cause(&self) -> Option<&CoreErrorCause> {
+        (!self.is_unknown_commit()).then_some(&self.cause)
+    }
+    pub fn is_unknown_commit(&self) -> bool {
+        self.disposition == CoreErrorDisposition::UnknownCommit
+    }
+    pub fn is_capacity_denied(&self) -> bool {
+        matches!(self.rejected_cause(), Some(CoreErrorCause::CapacityDenied))
+            || matches!(self.rejected_cause(), Some(CoreErrorCause::AllocationRefused(original))
+                if original.kind() == io::ErrorKind::OutOfMemory)
+    }
+    pub fn io_error(&self) -> Option<&io::Error> {
+        match &self.cause {
+            CoreErrorCause::Io(original) | CoreErrorCause::AllocationRefused(original) => {
+                Some(original)
+            }
+            _ => None,
+        }
+    }
+    pub fn panic(&self) -> Option<&CorePanic> {
+        match &self.cause {
+            CoreErrorCause::Panicked(original) => Some(original),
+            _ => None,
+        }
+    }
+    pub(crate) fn into_unknown_commit(mut self) -> Self {
+        self.disposition = CoreErrorDisposition::UnknownCommit;
+        self
+    }
+    /// Preserve the established ordinary I/O conversion without cloning an
+    /// original error. Unknown outcomes and all other causes remain in this
+    /// exact error owner.
+    pub(crate) fn into_io(self) -> Result<io::Error, Self> {
+        if self.is_unknown_commit() {
+            return Err(self);
+        }
+        match self.cause {
+            CoreErrorCause::Io(original) => Ok(original),
+            cause => Err(Self {
+                disposition: self.disposition,
+                cause,
+            }),
+        }
+    }
+    pub(crate) fn unknown_io(original: io::Error) -> Self {
+        Self::new(CoreErrorCause::Io(original)).into_unknown_commit()
+    }
+    pub(crate) fn unknown_commit(original: CorePanic) -> Self {
+        Self::panicked(original).into_unknown_commit()
+    }
+    pub(crate) fn panicked(original: CorePanic) -> Self {
+        Self::new(CoreErrorCause::Panicked(original))
+    }
+    pub(crate) fn fences_owner(&self) -> bool {
+        self.is_unknown_commit()
+            || matches!(
+                self.cause,
+                CoreErrorCause::Io(_)
+                    | CoreErrorCause::Corrupt(_)
+                    | CoreErrorCause::OwnerFailed
+                    | CoreErrorCause::Panicked(_)
+            )
+    }
 }
 impl fmt::Display for CoreError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Io(error) => write!(f, "storage I/O: {error}"),
-            Self::Corrupt(reason) => write!(f, "corrupt committed storage: {reason}"),
-            Self::CapacityDenied => f.write_str("storage capacity denied"),
-            Self::OwnerFailed => f.write_str("storage owner failed"),
-            Self::Closed => f.write_str("database closed"),
-            Self::InvalidInput(reason) => write!(f, "invalid storage input: {reason}"),
-            Self::MissingTable => f.write_str("table does not exist"),
-            Self::UnknownCommit(error) => write!(f, "commit outcome unknown: {error}"),
-            Self::Panicked(panic) => panic.fmt(f),
-            Self::OpeningFailure(failure) => failure.fmt(f),
+        if self.is_unknown_commit() {
+            f.write_str("commit outcome unknown: ")?;
+        }
+        match &self.cause {
+            CoreErrorCause::Io(original) => write!(f, "storage I/O: {original}"),
+            CoreErrorCause::AllocationRefused(original) => {
+                write!(f, "native allocation refused: {original}")
+            }
+            CoreErrorCause::Corrupt(reason) => write!(f, "corrupt committed storage: {reason}"),
+            CoreErrorCause::CapacityDenied => f.write_str("storage capacity denied"),
+            CoreErrorCause::OwnerFailed => f.write_str("storage owner failed"),
+            CoreErrorCause::Closed => f.write_str("database closed"),
+            CoreErrorCause::InvalidInput(reason) => write!(f, "invalid storage input: {reason}"),
+            CoreErrorCause::MissingTable => f.write_str("table does not exist"),
+            CoreErrorCause::Panicked(original) => original.fmt(f),
         }
     }
 }
 impl std::error::Error for CoreError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::Io(error) | Self::UnknownCommit(error) => Some(error),
-            Self::Panicked(panic) => Some(panic),
-            Self::OpeningFailure(failure) => Some(failure),
+        match &self.cause {
+            CoreErrorCause::Io(original) | CoreErrorCause::AllocationRefused(original) => {
+                Some(original)
+            }
+            CoreErrorCause::Panicked(original) => Some(original),
             _ => None,
         }
-    }
-}
-impl CoreError {
-    /// An unwinding commit may have entered any backend effect. The payload
-    /// stays inspectable as the `CorePanic` source of the unknown outcome.
-    fn unknown_commit(panic: CorePanic) -> Self {
-        Self::UnknownCommit(io::Error::other(panic))
-    }
-
-    fn panicked(panic: CorePanic) -> Self {
-        Self::Panicked(Box::new(panic))
-    }
-
-    /// Errors that leave the physical owner or a backend effect uncertain.
-    /// Capacity, input, table and close errors are decided before any effect.
-    pub(crate) fn fences_owner(&self) -> bool {
-        matches!(
-            self,
-            Self::Io(_)
-                | Self::Corrupt(_)
-                | Self::OwnerFailed
-                | Self::UnknownCommit(_)
-                | Self::Panicked(_)
-        )
     }
 }
 
 /// Original unwind payload from a storage operation or opening. The payload
 /// remains owned and inspectable without requiring it to implement `Sync`.
-pub struct CorePanic(Mutex<Box<dyn Any + Send>>);
+pub struct CorePanic {
+    payload: std::cell::UnsafeCell<Box<dyn Any + Send>>,
+    inspecting: AtomicBool,
+}
+
+// The original payload is Send but need not be Sync. Every borrowed access is
+// serialized by the inline flag; no payload reference escapes with_payload.
+unsafe impl Sync for CorePanic {}
+
+struct PanicInspection<'a>(&'a AtomicBool);
+
+impl Drop for PanicInspection<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
 
 impl CorePanic {
     pub(crate) fn new(payload: Box<dyn Any + Send>) -> Self {
-        Self(Mutex::new(payload))
+        Self {
+            payload: std::cell::UnsafeCell::new(payload),
+            inspecting: AtomicBool::new(false),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn into_payload_for_test(self) -> Box<dyn Any + Send> {
+        self.payload.into_inner()
     }
 
     pub fn with_payload<R>(&self, inspect: impl FnOnce(&(dyn Any + Send)) -> R) -> R {
-        let payload = self
-            .0
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        inspect(payload.as_ref())
+        // Diagnostics must remain inspectable after admission or cleanup has
+        // failed. The inline gate avoids a lazy platform Mutex allocation on
+        // the first inspection. Yield while another synchronous inspection is
+        // active; the guard also releases the gate if its callback unwinds.
+        while self
+            .inspecting
+            .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            std::hint::spin_loop();
+            std::thread::yield_now();
+        }
+        let _inspection = PanicInspection(&self.inspecting);
+        // SAFETY: the acquired gate serializes every access to this payload.
+        // The callback's output is independent of the borrowed input lifetime.
+        inspect(unsafe { (&*self.payload.get()).as_ref() })
     }
 }
 
@@ -295,148 +407,23 @@ impl fmt::Display for CorePanic {
 
 impl std::error::Error for CorePanic {}
 
-fn run_open<T>(
-    close_on_failure: bool,
-    work: impl FnOnce() -> Result<T, CoreError>,
-) -> Result<T, CoreError> {
-    if close_on_failure {
-        match catch_unwind(AssertUnwindSafe(work)) {
-            Ok(result) => result,
-            Err(payload) => Err(CoreError::Panicked(Box::new(CorePanic::new(payload)))),
-        }
-    } else {
-        // RetainedDatabaseOpening owns the exact SharedBackend and catches its
-        // own unwind before recording the original terminal observation.
-        work()
-    }
-}
+#[path = "core_opening.rs"]
+pub(crate) mod opening;
+pub use opening::{
+    CoreOpenCleanup, CoreOpenFailure, NativeDisposalReport, NativeOpenFailure, NativeOwnedDisposal,
+};
+pub(crate) use opening::{NativeDisposal, OpeningCustody};
 
-struct FailedOpenOwner(Arc<dyn SegmentGroupBackend>);
-
-impl FailedOpenOwner {
-    fn close(&self) -> BackendCloseOutcome {
-        self.0.close()
-    }
-}
-
-/// A constructor failure whose close did not prove clean native drain. The
-/// original opening error and first close observation remain available, and a
-/// pre-effect busy close may be retried on this exact owner.
-#[must_use]
-pub struct CoreOpenFailure {
-    original: CoreError,
-    owner: Option<FailedOpenOwner>,
-    close: BackendCloseOutcome,
-    close_panic: Option<CorePanic>,
-}
-
-impl CoreOpenFailure {
-    pub fn original_error(&self) -> &CoreError {
-        &self.original
-    }
-
-    pub fn close_report(&self) -> &BackendCloseOutcome {
-        &self.close
-    }
-
-    pub fn close_panic(&self) -> Option<&CorePanic> {
-        self.close_panic.as_ref()
-    }
-
-    pub fn retry_close(&mut self) -> &BackendCloseOutcome {
-        if self.close.entry() == BackendCloseEntry::NotEntered
-            && let Some(owner) = self.owner.as_ref()
-        {
-            self.close = match catch_unwind(AssertUnwindSafe(|| owner.close())) {
-                Ok(close) => close,
-                Err(payload) => {
-                    self.close_panic = Some(CorePanic::new(payload));
-                    BackendCloseOutcome::retained(io::Error::other("backend close panicked"))
-                }
-            };
-            if self.close.native_disposition() == BackendNativeDisposition::Drained {
-                self.owner.take();
-            }
-        }
-        &self.close
-    }
-}
-
-impl fmt::Debug for CoreOpenFailure {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("CoreOpenFailure")
-            .field("original", &self.original)
-            .field("close", &self.close)
-            .field("close_panic", &self.close_panic)
-            .field("owner_retained", &self.owner.is_some())
-            .finish()
-    }
-}
-
-impl fmt::Display for CoreOpenFailure {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "opening failed: {}; native close: ", self.original)?;
-        match self.close.result.as_ref() {
-            Ok(()) => f.write_str("drained"),
-            Err(error) => error.fmt(f),
-        }
-    }
-}
-
-impl std::error::Error for CoreOpenFailure {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        Some(&self.original)
-    }
-}
-
-impl Drop for CoreOpenFailure {
-    fn drop(&mut self) {
-        // A caller who discards the report cannot silently perform an
-        // unobserved native close of an unproved owner.
-        if let Some(owner) = self.owner.take() {
-            std::mem::forget(owner);
-        }
-    }
-}
-
-fn failed_open(owner: FailedOpenOwner, original: CoreError, close_on_failure: bool) -> CoreError {
-    if !close_on_failure {
-        // Used only by the retained opening, which already holds the exact
-        // SharedBackend and records its own terminal close attempt.
-        return original;
-    }
-    let (close, close_panic) = match catch_unwind(AssertUnwindSafe(|| owner.close())) {
-        Ok(close) => (close, None),
-        Err(payload) => (
-            BackendCloseOutcome::retained(io::Error::other("backend close panicked")),
-            Some(CorePanic::new(payload)),
-        ),
-    };
-    if close.native_disposition() == BackendNativeDisposition::Drained && close.result.is_ok() {
-        return original;
-    }
-    let owner = if close.native_disposition() == BackendNativeDisposition::Drained {
-        None
-    } else {
-        Some(owner)
-    };
-    CoreError::OpeningFailure(Box::new(CoreOpenFailure {
-        original,
-        owner,
-        close,
-        close_panic,
-    }))
-}
 impl From<io::Error> for CoreError {
     fn from(error: io::Error) -> Self {
-        Self::Io(error)
+        Self::new(CoreErrorCause::Io(error))
     }
 }
 impl From<AdmissionError> for CoreError {
     fn from(error: AdmissionError) -> Self {
         match error {
-            AdmissionError::CapacityDenied => Self::CapacityDenied,
-            AdmissionError::OwnerFailed => Self::OwnerFailed,
+            AdmissionError::CapacityDenied => Self::new(CoreErrorCause::CapacityDenied),
+            AdmissionError::OwnerFailed => Self::new(CoreErrorCause::OwnerFailed),
         }
     }
 }
@@ -481,7 +468,7 @@ impl Operation {
 }
 
 struct State {
-    backend: Arc<dyn SegmentGroupBackend>,
+    backend: crate::native_backend::BackendRef,
     disk: Option<DiskState>,
     close_entered: bool,
     close_report: Option<CoreCloseReport>,
@@ -491,17 +478,35 @@ struct State {
 }
 impl State {
     fn disk(&mut self) -> Result<&mut DiskState, CoreError> {
-        self.disk.as_mut().ok_or(CoreError::Closed)
+        self.disk
+            .as_mut()
+            .ok_or(CoreError::new(crate::CoreErrorCause::Closed))
     }
 }
 struct Shared {
-    state: Mutex<State>,
-    admission: Arc<dyn StorageAdmission>,
+    state: Option<Mutex<State>>,
+    admission: std::mem::ManuallyDrop<Arc<dyn StorageAdmission>>,
     stopped: AtomicBool,
     fenced: AtomicBool,
     fence_panic: OnceLock<CorePanic>,
     snapshots: AtomicUsize,
-    _lease: Box<dyn ResidentLease>,
+    _authority: Option<crate::native_backend::BackendOwner>,
+}
+impl Drop for Shared {
+    fn drop(&mut self) {
+        // Explicit teardown takes every owned field first. An abandoned
+        // authority keeps its original state and funding without replaying
+        // close or pretending an unobserved destructor established drain.
+        if let Some(state) = self.state.take() {
+            std::mem::forget(state);
+        }
+        if let Some(authority) = self._authority.take() {
+            std::mem::forget(authority);
+        }
+        if let Some(original) = self.fence_panic.take() {
+            std::mem::forget(original);
+        }
+    }
 }
 impl Shared {
     /// Latch owner failure. The admission owner is told exactly once; an
@@ -518,25 +523,29 @@ impl Shared {
     /// A poisoned state lock means an earlier holder unwound with an
     /// unknown effect. It is an owner failure, never a retryable busy state.
     fn lock_state(&self) -> Result<MutexGuard<'_, State>, CoreError> {
-        self.state.lock().map_err(|_| {
-            self.fence();
-            CoreError::OwnerFailed
-        })
+        self.state
+            .as_ref()
+            .expect("live native state")
+            .lock()
+            .map_err(|_| {
+                self.fence();
+                CoreError::new(crate::CoreErrorCause::OwnerFailed)
+            })
     }
 
     fn check_owner(&self) -> Result<(), CoreError> {
         if self.fenced.load(Ordering::Acquire) {
-            return Err(CoreError::OwnerFailed);
+            return Err(CoreError::new(crate::CoreErrorCause::OwnerFailed));
         }
         self.admission.check_owner().map_err(|_| {
             self.fence();
-            CoreError::OwnerFailed
+            CoreError::new(crate::CoreErrorCause::OwnerFailed)
         })
     }
 
     fn check_open(&self, state: &State) -> Result<(), CoreError> {
         if state.closed || self.stopped.load(Ordering::Acquire) {
-            return Err(CoreError::Closed);
+            return Err(CoreError::new(crate::CoreErrorCause::Closed));
         }
         self.check_owner()
     }
@@ -560,11 +569,11 @@ impl Shared {
     }
 }
 pub struct Core {
-    shared: Arc<Shared>,
+    shared: NativeOwnedArc<Shared>,
 }
 
 pub struct ReadSnapshot {
-    shared: Arc<Shared>,
+    shared: NativeOwnedArc<Shared>,
     pin: SnapshotPin,
 }
 
@@ -613,19 +622,19 @@ pub struct CommittedPosition {
 /// Owned output bytes whose allocation remains admitted until the consumer drops it.
 pub struct AdmittedValue {
     pub(crate) bytes: Vec<u8>,
-    pub(crate) lease: Box<dyn ResidentLease>,
+    pub(crate) lease: NativeResidentLease,
 }
 impl AdmittedValue {
     pub(crate) fn request_bytes(len: usize) -> Result<u64, CoreError> {
         let bytes = len
             .checked_add(std::mem::size_of::<Self>() + 192)
-            .ok_or(CoreError::CapacityDenied)?;
-        u64::try_from(bytes).map_err(|_| CoreError::CapacityDenied)
+            .ok_or(CoreError::new(crate::CoreErrorCause::CapacityDenied))?;
+        u64::try_from(bytes).map_err(|_| CoreError::new(crate::CoreErrorCause::CapacityDenied))
     }
     pub fn as_bytes(&self) -> &[u8] {
         &self.bytes
     }
-    pub(crate) fn into_parts(self) -> (Vec<u8>, Box<dyn ResidentLease>) {
+    pub(crate) fn into_parts(self) -> (Vec<u8>, NativeResidentLease) {
         (self.bytes, self.lease)
     }
     pub(crate) fn allocate(
@@ -633,13 +642,15 @@ impl AdmittedValue {
         len: usize,
     ) -> Result<Self, CoreError> {
         // Include the output handle, allocator allowance and retained lease.
-        let lease = admission.reserve_workspace(Self::request_bytes(len)?)?;
+        let lease = admission
+            .reserve_workspace(Self::request_bytes(len)?)
+            .map(NativeResidentLease::new)?;
         let mut bytes = Vec::new();
         bytes
             .try_reserve_exact(len)
-            .map_err(|_| CoreError::CapacityDenied)?;
+            .map_err(|_| CoreError::new(crate::CoreErrorCause::CapacityDenied))?;
         if bytes.capacity() != len {
-            return Err(CoreError::CapacityDenied);
+            return Err(CoreError::new(crate::CoreErrorCause::CapacityDenied));
         }
         bytes.resize(len, 0);
         Ok(Self { bytes, lease })
@@ -660,8 +671,8 @@ impl AdmittedValue {
 pub struct PreparedPointRead {
     pub(crate) directory: crate::directory::DirectoryReadWorkspace,
     pub(crate) output: AdmittedValue,
-    owner: Arc<Shared>,
-    _charge: Box<dyn ResidentLease>,
+    owner: NativeOwnedArc<Shared>,
+    _charge: NativeResidentLease,
 }
 impl PreparedPointRead {
     /// Request for the fixed workspace shell; directory and output are separate.
@@ -717,85 +728,101 @@ impl ReadSnapshot {
 }
 
 impl Core {
-    /// Strictly initialize an empty group using the installed owner's explicit
-    /// incarnation and cache budget. Existing groups require `open_with_backend`.
-    pub fn create_with_backend(
-        backend: impl SegmentGroupBackend + 'static,
-        admission: Arc<dyn StorageAdmission>,
-        group_id: [u8; 16],
-        cache: CacheConfig,
-    ) -> Result<Self, CoreError> {
-        Self::assemble(Arc::new(backend), admission, group_id, cache, true, true)
+    #[cfg(test)]
+    pub(crate) fn owner_allocation_addresses_for_test(&self) -> [usize; 7] {
+        let state = self
+            .shared
+            .state
+            .as_ref()
+            .expect("live native state")
+            .lock()
+            .unwrap();
+        let [root, root_grant, arena, arena_grant, roll] = state
+            .disk
+            .as_ref()
+            .expect("live test native owner")
+            .owner_allocation_addresses_for_test();
+        [
+            self.shared.as_ref() as *const Shared as usize,
+            self.shared
+                ._authority
+                .as_ref()
+                .expect("native authority")
+                .grant()
+                .allocation_address_for_test(),
+            root,
+            root_grant,
+            arena,
+            arena_grant,
+            roll,
+        ]
     }
-    pub fn open_with_backend(
-        backend: impl SegmentGroupBackend + 'static,
-        admission: Arc<dyn StorageAdmission>,
-        group_id: [u8; 16],
-        cache: CacheConfig,
-    ) -> Result<Self, CoreError> {
-        Self::assemble(Arc::new(backend), admission, group_id, cache, false, true)
+    #[cfg(test)]
+    pub(crate) fn backend_allocation_addresses_for_test(&self) -> [usize; 2] {
+        self.shared
+            ._authority
+            .as_ref()
+            .expect("native authority")
+            .backing_addresses_for_test()
     }
-    pub(crate) fn create_with_backend_retained(
-        backend: impl SegmentGroupBackend + 'static,
-        admission: Arc<dyn StorageAdmission>,
-        group_id: [u8; 16],
-        cache: CacheConfig,
-    ) -> Result<Self, CoreError> {
-        Self::assemble(Arc::new(backend), admission, group_id, cache, true, false)
+    pub(crate) fn native_is_drained(&self) -> bool {
+        self.shared
+            .state
+            .as_ref()
+            .expect("live native state")
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .closed
     }
-    pub(crate) fn open_with_backend_retained(
-        backend: impl SegmentGroupBackend + 'static,
-        admission: Arc<dyn StorageAdmission>,
-        group_id: [u8; 16],
-        cache: CacheConfig,
-    ) -> Result<Self, CoreError> {
-        Self::assemble(Arc::new(backend), admission, group_id, cache, false, false)
+    /// One original native shell grant funds the sized backend body, its
+    /// authoritative cell, Shared, and every database facade control.
+    pub(crate) fn shell_request_bytes<B>() -> io::Result<u64> {
+        let fixed = (std::mem::size_of::<Shared>()
+            + 2 * std::mem::size_of::<usize>()
+            + 64
+            + 128
+            + crate::native_sync::mutex_backing_bytes()
+            + crate::tables::facade_heap_bytes()) as u64;
+        fixed
+            .checked_add(crate::native_backend::BackendOwner::allocation_request_bytes::<B>()?)
+            .ok_or_else(|| io::ErrorKind::InvalidInput.into())
     }
-    fn assemble(
-        backend: Arc<dyn SegmentGroupBackend>,
+    pub(crate) fn shell_lease(&self) -> &NativeResidentLease {
+        self.shared
+            ._authority
+            .as_ref()
+            .expect("native authority")
+            .grant()
+    }
+    #[allow(
+        clippy::result_large_err,
+        reason = "The failure owns the exact sized backend and cleanup without an error-path allocation."
+    )]
+    pub fn create_with_backend<B: SegmentGroupBackend + 'static>(
+        backend: B,
         admission: Arc<dyn StorageAdmission>,
         group_id: [u8; 16],
         cache: CacheConfig,
-        create: bool,
-        close_on_failure: bool,
-    ) -> Result<Self, CoreError> {
-        let result = run_open(close_on_failure, || {
-            admission
-                .check_owner()
-                .map_err(|_| CoreError::OwnerFailed)?;
-            let lease =
-                admission.reserve_workspace((std::mem::size_of::<Shared>() + 256) as u64)?;
-            let disk = if create {
-                DiskState::create(backend.clone(), admission.clone(), group_id, cache)?
-            } else {
-                DiskState::open(backend.clone(), admission.clone(), group_id, cache)?
-            };
-            let position = disk.committed_position()?;
-            Ok(Self {
-                shared: Arc::new(Shared {
-                    state: Mutex::new(State {
-                        backend: backend.clone(),
-                        disk: Some(disk),
-                        close_entered: false,
-                        close_report: None,
-                        closed: false,
-                        maintenance_active: false,
-                        maintenance_position: position,
-                    }),
-                    admission: admission.clone(),
-                    stopped: AtomicBool::new(false),
-                    fenced: AtomicBool::new(false),
-                    fence_panic: OnceLock::new(),
-                    snapshots: AtomicUsize::new(0),
-                    _lease: lease,
-                }),
-            })
-        });
-        result.map_err(|error| failed_open(FailedOpenOwner(backend), error, close_on_failure))
+    ) -> Result<Self, NativeOpenFailure<B>> {
+        opening::assemble(backend, admission, group_id, cache, true, true, false)
+            .map(|opened| opened.into_core())
+    }
+    #[allow(
+        clippy::result_large_err,
+        reason = "The failure owns the exact sized backend and cleanup without an error-path allocation."
+    )]
+    pub fn open_with_backend<B: SegmentGroupBackend + 'static>(
+        backend: B,
+        admission: Arc<dyn StorageAdmission>,
+        group_id: [u8; 16],
+        cache: CacheConfig,
+    ) -> Result<Self, NativeOpenFailure<B>> {
+        opening::assemble(backend, admission, group_id, cache, false, true, false)
+            .map(|opened| opened.into_core())
     }
     pub fn snapshot(&self) -> Result<ReadSnapshot, CoreError> {
         if self.shared.stopped.load(Ordering::Acquire) {
-            return Err(CoreError::Closed);
+            return Err(CoreError::new(crate::CoreErrorCause::Closed));
         }
         self.shared.run(CoreError::panicked, |state| {
             self.shared.check_open(state)?;
@@ -824,15 +851,13 @@ impl Core {
         self.shared
             .run(CoreError::panicked, |_| self.shared.check_owner())
     }
-    pub(crate) fn reserve_workspace(
-        &self,
-        bytes: u64,
-    ) -> Result<Box<dyn ResidentLease>, CoreError> {
+    pub(crate) fn reserve_workspace(&self, bytes: u64) -> Result<NativeResidentLease, CoreError> {
         self.shared.run(CoreError::panicked, |state| {
             self.shared.check_open(state)?;
             self.shared
                 .admission
                 .reserve_workspace(bytes)
+                .map(NativeResidentLease::new)
                 .map_err(Into::into)
         })
     }
@@ -866,9 +891,9 @@ impl Core {
     /// warm_cache_if_needed, which reports provider pressure without an error.
     pub fn warm_cache(&self, work_limit: usize) -> Result<CacheWarmup, CoreError> {
         if work_limit == 0 {
-            return Err(CoreError::InvalidInput(
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
                 "cache warm-up step must be nonzero",
-            ));
+            )));
         }
         self.shared.run(CoreError::panicked, |state| {
             self.shared.check_open(state)?;
@@ -882,9 +907,9 @@ impl Core {
     /// automatic driver must apply backoff to provider-limited attempts.
     pub fn warm_cache_if_needed(&self, work_limit: usize) -> Result<CacheWarmup, CoreError> {
         if work_limit == 0 {
-            return Err(CoreError::InvalidInput(
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
                 "cache warm-up step must be nonzero",
-            ));
+            )));
         }
         self.shared.run(CoreError::panicked, |state| {
             self.shared.check_open(state)?;
@@ -943,10 +968,10 @@ impl Core {
         })
     }
     fn check_snapshot(&self, snapshot: &ReadSnapshot) -> Result<(), CoreError> {
-        if !Arc::ptr_eq(&self.shared, &snapshot.shared) {
-            return Err(CoreError::InvalidInput(
+        if !NativeOwnedArc::ptr_eq(&self.shared, &snapshot.shared) {
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
                 "snapshot belongs to another database owner",
-            ));
+            )));
         }
         Ok(())
     }
@@ -955,16 +980,17 @@ impl Core {
         max_value_bytes: usize,
     ) -> Result<PreparedPointRead, CoreError> {
         if max_value_bytes > MAX_VALUE_BYTES {
-            return Err(CoreError::InvalidInput(
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
                 "prepared point bound exceeds native value limit",
-            ));
+            )));
         }
         self.shared.run(CoreError::panicked, |state| {
             self.shared.check_open(state)?;
             let charge = self
                 .shared
                 .admission
-                .reserve_workspace(PreparedPointRead::shell_request_bytes())?;
+                .reserve_workspace(PreparedPointRead::shell_request_bytes())
+                .map(NativeResidentLease::new)?;
             let directory = crate::directory::DirectoryReadWorkspace::new(&self.shared.admission)?;
             let output = AdmittedValue::allocate(&self.shared.admission, max_value_bytes)?;
             self.shared.check_open(state)?;
@@ -984,8 +1010,10 @@ impl Core {
         workspace: &mut PreparedPointRead,
     ) -> Result<bool, CoreError> {
         self.check_snapshot(snapshot)?;
-        if !Arc::ptr_eq(&self.shared, &workspace.owner) {
-            return Err(CoreError::InvalidInput("prepared point owner differs"));
+        if !NativeOwnedArc::ptr_eq(&self.shared, &workspace.owner) {
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
+                "prepared point owner differs",
+            )));
         }
         self.shared.run(CoreError::panicked, |state| {
             self.shared.check_open(state)?;
@@ -1005,8 +1033,10 @@ impl Core {
         workspace: &mut PreparedPointRead,
     ) -> Result<Option<usize>, CoreError> {
         self.check_snapshot(snapshot)?;
-        if !Arc::ptr_eq(&self.shared, &workspace.owner) {
-            return Err(CoreError::InvalidInput("prepared point owner differs"));
+        if !NativeOwnedArc::ptr_eq(&self.shared, &workspace.owner) {
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
+                "prepared point owner differs",
+            )));
         }
         self.shared.run(CoreError::panicked, |state| {
             self.shared.check_open(state)?;
@@ -1025,10 +1055,12 @@ impl Core {
         workspace: &'workspace mut PreparedPointRead,
     ) -> Result<Option<&'workspace [u8]>, CoreError> {
         self.check_snapshot(snapshot)?;
-        if !Arc::ptr_eq(&self.shared, &workspace.owner) || max_value_bytes > workspace.capacity() {
-            return Err(CoreError::InvalidInput(
+        if !NativeOwnedArc::ptr_eq(&self.shared, &workspace.owner)
+            || max_value_bytes > workspace.capacity()
+        {
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
                 "prepared point owner or bound differs",
-            ));
+            )));
         }
         let length = self.shared.run(CoreError::panicked, |state| {
             self.shared.check_open(state)?;
@@ -1114,7 +1146,13 @@ impl Core {
         if self.shared.snapshots.load(Ordering::Acquire) != 0 {
             return BackendCloseOutcome::not_entered(io::ErrorKind::WouldBlock.into());
         }
-        let mut state = match self.shared.state.try_lock() {
+        let mut state = match self
+            .shared
+            .state
+            .as_ref()
+            .expect("live native state")
+            .try_lock()
+        {
             Ok(state) => state,
             Err(TryLockError::WouldBlock) => {
                 return BackendCloseOutcome::not_entered(io::ErrorKind::WouldBlock.into());
@@ -1148,14 +1186,14 @@ impl Core {
             state.close_report = Some(CoreCloseReport::capture(&outcome));
             if outcome.native_disposition() == BackendNativeDisposition::Drained {
                 state.closed = true;
-                state.disk.take();
+                // Keep the original disk owner until explicit observed disposal.
             }
         }
         outcome
     }
 
     pub fn admission(&self) -> Arc<dyn StorageAdmission> {
-        self.shared.admission.clone()
+        Arc::clone(&self.shared.admission)
     }
 }
 #[cfg(test)]

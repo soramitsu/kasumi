@@ -2834,7 +2834,8 @@ mod publication_tests {
     use super::*;
 
     #[test]
-    fn rejected_recovery_waits_for_publication_and_retries_exact_response() -> anyhow::Result<()> {
+    fn rejected_recovery_waits_for_publication_and_retries_exact_response()
+    -> crate::test_fixture_failure::FixtureResult<()> {
         let engine = TenantEngine::new(
             "tenant".into(),
             Uuid::new_v4().to_string(),
@@ -2929,7 +2930,10 @@ mod publication_tests {
         )
         .unwrap_err();
         assert_eq!(
-            failure.downcast_ref::<kasumi_raft::PublishCallError>(),
+            failure
+                .operation_error()
+                .unwrap()
+                .downcast_ref::<kasumi_raft::PublishCallError>(),
             Some(&kasumi_raft::PublishCallError::Failed)
         );
         assert!(Arc::ptr_eq(&engine.generation()?, &previous));

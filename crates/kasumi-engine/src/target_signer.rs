@@ -51,7 +51,7 @@ impl TargetSigner {
         &self,
         proof: &crate::VerifiedTargetInitialMembershipStatus,
         operation: &TargetOperation,
-    ) -> Result<SignedTargetInitialMembershipStatus> {
+    ) -> std::result::Result<SignedTargetInitialMembershipStatus, crate::SnapshotFailure> {
         proof.release(operation).await?;
         let observation = proof.observation().clone();
         self.check(observation.origin()?, operation).map_err(|_| {
@@ -64,7 +64,8 @@ impl TargetSigner {
             return Err(Error::new(
                 ErrorCode::Forbidden,
                 "initial membership observer is another leader",
-            ));
+            )
+            .into());
         }
         let bytes = serde_json::to_vec(&(
             "kasumi.target-initial-membership-status-observation.v1",

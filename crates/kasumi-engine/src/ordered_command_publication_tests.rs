@@ -40,7 +40,7 @@ fn selected(fixture: &Fixture, input: &CommandInput) -> Result<()> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn ordered_command_real_sink_publishes_acceptance_rejection_and_idempotent_outcome()
--> Result<()> {
+-> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
     fixture.seed(1, false)?;
     let old = fixture.engine.generation()?;
@@ -119,7 +119,7 @@ async fn ordered_command_real_sink_publishes_acceptance_rejection_and_idempotent
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn ordered_command_real_sink_rejects_full_context_substitution_after_preparation()
--> Result<()> {
+-> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
     fixture.seed(1, false)?;
     let old = fixture.engine.generation()?;
@@ -194,8 +194,8 @@ async fn ordered_command_real_sink_rejects_full_context_substitution_after_prepa
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn ordered_command_frozen_refusal_keeps_actual_guard_and_encoded_sealed_outcome() -> Result<()>
-{
+async fn ordered_command_frozen_refusal_keeps_actual_guard_and_encoded_sealed_outcome()
+-> crate::test_fixture_failure::FixtureResult<()> {
     struct Refuse<'a> {
         engine: &'a TenantEngine,
         previous: &'a Arc<Generation>,
@@ -285,7 +285,10 @@ async fn ordered_command_frozen_refusal_keeps_actual_guard_and_encoded_sealed_ou
         )
         .unwrap_err();
     assert_eq!(
-        error.downcast_ref::<kasumi_raft::PublishCallError>(),
+        error
+            .operation_error()
+            .expect("actual publisher operation failure")
+            .downcast_ref::<kasumi_raft::PublishCallError>(),
         Some(&kasumi_raft::PublishCallError::Failed)
     );
     assert_eq!(publisher.calls, 1);

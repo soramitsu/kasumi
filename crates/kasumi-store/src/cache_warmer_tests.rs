@@ -205,7 +205,7 @@ impl SegmentGroupBackend for Probe {
 }
 
 struct Fixture {
-    node: Arc<NodeStore>,
+    node: NodeStore,
     probe: Arc<Probe>,
     memory: Arc<crate::test_utils::TestDiskMemory>,
     admission: Arc<MemoryAdmission>,
@@ -226,7 +226,7 @@ impl Fixture {
         };
         let first =
             NodeStore::create_with_backend(group.clone(), native(), scratch.clone()).unwrap();
-        let transaction = first.db.begin_write().unwrap();
+        let transaction = first.body().db.begin_write().unwrap();
         {
             let mut table = transaction.open_table(ROWS).unwrap();
             for i in 0..20_u8 {
@@ -245,9 +245,28 @@ impl Fixture {
             gate: ReadGate::default(),
         });
         let admission = native();
-        let node = NodeStore::open_with_backend(probe.clone(), admission.clone(), scratch).unwrap();
-        // The generic store fixture explicitly disables caching. Residency
-        // tests opt into their own nonzero share before activating the worker.
+        let mut inputs = Some(crate::NodeFixtureInputs {
+            backend: probe.clone(),
+            admission: admission.clone(),
+            persistent: None,
+            scratch,
+        });
+        let mut config = crate::test_utils::node_storage_config();
+        // Declare the same residency share before the registered opening's
+        // construction. Runtime configuration may only use that installed cap.
+        config.cache.byte_limit = 8 << 20;
+        let startup = crate::RegisteredNodeStartup::prepare_fixture(
+            &mut inputs,
+            crate::test_utils::NODE_STORE_ID,
+            true,
+            config,
+        )
+        .unwrap();
+        let node = NodeStore::finish_registered_startup(startup).unwrap();
+        // Verification may have cached pages. Release that lookup ownership
+        // before the original cold-fixture activation below.
+        node.configure_cache(kasumi_kv::CacheConfig { byte_limit: 0 })
+            .unwrap();
         node.configure_cache(kasumi_kv::CacheConfig {
             byte_limit: 8 << 20,
         })
@@ -364,7 +383,7 @@ async fn automatic_warmer_fills_cold_reopen_without_foreground_reads() {
     assert!(status.progress.unwrap().fully_resident);
     assert!(status.work > 0);
     let before = fixture.probe.reads.load(Ordering::Acquire);
-    let transaction = fixture.node.db.begin_read().unwrap();
+    let transaction = fixture.node.body().db.begin_read().unwrap();
     let table = transaction.open_table(ROWS).unwrap();
     for i in 0..20_u8 {
         assert_eq!(table.get(&[i][..]).unwrap().unwrap().value(), &[i; 512]);

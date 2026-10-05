@@ -138,8 +138,34 @@ impl TargetRecoveryRuntime {
             }
         }
     }
-    async fn reconcile_serving(&self, tenant: &str, stage: &mut RecoveryStage) -> Result<()> {
-        ensure!(
+    async fn reconcile_serving(
+        &self,
+        tenant: &str,
+        stage: &mut RecoveryStage,
+    ) -> std::result::Result<(), TargetCallFailure> {
+        let failure = self.call_jobs.acquire_failure()?;
+        let result = failure
+            .begin()?
+            .run(self.reconcile_serving_inner(tenant, stage))
+            .await
+            .and_then(|ticket| ticket.claim());
+        if let Err(original) = &result {
+            original.close_pending().await;
+            if original.unresolved_custody() {
+                // The original remains independently observable in its exact
+                // cell. Repeated constructor effects require an actual settled
+                // outcome; the dropped monitor response provides no such proof.
+                self.call_jobs.close();
+            }
+        }
+        result
+    }
+    async fn reconcile_serving_inner(
+        &self,
+        tenant: &str,
+        stage: &mut RecoveryStage,
+    ) -> std::result::Result<(), TargetTaskFailure> {
+        snapshot_ensure!(
             !self.closing.load(Ordering::Acquire),
             "target runtime closing"
         );
@@ -154,7 +180,7 @@ impl TargetRecoveryRuntime {
             if let Some(target) = all.get(&key) {
                 target.clone()
             } else {
-                ensure!(
+                snapshot_ensure!(
                     all.len() < self.installed.limits.max_live_generations as usize,
                     "target live generation capacity exhausted"
                 );
@@ -193,10 +219,10 @@ impl TargetRecoveryRuntime {
         let projection = Arc::new(
             self.journal
                 .serving_projection(tenant, incarnation)?
-                .context("activation projection unavailable")?,
+                .ok_or_else(|| missing_target_owner("activation projection unavailable"))?,
         );
         let path = self.path(&key)?;
-        ensure!(
+        snapshot_ensure!(
             target_file_exists(&path)?,
             "activated target group is missing"
         );
@@ -224,8 +250,8 @@ impl TargetRecoveryRuntime {
         );
         let probe = g.custody_probe.as_ref().unwrap().clone();
         let control = kasumi_raft::ControlLog::installed(probe.clone())?
-            .context("target control identity missing")?;
-        ensure!(
+            .ok_or_else(|| missing_target_owner("target control identity missing"))?;
+        snapshot_ensure!(
             control.group() == format!("{tenant}/{incarnation}")
                 && control.node_id() == self.installed.node.node_id,
             "target control identity differs"
@@ -246,7 +272,7 @@ impl TargetRecoveryRuntime {
                 self.admission.clone(),
             )
             .await?;
-            ensure!(
+            snapshot_ensure!(
                 custody.identity()? == (tenant.into(), incarnation.to_string()),
                 "retired target custody identity differs"
             );
@@ -269,7 +295,7 @@ impl TargetRecoveryRuntime {
             authority,
             self.authority_trusts
                 .get(&template.authority)
-                .context("live authority verifier absent")?
+                .ok_or_else(|| missing_target_owner("live authority verifier absent"))?
                 .clone(),
             self.credential.clone(),
             tenant,
@@ -279,7 +305,7 @@ impl TargetRecoveryRuntime {
         )
         .await?;
         projection.check(lease.gate())?;
-        ensure!(
+        snapshot_ensure!(
             !self.closing.load(Ordering::Acquire),
             "target runtime closing"
         );
@@ -304,8 +330,9 @@ impl TargetRecoveryRuntime {
         );
         g.lease = Some(lease);
         let stores = g.stores.as_ref().unwrap().clone();
-        self.config
-            .install_tenant_audit_archive(stores.application(), None)?;
+        template
+            .audit_placement
+            .install(stores.application(), None)?;
         *stage = RecoveryStage::LocalReplay;
         let owner = kasumi_engine::open_serving_target(
             projection.clone(),
@@ -320,7 +347,10 @@ impl TargetRecoveryRuntime {
         )
         .await?;
         g.serving = Some(owner);
-        let owner = g.serving.as_ref().context("opened serving owner absent")?;
+        let owner = g
+            .serving
+            .as_ref()
+            .ok_or_else(|| missing_target_owner("opened serving owner absent"))?;
         let database = owner.database()?;
         for (name, destination) in &self.destinations {
             database.install_archive_destination(name.clone(), destination.clone())?;
@@ -336,13 +366,13 @@ impl TargetRecoveryRuntime {
             execution
                 .completion
                 .as_ref()
-                .context("target completion absent")?
+                .ok_or_else(|| missing_target_owner("target completion absent"))?
                 .bootstrap_sha256
                 .clone(),
             Arc::new(move || check.check_access()),
         )?;
         g.registered_group = Some(name);
-        ensure!(
+        snapshot_ensure!(
             !self.closing.load(Ordering::Acquire),
             "target runtime closing"
         );

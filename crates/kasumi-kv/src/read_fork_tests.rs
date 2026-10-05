@@ -33,19 +33,115 @@ static BACKING_FREED: AtomicBool = AtomicBool::new(false);
 static WATCH_REFUNDS: AtomicUsize = AtomicUsize::new(0);
 thread_local! {
     static COUNTING: Cell<bool> = const { Cell::new(false) };
+    static REFUSAL_SCOPE: Cell<bool> = const { Cell::new(false) };
+    static REFUSAL_LAYOUT: Cell<Option<(usize, usize)>> = const { Cell::new(None) };
+    static REFUSALS: Cell<usize> = const { Cell::new(0) };
     static ALLOCATIONS: Cell<usize> = const { Cell::new(0) };
+    static ALLOCATION_LAYOUTS: Cell<[(usize, usize); 8]> = const { Cell::new([(0, 0); 8]) };
+    static ALLOCATION_ADDRESSES: Cell<[usize; 8]> = const { Cell::new([0; 8]) };
+    static ALLOCATION_RETIRED: Cell<[bool; 8]> = const { Cell::new([false; 8]) };
 }
-fn note_allocation() {
+// This closed scope refuses one exact allocation on the current test thread.
+// Constructor fixtures arm it only after their original grant Box is recorded;
+// unrelated allocation layouts and other threads continue through System.
+pub(crate) struct AllocationRefusal;
+impl AllocationRefusal {
+    pub(crate) fn start() -> Self {
+        REFUSAL_SCOPE.with(|scope| assert!(!scope.replace(true)));
+        REFUSAL_LAYOUT.with(|selected| assert!(selected.replace(None).is_none()));
+        REFUSALS.with(|count| count.set(0));
+        Self
+    }
+    pub(crate) fn arm(layout: Layout) -> Self {
+        let scope = Self::start();
+        Self::arm_after_grant(layout);
+        scope
+    }
+    pub(crate) fn arm_after_grant(layout: Layout) {
+        REFUSAL_SCOPE.with(|scope| assert!(scope.get(), "original test refusal scope"));
+        REFUSALS.with(|count| assert_eq!(count.get(), 0));
+        REFUSAL_LAYOUT.with(|selected| {
+            assert!(
+                selected
+                    .replace(Some((layout.size(), layout.align())))
+                    .is_none()
+            );
+        });
+    }
+    pub(crate) fn assert_denied(&self) {
+        REFUSALS.with(|count| assert_eq!(count.get(), 1));
+        REFUSAL_LAYOUT.with(|selected| assert!(selected.get().is_none()));
+    }
+}
+impl Drop for AllocationRefusal {
+    fn drop(&mut self) {
+        let _ = REFUSAL_LAYOUT.try_with(|selected| selected.set(None));
+        let _ = REFUSAL_SCOPE.try_with(|scope| scope.set(false));
+    }
+}
+fn refuse_selected_allocation(layout: Layout) -> bool {
+    REFUSAL_LAYOUT
+        .try_with(|selected| {
+            if selected.get() != Some((layout.size(), layout.align())) {
+                return false;
+            }
+            selected.set(None);
+            let _ = REFUSALS.try_with(|count| count.set(count.get() + 1));
+            true
+        })
+        .unwrap_or(false)
+}
+fn note_allocation(pointer: *mut u8, bytes: usize, align: usize) {
     crate::snapshot_pins::allocation_tests::note_allocation();
     let _ = COUNTING.try_with(|enabled| {
         if enabled.get() {
-            let _ = ALLOCATIONS.try_with(|count| count.set(count.get() + 1));
+            let _ = ALLOCATIONS.try_with(|count| {
+                let index = count.get();
+                count.set(index + 1);
+                if index < 8 {
+                    let _ = ALLOCATION_LAYOUTS.try_with(|layouts| {
+                        let mut actual = layouts.get();
+                        actual[index] = (bytes, align);
+                        layouts.set(actual);
+                    });
+                    let _ = ALLOCATION_ADDRESSES.try_with(|addresses| {
+                        let mut actual = addresses.get();
+                        actual[index] = pointer as usize;
+                        addresses.set(actual);
+                    });
+                }
+            });
         }
     });
 }
 fn note_deallocation(pointer: *mut u8, layout: Layout) {
+    crate::native_sync::tests::note_deallocation(pointer, layout);
+    crate::native_owned_arc::allocation_tests::note_deallocation(pointer);
+    crate::tables::native_owned_arc_tests::note_deallocation(pointer, layout);
+    crate::tables::staging_credit_tests::note_deallocation(pointer, layout);
     crate::retained::source_funding_note_deallocation(pointer, layout);
     crate::snapshot_pins::allocation_tests::note_deallocation(pointer, layout);
+    let _ = COUNTING.try_with(|enabled| {
+        if enabled.get() {
+            let _ = ALLOCATION_ADDRESSES.try_with(|addresses| {
+                let actual = addresses.get();
+                let _ = ALLOCATION_LAYOUTS.try_with(|layouts| {
+                    let layouts = layouts.get();
+                    let _ = ALLOCATION_RETIRED.try_with(|retired| {
+                        let mut completed = retired.get();
+                        for index in 0..8 {
+                            if actual[index] == pointer as usize
+                                && layouts[index] == (layout.size(), layout.align())
+                            {
+                                completed[index] = true;
+                            }
+                        }
+                        retired.set(completed);
+                    });
+                });
+            });
+        }
+    });
     let target = WATCH_BACKING.load(Ordering::Acquire);
     let start = pointer as usize;
     if target != 0 && target >= start && target - start < layout.size() {
@@ -54,32 +150,68 @@ fn note_deallocation(pointer: *mut u8, layout: Layout) {
 }
 unsafe impl GlobalAlloc for ObservedAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        note_allocation();
-        unsafe { System.alloc(layout) }
+        if refuse_selected_allocation(layout)
+            || crate::tables::staging_credit_tests::deny_allocation(layout)
+        {
+            return std::ptr::null_mut();
+        }
+        let actual = unsafe { System.alloc(layout) };
+        crate::native_sync::tests::note_allocation(actual, layout);
+        note_allocation(actual, layout.size(), layout.align());
+        crate::tables::staging_credit_tests::note_allocation_backing(actual, layout);
+        actual
     }
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
-        note_allocation();
-        unsafe { System.alloc_zeroed(layout) }
+        if refuse_selected_allocation(layout) {
+            return std::ptr::null_mut();
+        }
+        let actual = unsafe { System.alloc_zeroed(layout) };
+        crate::native_sync::tests::note_allocation(actual, layout);
+        note_allocation(actual, layout.size(), layout.align());
+        crate::tables::staging_credit_tests::note_allocation_backing(actual, layout);
+        actual
     }
     unsafe fn realloc(&self, pointer: *mut u8, layout: Layout, size: usize) -> *mut u8 {
-        note_allocation();
         // Snapshot backing is immutable and never reallocated.
-        unsafe { System.realloc(pointer, layout, size) }
+        let actual = unsafe { System.realloc(pointer, layout, size) };
+        note_allocation(actual, size, layout.align());
+        actual
     }
     unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
         unsafe { System.dealloc(pointer, layout) };
         note_deallocation(pointer, layout);
     }
 }
-struct AllocationCount;
+pub(super) struct AllocationCount;
 impl AllocationCount {
-    fn start() -> Self {
+    pub(super) fn current_count_if_enabled() -> Option<usize> {
+        COUNTING.with(|enabled| enabled.get().then(|| ALLOCATIONS.with(Cell::get)))
+    }
+    pub(super) fn start() -> Self {
         ALLOCATIONS.with(|count| count.set(0));
+        ALLOCATION_LAYOUTS.with(|layouts| layouts.set([(0, 0); 8]));
+        ALLOCATION_ADDRESSES.with(|addresses| addresses.set([0; 8]));
+        ALLOCATION_RETIRED.with(|retired| retired.set([false; 8]));
         COUNTING.with(|enabled| assert!(!enabled.replace(true)));
         Self
     }
-    fn count(&self) -> usize {
+    pub(super) fn count(&self) -> usize {
         ALLOCATIONS.with(Cell::get)
+    }
+    pub(super) fn layouts(&self) -> [(usize, usize); 8] {
+        ALLOCATION_LAYOUTS.with(Cell::get)
+    }
+    pub(super) fn addresses(&self) -> [usize; 8] {
+        ALLOCATION_ADDRESSES.with(Cell::get)
+    }
+    pub(super) fn retirements(&self) -> [bool; 8] {
+        ALLOCATION_RETIRED.with(Cell::get)
+    }
+    pub(super) fn all_actual_allocations_retired(&self) -> bool {
+        let count = self.count();
+        count <= 8
+            && ALLOCATION_RETIRED
+                .with(|retired| retired.get()[..count].iter().all(|retired| *retired))
     }
 }
 impl Drop for AllocationCount {
@@ -290,16 +422,16 @@ fn close_reader(opening: &RetainedDatabaseOpening, reader: &mut RetainedReadTran
 }
 fn finish(mut opening: RetainedDatabaseOpening, admission: &CountedAdmission) {
     assert_eq!(opening.close().settlement(), DatabaseOpenSettlement::Closed);
+    let report = opening.dispose();
+    assert_eq!(report.settlement(), DatabaseOpenSettlement::Disposed);
+    assert!(report.disposal().complete());
     drop(opening);
     assert_eq!(admission.census(), (0, 0));
 }
 fn assert_capacity(result: Result<ReadTransaction, TransactionError>) {
-    assert!(matches!(
-        result,
-        Err(TransactionError(StorageError::Core(
-            CoreError::CapacityDenied
-        )))
-    ));
+    assert!(matches!(&(result), Err(TransactionError(StorageError::Core(
+            native_error
+        ))) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::CapacityDenied))));
 }
 
 #[test]
@@ -483,12 +615,9 @@ fn selected_snapshot_normal_captures_preclaim_and_rollback_before_pin_creation()
     assert_eq!(count.count(), 0);
     drop(count);
     assert_capacity(read);
-    assert!(matches!(
-        write,
-        Err(TransactionError(StorageError::Core(
-            CoreError::CapacityDenied
-        )))
-    ));
+    assert!(matches!(&(write), Err(TransactionError(StorageError::Core(
+            native_error
+        ))) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::CapacityDenied))));
     assert_eq!(admission.census(), baseline);
     assert_eq!(database.active_transactions(), 0);
     // The backing fits, but the additional fresh root-pin lease does not.
@@ -553,10 +682,9 @@ fn selected_snapshot_fork_owner_failure_after_admission_retires_private_clone() 
     );
     admission.failed.store(true, Ordering::Release);
     pause.resume.wait();
-    assert!(matches!(
-        worker.join().unwrap(),
-        Err(TransactionError(StorageError::Core(CoreError::OwnerFailed)))
-    ));
+    assert!(
+        matches!(&(worker.join().unwrap()), Err(TransactionError(StorageError::Core(native_error))) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+    );
     assert_eq!(admission.census(), baseline);
     assert!(!parent.has_snapshot_descendants());
     drop(parent);
@@ -565,7 +693,7 @@ fn selected_snapshot_fork_owner_failure_after_admission_retires_private_clone() 
         DatabaseOpenSettlement::DrainedWithFailure
     );
     assert_eq!(
-        opening.dispose_failed().settlement(),
+        opening.dispose().settlement(),
         DatabaseOpenSettlement::FailedDisposed
     );
     drop(opening);
@@ -588,10 +716,9 @@ fn selected_snapshot_retained_fork_starts_open_and_preserves_owner_failure() {
     // A core owner failure is preserved, not replaced by a new current read.
     admission.failed.store(true, Ordering::Release);
     let failure = child.fork().err().unwrap();
-    assert!(matches!(
-        failure.original(),
-        TransactionError(StorageError::Core(CoreError::OwnerFailed))
-    ));
+    assert!(
+        matches!(&(failure.original()), TransactionError(StorageError::Core(native_error)) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+    );
     assert!(!failure.is_clean_capacity_refusal());
     close_reader(&opening, &mut child);
     assert_eq!(
@@ -599,7 +726,7 @@ fn selected_snapshot_retained_fork_starts_open_and_preserves_owner_failure() {
         DatabaseOpenSettlement::DrainedWithFailure
     );
     assert_eq!(
-        opening.dispose_failed().settlement(),
+        opening.dispose().settlement(),
         DatabaseOpenSettlement::FailedDisposed
     );
     drop(opening);
@@ -687,10 +814,9 @@ fn retained_acquisition_capacity_witness_follows_actual_backing_and_pin_refunds(
         );
         let error = database.begin_read_retained().err().unwrap();
         assert!(error.is_clean_capacity_refusal());
-        assert!(matches!(
-            error.original(),
-            TransactionError(StorageError::Core(CoreError::CapacityDenied))
-        ));
+        assert!(
+            matches!(&(error.original()), TransactionError(StorageError::Core(native_error)) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::CapacityDenied)))
+        );
         assert_eq!(admission.census(), baseline);
         assert_eq!(database.active_transactions(), 0);
     }
@@ -700,10 +826,9 @@ fn retained_acquisition_capacity_witness_follows_actual_backing_and_pin_refunds(
     admission.limits(selected.0 + SnapshotHandle::CHARGE_BYTES - 1, SLOT_LIMIT);
     let error = parent.fork().err().unwrap();
     assert!(error.is_clean_capacity_refusal());
-    assert!(matches!(
-        error.original(),
-        TransactionError(StorageError::Core(CoreError::CapacityDenied))
-    ));
+    assert!(
+        matches!(&(error.original()), TransactionError(StorageError::Core(native_error)) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::CapacityDenied)))
+    );
     assert_eq!(admission.census(), selected);
     admission.limits(BYTE_LIMIT, SLOT_LIMIT);
     assert_eq!(
@@ -770,10 +895,9 @@ fn retained_acquisition_full_native_pin_registry_refunds_both_provisional_grants
     let last_grant = admission.last_grant();
     let error = database.begin_read_retained().err().unwrap();
     assert!(error.is_clean_capacity_refusal());
-    assert!(matches!(
-        error.original(),
-        TransactionError(StorageError::Core(CoreError::CapacityDenied))
-    ));
+    assert!(
+        matches!(&(error.original()), TransactionError(StorageError::Core(native_error)) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::CapacityDenied)))
+    );
     assert_eq!(
         admission.last_grant(),
         last_grant + 2,
@@ -827,7 +951,7 @@ fn retained_reader_disposal_panic_preserves_unknown_even_after_transaction_is_ab
         DatabaseOpenSettlement::DrainedWithFailure
     );
     assert_eq!(
-        opening.dispose_failed().settlement(),
+        opening.dispose().settlement(),
         DatabaseOpenSettlement::FailedDisposed
     );
     drop(opening);

@@ -6,10 +6,11 @@
 //! lock before publishing garbage. Reopen re-proves recorded garbage before
 //! entering unlink; a checksum-valid garbage list is not a reachability proof.
 
+use crate::core::NativeResidentLease;
 use std::cell::Cell;
 use std::sync::Arc;
 
-use crate::core::{CoreError, ResidentLease, StorageAdmission};
+use crate::core::{CoreError, StorageAdmission};
 use crate::directory::{DirectoryBackend, DirectoryWalker};
 use crate::group::{GroupFile, SegmentGroupBackend};
 use crate::root::{DirectoryCommit, MAX_GARBAGE, Superblock};
@@ -97,7 +98,7 @@ pub(crate) struct ReclaimScan {
     walker: Option<DirectoryWalker>,
     complete: bool,
     failed: bool,
-    _lease: Box<dyn ResidentLease>,
+    _lease: NativeResidentLease,
 }
 
 pub(crate) struct ReclaimProofs {
@@ -105,7 +106,7 @@ pub(crate) struct ReclaimProofs {
     pub(crate) capture: SnapshotRoots,
     pub(crate) cursor: ReclaimCursor,
     pub(crate) cycle_complete: bool,
-    _lease: Box<dyn ResidentLease>,
+    _lease: NativeResidentLease,
 }
 
 impl ReclaimScan {
@@ -118,20 +119,24 @@ impl ReclaimScan {
     ) -> Result<Self, CoreError> {
         admission
             .check_owner()
-            .map_err(|_| CoreError::OwnerFailed)?;
-        let commit = root.directory().ok_or(CoreError::InvalidInput(
-            "reclamation needs a committed directory",
-        ))?;
+            .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?;
+        let commit =
+            root.directory()
+                .ok_or(CoreError::new(crate::CoreErrorCause::InvalidInput(
+                    "reclamation needs a committed directory",
+                )))?;
         let bytes = std::mem::size_of::<Self>()
             + MAX_GARBAGE * std::mem::size_of::<ReachabilityProof>()
             + 256;
-        let lease = admission.reserve_workspace(bytes as u64)?;
+        let lease = admission
+            .reserve_workspace(bytes as u64)
+            .map(NativeResidentLease::new)?;
         let mut candidates = Vec::new();
         candidates
             .try_reserve_exact(MAX_GARBAGE)
-            .map_err(|_| CoreError::CapacityDenied)?;
+            .map_err(|_| CoreError::new(crate::CoreErrorCause::CapacityDenied))?;
         if candidates.capacity() != MAX_GARBAGE {
-            return Err(CoreError::CapacityDenied);
+            return Err(CoreError::new(crate::CoreErrorCause::CapacityDenied));
         }
         let capture = pins.capture()?;
         if kind == ScanKind::RecordedGarbage {
@@ -173,7 +178,14 @@ impl ReclaimScan {
         }
         match pins.validate_coverage(&self.capture, self.commit.root) {
             Ok(()) => Ok(true),
-            Err(CoreError::InvalidInput(_)) => Ok(false),
+            Err(error)
+                if matches!(
+                    error.rejected_cause(),
+                    Some(crate::CoreErrorCause::InvalidInput(_))
+                ) =>
+            {
+                Ok(false)
+            }
             Err(error) => Err(error),
         }
     }
@@ -190,7 +202,7 @@ impl ReclaimScan {
         work_limit: usize,
     ) -> Result<ReclaimProgress, CoreError> {
         if self.failed {
-            return Err(CoreError::OwnerFailed);
+            return Err(CoreError::new(crate::CoreErrorCause::OwnerFailed));
         }
         let result = self.step_inner(backend, directory, work_limit);
         if result.is_err() {
@@ -207,7 +219,7 @@ impl ReclaimScan {
     ) -> Result<ReclaimProgress, CoreError> {
         self.admission
             .check_owner()
-            .map_err(|_| CoreError::OwnerFailed)?;
+            .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?;
         let mut progress = ReclaimProgress::default();
         while !self.complete && progress.work < work_limit {
             if self.collecting {
@@ -240,7 +252,7 @@ impl ReclaimScan {
                 }
                 self.admission
                     .check_owner()
-                    .map_err(|_| CoreError::OwnerFailed)?;
+                    .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?;
                 continue;
             }
             if self.walker.is_none() {
@@ -265,9 +277,9 @@ impl ReclaimScan {
                 for (index, candidate) in self.candidates.iter().enumerate() {
                     if candidate.file == file {
                         if self.kind == ScanKind::RecordedGarbage {
-                            return Err(CoreError::Corrupt(
+                            return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
                                 "recorded garbage is reachable from a directory root",
-                            ));
+                            )));
                         }
                         referenced.set(referenced.get() | (1u128 << index));
                     }
@@ -293,19 +305,23 @@ impl ReclaimScan {
                     progress.work += 1;
                 }
             } else if walked.work == 0 {
-                return Err(CoreError::Corrupt("directory walker made no progress"));
+                return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                    "directory walker made no progress",
+                )));
             }
         }
         progress.complete = self.complete;
         self.admission
             .check_owner()
-            .map_err(|_| CoreError::OwnerFailed)?;
+            .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?;
         Ok(progress)
     }
 
     pub(crate) fn finish(mut self) -> Result<ReclaimProofs, CoreError> {
         if !self.complete || self.failed {
-            return Err(CoreError::InvalidInput("reclamation scan is incomplete"));
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
+                "reclamation scan is incomplete",
+            )));
         }
         let mut index = 0;
         self.candidates.retain(|_| {

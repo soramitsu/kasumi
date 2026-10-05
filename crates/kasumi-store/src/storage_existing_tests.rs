@@ -2,7 +2,7 @@ use super::*;
 use crate::test_utils::{LocalKeyProvider, ManualClock};
 
 fn contents(node: &NodeStore) -> Result<String> {
-    let transaction = node.db.begin_read()?;
+    let transaction = node.body().db.begin_read()?;
     let mut digest = Sha256::new();
     for (index, definition) in [CATALOG, RECORDS].into_iter().enumerate() {
         digest.update((index as u64).to_be_bytes());
@@ -17,7 +17,7 @@ fn contents(node: &NodeStore) -> Result<String> {
     Ok(hex::encode(digest.finalize()))
 }
 
-async fn reopen(node: Arc<NodeStore>) -> Result<Arc<TenantStorageSet>> {
+async fn reopen(node: NodeStore) -> Result<Arc<TenantStorageSet>> {
     TenantStorageSet::open_existing(
         node,
         "tenant".into(),
@@ -40,7 +40,8 @@ async fn existing_catalog_rejects_equivalent_alternate_bytes_without_repair() ->
         crate::test_utils::NODE_STORE_ID,
         fixture_memory,
         fixture_scratch,
-    )?;
+    )
+    .expect("bounded node fixture setup succeeds");
     let provider = Arc::new(LocalKeyProvider::new([11; 32]));
     let store = TenantStore::initialize_catalog_fixture_with_clock(
         node.clone(),
@@ -51,7 +52,7 @@ async fn existing_catalog_rejects_equivalent_alternate_bytes_without_repair() ->
     .await?;
     store.rotate_data_key().await?;
     let original = {
-        let transaction = node.db.begin_read()?;
+        let transaction = node.body().db.begin_read()?;
         let table = transaction.open_table(CATALOG)?;
         let value = table
             .get(tenant_hash("tenant").as_slice())?
@@ -72,7 +73,7 @@ async fn existing_catalog_rejects_equivalent_alternate_bytes_without_repair() ->
             == serde_json::from_slice::<KeyCatalog>(&original)?,
         "alternate catalog changed its semantic value"
     );
-    let transaction = node.db.begin_write()?;
+    let transaction = node.body().db.begin_write()?;
     transaction
         .open_table(CATALOG)?
         .insert(tenant_hash("tenant").as_slice(), alternate.as_slice())?;
@@ -86,7 +87,7 @@ async fn existing_catalog_rejects_equivalent_alternate_bytes_without_repair() ->
     );
     assert_eq!(contents(&node)?, before, "failed open repaired the catalog");
 
-    let transaction = node.db.begin_write()?;
+    let transaction = node.body().db.begin_write()?;
     transaction
         .open_table(CATALOG)?
         .insert(tenant_hash("tenant").as_slice(), original.as_slice())?;
@@ -114,7 +115,8 @@ async fn missing_catalogs_and_authenticated_binding_never_provision_during_reope
             crate::test_utils::NODE_STORE_ID,
             fixture_memory.clone(),
             fixture_scratch.clone(),
-        )?;
+        )
+        .expect("bounded node fixture setup succeeds");
         let mut opened = Vec::new();
         for (flag, name, key) in [
             (1, "tenant".to_owned(), [11; 32]),
@@ -162,7 +164,8 @@ async fn existing_catalog_admission_cannot_provision_after_waiting_for_the_open_
         crate::test_utils::NODE_STORE_ID,
         fixture_memory.clone(),
         fixture_scratch.clone(),
-    )?;
+    )
+    .expect("bounded node fixture setup succeeds");
     let provider = Arc::new(LocalKeyProvider::new([11; 32]));
     let store = TenantStore::initialize_catalog_fixture_with_clock(
         node.clone(),
@@ -173,7 +176,14 @@ async fn existing_catalog_admission_cannot_provision_after_waiting_for_the_open_
     .await?;
     store.shutdown().await.unwrap();
     drop(store);
-    let gate = node.tenants.lock().await.get("tenant").unwrap().clone();
+    let gate = node
+        .body()
+        .tenants
+        .lock()
+        .await
+        .get("tenant")
+        .unwrap()
+        .clone();
     let guard = gate.lock().await;
     let pending = TenantStore::open_existing_fixture(node.clone(), "tenant".into(), provider);
     tokio::pin!(pending);
@@ -182,7 +192,7 @@ async fn existing_catalog_admission_cannot_provision_after_waiting_for_the_open_
         Poll::Ready(())
     })
     .await;
-    let transaction = node.db.begin_write()?;
+    let transaction = node.body().db.begin_write()?;
     transaction
         .open_table(CATALOG)?
         .remove(tenant_hash("tenant").as_slice())?;
@@ -211,7 +221,8 @@ async fn corrupt_or_authenticated_wrong_binding_is_never_repaired_by_reopen() ->
         crate::test_utils::NODE_STORE_ID,
         fixture_memory.clone(),
         fixture_scratch.clone(),
-    )?;
+    )
+    .expect("bounded node fixture setup succeeds");
     let stores = TenantStorageSet::initialize_catalogs_fixture(
         node.clone(),
         "tenant".into(),
@@ -232,7 +243,7 @@ async fn corrupt_or_authenticated_wrong_binding_is_never_repaired_by_reopen() ->
     }
     stores.shutdown().await.unwrap();
     drop(stores);
-    let transaction = node.db.begin_write()?;
+    let transaction = node.body().db.begin_write()?;
     transaction.open_table(CATALOG)?.insert(
         tenant_hash("tenant").as_slice(),
         b"invalid catalog".as_slice(),
@@ -256,7 +267,8 @@ async fn existing_binding_requires_current_writer_bytes_without_repair() -> Resu
         crate::test_utils::NODE_STORE_ID,
         fixture_memory,
         fixture_scratch,
-    )?;
+    )
+    .expect("bounded node fixture setup succeeds");
     let stores = TenantStorageSet::initialize_catalogs_fixture(
         node.clone(),
         "tenant".into(),
@@ -283,14 +295,16 @@ async fn existing_binding_requires_current_writer_bytes_without_repair() -> Resu
         "{install_error:#}"
     );
     assert_eq!(
-        custody.get(BINDING_NS, BINDING_KEY)?,
-        Some(alternate.clone())
+        custody.get(BINDING_NS, BINDING_KEY)?.as_deref(),
+        Some(alternate.as_slice())
     );
 
     stores.shutdown().await.unwrap();
     drop(stores);
     drop(custody);
-    node.drain_initializers().await?;
+    node.drain_initializers()
+        .await
+        .map_err(|original| anyhow::Error::new(original.observation()))?;
     let before = contents(&node)?;
     let reopen_error = reopen(node.clone())
         .await
@@ -300,7 +314,9 @@ async fn existing_binding_requires_current_writer_bytes_without_repair() -> Resu
         format!("{reopen_error:#}").contains("existing storage domain binding bytes differ"),
         "{reopen_error:#}"
     );
-    node.drain_initializers().await?;
+    node.drain_initializers()
+        .await
+        .map_err(|original| anyhow::Error::new(original.observation()))?;
     assert_eq!(contents(&node)?, before);
 
     let custody = TenantStore::open_existing_fixture(
@@ -309,14 +325,26 @@ async fn existing_binding_requires_current_writer_bytes_without_repair() -> Resu
         Arc::new(LocalKeyProvider::new([12; 32])),
     )
     .await?;
-    assert_eq!(custody.get(BINDING_NS, BINDING_KEY)?, Some(alternate));
-    custody.write_batch(&[WriteOp::put(BINDING_NS, BINDING_KEY, canonical)])?;
+    assert_eq!(
+        custody.get(BINDING_NS, BINDING_KEY)?.as_deref(),
+        Some(alternate.as_slice())
+    );
+    crate::test_utils::write_plaintext_copy_for_fixture(
+        &custody,
+        BINDING_NS,
+        BINDING_KEY,
+        canonical.as_bytes(),
+    )?;
     custody.shutdown().await.unwrap();
     drop(custody);
-    node.drain_initializers().await?;
+    node.drain_initializers()
+        .await
+        .map_err(|original| anyhow::Error::new(original.observation()))?;
     let reopened = reopen(node.clone()).await?;
     reopened.shutdown().await.unwrap();
-    node.drain_initializers().await?;
+    node.drain_initializers()
+        .await
+        .map_err(|original| anyhow::Error::new(original.observation()))?;
     node.shutdown().await.unwrap();
     Ok(())
 }
@@ -335,7 +363,8 @@ async fn exact_standalone_binding_reopens_after_both_domains_close_and_drain() -
         crate::test_utils::NODE_STORE_ID,
         fixture_memory.clone(),
         disk.clone(),
-    )?;
+    )
+    .expect("bounded node fixture setup succeeds");
     let installation = Uuid::new_v4();
     let incarnation = Uuid::new_v4();
     let access = StorageAccess::standalone(installation, "tenant", incarnation)?;
@@ -357,13 +386,15 @@ async fn exact_standalone_binding_reopens_after_both_domains_close_and_drain() -
     let before = contents(&node)?;
     stores.shutdown().await.unwrap();
     drop(stores);
+    node.shutdown().await.unwrap();
     drop(node);
     let node = NodeStore::open_existing_fixture(
         &path,
         crate::test_utils::NODE_STORE_ID,
         fixture_memory.clone(),
         disk,
-    )?;
+    )
+    .expect("bounded node fixture setup succeeds");
     let unused = Arc::new(LocalKeyProvider::new([99; 32]));
     assert!(
         TenantStorageSet::open_existing(

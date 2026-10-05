@@ -1028,7 +1028,13 @@ impl RecoveryProposal {
                 "queued original recovery credential expired",
             )));
         }
-        let bytes = self.database.group.write(self.command.encode()?).await?;
+        let bytes = self
+            .database
+            .group
+            .write(kasumi_raft::ApplicationProposal::generated(
+                self.command.encode()?,
+            ))
+            .await?;
         Ok(serde_json::from_slice(&bytes)?)
     }
 }

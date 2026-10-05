@@ -6,6 +6,67 @@ use std::{io, sync::Arc};
 #[path = "../native_cache_admission_tests.rs"]
 mod native_cache_admission_tests;
 
+#[cfg(test)]
+#[path = "../native_constructor_admission_tests.rs"]
+mod native_constructor_admission_tests;
+
+/// One concrete proposal reservation shared with accepted encoded input.
+/// This closes its actual sized control without erasing a raw Arc/Reservation.
+/// The initial producer quotes this control before new; every alias retires
+/// through into_inner. The inline parking_lot mutex has no lazy native backing.
+struct ProposalBudgetState {
+    input_installed: bool,
+    // LAST: the inline input disposition precedes the actual original grant.
+    original: Reservation,
+}
+pub(crate) struct ProposalBudget(Option<Arc<parking_lot::Mutex<ProposalBudgetState>>>);
+impl ProposalBudget {
+    pub(crate) fn required_bytes() -> io::Result<u64> {
+        kasumi_types::SharedBudgetCharge::required_bytes::<parking_lot::Mutex<ProposalBudgetState>>(
+        )
+    }
+    pub(crate) fn new(original: Reservation) -> Self {
+        Self(Some(Arc::new(parking_lot::Mutex::new(
+            ProposalBudgetState {
+                input_installed: false,
+                original,
+            },
+        ))))
+    }
+    fn original(&self) -> &parking_lot::Mutex<ProposalBudgetState> {
+        self.0.as_deref().expect("live original proposal budget")
+    }
+    pub(crate) fn reserve_additional(&self, bytes: u64) -> kasumi_types::Result<()> {
+        let mut state = self.original().lock();
+        if state.input_installed {
+            return Err(kasumi_types::Error::new(
+                kasumi_types::ErrorCode::Unavailable,
+                "accepted input budget cannot grow",
+            ));
+        }
+        state.original.reserve_additional(bytes)
+    }
+    #[cfg(test)]
+    pub(crate) fn allocation_address(&self) -> usize {
+        std::ptr::from_ref(self.original()) as usize
+    }
+    pub(crate) fn retain_workspace(&self) {
+        self.original().lock().original.retain_workspace();
+    }
+}
+impl Clone for ProposalBudget {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+impl Drop for ProposalBudget {
+    fn drop(&mut self) {
+        drop(Arc::into_inner(
+            self.0.take().expect("live original proposal budget"),
+        ));
+    }
+}
+
 impl MemoryCore {
     fn installed_reservation_bytes(workspace: u64) -> Option<u64> {
         workspace.checked_add(
@@ -28,6 +89,54 @@ impl MemoryCore {
         Ok(())
     }
 
+    /// Pre-submission transfer of one original proposal reservation. The same
+    /// actual provider and live ledger slot are checked before Box/control work.
+    /// The minimum includes exact encoded backing and, when prepared, only the
+    /// known mutation change-tree recipe. Other semantic apply workspace is not
+    /// certified by the old proposal estimate or by an opaque input alias.
+    pub(crate) fn bind_application_input(
+        self: &Arc<Self>,
+        original: &ProposalBudget,
+        install: &mut kasumi_raft::ApplicationInputInstall,
+    ) -> Result<(), kasumi_raft::InputBindingError> {
+        use kasumi_raft::InputBindingError;
+        let provider: Arc<dyn kasumi_store::NodeDiskMemoryAdmission> = self.clone();
+        let mut original_state = original.original().lock();
+        if original_state.input_installed {
+            return Err(InputBindingError::Repeated);
+        }
+        let reservation = &original_state.original;
+        if !Arc::ptr_eq(self, &reservation.core) {
+            return Err(InputBindingError::Foreign);
+        }
+        let permit = install.try_bind(&provider)?;
+        let required = permit
+            .requirements()
+            .with_token::<ProposalBudget>()
+            .map_err(|_| InputBindingError::Insufficient)?;
+        {
+            let state = self.data.state.lock().unwrap_or_else(|p| p.into_inner());
+            let charge = state
+                .charge(reservation.slot, reservation.id)
+                .ok_or(InputBindingError::Missing)?;
+            let required = required
+                .checked_add(
+                    ProposalBudget::required_bytes()
+                        .map_err(|_| InputBindingError::Insufficient)?,
+                )
+                .ok_or(InputBindingError::Insufficient)?;
+            if charge.bytes < required {
+                return Err(InputBindingError::Insufficient);
+            }
+        }
+        // The actual original budget is shared by closed controls; producer
+        // work/response and accepted encoded input cannot refund one another's
+        // charge early. Cloning allocates no new grant or control.
+        original_state.input_installed = true;
+        permit.bind(original.clone());
+        Ok(())
+    }
+
     /// Disk workspace plus this provider's real opaque lease allocation.
     /// This checked planning helper allocates neither workspace nor a charge.
     pub fn required_installed_reservation_bytes(workspace: u64) -> anyhow::Result<u64> {
@@ -36,6 +145,37 @@ impl MemoryCore {
     }
 }
 impl kasumi_store::NodeDiskMemoryAdmission for MemoryCore {
+    fn install_native_constructor(
+        self: Arc<Self>,
+        install: &mut kasumi_store::NativeConstructorInstall<'_>,
+    ) -> io::Result<()> {
+        let provider: Arc<dyn kasumi_store::NodeDiskMemoryAdmission> = self.clone();
+        let permit = install
+            .try_begin_bind(provider)
+            .map_err(|_| io::ErrorKind::InvalidInput)?;
+        let bytes = Self::installed_reservation_bytes(permit.request_bytes())
+            .ok_or(io::ErrorKind::OutOfMemory)?;
+        // Native construction is ordinary resident work, including during an
+        // audit scope. Admit the concrete Reservation allocation before binding
+        // its original token into the caller-owned constructor receiver.
+        let charge = match self.reserve_kind_raw(
+            bytes,
+            None,
+            ChargeKind::Resident,
+            super::ChargeOrigin::OtherOrdinary,
+        ) {
+            Ok(charge) => charge,
+            Err(ReserveKindError::Exhausted) => {
+                return Err(permit.refuse_capacity(io::ErrorKind::OutOfMemory.into()));
+            }
+            Err(ReserveKindError::IdentifierExhausted | ReserveKindError::Missing) => {
+                return Err(io::ErrorKind::Other.into());
+            }
+        };
+        permit.bind(charge);
+        Ok(())
+    }
+
     fn install_source_metadata(
         self: Arc<Self>,
         install: &mut kasumi_store::SourceMetadataInstall<'_>,
@@ -496,3 +636,7 @@ mod tests {
         assert_eq!(core.snapshot().live_reservations, before.live_reservations);
     }
 }
+
+#[cfg(test)]
+#[path = "../accepted_input_admission_tests.rs"]
+mod accepted_input_admission_tests;

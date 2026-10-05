@@ -56,10 +56,13 @@ pub struct AuthorityRuntimeConfig {
     pub native: MutualTlsEndpoint,
     pub replication: ReplicationConfig,
 }
+pub use crate::authority_enrollment_terminal::{
+    EnrollmentFailure, EnrollmentReport, EnrollmentTerminalFacade,
+};
 impl AuthorityRuntimeConfig {
     /// Explicit local issuer enrollment creates its node, audit, domain pair and
     /// immutable authority genesis before any normal startup or Raft handshake.
-    pub async fn provision_node(&self) -> Result<()> {
+    pub async fn provision_node(&self) -> std::result::Result<(), EnrollmentFailure> {
         crate::authority_node_enrollment::initialize(self.clone()).await
     }
 
@@ -173,11 +176,53 @@ impl AuthorityRuntimeConfig {
         Ok(())
     }
 }
+// UUID's canonical hyphenated representation and the full u16 decimal range
+// bound this formatting buffer; it is not an operational capacity or quota.
+const AUTHORITY_PARTICIPANT_PREFIX: &str = "kasumi.authority.";
+const AUTHORITY_PARTICIPANT_BYTES: usize = AUTHORITY_PARTICIPANT_PREFIX.len()
+    + uuid::fmt::Hyphenated::LENGTH
+    + 1
+    + (u16::MAX.ilog10() as usize + 1);
+pub(crate) struct AuthorityParticipantName {
+    bytes: [u8; AUTHORITY_PARTICIPANT_BYTES],
+    len: usize,
+}
+impl AuthorityParticipantName {
+    pub(crate) fn new(authority: Uuid, partition: u16) -> Self {
+        use std::fmt::Write;
+        let mut name = Self {
+            bytes: [0; AUTHORITY_PARTICIPANT_BYTES],
+            len: 0,
+        };
+        write!(
+            name,
+            "{AUTHORITY_PARTICIPANT_PREFIX}{authority}.{partition}"
+        )
+        .expect("concrete UUID/u16 authority participant bound");
+        name
+    }
+    pub(crate) fn as_str(&self) -> &str {
+        std::str::from_utf8(&self.bytes[..self.len]).expect("canonical ASCII authority participant")
+    }
+}
+impl std::fmt::Write for AuthorityParticipantName {
+    fn write_str(&mut self, value: &str) -> std::fmt::Result {
+        let end = self.len.checked_add(value.len()).ok_or(std::fmt::Error)?;
+        self.bytes
+            .get_mut(self.len..end)
+            .ok_or(std::fmt::Error)?
+            .copy_from_slice(value.as_bytes());
+        self.len = end;
+        Ok(())
+    }
+}
+
 pub struct AuthorityRuntime {
     serving_registration: Option<crate::serving_owner::Registration>,
     startup_drain: kasumi_types::drain::DrainReport,
+    original_recoveries: crate::administration::OriginalRecoveries,
     config: AuthorityRuntimeConfig,
-    node: Arc<NodeStore>,
+    node: NodeStore,
     authority: Arc<IndependentAuthority>,
     signer_verifier: Arc<crate::signer_runtime::InstalledSignerVerifier>,
     stores: Arc<TenantStorageSet>,
@@ -220,54 +265,54 @@ impl AuthorityRuntime {
 
     /// Close an opened runtime that has not entered its consuming serve loop.
     pub async fn shutdown(&mut self) -> kasumi_types::drain::DrainResult {
-        Self::drain_owned(
-            &mut self.startup_drain,
-            &self.authority,
-            &self.stores,
-            &self.audit,
-            &self.audit_store,
-            &self.signer_verifier,
-            &self.node,
-        )
-        .await
-    }
-
-    async fn drain_owned(
-        report: &mut kasumi_types::drain::DrainReport,
-        authority: &Arc<IndependentAuthority>,
-        stores: &Arc<TenantStorageSet>,
-        audit: &Arc<SecurityAudit>,
-        audit_store: &Arc<TenantStore>,
-        verifier: &Arc<crate::signer_runtime::InstalledSignerVerifier>,
-        node: &Arc<NodeStore>,
-    ) -> kasumi_types::drain::DrainResult {
         use crate::runtime_drain::observe;
+        let report = &mut self.startup_drain;
         let mut retained = None;
-        observe(report, &mut retained, authority.shutdown().await);
+        self.original_recoveries.seal();
+        if self.original_recoveries.retained().await {
+            let issue = report.record(
+                "authority original constructor inventory",
+                0,
+                anyhow::anyhow!("authority constructor custody remains retained"),
+            );
+            retained = Some(kasumi_types::drain::DrainFailure::retained(issue));
+        }
+        observe(report, &mut retained, self.authority.shutdown().await);
         observe(
             report,
             &mut retained,
-            audit.admission().drain_snapshot_startups().await,
+            self.audit.admission().drain_snapshot_startups().await,
         );
-        observe(report, &mut retained, stores.shutdown().await);
-        observe(report, &mut retained, audit.shutdown().await);
-        observe(report, &mut retained, audit_store.shutdown().await);
-        observe(report, &mut retained, verifier.shutdown().await);
+        observe(report, &mut retained, self.stores.shutdown().await);
+        observe(report, &mut retained, self.audit.shutdown().await);
+        observe(report, &mut retained, self.audit_store.shutdown().await);
+        observe(report, &mut retained, self.signer_verifier.shutdown().await);
         if retained.is_none() {
-            observe(report, &mut retained, node.shutdown().await);
+            observe(report, &mut retained, self.node.shutdown().await);
         }
         report.outcome(retained)
     }
 
+    #[allow(
+        clippy::result_large_err,
+        reason = "the native constructor returns whole inline custody into the same preadmitted inventory before any foreign marker; boxing the error would allocate outside that boundary"
+    )]
     async fn open_owned(
         config: AuthorityRuntimeConfig,
         storage: crate::runtime_memory::RuntimeStorage,
     ) -> Result<Self> {
         let mut pending = crate::startup_resources::Resources::default();
-        let outcome = crate::startup_preparation::capture("authority runtime", async {
+        let outcome: Result<Self> = crate::startup_preparation::capture("authority runtime", async {
             config.validate()?;
             let admission = storage.facade(&config.admission)?;
             pending.owned_admissions.push(admission.clone());
+            let participant = AuthorityParticipantName::new(
+                config.installation.manifest.authority_id, config.installation.partition);
+            pending.original_recoveries = Some(crate::administration::OriginalRecoveries::new(
+                &admission,
+                crate::administration::OriginalRecoveryParticipants::one(participant.as_str()),
+            )?);
+            pending.signer_original_recoveries = Some(config.signer_verifier.node_start_inventory(&admission)?);
             let persistent_disk = crate::persistent_disk::open(&config.persistent_disk, &storage)?;
             let scratch_disk = storage.open_scratch(&config.scratch_disk)?;
             let auth = Authenticator::new(config.auth.clone())?;
@@ -309,6 +354,7 @@ impl AuthorityRuntime {
                     persistent_disk.clone(),
                     scratch_disk.clone(),
                     admission.clone(),
+                    pending.signer_original_recoveries.as_ref().expect("same preinstalled signer original inventory"),
                 )
                 .await?;
             pending.verifiers.push(signer_verifier.clone());
@@ -322,13 +368,17 @@ impl AuthorityRuntime {
             .open(&signer_verifier)?;
             let native = TcpListener::bind(config.native.listen).await?;
             let cluster = TcpListener::bind(config.replication.listener.listen).await?;
-            let node = NodeStore::open_existing(
-                &config.database_path,
-                config.database_id,
-                persistent_disk.clone(),
-                scratch_disk.clone(),
-                persistent_disk.native_storage_config(),
-            )?;
+            let node = {
+                let mut constructor = pending.original_recoveries.as_ref()
+                    .expect("same installed authority startup inventory").claim(0).await;
+                constructor.begin_node().map_err(|observed| observed.foreign_error())?.run_node(|| NodeStore::open_existing(
+                    &config.database_path,
+                    config.database_id,
+                    persistent_disk.clone(),
+                    scratch_disk.clone(),
+                    persistent_disk.native_storage_config(),
+                )).map_err(|observed| observed.foreign_error())?
+            };
             pending.owned_nodes.push(node.clone());
             node.prepare_cache_warming().await?;
             let audit_store = TenantStore::open_existing(
@@ -363,18 +413,23 @@ impl AuthorityRuntime {
             .await?;
             pending.stores.push(stores.application().clone());
             pending.stores.push(stores.custody().store().clone());
-            let authority = IndependentAuthority::open_existing_replicated(
-                stores.clone(),
-                config.installation.clone(),
-                signer,
-                config.replication.node_id,
-                config.node_settings()?,
-                network.clone(),
-                kasumi_raft::server_config(),
-                request_budget(&admission)?,
-                admission.snapshot_buffer_owner()?,
-            )
-            .await?;
+            let authority = {
+                let mut constructor = pending.original_recoveries.as_ref()
+                    .expect("initial authority constructor inventory").claim(0).await;
+                constructor.run_snapshot(async {
+                    IndependentAuthority::open_existing_replicated(
+                        stores.clone(),
+                        config.installation.clone(),
+                        signer,
+                        config.replication.node_id,
+                        config.node_settings()?,
+                        network.clone(),
+                        kasumi_raft::server_config(),
+                        request_budget(&admission)?,
+                        admission.snapshot_buffer_owner()?,
+                    ).await.map_err(kasumi_engine::SnapshotFailure::from)
+                }).await.map_err(crate::administration::original_serving_runtime::OriginalRecoveryObservation::foreign_error)?
+            };
             pending.authorities.push(authority.clone());
             let group =
                 &config.installation.manifest.partitions[&config.installation.partition].group;
@@ -424,6 +479,8 @@ impl AuthorityRuntime {
             Ok(Self {
                 serving_registration: Some(serving_registration),
                 startup_drain: Default::default(),
+                original_recoveries: pending.original_recoveries.take()
+                    .expect("same initial authority constructor inventory"),
                 tls_reload,
                 config,
                 node,
@@ -606,11 +663,86 @@ impl crate::serving_owner::Owner for AuthorityServing {
 pub(crate) fn request_budget(
     admission: &Arc<kasumi_engine::admission::NodeAdmission>,
 ) -> Result<kasumi_serving::BackgroundWorkBudget> {
-    let bytes = kasumi_authority::authority_request_metadata_bytes()?;
+    let bytes = kasumi_authority::authority_request_metadata_bytes()?
+        .checked_add(kasumi_types::SharedBudgetCharge::required_bytes::<
+            kasumi_engine::admission::Reservation,
+        >()?)
+        .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
     let mut charge = admission.reserve(bytes, None)?;
     charge.retain(bytes);
     kasumi_serving::BackgroundWorkBudget::new(
         kasumi_authority::AUTHORITY_REQUEST_SLOTS,
-        Arc::new(charge),
+        kasumi_types::SharedBudgetCharge::new(charge),
     )
+}
+
+#[cfg(test)]
+mod participant_tests {
+    use super::*;
+
+    #[test]
+    fn authority_participant_formats_full_uuid_partition_range_without_allocation() {
+        let authority = Uuid::from_u128(42);
+        let watching = crate::recovery_allocation_watch::Watch::begin();
+        let minimum = AuthorityParticipantName::new(authority, u16::MIN);
+        let maximum = AuthorityParticipantName::new(authority, u16::MAX);
+        assert_eq!(
+            minimum.as_str(),
+            "kasumi.authority.00000000-0000-0000-0000-00000000002a.0"
+        );
+        assert_eq!(
+            maximum.as_str(),
+            "kasumi.authority.00000000-0000-0000-0000-00000000002a.65535"
+        );
+        assert_eq!(maximum.len, AUTHORITY_PARTICIPANT_BYTES);
+        let observed = watching.finish();
+        assert!(!observed.overflow);
+        assert_eq!(
+            observed.count, 0,
+            "no name backing precedes the initial donor quote"
+        );
+    }
+
+    #[tokio::test]
+    async fn authority_initial_donor_captures_whole_source_before_foreign_cleanup_marker() {
+        use kasumi_engine::{SnapshotFailure, admission::NodeAdmission};
+        let admission = NodeAdmission::new(Default::default()).unwrap();
+        let name = AuthorityParticipantName::new(Uuid::from_u128(42), 0);
+        let mut pending = crate::startup_resources::Resources::default();
+        pending.original_recoveries = Some(
+            crate::administration::OriginalRecoveries::new(
+                &admission,
+                crate::administration::OriginalRecoveryParticipants::one(name.as_str()),
+            )
+            .unwrap(),
+        );
+        let charged = admission.snapshot();
+        let original = anyhow::anyhow!("original authority constructor source");
+        let pointer: &(dyn std::error::Error + Send + Sync + 'static) = original.as_ref();
+        let pointer = pointer as *const _ as *const () as usize;
+        let inventory = pending.original_recoveries.as_ref().unwrap();
+        let mut constructor = inventory.claim(0).await;
+        let marker = constructor
+            .run_snapshot(async { Err::<(), _>(SnapshotFailure::Source(original)) })
+            .await
+            .err()
+            .unwrap()
+            .foreign_error();
+        constructor
+            .with_failure(|failure| {
+                let original: &(dyn std::error::Error + Send + Sync + 'static) =
+                    failure.original().source_error().unwrap().as_ref();
+                assert_eq!(original as *const _ as *const () as usize, pointer);
+            })
+            .unwrap();
+        drop(marker);
+        drop(constructor);
+        assert!(inventory.retained().await);
+        drop(pending);
+        assert_eq!(admission.snapshot().reserved_bytes, charged.reserved_bytes);
+        assert_eq!(
+            admission.snapshot().live_reservations,
+            charged.live_reservations
+        );
+    }
 }

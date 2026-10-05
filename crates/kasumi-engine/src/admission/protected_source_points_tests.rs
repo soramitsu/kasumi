@@ -13,7 +13,7 @@ use std::time::Duration;
 struct Fixture {
     _directory: tempfile::TempDir,
     storage: crate::test_utils::FixtureStorage,
-    node: Arc<NodeStore>,
+    node: NodeStore,
     stores: Arc<TenantStorageSet>,
     clock: Arc<ManualClock>,
     opening: RegisteredNodeOpening,
@@ -36,10 +36,12 @@ impl Fixture {
         let admission = NodeAdmission::with_fixed_memory(config, 2 << 30, 0)?;
         let storage =
             crate::test_utils::FixtureStorage::with_admission(&persistent, &scratch, admission)?;
-        let node = storage.create_new(
-            directory.path().join("persistent/source-points.kv"),
-            uuid::Uuid::from_u128(771),
-        )?;
+        let node = storage
+            .create_new(
+                directory.path().join("persistent/source-points.kv"),
+                uuid::Uuid::from_u128(771),
+            )
+            .unwrap_or_else(|original| std::panic::panic_any(original));
         let clock = Arc::new(ManualClock::default());
         let stores = Self::domains(&node, &clock, "source-points").await?;
         let opening = RegisteredNodeOpening::retained(
@@ -57,7 +59,7 @@ impl Fixture {
         })
     }
     async fn domains(
-        node: &Arc<NodeStore>,
+        node: &NodeStore,
         clock: &Arc<ManualClock>,
         tenant: &str,
     ) -> Result<Arc<TenantStorageSet>> {
@@ -243,10 +245,15 @@ async fn protected_source_binding_rejects_foreign_pair_provider_and_uncaptured_o
             None
         };
         let other_node = if mode == "native" {
-            Some(fixture.storage.create_new(
-                fixture._directory.path().join("persistent/other-source.kv"),
-                uuid::Uuid::from_u128(772),
-            )?)
+            Some(
+                fixture
+                    .storage
+                    .create_new(
+                        fixture._directory.path().join("persistent/other-source.kv"),
+                        uuid::Uuid::from_u128(772),
+                    )
+                    .unwrap_or_else(|original| std::panic::panic_any(original)),
+            )
         } else {
             None
         };

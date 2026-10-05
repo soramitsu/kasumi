@@ -162,6 +162,7 @@ pub(super) struct Handles {
     audit: Arc<SecurityAudit>,
     trusts: BTreeMap<String, kasumi_serving::AuthorityTrust>,
     verifier: Option<Arc<crate::signer_runtime::InstalledSignerVerifier>>,
+    original_recoveries: crate::administration::OriginalRecoveries,
 }
 impl Handles {
     pub fn capture(runtime: &NodeRuntime) -> Self {
@@ -171,6 +172,12 @@ impl Handles {
             audit: runtime.audit.clone(),
             trusts: runtime.authority_trusts.clone(),
             verifier: runtime.signer_verifier.clone(),
+            original_recoveries: runtime
+                .administration
+                .as_ref()
+                .expect("installed runtime retains its original administration donor")
+                .test_original_recoveries()
+                .clone(),
         }
     }
 }
@@ -189,7 +196,7 @@ pub(super) struct Fixture {
     endpoints: BTreeMap<u64, AuthorityEndpoint>,
     issuers: Vec<Arc<kasumi_authority::IndependentAuthority>>,
     issuer_stores: Vec<Arc<TenantStorageSet>>,
-    issuer_nodes: Vec<Arc<NodeStore>>,
+    issuer_nodes: Vec<NodeStore>,
     storage: crate::runtime_memory::RuntimeStorage,
     issuer_audits: Vec<Arc<SecurityAudit>>,
     issuer_networks: Vec<Arc<ClusterNetwork>>,
@@ -406,10 +413,16 @@ impl Fixture {
                     .storage
                     .open_persistent(&cluster.persistent)
                     .unwrap();
-                let audit_node = NodeStore::create_new(directory.join(format!("persistent/issuer-audit-{id}.kv")), Uuid::new_v4(), disk.clone(), cluster
+                let audit_node = NodeStore::create_new(
+                    directory.join(format!("persistent/issuer-audit-{id}.kv")),
+                    Uuid::new_v4(),
+                    disk.clone(),
+                    cluster
                         .storage
                         .open_scratch(&cluster.issuer_scratch[index][0])
-                        .unwrap(), disk.native_storage_config())
+                        .unwrap(),
+                    disk.native_storage_config(),
+                )
                 .unwrap();
                 issuer_nodes.push(audit_node.clone());
                 let audit = SecurityAudit::initialize(
@@ -427,10 +440,16 @@ impl Fixture {
                     admission.clone(),
                 )
                 .unwrap();
-                let node = NodeStore::create_new(directory.join(format!("persistent/issuer-{id}.kv")), Uuid::new_v4(), disk.clone(), cluster
+                let node = NodeStore::create_new(
+                    directory.join(format!("persistent/issuer-{id}.kv")),
+                    Uuid::new_v4(),
+                    disk.clone(),
+                    cluster
                         .storage
                         .open_scratch(&cluster.issuer_scratch[index][1])
-                        .unwrap(), disk.native_storage_config())
+                        .unwrap(),
+                    disk.native_storage_config(),
+                )
                 .unwrap();
                 issuer_nodes.push(node.clone());
                 let stores = TenantStorageSet::initialize_catalogs(
@@ -932,6 +951,7 @@ impl Fixture {
                         "acme".into(),
                         TargetTenantTemplate {
                             authority: "issuer".into(),
+                            audit_placement: crate::audit_destination::TenantAuditPlacementConfig::LocalReplicaOnly,
                             application_keys: target_key("application"),
                             custody_keys: target_key("custody"),
                             source_backups: BTreeMap::from([(
@@ -1177,6 +1197,7 @@ impl Fixture {
             handles[index].cluster.clone(),
             self.source_destinations.clone(),
             handles[index].registry.clone(),
+            &handles[index].original_recoveries,
         )
         .await
         .unwrap();

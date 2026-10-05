@@ -1,15 +1,16 @@
 use super::*;
 
 fn roll_arena(state: &mut DiskState) {
-    state.arena = Arc::new(
-        DirectoryArenaBackend::new(
+    let mut opening = crate::arena::ArenaOpening::default();
+    opening
+        .build(
             state.owner.backend.clone(),
             state.owner.clone(),
             state.owner.admission.clone(),
             GROUP,
         )
-        .unwrap(),
-    );
+        .unwrap();
+    state.arena = NativeOwnedArc::new(opening.take_completed().unwrap());
     state.pages = CachedDirectoryBackend::with_shared_cache(
         state.arena.clone(),
         state.owner.admission.clone(),
@@ -177,10 +178,9 @@ fn denial_before_scan_is_retryable_and_releases_scratch() {
     replace_twice(&mut state);
     let before = admission.used.load(Ordering::Acquire);
     admission.deny_nth(1);
-    assert!(matches!(
-        state.reclaim_step(4),
-        Err(CoreError::CapacityDenied)
-    ));
+    assert!(
+        matches!(&(state.reclaim_step(4)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::CapacityDenied)))
+    );
     assert!(!state.is_fenced());
     assert_eq!(admission.used.load(Ordering::Acquire), before);
     assert!(reclaim_all(&mut state, false) >= 3);
@@ -223,7 +223,7 @@ fn failure_at_each_unlink_and_forget_effect_reopens_without_losing_selected_data
                 let restarted = group.crash();
                 let mut state =
                     DiskState::open(Arc::new(restarted.clone()), admission, GROUP, LARGE_CACHE)
-                        .unwrap_or_else(|error| panic!("{op:?}/{nth}/{timing:?}: {error}"));
+                        .unwrap_or_else(|error| panic!("{op:?}/{nth}/{timing:?}: {error:?}"));
                 let pin = state.snapshot().unwrap();
                 assert_eq!(value(&mut state, &pin, b"k").unwrap(), b"current");
                 assert!(state.owner.lock().unwrap().garbage().is_empty());
@@ -270,7 +270,13 @@ fn restart_rejects_checksum_valid_garbage_that_contains_reachable_child_pages() 
         Ok(_) => panic!("reachable garbage was accepted"),
         Err(error) => error,
     };
-    assert!(matches!(error, CoreError::Corrupt(_)), "{error}");
+    assert!(
+        matches!(
+            error.original_error().unwrap().rejected_cause(),
+            Some(crate::CoreErrorCause::Corrupt(_))
+        ),
+        "{error:?}"
+    );
     assert!(restarted.exists(GroupFile::directory(1)).unwrap());
 }
 
@@ -340,11 +346,12 @@ fn snapshot_reservation_owner_failure_fences_later_writes_even_if_checks_recover
     )
     .unwrap();
     admission.fail_reservation.store(true, Ordering::Release);
-    assert!(matches!(state.snapshot(), Err(CoreError::OwnerFailed)));
+    assert!(
+        matches!(&(state.snapshot()), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+    );
     assert!(admission.check_owner().is_ok());
     assert!(state.is_fenced());
-    assert!(matches!(
-        state.commit(&[Operation::create_table("accounts")]),
-        Err(CoreError::OwnerFailed)
-    ));
+    assert!(
+        matches!(&(state.commit(&[Operation::create_table("accounts")])), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+    );
 }

@@ -12,7 +12,21 @@ use kasumi_store::{
 };
 use openraft::{LogId, SnapshotMeta, StoredMembership};
 use serde::{Serialize, de::DeserializeOwned};
-use std::borrow::Cow;
+use std::ops::Deref;
+
+enum SelectedBytes<'a> {
+    Borrowed(&'a [u8]),
+    Owned(kasumi_store::PlaintextValue),
+}
+impl Deref for SelectedBytes<'_> {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        match self {
+            Self::Borrowed(bytes) => bytes,
+            Self::Owned(bytes) => bytes.as_bytes(),
+        }
+    }
+}
 
 mod allocation;
 mod plan;
@@ -258,13 +272,13 @@ impl<W: SelectionWorkspace> SelectedApplicationPosition<W> {
             .map(|plan| plan.record(application, namespace, key))
             .transpose()?;
         let limit = planned.as_ref().map_or(limit, |record| record.limit());
-        let bytes: Option<Cow<'_, [u8]>> = match reads {
+        let bytes: Option<SelectedBytes<'_>> = match reads {
             SelectedReads::Prepared(reads) => if application {
                 reads.application_get(namespace, key, limit)?
             } else {
                 reads.custody_get(namespace, key, limit)?
             }
-            .map(Cow::Borrowed),
+            .map(SelectedBytes::Borrowed),
             SelectedReads::Source(source) => {
                 // The actual source owns a finite shape before capture. A
                 // larger format ceiling does not require a format-sized buffer;
@@ -275,7 +289,7 @@ impl<W: SelectionWorkspace> SelectedApplicationPosition<W> {
                 } else {
                     source.custody_get(namespace, key, limit)?
                 }
-                .map(Cow::Borrowed)
+                .map(SelectedBytes::Borrowed)
             }
             SelectedReads::SourceLoan(source) => {
                 let limit = limit.min(source.value_capacity());
@@ -284,7 +298,7 @@ impl<W: SelectionWorkspace> SelectedApplicationPosition<W> {
                 } else {
                     source.custody_get(namespace, key, limit)?
                 }
-                .map(Cow::Borrowed)
+                .map(SelectedBytes::Borrowed)
             }
             SelectedReads::View { view, points } => match points.as_deref_mut() {
                 Some(points) => if application {
@@ -292,7 +306,7 @@ impl<W: SelectionWorkspace> SelectedApplicationPosition<W> {
                 } else {
                     points.custody_get(view, namespace, key, limit)?
                 }
-                .map(Cow::Borrowed),
+                .map(SelectedBytes::Borrowed),
                 None => {
                     let plaintext = if application {
                         view.application_get_workspace_bytes(namespace.len(), key.len(), limit)?
@@ -305,7 +319,7 @@ impl<W: SelectionWorkspace> SelectedApplicationPosition<W> {
                     } else {
                         view.custody_get(namespace, key, limit)?
                     }
-                    .map(Cow::Owned)
+                    .map(SelectedBytes::Owned)
                 }
             },
         };

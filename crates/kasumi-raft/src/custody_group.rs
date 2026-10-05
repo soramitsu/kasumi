@@ -1,8 +1,10 @@
 //! The same installed Raft group reopened with only the custody key domain.
+use crate::ensure_result as ensure;
 use crate::lifetime::StorageDrain;
 use crate::{ControlLog, CustodyCommand, LogId, Raft, RaftCommand, RaftGroupConfig, RaftTransport};
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result};
 use kasumi_store::CustodyStore;
+use kasumi_store::ScratchOperationFailure;
 use openraft::storage::RaftLogStorage;
 use std::sync::{
     Arc,
@@ -56,7 +58,7 @@ impl CustodyRaftGroup {
         transport: Arc<dyn RaftTransport>,
         config: RaftGroupConfig,
         snapshot_buffers: Arc<crate::SnapshotBufferOwner>,
-    ) -> Result<Self> {
+    ) -> Result<Self, ScratchOperationFailure> {
         let owner = snapshot_buffers.clone();
         match owner
             .start(async move {
@@ -78,7 +80,7 @@ impl CustodyRaftGroup {
         transport: Arc<dyn RaftTransport>,
         config: RaftGroupConfig,
         snapshot_buffers: Arc<crate::SnapshotBufferOwner>,
-    ) -> Result<Self> {
+    ) -> Result<Self, ScratchOperationFailure> {
         let limits = config.limits;
         ensure!(
             limits.max_snapshot_bytes >= 4 << 20,
@@ -86,7 +88,7 @@ impl CustodyRaftGroup {
         );
         let mut raft_config = config.raft;
         raft_config.cluster_name = group.clone();
-        let config = Arc::new(raft_config.validate()?);
+        let config = Arc::new(raft_config.validate().map_err(anyhow::Error::from)?);
         let ownership = crate::claim_custody(&custody)?;
         snapshot_buffers.bind_group_ownership(ownership.clone(), custody.store().clone())?;
         let (storage_drain, lease) = StorageDrain::new();
@@ -94,11 +96,13 @@ impl CustodyRaftGroup {
             let control = ControlLog::open(custody.clone(), id, group.clone())?;
             let recovery_lease = lease.clone();
             let recovery_ownership = ownership.clone();
+            let recovery_buffers = snapshot_buffers.clone();
             ensure!(
                 tokio::task::spawn_blocking(move || {
                     let _lease = recovery_lease;
                     let _ownership = recovery_ownership;
-                    control.recover_retired()
+                    let guard = recovery_buffers.scratch_failure_guard()?;
+                    guard.capture_result(control.recover_retired())
                 })
                 .await??,
                 "source has no successful committed retirement"
@@ -113,8 +117,15 @@ impl CustodyRaftGroup {
             .await?;
             let machine_failed = machine.failure_flag();
             let mut log = crate::LogStore::open_custody(custody.clone(), id, lease.clone()).await?;
-            log.bind_group(group.clone()).await?;
-            let saved = crate::custody_machine::load_snapshot(&custody, limits.max_snapshot_bytes)?
+            log.bind_group(group.clone())
+                .await
+                .map_err(anyhow::Error::from)?;
+            let scratch_guard = snapshot_buffers.scratch_failure_guard()?;
+            let saved = scratch_guard
+                .capture_result(crate::custody_machine::load_snapshot(
+                    &custody,
+                    limits.max_snapshot_bytes,
+                ))?
                 .context("closed startup snapshot absent")?;
             let floor = saved
                 .meta
@@ -122,7 +133,7 @@ impl CustodyRaftGroup {
                 .context("closed startup has no log coverage")?;
             // Only encrypted control headers/bodies are removed. The immutable
             // retired municipal payload remains encrypted under its original key.
-            log.purge(floor).await?;
+            log.purge(floor).await.map_err(anyhow::Error::from)?;
             let raft = Raft::new(
                 id,
                 config,
@@ -130,8 +141,9 @@ impl CustodyRaftGroup {
                 log,
                 machine,
             )
-            .await?;
-            Ok::<_, anyhow::Error>((raft, machine_failed))
+            .await
+            .map_err(anyhow::Error::from)?;
+            Ok::<_, ScratchOperationFailure>((raft, machine_failed))
         }
         .await;
         drop(lease);

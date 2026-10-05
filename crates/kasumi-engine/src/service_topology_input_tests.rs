@@ -94,7 +94,10 @@ async fn topology_input_refused_actual_proposal_destroys_json_before_its_credit(
         clock: fixture.db.command_clock.lock().unwrap().clone(),
         source_engine: fixture.db.engine.clone(),
         admission: node.clone(),
-        _reservation: node.reserve(1, None).unwrap(),
+        _reservation: ProposalBudget::new(
+            node.reserve(ProposalBudget::required_bytes().unwrap(), None)
+                .unwrap(),
+        ),
         _registration: Arc::new(fixture.db.work.begin(QueryCancellation::default()).unwrap()),
     };
     let jobs = proposal_jobs::Jobs::default();

@@ -73,7 +73,7 @@ fn isolated_census(qualified_name: &str) -> Result<bool> {
 // requested backing), not an RSS measurement or native/cache admission claim.
 struct Fixture {
     store: Arc<TenantStore>,
-    node: Arc<NodeStore>,
+    node: NodeStore,
     memory: Arc<TestDiskMemory>,
     _directory: tempfile::TempDir,
     _scratch: tempfile::TempDir,
@@ -92,7 +92,8 @@ impl Fixture {
             disk,
             scratch,
             node_storage_config(),
-        )?;
+        )
+        .unwrap_or_else(|original| std::panic::panic_any(original));
         let store = TenantStore::initialize_catalog_fixture_with_clock(
             node.clone(),
             "t".repeat(1024),
@@ -134,7 +135,7 @@ impl Fixture {
         key: &[u8],
         max_value_bytes: usize,
         envelope: &[u8],
-    ) -> (Result<Vec<u8>>, usize, usize) {
+    ) -> (Result<PlaintextValue>, usize, usize) {
         let quote = plaintext_get_workspace_bytes(
             self.store.tenant().len(),
             namespace.len(),
@@ -221,7 +222,10 @@ async fn plaintext_get_workspace_covers_first_read_pages_large_values_and_max_na
         )])?;
         let view = fixture.store.read_view()?;
         assert!(view.registered_reader_id().is_some());
-        assert_eq!(view.get(&namespace, &key, value.len())?, Some(value));
+        assert_eq!(
+            view.get(&namespace, &key, value.len())?.as_deref(),
+            Some(value.as_slice())
+        );
         view.close()?;
     }
     fixture.close().await

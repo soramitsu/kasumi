@@ -23,9 +23,9 @@ impl<E: fmt::Debug> fmt::Display for Observation<'_, E> {
 
 #[cold]
 #[inline(never)]
-pub(super) fn fail(id: u64, create: bool, error: &anyhow::Error) -> ! {
+pub(super) fn fail(id: u64, create: bool, error: &kasumi_store::NodeStoreStartFailure) -> ! {
     eprintln!("node opening failure: node={id}, create={create}, original={error:#?}");
-    if let Some(failure) = error.downcast_ref::<kasumi_store::NodeStoreOpeningFailure>() {
+    if let kasumi_store::NodeStoreStartFailure::Opening(failure) = error {
         let custody = failure.custody();
         eprintln!(
             "startup: phase={:?}, opening={:?}, child={:?}, disposition={:?}, local={:#?}, close={:#?}",

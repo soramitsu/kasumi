@@ -386,7 +386,7 @@ mod lifecycle_tests {
     }
 
     struct RequestState {
-        node: Arc<NodeStore>,
+        node: NodeStore,
         entered: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
         release: Arc<tokio::sync::Notify>,
     }
@@ -400,7 +400,10 @@ mod lifecycle_tests {
             .send(())
             .unwrap();
         state.release.notified().await;
-        assert!(Arc::strong_count(&state.node) > 0);
+        assert!(matches!(
+            state.node.locator().try_borrow(),
+            kasumi_store::NodeStoreLookup::Active(original) if kasumi_store::NodeStore::ptr_eq(&original, &state.node)
+        ));
         state.node.shutdown().await.unwrap();
         "completed before listener returned"
     }
@@ -415,7 +418,8 @@ mod lifecycle_tests {
         let node = physical
             .create_new(&path, kasumi_store::test_utils::NODE_STORE_ID)
             .unwrap();
-        let weak = Arc::downgrade(&node);
+        let weak = node.locator();
+        let mut weak_retirement = node.clone().retire();
         let rcgen::CertifiedKey { cert, signing_key } =
             rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
         let identity = TlsIdentity::from_pem(
@@ -502,7 +506,13 @@ mod lifecycle_tests {
             response.await.unwrap(),
             "completed before listener returned"
         );
-        assert!(weak.upgrade().is_none());
+        assert!({
+            assert_eq!(
+                weak_retirement.retry(),
+                kasumi_store::StorageCensusDisposition::Retired
+            );
+            matches!(weak.try_borrow(), kasumi_store::NodeStoreLookup::Missing)
+        });
         let reopened = physical
             .open_existing(&path, kasumi_store::test_utils::NODE_STORE_ID)
             .unwrap();

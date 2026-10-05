@@ -21,6 +21,15 @@ type Panic = Box<dyn Any + Send>;
 mod source;
 pub(crate) use source::{SourceCellClaim, SourceCensusExchange};
 use source::{SourceClass, SourceSlot};
+#[path = "storage_census_native_constructor.rs"]
+mod native_constructor;
+#[cfg(any(test, feature = "test-utils"))]
+pub use native_constructor::NativeConstructorProbe;
+pub use native_constructor::{
+    NativeConstructorCallError, NativeConstructorCustody, NativeConstructorFailure,
+    NativeConstructorInstall, NativeConstructorPermit, NativeConstructorReport,
+};
+pub(crate) use native_constructor::{NativeStartupChild, NativeStartupChildPurpose};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StorageOwnerKind {
@@ -53,6 +62,7 @@ pub enum StorageCensusPanicPhase {
     LeaseRetirement,
     SourceHoldRetirement,
     SourceControlRetirement,
+    WriteOutputDisposal,
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct StorageCensusSnapshot {
@@ -145,7 +155,18 @@ const PAYLOAD_DISPOSED: u8 = 4;
 const LEASE_RETIRED: u8 = 5;
 const UNEXPECTED_SHARED: u8 = 6;
 const SOURCE_HOLD_RETIRED: u8 = 7;
+const OUTPUT_PENDING: u8 = 1;
+const OUTPUT_ENTERED: u8 = 2;
+const OUTPUT_DISPOSED: u8 = 3;
+const OUTPUT_RELEASED: u8 = 4;
+const OUTPUT_HANDED_OFF: u8 = 5;
+const OUTPUT_PANICKED: u8 = 6;
 struct Slot {
+    native_constructor: parking_lot::Mutex<native_constructor::NativeConstructorState>,
+    native_constructor_panicked: AtomicBool,
+    native_constructor_retired_generation: AtomicU64,
+    native_constructor_generation: AtomicU64,
+    native_constructor_delivery_pending: AtomicBool,
     metadata: Mutex<Metadata>,
     pending: AtomicU8,
     source_completion: AtomicU8,
@@ -159,6 +180,16 @@ struct Slot {
     // Once installed, an original panic makes the cell permanently retained;
     // successful retirement/reuse therefore never needs to reset this OnceLock.
     panic: OnceLock<OriginalPanic>,
+    // Paid in the initial actual slot array. A synchronous writer reserves
+    // this second observation before native begin; no failure grant is needed
+    // after its payload or original opaque lease has already left the cell.
+    output_generation: AtomicU64,
+    output_state: AtomicU8,
+    output_panic: OnceLock<OriginalPanic>,
+    payload_retired_generation: AtomicU64,
+    lease_retired_generation: AtomicU64,
+    #[cfg(test)]
+    after_write_lease_retirement: Mutex<Option<Box<dyn FnOnce() + Send>>>,
     unexpected_shared: OnceLock<Arc<dyn ErasedPayload>>,
 }
 
@@ -166,9 +197,20 @@ struct Slot {
 /// exact provider before publishing it. There is no optional or lazy census.
 pub struct StorageCensus {
     provider: AtomicPtr<()>,
-    next_generation: AtomicU64,
     fenced: AtomicBool,
     slots: Box<[Slot]>,
+}
+// An owner ID may cross a foreign transport boundary without its typed facade.
+// Mint process-wide generations so a different provider's same-index cell can
+// never alias that exact identity. Zero remains the never-installed sentinel.
+static NEXT_OWNER_GENERATION: AtomicU64 = AtomicU64::new(0);
+fn owner_generation() -> io::Result<u64> {
+    NEXT_OWNER_GENERATION
+        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
+            value.checked_add(1)
+        })
+        .map(|previous| previous + 1)
+        .map_err(|_| io::ErrorKind::Other.into())
 }
 impl StorageCensus {
     pub fn required_bytes(capacity: usize) -> io::Result<u64> {
@@ -194,6 +236,13 @@ impl StorageCensus {
             });
             drop(metadata.lock().unwrap());
             slot.write(Slot {
+                native_constructor: parking_lot::Mutex::new(
+                    native_constructor::NativeConstructorState::new(),
+                ),
+                native_constructor_panicked: AtomicBool::new(false),
+                native_constructor_retired_generation: AtomicU64::new(0),
+                native_constructor_generation: AtomicU64::new(0),
+                native_constructor_delivery_pending: AtomicBool::new(false),
                 metadata,
                 pending: AtomicU8::new(NONE),
                 source_completion: AtomicU8::new(source::EXCHANGE_NONE),
@@ -201,6 +250,13 @@ impl StorageCensus {
                 source_control: Mutex::new(source::SourceControlState::new()),
                 children: AtomicUsize::new(0),
                 panic: OnceLock::new(),
+                output_generation: AtomicU64::new(0),
+                output_state: AtomicU8::new(NONE),
+                output_panic: OnceLock::new(),
+                payload_retired_generation: AtomicU64::new(0),
+                lease_retired_generation: AtomicU64::new(0),
+                #[cfg(test)]
+                after_write_lease_retirement: Mutex::new(None),
                 unexpected_shared: OnceLock::new(),
             });
         }
@@ -209,7 +265,6 @@ impl StorageCensus {
         let slots = unsafe { slots.assume_init() };
         Ok(Self {
             provider: AtomicPtr::new(std::ptr::null_mut()),
-            next_generation: AtomicU64::new(0),
             fenced: AtomicBool::new(false),
             slots,
         })
@@ -305,7 +360,13 @@ impl StorageCensus {
         if servicing {
             snapshot.servicing += 1;
         }
+        if slot.native_constructor_panicked.load(Ordering::Acquire) {
+            snapshot.retained_panics += 1;
+        }
         if slot.panic.get().is_some() {
+            snapshot.retained_panics += 1;
+        }
+        if slot.output_panic.get().is_some() {
             snapshot.retained_panics += 1;
         }
     }
@@ -320,6 +381,13 @@ impl StorageCensus {
         self.slots.len()
     }
 
+    #[cfg(test)]
+    pub(crate) fn child_count_for_test(&self, id: StorageOwnerId) -> Option<usize> {
+        let slot = self.slots.get(id.index)?;
+        let metadata = slot.metadata.try_lock().ok()?;
+        (metadata.generation == id.generation && !matches!(metadata.cell, Cell::Vacant))
+            .then(|| slot.children.load(Ordering::Acquire))
+    }
     #[cfg(any(test, feature = "test-utils"))]
     pub(crate) fn with_owner_metadata_held_for_test<R>(
         &self,
@@ -350,6 +418,128 @@ impl StorageCensus {
             payload,
         })
     }
+    pub(crate) fn write_output_observation(
+        &self,
+        id: StorageOwnerId,
+    ) -> Option<StorageWriteOutputObservation<'_>> {
+        let slot = self.slots.get(id.index)?;
+        if slot.output_generation.load(Ordering::Acquire) != id.generation {
+            return None;
+        }
+        let state = slot.output_state.load(Ordering::Acquire);
+        let payload = if state == OUTPUT_PANICKED {
+            let original = slot.output_panic.get()?;
+            if original.generation != id.generation {
+                return None;
+            }
+            Some(
+                original
+                    .payload
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()),
+            )
+        } else {
+            None
+        };
+        Some(StorageWriteOutputObservation { state, payload })
+    }
+    /// Both destructive callbacks returned cleanly for this exact generation.
+    /// Neither busy metadata nor a prior drive result supplies this witness.
+    pub(crate) fn write_retirement_completed(&self, id: StorageOwnerId) -> bool {
+        self.slots.get(id.index).is_some_and(|slot| {
+            slot.output_generation.load(Ordering::Acquire) == id.generation
+                && slot.payload_retired_generation.load(Ordering::Acquire) == id.generation
+                && slot.lease_retired_generation.load(Ordering::Acquire) == id.generation
+                && slot.panic.get().is_none()
+                && slot.output_panic.get().is_none()
+        })
+    }
+    /// Output handoff is permitted only by the exact positive destruction and
+    /// lease-callback witness. The now-clean metadata tail remains retryable.
+    pub(crate) fn hand_off_write_output(&self, id: StorageOwnerId) -> bool {
+        if !self.write_retirement_completed(id) {
+            return false;
+        }
+        let slot = &self.slots[id.index];
+        if slot
+            .output_state
+            .compare_exchange(
+                OUTPUT_PENDING,
+                OUTPUT_HANDED_OFF,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_err()
+        {
+            return false;
+        }
+        let _ = self.drain_owner(id);
+        true
+    }
+    /// One real synchronous disposal under a preinstalled exact slot. The
+    /// original native/lease panic and this second original remain separate.
+    pub(crate) fn dispose_write_output<T>(&self, id: StorageOwnerId, output: T) {
+        let slot = self
+            .slots
+            .get(id.index)
+            .expect("registered write output slot");
+        assert_eq!(
+            slot.output_generation.load(Ordering::Acquire),
+            id.generation
+        );
+        assert!(
+            slot.output_state
+                .compare_exchange(
+                    OUTPUT_PENDING,
+                    OUTPUT_ENTERED,
+                    Ordering::AcqRel,
+                    Ordering::Acquire
+                )
+                .is_ok(),
+            "one output disposition per registered write"
+        );
+        match catch_unwind(AssertUnwindSafe(|| drop(output))) {
+            Ok(()) => slot.output_state.store(OUTPUT_DISPOSED, Ordering::Release),
+            Err(payload) => {
+                assert!(
+                    slot.output_panic
+                        .set(OriginalPanic {
+                            generation: id.generation,
+                            phase: StorageCensusPanicPhase::WriteOutputDisposal,
+                            payload: Mutex::new(payload),
+                        })
+                        .is_ok()
+                );
+                slot.output_state.store(OUTPUT_PANICKED, Ordering::Release);
+            }
+        }
+    }
+    pub(crate) fn release_disposed_write_output(&self, id: StorageOwnerId) {
+        let Some(slot) = self.slots.get(id.index) else {
+            return;
+        };
+        if slot.output_generation.load(Ordering::Acquire) == id.generation {
+            let _ = slot.output_state.compare_exchange(
+                OUTPUT_DISPOSED,
+                OUTPUT_RELEASED,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            );
+        }
+    }
+    pub(crate) fn release_unentered_write_output(&self, id: StorageOwnerId) {
+        let Some(slot) = self.slots.get(id.index) else {
+            return;
+        };
+        if slot.output_generation.load(Ordering::Acquire) == id.generation {
+            let _ = slot.output_state.compare_exchange(
+                OUTPUT_PENDING,
+                OUTPUT_HANDED_OFF,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            );
+        }
+    }
     fn record_panic(
         slot: &Slot,
         id: StorageOwnerId,
@@ -378,7 +568,7 @@ impl StorageCensus {
         backing_bytes: u64,
         construct: impl FnOnce() -> T,
     ) -> io::Result<StorageRegistration<T>> {
-        self.register_inner(provider, backing_bytes, None, construct)
+        self.register_inner(provider, backing_bytes, None, false, construct)
     }
     /// A child keeps its exact parent's census generation charged until its
     /// own payload, lease, and cell have all retired. The borrowed registration
@@ -388,6 +578,28 @@ impl StorageCensus {
         provider: Arc<dyn NodeDiskMemoryAdmission>,
         backing_bytes: u64,
         parent: &StorageRegistration<P>,
+        construct: impl FnOnce() -> T,
+    ) -> io::Result<StorageRegistration<T>> {
+        self.register_child_inner(provider, backing_bytes, parent, false, construct)
+    }
+    pub(crate) fn register_write_child<T: StoragePayload, P: StoragePayload>(
+        &self,
+        provider: Arc<dyn NodeDiskMemoryAdmission>,
+        backing_bytes: u64,
+        parent: &StorageRegistration<P>,
+        construct: impl FnOnce() -> T,
+    ) -> io::Result<StorageRegistration<T>> {
+        if T::KIND != StorageOwnerKind::Writer {
+            return Err(io::ErrorKind::InvalidInput.into());
+        }
+        self.register_child_inner(provider, backing_bytes, parent, true, construct)
+    }
+    fn register_child_inner<T: StoragePayload, P: StoragePayload>(
+        &self,
+        provider: Arc<dyn NodeDiskMemoryAdmission>,
+        backing_bytes: u64,
+        parent: &StorageRegistration<P>,
+        output: bool,
         construct: impl FnOnce() -> T,
     ) -> io::Result<StorageRegistration<T>> {
         self.require_provider(&parent.provider)?;
@@ -413,7 +625,7 @@ impl StorageCensus {
             return Err(io::ErrorKind::InvalidInput.into());
         }
         drop(metadata);
-        self.register_inner(provider, backing_bytes, Some(parent.id), construct)
+        self.register_inner(provider, backing_bytes, Some(parent.id), output, construct)
     }
     pub(crate) fn registration_request_bytes<T: StoragePayload>(backing: u64) -> io::Result<u64> {
         disk_memory::add(disk_memory::arc::<T>()?, backing)
@@ -423,9 +635,13 @@ impl StorageCensus {
         provider: Arc<dyn NodeDiskMemoryAdmission>,
         backing_bytes: u64,
         parent: Option<StorageOwnerId>,
+        output: bool,
         construct: impl FnOnce() -> T,
     ) -> io::Result<StorageRegistration<T>> {
-        if T::KIND == StorageOwnerKind::SourcePool {
+        if matches!(
+            T::KIND,
+            StorageOwnerKind::SourcePool | StorageOwnerKind::Database
+        ) {
             return Err(io::ErrorKind::InvalidInput.into());
         }
         self.require_provider(&provider)?;
@@ -443,13 +659,7 @@ impl StorageCensus {
                 continue;
             }
             assert_eq!(slot.children.load(Ordering::Acquire), 0);
-            let generation = self
-                .next_generation
-                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
-                    value.checked_add(1)
-                })
-                .map_err(|_| io::ErrorKind::Other)?
-                + 1;
+            let generation = owner_generation()?;
             let id = StorageOwnerId { index, generation };
             if let Some(parent) = parent {
                 self.slots[parent.index]
@@ -462,6 +672,11 @@ impl StorageCensus {
             metadata.generation = generation;
             metadata.kind = T::KIND;
             metadata.parent = parent;
+            slot.output_generation.store(generation, Ordering::Release);
+            slot.output_state.store(
+                if output { OUTPUT_PENDING } else { NONE },
+                Ordering::Release,
+            );
             metadata.lease = Some(lease);
             debug_assert!(metadata.source.is_none());
             metadata.cell = Cell::Constructing;
@@ -496,18 +711,41 @@ impl StorageCensus {
         provider: Arc<dyn NodeDiskMemoryAdmission>,
         id: StorageOwnerId,
     ) -> Option<StorageRegistration<T>> {
-        self.require_provider(&provider).ok()?;
-        let slot = self.slots.get(id.index)?;
-        let metadata = slot.metadata.try_lock().ok()?;
+        match self.try_retained(provider, id) {
+            TypedOwnerLookup::Active(owner) => Some(owner),
+            TypedOwnerLookup::Busy | TypedOwnerLookup::Missing => None,
+        }
+    }
+
+    pub(crate) fn try_retained<T: StoragePayload>(
+        &self,
+        provider: Arc<dyn NodeDiskMemoryAdmission>,
+        id: StorageOwnerId,
+    ) -> TypedOwnerLookup<T> {
+        if self.require_provider(&provider).is_err() {
+            return TypedOwnerLookup::Missing;
+        }
+        let Some(slot) = self.slots.get(id.index) else {
+            return TypedOwnerLookup::Missing;
+        };
+        let Ok(metadata) = slot.metadata.try_lock() else {
+            return TypedOwnerLookup::Busy;
+        };
         if metadata.generation != id.generation {
-            return None;
+            return TypedOwnerLookup::Missing;
         }
         let Cell::Active { owner, .. } = &metadata.cell else {
-            return None;
+            return if matches!(metadata.cell, Cell::Vacant) {
+                TypedOwnerLookup::Missing
+            } else {
+                TypedOwnerLookup::Busy
+            };
         };
         let erased: Arc<dyn Any + Send + Sync> = owner.clone();
-        let owner = Arc::downcast::<T>(erased).ok()?;
-        Some(StorageRegistration {
+        let Ok(owner) = Arc::downcast::<T>(erased) else {
+            return TypedOwnerLookup::Missing;
+        };
+        TypedOwnerLookup::Active(StorageRegistration {
             provider,
             id,
             owner,
@@ -569,6 +807,13 @@ impl StorageCensus {
             if metadata.generation != id.generation || matches!(metadata.cell, Cell::Vacant) {
                 return StorageCensusDisposition::Stale;
             }
+            if slot.native_constructor_generation.load(Ordering::Acquire) == id.generation
+                && slot
+                    .native_constructor_delivery_pending
+                    .load(Ordering::Acquire)
+            {
+                return StorageCensusDisposition::Retained;
+            }
             let pending = slot.pending.load(Ordering::Acquire);
             if source::exchange_blocks(slot, &metadata) {
                 return StorageCensusDisposition::Retained;
@@ -576,6 +821,7 @@ impl StorageCensus {
             if self.fenced.load(Ordering::Acquire)
                 || pending == PANICKED
                 || pending == UNEXPECTED_SHARED
+                || slot.output_state.load(Ordering::Acquire) == OUTPUT_PANICKED
             {
                 return StorageCensusDisposition::Retained;
             }
@@ -614,6 +860,8 @@ impl StorageCensus {
                         drop(metadata);
                         match owner.try_dispose() {
                             Disposal::Disposed => {
+                                slot.payload_retired_generation
+                                    .store(id.generation, Ordering::Release);
                                 slot.pending.store(PAYLOAD_DISPOSED, Ordering::Release)
                             }
                             Disposal::Panicked(payload) => Self::record_panic(
@@ -655,9 +903,23 @@ impl StorageCensus {
                     slot.pending.store(NONE, Ordering::Release);
                     metadata.cell = Cell::RetiringLease;
                     let lease = metadata.lease.take();
+                    let actual_lease = lease.is_some();
                     drop(metadata);
                     match catch_unwind(AssertUnwindSafe(|| drop(lease))) {
-                        Ok(()) => slot.pending.store(LEASE_RETIRED, Ordering::Release),
+                        Ok(()) => {
+                            if actual_lease {
+                                slot.lease_retired_generation
+                                    .store(id.generation, Ordering::Release);
+                            }
+                            slot.pending.store(LEASE_RETIRED, Ordering::Release);
+                            #[cfg(test)]
+                            if slot.output_state.load(Ordering::Acquire) == OUTPUT_PENDING {
+                                let hook = slot.after_write_lease_retirement.lock().unwrap().take();
+                                if let Some(hook) = hook {
+                                    hook();
+                                }
+                            }
+                        }
                         Err(payload) => {
                             Self::record_panic(
                                 slot,
@@ -673,6 +935,12 @@ impl StorageCensus {
                     if pending != LEASE_RETIRED {
                         return StorageCensusDisposition::Retained;
                     }
+                    if matches!(
+                        slot.output_state.load(Ordering::Acquire),
+                        OUTPUT_PENDING | OUTPUT_ENTERED | OUTPUT_DISPOSED
+                    ) {
+                        return StorageCensusDisposition::Retained;
+                    }
                     if metadata.source.is_some() {
                         drop(metadata);
                         return self.finish_source_payload(id);
@@ -684,6 +952,10 @@ impl StorageCensus {
                             .children
                             .fetch_sub(1, Ordering::AcqRel);
                         assert_ne!(previous, 0, "child count belongs to live parent generation");
+                    }
+                    if slot.native_constructor_generation.load(Ordering::Acquire) == id.generation {
+                        slot.native_constructor_retired_generation
+                            .fetch_max(id.generation, Ordering::Release);
                     }
                     return StorageCensusDisposition::Retired;
                 }
@@ -715,6 +987,24 @@ pub struct StorageCensusObservation<'a> {
     phase: StorageCensusPanicPhase,
     payload: MutexGuard<'a, Panic>,
 }
+pub struct StorageWriteOutputObservation<'a> {
+    state: u8,
+    payload: Option<MutexGuard<'a, Panic>>,
+}
+impl StorageWriteOutputObservation<'_> {
+    pub fn disposal(&self) -> kasumi_kv::TerminalObservation<'_, std::convert::Infallible> {
+        use kasumi_kv::TerminalObservation;
+        match self.state {
+            OUTPUT_PENDING | NONE | OUTPUT_HANDED_OFF => TerminalObservation::NotEntered,
+            OUTPUT_ENTERED => TerminalObservation::Entered,
+            OUTPUT_DISPOSED | OUTPUT_RELEASED => TerminalObservation::Returned(Ok(())),
+            OUTPUT_PANICKED => {
+                TerminalObservation::Panicked(self.payload.as_ref().unwrap().as_ref())
+            }
+            _ => unreachable!("registered output observation"),
+        }
+    }
+}
 impl StorageCensusObservation<'_> {
     pub fn phase(&self) -> StorageCensusPanicPhase {
         self.phase
@@ -726,6 +1016,12 @@ impl StorageCensusObservation<'_> {
 
 /// Private actual-owner facade. Drop never removes the independent census cell.
 /// A queued worker may disappear without destroying its actual accepted request.
+pub(crate) enum TypedOwnerLookup<T> {
+    Active(StorageRegistration<T>),
+    Busy,
+    Missing,
+}
+
 pub(crate) struct StorageRegistration<T> {
     provider: Arc<dyn NodeDiskMemoryAdmission>,
     id: StorageOwnerId,
@@ -741,11 +1037,22 @@ impl<T> Clone for StorageRegistration<T> {
     }
 }
 impl<T> StorageRegistration<T> {
+    pub(crate) fn provider(&self) -> &Arc<dyn NodeDiskMemoryAdmission> {
+        &self.provider
+    }
+    pub(crate) fn same_owner(&self, other: &Self) -> bool {
+        self.id == other.id && Arc::ptr_eq(&self.provider, &other.provider)
+    }
     pub(crate) fn owner(&self) -> &T {
         &self.owner
     }
     pub(crate) fn id(&self) -> StorageOwnerId {
         self.id
+    }
+    /// Another typed facade to this exact installed allocation. No Weak or raw
+    /// capability leaves the store, and the census keeps its independent lease.
+    pub(crate) fn owner_arc(&self) -> Arc<T> {
+        self.owner.clone()
     }
     pub(crate) fn retire(self) -> StorageCensusDisposition {
         let Self {
@@ -761,6 +1068,10 @@ impl<T> StorageRegistration<T> {
 #[cfg(test)]
 #[path = "storage_census_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "storage_census_write_output_tests.rs"]
+mod write_output_tests;
 
 #[cfg(test)]
 #[path = "storage_census_source_tests.rs"]

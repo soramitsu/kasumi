@@ -180,6 +180,7 @@ where
                 CommandPayload::Apply { since, upto } => {
                     self.apply_range(cmd.seq, since, upto).await?;
                 }
+                CommandPayload::Stop => return Ok(()),
             };
         }
     }

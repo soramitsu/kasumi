@@ -1289,6 +1289,8 @@ fn tampered_snapshot_never_changes_current_generation() {
                 .unwrap()
         )
         .unwrap_err()
+        .operation_error()
+        .expect("original snapshot corruption error")
         .code,
         ErrorCode::Corruption
     );

@@ -1,5 +1,5 @@
 use super::*;
-use crate::readiness::{Epoch, FRESHNESS, PROBE_TIMEOUT, Sample};
+use crate::readiness::{Epoch, PROBE_TIMEOUT, Sample};
 use std::time::Duration;
 use tokio::{sync::watch, time::Instant};
 
@@ -43,6 +43,38 @@ impl std::fmt::Display for SweepFailure {
 }
 
 impl Administration {
+    fn readiness_generation(
+        &self,
+        tenant: &str,
+        incarnation: &str,
+    ) -> Result<Option<SelectedTenant>> {
+        // Original owners can remain installed while their serving route is
+        // fenced. Targets have a separate installed runner and enter the route
+        // registry. Select exact owners from both inventories; never turn a
+        // failed lookup into a synthetic group or reopen a missing owner.
+        let original = self
+            .generations
+            .read()
+            .map_err(|_| anyhow::anyhow!("generation registry unavailable"))?
+            .get(&(tenant.to_owned(), incarnation.to_owned()))
+            .map(|owner| SelectedTenant::new(owner.database.clone()));
+        let routed = self
+            .registry
+            .installed_generation(tenant, incarnation)?
+            .map(SelectedTenant::new);
+        match (original, routed) {
+            (Some(original), Some(routed)) => {
+                ensure!(
+                    Arc::ptr_eq(&original.database, &routed.database),
+                    SweepFailure::GenerationUnavailable
+                );
+                Ok(Some(original))
+            }
+            (Some(selected), None) | (None, Some(selected)) => Ok(Some(selected)),
+            (None, None) => Ok(None),
+        }
+    }
+
     pub(crate) fn readiness_epoch(&self) -> Result<Epoch> {
         self.control
             .check_serving()
@@ -104,6 +136,16 @@ impl Administration {
                 _ = tokio::time::sleep(Duration::from_secs(1)) => {}
             }
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn test_readiness_sweep(&self) -> Result<(), &'static str> {
+        let (_sender, mut stop) = watch::channel(false);
+        self.readiness_sweep(&mut stop).await.map_err(|error| {
+            error
+                .downcast_ref::<SweepFailure>()
+                .map_or("unclassified", |failure| failure.class())
+        })
     }
 
     async fn readiness_sweep(&self, stop: &mut watch::Receiver<bool>) -> Result<()> {
@@ -212,10 +254,8 @@ impl Administration {
             let route = kasumi_engine::control::TenantRoute::deserialize(value)
                 .context(SweepFailure::RouteInvalid)?;
             let managed = self
-                .registry
-                .installed_generation(tenant, &route.incarnation)
-                .context(SweepFailure::GenerationUnavailable)?
-                .map(SelectedTenant::new);
+                .readiness_generation(tenant, &route.incarnation)
+                .context(SweepFailure::GenerationUnavailable)?;
             self.probe_one(
                 tenant.clone(),
                 route.incarnation,
@@ -241,13 +281,20 @@ impl Administration {
         epoch: Epoch,
         stop: &mut watch::Receiver<bool>,
     ) -> Result<()> {
+        let selected = selected.context(SweepFailure::GenerationUnavailable)?;
+        // A retained original owner may not have entered data routing yet.
+        // Attach the same synchronous membership observer before its first
+        // probe; a new attachment changes the epoch and requires a new sweep.
+        self.registry
+            .observe_membership(&selected.database)
+            .context(SweepFailure::EpochUnavailable)?;
+        ensure!(self.readiness_epoch()? == epoch, SweepFailure::EpochChanged);
         let mut quorum = false;
         let mut healthy = false;
-        let mut valid_until = Instant::now() + FRESHNESS;
-        if let Some(selected) = selected
-            && selected.database.check_serving().is_ok()
-            && selected.store.check_access().is_ok()
-        {
+        // Retain the actual installed handle for either the Raft observation or
+        // a fresh negative local state probe. An absent handle cannot certify a
+        // probe of a group that has never been opened here.
+        if selected.database.check_serving().is_ok() && selected.store.check_access().is_ok() {
             let local_id = self.config.replication.as_ref().map_or(1, |r| r.node_id);
             ensure!(!*stop.borrow(), SweepFailure::Stopped);
             let database = selected.database.clone();
@@ -276,15 +323,7 @@ impl Administration {
                     // operation. Revoke the old certificate now and retain the
                     // single charged slot until the actor replies or shutdown
                     // takes over its observation after draining the cores.
-                    self.readiness.record(
-                        Sample {
-                            tenant: tenant.clone(),
-                            incarnation: incarnation.clone(),
-                            quorum: false,
-                        },
-                        false,
-                        Instant::now(),
-                    );
+                    self.readiness.invalidate();
                     tokio::select! {
                         biased;
                         _ = stop.changed() => {},
@@ -297,16 +336,13 @@ impl Administration {
                 && selected.database.check_serving().is_ok()
                 && selected.store.check_access().is_ok();
             if self.config.mode == crate::runtime::DeploymentMode::Replicated {
-                let observed_at = Instant::now();
                 match selected
                     .store
                     .storage_access()
                     .serving_gate()
                     .and_then(|g| g.remaining().ok())
                 {
-                    Some(remaining) if !remaining.is_zero() => {
-                        valid_until = valid_until.min(observed_at + remaining)
-                    }
+                    Some(remaining) if !remaining.is_zero() => {}
                     _ => healthy = false,
                 }
             }
@@ -319,7 +355,6 @@ impl Administration {
                 quorum,
             },
             healthy,
-            valid_until,
         );
         Ok(())
     }

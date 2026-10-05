@@ -69,7 +69,9 @@ async fn completed_response_retains_command_workspace_and_registration_until_con
     let metadata = crate::test_utils::reserved_payload_bytes(&admission);
     let fence = Arc::new(WorkFence::default());
     let registration = Arc::new(fence.begin(QueryCancellation::default()).unwrap());
-    let mut workspace = admission.reserve(1 << 20, None).unwrap();
+    let workspace = ProposalBudget::new(admission.reserve(1 << 20, None).unwrap());
+    // The existing 1MiB actual workspace includes this fixed control; no policy,
+    // operation/slot count or asserted payload allowance changes.
     let call = jobs
         .start_task(async move {
             workspace.retain_workspace();

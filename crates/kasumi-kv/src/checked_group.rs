@@ -13,13 +13,13 @@ use crate::group::{GroupFile, SegmentGroupBackend};
 use crate::root::{ROOT_SLOT_BYTES, RootSlot};
 
 pub(crate) struct CheckedGroup {
-    backend: Arc<dyn SegmentGroupBackend>,
+    backend: crate::native_backend::OriginalBackend,
     admission: Arc<dyn StorageAdmission>,
 }
 
 impl CheckedGroup {
     pub(crate) fn new(
-        backend: Arc<dyn SegmentGroupBackend>,
+        backend: crate::native_backend::OriginalBackend,
         admission: Arc<dyn StorageAdmission>,
     ) -> Self {
         Self { backend, admission }
@@ -50,7 +50,7 @@ impl SegmentGroupBackend for CheckedGroup {
     ) -> std::result::Result<(), crate::TransactionReserveError> {
         self.check()
             .map_err(crate::TransactionReserveError::Failed)?;
-        let result = self.backend.reserve_transaction(plan);
+        let result = self.backend.as_ref().reserve_transaction(plan);
         let current = self.check();
         match result {
             Err(error) => Err(error),
@@ -58,70 +58,75 @@ impl SegmentGroupBackend for CheckedGroup {
         }
     }
     fn finish_transaction(&self, group_id: [u8; 16], batch_seq: u64) -> std::io::Result<()> {
-        self.backend.finish_transaction(group_id, batch_seq)
+        self.backend
+            .as_ref()
+            .finish_transaction(group_id, batch_seq)
     }
     fn cancel_transaction(&self, group_id: [u8; 16], batch_seq: u64) -> std::io::Result<()> {
-        self.backend.cancel_transaction(group_id, batch_seq)
+        self.backend
+            .as_ref()
+            .cancel_transaction(group_id, batch_seq)
     }
 
     fn read_root(&self, slot: RootSlot, out: &mut [u8; ROOT_SLOT_BYTES]) -> io::Result<()> {
-        self.checked(|| self.backend.read_root(slot, out))
+        self.checked(|| self.backend.as_ref().read_root(slot, out))
     }
 
     fn write_root(&self, slot: RootSlot, bytes: &[u8; ROOT_SLOT_BYTES]) -> io::Result<()> {
-        self.checked(|| self.backend.write_root(slot, bytes))
+        self.checked(|| self.backend.as_ref().write_root(slot, bytes))
     }
 
     fn sync_root(&self) -> io::Result<()> {
-        self.checked(|| self.backend.sync_root())
+        self.checked(|| self.backend.as_ref().sync_root())
     }
 
     fn visit_entries(&self, visitor: &mut dyn FnMut(&OsStr) -> io::Result<()>) -> io::Result<()> {
         self.checked(|| {
             self.backend
+                .as_ref()
                 .visit_entries(&mut |name| self.checked(|| visitor(name)))
         })
     }
 
     fn exists(&self, file: GroupFile) -> io::Result<bool> {
-        self.checked(|| self.backend.exists(file))
+        self.checked(|| self.backend.as_ref().exists(file))
     }
 
     fn create(&self, file: GroupFile) -> io::Result<()> {
-        self.checked(|| self.backend.create(file))
+        self.checked(|| self.backend.as_ref().create(file))
     }
 
     fn len(&self, file: GroupFile) -> io::Result<u64> {
-        self.checked(|| self.backend.len(file))
+        self.checked(|| self.backend.as_ref().len(file))
     }
 
     fn read(&self, file: GroupFile, at: u64, out: &mut [u8]) -> io::Result<()> {
-        self.checked(|| self.backend.read(file, at, out))
+        self.checked(|| self.backend.as_ref().read(file, at, out))
     }
 
     fn write(&self, file: GroupFile, at: u64, bytes: &[u8]) -> io::Result<()> {
-        self.checked(|| self.backend.write(file, at, bytes))
+        self.checked(|| self.backend.as_ref().write(file, at, bytes))
     }
 
     fn set_len(&self, file: GroupFile, length: u64) -> io::Result<()> {
-        self.checked(|| self.backend.set_len(file, length))
+        self.checked(|| self.backend.as_ref().set_len(file, length))
     }
 
     fn sync(&self, file: GroupFile) -> io::Result<()> {
-        self.checked(|| self.backend.sync(file))
+        self.checked(|| self.backend.as_ref().sync(file))
     }
 
     fn unlink(&self, file: GroupFile) -> io::Result<()> {
-        self.checked(|| self.backend.unlink(file))
+        self.checked(|| self.backend.as_ref().unlink(file))
     }
 
     fn sync_names(&self) -> io::Result<()> {
-        self.checked(|| self.backend.sync_names())
+        self.checked(|| self.backend.as_ref().sync_names())
     }
 
     /// Expiration never prevents the exact owner from draining its resources.
     fn close(&self) -> BackendCloseOutcome {
-        self.backend.close()
+        self.backend.as_ref().close()
     }
 }
 
@@ -290,7 +295,10 @@ mod tests {
             fail_after: AtomicBool::new(false),
         });
         (
-            CheckedGroup::new(probe.clone(), admission.clone()),
+            CheckedGroup::new(
+                crate::native_backend::OriginalBackend::component_fixture(probe.clone()),
+                admission.clone(),
+            ),
             probe,
             admission,
         )

@@ -3,7 +3,9 @@ use super::*;
 use crate::group::{ExistingFileSpace, FileSpaceRange};
 
 fn overflow() -> CoreError {
-    CoreError::InvalidInput("arena transaction-space arithmetic overflow")
+    CoreError::new(crate::CoreErrorCause::InvalidInput(
+        "arena transaction-space arithmetic overflow",
+    ))
 }
 
 fn file_length(pages: u64) -> Result<u64, CoreError> {
@@ -23,9 +25,12 @@ impl DirectoryArenaBackend {
         additional_pages: u64,
     ) -> Result<(Option<ExistingFileSpace>, FileSpaceRange), CoreError> {
         check_owner(&self.admission)?;
-        let writer = self.writer.lock().map_err(|_| CoreError::OwnerFailed)?;
+        let writer = self
+            .writer
+            .lock()
+            .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?;
         if writer.poisoned {
-            return Err(CoreError::OwnerFailed);
+            return Err(CoreError::new(crate::CoreErrorCause::OwnerFailed));
         }
         if first_fresh == 0
             || first_fresh == u64::MAX
@@ -36,9 +41,9 @@ impl DirectoryArenaBackend {
                 .as_ref()
                 .is_some_and(|a| a.id == 0 || a.id >= first_fresh || a.pages > self.max_pages)
         {
-            return Err(CoreError::InvalidInput(
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
                 "invalid arena transaction-space start",
-            ));
+            )));
         }
         let mut remaining = additional_pages;
         let existing = writer

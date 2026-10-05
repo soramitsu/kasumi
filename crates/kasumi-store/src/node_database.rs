@@ -1,15 +1,16 @@
 //! A stopped node retains the exact database owner until accepted transactions end.
 use crate::{
     NodeDiskMemoryAdmission, RegisteredBindingPut, RegisteredCatalogPut, RegisteredNodeOpening,
-    RegisteredNodeRead, StorageCensusDisposition, StorageOwnerId, TenantStore,
+    RegisteredNodeRead, StorageOwnerId, TenantStore,
     storage_domains::AdmittedBindingPut,
     storage_opening::write_plan::{AdmittedCatalogPairPut, AdmittedCatalogPut},
 };
 use kasumi_kv::{
-    BackendNativeDisposition, Database, ReadTransaction, TransactionError, WriteTransaction,
+    Database, DatabaseCloseReport, DatabaseCloseSettlement, DatabaseTransactionAdmission,
+    ReadTransaction, RetainedDatabase, TransactionError, WriteTransaction,
 };
 use kasumi_types::drain::{DrainFailure, DrainReport, DrainResult};
-use parking_lot::Mutex;
+use parking_lot::{Mutex, MutexGuard};
 use std::{
     any::Any,
     fmt,
@@ -20,11 +21,23 @@ use std::{
     },
 };
 
+struct NodeDatabaseLocator {
+    provider: Arc<dyn NodeDiskMemoryAdmission>,
+    id: StorageOwnerId,
+}
+impl NodeDatabaseLocator {
+    fn opening(&self) -> std::io::Result<RegisteredNodeOpening> {
+        RegisteredNodeOpening::retained(self.provider.clone(), self.id)
+            .ok_or_else(|| std::io::ErrorKind::WouldBlock.into())
+    }
+    fn id(&self) -> StorageOwnerId {
+        self.id
+    }
+}
+
 struct State {
-    database: Option<Arc<Database>>,
-    registered: Option<Arc<RegisteredNodeOpening>>,
-    retirement: Option<(Arc<dyn NodeDiskMemoryAdmission>, StorageOwnerId)>,
-    registered_provider: Option<Arc<dyn NodeDiskMemoryAdmission>>,
+    database: Option<RetainedDatabase>,
+    registered: Option<NodeDatabaseLocator>,
     busy: DrainReport,
     terminal: DrainReport,
     interrupted: Option<DrainFailure>,
@@ -52,20 +65,42 @@ pub(crate) struct NodeDatabase {
     state: Mutex<State>,
 }
 enum Accepted {
-    Direct(Arc<Database>),
-    Registered(Arc<RegisteredNodeOpening>),
+    Direct(DatabaseTransactionAdmission),
+    Registered(RegisteredNodeOpening),
+}
+
+/// Borrows the original direct close and disposal observations from the same
+/// preowned state. A native Drained result alone does not prove disposal.
+pub(crate) struct NodeDirectNativeReport<'a> {
+    state: MutexGuard<'a, State>,
+}
+impl NodeDirectNativeReport<'_> {
+    pub(crate) fn close(&self) -> DatabaseCloseReport<'_> {
+        self.state
+            .database
+            .as_ref()
+            .expect("direct native owner")
+            .report()
+    }
+
+    pub(crate) fn disposal_complete(&self) -> bool {
+        self.close().disposal().complete()
+    }
 }
 
 impl NodeDatabase {
+    #[cfg(test)]
     pub(crate) fn new(database: Database, component: &'static str) -> Self {
+        Self::new_retained(database.retain(), component)
+    }
+
+    pub(crate) fn new_retained(database: RetainedDatabase, component: &'static str) -> Self {
         Self {
             component,
             stopped: AtomicBool::new(false),
             state: Mutex::new(State {
-                database: Some(Arc::new(database)),
+                database: Some(database),
                 registered: None,
-                retirement: None,
-                registered_provider: None,
                 busy: DrainReport::default(),
                 terminal: DrainReport::default(),
                 interrupted: None,
@@ -73,9 +108,9 @@ impl NodeDatabase {
         }
     }
 
-    pub(crate) fn new_registered(
-        opening: RegisteredNodeOpening,
+    pub(crate) fn new_registered_locator(
         provider: Arc<dyn NodeDiskMemoryAdmission>,
+        id: StorageOwnerId,
         component: &'static str,
     ) -> Self {
         Self {
@@ -83,9 +118,7 @@ impl NodeDatabase {
             stopped: AtomicBool::new(false),
             state: Mutex::new(State {
                 database: None,
-                registered: Some(Arc::new(opening)),
-                retirement: None,
-                registered_provider: Some(provider),
+                registered: Some(NodeDatabaseLocator { provider, id }),
                 busy: DrainReport::default(),
                 terminal: DrainReport::default(),
                 interrupted: None,
@@ -99,12 +132,15 @@ impl NodeDatabase {
             return Err(kasumi_kv::StorageError::DatabaseClosed.into());
         }
         if let Some(opening) = &state.registered {
-            return Ok(Accepted::Registered(opening.clone()));
+            return Ok(Accepted::Registered(
+                opening.opening().map_err(kasumi_kv::StorageError::from)?,
+            ));
         }
         state
             .database
             .as_ref()
-            .cloned()
+            .and_then(RetainedDatabase::database)
+            .map(Database::transaction_admission)
             .map(Accepted::Direct)
             .ok_or_else(|| kasumi_kv::StorageError::DatabaseClosed.into())
     }
@@ -112,14 +148,34 @@ impl NodeDatabase {
     pub(crate) fn begin_read(&self) -> Result<ReadTransaction, TransactionError> {
         match self.accepted()? {
             Accepted::Direct(database) => database.begin_read(),
-            Accepted::Registered(opening) => opening.begin_store_read(),
+            Accepted::Registered(opening) => {
+                #[cfg(any(test, feature = "test-utils"))]
+                {
+                    opening.begin_store_read()
+                }
+                #[cfg(not(any(test, feature = "test-utils")))]
+                {
+                    let _ = opening;
+                    Err(kasumi_kv::StorageError::DatabaseClosed.into())
+                }
+            }
         }
     }
 
     pub(crate) fn begin_write(&self) -> Result<WriteTransaction, TransactionError> {
         match self.accepted()? {
             Accepted::Direct(database) => database.begin_write(),
-            Accepted::Registered(opening) => opening.begin_store_write(),
+            Accepted::Registered(opening) => {
+                #[cfg(any(test, feature = "test-utils"))]
+                {
+                    opening.begin_store_write()
+                }
+                #[cfg(not(any(test, feature = "test-utils")))]
+                {
+                    let _ = opening;
+                    Err(kasumi_kv::StorageError::DatabaseClosed.into())
+                }
+            }
         }
     }
 
@@ -196,10 +252,25 @@ impl NodeDatabase {
             state
                 .registered
                 .as_ref()
-                .cloned()
                 .ok_or(std::io::ErrorKind::InvalidInput)?
+                .opening()?
         };
         opening.queue_read()
+    }
+
+    pub(crate) fn queue_registered_write(&self) -> std::io::Result<crate::RegisteredNodeWrite> {
+        let opening = {
+            let state = self.state.lock();
+            if self.stopped.load(Ordering::Acquire) {
+                return Err(std::io::ErrorKind::BrokenPipe.into());
+            }
+            state
+                .registered
+                .as_ref()
+                .ok_or(std::io::ErrorKind::InvalidInput)?
+                .opening()?
+        };
+        opening.queue_write()
     }
 
     pub(crate) fn queue_source_capacity(&self) -> std::io::Result<crate::RegisteredSourceCapacity> {
@@ -211,8 +282,8 @@ impl NodeDatabase {
             state
                 .registered
                 .as_ref()
-                .cloned()
                 .ok_or(std::io::ErrorKind::InvalidInput)?
+                .opening()?
         };
         opening.queue_source_capacity()
     }
@@ -228,8 +299,9 @@ impl NodeDatabase {
         let opening = state
             .registered
             .as_ref()
-            .ok_or(std::io::ErrorKind::InvalidInput)?;
-        if !reader.belongs_to(opening) {
+            .ok_or(std::io::ErrorKind::InvalidInput)?
+            .opening()?;
+        if !reader.belongs_to(&opening) {
             return Err(std::io::ErrorKind::InvalidInput.into());
         }
         Ok(())
@@ -247,8 +319,8 @@ impl NodeDatabase {
             state
                 .registered
                 .as_ref()
-                .cloned()
                 .ok_or(std::io::ErrorKind::InvalidInput)?
+                .opening()?
         };
         if !parent.belongs_to(&opening) {
             return Err(std::io::ErrorKind::InvalidInput.into());
@@ -270,8 +342,8 @@ impl NodeDatabase {
             state
                 .registered
                 .as_ref()
-                .cloned()
                 .ok_or(std::io::ErrorKind::InvalidInput)?
+                .opening()?
         };
         opening.queue_catalog_put(plan)
     }
@@ -291,8 +363,8 @@ impl NodeDatabase {
             state
                 .registered
                 .as_ref()
-                .cloned()
                 .ok_or(std::io::ErrorKind::InvalidInput)?
+                .opening()?
         };
         opening.queue_catalog_pair_put(plan, application, custody)
     }
@@ -311,8 +383,8 @@ impl NodeDatabase {
             state
                 .registered
                 .as_ref()
-                .cloned()
                 .ok_or(std::io::ErrorKind::InvalidInput)?
+                .opening()?
         };
         opening.queue_binding_put(plan, application, custody)
     }
@@ -324,7 +396,9 @@ impl NodeDatabase {
 
     pub(crate) fn stop(&self) {
         self.stopped.store(true, Ordering::Release);
-        if let Some(opening) = self.state.lock().registered.as_ref() {
+        if let Some(locator) = self.state.lock().registered.as_ref()
+            && let Ok(opening) = locator.opening()
+        {
             opening.seal_store_transactions();
         }
     }
@@ -334,11 +408,7 @@ impl NodeDatabase {
     }
     pub(crate) fn registered_opening_id(&self) -> Option<StorageOwnerId> {
         let state = self.state.lock();
-        state
-            .registered
-            .as_ref()
-            .map(|opening| opening.id())
-            .or_else(|| state.retirement.as_ref().map(|(_, id)| *id))
+        state.registered.as_ref().map(NodeDatabaseLocator::id)
     }
 
     pub(crate) fn close(&self) -> DrainResult {
@@ -347,91 +417,48 @@ impl NodeDatabase {
         if let Some(failure) = &state.interrupted {
             return Err(failure.clone());
         }
-        if let Some((provider, id)) = state.retirement.take() {
-            // A prior close may have skipped a released routine child while
-            // its census metadata was busy. That child still owns this parent
-            // registration, so rescan the exact children before parent drain.
-            RegisteredNodeOpening::drain_released_routine_readers(&provider, id);
-            match provider.storage_census().drain_owner(id) {
-                StorageCensusDisposition::Retired => return state.terminal.complete(),
-                StorageCensusDisposition::Retained => {
-                    state.retirement = Some((provider, id));
+        if let Some(locator) = state.registered.as_ref() {
+            let opening = match locator.opening() {
+                Ok(opening) => opening,
+                Err(_) => {
                     let issue = state.busy.record(
                         self.component,
                         0,
-                        anyhow::anyhow!(
-                            "registered node opening retirement still owns physical custody"
-                        ),
+                        anyhow::anyhow!("registered node opening observation is busy"),
                     );
                     return Err(DrainFailure::retained(issue));
                 }
-                StorageCensusDisposition::Stale => {
+            };
+            let id = opening.id();
+            let settlement = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                let closed = opening.close()?;
+                if matches!(
+                    closed,
+                    kasumi_kv::DatabaseOpenSettlement::Closed
+                        | kasumi_kv::DatabaseOpenSettlement::Disposed
+                ) {
+                    opening.dispose_native()
+                } else {
+                    Ok(closed)
+                }
+            }));
+            match settlement {
+                Ok(Ok(kasumi_kv::DatabaseOpenSettlement::Disposed)) => {
+                    if opening.report().engine().disposal().complete() {
+                        // Actual native disposal is independent from this node
+                        // facade/control/path. The original census fee remains.
+                        return state.terminal.complete();
+                    }
                     let issue = state.terminal.record(
                         self.component,
                         0,
                         anyhow::anyhow!(
-                            "registered node opening owner disappeared before retirement"
+                            "registered node opening {id:?} native disposal is unproved"
                         ),
                     );
                     let failure = DrainFailure::retained(issue);
                     state.interrupted = Some(failure.clone());
                     return Err(failure);
-                }
-            }
-        }
-        if let Some(opening) = state.registered.as_ref() {
-            let id = opening.id();
-            let settlement = std::panic::catch_unwind(AssertUnwindSafe(|| opening.close()));
-            match settlement {
-                Ok(Ok(kasumi_kv::DatabaseOpenSettlement::Closed)) => {
-                    let opening = state
-                        .registered
-                        .take()
-                        .expect("registered opening retained");
-                    let opening = match Arc::try_unwrap(opening) {
-                        Ok(opening) => opening,
-                        Err(opening) => {
-                            state.registered = Some(opening);
-                            let issue = state.busy.record(
-                                self.component,
-                                0,
-                                anyhow::anyhow!(
-                                    "accepted registered database callers are still live"
-                                ),
-                            );
-                            return Err(DrainFailure::retained(issue));
-                        }
-                    };
-                    let provider = state
-                        .registered_provider
-                        .take()
-                        .expect("registered opening has exact installed provider");
-                    match opening.retire() {
-                        StorageCensusDisposition::Retired => return state.terminal.complete(),
-                        StorageCensusDisposition::Retained => {
-                            state.retirement = Some((provider, id));
-                            let issue = state.busy.record(
-                                self.component,
-                                0,
-                                anyhow::anyhow!(
-                                    "registered node opening retirement still owns physical custody"
-                                ),
-                            );
-                            return Err(DrainFailure::retained(issue));
-                        }
-                        StorageCensusDisposition::Stale => {
-                            let issue = state.terminal.record(
-                                self.component,
-                                0,
-                                anyhow::anyhow!(
-                                    "registered node opening owner disappeared before retirement"
-                                ),
-                            );
-                            let failure = DrainFailure::retained(issue);
-                            state.interrupted = Some(failure.clone());
-                            return Err(failure);
-                        }
-                    }
                 }
                 Ok(Ok(kasumi_kv::DatabaseOpenSettlement::WaitingForTransactions)) | Ok(Err(_)) => {
                     let issue = state.busy.record(
@@ -466,87 +493,112 @@ impl NodeDatabase {
                 }
             }
         }
-        let Some(database) = state.database.take() else {
+        let Some(database) = state.database.as_mut() else {
             return state.terminal.complete();
         };
-        let result = match Arc::try_unwrap(database) {
-            Ok(database) => match std::panic::catch_unwind(AssertUnwindSafe(|| database.close())) {
-                Ok(Ok(())) => return state.terminal.complete(),
-                Ok(Err(kasumi_kv::CloseError::Storage(error))) => {
-                    let issue = state.terminal.record(self.component, 0, error.into());
-                    let failure = DrainFailure::retained(issue);
-                    state.interrupted = Some(failure.clone());
-                    return Err(failure);
-                }
-                Ok(Err(kasumi_kv::CloseError::Busy(database))) => Arc::new(database),
-                Err(payload) => {
-                    let issue = state.terminal.record(
-                        self.component,
-                        1,
-                        ClosePanic(Mutex::new(payload)).into(),
-                    );
-                    let failure = DrainFailure::retained(issue);
-                    state.interrupted = Some(failure.clone());
-                    return Err(failure);
-                }
-            },
-            Err(database) => database,
+        // Existing accepted work owns the same closed native controls. Wrapper
+        // dispatch is sealed, but an already queued writer may finish before
+        // native closure enters. This is a pre-effect busy condition.
+        let settlement = if Self::direct_work_survives(database) {
+            DatabaseCloseSettlement::WaitingForTransactions
+        } else {
+            database.close().settlement()
         };
-        state.database = Some(result);
-        let issue = state.busy.record(
+        match settlement {
+            DatabaseCloseSettlement::Settled | DatabaseCloseSettlement::Disposed => {
+                if database.dispose().settlement() == DatabaseCloseSettlement::Disposed
+                    && database.report().disposal().complete()
+                {
+                    return state.terminal.complete();
+                }
+            }
+            DatabaseCloseSettlement::Open | DatabaseCloseSettlement::WaitingForTransactions => {
+                let issue = state.busy.record(
+                    self.component,
+                    0,
+                    anyhow::anyhow!(
+                        "accepted database callers or transaction handles are still live"
+                    ),
+                );
+                return Err(DrainFailure::retained(issue));
+            }
+            _ => {}
+        }
+        // The original close/disposal errors and panic payloads remain in the
+        // retained database. This stable drain issue is a nonowning diagnostic.
+        let issue = state.terminal.record(
             self.component,
             0,
-            anyhow::anyhow!("accepted database callers or transaction handles are still live"),
+            anyhow::anyhow!("direct database close or disposal is unproved; inspect native report"),
         );
-        Err(DrainFailure::retained(issue))
+        let failure = DrainFailure::retained(issue);
+        state.interrupted = Some(failure.clone());
+        Err(failure)
     }
 
-    /// Destructor fallback for the last owner of a direct database. Unlike
-    /// `close`, it records no report, formats nothing and allocates nothing
-    /// beyond the backend's own close (the scratch spool's close allocates
-    /// nothing). It seals admission and enters the one native close only when
-    /// no accepted caller or transaction handle survives. `Drained` is returned
-    /// only for clean native drain observed now or by an earlier completed
-    /// close. An earlier terminal failure, a live handle, a registered opening,
-    /// an unwind or any unproved native outcome is `Retained`: the caller must
-    /// keep this exact owner, and with it the physical file and its charge.
-    /// The native close is never re-entered; the engine keeps its first report.
-    pub(crate) fn close_native_for_drop(&self) -> BackendNativeDisposition {
+    /// Inspect actual native disposal while keeping the composite node's body,
+    /// locator and original census fee live. Lookup failure is never a receipt.
+    pub(crate) fn native_resources_disposed(&self) -> bool {
+        let state = self.state.lock();
+        if let Some(locator) = &state.registered {
+            let Ok(opening) = locator.opening() else {
+                return false;
+            };
+            let report = opening.report();
+            return report.engine().settlement() == kasumi_kv::DatabaseOpenSettlement::Disposed
+                && report.engine().disposal().complete();
+        }
+        state.database.as_ref().is_some_and(|database| {
+            let report = database.report();
+            report.settlement() == DatabaseCloseSettlement::Disposed && report.disposal().complete()
+        })
+    }
+
+    fn direct_work_survives(database: &RetainedDatabase) -> bool {
+        database
+            .database()
+            .is_some_and(|database| database.active_transactions() != 0)
+    }
+
+    /// Explicit native close for registered scratch custody. Every original
+    /// result stays in State; no diagnostic allocation or Drop witness occurs.
+    pub(crate) fn close_direct_native(&self) -> Option<NodeDirectNativeReport<'_>> {
         self.stopped.store(true, Ordering::Release);
-        let mut state = self.state.lock();
-        if state.interrupted.is_some() || state.registered.is_some() || state.retirement.is_some() {
-            return BackendNativeDisposition::Retained;
+        let mut state = self.state.try_lock()?;
+        if state.registered.is_some() {
+            return None;
         }
-        let Some(database) = state.database.as_ref() else {
-            // Only a completed close removes the direct database without
-            // recording a terminal interruption.
-            return BackendNativeDisposition::Drained;
-        };
-        if Arc::strong_count(database) != 1 {
-            return BackendNativeDisposition::Retained;
+        let database = state.database.as_mut()?;
+        if !Self::direct_work_survives(database) {
+            let _ = database.close();
         }
-        let outcome = match std::panic::catch_unwind(AssertUnwindSafe(|| database.close_native())) {
-            Ok(outcome) => outcome,
-            Err(payload) => {
-                // No report can hold the payload here. Its destructor is not
-                // run inside the caller's destructor and proves nothing.
-                std::mem::forget(payload);
-                return BackendNativeDisposition::Retained;
-            }
-        };
-        let (result, native) = outcome.into_parts();
-        if native == BackendNativeDisposition::Drained && result.is_ok() {
-            state.database = None;
-            return BackendNativeDisposition::Drained;
+        Some(NodeDirectNativeReport { state })
+    }
+
+    /// Dispose only the previously closed original owner. A call before close,
+    /// contention, or an unknown close remains unproved without entering close.
+    pub(crate) fn dispose_direct_native(&self) -> Option<NodeDirectNativeReport<'_>> {
+        self.stopped.store(true, Ordering::Release);
+        let mut state = self.state.try_lock()?;
+        if state.registered.is_some() {
+            return None;
         }
-        BackendNativeDisposition::Retained
+        let _ = state.database.as_mut()?.dispose();
+        Some(NodeDirectNativeReport { state })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn direct_native_report(&self) -> Option<NodeDirectNativeReport<'_>> {
+        let state = self.state.try_lock()?;
+        state.database.as_ref()?;
+        Some(NodeDirectNativeReport { state })
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kasumi_kv::SegmentGroupBackend;
+    use kasumi_kv::{BackendNativeDisposition, SegmentGroupBackend};
 
     fn memory() -> NodeDatabase {
         NodeDatabase::new(
@@ -596,7 +648,8 @@ mod tests {
                 .lock()
                 .database
                 .as_ref()
-                .is_some_and(|db| Arc::strong_count(db) > 1)
+                .and_then(RetainedDatabase::database)
+                .is_some_and(|db| db.active_transactions() > 1)
             {
                 break true;
             }
@@ -713,14 +766,28 @@ mod tests {
             &first.issues()[0],
             &second.issues()[0]
         ));
-        let original = first.issues()[0]
-            .error()
-            .downcast_ref::<ClosePanic>()
-            .unwrap();
-        assert_eq!(
-            original.0.lock().downcast_ref::<OriginalClosePanic>(),
-            Some(&OriginalClosePanic(41))
-        );
+        let original_address = {
+            let native = database.direct_native_report().unwrap();
+            let close = native.close();
+            let kasumi_kv::TerminalObservation::Panicked(original) = close.backend() else {
+                panic!("original native close panic was not retained");
+            };
+            assert_eq!(
+                original.downcast_ref::<OriginalClosePanic>(),
+                Some(&OriginalClosePanic(41))
+            );
+            assert!(!native.disposal_complete());
+            std::ptr::from_ref(original).cast::<()>()
+        };
+        {
+            let native = database.close_direct_native().unwrap();
+            let close = native.close();
+            let kasumi_kv::TerminalObservation::Panicked(original) = close.backend() else {
+                panic!("a repeated close lost the original panic");
+            };
+            assert_eq!(std::ptr::from_ref(original).cast::<()>(), original_address);
+            assert!(!native.disposal_complete());
+        }
         assert!(database.begin_read().is_err());
         assert!(database.begin_write().is_err());
     }
@@ -823,9 +890,13 @@ mod tests {
         ));
         assert!(database.begin_read().is_err());
         assert!(database.begin_write().is_err());
-        // This legacy consuming facade retains only its report on error. Actual
-        // owner custody requires the RegisteredNodeOpening consumer migration.
-        assert!(database.state.lock().database.is_none());
+        // The actual native owner and its first close report remain together.
+        let native = database.direct_native_report().unwrap();
+        assert_eq!(
+            native.close().settlement(),
+            DatabaseCloseSettlement::Retained
+        );
+        assert!(!native.disposal_complete());
     }
 
     #[derive(Clone, Copy, Debug)]
@@ -938,12 +1009,33 @@ mod tests {
         (database, closes)
     }
 
+    fn close_and_dispose(database: &NodeDatabase) -> BackendNativeDisposition {
+        let Some(closed) = database.close_direct_native() else {
+            return BackendNativeDisposition::Retained;
+        };
+        if !matches!(
+            closed.close().settlement(),
+            DatabaseCloseSettlement::Settled | DatabaseCloseSettlement::Disposed
+        ) {
+            return BackendNativeDisposition::Retained;
+        }
+        drop(closed);
+        if database
+            .dispose_direct_native()
+            .is_some_and(|report| report.disposal_complete())
+        {
+            BackendNativeDisposition::Drained
+        } else {
+            BackendNativeDisposition::Retained
+        }
+    }
+
     #[test]
-    fn drop_fallback_waits_for_live_handles_and_enters_native_close_once() {
+    fn explicit_disposal_waits_for_live_handles_and_enters_native_close_once() {
         let (database, closes) = counted(CloseMode::Drained);
         let reader = database.begin_read().unwrap();
         let (outcome, allocations) =
-            crate::allocation_tests::measure(|| database.close_native_for_drop());
+            crate::allocation_tests::measure(|| close_and_dispose(&database));
         assert_eq!(outcome, BackendNativeDisposition::Retained);
         assert_eq!(allocations, 0);
         assert_eq!(closes.load(Ordering::SeqCst), 0);
@@ -952,22 +1044,29 @@ mod tests {
         drop(reader);
         for _ in 0..2 {
             let (outcome, allocations) =
-                crate::allocation_tests::measure(|| database.close_native_for_drop());
+                crate::allocation_tests::measure(|| close_and_dispose(&database));
             assert_eq!(outcome, BackendNativeDisposition::Drained);
             assert_eq!(allocations, 0);
             assert_eq!(closes.load(Ordering::SeqCst), 1);
         }
-        assert!(database.state.lock().database.is_none());
+        {
+            let native = database.direct_native_report().unwrap();
+            assert_eq!(
+                native.close().settlement(),
+                DatabaseCloseSettlement::Disposed
+            );
+            assert!(native.disposal_complete());
+        }
         database.close().unwrap();
         assert_eq!(closes.load(Ordering::SeqCst), 1);
     }
 
     #[test]
-    fn drop_fallback_never_claims_or_reenters_an_unproved_native_close() {
+    fn explicit_disposal_never_claims_or_reenters_an_unproved_native_close() {
         let (database, closes) = counted(CloseMode::Unproved);
         for _ in 0..2 {
             let (outcome, allocations) =
-                crate::allocation_tests::measure(|| database.close_native_for_drop());
+                crate::allocation_tests::measure(|| close_and_dispose(&database));
             assert_eq!(outcome, BackendNativeDisposition::Retained);
             assert_eq!(allocations, 0);
             assert_eq!(closes.load(Ordering::SeqCst), 1);
@@ -982,12 +1081,12 @@ mod tests {
     }
 
     #[test]
-    fn drop_fallback_after_failed_explicit_close_retains_without_reentry() {
+    fn explicit_disposal_after_failed_close_retains_without_reentry() {
         let (database, closes) = counted(CloseMode::Unproved);
         let first = database.close().unwrap_err();
         assert_eq!(closes.load(Ordering::SeqCst), 1);
         let (outcome, allocations) =
-            crate::allocation_tests::measure(|| database.close_native_for_drop());
+            crate::allocation_tests::measure(|| close_and_dispose(&database));
         assert_eq!(outcome, BackendNativeDisposition::Retained);
         assert_eq!(allocations, 0);
         assert_eq!(closes.load(Ordering::SeqCst), 1);
@@ -999,11 +1098,11 @@ mod tests {
     }
 
     #[test]
-    fn drop_fallback_contains_close_panic_without_claiming_drain_or_reentry() {
+    fn explicit_disposal_preserves_close_panic_without_claiming_drain_or_reentry() {
         let (database, closes) = counted(CloseMode::Panic);
         for _ in 0..2 {
             assert_eq!(
-                database.close_native_for_drop(),
+                close_and_dispose(&database),
                 BackendNativeDisposition::Retained
             );
             // The entered close is never replayed into the panicking backend.

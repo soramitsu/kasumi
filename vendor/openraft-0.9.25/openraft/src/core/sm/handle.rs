@@ -39,6 +39,10 @@ where
         self.pending_apply.send(&self.cmd_tx, cmd)
     }
 
+    pub(crate) fn seal(&self) -> Result<(), mpsc::error::SendError<sm::Command<C>>> {
+        self.pending_apply.seal(&self.cmd_tx)
+    }
+
     /// Create a [`SnapshotReader`] to get the current snapshot from the state machine.
     pub(crate) fn new_snapshot_reader(&self) -> SnapshotReader<C> {
         SnapshotReader {

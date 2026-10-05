@@ -1,5 +1,9 @@
 //! Protocol tests use the real admitted slot and real publisher machinery.
 //! Native/source effects and canceled workers are exercised by Engine's fixtures.
+#[path = "apply_preparation_tests.rs"]
+mod apply_preparation_tests;
+#[path = "planner_refusal_tests.rs"]
+mod planner_refusal_tests;
 use super::*;
 use crate::{
     ApplyObservationRef as O, CompletionAction, CompletionBinding, CompletionCustody,
@@ -20,6 +24,8 @@ struct Control {
     failed: AtomicBool,
     drained: AtomicBool,
     drain_panic: AtomicBool,
+    action_proof: std::sync::Mutex<Option<crate::CompletionActionFailureIdentity>>,
+    proof_panic: AtomicBool,
 }
 struct Binding(Arc<Control>);
 impl CompletionCustody for Binding {
@@ -50,6 +56,12 @@ impl CompletionCustody for Binding {
     fn is_drained(&self) -> bool {
         self.0.drained.load(Ordering::SeqCst)
     }
+    fn retired_action_failure(&self) -> Option<crate::CompletionActionFailureIdentity> {
+        if self.0.proof_panic.load(Ordering::SeqCst) {
+            std::panic::panic_any(Arc::clone(&self.0));
+        }
+        *self.0.action_proof.lock().unwrap()
+    }
 }
 fn owner() -> (crate::apply_failure::ApplyFailureSlot, Arc<Control>) {
     let control = Arc::new(Control {
@@ -58,8 +70,11 @@ fn owner() -> (crate::apply_failure::ApplyFailureSlot, Arc<Control>) {
         failed: AtomicBool::new(false),
         drained: AtomicBool::new(false),
         drain_panic: AtomicBool::new(false),
+        action_proof: std::sync::Mutex::new(None),
+        proof_panic: AtomicBool::new(false),
     });
-    let slot = crate::apply_failure::ApplyFailureSlot::new(Arc::new(()));
+    let slot =
+        crate::apply_failure::ApplyFailureSlot::new(kasumi_types::SharedBudgetCharge::new(()));
     assert!(
         slot.completion()
             .bind(CompletionBinding::new(Binding(control.clone())))
@@ -89,7 +104,7 @@ impl CompletionAction for Commit {
         &mut self,
         _: &CompletionInvocation<'_>,
         publisher: &mut dyn ApplyPublisher,
-    ) -> Result<()> {
+    ) -> Result<(), kasumi_store::ScratchOperationFailure> {
         publisher.commit(AppliedResponse::application(vec![7, 9]), &[])?;
         Ok(())
     }
@@ -138,7 +153,7 @@ impl CompletionAction for Recursive<'_> {
         &mut self,
         _: &CompletionInvocation<'_>,
         publisher: &mut dyn ApplyPublisher,
-    ) -> Result<()> {
+    ) -> Result<(), kasumi_store::ScratchOperationFailure> {
         publisher.commit(AppliedResponse::application(vec![11]), &[])?;
         assert_eq!(
             publisher.with_completion(self.0, &mut Commit),
@@ -219,8 +234,9 @@ fn backend_error_precedes_finish_panic_and_both_survive_caller_drop() {
     publication
         .with_completion(&control.identity, &mut Commit)
         .unwrap();
-    let returned =
-        failed(publication.finish_observed(Ok(Err(original)), || std::panic::panic_any(thrown)));
+    let returned = failed(
+        publication.finish_observed(Ok(Err(original.into())), || std::panic::panic_any(thrown)),
+    );
     drop(returned);
     slot.failure()
         .unwrap()
@@ -323,7 +339,7 @@ impl CompletionAction for SwallowThenPanic {
         &mut self,
         _: &CompletionInvocation<'_>,
         publisher: &mut dyn ApplyPublisher,
-    ) -> Result<()> {
+    ) -> Result<(), kasumi_store::ScratchOperationFailure> {
         assert_eq!(
             publisher.commit(AppliedResponse::application(vec![29]), &[]),
             Err(PublishCallError::Failed)
@@ -377,7 +393,7 @@ fn opaque_sink_error_stays_owned_after_positive_completion_drain() {
             &mut self,
             _: &CompletionInvocation<'_>,
             publisher: &mut dyn ApplyPublisher,
-        ) -> Result<()> {
+        ) -> Result<(), kasumi_store::ScratchOperationFailure> {
             assert_eq!(
                 publisher.commit(AppliedResponse::application(vec![29]), &[]),
                 Err(PublishCallError::Failed)
@@ -428,6 +444,187 @@ fn opaque_sink_error_stays_owned_after_positive_completion_drain() {
             ));
             assert!(matches!(report.drain, O::Returned));
             assert!(report.response.is_some());
+        })
+        .unwrap();
+}
+
+struct ReturnedActionError<'a> {
+    control: &'a Control,
+    original: &'a mut Option<anyhow::Error>,
+    capture_identity: bool,
+    return_error: bool,
+    add_context: bool,
+}
+impl CompletionAction for ReturnedActionError<'_> {
+    fn run(
+        &mut self,
+        invocation: &CompletionInvocation<'_>,
+        publisher: &mut dyn ApplyPublisher,
+    ) -> Result<(), kasumi_store::ScratchOperationFailure> {
+        if self.capture_identity {
+            *self.control.action_proof.lock().unwrap() =
+                Some(invocation.action_failure_identity(self.original.as_ref().unwrap()));
+        }
+        publisher.commit(AppliedResponse::application(vec![53]), &[])?;
+        if self.return_error {
+            let original = self.original.take().unwrap();
+            return Err((if self.add_context {
+                original.context("same underlying cause in a different error allocation")
+            } else {
+                original
+            })
+            .into());
+        }
+        Ok(())
+    }
+}
+
+#[test]
+fn action_retirement_proof_requires_exact_allocation_binding_and_current_invocation() {
+    for mode in ["exact", "context", "foreign", "old ordinal", "opaque"] {
+        let (slot, control) = owner();
+        let mut sink = SinkCount(0);
+        let mut original: Option<anyhow::Error> = Some(Original(47).into());
+        let address = original
+            .as_ref()
+            .unwrap()
+            .downcast_ref::<Original>()
+            .unwrap() as *const Original as usize;
+        if matches!(mode, "foreign" | "old ordinal") {
+            // The same live error allocation is observed in a real successful
+            // prior action, then carried into a different binding or ordinal.
+            let (other, other_control) = owner();
+            let (before, binding) = if mode == "foreign" {
+                (&other, &other_control)
+            } else {
+                (&slot, &control)
+            };
+            let mut publication = ApplyPublication::new_bound(&mut sink, before);
+            publication
+                .with_completion(
+                    &binding.identity,
+                    &mut ReturnedActionError {
+                        control: &control,
+                        original: &mut original,
+                        capture_identity: true,
+                        return_error: false,
+                        add_context: false,
+                    },
+                )
+                .unwrap();
+            let FinishedPublication {
+                response,
+                acknowledgment,
+            } = publication.finish_observed(Ok(Ok(())), || {}).ok().unwrap();
+            acknowledge_publication(acknowledgment);
+            drop(response);
+        }
+        let mut publication = ApplyPublication::new_bound(&mut sink, &slot);
+        assert_eq!(
+            publication.with_completion(
+                &control.identity,
+                &mut ReturnedActionError {
+                    control: &control,
+                    original: &mut original,
+                    capture_identity: matches!(mode, "exact" | "context"),
+                    return_error: true,
+                    add_context: mode == "context",
+                }
+            ),
+            Err(crate::CompletionCallError::Recorded)
+        );
+        let returned = failed(publication.finish_observed(Ok(Ok(())), || {}));
+        assert!(original.is_none());
+        assert!(!slot.failure_ownership_drained());
+        drop(returned);
+        assert!(
+            slot.completion()
+                .poll_drain(&mut Context::from_waker(Waker::noop()))
+                .is_ready()
+        );
+        assert!(slot.completion().drained());
+        assert_eq!(slot.failure_ownership_drained(), mode == "exact", "{mode}");
+        slot.failure()
+            .unwrap()
+            .try_with_report(|report| {
+                let RetainedApplyReport::Ordinary(report) = report else {
+                    panic!("ordinary original");
+                };
+                let O::Error(original) = report.action else {
+                    panic!("unchanged action original");
+                };
+                assert_eq!(
+                    original.downcast_ref::<Original>().unwrap() as *const Original as usize,
+                    address,
+                    "{mode}"
+                );
+                assert_eq!(report.response.unwrap().data, [53]);
+                assert!(matches!(report.sink, O::Returned));
+                assert!(matches!(report.drain, O::Returned));
+                assert_eq!(
+                    report.custody_guards.action_error_retired,
+                    mode == "exact",
+                    "{mode}"
+                );
+            })
+            .unwrap();
+        assert!(slot.completion().failed() && slot.completion().unsettled());
+    }
+}
+
+#[test]
+fn action_retirement_proof_panic_retains_both_originals_and_never_retries_callback() {
+    let (slot, control) = owner();
+    control.proof_panic.store(true, Ordering::SeqCst);
+    let mut sink = SinkCount(0);
+    let mut original: Option<anyhow::Error> = Some(Original(59).into());
+    let address = original
+        .as_ref()
+        .unwrap()
+        .downcast_ref::<Original>()
+        .unwrap() as *const Original as usize;
+    let mut publication = ApplyPublication::new_bound(&mut sink, &slot);
+    assert_eq!(
+        publication.with_completion(
+            &control.identity,
+            &mut ReturnedActionError {
+                control: &control,
+                original: &mut original,
+                capture_identity: true,
+                return_error: true,
+                add_context: false,
+            }
+        ),
+        Err(crate::CompletionCallError::Recorded)
+    );
+    drop(failed(publication.finish_observed(Ok(Ok(())), || {})));
+    let mut cx = Context::from_waker(Waker::noop());
+    assert!(slot.completion().poll_drain(&mut cx).is_ready());
+    assert!(!slot.completion().drained() && !slot.failure_ownership_drained());
+    control.proof_panic.store(false, Ordering::SeqCst);
+    assert!(slot.completion().poll_drain(&mut cx).is_ready());
+    assert!(!slot.completion().drained() && !slot.failure_ownership_drained());
+    slot.failure()
+        .unwrap()
+        .try_with_report(|report| {
+            let RetainedApplyReport::Ordinary(report) = report else {
+                panic!("ordinary original");
+            };
+            let O::Error(original) = report.action else {
+                panic!("action original");
+            };
+            assert_eq!(
+                original.downcast_ref::<Original>().unwrap() as *const Original as usize,
+                address
+            );
+            let O::Unwound(panic) = report.drain else {
+                panic!("independent proof callback panic");
+            };
+            assert!(Arc::ptr_eq(
+                panic.downcast_ref::<Arc<Control>>().unwrap(),
+                &control
+            ));
+            assert_eq!(report.response.unwrap().data, [53]);
         })
         .unwrap();
 }

@@ -27,36 +27,37 @@ impl NativeAdmin {
                     .await
                     .map_err(status)?;
                 let mutation = !matches!(operation, SessionOperation::Status);
-                let result = match operation {
+                let response_json = match operation {
                     SessionOperation::Status => database
                         .backup_session_status(
                             context.clone(),
                             decode_json(&payload).map_err(status)?,
                         )
                         .await
-                        .and_then(|value| encode_json(&value)),
-                    SessionOperation::Abort => database
-                        .abort_backup_session(
-                            context.clone(),
-                            decode_json(&payload).map_err(status)?,
-                        )
-                        .await
-                        .and_then(|value| encode_json(&value)),
-                    SessionOperation::Cleanup => database
-                        .cleanup_backup_session(
-                            context.clone(),
-                            decode_json(&payload).map_err(status)?,
-                        )
-                        .await
-                        .and_then(|value| encode_json(&value)),
+                        .and_then(|value| encode_json(&value))
+                        .map_err(|error| self.registry.status(&context, error))?,
+                    SessionOperation::Abort => {
+                        let request = decode_json(&payload).map_err(status)?;
+                        self.snapshot_call(&context, true, async {
+                            let value = database
+                                .abort_backup_session(context.clone(), request)
+                                .await?;
+                            encode_json(&value).map_err(Into::into)
+                        })
+                        .await?
+                    }
+                    SessionOperation::Cleanup => {
+                        let result = database
+                            .cleanup_backup_session(
+                                context.clone(),
+                                decode_json(&payload).map_err(status)?,
+                            )
+                            .await
+                            .and_then(|value| encode_json(&value));
+                        mutation_release(result)
+                            .map_err(|error| self.registry.status(&context, error))?
+                    }
                 };
-                let result = if mutation {
-                    mutation_release(result)
-                } else {
-                    result
-                };
-                let response_json =
-                    result.map_err(|error| self.registry.status(&context, error))?;
                 Ok(Response::new(
                     release_response(
                         &self.auth,

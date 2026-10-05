@@ -82,7 +82,7 @@ impl PhysicalFixture {
 /// The exact runtime facade is required before the service ledger can open.
 #[allow(dead_code)]
 pub async fn security_audit(
-    node: Arc<NodeStore>,
+    node: NodeStore,
     admission: Arc<kasumi_engine::admission::NodeAdmission>,
 ) -> Arc<SecurityAudit> {
     let store = TenantStore::initialize_catalog_fixture(
@@ -103,7 +103,7 @@ pub async fn security_audit(
 /// Reopen a previously initialized ledger under its exact physical memory core.
 #[allow(dead_code)]
 pub async fn existing_security_audit(
-    node: Arc<NodeStore>,
+    node: NodeStore,
     admission: Arc<kasumi_engine::admission::NodeAdmission>,
 ) -> Arc<SecurityAudit> {
     let store = TenantStore::open_existing_fixture(

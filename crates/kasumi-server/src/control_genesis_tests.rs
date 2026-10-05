@@ -58,7 +58,16 @@ fn config(root: &Path) -> Result<(RuntimeConfig, crate::runtime_memory::RuntimeS
     config.signer_verifier = None;
     config.control.lifecycle = None;
     config.backup_destinations.clear();
-    config.tenant_audit_archives.clear();
+    config.tenant_audit_placements = std::collections::BTreeMap::from([
+        (
+            crate::runtime::CONTROL_TENANT.into(),
+            crate::audit_destination::TenantAuditPlacementConfig::LocalReplicaOnly,
+        ),
+        (
+            config.tenants[0].tenant.clone(),
+            crate::audit_destination::TenantAuditPlacementConfig::LocalReplicaOnly,
+        ),
+    ]);
     config.security_audit.archive = None;
     config.tenants[0].serving = crate::serving_runtime::TenantServingConfig::LocalFixture;
     for (index, keys) in std::iter::once(&mut config.security_audit.keys)
@@ -129,7 +138,7 @@ fn config(root: &Path) -> Result<(RuntimeConfig, crate::runtime_memory::RuntimeS
 async fn existing(
     config: &RuntimeConfig,
     storage: &crate::runtime_memory::RuntimeStorage,
-) -> Result<(Arc<NodeStore>, Arc<TenantStore>)> {
+) -> Result<(NodeStore, Arc<TenantStore>)> {
     let node = {
         let native_path = &config.database_path;
         let native_id = config.database_id;
@@ -142,7 +151,8 @@ async fn existing(
             native_scratch_disk,
             native_disk.native_storage_config(),
         )
-    }?;
+    }
+    .expect("drained control genesis fixture must reopen its installed native node");
     let security = TenantStore::open_existing(
         node.clone(),
         kasumi_engine::SECURITY_TENANT.into(),
@@ -363,7 +373,8 @@ async fn panicked_ha_enrollment_drains_nested_node_audit_pair_and_database_owner
                 native_scratch_disk,
                 native_disk.native_storage_config(),
             )
-        }?;
+        }
+        .expect("drained control enrollment fixture must reopen its installed native node");
         if index > 0 {
             let security = TenantStore::open_existing(
                 node.clone(),

@@ -237,6 +237,7 @@ impl SegmentGroupBackend for Backend {
 struct Owners {
     backend: Backend,
     admission: Arc<NativeAdmission>,
+    unentered: Option<kasumi_store::NodeFixtureInputs<Backend>>,
     _metadata: Option<Reservation>,
 }
 impl Drop for Owners {
@@ -248,6 +249,7 @@ impl Drop for Owners {
             let retained = HeldFailure::Abandoned {
                 _backend: self.backend.clone(),
                 _admission: self.admission.clone(),
+                _unentered: self.unentered.take(),
                 _metadata: self._metadata.take().expect("actual fixture grant"),
             };
             let mut slots = RETAINED_FAILURES
@@ -269,6 +271,7 @@ impl Owners {
             + std::mem::size_of::<Mutex<FaultState>>()
             + 4 * std::mem::size_of::<usize>()
             + std::mem::size_of::<FinishError>()
+            + std::mem::size_of::<Option<kasumi_store::NodeFixtureInputs<Backend>>>()
             + 3 * 4096) as u64;
         let metadata = storage.admission.reserve_resident(bytes)?;
         let memory = storage.persistent.memory().clone();
@@ -306,6 +309,7 @@ impl Owners {
         Ok(Self {
             backend,
             admission,
+            unentered: None,
             _metadata: Some(metadata),
         })
     }
@@ -315,18 +319,28 @@ struct Scope {
     owners: Owners,
 }
 impl Scope {
-    async fn new() -> Result<Self> {
+    async fn new() -> crate::test_fixture_failure::FixtureResult<Self> {
         let mut owners = None;
         let fixture = Fixture::new_with_node(|storage, _| {
-            let created = Owners::new(storage, InMemoryGroup::new())?;
+            let created = Owners::new(storage, InMemoryGroup::new())
+                .map_err(crate::test_fixture_failure::FixtureFailure::Operation)?;
             owners = Some(created);
             let created = owners.as_ref().unwrap();
-            kasumi_store::NodeStore::create_fixture_backend_on_disk(
+            match kasumi_store::NodeStore::create_fixture_backend_on_disk(
                 created.backend.clone(),
                 created.admission.clone(),
                 storage.persistent.clone(),
                 storage.scratch.clone(),
-            )
+            ) {
+                Ok(node) => Ok(node),
+                Err(original) => {
+                    let (original, unentered) = original.into_parts();
+                    owners.as_mut().unwrap().unentered = unentered;
+                    Err(crate::test_fixture_failure::FixtureFailure::NodeStartup(
+                        original,
+                    ))
+                }
+            }
         })
         .await;
         match fixture {
@@ -340,14 +354,17 @@ impl Scope {
             },
         }
     }
-    async fn reopen<'a>(&'a self, image: &SnapshotImage) -> Result<Restarted<'a>> {
+    async fn reopen<'a>(
+        &'a self,
+        image: &SnapshotImage,
+    ) -> crate::test_fixture_failure::FixtureResult<Restarted<'a>> {
         self.reopen_after(image, None).await
     }
     async fn reopen_after<'a>(
         &'a self,
         image: &SnapshotImage,
         final_operation: Option<Operation>,
-    ) -> Result<Restarted<'a>> {
+    ) -> crate::test_fixture_failure::FixtureResult<Restarted<'a>> {
         // Take durable bytes before any original owner drain, close, or Drop.
         let group = self.owners.backend.group.crash();
         // Probe only after preserving the crash image. The real backend rejects
@@ -366,14 +383,23 @@ impl Scope {
             scratch: source.scratch.clone(),
         };
         let input = storage.admission.reserve_resident(32 << 20)?;
-        let owners = Owners::new(&storage, group)?;
+        let mut owners = Owners::new(&storage, group)?;
         let built = async {
-            let node = kasumi_store::NodeStore::open_fixture_backend_on_disk(
+            let node = match kasumi_store::NodeStore::open_fixture_backend_on_disk(
                 owners.backend.clone(),
                 owners.admission.clone(),
                 storage.persistent.clone(),
                 storage.scratch.clone(),
-            )?;
+            ) {
+                Ok(node) => node,
+                Err(original) => {
+                    let (original, unentered) = original.into_parts();
+                    owners.unentered = unentered;
+                    return Err(crate::test_fixture_failure::FixtureFailure::NodeStartup(
+                        original,
+                    ));
+                }
+            };
             let stores = TenantStorageSet::open_existing_fixture(
                 node.clone(),
                 "cow".into(),
@@ -463,8 +489,11 @@ impl Scope {
             }
             fixture.roots.finish_reconstruction()?;
             assert!(!Arc::ptr_eq(&fixture.stores, &self.fixture.stores));
-            assert!(!Arc::ptr_eq(&fixture.node, &self.fixture.node));
-            Ok::<_, anyhow::Error>(fixture)
+            assert!(!kasumi_store::NodeStore::ptr_eq(
+                &fixture.node,
+                &self.fixture.node
+            ));
+            Ok::<_, crate::test_fixture_failure::FixtureFailure>(fixture)
         }
         .await;
         let fixture = match built {
@@ -498,7 +527,7 @@ impl Restarted<'_> {
 struct Cleanup {
     roots: Option<SourceRootsRef>,
     stores: Option<Arc<TenantStorageSet>>,
-    node: Option<Arc<kasumi_store::NodeStore>>,
+    node: Option<kasumi_store::NodeStore>,
     buffers: Option<Arc<kasumi_raft::SnapshotBufferOwner>>,
     storage: crate::test_utils::FixtureStorage,
     _input: Reservation,
@@ -513,12 +542,13 @@ struct Cleanup {
 enum HeldFailure {
     Setup {
         owners: Owners,
-        original: anyhow::Error,
+        original: crate::test_fixture_failure::FixtureFailure,
     },
     Shutdown(Cleanup),
     Abandoned {
         _backend: Backend,
         _admission: Arc<NativeAdmission>,
+        _unentered: Option<kasumi_store::NodeFixtureInputs<Backend>>,
         _metadata: Reservation,
     },
 }
@@ -781,6 +811,8 @@ fn original_unknown(error: &anyhow::Error, expected: usize, ordinal: usize) {
         panic!("actual native unknown outcome required: {commit:?}");
     };
     let original = original
+        .io_error()
+        .expect("original native finish I/O")
         .get_ref()
         .unwrap()
         .downcast_ref::<FinishError>()
@@ -790,7 +822,8 @@ fn original_unknown(error: &anyhow::Error, expected: usize, ordinal: usize) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn primary_cow_unknown_staging_reopens_complete_pending_and_chunk_batches() -> Result<()> {
+async fn primary_cow_unknown_staging_reopens_complete_pending_and_chunk_batches()
+-> crate::test_fixture_failure::FixtureResult<()> {
     for finish in [1, 3] {
         let scope = Scope::new().await?;
         let fixture = &scope.fixture;
@@ -844,10 +877,7 @@ async fn primary_cow_unknown_staging_reopens_complete_pending_and_chunk_batches(
                 .write_batch(&[put("cow.fenced-probe", b"never", b"published")], &[])
                 .unwrap_err();
             assert!(
-                retry.chain().any(|cause| matches!(
-                    cause.downcast_ref::<kasumi_kv::CoreError>(),
-                    Some(kasumi_kv::CoreError::OwnerFailed)
-                )),
+                retry.chain().any(|cause| matches!(&(cause.downcast_ref::<kasumi_kv::CoreError>()), Some(native_error) if matches!(native_error.rejected_cause(), Some(kasumi_kv::CoreErrorCause::OwnerFailed)))),
                 "fenced retry lost its actual owner failure: {retry:#}"
             );
             drop(retry);
@@ -872,7 +902,7 @@ async fn primary_cow_unknown_staging_reopens_complete_pending_and_chunk_batches(
                 value,
             } = write
             else {
-                anyhow::bail!("staging unexpectedly retained a delete");
+                return Err(anyhow::anyhow!("staging unexpectedly retained a delete").into());
             };
             reopened.read(namespace, key, value.len(), |actual| {
                 assert_eq!(

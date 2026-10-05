@@ -63,14 +63,13 @@ fn commit_warm_stops_before_refused_page_io_independently_of_tree_size() {
             }
             let before = cached.stats().unwrap();
             let reads = backend.reads.load(Ordering::Acquire);
-            assert!(matches!(
-                DirectoryReader::new(&warming, owner).warm_generation_with_workspace(
+            assert!(
+                matches!(&(DirectoryReader::new(&warming, owner).warm_generation_with_workspace(
                     root,
                     root.generation,
                     &mut workspace,
-                ),
-                Err(CoreError::CapacityDenied)
-            ));
+                )), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::CapacityDenied)))
+            );
             assert_eq!(
                 backend.reads.load(Ordering::Acquire),
                 reads,
@@ -150,22 +149,19 @@ fn commit_warm_propagates_corruption_and_owner_expiry_without_installing_pages()
     let mut out = [0; DIRECTORY_PAGE_BYTES];
     let mut wrong = page;
     wrong.sha256[0] ^= 1;
-    assert!(matches!(
-        warming.read_page(wrong, &mut out),
-        Err(CoreError::Corrupt(_))
-    ));
+    assert!(
+        matches!(&(warming.read_page(wrong, &mut out)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::Corrupt(_))))
+    );
     assert_eq!(cached.stats().unwrap().entries, 0);
     *backend.expire_on_read.lock().unwrap() = Some(admission.clone());
-    assert!(matches!(
-        warming.read_page(page, &mut out),
-        Err(CoreError::OwnerFailed)
-    ));
+    assert!(
+        matches!(&(warming.read_page(page, &mut out)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+    );
     assert_eq!(cached.cache.lock().unwrap().stats().entries, 0);
     let reads = backend.reads.load(Ordering::Acquire);
-    assert!(matches!(
-        warming.read_page(page, &mut out),
-        Err(CoreError::OwnerFailed)
-    ));
+    assert!(
+        matches!(&(warming.read_page(page, &mut out)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+    );
     assert_eq!(backend.reads.load(Ordering::Acquire), reads);
     drop(cached);
     assert_eq!(admission.used.load(Ordering::Acquire), 0);

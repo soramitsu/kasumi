@@ -2,13 +2,28 @@
 //! bounded native page/value cache. The ordered directory also lives on disk.
 use crate::ScratchDisk;
 use anyhow::{Result, ensure};
-use kasumi_kv::{BackendNativeDisposition, CacheConfig, StorageAdmission, TableDefinition};
-use kasumi_types::drain::{DrainCompletion, DrainResult};
+#[cfg(test)]
+use kasumi_kv::BackendNativeDisposition;
+use kasumi_kv::{CacheConfig, StorageAdmission, TableDefinition};
+use kasumi_types::drain::DrainResult;
 use std::sync::Arc;
 
 #[path = "scratch_group.rs"]
 pub(crate) mod group;
-use group::{Backend, Owner};
+#[cfg(test)]
+use group::Backend;
+use group::Owner;
+
+#[path = "scratch_table_value.rs"]
+mod value;
+pub use value::ScratchTableValue;
+
+#[path = "scratch_creation.rs"]
+mod creation;
+pub use creation::{
+    ScratchAdmissionRefusal, ScratchAdmissionSlot, ScratchCreationFailure, ScratchCreationReport,
+    ScratchCreationRetirement, ScratchOperationFailure,
+};
 
 const TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("staged");
 
@@ -17,7 +32,44 @@ struct ScratchTableDatabase {
     admission: Arc<Owner>,
     // An already-unwinding batch transfers its actual still-charged lease
     // here before the new provider callback could cause a second panic.
-    retained_batches: std::sync::Mutex<Option<Box<BatchMemoryLink>>>,
+    // This inline lock is included in the concrete owner quote; its first
+    // nonblocking census probe needs no separately allocated native backing.
+    retained_batches: parking_lot::Mutex<Option<Box<BatchMemoryLink>>>,
+    retirement: (
+        Arc<dyn crate::NodeDiskMemoryAdmission>,
+        crate::StorageOwnerId,
+    ),
+}
+
+/// Every public table/value/batch alias schedules its exact independently paid
+/// request after its own Arc has actually left. This is a request to drive;
+/// positive native and payload disposal still come only from the census.
+struct ScratchTableRef(Option<Arc<ScratchTableDatabase>>);
+impl ScratchTableRef {
+    fn new(owner: Arc<ScratchTableDatabase>) -> Self {
+        Self(Some(owner))
+    }
+}
+impl Clone for ScratchTableRef {
+    fn clone(&self) -> Self {
+        Self::new(self.0.as_ref().unwrap().clone())
+    }
+}
+impl std::ops::Deref for ScratchTableRef {
+    type Target = Arc<ScratchTableDatabase>;
+    fn deref(&self) -> &Self::Target {
+        self.0.as_ref().unwrap()
+    }
+}
+impl Drop for ScratchTableRef {
+    fn drop(&mut self) {
+        let owner = self.0.take().unwrap();
+        let (provider, id) = owner.retirement.clone();
+        drop(owner);
+        if !std::thread::panicking() {
+            let _ = provider.storage_census().drain_owner(id);
+        }
+    }
 }
 
 impl ScratchTableDatabase {
@@ -40,14 +92,13 @@ impl Drop for ScratchTableDatabase {
         // retires the descriptor, key and buffers before the scratch charge;
         // any other outcome, including an earlier failed explicit close, keeps
         // the exact spool and its charge alive for the process lifetime.
-        let retained_batches = self
-            .retained_batches
-            .get_mut()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .take();
-        if database.close_native_for_drop() == BackendNativeDisposition::Drained
-            && retained_batches.is_none()
-        {
+        let retained_batches = self.retained_batches.get_mut().take();
+        let closed = database.close_direct_native().is_some();
+        let disposed = closed
+            && database
+                .dispose_direct_native()
+                .is_some_and(|report| report.disposal_complete());
+        if disposed && retained_batches.is_none() {
             drop(database);
         } else {
             std::mem::forget(database);
@@ -56,50 +107,8 @@ impl Drop for ScratchTableDatabase {
     }
 }
 
-struct ScratchTableSetupFailure {
-    original: anyhow::Error,
-    close: DrainResult,
-    retained: Option<Arc<ScratchTableDatabase>>,
-}
-
-impl std::fmt::Debug for ScratchTableSetupFailure {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("ScratchTableSetupFailure")
-            .field("original", &self.original)
-            .field("close", &self.close)
-            .field("retained", &self.retained.is_some())
-            .finish()
-    }
-}
-
-impl std::fmt::Display for ScratchTableSetupFailure {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(formatter, "scratch table setup failed: {}", self.original)?;
-        if let Err(close) = &self.close {
-            write!(formatter, "; close: {close}")?;
-        }
-        Ok(())
-    }
-}
-
-impl std::error::Error for ScratchTableSetupFailure {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        Some(self.original.as_ref())
-    }
-}
-
-impl ScratchTableSetupFailure {
-    #[cfg(test)]
-    fn retry_close(&self) -> DrainResult {
-        self.retained
-            .as_ref()
-            .map_or_else(|| self.close.clone(), |owner| owner.close())
-    }
-}
-
 pub struct EncryptedTable {
-    owner: Arc<ScratchTableDatabase>,
+    owner: ScratchTableRef,
 }
 /// An unpublished, bounded staging transaction. A healthy dropped transaction
 /// aborts its pending writes; a committed batch remains private until its caller
@@ -125,7 +134,7 @@ struct BatchMemory {
     link: Option<Box<BatchMemoryLink>>,
     // Keep the real database alive until the grant callback has returned, even
     // when the original table was dropped before this batch.
-    owner: Arc<ScratchTableDatabase>,
+    owner: ScratchTableRef,
 }
 impl Drop for BatchMemory {
     fn drop(&mut self) {
@@ -136,11 +145,7 @@ impl Drop for BatchMemory {
             // No new callback during an existing unwind. The real preadmitted
             // link, lease and byte credit stay with this exact failed owner.
             self.owner.admission.owner_failed();
-            let mut retained = self
-                .owner
-                .retained_batches
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let mut retained = self.owner.retained_batches.lock();
             link.next = retained.take();
             *retained = Some(link);
             return;
@@ -223,7 +228,7 @@ impl EncryptedTableBatch {
 /// original outcome outside the narrow catch; a panic proves no clean release.
 fn settle_batch_retirement<T>(
     result: Result<T>,
-    owner: Arc<ScratchTableDatabase>,
+    owner: ScratchTableRef,
     retire: impl FnOnce(),
 ) -> Result<T> {
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(retire)) {
@@ -245,7 +250,7 @@ fn settle_batch_retirement<T>(
 struct ScratchBatchRetirementFailure {
     original: Option<anyhow::Error>,
     _payload: std::sync::Mutex<Box<dyn std::any::Any + Send>>,
-    _owner: Arc<ScratchTableDatabase>,
+    _owner: ScratchTableRef,
 }
 impl std::fmt::Debug for ScratchBatchRetirementFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -281,49 +286,30 @@ fn batch_workspace_bytes() -> std::io::Result<u64> {
 }
 
 impl EncryptedTable {
-    pub fn new(disk: &Arc<ScratchDisk>, max_disk_bytes: u64, cache: CacheConfig) -> Result<Self> {
-        Self::create(Owner::new(disk, max_disk_bytes)?, cache)
+    pub fn new(
+        disk: &Arc<ScratchDisk>,
+        max_disk_bytes: u64,
+        cache: CacheConfig,
+    ) -> std::result::Result<Self, ScratchCreationFailure> {
+        creation::create(disk, max_disk_bytes, cache)
     }
 
     /// A scratch table owns a fresh encrypted group and an explicit incarnation.
     /// Strict creation never adopts a pre-existing segmented image.
-    fn create(owner: Arc<Owner>, cache: CacheConfig) -> Result<Self> {
-        let group_id = *uuid::Uuid::new_v4().as_bytes();
-        let database = kasumi_kv::Database::builder(owner.clone(), group_id, cache)
-            .create_with_backend(Backend(owner.clone()))?;
-        Self::initialize(database, owner)
+    #[cfg(test)]
+    fn create(
+        owner: Arc<Owner>,
+        cache: CacheConfig,
+    ) -> std::result::Result<Self, ScratchCreationFailure> {
+        creation::create_owned(owner, cache)
     }
 
-    fn initialize(database: kasumi_kv::Database, admission: Arc<Owner>) -> Result<Self> {
-        let table = Self {
-            owner: Arc::new(ScratchTableDatabase {
-                database: Some(crate::node_database::NodeDatabase::new(
-                    database,
-                    "encrypted scratch table",
-                )),
-                admission,
-                retained_batches: std::sync::Mutex::new(None),
-            }),
-        };
-        let setup = (|| -> Result<()> {
-            let tx = table.owner.database().begin_write()?;
-            tx.open_table(TABLE)?;
-            tx.commit()?;
-            Ok(())
-        })();
-        if let Err(original) = setup {
-            let close = table.close();
-            let retained = close.as_ref().err().and_then(|failure| {
-                (failure.completion() == DrainCompletion::Retained).then(|| table.owner.clone())
-            });
-            return Err(ScratchTableSetupFailure {
-                original,
-                close,
-                retained,
-            }
-            .into());
-        }
-        Ok(table)
+    #[cfg(test)]
+    fn initialize(
+        database: kasumi_kv::Database,
+        admission: Arc<Owner>,
+    ) -> std::result::Result<Self, ScratchCreationFailure> {
+        creation::initialize(database, admission)
     }
     /// Fence new transactions and retain the exact database while accepted
     /// readers or writers drain. Repeated calls preserve the original outcome.
@@ -378,10 +364,12 @@ impl EncryptedTable {
         tx.commit()?;
         Ok(())
     }
-    pub fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
+    pub fn get(&self, key: &[u8]) -> Result<Option<ScratchTableValue>> {
         let tx = self.owner.database().begin_read()?;
         let table = tx.open_table(TABLE)?;
-        Ok(table.get(key)?.map(|v| v.value().to_vec()))
+        Ok(table
+            .get(key)?
+            .map(|value| ScratchTableValue::new(value, self.owner.clone())))
     }
     /// Replace a scratch accumulator. Permanent identities use `insert`, which
     /// rejects duplicates; this operation is only for unpublished working tables.

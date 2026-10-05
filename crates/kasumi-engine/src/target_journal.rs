@@ -39,7 +39,7 @@ pub use initial_start::ResolvedInitialStart;
 mod projection;
 pub use projection::VerifiedTargetServingProjection;
 
-/// A format-4 journal record is the exact current writer's JSON bytes. This
+/// A format-5 journal record is the exact current writer's JSON bytes. This
 /// streaming comparison avoids allocating another record during bounded reopen.
 fn decode_current<T: serde::de::DeserializeOwned + Serialize>(bytes: &[u8]) -> Result<T> {
     struct Compare<'a>(&'a [u8]);
@@ -66,6 +66,33 @@ fn decode_current<T: serde::de::DeserializeOwned + Serialize>(bytes: &[u8]) -> R
 pub struct TargetJournalInstallation {
     pub root: ControlSigningRoot,
     pub node: NodeIdentity,
+    /// Exact installed template choices, bound before any target cache or
+    /// external archive is opened. These are configuration identities, not
+    /// provider credential contents.
+    pub audit_placement_bindings: std::collections::BTreeMap<String, String>,
+}
+impl TargetJournalInstallation {
+    pub fn validate(&self) -> Result<()> {
+        self.root.validate()?;
+        self.node.validate()?;
+        ensure!(
+            (1..=10_000).contains(&self.audit_placement_bindings.len()),
+            "target journal audit placement roster must be explicitly bounded"
+        );
+        for (tenant, binding) in &self.audit_placement_bindings {
+            kasumi_types::validate_name(tenant)?;
+            ensure!(
+                !tenant.starts_with("__kasumi_") && !tenant.starts_with("kasumi."),
+                "reserved target journal audit placement tenant"
+            );
+            kasumi_types::validate_sha256(binding)?;
+        }
+        ensure!(
+            serde_json::to_vec(self)?.len() <= MAX_RECORD / 2,
+            "target journal audit placement roster exceeds its work limit"
+        );
+        Ok(())
+    }
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -127,16 +154,22 @@ pub struct MaterializationFile {
 /// The catalog action follows this original journal decision, never a disk
 /// existence probe. Replayed file reservations always return `Existing`.
 pub enum MaterializationNode {
-    Created(Arc<kasumi_store::NodeStore>),
-    Existing(Arc<kasumi_store::NodeStore>),
+    Created(kasumi_store::NodeStore),
+    Existing(kasumi_store::NodeStore),
 }
 impl MaterializationFile {
+    #[allow(
+        clippy::result_large_err,
+        reason = "The journal returns whole inline admitted native startup custody without an error-path Box."
+    )]
     pub fn open(
         self,
         path: &std::path::Path,
         scratch: Arc<kasumi_store::ScratchDisk>,
-    ) -> Result<MaterializationNode> {
-        self.operation.check()?;
+    ) -> std::result::Result<MaterializationNode, kasumi_store::NodeStoreStartFailure> {
+        self.operation
+            .check()
+            .map_err(kasumi_store::NodeStoreStartFailure::Operation)?;
         let node = if self.create {
             kasumi_store::NodeStore::create_new(
                 path,
@@ -153,8 +186,7 @@ impl MaterializationFile {
                 scratch,
                 self.persistent_disk.native_storage_config(),
             )
-        }
-        .map_err(journal_unknown)?;
+        }?;
         // The runtime must first retain this physical owner, then recheck the
         // operation before starting catalog work. A failed post-open fence here
         // would discard the only explicit-close owner of the new file.
@@ -274,8 +306,7 @@ impl TargetJournal {
             return Ok(existing);
         }
         let _workspace = admission.reserve((MAX_RECORD * 8) as u64, None)?;
-        installed.root.validate()?;
-        installed.node.validate()?;
+        installed.validate()?;
         limits.validate()?;
         ensure!(
             matches!(store.storage_access().purpose(), kasumi_store::StoragePurpose::TargetJournal {control_root,node}
@@ -301,7 +332,7 @@ impl TargetJournal {
                 anyhow::bail!("target journal records exist without a canonical head")
             })?;
             let metadata = Metadata {
-                format: 4,
+                format: 5,
                 installation: journal.installed.clone(),
                 intents: 0,
                 generations: 0,
@@ -344,6 +375,13 @@ impl TargetJournal {
                     .checked_add(1)
                     .context("journal count exhausted")?;
                 let target: GenerationBinding = decode_current(value)?;
+                ensure!(
+                    journal
+                        .installed
+                        .audit_placement_bindings
+                        .contains_key(&target.tenant),
+                    "target generation has no installed audit placement"
+                );
                 ensure!(
                     key == generation_key(&target.tenant, target.target_incarnation),
                     "journal generation key differs"
@@ -421,7 +459,7 @@ impl TargetJournal {
             .context("target journal metadata missing")?;
         let m: Metadata = decode_current(&value)?;
         ensure!(
-            m.format == 4
+            m.format == 5
                 && m.installation == self.installed
                 && m.dispatch_terminals <= m.dispatches
                 && m.dispatch_starts
@@ -434,6 +472,12 @@ impl TargetJournal {
     }
     fn validate_intent(&self, i: &TargetJournalIntent) -> Result<()> {
         i.intent.request.validate()?;
+        ensure!(
+            self.installed
+                .audit_placement_bindings
+                .contains_key(&i.intent.request.tenant),
+            "target journal tenant has no installed audit placement"
+        );
         ensure!(
             i.node == self.installed.node
                 && i.intent.control_incarnation == self.installed.root.control_incarnation

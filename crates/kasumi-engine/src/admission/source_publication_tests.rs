@@ -37,7 +37,8 @@ impl Fixture {
             storage.persistent.clone(),
             NodeOpeningMode::Create,
             storage.persistent.native_storage_config(),
-        )?;
+        )
+        .unwrap_or_else(|original| std::panic::panic_any(original));
         assert_eq!(opening.open(), NodeOpeningPhase::Open);
         let tables = opening.queue_node_tables()?;
         assert_eq!(tables.run(), NodeWriterPhase::Finished);
@@ -440,12 +441,11 @@ fn native_source_history_slot_denial_retains_byte_grant_until_positive_cancel() 
     native.prepare_history(0).unwrap();
     let read = native.read(0).unwrap();
     assert!(ok(read.history_preparation().unwrap()));
-    assert!(matches!(
-        read.history_report().unwrap().preparation(),
-        TerminalObservation::Returned(Err(kasumi_kv::StorageError::Core(
-            kasumi_kv::CoreError::CapacityDenied
-        )))
-    ));
+    assert!(
+        matches!(&(read.history_report().unwrap().preparation()), TerminalObservation::Returned(Err(kasumi_kv::StorageError::Core(
+            native_error
+        ))) if matches!(native_error.rejected_cause(), Some(kasumi_kv::CoreErrorCause::CapacityDenied)))
+    );
     assert_eq!(native.pool().snapshot().unwrap().assigned, 1);
     assert!(
         fixture.core().snapshot().reserved_bytes > filled.reserved_bytes,
@@ -453,17 +453,14 @@ fn native_source_history_slot_denial_retains_byte_grant_until_positive_cancel() 
     );
     assert!(native.commit_history(0).is_err());
     close(&mut native, 0);
-    assert!(matches!(
-        native
+    assert!(matches!(&(native
             .read(0)
             .unwrap()
             .history_report()
             .unwrap()
-            .preparation(),
-        TerminalObservation::Returned(Err(kasumi_kv::StorageError::Core(
-            kasumi_kv::CoreError::CapacityDenied
-        )))
-    ));
+            .preparation()), TerminalObservation::Returned(Err(kasumi_kv::StorageError::Core(
+            native_error
+        ))) if matches!(native_error.rejected_cause(), Some(kasumi_kv::CoreErrorCause::CapacityDenied))));
     assert_eq!(
         fixture.core().snapshot().reserved_bytes,
         filled.reserved_bytes

@@ -19,7 +19,7 @@ impl TenantStore {
     pub(crate) fn write_batch_with_source(
         &self,
         operations: &[WriteOp],
-        source: Option<&mut crate::PreparedRegisteredSource>,
+        mut source: Option<&mut crate::PreparedRegisteredSource>,
     ) -> Result<()> {
         let _access = AccessGuard(self);
         validate_batch(&[operations])?;
@@ -32,30 +32,23 @@ impl TenantStore {
         let state = self.state.read();
         self.require_access(&state)?;
         let catalog = self.catalog.read();
-        let tx = self.node.db.begin_write()?;
-        if let Some(source) = source.as_deref() {
-            source.require_prepared_store(self)?;
-        }
-        write_domain(&tx, self, &state, &catalog, operations)?;
-        self.require_access(&state)?;
-        // Keep the native transaction's actual writer token through capture,
-        // proving the exact committed root independently of facade lifecycles.
-        let _committed_writer = if source.is_some() {
-            Some(
-                tx.commit_holding_writer()
-                    .context("durable encrypted batch commit failed; outcome may be unknown")?,
-            )
-        } else {
-            tx.commit()
-                .context("durable encrypted batch commit failed; outcome may be unknown")?;
-            None
-        };
-        if let Some(source) = source {
-            source.capture_published_store(self)?;
-        }
-        // Expiry during fsync is an unknown-outcome write, never a false rollback claim.
-        self.require_access(&state).context(
-            "batch committed but key access was lost before acknowledgment; outcome unknown",
+        self.node.with_registered_write(
+            &mut source,
+            |tx, source| {
+                if let Some(source) = source.as_deref() {
+                    source.require_prepared_store(self)?;
+                }
+                write_domain(tx, self, &state, &catalog, operations)?;
+                self.require_access(&state)
+            },
+            |source| {
+                if let Some(source) = source.as_deref_mut() {
+                    source.capture_published_store(self)?;
+                }
+                self.require_access(&state).context(
+                    "batch committed but key access was lost before acknowledgment; outcome unknown",
+                )
+            },
         )
     }
 }

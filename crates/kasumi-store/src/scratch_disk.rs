@@ -273,8 +273,8 @@ impl ScratchDisk {
         crate::test_utils::retry_disk_registry(|| Self::open_fixture(&config, memory.clone()))
             .expect("fixture scratch governor")
     }
-    #[cfg(test)]
-    pub(crate) fn isolated_fixture(
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn isolated_fixture(
         directory: impl AsRef<std::path::Path>,
         max_bytes: u64,
         memory: Arc<dyn NodeDiskMemoryAdmission>,

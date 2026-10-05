@@ -2,8 +2,8 @@
 //! The standing grant funds these fixed shells, not candidate bodies or reads.
 use super::*;
 use kasumi_raft::{
-    CompletionBinding, CompletionCustody, CompletionFinalization, CompletionIdentity,
-    CompletionInvocation, CompletionSettleError, CompletionVerdict,
+    CompletionActionFailureIdentity, CompletionBinding, CompletionCustody, CompletionFinalization,
+    CompletionIdentity, CompletionInvocation, CompletionSettleError, CompletionVerdict,
 };
 use std::{
     ops::{Deref, DerefMut},
@@ -34,9 +34,16 @@ struct State {
     preparation: Option<RootPreparation>,
     selected: Option<SelectedApplication>,
     witness: Option<CellRef>,
+    failed_capture: Option<CapturedFailure>,
     cleanup: Cleanup,
     #[cfg(test)]
     fault: Option<(CompletionCheckpoint, CompletionFault)>,
+}
+struct CapturedFailure {
+    identity: CompletionActionFailureIdentity,
+    // Same admitted original diagnostic and credit, independent of Cell Drop.
+    original: FailureRef,
+    retired: bool,
 }
 pub(crate) struct OrdinarySourceCompletion {
     identity: CompletionIdentity,
@@ -105,6 +112,7 @@ impl OrdinarySourceCompletion {
                     preparation: None,
                     selected: None,
                     witness: None,
+                    failed_capture: None,
                     cleanup: Cleanup::Pending,
                     #[cfg(test)]
                     fault: None,
@@ -195,10 +203,10 @@ impl OrdinarySourceCompletion {
             Err(TryLockError::Poisoned(_)) => Err(CompletionSettleError::Retained),
         }
     }
-    pub(crate) fn enter(
-        &self,
-        invocation: &CompletionInvocation<'_>,
-    ) -> Result<CompletionLoan<'_>> {
+    pub(crate) fn enter<'a>(
+        &'a self,
+        invocation: &'a CompletionInvocation<'a>,
+    ) -> Result<CompletionLoan<'a>> {
         invocation.require_identity(&self.identity)?;
         ensure!(
             !self.sealed.load(Ordering::Acquire),
@@ -211,7 +219,8 @@ impl OrdinarySourceCompletion {
             matches!(state.phase, Phase::Idle | Phase::Settled)
                 && state.preparation.is_none()
                 && state.selected.is_none()
-                && state.witness.is_none(),
+                && state.witness.is_none()
+                && state.failed_capture.is_none(),
             "application completion is not empty"
         );
         ensure!(
@@ -227,44 +236,41 @@ impl OrdinarySourceCompletion {
         state.attempted = false;
         state.repeated = false;
         state.cleanup = Cleanup::Pending;
-        Ok(CompletionLoan { state, roots })
+        Ok(CompletionLoan {
+            state,
+            roots,
+            invocation,
+        })
     }
     fn clean(&self, state: &mut Guard<'_>) -> std::result::Result<(), CompletionSettleError> {
         if state.cleanup == Cleanup::Running {
             return Err(CompletionSettleError::Retained);
         }
-        if state.cleanup == Cleanup::Returned {
-            return if state.witness.is_some() {
-                Err(CompletionSettleError::Retained)
-            } else {
-                Ok(())
-            };
-        }
-        // Keep exact allocation, native/error identity and credit outside both
-        // destructive values before either can unwind.
-        state.witness = state
-            .preparation
-            .as_ref()
-            .map(|p| p.cell.clone())
-            .or_else(|| state.selected.as_ref().map(|s| s.cell.clone()));
-        state.cleanup = Cleanup::Running;
-        drop(state.selected.take());
-        drop(state.preparation.take());
-        state.cleanup = Cleanup::Returned;
-        if state.witness.as_ref().is_some_and(|cell| {
-            cell.capture_failed()
-                || cell.alias_failure.get().is_some()
-                || cell.close_failure.get().is_some()
-                || cell.native_retained.load(Ordering::Acquire)
-        }) {
-            state.phase = Phase::Retained;
-            return Err(CompletionSettleError::Retained);
+        if state.cleanup == Cleanup::Pending {
+            // Keep exact allocation, native/error identity and credit outside
+            // both destructive values before either can unwind. A later drain
+            // can inspect this witness again, but cannot replay either Drop.
+            state.witness = state
+                .preparation
+                .as_ref()
+                .map(|p| p.cell.clone())
+                .or_else(|| state.selected.as_ref().map(|s| s.cell.clone()));
+            state.cleanup = Cleanup::Running;
+            drop(state.selected.take());
+            drop(state.preparation.take());
+            state.cleanup = Cleanup::Returned;
         }
         let source_settled = state.witness.as_ref().is_none_or(|cell| {
             let source = cell.state.lock().unwrap_or_else(|p| p.into_inner());
-            let legitimate_alias =
-                cell.handles.load(Ordering::Acquire) != 0 || source.inflight != 0;
-            let retired = source.closed && source.view.is_none() && source.protected_view.is_none();
+            let legitimate_alias = !cell.capture_failed()
+                && cell.alias_failure.get().is_none()
+                && cell.close_failure.get().is_none()
+                && (cell.handles.load(Ordering::Acquire) != 0 || source.inflight != 0);
+            let retired = source.closed
+                && source.inflight == 0
+                && source.view.is_none()
+                && source.protected_view.is_none()
+                && !cell.native_retained.load(Ordering::Acquire);
             !source.preparing && !source.closing && (legitimate_alias || retired)
         });
         if !source_settled {
@@ -272,8 +278,27 @@ impl OrdinarySourceCompletion {
             return Err(CompletionSettleError::Retained);
         }
         // A remaining actual selected/reader alias is a handoff, otherwise the
-        // exact source must be positively closed with no view. Returned Drop
-        // alone never authorizes clearing the witness.
+        // exact source must be positively closed with no view or native work.
+        // Capture failure is still an error: its returned SourceFailure retains
+        // the original FailureRef and its credit independently of this Cell.
+        // Returning from Drop alone never authorizes clearing the witness.
+        if let Some(failed) = state.failed_capture.as_ref() {
+            let exact_retired_capture = state.witness.as_ref().is_some_and(|cell| {
+                cell.failure.get().is_some_and(|record| {
+                    std::ptr::eq(record.owner.as_ref(), failed.original.as_ref())
+                }) && cell.state.lock().unwrap_or_else(|p| p.into_inner()).closed
+                    && !cell.native_retained.load(Ordering::Acquire)
+            });
+            if !exact_retired_capture {
+                state.phase = Phase::Retained;
+                return Err(CompletionSettleError::Retained);
+            }
+            state
+                .failed_capture
+                .as_mut()
+                .expect("exact failed capture")
+                .retired = true;
+        }
         state.witness = None;
         state.phase = Phase::Settled;
         Ok(())
@@ -335,11 +360,23 @@ impl CompletionCustody for CompletionRef {
     fn is_drained(&self) -> bool {
         self.drained.load(Ordering::Acquire) && self.wake_panic.get().is_none()
     }
+    fn retired_action_failure(&self) -> Option<CompletionActionFailureIdentity> {
+        if !self.sealed.load(Ordering::Acquire) || !self.is_drained() {
+            return None;
+        }
+        let state = self.try_state().ok()?;
+        state
+            .failed_capture
+            .as_ref()
+            .filter(|f| f.retired)
+            .map(|f| f.identity)
+    }
 }
 
 pub(crate) struct CompletionLoan<'a> {
     state: Guard<'a>,
     roots: SourceRootsRef,
+    invocation: &'a CompletionInvocation<'a>,
 }
 struct Preparer<'a> {
     roots: &'a SourceRootsRef,
@@ -410,12 +447,34 @@ impl CompletionLoan<'_> {
         expectation.consume(receipt, plan)?;
         #[cfg(test)]
         self.state.checkpoint(CompletionCheckpoint::Published)?;
-        let selected = self
+        let captured = self
             .state
             .preparation
             .as_mut()
             .expect("verified preparation")
-            .capture_in_place(ApplicationBoundaryRef::Entry(position), frozen)?;
+            .capture_in_place(ApplicationBoundaryRef::Entry(position), frozen);
+        let selected = match captured {
+            Ok(selected) => selected,
+            Err(original) => {
+                // Only our canonical capture's exact recorded SourceFailure can
+                // carry this identity. Checkpoint errors and panics do not.
+                if let Some(failure) = original.downcast_ref::<SourceFailure>() {
+                    let exact = self.state.preparation.as_ref().is_some_and(|p| {
+                        p.cell.failure.get().is_some_and(|record| {
+                            std::ptr::eq(record.owner.as_ref(), failure.owner.as_ref())
+                        })
+                    });
+                    if exact {
+                        self.state.failed_capture = Some(CapturedFailure {
+                            identity: self.invocation.action_failure_identity(&original),
+                            original: failure.owner.clone(),
+                            retired: false,
+                        });
+                    }
+                }
+                return Err(original);
+            }
+        };
         self.state.selected = Some(selected);
         self.state.phase = Phase::Captured;
         #[cfg(test)]

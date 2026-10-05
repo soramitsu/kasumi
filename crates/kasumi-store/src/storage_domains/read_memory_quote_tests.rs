@@ -8,7 +8,7 @@ struct Fixture {
     _persistent: tempfile::TempDir,
     _scratch: tempfile::TempDir,
     stores: Arc<TenantStorageSet>,
-    node: Arc<NodeStore>,
+    node: NodeStore,
     memory: Arc<TestDiskMemory>,
 }
 impl Fixture {
@@ -27,7 +27,8 @@ impl Fixture {
             disk,
             scratch_disk,
             config,
-        )?;
+        )
+        .unwrap_or_else(|original| std::panic::panic_any(original));
         let stores = TenantStorageSet::initialize_catalogs_fixture(
             node.clone(),
             "quote-source".into(),
@@ -131,22 +132,41 @@ async fn paired_read_quote_covers_real_encrypted_get_requested_allocations() -> 
         let quote = fixture.stores.quote_read_memory()?;
         let point = quote.application_get(7, 3, bytes.len())?;
         let view = fixture.stores.read_view()?;
-        // Observe actual successful workspace admissions independently of the
-        // plaintext allowance. Cache retention is zero: directory pages and
-        // values both use their actual admitted output directly.
+        // Canonical record framing puts all three fields in one plaintext backing.
+        // Its installed lease overlaps the native ciphertext during decode.
+        let plaintext_len = crate::encode_plain_record("payload", b"key", &bytes)?.len();
+        let plaintext = fixture
+            .memory
+            .quote_installed(crate::disk_memory::allocation::<u8>(u64::try_from(
+                plaintext_len,
+            )?)?)?;
+        assert!(plaintext <= point.plaintext_bytes());
+        let before_read = fixture.memory.snapshot();
+        // Observe both actual native and plaintext admissions. Cache retention
+        // is zero: directory pages and values use their admitted output.
         let ((read, observed), allocations, requested) = measure_requested(|| {
             crate::test_utils::source_quote_observer::measure(&fixture.memory, || {
                 view.application_get("payload", b"key", bytes.len())
             })
         });
-        assert_eq!(read?.as_deref(), Some(bytes.as_slice()));
+        let read = read?;
+        assert_eq!(read.as_deref(), Some(bytes.as_slice()));
+        assert_eq!(
+            fixture.memory.snapshot().used_bytes,
+            before_read.used_bytes + plaintext
+        );
+        assert_eq!(
+            fixture.memory.snapshot().live_reservations,
+            before_read.live_reservations + 1
+        );
+        assert!(observed.requests[..observed.count].contains(&plaintext));
         assert!(allocations > 0);
         assert!(!observed.overflow);
         // measure_requested is cumulative traffic, not a simultaneous peak.
         // Sequential table/row probes can each allocate the same page buffers.
-        let native_traffic: u64 = observed.requests[..observed.count].iter().sum();
-        assert!(requested as u64 <= point.plaintext_bytes() + native_traffic);
-        // The directory supplies the actual two-request slot peak.
+        let admitted_traffic: u64 = observed.requests[..observed.count].iter().sum();
+        assert!(requested as u64 <= point.plaintext_bytes() + admitted_traffic);
+        // Bounds/page and later ciphertext/plaintext each need two leases.
         assert_eq!(observed.peak_slots, 2);
         let requests = PointReadRequests::new(point.ciphertext_limit()).unwrap();
         let native = |bytes| native_charge(fixture.memory.as_ref(), bytes).unwrap();
@@ -160,8 +180,8 @@ async fn paired_read_quote_covers_real_encrypted_get_requested_allocations() -> 
                 "actual zero-cache read omitted a quoted mandatory request"
             );
         }
-        // Keep the actual two-lease directory/output peak exact, separately
-        // from the unchanged conservative page/value fallback allowances.
+        // Keep the actual two-lease directory or ciphertext/plaintext peak
+        // exact, apart from the unchanged conservative fallback allowances.
         let directory =
             native(requests.bounds_request_bytes()) + native(requests.page_request_bytes());
         let value = native(requests.output_request_bytes());
@@ -173,6 +193,7 @@ async fn paired_read_quote_covers_real_encrypted_get_requested_allocations() -> 
                     native(requests.bounds_request_bytes()),
                     native(requests.page_request_bytes()),
                     value,
+                    plaintext,
                 ]
                 .contains(&former),
                 "fixture requests must distinguish temporary fallback"
@@ -182,7 +203,7 @@ async fn paired_read_quote_covers_real_encrypted_get_requested_allocations() -> 
                 "admitted read recreated a temporary workspace payload"
             );
         }
-        assert_eq!(observed.peak_bytes, directory.max(value));
+        assert_eq!(observed.peak_bytes, directory.max(value + plaintext));
         assert_eq!(
             point.native_peak_bytes(),
             (directory + former_page).max(value + former_value)
@@ -193,6 +214,13 @@ async fn paired_read_quote_covers_real_encrypted_get_requested_allocations() -> 
         } else {
             assert!(value > directory);
         }
+        assert!(observed.peak_bytes <= point.peak_bytes()?);
+        drop(read);
+        assert_eq!(fixture.memory.snapshot().used_bytes, before_read.used_bytes);
+        assert_eq!(
+            fixture.memory.snapshot().live_reservations,
+            before_read.live_reservations
+        );
         view.close()?;
         drop(quote);
     }
@@ -209,6 +237,12 @@ fn provider_without_own_quote_refuses_without_guessing_or_allocating() {
         }
         fn reserve_installed(self: Arc<Self>, bytes: u64) -> io::Result<crate::DiskMemoryLease> {
             self.0.clone().reserve_installed(bytes)
+        }
+        fn install_native_constructor(
+            self: Arc<Self>,
+            _install: &mut crate::NativeConstructorInstall<'_>,
+        ) -> io::Result<()> {
+            Err(io::ErrorKind::Unsupported.into())
         }
         fn quote_cache_memory(&self, bytes: u64) -> io::Result<kasumi_kv::CacheMemoryQuote> {
             self.0.quote_cache_memory(bytes)

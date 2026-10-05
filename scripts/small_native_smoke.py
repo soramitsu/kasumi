@@ -572,6 +572,42 @@ class Runner:
             self.record.setdefault("mcp_checks", []).append({"file": file.name, "sha256": sha256(file), **tls})
             self.persist()
 
+    def initialize_installation(self, installation, network):
+        network_file = self.output / "provenance/standalone-network.json"
+        private_write(network_file, json.dumps(network, sort_keys=True).encode())
+        self.record["standalone_network"] = {
+            "file": str(network_file), "sha256": sha256(network_file), "network": network}
+        placements = {
+            "__kasumi_control": {"kind": "local_replica_only"},
+            "capacity-smoke": {"kind": "local_replica_only"},
+        }
+        placements_file = self.output / "provenance/tenant-audit-placements.json"
+        private_write(placements_file, json.dumps(placements, sort_keys=True).encode())
+        self.record["tenant_audit_placements"] = {
+            "file": str(placements_file), "sha256": sha256(placements_file), "placements": placements}
+        self.persist()
+        self.command("init", [self.binaries["kasumid"], "init", "--mode", "standalone", installation,
+                              "--directory-policy", self.directory_policy_file,
+                              "--file-allocation-policy", self.file_allocation_policy_file,
+                              "--network", network_file, "--tenant-audit-placements", placements_file,
+                              "--tenant", "capacity-smoke"])
+        self.config_file = installation / "kasumi.json"
+        config = read_json(self.config_file)
+        require(config["mode"] == "standalone" and not config["serving_authorities"]
+                and config["replication"] is None, "init did not produce explicit standalone storage")
+        require(config.get("tenant_audit_placements") == placements
+                and "tenant_audit_archives" not in config, "init changed explicit tenant audit placements")
+        require(config["persistent_disk"]["directory_policy"] == self.record["directory_policy"]["policy"],
+                "init changed the supplied directory admission policy")
+        require(config["persistent_disk"]["file_allocation_policy"] == self.record["file_allocation_policy"]["policy"],
+                "init changed the supplied file allocation policy")
+        require(config["mcp"]["listen"] == network["mcp_listen"]
+                and config["mcp"]["protocol"]["public_url"] == network["mcp_public_url"]
+                and config["native"]["listen"] == network["native_listen"]
+                and config["admin"]["listen"] == network["admin_listen"],
+                "init changed selected listener identity")
+        return config
+
     def exercise(self):
         daemon = self.binaries["kasumid"]
         installation = self.output / "installation"
@@ -589,27 +625,7 @@ class Runner:
                 "native_listen": f"127.0.0.1:{ports['native']}",
                 "admin_listen": f"127.0.0.1:{ports['admin']}",
             }
-            network_file = self.output / "provenance/standalone-network.json"
-            private_write(network_file, json.dumps(network, sort_keys=True).encode())
-            self.record["standalone_network"] = {
-                "file": str(network_file), "sha256": sha256(network_file), "network": network}
-            self.command("init", [daemon, "init", "--mode", "standalone", installation,
-                                  "--directory-policy", self.directory_policy_file,
-                                  "--file-allocation-policy", self.file_allocation_policy_file,
-                                  "--network", network_file, "--tenant", "capacity-smoke"])
-            self.config_file = installation / "kasumi.json"
-            config = read_json(self.config_file)
-            require(config["mode"] == "standalone" and not config["serving_authorities"]
-                    and config["replication"] is None, "init did not produce explicit standalone storage")
-            require(config["persistent_disk"]["directory_policy"] == self.record["directory_policy"]["policy"],
-                    "init changed the supplied directory admission policy")
-            require(config["persistent_disk"]["file_allocation_policy"] == self.record["file_allocation_policy"]["policy"],
-                    "init changed the supplied file allocation policy")
-            require(config["mcp"]["listen"] == network["mcp_listen"]
-                    and config["mcp"]["protocol"]["public_url"] == network["mcp_public_url"]
-                    and config["native"]["listen"] == network["native_listen"]
-                    and config["admin"]["listen"] == network["admin_listen"],
-                    "init changed selected listener identity")
+            config = self.initialize_installation(installation, network)
             certificate = Path(config["mcp"]["tls"]["certificate"]).read_text()
             self.mcp_pin = hashlib.sha256(ssl.PEM_cert_to_DER_cert(certificate)).hexdigest()
             profile_file = installation / "profiles/default.json"

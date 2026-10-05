@@ -45,7 +45,11 @@ impl Drop for TerminalFence {
 
 impl Jobs {
     fn required_bytes() -> anyhow::Result<u64> {
-        BackgroundWorkBudget::required_bytes(MAX_PRODUCERS, 1)
+        BackgroundWorkBudget::required_bytes(MAX_PRODUCERS, 1)?
+            .checked_add(kasumi_types::SharedBudgetCharge::required_bytes::<
+                crate::admission::Reservation,
+            >()?)
+            .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::InvalidInput).into())
     }
 
     fn observe_locked(&self, state: &mut State) {
@@ -88,7 +92,11 @@ impl Jobs {
             })?;
             let charge = admission.reserve_resident(bytes)?;
             state.budget = Some(
-                BackgroundWorkBudget::new(MAX_PRODUCERS, Arc::new(charge)).map_err(|_| {
+                BackgroundWorkBudget::new(
+                    MAX_PRODUCERS,
+                    kasumi_types::SharedBudgetCharge::new(charge),
+                )
+                .map_err(|_| {
                     Error::new(
                         ErrorCode::ResourceExhausted,
                         "backup producer metadata budget unavailable",

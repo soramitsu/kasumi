@@ -37,6 +37,20 @@ impl AdmittedReadReport {
             charge: ReportCharge(Some(Arc::new(charge))),
         })
     }
+    /// The closed native startup receiver already installed this exact report
+    /// grant through the mandatory provider permit, before either allocation.
+    pub(super) fn new_startup(
+        grant: &mut Option<crate::DiskMemoryLease>,
+        state: ReaderState,
+    ) -> Self {
+        assert!(grant.is_some(), "original startup report grant installed");
+        let state = Arc::new(Mutex::new(state));
+        let charge = Arc::new(grant.take().expect("original startup report grant"));
+        Self {
+            state: Some(state),
+            charge: ReportCharge(Some(charge)),
+        }
+    }
     pub(super) fn new_source(
         provider: &Arc<dyn NodeDiskMemoryAdmission>,
         grant: &mut Option<crate::source_metadata::SourceReportGrant>,

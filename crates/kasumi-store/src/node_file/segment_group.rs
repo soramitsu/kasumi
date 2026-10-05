@@ -621,11 +621,30 @@ impl NodeSegmentGroup {
                 // Read-only classification only. A single-file store at this
                 // path is refused before NodeDisk opens it as a directory,
                 // which would fence the whole owner for a mismatched kind.
-                let metadata = std::fs::symlink_metadata(&self.path)?;
-                ensure!(
-                    metadata.is_dir(),
-                    "segment group path is not a directory; the single-file node format is unsupported"
-                );
+                match std::fs::symlink_metadata(&self.path) {
+                    Ok(metadata) if !metadata.is_dir() => {
+                        // Validate actual enrolled ancestry before deciding
+                        // whether this unsupported image is a legacy file or
+                        // replacement of a native directory. The latter must
+                        // enter the canonical failed-owner path below.
+                        let parent = self
+                            .disk
+                            .open_directory(root, relative.parent().unwrap_or(Path::new("")))?;
+                        parent.verified_identity()?;
+                        ensure!(
+                            self.disk.enrolled_name_kind(root, relative)?
+                                == Some(NodeDiskEntryKind::Directory),
+                            "segment group path is not a directory; the single-file node format is unsupported"
+                        );
+                    }
+                    Ok(_) => {}
+                    // The installed directory walk distinguishes an unknown
+                    // absent final name from disappearance of an enrolled name.
+                    // Skipping it here would hide physical owner failure from
+                    // other databases sharing that same installed disk.
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(error.into()),
+                }
                 self.disk.open_directory(root, relative)?
             }
         };
@@ -835,11 +854,6 @@ impl NodeSegmentGroup {
             ),
             root: resources.root()?.identity()?,
         })
-    }
-
-    #[cfg(any(test, feature = "test-utils"))]
-    pub(crate) fn path(&self) -> &Path {
-        &self.path
     }
 
     pub(crate) fn disk(&self) -> &Arc<NodeDisk> {
@@ -2157,6 +2171,10 @@ impl StorageAdmission for NodeSegmentGroup {
 #[cfg(test)]
 #[path = "segment_group_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "segment_group_missing_tests.rs"]
+mod missing_tests;
 
 #[cfg(test)]
 mod directory_arena_tests {

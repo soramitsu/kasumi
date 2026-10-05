@@ -102,6 +102,8 @@ fn claim_transfers_actual_group_files_through_one_descriptor_cache_without_new_a
         assert_eq!(bytes, [id as u8; 128]);
     }
     assert!(core.close().into_result().is_ok());
+    let mut disposal = core.into_disposal();
+    assert!(disposal.dispose().complete());
 }
 
 #[test]
@@ -130,6 +132,8 @@ fn metadata_shortage_precedes_root_or_file_effects_and_targeted_retry_works() {
     group.cancel_transaction(GROUP, 1).unwrap();
     assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes);
     assert!(core.close().into_result().is_ok());
+    let mut disposal = core.into_disposal();
+    assert!(disposal.dispose().complete());
 }
 
 #[test]
@@ -156,12 +160,14 @@ fn stale_generation_foreign_incarnation_and_wrong_terminal_identity_are_rejected
     group.cancel_transaction(GROUP, 1).unwrap();
     assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes);
     assert!(core.close().into_result().is_ok());
+    let mut disposal = core.into_disposal();
+    assert!(disposal.dispose().complete());
 }
 
 #[test]
 fn incomplete_envelope_or_native_minimum_cannot_finish_and_refund_a_claim() {
     for written in [0, 1] {
-        let (_directory, _memory, disk, group, _core) = fixture();
+        let (_directory, _memory, disk, group, core) = fixture();
         group.reserve_transaction(&plan(2)).unwrap();
         let promised = disk.snapshot().charged_bytes;
         group.create(GroupFile::segment(1)).unwrap();
@@ -179,12 +185,18 @@ fn incomplete_envelope_or_native_minimum_cannot_finish_and_refund_a_claim() {
         let _outcome = group.close();
         assert_eq!(disk.snapshot().charged_bytes, promised);
         retire_failed(&group, &disk);
+        assert_eq!(
+            core.close().native_disposition(),
+            kasumi_kv::BackendNativeDisposition::Drained
+        );
+        let mut disposal = core.into_disposal();
+        assert!(disposal.dispose().complete());
     }
 }
 
 #[test]
 fn plan_overrun_keeps_original_promise_and_forbids_any_retry_effect() {
-    let (_directory, _memory, disk, group, _core) = fixture();
+    let (_directory, _memory, disk, group, core) = fixture();
     let mut bounded = plan(2);
     bounded.new_segments.total_len = 192;
     group.reserve_transaction(&bounded).unwrap();
@@ -203,6 +215,12 @@ fn plan_overrun_keeps_original_promise_and_forbids_any_retry_effect() {
     let _outcome = group.close();
     assert_eq!(disk.snapshot().charged_bytes, promised);
     retire_failed(&group, &disk);
+    assert_eq!(
+        core.close().native_disposition(),
+        kasumi_kv::BackendNativeDisposition::Drained
+    );
+    let mut disposal = core.into_disposal();
+    assert!(disposal.dispose().complete());
 }
 
 #[test]
@@ -233,11 +251,13 @@ fn caller_lowered_native_minimum_is_refused_before_root_or_file_effects() {
     group.cancel_transaction(GROUP, 1).unwrap();
     assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes);
     assert!(core.close().into_result().is_ok());
+    let mut disposal = core.into_disposal();
+    assert!(disposal.dispose().complete());
 }
 
 #[test]
 fn protected_root_corruption_fences_the_owner_and_retains_the_native_source() {
-    let (_directory, _memory, disk, group, _core) = fixture();
+    let (_directory, _memory, disk, group, core) = fixture();
     let corrupt = [0xff; ROOT_SLOT_BYTES];
     group.write_root(RootSlot::A, &corrupt).unwrap();
     group.write_root(RootSlot::B, &corrupt).unwrap();
@@ -257,10 +277,9 @@ fn protected_root_corruption_fences_the_owner_and_retains_the_native_source() {
             .unwrap()
             .downcast_ref::<kasumi_kv::CoreError>()
     };
-    assert!(matches!(
-        native(),
-        Some(kasumi_kv::CoreError::Corrupt("no intact root slot"))
-    ));
+    assert!(
+        matches!(&(native()), Some(native_error) if matches!(native_error.rejected_cause(), Some(kasumi_kv::CoreErrorCause::Corrupt("no intact root slot"))))
+    );
     assert!(group.failed.load(Ordering::Acquire));
     assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
     assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes);
@@ -274,10 +293,15 @@ fn protected_root_corruption_fences_the_owner_and_retains_the_native_source() {
     assert!(group.reserve_transaction(&plan(1)).is_err());
 
     retire_failed(&group, &disk);
-    assert!(matches!(
-        native(),
-        Some(kasumi_kv::CoreError::Corrupt("no intact root slot"))
-    ));
+    assert!(
+        matches!(&(native()), Some(native_error) if matches!(native_error.rejected_cause(), Some(kasumi_kv::CoreErrorCause::Corrupt("no intact root slot"))))
+    );
+    assert_eq!(
+        core.close().native_disposition(),
+        kasumi_kv::BackendNativeDisposition::Drained
+    );
+    let mut disposal = core.into_disposal();
+    assert!(disposal.dispose().complete());
 }
 
 #[test]
@@ -314,4 +338,6 @@ fn namespace_epoch_exhaustion_refuses_the_whole_range_before_claim_admission() {
     assert_eq!(group.state.read().open().unwrap().namespace_epoch, u64::MAX);
     assert_eq!(disk.snapshot().phase, NodeDiskPhase::Open);
     assert!(core.close().into_result().is_ok());
+    let mut disposal = core.into_disposal();
+    assert!(disposal.dispose().complete());
 }

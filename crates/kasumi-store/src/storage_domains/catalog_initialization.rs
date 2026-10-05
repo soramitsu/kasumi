@@ -7,7 +7,7 @@ use tokio::sync::{Notify, OwnedMutexGuard, oneshot};
 type Slot = OwnedMutexGuard<Weak<TenantStore>>;
 
 struct Input {
-    node: Arc<NodeStore>,
+    node: NodeStore,
     tenant: String,
     application_provider: Arc<dyn KeyProvider>,
     custody_provider: Arc<dyn KeyProvider>,
@@ -86,7 +86,7 @@ impl TenantStorageSet {
     /// future returns Ready, its returned handles have ordinary runtime ownership;
     /// dropping a returned result does not undo publication or stop shared stores.
     pub async fn initialize_catalogs(
-        node: Arc<NodeStore>,
+        node: NodeStore,
         tenant: String,
         application_provider: Arc<dyn KeyProvider>,
         custody_provider: Arc<dyn KeyProvider>,
@@ -115,19 +115,20 @@ impl NodeStore {
     /// result receiver. This does not shut down committed/shared tenant stores.
     /// Stop admitting new initialization calls before using this as a final node
     /// drain. Cancellation of this drain retains every unfinished task handle.
-    pub async fn drain_initializers(&self) -> Result<()> {
-        let mut tasks = self.initializers.lock().await;
-        while let Some(task) = tasks.handles.last_mut() {
-            let result = task.await;
-            tasks.handles.pop();
-            if let Err(error) = result
-                .context("catalog initializer task join failed")
-                .and_then(|outcome| outcome)
-            {
-                tasks.failure.get_or_insert(error);
+    pub async fn drain_initializers(
+        &self,
+    ) -> std::result::Result<(), crate::InitializerDrainFailure> {
+        let mut tasks = self.body().initializers.lock().await;
+        if tasks.completion.is_some() {
+            return Err(crate::InitializerDrainFailure { node: self.clone() });
+        }
+        while !tasks.handles.is_empty() {
+            let index = tasks.handles.len() - 1;
+            if !tasks.join_original(index).await {
+                return Err(crate::InitializerDrainFailure { node: self.clone() });
             }
         }
-        tasks.take_failure()
+        Ok(())
     }
 }
 
@@ -137,11 +138,19 @@ async fn begin(input: Input) -> Result<oneshot::Receiver<Ticket>> {
     input.application_access.check()?;
     let (send, receive) = oneshot::channel();
     let node = input.node.clone();
-    let mut tasks = node.initializers.lock().await;
-    ensure!(!node.db.is_stopped(), "node catalog admission is closed");
+    let mut tasks = node.body().initializers.lock().await;
+    ensure!(
+        !node.body().db.is_stopped(),
+        "node catalog admission is closed"
+    );
     // Reap only actual terminal tasks, so repeated installation does not retain
     // a lifetime history of JoinHandles. Unfinished owners stay registered.
-    tasks.reap_finished().await?;
+    if !tasks.reap_finished().await {
+        return Err(crate::InitializerDrainObservation {
+            opening_id: node.opening.id(),
+        }
+        .into());
+    }
     tasks.handles.push(tokio::spawn(async move {
         // A buffered preparation error is not observed until the recipient
         // claims its ticket. Abandonment returns it to the node's task registry.
@@ -183,7 +192,7 @@ async fn prepare(input: Input, receiver: &oneshot::Sender<Ticket>) -> Result<Pre
     } = input;
     let custody_name = CustodyStore::catalog_name(&tenant);
     let (custody_gate, application_gate) = {
-        let mut registry = node.tenants.lock().await;
+        let mut registry = node.body().tenants.lock().await;
         let custody = registry.entry(custody_name.clone()).or_default().clone();
         let application = registry.entry(tenant.clone()).or_default().clone();
         (custody, application)
@@ -281,8 +290,8 @@ async fn prepare(input: Input, receiver: &oneshot::Sender<Ticket>) -> Result<Pre
 
 fn require_pristine(node: &NodeStore, tenants: [&str; 2]) -> Result<()> {
     #[cfg(any(test, feature = "test-utils"))]
-    if node.db.has_fixture_direct_database() {
-        let tx = node.db.begin_read()?;
+    if node.body().db.has_fixture_direct_database() {
+        let tx = node.body().db.begin_read()?;
         let catalogs = tx.open_table(CATALOG)?;
         let records = tx.open_table(RECORDS)?;
         for tenant in tenants {
@@ -322,12 +331,12 @@ fn save_new_catalogs(application: &Arc<TenantStore>, custody: &Arc<TenantStore>)
     application_catalog.validate(&application.tenant)?;
     custody_catalog.validate(&custody.tenant)?;
     #[cfg(any(test, feature = "test-utils"))]
-    if application.node.db.has_fixture_direct_database() {
+    if application.node.body().db.has_fixture_direct_database() {
         let bytes = [
             serde_json::to_vec(&*application_catalog)?,
             serde_json::to_vec(&*custody_catalog)?,
         ];
-        let tx = application.node.db.begin_write()?;
+        let tx = application.node.body().db.begin_write()?;
         {
             let mut catalogs = tx.open_table(CATALOG)?;
             let records = tx.open_table(RECORDS)?;
@@ -359,7 +368,7 @@ fn save_new_catalogs(application: &Arc<TenantStore>, custody: &Arc<TenantStore>)
         return custody.access.check();
     }
 
-    let provider = application.node.persistent_disk().memory().clone();
+    let provider = application.node.memory().clone();
     let plan = crate::storage_opening::write_plan::AdmittedCatalogPairPut::prepare(
         &application.tenant,
         &application_catalog,
@@ -371,11 +380,11 @@ fn save_new_catalogs(application: &Arc<TenantStore>, custody: &Arc<TenantStore>)
     drop(custody_catalog);
     application.access.check()?;
     custody.access.check()?;
-    let writer = application.node.db.queue_registered_catalog_pair_put(
-        plan,
-        application.clone(),
-        custody.clone(),
-    )?;
+    let writer = application
+        .node
+        .body()
+        .db
+        .queue_registered_catalog_pair_put(plan, application.clone(), custody.clone())?;
     let _ = writer.run();
     let (committed, rejection) = {
         let report = writer.report();

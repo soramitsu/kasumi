@@ -66,9 +66,15 @@ async fn initialization_provisions_control_topology_and_application_before_compl
         StorageAccess::standalone(installation_id, &tenant.tenant, incarnation)?,
     )
     .await?;
+    owner.retain_stores(&stores);
     config.install_tenant_audit_archive(stores.application(), None)?;
-    let application =
-        kasumi_engine::open_existing_local(stores.clone(), audit.clone(), incarnation).await?;
+    let application = owner
+        .snapshot(
+            &tenant.tenant,
+            kasumi_engine::open_existing_local(stores.clone(), audit.clone(), incarnation),
+        )
+        .await?;
+    owner.retain_database(application.clone());
     let generation = application.engine().generation()?;
     ensure!(
         generation.state.incarnation == incarnation.to_string()
@@ -127,6 +133,7 @@ async fn failed_profile_publication_drains_owners_and_never_marks_partial_instal
         kasumi_store::DirectoryPolicy::fixture(),
         kasumi_store::FileAllocationPolicy::fixture(),
         StandaloneNetwork::fixture(),
+        local_audit_placements("documents"),
         InitializationOptions {
             obstruct_profile_publication: true,
             ..Default::default()
@@ -166,7 +173,8 @@ async fn failed_profile_publication_drains_owners_and_never_marks_partial_instal
         disk.clone(),
         storage.open_scratch(&scratch)?,
         disk.native_storage_config(),
-    )?;
+    )
+    .expect("drained partial provisioning fixture must reopen its installed native node");
     node.shutdown().await?;
     drop(node);
     ensure!(
@@ -176,6 +184,7 @@ async fn failed_profile_publication_drains_owners_and_never_marks_partial_instal
             kasumi_store::DirectoryPolicy::fixture(),
             kasumi_store::FileAllocationPolicy::fixture(),
             StandaloneNetwork::fixture(),
+            local_audit_placements("documents"),
             storage
         )
         .await

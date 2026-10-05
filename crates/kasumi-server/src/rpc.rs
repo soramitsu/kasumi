@@ -31,6 +31,9 @@ mod control_signer;
 #[path = "rpc_security_audit.rs"]
 mod security_audit;
 #[cfg(test)]
+#[path = "rpc_snapshot_failure_tests.rs"]
+mod snapshot_failure_tests;
+#[cfg(test)]
 pub(crate) use security_audit::AuditReleaseGate;
 #[path = "rpc_credentials.rs"]
 mod credentials;
@@ -60,6 +63,7 @@ pub(crate) struct NativeData {
 pub struct NativeAdmin {
     registry: DatabaseRegistry,
     auth: Arc<Authenticator>,
+    failures: crate::administration::OriginalRecoveries,
     management: Option<Arc<crate::administration::Administration>>,
     telemetry: Arc<crate::observability::Telemetry>,
     control_signer: Option<Arc<crate::control_signer_runtime::ControlSignerRuntime>>,
@@ -707,10 +711,15 @@ impl NativeAdmin {
     pub(crate) fn audit_release_gate(&self) -> Arc<tokio::sync::Mutex<Option<AuditReleaseGate>>> {
         self.audit_release_gate.clone()
     }
-    pub fn new(registry: DatabaseRegistry, auth: Arc<Authenticator>) -> Self {
+    pub fn new(
+        registry: DatabaseRegistry,
+        auth: Arc<Authenticator>,
+        failures: crate::administration::OriginalRecoveries,
+    ) -> Self {
         Self {
             registry,
             auth,
+            failures,
             management: None,
             telemetry: crate::observability::Telemetry::new(),
             control_signer: None,
@@ -763,6 +772,69 @@ impl NativeAdmin {
         } else {
             routed(&self.registry, &self.auth, context).await?
         })
+    }
+
+    /// Claim the original paid RPC seat before polling constructor-reaching
+    /// work. A foreign status receives a native-free diagnostic only after the
+    /// whole returned failure is installed in that independently retained seat.
+    async fn snapshot_call<
+        T: crate::administration::original_serving_runtime::RpcSnapshotOutput,
+    >(
+        &self,
+        context: &RequestContext,
+        mutation: bool,
+        work: impl std::future::Future<Output = std::result::Result<T, kasumi_engine::SnapshotFailure>>,
+    ) -> Result<T, Status> {
+        let guard = self
+            .failures
+            .rpc_claim(&context.tenant)
+            .await
+            .map_err(|refusal| {
+                let (code, message) = match refusal {
+                    kasumi_store::ScratchAdmissionRefusal::Busy => (
+                        kasumi_types::ErrorCode::ResourceExhausted,
+                        "administrative operation custody exhausted",
+                    ),
+                    kasumi_store::ScratchAdmissionRefusal::Sealed => (
+                        kasumi_types::ErrorCode::Unavailable,
+                        "administrative operation custody closed",
+                    ),
+                };
+                self.registry
+                    .status(context, kasumi_types::Error::new(code, message))
+            })?;
+        match guard.run_snapshot(work).await {
+            Ok(value) => Ok(value),
+            Err(guard) => {
+                let marker = guard.with_report(|report| {
+                    use crate::administration::original_serving_runtime::CleanupEntry;
+                    let observation = report.observation();
+                    if observation.entry() == CleanupEntry::Returned
+                        && observation.future_disposal() == CleanupEntry::Returned
+                        && let Some(kasumi_engine::SnapshotFailure::Operation(original)) =
+                            report.original()
+                    {
+                        return original.clone();
+                    }
+                    // A returned error, successful output, poll panic and
+                    // future-disposal panic stay independently in the seat.
+                    kasumi_types::Error::new(
+                        if mutation {
+                            kasumi_types::ErrorCode::UnknownOutcome
+                        } else {
+                            kasumi_types::ErrorCode::Unavailable
+                        },
+                        "administrative failure remains in its original admitted custody",
+                    )
+                });
+                let marker = if mutation {
+                    mutation_release::<()>(Err(marker)).unwrap_err()
+                } else {
+                    marker
+                };
+                Err(self.registry.status(context, marker))
+            }
+        }
     }
 
     async fn apply(
@@ -933,13 +1005,16 @@ impl kasumi_admin_server::KasumiAdmin for NativeAdmin {
                     .audit_result(&context, database.response_fence(&context))
                     .await
                     .map_err(status)?;
-                let proof = Box::pin(database.backup_checkpoint_named(
-                    context.clone(),
-                    &request.destination,
-                    request.session_id,
-                ))
-                .await
-                .map_err(|error| self.registry.status(&context, error))?;
+                let proof = self
+                    .snapshot_call(&context, true, async {
+                        Box::pin(database.backup_checkpoint_named(
+                            context.clone(),
+                            &request.destination,
+                            request.session_id,
+                        ))
+                        .await
+                    })
+                    .await?;
                 let fence = self
                     .auth
                     .audit_result(
@@ -979,13 +1054,16 @@ impl kasumi_admin_server::KasumiAdmin for NativeAdmin {
                     .audit_result(&context, database.response_fence(&context))
                     .await
                     .map_err(status)?;
-                let proof = Box::pin(database.verify_backup_checkpoint_named(
-                    context.clone(),
-                    &request.destination,
-                    request.backup_id,
-                ))
-                .await
-                .map_err(|error| self.registry.status(&context, error))?;
+                let proof = self
+                    .snapshot_call(&context, false, async {
+                        Box::pin(database.verify_backup_checkpoint_named(
+                            context.clone(),
+                            &request.destination,
+                            request.backup_id,
+                        ))
+                        .await
+                    })
+                    .await?;
                 let fence = self
                     .auth
                     .audit_result(

@@ -9,6 +9,13 @@ pub(super) type ChangedIds = BTreeMap<String, BTreeSet<String>>;
 pub(super) struct ApplyOwner<'engine> {
     engine: &'engine TenantEngine,
     previous: Arc<Generation>,
+    // This inline slot receives the same original input/budget alias BEFORE
+    // the known tree factory allocates. It is unset for early/idempotent exits.
+    _mutation_change_tree: std::sync::OnceLock<kasumi_raft::MutationChangeTreeRetention>,
+    input_position: Option<kasumi_raft::LogId<u64>>,
+    // Exact input plus optional known change-tree recipe only. Generation,
+    // reducer/body clones, indexes and response remain the separate M03 model.
+    _input_retention: Option<kasumi_raft::AdmittedApplicationInput>,
     // Last: the exact previous owner retires while the apply mutex is held.
     _guard: std::sync::MutexGuard<'engine, ()>,
 }
@@ -23,6 +30,9 @@ impl<'engine> ApplyOwner<'engine> {
         Ok(Self {
             engine,
             previous,
+            _mutation_change_tree: std::sync::OnceLock::new(),
+            input_position: None,
+            _input_retention: None,
             _guard: guard,
         })
     }
@@ -36,10 +46,51 @@ impl<'engine> ApplyOwner<'engine> {
         Ok(Self {
             engine,
             previous,
+            _mutation_change_tree: std::sync::OnceLock::new(),
+            input_position: None,
+            _input_retention: None,
             _guard: guard,
         })
     }
 
+    pub(super) fn retain_input(
+        &mut self,
+        input: Option<kasumi_raft::AdmittedApplicationInput>,
+        position: kasumi_raft::LogId<u64>,
+    ) {
+        self.input_position = input.as_ref().map(|_| position);
+        self._input_retention = input;
+    }
+    /// Only the actual mutation producer calls this, immediately before its
+    /// first tree/String allocation. Early rejections and receipt replay never
+    /// mint a tree claim. The same ApplyOwner encloses the returned raw private
+    /// map and its accepted PrimaryDelta through publication and visible swap.
+    pub(super) fn begin_mutation_change_tree(&self, batch: &MutationBatch) -> anyhow::Result<()> {
+        let Some(input) = &self._input_retention else {
+            // Existing transport/reopen/fixture producers have no prepaid input
+            // bank yet. This branch supplies no new allowance or certificate.
+            return Ok(());
+        };
+        anyhow::ensure!(
+            self._mutation_change_tree.get().is_none(),
+            "mutation change-tree producer repeated"
+        );
+        let position = self
+            .input_position
+            .expect("retained input has its checked position");
+        let Some(retention) = input
+            .claim_mutation_change_tree(position, batch)
+            .map_err(|error| anyhow::anyhow!("mutation change-tree binding differs: {error:?}"))?
+        else {
+            // Replay carries its actual point-input fee, with NO change-tree
+            // allowance. Its existing semantic producer remains explicitly open;
+            // no recipe/retention is minted and no second grant is requested.
+            return Ok(());
+        };
+        self._mutation_change_tree
+            .set(retention)
+            .map_err(|_| anyhow::anyhow!("mutation change-tree producer repeated"))
+    }
     pub(super) fn engine(&self) -> &TenantEngine {
         self.engine
     }

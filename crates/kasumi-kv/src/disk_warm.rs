@@ -89,7 +89,8 @@ impl DiskState {
         // Ordinary pressure preserves the exact refused item. Every next step
         // still recaptures/compares roots before using a retained continuation.
         // Non-capacity failures must discard any possibly advanced cursor.
-        if matches!(result, Err(CoreError::CapacityDenied)) {
+        if matches!(&(result), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::CapacityDenied)))
+        {
             self.warmup.last_work = progress.work;
         } else if result.is_err() {
             self.warmup = Warmup::default();
@@ -161,14 +162,14 @@ impl DiskState {
                 let step = self
                     .cache
                     .lock()
-                    .map_err(|_| CoreError::OwnerFailed)?
+                    .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?
                     .candidate_step(&mut self.warmup.cursor, work_limit - progress.work)?;
                 progress.work += step.work;
                 progress.restarts += usize::from(step.restarted);
                 if let Some(candidate) = step.candidate {
                     let live = match self.cached_identity_is_live(&candidate) {
                         Ok(live) => live,
-                        Err(error @ CoreError::CapacityDenied) => {
+                        Err(error) if error.is_capacity_denied() => {
                             self.warmup.cursor = cursor;
                             return Err(error);
                         }
@@ -185,7 +186,7 @@ impl DiskState {
                         if self
                             .cache
                             .lock()
-                            .map_err(|_| CoreError::OwnerFailed)?
+                            .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?
                             .remove_candidate(&mut self.warmup.cursor, &candidate)?
                         {
                             progress.pruned += 1;
@@ -201,7 +202,7 @@ impl DiskState {
                     }
                     self.cache
                         .lock()
-                        .map_err(|_| CoreError::OwnerFailed)?
+                        .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?
                         .trim_metadata_for_warm()?;
                     self.warmup.pruned = true;
                     self.warmup.evictions = self.cache_stats()?.evictions;
@@ -280,7 +281,7 @@ impl DiskState {
         Ok(self
             .cache
             .lock()
-            .map_err(|_| CoreError::OwnerFailed)?
+            .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?
             .take_maintenance_provider_refusal())
     }
 
@@ -304,9 +305,9 @@ impl DiskState {
         workspace: &mut CachedIdentityProofWorkspace,
     ) -> Result<bool, CoreError> {
         if !Arc::ptr_eq(&workspace.admission, &self.owner.admission) {
-            return Err(CoreError::InvalidInput(
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
                 "cache proof workspace belongs to another admission owner",
-            ));
+            )));
         }
         self.owner.check()?;
         let roots = std::iter::once(self.selected).chain(
@@ -326,7 +327,9 @@ impl DiskState {
                 sha256,
             } => {
                 if group_id != self.owner.group_id {
-                    return Err(CoreError::Corrupt("cached page belongs to another group"));
+                    return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                        "cached page belongs to another group",
+                    )));
                 }
                 let reference = DirectoryPageRef {
                     arena_id,
@@ -354,7 +357,9 @@ impl DiskState {
                 key_len,
             } => {
                 if group_id != self.owner.group_id {
-                    return Err(CoreError::Corrupt("cached value belongs to another group"));
+                    return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                        "cached value belongs to another group",
+                    )));
                 }
                 let location = ValueLocation {
                     segment_id,
@@ -382,7 +387,9 @@ impl DiskState {
                         && value == location
                     {
                         if batch_seq != logical.logical_batch_seq {
-                            return Err(CoreError::Corrupt("cached value logical version differs"));
+                            return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                                "cached value logical version differs",
+                            )));
                         }
                         return Ok(true);
                     }
@@ -403,18 +410,22 @@ impl DiskState {
             location,
             key.table,
             key.row
-                .ok_or(CoreError::Corrupt("warm value has no row key"))?,
+                .ok_or(CoreError::new(crate::CoreErrorCause::Corrupt(
+                    "warm value has no row key",
+                )))?,
         )?;
         if let Some(value) = self
             .cache
             .lock()
-            .map_err(|_| CoreError::OwnerFailed)?
+            .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?
             .peek(identity)
         {
             if value.as_bytes().len() != location.len as usize
                 || crc32c(value.as_bytes()) != location.crc
             {
-                return Err(CoreError::Corrupt("cached warm value identity differs"));
+                return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                    "cached warm value identity differs",
+                )));
             }
             self.owner.check()?;
             return Ok(true);
@@ -444,7 +455,9 @@ impl DiskState {
                 && peer != location
             {
                 if peer.len != location.len || peer.crc != location.crc {
-                    return Err(CoreError::Corrupt("relocated logical payload differs"));
+                    return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                        "relocated logical payload differs",
+                    )));
                 }
                 let peer = NativeIdentity::value(
                     self.owner.group_id,
@@ -455,7 +468,7 @@ impl DiskState {
                 match self
                     .cache
                     .lock()
-                    .map_err(|_| CoreError::OwnerFailed)?
+                    .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?
                     .alias_if_fits(peer, identity)
                 {
                     Ok(true) => {
@@ -471,7 +484,7 @@ impl DiskState {
         let result = self
             .cache
             .lock()
-            .map_err(|_| CoreError::OwnerFailed)?
+            .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?
             .load_if_fits(identity, location.len as usize, |out| {
                 self.owner.check()?;
                 self.owner.backend.read(
@@ -481,7 +494,9 @@ impl DiskState {
                 )?;
                 self.owner.check()?;
                 if crc32c(out) != location.crc {
-                    return Err(CoreError::Corrupt("warm value checksum differs"));
+                    return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                        "warm value checksum differs",
+                    )));
                 }
                 Ok(())
             });
@@ -491,7 +506,9 @@ impl DiskState {
                 if value.as_bytes().len() != location.len as usize
                     || crc32c(value.as_bytes()) != location.crc
                 {
-                    return Err(CoreError::Corrupt("cached warm value identity differs"));
+                    return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                        "cached warm value identity differs",
+                    )));
                 }
                 Ok(true)
             }

@@ -52,11 +52,92 @@ fn request(
     let request = client.get(endpoint).bearer_auth(token);
     tokio::spawn(async move { request.send().await.unwrap() })
 }
+fn ready_wait_summary(body: &[u8]) -> serde_json::Value {
+    if body.len() > (1 << 20) {
+        serde_json::json!({"body": "oversized"})
+    } else if let Ok(value) = serde_json::from_slice::<serde_json::Value>(body) {
+        let coverage = &value["readiness_coverage"];
+        let disk = &value["persistent_disk"];
+        serde_json::json!({
+            "body": "json",
+            "ready": value["ready"].as_bool(),
+            "lifecycle": value["lifecycle"].as_str().filter(|value| {
+                matches!(*value, "starting" | "serving" | "draining" | "closed")
+            }),
+            "admission": {
+                "sample_usable": value["admission"]["sample_usable"].as_bool(),
+                "pressured": value["admission"]["pressured"].as_bool(),
+            },
+            "persistent_disk": {
+                "phase": disk["phase"].as_str().filter(|value| {
+                    matches!(*value, "Open" | "Paused" | "Failed")
+                }),
+                "pending_bytes": disk["pending_bytes"].as_u64(),
+                "filesystem_pending_bytes": disk["filesystem_pending_bytes"].as_u64(),
+                "filesystem_min_free_bytes": disk["filesystem_min_free_bytes"].as_u64(),
+                "filesystem_available_bytes": disk["filesystem_available_bytes"].as_u64(),
+                "filesystem_admission_ready": disk["filesystem_admission_ready"].as_bool(),
+            },
+            "service_audit": {
+                "persistence_failed": value["service_audit"]["persistence_failed"].as_bool(),
+            },
+            "standalone_recovery_pending": value["standalone_recovery_pending"].as_bool(),
+            "readiness_coverage": {
+                "membership_epoch": {
+                    "topology_version": coverage["membership_epoch"]["topology_version"].as_u64(),
+                    "installed_routes": coverage["membership_epoch"]["installed_routes"].as_u64(),
+                    "actual_membership": coverage["membership_epoch"]["actual_membership"].as_u64(),
+                },
+                "expected_groups": coverage["expected_groups"].as_u64(),
+                "examined_groups": coverage["examined_groups"].as_u64(),
+                "healthy_groups": coverage["healthy_groups"].as_u64(),
+                "complete": coverage["complete"].as_bool(),
+                "fresh": coverage["fresh"].as_bool(),
+                "oldest_probe_age_seconds": coverage["oldest_probe_age_seconds"].as_f64(),
+                "detail_limit": coverage["detail_limit"].as_u64(),
+            },
+        })
+    } else if body == b"protected node observation unavailable\n" {
+        serde_json::json!({"body": "protected_withheld"})
+    } else {
+        serde_json::json!({"body": "non_json"})
+    }
+}
+async fn record_ready_503(mut response: reqwest::Response, last_503: &mut serde_json::Value) {
+    *last_503 = serde_json::json!({"body": "pending"});
+    let mut body = Vec::new();
+    let mut oversized = false;
+    let mut body_read_failed = false;
+    loop {
+        let chunk = match response.chunk().await {
+            Ok(Some(chunk)) => chunk,
+            Ok(None) => break,
+            Err(_) => {
+                body_read_failed = true;
+                break;
+            }
+        };
+        if body.len().saturating_add(chunk.len()) > (1 << 20) {
+            oversized = true;
+            break;
+        }
+        body.extend_from_slice(&chunk);
+    }
+    *last_503 = if oversized {
+        serde_json::json!({"body": "oversized"})
+    } else if body_read_failed {
+        serde_json::json!({"body": "read_failed"})
+    } else {
+        ready_wait_summary(&body)
+    };
+}
 async fn ready_response(
     client: &reqwest::Client,
     endpoint: &str,
     token: &str,
+    phase: &'static str,
 ) -> reqwest::Response {
+    let mut last_503 = serde_json::Value::Null;
     tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             let response = client
@@ -69,11 +150,12 @@ async fn ready_response(
                 return response;
             }
             assert_eq!(response.status().as_u16(), 503);
+            record_ready_503(response, &mut last_503).await;
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
     })
     .await
-    .unwrap()
+    .unwrap_or_else(|_| panic!("readiness wait timed out: phase={phase} last_503={last_503}"))
 }
 async fn withheld(request: tokio::task::JoinHandle<reqwest::Response>, status: u16) {
     let response = request.await.unwrap();
@@ -88,7 +170,10 @@ async fn unavailable_tenant_ready(
     client: &reqwest::Client,
     endpoint: &str,
     token: &str,
+    management: &Arc<crate::administration::Administration>,
 ) -> serde_json::Value {
+    let mut last_status = None;
+    let mut last_observation = serde_json::Value::Null;
     tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             let response = client
@@ -97,24 +182,51 @@ async fn unavailable_tenant_ready(
                 .send()
                 .await
                 .unwrap();
-            assert_eq!(response.status().as_u16(), 503);
+            let status = response.status().as_u16();
+            assert!(matches!(status, 200 | 503));
+            last_status = Some(status);
+            last_observation = serde_json::json!({"body": "pending"});
             let body = response.text().await.unwrap();
+            last_observation = ready_wait_summary(body.as_bytes());
             if let Ok(value) = serde_json::from_str::<serde_json::Value>(&body) {
-                assert_eq!(value["ready"], false);
-                if value["groups"]
-                    .as_array()
-                    .is_some_and(|groups| groups.iter().any(|group| group["tenant"] == "tenant-a"))
+                if value["readiness_coverage"]["complete"] == true
+                    && value["readiness_coverage"]["fresh"] == true
+                    && value["readiness_coverage"]["healthy_groups"] == 1
+                    && value["groups"].as_array().is_some_and(|groups| {
+                        groups.iter().any(|group| {
+                            group["tenant"] == "tenant-a" && group["store_available"] == false
+                        })
+                    })
                 {
+                    assert_eq!(status, 200);
+                    assert_eq!(value["ready"], true);
+                    assert_eq!(value["readiness_coverage"]["expected_groups"], 2);
+                    assert_eq!(value["readiness_coverage"]["examined_groups"], 2);
                     return value;
                 }
             } else {
+                assert_eq!(status, 503);
                 assert_eq!(body, "protected node observation unavailable\n");
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
     })
     .await
-    .unwrap()
+    .unwrap_or_else(|_| {
+        let current_coverage = match management.readiness_epoch() {
+            Ok(epoch) => serde_json::to_value(
+                management
+                    .readiness
+                    .snapshot(epoch, tokio::time::Instant::now())
+                    .status,
+            )
+            .unwrap(),
+            Err(_) => serde_json::json!({"state": "epoch_unavailable"}),
+        };
+        panic!(
+            "sealed tenant readiness timed out: last_status={last_status:?} last_observation={last_observation} current_coverage={current_coverage}"
+        );
+    })
 }
 
 async fn unavailable_tenant_metrics(
@@ -133,8 +245,14 @@ async fn unavailable_tenant_metrics(
             let status = response.status().as_u16();
             let body = response.text().await.unwrap();
             if status == 200 {
-                assert!(body.contains("kasumi_ready 0\n"));
-                if body.contains("kasumi_local_group_store_available{tenant=\"tenant-a\"} 0\n") {
+                if body.contains("kasumi_readiness_coverage_complete 1\n")
+                    && body.contains("kasumi_readiness_coverage_fresh 1\n")
+                    && body.contains("kasumi_readiness_groups_expected 2\n")
+                    && body.contains("kasumi_readiness_groups_examined 2\n")
+                    && body.contains("kasumi_readiness_groups_healthy 1\n")
+                    && body.contains("kasumi_local_group_store_available{tenant=\"tenant-a\"} 0\n")
+                {
+                    assert!(body.contains("kasumi_ready 1\n"));
                     return body;
                 }
             } else {
@@ -277,7 +395,7 @@ async fn protected_observability_tls_reports_actual_state_and_fences_release_imp
             .as_u16(),
         401
     );
-    let response = ready_response(&client, &ready, &operator).await;
+    let response = ready_response(&client, &ready, &operator, "initial_serving").await;
     assert_eq!(response.headers()["cache-control"], "no-store");
     let value: serde_json::Value = response.json().await.unwrap();
     assert_eq!(value["ready"], true);
@@ -405,8 +523,7 @@ async fn protected_observability_tls_reports_actual_state_and_fences_release_imp
         .engine()
         .generation()
         .unwrap()
-        .state
-        .limits
+        .limits()
         .clone();
     limits.audit_retention.hot_bytes = 128 << 10;
     tenant_database
@@ -414,12 +531,7 @@ async fn protected_observability_tls_reports_actual_state_and_fences_release_imp
         .await
         .unwrap();
     for index in 0..50 {
-        let revision = tenant_database
-            .engine()
-            .generation()
-            .unwrap()
-            .state
-            .revision;
+        let revision = tenant_database.engine().generation().unwrap().revision();
         let command = Command {
             context: context.clone(),
             timestamp_ms: 1_000,
@@ -436,7 +548,9 @@ async fn protected_observability_tls_reports_actual_state_and_fences_release_imp
         };
         let response = tenant_database
             .raft_group()
-            .write(serde_json::to_vec(&command).unwrap())
+            .write(kasumi_raft::ApplicationProposal::generated(
+                serde_json::to_vec(&command).unwrap(),
+            ))
             .await
             .unwrap();
         serde_json::from_slice::<kasumi_types::Result<WriteReceipt>>(&response)
@@ -455,11 +569,12 @@ async fn protected_observability_tls_reports_actual_state_and_fences_release_imp
     })
     .await
     .unwrap();
-    let value: serde_json::Value = ready_response(&client, &ready, &operator)
-        .await
-        .json()
-        .await
-        .unwrap();
+    let value: serde_json::Value =
+        ready_response(&client, &ready, &operator, "audit_archive_committed")
+            .await
+            .json()
+            .await
+            .unwrap();
     let tenant_group = value["groups"]
         .as_array()
         .unwrap()
@@ -523,7 +638,7 @@ async fn protected_observability_tls_reports_actual_state_and_fences_release_imp
     assert!(changed.actual_membership > original.actual_membership);
     hold.release.notify_one();
     withheld(pending, 503).await;
-    ready_response(&client, &ready, &operator).await;
+    ready_response(&client, &ready, &operator, "control_membership_changed").await;
 
     // A complete quorum probe cannot certify a different committed voter set.
     let group = database.raft_group();
@@ -541,7 +656,7 @@ async fn protected_observability_tls_reports_actual_state_and_fences_release_imp
     entered(&hold).await;
     let removed = registry.remove("tenant-a").unwrap().unwrap();
     registry.insert(removed).unwrap();
-    ready_response(&client, &ready, &operator).await;
+    ready_response(&client, &ready, &operator, "route_reinstalled").await;
     hold.release.notify_one();
     withheld(pending, 503).await;
 
@@ -620,6 +735,9 @@ async fn protected_observability_tls_reports_actual_state_and_fences_release_imp
     hold.release.notify_one();
     withheld(pending, 401).await;
 
+    let hold = gate(&telemetry).await;
+    let credential_clock = kasumi_clock::EpochClock::system().unwrap();
+    let creation_started_at_ms = credential_clock.now_ms().unwrap();
     let short = admin
         .create_credential(
             &operator,
@@ -627,10 +745,33 @@ async fn protected_observability_tls_reports_actual_state_and_fences_release_imp
         )
         .await
         .unwrap();
-    let hold = gate(&telemetry).await;
+    let created_at_ms = credential_clock.now_ms().unwrap();
+    println!(
+        "credential timing: creation_started_at_ms={creation_started_at_ms} created_at_ms={created_at_ms} original_expires_at_ms={}",
+        short.expires_at_ms
+    );
     let pending = request(&client, &metrics, &short.token);
     entered(&hold).await;
-    tokio::time::sleep(Duration::from_millis(1100)).await;
+    let entered_at_ms = credential_clock.now_ms().unwrap();
+    let renewal_boundary_ms = short
+        .expires_at_ms
+        .checked_sub(4_000)
+        .unwrap()
+        .checked_add(1_000)
+        .unwrap();
+    println!(
+        "credential timing: entered_at_ms={entered_at_ms} next_issuance_boundary_ms={renewal_boundary_ms}"
+    );
+    if entered_at_ms < renewal_boundary_ms {
+        tokio::time::sleep(Duration::from_millis(renewal_boundary_ms - entered_at_ms)).await;
+    }
+    let renewal_started_at_ms = credential_clock.now_ms().unwrap();
+    println!("credential timing: renewal_started_at_ms={renewal_started_at_ms}");
+    assert!(
+        renewal_started_at_ms < short.expires_at_ms,
+        "original credential expired before renewal: now_ms={renewal_started_at_ms} original_expires_at_ms={}",
+        short.expires_at_ms
+    );
     let renewed = admin
         .renew_credential(
             &short.token,
@@ -639,8 +780,13 @@ async fn protected_observability_tls_reports_actual_state_and_fences_release_imp
                 renewal_id: Uuid::new_v4(),
             },
         )
-        .await
-        .unwrap();
+        .await;
+    let renewal_returned_at_ms = credential_clock.now_ms().unwrap();
+    println!(
+        "credential timing: renewal_returned_at_ms={renewal_returned_at_ms} renewal_succeeded={}",
+        renewed.is_ok()
+    );
+    let renewed = renewed.unwrap();
     assert!(renewed.expires_at_ms > short.expires_at_ms);
     let now = kasumi_clock::EpochClock::system()
         .unwrap()
@@ -650,6 +796,11 @@ async fn protected_observability_tls_reports_actual_state_and_fences_release_imp
         short.expires_at_ms.saturating_sub(now) + 50,
     ))
     .await;
+    let release_at_ms = credential_clock.now_ms().unwrap();
+    println!(
+        "credential timing: release_at_ms={release_at_ms} original_expires_at_ms={} renewed_expires_at_ms={}",
+        short.expires_at_ms, renewed.expires_at_ms
+    );
     hold.release.notify_one();
     withheld(pending, 401).await;
     assert_eq!(
@@ -684,17 +835,50 @@ async fn protected_observability_tls_reports_actual_state_and_fences_release_imp
     telemetry.set_lifecycle(Lifecycle::Serving);
 
     // An already encoded observation must not survive closure of a data store.
+    let tenant_incarnation = tenant_database
+        .engine()
+        .generation()
+        .unwrap()
+        .incarnation()
+        .to_owned();
+    // Retain the actual installed owner while observing closure. Reconciliation
+    // waits on its normal management gate; the readiness worker keeps probing.
+    let management_hold =
+        tokio::time::timeout(Duration::from_secs(10), management.test_hold_management())
+            .await
+            .unwrap()
+            .unwrap();
     let hold = gate(&telemetry).await;
     let pending = request(&client, &metrics, &operator);
     entered(&hold).await;
     application.seal();
+    let denied = application.check_access().unwrap_err();
+    assert!(denied.is::<kasumi_store::KeyAccessDenied>());
+    assert_eq!(denied.chain().count(), 1);
+    assert_eq!(
+        tenant_database.check_serving().unwrap_err().code,
+        ErrorCode::Sealed
+    );
+    assert_eq!(
+        tenant_database.engine().generation().err().unwrap().code,
+        ErrorCode::Sealed
+    );
+    assert!(Arc::ptr_eq(
+        &management.test_generation("tenant-a", &tenant_incarnation),
+        &tenant_database
+    ));
+    assert!(
+        registry
+            .installed_generation("tenant-a", &Uuid::new_v4().to_string())
+            .unwrap()
+            .is_none()
+    );
     hold.release.notify_one();
     withheld(pending, 503).await;
-    // A failed sweep invalidates the previous complete page immediately. While
-    // its replacement is in progress, the bounded diagnostic page can contain
-    // Control but not yet the sealed tenant. Every observed response must stay
-    // unavailable; require the tenant row once a sweep has reached it.
-    let value = unavailable_tenant_ready(&client, &ready, &operator).await;
+    // A new complete sweep diagnoses the sealed installed tenant without
+    // making the healthy node services unready. Require its fresh negative
+    // observation; the earlier response retaining that store stays withheld.
+    let value = unavailable_tenant_ready(&client, &ready, &operator, &management).await;
     let data = value["groups"]
         .as_array()
         .unwrap()
@@ -712,9 +896,10 @@ async fn protected_observability_tls_reports_actual_state_and_fences_release_imp
     assert!(!text.contains(
         "kasumi_local_group_audit_maintenance_committed_segments_total{tenant=\"tenant-a\"}"
     ));
+    drop(management_hold);
 
-    // Exercise the actual background sweep beyond the diagnostic page. Every
-    // locally assigned missing group must be counted, including the final row.
+    // A committed roster larger than the diagnostic page cannot get a complete
+    // coverage certificate from groups that have never been installed here.
     let plane = kasumi_engine::control::ControlPlane::new(database.clone()).unwrap();
     let context = configured_control_context(&config.control).unwrap();
     let mut topology = plane.topology(&context).await.unwrap().unwrap();
@@ -737,24 +922,53 @@ async fn protected_observability_tls_reports_actual_state_and_fences_release_imp
         )
         .await
         .unwrap();
+    let missing_epoch = management.readiness_epoch().unwrap();
     tokio::time::timeout(Duration::from_secs(10), async {
         loop {
-            let coverage = management.readiness.snapshot(
-                management.readiness_epoch().unwrap(),
-                tokio::time::Instant::now(),
-            );
-            if coverage.status.complete {
-                assert_eq!(coverage.status.expected_groups, Some(131));
-                assert_eq!(coverage.status.examined_groups, 131);
-                assert_eq!(coverage.details.len(), 128);
-                assert!(!coverage.status.ready());
-                break;
+            match management.test_readiness_sweep().await {
+                Err("generation_unavailable") => break,
+                Err("probe_admission" | "epoch_changed") => {
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+                Ok(()) => panic!("missing installed groups obtained complete readiness coverage"),
+                Err(class) => panic!("unexpected readiness sweep failure: {class}"),
             }
-            tokio::time::sleep(Duration::from_millis(50)).await;
         }
     })
     .await
     .unwrap();
+    let coverage = management.readiness.snapshot(
+        management.readiness_epoch().unwrap(),
+        tokio::time::Instant::now(),
+    );
+    assert_eq!(coverage.status.membership_epoch, missing_epoch);
+    assert!(!coverage.status.complete && !coverage.status.fresh);
+    if let Some(expected) = coverage.status.expected_groups {
+        assert_eq!(expected, 131);
+    }
+    assert!(coverage.status.examined_groups < 131);
+    assert!(coverage.details.len() <= 128);
+    assert!(!coverage.status.ready());
+    assert!(coverage.token.is_none());
+    let response = client
+        .get(&ready)
+        .bearer_auth(&*operator)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 503);
+    let body = response.text().await.unwrap();
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(&body) {
+        assert_eq!(value["ready"], false);
+        assert_eq!(value["readiness_coverage"]["complete"], false);
+        assert_eq!(value["readiness_coverage"]["fresh"], false);
+        assert_eq!(
+            value["readiness_coverage"]["membership_epoch"],
+            serde_json::to_value(missing_epoch).unwrap()
+        );
+    } else {
+        assert_eq!(body, "protected node observation unavailable\n");
+    }
 
     let hold = gate(&telemetry).await;
     let pending = request(&client, &metrics, &operator);
@@ -885,8 +1099,7 @@ async fn protected_archive_outage_and_due_backlog() {
         .engine()
         .generation()
         .unwrap()
-        .state
-        .limits
+        .limits()
         .clone();
     limits.audit_retention.hot_bytes = 128 << 10;
     tenant_database
@@ -894,12 +1107,7 @@ async fn protected_archive_outage_and_due_backlog() {
         .await
         .unwrap();
     for index in 0..50 {
-        let revision = tenant_database
-            .engine()
-            .generation()
-            .unwrap()
-            .state
-            .revision;
+        let revision = tenant_database.engine().generation().unwrap().revision();
         let command = Command {
             context: context.clone(),
             timestamp_ms: 1_000,
@@ -916,7 +1124,9 @@ async fn protected_archive_outage_and_due_backlog() {
         };
         let response = tenant_database
             .raft_group()
-            .write(serde_json::to_vec(&command).unwrap())
+            .write(kasumi_raft::ApplicationProposal::generated(
+                serde_json::to_vec(&command).unwrap(),
+            ))
             .await
             .unwrap();
         serde_json::from_slice::<kasumi_types::Result<WriteReceipt>>(&response)
@@ -924,10 +1134,8 @@ async fn protected_archive_outage_and_due_backlog() {
             .unwrap();
     }
     let before = tenant_database.engine().generation().unwrap();
-    assert!(
-        before.state.audit_retention.hot_bytes >= before.state.limits.audit_retention.starts_at()
-    );
-    assert_eq!(before.state.audit_retention.archive_segments, 0);
+    assert!(before.audit_retention().hot_bytes >= before.limits().audit_retention.starts_at());
+    assert_eq!(before.audit_retention().archive_segments, 0);
     tokio::time::timeout(Duration::from_secs(10), async {
         while tenant_database.audit_maintenance_status().unwrap().failures == 0 {
             tokio::time::sleep(Duration::from_millis(20)).await;
@@ -936,12 +1144,12 @@ async fn protected_archive_outage_and_due_backlog() {
     .await
     .unwrap();
     let after = tenant_database.engine().generation().unwrap();
-    assert_eq!(after.state.revision, before.state.revision);
-    assert_eq!(after.state.audit_retention, before.state.audit_retention);
+    assert_eq!(after.revision(), before.revision());
+    assert_eq!(after.audit_retention(), before.audit_retention());
     drop(after);
     drop(before);
 
-    let value: serde_json::Value = ready_response(&client, &ready, &operator)
+    let value: serde_json::Value = ready_response(&client, &ready, &operator, "archive_outage")
         .await
         .json()
         .await
@@ -1102,6 +1310,7 @@ async fn installed_healthy_group_coverage() {
         operator: &str,
         management: &Arc<crate::administration::Administration>,
     ) -> serde_json::Value {
+        let mut last_503 = serde_json::Value::Null;
         let response = tokio::time::timeout(Duration::from_secs(120), async {
             loop {
                 let epoch = management.readiness_epoch().unwrap();
@@ -1111,7 +1320,10 @@ async fn installed_healthy_group_coverage() {
                 if coverage.status.ready() {
                     match client.get(ready).bearer_auth(operator).send().await {
                         Ok(response) if response.status().as_u16() == 200 => break response,
-                        Ok(response) => assert_eq!(response.status().as_u16(), 503),
+                        Ok(response) => {
+                            assert_eq!(response.status().as_u16(), 503);
+                            record_ready_503(response, &mut last_503).await;
+                        }
                         Err(_) => {} // Listener startup is owned by the serving task.
                     }
                 }
@@ -1125,7 +1337,7 @@ async fn installed_healthy_group_coverage() {
                 tokio::time::Instant::now(),
             );
             panic!(
-                "installed 129-group readiness timed out: {}",
+                "installed 129-group readiness timed out: {} last_503={last_503}",
                 serde_json::to_string(&status.status).unwrap()
             )
         });
@@ -1245,8 +1457,8 @@ async fn installed_healthy_group_coverage() {
     assert_eq!(refreshed["readiness_coverage"]["complete"], true);
     assert_eq!(refreshed["readiness_coverage"]["fresh"], true);
 
-    // The only failed group is beyond the bounded detail page. Its actual
-    // installed store failure still revokes whole-node readiness.
+    // The only unhealthy installed group is beyond the bounded detail page.
+    // Its fresh negative probe counts toward complete whole-node coverage.
     last_store.seal();
     tokio::time::timeout(Duration::from_secs(30), async {
         loop {
@@ -1254,11 +1466,15 @@ async fn installed_healthy_group_coverage() {
             let coverage = management
                 .readiness
                 .snapshot(epoch, tokio::time::Instant::now());
-            if coverage.status.complete && coverage.status.healthy_groups == GROUPS - 1 {
+            if coverage.status.complete
+                && coverage.status.fresh
+                && coverage.status.healthy_groups == GROUPS - 1
+            {
                 assert_eq!(coverage.status.expected_groups, Some(GROUPS));
                 assert_eq!(coverage.status.examined_groups, GROUPS);
                 assert_eq!(coverage.details.len(), 128);
                 assert!(coverage.details.iter().all(|sample| sample.quorum));
+                assert!(coverage.status.ready() && coverage.token.is_some());
                 break;
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
@@ -1272,10 +1488,14 @@ async fn installed_healthy_group_coverage() {
         .send()
         .await
         .unwrap();
-    assert_eq!(response.status().as_u16(), 503);
+    assert_eq!(response.status().as_u16(), 200);
     let failed: serde_json::Value = response.json().await.unwrap();
-    assert_eq!(failed["ready"], false);
+    assert_eq!(failed["ready"], true);
+    assert_eq!(failed["readiness_coverage"]["expected_groups"], GROUPS);
+    assert_eq!(failed["readiness_coverage"]["examined_groups"], GROUPS);
     assert_eq!(failed["readiness_coverage"]["healthy_groups"], GROUPS - 1);
+    assert_eq!(failed["readiness_coverage"]["complete"], true);
+    assert_eq!(failed["readiness_coverage"]["fresh"], true);
     assert_eq!(failed["groups"].as_array().unwrap().len(), 128);
     stop.send(true).unwrap();
     serving.await.unwrap().unwrap();

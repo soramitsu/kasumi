@@ -4,13 +4,33 @@ Build the production binary without fixture features, then initialize an absolut
 
 ```sh
 cargo +1.97.1 build --release -p kasumi-server --bin kasumid
-target/release/kasumid init --mode standalone /var/lib/kasumi --directory-policy /etc/kasumi/directory-policy.json --file-allocation-policy /etc/kasumi/file-allocation-policy.json --network /etc/kasumi/standalone-network.json --tenant default
+target/release/kasumid init --mode standalone /var/lib/kasumi --directory-policy /etc/kasumi/directory-policy.json --file-allocation-policy /etc/kasumi/file-allocation-policy.json --network /etc/kasumi/standalone-network.json --tenant-audit-placements /etc/kasumi/tenant-audit-placements.json --tenant default
 target/release/kasumid serve /var/lib/kasumi/kasumi.json
 ```
 
 Initialization creates private directories and files, an exclusive installation identity, independent application/custody/Control/security wrapping keyrings, an Ed25519 issuer, TLS identities, and two client profiles. It provisions the Control and application catalogs, authenticated bootstrap, reserved Control schema and initial topology while holding exclusive storage ownership. It drains those owners before publishing the configuration and completion marker. A failed initialization leaves an incomplete private directory; initialization never adopts or overwrites it.
 
 Supply an explicit private `--network` JSON file before installation, for example `{"mcp_listen":"127.0.0.1:9443","mcp_public_url":"https://localhost:9443/mcp","native_listen":"127.0.0.1:9444","admin_listen":"127.0.0.1:9445"}`. The four fields are required, unknown fields are rejected, and the listener ports must be nonzero and distinct. Standalone TLS identities currently cover `localhost` and `127.0.0.1`, so the MCP public URL must be `https://localhost:<mcp-listen-port>/mcp`. The selected endpoint and certificate pin are committed together in original Control topology, configuration, and generated profiles. Changing the endpoint later requires an authorized topology update; editing only the configuration is insufficient.
+
+Supply a required owner-only `--tenant-audit-placements` JSON file with exactly
+one entry for `__kasumi_control` and one for the selected application tenant.
+This example explicitly chooses local replica only for both groups:
+
+```json
+{
+  "__kasumi_control": {"kind": "local_replica_only"},
+  "default": {"kind": "local_replica_only"}
+}
+```
+
+Each entry may instead select `{"kind":"external","destination":{...}}` with
+an installed filesystem or S3 destination. The groups choose independently; see
+[tenant audit retention](tenant-audit-retention.md) for destination details.
+The file must be a regular file with owner-only permissions, at most 64 KiB.
+Missing entries, duplicate rows, unknown fields and obsolete shapes are rejected
+before creating installation files. Initialization records the supplied choices
+in `tenant_audit_placements`; later staged tenants must provide their own explicit
+`audit_placement` in the [staging request](standalone-tenant-enrollment.md).
 
 Established standalone runtime and operator opens require the existing application/custody catalogs, authenticated bootstrap and exact configured incarnation. Missing bootstrap or Control topology is an error, never permission to create a new genesis from configuration defaults. The completion marker binds the immutable Control incarnation; unsupported marker formats are rejected explicitly.
 
@@ -89,7 +109,7 @@ runtime, and reread the separate bearer file for each request. See the
 rejected; issue current credentials and profiles before changing a consumer to
 this format. This does not alter an installed tenant or its stored documents.
 
-MCP accepts preconfigured local bearer tokens over TLS. Supply `Authorization: Bearer <token from profiles/default.token>` and the current MCP protocol headers. Its protected-resource metadata does not advertise an OAuth authorization server. An actual external OAuth deployment uses the separate `auth.source.kind = "external_oauth"` configuration variant.
+MCP accepts preconfigured local bearer tokens over TLS. Supply `Authorization: Bearer <token from profiles/default.token>` and the current MCP protocol headers. Both OAuth protected-resource discovery URLs return 404, and authentication challenges contain only `Bearer`. Discovery metadata and `resource_metadata` challenges are advertised when an external OAuth provider is installed through `auth.source.kind = "external_oauth"`.
 
 Local credentials expire after one hour. Keep each client credential file renewed:
 

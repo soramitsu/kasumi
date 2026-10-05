@@ -49,7 +49,7 @@ impl Backend {
         &self,
         meta: &Meta,
         command: &'a AuthorityMaintenanceCommand,
-    ) -> Result<PreparedSigningTransition<'a>> {
+    ) -> ScratchResult<PreparedSigningTransition<'a>> {
         let head = &meta.signing;
         head.validate()?;
         let action = match &command.action {
@@ -111,14 +111,16 @@ impl Backend {
         prepared: PreparedSigningTransition<'_>,
         revision: u64,
         additions: &mut Vec<(String, Record)>,
-    ) -> Result<()> {
+    ) -> ScratchResult<()> {
         match prepared.0 {
             PreparedSigningAction::AuthorizeControl => {
                 meta.operational.revision = revision;
                 return Ok(());
             }
             PreparedSigningAction::Roster(command) => {
-                return self.apply_roster_transition(meta, command, revision, additions);
+                return self
+                    .apply_roster_transition(meta, command, revision, additions)
+                    .map_err(ScratchOperationFailure::Operation);
             }
             PreparedSigningAction::Stage {
                 operation_id,
@@ -154,7 +156,9 @@ impl Backend {
             }
         }
         meta.signing.revision = revision;
-        meta.signing.validate()
+        meta.signing
+            .validate()
+            .map_err(ScratchOperationFailure::Operation)
     }
     pub(super) fn validate_signing_snapshot(&self, snapshot: &Snapshot) -> Result<()> {
         self.validate_control_signer_snapshot(snapshot)?;

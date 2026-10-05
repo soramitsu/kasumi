@@ -13,7 +13,7 @@ mod catalogs;
 #[path = "primary_stage_fixed_tests.rs"]
 mod fixed_objects;
 
-fn engine(fixture: &Fixture) -> Result<TenantEngine> {
+fn engine(fixture: &Fixture) -> crate::test_fixture_failure::FixtureResult<TenantEngine> {
     crate::test_utils::install_fixture_audit_placement(fixture.stores.application())?;
     let engine = TenantEngine::from_bootstrap("selected-sources", &fixture.image)?;
     engine.install_storage_access(fixture.stores.application())?;
@@ -86,7 +86,7 @@ fn document(bytes: usize) -> kasumi_types::Document {
 // Synchronous multi-chunk work must leave an executor worker for real key renewal.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn primary_stage_large_encrypted_object_and_old_selected_pin_survive_current_abort()
--> Result<()> {
+-> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
     let engine = engine(&fixture)?;
     // Input + independent expected serialization have separate real ownership.
@@ -175,7 +175,8 @@ async fn primary_stage_large_encrypted_object_and_old_selected_pin_survive_curre
 }
 
 #[tokio::test]
-async fn primary_stage_partial_high_water_and_abort_resume_are_atomic() -> Result<()> {
+async fn primary_stage_partial_high_water_and_abort_resume_are_atomic()
+-> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
     let engine = engine(&fixture)?;
     let input = fixture.storage.admission.reserve_document_source(1 << 20)?;
@@ -269,7 +270,7 @@ async fn primary_stage_partial_high_water_and_abort_resume_are_atomic() -> Resul
 
 #[tokio::test]
 async fn primary_stage_rejects_payload_corruption_before_lending_and_keeps_old_pin_exact()
--> Result<()> {
+-> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
     let engine = engine(&fixture)?;
     let input = fixture.storage.admission.reserve_document_source(1 << 20)?;
@@ -332,8 +333,8 @@ async fn primary_stage_rejects_payload_corruption_before_lending_and_keeps_old_p
 }
 
 #[tokio::test]
-async fn primary_stage_nonselection_readers_and_denied_begin_do_not_publish_or_write() -> Result<()>
-{
+async fn primary_stage_nonselection_readers_and_denied_begin_do_not_publish_or_write()
+-> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
     let engine = engine(&fixture)?;
     let mut authority = engine.lock_primary_apply()?;
@@ -374,7 +375,8 @@ async fn primary_stage_nonselection_readers_and_denied_begin_do_not_publish_or_w
 }
 
 #[tokio::test]
-async fn primary_stage_partial_attempt_resumes_after_actual_encrypted_reopen() -> Result<()> {
+async fn primary_stage_partial_attempt_resumes_after_actual_encrypted_reopen()
+-> crate::test_fixture_failure::FixtureResult<()> {
     let mut fixture = Fixture::new().await?;
     let first_engine = engine(&fixture)?;
     let input = fixture.storage.admission.reserve_document_source(1 << 20)?;
@@ -450,7 +452,7 @@ async fn primary_stage_partial_attempt_resumes_after_actual_encrypted_reopen() -
 
 #[tokio::test]
 async fn primary_stage_native_bound_failure_keeps_original_diagnostic_through_positive_close()
--> Result<()> {
+-> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
     let engine = engine(&fixture)?;
     let input = fixture.storage.admission.reserve_document_source(1 << 20)?;
@@ -524,7 +526,8 @@ async fn primary_stage_native_bound_failure_keeps_original_diagnostic_through_po
 }
 
 #[tokio::test]
-async fn primary_stage_archive_and_definition_keep_exact_dto_and_kind_identity() -> Result<()> {
+async fn primary_stage_archive_and_definition_keep_exact_dto_and_kind_identity()
+-> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
     let engine = engine(&fixture)?;
     let input = fixture.storage.admission.reserve_document_source(1 << 20)?;

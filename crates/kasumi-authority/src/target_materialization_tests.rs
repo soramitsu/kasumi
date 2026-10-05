@@ -1,6 +1,7 @@
 //! Actual encrypted graph/materialization tests with a real three-voter issuer.
 //! ControlFixture signs explicit input fixtures here; native Control-quorum
 //! issuance is covered separately by the server lifecycle end-to-end tests.
+use super::super::bootstrap_open_tests::AdmittedFixturePut;
 use super::*;
 use kasumi_engine::{
     RestoreSource, TargetLifecycleInvocation, TargetMaterializationConfig, TargetOperation,
@@ -235,7 +236,7 @@ fn target_close_replication_diagnostic_preserves_child_failure_boundaries() {
 }
 
 async fn audit(
-    node: Arc<NodeStore>,
+    node: NodeStore,
     admission: Arc<kasumi_engine::admission::NodeAdmission>,
     existing: bool,
 ) -> Arc<kasumi_engine::SecurityAudit> {
@@ -272,7 +273,7 @@ struct MaterialFixture {
     physical: BTreeMap<u64, PhysicalFixture>,
     _source_physical: PhysicalFixture,
     target_files: std::sync::Mutex<BTreeSet<u64>>,
-    target_nodes: std::sync::Mutex<BTreeMap<u64, Arc<NodeStore>>>,
+    target_nodes: std::sync::Mutex<BTreeMap<u64, NodeStore>>,
 }
 impl MaterialFixture {
     async fn new() -> Self {
@@ -647,12 +648,22 @@ async fn actual_target_materialization_preserves_image_and_original_operation_fe
             .custody()
             .store()
             .get("raft.meta", b"node_id")
-            .unwrap(),
-        Some(serde_json::to_vec(&1_u64).unwrap())
+            .unwrap()
+            .as_deref(),
+        Some(serde_json::to_vec(&1_u64).unwrap().as_slice())
     );
     assert_eq!(
-        stores.custody().store().get("raft.meta", b"group").unwrap(),
-        Some(serde_json::to_vec(&format!("city/{}", f.target.incarnation)).unwrap())
+        stores
+            .custody()
+            .store()
+            .get("raft.meta", b"group")
+            .unwrap()
+            .as_deref(),
+        Some(
+            serde_json::to_vec(&format!("city/{}", f.target.incarnation))
+                .unwrap()
+                .as_slice()
+        )
     );
     let proof = f.signers[&1]
         .sign_materialized(&materialized.proof, &operation)
@@ -915,7 +926,7 @@ impl RunningTarget {
         &self,
         control: &SignedControlIntent,
         signer: &TargetSigner,
-    ) -> anyhow::Result<(
+    ) -> FixtureResult<(
         kasumi_types::RecoveryPhaseRecord,
         kasumi_types::TargetRuntimeRequest,
     )> {
@@ -957,7 +968,7 @@ impl RunningTarget {
                 &request,
             )?
         else {
-            anyhow::bail!("fixture Initialize candidate already consumed")
+            return Err(anyhow::anyhow!("fixture Initialize candidate already consumed").into());
         };
         let permit = candidate
             .verify_initial_membership(self.id, LifecyclePhase::Initialize)?
@@ -1016,6 +1027,10 @@ impl MaterialFixture {
             kasumi_engine::TargetJournalInstallation {
                 root: self.control.root.clone(),
                 node: node_identity,
+                audit_placement_bindings: std::collections::BTreeMap::from([(
+                    "city".into(),
+                    "ab".repeat(32),
+                )]),
             },
             TargetJournalLimits {
                 max_metadata_bytes: 4 << 20,
@@ -1568,6 +1583,10 @@ async fn initialize_association_reopens_and_requires_exact_start_and_custody_own
             kasumi_engine::TargetJournalInstallation {
                 root: f.control.root.clone(),
                 node: nodes().into_iter().find(|n| n.node_id == 1).unwrap(),
+                audit_placement_bindings: std::collections::BTreeMap::from([(
+                    "city".into(),
+                    "ab".repeat(32),
+                )]),
             },
             TargetJournalLimits {
                 max_metadata_bytes: 4 << 20,
@@ -1582,54 +1601,65 @@ async fn initialize_association_reopens_and_requires_exact_start_and_custody_own
         .require_owner(&target.owner)
         .unwrap();
     drop(journal);
-    let substituted = String::from_utf8(bytes.clone())
-        .unwrap()
-        .replace(
-            &start.identity.attempt_id.to_string(),
-            &Uuid::new_v4().to_string(),
-        )
-        .into_bytes();
-    assert_ne!(substituted, bytes);
-    journal_store
-        .write_batch(&[kasumi_store::WriteOp::put(
-            "target.journal",
-            association_key.as_bytes(),
-            substituted,
-        )])
-        .unwrap();
+    let mut original_attempt = [0; 36];
+    let original_attempt = start
+        .identity
+        .attempt_id
+        .hyphenated()
+        .encode_lower(&mut original_attempt);
+    let mut replacement_attempt = [0; 36];
+    let replacement_attempt = Uuid::new_v4()
+        .hyphenated()
+        .encode_lower(&mut replacement_attempt);
+    let substituted = AdmittedFixturePut::replace(
+        &journal_store,
+        "target.journal",
+        association_key.as_bytes(),
+        bytes.as_bytes(),
+        original_attempt,
+        replacement_attempt,
+    )
+    .unwrap();
+    assert_ne!(substituted.value(), bytes.as_bytes());
+    journal_store.write_batch(substituted.operations()).unwrap();
     assert!(
         reopen().is_err(),
         "foreign Start cannot survive association reopen"
     );
+    let restored_association = AdmittedFixturePut::copy(
+        &journal_store,
+        "target.journal",
+        association_key.as_bytes(),
+        bytes.as_bytes(),
+    )
+    .unwrap();
     journal_store
-        .write_batch(&[kasumi_store::WriteOp::put(
-            "target.journal",
-            association_key.as_bytes(),
-            bytes,
-        )])
+        .write_batch(restored_association.operations())
         .unwrap();
-    let torn = String::from_utf8(metadata.clone())
-        .unwrap()
-        .replace("\"dispatch_initializes\":1", "\"dispatch_initializes\":0")
-        .into_bytes();
-    assert_ne!(torn, metadata);
-    journal_store
-        .write_batch(&[kasumi_store::WriteOp::put(
-            "target.journal",
-            b"metadata",
-            torn,
-        )])
-        .unwrap();
+    let torn = AdmittedFixturePut::replace(
+        &journal_store,
+        "target.journal",
+        b"metadata",
+        metadata.as_bytes(),
+        "\"dispatch_initializes\":1",
+        "\"dispatch_initializes\":0",
+    )
+    .unwrap();
+    assert_ne!(torn.value(), metadata.as_bytes());
+    journal_store.write_batch(torn.operations()).unwrap();
     assert!(
         reopen().is_err(),
         "Initialize association count must match retained records"
     );
+    let restored_metadata = AdmittedFixturePut::copy(
+        &journal_store,
+        "target.journal",
+        b"metadata",
+        metadata.as_bytes(),
+    )
+    .unwrap();
     journal_store
-        .write_batch(&[kasumi_store::WriteOp::put(
-            "target.journal",
-            b"metadata",
-            metadata,
-        )])
+        .write_batch(restored_metadata.operations())
         .unwrap();
     let journal = reopen().unwrap();
     let custody = target.stores.custody().store();
@@ -1643,15 +1673,15 @@ async fn initialize_association_reopens_and_requires_exact_start_and_custody_own
         .windows(b"\"initialize_ownership\":".len())
         .position(|part| part == b"\"initialize_ownership\":")
         .unwrap();
-    let mut prepared = owned[..split].to_vec();
-    prepared.extend_from_slice(b"\"initialize_ownership\":\"Prepared\"}");
-    custody
-        .write_batch(&[kasumi_store::WriteOp::put(
-            "target.lifecycle",
-            b"initialize",
-            prepared,
-        )])
-        .unwrap();
+    let prepared = AdmittedFixturePut::with_suffix(
+        custody,
+        "target.lifecycle",
+        b"initialize",
+        &owned[..split],
+        b"\"initialize_ownership\":\"Prepared\"}",
+    )
+    .unwrap();
+    custody.write_batch(prepared.operations()).unwrap();
     assert!(
         journal
             .resolve_initial_membership_history(
@@ -1664,12 +1694,11 @@ async fn initialize_association_reopens_and_requires_exact_start_and_custody_own
             .is_err(),
         "journal association and membership cannot replace custody Initialize owner"
     );
+    let restored_ownership =
+        AdmittedFixturePut::copy(custody, "target.lifecycle", b"initialize", owned.as_bytes())
+            .unwrap();
     custody
-        .write_batch(&[kasumi_store::WriteOp::put(
-            "target.lifecycle",
-            b"initialize",
-            owned,
-        )])
+        .write_batch(restored_ownership.operations())
         .unwrap();
     journal
         .resolve_initial_membership_history(&control, &phase, &identity, &request, &target.stores)
@@ -1907,6 +1936,10 @@ async fn exercise_target_activation(maintenance: bool) {
             .into_iter()
             .find(|n| n.node_id == selected.id)
             .unwrap(),
+        audit_placement_bindings: std::collections::BTreeMap::from([(
+            "city".into(),
+            "ab".repeat(32),
+        )]),
     };
     let projected_node_id = selected.id;
     let journal_tenant = format!(
@@ -2116,12 +2149,15 @@ async fn exercise_target_activation(maintenance: bool) {
         )
         .is_err()
     );
+    let restored_projection = AdmittedFixturePut::copy(
+        &journal_store,
+        "target.journal",
+        &projection_key,
+        exact_bytes.as_bytes(),
+    )
+    .unwrap();
     journal_store
-        .write_batch(&[kasumi_store::WriteOp::put(
-            "target.journal",
-            projection_key,
-            exact_bytes,
-        )])
+        .write_batch(restored_projection.operations())
         .unwrap();
     let journal = kasumi_engine::TargetJournal::open_existing(
         journal_store.clone(),
@@ -2387,6 +2423,10 @@ async fn independent_target_journal_reserves_stop_after_normal_quota_and_recover
     let installation = TargetJournalInstallation {
         root: f.control.root.clone(),
         node: nodes().first().unwrap().clone(),
+        audit_placement_bindings: std::collections::BTreeMap::from([(
+            "city".into(),
+            "ab".repeat(32),
+        )]),
     };
     let path = f.physical[&1].path("independent-target-journal.kv");
     let file_id = kasumi_store::node_store_ids::target_journal(
@@ -2748,7 +2788,7 @@ async fn followup_request_keeps_both_original_credential_fences_and_cannot_reope
         operation
             .run(async {
                 polled.store(true, Ordering::SeqCst);
-                Ok(())
+                Ok::<_, anyhow::Error>(())
             })
             .await
             .is_err()
@@ -2773,6 +2813,10 @@ async fn target_file_creation_outcome_distinguishes_original_creation_from_stric
     let installation = TargetJournalInstallation {
         root: f.control.root.clone(),
         node: nodes().first().unwrap().clone(),
+        audit_placement_bindings: std::collections::BTreeMap::from([(
+            "city".into(),
+            "ab".repeat(32),
+        )]),
     };
     let journal_path = f.physical[&1].path("creation-outcome-journal.kv");
     let node = f.physical[&1]
@@ -2819,7 +2863,11 @@ async fn target_file_creation_outcome_distinguishes_original_creation_from_stric
     target.drain_initializers().await.unwrap();
     target.shutdown().await.unwrap();
     drop(target);
-    let before = std::fs::read(&path).unwrap();
+    let before = kasumi_store::test_utils::capture_native_group_image(
+        &path,
+        node.persistent_disk().memory().clone(),
+    )
+    .unwrap();
     let MaterializationNode::Existing(target) = journal
         .reserve_materialization_file(&operation)
         .unwrap()
@@ -2841,9 +2889,16 @@ async fn target_file_creation_outcome_distinguishes_original_creation_from_stric
     target.drain_initializers().await.unwrap();
     target.shutdown().await.unwrap();
     drop(target);
-    assert_eq!(std::fs::read(&path).unwrap(), before);
+    assert_eq!(
+        kasumi_store::test_utils::capture_native_group_image(
+            &path,
+            node.persistent_disk().memory().clone(),
+        )
+        .unwrap(),
+        before
+    );
     // Even absence after an earlier creation cannot turn a replay into a creator.
-    std::fs::remove_file(&path).unwrap();
+    std::fs::remove_dir_all(&path).unwrap();
     let memory = node.persistent_disk().memory().clone();
     let registered_before = memory.storage_census().snapshot().databases;
     let missing = journal
@@ -2852,13 +2907,115 @@ async fn target_file_creation_outcome_distinguishes_original_creation_from_stric
         .open(&path, f.physical[&1].scratch.clone())
         .err()
         .unwrap();
-    let missing = missing.downcast::<kasumi_types::Error>().unwrap();
-    assert_eq!(missing.code, ErrorCode::UnknownOutcome);
+    let kasumi_store::NodeStoreStartFailure::Opening(missing) = missing else {
+        panic!("missing enrolled replay must retain its exact opening: {missing:?}");
+    };
+    let missing_opening_id = missing.opening_id();
+    assert_eq!(missing.custody().opening().id(), missing_opening_id);
+    assert_eq!(
+        missing.custody().phase(),
+        kasumi_store::NodeStartupPhase::Failed
+    );
+    let (original_address, original_allocation, cause_address) = {
+        let report = missing.custody().opening().report();
+        let kasumi_store::TerminalObservation::Returned(Err(original)) = report.acquisition()
+        else {
+            panic!("missing enrolled replay lost its original acquisition error");
+        };
+        // Outside removal changes enrolled parent metadata. The canonical walk
+        // fails during preparation, before opening the missing child or native
+        // database; the typed opening keeps that exact filesystem original.
+        let outer: &(dyn std::error::Error + Send + Sync + 'static) = original.as_ref();
+        let cause = outer
+            .downcast_ref::<std::io::Error>()
+            .expect("missing enrolled replay must retain the original outer filesystem error");
+        assert_eq!(cause.kind(), std::io::ErrorKind::InvalidData);
+        assert_eq!(cause.raw_os_error(), None);
+        assert!(matches!(
+            report.opening_outer(),
+            kasumi_store::TerminalObservation::NotEntered
+        ));
+        assert!(matches!(
+            report.engine().opening(),
+            kasumi_store::TerminalObservation::NotEntered
+        ));
+        assert!(matches!(
+            report.ready_publication(),
+            kasumi_store::TerminalObservation::NotEntered
+        ));
+        (
+            std::ptr::from_ref(original) as usize,
+            std::ptr::from_ref(outer) as *const () as usize,
+            std::ptr::from_ref(cause) as usize,
+        )
+    };
+    let physical_failure = node
+        .persistent_disk()
+        .pending_directory_operation()
+        .expect("missing enrolled replay must retain its actual namespace operation");
+    assert_eq!(
+        physical_failure.kind,
+        kasumi_store::NodeDiskDirectoryOperationKind::Open
+    );
+    assert_eq!(
+        physical_failure.step,
+        kasumi_store::NodeDiskDirectoryOperationStep::Prepared
+    );
+    let acquisition_failure = physical_failure
+        .failure
+        .expect("actual enrolled-directory acquisition failure missing");
+    assert_eq!(acquisition_failure.step, physical_failure.step);
+    assert_eq!(acquisition_failure.kind, std::io::ErrorKind::InvalidData);
+    assert_eq!(acquisition_failure.errno, None);
+    assert!(physical_failure.close_failure.is_none());
+    assert!(physical_failure.uncertain_close_descriptor.is_none());
+    assert_eq!(
+        node.persistent_disk().snapshot().phase,
+        kasumi_store::NodeDiskPhase::Failed
+    );
+    drop(missing);
     assert!(!path.exists());
     assert_eq!(
         memory.storage_census().snapshot().databases,
         registered_before + 1,
         "failed replay must retain its registered opening after caller loss"
+    );
+    let retained_missing =
+        kasumi_store::RegisteredNodeOpening::retained(memory.clone(), missing_opening_id)
+            .expect("exact failed replay opening must survive its caller facade");
+    assert_eq!(retained_missing.id(), missing_opening_id);
+    {
+        let report = retained_missing.report();
+        let kasumi_store::TerminalObservation::Returned(Err(original)) = report.acquisition()
+        else {
+            panic!("retained missing replay lost its original acquisition observation");
+        };
+        assert_eq!(std::ptr::from_ref(original) as usize, original_address);
+        let outer: &(dyn std::error::Error + Send + Sync + 'static) = original.as_ref();
+        assert_eq!(
+            std::ptr::from_ref(outer) as *const () as usize,
+            original_allocation
+        );
+        let cause = outer
+            .downcast_ref::<std::io::Error>()
+            .expect("retained missing replay changed its original outer filesystem error");
+        assert_eq!(cause.kind(), std::io::ErrorKind::InvalidData);
+        assert_eq!(cause.raw_os_error(), None);
+        assert_eq!(std::ptr::from_ref(cause) as usize, cause_address);
+    }
+    drop(retained_missing);
+    assert_eq!(
+        node.persistent_disk().pending_directory_operation(),
+        Some(physical_failure)
+    );
+    assert_eq!(
+        node.persistent_disk().snapshot().phase,
+        kasumi_store::NodeDiskPhase::Failed
+    );
+    assert_eq!(
+        memory.storage_census().snapshot().databases,
+        registered_before + 1,
+        "borrowing the original replay report must not retire its failed opening"
     );
     drop(operation);
     scope.close();

@@ -4,7 +4,7 @@ use kasumi_raft::{
     StateMachineBackend,
 };
 use kasumi_serving::*;
-use kasumi_store::{TenantStore, WriteOp};
+use kasumi_store::{ScratchOperationFailure, TenantStore, WriteOp};
 use kasumi_types::{Error, ErrorCode, RequestContext};
 use serde::{Deserialize, Serialize};
 
@@ -40,16 +40,32 @@ fn prepared_outcome<T>(result: Result<T>) -> Result<kasumi_types::Result<T>> {
         },
     }
 }
+type ScratchResult<T> = std::result::Result<T, ScratchOperationFailure>;
+
+// Only an ordinary semantic rejection becomes a durable rejection receipt.
+// Creation carries its original registered native owner through the apply seam.
+fn prepared_scratch_outcome<T>(result: ScratchResult<T>) -> ScratchResult<kasumi_types::Result<T>> {
+    match result {
+        Ok(value) => Ok(Ok(value)),
+        Err(ScratchOperationFailure::Operation(error)) => {
+            prepared_outcome(Err(error)).map_err(ScratchOperationFailure::Operation)
+        }
+        Err(original) => Err(original),
+    }
+}
+fn rejection_error<E: From<anyhow::Error>>(original: anyhow::Error) -> E {
+    E::from(original)
+}
 macro_rules! reject_unless {
     ($condition:expr, $($message:tt)*) => {
         if !$condition {
-            return Err(reject_conflict(format_args!($($message)*)));
+            return Err(rejection_error(reject_conflict(format_args!($($message)*))));
         }
     };
 }
 macro_rules! reject_bail {
     ($($message:tt)*) => {
-        return Err(reject_conflict(format_args!($($message)*)))
+        return Err(rejection_error(reject_conflict(format_args!($($message)*))))
     };
 }
 
@@ -994,7 +1010,7 @@ impl StateMachineBackend for Backend {
         position: &AppliedEntryContext,
         input: AppliedInput<'_>,
         publisher: &mut dyn ApplyPublisher,
-    ) -> Result<()> {
+    ) -> ScratchResult<()> {
         let _lock = self
             .mutation
             .lock()
@@ -1005,38 +1021,62 @@ impl StateMachineBackend for Backend {
         let mut writes = Vec::new();
         let data = match input {
             AppliedInput::Command(bytes) => {
-                ensure!(
-                    bytes.len() <= MAX_RECORD_BYTES,
-                    "authority command byte limit exceeded"
-                );
-                match serde_json::from_slice::<PreparedOperation>(bytes)? {
-                    PreparedOperation::Coverage(prepared) => serde_json::to_vec(
-                        &self.reduce_coverage(position, *prepared, &mut writes)?,
-                    )?,
-                    PreparedOperation::Maintenance(prepared) => serde_json::to_vec(
-                        &self.reduce_maintenance(position, *prepared, &mut writes)?,
-                    )?,
-                    PreparedOperation::Administrative(prepared) => {
-                        serde_json::to_vec(&self.reduce(position, *prepared, &mut writes)?)?
+                let prepared = ScratchOperationFailure::ordinary(|| {
+                    ensure!(
+                        bytes.len() <= MAX_RECORD_BYTES,
+                        "authority command byte limit exceeded"
+                    );
+                    Ok(serde_json::from_slice::<PreparedOperation>(bytes)?)
+                })?;
+                match prepared {
+                    PreparedOperation::Coverage(prepared) => {
+                        ScratchOperationFailure::ordinary(|| {
+                            Ok(serde_json::to_vec(&self.reduce_coverage(
+                                position,
+                                *prepared,
+                                &mut writes,
+                            )?)?)
+                        })?
                     }
-                    PreparedOperation::Lifecycle(prepared) => serde_json::to_vec(
-                        &self.reduce_lifecycle(position, *prepared, &mut writes)?,
-                    )?,
+                    PreparedOperation::Maintenance(prepared) => {
+                        let outcome = self.reduce_maintenance(position, *prepared, &mut writes)?;
+                        ScratchOperationFailure::ordinary(|| Ok(serde_json::to_vec(&outcome)?))?
+                    }
+                    PreparedOperation::Administrative(prepared) => {
+                        ScratchOperationFailure::ordinary(|| {
+                            Ok(serde_json::to_vec(&self.reduce(
+                                position,
+                                *prepared,
+                                &mut writes,
+                            )?)?)
+                        })?
+                    }
+                    PreparedOperation::Lifecycle(prepared) => {
+                        ScratchOperationFailure::ordinary(|| {
+                            Ok(serde_json::to_vec(&self.reduce_lifecycle(
+                                position,
+                                *prepared,
+                                &mut writes,
+                            )?)?)
+                        })?
+                    }
                 }
             }
-            AppliedInput::Metadata => {
+            AppliedInput::Metadata => ScratchOperationFailure::ordinary(|| {
                 let mut meta = self.meta()?;
                 if position.log_id.index > meta.revision {
                     meta.revision = position.log_id.index;
                     writes.push(WriteOp::put(NS, META, serde_json::to_vec(&meta)?));
                 }
-                Vec::new()
-            }
+                Ok(Vec::new())
+            })?,
         };
-        publisher.commit(AppliedResponse::application(data), &writes)?;
+        publisher
+            .commit(AppliedResponse::application(data), &writes)
+            .map_err(anyhow::Error::from)?;
         Ok(())
     }
-    fn capture_snapshot(&self) -> Result<kasumi_raft::CapturedSnapshot> {
+    fn capture_snapshot(&self) -> ScratchResult<kasumi_raft::CapturedSnapshot> {
         let _lock = self
             .mutation
             .lock()
@@ -1050,7 +1090,7 @@ impl StateMachineBackend for Backend {
     fn validate_snapshot(
         &self,
         bytes: &mut dyn std::io::Read,
-    ) -> Result<Option<RetiredSnapshotState>> {
+    ) -> ScratchResult<Option<RetiredSnapshotState>> {
         self.decode_snapshot(bytes)?;
         Ok(None)
     }
@@ -1058,7 +1098,7 @@ impl StateMachineBackend for Backend {
         &'a self,
         _context: &kasumi_raft::SnapshotRestoreContext,
         bytes: &mut dyn std::io::Read,
-    ) -> Result<Box<dyn kasumi_raft::PreparedStateMachineRestore + 'a>> {
+    ) -> ScratchResult<Box<dyn kasumi_raft::PreparedStateMachineRestore + 'a>> {
         let guard = self
             .mutation
             .lock()
@@ -1097,26 +1137,27 @@ impl kasumi_raft::PreparedStateMachineRestore for PreparedAuthorityRestore<'_> {
 }
 
 impl Backend {
-    fn decode_snapshot(&self, bytes: &mut dyn std::io::Read) -> Result<Snapshot> {
+    fn decode_snapshot(&self, bytes: &mut dyn std::io::Read) -> ScratchResult<Snapshot> {
         let snapshot =
             snapshot::read(self.store.scratch_disk(), bytes, self.resource_budget_bytes)?;
-        ensure!(
-            snapshot.meta.installation == self.installation
-                && snapshot.meta.policy_epoch > 0
-                && !snapshot.meta.administrators.is_empty()
-                && snapshot.meta.administrators.len() <= 64,
-            "authority snapshot installation or policy differs"
-        );
-        let (
-            mut tenants,
-            mut receipts,
-            mut state_bytes,
-            mut active_fences,
-            mut preparations,
-            mut incarnations,
-            mut target_stops,
-        ) = (0, 0, 0, 0, 0, 0, 0);
-        snapshot.records.visit(|key, record| {
+        ScratchOperationFailure::ordinary(|| {
+            ensure!(
+                snapshot.meta.installation == self.installation
+                    && snapshot.meta.policy_epoch > 0
+                    && !snapshot.meta.administrators.is_empty()
+                    && snapshot.meta.administrators.len() <= 64,
+                "authority snapshot installation or policy differs"
+            );
+            let (
+                mut tenants,
+                mut receipts,
+                mut state_bytes,
+                mut active_fences,
+                mut preparations,
+                mut incarnations,
+                mut target_stops,
+            ) = (0, 0, 0, 0, 0, 0, 0);
+            snapshot.records.visit(|key, record| {
             let bytes = serde_json::to_vec(record)?;
             ensure!(
                 bytes.len() <= MAX_RECORD_BYTES,
@@ -1326,41 +1367,43 @@ impl Backend {
             }
             Ok(())
         })?;
-        self.validate_activation_snapshot(&snapshot)?;
-        ensure!(
-            (
-                tenants,
-                receipts,
-                state_bytes,
-                active_fences,
-                preparations,
-                incarnations,
-                target_stops
-            ) == (
-                snapshot.meta.tenants,
-                snapshot.meta.receipts,
-                snapshot.meta.state_bytes,
-                snapshot.meta.active_fences,
-                snapshot.meta.preparations,
-                snapshot.meta.incarnations,
-                snapshot.meta.target_stops
-            ) && target_stops <= receipts
-                && preparations <= receipts
-                && incarnations >= tenants
-                && incarnations <= receipts
-                && tenants <= snapshot.meta.operational.capacity.max_tenants
-                && state_bytes.saturating_add(Self::completion_reserve(&snapshot.meta))
-                    <= snapshot.meta.operational.capacity.max_state_bytes
-                && snapshot.meta.operational.capacity.max_state_bytes <= self.resource_budget_bytes,
-            "authority snapshot accounting differs"
-        );
-        self.validate_lifecycle_snapshot(&snapshot)?;
-        self.validate_maintenance_snapshot(&snapshot)?;
-        self.validate_signing_snapshot(&snapshot)?;
-        self.validate_coverage_snapshot(&snapshot)?;
-        self.validate_coverage_history(&snapshot)?;
-        self.validate_roster_snapshot(&snapshot)?;
-        Ok(snapshot)
+            self.validate_activation_snapshot(&snapshot)?;
+            ensure!(
+                (
+                    tenants,
+                    receipts,
+                    state_bytes,
+                    active_fences,
+                    preparations,
+                    incarnations,
+                    target_stops
+                ) == (
+                    snapshot.meta.tenants,
+                    snapshot.meta.receipts,
+                    snapshot.meta.state_bytes,
+                    snapshot.meta.active_fences,
+                    snapshot.meta.preparations,
+                    snapshot.meta.incarnations,
+                    snapshot.meta.target_stops
+                ) && target_stops <= receipts
+                    && preparations <= receipts
+                    && incarnations >= tenants
+                    && incarnations <= receipts
+                    && tenants <= snapshot.meta.operational.capacity.max_tenants
+                    && state_bytes.saturating_add(Self::completion_reserve(&snapshot.meta))
+                        <= snapshot.meta.operational.capacity.max_state_bytes
+                    && snapshot.meta.operational.capacity.max_state_bytes
+                        <= self.resource_budget_bytes,
+                "authority snapshot accounting differs"
+            );
+            self.validate_lifecycle_snapshot(&snapshot)?;
+            self.validate_maintenance_snapshot(&snapshot)?;
+            self.validate_signing_snapshot(&snapshot)?;
+            self.validate_coverage_snapshot(&snapshot)?;
+            self.validate_coverage_history(&snapshot)?;
+            self.validate_roster_snapshot(&snapshot)?;
+            Ok(snapshot)
+        })
     }
 }
 

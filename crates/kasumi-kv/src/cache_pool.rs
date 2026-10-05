@@ -93,7 +93,9 @@ impl Drop for Pool {
 
 impl Pool {
     pub(super) fn backing_bytes() -> u64 {
-        (size_of::<Inner>() + 2 * size_of::<usize>()) as u64 + ALLOCATION_ALLOWANCE
+        (size_of::<Inner>() + 2 * size_of::<usize>()) as u64
+            + ALLOCATION_ALLOWANCE
+            + crate::native_sync::mutex_backing_bytes() as u64
     }
 
     pub(super) fn new(
@@ -127,15 +129,23 @@ impl Pool {
         admission
             .check_owner()
             .map_err(|_| BorrowError::Provider(AdmissionError::OwnerFailed))?;
-        Ok(Self(Some(Arc::new(Inner {
-            state: Mutex::new(State {
-                lease: Some(lease),
+        let mut state = crate::native_sync::mutex(
+            State {
+                lease: None,
                 quote,
                 used: control,
                 control,
                 limit,
                 rollback: None,
-            }),
+            },
+            &lease,
+        );
+        state
+            .get_mut()
+            .expect("new admitted cache pool state")
+            .lease = Some(lease);
+        Ok(Self(Some(Arc::new(Inner {
+            state,
             live_values: AtomicU64::new(0),
             cached_values: AtomicU64::new(0),
         }))))

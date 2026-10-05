@@ -69,10 +69,9 @@ impl BackupReader for LiveBackupReader<'_> {
             _ = cancelled(&self.cancellation) => return Err(cancelled_error().into()),
         };
         self.check_access().await?;
-        Ok(kasumi_store::PreparedAuditSegment {
-            reference,
-            ciphertext,
-        })
+        self.database
+            .store
+            .copy_audit_segment(reference, &ciphertext)
     }
     async fn object<'a>(
         &'a self,
@@ -110,20 +109,11 @@ impl BackupReader for LiveBackupReader<'_> {
     }
 }
 
-fn verification_error(error: anyhow::Error, deadline: VerificationDeadline) -> Error {
-    if let Some(error) = error.downcast_ref::<Error>() {
-        return error.clone();
-    }
-    if deadline.check().is_err() {
-        return Error::new(
-            ErrorCode::ResourceExhausted,
-            "backup verification deadline expired",
-        );
-    }
-    Error::new(
-        ErrorCode::Corruption,
-        "complete backup graph verification failed",
-    )
+fn verification_error(
+    original: anyhow::Error,
+    _deadline: VerificationDeadline,
+) -> crate::SnapshotFailure {
+    original.into()
 }
 
 impl Database {
@@ -132,7 +122,7 @@ impl Database {
         context: RequestContext,
         destination: &dyn BackupDestination,
         session_id: uuid::Uuid,
-    ) -> Result<VerifiedBackupCheckpoint> {
+    ) -> std::result::Result<VerifiedBackupCheckpoint, crate::SnapshotFailure> {
         let mut publication_admitted = false;
         let result = self
             .session_work(|| async {
@@ -143,7 +133,8 @@ impl Database {
                         return Err(Error::new(
                             ErrorCode::InvalidArgument,
                             "nil backup session identity",
-                        ));
+                        )
+                        .into());
                     }
                     if let Some(session) = self
                         .backup_session(&context, destination, session_id)
@@ -163,7 +154,8 @@ impl Database {
                                 return Err(Error::new(
                                     ErrorCode::Conflict,
                                     "backup session was permanently aborted",
-                                ));
+                                )
+                                .into());
                             }
                             None => {
                                 publication_admitted = true;
@@ -203,7 +195,8 @@ impl Database {
                         return Err(Error::new(
                             ErrorCode::Corruption,
                             "published backup checkpoint differs from complete readback",
-                        ));
+                        )
+                        .into());
                     }
                     self.finish_backup_session(&context, destination, &session, proof.checkpoint())
                         .await?;
@@ -212,29 +205,32 @@ impl Database {
                 })
                 .await
                 .map_err(|_| {
-                    Error::new(
+                    crate::SnapshotFailure::from(Error::new(
                         ErrorCode::UnknownOutcome,
                         "backup publication deadline expired; immutable artifacts may exist",
-                    )
+                    ))
                 })
                 .and_then(|result| result)
             })
             .await;
-        let result = self.audit_result(&context, result).await;
+        let result = self.audit_snapshot_result(&context, result).await;
         if publication_admitted {
             result.map_err(|_original| {
+                let crate::SnapshotFailure::Operation(_original) = _original else {
+                    return _original;
+                };
                 // Preserve the public uncertainty response. Fixture diagnostics
                 // retain the rejected phase before that response erases it.
-                #[cfg(test)]
+                #[cfg(any(test, feature = "test-utils"))]
                 eprintln!(
                     "backup publication original failure before proof release: {_original:?}; raft metrics: {:?}; retained apply: {:?}",
                     self.group.raft().metrics().borrow(),
                     crate::test_utils::retained_apply_diagnostic(&self.group),
                 );
-                Error::new(
+                crate::SnapshotFailure::from(Error::new(
                     ErrorCode::UnknownOutcome,
                     "backup publication was admitted but complete proof release failed; immutable artifacts may exist and no verified proof was released",
-                )
+                ))
             })
         } else {
             result
@@ -246,7 +242,7 @@ impl Database {
         context: RequestContext,
         destination: &str,
         session_id: uuid::Uuid,
-    ) -> Result<VerifiedBackupCheckpoint> {
+    ) -> std::result::Result<VerifiedBackupCheckpoint, crate::SnapshotFailure> {
         let result = async {
             self.engine.authorize(&context, None, Action::Admin)?;
             let destination = self.archive_destination(destination)?;
@@ -254,7 +250,7 @@ impl Database {
                 .await
         }
         .await;
-        self.audit_write_result(&context, result).await
+        self.audit_snapshot_write_result(&context, result).await
     }
 
     pub async fn verify_backup_checkpoint_named(
@@ -262,7 +258,7 @@ impl Database {
         context: RequestContext,
         destination: &str,
         backup_id: uuid::Uuid,
-    ) -> Result<VerifiedBackupCheckpoint> {
+    ) -> std::result::Result<VerifiedBackupCheckpoint, crate::SnapshotFailure> {
         let result = async {
             self.engine.authorize(&context, None, Action::Admin)?;
             let destination = self.archive_destination(destination)?;
@@ -270,7 +266,7 @@ impl Database {
                 .await
         }
         .await;
-        self.audit_result(&context, result).await
+        self.audit_snapshot_result(&context, result).await
     }
 
     pub async fn verify_backup_checkpoint(
@@ -278,11 +274,11 @@ impl Database {
         context: RequestContext,
         destination: &dyn BackupDestination,
         backup_id: uuid::Uuid,
-    ) -> Result<VerifiedBackupCheckpoint> {
+    ) -> std::result::Result<VerifiedBackupCheckpoint, crate::SnapshotFailure> {
         let result = self
             .verify_backup_checkpoint_inner(&context, destination, backup_id)
             .await;
-        self.audit_result(&context, result).await
+        self.audit_snapshot_result(&context, result).await
     }
 
     async fn verify_backup_checkpoint_inner(
@@ -290,7 +286,7 @@ impl Database {
         context: &RequestContext,
         destination: &dyn BackupDestination,
         backup_id: uuid::Uuid,
-    ) -> Result<VerifiedBackupCheckpoint> {
+    ) -> std::result::Result<VerifiedBackupCheckpoint, crate::SnapshotFailure> {
         self.with_verified_backup(
             context,
             destination,
@@ -312,7 +308,7 @@ impl Database {
         destination: &dyn BackupDestination,
         session: &kasumi_store::VerifiedBackupSession,
         capture: Option<crate::backup_verify::ResidentCapture>,
-    ) -> Result<VerifiedBackupCheckpoint> {
+    ) -> std::result::Result<VerifiedBackupCheckpoint, crate::SnapshotFailure> {
         self.with_verified_backup(
             context,
             destination,
@@ -333,7 +329,7 @@ impl Database {
         context: &RequestContext,
         destination: &dyn BackupDestination,
         expected: FullBackupCheckpoint,
-    ) -> Result<String> {
+    ) -> std::result::Result<String, crate::SnapshotFailure> {
         let credential = context.authorization.clone();
         self.with_verified_backup(
             context,
@@ -373,7 +369,7 @@ impl Database {
         pending: Option<&kasumi_store::VerifiedBackupSession>,
         capture: Option<crate::backup_verify::ResidentCapture>,
         finish: F,
-    ) -> Result<T>
+    ) -> std::result::Result<T, crate::SnapshotFailure>
     where
         T: Send + 'static,
         F: FnOnce(
@@ -387,10 +383,7 @@ impl Database {
         self.access()?;
         self.engine.authorize(context, None, Action::Admin)?;
         if backup_id.is_nil() {
-            return Err(Error::new(
-                ErrorCode::InvalidArgument,
-                "nil backup identity",
-            ));
+            return Err((Error::new(ErrorCode::InvalidArgument, "nil backup identity")).into());
         }
         let cancellation = QueryCancellation::default();
         let _cancel_on_drop = CancelOnDrop(cancellation.clone());
@@ -406,7 +399,7 @@ impl Database {
             .map_err(|_| Error::new(ErrorCode::Unavailable, "backup deadline unavailable"))?;
         tokio::select! {
             result = deadline.run(self.barrier()) => result.map_err(|error| verification_error(error, deadline))??,
-            _ = cancelled(&cancellation) => return Err(cancelled_error()),
+            _ = cancelled(&cancellation) => return Err((cancelled_error()).into()),
         }
         let state = self.engine.generation()?;
         let epoch = state.state.policy_epoch;
@@ -414,31 +407,30 @@ impl Database {
         drop(state);
         let session = tokio::select! {
             result = deadline.run(self.backup_session(context, destination, backup_id)) => result.map_err(|error| verification_error(error, deadline))??,
-            _ = cancelled(&cancellation) => return Err(cancelled_error()),
+            _ = cancelled(&cancellation) => return Err((cancelled_error()).into()),
         }.ok_or_else(|| Error::new(ErrorCode::NotFound, "backup session not found"))?;
         if let Some(expected) = pending
             && (expected.intent() != session.intent()
                 || expected.intent_ciphertext_sha256() != session.intent_ciphertext_sha256())
         {
-            return Err(Error::new(
-                ErrorCode::Conflict,
-                "backup session intent changed",
-            ));
+            return Err((Error::new(ErrorCode::Conflict, "backup session intent changed")).into());
         }
         let completed = match session.outcome() {
             Some(BackupSessionOutcome::Complete { checkpoint, .. }) => Some(checkpoint.clone()),
             Some(BackupSessionOutcome::Aborted { .. }) => {
-                return Err(Error::new(
+                return Err((Error::new(
                     ErrorCode::Conflict,
                     "backup session was permanently aborted",
-                ));
+                ))
+                .into());
             }
             None if pending.is_some() => None,
             None => {
-                return Err(Error::new(
+                return Err((Error::new(
                     ErrorCode::UnknownOutcome,
                     "backup session has no permanent completion; resolve its creation first",
-                ));
+                ))
+                .into());
             }
         };
         let objects = kasumi_store::BackupSessionObjects::new(destination, backup_id)
@@ -454,8 +446,8 @@ impl Database {
             registration: registration.clone(),
         };
         let verified = tokio::select! {
-            result = deadline.run(Box::pin(crate::backup_verify::verify(&reader, backup_id, self.admission(), deadline, capture))) => result.map_err(|error| verification_error(error, deadline))?.map_err(|error| verification_error(error, deadline))?,
-            _ = cancelled(&cancellation) => return Err(cancelled_error()),
+            result = deadline.run(Box::pin(crate::backup_verify::verify(&reader, backup_id, self.admission(), deadline, capture))) => result.map_err(|error| verification_error(error, deadline))?.map_err(crate::SnapshotFailure::from)?,
+            _ = cancelled(&cancellation) => return Err(cancelled_error().into()),
         };
         if completed
             .as_ref()
@@ -467,7 +459,8 @@ impl Database {
             return Err(Error::new(
                 ErrorCode::Corruption,
                 "backup graph differs from permanent session identity or outcome",
-            ));
+            )
+            .into());
         }
         // Decoded resident state can be large; its destructor and reservation
         // also belong to the actual blocking worker, not a canceled caller.
@@ -482,7 +475,7 @@ impl Database {
             .map_err(|error| verification_error(error, deadline))?;
         tokio::select! {
             result = deadline.run(self.maintenance_audit_inner(context.clone(), "backup_verification", "completed", current_revision)) => { result.map_err(|error| verification_error(error, deadline))??; },
-            _ = cancelled(&cancellation) => return Err(cancelled_error()),
+            _ = cancelled(&cancellation) => return Err(cancelled_error().into()),
         }
         self.engine
             .authorize_release(context, None, Action::Admin, epoch)?;

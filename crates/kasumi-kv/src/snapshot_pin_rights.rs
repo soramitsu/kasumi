@@ -46,7 +46,10 @@ pub(super) const fn source_rights_request_bytes() -> u64 {
 }
 
 fn serial(state: &RegistryState) -> Result<u64, CoreError> {
-    state.serial.checked_add(1).ok_or(CoreError::CapacityDenied)
+    state
+        .serial
+        .checked_add(1)
+        .ok_or(CoreError::new(crate::CoreErrorCause::CapacityDenied))
 }
 fn same_pin(slot: &Slot, pin: PinIdentity) -> bool {
     slot.token == pin.token && slot.root == pin.root
@@ -67,11 +70,11 @@ impl SnapshotPins {
         let first = available
             .next()
             .map(|(i, _)| i)
-            .ok_or(CoreError::CapacityDenied)?;
+            .ok_or(CoreError::new(crate::CoreErrorCause::CapacityDenied))?;
         let second = available
             .next()
             .map(|(i, _)| i)
-            .ok_or(CoreError::CapacityDenied)?;
+            .ok_or(CoreError::new(crate::CoreErrorCause::CapacityDenied))?;
         let source = serial(&state)?;
         // No allocation or provider callback while this lock is held. The
         // rights payload is still stack-owned; allocate its Arc after unlocking
@@ -97,9 +100,9 @@ impl SnapshotPins {
         rights: &SourcePinRights,
     ) -> Result<PreparedProtectedPin, CoreError> {
         if !RetiredArc::ptr_eq(&self.inner, &rights.inner.registry) {
-            return Err(CoreError::InvalidInput(
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
                 "source pin rights belong to another owner",
-            ));
+            )));
         }
         let lease = self.inner.reserve(Self::pin_backing_request_bytes())?;
         let pin = SnapshotPin {
@@ -124,7 +127,7 @@ impl SnapshotPins {
                 }
                 _ => None,
             })
-            .ok_or(CoreError::CapacityDenied)?;
+            .ok_or(CoreError::new(crate::CoreErrorCause::CapacityDenied))?;
         let ticket = serial(&state)?;
         state.slots[index] = Entry::ProtectedIdle {
             lane,
@@ -154,17 +157,19 @@ impl SnapshotPins {
         root: DirectoryRoot,
     ) -> Result<SnapshotPin, CoreError> {
         if !RetiredArc::ptr_eq(&self.inner, &prepared.rights.registry) {
-            return Err(CoreError::InvalidInput(
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
                 "prepared pin belongs to another owner",
-            ));
+            )));
         }
         if !prepared.pending || prepared.pin.is_none() {
-            return Err(CoreError::InvalidInput("prepared pin was already settled"));
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
+                "prepared pin was already settled",
+            )));
         }
         if root.group_id != self.inner.group_id {
-            return Err(CoreError::InvalidInput(
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
                 "snapshot root belongs to another group",
-            ));
+            )));
         }
         root.validate()?;
         let pin = prepared.pin.as_ref().expect("checked prepared pin");
@@ -177,7 +182,9 @@ impl SnapshotPins {
             Entry::ProtectedIdle { lane, ticket: Some(ticket) }
                 if *lane == prepared.lane && *ticket == prepared.ticket)
             })
-            .ok_or(CoreError::InvalidInput("prepared pin ticket differs"))?;
+            .ok_or(CoreError::new(crate::CoreErrorCause::InvalidInput(
+                "prepared pin ticket differs",
+            )))?;
         let token = self.inner.next_epoch(&state)?;
         // OnceLock::set neither allocates nor invokes provider code.
         if pin
@@ -191,7 +198,7 @@ impl SnapshotPins {
             .is_err()
         {
             self.inner.failed.store(true, Ordering::Release);
-            return Err(CoreError::OwnerFailed);
+            return Err(CoreError::new(crate::CoreErrorCause::OwnerFailed));
         }
         state.slots[index] = Entry::Pinned(Slot {
             root,
@@ -207,9 +214,9 @@ impl SnapshotPins {
     pub(crate) fn reserve_history(&self, pin: &SnapshotPin) -> Result<HistoryPinRight, CoreError> {
         self.inner.check()?;
         if !RetiredArc::ptr_eq(&self.inner, &pin.inner.registry) {
-            return Err(CoreError::InvalidInput(
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
                 "history pin belongs to another owner",
-            ));
+            )));
         }
         let retained = pin.clone(); // Allocation-free; retained before the lock.
         let target = pin.identity();
@@ -218,21 +225,29 @@ impl SnapshotPins {
             Some(slot) if same_pin(slot, target) => match slot.class {
                 PinClass::Protected(lane) => lane,
                 PinClass::Ordinary => {
-                    return Err(CoreError::InvalidInput("pin is already ordinary"));
+                    return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
+                        "pin is already ordinary",
+                    )));
                 }
             },
-            _ => return Err(CoreError::InvalidInput("history target differs")),
+            _ => {
+                return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
+                    "history target differs",
+                )));
+            }
         };
         if state.slots.iter().any(
             |entry| matches!(entry, Entry::HistoryHold { target: held, .. } if *held == target),
         ) {
-            return Err(CoreError::InvalidInput("history target already reserved"));
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
+                "history target already reserved",
+            )));
         }
         let held_slot = state
             .slots
             .iter()
             .position(Entry::is_empty)
-            .ok_or(CoreError::CapacityDenied)?;
+            .ok_or(CoreError::new(crate::CoreErrorCause::CapacityDenied))?;
         let ticket = serial(&state)?;
         state.slots[held_slot] = Entry::HistoryHold {
             ticket,
@@ -256,19 +271,23 @@ impl SnapshotPins {
     /// higher-level handoff. No admission, allocation or root change occurs.
     pub(crate) fn commit_history(&self, history: &mut HistoryPinRight) -> Result<(), CoreError> {
         if !RetiredArc::ptr_eq(&self.inner, &history.pin.inner.registry) {
-            return Err(CoreError::InvalidInput(
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
                 "history right belongs to another owner",
-            ));
+            )));
         }
         if !history.pending {
-            return Err(CoreError::InvalidInput("history right was already settled"));
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
+                "history right was already settled",
+            )));
         }
         let target = history.pin.identity();
         let mut state = self.inner.lock()?;
         if !matches!(state.slots.get(history.held_slot), Some(Entry::HistoryHold { ticket, target: held, lane })
             if *ticket == history.ticket && *held == target && *lane == history.lane)
         {
-            return Err(CoreError::InvalidInput("history reservation differs"));
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
+                "history reservation differs",
+            )));
         }
         let slot = state
             .slots
@@ -278,7 +297,9 @@ impl SnapshotPins {
             .filter(|slot| {
                 same_pin(slot, target) && slot.class == PinClass::Protected(history.lane)
             })
-            .ok_or(CoreError::InvalidInput("history protected pin differs"))?;
+            .ok_or(CoreError::new(crate::CoreErrorCause::InvalidInput(
+                "history protected pin differs",
+            )))?;
         state.slots[target.slot] = Entry::Pinned(Slot {
             class: PinClass::Ordinary,
             ..slot
@@ -320,7 +341,7 @@ impl PreparedProtectedPin {
         let Some(index) = state.slots.iter().position(|entry| matches!(entry,
             Entry::ProtectedIdle { lane, ticket: Some(ticket) } if *lane == self.lane && *ticket == self.ticket)) else {
             registry.failed.store(true, Ordering::Release);
-            return Err(CoreError::OwnerFailed);
+            return Err(CoreError::new(crate::CoreErrorCause::OwnerFailed));
         };
         state.slots[index] = Entry::ProtectedIdle {
             lane: self.lane,
@@ -351,7 +372,7 @@ impl HistoryPinRight {
             if *ticket == self.ticket && *target == self.pin.identity() && *lane == self.lane)
         {
             registry.failed.store(true, Ordering::Release);
-            return Err(CoreError::OwnerFailed);
+            return Err(CoreError::new(crate::CoreErrorCause::OwnerFailed));
         }
         state.slots[self.held_slot] = Entry::Empty;
         self.pending = false;
@@ -369,7 +390,7 @@ fn retire_source_lanes(registry: &RegistryRef, source: u64) -> Result<(), CoreEr
     let mut state = registry.state.lock().map_err(|poisoned| {
         registry.failed.store(true, Ordering::Release);
         drop(poisoned.into_inner());
-        CoreError::OwnerFailed
+        CoreError::new(crate::CoreErrorCause::OwnerFailed)
     })?;
     let mut found = [None; 2];
     for (index, entry) in state.slots.iter().enumerate() {
@@ -381,26 +402,26 @@ fn retire_source_lanes(registry: &RegistryRef, source: u64) -> Result<(), CoreEr
                 ..
             }) if lane.source == source => {
                 registry.failed.store(true, Ordering::Release);
-                return Err(CoreError::OwnerFailed);
+                return Err(CoreError::new(crate::CoreErrorCause::OwnerFailed));
             }
             Entry::HistoryHold { lane, .. } if lane.source == source => {
                 registry.failed.store(true, Ordering::Release);
-                return Err(CoreError::OwnerFailed);
+                return Err(CoreError::new(crate::CoreErrorCause::OwnerFailed));
             }
             _ => continue,
         };
         let Some(slot) = found.get_mut(usize::from(lane.lane)) else {
             registry.failed.store(true, Ordering::Release);
-            return Err(CoreError::OwnerFailed);
+            return Err(CoreError::new(crate::CoreErrorCause::OwnerFailed));
         };
         if slot.replace(index).is_some() {
             registry.failed.store(true, Ordering::Release);
-            return Err(CoreError::OwnerFailed);
+            return Err(CoreError::new(crate::CoreErrorCause::OwnerFailed));
         }
     }
     let [Some(first), Some(second)] = found else {
         registry.failed.store(true, Ordering::Release);
-        return Err(CoreError::OwnerFailed);
+        return Err(CoreError::new(crate::CoreErrorCause::OwnerFailed));
     };
     state.slots[first] = Entry::Empty;
     state.slots[second] = Entry::Empty;

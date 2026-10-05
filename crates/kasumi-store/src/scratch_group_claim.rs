@@ -13,13 +13,16 @@ struct PreparedFile {
 }
 pub(super) struct GroupTransaction {
     plan: TransactionSpacePlan,
-    prepared: [Option<PreparedFile>; MAX_FILES],
+    prepared: Vec<Option<PreparedFile>>,
     space: Option<TransactionSpace>,
     created: [u64; 2],
     lengths: [u64; 2],
     pub(super) entered: bool,
 }
 impl GroupTransaction {
+    pub(super) fn prepared_backing_bytes() -> io::Result<u64> {
+        slots_backing_bytes::<PreparedFile>()
+    }
     fn matches(&self, group: [u8; 16], batch: u64) -> bool {
         self.plan.group_id == group && self.plan.batch_seq == batch
     }
@@ -176,7 +179,9 @@ impl State {
         }
         let mut transaction = GroupTransaction {
             plan: *plan,
-            prepared: std::array::from_fn(|_| None),
+            // The original owner's census grant already covers this complete
+            // capacity before any per-file grant, prepared spool or effect.
+            prepared: fixed_slots::<PreparedFile>().map_err(ReserveFailure::memory)?,
             space: None,
             created: [0; 2],
             lengths: [0; 2],
@@ -251,7 +256,10 @@ impl State {
         if let Err(error) = kasumi_kv::validate_transaction_space_roots(plan, &a, &b) {
             // Caller plan mismatches do not invalidate healthy storage. Actual
             // protected-root corruption does, retaining the exact CoreError.
-            if matches!(error, kasumi_kv::CoreError::Corrupt(_)) {
+            if matches!(
+                (error).rejected_cause(),
+                Some(kasumi_kv::CoreErrorCause::Corrupt(_))
+            ) {
                 self.fail();
             }
             return Err(io::Error::other(error).into());

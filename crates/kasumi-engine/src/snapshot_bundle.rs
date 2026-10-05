@@ -5,7 +5,7 @@
 use super::CapturedValidation;
 use super::{Generation, TenantEngine, ValidationBaseline};
 use anyhow::{Context, Result, ensure};
-use kasumi_store::{InspectedAuditDependency, PreparedAuditSegment, StoragePurpose, TenantStore};
+use kasumi_store::{InspectedAuditDependency, StoragePurpose, TenantStore};
 use kasumi_types::{AuditArchiveLink, AuditArchiveReference, MAX_AUDIT_SEGMENT_BYTES, TenantState};
 use sha2::{Digest, Sha256};
 use std::io::{self, Read, Write};
@@ -424,33 +424,36 @@ pub(super) fn read(
     baseline: &ValidationBaseline<'_>,
     reader: &mut dyn Read,
     expected: Option<crate::snapshot_codec::StreamSummary>,
-) -> Result<Generation> {
-    baseline.current_for(engine)?;
-    let store = engine
-        .snapshot_store
-        .get()
-        .context("snapshot storage not installed")?;
-    store.check_access()?;
-    let mut decoder = Decoder {
-        reader,
-        digest: Sha256::new(),
-        counts: Counts::default(),
-    };
-    let mut magic = [0; 8];
-    decoder.bytes(&mut magic)?;
-    ensure!(&magic == MAGIC, "unsupported tenant snapshot bundle format");
-    let length = decoder.length(SOURCE_LIMIT)?;
-    let mut encoded = vec![0; length];
-    decoder.bytes(&mut encoded)?;
-    let source: StoragePurpose = serde_json::from_slice(&encoded)?;
-    ensure!(
-        serde_json::to_vec(&source)? == encoded,
-        "noncanonical snapshot source purpose"
-    );
-    ensure!(
-        same_snapshot_resource(&source, store.storage_access().purpose()),
-        "snapshot source installation differs"
-    );
+) -> std::result::Result<Generation, kasumi_store::ScratchOperationFailure> {
+    let (store, mut decoder, source) = kasumi_store::ScratchOperationFailure::ordinary(|| {
+        baseline.current_for(engine)?;
+        let store = engine
+            .snapshot_store
+            .get()
+            .context("snapshot storage not installed")?;
+        store.check_access()?;
+        let mut decoder = Decoder {
+            reader,
+            digest: Sha256::new(),
+            counts: Counts::default(),
+        };
+        let mut magic = [0; 8];
+        decoder.bytes(&mut magic)?;
+        ensure!(&magic == MAGIC, "unsupported tenant snapshot bundle format");
+        let length = decoder.length(SOURCE_LIMIT)?;
+        let mut encoded = vec![0; length];
+        decoder.bytes(&mut encoded)?;
+        let source: StoragePurpose = serde_json::from_slice(&encoded)?;
+        ensure!(
+            serde_json::to_vec(&source)? == encoded,
+            "noncanonical snapshot source purpose"
+        );
+        ensure!(
+            same_snapshot_resource(&source, store.storage_access().purpose()),
+            "snapshot source installation differs"
+        );
+        Ok((store, decoder, source))
+    })?;
     let mut logical = LogicalReader {
         decoder: &mut decoder,
         buffer: Vec::with_capacity(CHUNK),
@@ -458,60 +461,64 @@ pub(super) fn read(
         short: false,
         ended: false,
     };
-    let generation =
-        engine.prepare_snapshot_reader(baseline, store.scratch_disk(), &mut logical, expected)?;
-    ensure!(logical.ended, "logical snapshot end missing");
-    authorize_root(&generation.state, &source, store.storage_access().purpose())?;
-    let retention = &generation.state.audit_retention;
-    let mut expected = retention
-        .archive_head
-        .as_ref()
-        .map(|head| head.object.clone());
-    if expected.is_some() {
-        let placement = store.tenant_audit_archive()?;
-        while let Some(link) = expected {
-            ensure!(
-                decoder.tag()? == ARCHIVE,
-                "snapshot archive dependency missing"
-            );
-            let length = decoder.length(MAX_AUDIT_SEGMENT_BYTES)?;
-            let mut ciphertext = vec![0; length];
-            decoder.bytes(&mut ciphertext)?;
-            let reference =
-                verify_dependency(&generation.state, &source, store, &ciphertext, &link)?;
-            if decoder.counts.archive_records == 0 {
+    let generation = engine
+        .prepare_snapshot_reader(baseline, store.scratch_disk(), &mut logical, expected)
+        .map_err(crate::SnapshotFailure::into_scratch_failure)?;
+    let logical_ended = logical.ended;
+    drop(logical);
+    kasumi_store::ScratchOperationFailure::ordinary(|| {
+        ensure!(logical_ended, "logical snapshot end missing");
+        authorize_root(&generation.state, &source, store.storage_access().purpose())?;
+        let retention = &generation.state.audit_retention;
+        let mut expected = retention
+            .archive_head
+            .as_ref()
+            .map(|head| head.object.clone());
+        if expected.is_some() {
+            let placement = store.tenant_audit_archive()?;
+            while let Some(link) = expected {
                 ensure!(
-                    retention.archive_head.as_ref() == Some(&reference),
-                    "snapshot archive head differs"
+                    decoder.tag()? == ARCHIVE,
+                    "snapshot archive dependency missing"
                 );
+                let length = decoder.length(MAX_AUDIT_SEGMENT_BYTES)?;
+                let mut ciphertext = vec![0; length];
+                decoder.bytes(&mut ciphertext)?;
+                let reference =
+                    verify_dependency(&generation.state, &source, store, &ciphertext, &link)?;
+                if decoder.counts.archive_records == 0 {
+                    ensure!(
+                        retention.archive_head.as_ref() == Some(&reference),
+                        "snapshot archive head differs"
+                    );
+                }
+                expected = reference.previous.clone();
+                decoder.counts.record(true, length)?;
+                ensure!(
+                    decoder.counts.archive_bytes <= retention.archive_bytes
+                        && decoder.counts.archive_records <= retention.archive_segments,
+                    "snapshot archive budget exceeded"
+                );
+                // Verified immutable orphans are harmless on a later failure. No
+                // pruning watermark is published until this whole bundle succeeds.
+                placement
+                    .cache()
+                    .publish_blocking(&store.copy_audit_segment(reference, &ciphertext)?)?;
             }
-            expected = reference.previous.clone();
-            decoder.counts.record(true, length)?;
-            ensure!(
-                decoder.counts.archive_bytes <= retention.archive_bytes
-                    && decoder.counts.archive_records <= retention.archive_segments,
-                "snapshot archive budget exceeded"
-            );
-            // Verified immutable orphans are harmless on a later failure. No
-            // pruning watermark is published until this whole bundle succeeds.
-            placement.cache().publish_blocking(&PreparedAuditSegment {
-                reference,
-                ciphertext,
-            })?;
         }
-    }
-    ensure!(
-        decoder.counts.archive_bytes == retention.archive_bytes
-            && decoder.counts.archive_records == retention.archive_segments,
-        "snapshot archive accounting differs"
-    );
-    ensure!(
-        decoder.tag()? == END,
-        "snapshot trailing dependency or missing final record"
-    );
-    decoder.finish()?;
-    store.check_access()?;
-    Ok(generation)
+        ensure!(
+            decoder.counts.archive_bytes == retention.archive_bytes
+                && decoder.counts.archive_records == retention.archive_segments,
+            "snapshot archive accounting differs"
+        );
+        ensure!(
+            decoder.tag()? == END,
+            "snapshot trailing dependency or missing final record"
+        );
+        decoder.finish()?;
+        store.check_access()?;
+        Ok(generation)
+    })
 }
 
 #[cfg(test)]
@@ -614,7 +621,7 @@ mod tests {
     }
     async fn fixture_on_node(
         directory: tempfile::TempDir,
-        node: Arc<NodeStore>,
+        node: NodeStore,
         incarnation: &str,
         tenant: &str,
     ) -> Fixture {
@@ -683,7 +690,7 @@ mod tests {
             state.audit_retention.archive_bytes += segment.reference.ciphertext_bytes;
             state.audit_retention.archive_segments += 1;
             previous = Some(segment.reference.object.clone());
-            references.push(segment.reference);
+            references.push(segment.reference.clone());
         }
         state.audit_retention.next_sequence = 3;
         state.audit_retention.pruned_before = 3;
@@ -702,18 +709,23 @@ mod tests {
         )));
         references
     }
-    async fn capture(engine: Arc<TenantEngine>) -> Result<Vec<u8>> {
+    async fn capture(
+        engine: Arc<TenantEngine>,
+    ) -> crate::test_fixture_failure::FixtureResult<Vec<u8>> {
         // Capture happens before owned blocking materialization, as in Raft.
         let captured = engine.capture_snapshot()?;
-        tokio::task::spawn_blocking(move || {
+        tokio::task::spawn_blocking(move || -> crate::test_fixture_failure::FixtureResult<_> {
             let mut bytes = Vec::new();
             captured.write(&mut bytes)?;
             Ok(bytes)
         })
         .await?
     }
-    async fn restore(engine: Arc<TenantEngine>, bytes: Vec<u8>) -> Result<()> {
-        tokio::task::spawn_blocking(move || {
+    async fn restore(
+        engine: Arc<TenantEngine>,
+        bytes: Vec<u8>,
+    ) -> crate::test_fixture_failure::FixtureResult<()> {
+        tokio::task::spawn_blocking(move || -> crate::test_fixture_failure::FixtureResult<_> {
             // These bundle fixtures remain at genesis (no applied Raft entry).
             // Exercise prepared validation and atomic namespace publication;
             // the Raft crate separately tests the joint custody/cursor commit.
@@ -736,7 +748,7 @@ mod tests {
                 &prepared.application_replacements(),
                 prepared.application_writes(),
             )?;
-            prepared.publish()
+            prepared.publish().map_err(Into::into)
         })
         .await?
     }
@@ -929,8 +941,8 @@ mod tests {
         };
 
         fn ready_error<T>(
-            future: impl Future<Output = kasumi_types::Result<T>>,
-        ) -> kasumi_types::Error {
+            future: impl Future<Output = std::result::Result<T, crate::SnapshotFailure>>,
+        ) -> crate::SnapshotFailure {
             let mut future = std::pin::pin!(future);
             match future
                 .as_mut()
@@ -972,11 +984,16 @@ mod tests {
             target_store.scratch_disk().snapshot().live_files,
         );
         assert_eq!(
-            ready_error(source.snapshot(foreign.clone(), 60_000)).code,
+            ready_error(source.snapshot(foreign.clone(), 60_000))
+                .operation_error()
+                .unwrap()
+                .code,
             kasumi_types::ErrorCode::Conflict
         );
         assert_eq!(
             ready_error(target.prepare_snapshot_restore(image.clone(), foreign.clone(), 60_000))
+                .operation_error()
+                .unwrap()
                 .code,
             kasumi_types::ErrorCode::Conflict
         );
@@ -1165,7 +1182,10 @@ mod tests {
             .await
             .err()
             .expect("accounted record work must be admitted before staging");
-        assert_eq!(error.code, ErrorCode::ResourceExhausted);
+        assert_eq!(
+            error.operation_error().unwrap().code,
+            ErrorCode::ResourceExhausted
+        );
         assert_eq!(image.disk().snapshot().live_files, live_files);
         drop(held);
         assert_eq!(
@@ -1255,6 +1275,8 @@ mod tests {
                 .snapshot(admission.clone(), 60_000)
                 .await
                 .unwrap_err()
+                .operation_error()
+                .unwrap()
                 .code,
             kasumi_types::ErrorCode::ResourceExhausted
         );

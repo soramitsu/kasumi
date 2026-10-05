@@ -72,7 +72,8 @@ async fn panicked_cold_preparation_drains_actual_nodes_stores_and_partial_runtim
                 native_scratch_disk,
                 native_disk.native_storage_config(),
             )
-        }?;
+        }
+        .expect("drained runtime fixture must reopen its installed native node");
         let store = TenantStore::open_existing(
             node.clone(),
             SECURITY_TENANT.into(),
@@ -149,7 +150,8 @@ async fn rejected_cold_audit_open_drains_storage_and_releases_the_standalone_ins
             native_scratch_disk,
             native_disk.native_storage_config(),
         )
-    }?;
+    }
+    .expect("audit corruption fixture must reopen its installed native node");
     let store = TenantStore::open_existing(
         node.clone(),
         SECURITY_TENANT.into(),
@@ -192,7 +194,8 @@ async fn rejected_cold_audit_open_drains_storage_and_releases_the_standalone_ins
                 native_scratch_disk,
                 native_disk.native_storage_config(),
             )
-        }?;
+        }
+        .expect("drained rejected audit startup must reopen its installed native node");
         let store = TenantStore::open_existing(
             node.clone(),
             SECURITY_TENANT.into(),
@@ -440,7 +443,8 @@ async fn actual_standalone_unpolled_serve_and_serving_panic_retain_installation_
                 native_scratch_disk,
                 native_disk.native_storage_config(),
             )
-        }?;
+        }
+        .expect("drained cancelled runtime fixture must reopen its installed native node");
         let store = TenantStore::open_existing(
             node.clone(),
             SECURITY_TENANT.into(),

@@ -224,6 +224,7 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
                 .await
                 .unwrap();
             let admission = storage.facade(storage.policy()).unwrap();
+            let originals = config.node_start_inventory(&admission).unwrap();
             let installed = config
                 .open(
                     BTreeMap::from([(domain.digest().unwrap(), domain.clone())]),
@@ -231,6 +232,7 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
                     storage.open_persistent(&persistent_disk).unwrap(),
                     storage.open_scratch(&input.scratch_disk).unwrap(),
                     admission,
+                    &originals,
                 )
                 .await
                 .unwrap();
@@ -264,7 +266,11 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
                 Arc::new(CurrentFixtureAdministrator {
                     authority_id: manifest.authority_id,
                 }),
-                kasumi_serving::BackgroundWorkBudget::new(64, Arc::new(())).unwrap(),
+                kasumi_serving::BackgroundWorkBudget::new(
+                    64,
+                    kasumi_types::SharedBudgetCharge::new(()),
+                )
+                .unwrap(),
             )
             .unwrap();
         verifier_stores.push(store);

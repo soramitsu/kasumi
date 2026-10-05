@@ -171,7 +171,7 @@ async fn invocation_receipt_consumes_covered_replay_with_changed_and_empty_effec
             current
                 .custody_get(META, b"applied", CONTROL_BYTES)?
                 .as_deref(),
-            Some(original_cursor.as_slice())
+            Some(original_cursor.as_bytes())
         );
         let proof = selected_application_at_planned(
             &current,
@@ -230,15 +230,19 @@ async fn invocation_receipt_reentrant_early_consume_cannot_change_entered_mint_s
         plan: None,
     };
     let mut receipt = None;
-    crate::with_application_publisher_for_test(&fixture.stores, &later, |publisher| {
-        receipt = Some(publisher.commit_with_selection(
-            response,
-            &[],
-            &mut preparer,
-            expected.challenge()?,
-        )?);
-        Ok(())
-    })?;
+    crate::with_application_publisher_for_test(
+        &fixture.stores,
+        &later,
+        |publisher| -> anyhow::Result<()> {
+            receipt = Some(publisher.commit_with_selection(
+                response,
+                &[],
+                &mut preparer,
+                expected.challenge()?,
+            )?);
+            Ok(())
+        },
+    )?;
     let plan = preparer.plan.take().context("actual plan absent")?;
     expected.consume(receipt.context("actual receipt absent")?, &plan)?;
     drop(preparer);
@@ -543,11 +547,19 @@ async fn invocation_receipt_fixed_inputs_hash_and_authentic_consume_allocate_not
     ));
     let mut prepared = Prepared::default();
     let mut receipt = None;
-    crate::with_application_publisher_for_test(&fixture.stores, &position, |publisher| {
-        receipt =
-            Some(publisher.commit_with_selection(response, &writes, &mut prepared, challenge)?);
-        Ok(())
-    })?;
+    crate::with_application_publisher_for_test(
+        &fixture.stores,
+        &position,
+        |publisher| -> anyhow::Result<()> {
+            receipt = Some(publisher.commit_with_selection(
+                response,
+                &writes,
+                &mut prepared,
+                challenge,
+            )?);
+            Ok(())
+        },
+    )?;
     let plan = prepared.0.take().context("actual plan absent")?;
     let receipt = receipt.context("actual receipt absent")?;
     allocation_tests::require_no_allocations(|| expected.consume(receipt, &plan))?;

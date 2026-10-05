@@ -1,5 +1,6 @@
 //! Exercise the callback barrier in the actual detached storage worker.
 use super::*;
+use crate::test_utils::FixtureResult;
 use std::{cell::Cell, sync::atomic::AtomicUsize, time::Duration};
 
 const WAIT: Duration = Duration::from_secs(10);
@@ -42,7 +43,7 @@ impl StateMachineBackend for Backend {
         position: &crate::AppliedEntryContext,
         input: crate::AppliedInput<'_>,
         publisher: &mut dyn crate::ApplyPublisher,
-    ) -> Result<()> {
+    ) -> std::result::Result<(), kasumi_store::ScratchOperationFailure> {
         self.calls.fetch_add(1, Ordering::AcqRel);
         if matches!(self.behavior, Behavior::Missing) {
             return Ok(());
@@ -69,7 +70,10 @@ impl StateMachineBackend for Backend {
                 .entered
                 .send(())
                 .map_err(|_| anyhow::anyhow!("observer gone"))?;
-            pause.release.recv_timeout(WAIT)?;
+            pause
+                .release
+                .recv_timeout(WAIT)
+                .map_err(anyhow::Error::from)?;
         }
         if matches!(self.behavior, Behavior::PanicAfterRefusal) {
             assert_eq!(result, Err(crate::PublishCallError::Failed));
@@ -82,7 +86,7 @@ impl StateMachineBackend for Backend {
             assert_eq!(result, Err(crate::PublishCallError::Failed));
             return Ok(()); // Deliberately swallow the non-owning notification.
         }
-        result?;
+        result.map_err(anyhow::Error::from)?;
         if matches!(self.behavior, Behavior::Repeated) {
             assert_eq!(
                 publisher.commit(crate::AppliedResponse::application(Vec::new()), &[]),
@@ -93,20 +97,28 @@ impl StateMachineBackend for Backend {
         *self.selected.0.lock().unwrap() = bytes;
         Ok(())
     }
-    fn capture_snapshot(&self) -> Result<crate::CapturedSnapshot> {
+    fn capture_snapshot(
+        &self,
+    ) -> std::result::Result<crate::CapturedSnapshot, kasumi_store::ScratchOperationFailure> {
         self.selected.capture_snapshot()
     }
     fn validate_snapshot(
         &self,
         bytes: &mut dyn std::io::Read,
-    ) -> Result<Option<crate::RetiredSnapshotState>> {
+    ) -> std::result::Result<
+        Option<crate::RetiredSnapshotState>,
+        kasumi_store::ScratchOperationFailure,
+    > {
         self.selected.validate_snapshot(bytes)
     }
     fn prepare_restore<'a>(
         &'a self,
         context: &crate::SnapshotRestoreContext,
         bytes: &mut dyn std::io::Read,
-    ) -> Result<Box<dyn crate::PreparedStateMachineRestore + 'a>> {
+    ) -> std::result::Result<
+        Box<dyn crate::PreparedStateMachineRestore + 'a>,
+        kasumi_store::ScratchOperationFailure,
+    > {
         self.selected.prepare_restore(context, bytes)
     }
 }
@@ -120,7 +132,7 @@ struct Fixture {
     machine: StateMachine,
     drain: crate::lifetime::StorageDrain,
 }
-async fn fixture(behavior: Behavior) -> Result<Fixture> {
+async fn fixture(behavior: Behavior) -> FixtureResult<Fixture> {
     let directory = kasumi_store::test_utils::private_tempdir()?;
     let scratch = kasumi_store::ScratchDisk::fixture(
         directory.path(),
@@ -182,7 +194,7 @@ fn durable_cursor(domains: &TenantStorageSet) -> Result<Option<LogId<u64>>> {
 }
 
 #[tokio::test]
-async fn metadata_application_write_and_cursor_publish_together() -> Result<()> {
+async fn metadata_application_write_and_cursor_publish_together() -> FixtureResult<()> {
     let mut fixture = fixture(Behavior::Publish).await?;
     let step = entry(1, EntryPayload::Blank);
     assert_eq!(
@@ -193,8 +205,9 @@ async fn metadata_application_write_and_cursor_publish_together() -> Result<()> 
         fixture
             .domains
             .application()
-            .get(APPLICATION, b"selected")?,
-        Some(1u64.to_be_bytes().to_vec())
+            .get(APPLICATION, b"selected")?
+            .as_deref(),
+        Some(1u64.to_be_bytes().as_slice())
     );
     assert_eq!(durable_cursor(&fixture.domains)?, Some(step.log_id));
     assert_eq!(fixture.machine.applied_state().await?.0, Some(step.log_id));
@@ -202,7 +215,8 @@ async fn metadata_application_write_and_cursor_publish_together() -> Result<()> 
 }
 
 #[tokio::test]
-async fn covered_replay_publishes_application_writes_without_rolling_custody_back() -> Result<()> {
+async fn covered_replay_publishes_application_writes_without_rolling_custody_back()
+-> FixtureResult<()> {
     let mut fixture = fixture(Behavior::Publish).await?;
     fixture
         .machine
@@ -249,8 +263,8 @@ async fn covered_replay_publishes_application_writes_without_rolling_custody_bac
 }
 
 #[tokio::test]
-async fn swallowed_missing_repeated_and_metadata_refusal_never_advance_resident_state() -> Result<()>
-{
+async fn swallowed_missing_repeated_and_metadata_refusal_never_advance_resident_state()
+-> FixtureResult<()> {
     for behavior in [
         Behavior::Missing,
         Behavior::Repeated,
@@ -292,7 +306,7 @@ async fn swallowed_missing_repeated_and_metadata_refusal_never_advance_resident_
 }
 
 #[tokio::test]
-async fn failed_joint_commit_preserves_application_and_custody_after_crash() -> Result<()> {
+async fn failed_joint_commit_preserves_application_and_custody_after_crash() -> FixtureResult<()> {
     let mut fixture = fixture(Behavior::Publish).await?;
     fixture.machine.apply([command(1, b"old")]).await?;
     fixture.disk.fail_after(0);
@@ -320,8 +334,8 @@ async fn failed_joint_commit_preserves_application_and_custody_after_crash() -> 
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn canceled_apply_retains_callback_error_and_send_only_panic_after_actual_drain() -> Result<()>
-{
+async fn canceled_apply_retains_callback_error_and_send_only_panic_after_actual_drain()
+-> FixtureResult<()> {
     let fixture = fixture(Behavior::PanicAfterRefusal).await?;
     let (entered, ready) = tokio::sync::oneshot::channel();
     let (release, wait) = std::sync::mpsc::channel();

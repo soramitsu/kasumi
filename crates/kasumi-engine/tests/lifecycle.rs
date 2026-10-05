@@ -29,7 +29,7 @@ struct Fixture {
     bootstrap: ReplicatedBootstrap,
     nodes: BTreeMap<u64, Arc<Database>>,
     audits: BTreeMap<u64, Arc<kasumi_engine::SecurityAudit>>,
-    node_owners: BTreeMap<u64, Arc<NodeStore>>,
+    node_owners: BTreeMap<u64, NodeStore>,
     signer: LifecycleSigner,
     partition_keys: BTreeMap<String, kasumi_serving::GenerationSigner>,
     installation: LifecycleInstallation,
@@ -1210,7 +1210,9 @@ async fn control_completion_audit_reservation_survives_denials_and_current_admin
         };
         let bytes = db
             .raft_group()
-            .write(serde_json::to_vec(&command).unwrap())
+            .write(kasumi_raft::ApplicationProposal::generated(
+                serde_json::to_vec(&command).unwrap(),
+            ))
             .await
             .unwrap();
         serde_json::from_slice::<Result<WriteReceipt>>(&bytes)

@@ -282,10 +282,9 @@ fn force_roll_keeps_capacity_and_cannot_interrupt_a_prepared_batch() {
     let prepared = prepare(&mut log, MaintenanceOp::DirectoryOnly).unwrap();
     let before = log.writer.position();
     let mut roll = RootRoll::new(&log.group, &mut log.root);
-    assert!(matches!(
-        log.writer.force_roll(&log.group, &mut roll),
-        Err(CoreError::OwnerFailed)
-    ));
+    assert!(
+        matches!(&(log.writer.force_roll(&log.group, &mut roll)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+    );
     assert_eq!(log.writer.position(), before);
     finish(&mut log, prepared).unwrap();
     assert_eq!(reopen(&log.group.crash()).unwrap().batches.len(), 2);
@@ -682,10 +681,9 @@ fn complete_metadata_preflight_rejects_late_invalid_inputs_without_effects() {
     let position = log.writer.position();
     let root = log.root.clone();
     for invalid in invalids {
-        assert!(matches!(
-            prepare_many(&mut log, &[operation(source), invalid]),
-            Err(CoreError::InvalidInput(_))
-        ));
+        assert!(
+            matches!(&(prepare_many(&mut log, &[operation(source), invalid])), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput(_))))
+        );
         assert!(!log.writer.is_fenced());
         assert!(log.writer.prepared.is_none());
         assert_eq!(log.writer.position(), position);
@@ -693,14 +691,12 @@ fn complete_metadata_preflight_rejects_late_invalid_inputs_without_effects() {
         assert_eq!(log.group.len(file).unwrap(), before.len() as u64);
         assert_eq!(log.group.durable_image(file).unwrap(), before);
     }
-    assert!(matches!(
-        prepare_many(&mut log, &[]),
-        Err(CoreError::InvalidInput(_))
-    ));
-    assert!(matches!(
-        prepare_many(&mut log, &[MaintenanceOp::DirectoryOnly; 2]),
-        Err(CoreError::InvalidInput(_))
-    ));
+    assert!(
+        matches!(&(prepare_many(&mut log, &[])), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput(_))))
+    );
+    assert!(
+        matches!(&(prepare_many(&mut log, &[MaintenanceOp::DirectoryOnly; 2])), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput(_))))
+    );
     let prepared = prepare(&mut log, operation(source)).unwrap();
     finish(&mut log, prepared).unwrap();
 }
@@ -719,12 +715,11 @@ fn maintenance_count_and_encoded_bytes_have_exact_preflight_bounds() {
         MAX_MAINTENANCE_OPERATIONS
     );
     let too_many = vec![operation(source); MAX_MAINTENANCE_OPERATIONS + 1];
-    assert!(matches!(
-        prepare_many(&mut log, &too_many),
-        Err(CoreError::InvalidInput(
+    assert!(
+        matches!(&(prepare_many(&mut log, &too_many)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput(
             "empty or oversized maintenance batch"
-        ))
-    ));
+        ))))
+    );
     assert!(!log.writer.is_fenced());
 
     let overhead = maintenance_operation_bytes(operation(source)).unwrap();
@@ -754,12 +749,11 @@ fn maintenance_count_and_encoded_bytes_have_exact_preflight_bounds() {
             ..last
         }),
     ];
-    assert!(matches!(
-        prepare_many(&mut log, &too_large),
-        Err(CoreError::InvalidInput(
+    assert!(
+        matches!(&(prepare_many(&mut log, &too_large)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput(
             "maintenance batch exceeds encoded byte bound"
-        ))
-    ));
+        ))))
+    );
     assert!(
         !log.writer.is_fenced(),
         "metadata rejection should precede source extent reads"

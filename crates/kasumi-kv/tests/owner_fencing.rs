@@ -346,10 +346,10 @@ fn payload(panic: &CorePanic) -> Option<&'static str> {
 }
 
 fn unknown_commit_payload(error: &CoreError) -> Option<&'static str> {
-    let CoreError::UnknownCommit(error) = error else {
+    if !error.is_unknown_commit() {
         return None;
-    };
-    payload(error.get_ref()?.downcast_ref::<CorePanic>()?)
+    }
+    payload(error.panic()?)
 }
 
 /// Every installed operation of a fenced, still open core reports
@@ -358,17 +358,21 @@ fn assert_sticky(core: &Core, admission: &FencingAdmission, backend: &PanicBacke
     let calls = admission.owner_failed_calls();
     let effects = backend.effects();
     assert!(core.is_fenced());
-    assert!(matches!(core.snapshot(), Err(CoreError::OwnerFailed)));
-    assert!(matches!(core.generation(), Err(CoreError::OwnerFailed)));
-    assert!(matches!(
-        core.committed_position(),
-        Err(CoreError::OwnerFailed)
-    ));
-    assert!(matches!(core.compact(), Err(CoreError::OwnerFailed)));
-    assert!(matches!(
-        core.commit(&[Operation::put("items", b"key", b"retry")]),
-        Err(CoreError::OwnerFailed)
-    ));
+    assert!(
+        matches!(&(core.snapshot()), Err(native_error) if matches!(native_error.rejected_cause(), Some(kasumi_kv::CoreErrorCause::OwnerFailed)))
+    );
+    assert!(
+        matches!(&(core.generation()), Err(native_error) if matches!(native_error.rejected_cause(), Some(kasumi_kv::CoreErrorCause::OwnerFailed)))
+    );
+    assert!(
+        matches!(&(core.committed_position()), Err(native_error) if matches!(native_error.rejected_cause(), Some(kasumi_kv::CoreErrorCause::OwnerFailed)))
+    );
+    assert!(
+        matches!(&(core.compact()), Err(native_error) if matches!(native_error.rejected_cause(), Some(kasumi_kv::CoreErrorCause::OwnerFailed)))
+    );
+    assert!(
+        matches!(&(core.commit(&[Operation::put("items", b"key", b"retry")])), Err(native_error) if matches!(native_error.rejected_cause(), Some(kasumi_kv::CoreErrorCause::OwnerFailed)))
+    );
     assert_eq!(admission.owner_failed_calls(), calls);
     assert_eq!(backend.effects(), effects);
 }
@@ -380,7 +384,9 @@ fn close_drains(core: &Core) {
         BackendNativeDisposition::Drained
     );
     outcome.into_result().unwrap();
-    assert!(matches!(core.snapshot(), Err(CoreError::Closed)));
+    assert!(
+        matches!(&(core.snapshot()), Err(native_error) if matches!(native_error.rejected_cause(), Some(kasumi_kv::CoreErrorCause::Closed)))
+    );
 }
 
 #[test]
@@ -405,7 +411,7 @@ fn failed_pre_commit_owner_calls_fence_once_without_any_backend_effect() {
         inject(&admission);
         let result = core.commit(&[Operation::put("items", b"key", NEW)]);
         assert!(
-            matches!(result, Err(CoreError::OwnerFailed)),
+            matches!(&(result), Err(native_error) if matches!(native_error.rejected_cause(), Some(kasumi_kv::CoreErrorCause::OwnerFailed))),
             "{site}: {result:?}"
         );
         assert_eq!(backend.effects(), 0, "{site} reached the backend");
@@ -433,36 +439,29 @@ fn failed_read_owner_check_is_sticky_for_every_snapshot_and_writer() {
     let (core, backend) = baseline(&admission);
     let view = core.snapshot().unwrap();
     admission.fail_check.store(true, Ordering::Release);
-    assert!(matches!(
-        view.table_exists("items"),
-        Err(CoreError::OwnerFailed)
-    ));
+    assert!(
+        matches!(&(view.table_exists("items")), Err(native_error) if matches!(native_error.rejected_cause(), Some(kasumi_kv::CoreErrorCause::OwnerFailed)))
+    );
     assert_eq!(admission.owner_failed_calls(), 1);
     admission.heal();
-    assert!(matches!(
-        view.table_exists("items"),
-        Err(CoreError::OwnerFailed)
-    ));
-    assert!(matches!(
-        view.next_key_admitted("items", b"", None),
-        Err(CoreError::OwnerFailed)
-    ));
-    assert!(matches!(
-        core.get_admitted(&view, "items", b"key", 64),
-        Err(CoreError::OwnerFailed)
-    ));
-    assert!(matches!(
-        core.key_exists(&view, "items", b"key"),
-        Err(CoreError::OwnerFailed)
-    ));
-    assert!(matches!(
-        core.prefix_exists(&view, "items", b"k"),
-        Err(CoreError::OwnerFailed)
-    ));
-    assert!(matches!(
-        core.next_admitted(&view, "items", b"", None, 64),
-        Err(CoreError::OwnerFailed)
-    ));
+    assert!(
+        matches!(&(view.table_exists("items")), Err(native_error) if matches!(native_error.rejected_cause(), Some(kasumi_kv::CoreErrorCause::OwnerFailed)))
+    );
+    assert!(
+        matches!(&(view.next_key_admitted("items", b"", None)), Err(native_error) if matches!(native_error.rejected_cause(), Some(kasumi_kv::CoreErrorCause::OwnerFailed)))
+    );
+    assert!(
+        matches!(&(core.get_admitted(&view, "items", b"key", 64)), Err(native_error) if matches!(native_error.rejected_cause(), Some(kasumi_kv::CoreErrorCause::OwnerFailed)))
+    );
+    assert!(
+        matches!(&(core.key_exists(&view, "items", b"key")), Err(native_error) if matches!(native_error.rejected_cause(), Some(kasumi_kv::CoreErrorCause::OwnerFailed)))
+    );
+    assert!(
+        matches!(&(core.prefix_exists(&view, "items", b"k")), Err(native_error) if matches!(native_error.rejected_cause(), Some(kasumi_kv::CoreErrorCause::OwnerFailed)))
+    );
+    assert!(
+        matches!(&(core.next_admitted(&view, "items", b"", None, 64)), Err(native_error) if matches!(native_error.rejected_cause(), Some(kasumi_kv::CoreErrorCause::OwnerFailed)))
+    );
     assert_sticky(&core, &admission, &backend);
     drop(view);
     close_drains(&core);
@@ -476,10 +475,9 @@ fn unfenced_capacity_denial_has_no_effect_and_leaves_the_owner_usable() {
     let generation = core.generation().unwrap();
     backend.panic_at(usize::MAX, PanicPoint::Before);
     admission.deny_workspace.store(true, Ordering::Release);
-    assert!(matches!(
-        core.commit(&[Operation::put("items", b"key", NEW)]),
-        Err(CoreError::CapacityDenied)
-    ));
+    assert!(
+        matches!(&(core.commit(&[Operation::put("items", b"key", NEW)])), Err(native_error) if matches!(native_error.rejected_cause(), Some(kasumi_kv::CoreErrorCause::CapacityDenied)))
+    );
     // An unfenced error is the positive no-effect report.
     assert!(!core.is_fenced());
     assert_eq!(backend.effects(), 0);
@@ -506,8 +504,9 @@ fn owner_failure_after_prepare_fences_and_restart_truncates_the_unpublished_reco
         .unwrap_err();
     // The checked group observes expiry immediately after the successful sync.
     // It preserves that owner-failure cause through the backend's I/O boundary.
-    assert!(matches!(error, CoreError::Io(ref error)
-        if error.get_ref().is_some_and(|cause| cause.is::<OwnerFailed>())));
+    assert!(
+        matches!((error).rejected_cause(), Some(kasumi_kv::CoreErrorCause::Io(error)) if error.get_ref().is_some_and(|cause| cause.is::<OwnerFailed>()))
+    );
     assert_eq!(admission.owner_failed_calls(), 1);
     admission.heal();
     assert_sticky(&core, &admission, &backend);
@@ -624,10 +623,7 @@ fn panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value() {
             backend.panic_at(ordinal, point);
             let error = core.compact().unwrap_err();
             assert_eq!(
-                match &error {
-                    CoreError::Panicked(panic) => payload(panic),
-                    _ => unknown_commit_payload(&error),
-                },
+                error.panic().and_then(payload),
                 Some("injected effect panic"),
                 "effect {ordinal}: compaction unwind must be retained: {error:?}"
             );
@@ -670,19 +666,21 @@ fn panicking_length_and_value_read_fence_once_and_keep_their_payloads() {
     let (core, backend) = baseline(&admission);
     let view = core.snapshot().unwrap();
     backend.image().panic_next_read = true;
-    let Err(CoreError::Panicked(panic)) = core.get_admitted(&view, "items", b"key", 64) else {
+    let Err(original) = core.get_admitted(&view, "items", b"key", 64) else {
         panic!("an unwinding value read must be retained and fenced");
     };
-    assert_eq!(payload(&panic), Some("injected read panic"));
+    assert!(!original.is_unknown_commit());
+    assert_eq!(
+        payload(original.panic().unwrap()),
+        Some("injected read panic")
+    );
     assert_eq!(admission.owner_failed_calls(), 1);
-    assert!(matches!(
-        core.get_admitted(&view, "items", b"key", 64),
-        Err(CoreError::OwnerFailed)
-    ));
-    assert!(matches!(
-        view.table_exists("items"),
-        Err(CoreError::OwnerFailed)
-    ));
+    assert!(
+        matches!(&(core.get_admitted(&view, "items", b"key", 64)), Err(native_error) if matches!(native_error.rejected_cause(), Some(kasumi_kv::CoreErrorCause::OwnerFailed)))
+    );
+    assert!(
+        matches!(&(view.table_exists("items")), Err(native_error) if matches!(native_error.rejected_cause(), Some(kasumi_kv::CoreErrorCause::OwnerFailed)))
+    );
     drop(view);
     assert_sticky(&core, &admission, &backend);
     close_drains(&core);
@@ -695,10 +693,9 @@ fn unwinding_owner_failed_callback_cannot_unlatch_the_fence() {
     let (core, backend) = baseline(&admission);
     admission.panic_owner_failed.store(true, Ordering::Release);
     admission.fail_check.store(true, Ordering::Release);
-    assert!(matches!(
-        core.commit(&[Operation::put("items", b"key", NEW)]),
-        Err(CoreError::OwnerFailed)
-    ));
+    assert!(
+        matches!(&(core.commit(&[Operation::put("items", b"key", NEW)])), Err(native_error) if matches!(native_error.rejected_cause(), Some(kasumi_kv::CoreErrorCause::OwnerFailed)))
+    );
     assert_eq!(admission.owner_failed_calls(), 1);
     assert_eq!(
         core.fence_panic().and_then(payload),
@@ -728,6 +725,8 @@ fn poisoned_close_is_fenced_and_never_replays_native_close() {
     assert_eq!(backend.close_attempts(), 1);
     assert!(core.is_fenced());
     assert_eq!(admission.owner_failed_calls(), 1);
-    assert!(matches!(core.snapshot(), Err(CoreError::Closed)));
+    assert!(
+        matches!(&(core.snapshot()), Err(native_error) if matches!(native_error.rejected_cause(), Some(kasumi_kv::CoreErrorCause::Closed)))
+    );
     assert_eq!(read(&reopen(&backend), b"key"), Some(OLD.to_vec()));
 }

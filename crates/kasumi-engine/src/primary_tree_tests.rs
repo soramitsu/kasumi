@@ -13,16 +13,16 @@ pub(crate) fn note_allocation() {
         }
     });
 }
-struct AllocationGuard;
+pub(crate) struct AllocationGuard;
 impl AllocationGuard {
-    fn begin() -> Self {
+    pub(crate) fn begin() -> Self {
         ALLOCATIONS.with(|count| {
             assert!(count.get().is_none());
             count.set(Some(0));
         });
         Self
     }
-    fn finish(self) -> usize {
+    pub(crate) fn finish(self) -> usize {
         let count = ALLOCATIONS.with(|count| count.replace(None).unwrap());
         drop(self);
         count

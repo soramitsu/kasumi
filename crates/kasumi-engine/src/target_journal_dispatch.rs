@@ -22,6 +22,14 @@ use std::collections::BTreeMap;
 mod initialize;
 pub use initialize::{InitialInitializePermit, VerifiedTargetInitializationAssociation};
 
+macro_rules! snapshot_ensure {
+    ($condition:expr, $($message:tt)+) => {
+        if !($condition) {
+            return Err(anyhow::anyhow!($($message)+).into());
+        }
+    };
+}
+
 /// A complete immutable local admission record. Keeping the frozen phase and
 /// lifecycle intent makes startup validation independent of a live Control read.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -485,6 +493,12 @@ impl AcceptedInitialDispatch {
         self.control_root.validate()?;
         self.node.validate()?;
         self.lifecycle.request.validate()?;
+        ensure!(
+            installed
+                .audit_placement_bindings
+                .contains_key(&self.lifecycle.request.tenant),
+            "target initial dispatch has no installed audit placement"
+        );
         self.phase.validate()?;
         kasumi_types::validate_name(&self.lifecycle.original_principal)?;
         let marker = self.marker()?;
@@ -660,7 +674,7 @@ impl TargetJournal {
         identity: &TargetInitialDispatchIdentity,
         request: &TargetRuntimeRequest,
         stores: &TenantStorageSet,
-    ) -> Result<ResolvedInitialMembershipHistory> {
+    ) -> Result<ResolvedInitialMembershipHistory, crate::SnapshotFailure> {
         let _guard = self
             .mutation
             .lock()
@@ -675,7 +689,7 @@ impl TargetJournal {
         identity: &TargetInitialDispatchIdentity,
         request: &TargetRuntimeRequest,
         stores: &TenantStorageSet,
-    ) -> Result<ResolvedInitialMembershipHistory> {
+    ) -> Result<ResolvedInitialMembershipHistory, crate::SnapshotFailure> {
         let accepted = self.authenticate_initial_dispatch(control, marked, identity, request)?;
         if matches!(request.step, TargetRuntimeStep::Initialize(_)) {
             let retained = kasumi_raft::read_initialization_association(stores)?.context(
@@ -683,7 +697,7 @@ impl TargetJournal {
             )?;
             let start = self.initialized_start_prebind(&accepted, Some(stores))?;
             let start_row = self.accepted_prebind_record(&start)?;
-            ensure!(
+            snapshot_ensure!(
                 retained.signed.association.control_root == control.observation().root
                     && retained.signed.association.original_intent == control.observation().intent
                     && retained.signed.association.initialize == *marked
@@ -700,7 +714,7 @@ impl TargetJournal {
         identity: &TargetInitialDispatchIdentity,
         request: &TargetRuntimeRequest,
         stores: &TenantStorageSet,
-    ) -> Result<ResolvedInitialMembershipHistory> {
+    ) -> Result<ResolvedInitialMembershipHistory, crate::SnapshotFailure> {
         let expected_prebind = if matches!(request.step, TargetRuntimeStep::Initialize(_)) {
             self.initialized_start_prebind(&accepted, Some(stores))?
         } else {
@@ -789,7 +803,7 @@ impl TargetJournal {
         identity: &TargetInitialDispatchIdentity,
         request: &TargetRuntimeRequest,
         stores: &TenantStorageSet,
-    ) -> Result<ResolvedInitialMembershipHistory> {
+    ) -> Result<ResolvedInitialMembershipHistory, crate::SnapshotFailure> {
         let _workspace = self.admission.reserve((MAX_RECORD * 8) as u64, None)?;
         let _guard = self
             .mutation
@@ -812,7 +826,7 @@ impl TargetJournal {
             .dispatch_terminals
             .checked_add(1)
             .context("target dispatch terminal count exhausted")?;
-        ensure!(
+        snapshot_ensure!(
             metadata.dispatch_terminals <= metadata.dispatches,
             "target dispatch terminal lacks original capacity"
         );
@@ -828,7 +842,7 @@ impl TargetJournal {
             .context("first-membership terminal absent after write")?;
         self.validate_dispatch_terminal(&key, &readback)?
             .require_current_history(&history)?;
-        ensure!(
+        snapshot_ensure!(
             readback == encoded,
             "first-membership terminal changed after write"
         );
@@ -996,12 +1010,12 @@ impl TargetJournal {
         current: &VerifiedControlIntent,
         input: &kasumi_types::TargetInitialMembershipStatusInput,
         stores: &TenantStorageSet,
-    ) -> Result<TargetFirstMembershipHistory> {
+    ) -> Result<TargetFirstMembershipHistory, crate::SnapshotFailure> {
         let _guard = self
             .mutation
             .lock()
             .map_err(|_| anyhow::anyhow!("target journal poisoned"))?;
         let expected = self.initial_inspection_start_prebind(current, input, stores)?;
-        read_target_first_membership_history(stores, &expected)
+        read_target_first_membership_history(stores, &expected).map_err(Into::into)
     }
 }

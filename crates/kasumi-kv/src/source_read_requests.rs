@@ -15,7 +15,7 @@ impl ProtectedReadRequests {
     pub const fn rights_request_bytes() -> u64 {
         SnapshotPins::rights_request_bytes()
     }
-    /// Plain heap envelope for the temporary table name, not an admission request.
+    /// Native admission for both temporary table name allocations and its grant.
     /// The two type probes are sequential and their native output drops first.
     pub fn table_name_backing_bytes(name_bytes: usize) -> Result<u64, CoreError> {
         crate::tables::table_name_backing_bytes(name_bytes)
@@ -37,18 +37,18 @@ pub struct PointReadRequests {
 impl PointReadRequests {
     pub fn new(max_value_bytes: usize) -> Result<Self, CoreError> {
         if max_value_bytes > crate::MAX_VALUE_BYTES {
-            return Err(CoreError::InvalidInput(
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
                 "point quote exceeds native value limit",
-            ));
+            )));
         }
         Ok(Self {
             output: AdmittedValue::request_bytes(max_value_bytes)?,
             page_fallback: crate::CachedBytes::charge_for_len(
                 crate::directory::DIRECTORY_PAGE_BYTES,
             )
-            .ok_or(CoreError::CapacityDenied)?,
+            .ok_or(CoreError::new(crate::CoreErrorCause::CapacityDenied))?,
             value_fallback: crate::CachedBytes::charge_for_len(max_value_bytes)
-                .ok_or(CoreError::CapacityDenied)?,
+                .ok_or(CoreError::new(crate::CoreErrorCause::CapacityDenied))?,
         })
     }
     pub const fn bounds_request_bytes(&self) -> u64 {

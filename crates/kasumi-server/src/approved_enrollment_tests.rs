@@ -53,6 +53,7 @@ unsafe impl GlobalAlloc for Counting {
         let p = unsafe { System.alloc(layout) };
         if !p.is_null() {
             allocated(layout.size());
+            crate::recovery_allocation_watch::allocated(p as usize, layout.size(), layout.align());
         }
         p
     }
@@ -60,6 +61,7 @@ unsafe impl GlobalAlloc for Counting {
         let p = unsafe { System.alloc_zeroed(layout) };
         if !p.is_null() {
             allocated(layout.size());
+            crate::recovery_allocation_watch::allocated(p as usize, layout.size(), layout.align());
         }
         p
     }
@@ -68,12 +70,15 @@ unsafe impl GlobalAlloc for Counting {
         if !next.is_null() {
             allocated(size); // model allocate/copy/free even for in-place growth
             deallocated(layout.size());
+            crate::recovery_allocation_watch::deallocated(p as usize);
+            crate::recovery_allocation_watch::allocated(next as usize, size, layout.align());
         }
         next
     }
     unsafe fn dealloc(&self, p: *mut u8, layout: Layout) {
         unsafe { System.dealloc(p, layout) };
         deallocated(layout.size());
+        crate::recovery_allocation_watch::deallocated(p as usize);
     }
 }
 struct Measurement;

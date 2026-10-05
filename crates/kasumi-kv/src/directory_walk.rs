@@ -56,14 +56,63 @@ pub(crate) struct DirectoryWalkProgress {
 pub(crate) struct DirectoryWalker {
     root: DirectoryRoot,
     admission: Arc<dyn StorageAdmission>,
-    frames: [Option<Frame>; MAX_HEIGHT],
+    frames: Vec<Option<Frame>>,
     depth: usize,
-    bounds: Bounds,
+    bounds: Box<Bounds>,
     buffer: Option<PageBuffer>,
     loaded: Option<DirectoryPageRef>,
     action: Action,
     failed: bool,
-    _lease: Box<dyn ResidentLease>,
+    _lease: NativeResidentLease,
+}
+
+// One exact Vec allocation becomes the Box with the same Bounds layout.
+// No large Bounds value is constructed or moved through the stack.
+fn bounds_backing(
+    root: DirectoryRoot,
+    _original: &NativeResidentLease,
+) -> Result<Box<Bounds>, CoreError> {
+    let mut allocation = Vec::<Bounds>::new();
+    allocation
+        .try_reserve_exact(1)
+        .map_err(|_| CoreError::new(crate::CoreErrorCause::CapacityDenied))?;
+    if allocation.capacity() != 1 {
+        return Err(CoreError::new(crate::CoreErrorCause::CapacityDenied));
+    }
+    let pointer = allocation.as_mut_ptr();
+    // SAFETY: capacity1 owns properly aligned space for exactly one Bounds.
+    // The arrays contain only bytes, every scalar field is written, and no
+    // reference or initialized length exists until all fields are valid.
+    unsafe {
+        std::ptr::addr_of_mut!((*pointer).lower)
+            .cast::<u8>()
+            .write_bytes(0, MAX_ENCODED_KEY);
+        std::ptr::addr_of_mut!((*pointer).lower_len).write(0);
+        std::ptr::addr_of_mut!((*pointer).upper)
+            .cast::<u8>()
+            .write_bytes(0, MAX_ENCODED_KEY);
+        std::ptr::addr_of_mut!((*pointer).upper_len).write(0);
+        std::ptr::addr_of_mut!((*pointer).entries).write(root.entries);
+        std::ptr::addr_of_mut!((*pointer).level).write(root.height.saturating_sub(1));
+        std::ptr::addr_of_mut!((*pointer).generation).write(root.generation);
+        allocation.set_len(1);
+    }
+    std::mem::forget(allocation);
+    // SAFETY: the initialized Vec had capacity1, so its actual Global
+    // allocation has exactly Layout::new::<Bounds>(), matching this Box.
+    // The forgotten Vec supplies no surviving alias or second owner.
+    let bounds = unsafe { Box::from_raw(pointer) };
+    // Keep the raw initializer exhaustive if the common Bounds gains a field.
+    let Bounds {
+        lower: _,
+        lower_len: _,
+        upper: _,
+        upper_len: _,
+        entries: _,
+        level: _,
+        generation: _,
+    } = bounds.as_ref();
+    Ok(bounds)
 }
 
 impl DirectoryWalker {
@@ -75,33 +124,42 @@ impl DirectoryWalker {
     ) -> Result<Self, CoreError> {
         admission
             .check_owner()
-            .map_err(|_| CoreError::OwnerFailed)?;
+            .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?;
         root.validate()?;
         let lease = reserve(
             &admission,
             std::mem::size_of::<Self>()
                 + std::mem::size_of::<Frame>()
                 + std::mem::size_of::<DirectoryReader<'_>>()
-                + 2 * std::mem::size_of::<KeySource>(),
+                + 2 * std::mem::size_of::<KeySource>()
+                + std::mem::size_of::<[Option<Frame>; MAX_HEIGHT]>()
+                + (std::mem::align_of::<Option<Frame>>() - 1)
+                + ALLOCATION_ALLOWANCE
+                + std::mem::size_of::<Bounds>()
+                + (std::mem::align_of::<Bounds>() - 1)
+                + ALLOCATION_ALLOWANCE,
         )?;
+        let mut frames = Vec::new();
+        frames
+            .try_reserve_exact(MAX_HEIGHT)
+            .map_err(|_| CoreError::new(crate::CoreErrorCause::CapacityDenied))?;
+        if frames.capacity() != MAX_HEIGHT {
+            return Err(CoreError::new(crate::CoreErrorCause::CapacityDenied));
+        }
+        for _ in 0..MAX_HEIGHT {
+            frames.push(None);
+        }
+        let bounds = bounds_backing(root, &lease)?;
         let buffer = root.page.map(|_| PageBuffer::new(&admission)).transpose()?;
         admission
             .check_owner()
-            .map_err(|_| CoreError::OwnerFailed)?;
+            .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?;
         Ok(Self {
             root,
             admission,
-            frames: [None; MAX_HEIGHT],
+            frames,
             depth: 0,
-            bounds: Bounds {
-                lower: [0; MAX_ENCODED_KEY],
-                lower_len: 0,
-                upper: [0; MAX_ENCODED_KEY],
-                upper_len: 0,
-                entries: root.entries,
-                level: root.height.saturating_sub(1),
-                generation: root.generation,
-            },
+            bounds,
             buffer,
             loaded: None,
             action: root.page.map_or(Action::Complete, |reference| {
@@ -133,7 +191,7 @@ impl DirectoryWalker {
         mut value: impl FnMut(ValueLocation) -> Result<(), CoreError>,
     ) -> Result<DirectoryWalkProgress, CoreError> {
         if self.failed {
-            return Err(CoreError::OwnerFailed);
+            return Err(CoreError::new(crate::CoreErrorCause::OwnerFailed));
         }
         let result = self.step_inner(backend, work_limit, &mut page, &mut value);
         if result.is_err() {
@@ -145,7 +203,7 @@ impl DirectoryWalker {
     fn check_owner(&self) -> Result<(), CoreError> {
         self.admission
             .check_owner()
-            .map_err(|_| CoreError::OwnerFailed)
+            .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))
     }
 
     fn step_inner(
@@ -283,7 +341,9 @@ impl DirectoryWalker {
                     )?;
                     progress.work += 1;
                     if info != frame.info {
-                        return Err(CoreError::Corrupt("directory changed during traversal"));
+                        return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                            "directory changed during traversal",
+                        )));
                     }
                     self.loaded = Some(frame.reference);
                     self.action = Action::Entries;
@@ -308,7 +368,7 @@ impl DirectoryWalker {
             backend.read_page(key.page, &mut buffer.bytes)?;
             self.admission
                 .check_owner()
-                .map_err(|_| CoreError::OwnerFailed)?;
+                .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?;
             progress.work += 1;
             self.loaded = Some(key.page);
         }
@@ -318,9 +378,9 @@ impl DirectoryWalker {
         let info = validate_page(&buffer.bytes, self.root, key.page)?;
         let (entry, _) = page_entry(&buffer.bytes, key.at, info.used)?;
         if entry.key_bytes.len() != key.len {
-            return Err(CoreError::Corrupt(
+            return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
                 "directory separator changed during traversal",
-            ));
+            )));
         }
         if lower {
             self.bounds.lower_len = key.len;

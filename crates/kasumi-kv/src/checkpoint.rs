@@ -222,7 +222,9 @@ impl<'a> CheckpointWriter<'a> {
         header: CheckpointHeader,
     ) -> Result<Self, CoreError> {
         if header.invalid() {
-            return Err(CoreError::InvalidInput("checkpoint header is invalid"));
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
+                "checkpoint header is invalid",
+            )));
         }
         let file = GroupFile::checkpoint(header.checkpoint_id);
         backend.create(file)?;
@@ -241,7 +243,7 @@ impl<'a> CheckpointWriter<'a> {
 
     fn check_usable(&self) -> Result<(), CoreError> {
         if self.failed {
-            return Err(CoreError::OwnerFailed);
+            return Err(CoreError::new(crate::CoreErrorCause::OwnerFailed));
         }
         Ok(())
     }
@@ -250,7 +252,7 @@ impl<'a> CheckpointWriter<'a> {
         self.check_usable()?;
         self.order
             .table(name.as_bytes(), birth_seq)
-            .map_err(CoreError::InvalidInput)?;
+            .map_err(|original| CoreError::new(crate::CoreErrorCause::InvalidInput(original)))?;
         let mut entry = [0u8; TABLE_ENTRY_BYTES];
         entry[0] = TAG_TABLE;
         entry[2..4].copy_from_slice(&(name.len() as u16).to_le_bytes());
@@ -268,7 +270,7 @@ impl<'a> CheckpointWriter<'a> {
         self.check_usable()?;
         self.order
             .row(key, batch_seq, value)
-            .map_err(CoreError::InvalidInput)?;
+            .map_err(|original| CoreError::new(crate::CoreErrorCause::InvalidInput(original)))?;
         let mut entry = [0u8; ROW_ENTRY_BYTES];
         entry[0] = TAG_ROW;
         entry[2..4].copy_from_slice(&(key.len() as u16).to_le_bytes());
@@ -347,7 +349,9 @@ struct DigestReader<'a> {
 impl DigestReader<'_> {
     fn read(&mut self, out: &mut [u8]) -> Result<(), CoreError> {
         if (out.len() as u64) > self.reader.remaining() {
-            return Err(CoreError::Corrupt("checkpoint entry is truncated"));
+            return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                "checkpoint entry is truncated",
+            )));
         }
         self.reader.read_exact(out)?;
         self.digest.update(&*out);
@@ -367,16 +371,18 @@ pub(crate) fn read_checkpoint(
     let file = GroupFile::checkpoint(reference.id);
     let len = backend.len(file)?;
     if len != reference.len {
-        return Err(CoreError::Corrupt(
+        return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
             "checkpoint length differs from its root",
-        ));
+        )));
     }
     let minimum = (HEADER_BYTES + END_ENTRY_BYTES + DIGEST_BYTES) as u64;
     if len < minimum {
         let mut prefix = vec![0u8; len.min(16) as usize];
         backend.read(file, 0, &mut prefix)?;
         reject_legacy(&prefix)?;
-        return Err(CoreError::Corrupt("checkpoint is truncated"));
+        return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+            "checkpoint is truncated",
+        )));
     }
     let body_len = len - DIGEST_BYTES as u64;
     let mut input = DigestReader {
@@ -391,7 +397,9 @@ pub(crate) fn read_checkpoint(
         || bytes[20..24].iter().any(|&byte| byte != 0)
         || bytes[104..].iter().any(|&byte| byte != 0)
     {
-        return Err(CoreError::Corrupt("checkpoint header is invalid"));
+        return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+            "checkpoint header is invalid",
+        )));
     }
     let header = CheckpointHeader {
         group_id: bytes[24..40].try_into().expect("16 bytes"),
@@ -406,14 +414,14 @@ pub(crate) fn read_checkpoint(
         },
     };
     if header.invalid() || header.group_id != *group_id || header.checkpoint_id != reference.id {
-        return Err(CoreError::Corrupt(
+        return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
             "checkpoint header names another checkpoint",
-        ));
+        )));
     }
     if header.start.position.segment_id != reference.start_segment_id {
-        return Err(CoreError::Corrupt(
+        return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
             "checkpoint replay start differs from its root",
-        ));
+        )));
     }
     let mut order = EntryOrder::new(header);
     let mut scratch = Vec::new();
@@ -429,14 +437,16 @@ pub(crate) fn read_checkpoint(
                     || tag[4..8].iter().any(|&byte| byte != 0)
                     || name_len > MAX_TABLE_BYTES
                 {
-                    return Err(CoreError::Corrupt("checkpoint table entry is invalid"));
+                    return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                        "checkpoint table entry is invalid",
+                    )));
                 }
                 let birth_seq = le_u64(&rest);
                 scratch.resize(name_len, 0);
                 input.read(&mut scratch)?;
                 order
                     .table(&scratch, birth_seq)
-                    .map_err(CoreError::Corrupt)?;
+                    .map_err(|original| CoreError::new(crate::CoreErrorCause::Corrupt(original)))?;
                 let text = std::str::from_utf8(&scratch).expect("order checked UTF-8");
                 visit(CheckpointItem::Table {
                     name: text,
@@ -451,7 +461,9 @@ pub(crate) fn read_checkpoint(
                     || rest[28..32].iter().any(|&byte| byte != 0)
                     || key_len > MAX_KEY_BYTES
                 {
-                    return Err(CoreError::Corrupt("checkpoint row entry is invalid"));
+                    return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                        "checkpoint row entry is invalid",
+                    )));
                 }
                 let batch_seq = le_u64(&rest[..8]);
                 let value = ValueLocation {
@@ -464,7 +476,7 @@ pub(crate) fn read_checkpoint(
                 input.read(&mut scratch)?;
                 order
                     .row(&scratch, batch_seq, &value)
-                    .map_err(CoreError::Corrupt)?;
+                    .map_err(|original| CoreError::new(crate::CoreErrorCause::Corrupt(original)))?;
                 visit(CheckpointItem::Row {
                     key: &scratch,
                     batch_seq,
@@ -472,7 +484,11 @@ pub(crate) fn read_checkpoint(
                 })?;
             }
             TAG_END if tag[1..].iter().all(|&byte| byte == 0) => break,
-            _ => return Err(CoreError::Corrupt("checkpoint entry has an unknown kind")),
+            _ => {
+                return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                    "checkpoint entry has an unknown kind",
+                )));
+            }
         }
     }
     let mut end = [0u8; END_ENTRY_BYTES - 8];
@@ -484,22 +500,26 @@ pub(crate) fn read_checkpoint(
         || le_u64(&end[16..24]) != order.live_bytes
         || segment_count != order.segments.len() as u64
     {
-        return Err(CoreError::Corrupt(
+        return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
             "checkpoint totals differ from its entries",
-        ));
+        )));
     }
     for (&segment_id, &bytes) in &order.segments {
         let mut entry = [0u8; SUMMARY_ENTRY_BYTES];
         input.read(&mut entry)?;
         if le_u64(&entry[..8]) != segment_id || le_u64(&entry[8..]) != bytes {
-            return Err(CoreError::Corrupt("checkpoint segment summary differs"));
+            return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                "checkpoint segment summary differs",
+            )));
         }
     }
     let computed: [u8; 32] = input.digest.finalize().into();
     let mut stored = [0u8; DIGEST_BYTES];
     backend.read(file, body_len, &mut stored)?;
     if computed != stored || stored != reference.sha256 {
-        return Err(CoreError::Corrupt("checkpoint digest differs"));
+        return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+            "checkpoint digest differs",
+        )));
     }
     Ok(order.summary(*reference))
 }
@@ -523,14 +543,14 @@ pub(crate) fn verify_referenced_segments(
             || root.classify(file) != FileRole::Live
             || !backend.exists(file)?
         {
-            return Err(CoreError::Corrupt(
+            return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
                 "checkpoint references a retired or missing segment",
-            ));
+            )));
         }
         if read_segment_header(backend, root.group_id(), segment_id)? != HeaderState::Valid {
-            return Err(CoreError::Corrupt(
+            return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
                 "checkpoint references a damaged segment",
-            ));
+            )));
         }
     }
     Ok(())
@@ -800,7 +820,7 @@ mod tests {
         };
         let invalid = |result: Result<(), CoreError>| {
             assert!(
-                matches!(result, Err(CoreError::InvalidInput(_))),
+                matches!(&(result), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput(_)))),
                 "{result:?}"
             );
         };
@@ -830,10 +850,9 @@ mod tests {
 
         let mut header = sample.header;
         header.checkpoint_id = 0;
-        assert!(matches!(
-            CheckpointWriter::create(group, header),
-            Err(CoreError::InvalidInput(_))
-        ));
+        assert!(
+            matches!(&(CheckpointWriter::create(group, header)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput(_))))
+        );
     }
 
     #[test]
@@ -841,10 +860,9 @@ mod tests {
         let sample = sample();
         let group = &sample.log.group;
         write(group, sample.header, &sample.items);
-        assert!(matches!(
-            CheckpointWriter::create(group, sample.header),
-            Err(CoreError::Io(error)) if error.kind() == std::io::ErrorKind::AlreadyExists
-        ));
+        assert!(
+            matches!(&(CheckpointWriter::create(group, sample.header)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::Io(error)) if error.kind() == std::io::ErrorKind::AlreadyExists))
+        );
         let mut root = sample.log.root.clone();
         let (next, id) = root.reserve_checkpoint().unwrap();
         publish_root(group, &root, &next).unwrap();
@@ -856,7 +874,9 @@ mod tests {
         group.fail(GroupOp::Sync, 1, FaultTiming::BeforeEffect);
         let mut writer = CheckpointWriter::create(group, header).unwrap();
         writer.table("a", 1).unwrap();
-        assert!(matches!(writer.finish(), Err(CoreError::Io(_))));
+        assert!(
+            matches!(&(writer.finish()), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::Io(_))))
+        );
         // The root never referenced it, so reopen classifies it as an orphan.
         let census = root.census(&group.crash()).unwrap();
         assert!(census.orphans.contains(&GroupFile::checkpoint(id)));
@@ -888,16 +908,22 @@ mod tests {
                 index += 1;
                 assert!(index < 32, "no flush");
             };
-            assert!(matches!(error, CoreError::Io(_)), "{error:?}");
+            assert!(
+                matches!((error).rejected_cause(), Some(crate::CoreErrorCause::Io(_))),
+                "{error:?}"
+            );
             // The failed row is counted and hashed but not in the file, so
             // every later call is refused, even one the order would accept.
             let len = group.len(file).unwrap();
-            assert!(matches!(
-                writer.row(&key(index + 1), 2, &value),
-                Err(CoreError::OwnerFailed)
-            ));
-            assert!(matches!(writer.table("b", 1), Err(CoreError::OwnerFailed)));
-            assert!(matches!(writer.finish(), Err(CoreError::OwnerFailed)));
+            assert!(
+                matches!(&(writer.row(&key(index + 1), 2, &value)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+            );
+            assert!(
+                matches!(&(writer.table("b", 1)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+            );
+            assert!(
+                matches!(&(writer.finish()), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+            );
             assert_eq!(group.len(file).unwrap(), len, "{timing:?}");
             // No reference exists to install, and reopen finds an orphan.
             let census = sample.log.root.census(&group.crash()).unwrap();
@@ -933,12 +959,11 @@ mod tests {
         let installing = log.root.install_checkpoint(second.reference).unwrap();
         let unpublished = installing.retire_segment(old.segment_id, &second).unwrap();
         let segment = GroupFile::segment(old.segment_id);
-        assert!(matches!(
-            unpublished.unlink_garbage(&log.group, segment),
-            Err(CoreError::InvalidInput(
+        assert!(
+            matches!(&(unpublished.unlink_garbage(&log.group, segment)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput(
                 "garbage unlink does not follow the selected root"
-            ))
-        ));
+            ))))
+        );
         assert!(log.group.exists(segment).unwrap());
 
         // After power loss the durable root still loads checkpoint 1 with

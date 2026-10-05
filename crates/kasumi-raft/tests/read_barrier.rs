@@ -2,6 +2,7 @@ mod common;
 
 use anyhow::Result;
 use async_trait::async_trait;
+use kasumi_raft::test_utils::FixtureResult;
 use kasumi_raft::{BasicNode, InProcessRouter, RaftGroup, RaftTransport, RpcRequest, RpcResponse};
 use kasumi_store::TenantStorageSet;
 use openraft::error::{CheckIsLeaderError, RaftError};
@@ -47,7 +48,7 @@ struct Fixture {
     _scratch_directory: tempfile::TempDir,
 }
 impl Fixture {
-    async fn new() -> Result<Self> {
+    async fn new() -> FixtureResult<Self> {
         let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
         let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
         let fixture_scratch =
@@ -102,7 +103,11 @@ impl Fixture {
             .wait(Some(Duration::from_secs(5)))
             .current_leader(1, "chosen test leader")
             .await?;
-        groups[0].write(b"committed before pause".to_vec()).await?;
+        groups[0]
+            .write(kasumi_raft::ApplicationProposal::generated(
+                b"committed before pause".to_vec(),
+            ))
+            .await?;
         groups[0].linearizable_barrier().await?;
         Ok(Self {
             _scratch_directory: scratch_directory,
@@ -115,7 +120,7 @@ impl Fixture {
     fn pause(&self, duration: Duration) {
         *self.transport.paused_until.lock().unwrap() = Instant::now() + duration;
     }
-    async fn close(self) -> Result<()> {
+    async fn close(self) -> FixtureResult<()> {
         for group in self.groups {
             group.shutdown().await?;
         }
@@ -124,7 +129,8 @@ impl Fixture {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn fresh_quorum_round_recovers_after_a_600ms_stall_within_original_deadline() -> Result<()> {
+async fn fresh_quorum_round_recovers_after_a_600ms_stall_within_original_deadline()
+-> FixtureResult<()> {
     let fixture = Fixture::new().await?;
     fixture.pause(Duration::from_millis(900));
     // Establish the pinned OpenRaft behavior directly, independent of our retry.
@@ -156,7 +162,8 @@ async fn fresh_quorum_round_recovers_after_a_600ms_stall_within_original_deadlin
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn permanent_partition_exhausts_five_seconds_without_reducing_membership() -> Result<()> {
+async fn permanent_partition_exhausts_five_seconds_without_reducing_membership() -> FixtureResult<()>
+{
     let fixture = Fixture::new().await?;
     fixture.pause(Duration::from_secs(60));
     let start = Instant::now();
@@ -179,7 +186,8 @@ async fn permanent_partition_exhausts_five_seconds_without_reducing_membership()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn key_seal_interrupts_pending_quorum_probe_without_waiting_for_deadline() -> Result<()> {
+async fn key_seal_interrupts_pending_quorum_probe_without_waiting_for_deadline() -> FixtureResult<()>
+{
     let fixture = Fixture::new().await?;
     fixture.pause(Duration::from_secs(60));
     let start = Instant::now();
@@ -193,7 +201,7 @@ async fn key_seal_interrupts_pending_quorum_probe_without_waiting_for_deadline()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn custody_key_seal_interrupts_pending_probe_and_denies_new_writes() -> Result<()> {
+async fn custody_key_seal_interrupts_pending_probe_and_denies_new_writes() -> FixtureResult<()> {
     let fixture = Fixture::new().await?;
     fixture.pause(Duration::from_secs(60));
     let start = Instant::now();
@@ -205,7 +213,9 @@ async fn custody_key_seal_interrupts_pending_probe_and_denies_new_writes() -> Re
     assert!(start.elapsed() < Duration::from_millis(250));
     assert!(
         fixture.groups[0]
-            .write(b"after custody seal".to_vec())
+            .write(kasumi_raft::ApplicationProposal::generated(
+                b"after custody seal".to_vec()
+            ))
             .await
             .is_err()
     );
@@ -213,7 +223,7 @@ async fn custody_key_seal_interrupts_pending_probe_and_denies_new_writes() -> Re
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn higher_term_stops_retry_and_never_releases_a_stale_read() -> Result<()> {
+async fn higher_term_stops_retry_and_never_releases_a_stale_read() -> FixtureResult<()> {
     let fixture = Fixture::new().await?;
     fixture.pause(Duration::from_secs(60));
     let metrics = fixture.groups[0].raft().metrics().borrow().clone();

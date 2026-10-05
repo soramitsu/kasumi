@@ -14,7 +14,7 @@ const MAX_CARRIES: usize = 3;
 /// One admitted logical continuation, independent of physical page lifetime.
 pub(crate) struct DirectoryCursor {
     key: Vec<u8>,
-    _lease: Box<dyn ResidentLease>,
+    _lease: NativeResidentLease,
 }
 
 impl DirectoryCursor {
@@ -26,14 +26,14 @@ impl DirectoryCursor {
         let mut owned = Vec::new();
         owned
             .try_reserve_exact(key.len())
-            .map_err(|_| CoreError::CapacityDenied)?;
+            .map_err(|_| CoreError::new(crate::CoreErrorCause::CapacityDenied))?;
         if owned.capacity() != key.len() {
-            return Err(CoreError::CapacityDenied);
+            return Err(CoreError::new(crate::CoreErrorCause::CapacityDenied));
         }
         owned.extend_from_slice(key);
         admission
             .check_owner()
-            .map_err(|_| CoreError::OwnerFailed)?;
+            .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?;
         Ok(Self {
             key: owned,
             _lease: lease,
@@ -71,32 +71,46 @@ impl PlannedPage {
     ) -> Result<(), CoreError> {
         let mut reference = root
             .page
-            .ok_or(CoreError::Corrupt("packing plan has an empty root"))?;
+            .ok_or(CoreError::new(crate::CoreErrorCause::Corrupt(
+                "packing plan has an empty root",
+            )))?;
         let mut bounds = Bounds::root(root);
         let expected_depth = root
             .height
             .checked_sub(self.info.level)
             .and_then(|height| height.checked_sub(1));
         if expected_depth.is_none_or(|depth| self.depth != usize::from(depth)) {
-            return Err(CoreError::Corrupt("packing path depth differs"));
+            return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                "packing path depth differs",
+            )));
         }
         for frame in &self.path[..self.depth] {
-            let frame = frame.ok_or(CoreError::Corrupt("packing path is incomplete"))?;
+            let frame = frame.ok_or(CoreError::new(crate::CoreErrorCause::Corrupt(
+                "packing path is incomplete",
+            )))?;
             if frame.reference != reference {
-                return Err(CoreError::Corrupt("packing path reference differs"));
+                return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                    "packing path reference differs",
+                )));
             }
             let info = reader.load(input, root, reference, &bounds)?;
             if info != frame.info || info.level == 0 {
-                return Err(CoreError::Corrupt("packing ancestor differs"));
+                return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                    "packing ancestor differs",
+                )));
             }
             reference = bounds.child(input, info, frame.child)?;
         }
         if reference != self.reference {
-            return Err(CoreError::Corrupt("packing selected reference differs"));
+            return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                "packing selected reference differs",
+            )));
         }
         let info = reader.load(input, root, reference, &bounds)?;
         if info != self.info || &*input != self.buffer.bytes.as_slice() {
-            return Err(CoreError::Corrupt("packing selected page differs"));
+            return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                "packing selected page differs",
+            )));
         }
         Ok(())
     }
@@ -111,7 +125,7 @@ pub(crate) struct DirectoryPackPlan {
     moved: usize,
     normalize_root: bool,
     next: Option<DirectoryCursor>,
-    _lease: Box<dyn ResidentLease>,
+    _lease: NativeResidentLease,
 }
 
 impl DirectoryPackPlan {
@@ -133,49 +147,65 @@ impl DirectoryPackPlan {
 
     /// Exact adjacency is a property of both paths, not just ordered keys.
     fn ancestor(&self) -> Result<usize, CoreError> {
-        let right = self
-            .right
-            .as_ref()
-            .ok_or(CoreError::InvalidInput("packing plan has no neighbor"))?;
+        let right =
+            self.right
+                .as_ref()
+                .ok_or(CoreError::new(crate::CoreErrorCause::InvalidInput(
+                    "packing plan has no neighbor",
+                )))?;
         if right.depth != self.left.depth
             || right.info.level != self.left.info.level
             || right.reference == self.left.reference
         {
-            return Err(CoreError::Corrupt("packing neighbor shape differs"));
+            return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                "packing neighbor shape differs",
+            )));
         }
         for depth in 0..self.left.depth {
-            let left = self.left.path[depth]
-                .ok_or(CoreError::Corrupt("packing left path is incomplete"))?;
-            let other =
-                right.path[depth].ok_or(CoreError::Corrupt("packing right path is incomplete"))?;
+            let left = self.left.path[depth].ok_or(CoreError::new(
+                crate::CoreErrorCause::Corrupt("packing left path is incomplete"),
+            ))?;
+            let other = right.path[depth].ok_or(CoreError::new(crate::CoreErrorCause::Corrupt(
+                "packing right path is incomplete",
+            )))?;
             if left.reference != other.reference || left.info != other.info {
-                return Err(CoreError::Corrupt(
+                return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
                     "packing paths diverge before their ancestor",
-                ));
+                )));
             }
             if left.child == other.child {
                 continue;
             }
             if left.child + 1 != other.child {
-                return Err(CoreError::Corrupt("packing pages are not adjacent"));
+                return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                    "packing pages are not adjacent",
+                )));
             }
             for frame in &self.left.path[depth + 1..self.left.depth] {
-                let frame = frame.ok_or(CoreError::Corrupt("packing left path is incomplete"))?;
+                let frame = frame.ok_or(CoreError::new(crate::CoreErrorCause::Corrupt(
+                    "packing left path is incomplete",
+                )))?;
                 if frame.child + 1 != frame.info.count {
-                    return Err(CoreError::Corrupt("packing left path is not rightmost"));
+                    return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                        "packing left path is not rightmost",
+                    )));
                 }
             }
             for frame in &right.path[depth + 1..right.depth] {
-                let frame = frame.ok_or(CoreError::Corrupt("packing right path is incomplete"))?;
+                let frame = frame.ok_or(CoreError::new(crate::CoreErrorCause::Corrupt(
+                    "packing right path is incomplete",
+                )))?;
                 if frame.child != 0 {
-                    return Err(CoreError::Corrupt("packing right path is not leftmost"));
+                    return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                        "packing right path is not leftmost",
+                    )));
                 }
             }
             return Ok(depth);
         }
-        Err(CoreError::Corrupt(
+        Err(CoreError::new(crate::CoreErrorCause::Corrupt(
             "packing pages have no divergent ancestor",
-        ))
+        )))
     }
 }
 
@@ -192,7 +222,7 @@ impl DirectoryReader<'_> {
     ) -> Result<Option<DirectoryPackPlan>, CoreError> {
         self.admission
             .check_owner()
-            .map_err(|_| CoreError::OwnerFailed)?;
+            .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?;
         root.validate()?;
         lower.validate()?;
         if level >= root.height {
@@ -259,7 +289,9 @@ impl DirectoryReader<'_> {
                 let child = if depth <= pivot {
                     let frame = left.path[depth].expect("shared neighbor ancestor");
                     if info != frame.info || reference != frame.reference {
-                        return Err(CoreError::Corrupt("packing neighbor ancestor changed"));
+                        return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                            "packing neighbor ancestor changed",
+                        )));
                     }
                     frame.child + usize::from(depth == pivot)
                 } else {
@@ -322,7 +354,7 @@ impl DirectoryReader<'_> {
         }
         self.admission
             .check_owner()
-            .map_err(|_| CoreError::OwnerFailed)?;
+            .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?;
         Ok(Some(plan))
     }
 }
@@ -342,7 +374,9 @@ impl Default for Replacement {
 impl Replacement {
     fn push(&mut self, carry: Carry) -> Result<(), CoreError> {
         if self.len == MAX_CARRIES {
-            return Err(CoreError::Corrupt("packing carry bound exceeded"));
+            return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                "packing carry bound exceeded",
+            )));
         }
         self.items[self.len] = Some(carry);
         self.len += 1;
@@ -351,7 +385,9 @@ impl Replacement {
     fn entries(&self) -> Result<u64, CoreError> {
         self.items.iter().flatten().try_fold(0u64, |sum, carry| {
             sum.checked_add(carry.entries)
-                .ok_or(CoreError::Corrupt("packing counts overflow"))
+                .ok_or(CoreError::new(crate::CoreErrorCause::Corrupt(
+                    "packing counts overflow",
+                )))
         })
     }
 }
@@ -392,14 +428,16 @@ impl Context<'_> {
         let digest = page_digest(bytes);
         self.admission
             .check_owner()
-            .map_err(|_| CoreError::OwnerFailed)?;
+            .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?;
         let reference = self.backend.append_page(bytes)?;
         self.admission
             .check_owner()
-            .map_err(|_| CoreError::OwnerFailed)?;
+            .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?;
         reference.validate()?;
         if reference.sha256 != digest {
-            return Err(CoreError::Corrupt("packed page digest differs"));
+            return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                "packed page digest differs",
+            )));
         }
         replacement.push(Carry {
             key,
@@ -469,7 +507,9 @@ impl Context<'_> {
         }
         self.flush(plan.level(), &mut replacement)?;
         if !(1..=2).contains(&replacement.len) {
-            return Err(CoreError::Corrupt("packed pair output bound differs"));
+            return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                "packed pair output bound differs",
+            )));
         }
         Ok(replacement)
     }
@@ -477,14 +517,16 @@ impl Context<'_> {
     fn parent(&mut self, frame: Frame, edits: &[ChildEdit<'_>]) -> Result<Replacement, CoreError> {
         self.admission
             .check_owner()
-            .map_err(|_| CoreError::OwnerFailed)?;
+            .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?;
         self.backend.read_page(frame.reference, self.input)?;
         self.admission
             .check_owner()
-            .map_err(|_| CoreError::OwnerFailed)?;
+            .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?;
         let info = validate_page(self.input, self.root, frame.reference)?;
         if info != frame.info || info.level == 0 {
-            return Err(CoreError::Corrupt("packing parent changed"));
+            return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                "packing parent changed",
+            )));
         }
         let mut result = Replacement::default();
         let mut at = HEADER_BYTES;
@@ -493,7 +535,9 @@ impl Context<'_> {
             let (entry, end) = page_entry(self.input, at, info.used)?;
             if let Some(edit) = edits.iter().find(|edit| edit.index == index) {
                 if DirectoryPageRef::decode(&entry.value[..PAGE_REF_BYTES])? != edit.old {
-                    return Err(CoreError::Corrupt("packing parent selected another child"));
+                    return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                        "packing parent selected another child",
+                    )));
                 }
                 for carry in edit.replacement.items.iter().flatten() {
                     self.carry(info.level, carry, &mut result)?;
@@ -518,7 +562,9 @@ impl Context<'_> {
             at = end;
         }
         if applied != edits.len() {
-            return Err(CoreError::Corrupt("packing child edit was not applied"));
+            return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                "packing child edit was not applied",
+            )));
         }
         self.flush(info.level, &mut result)?;
         Ok(result)
@@ -526,7 +572,9 @@ impl Context<'_> {
 
     fn finish_root(&mut self, replacement: Replacement) -> Result<DirectoryRoot, CoreError> {
         if replacement.entries()? != self.root.entries || replacement.len == 0 {
-            return Err(CoreError::Corrupt("packed root entry count differs"));
+            return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                "packed root entry count differs",
+            )));
         }
         let mut root = DirectoryRoot {
             generation: self.generation,
@@ -536,7 +584,9 @@ impl Context<'_> {
             root.page = Some(replacement.items[0].as_ref().expect("one root carry").page);
         } else {
             if usize::from(root.height) == MAX_HEIGHT {
-                return Err(CoreError::InvalidInput("directory exceeds maximum height"));
+                return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
+                    "directory exceeds maximum height",
+                )));
             }
             let mut top = Replacement::default();
             for carry in replacement.items.iter().flatten() {
@@ -544,7 +594,9 @@ impl Context<'_> {
             }
             self.flush(root.height, &mut top)?;
             if top.len != 1 {
-                return Err(CoreError::Corrupt("packing root exceeds one page"));
+                return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                    "packing root exceeds one page",
+                )));
             }
             root.page = Some(top.items[0].as_ref().expect("one new root carry").page);
             root.height += 1;
@@ -579,7 +631,9 @@ impl Context<'_> {
         let reader = DirectoryReader::new(self.backend, self.admission.clone());
         let info = reader.load(self.input, self.root, reference, &Bounds::root(self.root))?;
         if info.level == 0 || info.count != 1 {
-            return Err(CoreError::Corrupt("terminal packing root is not unary"));
+            return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                "terminal packing root is not unary",
+            )));
         }
         let entry = nth_entry(self.input, info, 0)?;
         let mut key = [0; MAX_ENCODED_KEY];
@@ -608,22 +662,22 @@ impl DirectoryMutator<'_> {
         plan: &DirectoryPackPlan,
     ) -> Result<DirectoryRoot, CoreError> {
         if self.failed {
-            return Err(CoreError::OwnerFailed);
+            return Err(CoreError::new(crate::CoreErrorCause::OwnerFailed));
         }
         if self.admission.check_owner().is_err() {
             self.failed = true;
-            return Err(CoreError::OwnerFailed);
+            return Err(CoreError::new(crate::CoreErrorCause::OwnerFailed));
         }
         if root != plan.root {
-            return Err(CoreError::InvalidInput(
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
                 "packing plan belongs to another root",
-            ));
+            )));
         }
         root.validate()?;
         if generation == 0 || generation < root.generation {
-            return Err(CoreError::InvalidInput(
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
                 "directory mutation generation is invalid",
-            ));
+            )));
         }
         // Include simultaneous pair/left/right/joined/returned carries and
         // helper-frame moves, plus bounds, record copying and root promotion.
@@ -649,7 +703,9 @@ impl DirectoryMutator<'_> {
             }
             if plan.normalize_root {
                 if plan.right.is_some() || plan.moved != 0 {
-                    return Err(CoreError::Corrupt("terminal packing plan has a neighbor"));
+                    return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                        "terminal packing plan has a neighbor",
+                    )));
                 }
                 return context.normalize_root();
             }
@@ -678,7 +734,9 @@ impl DirectoryMutator<'_> {
                 // <= P + 2M leaves <3M <= P after its first greedy output.
                 // This invariant bounds the later LCA input to four carries.
                 if left.len > 2 {
-                    return Err(CoreError::Corrupt("packing divergent carry bound exceeded"));
+                    return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                        "packing divergent carry bound exceeded",
+                    )));
                 }
                 left_old = frame.reference;
             }
@@ -693,7 +751,9 @@ impl DirectoryMutator<'_> {
                     }],
                 )?;
                 if right.len > 2 {
-                    return Err(CoreError::Corrupt("packing divergent carry bound exceeded"));
+                    return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                        "packing divergent carry bound exceeded",
+                    )));
                 }
                 right_old = frame.reference;
             }

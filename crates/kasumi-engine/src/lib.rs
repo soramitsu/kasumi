@@ -58,6 +58,7 @@ pub use target_signer::TargetSigner;
 mod backup_binding;
 mod bootstrap;
 pub mod control;
+mod materialization_row;
 mod mutation_receipt;
 mod namespace_installation;
 pub mod security_audit;
@@ -86,6 +87,10 @@ pub use service::{
     CustodyResponseFence, Database, ResponseFence, RetiredCustody, RetirementResponseFence,
 };
 pub use state::{Generation, PreparedSnapshotRestore, TenantEngine, validate_genesis_inputs};
+mod snapshot_failure;
+pub use snapshot_failure::SnapshotFailure;
+#[cfg(test)]
+mod test_fixture_failure;
 
 /// Conservative resident charge for retaining one immutable document across
 /// asynchronous work. Uses the same allocation accounting as coherent leases;

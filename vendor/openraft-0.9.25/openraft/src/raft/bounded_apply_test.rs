@@ -1,7 +1,6 @@
 //! Actual core/worker ordering while the committed reader is held.
 use std::collections::BTreeMap;
 use std::fmt::Debug;
-#[cfg(feature = "generic-snapshot-data")]
 use std::future::Future;
 use std::io::Cursor;
 use std::ops::RangeBounds;
@@ -16,11 +15,12 @@ use super::{
     AppendEntriesRequest, AppendEntriesResponse, InstallSnapshotRequest, InstallSnapshotResponse, Raft, VoteRequest,
     VoteResponse,
 };
+use crate::error::{Fatal, InstallSnapshotError, RPCError, RaftError};
 #[cfg(feature = "generic-snapshot-data")]
-use crate::error::{Fatal, ReplicationClosed, StreamingError};
-use crate::error::{InstallSnapshotError, RPCError, RaftError};
+use crate::error::{ReplicationClosed, StreamingError};
 use crate::network::{RPCOption, RaftNetwork, RaftNetworkFactory};
 use crate::storage::{LogFlushed, RaftLogStorage, RaftStateMachine};
+use crate::type_config::TypeConfigExt;
 use crate::{
     CommittedLeaderId, Config, Entry, EntryPayload, LogId, LogState, Membership, OptionalSend, RaftLogReader,
     RaftSnapshotBuilder, Snapshot, SnapshotMeta, SnapshotPolicy, StorageError, StoredMembership, TokioRuntime, Vote,
@@ -53,6 +53,8 @@ struct State {
     applied: Vec<u64>,
     last: Option<LogId<u64>>,
     installed: Option<Snapshot<TestConfig>>,
+    apply_failure: Option<StorageError<u64>>,
+    panic_apply: bool,
 }
 #[derive(Clone)]
 struct Store {
@@ -149,6 +151,14 @@ impl RaftStateMachine<TestConfig> for Machine {
         I: IntoIterator<Item = Entry<TestConfig>> + OptionalSend,
         I::IntoIter: OptionalSend,
     {
+        let (failure, panic_apply) = {
+            let state = self.0.lock().unwrap();
+            (state.apply_failure.clone(), state.panic_apply)
+        };
+        if let Some(failure) = failure {
+            return Err(failure);
+        }
+        assert!(!panic_apply, "controlled original apply panic");
         let mut state = self.0.lock().unwrap();
         Ok(entries
             .into_iter()
@@ -403,10 +413,7 @@ async fn cancelled_shutdown_retains_pending_snapshot_and_unconsumed_real_apply_o
         let shutdown = tokio::spawn(async move { stopping.shutdown().await });
         // Join the actual core; the state-machine worker is still in its held
         // physical read. Cancelling the shutdown caller must not detach it.
-        assert!(matches!(
-            raft.inner.join_core_task().await.fatal,
-            crate::error::Fatal::Stopped
-        ));
+        assert!(matches!(raft.inner.join_core_task().await.fatal, Fatal::Stopped));
         shutdown.abort();
         assert!(shutdown.await.unwrap_err().is_cancelled());
         assert!(original_snapshot.same_owner(&raft.inner.pending_snapshot.retained().unwrap()));
@@ -426,6 +433,262 @@ async fn cancelled_shutdown_retains_pending_snapshot_and_unconsumed_real_apply_o
         assert!(state.lock().unwrap().installed.is_none());
         assert!(state.lock().unwrap().purged.is_none());
         assert!(reads.try_recv().is_err());
+    })
+    .await
+    .unwrap();
+}
+
+async fn graceful_fixture() -> (
+    Raft<TestConfig>,
+    Arc<Mutex<State>>,
+    mpsc::UnboundedReceiver<(u64, u64, oneshot::Sender<()>)>,
+) {
+    let state = Arc::new(Mutex::new(State {
+        logs: (0..5).map(|index| (index, entry(index))).collect(),
+        vote: Some(Vote::new_committed(1, 2)),
+        ..State::default()
+    }));
+    let (read_tx, reads) = mpsc::unbounded_channel();
+    let config = Config {
+        enable_tick: false,
+        enable_elect: false,
+        enable_heartbeat: false,
+        max_payload_entries: 2,
+        snapshot_policy: SnapshotPolicy::Never,
+        ..Config::default()
+    };
+    let raft = Raft::new(
+        1,
+        Arc::new(config.validate().unwrap()),
+        Network,
+        Store {
+            state: state.clone(),
+            reads: read_tx,
+        },
+        Machine(state.clone()),
+    )
+    .await
+    .unwrap();
+    assert!(raft
+        .append_entries(AppendEntriesRequest {
+            vote: Vote::new_committed(1, 2),
+            prev_log_id: Some(id(4)),
+            entries: vec![],
+            leader_commit: Some(id(4)),
+        })
+        .await
+        .unwrap()
+        .is_success());
+    (raft, state, reads)
+}
+
+async fn poll_shutdown_signal(raft: &Raft<TestConfig>) {
+    let mut closing = Box::pin(raft.shutdown_gracefully());
+    std::future::poll_fn(|cx| {
+        assert!(
+            closing.as_mut().poll(cx).is_pending(),
+            "held committed read must keep the core alive"
+        );
+        std::task::Poll::Ready(())
+    })
+    .await;
+    // The actual core owns the signalled policy after this waiter disappears.
+    drop(closing);
+}
+
+async fn wait_ingress_closed(raft: &Raft<TestConfig>) {
+    while !raft.inner.tx_api.is_closed() {
+        tokio::task::yield_now().await;
+    }
+}
+
+#[tokio::test]
+async fn graceful_shutdown_fences_ingress_and_drains_coalesced_apply_after_waiter_cancellation() {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let (raft, state, mut reads) = graceful_fixture().await;
+        let (start, end, release) = reads.recv().await.unwrap();
+        assert_eq!((start, end), (0, 2));
+        // This admitted later commit is in the scalar pending handoff while
+        // the worker still owns its preceding physical read.
+        assert!(raft
+            .append_entries(AppendEntriesRequest {
+                vote: Vote::new_committed(1, 2),
+                prev_log_id: Some(id(4)),
+                entries: vec![entry(5), entry(6)],
+                leader_commit: Some(id(6)),
+            })
+            .await
+            .unwrap()
+            .is_success());
+        poll_shutdown_signal(&raft).await;
+        // No yield occurred since signalling: this original API request is
+        // queued behind the stop cut and must receive channel termination.
+        let (response, received) = TestConfig::oneshot();
+        assert!(raft
+            .inner
+            .tx_api
+            .send(crate::core::raft_msg::RaftMsg::AppendEntries {
+                rpc: AppendEntriesRequest {
+                    vote: Vote::new_committed(1, 2),
+                    prev_log_id: Some(id(6)),
+                    entries: vec![entry(7)],
+                    leader_commit: Some(id(7)),
+                },
+                tx: response,
+            })
+            .is_ok());
+        let (response, original_writer) = TestConfig::oneshot();
+        assert!(raft
+            .inner
+            .tx_api
+            .send(crate::core::raft_msg::RaftMsg::ClientWriteRequest {
+                app_data: (),
+                tx: crate::impls::OneshotResponder::<TestConfig>::new(response),
+            })
+            .is_ok());
+        wait_ingress_closed(&raft).await;
+        assert!(
+            received.await.is_err(),
+            "queued unprocessed request must terminate without acceptance"
+        );
+        assert!(
+            original_writer.await.is_err(),
+            "queued original responder must terminate without a fabricated reply"
+        );
+        assert!(raft
+            .inner
+            .tx_notify
+            .send(crate::core::notify::Notify::HigherVote {
+                target: 2,
+                higher: Vote::new(9, 2),
+                sender_vote: Vote::new_committed(1, 2),
+            })
+            .is_ok());
+        assert!(!state.lock().unwrap().logs.contains_key(&7));
+        release.send(()).unwrap();
+        for range in [(2, 4), (4, 5), (5, 7)] {
+            let (start, end, release) = reads.recv().await.unwrap();
+            assert_eq!((start, end), range);
+            release.send(()).unwrap();
+        }
+        raft.shutdown_gracefully().await.unwrap();
+        assert_eq!(state.lock().unwrap().applied, [0, 1, 2, 3, 4, 5, 6]);
+        assert_eq!(state.lock().unwrap().committed, Some(id(6)));
+        assert_eq!(state.lock().unwrap().vote, Some(Vote::new_committed(1, 2)));
+        assert!(reads.try_recv().is_err());
+        assert!(raft.inner.state_machine_tasks.apply_batch.retained().is_none());
+        assert!(raft.inner.tx_api.is_closed());
+        raft.shutdown().await.unwrap();
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn graceful_shutdown_drains_offered_snapshot_before_queued_activation_and_rejects_late_offer() {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let (raft, state, mut reads) = graceful_fixture().await;
+        let (start, end, release) = reads.recv().await.unwrap();
+        assert_eq!((start, end), (0, 2));
+        let mut incoming = Box::pin(raft.install_full_snapshot(
+            Vote::new_committed(1, 2),
+            Snapshot {
+                meta: SnapshotMeta {
+                    last_log_id: Some(id(7)),
+                    last_membership: membership(),
+                    snapshot_id: "offered-before-stop-cut".into(),
+                },
+                snapshot: Box::new(Cursor::new(vec![8, 9, 10])),
+            },
+        ));
+        std::future::poll_fn(|cx| {
+            assert!(incoming.as_mut().poll(cx).is_pending());
+            std::task::Poll::Ready(())
+        })
+        .await;
+        let original = raft.inner.pending_snapshot.retained().unwrap();
+        drop(incoming);
+        // The activation actor message remains queued. The ownership cut
+        // must include the exact offer even when that message never executes.
+        poll_shutdown_signal(&raft).await;
+        wait_ingress_closed(&raft).await;
+        assert!(original.same_owner(&raft.inner.pending_snapshot.retained().unwrap()));
+        let late_raft = raft.clone();
+        let late = tokio::spawn(async move {
+            late_raft
+                .install_full_snapshot(
+                    Vote::new_committed(1, 2),
+                    Snapshot {
+                        meta: SnapshotMeta {
+                            last_log_id: Some(id(8)),
+                            last_membership: membership(),
+                            snapshot_id: "unadmitted-after-stop-cut".into(),
+                        },
+                        snapshot: Box::new(Cursor::new(vec![42])),
+                    },
+                )
+                .await
+        });
+        release.send(()).unwrap();
+        for range in [(2, 4), (4, 5)] {
+            let (start, end, release) = reads.recv().await.unwrap();
+            assert_eq!((start, end), range);
+            release.send(()).unwrap();
+        }
+        raft.shutdown_gracefully().await.unwrap();
+        assert_eq!(late.await.unwrap().unwrap_err(), Fatal::Stopped);
+        let state = state.lock().unwrap();
+        assert_eq!(state.applied, [0, 1, 2, 3, 4]);
+        assert_eq!(
+            state.installed.as_ref().unwrap().meta.snapshot_id,
+            "offered-before-stop-cut"
+        );
+        assert_eq!(state.installed.as_ref().unwrap().snapshot.get_ref(), &[8, 9, 10]);
+        assert!(raft.inner.pending_snapshot.retained().is_none());
+        assert!(raft.inner.state_machine_tasks.apply_batch.retained().is_none());
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn graceful_shutdown_preserves_original_apply_error_and_panic_across_cancelled_waiter_and_retry() {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        for panic_apply in [false, true] {
+            let (raft, state, mut reads) = graceful_fixture().await;
+            let (_, _, release) = reads.recv().await.unwrap();
+            {
+                let mut state = state.lock().unwrap();
+                state.panic_apply = panic_apply;
+                if !panic_apply {
+                    state.apply_failure = Some(
+                        crate::StorageIOError::apply(
+                            id(1),
+                            anyerror::AnyError::error("controlled original graceful apply failure"),
+                        )
+                        .into(),
+                    );
+                }
+            }
+            poll_shutdown_signal(&raft).await;
+            wait_ingress_closed(&raft).await;
+            release.send(()).unwrap();
+            let first = raft.shutdown_gracefully().await.unwrap_err();
+            let again = raft.shutdown_gracefully().await.unwrap_err();
+            let original = first.state_machine().unwrap();
+            let repeated = again.state_machine().unwrap();
+            if panic_apply {
+                let original = original.join_error().unwrap();
+                assert!(original.is_panic());
+                assert!(Arc::ptr_eq(original, repeated.join_error().unwrap()));
+            } else {
+                let original = original.storage_error().unwrap();
+                assert!(original.to_string().contains("controlled original graceful apply failure"));
+                assert!(Arc::ptr_eq(original, repeated.storage_error().unwrap()));
+            }
+            assert!(state.lock().unwrap().applied.is_empty());
+            assert!(reads.try_recv().is_err());
+        }
     })
     .await
     .unwrap();

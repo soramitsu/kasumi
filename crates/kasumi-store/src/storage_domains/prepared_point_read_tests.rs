@@ -8,7 +8,7 @@ use crate::{
 
 struct Fixture {
     stores: Arc<TenantStorageSet>,
-    node: Arc<NodeStore>,
+    node: NodeStore,
     memory: Arc<TestDiskMemory>,
     clock: Arc<ManualClock>,
     _persistent: tempfile::TempDir,
@@ -36,7 +36,8 @@ impl Fixture {
             disk,
             scratch_disk,
             config,
-        )?;
+        )
+        .unwrap_or_else(|original| std::panic::panic_any(original));
         let clock = Arc::new(ManualClock::default());
         let tenant = "prepared-source";
         let application = TenantStore::initialize_catalog_fixture_with_clock(
@@ -98,7 +99,7 @@ impl Fixture {
         if tamper_tag {
             *envelope.last_mut().unwrap() ^= 1;
         }
-        let tx = self.node.db.begin_write()?;
+        let tx = self.node.body().db.begin_write()?;
         tx.open_table(RECORDS)?
             .insert(disk_key.as_slice(), envelope.as_slice())?;
         tx.commit()?;
@@ -369,12 +370,11 @@ async fn prepared_point_partial_construction_denial_retires_backing_and_register
     let failure = error
         .downcast_ref::<NodeScopedReadFailure>()
         .expect("actual registered failure owner");
-    assert!(matches!(
-        failure.report().read_failure(),
-        kasumi_kv::TerminalObservation::Returned(Err(kasumi_kv::BoundedReadError::Storage(
-            kasumi_kv::StorageError::Core(kasumi_kv::CoreError::CapacityDenied)
-        )))
-    ));
+    assert!(
+        matches!(&(failure.report().read_failure()), kasumi_kv::TerminalObservation::Returned(Err(kasumi_kv::BoundedReadError::Storage(
+            kasumi_kv::StorageError::Core(native_error)
+        ))) if matches!(native_error.rejected_cause(), Some(kasumi_kv::CoreErrorCause::CapacityDenied)))
+    );
     // The failed operation's report remains owned by the error; all partial
     // point backing has already retired. Drop the actual diagnostic to retire
     // the remaining routine reader custody, then retry on the same owner.
@@ -801,3 +801,6 @@ async fn prepared_size_replacement_retains_actual_old_backing_drop_panic() -> Re
 
 #[path = "prepared_custody_visit_tests.rs"]
 mod constructor_visit_tests;
+
+#[path = "key_access_planner_tests.rs"]
+mod key_access_planner_tests;

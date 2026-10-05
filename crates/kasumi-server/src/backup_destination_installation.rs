@@ -140,6 +140,11 @@ pub(crate) fn enroll_with_storage(
                     crate::startup_preparation::capture("backup destination enrollment", async {
                         let admission = storage.facade(&config.admission)?;
                         pending.owned_admissions.push(admission.clone());
+                        pending.signer_original_recoveries = config
+                            .signer_verifier
+                            .as_ref()
+                            .map(|verifier| verifier.node_start_inventory(&admission))
+                            .transpose()?;
                         let disk = crate::persistent_disk::open(&config.persistent_disk, &storage)?;
                         pending.standalone_owner = crate::standalone::claim(&config, &disk)?;
                         if let Some(configured) = &config.signer_verifier {
@@ -157,6 +162,10 @@ pub(crate) fn enroll_with_storage(
                                     disk.clone(),
                                     storage.open_scratch(&config.scratch_disk)?,
                                     admission,
+                                    pending
+                                        .signer_original_recoveries
+                                        .as_ref()
+                                        .expect("installed backup signer constructor inventory"),
                                 )
                                 .await?;
                             pending.verifiers.push(verifier);

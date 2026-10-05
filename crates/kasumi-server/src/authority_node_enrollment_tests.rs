@@ -219,12 +219,18 @@ impl Fixture {
             storage,
         })
     }
-    fn node(&self) -> Result<Arc<NodeStore>> {
+    fn node(&self) -> std::result::Result<NodeStore, kasumi_store::NodeStoreStartFailure> {
         {
             let native_path = &self.config.database_path;
             let native_id = self.config.database_id;
-            let native_disk = self.storage.open_persistent(&self.config.persistent_disk)?;
-            let native_scratch_disk = self.storage.open_scratch(&self.config.scratch_disk)?;
+            let native_disk = self
+                .storage
+                .open_persistent(&self.config.persistent_disk)
+                .map_err(kasumi_store::NodeStoreStartFailure::Operation)?;
+            let native_scratch_disk = self
+                .storage
+                .open_scratch(&self.config.scratch_disk)
+                .map_err(kasumi_store::NodeStoreStartFailure::Operation)?;
             NodeStore::open_existing(
                 native_path,
                 native_id,
@@ -236,6 +242,11 @@ impl Fixture {
     }
     async fn verifier(&self) -> Result<Arc<crate::signer_runtime::InstalledSignerVerifier>> {
         let domain = self.config.installation.manifest.signing_domain(0)?;
+        let admission = self.storage.facade(&self.config.admission)?;
+        let originals = self
+            .config
+            .signer_verifier
+            .node_start_inventory(&admission)?;
         self.config
             .signer_verifier
             .open(
@@ -243,12 +254,15 @@ impl Fixture {
                 Arc::new(crate::runtime::file_secret),
                 self.storage.open_persistent(&self.config.persistent_disk)?,
                 self.storage.open_scratch(&self.config.scratch_disk)?,
-                self.storage.facade(&self.config.admission)?,
+                admission,
+                &originals,
             )
             .await
     }
     async fn verify_retained_state(&self, pair: bool, genesis: bool, complete: bool) -> Result<()> {
-        let node = self.node()?;
+        let node = self
+            .node()
+            .expect("drained authority enrollment fixture must reopen its installed native node");
         let security = TenantStore::open_existing(
             node.clone(),
             kasumi_engine::SECURITY_TENANT.into(),
@@ -395,20 +409,59 @@ async fn authority_enrollment_panics_drain_owned_nodes_verifier_and_both_domains
         )
         .await?
         .unwrap_err();
-        assert!(
-            error
-                .downcast_ref::<crate::startup_preparation::PreparationPanic>()
-                .is_some(),
-            "{phase}: {error:#}"
-        );
+        let original_terminal = error
+            .retained()
+            .expect("actual preparation panic is registered");
+        let original_id = original_terminal.id();
+        let panic_address = original_terminal.with_report(|report| {
+            let report = report.expect("worker actually joined before returned failure");
+            assert!(report.original().is_none());
+            report
+                .with_body_panic(|original| {
+                    assert_eq!(original.downcast_ref::<&'static str>(), Some(&phase));
+                    original as *const (dyn std::any::Any + Send) as *const () as usize
+                })
+                .expect("same actual checkpoint panic")
+        });
+        drop(error);
+        let retained = EnrollmentTerminalFacade::retained(fixture.storage.memory(), original_id)
+            .expect("original preparation panic survives caller facade drop");
+        retained.with_report(|report| {
+            assert_eq!(
+                report.unwrap().with_body_panic(|original| {
+                    original as *const (dyn std::any::Any + Send) as *const () as usize
+                }),
+                Some(panic_address)
+            );
+        });
         fixture
             .verify_retained_state(pair, genesis, complete)
             .await?;
         let before = group_image(&fixture.config.database_path)?;
-        assert!(
-            initialize_with_storage(fixture.config.clone(), fixture.storage.clone())
-                .await
-                .is_err()
+        let duplicate =
+            initialize_with_storage(fixture.config.clone(), fixture.storage.clone()).await;
+        assert!(duplicate.is_err());
+        let duplicate = duplicate.unwrap_err();
+        let retained = duplicate
+            .retained()
+            .expect("whole duplicate native startup stays registered");
+        let retained_id = retained.id();
+        let node_failure_address = retained
+            .with_node_start_failure(0, |original| {
+                original as *const kasumi_store::NodeStoreStartFailure as usize
+            })
+            .await
+            .expect("actual duplicate opening original in initial paid lane");
+        drop(duplicate);
+        let retained = EnrollmentTerminalFacade::retained(fixture.storage.memory(), retained_id)
+            .expect("standing census retains same terminal after facade drop");
+        assert_eq!(
+            retained
+                .with_node_start_failure(0, |original| {
+                    original as *const kasumi_store::NodeStoreStartFailure as usize
+                })
+                .await,
+            Some(node_failure_address)
         );
         assert_eq!(
             group_image(&fixture.config.database_path)?,
@@ -424,14 +477,13 @@ async fn cancelled_authority_enrollment_joins_dispatched_genesis_and_preserves_b
 -> Result<()> {
     let fixture = Fixture::new().await?;
     let id = fixture.config.database_id;
-    let registry = crate::startup_owner::TestRegistry::default();
     let blocking = BlockingGuard::install(id);
     let _fault = crate::startup_preparation::install(id, "authority-enrollment-genesis-dispatched");
     let pause = crate::startup_preparation::pause_failure(id);
-    let mut enrolling = Box::pin(registry.open(initialize_owned(
+    let mut enrolling = Box::pin(initialize_with_storage(
         fixture.config.clone(),
         fixture.storage.clone(),
-    )));
+    ));
     std::future::poll_fn(|cx| {
         assert!(enrolling.as_mut().poll(cx).is_pending());
         Poll::Ready(())
@@ -440,9 +492,13 @@ async fn cancelled_authority_enrollment_joins_dispatched_genesis_and_preserves_b
     tokio::time::timeout(Duration::from_secs(10), pause.entered()).await?;
     tokio::time::timeout(Duration::from_secs(10), blocking.1.entered.notified()).await?;
     drop(enrolling);
+    let terminal = (0..fixture.storage.memory().startup_scope_capacity())
+        .find_map(|index| EnrollmentTerminalFacade::registered_at(fixture.storage.memory(), index))
+        .expect("same actual admitted terminal survives caller cancellation");
+    let terminal_id = terminal.id();
     assert!(fixture.node().is_err());
     assert!(fixture.verifier().await.is_err());
-    let mut drain = Box::pin(registry.drain());
+    let mut drain = Box::pin(terminal.join());
     std::future::poll_fn(|cx| {
         assert!(drain.as_mut().poll(cx).is_pending());
         Poll::Ready(())
@@ -453,7 +509,7 @@ async fn cancelled_authority_enrollment_joins_dispatched_genesis_and_preserves_b
     // original blocking child, which still owns the actual encrypted pair.
     pause.release();
     tokio::time::timeout(Duration::from_secs(10), blocking.1.joining.notified()).await?;
-    let mut drain = Box::pin(registry.drain());
+    let mut drain = Box::pin(terminal.join());
     std::future::poll_fn(|cx| {
         assert!(drain.as_mut().poll(cx).is_pending());
         Poll::Ready(())
@@ -463,33 +519,50 @@ async fn cancelled_authority_enrollment_joins_dispatched_genesis_and_preserves_b
     assert!(fixture.verifier().await.is_err());
     drop(drain);
     blocking.release();
-    let error = tokio::time::timeout(Duration::from_secs(10), registry.drain())
-        .await?
-        .unwrap_err();
-    assert!(
-        error
-            .downcast_ref::<crate::startup_preparation::PreparationPanic>()
-            .is_some()
-    );
-    let report = error
-        .downcast_ref::<kasumi_types::drain::DrainFailure>()
-        .unwrap();
-    let issue = report
-        .issues()
-        .iter()
-        .find(|issue| issue.component() == "authority enrollment genesis")
-        .expect("the original blocking outcome is retained alongside the preparation failure");
-    let child = issue
-        .error()
-        .downcast_ref::<tokio::task::JoinError>()
-        .unwrap();
-    assert!(child.is_panic());
-    assert!(
-        child
-            .to_string()
-            .contains("original authority genesis blocking panic")
-    );
+    tokio::time::timeout(Duration::from_secs(10), terminal.join()).await?;
+    let original_address = terminal.with_report(|report| {
+        let report = report.unwrap();
+        assert!(report.original().is_none());
+        let original_address = report
+            .with_body_panic(|original| {
+                assert_eq!(
+                    original.downcast_ref::<&'static str>(),
+                    Some(&"authority-enrollment-genesis-dispatched")
+                );
+                original as *const (dyn std::any::Any + Send) as *const () as usize
+            })
+            .unwrap();
+        let child = report.genesis_join_error().unwrap();
+        assert!(child.is_panic());
+        assert!(
+            child
+                .to_string()
+                .contains("original authority genesis blocking panic")
+        );
+        (
+            original_address,
+            child as *const tokio::task::JoinError as usize,
+        )
+    });
     fixture.verify_retained_state(true, false, false).await?;
-    registry.drain().await?;
+    terminal.join().await;
+    drop(terminal);
+    let terminal = EnrollmentTerminalFacade::retained(fixture.storage.memory(), terminal_id)
+        .expect("originals remain reachable after the last caller facade");
+    terminal.with_report(|report| {
+        let report = report.unwrap();
+        assert_eq!(
+            report.with_body_panic(|original| {
+                original as *const (dyn std::any::Any + Send) as *const () as usize
+            }),
+            Some(original_address.0)
+        );
+        let child = report.genesis_join_error().unwrap();
+        assert!(child.is_panic());
+        assert_eq!(
+            child as *const tokio::task::JoinError as usize,
+            original_address.1
+        );
+    });
     Ok(())
 }

@@ -189,7 +189,7 @@ impl DiskState {
         // Preserve the refused item but return retryable pressure instead of
         // spinning through the same provider denial under the owner lock.
         if warm.provider_limited {
-            return Err(CoreError::CapacityDenied);
+            return Err(CoreError::new(crate::CoreErrorCause::CapacityDenied));
         }
         Ok(warm.complete)
     }
@@ -199,11 +199,8 @@ impl DiskState {
         leaf: &DirectoryLeaf,
         plan: &mut LeafWork<'_>,
     ) -> Result<(), CoreError> {
-        catch_unwind(AssertUnwindSafe(|| self.maintain_inner(leaf, plan))).unwrap_or_else(|panic| {
-            Err(CoreError::UnknownCommit(std::io::Error::other(
-                CorePanic::new(panic),
-            )))
-        })
+        catch_unwind(AssertUnwindSafe(|| self.maintain_inner(leaf, plan)))
+            .unwrap_or_else(|panic| Err(CoreError::unknown_commit(CorePanic::new(panic))))
     }
 
     fn maintain_inner(
@@ -216,7 +213,8 @@ impl DiskState {
         let workspace = self
             .owner
             .admission
-            .reserve_workspace(segment::maintenance_workspace_bytes() + LEASE_ALLOWANCE as u64)?;
+            .reserve_workspace(segment::maintenance_workspace_bytes() + LEASE_ALLOWANCE as u64)
+            .map(NativeResidentLease::new)?;
         let mut directory_workspace =
             DirectoryWriteWorkspace::for_leaf_rewrite(self.owner.admission.clone())?;
         let mut roll = Roll(self.owner.clone());
@@ -227,12 +225,14 @@ impl DiskState {
         )?;
         self.owner.check()?;
         if prepared.values().len() != plan.operations.len() {
-            return Err(CoreError::Corrupt("maintenance location count differs"));
+            return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                "maintenance location count differs",
+            )));
         }
         for (&index, &destination) in plan.indices.iter().zip(prepared.values()) {
-            plan.replacements[index] = Some(
-                destination.ok_or(CoreError::Corrupt("maintenance relocation has no location"))?,
-            );
+            plan.replacements[index] = Some(destination.ok_or(CoreError::new(
+                crate::CoreErrorCause::Corrupt("maintenance relocation has no location"),
+            ))?);
         }
         let private = self.pages.maintenance_private_view();
         let result = (|| {
@@ -248,7 +248,7 @@ impl DiskState {
         drop(directory_workspace);
         let root = match result {
             Ok(root) => root,
-            Err(error @ CoreError::CapacityDenied) => {
+            Err(error) if error.is_capacity_denied() => {
                 self.writer.abort_prepared(
                     self.owner.backend.as_ref(),
                     prepared,
@@ -268,21 +268,23 @@ impl DiskState {
                     source, table, key, ..
                 } = operation
                 else {
-                    return Err(CoreError::Corrupt("relocation plan operation differs"));
+                    return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                        "relocation plan operation differs",
+                    )));
                 };
-                let destination = plan.replacements[index]
-                    .ok_or(CoreError::Corrupt("relocation plan destination is missing"))?;
+                let destination = plan.replacements[index].ok_or(CoreError::new(
+                    crate::CoreErrorCause::Corrupt("relocation plan destination is missing"),
+                ))?;
                 let identity =
                     |value| NativeIdentity::value(self.owner.group_id, value, table, key);
                 self.cache
                     .lock()
-                    .map_err(|_| CoreError::OwnerFailed)?
+                    .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?
                     .copy_relocated(identity(*source)?, identity(destination)?)?;
             }
             self.warm_maintenance_pages(root)
         })();
-        retained
-            .map_err(|error: CoreError| CoreError::UnknownCommit(std::io::Error::other(error)))?;
+        retained.map_err(|error: CoreError| error.into_unknown_commit())?;
         Ok(())
     }
 
@@ -290,7 +292,7 @@ impl DiskState {
         &mut self,
         prepared: segment::PreparedBatch,
         root: DirectoryRoot,
-        workspace: Box<dyn ResidentLease>,
+        workspace: NativeResidentLease,
     ) -> Result<(), CoreError> {
         self.observe_warm_publication_start()?;
         let committed = self.writer.finish_batch(
@@ -311,7 +313,7 @@ impl DiskState {
         drop(workspace);
         self.owner
             .install(commit)
-            .map_err(|error| CoreError::UnknownCommit(std::io::Error::other(error)))?;
+            .map_err(|error| error.into_unknown_commit())?;
         self.selected = root;
         self.warmup = Warmup::default();
         // Physical page packing/alias retirement can make a previously
@@ -325,7 +327,8 @@ impl DiskState {
         match DirectoryReader::new(&warming, self.owner.admission.clone())
             .warm_generation(root, root.generation)
         {
-            Ok(()) | Err(CoreError::CapacityDenied) => Ok(()),
+            Ok(()) => Ok(()),
+            Err(error) if error.is_capacity_denied() => Ok(()),
             Err(error) => Err(error),
         }
     }
@@ -341,7 +344,7 @@ struct LeafWork<'a> {
     visited: usize,
     copied_bytes: u64,
     needs_rewrite: bool,
-    _lease: Box<dyn ResidentLease>,
+    _lease: NativeResidentLease,
 }
 
 impl<'a> LeafWork<'a> {
@@ -354,7 +357,9 @@ impl<'a> LeafWork<'a> {
             || leaf.len() > MAX_DIRECTORY_LEAF_RECORDS
             || leaf.first_index() >= leaf.len()
         {
-            return Err(CoreError::Corrupt("compaction leaf bounds are invalid"));
+            return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                "compaction leaf bounds are invalid",
+            )));
         }
         let bytes = leaf.len()
             * (std::mem::size_of::<MaintenanceOp<'_>>()
@@ -363,24 +368,26 @@ impl<'a> LeafWork<'a> {
             + std::mem::size_of::<Self>()
             + 3 * ALLOCATION_ALLOWANCE
             + LEASE_ALLOWANCE;
-        let lease = admission.reserve_workspace(bytes as u64)?;
+        let lease = admission
+            .reserve_workspace(bytes as u64)
+            .map(NativeResidentLease::new)?;
         let mut operations = Vec::new();
         let mut indices = Vec::new();
         let mut replacements = Vec::new();
         operations
             .try_reserve_exact(leaf.len())
-            .map_err(|_| CoreError::CapacityDenied)?;
+            .map_err(|_| CoreError::new(crate::CoreErrorCause::CapacityDenied))?;
         indices
             .try_reserve_exact(leaf.len())
-            .map_err(|_| CoreError::CapacityDenied)?;
+            .map_err(|_| CoreError::new(crate::CoreErrorCause::CapacityDenied))?;
         replacements
             .try_reserve_exact(leaf.len())
-            .map_err(|_| CoreError::CapacityDenied)?;
+            .map_err(|_| CoreError::new(crate::CoreErrorCause::CapacityDenied))?;
         if operations.capacity() != leaf.len()
             || indices.capacity() != leaf.len()
             || replacements.capacity() != leaf.len()
         {
-            return Err(CoreError::CapacityDenied);
+            return Err(CoreError::new(crate::CoreErrorCause::CapacityDenied));
         }
         replacements.resize(leaf.len(), None);
         let mut encoded_bytes = 0usize;
@@ -419,7 +426,7 @@ impl<'a> LeafWork<'a> {
         let cursor = leaf.owned_record(last)?;
         admission
             .check_owner()
-            .map_err(|_| CoreError::OwnerFailed)?;
+            .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?;
         Ok(Self {
             operations,
             indices,

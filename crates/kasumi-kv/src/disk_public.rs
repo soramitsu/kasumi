@@ -31,16 +31,16 @@ impl DiskState {
             let root = state.check_snapshot(pin)?;
             let reader = DirectoryReader::new(&state.pages, state.owner.admission.clone());
             if reader.get(root, DirectoryKey::table(table))?.is_none() {
-                return Err(CoreError::MissingTable);
+                return Err(CoreError::new(crate::CoreErrorCause::MissingTable));
             }
             match reader.get(root, DirectoryKey::row(table, key))? {
                 None => Ok(None),
                 Some(DirectoryValue::Row { value, .. }) => state
                     .value_admitted(value, table, key, max_value_bytes)
                     .map(Some),
-                Some(DirectoryValue::Table { .. }) => {
-                    Err(CoreError::Corrupt("row lookup returned a table"))
-                }
+                Some(DirectoryValue::Table { .. }) => Err(CoreError::new(
+                    crate::CoreErrorCause::Corrupt("row lookup returned a table"),
+                )),
             }
         })
     }
@@ -77,7 +77,7 @@ impl DiskState {
     ) -> Result<Option<ValueLocation>, CoreError> {
         let root = self.check_snapshot(pin)?;
         if !self.table_at_prepared(root, table, workspace)? {
-            return Err(CoreError::MissingTable);
+            return Err(CoreError::new(crate::CoreErrorCause::MissingTable));
         }
         let reader = DirectoryReader::new(&self.pages, self.owner.admission.clone());
         match reader.get_with_workspace(
@@ -87,9 +87,9 @@ impl DiskState {
         )? {
             None => Ok(None),
             Some(DirectoryValue::Row { value, .. }) => Ok(Some(value)),
-            Some(DirectoryValue::Table { .. }) => {
-                Err(CoreError::Corrupt("row lookup returned a table"))
-            }
+            Some(DirectoryValue::Table { .. }) => Err(CoreError::new(
+                crate::CoreErrorCause::Corrupt("row lookup returned a table"),
+            )),
         }
     }
 
@@ -121,9 +121,9 @@ impl DiskState {
             };
             let length = value.len as usize;
             if length > max_value_bytes || length > workspace.output.bytes.len() {
-                return Err(CoreError::InvalidInput(
+                return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
                     "value exceeds the caller's read bound",
-                ));
+                )));
             }
             state.value_into(value, table, key, &mut workspace.output.bytes[..length])?;
             Ok(Some(length))
@@ -140,14 +140,14 @@ impl DiskState {
             let root = state.check_snapshot(pin)?;
             let reader = DirectoryReader::new(&state.pages, state.owner.admission.clone());
             if reader.get(root, DirectoryKey::table(table))?.is_none() {
-                return Err(CoreError::MissingTable);
+                return Err(CoreError::new(crate::CoreErrorCause::MissingTable));
             }
             match reader.get(root, DirectoryKey::row(table, key))? {
                 None => Ok(false),
                 Some(DirectoryValue::Row { .. }) => Ok(true),
-                Some(DirectoryValue::Table { .. }) => {
-                    Err(CoreError::Corrupt("row lookup returned a table"))
-                }
+                Some(DirectoryValue::Table { .. }) => Err(CoreError::new(
+                    crate::CoreErrorCause::Corrupt("row lookup returned a table"),
+                )),
             }
         })
     }
@@ -163,7 +163,7 @@ impl DiskState {
             let root = state.check_snapshot(pin)?;
             let reader = DirectoryReader::new(&state.pages, state.owner.admission.clone());
             if reader.get(root, DirectoryKey::table(table))?.is_none() {
-                return Err(CoreError::MissingTable);
+                return Err(CoreError::new(crate::CoreErrorCause::MissingTable));
             }
             let (lower, exclusive) = after
                 .filter(|after| *after >= start)
@@ -176,7 +176,9 @@ impl DiskState {
                         (Some(row), DirectoryValue::Row { .. }) => {
                             AdmittedValue::copy(&state.owner.admission, row).map(Some)
                         }
-                        _ => Err(CoreError::Corrupt("row successor returned a table")),
+                        _ => Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                            "row successor returned a table",
+                        ))),
                     }
                 }
                 _ => Ok(None),
@@ -199,7 +201,9 @@ impl DiskState {
             };
             let key = record.key();
             let (Some(key), DirectoryValue::Row { value, .. }) = (key.row, record.value) else {
-                return Err(CoreError::Corrupt("row successor returned a table"));
+                return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                    "row successor returned a table",
+                )));
             };
             let output_key = AdmittedValue::copy(&state.owner.admission, key)?;
             let output_value = state.value_admitted(value, table, key, max_value_bytes)?;
@@ -217,9 +221,9 @@ impl DiskState {
         self.owner.check()?;
         value.validate()?;
         if value.len as usize > max_value_bytes {
-            return Err(CoreError::InvalidInput(
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
                 "value exceeds the caller's read bound",
-            ));
+            )));
         }
         // Reserve the required output first. Optional caching cannot turn a
         // readable value into an allocation failure by consuming its headroom.
@@ -240,13 +244,15 @@ impl DiskState {
         self.owner.check()?;
         value.validate()?;
         if output.len() != value.len as usize {
-            return Err(CoreError::InvalidInput("value output length differs"));
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
+                "value output length differs",
+            )));
         }
         let identity = NativeIdentity::value(self.owner.group_id, value, table, key)?;
         let cached = self
             .cache
             .lock()
-            .map_err(|_| CoreError::OwnerFailed)?
+            .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?
             .load_or_read_into(identity, output, |out| {
                 self.owner.check()?;
                 self.owner
@@ -254,7 +260,9 @@ impl DiskState {
                     .read(GroupFile::segment(value.segment_id), value.offset, out)?;
                 self.owner.check()?;
                 if crc32c(out) != value.crc {
-                    return Err(CoreError::Corrupt("value checksum differs"));
+                    return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                        "value checksum differs",
+                    )));
                 }
                 Ok(())
             })
@@ -267,7 +275,9 @@ impl DiskState {
             if cached.as_bytes().len() != value.len as usize
                 || crc32c(cached.as_bytes()) != value.crc
             {
-                return Err(CoreError::Corrupt("cached value identity differs"));
+                return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                    "cached value identity differs",
+                )));
             }
             output.copy_from_slice(cached.as_bytes());
         }

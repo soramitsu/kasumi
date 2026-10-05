@@ -139,13 +139,15 @@ enum Source {
     Staged(Arc<EncryptedTable>),
 }
 impl Source {
-    fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
+    fn get(&self, key: &[u8]) -> Result<Option<crate::materialization_row::MaterializationRow>> {
         let result = match self {
-            Self::Durable(rows) => {
-                rows.store
-                    .get_bounded(&rows.binding.namespace(), key, MAX_ROW_BYTES)?
-            }
-            Self::Staged(table) => table.get(key)?,
+            Self::Durable(rows) => rows
+                .store
+                .get_bounded(&rows.binding.namespace(), key, MAX_ROW_BYTES)?
+                .map(crate::materialization_row::MaterializationRow::Stored),
+            Self::Staged(table) => table
+                .get(key)?
+                .map(crate::materialization_row::MaterializationRow::Staged),
         };
         ensure!(
             result.as_ref().is_none_or(|v| v.len() <= MAX_ROW_BYTES),
@@ -176,7 +178,7 @@ impl View {
     pub(crate) fn head(&self) -> &BackupBindingHead {
         &self.head
     }
-    fn bytes(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
+    fn bytes(&self, key: &[u8]) -> Result<Option<crate::materialization_row::MaterializationRow>> {
         self.source
             .as_ref()
             .map(|source| source.get(key))
@@ -451,14 +453,20 @@ pub(crate) struct Builder {
     head: BackupBindingHead,
 }
 impl Builder {
-    pub(crate) fn new(disk: &Arc<ScratchDisk>, limit: u64, incarnation: &str) -> Result<Self> {
+    pub(crate) fn new(
+        disk: &Arc<ScratchDisk>,
+        limit: u64,
+        incarnation: &str,
+    ) -> std::result::Result<Self, kasumi_store::ScratchOperationFailure> {
         Ok(Self {
             table: Arc::new(EncryptedTable::new(
                 disk,
                 limit,
                 disk.native_cache_config(),
             )?),
-            head: BackupBindingHead::empty(incarnation)?,
+            head: BackupBindingHead::empty(incarnation).map_err(|original| {
+                kasumi_store::ScratchOperationFailure::Operation(original.into())
+            })?,
         })
     }
     pub(crate) fn push(&mut self, row: &Row, state: &TenantState) -> Result<()> {

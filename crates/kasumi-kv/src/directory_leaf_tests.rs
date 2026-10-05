@@ -63,10 +63,9 @@ fn leaf_plans_find_boundaries_and_return_admitted_cursors_without_collecting_pri
         assert_eq!(exclusive.first_index(), leaf.len() / 2 + 1);
         drop(exclusive);
         let before = admission.0.used.load(AtomicOrdering::Relaxed);
-        assert!(matches!(
-            leaf.owned_record(leaf.len()),
-            Err(CoreError::InvalidInput(_))
-        ));
+        assert!(
+            matches!(&(leaf.owned_record(leaf.len())), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput(_))))
+        );
         assert_eq!(admission.0.used.load(AtomicOrdering::Relaxed), before);
         cursor = Some(leaf.owned_record(leaf.len() - 1).unwrap());
         previous_reference = Some(leaf.reference());
@@ -180,8 +179,7 @@ fn leaf_rewrite_rejects_foreign_root_bad_shape_and_changed_value_bytes_before_ap
     let mut mutator = DirectoryMutator::new(&backend, &mut mutator_workspace).unwrap();
     let before = backend.pages.lock().unwrap().len();
     let mut replacements = vec![None; leaf.len()];
-    assert!(matches!(
-        mutator.rewrite_leaf(
+    assert!(matches!(&(mutator.rewrite_leaf(
             DirectoryRoot {
                 generation: 8,
                 ..root
@@ -189,17 +187,13 @@ fn leaf_rewrite_rejects_foreign_root_bad_shape_and_changed_value_bytes_before_ap
             8,
             &leaf,
             &replacements
-        ),
-        Err(CoreError::InvalidInput(_))
-    ));
-    assert!(matches!(
-        mutator.rewrite_leaf(root, 6, &leaf, &replacements),
-        Err(CoreError::InvalidInput(_))
-    ));
-    assert!(matches!(
-        mutator.rewrite_leaf(root, 8, &leaf, &[]),
-        Err(CoreError::InvalidInput(_))
-    ));
+        )), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput(_)))));
+    assert!(
+        matches!(&(mutator.rewrite_leaf(root, 6, &leaf, &replacements)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput(_))))
+    );
+    assert!(
+        matches!(&(mutator.rewrite_leaf(root, 8, &leaf, &[])), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput(_))))
+    );
     let row = leaf
         .records()
         .position(|(_, value)| matches!(value, DirectoryValue::Row { .. }))
@@ -222,17 +216,15 @@ fn leaf_rewrite_rejects_foreign_root_bad_shape_and_changed_value_bytes_before_ap
         },
     ] {
         replacements[row] = Some(replacement);
-        assert!(matches!(
-            mutator.rewrite_leaf(root, 8, &leaf, &replacements),
-            Err(CoreError::InvalidInput(_))
-        ));
+        assert!(
+            matches!(&(mutator.rewrite_leaf(root, 8, &leaf, &replacements)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput(_))))
+        );
     }
     replacements[row] = None;
     replacements[0] = Some(value);
-    assert!(matches!(
-        mutator.rewrite_leaf(root, 8, &leaf, &replacements),
-        Err(CoreError::InvalidInput(_))
-    ));
+    assert!(
+        matches!(&(mutator.rewrite_leaf(root, 8, &leaf, &replacements)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput(_))))
+    );
     assert_eq!(backend.pages.lock().unwrap().len(), before);
     replacements[0] = None;
     let next = mutator.rewrite_leaf(root, 8, &leaf, &replacements).unwrap();
@@ -245,14 +237,13 @@ fn leaf_plans_and_rewrites_admit_before_io_and_release_on_denial() {
     let (root, _) = build_leaf_fixture(&backend, Admission::new(256 << 10), 24, true);
     let denied = Admission::new(1);
     let before = backend.reads.load(AtomicOrdering::Relaxed);
-    assert!(matches!(
-        DirectoryReader::new(&backend, denied.clone()).leaf_after(
+    assert!(
+        matches!(&(DirectoryReader::new(&backend, denied.clone()).leaf_after(
             root,
             DirectoryKey::table("t"),
             false
-        ),
-        Err(CoreError::CapacityDenied)
-    ));
+        )), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::CapacityDenied)))
+    );
     assert_eq!(backend.reads.load(AtomicOrdering::Relaxed), before);
     assert_eq!(denied.0.used.load(AtomicOrdering::Relaxed), 0);
 
@@ -267,14 +258,12 @@ fn leaf_plans_and_rewrites_admit_before_io_and_release_on_denial() {
         .unwrap();
     let reads = backend.reads.load(AtomicOrdering::Relaxed);
     let pages = backend.pages.lock().unwrap().len();
-    assert!(matches!(
-        leaf.owned_record(0),
-        Err(CoreError::CapacityDenied)
-    ));
-    assert!(matches!(
-        DirectoryWriteWorkspace::for_leaf_rewrite(admission.clone()),
-        Err(CoreError::CapacityDenied)
-    ));
+    assert!(
+        matches!(&(leaf.owned_record(0)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::CapacityDenied)))
+    );
+    assert!(
+        matches!(&(DirectoryWriteWorkspace::for_leaf_rewrite(admission.clone())), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::CapacityDenied)))
+    );
     assert_eq!(backend.reads.load(AtomicOrdering::Relaxed), reads);
     assert_eq!(backend.pages.lock().unwrap().len(), pages);
     drop(blocker);
@@ -312,12 +301,13 @@ fn leaf_rewrite_revalidates_parent_and_leaf_digests_before_any_effect() {
         backend.pages.lock().unwrap()[reference.page_index as usize][36] ^= 1;
         let mut mutator_workspace = DirectoryWriteWorkspace::for_leaf_rewrite(admission).unwrap();
         let mut mutator = DirectoryMutator::new(&backend, &mut mutator_workspace).unwrap();
-        assert!(matches!(
-            mutator.rewrite_leaf(root, 8, &leaf, &vec![None; leaf.len()]),
-            Err(CoreError::Corrupt(_))
-        ));
+        assert!(
+            matches!(&(mutator.rewrite_leaf(root, 8, &leaf, &vec![None; leaf.len()])), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::Corrupt(_))))
+        );
         assert_eq!(backend.pages.lock().unwrap().len(), before);
-        assert!(matches!(mutator.finish(root), Err(CoreError::OwnerFailed)));
+        assert!(
+            matches!(&(mutator.finish(root)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+        );
     }
 }
 
@@ -338,12 +328,13 @@ fn leaf_rewrite_append_and_sync_failures_poison_without_changing_old_roots() {
         let mut mutator_workspace =
             DirectoryWriteWorkspace::for_leaf_rewrite(admission.clone()).unwrap();
         let mut mutator = DirectoryMutator::new(&backend, &mut mutator_workspace).unwrap();
-        assert!(matches!(
-            mutator.rewrite_leaf(root, 8, &leaf, &vec![None; leaf.len()]),
-            Err(CoreError::Io(_))
-        ));
+        assert!(
+            matches!(&(mutator.rewrite_leaf(root, 8, &leaf, &vec![None; leaf.len()])), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::Io(_))))
+        );
         assert_eq!(backend.inner.pages.lock().unwrap().len() - before, count);
-        assert!(matches!(mutator.finish(root), Err(CoreError::OwnerFailed)));
+        assert!(
+            matches!(&(mutator.finish(root)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+        );
         assert_directory_model(&backend, admission.clone(), root, &model);
     }
     backend
@@ -356,8 +347,12 @@ fn leaf_rewrite_append_and_sync_failures_poison_without_changing_old_roots() {
         .rewrite_leaf(root, 8, &leaf, &vec![None; leaf.len()])
         .unwrap();
     backend.fail_sync.store(true, AtomicOrdering::Relaxed);
-    assert!(matches!(mutator.finish(next), Err(CoreError::Io(_))));
-    assert!(matches!(mutator.finish(next), Err(CoreError::OwnerFailed)));
+    assert!(
+        matches!(&(mutator.finish(next)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::Io(_))))
+    );
+    assert!(
+        matches!(&(mutator.finish(next)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+    );
     assert_directory_model(&backend, admission.clone(), root, &model);
     drop((leaf, mutator));
     drop(mutator_workspace);

@@ -55,7 +55,7 @@ fn context(database: &Database, clock: &EpochClock) -> RequestContext {
         request_id: "clock-fixture".into(),
     }
 }
-async fn audit(node: Arc<NodeStore>, admission: Arc<NodeAdmission>) -> Arc<SecurityAudit> {
+async fn audit(node: NodeStore, admission: Arc<NodeAdmission>) -> Arc<SecurityAudit> {
     SecurityAudit::initialize(
         TenantStore::initialize_catalog_fixture(
             node,

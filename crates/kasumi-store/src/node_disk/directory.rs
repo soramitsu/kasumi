@@ -427,5 +427,5 @@ mod managed;
 pub(super) use managed::PendingDirectory;
 pub use managed::{
     NodeDiskDirectoryFailure, NodeDiskDirectoryOperation, NodeDiskDirectoryOperationKind,
-    NodeDiskDirectoryOperationStep,
+    NodeDiskDirectoryOperationStep, NodeDiskDirectoryOriginals,
 };

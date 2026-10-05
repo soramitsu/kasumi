@@ -162,7 +162,7 @@ impl Backend {
         position: &AppliedEntryContext,
         prepared: PreparedMaintenance,
         publication_writes: &mut Vec<WriteOp>,
-    ) -> Result<kasumi_types::Result<AuthorityMaintenanceStatus>> {
+    ) -> ScratchResult<kasumi_types::Result<AuthorityMaintenanceStatus>> {
         let mut meta = self.meta()?;
         if let Err(error) = prepared
             .context
@@ -227,7 +227,7 @@ impl Backend {
                     progress_revision: position.log_id.index,
                     phase: AuthorityMaintenancePhase::Prepared,
                 };
-                match prepared_outcome(self.prepare_maintenance_start(&meta, command))? {
+                match prepared_scratch_outcome(self.prepare_maintenance_start(&meta, command))? {
                     Err(error) => {
                         status.phase = AuthorityMaintenancePhase::Rejected {
                             code: error.code,
@@ -279,7 +279,7 @@ impl Backend {
                     return Ok(Ok(status));
                 }
                 if meta.operational.pending_operation != Some(id) {
-                    anyhow::bail!("pending maintenance identity differs");
+                    return Err(anyhow::anyhow!("pending maintenance identity differs").into());
                 }
                 status
             }
@@ -370,7 +370,9 @@ impl Backend {
                     | AuthorityMaintenanceAction::ActivateSignerGeneration { .. }
                     | AuthorityMaintenanceAction::SetCapacity { .. }
                     | AuthorityMaintenanceAction::AuthorizeSignerTrust { .. } => {
-                        anyhow::bail!("capacity maintenance requires no dispatch")
+                        return Err(
+                            anyhow::anyhow!("capacity maintenance requires no dispatch").into()
+                        );
                     }
                 }
                 if status.phase.terminal() {
@@ -399,11 +401,14 @@ impl Backend {
         additions.push((operation_key(id), Record::Maintenance(status.clone())));
         let mut writes = Vec::new();
         for (key, record) in additions {
-            let bytes = serde_json::to_vec(&record)?;
-            ensure!(
-                bytes.len() <= MAX_RECORD_BYTES,
-                "maintenance record exceeds its byte bound"
-            );
+            let bytes = ScratchOperationFailure::ordinary(|| {
+                let bytes = serde_json::to_vec(&record)?;
+                ensure!(
+                    bytes.len() <= MAX_RECORD_BYTES,
+                    "maintenance record exceeds its byte bound"
+                );
+                Ok(bytes)
+            })?;
             let previous = self
                 .store
                 .get_bounded(NS, key.as_bytes(), MAX_RECORD_BYTES)?;
@@ -430,7 +435,11 @@ impl Backend {
             )));
         }
         meta.revision = position.log_id.index;
-        writes.push(WriteOp::put(NS, META, serde_json::to_vec(&meta)?));
+        writes.push(WriteOp::put(
+            NS,
+            META,
+            ScratchOperationFailure::ordinary(|| Ok(serde_json::to_vec(&meta)?))?,
+        ));
         *publication_writes = writes;
         Ok(Ok(status))
     }
@@ -438,13 +447,14 @@ impl Backend {
         &self,
         meta: &Meta,
         command: &'a AuthorityMaintenanceCommand,
-    ) -> Result<PreparedMaintenanceStart<'a>> {
+    ) -> ScratchResult<PreparedMaintenanceStart<'a>> {
         if meta.operational.revision != command.expected_operational_revision
             || meta.operational.pending_operation.is_some()
         {
             return Err(reject_conflict(
                 "authority operational revision changed or maintenance remains pending",
-            ));
+            )
+            .into());
         }
         let mut next = meta.operational.membership.clone();
         match &command.action {
@@ -470,11 +480,13 @@ impl Backend {
                             .installation
                             .manifest
                             .signing_domain(self.installation.partition)?
-                            .digest()?
+                            .digest()
+                            .map_err(anyhow::Error::new)?
                 {
                     return Err(reject_conflict(
                         "signer directive member or installed domain differs",
-                    ));
+                    )
+                    .into());
                 }
                 self.validate_issuer_signer_directive(meta, directive)?;
             }
@@ -485,7 +497,8 @@ impl Backend {
                 {
                     return Err(reject_conflict(
                         "authority member identity is already allocated or permanently revoked",
-                    ));
+                    )
+                    .into());
                 }
                 next.members.insert(*node_id, member.clone());
             }
@@ -494,7 +507,8 @@ impl Backend {
                 if next.voters.contains(node_id) || next.members.remove(node_id).is_none() {
                     return Err(reject_conflict(
                         "replace an active voter before revoking its member identity",
-                    ));
+                    )
+                    .into());
                 }
             }
             AuthorityMaintenanceAction::SetCapacity { capacity } => {
@@ -513,7 +527,7 @@ impl Backend {
                 {
                     return Err(reject_conflict(
                         "new authority capacity cannot fit durable records and reserved completions",
-                    ));
+                    ).into());
                 }
             }
         }

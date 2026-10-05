@@ -5,6 +5,7 @@ use super::*;
 use crate::cache::CacheConfig;
 use crate::group::{FileKind, InMemoryGroup, TransactionReserveError, TransactionSpacePlan};
 use crate::root::{RootSelection, select_root};
+use std::sync::Mutex;
 
 const GROUP: [u8; 16] = [184; 16];
 const ROWS: TableDefinition<&[u8], &[u8]> = TableDefinition::new("claim-accounts");
@@ -369,9 +370,27 @@ fn assert_original(writer: &RetainedWriteTransaction, address: usize, unknown: b
         panic!("original commit error missing");
     };
     let original = match (unknown, error) {
-        (true, StorageError::UnknownCommit(original)) | (false, StorageError::Io(original)) => {
-            original
+        (true, StorageError::UnknownCommit(original)) => {
+            assert_eq!(
+                original.disposition(),
+                crate::CoreErrorDisposition::UnknownCommit
+            );
+            assert!(original.rejected_cause().is_none());
+            assert!(!original.is_capacity_denied());
+            let observed = std::error::Error::source(error)
+                .unwrap()
+                .downcast_ref::<CoreError>()
+                .unwrap();
+            assert!(std::ptr::eq(observed, original));
+            let original_io = original.io_error().expect("original commit I/O");
+            let observed_io = std::error::Error::source(original)
+                .unwrap()
+                .downcast_ref::<io::Error>()
+                .unwrap();
+            assert!(std::ptr::eq(observed_io, original_io));
+            original_io
         }
+        (false, StorageError::Io(original)) => original,
         _ => panic!("wrong error identity: {error:?}"),
     };
     assert_eq!(original.kind(), io::ErrorKind::StorageFull);
@@ -617,13 +636,13 @@ fn transaction_claim_activation_preparation_memory_refusal_precedes_claim_and_re
 }
 
 #[test]
-fn transaction_claim_activation_postcommit_finish_error_is_unknown_and_reopens_new_version() {
+fn retained_holding_writer_postcommit_finish_error_is_unknown_and_reopens_new_version() {
     let (mut opening, backend) = fixture();
     let counts = backend.counts();
     let (error, address) = error_at("postcommit claim settlement");
     *backend.0.finish_error.lock().unwrap() = Some(error);
     let mut writer = staged(&opening, NEW);
-    writer.commit();
+    writer.commit_holding_writer();
     assert_original(&writer, address, true);
     assert_eq!(backend.0.finishes.load(Ordering::Acquire), counts.1 + 1);
     let (claimed, selected) = *backend.0.finished.lock().unwrap().last().unwrap();

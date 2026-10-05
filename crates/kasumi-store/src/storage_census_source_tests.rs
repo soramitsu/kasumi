@@ -77,7 +77,7 @@ impl Memory {
     }
     fn parent(self: &Arc<Self>) -> StorageRegistration<Database> {
         self.census
-            .register(self.provider(), 0, || Database)
+            .register_native(self.provider(), 0, |_| Database)
             .unwrap()
     }
     fn pool(self: &Arc<Self>, parent: &StorageRegistration<Database>) -> StorageRegistration<Pool> {
@@ -113,6 +113,30 @@ impl NodeDiskMemoryAdmission for Memory {
     }
     fn reserve_installed(self: Arc<Self>, bytes: u64) -> io::Result<DiskMemoryLease> {
         self.backing.clone().reserve_installed(bytes)
+    }
+    fn install_native_constructor(
+        self: Arc<Self>,
+        install: &mut crate::NativeConstructorInstall<'_>,
+    ) -> std::io::Result<()> {
+        let provider: Arc<dyn NodeDiskMemoryAdmission> = self.clone();
+        let permit = install
+            .try_begin_bind(provider)
+            .map_err(|_| std::io::ErrorKind::InvalidInput)?;
+        let requested_bytes = permit.request_bytes();
+        let bytes = crate::disk_memory::add(
+            requested_bytes,
+            crate::DiskMemoryLease::token_allocation_bytes::<crate::DiskMemoryLease>()?,
+        )?;
+        match self.backing.clone().reserve_installed(bytes) {
+            Ok(token) => {
+                permit.bind(token);
+                Ok(())
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::OutOfMemory => {
+                Err(permit.refuse_capacity(error))
+            }
+            Err(error) => Err(error),
+        }
     }
     fn quote_installed(&self, bytes: u64) -> io::Result<u64> {
         self.backing.quote_installed(bytes)
@@ -376,7 +400,7 @@ fn source_census_partial_right_claim_is_real_capacity_and_release_returns_parent
     assert!(
         memory
             .census
-            .register(memory.provider(), 0, || Database)
+            .register_native(memory.provider(), 0, |_| Database)
             .is_err()
     );
     assert_eq!(
@@ -406,17 +430,32 @@ fn source_census_foreign_holds_never_consume_capacity_or_parent_counts() {
     let other_parent = other.parent();
     let pool = memory.pool(&parent);
     let other_pool = other.pool(&other_parent);
-    assert_eq!(pool.id(), other_pool.id()); // Numeric equality is insufficient.
+    // Separate providers reuse the same slot position, but their exact owner
+    // generations are process-wide and cannot alias.
+    assert_eq!(pool.id().index, other_pool.id().index);
+    assert_ne!(pool.id().generation, other_pool.id().generation);
     let bank = other.bank(other_pool.id());
     let mut hold = Some(bank.hold());
-    assert!(
+    let own_census = memory.census.snapshot();
+    let foreign_census = other.census.snapshot();
+    let own_memory = memory.backing.snapshot();
+    let foreign_memory = other.backing.snapshot();
+    assert_eq!(
         memory
             .census
             .claim_source_right(&memory.provider(), parent.id(), pool.id(), 0, &mut hold)
-            .is_err()
+            .err()
+            .unwrap()
+            .kind(),
+        io::ErrorKind::InvalidInput
     );
     assert!(hold.is_some());
+    assert_eq!(memory.census.snapshot(), own_census);
+    assert_eq!(other.census.snapshot(), foreign_census);
+    assert_eq!(memory.backing.snapshot(), own_memory);
+    assert_eq!(other.backing.snapshot(), foreign_memory);
     assert_eq!(children(&memory, parent.id()), 1);
+    assert_eq!(children(&other, other_parent.id()), 1);
     assert_eq!(memory.census.snapshot().source_reserved, 0);
     drop(hold);
     bank.begin_seal().unwrap();

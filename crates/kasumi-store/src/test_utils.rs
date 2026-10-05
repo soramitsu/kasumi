@@ -18,6 +18,13 @@ use crate::{GeneratedKey, KeyProvider, SecretKey, WrappedKey, decrypt, encrypt};
 use kasumi_clock::LeaseClock;
 
 use kasumi_kv as cache_types;
+#[path = "test_utils_fixed_diagnostic.rs"]
+mod fixed_diagnostic;
+#[path = "test_utils_plaintext_copy.rs"]
+mod plaintext_copy;
+pub use plaintext_copy::{
+    FixturePlaintextCopy, FixtureWrite, FixtureWriteBatch, write_plaintext_copy_for_fixture,
+};
 #[cfg(test)]
 #[path = "test_cache_memory.rs"]
 pub(crate) mod cache_memory;
@@ -46,6 +53,13 @@ pub fn private_tempdir() -> std::io::Result<tempfile::TempDir> {
         .permissions(std::fs::Permissions::from_mode(0o700))
         .tempdir()
 }
+
+#[path = "test_utils_native_group.rs"]
+mod native_group;
+pub use native_group::{
+    FixtureNativeGroupImage, capture_native_group_image, copy_closed_native_group,
+    restore_closed_native_group,
+};
 
 /// Enumerate the actual regular files in a test node group without following
 /// symlinks or silently skipping unexpected physical entries.
@@ -84,7 +98,7 @@ pub fn inject_authenticated_rows_below_facade(
     application_ops: &[crate::WriteOp],
     custody_ops: &[crate::WriteOp],
 ) -> Result<()> {
-    let tx = stores.application().node.db.begin_write()?;
+    let tx = stores.application().node.body().db.begin_write()?;
     for (store, operations) in [
         (stores.application(), application_ops),
         (stores.custody().store(), custody_ops),
@@ -162,6 +176,10 @@ pub(crate) fn installed_device_memory() -> std::sync::Arc<TestDiskMemory> {
         .clone()
 }
 
+#[path = "test_utils_planner_clock.rs"]
+mod planner_clock;
+pub use planner_clock::PlannerExpiryClock;
+
 /// Explicit bounded memory owner for physical-disk fixtures. It performs the
 /// same mandatory resident acquisition and owns every accepted lease until Drop;
 /// no production constructor selects this governor implicitly.
@@ -172,6 +190,10 @@ pub struct TestDiskMemory {
     state: std::sync::Mutex<TestDiskMemorySnapshot>,
     #[cfg(test)]
     point_drop_panic: std::sync::Mutex<Option<(u64, Box<dyn std::any::Any + Send>)>>,
+    #[cfg(test)]
+    point_reserve_panic: std::sync::Mutex<Option<(u64, Box<dyn std::any::Any + Send>)>>,
+    #[cfg(test)]
+    point_matching_drop_panic: std::sync::Mutex<Option<(u64, Box<dyn std::any::Any + Send>)>>,
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct TestDiskMemorySnapshot {
@@ -202,6 +224,10 @@ impl TestDiskMemory {
             storage_census,
             #[cfg(test)]
             point_drop_panic: std::sync::Mutex::new(None),
+            #[cfg(test)]
+            point_reserve_panic: std::sync::Mutex::new(None),
+            #[cfg(test)]
+            point_matching_drop_panic: std::sync::Mutex::new(None),
             max_bytes,
             max_reservations,
             state: std::sync::Mutex::new(TestDiskMemorySnapshot {
@@ -214,6 +240,10 @@ impl TestDiskMemory {
         // test-only fault hook here, before any allocation-free retirement.
         #[cfg(test)]
         drop(owner.point_drop_panic.lock().unwrap());
+        #[cfg(test)]
+        drop(owner.point_reserve_panic.lock().unwrap());
+        #[cfg(test)]
+        drop(owner.point_matching_drop_panic.lock().unwrap());
         let provider: std::sync::Arc<dyn crate::NodeDiskMemoryAdmission> = owner.clone();
         owner.storage_census.bind_provider(&provider).unwrap();
         owner
@@ -268,61 +298,27 @@ impl crate::NodeDiskMemoryAdmission for TestDiskMemory {
         self: std::sync::Arc<Self>,
         bytes: u64,
     ) -> std::io::Result<crate::DiskMemoryLease> {
-        let requested_bytes = bytes;
-        let bytes = Self::required_reservation_bytes(bytes)?;
-        let mut state = self.state.lock().map_err(|_| std::io::ErrorKind::Other)?;
-        state.attempts = state
-            .attempts
-            .checked_add(1)
-            .ok_or(std::io::ErrorKind::Other)?;
-        #[cfg(test)]
-        if binding_staging_refuses(std::sync::Arc::as_ptr(&self) as usize, requested_bytes) {
-            return Err(std::io::ErrorKind::OutOfMemory.into());
+        Ok(crate::DiskMemoryLease::new(self.take_installed(bytes)?))
+    }
+
+    fn install_native_constructor(
+        self: std::sync::Arc<Self>,
+        install: &mut crate::NativeConstructorInstall<'_>,
+    ) -> std::io::Result<()> {
+        let provider: std::sync::Arc<dyn crate::NodeDiskMemoryAdmission> = self.clone();
+        let permit = install
+            .try_begin_bind(provider)
+            .map_err(|_| std::io::ErrorKind::InvalidInput)?;
+        match self.take_installed(permit.request_bytes()) {
+            Ok(token) => {
+                permit.bind(token);
+                Ok(())
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::OutOfMemory => {
+                Err(permit.refuse_capacity(error))
+            }
+            Err(error) => Err(error),
         }
-        let next = state
-            .used_bytes
-            .checked_add(bytes)
-            .ok_or(std::io::ErrorKind::OutOfMemory)?;
-        if next
-            .checked_add(state.bookkeeping_bytes)
-            .is_none_or(|total| total > self.max_bytes)
-            || state.live_reservations >= self.max_reservations
-        {
-            let error = std::io::Error::from(std::io::ErrorKind::OutOfMemory);
-            let refused = *state;
-            drop(state);
-            use std::io::Write as _;
-            let _ = writeln!(
-                std::io::stderr().lock(),
-                "TestDiskMemory::reserve_installed denied: provider={:p} requested_bytes={requested_bytes} charged_bytes={bytes} bookkeeping_bytes={} used_bytes={} next_used_bytes={next} max_bytes={} live_reservations={} max_reservations={} attempts={} error={error:?}",
-                std::sync::Arc::as_ptr(&self),
-                refused.bookkeeping_bytes,
-                refused.used_bytes,
-                self.max_bytes,
-                refused.live_reservations,
-                self.max_reservations,
-                refused.attempts,
-            );
-            return Err(error);
-        }
-        state.used_bytes = next;
-        state.live_reservations += 1;
-        #[cfg(test)]
-        source_quote_observer::record(
-            std::sync::Arc::as_ptr(&self) as usize,
-            bytes,
-            state.used_bytes,
-            state.live_reservations,
-        );
-        let id = state.attempts;
-        let observed = *state;
-        drop(state);
-        self.observe_lease("installed", id, 0, bytes, observed);
-        Ok(crate::DiskMemoryLease::new(TestDiskLease {
-            id,
-            owner: self,
-            bytes,
-        }))
     }
 
     fn quote_cache_memory(&self, bytes: u64) -> std::io::Result<kasumi_kv::CacheMemoryQuote> {
@@ -365,6 +361,86 @@ impl crate::NodeDiskMemoryAdmission for TestDiskMemory {
 }
 
 impl TestDiskMemory {
+    fn take_installed(self: std::sync::Arc<Self>, bytes: u64) -> std::io::Result<TestDiskLease> {
+        let requested_bytes = bytes;
+        #[cfg(test)]
+        {
+            let payload = {
+                let mut pending = self.point_reserve_panic.lock().unwrap();
+                if pending
+                    .as_ref()
+                    .is_some_and(|(bytes, _)| *bytes == requested_bytes)
+                {
+                    pending.take().map(|(_, payload)| payload)
+                } else {
+                    None
+                }
+            };
+            if let Some(payload) = payload {
+                // Count the actual provider callback, then unwind outside both
+                // fixture mutexes and before acquiring any reservation credit.
+                let mut state = self.state.lock().unwrap();
+                state.attempts = state.attempts.checked_add(1).unwrap();
+                drop(state);
+                std::panic::resume_unwind(payload);
+            }
+        }
+        let bytes = Self::required_reservation_bytes(bytes)?;
+        let mut state = self.state.lock().map_err(|_| std::io::ErrorKind::Other)?;
+        state.attempts = state
+            .attempts
+            .checked_add(1)
+            .ok_or(std::io::ErrorKind::Other)?;
+        #[cfg(test)]
+        if binding_staging_refuses(std::sync::Arc::as_ptr(&self) as usize, requested_bytes) {
+            return Err(std::io::ErrorKind::OutOfMemory.into());
+        }
+        let next = state
+            .used_bytes
+            .checked_add(bytes)
+            .ok_or(std::io::ErrorKind::OutOfMemory)?;
+        if next
+            .checked_add(state.bookkeeping_bytes)
+            .is_none_or(|total| total > self.max_bytes)
+            || state.live_reservations >= self.max_reservations
+        {
+            let error = std::io::Error::from(std::io::ErrorKind::OutOfMemory);
+            let refused = *state;
+            drop(state);
+            #[cfg(test)]
+            source_quote_observer::record_refusal(std::sync::Arc::as_ptr(&self) as usize, bytes);
+            fixed_diagnostic::write(format_args!(
+                "TestDiskMemory::reserve_installed denied: provider={:p} requested_bytes={requested_bytes} charged_bytes={bytes} bookkeeping_bytes={} used_bytes={} next_used_bytes={next} max_bytes={} live_reservations={} max_reservations={} attempts={} error={error:?}\n",
+                std::sync::Arc::as_ptr(&self),
+                refused.bookkeeping_bytes,
+                refused.used_bytes,
+                self.max_bytes,
+                refused.live_reservations,
+                self.max_reservations,
+                refused.attempts,
+            ));
+            return Err(error);
+        }
+        state.used_bytes = next;
+        state.live_reservations += 1;
+        #[cfg(test)]
+        source_quote_observer::record(
+            std::sync::Arc::as_ptr(&self) as usize,
+            bytes,
+            state.used_bytes,
+            state.live_reservations,
+        );
+        let id = state.attempts;
+        let observed = *state;
+        drop(state);
+        self.observe_lease("installed", id, 0, bytes, observed);
+        Ok(TestDiskLease {
+            id,
+            owner: self,
+            bytes,
+        })
+    }
+
     fn cache_headroom_fits(
         &self,
         state: &TestDiskMemorySnapshot,
@@ -462,6 +538,20 @@ impl Drop for TestDiskLease {
             if let Some(payload) = payload {
                 std::panic::resume_unwind(payload);
             }
+            let payload = {
+                let mut pending = self.owner.point_matching_drop_panic.lock().unwrap();
+                if pending
+                    .as_ref()
+                    .is_some_and(|(bytes, _)| *bytes == self.bytes)
+                {
+                    pending.take().map(|(_, payload)| payload)
+                } else {
+                    None
+                }
+            };
+            if let Some(payload) = payload {
+                std::panic::resume_unwind(payload);
+            }
         }
     }
 }
@@ -470,85 +560,81 @@ impl crate::NodeStore {
     /// Synthetic KV I/O with an explicit admitted physical owner for engine
     /// fixtures. This does not claim the backend itself is a physical file.
     /// The exact persistent/scratch core is checked before the engine can touch it.
-    pub fn create_fixture_backend_on_disk(
-        backend: impl kasumi_kv::SegmentGroupBackend + 'static,
+    #[allow(
+        clippy::result_large_err,
+        reason = "original startup custody stays inline; an error Box would allocate at refusal"
+    )]
+    pub fn create_fixture_backend_on_disk<B: kasumi_kv::SegmentGroupBackend + 'static>(
+        backend: B,
         storage_admission: std::sync::Arc<dyn kasumi_kv::StorageAdmission>,
         persistent: std::sync::Arc<crate::NodeDisk>,
         scratch: std::sync::Arc<crate::ScratchDisk>,
-    ) -> Result<std::sync::Arc<Self>> {
-        ensure!(
-            std::sync::Arc::ptr_eq(persistent.memory(), scratch.memory()),
-            "persistent and scratch disks require the same installed memory admission"
-        );
-        let db = kasumi_kv::Database::builder(
-            storage_admission,
-            *NODE_STORE_ID.as_bytes(),
-            node_storage_config().cache,
-        )
-        .create_with_backend(backend)?;
-        let db = Self::finish_setup(db, Self::initialize_tables)?;
-        Ok(Self::installed(db, None, Some(persistent), scratch))
+    ) -> std::result::Result<Self, crate::NodeFixtureStartFailure<B>> {
+        Self::start_fixture(backend, storage_admission, Some(persistent), scratch, false)
     }
 
-    pub fn open_fixture_backend_on_disk(
-        backend: impl kasumi_kv::SegmentGroupBackend + 'static,
+    #[allow(
+        clippy::result_large_err,
+        reason = "original startup custody stays inline; an error Box would allocate at refusal"
+    )]
+    pub fn open_fixture_backend_on_disk<B: kasumi_kv::SegmentGroupBackend + 'static>(
+        backend: B,
         storage_admission: std::sync::Arc<dyn kasumi_kv::StorageAdmission>,
         persistent: std::sync::Arc<crate::NodeDisk>,
         scratch: std::sync::Arc<crate::ScratchDisk>,
-    ) -> Result<std::sync::Arc<Self>> {
-        ensure!(
-            std::sync::Arc::ptr_eq(persistent.memory(), scratch.memory()),
-            "persistent and scratch disks require the same installed memory admission"
-        );
-        let db = kasumi_kv::Database::builder(
-            storage_admission,
-            *NODE_STORE_ID.as_bytes(),
-            node_storage_config().cache,
-        )
-        .open_with_backend(backend)?;
-        let db = Self::finish_setup(db, |database| {
-            let tx = database.begin_read()?;
-            tx.open_table(crate::CATALOG)?;
-            tx.open_table(crate::RECORDS)?;
-            Ok(())
-        })?;
-        Ok(Self::installed(db, None, Some(persistent), scratch))
+    ) -> std::result::Result<Self, crate::NodeFixtureStartFailure<B>> {
+        Self::start_fixture(backend, storage_admission, Some(persistent), scratch, true)
     }
 
+    #[allow(
+        clippy::result_large_err,
+        reason = "original startup custody stays inline; an error Box would allocate at refusal"
+    )]
     pub fn create_new_fixture(
         path: impl AsRef<std::path::Path>,
         id: uuid::Uuid,
         memory: std::sync::Arc<dyn crate::NodeDiskMemoryAdmission>,
         scratch: std::sync::Arc<crate::ScratchDisk>,
-    ) -> Result<std::sync::Arc<Self>> {
+    ) -> std::result::Result<Self, crate::NodeStoreStartFailure> {
         let disk = retry_disk_registry(|| {
             crate::NodeDisk::fixture_for_path(path.as_ref(), memory.clone())
-        })?;
+        })
+        .map_err(|original| crate::NodeStoreStartFailure::Operation(original.into()))?;
         Self::create_new_fixture_direct(path.as_ref(), id, disk, scratch)
     }
 
+    #[allow(
+        clippy::result_large_err,
+        reason = "original startup custody stays inline; an error Box would allocate at refusal"
+    )]
     pub fn open_existing_fixture(
         path: impl AsRef<std::path::Path>,
         id: uuid::Uuid,
         memory: std::sync::Arc<dyn crate::NodeDiskMemoryAdmission>,
         scratch: std::sync::Arc<crate::ScratchDisk>,
-    ) -> Result<std::sync::Arc<Self>> {
+    ) -> std::result::Result<Self, crate::NodeStoreStartFailure> {
         let disk = retry_disk_registry(|| {
             crate::NodeDisk::fixture_for_path(path.as_ref(), memory.clone())
-        })?;
+        })
+        .map_err(|original| crate::NodeStoreStartFailure::Operation(original.into()))?;
         Self::open_existing_fixture_direct(path.as_ref(), id, disk, scratch)
     }
 
+    #[allow(
+        clippy::result_large_err,
+        reason = "original startup custody stays inline; an error Box would allocate at refusal"
+    )]
     pub fn initialize_owned_empty_fixture(
         path: impl AsRef<std::path::Path>,
         identity: &crate::NodeGroupIdentity,
         id: uuid::Uuid,
         memory: std::sync::Arc<dyn crate::NodeDiskMemoryAdmission>,
         scratch: std::sync::Arc<crate::ScratchDisk>,
-    ) -> Result<std::sync::Arc<Self>> {
+    ) -> std::result::Result<Self, crate::NodeStoreStartFailure> {
         let disk = retry_disk_registry(|| {
             crate::NodeDisk::fixture_for_path(path.as_ref(), memory.clone())
-        })?;
+        })
+        .map_err(|original| crate::NodeStoreStartFailure::Operation(original.into()))?;
         Self::initialize_owned_empty_fixture_direct(path.as_ref(), identity, id, disk, scratch)
     }
 
@@ -562,6 +648,50 @@ impl crate::NodeStore {
         })?;
         Self::claim_cleanup(path, id, disk, node_storage_config())
     }
+}
+
+/// Inspect the exact saved fixture result, reborrow it through its real census
+/// ID, and explicitly observe its disposition before allowing later joins.
+#[cfg(test)]
+pub(crate) async fn inspect_and_dispose_initializer(
+    failure: &crate::InitializerDrainFailure,
+    inspect: impl FnOnce(&anyhow::Error),
+) {
+    let address = failure
+        .with_report(|report| {
+            assert!(matches!(
+                report.handle_disposal(),
+                crate::TerminalObservation::Returned(Ok(()))
+            ));
+            assert!(matches!(
+                report.original_disposal(),
+                crate::TerminalObservation::NotEntered
+            ));
+            let original = report
+                .body_error()
+                .expect("the actual original initializer error");
+            inspect(original);
+            std::ptr::from_ref(original) as usize
+        })
+        .await;
+    let retained = crate::InitializerDrainFailure::retained(
+        failure.node.memory().clone(),
+        failure.opening_id(),
+    )
+    .await
+    .expect("same paid first original remains installed");
+    retained
+        .with_report(|report| {
+            assert_eq!(
+                std::ptr::from_ref(report.body_error().unwrap()) as usize,
+                address
+            );
+        })
+        .await;
+    assert!(
+        failure.dispose_original().await,
+        "actual original result disposal returned"
+    );
 }
 
 /// Bounded synthetic owner for the in-memory crash/fault backends used only by
@@ -724,6 +854,38 @@ pub async fn open_existing_custody_fixture(
             Err(failure) => error.context(failure),
         }),
     }
+}
+
+/// Observe both tenant worker drains and each distinct native node close before
+/// a fixture reopens its physical namespace. Dropping handles is not disposal.
+pub async fn shutdown_owned_stores_fixture(
+    stores: &crate::TenantStorageSet,
+) -> kasumi_types::drain::DrainResult {
+    let mut report = kasumi_types::drain::DrainReport::default();
+    let mut retained = None;
+    if let Err(failure) = stores.shutdown().await {
+        report.merge(&failure);
+        if failure.completion() == kasumi_types::drain::DrainCompletion::Retained {
+            retained = Some(failure);
+        }
+    }
+    let application = &stores.application().node;
+    let custody = &stores.custody().store().node;
+    for node in [
+        Some(application),
+        (!crate::NodeStore::ptr_eq(application, custody)).then_some(custody),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if let Err(failure) = node.shutdown().await {
+            report.merge(&failure);
+            if failure.completion() == kasumi_types::drain::DrainCompletion::Retained {
+                retained = Some(failure);
+            }
+        }
+    }
+    report.outcome(retained)
 }
 
 /// Assemble explicitly clocked test domains. This helper is unavailable in
@@ -1164,6 +1326,7 @@ mod registry_retry_tests {
 #[cfg(test)]
 mod admitted_backend_tests {
     use super::*;
+    use crate::NodeDiskMemoryAdmission;
     use std::sync::Arc;
 
     #[derive(Debug)]
@@ -1273,15 +1436,25 @@ mod admitted_backend_tests {
         )
         .err()
         .expect("foreign core must be rejected before backend I/O");
+        let crate::NodeStoreStartFailure::Constructor(crate::NativeConstructorFailure::Preclaim(
+            original,
+        )) = error.original()
+        else {
+            panic!("foreign provider must refuse before claiming native construction");
+        };
+        assert_eq!(original.kind(), std::io::ErrorKind::InvalidInput);
         assert!(
-            error
-                .to_string()
-                .contains("same installed memory admission")
+            error.unentered().is_some(),
+            "the same original backend remains unentered"
         );
         assert_eq!(memory.snapshot(), before);
         assert_eq!(foreign_memory.snapshot(), foreign_before);
         assert!(!persistent_directory.path().join("node.kv").exists());
 
+        let node_fee = TestDiskMemory::required_reservation_bytes(
+            crate::RegisteredNodeOpening::fixture_request_bytes::<FaultBackend>().unwrap(),
+        )
+        .unwrap();
         let backend = FaultBackend::new();
         let node = crate::NodeStore::create_fixture_backend_on_disk(
             backend.clone(),
@@ -1296,12 +1469,20 @@ mod admitted_backend_tests {
         );
         assert!(Arc::ptr_eq(node.persistent_disk(), &persistent));
         assert!(Arc::ptr_eq(node.scratch_disk(), &scratch));
+        assert_eq!(memory.snapshot().used_bytes, before.used_bytes + node_fee);
         assert_eq!(
-            memory.snapshot(),
-            before,
-            "opening a synthetic backend invented a second disk owner"
+            memory.snapshot().live_reservations,
+            before.live_reservations + 1
         );
+        assert_eq!(memory.storage_census().snapshot().databases, 1);
         node.shutdown().await.unwrap();
+        assert!(node.retire().is_retired());
+        assert_eq!(memory.snapshot().used_bytes, before.used_bytes);
+        assert_eq!(
+            memory.snapshot().live_reservations,
+            before.live_reservations
+        );
+        assert_eq!(memory.storage_census().snapshot().databases, 0);
         assert!(!persistent_directory.path().join("node.kv").exists());
     }
 }
@@ -1497,6 +1678,31 @@ fn binding_staging_refuses(provider: usize, bytes: u64) -> bool {
 
 #[cfg(test)]
 impl TestDiskMemory {
+    /// Unwind from the next actual installed reservation callback with this
+    /// exact request size, before it creates an output allocation or lease.
+    pub(crate) fn panic_on_next_point_reservation(
+        &self,
+        requested_bytes: u64,
+        payload: Box<dyn std::any::Any + Send>,
+    ) {
+        let mut pending = self.point_reserve_panic.lock().unwrap();
+        assert!(pending.is_none());
+        *pending = Some((requested_bytes, payload));
+    }
+
+    /// Unwind after the actual matching lease retires its accounted capacity.
+    /// Tests quote the native constructor's request instead of guessing an ID.
+    pub(crate) fn panic_on_next_matching_point_lease_drop(
+        &self,
+        requested_bytes: u64,
+        payload: Box<dyn std::any::Any + Send>,
+    ) {
+        let charged = Self::required_reservation_bytes(requested_bytes).unwrap();
+        let mut pending = self.point_matching_drop_panic.lock().unwrap();
+        assert!(pending.is_none());
+        *pending = Some((charged, payload));
+    }
+
     /// Arm the exact most recently admitted actual lease, after construction.
     /// Injection runs only after its real accounting release and mutex unlock.
     pub(crate) fn panic_on_last_point_lease_drop(&self, payload: Box<dyn std::any::Any + Send>) {

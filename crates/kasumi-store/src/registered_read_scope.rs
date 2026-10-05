@@ -239,7 +239,7 @@ impl std::error::Error for NodeScopedReadRetirement {
 
 impl NodeStore {
     pub(crate) fn begin_registered_read(&self) -> Result<RegisteredNodeRead> {
-        let reader = self.db.queue_registered_read()?;
+        let reader = self.body().db.queue_registered_read()?;
         if reader.begin() != NodeReadPhase::Active {
             return Err(NodeScopedReadFailure::new(reader, "begin", None).into());
         }
@@ -291,7 +291,7 @@ impl NodeStore {
         &self,
         parent: &RegisteredNodeRead,
     ) -> Result<RegisteredNodeRead> {
-        let reader = self.db.fork_registered_read(parent)?;
+        let reader = self.body().db.fork_registered_read(parent)?;
         if reader.phase() != NodeReadPhase::Active {
             return Err(NodeScopedReadFailure::new(reader, "fork", None).into());
         }

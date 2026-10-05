@@ -1239,3 +1239,177 @@ async fn claim_revalidates_after_reentrant_executor_already_claims_the_output() 
     assert_eq!(gate.output_drops.load(Ordering::Acquire), 1);
     assert_eq!(node.snapshot().reserved_bytes, baseline);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn original_proposal_budget_control_deallocates_before_its_actual_ledger_refund() {
+    let _serial = deallocation::SERIAL.lock().await;
+    let node = admission(1);
+    let baseline = node.snapshot();
+    let required = super::super::ProposalBudget::required_bytes().unwrap();
+    let budget = super::super::ProposalBudget::new(node.reserve(required, None).unwrap());
+    let charged = node.snapshot();
+    let address = budget.allocation_address();
+    let copies = (0..8).map(|_| budget.clone()).collect::<Vec<_>>();
+    drop(budget);
+    let release = deallocation::OWNER.arm(address, true);
+    let dropping = tokio::task::spawn_blocking(move || {
+        let gate = Arc::new(std::sync::Barrier::new(copies.len()));
+        std::thread::scope(|scope| {
+            for copy in copies {
+                let gate = gate.clone();
+                scope.spawn(move || {
+                    gate.wait();
+                    drop(copy);
+                });
+            }
+        });
+    });
+    deallocation::OWNER.entered().await;
+    assert!(!deallocation::OWNER.finished());
+    assert_eq!(node.snapshot().reserved_bytes, charged.reserved_bytes);
+    assert_eq!(node.snapshot().live_reservations, charged.live_reservations);
+    assert_eq!(
+        node.snapshot().inflight_operations,
+        charged.inflight_operations
+    );
+    release.release();
+    dropping.await.unwrap();
+    assert!(deallocation::OWNER.finished());
+    assert_eq!(deallocation::OWNER.count(), 1);
+    assert_eq!(node.snapshot().reserved_bytes, baseline.reserved_bytes);
+    assert_eq!(
+        node.snapshot().live_reservations,
+        baseline.live_reservations
+    );
+    assert_eq!(
+        node.snapshot().inflight_operations,
+        baseline.inflight_operations
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn prepaid_startup_actual_three_controls_retire_before_original_joint_charge() {
+    use crate::admission::startup::{
+        PrepaidStartup, StartupBacking, StartupTerminal, StartupTerminalLoan,
+    };
+    #[derive(Default)]
+    struct ControlTerminal {
+        entered: bool,
+        returned: bool,
+    }
+    impl StartupTerminal for ControlTerminal {
+        type Plan<'a> = ();
+        type Output = ();
+        fn backing(_: &()) -> anyhow::Result<StartupBacking> {
+            Ok(StartupBacking::empty())
+        }
+        fn allocate(_: (), _: kasumi_types::SharedBudgetCharge) -> Self {
+            Self::default()
+        }
+        fn begin(&mut self) -> bool {
+            if self.entered {
+                return false;
+            }
+            self.entered = true;
+            true
+        }
+        fn retirement_ready(&self) -> bool {
+            self.entered && self.returned
+        }
+        fn claim_output(&mut self) -> Option<()> {
+            self.retirement_ready().then_some(())
+        }
+    }
+    async fn finish_control(mut loan: StartupTerminalLoan<ControlTerminal>, _: ()) {
+        loan.returned = true;
+    }
+
+    let _serial = deallocation::SERIAL.lock().await;
+    // Each iteration selects an actual State/value-Mutex/worker-Mutex control.
+    // The terminal is inline and owns no resource backing. This test proves
+    // these control lifetimes; generic F/Tokio task backing remains separate.
+    for selected in 0..3 {
+        let node = admission(1);
+        let baseline = node.snapshot();
+        let required = PrepaidStartup::<ControlTerminal>::required_bytes(&()).unwrap();
+        let owner = node
+            .memory()
+            .prepare_prepaid_startup::<ControlTerminal>()
+            .unwrap()
+            .install(())
+            .unwrap();
+        let installed = node.snapshot();
+        assert_eq!(installed.reserved_bytes, baseline.reserved_bytes + required);
+        assert_eq!(installed.live_reservations, baseline.live_reservations + 1);
+        assert_eq!(installed.inflight_operations, baseline.inflight_operations);
+        let addresses = owner.control_addresses();
+        assert_ne!(addresses[0], addresses[1]);
+        assert_ne!(addresses[0], addresses[2]);
+        assert_ne!(addresses[1], addresses[2]);
+        let id = owner.id();
+        let running = owner.begin().unwrap().spawn(finish_control, ());
+        drop(owner);
+        running.join_worker().await;
+        running
+            .with_worker_report(|report| {
+                assert!(report.entered());
+                assert!(report.returned());
+                assert!(!report.handle_retained());
+                assert!(report.original().is_none());
+                assert!(report.poll_panic().is_none());
+                assert!(report.factory_panic().is_none());
+                assert!(report.dispatch_error().is_none());
+                assert!(report.dispatch_panic().is_none());
+                assert!(report.handle_disposal_entered());
+                assert!(report.handle_disposal_returned());
+                assert!(report.handle_disposal_panic().is_none());
+            })
+            .expect("actual joined worker report is available");
+        assert!(running.retire_empty().await);
+        assert!(
+            node.memory()
+                .prepaid_startup::<ControlTerminal>(id)
+                .is_none()
+        );
+        let charged = node.snapshot();
+        assert_eq!(charged.reserved_bytes, installed.reserved_bytes);
+        assert_eq!(charged.live_reservations, installed.live_reservations);
+        assert_eq!(charged.inflight_operations, installed.inflight_operations);
+        let copies: [_; 8] = std::array::from_fn(|_| running.clone());
+        drop(running);
+        let release = deallocation::OWNER.arm(addresses[selected], true);
+        let dropping = tokio::task::spawn_blocking(move || {
+            let rendezvous = Arc::new(std::sync::Barrier::new(copies.len()));
+            std::thread::scope(|scope| {
+                for copy in copies {
+                    let rendezvous = rendezvous.clone();
+                    scope.spawn(move || {
+                        rendezvous.wait();
+                        drop(copy);
+                    });
+                }
+            });
+        });
+        deallocation::OWNER.entered().await;
+        assert!(!deallocation::OWNER.finished());
+        assert_eq!(node.snapshot().reserved_bytes, charged.reserved_bytes);
+        assert_eq!(node.snapshot().live_reservations, charged.live_reservations);
+        assert_eq!(
+            node.snapshot().inflight_operations,
+            charged.inflight_operations
+        );
+        release.release();
+        dropping.await.unwrap();
+        assert!(deallocation::OWNER.finished());
+        assert_eq!(deallocation::OWNER.count(), 1);
+        assert_eq!(node.snapshot().reserved_bytes, baseline.reserved_bytes);
+        assert_eq!(
+            node.snapshot().live_reservations,
+            baseline.live_reservations
+        );
+        assert_eq!(
+            node.snapshot().inflight_operations,
+            baseline.inflight_operations
+        );
+    }
+}

@@ -65,7 +65,8 @@ fn read_payload(fixture: &Fixture, selected: &SelectedApplication) -> Result<Opt
 }
 
 #[tokio::test]
-async fn source_cohort_real_capture_has_no_new_grant_under_complete_slot_refusal() -> Result<()> {
+async fn source_cohort_real_capture_has_no_new_grant_under_complete_slot_refusal()
+-> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
     fixture.roots.install_source_cohort(envelope(&fixture)?)?;
     let preparation = prepared(&fixture)?;
@@ -107,7 +108,7 @@ async fn source_cohort_real_capture_has_no_new_grant_under_complete_slot_refusal
 
 #[tokio::test]
 async fn source_cohort_public_history_refusal_preserves_current_and_then_funds_real_reuse()
--> Result<()> {
+-> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
     fixture.roots.install_source_cohort(envelope(&fixture)?)?;
     fixture.stores.write_batch(
@@ -203,7 +204,8 @@ async fn source_cohort_public_history_refusal_preserves_current_and_then_funds_r
 }
 
 #[tokio::test]
-async fn source_cohort_unused_preparation_returns_exact_native_right_and_backing() -> Result<()> {
+async fn source_cohort_unused_preparation_returns_exact_native_right_and_backing()
+-> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
     fixture.roots.install_source_cohort(envelope(&fixture)?)?;
     let unused = prepared(&fixture)?;
@@ -226,8 +228,8 @@ async fn source_cohort_unused_preparation_returns_exact_native_right_and_backing
 }
 
 #[tokio::test]
-async fn source_cohort_pre_cell_cancellation_returns_actual_backing_and_unused_ticket() -> Result<()>
-{
+async fn source_cohort_pre_cell_cancellation_returns_actual_backing_and_unused_ticket()
+-> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
     fixture.roots.install_source_cohort(envelope(&fixture)?)?;
     let cohort = fixture.roots.cohort.get().unwrap();
@@ -257,7 +259,8 @@ async fn source_cohort_pre_cell_cancellation_returns_actual_backing_and_unused_t
 }
 
 #[tokio::test]
-async fn source_cohort_close_retires_actual_capacity_and_workspaces_before_drained() -> Result<()> {
+async fn source_cohort_close_retires_actual_capacity_and_workspaces_before_drained()
+-> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
     let before = fixture.storage.admission.snapshot();
     fixture.roots.install_source_cohort(envelope(&fixture)?)?;
@@ -283,7 +286,8 @@ async fn source_cohort_close_retires_actual_capacity_and_workspaces_before_drain
 }
 
 #[tokio::test]
-async fn source_cohort_partial_admission_keeps_original_until_actual_fields_retire() -> Result<()> {
+async fn source_cohort_partial_admission_keeps_original_until_actual_fields_retire()
+-> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
     // This real construction has its own caller-held root; it has not escaped
     // into the fixture's already-bound startup owner or begun any selection.
@@ -357,8 +361,8 @@ async fn source_cohort_partial_admission_keeps_original_until_actual_fields_reti
 }
 
 #[tokio::test]
-async fn source_capacity_close_yields_to_actual_report_guard_then_retires_exact_owner() -> Result<()>
-{
+async fn source_capacity_close_yields_to_actual_report_guard_then_retires_exact_owner()
+-> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
     let before = fixture.storage.admission.snapshot();
     let capacity = fixture.stores.queue_source_capacity()?.install()?;

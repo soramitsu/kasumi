@@ -63,7 +63,7 @@ fn finish_failed(mut opening: RetainedDatabaseOpening, admission: &CountedAdmiss
         DatabaseOpenSettlement::DrainedWithFailure
     );
     assert_eq!(
-        opening.dispose_failed().settlement(),
+        opening.dispose().settlement(),
         DatabaseOpenSettlement::FailedDisposed
     );
     drop(opening);
@@ -251,10 +251,9 @@ fn source_actual_backing_and_pin_refusals_retain_original_until_explicit_clean_d
         request
             .prepare(opening.retained_database().unwrap(), &rights)
             .unwrap();
-        assert!(matches!(
-            request.report().preparation(),
-            TerminalObservation::Returned(Err(StorageError::Core(CoreError::CapacityDenied)))
-        ));
+        assert!(
+            matches!(&(request.report().preparation()), TerminalObservation::Returned(Err(StorageError::Core(native_error))) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::CapacityDenied)))
+        );
         let original = original_address(request.report());
         assert!(!request.report().is_clean_capacity_refusal());
         assert_eq!(admission.census().1, baseline.1 + allowed);
@@ -568,10 +567,9 @@ fn source_unknown_ticket_cancellation_and_rights_retirement_never_acknowledge_dr
     drop(request); // best effort Drop cannot settle the mismatched registry entry
     let report = rights.retire(opening.retained_database().unwrap()).unwrap();
     assert_eq!(report.settlement(), SourceRightsSettlement::Retained);
-    assert!(matches!(
-        report.retirement(),
-        TerminalObservation::Returned(Err(StorageError::Core(CoreError::OwnerFailed)))
-    ));
+    assert!(
+        matches!(&(report.retirement()), TerminalObservation::Returned(Err(StorageError::Core(native_error))) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+    );
     assert!(report.retains_database());
     assert_eq!(
         opening.close().settlement(),
@@ -591,10 +589,9 @@ fn source_final_rights_mismatch_or_poison_retains_payload_and_database_after_arc
         rights.corrupt_retirement_for_test(poison);
         let report = rights.retire(opening.retained_database().unwrap()).unwrap();
         assert_eq!(report.settlement(), SourceRightsSettlement::Retained);
-        assert!(matches!(
-            report.retirement(),
-            TerminalObservation::Returned(Err(StorageError::Core(CoreError::OwnerFailed)))
-        ));
+        assert!(
+            matches!(&(report.retirement()), TerminalObservation::Returned(Err(StorageError::Core(native_error))) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+        );
         assert!(matches!(report.disposal(), TerminalObservation::NotEntered));
         assert!(report.retains_database());
         assert_eq!(admission.census(), before);
@@ -633,10 +630,9 @@ fn source_protected_capture_survives_full_ordinary_registry_and_history_reuses_m
     assert_eq!(admission.last_grant(), grants);
     let mut denied = selected.queue_source_history().unwrap();
     denied.prepare(owner).unwrap();
-    assert!(matches!(
-        denied.report().preparation(),
-        TerminalObservation::Returned(Err(StorageError::Core(CoreError::CapacityDenied)))
-    ));
+    assert!(
+        matches!(&(denied.report().preparation()), TerminalObservation::Returned(Err(StorageError::Core(native_error))) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::CapacityDenied)))
+    );
     denied.cancel(owner).unwrap();
     denied.dispose_settled(owner).unwrap();
     close_reader(&opening, &mut ordinary.pop().unwrap());
@@ -806,8 +802,12 @@ fn source_postcapture_error_and_panic_keep_actual_reader_and_original_observatio
             TerminalObservation::Panicked(payload) if panic => {
                 assert_eq!(payload.downcast_ref::<u64>(), Some(&0xcafef00d))
             }
-            TerminalObservation::Returned(Err(StorageError::Core(CoreError::OwnerFailed)))
-                if !panic => {}
+            TerminalObservation::Returned(Err(StorageError::Core(original)))
+                if !panic
+                    && matches!(
+                        original.rejected_cause(),
+                        Some(crate::CoreErrorCause::OwnerFailed)
+                    ) => {}
             _ => panic!("original postcapture observation changed"),
         }
         request
@@ -879,11 +879,11 @@ fn source_history_exchange_stays_committed_when_final_pin_disposal_panics() {
 }
 
 fn native_failure_address(observation: TerminalObservation<'_, StorageError>) -> usize {
-    let TerminalObservation::Returned(Err(error @ StorageError::Core(CoreError::OwnerFailed))) =
-        observation
-    else {
+    let TerminalObservation::Returned(Err(error @ StorageError::Core(_))) = observation else {
         panic!("original native retirement failure absent");
     };
+    assert!(matches!(error, StorageError::Core(original)
+        if matches!(original.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed))));
     error as *const _ as usize
 }
 
@@ -1045,7 +1045,7 @@ fn source_cancelled_and_captured_request_keep_final_native_failure_and_database(
 }
 
 #[test]
-fn committed_writer_holds_exact_root_through_preowned_capture_without_new_grants() {
+fn retained_committed_writer_holds_exact_root_through_preowned_capture_without_new_grants() {
     use std::sync::mpsc;
     use std::time::Duration;
     let admission = CountedAdmission::new();
@@ -1059,7 +1059,11 @@ fn committed_writer_holds_exact_root_through_preowned_capture_without_new_grants
         .unwrap()
         .insert(b"a".as_slice(), b"first".as_slice())
         .unwrap();
-    let committed = write.commit_holding_writer().unwrap();
+    let mut committed = write.retain();
+    assert_eq!(
+        committed.commit_holding_writer().settlement(),
+        crate::WriteTerminalSettlement::HoldingWriter
+    );
     assert!(*database.inner.gate.held.lock().unwrap());
     let queued = database.transaction_admission();
     let (started, starting) = mpsc::sync_channel(0);
@@ -1099,7 +1103,11 @@ fn committed_writer_holds_exact_root_through_preowned_capture_without_new_grants
     assert_eq!(admission.last_grant(), grants);
     assert_eq!(admission.census(), full);
     admission.limits(BYTE_LIMIT, SLOT_LIMIT);
-    drop(committed);
+    assert!(
+        committed
+            .dispose_settled(opening.retained_database().unwrap())
+            .disposal_complete()
+    );
     acquisition.recv_timeout(Duration::from_secs(2)).unwrap();
     next.join().unwrap();
     assert_eq!(
@@ -1122,6 +1130,62 @@ fn committed_writer_holds_exact_root_through_preowned_capture_without_new_grants
     drop(current);
     close_reader(&opening, &mut selected);
     retire_rights(&opening, &mut rights);
+    finish(opening, &admission);
+}
+
+#[test]
+fn retained_holding_writer_refuses_foreign_disposal_and_keeps_exact_terminal_once() {
+    let admission = CountedAdmission::new();
+    let opening = opening(&admission);
+    let foreign_admission = CountedAdmission::new();
+    let foreign = super::opening(&foreign_admission);
+    let database = opening.database().unwrap();
+    let mut writer = database.begin_write().unwrap().retain();
+    assert_eq!(
+        writer.commit_holding_writer().settlement(),
+        crate::WriteTerminalSettlement::HoldingWriter
+    );
+    assert!(*database.inner.gate.held.lock().unwrap());
+    assert!(
+        !writer
+            .dispose_settled(foreign.retained_database().unwrap())
+            .disposal_complete()
+    );
+    assert_eq!(
+        writer.report().settlement(),
+        crate::WriteTerminalSettlement::HoldingWriter
+    );
+    assert!(matches!(
+        writer.report().disposal(),
+        TerminalObservation::NotEntered
+    ));
+    assert!(*database.inner.gate.held.lock().unwrap());
+    let before = admission.census();
+    let grants = admission.last_grant();
+    let counting = AllocationCount::start();
+    assert_eq!(
+        writer.commit().settlement(),
+        crate::WriteTerminalSettlement::HoldingWriter
+    );
+    assert_eq!(
+        writer.abort().settlement(),
+        crate::WriteTerminalSettlement::HoldingWriter
+    );
+    assert_eq!(counting.count(), 0);
+    drop(counting);
+    assert_eq!(admission.last_grant(), grants);
+    assert_eq!(admission.census(), before);
+    assert!(
+        writer
+            .dispose_settled(opening.retained_database().unwrap())
+            .disposal_complete()
+    );
+    assert!(!*database.inner.gate.held.lock().unwrap());
+    assert!(matches!(
+        writer.report().terminal(),
+        TerminalObservation::Returned(Ok(()))
+    ));
+    finish(foreign, &foreign_admission);
     finish(opening, &admission);
 }
 

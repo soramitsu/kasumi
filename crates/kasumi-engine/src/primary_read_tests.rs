@@ -23,12 +23,14 @@ use sha2::{Digest, Sha256};
 enum TestError {
     Read(crate::primary_tree::read::ReadFailure),
     Other(anyhow::Error),
+    Fixture(crate::test_fixture_failure::FixtureFailure),
 }
 impl std::fmt::Debug for TestError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Read(error) => f.debug_tuple("Read").field(error).finish(),
             Self::Other(error) => f.debug_tuple("Other").field(error).finish(),
+            Self::Fixture(error) => f.debug_tuple("Fixture").field(error).finish(),
         }
     }
 }
@@ -40,6 +42,11 @@ impl From<crate::primary_tree::read::ReadFailure> for TestError {
 impl From<anyhow::Error> for TestError {
     fn from(error: anyhow::Error) -> Self {
         Self::Other(error)
+    }
+}
+impl From<crate::test_fixture_failure::FixtureFailure> for TestError {
+    fn from(original: crate::test_fixture_failure::FixtureFailure) -> Self {
+        Self::Fixture(original)
     }
 }
 type TestResult<T> = std::result::Result<T, TestError>;
@@ -81,10 +88,10 @@ struct Harness {
     _seed_input: crate::admission::Reservation,
 }
 impl Harness {
-    async fn new() -> Result<Self> {
+    async fn new() -> crate::test_fixture_failure::FixtureResult<Self> {
         Self::with_version(1).await
     }
-    async fn with_version(version: u64) -> Result<Self> {
+    async fn with_version(version: u64) -> crate::test_fixture_failure::FixtureResult<Self> {
         let seed = Fixture::new().await?;
         let seed_input = seed.storage.admission.reserve_document_source(16 << 20)?;
         let source = TenantEngine::from_bootstrap("selected-sources", &seed.image)?;
@@ -317,7 +324,7 @@ impl Harness {
         reader.close()?;
         Ok(bytes)
     }
-    async fn close(self) -> Result<()> {
+    async fn close(self) -> crate::test_fixture_failure::FixtureResult<()> {
         let Self {
             fixture,
             seed,

@@ -92,7 +92,7 @@ impl PreparedTenantPointWorkspace {
             "prepared encrypted point bounds exceed store limits"
         );
         ensure!(
-            Arc::ptr_eq(&view.application.node, &view.custody.node),
+            crate::NodeStore::ptr_eq(&view.application.node, &view.custody.node),
             "prepared point domains use different native owners"
         );
         let provider = view.application.persistent_disk().memory();

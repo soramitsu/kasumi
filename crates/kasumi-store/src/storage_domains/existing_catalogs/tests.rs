@@ -4,7 +4,7 @@ use std::{future::Future, task::Poll};
 
 struct Fixture {
     directory: tempfile::TempDir,
-    node: Arc<NodeStore>,
+    node: NodeStore,
     scratch_directory: tempfile::TempDir,
 }
 impl Fixture {
@@ -19,7 +19,8 @@ impl Fixture {
             crate::test_utils::NODE_STORE_ID,
             fixture_memory.clone(),
             fixture_scratch.clone(),
-        )?;
+        )
+        .expect("bounded node fixture setup succeeds");
         let stores = TenantStorageSet::initialize_catalogs(
             node.clone(),
             "existing".into(),
@@ -32,7 +33,9 @@ impl Fixture {
             .application
             .write_batch(&[WriteOp::put("data", b"kept", b"original".to_vec())])?;
         stores.shutdown().await.unwrap();
-        node.drain_initializers().await?;
+        node.drain_initializers()
+            .await
+            .map_err(|original| anyhow::Error::new(original.observation()))?;
         Ok(Self {
             directory,
             node,
@@ -40,7 +43,7 @@ impl Fixture {
         })
     }
     fn contents(&self) -> Result<Vec<u8>> {
-        let tx = self.node.db.begin_read()?;
+        let tx = self.node.body().db.begin_read()?;
         let mut hash = Sha256::new();
         for (index, definition) in [CATALOG, RECORDS].into_iter().enumerate() {
             hash.update((index as u64).to_be_bytes());
@@ -70,14 +73,18 @@ impl Fixture {
         } = self;
         let fixture_scratch = node.scratch_disk().clone();
         let fixture_memory = fixture_scratch.memory().clone();
-        node.drain_initializers().await?;
+        node.drain_initializers()
+            .await
+            .map_err(|original| anyhow::Error::new(original.observation()))?;
+        node.shutdown().await.unwrap();
         drop(node);
         let node = NodeStore::open_existing_fixture(
             directory.path().join("existing.kv"),
             crate::test_utils::NODE_STORE_ID,
             fixture_memory.clone(),
             fixture_scratch.clone(),
-        )?;
+        )
+        .expect("bounded node fixture setup succeeds");
         let stores = TenantStorageSet::open_existing_fixture(
             node.clone(),
             "existing".into(),
@@ -86,11 +93,13 @@ impl Fixture {
         )
         .await?;
         assert_eq!(
-            stores.application.get("data", b"kept")?,
-            Some(b"original".to_vec())
+            stores.application.get("data", b"kept")?.as_deref(),
+            Some(b"original".as_slice())
         );
         stores.shutdown().await.unwrap();
-        node.drain_initializers().await?;
+        node.drain_initializers()
+            .await
+            .map_err(|original| anyhow::Error::new(original.observation()))?;
         Ok(())
     }
 }
@@ -180,10 +189,18 @@ async fn interrupted_after_custody(borrowed: bool, cancel: bool) -> Result<()> {
         tokio::time::timeout(Duration::from_secs(5), fixture.node.drain_initializers()).await?;
     if cancel {
         let error = drained.unwrap_err();
-        assert!(format!("{error:#}").contains("existing catalog receiver closed"));
-        fixture.node.drain_initializers().await?;
+        crate::test_utils::inspect_and_dispose_initializer(&error, |original| {
+            assert!(format!("{original:#}").contains("existing catalog receiver closed"));
+        })
+        .await;
+        drop(error);
+        fixture
+            .node
+            .drain_initializers()
+            .await
+            .map_err(|original| anyhow::Error::new(original.observation()))?;
     } else {
-        drained?;
+        drained.map_err(|original| anyhow::Error::new(original.observation()))?;
     }
     assert!(!provider.active.load(Ordering::Acquire));
     assert_eq!(fixture.contents()?, before);
@@ -254,7 +271,7 @@ async fn buffered_existing_pair_ticket_publishes_nothing_and_drains_its_new_work
         "existing".to_owned(),
         CustodyStore::catalog_name("existing"),
     ] {
-        let gate = fixture.node.tenants.lock().await[&tenant].clone();
+        let gate = fixture.node.body().tenants.lock().await[&tenant].clone();
         assert!(gate.lock().await.upgrade().is_none());
     }
     assert_eq!(fixture.contents()?, before);
@@ -276,7 +293,9 @@ async fn missing_binding_rejects_new_custody_and_leaves_every_existing_byte_unch
     let before = fixture.contents()?;
     for _ in 0..2 {
         assert!(fixture.custody().await.is_err());
-        tokio::time::timeout(Duration::from_secs(5), fixture.node.drain_initializers()).await??;
+        tokio::time::timeout(Duration::from_secs(5), fixture.node.drain_initializers())
+            .await?
+            .map_err(|original| anyhow::Error::new(original.observation()))?;
         assert_eq!(fixture.contents()?, before);
     }
     let Fixture {
@@ -286,13 +305,16 @@ async fn missing_binding_rejects_new_custody_and_leaves_every_existing_byte_unch
     } = fixture;
     let fixture_scratch = node.scratch_disk().clone();
     let fixture_memory = fixture_scratch.memory().clone();
+    node.shutdown().await.unwrap();
     drop(node);
     let _node = NodeStore::open_existing_fixture(
         directory.path().join("existing.kv"),
         crate::test_utils::NODE_STORE_ID,
         fixture_memory.clone(),
         fixture_scratch.clone(),
-    )?;
+    )
+    .expect("bounded node fixture setup succeeds");
+    _node.shutdown().await.unwrap();
     Ok(())
 }
 
@@ -345,11 +367,12 @@ async fn unclaimed_borrowed_pair_and_changed_binding_never_close_its_cached_owne
             assert!(receive.await?.claim().is_err());
             tokio::time::timeout(Duration::from_secs(5), delivery).await??;
             assert_eq!(fixture.contents()?, before);
-            original.custody.store.write_batch(&[WriteOp::put(
+            crate::test_utils::write_plaintext_copy_for_fixture(
+                &original.custody.store,
                 BINDING_NS,
                 BINDING_KEY,
-                saved_binding.clone(),
-            )])?;
+                saved_binding.as_bytes(),
+            )?;
         } else {
             let before = fixture.contents()?;
             drop(receive);
@@ -366,8 +389,8 @@ async fn unclaimed_borrowed_pair_and_changed_binding_never_close_its_cached_owne
             custody_deadline
         );
         assert_eq!(
-            original.application.get("data", b"kept")?,
-            Some(b"original".to_vec())
+            original.application.get("data", b"kept")?.as_deref(),
+            Some(b"original".as_slice())
         );
     }
     original.shutdown().await.unwrap();
@@ -421,7 +444,14 @@ async fn buffered_existing_preparation_failure_requires_claim_and_preserves_borr
                 sent.notify_one();
                 delivery.await
             });
-            fixture.node.initializers.lock().await.handles.push(task);
+            fixture
+                .node
+                .body()
+                .initializers
+                .lock()
+                .await
+                .handles
+                .push(task);
             tokio::time::timeout(Duration::from_secs(5), buffered.notified()).await?;
             if claim {
                 let error = receive.await?.claim().err().expect("preparation must fail");
@@ -433,14 +463,21 @@ async fn buffered_existing_preparation_failure_requires_claim_and_preserves_borr
                 tokio::time::timeout(Duration::from_secs(5), fixture.node.drain_initializers())
                     .await?;
             if claim {
-                outcome?;
+                outcome.map_err(|original| anyhow::Error::new(original.observation()))?;
             } else {
-                assert!(
-                    format!("{:#}", outcome.unwrap_err())
-                        .contains("buffered existing application failure")
-                );
+                let failure = outcome.unwrap_err();
+                crate::test_utils::inspect_and_dispose_initializer(&failure, |original| {
+                    assert!(
+                        format!("{original:#}").contains("buffered existing application failure")
+                    );
+                })
+                .await;
             }
-            fixture.node.drain_initializers().await?;
+            fixture
+                .node
+                .drain_initializers()
+                .await
+                .map_err(|original| anyhow::Error::new(original.observation()))?;
             assert_eq!(fixture.contents()?, before);
             if let Some(custody) = custody {
                 custody.store.check_access()?;

@@ -249,6 +249,57 @@ class SmokeTests(unittest.TestCase):
         return smoke.Runner(SimpleNamespace(output=root, stop_timeout=1, command_timeout=1,
                                             ready_timeout=1, execution_description="pure mocked tests"))
 
+    def test_init_retains_explicit_private_audit_map_and_rejects_obsolete_output(self):
+        for output_shape in ("exact", "missing", "empty", "legacy", "changed"):
+            with self.subTest(output_shape=output_shape), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                (root / "provenance").mkdir(mode=0o700)
+                runner = self.runner(root)
+                runner.binaries = {"kasumid": root / "mock-kasumid"}
+                runner.directory_policy_file = root / "directory-policy.json"
+                runner.file_allocation_policy_file = root / "file-allocation-policy.json"
+                runner.record["directory_policy"] = {"policy": {"extent_bytes": 1048576, "max_entries": 32768}}
+                runner.record["file_allocation_policy"] = {"policy": {"maximum_extra_extent_bytes": 0}}
+                installation = root / "installation"
+                network = {"mcp_listen": "127.0.0.1:19443", "mcp_public_url": "https://localhost:19443/mcp",
+                           "native_listen": "127.0.0.1:19444", "admin_listen": "127.0.0.1:19445"}
+                def init_command(name, command):
+                    self.assertEqual(name, "init")
+                    self.assertIn("--tenant-audit-placements", command)
+                    selected = command[command.index("--tenant-audit-placements") + 1]
+                    self.assertEqual(selected, root / "provenance/tenant-audit-placements.json")
+                    placements = smoke.read_json(selected)
+                    self.assertEqual(placements, {
+                        "__kasumi_control": {"kind": "local_replica_only"},
+                        "capacity-smoke": {"kind": "local_replica_only"}})
+                    self.assertEqual(selected.stat().st_mode & 0o777, 0o600)
+                    evidence = smoke.read_json(root / "evidence.json")["tenant_audit_placements"]
+                    self.assertEqual(evidence["placements"], placements)
+                    self.assertEqual(evidence["sha256"], smoke.sha256(selected))
+                    config = {"mode": "standalone", "serving_authorities": {}, "replication": None,
+                              "persistent_disk": {"directory_policy": runner.record["directory_policy"]["policy"],
+                                                  "file_allocation_policy": runner.record["file_allocation_policy"]["policy"]},
+                              "mcp": {"listen": network["mcp_listen"], "protocol": {"public_url": network["mcp_public_url"]}},
+                              "native": {"listen": network["native_listen"]}, "admin": {"listen": network["admin_listen"]},
+                              "tenant_audit_placements": placements}
+                    if output_shape == "missing":
+                        del config["tenant_audit_placements"]
+                    elif output_shape == "empty":
+                        config["tenant_audit_placements"] = {}
+                    elif output_shape == "legacy":
+                        config["tenant_audit_archives"] = {}
+                    elif output_shape == "changed":
+                        del config["tenant_audit_placements"]["__kasumi_control"]
+                    installation.mkdir(mode=0o700)
+                    smoke.write_json(installation / "kasumi.json", config)
+                with patch.object(runner, "command", side_effect=init_command) as dispatch:
+                    if output_shape == "exact":
+                        runner.initialize_installation(installation, network)
+                    else:
+                        with self.assertRaises(ValueError):
+                            runner.initialize_installation(installation, network)
+                    self.assertEqual(dispatch.call_count, 1)
+
     def test_required_file_allocation_policy_is_exact_strict_and_accepts_explicit_zero(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "allocation.json"

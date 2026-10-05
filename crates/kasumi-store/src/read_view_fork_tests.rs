@@ -36,7 +36,7 @@ impl LeaseClock for ForkClock {
 }
 struct Fixture {
     stores: Arc<TenantStorageSet>,
-    node: Arc<NodeStore>,
+    node: NodeStore,
     memory: Arc<TestDiskMemory>,
     app_clock: Arc<ForkClock>,
     custody_clock: Arc<ForkClock>,
@@ -58,7 +58,8 @@ impl Fixture {
             disk,
             scratch,
             node_storage_config(),
-        )?;
+        )
+        .unwrap_or_else(|original| std::panic::panic_any(original));
         let app_clock = ForkClock::new();
         let custody_clock = ForkClock::new();
         let app = TenantStore::initialize_catalog_fixture_with_clock(
@@ -269,7 +270,8 @@ async fn selected_view_fork_rejects_foreign_database_even_with_same_provider_and
         disk,
         fixture.node.scratch_disk().clone(),
         node_storage_config(),
-    )?;
+    )
+    .unwrap_or_else(|original| std::panic::panic_any(original));
     let parent = fixture.node.begin_registered_read()?;
     let census = fixture.memory.storage_census().snapshot();
     let before = fixture.memory.snapshot();

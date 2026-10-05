@@ -1,7 +1,7 @@
 use super::*;
 use crate::test_utils::{FaultBackend, LocalKeyProvider, ManualClock};
 
-async fn initialize_pair_fixture(node: Arc<NodeStore>) -> Result<Arc<TenantStorageSet>> {
+async fn initialize_pair_fixture(node: NodeStore) -> Result<Arc<TenantStorageSet>> {
     let app = TenantStore::initialize_catalog_fixture_with_clock(
         node.clone(),
         "tenant".into(),
@@ -19,7 +19,7 @@ async fn initialize_pair_fixture(node: Arc<NodeStore>) -> Result<Arc<TenantStora
     TenantStorageSet::install(app, custody)
 }
 
-async fn existing_pair_fixture(node: Arc<NodeStore>) -> Result<Arc<TenantStorageSet>> {
+async fn existing_pair_fixture(node: NodeStore) -> Result<Arc<TenantStorageSet>> {
     let application = Arc::new(LocalKeyProvider::new([11; 32]));
     let custody = Arc::new(LocalKeyProvider::new([12; 32]));
     let app = TenantStore::open_existing_fixture_with_clock(
@@ -47,7 +47,9 @@ async fn existing_pair_fixture(node: Arc<NodeStore>) -> Result<Arc<TenantStorage
     if result.is_err() {
         app.shutdown().await.unwrap();
         control.shutdown().await.unwrap();
-        node.drain_initializers().await?;
+        node.drain_initializers()
+            .await
+            .map_err(|original| anyhow::Error::new(original.observation()))?;
     }
     result
 }
@@ -97,7 +99,7 @@ fn stage_initial_identity_rows(
 }
 
 fn inject_initial_identity_row(store: &TenantStore, operation: WriteOp) -> Result<()> {
-    let tx = store.node.db.begin_write()?;
+    let tx = store.node.body().db.begin_write()?;
     stage_initial_identity_rows(&tx, store, &[operation])?;
     tx.commit()?;
     Ok(())
@@ -111,7 +113,7 @@ fn inject_initial_identity_rows(
     application_ops: &[WriteOp],
     custody_ops: &[WriteOp],
 ) -> Result<()> {
-    let tx = stores.application().node.db.begin_write()?;
+    let tx = stores.application().node.body().db.begin_write()?;
     stage_initial_identity_rows(&tx, stores.application(), application_ops)?;
     stage_initial_identity_rows(&tx, stores.custody().store(), custody_ops)?;
     tx.commit()?;
@@ -130,7 +132,8 @@ async fn catalog_presence_classification_requires_both_domains() -> Result<()> {
         crate::test_utils::NODE_STORE_ID,
         fixture_memory.clone(),
         fixture_scratch.clone(),
-    )?;
+    )
+    .expect("bounded node fixture setup succeeds");
     assert!(!TenantStorageSet::catalogs_installed(&absent, "tenant")?);
     absent.shutdown().await.unwrap();
 
@@ -143,7 +146,8 @@ async fn catalog_presence_classification_requires_both_domains() -> Result<()> {
             crate::test_utils::NODE_STORE_ID,
             fixture_memory.clone(),
             fixture_scratch.clone(),
-        )?;
+        )
+        .expect("bounded node fixture setup succeeds");
         let store = TenantStore::initialize_catalog_fixture(
             node.clone(),
             name,
@@ -166,7 +170,8 @@ async fn catalog_presence_classification_requires_both_domains() -> Result<()> {
         crate::test_utils::NODE_STORE_ID,
         fixture_memory,
         fixture_scratch,
-    )?;
+    )
+    .expect("bounded node fixture setup succeeds");
     let stores = TenantStorageSet::initialize_catalogs_fixture(
         node.clone(),
         "tenant".into(),
@@ -192,7 +197,8 @@ async fn domains_require_distinct_actual_wrapping_policies_and_same_node() -> Re
         crate::test_utils::NODE_STORE_ID,
         fixture_memory.clone(),
         fixture_scratch.clone(),
-    )?;
+    )
+    .expect("bounded node fixture setup succeeds");
     let provider = Arc::new(LocalKeyProvider::new([1; 32]));
     let app =
         TenantStore::initialize_catalog_fixture(node.clone(), "tenant".into(), provider.clone())
@@ -211,7 +217,8 @@ async fn domains_require_distinct_actual_wrapping_policies_and_same_node() -> Re
             crate::test_utils::NODE_STORE_ID,
             fixture_memory.clone(),
             fixture_scratch.clone(),
-        )?,
+        )
+        .expect("bounded node fixture setup succeeds"),
         CustodyStore::catalog_name("tenant"),
         Arc::new(LocalKeyProvider::new([2; 32])),
     )
@@ -222,7 +229,8 @@ async fn domains_require_distinct_actual_wrapping_policies_and_same_node() -> Re
         crate::test_utils::NODE_STORE_ID,
         fixture_memory.clone(),
         fixture_scratch.clone(),
-    )?;
+    )
+    .expect("bounded node fixture setup succeeds");
     assert!(
         TenantStorageSet::initialize_catalogs_fixture(
             reserved.clone(),
@@ -255,7 +263,8 @@ async fn control_reopens_without_any_application_key_probe_after_revocation() ->
         crate::test_utils::NODE_STORE_ID,
         fixture_memory.clone(),
         fixture_scratch.clone(),
-    )?;
+    )
+    .expect("bounded node fixture setup succeeds");
     let stores = TenantStorageSet::initialize_catalogs_fixture(
         node.clone(),
         "tenant".into(),
@@ -286,6 +295,7 @@ async fn control_reopens_without_any_application_key_probe_after_revocation() ->
     );
     stores.shutdown().await.unwrap();
     drop(stores);
+    node.shutdown().await.unwrap();
     drop(node);
     let reopened = CustodyStore::open(
         NodeStore::open_existing_fixture(
@@ -293,7 +303,8 @@ async fn control_reopens_without_any_application_key_probe_after_revocation() ->
             crate::test_utils::NODE_STORE_ID,
             fixture_memory.clone(),
             fixture_scratch.clone(),
-        )?,
+        )
+        .expect("bounded node fixture setup succeeds"),
         "tenant".into(),
         control_provider,
     )
@@ -315,11 +326,14 @@ async fn every_interrupted_domain_transaction_recovers_whole_old_or_whole_new() 
     let fixture_scratch =
         crate::ScratchDisk::fixture(scratch_directory.path(), fixture_memory.clone());
     let original = FaultBackend::new();
-    let stores = initialize_pair_fixture(NodeStore::create_with_backend(
-        original.clone(),
-        crate::test_utils::storage_admission(),
-        fixture_scratch.clone(),
-    )?)
+    let stores = initialize_pair_fixture(
+        NodeStore::create_with_backend(
+            original.clone(),
+            crate::test_utils::storage_admission(),
+            fixture_scratch.clone(),
+        )
+        .expect("bounded node fixture setup succeeds"),
+    )
     .await?;
     stores.write_batch(
         &[WriteOp::put("data", b"entry", b"old")],
@@ -331,11 +345,14 @@ async fn every_interrupted_domain_transaction_recovers_whole_old_or_whole_new() 
     let mut failures = 0;
     for failure in 0..40 {
         let disk = starting.crash();
-        let stores = existing_pair_fixture(NodeStore::open_with_backend(
-            disk.clone(),
-            crate::test_utils::storage_admission(),
-            fixture_scratch.clone(),
-        )?)
+        let stores = existing_pair_fixture(
+            NodeStore::open_with_backend(
+                disk.clone(),
+                crate::test_utils::storage_admission(),
+                fixture_scratch.clone(),
+            )
+            .expect("bounded node fixture setup succeeds"),
+        )
         .await?;
         disk.fail_after(failure);
         let result = stores.write_batch(
@@ -345,11 +362,14 @@ async fn every_interrupted_domain_transaction_recovers_whole_old_or_whole_new() 
         let crashed = disk.crash();
         disk.disarm();
         drop(stores);
-        let reopened = existing_pair_fixture(NodeStore::open_with_backend(
-            crashed,
-            crate::test_utils::storage_admission(),
-            fixture_scratch.clone(),
-        )?)
+        let reopened = existing_pair_fixture(
+            NodeStore::open_with_backend(
+                crashed,
+                crate::test_utils::storage_admission(),
+                fixture_scratch.clone(),
+            )
+            .expect("bounded node fixture setup succeeds"),
+        )
         .await?;
         let data = reopened.application().get("data", b"entry")?.unwrap();
         let control = reopened
@@ -381,7 +401,8 @@ async fn post_commit_domain_expiry_reports_uncertainty_and_retains_complete_writ
         disk.clone(),
         crate::test_utils::storage_admission(),
         fixture_scratch.clone(),
-    )?;
+    )
+    .expect("bounded node fixture setup succeeds");
     let clock = Arc::new(ManualClock::new());
     let app = TenantStore::initialize_catalog_fixture_with_clock(
         node.clone(),
@@ -409,11 +430,14 @@ async fn post_commit_domain_expiry_reports_uncertainty_and_retains_complete_writ
     assert!(stores.application().check_access().is_err());
     let recovered = disk.crash();
     drop(stores);
-    let reopened = existing_pair_fixture(NodeStore::open_with_backend(
-        recovered,
-        crate::test_utils::storage_admission(),
-        fixture_scratch.clone(),
-    )?)
+    let reopened = existing_pair_fixture(
+        NodeStore::open_with_backend(
+            recovered,
+            crate::test_utils::storage_admission(),
+            fixture_scratch.clone(),
+        )
+        .expect("bounded node fixture setup succeeds"),
+    )
     .await?;
     assert_eq!(
         reopened.application().get("data", b"entry")?.unwrap(),
@@ -441,7 +465,8 @@ async fn typed_domain_expiry_is_minted_only_after_actual_complete_commit() -> Re
         disk.clone(),
         crate::test_utils::storage_admission(),
         fixture_scratch.clone(),
-    )?;
+    )
+    .expect("bounded node fixture setup succeeds");
     let clock = Arc::new(ManualClock::new());
     let app = TenantStore::initialize_catalog_fixture_with_clock(
         node.clone(),
@@ -484,11 +509,14 @@ async fn typed_domain_expiry_is_minted_only_after_actual_complete_commit() -> Re
     assert!(stores.application().check_access().is_err());
     let recovered = disk.crash();
     drop(stores);
-    let reopened = existing_pair_fixture(NodeStore::open_with_backend(
-        recovered,
-        crate::test_utils::storage_admission(),
-        fixture_scratch.clone(),
-    )?)
+    let reopened = existing_pair_fixture(
+        NodeStore::open_with_backend(
+            recovered,
+            crate::test_utils::storage_admission(),
+            fixture_scratch.clone(),
+        )
+        .expect("bounded node fixture setup succeeds"),
+    )
     .await?;
     assert_eq!(
         reopened.application().get("data", b"entry")?.unwrap(),
@@ -517,7 +545,8 @@ async fn combined_quota_and_substituted_catalog_binding_fail_before_publication(
         crate::test_utils::NODE_STORE_ID,
         fixture_memory.clone(),
         fixture_scratch.clone(),
-    )?;
+    )
+    .expect("bounded node fixture setup succeeds");
     let stores = initialize_pair_fixture(node.clone()).await?;
     let ops = vec![WriteOp::put("data", b"entry", b"a"); 32769];
     assert!(stores.write_batch(&ops, &ops).is_err());
@@ -532,7 +561,9 @@ async fn combined_quota_and_substituted_catalog_binding_fail_before_publication(
     )
     .await;
     assert!(result.is_err());
-    node.drain_initializers().await?;
+    node.drain_initializers()
+        .await
+        .map_err(|original| anyhow::Error::new(original.observation()))?;
     stores.check_access()?;
     stores.shutdown().await.unwrap();
     Ok(())
@@ -551,7 +582,8 @@ async fn initial_state_rejects_unknown_records_in_either_complete_domain() -> Re
             crate::test_utils::NODE_STORE_ID,
             fixture_memory.clone(),
             fixture_scratch.clone(),
-        )?;
+        )
+        .expect("bounded node fixture setup succeeds");
         let stores = initialize_pair_fixture(node).await?;
         let domain = if custody {
             stores.custody().store()
@@ -591,12 +623,15 @@ async fn initial_state_checks_and_joint_publication_have_one_concurrent_winner()
     let fixture_scratch =
         crate::ScratchDisk::fixture(scratch_directory.path(), fixture_memory.clone());
     let directory = crate::test_utils::private_tempdir()?;
-    let stores = initialize_pair_fixture(NodeStore::create_new_fixture(
-        directory.path().join("first-publication.kv"),
-        crate::test_utils::NODE_STORE_ID,
-        fixture_memory.clone(),
-        fixture_scratch.clone(),
-    )?)
+    let stores = initialize_pair_fixture(
+        NodeStore::create_new_fixture(
+            directory.path().join("first-publication.kv"),
+            crate::test_utils::NODE_STORE_ID,
+            fixture_memory.clone(),
+            fixture_scratch.clone(),
+        )
+        .expect("bounded node fixture setup succeeds"),
+    )
     .await?;
     let barrier = std::sync::Barrier::new(2);
     let results = std::thread::scope(|scope| {
@@ -651,12 +686,15 @@ async fn initial_state_requires_the_exact_retained_custody_binding() -> Result<(
         crate::ScratchDisk::fixture(scratch_directory.path(), fixture_memory.clone());
     let directory = crate::test_utils::private_tempdir()?;
     for missing in [false, true] {
-        let stores = initialize_pair_fixture(NodeStore::create_new_fixture(
-            directory.path().join(format!("binding-{missing}.kv")),
-            crate::test_utils::NODE_STORE_ID,
-            fixture_memory.clone(),
-            fixture_scratch.clone(),
-        )?)
+        let stores = initialize_pair_fixture(
+            NodeStore::create_new_fixture(
+                directory.path().join(format!("binding-{missing}.kv")),
+                crate::test_utils::NODE_STORE_ID,
+                fixture_memory.clone(),
+                fixture_scratch.clone(),
+            )
+            .expect("bounded node fixture setup succeeds"),
+        )
         .await?;
         let damage = if missing {
             WriteOp::delete(BINDING_NS, BINDING_KEY)
@@ -691,12 +729,15 @@ async fn initial_state_rejects_delete_only_publications_without_consuming_initia
     let fixture_scratch =
         crate::ScratchDisk::fixture(scratch_directory.path(), fixture_memory.clone());
     let directory = crate::test_utils::private_tempdir()?;
-    let stores = initialize_pair_fixture(NodeStore::create_new_fixture(
-        directory.path().join("empty-initialization.kv"),
-        crate::test_utils::NODE_STORE_ID,
-        fixture_memory.clone(),
-        fixture_scratch.clone(),
-    )?)
+    let stores = initialize_pair_fixture(
+        NodeStore::create_new_fixture(
+            directory.path().join("empty-initialization.kv"),
+            crate::test_utils::NODE_STORE_ID,
+            fixture_memory.clone(),
+            fixture_scratch.clone(),
+        )
+        .expect("bounded node fixture setup succeeds"),
+    )
     .await?;
     let put = [WriteOp::put("genesis", b"head", b"initial")];
     let delete = [WriteOp::delete("genesis", b"head")];
@@ -724,12 +765,15 @@ async fn paired_deployment_read_checks_domains_and_charge() -> Result<()> {
     let scratch_directory = crate::test_utils::private_tempdir()?;
     let scratch = crate::ScratchDisk::fixture(scratch_directory.path(), memory.clone());
     let directory = crate::test_utils::private_tempdir()?;
-    let stores = initialize_pair_fixture(NodeStore::create_new_fixture(
-        directory.path().join("deployment-pair.kv"),
-        crate::test_utils::NODE_STORE_ID,
-        memory.clone(),
-        scratch,
-    )?)
+    let stores = initialize_pair_fixture(
+        NodeStore::create_new_fixture(
+            directory.path().join("deployment-pair.kv"),
+            crate::test_utils::NODE_STORE_ID,
+            memory.clone(),
+            scratch,
+        )
+        .expect("bounded node fixture setup succeeds"),
+    )
     .await?;
     assert!(stores.deployment_binding()?.is_none());
 
@@ -802,7 +846,8 @@ async fn pinned_bootstrap_view_survives_coherent_physical_identity_replacement()
         crate::test_utils::NODE_STORE_ID,
         memory,
         scratch,
-    )?;
+    )
+    .expect("bounded node fixture setup succeeds");
     let stores = initialize_pair_fixture(node.clone()).await?;
     let application_a = [
         WriteOp::put(DEPLOYMENT_NS, DEPLOYMENT_KEY, b"a"),
@@ -883,12 +928,15 @@ async fn initial_bootstrap_identity_is_atomic_write_once_with_exact_retry() -> R
     let scratch_directory = crate::test_utils::private_tempdir()?;
     let scratch = crate::ScratchDisk::fixture(scratch_directory.path(), memory.clone());
     let directory = crate::test_utils::private_tempdir()?;
-    let stores = initialize_pair_fixture(NodeStore::create_new_fixture(
-        directory.path().join("write-once.kv"),
-        crate::test_utils::NODE_STORE_ID,
-        memory,
-        scratch.clone(),
-    )?)
+    let stores = initialize_pair_fixture(
+        NodeStore::create_new_fixture(
+            directory.path().join("write-once.kv"),
+            crate::test_utils::NODE_STORE_ID,
+            memory,
+            scratch.clone(),
+        )
+        .expect("bounded node fixture setup succeeds"),
+    )
     .await?;
     let app = stores.application();
     let custody = stores.custody().store();
@@ -945,8 +993,8 @@ async fn initial_bootstrap_identity_is_atomic_write_once_with_exact_retry() -> R
             .is_err()
     );
     assert_eq!(
-        app.get("engine.bootstrap", &0u64.to_be_bytes())?,
-        Some(b"chunk-a".to_vec())
+        app.get("engine.bootstrap", &0u64.to_be_bytes())?.as_deref(),
+        Some(b"chunk-a".as_slice())
     );
     assert!(app.get("ordinary", b"key")?.is_none());
 
@@ -999,12 +1047,14 @@ async fn initial_bootstrap_identity_is_atomic_write_once_with_exact_retry() -> R
             .is_err()
     );
     assert_eq!(
-        app.get("engine.bootstrap", b"manifest")?,
-        Some(b"manifest-a".to_vec())
+        app.get("engine.bootstrap", b"manifest")?.as_deref(),
+        Some(b"manifest-a".as_slice())
     );
     assert_eq!(
-        custody.get("raft.meta", b"application_bootstrap_sha256")?,
-        Some(b"digest-a".to_vec())
+        custody
+            .get("raft.meta", b"application_bootstrap_sha256")?
+            .as_deref(),
+        Some(b"digest-a".as_slice())
     );
     for (key, alternate) in [
         (b"node_id".as_slice(), b"2".as_slice()),
@@ -1021,10 +1071,13 @@ async fn initial_bootstrap_identity_is_atomic_write_once_with_exact_retry() -> R
                 .is_err()
         );
     }
-    assert_eq!(custody.get("raft.meta", b"node_id")?, Some(b"1".to_vec()));
     assert_eq!(
-        custody.get("raft.meta", b"group")?,
-        Some(b"\"tenant/group\"".to_vec())
+        custody.get("raft.meta", b"node_id")?.as_deref(),
+        Some(b"1".as_slice())
+    );
+    assert_eq!(
+        custody.get("raft.meta", b"group")?.as_deref(),
+        Some(b"\"tenant/group\"".as_slice())
     );
 
     for namespace in ["engine.bootstrap", DEPLOYMENT_NS, "raft.meta"] {
@@ -1048,7 +1101,8 @@ async fn initial_bootstrap_identity_is_atomic_write_once_with_exact_retry() -> R
                 .is_err()
         );
     }
-    let replacement = EncryptedTable::new(&scratch, 8 << 20, scratch.native_cache_config())?;
+    let replacement =
+        EncryptedTable::new(&scratch, 8 << 20, scratch.native_cache_config()).unwrap();
     custody.write_batch(&[WriteOp::put("raft.meta", b"mutable", b"old")])?;
     assert!(
         app.replace_namespaces(
@@ -1102,19 +1156,25 @@ async fn initial_bootstrap_identity_is_atomic_write_once_with_exact_retry() -> R
             .is_err()
     );
     assert_eq!(
-        app.get("engine.bootstrap", b"manifest")?,
-        Some(b"manifest-a".to_vec())
+        app.get("engine.bootstrap", b"manifest")?.as_deref(),
+        Some(b"manifest-a".as_slice())
     );
     assert_eq!(
-        app.get("engine.bootstrap", &0u64.to_be_bytes())?,
-        Some(b"chunk-a".to_vec())
+        app.get("engine.bootstrap", &0u64.to_be_bytes())?.as_deref(),
+        Some(b"chunk-a".as_slice())
     );
     assert_eq!(
-        custody.get("raft.meta", b"application_bootstrap_sha256")?,
-        Some(b"digest-a".to_vec())
+        custody
+            .get("raft.meta", b"application_bootstrap_sha256")?
+            .as_deref(),
+        Some(b"digest-a".as_slice())
     );
-    assert_eq!(custody.get("raft.meta", b"mutable")?, Some(b"old".to_vec()));
-    let forbidden_manifest = EncryptedTable::new(&scratch, 8 << 20, scratch.native_cache_config())?;
+    assert_eq!(
+        custody.get("raft.meta", b"mutable")?.as_deref(),
+        Some(b"old".as_slice())
+    );
+    let forbidden_manifest =
+        EncryptedTable::new(&scratch, 8 << 20, scratch.native_cache_config()).unwrap();
     forbidden_manifest.insert(b"manifest", b"manifest-b")?;
     assert!(
         app.replace_namespaces(
@@ -1126,7 +1186,8 @@ async fn initial_bootstrap_identity_is_atomic_write_once_with_exact_retry() -> R
         )
         .is_err()
     );
-    let forbidden_digest = EncryptedTable::new(&scratch, 8 << 20, scratch.native_cache_config())?;
+    let forbidden_digest =
+        EncryptedTable::new(&scratch, 8 << 20, scratch.native_cache_config()).unwrap();
     forbidden_digest.insert(b"application_bootstrap_sha256", b"digest-b")?;
     assert!(
         custody
@@ -1190,12 +1251,15 @@ async fn custody_deployment_read_retains_writer_bounded_charge_without_applicati
     let scratch_directory = crate::test_utils::private_tempdir()?;
     let scratch = crate::ScratchDisk::fixture(scratch_directory.path(), memory.clone());
     let directory = crate::test_utils::private_tempdir()?;
-    let stores = initialize_pair_fixture(NodeStore::create_new_fixture(
-        directory.path().join("custody-deployment.kv"),
-        crate::test_utils::NODE_STORE_ID,
-        memory.clone(),
-        scratch,
-    )?)
+    let stores = initialize_pair_fixture(
+        NodeStore::create_new_fixture(
+            directory.path().join("custody-deployment.kv"),
+            crate::test_utils::NODE_STORE_ID,
+            memory.clone(),
+            scratch,
+        )
+        .expect("bounded node fixture setup succeeds"),
+    )
     .await?;
     assert!(stores.custody().deployment_binding()?.is_none());
 
@@ -1235,12 +1299,15 @@ async fn paired_deployment_read_accepts_exact_current_writer_boundary() -> Resul
     let scratch_directory = crate::test_utils::private_tempdir()?;
     let scratch = crate::ScratchDisk::fixture(scratch_directory.path(), memory.clone());
     let directory = crate::test_utils::private_tempdir()?;
-    let stores = initialize_pair_fixture(NodeStore::create_new_fixture(
-        directory.path().join("deployment-boundary.kv"),
-        crate::test_utils::NODE_STORE_ID,
-        memory,
-        scratch,
-    )?)
+    let stores = initialize_pair_fixture(
+        NodeStore::create_new_fixture(
+            directory.path().join("deployment-boundary.kv"),
+            crate::test_utils::NODE_STORE_ID,
+            memory,
+            scratch,
+        )
+        .expect("bounded node fixture setup succeeds"),
+    )
     .await?;
     let exact = vec![b'x'; MAX_DEPLOYMENT_BINDING_BYTES];
     let put = WriteOp::put(DEPLOYMENT_NS, DEPLOYMENT_KEY, exact);
@@ -1275,12 +1342,15 @@ async fn paired_deployment_read_rejects_oversized_envelope_before_key_id_parse()
     let scratch_directory = crate::test_utils::private_tempdir()?;
     let scratch = crate::ScratchDisk::fixture(scratch_directory.path(), memory.clone());
     let directory = crate::test_utils::private_tempdir()?;
-    let stores = initialize_pair_fixture(NodeStore::create_new_fixture(
-        directory.path().join("deployment-oversized-envelope.kv"),
-        crate::test_utils::NODE_STORE_ID,
-        memory.clone(),
-        scratch,
-    )?)
+    let stores = initialize_pair_fixture(
+        NodeStore::create_new_fixture(
+            directory.path().join("deployment-oversized-envelope.kv"),
+            crate::test_utils::NODE_STORE_ID,
+            memory.clone(),
+            scratch,
+        )
+        .expect("bounded node fixture setup succeeds"),
+    )
     .await?;
     let application = stores.application();
     let disk_key = {
@@ -1297,7 +1367,7 @@ async fn paired_deployment_read_rejects_oversized_envelope_before_key_id_parse()
     let mut oversized = vec![0xff; MAX_DEPLOYMENT_ENVELOPE_BYTES + 1];
     let id_len = u32::try_from(oversized.len() - 4)?;
     oversized[..4].copy_from_slice(&id_len.to_be_bytes());
-    let tx = application.node.db.begin_write()?;
+    let tx = application.node.body().db.begin_write()?;
     tx.open_table(RECORDS)?
         .insert(disk_key.as_slice(), oversized.as_slice())?;
     tx.commit()?;
@@ -1311,7 +1381,7 @@ async fn paired_deployment_read_rejects_oversized_envelope_before_key_id_parse()
         "encrypted deployment envelope exceeds read budget"
     );
     assert_eq!(memory.snapshot().used_bytes, before);
-    let tx = application.node.db.begin_read()?;
+    let tx = application.node.body().db.begin_read()?;
     let table = tx.open_table(RECORDS)?;
     assert_eq!(
         table
@@ -1339,7 +1409,8 @@ async fn empty_namespace_replacements_roll_back_both_domains_when_real_source_is
         crate::test_utils::NODE_STORE_ID,
         memory,
         scratch.clone(),
-    )?;
+    )
+    .expect("bounded node fixture setup succeeds");
     let stores = initialize_pair_fixture(node).await?;
     let app = stores.application();
     let custody = stores.custody().store();
@@ -1355,7 +1426,7 @@ async fn empty_namespace_replacements_roll_back_both_domains_when_real_source_is
     )?;
     let pinned_app = app.read_view()?;
     let pinned_custody = custody.read_view()?;
-    let closed = EncryptedTable::new(&scratch, 8 << 20, scratch.native_cache_config())?;
+    let closed = EncryptedTable::new(&scratch, 8 << 20, scratch.native_cache_config()).unwrap();
     closed.insert(b"new", b"unpublished")?;
     closed.close().unwrap();
     // App deletion and metadata are already staged when the custody source's
@@ -1377,11 +1448,23 @@ async fn empty_namespace_replacements_roll_back_both_domains_when_real_source_is
         ),
         "replacement must reach the closed native source: {error:#}"
     );
-    assert_eq!(app.get("data", b"old")?, Some(b"application".to_vec()));
-    assert_eq!(custody.get("data", b"old")?, Some(b"custody".to_vec()));
+    assert_eq!(
+        app.get("data", b"old")?.as_deref(),
+        Some(b"application".as_slice())
+    );
+    assert_eq!(
+        custody.get("data", b"old")?.as_deref(),
+        Some(b"custody".as_slice())
+    );
     assert!(custody.get("data", b"new")?.is_none());
-    assert_eq!(app.get("meta", b"position")?, Some(b"old".to_vec()));
-    assert_eq!(custody.get("meta", b"position")?, Some(b"old".to_vec()));
+    assert_eq!(
+        app.get("meta", b"position")?.as_deref(),
+        Some(b"old".as_slice())
+    );
+    assert_eq!(
+        custody.get("meta", b"position")?.as_deref(),
+        Some(b"old".as_slice())
+    );
 
     // The same stores can then commit both empty namespaces and their bindings.
     stores.write_batch_replacing(
@@ -1392,23 +1475,29 @@ async fn empty_namespace_replacements_roll_back_both_domains_when_real_source_is
     )?;
     assert!(app.get("data", b"old")?.is_none());
     assert!(custody.get("data", b"old")?.is_none());
-    assert_eq!(app.get("meta", b"position")?, Some(b"new".to_vec()));
-    assert_eq!(custody.get("meta", b"position")?, Some(b"new".to_vec()));
     assert_eq!(
-        pinned_app.get("data", b"old", 1024)?,
-        Some(b"application".to_vec())
+        app.get("meta", b"position")?.as_deref(),
+        Some(b"new".as_slice())
     );
     assert_eq!(
-        pinned_custody.get("data", b"old", 1024)?,
-        Some(b"custody".to_vec())
+        custody.get("meta", b"position")?.as_deref(),
+        Some(b"new".as_slice())
     );
     assert_eq!(
-        pinned_app.get("meta", b"position", 1024)?,
-        Some(b"old".to_vec())
+        pinned_app.get("data", b"old", 1024)?.as_deref(),
+        Some(b"application".as_slice())
     );
     assert_eq!(
-        pinned_custody.get("meta", b"position", 1024)?,
-        Some(b"old".to_vec())
+        pinned_custody.get("data", b"old", 1024)?.as_deref(),
+        Some(b"custody".as_slice())
+    );
+    assert_eq!(
+        pinned_app.get("meta", b"position", 1024)?.as_deref(),
+        Some(b"old".as_slice())
+    );
+    assert_eq!(
+        pinned_custody.get("meta", b"position", 1024)?.as_deref(),
+        Some(b"old".as_slice())
     );
     Ok(())
 }

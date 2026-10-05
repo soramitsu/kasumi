@@ -88,7 +88,7 @@ pub async fn open_serving_target(
     config: TargetReplicaConfig,
     transport: Arc<dyn RaftTransport>,
     audit: Arc<SecurityAudit>,
-) -> anyhow::Result<TargetServingReplica> {
+) -> std::result::Result<TargetServingReplica, crate::SnapshotFailure> {
     audit.require_admission(&config.admission)?;
     let construction = DatabaseConstruction::new(stores.clone(), audit.clone())?;
     let gate = stores
@@ -98,15 +98,18 @@ pub async fn open_serving_target(
         .context("fresh serving lease missing")?
         .clone();
     projection.check(&gate)?;
-    anyhow::ensure!(
-        stores
-            .application()
-            .storage_access()
-            .lifecycle_gate()
-            .is_none()
-            && config.node_id == gate.identity().node.node_id,
-        "ordinary startup cannot reuse phase storage or another node"
-    );
+    crate::SnapshotFailure::ordinary(|| {
+        anyhow::ensure!(
+            stores
+                .application()
+                .storage_access()
+                .lifecycle_gate()
+                .is_none()
+                && config.node_id == gate.identity().node.node_id,
+            "ordinary startup cannot reuse phase storage or another node"
+        );
+        Ok(())
+    })?;
     let task = tokio::spawn(async move {
         let _serial = BOOTSTRAP_GATE.lock().await;
         projection.check(&gate)?;
@@ -130,38 +133,44 @@ pub async fn open_serving_target(
             )?);
             let expected = proof.execution()?;
             let state = engine.generation()?;
-            anyhow::ensure!(
-                state
-                    .state
-                    .target_lifecycle
-                    .get(&state.state.incarnation)
-                    .is_some_and(|entry| entry.origin == expected.origin)
-                    && bytes.sha256()
-                        == expected
-                            .completion
-                            .as_ref()
-                            .context("completion missing")?
-                            .bootstrap_sha256,
-                "existing physical bootstrap differs from committed target"
-            );
+            crate::SnapshotFailure::ordinary(|| {
+                anyhow::ensure!(
+                    state
+                        .state
+                        .target_lifecycle
+                        .get(&state.state.incarnation)
+                        .is_some_and(|entry| entry.origin == expected.origin)
+                        && bytes.sha256()
+                            == expected
+                                .completion
+                                .as_ref()
+                                .context("completion missing")?
+                                .bootstrap_sha256,
+                    "existing physical bootstrap differs from committed target"
+                );
+                Ok(())
+            })?;
             let bootstrap = decode_current_target_deployment(&material)?;
-            anyhow::ensure!(
-                bootstrap.incarnation == proof.target_incarnation().to_string()
-                    && bootstrap.voters.len() == expected.origin.input.voters.len()
-                    && bootstrap.voters.iter().all(|(id, peer)| expected
-                        .origin
-                        .input
-                        .voters
-                        .get(id)
-                        .is_some_and(|original| peer.address == original.endpoint
-                            && peer.failure_domain == original.failure_domain)),
-                "target deployment identity differs"
-            );
+            crate::SnapshotFailure::ordinary(|| {
+                anyhow::ensure!(
+                    bootstrap.incarnation == proof.target_incarnation().to_string()
+                        && bootstrap.voters.len() == expected.origin.input.voters.len()
+                        && bootstrap.voters.iter().all(|(id, peer)| expected
+                            .origin
+                            .input
+                            .voters
+                            .get(id)
+                            .is_some_and(|original| peer.address == original.endpoint
+                                && peer.failure_domain == original.failure_domain)),
+                    "target deployment identity differs"
+                );
+                Ok(())
+            })?;
             drop(state);
             engine.install_storage_access(material.application())?;
             engine.verify_bootstrap_dependencies_checked(|| proof.check(&live))?;
             proof.check(&live)?;
-            Ok::<_, anyhow::Error>((engine, bootstrap, bytes))
+            Ok::<_, crate::SnapshotFailure>((engine, bootstrap, bytes))
         })
         .await??;
         projection.check(&gate)?;
@@ -189,7 +198,7 @@ pub async fn open_serving_target(
         // Raft open replays its persisted committed prefix. An uncommitted or
         // missing local activation cannot be promoted by a foreign signed DTO.
         owner.check()?;
-        Ok::<_, anyhow::Error>(owner)
+        Ok::<_, crate::SnapshotFailure>(owner)
     });
     task.await?
 }

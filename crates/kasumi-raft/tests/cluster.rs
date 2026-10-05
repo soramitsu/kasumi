@@ -1,6 +1,8 @@
 mod common;
 
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result};
+use common::ensure;
+use kasumi_raft::test_utils::FixtureResult;
 use kasumi_raft::{BasicNode, InProcessRouter, RaftGroup};
 use openraft::{LogId, ServerState};
 use std::{
@@ -26,7 +28,7 @@ struct Cluster {
 }
 
 impl Cluster {
-    async fn new() -> Result<Self> {
+    async fn new() -> FixtureResult<Self> {
         let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
         let scratch_directory = kasumi_store::test_utils::private_tempdir()?;
         let fixture_scratch =
@@ -53,7 +55,7 @@ impl Cluster {
         Ok(cluster)
     }
 
-    async fn open(&mut self, id: u64, create: bool) -> Result<()> {
+    async fn open(&mut self, id: u64, create: bool) -> FixtureResult<()> {
         let store = common::store(
             &self.dir.path().join(format!("node-{id}.kv")),
             create,
@@ -81,7 +83,7 @@ impl Cluster {
         Ok(())
     }
 
-    async fn stop(&mut self, id: u64) -> Result<()> {
+    async fn stop(&mut self, id: u64) -> FixtureResult<()> {
         self.router.unregister(GROUP, id);
         self.nodes
             .remove(&id)
@@ -92,14 +94,14 @@ impl Cluster {
         Ok(())
     }
 
-    async fn stop_all(&mut self) -> Result<()> {
+    async fn stop_all(&mut self) -> FixtureResult<()> {
         for id in self.nodes.keys().copied().collect::<Vec<_>>() {
             self.stop(id).await?;
         }
         Ok(())
     }
 
-    async fn leader(&self, excluded: &[u64]) -> Result<u64> {
+    async fn leader(&self, excluded: &[u64]) -> FixtureResult<u64> {
         tokio::time::timeout(WAIT, async {
             loop {
                 for (&id, node) in &self.nodes {
@@ -124,11 +126,19 @@ impl Cluster {
         })
         .await
         .context("no quorum-backed leader elected")
+        .map_err(Into::into)
     }
 
-    async fn write(&self, id: u64, data: &[u8]) -> Result<LogId<u64>> {
+    async fn write(&self, id: u64, data: &[u8]) -> FixtureResult<LogId<u64>> {
         ensure!(
-            tokio::time::timeout(WAIT, self.nodes[&id].group.write(data.to_vec())).await?? == data,
+            tokio::time::timeout(
+                WAIT,
+                self.nodes[&id]
+                    .group
+                    .write(kasumi_raft::ApplicationProposal::generated(data.to_vec()))
+            )
+            .await??
+                == data,
             "wrong application response"
         );
         self.nodes[&id]
@@ -136,9 +146,10 @@ impl Cluster {
             .linearizable_barrier()
             .await?
             .context("leader missing committed log")
+            .map_err(Into::into)
     }
 
-    async fn applied(&self, ids: &[u64], target: LogId<u64>) -> Result<()> {
+    async fn applied(&self, ids: &[u64], target: LogId<u64>) -> FixtureResult<()> {
         for id in ids {
             self.nodes[id]
                 .group
@@ -163,8 +174,8 @@ impl Cluster {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn partition_rejects_minority_reads_and_writes_and_recovers_after_full_restart() -> Result<()>
-{
+async fn partition_rejects_minority_reads_and_writes_and_recovers_after_full_restart()
+-> FixtureResult<()> {
     let mut cluster = Cluster::new().await?;
     let first = cluster.leader(&[]).await?;
     let committed = cluster
@@ -183,7 +194,9 @@ async fn partition_rejects_minority_reads_and_writes_and_recovers_after_full_res
     assert!(!matches!(
         tokio::time::timeout(
             Duration::from_millis(600),
-            minority.write(b"uncommitted-minority".to_vec())
+            minority.write(kasumi_raft::ApplicationProposal::generated(
+                b"uncommitted-minority".to_vec()
+            ))
         )
         .await,
         Ok(Ok(_))
@@ -236,7 +249,7 @@ async fn partition_rejects_minority_reads_and_writes_and_recovers_after_full_res
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn snapshot_catches_up_partitioned_follower_and_replaces_a_voter() -> Result<()> {
+async fn snapshot_catches_up_partitioned_follower_and_replaces_a_voter() -> FixtureResult<()> {
     let mut cluster = Cluster::new().await?;
     let leader = cluster.leader(&[]).await?;
     let lagging = (1..=3).find(|id| *id != leader).unwrap();
@@ -321,7 +334,7 @@ async fn snapshot_catches_up_partitioned_follower_and_replaces_a_voter() -> Resu
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn one_voter_acknowledgment_recovers_without_a_snapshot() -> Result<()> {
+async fn one_voter_acknowledgment_recovers_without_a_snapshot() -> FixtureResult<()> {
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
     let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
@@ -338,7 +351,11 @@ async fn one_voter_acknowledgment_recovers_without_a_snapshot() -> Result<()> {
         )
         .await?;
         assert_eq!(
-            group.write(b"durable-local".to_vec()).await?,
+            group
+                .write(kasumi_raft::ApplicationProposal::generated(
+                    b"durable-local".to_vec()
+                ))
+                .await?,
             b"durable-local"
         );
         assert_eq!(backend.values(), vec![b"durable-local".to_vec()]);
@@ -359,7 +376,7 @@ async fn one_voter_acknowledgment_recovers_without_a_snapshot() -> Result<()> {
 }
 
 #[tokio::test]
-async fn fatal_snapshot_capture_blocks_even_local_generation_access() -> Result<()> {
+async fn fatal_snapshot_capture_blocks_even_local_generation_access() -> FixtureResult<()> {
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
     let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
@@ -375,7 +392,11 @@ async fn fatal_snapshot_capture_blocks_even_local_generation_access() -> Result<
         common::snapshot_owner(),
     )
     .await?;
-    group.write(b"committed".to_vec()).await?;
+    group
+        .write(kasumi_raft::ApplicationProposal::generated(
+            b"committed".to_vec(),
+        ))
+        .await?;
     backend
         .fail_snapshot
         .store(true, std::sync::atomic::Ordering::Release);
@@ -457,7 +478,7 @@ async fn fatal_snapshot_capture_blocks_even_local_generation_access() -> Result<
 }
 
 #[tokio::test]
-async fn raft_crash_worker() -> Result<()> {
+async fn raft_crash_worker() -> FixtureResult<()> {
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
     let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
@@ -473,7 +494,11 @@ async fn raft_crash_worker() -> Result<()> {
         common::snapshot_owner(),
     )
     .await?;
-    group.write(b"acknowledged-before-sigkill".to_vec()).await?;
+    group
+        .write(kasumi_raft::ApplicationProposal::generated(
+            b"acknowledged-before-sigkill".to_vec(),
+        ))
+        .await?;
     use std::io::Write;
     println!("KASUMI_DURABLE_ACK");
     std::io::stdout().flush()?;
@@ -482,7 +507,8 @@ async fn raft_crash_worker() -> Result<()> {
 }
 
 #[tokio::test]
-async fn acknowledged_one_voter_write_survives_sigkill_without_graceful_shutdown() -> Result<()> {
+async fn acknowledged_one_voter_write_survives_sigkill_without_graceful_shutdown()
+-> FixtureResult<()> {
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
     let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
@@ -504,7 +530,7 @@ async fn acknowledged_one_voter_write_survives_sigkill_without_graceful_shutdown
                 return anyhow::Ok(());
             }
         }
-        anyhow::bail!("worker exited before acknowledging")
+        return Err(anyhow::anyhow!("worker exited before acknowledging").into());
     })
     .await??;
     child.kill().await?;
@@ -527,7 +553,7 @@ async fn acknowledged_one_voter_write_survives_sigkill_without_graceful_shutdown
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn oversized_replication_backlog_shrinks_and_catches_up_without_changing_membership()
--> Result<()> {
+-> FixtureResult<()> {
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
     let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
@@ -620,7 +646,9 @@ async fn oversized_replication_backlog_shrinks_and_catches_up_without_changing_m
     router.isolate(GROUP, 3, true);
     for id in 0..24 {
         groups[0]
-            .write(format!("backlog-{id}").into_bytes())
+            .write(kasumi_raft::ApplicationProposal::generated(
+                format!("backlog-{id}").into_bytes(),
+            ))
             .await?;
     }
     let target = groups[0].linearizable_barrier().await?.unwrap();

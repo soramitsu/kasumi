@@ -540,7 +540,9 @@ impl Administration {
                         Some(&proposal.route.incarnation),
                     )?
                     .context("enrollment bootstrap missing")?;
-                let database = kasumi_engine::open_replicated(
+                let constructor_index = crate::administration::original_serving_runtime::OriginalRecoveries::configured_index(&self.config, name)?;
+                let mut constructor_seat = self.original_recoveries.claim(constructor_index).await;
+                let database = constructor_seat.run_snapshot(kasumi_engine::open_replicated(
                     replication.node_id,
                     stores.clone(),
                     &bootstrap,
@@ -548,7 +550,7 @@ impl Administration {
                     kasumi_raft::server_config(),
                     self.audit.clone(),
                 )
-                .await?;
+                ).await.map_err(crate::administration::original_serving_runtime::OriginalRecoveryObservation::foreign_error)?;
                 prepared.resources.databases.push(database.clone());
                 let resident = ManagedTenant {
                     store: stores.application().clone(),
@@ -609,7 +611,9 @@ impl Administration {
                 .push(stores.custody().store().clone());
             self.config
                 .install_tenant_audit_archive(stores.application(), None)?;
-            let opened = kasumi_engine::open_existing_replicated(
+            let constructor_index = crate::administration::original_serving_runtime::OriginalRecoveries::configured_index(&self.config, name)?;
+            let mut constructor_seat = self.original_recoveries.claim(constructor_index).await;
+            let opened = constructor_seat.run_snapshot(kasumi_engine::open_existing_replicated(
                 replication.node_id,
                 stores.clone(),
                 incarnation,
@@ -617,7 +621,7 @@ impl Administration {
                 kasumi_raft::server_config(),
                 self.audit.clone(),
             )
-            .await?;
+            ).await.map_err(crate::administration::original_serving_runtime::OriginalRecoveryObservation::foreign_error)?;
             prepared.resources.databases.push(opened.database.clone());
             for (alias, destination) in &self.destinations {
                 opened
@@ -643,7 +647,10 @@ impl Administration {
                 lease,
             };
             self.require_resident_proposal(&resident, &proposal)?;
-            self.node.drain_initializers().await?;
+            self.node
+                .drain_initializers()
+                .await
+                .map_err(|failure| failure.observation())?;
             let group = format!("{name}/{incarnation}");
             let store = stores.application().clone();
             network.register_group_with_bootstrap(

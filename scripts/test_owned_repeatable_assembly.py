@@ -220,6 +220,58 @@ class OwnedRunnerTests(unittest.TestCase):
         self.assertEqual(aliased["status"], "failed")
         self.assertIsNotNone(attempt_index.replay(self.root)["alias-preflight"]["terminal"])
 
+    def test_actual_pre_dispatch_failure_remains_in_acceptance_history(self):
+        output = self.root / "failed-launch"
+        with self.assertRaises(ValueError):
+            owned.launch(self.evidence, self.declaration, output, self.root, "failed-preflight")
+        receipt = attempt_index.file_ref(self.root,
+                                        self.root / "attempts/failed-preflight/attempt.json")
+        retained = [{"id": "failed-preflight", "receipt": receipt}]
+        acceptance.verify_attempts(self.root, retained, set())
+        with self.assertRaisesRegex(ValueError, "selected attempt failed"):
+            acceptance.verify_attempts(self.root, retained, {"failed-launch/launcher.json"})
+
+        original = assembly.read(output / "launcher.json")
+        self.assertIs(original["dispatch_started"], False)
+        declaration = assembly.check_ref(output, original["declaration"])
+        self.assertEqual(declaration.read_bytes(), self.declaration.read_bytes())
+        declaration.write_text("changed original preflight input")
+        with self.assertRaisesRegex(ValueError, "artifact changed"):
+            acceptance.verify_attempts(self.root, retained, set())
+        declaration.write_bytes(self.declaration.read_bytes())
+
+        # Hiding an original child behind an empty roster is not preflight.
+        (output / "runner").mkdir()
+        with self.assertRaisesRegex(ValueError, "retains child output"):
+            acceptance.verify_attempts(self.root, retained, set())
+        (output / "runner").rmdir()
+        ledger = output / "descendant-groups.jsonl"
+        ledger.write_bytes(b"")
+        acceptance.verify_attempts(self.root, retained, set())
+        ledger.write_text(json.dumps({"schema": 1, "kind": "group", "group": 123,
+                                    "owner_pid": 456, "executable_sha256": "a" * 64,
+                                    "leader_birth": "linux:789"}) + "\n")
+        with self.assertRaisesRegex(ValueError, "retains child admissions"):
+            acceptance.verify_attempts(self.root, retained, set())
+
+    def test_dispatcher_uncertainty_cannot_be_relabelled_as_pre_dispatch_failure(self):
+        write_json(self.evidence / "source-files.json", {})
+        output = self.root / "uncertain-launch"
+        with patch.object(owned.assembly_inputs, "validate_declaration", return_value=self.inputs), \
+                patch.object(owned, "source_scripts", return_value={}), \
+                patch.object(owned.assembly_inputs, "environment", return_value={}), \
+                patch.object(assembly, "run_owned", side_effect=ValueError("dispatch uncertain")) as dispatch:
+            with self.assertRaisesRegex(ValueError, "dispatch uncertain"):
+                owned.launch(self.evidence, self.declaration, output, self.root, "uncertain-dispatch")
+        dispatch.assert_called_once()
+        original = assembly.read(output / "launcher.json")
+        self.assertIs(original["dispatch_started"], True)
+        self.assertIsNone(original["runner_process"])
+        receipt = attempt_index.file_ref(self.root,
+                                        self.root / "attempts/uncertain-dispatch/attempt.json")
+        with self.assertRaisesRegex(ValueError, "not an original pre-dispatch failure"):
+            acceptance.verify_attempts(self.root, [{"id": "uncertain-dispatch", "receipt": receipt}], set())
+
     def test_locked_spawn_ledger_seals_admission_and_binds_original_group(self):
         ledger = self.root / "groups.jsonl"
         ledger.write_bytes(b"")

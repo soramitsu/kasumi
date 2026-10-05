@@ -228,7 +228,7 @@ where
     /// The main loop of the Raft protocol.
     pub(crate) async fn main(
         mut self,
-        rx_shutdown: <C::AsyncRuntime as AsyncRuntime>::OneshotReceiver<()>,
+        rx_shutdown: <C::AsyncRuntime as AsyncRuntime>::OneshotReceiver<crate::core::ShutdownMode>,
     ) -> Result<Infallible, Fatal<C::NodeId>> {
         let span = tracing::span!(parent: &self.span, Level::DEBUG, "main");
         let res = self.do_main(rx_shutdown).instrument(span).await;
@@ -262,7 +262,7 @@ where
     #[tracing::instrument(level="trace", skip_all, fields(id=display(&self.id), cluster=%self.config.cluster_name))]
     async fn do_main(
         &mut self,
-        rx_shutdown: <C::AsyncRuntime as AsyncRuntime>::OneshotReceiver<()>,
+        rx_shutdown: <C::AsyncRuntime as AsyncRuntime>::OneshotReceiver<crate::core::ShutdownMode>,
     ) -> Result<Infallible, Fatal<C::NodeId>> {
         tracing::debug!("raft node is initializing");
 
@@ -920,6 +920,10 @@ where
     /// next RaftMsg.
     #[tracing::instrument(level = "debug", skip_all)]
     pub(crate) async fn run_engine_commands(&mut self) -> Result<(), StorageError<C::NodeId>> {
+        self.run_engine_commands_inner(true).await
+    }
+
+    async fn run_engine_commands_inner(&mut self, replicate: bool) -> Result<(), StorageError<C::NodeId>> {
         self.resume_pending_snapshot();
         if tracing::enabled!(Level::DEBUG) {
             tracing::debug!("queued commands: start...");
@@ -931,6 +935,20 @@ where
 
         while let Some(cmd) = self.engine.output.pop_command() {
             tracing::debug!("run command: {:?}", cmd);
+
+            if !replicate
+                && matches!(
+                    &cmd,
+                    Command::SendVote { .. }
+                        | Command::Replicate { .. }
+                        | Command::ReplicateCommitted { .. }
+                        | Command::RebuildReplicationStreams { .. }
+                )
+            {
+                // The admission cut freezes protocol state. These original
+                // intents own no application response or storage publication.
+                continue;
+            }
 
             let res = self.run_command(cmd).await?;
 
@@ -944,11 +962,75 @@ where
                     }
                 }
 
-                return self.resume_replication().await;
+                return if replicate {
+                    self.resume_replication().await
+                } else {
+                    Ok(())
+                };
             }
         }
 
-        self.resume_replication().await
+        if replicate {
+            self.resume_replication().await
+        } else {
+            Ok(())
+        }
+    }
+
+    /// A fixed admission cut followed by the actual worker's terminal boundary.
+    /// Only existing storage/SM commands and their replies advance during this
+    /// loop; elections and replication replies cannot admit another commit.
+    async fn drain_committed_work(&mut self) -> Result<Infallible, Fatal<C::NodeId>> {
+        self.rx_api.close();
+        self.pending_snapshot.seal();
+        // Unprocessed actor requests have no accepted consensus effect. Close
+        // their original response channels and dispose their original payloads.
+        // An already offered snapshot remains in the separately sealed owner.
+        while let Ok(request) = self.rx_api.try_recv() {
+            drop(request);
+        }
+        let mut worker_sealed = false;
+        loop {
+            self.run_engine_commands_inner(false).await?;
+            if !worker_sealed && self.engine.output.commands.is_empty() && self.pending_snapshot.retained().is_none() {
+                // This lock also orders weak snapshot-reader senders and the
+                // coalesced range; no metric or sequence maximum proves drain.
+                // A dropped receiver already has a finishing/failed worker.
+                // Observe its original retained outcome below; do not replace
+                // that storage error or panic with a synthetic send failure.
+                let _ = self.sm_handle.seal();
+                worker_sealed = true;
+            }
+            self.flush_metrics();
+            select! {
+                biased;
+                outcome = self.auxiliary_tasks.changed() => {
+                    if let Err(error) = outcome {
+                        return Err(sm::tasks::fatal::<C>(&error));
+                    }
+                }
+                outcome = self.replication_tasks.changed() => {
+                    if let Err(error) = outcome {
+                        return Err(sm::tasks::fatal::<C>(&error));
+                    }
+                }
+                outcome = self.sm_handle.stopped() => {
+                    return Err(match outcome {
+                        Ok(()) => Fatal::Stopped,
+                        Err(error) => sm::tasks::fatal::<C>(&error),
+                    });
+                }
+                notification = self.rx_notify.recv() => {
+                    match notification {
+                        Some(notification @ (Notify::StateMachine { .. } | Notify::IncomingSnapshotFailed { .. })) => {
+                            self.handle_notify(notification)?;
+                        }
+                        Some(Notify::Tick { .. } | Notify::VoteResponse { .. } | Notify::HigherVote { .. } | Notify::Network { .. }) => {}
+                        None => return Err(Fatal::Stopped),
+                    }
+                }
+            }
+        }
     }
 
     /// Run an event handling loop
@@ -957,7 +1039,7 @@ where
     #[tracing::instrument(level="debug", skip_all, fields(id=display(&self.id)))]
     async fn runtime_loop(
         &mut self,
-        mut rx_shutdown: <C::AsyncRuntime as AsyncRuntime>::OneshotReceiver<()>,
+        mut rx_shutdown: <C::AsyncRuntime as AsyncRuntime>::OneshotReceiver<crate::core::ShutdownMode>,
     ) -> Result<Infallible, Fatal<C::NodeId>> {
         // Ratio control the ratio of number of RaftMsg to process to number of Notify to process.
         let mut balancer = Balancer::new(10_000);
@@ -977,9 +1059,12 @@ where
                 // See: https://docs.rs/tokio/latest/tokio/macro.select.html#fairness
                 biased;
 
-                _ = &mut rx_shutdown => {
+                mode = &mut rx_shutdown => {
                     tracing::info!("recv from rx_shutdown");
-                    return Err(Fatal::Stopped);
+                    return match mode {
+                        Ok(crate::core::ShutdownMode::Graceful) => self.drain_committed_work().await,
+                        Ok(crate::core::ShutdownMode::Immediate) | Err(_) => Err(Fatal::Stopped),
+                    };
                 }
 
                 outcome = self.auxiliary_tasks.changed() => {

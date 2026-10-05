@@ -785,7 +785,11 @@ pub(super) async fn pause_open(path: &Path) {
 }
 
 async fn create_catalogs(operator: &Operator, journal: &mut Journal) {
-    let node = operator.prepare_database_group(journal).unwrap().unwrap();
+    let node = operator
+        .prepare_database_group(journal)
+        .await
+        .unwrap()
+        .unwrap();
     let tenant = &operator.config.tenants[0];
     let source = Arc::new(crate::runtime::file_secret);
     let stores = kasumi_store::TenantStorageSet::initialize_catalogs(
@@ -1169,6 +1173,7 @@ async fn local_incomplete_catalogs_or_dispatched_restore_never_restart_creation_
         } else {
             let node = operator
                 .prepare_database_group(&mut journal)
+                .await
                 .unwrap()
                 .unwrap();
             node.shutdown().await.unwrap();
@@ -1503,6 +1508,197 @@ fn recovery_rows(store: &TenantStore) -> [Rows; 5] {
 }
 
 #[test]
+fn local_audit_placement_is_owned_before_cache_creation_and_cannot_change_on_resume() {
+    std::thread::Builder::new()
+        .name("local recovery audit placement fixture".into())
+        .stack_size(16 << 20)
+        .spawn(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(Box::pin(local_audit_placement_custody_impl()));
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+async fn local_audit_placement_custody_impl() {
+    use crate::audit_destination::{AuditDestinationConfig, TenantAuditPlacementConfig};
+    let root = kasumi_store::test_utils::private_tempdir().unwrap();
+    let (configuration, request, _, storage) = backup(root.path()).await;
+    start_with_storage(&configuration, request.clone(), storage.clone())
+        .await
+        .unwrap();
+    let mut operator = Operator::open(&configuration, storage.clone())
+        .await
+        .unwrap();
+    let original_config = operator.config.clone();
+    let mut journal = record(operator.store(), request.operation_id).unwrap();
+    let original_journal = encoded(&journal).unwrap();
+    let target = journal.target_directory.clone();
+    let external_directory = root
+        .path()
+        .canonicalize()
+        .unwrap()
+        .join("kasumi/backups/changed-audit-choice");
+    let changed = TenantAuditPlacementConfig::External {
+        destination: AuditDestinationConfig::Filesystem {
+            directory: external_directory.clone(),
+        },
+    };
+    assert_eq!(
+        journal.audit_placement_binding,
+        original_config
+            .tenant_audit_placement(&request.tenant)
+            .unwrap()
+            .canonical_binding()
+            .unwrap()
+    );
+    assert!(!target.exists());
+    let original_rows = recovery_rows(operator.store());
+    operator
+        .state
+        .config
+        .tenant_audit_placements
+        .insert(request.tenant.clone(), changed.clone());
+    let error = operator
+        .target(&mut journal, TargetOpen::Materialize)
+        .await
+        .err()
+        .unwrap();
+    assert!(
+        format!("{error:#}").contains("local recovery audit placement binding differs"),
+        "{error:#}"
+    );
+    assert!(!target.exists());
+    assert!(!external_directory.exists());
+    assert_eq!(recovery_rows(operator.store()), original_rows);
+    // Changing both the mutable cursor and config still cannot replace the
+    // originally admitted immutable phase inputs.
+    journal.audit_placement_binding = changed.canonical_binding().unwrap();
+    let error = operator
+        .target(&mut journal, TargetOpen::Materialize)
+        .await
+        .err()
+        .unwrap();
+    assert!(
+        format!("{error:#}").contains("local recovery original phase binding differs"),
+        "{error:#}"
+    );
+    assert!(!target.exists());
+    assert!(!external_directory.exists());
+    assert_eq!(recovery_rows(operator.store()), original_rows);
+    private_files::replace(
+        &configuration,
+        &serde_json::to_vec_pretty(&operator.config).unwrap(),
+    )
+    .unwrap();
+    crate::startup_owner::finish(&mut operator).await.unwrap();
+    drop(operator);
+    for error in [
+        resume_with_storage(&configuration, request.operation_id, storage.clone())
+            .await
+            .unwrap_err(),
+        stop_with_storage(&configuration, request.operation_id, storage.clone())
+            .await
+            .unwrap_err(),
+    ] {
+        assert!(
+            format!("{error:#}").contains("local recovery audit placement binding differs"),
+            "{error:#}"
+        );
+    }
+    assert!(!target.exists());
+    assert!(!external_directory.exists());
+    private_files::replace(
+        &configuration,
+        &serde_json::to_vec_pretty(&original_config).unwrap(),
+    )
+    .unwrap();
+    let mut operator = Operator::open(&configuration, storage.clone())
+        .await
+        .unwrap();
+    assert_eq!(recovery_rows(operator.store()), original_rows);
+    let mut missing: serde_json::Value = serde_json::from_slice(&original_journal).unwrap();
+    missing
+        .as_object_mut()
+        .unwrap()
+        .remove("audit_placement_binding");
+    let mut null: serde_json::Value = serde_json::from_slice(&original_journal).unwrap();
+    null["audit_placement_binding"] = serde_json::Value::Null;
+    let mut old: Journal = serde_json::from_slice(&original_journal).unwrap();
+    old.format = 4;
+    for bytes in [
+        serde_json::to_vec(&missing).unwrap(),
+        serde_json::to_vec(&null).unwrap(),
+        encoded(&old).unwrap(),
+    ] {
+        operator
+            .store()
+            .write_batch(&[WriteOp::put(
+                OPERATIONS,
+                request.operation_id.as_bytes(),
+                bytes.clone(),
+            )])
+            .unwrap();
+        assert!(record(operator.store(), request.operation_id).is_err());
+        assert_eq!(
+            operator
+                .store()
+                .get(OPERATIONS, request.operation_id.as_bytes())
+                .unwrap()
+                .as_deref(),
+            Some(bytes.as_slice())
+        );
+        assert!(!target.exists());
+    }
+    operator
+        .store()
+        .write_batch(&[WriteOp::put(
+            OPERATIONS,
+            request.operation_id.as_bytes(),
+            original_journal,
+        )])
+        .unwrap();
+    journal = record(operator.store(), request.operation_id).unwrap();
+    operator.step(&mut journal).await.unwrap();
+    let original_cache = journal.archive_directory.clone().unwrap();
+    let materialized_rows = recovery_rows(operator.store());
+    operator
+        .state
+        .config
+        .tenant_audit_placements
+        .insert(request.tenant.clone(), changed);
+    let error = operator
+        .target(&mut journal, TargetOpen::Existing)
+        .await
+        .err()
+        .unwrap();
+    assert!(
+        format!("{error:#}").contains("local recovery audit placement binding differs"),
+        "{error:#}"
+    );
+    assert_eq!(journal.archive_directory, Some(original_cache.clone()));
+    assert_eq!(
+        private_files::directory_identity(&target.join("tenant-audit-archives")).unwrap(),
+        original_cache
+    );
+    assert_eq!(recovery_rows(operator.store()), materialized_rows);
+    assert!(!external_directory.exists());
+    crate::startup_owner::finish(&mut operator).await.unwrap();
+    drop(operator);
+    assert_eq!(
+        stop_with_storage(&configuration, request.operation_id, storage)
+            .await
+            .unwrap()
+            .phase,
+        LocalRecoveryPhase::Stopped
+    );
+}
+
+#[test]
 fn respelled_local_recovery_journal_is_refused_with_its_generation_untouched() {
     std::thread::Builder::new()
         .name("local recovery exact journal fixture".into())
@@ -1626,7 +1822,7 @@ async fn respelled_local_recovery_journal_is_refused_with_its_generation_untouch
             .write_batch(&[WriteOp::put(
                 OPERATIONS,
                 operation.as_bytes(),
-                current.clone(),
+                current.as_bytes(),
             )])
             .unwrap();
         crate::startup_owner::finish(&mut operator).await.unwrap();

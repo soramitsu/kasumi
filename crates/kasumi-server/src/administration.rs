@@ -228,7 +228,10 @@ mod observability;
 mod topology;
 use command_jobs::CommandJobs;
 #[path = "original_serving_runtime.rs"]
-mod original_serving_runtime;
+pub(crate) mod original_serving_runtime;
+pub use original_serving_runtime::{
+    OriginalRecoveries, OriginalRecoveryObservation, OriginalRecoveryParticipants,
+};
 #[path = "administration_readiness.rs"]
 mod readiness;
 use configured_tenant_enrollment::ProvisionSelection;
@@ -268,7 +271,7 @@ impl ManagementGate {
 pub struct Administration {
     pub(crate) config: RuntimeConfig,
     authority_trusts: BTreeMap<String, kasumi_serving::AuthorityTrust>,
-    node: Arc<NodeStore>,
+    node: NodeStore,
     registry: DatabaseRegistry,
     control: Arc<Database>,
     control_context: RequestContext,
@@ -292,6 +295,7 @@ pub struct Administration {
     // Retain observed failures if a caller cancels while another owner drains.
     shutdown_failure: tokio::sync::Mutex<DrainReport>,
     command_jobs: CommandJobs,
+    original_recoveries: original_serving_runtime::OriginalRecoveries,
     admission: Arc<kasumi_engine::admission::NodeAdmission>,
     credential: crate::serving_runtime::CredentialSource,
     pub(crate) readiness: crate::readiness::Coverage,
@@ -400,6 +404,11 @@ impl ManagementResponseFence<'_> {
 }
 
 impl Administration {
+    #[cfg(test)]
+    pub(crate) fn test_original_recoveries(&self) -> &original_serving_runtime::OriginalRecoveries {
+        &self.original_recoveries
+    }
+
     pub(crate) fn security_audit_workspace(
         &self,
     ) -> kasumi_types::Result<kasumi_engine::admission::Reservation> {
@@ -524,7 +533,7 @@ impl Administration {
     pub(crate) fn new(
         config: RuntimeConfig,
         authority_trusts: BTreeMap<String, kasumi_serving::AuthorityTrust>,
-        node: Arc<NodeStore>,
+        node: NodeStore,
         registry: DatabaseRegistry,
         control: Arc<Database>,
         audit: Arc<SecurityAudit>,
@@ -533,6 +542,7 @@ impl Administration {
         destinations: BTreeMap<String, Arc<dyn BackupDestination>>,
         admission: Arc<kasumi_engine::admission::NodeAdmission>,
         credential: crate::serving_runtime::CredentialSource,
+        original_recoveries: original_serving_runtime::OriginalRecoveries,
     ) -> Result<Arc<Self>> {
         if !Arc::ptr_eq(&admission, audit.admission()) {
             return Err(kasumi_types::Error::new(
@@ -580,6 +590,7 @@ impl Administration {
             enrollment_closed: std::sync::Mutex::new(false),
             shutdown_failure: tokio::sync::Mutex::new(DrainReport::default()),
             command_jobs,
+            original_recoveries,
             admission,
             credential,
             readiness,
@@ -624,7 +635,7 @@ impl Administration {
         Ok(selected)
     }
     #[cfg(test)]
-    pub(crate) fn node_for_enrollment_test(&self) -> Arc<NodeStore> {
+    pub(crate) fn node_for_enrollment_test(&self) -> NodeStore {
         self.node.clone()
     }
     #[cfg(test)]
@@ -636,6 +647,12 @@ impl Administration {
         self.generation(tenant, incarnation)
             .expect("fixture generation exists")
             .database
+    }
+    #[cfg(test)]
+    pub(crate) async fn test_hold_management(
+        &self,
+    ) -> kasumi_types::Result<tokio::sync::OwnedMutexGuard<()>> {
+        self.gate.enter().await
     }
     fn generation(&self, tenant: &str, incarnation: &str) -> Result<ManagedTenant> {
         self.generations
@@ -842,9 +859,22 @@ impl Administration {
                 let destination = self.destination(&destination)?;
                 self.event(context, SecurityEventKind::Backup, SecurityOutcome::Started)
                     .await?;
-                let result = source
-                    .database
-                    .backup(context.clone(), destination, session_id)
+                let constructor_seat = self
+                    .original_recoveries
+                    .rpc_claim(&context.tenant)
+                    .await
+                    .map_err(|refusal| {
+                        kasumi_types::Error::new(
+                            kasumi_types::ErrorCode::Unavailable,
+                            refusal.to_string(),
+                        )
+                    })?;
+                let result = constructor_seat
+                    .run_snapshot(
+                        source
+                            .database
+                            .backup(context.clone(), destination, session_id),
+                    )
                     .await;
                 self.event(
                     context,
@@ -856,7 +886,9 @@ impl Administration {
                     },
                 )
                 .await?;
-                Ok(serde_json::json!({"backup_id":result?}))
+                Ok(
+                    serde_json::json!({"backup_id":result.map_err(crate::administration::original_serving_runtime::RpcConstructorFailure::foreign_error)?}),
+                )
             }
             ManagementCommand::RotateDataKey | ManagementCommand::RewrapKeys => {
                 self.authorized(source, context, true).await?;
@@ -1389,14 +1421,17 @@ impl Administration {
             if let Some(network) = &self.cluster {
                 network.unregister_group(&group)?;
             }
-            let route = match crate::runtime::open_retired_source(
-                &self.config,
-                store,
-                self.cluster.as_ref(),
-                self.audit.clone(),
-                self.admission.clone(),
-            )
-            .await
+            let index = OriginalRecoveries::configured_index(&self.config, &tenant)?;
+            let mut recovery_seat = self.original_recoveries.claim(index).await;
+            let route = match recovery_seat
+                .run_retired(crate::runtime::open_retired_source(
+                    &self.config,
+                    store,
+                    self.cluster.as_ref(),
+                    self.audit.clone(),
+                    self.admission.clone(),
+                ))
+                .await
             {
                 Ok(custody) => {
                     self.custody_generations
@@ -1438,9 +1473,15 @@ impl Administration {
             {
                 // Only fixed classes leave this boundary; the error chain may
                 // carry provider, path or transport detail and is not logged.
-                let recover_stage = error
-                    .downcast_ref::<original_serving_runtime::RecoverStage>()
-                    .map_or("unclassified", |stage| stage.class());
+                let recover_stage = self
+                    .original_recoveries
+                    .with_failure(error.index, |original| {
+                        original
+                            .source_stage()
+                            .map_or("unclassified", |stage| stage.class())
+                    })
+                    .await
+                    .unwrap_or(error.stage);
                 let closure_cause = self.record_failed_admission(tenant, &route.incarnation);
                 tracing::warn!(
                     tenant,
@@ -1520,7 +1561,17 @@ impl Administration {
         }
         // No management execution or reconciliation can still be using an
         // original generation when its Raft/database owner starts closing.
+        self.original_recoveries.seal();
         let _management = self.gate.drain().await;
+        if self.original_recoveries.retained().await {
+            // The exact original and any independent cleanup observations stay
+            // in the prepaid manager inventory. This is a foreign marker only.
+            retained = Some(DrainFailure::retained(report.record(
+                "original tenant recovery",
+                0,
+                anyhow::anyhow!("original tenant recovery retains native or opaque custody"),
+            )));
+        }
         let generations = self
             .generations
             .read()
@@ -1592,7 +1643,12 @@ impl Administration {
             }
         }
         if let Err(error) = self.node.drain_initializers().await {
-            report.record("administration node initializers", 0, error);
+            let issue = report.record(
+                "administration node initializers",
+                0,
+                error.observation().into(),
+            );
+            retained = Some(kasumi_types::drain::DrainFailure::retained(issue));
         }
         report.outcome(retained)
     }

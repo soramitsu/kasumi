@@ -4,23 +4,23 @@ use super::*;
 use crate::core::SourceReadContext;
 use crate::snapshot_pins::{HistoryPinRight, PreparedProtectedPin, SnapshotPins};
 
-pub(crate) struct SourceDatabase(Arc<DatabaseInner>);
+pub(crate) struct SourceDatabase(NativeOwnedArc<DatabaseInner>);
 impl SourceDatabase {
     pub(crate) fn new(database: &Database) -> Self {
         Self(database.inner.clone())
     }
     pub(crate) fn belongs_to(&self, database: &Database) -> bool {
-        Arc::ptr_eq(&self.0, &database.inner)
+        NativeOwnedArc::ptr_eq(&self.0, &database.inner)
     }
     pub(crate) fn same_owner(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.0, &other.0)
+        NativeOwnedArc::ptr_eq(&self.0, &other.0)
     }
     pub(crate) fn check_local(&self) -> Result<(), CoreError> {
         if self.0.core.is_fenced() {
-            return Err(CoreError::OwnerFailed);
+            return Err(CoreError::new(crate::CoreErrorCause::OwnerFailed));
         }
         if self.0.closing.load(Ordering::Acquire) {
-            return Err(CoreError::Closed);
+            return Err(CoreError::new(crate::CoreErrorCause::Closed));
         }
         Ok(())
     }
@@ -65,7 +65,9 @@ impl SourceBacking {
     }
     pub(crate) fn prepare(&mut self, context: &SourceReadContext) -> Result<(), CoreError> {
         if self.handle.is_some() || self.charge.0.is_some() {
-            return Err(CoreError::InvalidInput("source backing already prepared"));
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
+                "source backing already prepared",
+            )));
         }
         context.reserve_into(
             &mut self.charge.0,
@@ -80,7 +82,9 @@ impl SourceBacking {
         funding: &mut crate::NativeSourceFunding,
     ) -> Result<(), CoreError> {
         if self.handle.is_some() || self.charge.0.is_some() {
-            return Err(CoreError::InvalidInput("source backing already prepared"));
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
+                "source backing already prepared",
+            )));
         }
         funding.reserve_backing_into(context, &mut self.charge.0)?;
         self.allocate_empty();
@@ -100,7 +104,9 @@ impl SourceBacking {
         let backing = self
             .handle
             .as_ref()
-            .ok_or(CoreError::InvalidInput("source backing absent"))?
+            .ok_or(CoreError::new(crate::CoreErrorCause::InvalidInput(
+                "source backing absent",
+            )))?
             .0
             .as_ref()
             .expect("live backing");

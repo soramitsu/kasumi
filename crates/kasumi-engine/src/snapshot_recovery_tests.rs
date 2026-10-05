@@ -808,7 +808,7 @@ fn completion_history_stream_is_resident_and_counts_in_snapshot_admission_and_qu
         .insert(key.clone(), history.clone());
     let source = image(disk, &state);
     let summary = inspect(&mut source.reader()).unwrap();
-    let verified = visit(&mut source.reader(), |_, _| Ok(())).unwrap();
+    let verified = visit::<anyhow::Error>(&mut source.reader(), |_, _| Ok(())).unwrap();
     assert_eq!(summary, verified);
     assert_eq!(summary.kinds[23].records, 1);
     assert_eq!(summary.kinds[23].framed_bytes, framed_bytes);

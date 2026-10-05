@@ -9,7 +9,7 @@ use kasumi_types::{Limits, Policy};
 use std::path::Path;
 
 struct Fixture {
-    node: Arc<NodeStore>,
+    node: NodeStore,
     stores: Arc<TenantStorageSet>,
     audit: Arc<SecurityAudit>,
     admission: Arc<NodeAdmission>,
@@ -44,7 +44,8 @@ impl Fixture {
             NodeDisk::open_fixture(disk, memory.clone(), &CensusCancellation::default())
         })?;
         let storage = persistent.native_storage_config();
-        let node = NodeStore::create_new(path, NODE_STORE_ID, persistent, scratch, storage)?;
+        let node = NodeStore::create_new(path, NODE_STORE_ID, persistent, scratch, storage)
+            .unwrap_or_else(|original| std::panic::panic_any(original));
         let audit_store = TenantStore::initialize_catalog_fixture(
             node.clone(),
             crate::SECURITY_TENANT.into(),

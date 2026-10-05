@@ -1,3 +1,4 @@
+use crate::test_utils::FixtureResult;
 use crate::{
     SnapshotBufferOwner, startup_owner::StartedGroup, startup_test_utils::LocalStartupGate,
 };
@@ -14,6 +15,21 @@ use std::{
     time::Duration,
 };
 const WAIT: Duration = Duration::from_secs(10);
+
+fn paid_snapshot_owner(
+    memory: &Arc<kasumi_store::test_utils::TestDiskMemory>,
+) -> Result<Arc<SnapshotBufferOwner>> {
+    use kasumi_store::{DiskMemoryLease, NodeDiskMemoryAdmission};
+    let bytes = SnapshotBufferOwner::required_bytes(1)?
+        .checked_add(kasumi_types::SharedBudgetCharge::required_bytes::<
+            DiskMemoryLease,
+        >()?)
+        .ok_or_else(|| anyhow::anyhow!("snapshot fixture root quote overflow"))?;
+    SnapshotBufferOwner::new(
+        1,
+        kasumi_types::SharedBudgetCharge::new(memory.clone().reserve_installed(bytes)?),
+    )
+}
 
 #[derive(Debug)]
 struct OriginalFailure(u64);
@@ -70,27 +86,27 @@ async fn pending<F: Future>(future: std::pin::Pin<&mut F>) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn cancelled_startup_and_drain_keep_actual_child_panic_and_charge() -> Result<()> {
-    let charge = Arc::new(());
-    let owner = SnapshotBufferOwner::new(1, charge.clone())?;
+async fn cancelled_startup_and_drain_keep_actual_child_panic_and_charge() -> FixtureResult<()> {
+    let (charge, charge_retired) = crate::test_utils::observed_budget_charge();
+    let owner = SnapshotBufferOwner::new(1, charge)?;
     let weak = Arc::downgrade(&owner);
     let (entered, ready) = tokio::sync::oneshot::channel();
     let (release, paused) = mpsc::channel();
-    let mut startup = Box::pin(owner.start(async move {
+    let mut startup = Box::pin(owner.start::<_, anyhow::Error>(async move {
         tokio::task::spawn_blocking(move || {
             let _ = entered.send(tokio::task::id());
             paused.recv_timeout(WAIT).unwrap();
             std::panic::panic_any(OriginalFailure(47));
         })
         .await?;
-        anyhow::bail!("unreachable after child panic")
+        Err(anyhow::anyhow!("unreachable after child panic"))
     }));
     pending(startup.as_mut()).await;
     let task_id = tokio::time::timeout(WAIT, ready).await??;
     drop(startup);
     drop(owner);
     let owner = weak.upgrade().expect("registry retains abandoned startup");
-    assert!(Arc::strong_count(&charge) > 1);
+    assert!(!charge_retired.load(std::sync::atomic::Ordering::Acquire));
     let mut first = Box::pin(owner.drain_startup());
     pending(first.as_mut()).await;
     drop(first);
@@ -113,17 +129,17 @@ async fn cancelled_startup_and_drain_keep_actual_child_panic_and_charge() -> Res
     ));
     drop(owner);
     assert!(weak.upgrade().is_none());
-    assert_eq!(Arc::strong_count(&charge), 1);
+    assert!(charge_retired.load(std::sync::atomic::Ordering::Acquire));
     Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn cancelled_unclaimed_group_cleanup_keeps_same_actual_child() -> Result<()> {
-    let owner = SnapshotBufferOwner::new(1, Arc::new(()))?;
+async fn cancelled_unclaimed_group_cleanup_keeps_same_actual_child() -> FixtureResult<()> {
+    let owner = SnapshotBufferOwner::new(1, kasumi_types::SharedBudgetCharge::new(()))?;
     let (return_group, group_ready) = tokio::sync::oneshot::channel();
     let (entered, ready) = tokio::sync::oneshot::channel();
     let (release, paused) = mpsc::channel();
-    let mut startup = Box::pin(owner.start(async move {
+    let mut startup = Box::pin(owner.start::<_, anyhow::Error>(async move {
         let child = tokio::task::spawn_blocking(move || {
             let _ = entered.send(tokio::task::id());
             paused.recv_timeout(WAIT).unwrap();
@@ -167,13 +183,13 @@ async fn cancelled_unclaimed_group_cleanup_keeps_same_actual_child() -> Result<(
 }
 
 #[tokio::test]
-async fn delivered_startup_is_not_closed_by_node_startup_census() -> Result<()> {
+async fn delivered_startup_is_not_closed_by_node_startup_census() -> FixtureResult<()> {
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
     let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
-    let owner = SnapshotBufferOwner::new(1, Arc::new(()))?;
+    let owner = SnapshotBufferOwner::new(1, kasumi_types::SharedBudgetCharge::new(()))?;
     let started = owner
-        .start(async {
+        .start::<_, anyhow::Error>(async {
             Ok(StartedGroup::Fixture(FixtureGroup {
                 child: tokio::spawn(async {}),
                 report: DrainReport::default(),
@@ -197,18 +213,18 @@ async fn delivered_startup_is_not_closed_by_node_startup_census() -> Result<()> 
 }
 
 #[tokio::test]
-async fn oversized_startup_is_rejected_before_polling_or_global_publication() -> Result<()> {
-    let owner = SnapshotBufferOwner::new(1, Arc::new(()))?;
+async fn oversized_startup_is_rejected_before_polling_or_global_publication() -> FixtureResult<()> {
+    let owner = SnapshotBufferOwner::new(1, kasumi_types::SharedBudgetCharge::new(()))?;
     let weak = Arc::downgrade(&owner);
     let polled = Arc::new(AtomicBool::new(false));
     let observed = polled.clone();
     let payload = [0u8; crate::startup_owner::STARTUP_WORKSPACE as usize + 1];
     let result = owner
-        .start(async move {
+        .start::<_, anyhow::Error>(async move {
             observed.store(true, Ordering::Release);
             std::future::pending::<()>().await;
             std::hint::black_box(payload);
-            anyhow::bail!("unreachable")
+            Err(anyhow::anyhow!("unreachable"))
         })
         .await;
     assert!(result.is_err());
@@ -226,34 +242,47 @@ impl crate::StateMachineBackend for Backend {
         _: &crate::AppliedEntryContext,
         input: crate::AppliedInput<'_>,
         publisher: &mut dyn crate::ApplyPublisher,
-    ) -> Result<()> {
+    ) -> std::result::Result<(), kasumi_store::ScratchOperationFailure> {
         let crate::AppliedInput::Command(bytes) = input else {
-            publisher.commit(crate::AppliedResponse::application(Vec::new()), &[])?;
+            publisher
+                .commit(crate::AppliedResponse::application(Vec::new()), &[])
+                .map_err(anyhow::Error::from)?;
             return Ok(());
         };
-        publisher.commit(crate::AppliedResponse::application(bytes.to_vec()), &[])?;
+        publisher
+            .commit(crate::AppliedResponse::application(bytes.to_vec()), &[])
+            .map_err(anyhow::Error::from)?;
         Ok(())
     }
-    fn capture_snapshot(&self) -> Result<crate::CapturedSnapshot> {
+    fn capture_snapshot(
+        &self,
+    ) -> std::result::Result<crate::CapturedSnapshot, kasumi_store::ScratchOperationFailure> {
         Ok(crate::CapturedSnapshot::new(None, |_| Ok(())))
     }
     fn validate_snapshot(
         &self,
         _: &mut dyn std::io::Read,
-    ) -> Result<Option<crate::RetiredSnapshotState>> {
+    ) -> std::result::Result<
+        Option<crate::RetiredSnapshotState>,
+        kasumi_store::ScratchOperationFailure,
+    > {
         Ok(None)
     }
     fn prepare_restore<'a>(
         &'a self,
         _: &crate::SnapshotRestoreContext,
         _: &mut dyn std::io::Read,
-    ) -> Result<Box<dyn crate::PreparedStateMachineRestore + 'a>> {
-        anyhow::bail!("empty startup fixture has no snapshot")
+    ) -> std::result::Result<
+        Box<dyn crate::PreparedStateMachineRestore + 'a>,
+        kasumi_store::ScratchOperationFailure,
+    > {
+        Err(anyhow::anyhow!("empty startup fixture has no snapshot").into())
     }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn cancelled_local_initialization_drains_real_group_and_breaks_router_cycle() -> Result<()> {
+async fn cancelled_local_initialization_drains_real_group_and_breaks_router_cycle()
+-> FixtureResult<()> {
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
     let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
@@ -352,12 +381,12 @@ async fn cancelled_local_initialization_drains_real_group_and_breaks_router_cycl
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn startup_census_closes_delivery_before_waiting_for_active_caller() -> Result<()> {
-    let owner = SnapshotBufferOwner::new(1, Arc::new(()))?;
+async fn startup_census_closes_delivery_before_waiting_for_active_caller() -> FixtureResult<()> {
+    let owner = SnapshotBufferOwner::new(1, kasumi_types::SharedBudgetCharge::new(()))?;
     let (return_group, group_ready) = tokio::sync::oneshot::channel();
     let (entered, ready) = tokio::sync::oneshot::channel();
     let (release, paused) = mpsc::channel();
-    let mut startup = Box::pin(owner.start(async move {
+    let mut startup = Box::pin(owner.start::<_, anyhow::Error>(async move {
         let child = tokio::task::spawn_blocking(move || {
             let _ = entered.send(tokio::task::id());
             paused.recv_timeout(WAIT).unwrap();
@@ -494,13 +523,17 @@ async fn assert_original_poll_panic_retained(
 }
 
 #[tokio::test]
-async fn direct_claim_poll_panic_keeps_original_payload_future_and_registry() -> Result<()> {
-    let charge = Arc::new(());
-    let owner = SnapshotBufferOwner::new(1, charge.clone())?;
+async fn direct_claim_poll_panic_keeps_original_payload_future_and_registry() -> FixtureResult<()> {
+    let (charge, charge_retired) = crate::test_utils::observed_budget_charge();
+    let owner = SnapshotBufferOwner::new(1, charge)?;
     let weak = Arc::downgrade(&owner);
-    let (state, future) = direct_poll_future::<Result<StartedGroup>>(true);
+    let (state, future) =
+        direct_poll_future::<Result<StartedGroup, kasumi_store::ScratchOperationFailure>>(true);
     let failure = match owner.start(future).await {
-        Err(error) => error.downcast::<kasumi_types::drain::DrainFailure>()?,
+        Err(kasumi_store::ScratchOperationFailure::Operation(error)) => {
+            error.downcast::<kasumi_types::drain::DrainFailure>()?
+        }
+        Err(original) => return Err(original.into()),
         Ok(_) => panic!("direct poll panic cannot deliver a group"),
     };
     assert_original_poll_panic_retained(&owner, &state, failure).await;
@@ -509,14 +542,15 @@ async fn direct_claim_poll_panic_keeps_original_payload_future_and_registry() ->
         weak.upgrade().is_some(),
         "unresolved startup lost registry custody"
     );
-    assert!(Arc::strong_count(&charge) > 1);
+    assert!(!charge_retired.load(std::sync::atomic::Ordering::Acquire));
     Ok(())
 }
 
 #[tokio::test]
-async fn direct_abandoned_opening_poll_panic_is_never_repolled_by_drain() -> Result<()> {
-    let owner = SnapshotBufferOwner::new(1, Arc::new(()))?;
-    let (state, future) = direct_poll_future::<Result<StartedGroup>>(false);
+async fn direct_abandoned_opening_poll_panic_is_never_repolled_by_drain() -> FixtureResult<()> {
+    let owner = SnapshotBufferOwner::new(1, kasumi_types::SharedBudgetCharge::new(()))?;
+    let (state, future) =
+        direct_poll_future::<Result<StartedGroup, kasumi_store::ScratchOperationFailure>>(false);
     let mut startup = Box::pin(owner.start(future));
     pending(startup.as_mut()).await;
     drop(startup);
@@ -527,8 +561,9 @@ async fn direct_abandoned_opening_poll_panic_is_never_repolled_by_drain() -> Res
 }
 
 #[tokio::test]
-async fn direct_cleanup_poll_panic_keeps_original_payload_and_exact_cleanup_future() -> Result<()> {
-    let owner = SnapshotBufferOwner::new(1, Arc::new(()))?;
+async fn direct_cleanup_poll_panic_keeps_original_payload_and_exact_cleanup_future()
+-> FixtureResult<()> {
+    let owner = SnapshotBufferOwner::new(1, kasumi_types::SharedBudgetCharge::new(()))?;
     let (state, future) = direct_poll_future::<kasumi_types::drain::DrainResult>(true);
     owner.install_cleanup_fixture(future).await;
     let failure = owner.drain_startup().await.unwrap_err();
@@ -537,9 +572,15 @@ async fn direct_cleanup_poll_panic_keeps_original_payload_and_exact_cleanup_futu
 }
 
 #[tokio::test]
-async fn cleanup_retained_result_cannot_be_promoted_to_complete_or_release_custody() -> Result<()> {
-    let owner = SnapshotBufferOwner::new(1, Arc::new(()))?;
+async fn cleanup_retained_result_cannot_be_promoted_to_complete_or_release_custody()
+-> FixtureResult<()> {
+    let owner = SnapshotBufferOwner::new(1, kasumi_types::SharedBudgetCharge::new(()))?;
     let weak = Arc::downgrade(&owner);
+    let guard = owner.scratch_failure_guard()?;
+    let earlier = owner.drain_buffers().await.unwrap_err();
+    assert_eq!(earlier.completion(), DrainCompletion::Retained);
+    let buffer_issue = earlier.issues()[0].clone();
+    assert_eq!(guard.capture_result(Ok(41)).unwrap(), 41);
     let mut report = DrainReport::default();
     let issue = report.record("unresolved startup fixture", 0, OriginalFailure(149).into());
     let first = kasumi_types::drain::DrainFailure::retained(issue.clone());
@@ -555,6 +596,12 @@ async fn cleanup_retained_result_cannot_be_promoted_to_complete_or_release_custo
                 .iter()
                 .any(|next| kasumi_types::drain::DrainIssueRef::ptr_eq(next, &issue))
         );
+        assert!(
+            failure
+                .issues()
+                .iter()
+                .any(|next| kasumi_types::drain::DrainIssueRef::ptr_eq(next, &buffer_issue))
+        );
     }
     assert_eq!(
         owner.drain().await.unwrap_err().completion(),
@@ -566,11 +613,11 @@ async fn cleanup_retained_result_cannot_be_promoted_to_complete_or_release_custo
 }
 
 #[tokio::test]
-async fn synchronous_enrollment_allows_census_before_the_claimant_is_polled() -> Result<()> {
-    let owner = SnapshotBufferOwner::new(1, Arc::new(()))?;
+async fn synchronous_enrollment_allows_census_before_the_claimant_is_polled() -> FixtureResult<()> {
+    let owner = SnapshotBufferOwner::new(1, kasumi_types::SharedBudgetCharge::new(()))?;
     let polled = Arc::new(AtomicBool::new(false));
     let observed = polled.clone();
-    let claimant = owner.start(async move {
+    let claimant = owner.start::<_, anyhow::Error>(async move {
         observed.store(true, Ordering::Release);
         Ok(StartedGroup::Fixture(FixtureGroup {
             child: tokio::spawn(async {}),
@@ -592,6 +639,8 @@ async fn synchronous_enrollment_allows_census_before_the_claimant_is_polled() ->
     };
     assert_eq!(
         error
+            .operation_error()
+            .expect("original startup diagnostic is an ordinary failure")
             .downcast_ref::<kasumi_types::drain::DrainFailure>()
             .unwrap()
             .completion(),
@@ -601,7 +650,7 @@ async fn synchronous_enrollment_allows_census_before_the_claimant_is_polled() ->
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn panicked_core_closes_group_access_and_drains_complete_for_reopen() -> Result<()> {
+async fn panicked_core_closes_group_access_and_drains_complete_for_reopen() -> FixtureResult<()> {
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
     let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
@@ -667,8 +716,8 @@ async fn panicked_core_closes_group_access_and_drains_complete_for_reopen() -> R
 }
 
 #[tokio::test]
-async fn retained_cleanup_keeps_exact_group_after_shutdown_future_returns() -> Result<()> {
-    let owner = SnapshotBufferOwner::new(1, Arc::new(()))?;
+async fn retained_cleanup_keeps_exact_group_after_shutdown_future_returns() -> FixtureResult<()> {
+    let owner = SnapshotBufferOwner::new(1, kasumi_types::SharedBudgetCharge::new(()))?;
     let weak_owner = Arc::downgrade(&owner);
     let group_drops = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let held = Arc::new(HeldGroup {
@@ -678,7 +727,7 @@ async fn retained_cleanup_keeps_exact_group_after_shutdown_future_returns() -> R
     let mut report = DrainReport::default();
     let issue = report.record("retained group fixture", 0, OriginalFailure(173).into());
     let retained = kasumi_types::drain::DrainFailure::retained(issue);
-    let claimant = owner.start(async move {
+    let claimant = owner.start::<_, anyhow::Error>(async move {
         Ok(StartedGroup::Fixture(FixtureGroup {
             child: tokio::spawn(async {}),
             report: DrainReport::default(),
@@ -704,8 +753,9 @@ async fn retained_cleanup_keeps_exact_group_after_shutdown_future_returns() -> R
 }
 
 #[tokio::test]
-async fn delivered_apply_failure_keeps_registry_and_fence_after_all_facades_drop() -> Result<()> {
-    let owner = SnapshotBufferOwner::new(1, Arc::new(()))?;
+async fn delivered_apply_failure_keeps_registry_and_fence_after_all_facades_drop()
+-> FixtureResult<()> {
+    let owner = SnapshotBufferOwner::new(1, kasumi_types::SharedBudgetCharge::new(()))?;
     let weak_owner = Arc::downgrade(&owner);
     let ownership = Arc::new(AtomicBool::new(true));
     let weak_fence = Arc::downgrade(&ownership);
@@ -716,7 +766,7 @@ async fn delivered_apply_failure_keeps_registry_and_fence_after_all_facades_drop
     let weak_identity = Arc::downgrade(&identity);
     owner.bind_fixture_group_ownership(ownership, identity)?;
     let group = owner
-        .start(async {
+        .start::<_, anyhow::Error>(async {
             Ok(StartedGroup::Fixture(FixtureGroup {
                 child: tokio::spawn(async {}),
                 report: DrainReport::default(),
@@ -756,8 +806,11 @@ async fn delivered_apply_failure_keeps_registry_and_fence_after_all_facades_drop
 }
 
 #[tokio::test]
-async fn positive_delivered_shutdown_releases_existing_registry_root_and_fence() -> Result<()> {
-    let owner = SnapshotBufferOwner::new(1, Arc::new(()))?;
+async fn positive_delivered_shutdown_releases_existing_registry_root_and_fence() -> FixtureResult<()>
+{
+    let memory = kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 32);
+    let baseline = memory.snapshot();
+    let owner = paid_snapshot_owner(&memory)?;
     let weak_owner = Arc::downgrade(&owner);
     let ownership = Arc::new(AtomicBool::new(true));
     let identity_drops = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -766,10 +819,23 @@ async fn positive_delivered_shutdown_releases_existing_registry_root_and_fence()
     });
     let weak_identity = Arc::downgrade(&identity);
     owner.bind_fixture_group_ownership(ownership.clone(), identity)?;
+    let admitted = memory.snapshot();
+    let guard = owner.scratch_failure_guard()?;
+    let (storage, lease) = crate::lifetime::StorageDrain::new();
+    let (entered, ready) = tokio::sync::oneshot::channel();
+    let (release, paused) = tokio::sync::oneshot::channel();
+    let child = tokio::spawn(async move {
+        entered.send(()).unwrap();
+        paused.await.unwrap();
+        assert_eq!(guard.capture_result(Ok(17)).unwrap(), 17);
+        // The actual final storage lease cannot wake shutdown before the
+        // admitted constructor claim has returned and released its seat.
+        drop(lease);
+    });
     let group = owner
-        .start(async {
-            Ok(StartedGroup::Fixture(FixtureGroup {
-                child: tokio::spawn(async {}),
+        .start(async move {
+            Ok::<_, kasumi_store::ScratchOperationFailure>(StartedGroup::Fixture(FixtureGroup {
+                child,
                 report: DrainReport::default(),
                 retained: None,
                 _held: None,
@@ -781,11 +847,42 @@ async fn positive_delivered_shutdown_releases_existing_registry_root_and_fence()
     let owner = weak_owner
         .upgrade()
         .expect("active delivered group retains admitted root");
+    tokio::time::timeout(WAIT, ready).await??;
+    let earlier = owner.drain_buffers().await.unwrap_err();
+    assert_eq!(earlier.completion(), DrainCompletion::Retained);
+    assert_eq!(earlier.issues().len(), 1);
+    let original_issue = earlier.issues()[0].clone();
+    assert!(!owner.apply_slot().completion().failed());
+    owner.release_group_ownership();
+    assert!(ownership.load(Ordering::Acquire));
+    assert!(weak_identity.upgrade().is_some());
+    assert_eq!(identity_drops.load(Ordering::Acquire), 0);
+    assert_eq!(memory.snapshot(), admitted);
+    let mut waiting = Box::pin(storage.wait());
+    pending(waiting.as_mut()).await;
+    drop(waiting);
+    release.send(()).unwrap();
     match group {
         StartedGroup::Fixture(mut group) => group.shutdown().await?,
         _ => unreachable!(),
     }
-    owner.drain_buffers().await?;
+    tokio::time::timeout(WAIT, storage.wait()).await?;
+    owner.drain_application_sources().await?;
+    let mut report = DrainReport::default();
+    report.merge(&earlier);
+    let unresolved = owner
+        .finish_failed_buffer_drain(Some(earlier), &mut report)
+        .await;
+    assert!(unresolved.is_none());
+    assert!(!owner.apply_slot().completion().failed());
+    let completed = report.complete().unwrap_err();
+    assert_eq!(completed.completion(), DrainCompletion::Complete);
+    assert!(
+        completed
+            .issues()
+            .iter()
+            .any(|issue| { kasumi_types::drain::DrainIssueRef::ptr_eq(issue, &original_issue) })
+    );
     assert!(ownership.load(Ordering::Acquire));
     owner.release_group_ownership();
     assert!(!ownership.load(Ordering::Acquire));
@@ -793,19 +890,197 @@ async fn positive_delivered_shutdown_releases_existing_registry_root_and_fence()
     assert_eq!(identity_drops.load(Ordering::Acquire), 1);
     drop(owner);
     assert!(weak_owner.upgrade().is_none());
+    assert_eq!(memory.snapshot().used_bytes, baseline.used_bytes);
+    assert_eq!(
+        memory.snapshot().live_reservations,
+        baseline.live_reservations
+    );
     Ok(())
 }
 
 #[tokio::test]
-async fn actual_group_cleanup_poll_panic_keeps_group_outside_unwinding_generator() -> Result<()> {
-    let owner = SnapshotBufferOwner::new(1, Arc::new(()))?;
+async fn delivered_shutdown_keeps_actual_initial_quote_original_after_worker_and_storage_join()
+-> FixtureResult<()> {
+    use kasumi_store::{
+        DiskMemoryLease, EncryptedTable, NativeConstructorProbe, NodeDiskMemoryAdmission,
+        ScratchDisk, ScratchOperationFailure, StorageCensusDisposition,
+    };
+    let memory = kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 32);
+    let directory = kasumi_store::test_utils::private_tempdir()?;
+    let disk = ScratchDisk::isolated_fixture(directory.path(), 16 << 20, memory.clone());
+    let owner = paid_snapshot_owner(&memory)?;
+    let weak_owner = Arc::downgrade(&owner);
+    let ownership = Arc::new(AtomicBool::new(true));
+    let identity_drops = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let identity = Arc::new(HeldGroup {
+        drops: identity_drops.clone(),
+    });
+    let weak_identity = Arc::downgrade(&identity);
+    owner.bind_fixture_group_ownership(ownership.clone(), identity)?;
+    let before_fill = memory.snapshot();
+    let mut fillers: [Option<DiskMemoryLease>; 32] = std::array::from_fn(|_| None);
+    for slot in fillers.iter_mut().take(32 - before_fill.live_reservations) {
+        *slot = Some(memory.clone().reserve_installed(0)?);
+    }
+    let full = memory.snapshot();
+    let disk_before = disk.snapshot();
+    let original_census = memory.storage_census().snapshot();
+    let provider: Arc<dyn NodeDiskMemoryAdmission> = memory.clone();
+    let mut receivers: [Option<NativeConstructorProbe>; 32] = std::array::from_fn(|_| None);
+    for receiver in receivers
+        .iter_mut()
+        .take(original_census.capacity - original_census.databases)
+    {
+        *receiver = Some(NativeConstructorProbe::prepare(provider.clone(), 0)?);
+    }
+    // Claim every actual prepaid receiver without entering its provider. The
+    // ensuing refusal belongs to the original source's admission slot because
+    // no native constructor receiver can yet take custody of that failure.
+    assert_eq!(memory.snapshot(), full);
+    let census_before = memory.storage_census().snapshot();
+    assert_eq!(census_before.databases, census_before.capacity);
+    let guard = owner.scratch_failure_guard()?;
+    let (storage, lease) = crate::lifetime::StorageDrain::new();
+    let (entered, ready) = tokio::sync::oneshot::channel();
+    let (release, paused) = tokio::sync::oneshot::channel();
+    let (original_address, address_ready) = tokio::sync::oneshot::channel();
+    let captured_disk = disk.clone();
+    let child = tokio::spawn(async move {
+        entered.send(()).unwrap();
+        paused.await.unwrap();
+        let original = EncryptedTable::new(
+            &captured_disk,
+            8 << 20,
+            kasumi_kv::CacheConfig { byte_limit: 0 },
+        )
+        .err()
+        .expect("actual first constructor quote must be refused");
+        assert_eq!(original.owner_id(), None);
+        let returned = guard
+            .capture_result::<()>(Err(original.into()))
+            .unwrap_err();
+        let ScratchOperationFailure::Creation(original) = returned else {
+            panic!("the actual original must remain a creation owner")
+        };
+        let address = original.with_diagnostic(|report| {
+            let report = report.unwrap();
+            let error = report.admission_error().unwrap();
+            assert_eq!(error.kind(), std::io::ErrorKind::WouldBlock);
+            assert!(report.constructor_report().is_none());
+            assert!(report.opening_error().is_none());
+            std::ptr::from_ref(error) as usize
+        });
+        original_address.send(address).unwrap();
+        drop(original);
+        drop(lease);
+    });
+    let group = owner
+        .start(async move { Ok::<_, ScratchOperationFailure>(source_custody_fixture_group(child)) })
+        .await?;
+    tokio::time::timeout(WAIT, ready).await??;
+    let earlier = owner.drain_buffers().await.unwrap_err();
+    assert_eq!(earlier.completion(), DrainCompletion::Retained);
+    let original_issue = earlier.issues()[0].clone();
+    release.send(()).unwrap();
+    match group {
+        StartedGroup::Fixture(mut group) => group.shutdown().await?,
+        _ => unreachable!(),
+    }
+    tokio::time::timeout(WAIT, storage.wait()).await?;
+    let address = tokio::time::timeout(WAIT, address_ready).await??;
+    owner.drain_application_sources().await?;
+    let after = memory.snapshot();
+    assert_eq!(after.attempts, full.attempts);
+    assert_eq!(after.used_bytes, full.used_bytes);
+    assert_eq!(after.live_reservations, full.live_reservations);
+    let disk_after = disk.snapshot();
+    assert_eq!(disk_after.live_files, disk_before.live_files);
+    assert_eq!(disk_after.charged_bytes, disk_before.charged_bytes);
+    assert_eq!(memory.storage_census().snapshot(), census_before);
+    let mut report = DrainReport::default();
+    report.merge(&earlier);
+    let unresolved = owner
+        .finish_failed_buffer_drain(Some(earlier), &mut report)
+        .await
+        .expect("an occupied original cannot retire with its worker");
+    assert_eq!(unresolved.completion(), DrainCompletion::Retained);
+    assert!(
+        unresolved
+            .issues()
+            .iter()
+            .any(|issue| { kasumi_types::drain::DrainIssueRef::ptr_eq(issue, &original_issue) })
+    );
+    for _ in 0..2 {
+        let original = owner.retained_scratch_admission(0).unwrap();
+        assert_eq!(original.owner_id(), None);
+        assert_eq!(
+            original.with_diagnostic(|report| {
+                std::ptr::from_ref(report.unwrap().admission_error().unwrap()) as usize
+            }),
+            address
+        );
+        assert_eq!(
+            original.retire().disposition(),
+            StorageCensusDisposition::Retained
+        );
+    }
+    owner.release_group_ownership();
+    assert!(ownership.load(Ordering::Acquire));
+    assert!(weak_identity.upgrade().is_some());
+    assert_eq!(identity_drops.load(Ordering::Acquire), 0);
+    let mut refused_receivers = 0;
+    for receiver in receivers.iter_mut().filter_map(Option::take) {
+        assert!(!receiver.run());
+        receiver.with_report(|report| {
+            assert!(report.capacity_refused());
+            assert_eq!(report.protocol(), None);
+            assert!(!report.has_lease());
+            assert!(!report.has_payload());
+            assert!(matches!(
+                report.provider(),
+                kasumi_kv::TerminalObservation::Returned(Err(original))
+                    if original.kind() == std::io::ErrorKind::OutOfMemory
+            ));
+            assert!(matches!(
+                report.construction(),
+                kasumi_kv::TerminalObservation::NotEntered
+            ));
+        });
+        assert_eq!(receiver.cleanup(), StorageCensusDisposition::Retired);
+        refused_receivers += 1;
+    }
+    assert_eq!(
+        refused_receivers,
+        census_before.capacity - original_census.databases
+    );
+    assert_eq!(
+        memory.snapshot().attempts,
+        full.attempts + refused_receivers as u64
+    );
+    assert_eq!(memory.storage_census().snapshot(), original_census);
+    drop(fillers);
+    assert_eq!(memory.snapshot().used_bytes, before_fill.used_bytes);
+    assert_eq!(
+        memory.snapshot().live_reservations,
+        before_fill.live_reservations
+    );
+    drop(owner);
+    assert!(weak_owner.upgrade().is_some());
+    assert!(ownership.load(Ordering::Acquire));
+    Ok(())
+}
+
+#[tokio::test]
+async fn actual_group_cleanup_poll_panic_keeps_group_outside_unwinding_generator()
+-> FixtureResult<()> {
+    let owner = SnapshotBufferOwner::new(1, kasumi_types::SharedBudgetCharge::new(()))?;
     let weak_owner = Arc::downgrade(&owner);
     let group_drops = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let held = Arc::new(HeldGroup {
         drops: group_drops.clone(),
     });
     let weak_group = Arc::downgrade(&held);
-    let claimant = owner.start(async move {
+    let claimant = owner.start::<_, anyhow::Error>(async move {
         Ok(StartedGroup::Fixture(FixtureGroup {
             child: tokio::spawn(async {}),
             report: DrainReport::default(),

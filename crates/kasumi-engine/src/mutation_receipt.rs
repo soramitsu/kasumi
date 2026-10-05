@@ -163,13 +163,15 @@ enum Source {
     Staged(Arc<EncryptedTable>),
 }
 impl Source {
-    fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
+    fn get(&self, key: &[u8]) -> Result<Option<crate::materialization_row::MaterializationRow>> {
         let result = match self {
-            Self::Durable(rows) => {
-                rows.store
-                    .get_bounded(&rows.binding.namespace(), key, MAX_ROW_BYTES)?
-            }
-            Self::Staged(table) => table.get(key)?,
+            Self::Durable(rows) => rows
+                .store
+                .get_bounded(&rows.binding.namespace(), key, MAX_ROW_BYTES)?
+                .map(crate::materialization_row::MaterializationRow::Stored),
+            Self::Staged(table) => table
+                .get(key)?
+                .map(crate::materialization_row::MaterializationRow::Staged),
         };
         ensure!(
             result
@@ -204,7 +206,7 @@ impl View {
     pub(crate) fn head(&self) -> &MutationReceiptHead {
         &self.head
     }
-    fn bytes(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
+    fn bytes(&self, key: &[u8]) -> Result<Option<crate::materialization_row::MaterializationRow>> {
         self.source
             .as_ref()
             .map(|s| s.get(key))
@@ -354,7 +356,7 @@ impl Builder {
         limit: u64,
         tenant: &str,
         origin: &str,
-    ) -> Result<Self> {
+    ) -> std::result::Result<Self, kasumi_store::ScratchOperationFailure> {
         #[cfg(any(test, feature = "test-utils"))]
         observe_staging("setup_entered", None, None);
         let table = EncryptedTable::new(disk, limit, disk.native_cache_config());
@@ -362,7 +364,9 @@ impl Builder {
         observe_staging("setup_returned", None, Some(table.is_ok()));
         Ok(Self {
             table: Arc::new(table?),
-            head: MutationReceiptHead::empty(tenant, origin)?,
+            head: MutationReceiptHead::empty(tenant, origin).map_err(|original| {
+                kasumi_store::ScratchOperationFailure::Operation(original.into())
+            })?,
         })
     }
     pub(crate) fn push(&mut self, row: &Row, state: &TenantState) -> Result<()> {
@@ -717,14 +721,18 @@ impl View {
         &self,
         disk: &Arc<ScratchDisk>,
         state: &TenantState,
-    ) -> Result<Self> {
+    ) -> std::result::Result<Self, kasumi_store::ScratchOperationFailure> {
         if self.source.is_some() {
             return Ok(self.clone());
         }
-        ensure!(self.head.count == 0, "fixture receipt prefix has no owner");
+        kasumi_store::ScratchOperationFailure::ordinary(|| {
+            ensure!(self.head.count == 0, "fixture receipt prefix has no owner");
+            Ok(())
+        })?;
         let table = Arc::new(EncryptedTable::new(
             disk,
-            scratch_limit(state.limits.max_mutation_receipt_bytes)?,
+            scratch_limit(state.limits.max_mutation_receipt_bytes)
+                .map_err(kasumi_store::ScratchOperationFailure::Operation)?,
             disk.native_cache_config(),
         )?);
         Ok(Self {

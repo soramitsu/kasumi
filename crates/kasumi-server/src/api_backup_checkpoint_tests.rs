@@ -43,7 +43,11 @@ async fn native_backup_proof_is_admin_only_configured_and_verified_through_secur
         .db
         .install_archive_destination("approved".into(), destination)
         .unwrap();
-    let admin = NativeAdmin::new(fixture.registry.clone(), fixture.auth.clone());
+    let admin = NativeAdmin::new(
+        fixture.registry.clone(),
+        fixture.auth.clone(),
+        fixture.failures.clone(),
+    );
     let token = fixture.token("person", "tenant-a", "kasumi:admin");
     let read_only = fixture.token("person", "tenant-a", "kasumi:read");
     let wire = || proto::CreateBackupCheckpointRequest {
@@ -561,9 +565,9 @@ async fn native_backup_proof_is_admin_only_configured_and_verified_through_secur
 }
 #[tokio::test]
 async fn retirement_pool_lost_committed_reply_never_dispatches_to_second_installed_route() {
+    use http_body_util::BodyExt;
     use kasumi_client::{KasumiClientConfig, KasumiRetirementPool};
     use kasumi_transport::{ClientAuthentication, TlsIdentity};
-    use http_body_util::BodyExt;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     let fixture = Fixture::new().await;
@@ -636,7 +640,12 @@ async fn retirement_pool_lost_committed_reply_never_dispatches_to_second_install
     let first = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let first_endpoint = format!("https://localhost:{}", first.local_addr().unwrap().port());
     let first_router = tonic::service::Routes::new(
-        NativeAdmin::new(fixture.registry.clone(), fixture.auth.clone()).service(),
+        NativeAdmin::new(
+            fixture.registry.clone(),
+            fixture.auth.clone(),
+            fixture.failures.clone(),
+        )
+        .service(),
     )
     .into_axum_router()
     .layer(axum::middleware::from_fn({
@@ -701,7 +710,10 @@ async fn retirement_pool_lost_committed_reply_never_dispatches_to_second_install
                 assert_eq!(receipt.retirement_id, reference.retirement_id);
                 assert_eq!(receipt.request_digest, reference.request_digest);
                 assert_eq!(receipt.checkpoint, expected_retirement.checkpoint);
-                assert_eq!(receipt.target_incarnation, expected_retirement.target_incarnation);
+                assert_eq!(
+                    receipt.target_incarnation,
+                    expected_retirement.target_incarnation
+                );
                 assert!(receipt.admitted_at_ms <= expected_retirement.not_after_ms);
                 *successful_reply.lock().unwrap() = Some(receipt);
                 consumed.store(true, Ordering::SeqCst);
@@ -717,7 +729,12 @@ async fn retirement_pool_lost_committed_reply_never_dispatches_to_second_install
     let second = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let second_endpoint = format!("https://localhost:{}", second.local_addr().unwrap().port());
     let second_router = tonic::service::Routes::new(
-        NativeAdmin::new(fixture.registry.clone(), fixture.auth.clone()).service(),
+        NativeAdmin::new(
+            fixture.registry.clone(),
+            fixture.auth.clone(),
+            fixture.failures.clone(),
+        )
+        .service(),
     )
     .into_axum_router()
     .layer(axum::middleware::from_fn({
@@ -913,7 +930,12 @@ async fn retirement_pool_lost_abort_reply_never_dispatches_to_second_installed_r
     let first = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let first_endpoint = format!("https://localhost:{}", first.local_addr().unwrap().port());
     let first_router = tonic::service::Routes::new(
-        NativeAdmin::new(fixture.registry.clone(), fixture.auth.clone()).service(),
+        NativeAdmin::new(
+            fixture.registry.clone(),
+            fixture.auth.clone(),
+            fixture.failures.clone(),
+        )
+        .service(),
     )
     .into_axum_router()
     .layer(axum::middleware::from_fn({
@@ -936,9 +958,7 @@ async fn retirement_pool_lost_abort_reply_never_dispatches_to_second_installed_r
                 let path = request.uri().path();
                 if path == "/kasumi.v1.KasumiAdmin/RetirementStatus" {
                     reads.fetch_add(1, Ordering::SeqCst);
-                    if blocked.load(Ordering::SeqCst)
-                        || unavailable.swap(false, Ordering::SeqCst)
-                    {
+                    if blocked.load(Ordering::SeqCst) || unavailable.swap(false, Ordering::SeqCst) {
                         return axum::http::Response::builder()
                             .status(200)
                             .header("content-type", "application/grpc")
@@ -1002,7 +1022,12 @@ async fn retirement_pool_lost_abort_reply_never_dispatches_to_second_installed_r
     let second = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let second_endpoint = format!("https://localhost:{}", second.local_addr().unwrap().port());
     let second_router = tonic::service::Routes::new(
-        NativeAdmin::new(fixture.registry.clone(), fixture.auth.clone()).service(),
+        NativeAdmin::new(
+            fixture.registry.clone(),
+            fixture.auth.clone(),
+            fixture.failures.clone(),
+        )
+        .service(),
     )
     .into_axum_router()
     .layer(axum::middleware::from_fn({
@@ -1072,10 +1097,7 @@ async fn retirement_pool_lost_abort_reply_never_dispatches_to_second_installed_r
         .strip_prefix("Bearer ")
         .unwrap()
         .to_owned();
-    let endpoints = BTreeMap::from([
-        (1, config(first_endpoint)),
-        (2, config(second_endpoint)),
-    ]);
+    let endpoints = BTreeMap::from([(1, config(first_endpoint)), (2, config(second_endpoint))]);
     let new_pool = || {
         let bearer = bearer.clone();
         KasumiRetirementPool::new(

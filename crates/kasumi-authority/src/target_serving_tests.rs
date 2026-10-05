@@ -16,11 +16,15 @@ async fn journal(
 ) -> (
     Arc<kasumi_engine::TargetJournal>,
     Arc<TenantStore>,
-    Arc<NodeStore>,
+    NodeStore,
 ) {
     let installation = kasumi_engine::TargetJournalInstallation {
         root: f.control.root.clone(),
         node: nodes().into_iter().find(|node| node.node_id == id).unwrap(),
+        audit_placement_bindings: std::collections::BTreeMap::from([(
+            "city".into(),
+            "ab".repeat(32),
+        )]),
     };
     let file_id = kasumi_store::node_store_ids::target_journal(
         installation.root.control_incarnation,
@@ -95,8 +99,8 @@ struct Serving {
     gate: Arc<ServingGate>,
     journal: Arc<kasumi_engine::TargetJournal>,
     journal_store: Arc<TenantStore>,
-    journal_node: Arc<NodeStore>,
-    node: Arc<NodeStore>,
+    journal_node: NodeStore,
+    node: NodeStore,
 }
 impl Serving {
     async fn open(

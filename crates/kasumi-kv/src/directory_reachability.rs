@@ -30,7 +30,7 @@ impl DirectoryReader<'_> {
     ) -> Result<bool, CoreError> {
         self.admission
             .check_owner()
-            .map_err(|_| CoreError::OwnerFailed)?;
+            .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?;
         let result = (|| {
             root.validate()?;
             // validate_page uses the root's group and generation ceiling. A
@@ -62,7 +62,7 @@ impl DirectoryReader<'_> {
         })();
         self.admission
             .check_owner()
-            .map_err(|_| CoreError::OwnerFailed)?;
+            .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?;
         result
     }
 
@@ -91,7 +91,7 @@ impl DirectoryReader<'_> {
         })();
         self.admission
             .check_owner()
-            .map_err(|_| CoreError::OwnerFailed)?;
+            .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?;
         result
     }
 

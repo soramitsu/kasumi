@@ -21,7 +21,7 @@ fn context(principal: &str) -> RequestContext {
 }
 
 async fn fixture(
-    node: Arc<NodeStore>,
+    node: NodeStore,
     provider: Arc<LocalKeyProvider>,
     audit_provider: Arc<LocalKeyProvider>,
     admission: Arc<kasumi_engine::admission::NodeAdmission>,
@@ -126,7 +126,15 @@ async fn every_embedded_request_boundary_durably_audits_denials_and_sealed_tenan
         )
         .unwrap(),
     );
-    denied!(db.backup(visitor.clone(), destination.as_ref(), uuid::Uuid::new_v4()));
+    let failure = db
+        .backup(visitor.clone(), destination.as_ref(), uuid::Uuid::new_v4())
+        .await
+        .unwrap_err();
+    let original = failure
+        .operation_error()
+        .expect("ordinary backup denial original");
+    assert_eq!(original.code, ErrorCode::Forbidden);
+    assert!(original.denial_audit_attempted());
     let mut cross_tenant = context("owner");
     cross_tenant.tenant = "other-tenant".into();
     denied!(db.get(&cross_tenant, "docs", "id"));
@@ -207,7 +215,8 @@ fn cancelled_embedded_denial_writer_is_drained_before_shutdown_and_reopen() {
             .storage
             .create_new(&path, kasumi_store::test_utils::NODE_STORE_ID)
             .unwrap();
-        let weak = Arc::downgrade(&node);
+        let weak = node.locator();
+        let mut weak_retirement = node.clone().retire();
         let service_provider = Arc::new(LocalKeyProvider::new([44; 32]));
         let (db, store, audit) = fixture(
             node.clone(),
@@ -248,7 +257,13 @@ fn cancelled_embedded_denial_writer_is_drained_before_shutdown_and_reopen() {
         drop(store);
         drop(audit);
         drop(node);
-        assert!(weak.upgrade().is_none());
+        assert!({
+            assert_eq!(
+                weak_retirement.retry(),
+                kasumi_store::StorageCensusDisposition::Retired
+            );
+            matches!(weak.try_borrow(), kasumi_store::NodeStoreLookup::Missing)
+        });
         let reopened = physical
             .storage
             .open_existing(&path, kasumi_store::test_utils::NODE_STORE_ID)
@@ -356,7 +371,9 @@ async fn standalone_restore_denials_are_audited_before_a_database_exists() {
     )
     .await;
     let error = local.err().expect("unauthorized local restore rejected");
-    let error = error.downcast_ref::<Error>().unwrap();
+    let error = error
+        .operation_error()
+        .expect("ordinary local restore denial original");
     assert_eq!(error.code, ErrorCode::Forbidden);
     assert!(error.denial_audit_attempted());
     let replica = ReplicaRestoreConfig {
@@ -395,8 +412,8 @@ async fn standalone_restore_denials_are_audited_before_a_database_exists() {
         replicated
             .err()
             .expect("unauthorized replicated restore rejected")
-            .downcast_ref::<Error>()
-            .unwrap()
+            .operation_error()
+            .expect("ordinary replicated restore denial original")
             .code,
         ErrorCode::Forbidden
     );
@@ -436,14 +453,14 @@ async fn standalone_restore_denials_are_audited_before_a_database_exists() {
         sealed
             .err()
             .expect("sealed restore rejected")
-            .downcast_ref::<Error>()
-            .unwrap()
+            .operation_error()
+            .expect("ordinary sealed restore original")
             .code,
         ErrorCode::Sealed
     );
     let entries = audit.store().scan("security.audit").unwrap();
     assert_eq!(entries.len(), 3);
-    let last: Value = serde_json::from_slice(&entries[2].1).unwrap();
+    let last: Value = serde_json::from_slice(entries[2].value()).unwrap();
     assert_eq!(last["event"]["kind"], "tenant_sealed");
     target_domains.custody().store().shutdown().await.unwrap();
     target_store.shutdown().await.unwrap();

@@ -70,7 +70,7 @@ fn warm_proof_admission_denial_retries_the_unproved_stale_identity() {
         let before = admission.calls.load(Ordering::Acquire);
         admission.deny_nth(nth);
         assert!(
-            matches!(state.warm(512), Err(CoreError::CapacityDenied)),
+            matches!(&(state.warm(512)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::CapacityDenied))),
             "reservation {nth}"
         );
         assert!(admission.calls.load(Ordering::Acquire) >= before + nth);
@@ -122,7 +122,7 @@ fn warm_refill_and_cursor_denials_are_retryable_and_never_fence_the_owner() {
         let result = state.warm(1);
         if let Some(nth) = workspace {
             assert!(
-                matches!(result, Err(CoreError::CapacityDenied)),
+                matches!(&(result), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::CapacityDenied))),
                 "workspace {nth}"
             );
             assert_eq!(gate.workspace_calls.load(Ordering::Acquire), before + nth);
@@ -254,7 +254,9 @@ fn warm_metadata_shrink_denial_keeps_valid_backing_and_retries_on_the_next_pass(
     // hash table needs a separate token for the old backing during rehash.
     // Refuse that acquisition without denying required proof/cursor workspace.
     gate.deny_new_cache.store(true, Ordering::Release);
-    assert!(matches!(state.warm(512), Err(CoreError::CapacityDenied)));
+    assert!(
+        matches!(&(state.warm(512)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::CapacityDenied)))
+    );
     assert_eq!(gate.denied.load(Ordering::Acquire), 1);
     assert!(!state.is_fenced());
     let denied = state.cache_stats().unwrap();
@@ -262,7 +264,9 @@ fn warm_metadata_shrink_denial_keeps_valid_backing_and_retries_on_the_next_pass(
     assert_eq!(denied.metadata_bytes, before.metadata_bytes);
     assert_eq!(denied.evictions, 0);
     let refusals = gate.denied.load(Ordering::Acquire);
-    assert!(matches!(state.warm(512), Err(CoreError::CapacityDenied)));
+    assert!(
+        matches!(&(state.warm(512)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::CapacityDenied)))
+    );
     assert_eq!(gate.denied.load(Ordering::Acquire), refusals + 1);
     assert_eq!(state.cache_stats().unwrap(), denied);
     assert!(!state.is_fenced());
@@ -320,7 +324,9 @@ fn warm_corruption_fences_before_removing_the_unproved_identity_or_mutating_sour
         };
         let before = image(&group, file);
         let stats = state.cache_stats().unwrap();
-        assert!(matches!(state.warm(512), Err(CoreError::Corrupt(_))));
+        assert!(
+            matches!(&(state.warm(512)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::Corrupt(_))))
+        );
         assert!(state.is_fenced());
         let cache = state.cache.lock().unwrap();
         assert!(cache.contains(identity));
@@ -409,7 +415,9 @@ fn warm_proof_read_failure_fences_and_preserves_the_unproved_value() {
     let file = GroupFile::segment(old.segment_id);
     let before = image(&backend.group, file);
     backend.fail.store(true, Ordering::Release);
-    assert!(matches!(state.warm(512), Err(CoreError::Io(_))));
+    assert!(
+        matches!(&(state.warm(512)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::Io(_))))
+    );
     assert!(state.is_fenced());
     let cache = state.cache.lock().unwrap();
     assert!(cache.contains(identity));
@@ -448,7 +456,9 @@ fn warm_duplicate_pin_capacity_and_final_output_guard_keep_exact_charge_lifetime
         .collect();
     let full = admission.used.load(Ordering::Acquire);
     assert!(full > baseline);
-    assert!(matches!(state.snapshot(), Err(CoreError::CapacityDenied)));
+    assert!(
+        matches!(&(state.snapshot()), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::CapacityDenied)))
+    );
     assert_eq!(admission.used.load(Ordering::Acquire), full);
     assert!(!state.is_fenced());
     let clones = pins.clone();
@@ -481,10 +491,9 @@ fn cached_identity_proof_one_grant_covers_complete_owner_before_allocation() {
             - std::mem::size_of::<DirectoryReadWorkspace>()) as u64;
     let admission = Admission::new(bytes - 1);
     let owner: Arc<dyn StorageAdmission> = admission.clone();
-    assert!(matches!(
-        CachedIdentityProofWorkspace::new(&owner),
-        Err(CoreError::CapacityDenied)
-    ));
+    assert!(
+        matches!(&(CachedIdentityProofWorkspace::new(&owner)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::CapacityDenied)))
+    );
     assert_eq!(admission.calls.load(Ordering::Acquire), 1);
     assert_eq!(admission.used.load(Ordering::Acquire), 0);
     assert!(admission.check_owner().is_ok());
@@ -552,10 +561,9 @@ fn cached_identity_proof_reuses_actual_owner_for_current_and_pinned_history_unde
                 .unwrap()
         );
     }
-    assert!(matches!(
-        state.cached_identity_is_live_with(&current, &both, &mut foreign),
-        Err(CoreError::InvalidInput(_))
-    ));
+    assert!(
+        matches!(&(state.cached_identity_is_live_with(&current, &both, &mut foreign)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput(_))))
+    );
     assert_eq!(admission.calls.load(Ordering::Acquire), calls);
     assert_eq!(admission.used.load(Ordering::Acquire), charged);
     assert!(!state.is_fenced());

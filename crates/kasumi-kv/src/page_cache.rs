@@ -60,9 +60,9 @@ impl NativeIdentity {
             || table.len() > crate::core::MAX_TABLE_BYTES
             || key.len() > crate::core::MAX_KEY_BYTES
         {
-            return Err(CoreError::InvalidInput(
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
                 "cached value key bounds are invalid",
-            ));
+            )));
         }
         Ok(Self::Value {
             group_id,
@@ -120,11 +120,13 @@ impl<B: DirectoryBackend> CachedDirectoryBackend<B> {
     fn check_owner(&self) -> Result<(), CoreError> {
         self.admission
             .check_owner()
-            .map_err(|_| CoreError::OwnerFailed)
+            .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))
     }
 
     fn lock(&self) -> Result<MutexGuard<'_, NativeCache<NativeIdentity>>, CoreError> {
-        self.cache.lock().map_err(|_| CoreError::OwnerFailed)
+        self.cache
+            .lock()
+            .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))
     }
 
     pub(crate) fn configure(&self, config: CacheConfig) -> Result<(), CoreError> {
@@ -214,7 +216,9 @@ impl<B: DirectoryBackend> CachedDirectoryBackend<B> {
             || reference.arena_id == u64::MAX
             || reference.page_index == u64::MAX
         {
-            return Err(CoreError::Corrupt("directory page reference is invalid"));
+            return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                "directory page reference is invalid",
+            )));
         }
         Ok(NativeIdentity::Page {
             group_id: self.group_id,
@@ -231,7 +235,9 @@ impl<B: DirectoryBackend> CachedDirectoryBackend<B> {
         // Never install or return those bytes under the earlier owner check.
         self.check_owner()?;
         if page_digest(out) != reference.sha256 {
-            return Err(CoreError::Corrupt("directory page digest differs"));
+            return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                "directory page digest differs",
+            )));
         }
         Ok(())
     }
@@ -244,9 +250,9 @@ impl<B: DirectoryBackend> CachedDirectoryBackend<B> {
     ) -> Result<(), CoreError> {
         self.check_owner()?;
         if out.len() != DIRECTORY_PAGE_BYTES {
-            return Err(CoreError::InvalidInput(
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
                 "directory page output length differs",
-            ));
+            )));
         }
         let identity = self.identity(reference)?;
         let page = {
@@ -261,7 +267,9 @@ impl<B: DirectoryBackend> CachedDirectoryBackend<B> {
             if page.as_bytes().len() != DIRECTORY_PAGE_BYTES
                 || page_digest(page.as_bytes()) != reference.sha256
             {
-                return Err(CoreError::Corrupt("cached directory page identity differs"));
+                return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                    "cached directory page identity differs",
+                )));
             }
             out.copy_from_slice(page.as_bytes());
             self.check_owner()
@@ -347,9 +355,9 @@ impl<B: DirectoryBackend> DirectoryBackend for MaintenanceDirectoryBackend<'_, B
     fn read_page(&self, reference: DirectoryPageRef, out: &mut [u8]) -> Result<(), CoreError> {
         self.cached.check_owner()?;
         if out.len() != DIRECTORY_PAGE_BYTES {
-            return Err(CoreError::InvalidInput(
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
                 "directory page output length differs",
-            ));
+            )));
         }
         let identity = self.cached.identity(reference)?;
         let page = if self.retain {
@@ -372,7 +380,9 @@ impl<B: DirectoryBackend> DirectoryBackend for MaintenanceDirectoryBackend<'_, B
             if page.as_bytes().len() != DIRECTORY_PAGE_BYTES
                 || page_digest(page.as_bytes()) != reference.sha256
             {
-                return Err(CoreError::Corrupt("cached directory page identity differs"));
+                return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                    "cached directory page identity differs",
+                )));
             }
             out.copy_from_slice(page.as_bytes());
             self.cached.check_owner()
@@ -381,7 +391,7 @@ impl<B: DirectoryBackend> DirectoryBackend for MaintenanceDirectoryBackend<'_, B
                 denied.store(true, Ordering::Release);
             }
             if self.stop_on_denial {
-                return Err(CoreError::CapacityDenied);
+                return Err(CoreError::new(crate::CoreErrorCause::CapacityDenied));
             }
             self.cached.read_verified(reference, out)?;
             self.cached.check_owner()
@@ -401,9 +411,9 @@ impl<B: DirectoryBackend> DirectoryBackend for CachedDirectoryBackend<B> {
     fn read_page(&self, reference: DirectoryPageRef, out: &mut [u8]) -> Result<(), CoreError> {
         self.check_owner()?;
         if out.len() != DIRECTORY_PAGE_BYTES {
-            return Err(CoreError::InvalidInput(
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
                 "directory page output length differs",
-            ));
+            )));
         }
         let identity = self.identity(reference)?;
         // Normal demand policy still retains every fitting page. A refused
@@ -421,7 +431,9 @@ impl<B: DirectoryBackend> DirectoryBackend for CachedDirectoryBackend<B> {
             if page.as_bytes().len() != DIRECTORY_PAGE_BYTES
                 || page_digest(page.as_bytes()) != reference.sha256
             {
-                return Err(CoreError::Corrupt("cached directory page identity differs"));
+                return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                    "cached directory page identity differs",
+                )));
             }
             out.copy_from_slice(page.as_bytes());
         }
@@ -431,15 +443,17 @@ impl<B: DirectoryBackend> DirectoryBackend for CachedDirectoryBackend<B> {
     fn append_page(&self, bytes: &[u8]) -> Result<DirectoryPageRef, CoreError> {
         self.check_owner()?;
         if bytes.len() != DIRECTORY_PAGE_BYTES {
-            return Err(CoreError::InvalidInput(
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
                 "directory page input length differs",
-            ));
+            )));
         }
         let reference = self.backend.append_page(bytes)?;
         self.check_owner()?;
         self.identity(reference)?;
         if page_digest(bytes) != reference.sha256 {
-            return Err(CoreError::Corrupt("appended directory page digest differs"));
+            return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                "appended directory page digest differs",
+            )));
         }
         Ok(reference)
     }
@@ -571,7 +585,9 @@ mod tests {
             let pages = self.pages.lock().unwrap();
             let page = pages
                 .get(reference.page_index as usize)
-                .ok_or(CoreError::Corrupt("test page is absent"))?;
+                .ok_or(CoreError::new(crate::CoreErrorCause::Corrupt(
+                    "test page is absent",
+                )))?;
             out.copy_from_slice(page);
             if let Some(admission) = self.expire_on_read.lock().unwrap().take() {
                 admission.failed.store(true, Ordering::Release);
@@ -669,30 +685,26 @@ mod tests {
         let before = cached.stats().unwrap();
         let private = cached.publication_private_view();
         let mut out = [0; DIRECTORY_PAGE_BYTES];
-        assert!(matches!(
-            private.read_page(reference(0, 1), &mut out),
-            Err(CoreError::OwnerFailed)
-        ));
+        assert!(
+            matches!(&(private.read_page(reference(0, 1), &mut out)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+        );
         cached
             .lock()
             .unwrap()
             .begin_publication_candidates()
             .unwrap();
-        assert!(matches!(
-            private.read_page(reference(0, 1), &mut out[..8]),
-            Err(CoreError::InvalidInput(_))
-        ));
+        assert!(
+            matches!(&(private.read_page(reference(0, 1), &mut out[..8])), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput(_))))
+        );
         let mut invalid = reference(0, 1);
         invalid.arena_id = 0;
-        assert!(matches!(
-            private.read_page(invalid, &mut out),
-            Err(CoreError::Corrupt(_))
-        ));
+        assert!(
+            matches!(&(private.read_page(invalid, &mut out)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::Corrupt(_))))
+        );
         admission.failed.store(true, Ordering::Release);
-        assert!(matches!(
-            private.read_page(reference(0, 1), &mut out),
-            Err(CoreError::OwnerFailed)
-        ));
+        assert!(
+            matches!(&(private.read_page(reference(0, 1), &mut out)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+        );
         assert_eq!(
             cached.lock().unwrap().clear_publication_candidates(),
             Err(AdmissionError::OwnerFailed)
@@ -704,10 +716,9 @@ mod tests {
             .begin_publication_candidates()
             .unwrap();
         *pages.expire_on_read.lock().unwrap() = Some(admission.clone());
-        assert!(matches!(
-            private.read_page(reference(1, 2), &mut out),
-            Err(CoreError::OwnerFailed)
-        ));
+        assert!(
+            matches!(&(private.read_page(reference(1, 2), &mut out)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+        );
         assert_eq!(
             cached.lock().unwrap().clear_publication_candidates(),
             Err(AdmissionError::OwnerFailed)
@@ -721,10 +732,9 @@ mod tests {
             .unwrap();
         let mut wrong = reference(1, 2);
         wrong.sha256[0] ^= 1;
-        assert!(matches!(
-            private.read_page(wrong, &mut out),
-            Err(CoreError::Corrupt(_))
-        ));
+        assert!(
+            matches!(&(private.read_page(wrong, &mut out)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::Corrupt(_))))
+        );
         assert!(
             cached
                 .lock()
@@ -914,23 +924,20 @@ mod tests {
                         stop_on_denial: false,
                     };
                     let mut out = [0; DIRECTORY_PAGE_BYTES];
-                    assert!(matches!(
-                        maintenance.read_page(hot, &mut out[..8]),
-                        Err(CoreError::InvalidInput(_))
-                    ));
+                    assert!(
+                        matches!(&(maintenance.read_page(hot, &mut out[..8])), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput(_))))
+                    );
                     let mut wrong = cold;
                     wrong.sha256[0] ^= 1;
-                    assert!(matches!(
-                        maintenance.read_page(wrong, &mut out),
-                        Err(CoreError::Corrupt(_))
-                    ));
+                    assert!(
+                        matches!(&(maintenance.read_page(wrong, &mut out)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::Corrupt(_))))
+                    );
                     assert_eq!(cached.stats().unwrap().entries, 1);
                     admission.failed.store(true, Ordering::Release);
                     let reads = backend.reads.load(Ordering::Relaxed);
-                    assert!(matches!(
-                        maintenance.read_page(hot, &mut out),
-                        Err(CoreError::OwnerFailed)
-                    ));
+                    assert!(
+                        matches!(&(maintenance.read_page(hot, &mut out)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+                    );
                     assert_eq!(backend.reads.load(Ordering::Relaxed), reads);
                     admission.failed.store(false, Ordering::Release);
                     cached.clear().unwrap();
@@ -944,10 +951,9 @@ mod tests {
                     assert_eq!(out, [2; DIRECTORY_PAGE_BYTES]);
                     cached.clear().unwrap();
                     *backend.expire_on_read.lock().unwrap() = Some(admission.clone());
-                    assert!(matches!(
-                        maintenance.read_page(cold, &mut out),
-                        Err(CoreError::OwnerFailed)
-                    ));
+                    assert!(
+                        matches!(&(maintenance.read_page(cold, &mut out)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+                    );
                     assert_eq!(cached.cache.lock().unwrap().stats().entries, 0);
                     cached.clear().unwrap();
                     assert_eq!(admission.used.load(Ordering::Acquire), 0);
@@ -972,7 +978,9 @@ mod tests {
                 if self.enabled.load(Ordering::Acquire)
                     && (reference.page_index as usize) < self.old_pages
                 {
-                    return Err(CoreError::Corrupt("published hot page reached disk"));
+                    return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                        "published hot page reached disk",
+                    )));
                 }
                 self.backend.read_page(reference, out)
             }
@@ -1094,30 +1102,26 @@ mod tests {
         assert_eq!(bytes, [2; DIRECTORY_PAGE_BYTES]);
         assert_eq!(cached.stats().unwrap(), before);
         assert_eq!(backend.reads.load(Ordering::Relaxed), reads + 2);
-        assert!(matches!(
-            private.read_page(hot, &mut bytes[..8]),
-            Err(CoreError::InvalidInput(_))
-        ));
+        assert!(
+            matches!(&(private.read_page(hot, &mut bytes[..8])), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput(_))))
+        );
         let mut wrong = hot;
         wrong.sha256[31] ^= 1;
-        assert!(matches!(
-            private.read_page(wrong, &mut bytes),
-            Err(CoreError::Corrupt(_))
-        ));
+        assert!(
+            matches!(&(private.read_page(wrong, &mut bytes)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::Corrupt(_))))
+        );
         assert_eq!(cached.stats().unwrap(), before);
         admission.failed.store(true, Ordering::Release);
         let reads = backend.reads.load(Ordering::Relaxed);
-        assert!(matches!(
-            private.read_page(hot, &mut bytes),
-            Err(CoreError::OwnerFailed)
-        ));
+        assert!(
+            matches!(&(private.read_page(hot, &mut bytes)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+        );
         assert_eq!(backend.reads.load(Ordering::Relaxed), reads);
         admission.failed.store(false, Ordering::Release);
         *backend.expire_on_read.lock().unwrap() = Some(admission.clone());
-        assert!(matches!(
-            private.read_page(cold, &mut bytes),
-            Err(CoreError::OwnerFailed)
-        ));
+        assert!(
+            matches!(&(private.read_page(cold, &mut bytes)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+        );
         assert_eq!(cached.cache.lock().unwrap().stats(), before);
     }
 
@@ -1271,21 +1275,17 @@ mod tests {
             group_id: [99; 16],
             ..root
         };
-        assert!(matches!(
-            reader.get(
+        assert!(matches!(&(reader.get(
                 wrong_group,
                 DirectoryKey::row("accounts", &0u64.to_be_bytes())
-            ),
-            Err(CoreError::Corrupt(_))
-        ));
+            )), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::Corrupt(_)))));
         let older = crate::directory::DirectoryRoot {
             generation: 2,
             ..root
         };
-        assert!(matches!(
-            reader.get(older, DirectoryKey::row("accounts", &0u64.to_be_bytes())),
-            Err(CoreError::Corrupt(_))
-        ));
+        assert!(
+            matches!(&(reader.get(older, DirectoryKey::row("accounts", &0u64.to_be_bytes()))), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::Corrupt(_))))
+        );
         assert_eq!(backend.reads.load(Ordering::Relaxed), reads);
         let newer = crate::directory::DirectoryRoot {
             generation: 4,
@@ -1318,17 +1318,18 @@ mod tests {
             drop(cache.load_page(page).unwrap());
             admission.failed.store(true, Ordering::Release);
             let reads = backend.reads.load(Ordering::Relaxed);
-            assert!(matches!(cache.load_page(page), Err(CoreError::OwnerFailed)));
+            assert!(
+                matches!(&(cache.load_page(page)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+            );
             assert_eq!(backend.reads.load(Ordering::Relaxed), reads);
             admission.failed.store(false, Ordering::Release);
             cache.clear().unwrap();
             admission.limit.store(capacity, Ordering::Release);
             *backend.expire_on_read.lock().unwrap() = Some(admission.clone());
             let mut out = [0; DIRECTORY_PAGE_BYTES];
-            assert!(matches!(
-                cache.read_page(page, &mut out),
-                Err(CoreError::OwnerFailed)
-            ));
+            assert!(
+                matches!(&(cache.read_page(page, &mut out)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+            );
             assert_eq!(cache.lock().unwrap().stats().entries, 0);
             cache.clear().unwrap();
             assert_eq!(admission.used.load(Ordering::Acquire), 0);
@@ -1356,13 +1357,14 @@ mod tests {
         assert_eq!(cache.stats().unwrap().uncached_loads, 1);
         let mut wrong = page;
         wrong.sha256[0] ^= 1;
-        assert!(matches!(
-            cache.read_page(wrong, &mut out),
-            Err(CoreError::Corrupt(_))
-        ));
+        assert!(
+            matches!(&(cache.read_page(wrong, &mut out)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::Corrupt(_))))
+        );
         assert_eq!(admission.used.load(Ordering::Acquire), 0);
         admission.limit.store(u64::MAX, Ordering::Release);
-        assert!(matches!(cache.load_page(wrong), Err(CoreError::Corrupt(_))));
+        assert!(
+            matches!(&(cache.load_page(wrong)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::Corrupt(_))))
+        );
         assert_eq!(cache.stats().unwrap().entries, 0);
         cache.clear().unwrap();
         assert_eq!(admission.used.load(Ordering::Acquire), 0);
@@ -1438,22 +1440,18 @@ mod tests {
         drop(cache_a.load_page(a).unwrap());
         drop(cache_a.load_page(other_arena).unwrap());
         assert_eq!(first.reads.load(Ordering::Relaxed), 2);
-        assert!(matches!(
-            cache_a.load_page(DirectoryPageRef {
+        assert!(matches!(&(cache_a.load_page(DirectoryPageRef {
                 sha256: b.sha256,
                 ..a
-            }),
-            Err(CoreError::Corrupt(_))
-        ));
+            })), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::Corrupt(_)))));
         // Every digest byte participates in equality; the slot hash never
         // substitutes for the complete cryptographic page identity.
         for index in 0..32 {
             let mut different = a;
             different.sha256[index] ^= 1;
-            assert!(matches!(
-                cache_a.load_page(different),
-                Err(CoreError::Corrupt(_))
-            ));
+            assert!(
+                matches!(&(cache_a.load_page(different)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::Corrupt(_))))
+            );
         }
         assert_eq!(cache_a.stats().unwrap().entries, 2);
         assert_eq!(
@@ -1499,10 +1497,9 @@ mod tests {
         let pin = cache.load_page(reference(0, 0)).unwrap();
         cache.clear().unwrap();
         assert_eq!(cache.stats().unwrap().pinned_bytes, pin.charged_bytes());
-        assert!(matches!(
-            cache.configure(CacheConfig { byte_limit: 0 }),
-            Err(CoreError::CapacityDenied)
-        ));
+        assert!(
+            matches!(&(cache.configure(CacheConfig { byte_limit: 0 })), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::CapacityDenied)))
+        );
         assert_eq!(
             admission.used.load(Ordering::Acquire),
             cache.stats().unwrap().resident_bytes

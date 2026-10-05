@@ -561,7 +561,7 @@ fn every_commit_effect_recovers_one_complete_root_or_the_previous_root() {
                 let mut reopened =
                     DiskState::open(Arc::new(group.crash()), admission, GROUP, LARGE_CACHE)
                         .unwrap_or_else(|error| {
-                            panic!("{op:?} {timing:?} {nth}: reopen {error}; commit {result:?}")
+                            panic!("{op:?} {timing:?} {nth}: reopen {error:?}; commit {result:?}")
                         });
                 let root = reopened.snapshot().unwrap();
                 let present = reopened.table_exists(&root, "accounts").unwrap();
@@ -604,17 +604,15 @@ fn cache_hits_still_enforce_owner_and_snapshot_scope() {
     let root = state.snapshot().unwrap();
     let foreign_registry = SnapshotPins::new(admission.clone(), GROUP, 1).unwrap();
     let foreign = foreign_registry.acquire(root.root()).unwrap();
-    assert!(matches!(
-        state.get(&foreign, "accounts", b"a", 99),
-        Err(CoreError::InvalidInput(_))
-    ));
+    assert!(
+        matches!(&(state.get(&foreign, "accounts", b"a", 99)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput(_))))
+    );
     assert!(!state.is_fenced());
     assert!(value(&mut state, &root, b"a").is_some());
     admission.failed.store(true, Ordering::Release);
-    assert!(matches!(
-        state.get(&root, "accounts", b"a", 99),
-        Err(CoreError::OwnerFailed)
-    ));
+    assert!(
+        matches!(&(state.get(&root, "accounts", b"a", 99)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+    );
     assert!(state.is_fenced());
 }
 
@@ -630,14 +628,11 @@ fn publication_panic_is_unknown_commit_and_reopen_selects_durable_batch() {
     let error = state
         .commit(&[Operation::put("accounts", b"a", b"durable")])
         .unwrap_err();
-    let CoreError::UnknownCommit(source) = error else {
-        panic!("wrong unwind classification: {error}");
-    };
-    let panic = source
-        .get_ref()
-        .unwrap()
-        .downcast_ref::<CorePanic>()
-        .unwrap();
+    assert!(
+        error.is_unknown_commit(),
+        "wrong unwind classification: {error}"
+    );
+    let panic = error.panic().expect("original publication unwind");
     assert!(
         panic.with_payload(|payload| payload.downcast_ref::<&str>() == Some(&"publication unwind"))
     );

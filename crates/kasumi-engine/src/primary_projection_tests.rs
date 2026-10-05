@@ -26,7 +26,7 @@ struct Fixture {
     engine: TenantEngine,
     roots: SourceRootsRef,
     stores: Arc<TenantStorageSet>,
-    node: Arc<kasumi_store::NodeStore>,
+    node: kasumi_store::NodeStore,
     storage: crate::test_utils::FixtureStorage,
     _buffers: Arc<kasumi_raft::SnapshotBufferOwner>,
     _input: Reservation,
@@ -39,9 +39,11 @@ struct CommandInput {
 }
 
 impl Fixture {
-    async fn new() -> Result<Self> {
+    async fn new() -> crate::test_fixture_failure::FixtureResult<Self> {
         Self::new_with_node(|storage, path| {
-            storage.create_new(path, kasumi_store::test_utils::NODE_STORE_ID)
+            storage
+                .create_new(path, kasumi_store::test_utils::NODE_STORE_ID)
+                .map_err(crate::test_fixture_failure::FixtureFailure::NodeStartup)
         })
         .await
     }
@@ -49,8 +51,9 @@ impl Fixture {
         create: impl FnOnce(
             &crate::test_utils::FixtureStorage,
             &std::path::Path,
-        ) -> Result<Arc<kasumi_store::NodeStore>>,
-    ) -> Result<Self> {
+        )
+            -> crate::test_fixture_failure::FixtureResult<kasumi_store::NodeStore>,
+    ) -> crate::test_fixture_failure::FixtureResult<Self> {
         let directory = kasumi_store::test_utils::private_tempdir()?;
         let (mut persistent, mut scratch) =
             crate::test_utils::fixture_disk_configs(directory.path())?;
@@ -137,7 +140,10 @@ impl Fixture {
         };
         Ok(CommandInput { position, bytes })
     }
-    fn prepare<'a>(&'a self, input: &'a CommandInput) -> Result<Prepared<'a>> {
+    fn prepare<'a>(
+        &'a self,
+        input: &'a CommandInput,
+    ) -> crate::test_fixture_failure::FixtureResult<Prepared<'a>> {
         let prepared = PreparedOrderedCommand::prepare(
             &self.engine,
             ByteBoundCommand::check(&input.position, &input.bytes)?,
@@ -176,7 +182,7 @@ impl Fixture {
                 .collect(),
         ))
     }
-    fn fresh(&self) -> Result<CommittedBaseline> {
+    fn fresh(&self) -> crate::test_fixture_failure::FixtureResult<CommittedBaseline> {
         let command_input = self.command(Operation::SetPolicy(policy()))?;
         let prepared = self.prepare(&command_input)?;
         let proof = {
@@ -224,7 +230,7 @@ impl Fixture {
             assert_eq!(proof.totals(), catalog.totals());
             proof
         };
-        self.publish_baseline(prepared, proof)
+        Ok(self.publish_baseline(prepared, proof)?)
     }
     fn publish_baseline(
         &self,
@@ -237,38 +243,44 @@ impl Fixture {
             proof.fresh_effects(&input, position)?
         };
         let mut prior = None;
-        kasumi_raft::with_application_publisher_for_test(&self.stores, position, |publisher| {
-            let expectation =
-                self.roots
-                    .publication_expectation(position, effects.writes(), &response)?;
-            let mut preparation = self.roots.publication_preparation();
-            let receipt = publisher.commit_with_selection(
-                response,
-                effects.writes(),
-                &mut preparation,
-                expectation.challenge()?,
-            )?;
-            let selected = preparation
-                .finish_publication(&expectation, receipt)?
-                .capture(ApplicationBoundaryRef::Entry(position), false)?;
-            let captured = selected.clone();
-            {
-                let (mut authority, input) = accepted.primary_input()?.split();
-                prior = Some(
-                    proof
-                        .bind_selected(&mut authority, &input, selected, &effects)
-                        .unwrap(),
-                );
-            }
-            accepted
-                .candidate()
-                .application_selection
-                .set(captured)
-                .map_err(|_| anyhow::anyhow!("fixture source already set"))?;
-            accepted.publish();
-            Ok(())
-        })?;
-        prior.context("actual baseline publication omitted result")
+        kasumi_raft::with_application_publisher_for_test(
+            &self.stores,
+            position,
+            |publisher| -> anyhow::Result<()> {
+                let expectation =
+                    self.roots
+                        .publication_expectation(position, effects.writes(), &response)?;
+                let mut preparation = self.roots.publication_preparation();
+                let receipt = publisher.commit_with_selection(
+                    response,
+                    effects.writes(),
+                    &mut preparation,
+                    expectation.challenge()?,
+                )?;
+                let selected = preparation
+                    .finish_publication(&expectation, receipt)?
+                    .capture(ApplicationBoundaryRef::Entry(position), false)?;
+                let captured = selected.clone();
+                {
+                    let (mut authority, input) = accepted.primary_input()?.split();
+                    prior = Some(
+                        proof
+                            .bind_selected(&mut authority, &input, selected, &effects)
+                            .unwrap(),
+                    );
+                }
+                accepted
+                    .candidate()
+                    .application_selection
+                    .set(captured)
+                    .map_err(|_| anyhow::anyhow!("fixture source already set"))?;
+                accepted.publish();
+                Ok(())
+            },
+        )?;
+        prior
+            .context("actual baseline publication omitted result")
+            .map_err(Into::into)
     }
     fn read<T>(
         &self,
@@ -306,7 +318,7 @@ impl Fixture {
             |b| decode(Attempt::decode(b.context("attempt absent")?)),
         )
     }
-    async fn close(self) -> Result<()> {
+    async fn close(self) -> crate::test_fixture_failure::FixtureResult<()> {
         drop(self.engine);
         self._buffers.drain_startup().await?;
         std::future::poll_fn(|cx| self.roots.poll_drain(cx)).await?;
@@ -383,7 +395,7 @@ fn put(namespace: &str, key: &[u8], value: &[u8]) -> WriteOp {
 // Keep actual key renewal runnable during this long synchronous staging/abort loop.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn primary_cow_actual_accepted_path_is_unselected_and_abort_is_separately_bounded()
--> Result<()> {
+-> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
     fixture.seed(50, true)?;
     let prior = fixture.fresh()?;
@@ -492,7 +504,8 @@ async fn primary_cow_actual_accepted_path_is_unselected_and_abort_is_separately_
 }
 
 #[tokio::test]
-async fn primary_cow_complete_map_diff_rejects_omitted_id_and_real_multi_id_shape() -> Result<()> {
+async fn primary_cow_complete_map_diff_rejects_omitted_id_and_real_multi_id_shape()
+-> crate::test_fixture_failure::FixtureResult<()> {
     for forged in [false, true] {
         let fixture = Fixture::new().await?;
         fixture.seed(3, false)?;
@@ -526,8 +539,8 @@ async fn primary_cow_complete_map_diff_rejects_omitted_id_and_real_multi_id_shap
 }
 
 #[tokio::test]
-async fn primary_cow_foreign_apply_guard_on_same_store_pair_is_refused_before_pending() -> Result<()>
-{
+async fn primary_cow_foreign_apply_guard_on_same_store_pair_is_refused_before_pending()
+-> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
     // A different engine can be installed over the same actual pair/scope in
     // this adversarial private fixture. Its mutex cannot authorize this input.
@@ -570,7 +583,7 @@ async fn primary_cow_foreign_apply_guard_on_same_store_pair_is_refused_before_pe
 
 #[tokio::test]
 async fn primary_cow_captured_mapping_refuses_valid_alternate_manifest_with_unchanged_selector()
--> Result<()> {
+-> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
     fixture.seed(2, false)?;
     let prior = fixture.fresh()?;
@@ -644,7 +657,7 @@ async fn primary_cow_captured_mapping_refuses_valid_alternate_manifest_with_unch
 
 #[tokio::test]
 async fn primary_cow_abort_rejects_bootstrap_missing_inventory_and_ambiguous_committed_phase()
--> Result<()> {
+-> crate::test_fixture_failure::FixtureResult<()> {
     for fault in 0..4 {
         let fixture = Fixture::new().await?;
         fixture.seed(1, false)?;
@@ -723,7 +736,7 @@ async fn primary_cow_abort_rejects_bootstrap_missing_inventory_and_ambiguous_com
                     .err()
                     .context("missing inventory silently cleaned")?
             }
-            Ok(None) => anyhow::bail!("fault erased pending ownership"),
+            Ok(None) => return Err(anyhow::anyhow!("fault erased pending ownership").into()),
         };
         let message = format!("{error:#}");
         assert!(
@@ -754,7 +767,7 @@ async fn primary_cow_abort_rejects_bootstrap_missing_inventory_and_ambiguous_com
 
 #[tokio::test]
 async fn primary_cow_cancel_during_new_chunks_retains_original_and_pending_is_abortable()
--> Result<()> {
+-> crate::test_fixture_failure::FixtureResult<()> {
     #[derive(Debug)]
     struct Stop;
     impl std::fmt::Display for Stop {
@@ -878,7 +891,7 @@ fn archive(fixture: &Fixture, name: &str) -> Result<()> {
 
 #[tokio::test]
 async fn primary_cow_baseline_rejects_cross_collection_dto_alias_even_with_same_tree_identity()
--> Result<()> {
+-> crate::test_fixture_failure::FixtureResult<()> {
     for archived in [false, true] {
         let fixture = Fixture::new().await?;
         for name in ["alpha", "beta"] {
@@ -1010,8 +1023,8 @@ async fn primary_cow_baseline_rejects_cross_collection_dto_alias_even_with_same_
 }
 
 #[tokio::test]
-async fn primary_cow_baseline_checks_actual_inventory_count_and_original_cancellation() -> Result<()>
-{
+async fn primary_cow_baseline_checks_actual_inventory_count_and_original_cancellation()
+-> crate::test_fixture_failure::FixtureResult<()> {
     for fault in 0..3 {
         let fixture = Fixture::new().await?;
         fixture.seed(1, false)?;
@@ -1104,7 +1117,8 @@ async fn primary_cow_baseline_checks_actual_inventory_count_and_original_cancell
 }
 
 #[tokio::test]
-async fn primary_cow_actual_two_page_working_set_and_retirement_are_precharged() -> Result<()> {
+async fn primary_cow_actual_two_page_working_set_and_retirement_are_precharged()
+-> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
     for which in 0..3 {
         let mut authority = fixture.engine.lock_primary_apply()?;
@@ -1141,7 +1155,8 @@ async fn primary_cow_actual_two_page_working_set_and_retirement_are_precharged()
 }
 
 #[tokio::test]
-async fn primary_cow_real_slot_refusal_precedes_pending_effects() -> Result<()> {
+async fn primary_cow_real_slot_refusal_precedes_pending_effects()
+-> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
     fixture.seed(1, false)?;
     let prior = fixture.fresh()?;

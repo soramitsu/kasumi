@@ -3,6 +3,14 @@
 use super::*;
 use crate::{TargetReplica, target_initial_intent};
 
+macro_rules! snapshot_ensure {
+    ($condition:expr, $($message:tt)+) => {
+        if !($condition) {
+            return Err(anyhow::anyhow!($($message)+).into());
+        }
+    };
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct InitialInitializeAssociation {
@@ -53,7 +61,11 @@ impl InitialInitializePermit {
         Ok(self)
     }
 
-    pub(crate) fn applied(self, owner: &TargetReplica, operation: &TargetOperation) -> Result<()> {
+    pub(crate) fn applied(
+        self,
+        owner: &TargetReplica,
+        operation: &TargetOperation,
+    ) -> Result<(), crate::SnapshotFailure> {
         owner.require_initial_start(&self.association.start)?;
         require_operation(
             operation,
@@ -124,14 +136,14 @@ impl VerifiedTargetInitializationAssociation<'_> {
         self,
         signed: &kasumi_types::SignedTargetInitializationAssociation,
         operation: &TargetOperation,
-    ) -> Result<()> {
+    ) -> Result<(), crate::SnapshotFailure> {
         self.release(operation)?;
-        ensure!(
+        snapshot_ensure!(
             signed.association == self.association,
             "signed initialization cause differs from original owned proof"
         );
         kasumi_serving::verify_target_initialization_association(signed)?;
-        ensure!(
+        snapshot_ensure!(
             kasumi_raft::read_initialization_association(self.owner.database().stores())?.is_none(),
             "initialization association already committed; original effect cannot repeat"
         );

@@ -142,12 +142,13 @@ impl Permit {
 impl TenantEngine {
     pub(super) fn prepare_mutation_ordered(
         &self,
-        previous: &Generation,
+        apply: &ApplyOwner<'_>,
         command: &Command,
         batch: &MutationBatch,
         applied: &crate::staged_terminal::AppliedIdentity,
         scope: &ApplyScope,
-    ) -> anyhow::Result<PreparedCommand> {
+    ) -> std::result::Result<PreparedCommand, kasumi_store::ScratchOperationFailure> {
+        let previous = apply.current();
         let revision = applied.revision;
         let state = &previous.state;
         let authorization = (|| {
@@ -193,12 +194,20 @@ impl TenantEngine {
             Ok(())
         })();
         if let Err(error) = authorization {
-            return self.prepare_mutation_observation(previous, command, revision, Err(error));
+            return self
+                .prepare_mutation_observation(previous, command, revision, Err(error))
+                .map_err(Into::into);
         }
-        let key = staged_digest(&(&command.context.principal, &batch.idempotency_key))?.0;
-        let digest = batch.digest()?;
-        if let Some(row) = previous.receipts.get(&key)? {
-            row.validate(state)?;
+        let (digest, replay) = kasumi_store::ScratchOperationFailure::ordinary(|| {
+            let key = staged_digest(&(&command.context.principal, &batch.idempotency_key))?.0;
+            let digest = batch.digest()?;
+            let replay = previous.receipts.get(&key)?;
+            if let Some(row) = &replay {
+                row.validate(state)?;
+            }
+            Ok((digest, replay))
+        })?;
+        if let Some(row) = replay {
             let result = if row.receipt.request_digest == digest {
                 row.receipt.outcome
             } else {
@@ -207,158 +216,170 @@ impl TenantEngine {
                     "idempotency key reused for different input",
                 ))
             };
-            return self.prepare_mutation_observation(previous, command, revision, result);
+            return self
+                .prepare_mutation_observation(previous, command, revision, result)
+                .map_err(Into::into);
         }
         let owner = match scope {
             ApplyScope::Committed => previous.receipts.clone(),
             #[cfg(any(test, feature = "test-utils"))]
             ApplyScope::Fixture(disk) => previous.receipts.fixture_owner(disk, state)?,
         };
-        let mut baseline = state.clone();
-        baseline.revision = revision;
-        let permit = match Permit::prepare(&baseline, command, batch, applied, digest) {
-            Ok(permit) => permit,
-            Err(error) if error.code == ErrorCode::QuotaExceeded => {
-                return self.prepare_mutation_observation(previous, command, revision, Err(error));
-            }
-            Err(error) => return Err(error.into()),
-        };
-        // Prove the entire rejection can publish BEFORE document changes. Use
-        // the longer audit outcome plus maximum head decimal widths. Unrelated
-        // staged/target/control completion reservations are included by fits.
-        let mut reserved = baseline.clone();
-        reserved.mutation_receipt_head = permit.maximum_head.clone();
-        append_audit(&mut reserved, audit(command, &baseline, "committed"))?;
-        let accounting = previous.snapshot_accounting.updated(
-            state,
-            &reserved,
-            &BTreeMap::new(),
-            &BTreeSet::new(),
-        )?;
-        if !crate::accounting::audit_fits(&reserved)
-            || !accounting.fits(&reserved)?
-            || !lifecycle::completion_fits(&reserved)?
-        {
-            return self.prepare_mutation_observation(
-                previous,
-                command,
-                revision,
-                Err(Error::new(
-                    ErrorCode::AuditUnavailable,
-                    "required mutation terminal and audit capacity unavailable",
-                )),
-            );
-        }
-        drop(reserved);
-        // From this point every deterministic outcome selects exactly one row.
-        // A storage/invariant failure is outer failure: no Generation publishes.
-        let mut next = baseline.clone();
-        let changed = batch_changes(batch);
-        let attempt = (|| -> Result<WriteReceipt> {
-            let receipt = apply_batch(
-                &mut next,
-                batch,
-                revision,
-                command.timestamp_ms,
-                &previous.indexes,
+        kasumi_store::ScratchOperationFailure::ordinary(|| {
+            let mut baseline = state.clone();
+            baseline.revision = revision;
+            let permit = match Permit::prepare(&baseline, command, batch, applied, digest) {
+                Ok(permit) => permit,
+                Err(error) if error.code == ErrorCode::QuotaExceeded => {
+                    return self.prepare_mutation_observation(
+                        previous,
+                        command,
+                        revision,
+                        Err(error),
+                    );
+                }
+                Err(error) => return Err(error.into()),
+            };
+            // Prove the entire rejection can publish BEFORE document changes. Use
+            // the longer audit outcome plus maximum head decimal widths. Unrelated
+            // staged/target/control completion reservations are included by fits.
+            let mut reserved = baseline.clone();
+            reserved.mutation_receipt_head = permit.maximum_head.clone();
+            append_audit(&mut reserved, audit(command, &baseline, "committed"))?;
+            let accounting = previous.snapshot_accounting.updated(
+                state,
+                &reserved,
+                &BTreeMap::new(),
+                &BTreeSet::new(),
             )?;
-            crate::index_source::validate_changes(&previous.indexes, state, &next, &changed)?;
-            crate::change_feed_state::append(state, &mut next, &changed)?;
-            Ok(receipt)
-        })();
-        // Captured state/index disagreements are replica failures. They cannot
-        // select a permanent rejection receipt or advance the text writer.
-        let attempt = match attempt {
-            Err(error) if error.code == ErrorCode::Corruption => return Err(error.into()),
-            outcome => outcome,
-        };
-        if let Ok(receipt) = attempt.as_ref() {
-            let outcome = Ok(receipt.clone());
-            let pending = permit.finalize(&owner, &mut next, &outcome, applied)?;
-            append_audit(&mut next, audit(command, &baseline, "committed"))?;
-            let accounting =
-                previous
-                    .snapshot_accounting
-                    .updated(state, &next, &changed, &BTreeSet::new())?;
-            if crate::accounting::audit_fits(&next)
-                && accounting.fits(&next)?
-                && lifecycle::completion_fits(&next)?
+            if !crate::accounting::audit_fits(&reserved)
+                || !accounting.fits(&reserved)?
+                || !lifecycle::completion_fits(&reserved)?
             {
-                // Deterministic document/index validation and every acceptance
-                // budget check have finished. Text materialization advances a
-                // shared writer generation, so it cannot precede a rejection.
-                // Any error from here is an outer replica failure; do not select
-                // a rejection receipt and continue with the old text writer.
-                let indexes = Arc::new(crate::index_source::update(
+                return self.prepare_mutation_observation(
+                    previous,
+                    command,
+                    revision,
+                    Err(Error::new(
+                        ErrorCode::AuditUnavailable,
+                        "required mutation terminal and audit capacity unavailable",
+                    )),
+                );
+            }
+            drop(reserved);
+            // From this point every deterministic outcome selects exactly one row.
+            // A storage/invariant failure is outer failure: no Generation publishes.
+            let mut next = baseline.clone();
+            apply.begin_mutation_change_tree(batch)?;
+            let changed = batch_changes(batch);
+            let attempt = (|| -> Result<WriteReceipt> {
+                let receipt = apply_batch(
+                    &mut next,
+                    batch,
+                    revision,
+                    command.timestamp_ms,
                     &previous.indexes,
+                )?;
+                crate::index_source::validate_changes(&previous.indexes, state, &next, &changed)?;
+                crate::change_feed_state::append(state, &mut next, &changed)?;
+                Ok(receipt)
+            })();
+            // Captured state/index disagreements are replica failures. They cannot
+            // select a permanent rejection receipt or advance the text writer.
+            let attempt = match attempt {
+                Err(error) if error.code == ErrorCode::Corruption => return Err(error.into()),
+                outcome => outcome,
+            };
+            if let Ok(receipt) = attempt.as_ref() {
+                let outcome = Ok(receipt.clone());
+                let pending = permit.finalize(&owner, &mut next, &outcome, applied)?;
+                append_audit(&mut next, audit(command, &baseline, "committed"))?;
+                let accounting = previous.snapshot_accounting.updated(
                     state,
                     &next,
                     &changed,
-                )?);
-                let receipts = pending.stage()?;
-                let candidate = Arc::new(Generation {
-                    state: next,
-                    receipts,
-                    backup_bindings: previous.backup_bindings.clone(),
-                    terminals: previous.terminals.clone(),
-                    target_resolutions: previous.target_resolutions.clone(),
-                    indexes,
-                    snapshot_accounting: accounting,
-                    application_selection: std::sync::OnceLock::new(),
-                    _read_reservations: vec![],
-                });
-                return Ok(PreparedCommand {
-                    generation: Some(candidate),
-                    changed,
-                    outcome,
-                });
+                    &BTreeSet::new(),
+                )?;
+                if crate::accounting::audit_fits(&next)
+                    && accounting.fits(&next)?
+                    && lifecycle::completion_fits(&next)?
+                {
+                    // Deterministic document/index validation and every acceptance
+                    // budget check have finished. Text materialization advances a
+                    // shared writer generation, so it cannot precede a rejection.
+                    // Any error from here is an outer replica failure; do not select
+                    // a rejection receipt and continue with the old text writer.
+                    let indexes = Arc::new(crate::index_source::update(
+                        &previous.indexes,
+                        state,
+                        &next,
+                        &changed,
+                    )?);
+                    let receipts = pending.stage()?;
+                    let candidate = Arc::new(Generation {
+                        state: next,
+                        receipts,
+                        backup_bindings: previous.backup_bindings.clone(),
+                        terminals: previous.terminals.clone(),
+                        target_resolutions: previous.target_resolutions.clone(),
+                        indexes,
+                        snapshot_accounting: accounting,
+                        application_selection: std::sync::OnceLock::new(),
+                        _read_reservations: vec![],
+                    });
+                    return Ok(PreparedCommand {
+                        generation: Some(candidate),
+                        changed,
+                        outcome,
+                    });
+                }
             }
-        }
-        let error = match attempt {
-            Err(error) => error,
-            Ok(_) => Error::new(
-                ErrorCode::QuotaExceeded,
-                "serialized tenant snapshot byte budget exhausted",
-            ),
-        };
-        drop(next);
-        let mut rejected = baseline;
-        let outcome = Err(error);
-        let pending = permit.finalize(&owner, &mut rejected, &outcome, applied)?;
-        let event = audit(command, &rejected, "rejected");
-        append_audit(&mut rejected, event)?;
-        let accounting = previous.snapshot_accounting.updated(
-            state,
-            &rejected,
-            &BTreeMap::new(),
-            &BTreeSet::new(),
-        )?;
-        if !crate::accounting::audit_fits(&rejected)
-            || !accounting.fits(&rejected)?
-            || !lifecycle::completion_fits(&rejected)?
-        {
-            return Err(Error::new(
-                ErrorCode::Corruption,
-                "reserved mutation terminal cannot publish",
-            )
-            .into());
-        }
-        let receipts = pending.stage()?;
-        let candidate = Arc::new(Generation {
-            state: rejected,
-            receipts,
-            backup_bindings: previous.backup_bindings.clone(),
-            terminals: previous.terminals.clone(),
-            target_resolutions: previous.target_resolutions.clone(),
-            indexes: previous.indexes.clone(),
-            snapshot_accounting: accounting,
-            application_selection: std::sync::OnceLock::new(),
-            _read_reservations: vec![],
-        });
-        Ok(PreparedCommand {
-            generation: Some(candidate),
-            changed: ChangedIds::new(),
-            outcome,
+            let error = match attempt {
+                Err(error) => error,
+                Ok(_) => Error::new(
+                    ErrorCode::QuotaExceeded,
+                    "serialized tenant snapshot byte budget exhausted",
+                ),
+            };
+            drop(next);
+            let mut rejected = baseline;
+            let outcome = Err(error);
+            let pending = permit.finalize(&owner, &mut rejected, &outcome, applied)?;
+            let event = audit(command, &rejected, "rejected");
+            append_audit(&mut rejected, event)?;
+            let accounting = previous.snapshot_accounting.updated(
+                state,
+                &rejected,
+                &BTreeMap::new(),
+                &BTreeSet::new(),
+            )?;
+            if !crate::accounting::audit_fits(&rejected)
+                || !accounting.fits(&rejected)?
+                || !lifecycle::completion_fits(&rejected)?
+            {
+                return Err(Error::new(
+                    ErrorCode::Corruption,
+                    "reserved mutation terminal cannot publish",
+                )
+                .into());
+            }
+            let receipts = pending.stage()?;
+            let candidate = Arc::new(Generation {
+                state: rejected,
+                receipts,
+                backup_bindings: previous.backup_bindings.clone(),
+                terminals: previous.terminals.clone(),
+                target_resolutions: previous.target_resolutions.clone(),
+                indexes: previous.indexes.clone(),
+                snapshot_accounting: accounting,
+                application_selection: std::sync::OnceLock::new(),
+                _read_reservations: vec![],
+            });
+            Ok(PreparedCommand {
+                generation: Some(candidate),
+                changed: ChangedIds::new(),
+                outcome,
+            })
         })
     }
 

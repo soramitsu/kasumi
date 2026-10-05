@@ -82,6 +82,10 @@ where
         let payload = CommandPayload::Apply { since, upto };
         Command::new(payload)
     }
+
+    pub(crate) fn stop() -> Self {
+        Command::new(CommandPayload::Stop)
+    }
 }
 
 // TODO: move to other mod, it is shared by log, sm and replication
@@ -117,6 +121,9 @@ where
         since: u64,
         upto: LogId<C::NodeId>,
     },
+
+    /// Terminal boundary, admitted only while sealing the shared handoff.
+    Stop,
 }
 
 impl<C> Debug for CommandPayload<C>
@@ -134,6 +141,7 @@ where
                 write!(f, "BeginReceivingSnapshot")
             }
             CommandPayload::Apply { since, upto } => write!(f, "Apply: {}..={}", since, upto),
+            CommandPayload::Stop => write!(f, "Stop"),
         }
     }
 }
@@ -148,6 +156,7 @@ where
             (CommandPayload::BuildSnapshot, CommandPayload::BuildSnapshot) => true,
             (CommandPayload::GetSnapshot { .. }, CommandPayload::GetSnapshot { .. }) => true,
             (CommandPayload::BeginReceivingSnapshot { .. }, CommandPayload::BeginReceivingSnapshot { .. }) => true,
+            (CommandPayload::Stop, CommandPayload::Stop) => true,
             (
                 CommandPayload::InstallFullSnapshot { snapshot: s1 },
                 CommandPayload::InstallFullSnapshot { snapshot: s2 },

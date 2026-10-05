@@ -1,6 +1,7 @@
 //! OpenRaft joins its core before its state-machine, snapshot, and replication
 //! workers necessarily finish. Track their actual storage ownership separately.
 
+use kasumi_store::{PlaintextValue, RetainedPlaintextValue, TenantStore};
 use std::{ops::Deref, sync::Arc};
 use tokio::sync::watch;
 
@@ -50,6 +51,129 @@ impl<T: ?Sized> StorageHandle<T> {
     }
 }
 
+/// An escaped plaintext result keeps the exact storage owner and shutdown
+/// lease. Both fields are move-only; plaintext and its resident charge retire
+/// before the final custody handle can announce storage drain.
+pub(crate) struct StoragePlaintext {
+    value: PlaintextValue,
+    _custody: PlaintextCustody,
+}
+
+#[derive(Clone)]
+enum PlaintextCustody {
+    Store {
+        _owner: StorageHandle<TenantStore>,
+    },
+    Domains {
+        _owner: StorageHandle<crate::domains::Domains>,
+    },
+}
+
+impl StoragePlaintext {
+    pub(crate) fn as_bytes(&self) -> &[u8] {
+        self.value.as_bytes()
+    }
+}
+
+impl Deref for StoragePlaintext {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        self.as_bytes()
+    }
+}
+
+/// The immutable point control is paid by its original Store point lease.
+/// Cloning this inline wrapper retains the SAME plaintext and existing storage
+/// handle; it allocates neither a second byte Vec nor another control/grant.
+#[derive(Clone)]
+pub(crate) struct RetainedStoragePlaintext {
+    value: RetainedPlaintextValue,
+    _custody: PlaintextCustody,
+}
+impl RetainedStoragePlaintext {
+    pub(crate) fn as_bytes(&self) -> &[u8] {
+        self.value.as_bytes()
+    }
+    pub(crate) fn is_from_memory(
+        &self,
+        memory: &Arc<dyn kasumi_store::NodeDiskMemoryAdmission>,
+    ) -> bool {
+        self.value.is_from_memory(memory)
+    }
+}
+
+impl StorageHandle<TenantStore> {
+    #[cfg(test)]
+    pub(crate) fn get_retained(
+        &self,
+        namespace: &str,
+        key: &[u8],
+    ) -> anyhow::Result<Option<RetainedStoragePlaintext>> {
+        self.0.value.get_retained(namespace, key).map(|value| {
+            value.map(|value| RetainedStoragePlaintext {
+                value,
+                _custody: PlaintextCustody::Store {
+                    _owner: self.clone(),
+                },
+            })
+        })
+    }
+    pub(crate) fn get(
+        &self,
+        namespace: &str,
+        key: &[u8],
+    ) -> anyhow::Result<Option<StoragePlaintext>> {
+        self.0.value.get(namespace, key).map(|value| {
+            value.map(|value| StoragePlaintext {
+                value,
+                _custody: PlaintextCustody::Store {
+                    _owner: self.clone(),
+                },
+            })
+        })
+    }
+}
+
+impl StorageHandle<crate::domains::Domains> {
+    pub(crate) fn application_get_retained(
+        &self,
+        namespace: &str,
+        key: &[u8],
+    ) -> anyhow::Result<Option<RetainedStoragePlaintext>> {
+        self.0
+            .value
+            .application()?
+            .get_retained(namespace, key)
+            .map(|value| {
+                value.map(|value| RetainedStoragePlaintext {
+                    value,
+                    _custody: PlaintextCustody::Domains {
+                        _owner: self.clone(),
+                    },
+                })
+            })
+    }
+
+    pub(crate) fn application_get(
+        &self,
+        namespace: &str,
+        key: &[u8],
+    ) -> anyhow::Result<Option<StoragePlaintext>> {
+        self.0
+            .value
+            .application()?
+            .get(namespace, key)
+            .map(|value| {
+                value.map(|value| StoragePlaintext {
+                    value,
+                    _custody: PlaintextCustody::Domains {
+                        _owner: self.clone(),
+                    },
+                })
+            })
+    }
+}
+
 impl<T: ?Sized> Clone for StorageHandle<T> {
     fn clone(&self) -> Self {
         Self(self.0.clone())
@@ -63,6 +187,10 @@ impl<T: ?Sized> Deref for StorageHandle<T> {
         &self.0.value
     }
 }
+
+#[cfg(test)]
+#[path = "lifetime_plaintext_tests.rs"]
+mod plaintext_tests;
 
 #[cfg(test)]
 mod tests {

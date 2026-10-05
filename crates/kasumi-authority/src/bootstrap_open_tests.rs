@@ -1,12 +1,145 @@
 use super::*;
 use kasumi_store::WriteOp;
 
-type RetainedRows = Vec<Vec<(Vec<u8>, Vec<u8>)>>;
+type RetainedRows = Vec<kasumi_store::PlaintextScan>;
+
+/// Copies used to alter authenticated fixture rows own their installed credit
+/// through the production writer. The operation's buffers retire first.
+pub(super) struct AdmittedFixturePut {
+    operation: WriteOp,
+    _charge: kasumi_store::DiskMemoryLease,
+}
+impl AdmittedFixturePut {
+    fn prepare(
+        store: &kasumi_store::TenantStore,
+        namespace: &str,
+        key: &[u8],
+        value_len: usize,
+        fill: impl FnOnce(&mut Vec<u8>),
+    ) -> anyhow::Result<Self> {
+        // Each actual buffer has a checked allocator allowance; the installed
+        // provider separately accounts for its opaque reservation token.
+        const ALLOCATION_ALLOWANCE: usize = 4096;
+        let namespace_bound = namespace
+            .len()
+            .checked_add(ALLOCATION_ALLOWANCE)
+            .ok_or_else(|| anyhow::anyhow!("fixture namespace allocation overflow"))?;
+        let key_bound = key
+            .len()
+            .checked_add(ALLOCATION_ALLOWANCE)
+            .ok_or_else(|| anyhow::anyhow!("fixture key allocation overflow"))?;
+        let value_bound = value_len
+            .checked_add(ALLOCATION_ALLOWANCE)
+            .ok_or_else(|| anyhow::anyhow!("fixture value allocation overflow"))?;
+        let admitted = namespace_bound
+            .checked_add(key_bound)
+            .and_then(|bytes| bytes.checked_add(value_bound))
+            .ok_or_else(|| anyhow::anyhow!("fixture write allocation overflow"))?;
+        let charge = store
+            .plaintext_memory_owner()
+            .clone()
+            .reserve_installed(u64::try_from(admitted)?)?;
+        let mut namespace_buffer = String::new();
+        namespace_buffer.try_reserve_exact(namespace.len())?;
+        anyhow::ensure!(
+            namespace_buffer.capacity() <= namespace_bound,
+            "fixture namespace allocation exceeded admission"
+        );
+        namespace_buffer.push_str(namespace);
+        let mut key_buffer = Vec::new();
+        key_buffer.try_reserve_exact(key.len())?;
+        anyhow::ensure!(
+            key_buffer.capacity() <= key_bound,
+            "fixture key allocation exceeded admission"
+        );
+        key_buffer.extend_from_slice(key);
+        let mut value_buffer = Vec::new();
+        value_buffer.try_reserve_exact(value_len)?;
+        anyhow::ensure!(
+            value_buffer.capacity() <= value_bound,
+            "fixture value allocation exceeded admission"
+        );
+        fill(&mut value_buffer);
+        anyhow::ensure!(
+            value_buffer.len() == value_len && value_buffer.capacity() <= value_bound,
+            "fixture value construction exceeded admission"
+        );
+        Ok(Self {
+            operation: WriteOp::put(namespace_buffer, key_buffer, value_buffer),
+            _charge: charge,
+        })
+    }
+    pub(super) fn copy(
+        store: &kasumi_store::TenantStore,
+        namespace: &str,
+        key: &[u8],
+        value: &[u8],
+    ) -> anyhow::Result<Self> {
+        Self::with_suffix(store, namespace, key, value, &[])
+    }
+    pub(super) fn with_suffix(
+        store: &kasumi_store::TenantStore,
+        namespace: &str,
+        key: &[u8],
+        prefix: &[u8],
+        suffix: &[u8],
+    ) -> anyhow::Result<Self> {
+        let value_len = prefix
+            .len()
+            .checked_add(suffix.len())
+            .ok_or_else(|| anyhow::anyhow!("fixture value length overflow"))?;
+        Self::prepare(store, namespace, key, value_len, |value| {
+            value.extend_from_slice(prefix);
+            value.extend_from_slice(suffix);
+        })
+    }
+    pub(super) fn replace(
+        store: &kasumi_store::TenantStore,
+        namespace: &str,
+        key: &[u8],
+        source: &[u8],
+        needle: &str,
+        replacement: &str,
+    ) -> anyhow::Result<Self> {
+        anyhow::ensure!(!needle.is_empty(), "fixture replacement needle is empty");
+        let source = std::str::from_utf8(source)?;
+        let matches = source.match_indices(needle).count();
+        let removed = matches
+            .checked_mul(needle.len())
+            .ok_or_else(|| anyhow::anyhow!("fixture replacement length overflow"))?;
+        let added = matches
+            .checked_mul(replacement.len())
+            .ok_or_else(|| anyhow::anyhow!("fixture replacement length overflow"))?;
+        let value_len = source
+            .len()
+            .checked_sub(removed)
+            .and_then(|bytes| bytes.checked_add(added))
+            .ok_or_else(|| anyhow::anyhow!("fixture replacement length overflow"))?;
+        Self::prepare(store, namespace, key, value_len, |value| {
+            let mut start = 0;
+            for (index, _) in source.match_indices(needle) {
+                value.extend_from_slice(&source.as_bytes()[start..index]);
+                value.extend_from_slice(replacement.as_bytes());
+                start = index + needle.len();
+            }
+            value.extend_from_slice(&source.as_bytes()[start..]);
+        })
+    }
+    pub(super) fn operations(&self) -> &[WriteOp] {
+        std::slice::from_ref(&self.operation)
+    }
+    pub(super) fn value(&self) -> &[u8] {
+        let WriteOp::Put { value, .. } = &self.operation else {
+            unreachable!("fixture owner contains only Put")
+        };
+        value
+    }
+}
 
 struct InstalledFixture {
     physical: PhysicalFixture,
     stores: Arc<TenantStorageSet>,
-    node: Arc<NodeStore>,
+    node: NodeStore,
     installation: AuthorityInstallation,
     bootstrap: crate::AuthorityBootstrap,
     settings: AuthorityNodeSettings,
@@ -36,10 +169,12 @@ impl InstalledFixture {
         };
         let signing = root.install(installation.manifest.clone(), 0)?;
         let (bootstrap, settings) = test_settings(4 << 20, signing.signer.certificate().clone());
-        let node = physical.create_new(
-            physical.path("authority.kv"),
-            kasumi_store::test_utils::NODE_STORE_ID,
-        )?;
+        let node = physical
+            .create_new(
+                physical.path("authority.kv"),
+                kasumi_store::test_utils::NODE_STORE_ID,
+            )
+            .expect("bounded installed authority fixture must create its original node");
         let stores = TenantStorageSet::initialize_catalogs(
             node.clone(),
             installation.tenant(),
@@ -66,7 +201,9 @@ impl InstalledFixture {
             &self.settings.installed_members[&1].verifier,
         )
     }
-    async fn open(&self) -> anyhow::Result<Arc<IndependentAuthority>> {
+    async fn open(
+        &self,
+    ) -> std::result::Result<Arc<IndependentAuthority>, kasumi_store::ScratchOperationFailure> {
         self.open_as(
             self.installation.clone(),
             self.signing.signer.clone(),
@@ -79,7 +216,7 @@ impl InstalledFixture {
         installation: AuthorityInstallation,
         signer: Arc<AuthoritySigner>,
         settings: AuthorityNodeSettings,
-    ) -> anyhow::Result<Arc<IndependentAuthority>> {
+    ) -> std::result::Result<Arc<IndependentAuthority>, kasumi_store::ScratchOperationFailure> {
         IndependentAuthority::open_existing_with_clock(
             self.stores.clone(),
             installation,
@@ -157,10 +294,12 @@ impl InstalledFixture {
         } = self;
         drop(stores);
         drop(node);
-        let node = physical.open_existing(
-            physical.path("authority.kv"),
-            kasumi_store::test_utils::NODE_STORE_ID,
-        )?;
+        let node = physical
+            .open_existing(
+                physical.path("authority.kv"),
+                kasumi_store::test_utils::NODE_STORE_ID,
+            )
+            .expect("positively drained authority fixture must reopen its original node");
         let stores = TenantStorageSet::open_existing(
             node.clone(),
             installation.tenant(),
@@ -230,7 +369,21 @@ async fn strict_authority_requires_every_published_head_without_recreating_it() 
             "partial installation cannot initialize again"
         );
         assert_eq!(fixture.retained()?, before);
-        inject(WriteOp::put(namespace, key, original))?;
+        let restoration = AdmittedFixturePut::copy(store, namespace, key, original.as_bytes())?;
+        let operations = restoration.operations();
+        if custody {
+            kasumi_store::test_utils::inject_authenticated_rows_below_facade(
+                fixture.stores.as_ref(),
+                &[],
+                operations,
+            )?;
+        } else {
+            kasumi_store::test_utils::inject_authenticated_rows_below_facade(
+                fixture.stores.as_ref(),
+                operations,
+                &[],
+            )?;
+        }
     }
     fixture.close().await;
     Ok(())
@@ -257,14 +410,15 @@ async fn strict_authority_rejects_corrupt_and_unsupported_genesis_without_replac
         )?;
         fixture.reject().await?;
     }
-    fixture.stores.write_batch(
-        &[WriteOp::put(
-            "authority.installation",
-            b"binding",
-            original.clone(),
-        )],
-        &[WriteOp::put("authority.installation", b"binding", original)],
+    let restoration = AdmittedFixturePut::copy(
+        fixture.stores.application(),
+        "authority.installation",
+        b"binding",
+        original.as_bytes(),
     )?;
+    fixture
+        .stores
+        .write_batch(restoration.operations(), restoration.operations())?;
     let original = fixture
         .stores
         .application()
@@ -276,18 +430,23 @@ async fn strict_authority_rejects_corrupt_and_unsupported_genesis_without_replac
         b"not-json",
     )])?;
     fixture.reject().await?;
-    fixture.stores.application().write_batch(&[WriteOp::put(
+    let restoration = AdmittedFixturePut::copy(
+        fixture.stores.application(),
         "kasumi.independent-authority",
         b"meta",
-        original,
-    )])?;
+        original.as_bytes(),
+    )?;
+    fixture
+        .stores
+        .application()
+        .write_batch(restoration.operations())?;
     fixture.close().await;
     Ok(())
 }
 
 #[tokio::test]
 async fn strict_authority_rejects_alternate_installation_bytes_and_restores_writer_rows()
--> anyhow::Result<()> {
+-> FixtureResult<()> {
     let fixture = InstalledFixture::new().await?;
     fixture.initialize()?;
     let verifier = &fixture.settings.installed_members[&1].verifier;
@@ -318,28 +477,32 @@ async fn strict_authority_rejects_alternate_installation_bytes_and_restores_writ
                 .stores
                 .custody()
                 .store()
-                .get("authority.installation", key)?,
-            paired.then(|| original.clone())
+                .get("authority.installation", key)?
+                .as_deref(),
+            paired.then_some(original.as_bytes())
         );
-        let write = |bytes: &[u8]| -> anyhow::Result<()> {
+        let write = |operation: &AdmittedFixturePut| -> anyhow::Result<()> {
             if paired {
-                fixture.stores.write_batch(
-                    &[WriteOp::put("authority.installation", key, bytes)],
-                    &[WriteOp::put("authority.installation", key, bytes)],
-                )?;
+                fixture
+                    .stores
+                    .write_batch(operation.operations(), operation.operations())?;
             } else {
-                fixture.stores.application().write_batch(&[WriteOp::put(
-                    "authority.installation",
-                    key,
-                    bytes,
-                )])?;
+                fixture
+                    .stores
+                    .application()
+                    .write_batch(operation.operations())?;
             }
             Ok(())
         };
-        let mut alternate = original.clone();
-        alternate.push(b' ');
+        let alternate = AdmittedFixturePut::with_suffix(
+            fixture.stores.application(),
+            "authority.installation",
+            key,
+            original.as_bytes(),
+            b" ",
+        )?;
         assert_eq!(
-            serde_json::from_slice::<serde_json::Value>(&alternate)?,
+            serde_json::from_slice::<serde_json::Value>(alternate.value())?,
             serde_json::from_slice::<serde_json::Value>(&original)?
         );
         write(&alternate)?;
@@ -349,7 +512,13 @@ async fn strict_authority_rejects_alternate_installation_bytes_and_restores_writ
         };
         assert!(format!("{error:#}").contains(diagnostic), "{error:#}");
         fixture.reject().await?;
-        write(&original)?;
+        let restoration = AdmittedFixturePut::copy(
+            fixture.stores.application(),
+            "authority.installation",
+            key,
+            original.as_bytes(),
+        )?;
+        write(&restoration)?;
         let restored = crate::bootstrap::load(&fixture.stores, &fixture.installation, verifier)?;
         assert_eq!(
             restored.binding,
@@ -397,7 +566,7 @@ async fn strict_authority_binds_immutable_installation_and_physical_verifier() -
 }
 
 #[tokio::test]
-async fn strict_authority_reopens_original_genesis_after_complete_owner_drain() -> anyhow::Result<()>
+async fn strict_authority_reopens_original_genesis_after_complete_owner_drain() -> FixtureResult<()>
 {
     let fixture = InstalledFixture::new().await?;
     fixture.initialize()?;
@@ -438,7 +607,7 @@ async fn strict_authority_reopens_original_genesis_after_complete_owner_drain() 
 
 #[tokio::test]
 async fn live_maintenance_resource_floor_rejects_alternate_bytes_and_accepts_restored_writer_bytes()
--> anyhow::Result<()> {
+-> FixtureResult<()> {
     let fixture = InstalledFixture::new().await?;
     fixture.initialize()?;
     let service = fixture.open().await?;
@@ -447,17 +616,21 @@ async fn live_maintenance_resource_floor_rejects_alternate_bytes_and_accepts_res
         .application()
         .get("authority.installation", b"resource-floor")?
         .unwrap();
-    let mut alternate = original.clone();
-    alternate.push(b' ');
-    assert_eq!(
-        serde_json::from_slice::<u64>(&alternate)?,
-        serde_json::from_slice::<u64>(&original)?
-    );
-    fixture.stores.application().write_batch(&[WriteOp::put(
+    let alternate = AdmittedFixturePut::with_suffix(
+        fixture.stores.application(),
         "authority.installation",
         b"resource-floor",
-        alternate.as_slice(),
-    )])?;
+        original.as_bytes(),
+        b" ",
+    )?;
+    assert_eq!(
+        serde_json::from_slice::<u64>(alternate.value())?,
+        serde_json::from_slice::<u64>(&original)?
+    );
+    fixture
+        .stores
+        .application()
+        .write_batch(alternate.operations())?;
     let Err(error) = service.backend.reserve_node_resources(0) else {
         panic!("live maintenance accepted alternate resource-floor bytes");
     };
@@ -469,14 +642,20 @@ async fn live_maintenance_resource_floor_rejects_alternate_bytes_and_accepts_res
         fixture
             .stores
             .application()
-            .get("authority.installation", b"resource-floor")?,
-        Some(alternate)
+            .get("authority.installation", b"resource-floor")?
+            .as_deref(),
+        Some(alternate.value())
     );
-    fixture.stores.application().write_batch(&[WriteOp::put(
+    let restoration = AdmittedFixturePut::copy(
+        fixture.stores.application(),
         "authority.installation",
         b"resource-floor",
-        original.as_slice(),
-    )])?;
+        original.as_bytes(),
+    )?;
+    fixture
+        .stores
+        .application()
+        .write_batch(restoration.operations())?;
     service.backend.reserve_node_resources(0)?;
     assert_eq!(
         fixture

@@ -106,7 +106,8 @@ async fn physical_reopen(
         disk.clone(),
         storage.open_scratch(&config.scratch_disk)?,
         disk.native_storage_config(),
-    )?;
+    )
+    .expect("drained standalone operator fixture must reopen its installed native node");
     node.shutdown().await?;
     drop(node);
     Ok(())
@@ -229,6 +230,7 @@ async fn cancelled_initialization_impl() -> Result<()> {
         kasumi_store::DirectoryPolicy::fixture(),
         kasumi_store::FileAllocationPolicy::fixture(),
         StandaloneNetwork::fixture(),
+        local_audit_placements("documents"),
         storage.clone(),
     ));
     pending(&mut request).await;
@@ -354,6 +356,7 @@ async fn early_initialization_audit_error_impl() -> Result<()> {
             kasumi_store::DirectoryPolicy::fixture(),
             kasumi_store::FileAllocationPolicy::fixture(),
             StandaloneNetwork::fixture(),
+            local_audit_placements("documents"),
             storage.clone()
         )
         .await
@@ -379,7 +382,8 @@ async fn early_initialization_audit_error_impl() -> Result<()> {
             native_scratch_disk,
             native_disk.native_storage_config(),
         )
-    }?;
+    }
+    .expect("drained partial operator provisioning must reopen its installed native node");
     node.shutdown().await?;
     drop(node);
     Ok(())

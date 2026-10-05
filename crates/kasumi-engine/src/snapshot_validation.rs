@@ -19,20 +19,23 @@ impl ValidatedApplicationSnapshot {
         image: SnapshotImage,
         index_disk_bytes: u64,
         mut check: impl FnMut() -> anyhow::Result<()>,
-    ) -> anyhow::Result<Self> {
+    ) -> std::result::Result<Self, kasumi_store::ScratchOperationFailure> {
         let phase = VerificationPhase::start("snapshot.structural_index", None);
         let index = StagedSnapshot::new(image, index_disk_bytes, &mut check)?;
         phase.complete();
-        let phase = VerificationPhase::start("snapshot.semantic_setup", None);
-        let Some(Record::Header(header)) = index.get(0, "", "")? else {
-            anyhow::bail!("snapshot metadata absent");
-        };
-        phase.complete();
-        let phase = VerificationPhase::start("snapshot.header", None);
-        // Header semantics use only the bounded metadata and structural index.
-        // Reject invalid application input before allocating lineage scratch.
-        Self::validate_header(&header, &index)?;
-        phase.complete();
+        let header = kasumi_store::ScratchOperationFailure::ordinary(|| {
+            let phase = VerificationPhase::start("snapshot.semantic_setup", None);
+            let Some(Record::Header(header)) = index.get(0, "", "")? else {
+                anyhow::bail!("snapshot metadata absent");
+            };
+            phase.complete();
+            let phase = VerificationPhase::start("snapshot.header", None);
+            // Header semantics use only the bounded metadata and structural index.
+            // Reject invalid application input before allocating lineage scratch.
+            Self::validate_header(&header, &index)?;
+            phase.complete();
+            Ok(header)
+        })?;
         let phase = VerificationPhase::start("snapshot.lineage", None);
         let scratch = EncryptedTable::new(
             index.image().disk(),
@@ -44,37 +47,39 @@ impl ValidatedApplicationSnapshot {
             header,
             lineage: scratch,
         };
-        result.validate_lineage(&mut check)?;
-        phase.complete();
-        let phase = VerificationPhase::start("snapshot.receipts", None);
-        result.validate_receipts(&mut check)?;
-        phase.complete();
-        let phase = VerificationPhase::start("snapshot.documents", None);
-        result.validate_documents(&mut check)?;
-        phase.complete();
-        let phase = VerificationPhase::start("snapshot.staging", None);
-        result.validate_staging(&mut check)?;
-        phase.complete();
-        let phase = VerificationPhase::start("snapshot.change_feed", None);
-        result.validate_change_feed(&mut check)?;
-        phase.complete();
-        let phase = VerificationPhase::start("snapshot.history", None);
-        result.validate_history(&mut check)?;
-        phase.complete();
-        let phase = VerificationPhase::start("snapshot.permanent", None);
-        result.validate_permanent(&mut check)?;
-        phase.complete();
-        let phase = VerificationPhase::start("snapshot.audits", None);
-        result.validate_audits(&mut check)?;
-        phase.complete();
-        let phase = VerificationPhase::start("snapshot.targets", None);
-        result.validate_targets(&mut check)?;
-        phase.complete();
-        let phase = VerificationPhase::start("snapshot.target_resolutions", None);
-        result.validate_target_resolutions(&mut check)?;
-        phase.complete();
-        check()?;
-        Ok(result)
+        kasumi_store::ScratchOperationFailure::ordinary(|| {
+            result.validate_lineage(&mut check)?;
+            phase.complete();
+            let phase = VerificationPhase::start("snapshot.receipts", None);
+            result.validate_receipts(&mut check)?;
+            phase.complete();
+            let phase = VerificationPhase::start("snapshot.documents", None);
+            result.validate_documents(&mut check)?;
+            phase.complete();
+            let phase = VerificationPhase::start("snapshot.staging", None);
+            result.validate_staging(&mut check)?;
+            phase.complete();
+            let phase = VerificationPhase::start("snapshot.change_feed", None);
+            result.validate_change_feed(&mut check)?;
+            phase.complete();
+            let phase = VerificationPhase::start("snapshot.history", None);
+            result.validate_history(&mut check)?;
+            phase.complete();
+            let phase = VerificationPhase::start("snapshot.permanent", None);
+            result.validate_permanent(&mut check)?;
+            phase.complete();
+            let phase = VerificationPhase::start("snapshot.audits", None);
+            result.validate_audits(&mut check)?;
+            phase.complete();
+            let phase = VerificationPhase::start("snapshot.targets", None);
+            result.validate_targets(&mut check)?;
+            phase.complete();
+            let phase = VerificationPhase::start("snapshot.target_resolutions", None);
+            result.validate_target_resolutions(&mut check)?;
+            phase.complete();
+            check()?;
+            Ok(result)
+        })
     }
 
     pub(crate) fn header(&self) -> &TenantState {
@@ -95,7 +100,7 @@ impl ValidatedApplicationSnapshot {
         backup_id: uuid::Uuid,
         mut admit: impl FnMut(&crate::snapshot_codec::StreamSummary) -> anyhow::Result<()>,
         mut check: impl FnMut() -> anyhow::Result<()>,
-    ) -> anyhow::Result<Self> {
+    ) -> std::result::Result<Self, kasumi_store::ScratchOperationFailure> {
         if self.index.count(11)? == 0 {
             // Semantic validation already proved zero catalog bytes and no
             // archived references without a catalog entry. Relocation changes
@@ -124,20 +129,23 @@ impl ValidatedApplicationSnapshot {
             crate::target_resolution::snapshot_limit(&self.header)?,
             |writer| {
                 let mut encoder = crate::snapshot_codec::Encoder::new(writer)?;
-                crate::snapshot_codec::visit(&mut self.image().reader(), |_, mut record| {
-                    check()?;
-                    match &mut record {
-                        Record::Header(header) => {
-                            header.history_archive_bytes = usize::try_from(history_bytes)?
+                crate::snapshot_codec::visit::<anyhow::Error>(
+                    &mut self.image().reader(),
+                    |_, mut record| {
+                        check()?;
+                        match &mut record {
+                            Record::Header(header) => {
+                                header.history_archive_bytes = usize::try_from(history_bytes)?
+                            }
+                            Record::Archive(_, archive) => {
+                                Arc::make_mut(archive).storage_destination = alias.to_owned();
+                                Arc::make_mut(archive).storage_backup_session = Some(backup_id);
+                            }
+                            _ => {}
                         }
-                        Record::Archive(_, archive) => {
-                            Arc::make_mut(archive).storage_destination = alias.to_owned();
-                            Arc::make_mut(archive).storage_backup_session = Some(backup_id);
-                        }
-                        _ => {}
-                    }
-                    encoder.record(record)
-                })?;
+                        encoder.record(record)
+                    },
+                )?;
                 check()?;
                 encoder.finish()
             },
@@ -153,10 +161,13 @@ impl ValidatedApplicationSnapshot {
         let layout = StagedSnapshot::inspect(&image, &mut check)?;
         admit(&layout)?;
         let validated = Self::validate(image, disk, check)?;
-        ensure!(
-            validated.index.summary() == layout,
-            "relocated backup differs from admitted typed framing"
-        );
+        kasumi_store::ScratchOperationFailure::ordinary(|| {
+            ensure!(
+                validated.index.summary() == layout,
+                "relocated backup differs from admitted typed framing"
+            );
+            Ok(())
+        })?;
         Ok(validated)
     }
     pub(crate) fn authorize_source(
@@ -1350,7 +1361,8 @@ mod tests {
     fn indexed(
         disk: &Arc<kasumi_store::ScratchDisk>,
         state: &TenantState,
-    ) -> anyhow::Result<ValidatedApplicationSnapshot> {
+    ) -> std::result::Result<ValidatedApplicationSnapshot, kasumi_store::ScratchOperationFailure>
+    {
         ValidatedApplicationSnapshot::validate(image(disk, state), 128 << 20, || Ok(()))
     }
     #[test]
@@ -1832,7 +1844,12 @@ mod tests {
                 panic!("relocation ignored a failed callback");
             };
             assert!(Arc::ptr_eq(
-                &error.downcast_ref::<RelocationFailure>().unwrap().0,
+                &error
+                    .operation_error()
+                    .expect("original ordinary relocation callback failure")
+                    .downcast_ref::<RelocationFailure>()
+                    .unwrap()
+                    .0,
                 &marker
             ));
             assert_eq!(
@@ -1962,12 +1979,9 @@ mod tests {
             case: &str,
         ) {
             let image = encoded(disk, state, row);
-            let full = crate::snapshot_codec::read(image.disk(), &mut image.reader()).and_then(
-                |decoded| {
-                    TenantEngine::verify_logical_snapshot(&image, &decoded.state)
-                        .map_err(Into::into)
-                },
-            );
+            let full = crate::snapshot_codec::read(image.disk(), &mut image.reader())
+                .map_err(SnapshotFailure::from)
+                .and_then(|decoded| TenantEngine::verify_logical_snapshot(&image, &decoded.state));
             assert_eq!(full.is_ok(), accepted, "full {case}: {full:?}");
             let indexed = ValidatedApplicationSnapshot::validate(image, 128 << 20, || Ok(()));
             assert_eq!(indexed.is_ok(), accepted, "indexed {case}");

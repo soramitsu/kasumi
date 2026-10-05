@@ -353,9 +353,10 @@ fn post_publication_locator_read_failure_fences_and_reopens_the_whole_new_genera
             Operation::put("accounts", b"b", vec![8; 8192]),
         ])
         .unwrap_err();
-    let CoreError::UnknownCommit(error) = error else {
-        panic!("post-publication proof did not return UnknownCommit: {error}");
-    };
+    assert!(
+        error.is_unknown_commit(),
+        "post-publication proof did not return UnknownCommit: {error}"
+    );
     assert!(error.to_string().contains("publication proof read failed"));
     let published = assert_commit_boundary(&state, &backend, before);
     assert_eq!(backend.post_publication_reads.load(Ordering::Acquire), 1);
@@ -367,11 +368,12 @@ fn post_publication_locator_read_failure_fences_and_reopens_the_whole_new_genera
     assert_eq!(failed.at + failed.len as u64, old_b.offset);
     assert!(failed.len <= segment::CACHED_VALUE_LOCATOR_BYTES);
     assert!(state.is_fenced());
-    assert!(matches!(state.snapshot(), Err(CoreError::OwnerFailed)));
-    assert!(matches!(
-        state.commit(&[Operation::delete("accounts", b"hot")]),
-        Err(CoreError::OwnerFailed)
-    ));
+    assert!(
+        matches!(&(state.snapshot()), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+    );
+    assert!(
+        matches!(&(state.commit(&[Operation::delete("accounts", b"hot")])), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+    );
     drop(state);
     assert_eq!(backend.admission.inner.used.load(Ordering::Acquire), 0);
 
@@ -437,9 +439,10 @@ fn post_publication_warm_read_failure_fences_and_reopens_durable_version() {
     let error = state
         .commit(&[Operation::put("accounts", b"a", vec![9; 8192])])
         .unwrap_err();
-    let CoreError::UnknownCommit(error) = error else {
-        panic!("post-publication warm read did not return UnknownCommit: {error}");
-    };
+    assert!(
+        error.is_unknown_commit(),
+        "post-publication warm read did not return UnknownCommit: {error}"
+    );
     assert!(error.to_string().contains("publication proof read failed"));
     let published = assert_commit_boundary(&state, &backend, before);
     let failed = backend.failed_read.lock().unwrap().unwrap();

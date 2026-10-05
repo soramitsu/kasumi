@@ -218,10 +218,9 @@ fn publication_proof_preflight_denials_leave_cache_and_root_unchanged() {
         // Values, rollback/edit scratch and the admitted directory writer
         // precede the exact capture/proof constructors under test.
         admission.deny_nth(3 + nth);
-        assert!(matches!(
-            state.commit(&[Operation::put("accounts", b"a", vec![9; 8192])]),
-            Err(CoreError::CapacityDenied)
-        ));
+        assert!(
+            matches!(&(state.commit(&[Operation::put("accounts", b"a", vec![9; 8192])])), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::CapacityDenied)))
+        );
         admission.deny_at.store(usize::MAX, Ordering::Release);
         assert!(!state.is_fenced());
         assert_eq!(state.selected, selected);
@@ -257,10 +256,9 @@ fn corrupted_publication_candidate_fences_after_durable_commit_and_reopens_new_v
                 .unwrap(),
         );
     }
-    assert!(matches!(
-        state.commit(&[Operation::put("accounts", b"a", vec![9; 8192])]),
-        Err(CoreError::UnknownCommit(_))
-    ));
+    assert!(
+        matches!(&(state.commit(&[Operation::put("accounts", b"a", vec![9; 8192])])), Err(native_error) if native_error.is_unknown_commit())
+    );
     assert!(state.is_fenced());
     drop(state);
     let mut reopened = DiskState::open(

@@ -126,6 +126,35 @@ impl NodeDiskMemoryAdmission for Memory {
         let bytes = bytes.checked_add(TOKEN).ok_or(io::ErrorKind::OutOfMemory)?;
         Ok(DiskMemoryLease::new(self.take(bytes, false)?))
     }
+    fn install_native_constructor(
+        self: Arc<Self>,
+        install: &mut kasumi_store::NativeConstructorInstall<'_>,
+    ) -> io::Result<()> {
+        let provider: Arc<dyn NodeDiskMemoryAdmission> = self.clone();
+        let permit = install
+            .try_begin_bind(provider)
+            .map_err(|_| std::io::ErrorKind::InvalidInput)?;
+        self.installed_requests.fetch_add(1, Ordering::Relaxed);
+        if self.deny_installed.load(Ordering::Relaxed) {
+            return Err(io::Error::other(
+                "prepared capture installed admission denied",
+            ));
+        }
+        let bytes = permit
+            .request_bytes()
+            .checked_add(DiskMemoryLease::token_allocation_bytes::<Grant>()?)
+            .ok_or(io::ErrorKind::OutOfMemory)?;
+        match self.take(bytes, false) {
+            Ok(token) => {
+                permit.bind(token);
+                Ok(())
+            }
+            Err(error) if error.kind() == io::ErrorKind::OutOfMemory => {
+                Err(permit.refuse_capacity(error))
+            }
+            Err(error) => Err(error),
+        }
+    }
     fn quote_cache_memory(&self, bytes: u64) -> io::Result<kasumi_kv::CacheMemoryQuote> {
         kasumi_kv::CacheMemoryQuote::new(bytes, TOKEN)
             .ok_or_else(|| io::ErrorKind::OutOfMemory.into())
@@ -201,7 +230,7 @@ impl SelectionWorkspace for Workspace {
 
 pub(super) struct Fixture {
     pub stores: Arc<kasumi_store::TenantStorageSet>,
-    pub node: Arc<kasumi_store::NodeStore>,
+    pub node: kasumi_store::NodeStore,
     pub image: SnapshotImage,
     pub memory: Arc<Memory>,
     _directory: tempfile::TempDir,
@@ -222,7 +251,8 @@ impl Fixture {
             disk,
             scratch.clone(),
             node_storage_config(),
-        )?;
+        )
+        .expect("registered node for the admitted selection fixture");
         let app = TenantStore::initialize_catalog_fixture_with_clock(
             node.clone(),
             "selected-proof".into(),

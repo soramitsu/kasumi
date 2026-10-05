@@ -187,10 +187,9 @@ fn read_workspace_constructor_refusal_has_no_effect_and_same_owner_retries() {
     let admission = WorkspaceAdmission::new();
     let owner: Arc<dyn StorageAdmission> = admission.clone();
     admission.deny_at.store(1, AtomicOrdering::Relaxed);
-    assert!(matches!(
-        DirectoryReadWorkspace::new(&owner),
-        Err(CoreError::CapacityDenied)
-    ));
+    assert!(
+        matches!(&(DirectoryReadWorkspace::new(&owner)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::CapacityDenied)))
+    );
     assert_eq!(admission.calls.load(AtomicOrdering::Relaxed), 1);
     assert_eq!(admission.inner.0.used.load(AtomicOrdering::Relaxed), 0);
     admission.check_owner().unwrap();
@@ -212,10 +211,9 @@ fn read_workspace_admits_its_entire_buffer_and_traversal_before_allocation() {
     let request = DirectoryReadWorkspace::request_bytes();
     let denied = Admission::new(request - 1);
     let owner: Arc<dyn StorageAdmission> = denied.clone();
-    assert!(matches!(
-        DirectoryReadWorkspace::new(&owner),
-        Err(CoreError::CapacityDenied)
-    ));
+    assert!(
+        matches!(&(DirectoryReadWorkspace::new(&owner)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::CapacityDenied)))
+    );
     assert_eq!(denied.0.used.load(AtomicOrdering::Relaxed), 0);
     denied.check_owner().unwrap();
     let exact = Admission::new(request);
@@ -239,33 +237,27 @@ fn workspace_rejects_foreign_admission_and_failed_owner_before_io() {
     let foreign = WorkspaceAdmission::new();
     let reader = DirectoryReader::new(&backend, foreign.clone());
     let before = backend.reads.load(AtomicOrdering::Relaxed);
-    assert!(matches!(
-        reader.get_with_workspace(root, DirectoryKey::table("t"), &mut workspace),
-        Err(CoreError::InvalidInput(_))
-    ));
-    assert!(matches!(
-        reader.contains_page_with_workspace(root, reference, &bytes, &mut workspace),
-        Err(CoreError::InvalidInput(_))
-    ));
-    assert!(matches!(
-        reader.warm_generation_with_workspace(root, 0, &mut workspace),
-        Err(CoreError::InvalidInput(_))
-    ));
+    assert!(
+        matches!(&(reader.get_with_workspace(root, DirectoryKey::table("t"), &mut workspace)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput(_))))
+    );
+    assert!(
+        matches!(&(reader.contains_page_with_workspace(root, reference, &bytes, &mut workspace)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput(_))))
+    );
+    assert!(
+        matches!(&(reader.warm_generation_with_workspace(root, 0, &mut workspace)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput(_))))
+    );
     assert_eq!(foreign.calls.load(AtomicOrdering::Relaxed), 0);
     admission.owner_failed();
     let reader = DirectoryReader::new(&backend, owner);
-    assert!(matches!(
-        reader.get_with_workspace(root, DirectoryKey::table("t"), &mut workspace),
-        Err(CoreError::OwnerFailed)
-    ));
-    assert!(matches!(
-        reader.contains_page_with_workspace(root, reference, &bytes, &mut workspace),
-        Err(CoreError::OwnerFailed)
-    ));
-    assert!(matches!(
-        reader.warm_generation_with_workspace(root, 0, &mut workspace),
-        Err(CoreError::OwnerFailed)
-    ));
+    assert!(
+        matches!(&(reader.get_with_workspace(root, DirectoryKey::table("t"), &mut workspace)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+    );
+    assert!(
+        matches!(&(reader.contains_page_with_workspace(root, reference, &bytes, &mut workspace)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+    );
+    assert!(
+        matches!(&(reader.warm_generation_with_workspace(root, 0, &mut workspace)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+    );
     assert_eq!(backend.reads.load(AtomicOrdering::Relaxed), before);
     drop(workspace);
     assert_eq!(admission.inner.0.used.load(AtomicOrdering::Relaxed), 0);
@@ -289,10 +281,9 @@ fn reused_workspace_preserves_candidate_validation_and_parent_bounds() {
         ..reference
     };
     let before = backend.reads.load(AtomicOrdering::Relaxed);
-    assert!(matches!(
-        reader.contains_page_with_workspace(empty_root(), bad_reference, &bad, &mut workspace),
-        Err(CoreError::Corrupt(_))
-    ));
+    assert!(
+        matches!(&(reader.contains_page_with_workspace(empty_root(), bad_reference, &bad, &mut workspace)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::Corrupt(_))))
+    );
     assert_eq!(backend.reads.load(AtomicOrdering::Relaxed), before);
 
     // Keep every page canonical while declaring the wrong subtree total in
@@ -301,18 +292,15 @@ fn reused_workspace_preserves_candidate_validation_and_parent_bounds() {
         entries: root.entries + 1,
         ..root
     };
-    assert!(matches!(
-        reader.get_with_workspace(invalid, DirectoryKey::table("t"), &mut workspace),
-        Err(CoreError::Corrupt(_))
-    ));
-    assert!(matches!(
-        reader.contains_page_with_workspace(invalid, reference, &bytes, &mut workspace),
-        Err(CoreError::Corrupt(_))
-    ));
-    assert!(matches!(
-        reader.warm_generation_with_workspace(invalid, 0, &mut workspace),
-        Err(CoreError::Corrupt(_))
-    ));
+    assert!(
+        matches!(&(reader.get_with_workspace(invalid, DirectoryKey::table("t"), &mut workspace)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::Corrupt(_))))
+    );
+    assert!(
+        matches!(&(reader.contains_page_with_workspace(invalid, reference, &bytes, &mut workspace)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::Corrupt(_))))
+    );
+    assert!(
+        matches!(&(reader.warm_generation_with_workspace(invalid, 0, &mut workspace)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::Corrupt(_))))
+    );
     assert_eq!(
         reader
             .get_with_workspace(root, DirectoryKey::table("t"), &mut workspace)
@@ -337,7 +325,9 @@ fn reused_workspace_preserves_read_failures_and_post_io_owner_checks() {
                 self.admission.owner_failed();
             }
             if self.fail.load(AtomicOrdering::Relaxed) {
-                return Err(CoreError::Io(std::io::ErrorKind::Other.into()));
+                return Err(CoreError::new(crate::CoreErrorCause::Io(
+                    std::io::ErrorKind::Other.into(),
+                )));
             }
             Ok(())
         }
@@ -373,13 +363,19 @@ fn reused_workspace_preserves_read_failures_and_post_io_owner_checks() {
         };
         let calls = admission.calls.load(AtomicOrdering::Relaxed);
         admission.deny_all.store(true, AtomicOrdering::Relaxed);
-        assert!(matches!(read(), Err(CoreError::Io(_))));
+        assert!(
+            matches!(&(read()), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::Io(_))))
+        );
         controlled.fail.store(false, AtomicOrdering::Relaxed);
         read().unwrap();
         controlled.expire.store(true, AtomicOrdering::Relaxed);
-        assert!(matches!(read(), Err(CoreError::OwnerFailed)));
+        assert!(
+            matches!(&(read()), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+        );
         let before = backend.reads.load(AtomicOrdering::Relaxed);
-        assert!(matches!(read(), Err(CoreError::OwnerFailed)));
+        assert!(
+            matches!(&(read()), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+        );
         assert_eq!(backend.reads.load(AtomicOrdering::Relaxed), before);
         assert_eq!(admission.calls.load(AtomicOrdering::Relaxed), calls);
         drop(workspace);
@@ -395,10 +391,9 @@ fn write_workspace_is_one_grant_and_reuses_actual_pages_for_checks_and_edits() {
     let admission = WorkspaceAdmission::new();
     admission.deny_all.store(true, AtomicOrdering::Relaxed);
     let reads = backend.reads.load(AtomicOrdering::Relaxed);
-    assert!(matches!(
-        DirectoryWriteWorkspace::for_edits(admission.clone()),
-        Err(CoreError::CapacityDenied)
-    ));
+    assert!(
+        matches!(&(DirectoryWriteWorkspace::for_edits(admission.clone())), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::CapacityDenied)))
+    );
     assert_eq!(admission.inner.0.used.load(AtomicOrdering::Relaxed), 0);
     assert_eq!(backend.reads.load(AtomicOrdering::Relaxed), reads);
     assert_eq!(*backend.pages.lock().unwrap(), old_pages);
@@ -476,10 +471,9 @@ fn write_workspace_rejects_an_operation_outside_its_admitted_envelope() {
     let reads = backend.reads.load(AtomicOrdering::Relaxed);
     let pages = backend.pages.lock().unwrap().len();
     let mut mutator = DirectoryMutator::new(&backend, &mut workspace).unwrap();
-    assert!(matches!(
-        mutator.set(old, 8, DirectoryKey::row("t", b"bad"), Some(value(8, 44))),
-        Err(CoreError::InvalidInput(_))
-    ));
+    assert!(
+        matches!(&(mutator.set(old, 8, DirectoryKey::row("t", b"bad"), Some(value(8, 44)))), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput(_))))
+    );
     assert_eq!(backend.reads.load(AtomicOrdering::Relaxed), reads);
     assert_eq!(backend.pages.lock().unwrap().len(), pages);
     assert_eq!(admission.calls.load(AtomicOrdering::Relaxed), 1);

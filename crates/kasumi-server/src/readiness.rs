@@ -92,9 +92,9 @@ impl Status {
     pub(crate) fn ready(&self) -> bool {
         self.complete
             && self.fresh
-            && self.expected_groups.is_some_and(|expected| {
-                expected > 0 && self.examined_groups == expected && self.healthy_groups == expected
-            })
+            && self
+                .expected_groups
+                .is_some_and(|expected| expected > 0 && self.examined_groups == expected)
     }
 }
 pub(crate) struct Snapshot {
@@ -134,18 +134,14 @@ impl Coverage {
             details: Vec::with_capacity(DETAIL_LIMIT.min(expected)),
         });
     }
-    pub(crate) fn record(&self, sample: Sample, healthy: bool, valid_until: Instant) {
+    pub(crate) fn record(&self, sample: Sample, healthy: bool) {
         let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
-        if !healthy {
-            // A newly observed failure invalidates the preceding successful
-            // sweep immediately, including a response awaiting final release.
-            state.completed = None;
-            state.invalidation = state.invalidation.saturating_add(1);
-        }
+        // A completed negative group probe is fresh coverage. Its health is
+        // diagnostic; only loss of coverage, its epoch or its original deadline
+        // invalidates the node's coverage certificate.
         if let Some(sweep) = state.progress.as_mut() {
             sweep.examined += 1;
             sweep.healthy += usize::from(healthy);
-            sweep.valid_until = sweep.valid_until.min(valid_until);
             if sweep.details.len() < DETAIL_LIMIT {
                 sweep.details.push(sample);
             }

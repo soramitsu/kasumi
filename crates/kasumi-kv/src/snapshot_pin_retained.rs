@@ -69,9 +69,9 @@ impl PendingSourceRights {
     }
     pub(crate) fn prepare(&mut self, pins: &SnapshotPins) -> Result<(), CoreError> {
         if self.rights.is_some() || self.lease.0.is_some() {
-            return Err(CoreError::InvalidInput(
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
                 "rights preparation already entered",
-            ));
+            )));
         }
         reserve_into(
             &pins.inner,
@@ -86,9 +86,9 @@ impl PendingSourceRights {
         pool: &mut crate::NativeSourcePool,
     ) -> Result<(), CoreError> {
         if self.rights.is_some() || self.lease.0.is_some() {
-            return Err(CoreError::InvalidInput(
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
                 "rights preparation already entered",
-            ));
+            )));
         }
         pool.reserve_rights_into(pins, &mut self.lease.0)?;
         self.install_prepared_rights(pins)
@@ -119,11 +119,11 @@ impl PendingSourceRights {
         let first = free
             .next()
             .map(|(i, _)| i)
-            .ok_or(CoreError::CapacityDenied)?;
+            .ok_or(CoreError::new(crate::CoreErrorCause::CapacityDenied))?;
         let second = free
             .next()
             .map(|(i, _)| i)
-            .ok_or(CoreError::CapacityDenied)?;
+            .ok_or(CoreError::new(crate::CoreErrorCause::CapacityDenied))?;
         let source = serial(&state)?;
         owner.source = source;
         for (slot, lane) in [(first, 0), (second, 1)] {
@@ -145,7 +145,11 @@ fn reserve_into(
     bytes: u64,
 ) -> Result<(), CoreError> {
     registry.check()?;
-    match registry.admission.reserve_workspace(bytes) {
+    match registry
+        .admission
+        .reserve_workspace(bytes)
+        .map(NativeResidentLease::new)
+    {
         Ok(lease) => target.0 = Some(lease),
         Err(error) => {
             if error == AdmissionError::OwnerFailed {
@@ -182,7 +186,9 @@ impl PreparedProtectedPin {
     }
     pub(crate) fn prepare_retained(&mut self) -> Result<(), CoreError> {
         if self.pin.is_some() || self.lease.0.is_some() || self.pending {
-            return Err(CoreError::InvalidInput("pin preparation already entered"));
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
+                "pin preparation already entered",
+            )));
         }
         let registry = &self.rights.registry;
         reserve_into(
@@ -197,7 +203,9 @@ impl PreparedProtectedPin {
         funding: &mut crate::NativeSourceFunding,
     ) -> Result<(), CoreError> {
         if self.pin.is_some() || self.lease.0.is_some() || self.pending {
-            return Err(CoreError::InvalidInput("pin preparation already entered"));
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
+                "pin preparation already entered",
+            )));
         }
         let pins = SnapshotPins {
             inner: self.rights.registry.clone(),
@@ -228,7 +236,7 @@ impl PreparedProtectedPin {
                 }
                 _ => None,
             })
-            .ok_or(CoreError::CapacityDenied)?;
+            .ok_or(CoreError::new(crate::CoreErrorCause::CapacityDenied))?;
         let ticket = serial(&state)?;
         self.lane = lane;
         self.ticket = ticket;
@@ -272,9 +280,9 @@ impl HistoryPinRight {
     }
     pub(crate) fn prepare_retained(&mut self) -> Result<(), CoreError> {
         if self.pending || self.ticket != 0 {
-            return Err(CoreError::InvalidInput(
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
                 "history preparation already entered",
-            ));
+            )));
         }
         let registry = &self.pin.inner.registry;
         registry.check()?;
@@ -284,21 +292,29 @@ impl HistoryPinRight {
             Some(slot) if same_pin(slot, target) => match slot.class {
                 PinClass::Protected(lane) => lane,
                 PinClass::Ordinary => {
-                    return Err(CoreError::InvalidInput("pin is already ordinary"));
+                    return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
+                        "pin is already ordinary",
+                    )));
                 }
             },
-            _ => return Err(CoreError::InvalidInput("history target differs")),
+            _ => {
+                return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
+                    "history target differs",
+                )));
+            }
         };
         if state.slots.iter().any(
             |entry| matches!(entry, Entry::HistoryHold { target: held, .. } if *held == target),
         ) {
-            return Err(CoreError::InvalidInput("history target already reserved"));
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
+                "history target already reserved",
+            )));
         }
         let held_slot = state
             .slots
             .iter()
             .position(Entry::is_empty)
-            .ok_or(CoreError::CapacityDenied)?;
+            .ok_or(CoreError::new(crate::CoreErrorCause::CapacityDenied))?;
         let ticket = serial(&state)?;
         self.held_slot = held_slot;
         self.ticket = ticket;

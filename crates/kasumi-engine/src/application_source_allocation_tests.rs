@@ -201,7 +201,8 @@ fn assert_retired(fixture: &Fixture, grant: u64, slots: usize) -> Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn source_root_and_credit_arcs_remain_funded_through_actual_deallocation() -> Result<()> {
+async fn source_root_and_credit_arcs_remain_funded_through_actual_deallocation()
+-> crate::test_fixture_failure::FixtureResult<()> {
     let _serial = SERIAL.lock().await;
     let fixture = Fixture::new().await?;
     for block_credit in [false, true] {
@@ -228,7 +229,8 @@ async fn source_root_and_credit_arcs_remain_funded_through_actual_deallocation()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn source_root_weak_retains_shell_credit_after_payload_is_gone() -> Result<()> {
+async fn source_root_weak_retains_shell_credit_after_payload_is_gone()
+-> crate::test_fixture_failure::FixtureResult<()> {
     let _serial = SERIAL.lock().await;
     let fixture = Fixture::new().await?;
     let before = fixture.storage.admission.snapshot().reserved_bytes;
@@ -257,7 +259,8 @@ async fn source_root_weak_retains_shell_credit_after_payload_is_gone() -> Result
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn source_cell_concurrent_strong_and_weak_drops_hold_the_actual_credit_tail() -> Result<()> {
+async fn source_cell_concurrent_strong_and_weak_drops_hold_the_actual_credit_tail()
+-> crate::test_fixture_failure::FixtureResult<()> {
     let _serial = SERIAL.lock().await;
     let fixture = Fixture::new().await?;
     for block_credit in [false, true] {
@@ -286,7 +289,8 @@ async fn source_cell_concurrent_strong_and_weak_drops_hold_the_actual_credit_tai
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn source_binding_box_retires_before_its_real_root_credit() -> Result<()> {
+async fn source_binding_box_retires_before_its_real_root_credit()
+-> crate::test_fixture_failure::FixtureResult<()> {
     let _serial = SERIAL.lock().await;
     let fixture = Fixture::new().await?;
     let buffers = fixture.storage.admission.snapshot_buffer_owner()?;
@@ -321,7 +325,8 @@ async fn source_binding_box_retires_before_its_real_root_credit() -> Result<()> 
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn source_view_unique_close_holds_cell_credit_while_arc_backing_retires() -> Result<()> {
+async fn source_view_unique_close_holds_cell_credit_while_arc_backing_retires()
+-> crate::test_fixture_failure::FixtureResult<()> {
     let _serial = SERIAL.lock().await;
     let fixture = Fixture::new().await?;
     let preparation = fixture.roots.prepare_kind(false)?;
@@ -352,7 +357,8 @@ async fn source_view_unique_close_holds_cell_credit_while_arc_backing_retires() 
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn source_view_weak_retains_credit_after_unique_native_close() -> Result<()> {
+async fn source_view_weak_retains_credit_after_unique_native_close()
+-> crate::test_fixture_failure::FixtureResult<()> {
     let _serial = SERIAL.lock().await;
     let fixture = Fixture::new().await?;
     let preparation = fixture.roots.prepare_kind(false)?;
@@ -388,8 +394,8 @@ impl std::fmt::Display for TailOriginal {
 impl std::error::Error for TailOriginal {}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn source_failure_actual_error_aliases_hold_credit_through_owner_deallocation() -> Result<()>
-{
+async fn source_failure_actual_error_aliases_hold_credit_through_owner_deallocation()
+-> crate::test_fixture_failure::FixtureResult<()> {
     let _serial = SERIAL.lock().await;
     let fixture = Fixture::new().await?;
     for block_credit in [false, true] {

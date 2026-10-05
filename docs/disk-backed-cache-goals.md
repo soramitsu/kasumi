@@ -47,6 +47,36 @@ implemented and tested in isolated integration cohorts; they have not been
 promoted to the live checkout. No combination of component passes closes
 a production goal.
 
+The [2026-10-04 production-checkout checkpoint](evidence/release-resume-20261004/README.md)
+passes the rebuilt native library **563/563**, including **8** actual staging
+allocation/refund regressions. Its fallible node ownership repair is active in
+the native table path; it does not fund complete application successor work
+before Raft acceptance, activate disk document/index serving or prove full-fit
+residency. Required installed incarnation and Transit trust cutovers and the
+G11 preflight-failure repair have separate scoped passes. Later shared
+plaintext/Raft changes are preserved and require their own source-bound
+validation. C01–C07 and M01–M07 remain open.
+
+The later [2026-10-04 explicit audit-placement checkpoint](evidence/audit-placement-cutover-20261004/README.md)
+requires caller-selected Control/application policy and independent target
+policy. Immutable target/local journal bindings retain the original supplied
+cache and its physical owner; external failure cannot choose local storage.
+Target/local journals use format 5 and local physical markers format 2, directly
+rejecting superseded inputs. Standalone init, CLI and staging publish explicit
+choices without missing-row repair.
+
+Separate development checks pass **295** Python, **49** server, **16** earlier
+Store audit, **18** fresh Store ownership, **21** Engine journal, **6** snapshot
+and **12** capacity/error-retirement cases. Strict all-feature/all-target
+Store/Engine/server Clippy and scoped formatting pass. The bounded test observer
+now records all actual grants; its sample capacity changes no production budget.
+The selected-source fixture releases its inspected original clean write refusal
+before final drain. Original failures and shared-source custody remain archived.
+This C05/C06 prerequisite cut does not activate disk document/index serving,
+fund complete preacceptance publication, prove full-fit residency or qualify
+Control-only topology or production stack limits. C01–C07, M01–M07 and G01–G14
+remain open; no source revision is release-qualified.
+
 | Component | Verified progress | Remaining production dependency |
 | --- | --- | --- |
 | Native lookup/publication | The v3 cohort passes all 605 native tests, including actual 100,000-row / >96 MiB images. The contraction correction passes all 191 NodeDisk tests and the original large byte-bound Store image. Retained reclamation passes the complete 158-case selection. The serialized image owner now passes the unchanged 65,539-operation encrypted Store release workload through commit, capture, replay and disposal: 1/1 in 1,279.25s, runner exit 0 with 2,654/2,654 unchanged pins. The earlier pre-effect StorageFull failure remains recorded. | Preserve the fixed-root promise, generic parked writer bound and original operation-count assertions through final integration. Finish production preacceptance ownership and sustained reclamation; this component pass does not activate disk serving. |

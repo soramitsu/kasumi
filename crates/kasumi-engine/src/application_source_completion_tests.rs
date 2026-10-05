@@ -20,7 +20,7 @@ struct Input {
     position: AppliedEntryContext,
 }
 impl OrdinaryFixture {
-    async fn new() -> Result<Self> {
+    async fn new() -> crate::test_fixture_failure::FixtureResult<Self> {
         let fixture = Fixture::new().await?;
         crate::test_utils::install_fixture_audit_placement(fixture.stores.application())?;
         let engine = Arc::new(TenantEngine::from_bootstrap(
@@ -82,7 +82,7 @@ impl OrdinaryFixture {
             after_backend,
         )
     }
-    async fn close(self) -> Result<()> {
+    async fn close(self) -> crate::test_fixture_failure::FixtureResult<()> {
         self.engine.seal();
         drop(self.engine);
         self.fixture.close().await
@@ -127,7 +127,8 @@ fn selected(fixture: &OrdinaryFixture, input: &Input, expected_handles: usize) -
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn ordinary_completion_is_last_selected_owner_through_real_outer_finish() -> Result<()> {
+async fn ordinary_completion_is_last_selected_owner_through_real_outer_finish()
+-> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = OrdinaryFixture::new().await?;
     let input = fixture.input(Operation::SetPolicy(policy()))?;
     let mut witness = None;
@@ -173,7 +174,7 @@ async fn ordinary_completion_is_last_selected_owner_through_real_outer_finish() 
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn ordinary_completion_reuses_only_after_real_accept_reject_and_idempotent_finish()
--> Result<()> {
+-> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = OrdinaryFixture::new().await?;
     let create = fixture.input(Operation::CreateCollection(definition()))?;
     fixture.apply(&create, || {
@@ -244,12 +245,401 @@ async fn ordinary_completion_reuses_only_after_real_accept_reject_and_idempotent
     fixture.close().await
 }
 
+fn require_positive_drain(result: kasumi_types::drain::DrainResult) {
+    if let Err(original) = result {
+        assert_eq!(
+            original.completion(),
+            DrainCompletion::Complete,
+            "{original:#?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn ordinary_completion_unentered_access_refusal_keeps_original_and_drains_before_reopen()
+-> crate::test_fixture_failure::FixtureResult<()> {
+    use kasumi_raft::{ApplyObservationRef as O, RetainedApplyReport};
+    let fixture = OrdinaryFixture::new().await?;
+    let input = fixture.input(Operation::SetPolicy(policy()))?;
+    let before = fixture.fixture.roots.gate.lock().unwrap().next;
+    let returned = kasumi_raft::with_application_publisher_bound_observed_for_test(
+        &fixture.fixture._buffers,
+        &fixture.fixture.stores,
+        &input.position,
+        |publisher| {
+            fixture.engine.apply_with_publisher(
+                &input.position,
+                AppliedInput::Command(&input.bytes),
+                &mut SealAtPublication {
+                    actual: publisher,
+                    application: fixture.fixture.stores.application(),
+                    phase: PublicationSealPhase::BeforeCommit,
+                },
+            )
+        },
+        || {},
+    )
+    .err()
+    .context("sealed Entry sink acknowledged")?;
+    let inspect = || {
+        fixture
+            .fixture
+            ._buffers
+            .try_with_retained_apply_report(|report| {
+                let RetainedApplyReport::Ordinary(report) = report else {
+                    panic!("ordinary original");
+                };
+                let O::Error(original) = report.sink else {
+                    panic!("exact access refusal");
+                };
+                assert_eq!(
+                    original.root_cause().to_string(),
+                    "tenant is sealed: key-access lease unavailable or expired"
+                );
+                assert!(report.response.is_some());
+                assert!(report.violation.is_none());
+                assert!(matches!(report.action, O::Returned));
+                assert!(matches!(report.backend, O::Returned));
+                assert!(matches!(report.finish, O::Returned));
+                (
+                    std::ptr::from_ref::<dyn std::error::Error + Send + Sync>(original.as_ref())
+                        as *const () as usize,
+                    report.response.unwrap().data.as_ptr() as usize,
+                )
+            })
+            .unwrap()
+            .unwrap()
+    };
+    let exact = inspect();
+    assert_eq!(
+        fixture.fixture.roots.gate.lock().unwrap().next,
+        before,
+        "unentered refusal prepared a source"
+    );
+    drop(returned);
+    fixture.engine.seal();
+    require_positive_drain(fixture.fixture._buffers.drain_startup().await);
+    assert_eq!(inspect(), exact);
+    let next = fixture
+        .apply(&input, || panic!("closed original reentered finish"))
+        .err()
+        .context("failed apply owner reset")?;
+    assert_eq!(inspect(), exact);
+    drop(next);
+    drop(input);
+    drop(fixture.engine);
+    require_positive_drain(
+        fixture
+            .fixture
+            .storage
+            .admission
+            .drain_snapshot_startups()
+            .await,
+    );
+    fixture.fixture.stores.shutdown().await?;
+    fixture.fixture.node.shutdown().await?;
+    Ok(())
+}
+
+#[derive(Clone, Copy)]
+enum PublicationSealPhase {
+    BeforeCommit,
+    AfterCommit,
+}
+struct SealAtPublication<'a> {
+    actual: &'a mut dyn kasumi_raft::ApplyPublisher,
+    application: &'a kasumi_store::TenantStore,
+    phase: PublicationSealPhase,
+}
+struct SealAtPublicationAction<'a> {
+    actual: &'a mut dyn kasumi_raft::CompletionAction,
+    application: &'a kasumi_store::TenantStore,
+    phase: PublicationSealPhase,
+}
+impl kasumi_raft::CompletionAction for SealAtPublicationAction<'_> {
+    fn run(
+        &mut self,
+        invocation: &kasumi_raft::CompletionInvocation<'_>,
+        publisher: &mut dyn kasumi_raft::ApplyPublisher,
+    ) -> std::result::Result<(), kasumi_store::ScratchOperationFailure> {
+        self.actual.run(
+            invocation,
+            &mut SealAtPublication {
+                actual: publisher,
+                application: self.application,
+                phase: self.phase,
+            },
+        )
+    }
+}
+impl kasumi_raft::ApplyPublisher for SealAtPublication<'_> {
+    fn with_completion(
+        &mut self,
+        expected: &kasumi_raft::CompletionIdentity,
+        action: &mut dyn kasumi_raft::CompletionAction,
+    ) -> std::result::Result<(), kasumi_raft::CompletionCallError> {
+        self.actual.with_completion(
+            expected,
+            &mut SealAtPublicationAction {
+                actual: action,
+                application: self.application,
+                phase: self.phase,
+            },
+        )
+    }
+    fn commit(
+        &mut self,
+        response: AppliedResponse,
+        writes: &[kasumi_store::WriteOp],
+    ) -> std::result::Result<(), kasumi_raft::PublishCallError> {
+        self.actual.commit(response, writes)
+    }
+    fn commit_with_selection<'call>(
+        &mut self,
+        response: AppliedResponse,
+        writes: &[kasumi_store::WriteOp],
+        preparer: &mut dyn kasumi_raft::SelectionPreparer,
+        challenge: kasumi_raft::PublicationChallenge<'call>,
+    ) -> std::result::Result<
+        kasumi_raft::JointPublicationReceipt<'call>,
+        kasumi_raft::PublishCallError,
+    > {
+        if matches!(self.phase, PublicationSealPhase::BeforeCommit) {
+            // Acquisition has passed the original Store fence. Refuse at the
+            // actual sink before it can enter a planner or native preparation.
+            self.application.seal();
+        }
+        let receipt = self
+            .actual
+            .commit_with_selection(response, writes, preparer, challenge)?;
+        if matches!(self.phase, PublicationSealPhase::AfterCommit) {
+            // The real paired commit returned; expire precisely before capture
+            // of its prequeued source, preserving the exact receipt and cursor.
+            self.application.seal();
+        }
+        Ok(receipt)
+    }
+}
+
+#[tokio::test]
+async fn ordinary_completion_exact_capture_error_retires_reader_and_keeps_original_credit()
+-> crate::test_fixture_failure::FixtureResult<()> {
+    use super::super::capture_access_test_hook::{Arm, Mode};
+    use kasumi_raft::{ApplyObservationRef as O, RetainedApplyReport};
+    for late in [None, Some(Mode::Bare), Some(Mode::OwningContext)] {
+        let fixture = OrdinaryFixture::new().await?;
+        let input = fixture.input(Operation::SetPolicy(policy()))?;
+        let previous = fixture.engine.generation()?;
+        let hook = late.map(Arm::new);
+        let returned = kasumi_raft::with_application_publisher_bound_for_test(
+            &fixture.fixture._buffers,
+            &fixture.fixture.stores,
+            &input.position,
+            |publisher| {
+                if late.is_some() {
+                    fixture.engine.apply_with_publisher(
+                        &input.position,
+                        AppliedInput::Command(&input.bytes),
+                        publisher,
+                    )
+                } else {
+                    fixture.engine.apply_with_publisher(
+                        &input.position,
+                        AppliedInput::Command(&input.bytes),
+                        &mut SealAtPublication {
+                            actual: publisher,
+                            application: fixture.fixture.stores.application(),
+                            phase: PublicationSealPhase::AfterCommit,
+                        },
+                    )
+                }
+            },
+        )
+        .err()
+        .context("failed post-publication capture acknowledged")?;
+        let inspect = || {
+            fixture
+                .fixture
+                ._buffers
+                .try_with_retained_apply_report(|report| {
+                    let RetainedApplyReport::Ordinary(report) = report else {
+                        panic!("ordinary original");
+                    };
+                    assert!(matches!(report.sink, O::Returned));
+                    let O::Error(original) = report.action else {
+                        panic!("original capture failure");
+                    };
+                    let outer: &(dyn std::error::Error + Send + Sync) = original.as_ref();
+                    let source = outer
+                        .downcast_ref::<SourceFailure>()
+                        .expect("exact outer recorded capture owner");
+                    assert_eq!(
+                        super::super::captured_key_access_denied(original).is_some(),
+                        late != Some(Mode::OwningContext),
+                    );
+                    let selection = source
+                        .owner
+                        .original
+                        .downcast_ref::<SelectionFailure<Workspace>>();
+                    assert_eq!(selection.is_some(), late.is_some());
+                    assert_eq!(
+                        source
+                            .original()
+                            .downcast_ref::<SelectionFailure<Workspace>>()
+                            .is_some(),
+                        late == Some(Mode::Bare),
+                    );
+                    let selection_addresses = selection.map(|selection| {
+                        // Borrow only the known whole producer slot; the owning
+                        // context never supplies diagnostic authority.
+                        let denial: &(dyn std::error::Error + Send + Sync) =
+                            selection.original_error().as_ref();
+                        let denial = denial
+                            .downcast_ref::<kasumi_store::KeyAccessDenied>()
+                            .unwrap();
+                        (
+                            std::ptr::from_ref(selection) as usize,
+                            std::ptr::from_ref(denial) as usize,
+                        )
+                    });
+                    if let Some(hook) = &hook {
+                        let observed = hook.observation();
+                        assert_eq!(
+                            selection_addresses,
+                            observed.selection_address.zip(observed.denial_address)
+                        );
+                        let reader = observed
+                            .reader
+                            .expect("original queued reader really began");
+                        assert!(
+                            kasumi_store::RegisteredNodeRead::retained(
+                                fixture.fixture.node.persistent_disk().memory().clone(),
+                                reader,
+                            )
+                            .is_none()
+                        );
+                    }
+                    assert_eq!(
+                        original.root_cause().to_string(),
+                        "tenant is sealed: key-access lease unavailable or expired"
+                    );
+                    assert!(report.response.is_some());
+                    assert!(report.violation.is_none());
+                    assert!(matches!(report.backend, O::Returned));
+                    assert!(matches!(report.finish, O::Returned));
+                    (
+                        std::ptr::from_ref::<dyn std::error::Error + Send + Sync>(original.as_ref())
+                            as *const () as usize,
+                        std::ptr::from_ref(source.owner.as_ref()) as usize,
+                        source.owner.credit_address(),
+                        report.response.unwrap().data.as_ptr() as usize,
+                        selection_addresses,
+                    )
+                })
+                .unwrap()
+                .unwrap()
+        };
+        let exact = inspect();
+        fixture
+            .fixture
+            ._buffers
+            .try_with_retained_apply_report(|report| {
+                let RetainedApplyReport::Ordinary(report) = report else {
+                    panic!("ordinary original");
+                };
+                assert!(!report.custody_guards.action_error_retired);
+                let O::Error(original) = report.action else {
+                    panic!("original capture failure");
+                };
+                let outer: &(dyn std::error::Error + Send + Sync) = original.as_ref();
+                let source = outer.downcast_ref::<SourceFailure>().unwrap();
+                // This owns the same real failure/credit, but an outer context must
+                // not supply the private captured-owner diagnostic through anyhow.
+                let wrapped = anyhow::Error::new(source.clone()).context("owned source context");
+                assert!(wrapped.downcast_ref::<SourceFailure>().is_some());
+                assert!(super::super::captured_key_access_denied(&wrapped).is_none());
+            })
+            .unwrap()
+            .unwrap();
+        let held = fixture.fixture.roots.completion_snapshot_for_test();
+        let cell_id = held.preparation_cell.expect("actual failed capture cell");
+        assert!(
+            !fixture
+                .fixture
+                .roots
+                .gate
+                .lock()
+                .unwrap()
+                .cells
+                .contains_key(&cell_id),
+            "positively retired capture remained in the source census"
+        );
+        assert!(held.selected_cell.is_none());
+        // Fill remaining ordinary bytes after the exact native work retired. Drain
+        // must consume existing owners, without acquiring replacement funding.
+        let filler = fixture.fixture.storage.admission.reserve_resident(
+            fixture.fixture.budget - fixture.fixture.storage.admission.snapshot().reserved_bytes,
+        )?;
+        let filled = fixture.fixture.storage.admission.snapshot();
+        drop(returned);
+        fixture.engine.seal();
+        drop(previous);
+        require_positive_drain(fixture.fixture._buffers.drain_startup().await);
+        fixture
+            .fixture
+            ._buffers
+            .try_with_retained_apply_report(|report| {
+                let RetainedApplyReport::Ordinary(report) = report else {
+                    panic!("ordinary original");
+                };
+                assert!(report.custody_guards.action_error_retired);
+            })
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            inspect(),
+            exact,
+            "original allocation or grant was reconstructed"
+        );
+        let settled = fixture.fixture.roots.completion_snapshot_for_test();
+        assert!(
+            settled.preparation_cell.is_none()
+                && settled.selected_cell.is_none()
+                && settled.retirement_witness.is_none()
+        );
+        assert!(fixture.fixture.roots.is_drained());
+        assert!(
+            fixture.fixture.storage.admission.snapshot().reserved_bytes <= filled.reserved_bytes
+        );
+        let refused = fixture
+            .apply(&input, || panic!("failed source owner reentered"))
+            .err()
+            .context("failed capture owner reset")?;
+        assert_eq!(inspect(), exact);
+        drop(refused);
+        drop(filler);
+        drop(input);
+        drop(fixture.engine);
+        require_positive_drain(
+            fixture
+                .fixture
+                .storage
+                .admission
+                .drain_snapshot_startups()
+                .await,
+        );
+        fixture.fixture.stores.shutdown().await?;
+        fixture.fixture.node.shutdown().await?;
+    }
+    Ok(())
+}
+
 #[derive(Debug)]
 struct FinishPanic;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn ordinary_completion_outer_finish_panic_retains_original_response_after_facade_seal()
--> Result<()> {
+-> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = OrdinaryFixture::new().await?;
     let input = fixture.input(Operation::SetPolicy(policy()))?;
     let original = Arc::new(FinishPanic);
@@ -393,7 +783,7 @@ impl std::error::Error for CheckpointOriginal {}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn ordinary_completion_cancelled_real_group_waiter_keeps_queued_source_and_original()
--> Result<()> {
+-> crate::test_fixture_failure::FixtureResult<()> {
     use super::super::completion::{CompletionCheckpoint, CompletionFault};
     let fixture = OrdinaryFixture::new().await?;
     let group = Arc::new(
@@ -418,7 +808,11 @@ async fn ordinary_completion_cancelled_real_group_waiter_keeps_queued_source_and
         CompletionFault::Pause(gate.clone()),
     );
     let writing = group.clone();
-    let waiter = tokio::spawn(async move { writing.write(input.bytes).await });
+    let waiter = tokio::spawn(async move {
+        writing
+            .write(kasumi_raft::ApplicationProposal::generated(input.bytes))
+            .await
+    });
     let reached = tokio::time::timeout(std::time::Duration::from_secs(10), reached).await??;
     assert!(reached.queued_reader.is_some());
     assert!(reached.selected_cell.is_none());
@@ -532,8 +926,8 @@ async fn ordinary_completion_cancelled_real_group_waiter_keeps_queued_source_and
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn ordinary_completion_bound_frozen_branch_keeps_source_without_new_preparation() -> Result<()>
-{
+async fn ordinary_completion_bound_frozen_branch_keeps_source_without_new_preparation()
+-> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = OrdinaryFixture::new().await?;
     // Explicit branch fixture only. This sets the retired flag but preserves
     // the actual captured source; it is not an authenticated retirement proof.
@@ -606,7 +1000,7 @@ async fn ordinary_completion_bound_frozen_branch_keeps_source_without_new_prepar
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn ordinary_completion_fault_checkpoints_preserve_exact_original_and_source_phase()
--> Result<()> {
+-> crate::test_fixture_failure::FixtureResult<()> {
     use super::super::completion::{CompletionCheckpoint as C, CompletionFault, Phase};
     for point in [
         C::BeforeQueue,
@@ -798,7 +1192,7 @@ impl std::task::Wake for CompletionWake {
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn ordinary_completion_drain_registers_before_busy_and_wakes_after_real_guard_release()
--> Result<()> {
+-> crate::test_fixture_failure::FixtureResult<()> {
     use kasumi_raft::CompletionCustody;
     let fixture = Fixture::new().await?;
     let owner = fixture.roots.completion()?.clone();
@@ -838,7 +1232,7 @@ impl kasumi_raft::CompletionAction for GuardObservedAction<'_> {
         &mut self,
         invocation: &kasumi_raft::CompletionInvocation<'_>,
         publisher: &mut dyn kasumi_raft::ApplyPublisher,
-    ) -> Result<()> {
+    ) -> std::result::Result<(), kasumi_store::ScratchOperationFailure> {
         assert_eq!(std::thread::current().id(), self.thread);
         self.actual.run(
             invocation,
@@ -933,7 +1327,8 @@ impl std::task::Wake for CompletionUnwindWake {
     }
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn ordinary_completion_capture_wake_unwind_retires_the_actual_counted_handle() -> Result<()> {
+async fn ordinary_completion_capture_wake_unwind_retires_the_actual_counted_handle()
+-> crate::test_fixture_failure::FixtureResult<()> {
     for unwind_completion_wake in [false, true] {
         let fixture = OrdinaryFixture::new().await?;
         let input = fixture.input(Operation::SetPolicy(policy()))?;

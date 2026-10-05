@@ -40,16 +40,39 @@ impl fmt::Display for CompletionCallError {
     }
 }
 impl std::error::Error for CompletionCallError {}
+impl From<CompletionCallError> for kasumi_store::ScratchOperationFailure {
+    fn from(original: CompletionCallError) -> Self {
+        Self::Operation(anyhow::Error::new(original))
+    }
+}
 
 /// The actual adapter's one invocation. A borrowed token cannot outlive the
 /// synchronous action; private construction and ordinal prevent substitution.
 pub struct CompletionInvocation<'a> {
     identity: &'a CompletionIdentity,
     ordinal: u64,
+    input_retention: Option<&'a crate::ApplicationInputLoan>,
 }
 impl<'a> CompletionInvocation<'a> {
     pub(crate) fn new(identity: &'a CompletionIdentity, ordinal: u64) -> Self {
-        Self { identity, ordinal }
+        Self {
+            identity,
+            ordinal,
+            input_retention: None,
+        }
+    }
+    pub(crate) fn with_input_retention(
+        mut self,
+        input: Option<&'a crate::ApplicationInputLoan>,
+    ) -> Self {
+        self.input_retention = input;
+        self
+    }
+    /// Same already paid encoded input/control. None identifies an unsupported
+    /// input producer (transport/replay/stored/retirement/metadata). This is not
+    /// reducer/candidate credit, native admission or a completion verdict.
+    pub fn input_retention(&self) -> Option<&crate::ApplicationInputLoan> {
+        self.input_retention
     }
     pub fn ordinal(&self) -> u64 {
         self.ordinal
@@ -64,6 +87,59 @@ impl<'a> CompletionInvocation<'a> {
             Err(CompletionCallError::Foreign)
         }
     }
+    /// Identify this exact returned error allocation while the actual action
+    /// still owns it. The identity alone proves no retirement or acknowledgment.
+    pub fn action_failure_identity(
+        &self,
+        original: &anyhow::Error,
+    ) -> CompletionActionFailureIdentity {
+        CompletionActionFailureIdentity {
+            binding: std::ptr::from_ref(self.identity) as usize,
+            ordinal: self.ordinal,
+            original: std::ptr::from_ref::<dyn std::error::Error + Send + Sync>(original.as_ref())
+                as *const () as usize,
+        }
+    }
+}
+
+/// An opaque observation of one real action's unchanged error allocation.
+/// A custody owner may return it only after retiring that error's exact work.
+/// It never authorizes taking the failed response or resetting the failure.
+#[derive(Clone, Copy)]
+pub struct CompletionActionFailureIdentity {
+    binding: usize,
+    ordinal: u64,
+    original: usize,
+}
+impl CompletionActionFailureIdentity {
+    pub(crate) fn matches(
+        self,
+        binding: &CompletionIdentity,
+        ordinal: u64,
+        original: &anyhow::Error,
+    ) -> bool {
+        self.binding == std::ptr::from_ref(binding) as usize
+            && self.ordinal == ordinal
+            && self.original
+                == std::ptr::from_ref::<dyn std::error::Error + Send + Sync>(original.as_ref())
+                    as *const () as usize
+    }
+
+    /// Borrow the already captured proof against the binding address observed
+    /// by the actual checked begin. Inspection invokes no custody callback.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub(crate) fn matches_observed(
+        self,
+        binding_address: usize,
+        ordinal: u64,
+        original: &anyhow::Error,
+    ) -> bool {
+        self.binding == binding_address
+            && self.ordinal == ordinal
+            && self.original
+                == std::ptr::from_ref::<dyn std::error::Error + Send + Sync>(original.as_ref())
+                    as *const () as usize
+    }
 }
 
 /// The action acquires/releases its guards synchronously inside this call.
@@ -73,7 +149,7 @@ pub trait CompletionAction {
         &mut self,
         invocation: &CompletionInvocation<'_>,
         publisher: &mut dyn ApplyPublisher,
-    ) -> anyhow::Result<()>;
+    ) -> Result<(), kasumi_store::ScratchOperationFailure>;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -128,6 +204,12 @@ pub trait CompletionCustody: Send + Sync {
     /// serialization can be held, so this must never reenter startup APIs.
     fn poll_drain(&self, cx: &mut Context<'_>) -> Poll<Result<(), CompletionSettleError>>;
     fn is_drained(&self) -> bool;
+    /// Lend only a positively retired exact action-error identity after sealed
+    /// drain. Unknown errors, panics and callbacks without a work census retain
+    /// the default refusal. Raft invokes this outside its report mutex.
+    fn retired_action_failure(&self) -> Option<CompletionActionFailureIdentity> {
+        None
+    }
 }
 trait RetireCompletion: CompletionCustody {
     fn retire(self: Box<Self>);
@@ -189,6 +271,12 @@ impl CompletionCustody for CompletionBinding {
             .as_ref()
             .expect("completion binding")
             .is_drained()
+    }
+    fn retired_action_failure(&self) -> Option<CompletionActionFailureIdentity> {
+        self.owner
+            .as_ref()
+            .expect("completion binding")
+            .retired_action_failure()
     }
 }
 impl Drop for CompletionBinding {

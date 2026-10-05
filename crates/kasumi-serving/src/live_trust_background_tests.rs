@@ -32,7 +32,7 @@ fn live(capacity: usize) -> Arc<LiveSignerTrust> {
         .unwrap();
     let live = signing.verifier;
     live.state.lock().unwrap().work_budget =
-        BackgroundWorkBudget::new(capacity, Arc::new(())).unwrap();
+        BackgroundWorkBudget::new(capacity, kasumi_types::SharedBudgetCharge::new(())).unwrap();
     live
 }
 #[tokio::test]

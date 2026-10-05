@@ -263,7 +263,7 @@ fn raw(options: &Options, tenants: usize) -> Result<Case> {
 }
 
 struct Tenant {
-    replicas: Vec<Arc<Database>>,
+    replicas: Vec<benchmark_retirement::Replica>,
     bootstrap: Option<ReplicatedBootstrap>,
 }
 /// Retained for the entire benchmark case, including close/reopen. Replicas
@@ -341,17 +341,19 @@ impl BenchmarkStorage {
             root: data,
         })
     }
-    fn path(&self, replica: usize) -> PathBuf {
-        self.root.join(format!("replica-{replica}.kv"))
-    }
 }
 
+mod benchmark_startup;
+use benchmark_startup::{BenchmarkFailure, BenchmarkResult};
+
+mod benchmark_retirement;
+
 struct Databases {
-    tenants: Vec<Tenant>,
-    nodes: Vec<Arc<NodeStore>>,
-    router: Arc<InProcessRouter>,
-    provider: Arc<LocalKeyProvider>,
-    audits: Vec<Arc<SecurityAudit>>,
+    resources: benchmark_retirement::ResourcesOwner,
+    tenant_count: usize,
+    audit_count: usize,
+    // Outside the resource payload: no terminal -> resources -> terminal cycle.
+    _startup: Option<benchmark_startup::BenchmarkStartup>,
 }
 impl Databases {
     async fn open(
@@ -362,215 +364,17 @@ impl Databases {
         replicated: bool,
         bootstraps: Option<Vec<ReplicatedBootstrap>>,
         create: bool,
-    ) -> Result<Self> {
-        let replicas = if replicated { 3 } else { 1 };
-        let mut nodes = Vec::new();
-        ensure!(
-            physical.admissions.len() == replicas,
-            "benchmark physical replica count changed"
-        );
-        for replica in 0..replicas {
-            nodes.push(
-                (if create {
-                    physical.storage.create_new(
-                        physical.path(replica),
-                        kasumi_store::test_utils::NODE_STORE_ID,
-                    )
-                } else {
-                    physical.storage.open_existing(
-                        physical.path(replica),
-                        kasumi_store::test_utils::NODE_STORE_ID,
-                    )
-                })?,
-            );
-        }
-        let mut audits = Vec::new();
-        for (replica, node) in nodes.iter().enumerate() {
-            let service_store = TenantStore::initialize_catalog_fixture(
-                node.clone(),
-                SECURITY_TENANT.into(),
-                Arc::new(LocalKeyProvider::new([0xA7; 32])),
-            )
-            .await?;
-            audits.push((if create {
-                SecurityAudit::initialize
-            } else {
-                SecurityAudit::open
-            })(
-                service_store,
-                kasumi_types::AuditRetentionBudget::default(),
-                physical.admissions[replica].clone(),
-            )?);
-        }
-        let provider = Arc::new(LocalKeyProvider::new([0x42; 32]));
-        let router = Arc::new(InProcessRouter::default());
-        let mut result = Vec::new();
-        for tenant in 0..tenants {
-            let count = documents / tenants + usize::from(tenant < documents % tenants);
-            let workload_limits = limits(count, operations)?;
-            let bootstrap = if replicated {
-                Some(
-                    bootstraps
-                        .as_ref()
-                        .map(|values| values[tenant].clone())
-                        .unwrap_or_else(|| ReplicatedBootstrap {
-                            genesis: kasumi_engine::ReplicatedGenesis::Application,
-                            incarnation: uuid::Uuid::new_v4().to_string(),
-                            initial_policy: policy(),
-                            initial_limits: workload_limits.clone(),
-                            voters: (1..=3)
-                                .map(|id| {
-                                    (
-                                        id,
-                                        ReplicaPlacement {
-                                            address: format!("in-process-{id}"),
-                                            failure_domain: format!(
-                                                "logical-benchmark-replica-{id}"
-                                            ),
-                                        },
-                                    )
-                                })
-                                .collect(),
-                        }),
-                )
-            } else {
-                None
-            };
-            let mut databases = Vec::new();
-            for (replica, node) in nodes.iter().enumerate() {
-                let store = TenantStore::initialize_catalog_fixture(
-                    node.clone(),
-                    context(tenant).tenant,
-                    provider.clone(),
-                )
-                .await?;
-                let database = if let Some(bootstrap) = &bootstrap {
-                    let database = open_replicated(
-                        replica as u64 + 1,
-                        kasumi_store::test_utils::initialize_custody_fixture(
-                            store,
-                            std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new(
-                                [241; 32],
-                            )),
-                        )
-                        .await
-                        .unwrap(),
-                        bootstrap,
-                        router.clone(),
-                        server_config(),
-                        audits[replica].clone(),
-                    )
-                    .await?;
-                    router.register(
-                        format!("{}/{}", context(tenant).tenant, bootstrap.incarnation),
-                        replica as u64 + 1,
-                        database.raft_group().raft().clone(),
-                    );
-                    database
-                } else {
-                    open_local(
-                        kasumi_store::test_utils::initialize_custody_fixture(
-                            store,
-                            std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new(
-                                [241; 32],
-                            )),
-                        )
-                        .await
-                        .unwrap(),
-                        policy(),
-                        workload_limits.clone(),
-                        audits[replica].clone(),
-                    )
-                    .await?
-                };
-                databases.push(database);
-            }
-            if let Some(bootstrap) = &bootstrap {
-                initialize_replicated(&databases[0], bootstrap).await?;
-            }
-            result.push(Tenant {
-                replicas: databases,
-                bootstrap,
-            });
-            if (tenant + 1) % 100 == 0 {
-                eprintln!("opened {}/{} tenant groups", tenant + 1, tenants);
-            }
-        }
-        let opened = Self {
-            tenants: result,
-            nodes,
-            router,
-            provider,
-            audits,
-        };
-        for tenant in 0..tenants {
-            let readiness = Instant::now();
-            loop {
-                let database = opened.leader(tenant).await?;
-                if database.raft_group().linearizable_barrier().await.is_ok() {
-                    break;
-                }
-                ensure!(
-                    readiness.elapsed() < Duration::from_secs(30),
-                    "tenant {tenant} did not establish a serving quorum during setup"
-                );
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
-        }
-        Ok(opened)
+    ) -> BenchmarkResult<Self> {
+        benchmark_startup::open(
+            physical, tenants, documents, operations, replicated, bootstraps, create,
+        )
+        .await
     }
     async fn leader(&self, tenant: usize) -> Result<Arc<Database>> {
-        let start = Instant::now();
-        loop {
-            for database in &self.tenants[tenant].replicas {
-                let metrics = database.raft_group().raft().metrics();
-                let metrics = metrics.borrow();
-                if metrics.current_leader == Some(metrics.id) {
-                    return Ok(database.clone());
-                }
-            }
-            ensure!(
-                start.elapsed() < Duration::from_secs(10),
-                "no serving leader for tenant {tenant}"
-            );
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+        self.resources.lock().await.leader(tenant).await
     }
-    async fn close(mut self) -> Result<Option<Vec<ReplicatedBootstrap>>> {
-        let bootstraps = self
-            .tenants
-            .iter()
-            .map(|tenant| tenant.bootstrap.clone())
-            .collect::<Option<Vec<_>>>();
-        for (tenant_index, tenant) in self.tenants.iter().enumerate() {
-            for database in &tenant.replicas {
-                database.shutdown().await?;
-                if let Some(bootstrap) = &tenant.bootstrap {
-                    self.router.unregister(
-                        &format!("{}/{}", context(tenant_index).tenant, bootstrap.incarnation),
-                        database.raft_group().raft().metrics().borrow().id,
-                    );
-                }
-            }
-        }
-        self.tenants.clear();
-        let mut report = kasumi_types::drain::DrainReport::default();
-        for audit in &self.audits {
-            if let Err(failure) = audit.shutdown().await {
-                report.merge(&failure);
-            }
-        }
-        self.audits.clear();
-        for node in &self.nodes {
-            if let Err(failure) = node.shutdown().await {
-                report.merge(&failure);
-            }
-        }
-        self.nodes.clear();
-        drop(self.provider);
-        drop(self.router);
-        report.complete()?;
-        Ok(bootstraps)
+    async fn close(self) -> BenchmarkResult<Option<Vec<ReplicatedBootstrap>>> {
+        self.resources.close().await
     }
 }
 
@@ -593,7 +397,7 @@ async fn database_case(
     tenants: usize,
     mode: &str,
     report: &mut Report,
-) -> Result<Case> {
+) -> BenchmarkResult<Case> {
     checkpoint(report, mode, tenants, "opening", json!({}), &[])?;
     let directory = if let Some(parent) = &options.work_parent {
         tempfile::Builder::new()
@@ -624,7 +428,7 @@ async fn database_case(
         mode,
         tenants,
         "collection_setup",
-        json!({"open_seconds":open_seconds,"empty_rss_bytes":empty_rss_bytes,"security_audit_stores":databases.audits.len()}),
+        json!({"open_seconds":open_seconds,"empty_rss_bytes":empty_rss_bytes,"security_audit_stores":databases.audit_count}),
         &[],
     )?;
     let collection_setup = Instant::now();
@@ -711,7 +515,7 @@ async fn database_case(
     let load_seconds = started.elapsed().as_secs_f64();
     let resident_rss_bytes = rss();
     let mut measurements = Vec::new();
-    let mut details = json!({"security_audit_stores":databases.audits.len(),"mode":mode,"tenants":tenants,"documents":options.documents,"payload_bytes":payload_bytes,"open_seconds":open_seconds,"load_seconds":load_seconds,"baseline_rss_bytes":baseline_rss_bytes,"resident_rss_bytes":resident_rss_bytes,"empty_rss_bytes":empty_rss_bytes,"collection_setup_seconds":collection_setup_seconds,"empty_index_rss_bytes":empty_index_rss_bytes});
+    let mut details = json!({"security_audit_stores":databases.audit_count,"mode":mode,"tenants":tenants,"documents":options.documents,"payload_bytes":payload_bytes,"open_seconds":open_seconds,"load_seconds":load_seconds,"baseline_rss_bytes":baseline_rss_bytes,"resident_rss_bytes":resident_rss_bytes,"empty_rss_bytes":empty_rss_bytes,"collection_setup_seconds":collection_setup_seconds,"empty_index_rss_bytes":empty_index_rss_bytes});
     for (name, percent, phase) in [
         ("embedded_authorized_owned_point_get", 0, 0),
         ("embedded_authorized_shared_point_get", 0, 0),
@@ -809,10 +613,9 @@ async fn database_case(
             .await
             .with_context(|| format!("recovery verification, tenant {tenant}"))?
             .with_context(|| format!("recovered document absent, tenant {tenant}"))?;
-        ensure!(
-            result.body["ordinal"] == json!(tenant),
-            "recovery document mismatch"
-        );
+        if result.body["ordinal"] != json!(tenant) {
+            return Err(anyhow::anyhow!("recovery document mismatch").into());
+        }
     }
     let recovery_seconds = Some(recovered.elapsed().as_secs_f64());
     let after_recovery_rss_bytes = rss();
@@ -834,7 +637,7 @@ async fn workload(
     let mut samples = Samples::new(name, options.operations);
     for operation in 0..options.operations {
         let ordinal = operation.wrapping_mul(7919) % options.documents;
-        let tenant = ordinal % databases.tenants.len();
+        let tenant = ordinal % databases.tenant_count;
         let selection = Instant::now();
         let database = match databases.leader(tenant).await {
             Ok(database) => database,
@@ -860,7 +663,7 @@ async fn workload(
                                 body: body(
                                     ordinal,
                                     phase * options.operations + operation + 1,
-                                    databases.tenants.len(),
+                                    databases.tenant_count,
                                 ),
                                 expected: Precondition::Any,
                             }],
@@ -868,9 +671,18 @@ async fn workload(
                     )
                     .await?;
             } else if name == "embedded_authorized_shared_point_get" {
-                black_box(database.get_shared(&context, "docs", &id).await?);
+                black_box(
+                    database
+                        .get_shared(&context, "docs", &id)
+                        .await?
+                        .ok_or_else(|| {
+                            Error::new(ErrorCode::NotFound, "benchmark document is missing")
+                        })?,
+                );
             } else {
-                black_box(database.get(&context, "docs", &id).await?);
+                black_box(database.get(&context, "docs", &id).await?.ok_or_else(|| {
+                    Error::new(ErrorCode::NotFound, "benchmark document is missing")
+                })?);
             }
             Ok(())
         }
@@ -893,7 +705,7 @@ async fn queries(
     let mut samples = Samples::new(name, options.operations);
     for operation in 0..options.operations {
         let ordinal = operation.wrapping_mul(7919) % options.documents;
-        let tenant = ordinal % databases.tenants.len();
+        let tenant = ordinal % databases.tenant_count;
         let selection = Instant::now();
         let database = match databases.leader(tenant).await {
             Ok(database) => database,
@@ -1054,7 +866,7 @@ fn save(report: &Report) -> Result<()> {
 }
 
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() -> BenchmarkResult<()> {
     let options = Options::parse()?;
     let mut report=Report {format:1,created_unix_ms:SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis(),options:options.clone(),os:std::env::consts::OS.into(),architecture:std::env::consts::ARCH.into(),build_profile:if cfg!(debug_assertions){"debug"}else{"release"}.into(),rustc:std::process::Command::new("rustc").arg("--version").output().ok().map(|output|String::from_utf8_lossy(&output.stdout).trim().to_owned()),source_sha256:source_hash()?, executable_sha256:hex::encode(Sha256::digest(std::fs::read(std::env::current_exe()?)?)), git_status:std::process::Command::new("git").args(["status","--porcelain"]).output().ok().map(|output|String::from_utf8_lossy(&output.stdout).lines().map(str::to_owned).collect()).unwrap_or_default(), logical_cpus:std::thread::available_parallelism().ok().map(usize::from), evidence_status:"Preliminary development measurement; repeat on a quiet host with stable source for publication".into(),guarantees:vec!["Raw lookup, authorized resident reads, and durable writes are reported separately; no 50x comparison is inferred.".into(),
             "RSS is process resident memory; peak RSS covers the whole process lifetime. Sequential cases may retain allocator pages; run one case per process for independent capacity estimates.".into(),
@@ -1067,7 +879,7 @@ async fn main() -> Result<()> {
                 options.documents, options.operations
             );
             let result = if mode == "raw" {
-                raw(&options, tenants)
+                raw(&options, tenants).map_err(BenchmarkFailure::from)
             } else {
                 database_case(&options, tenants, mode, &mut report).await
             };
@@ -1097,10 +909,9 @@ async fn main() -> Result<()> {
         }
     }
     eprintln!("benchmark report: {}", options.output.display());
-    ensure!(
-        report.failures.is_empty(),
-        "benchmark completed with recorded workload failures"
-    );
+    if !report.failures.is_empty() {
+        return Err(anyhow::anyhow!("benchmark completed with recorded workload failures").into());
+    }
     Ok(())
 }
 
@@ -1114,6 +925,12 @@ mod tests {
         let databases = Databases::open(&physical, 1, 1, 4, false, None, true)
             .await
             .unwrap();
+        let startup_id = databases._startup.as_ref().unwrap().id();
+        let retained_startup = physical.admissions[0]
+            .memory()
+            .prepaid_startup::<benchmark_startup::BenchmarkTerminal>(startup_id)
+            .unwrap();
+        assert!(!retained_startup.retire_empty().await);
         let database = databases.leader(0).await.unwrap();
         database
             .administer(context(0), Operation::CreateCollection(definition(false)))
@@ -1127,27 +944,26 @@ mod tests {
             output: dir.path().join("result.json"),
             work_parent: None,
         };
-        let failed = workload(
-            &databases,
-            &options,
+        for name in [
             "embedded_authorized_owned_point_get",
-            0,
-            0,
-        )
-        .await;
-        assert_eq!(
-            (
-                failed.successful_operations,
-                failed.failed_operations,
-                failed.unattempted_operations
-            ),
-            (0, 1, 3)
-        );
-        assert_eq!(
-            failed.failed_attempts[0].error_code,
-            Some(ErrorCode::NotFound)
-        );
-        assert!(failed.latency.is_none());
+            "embedded_authorized_shared_point_get",
+        ] {
+            let failed = workload(&databases, &options, name, 0, 0).await;
+            assert_eq!(
+                (
+                    failed.successful_operations,
+                    failed.failed_operations,
+                    failed.unattempted_operations
+                ),
+                (0, 1, 3),
+                "{name} must not count an absent document as a successful read"
+            );
+            assert_eq!(
+                failed.failed_attempts[0].error_code,
+                Some(ErrorCode::NotFound)
+            );
+            assert!(failed.latency.is_none());
+        }
         database
             .mutate(
                 context(0),
@@ -1180,6 +996,17 @@ mod tests {
             ),
             (4, 0, 0)
         );
+        // This test owns one actual escaped leader alias. Release it before
+        // requiring the original node's real final retirement receipt.
+        drop(database);
         databases.close().await.unwrap();
+        // Successful shutdown alone cannot certify every escaped output alias.
+        assert!(
+            physical.admissions[0]
+                .memory()
+                .prepaid_startup::<benchmark_startup::BenchmarkTerminal>(startup_id)
+                .is_some()
+        );
+        assert!(!retained_startup.retire_empty().await);
     }
 }

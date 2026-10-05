@@ -449,3 +449,6 @@ fn accepted_apply_exact_engine_and_position_required_and_failure_releases_guard(
     ));
     assert!(fixture.engine.apply_lock.try_lock().is_ok());
 }
+
+#[path = "mutation_change_tree_tests.rs"]
+mod mutation_change_tree_tests;

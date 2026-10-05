@@ -23,35 +23,37 @@ impl DirectoryMutator<'_> {
         edits: &[DirectoryEdit<'_>],
     ) -> Result<Option<(DirectoryRoot, usize)>, CoreError> {
         if self.failed {
-            return Err(CoreError::OwnerFailed);
+            return Err(CoreError::new(crate::CoreErrorCause::OwnerFailed));
         }
         if self.admission.check_owner().is_err() {
             self.failed = true;
-            return Err(CoreError::OwnerFailed);
+            return Err(CoreError::new(crate::CoreErrorCause::OwnerFailed));
         }
         root.validate()?;
         if generation == 0 || generation < root.generation {
-            return Err(CoreError::InvalidInput(
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
                 "directory mutation generation is invalid",
-            ));
+            )));
         }
         if !(2..=MAX_DIRECTORY_BATCH_EDITS).contains(&edits.len()) {
-            return Err(CoreError::InvalidInput(
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
                 "directory batch edit count is invalid",
-            ));
+            )));
         }
         let mut previous = None;
         for edit in edits {
             edit.key.validate()?;
             if previous.is_some_and(|key| key >= edit.key) {
-                return Err(CoreError::InvalidInput(
+                return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
                     "directory batch keys are not strictly ordered",
-                ));
+                )));
             }
             if let Some(value) = edit.value {
-                value
-                    .validate(edit.key, generation)
-                    .map_err(|_| CoreError::InvalidInput("directory value is invalid"))?;
+                value.validate(edit.key, generation).map_err(|_| {
+                    CoreError::new(crate::CoreErrorCause::InvalidInput(
+                        "directory value is invalid",
+                    ))
+                })?;
             }
             previous = Some(edit.key);
         }
@@ -192,7 +194,9 @@ impl Editor<'_> {
             .entries
             .checked_sub(leaf.map_or(0, |info| info.entries))
             .and_then(|entries| entries.checked_add(output.entries))
-            .ok_or(CoreError::InvalidInput("directory entry count overflow"))?;
+            .ok_or(CoreError::new(crate::CoreErrorCause::InvalidInput(
+                "directory entry count overflow",
+            )))?;
         if output.count != 0 {
             let minimum_len = decode_key(&output.buffer[HEADER_BYTES..output.used])?.1;
             for index in (0..depth).rev() {

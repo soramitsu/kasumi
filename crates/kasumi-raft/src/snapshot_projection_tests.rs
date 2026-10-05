@@ -107,7 +107,12 @@ pub(crate) fn verify_boundary(
 
     // Restore the exact previously published row; the caller independently
     // validates the baseline's image/coverage before testing staging refusal.
-    store.write_batch(&[WriteOp::put(META, PROJECTION, original.clone())])?;
+    kasumi_store::test_utils::write_plaintext_copy_for_fixture(
+        store,
+        META,
+        PROJECTION,
+        original.as_bytes(),
+    )?;
     assert_eq!(
         encode_projection(&load_projection(store)?.unwrap())?,
         original

@@ -16,10 +16,41 @@ use std::sync::{Arc, Mutex};
 // Anonymous files cannot be closed and later reopened. A fixed descriptor
 // ceiling is therefore part of this scratch owner, independent of row count.
 pub(super) const MAX_FILES: usize = 256;
-const FILE_MEMORY_BYTES: u64 = (2 * crate::spool::NATIVE_BLOCK) as u64
+pub(super) const FILE_MEMORY_BYTES: u64 = (2 * crate::spool::NATIVE_BLOCK) as u64
     + 40
     + 3 * crate::disk_memory::ALLOCATION_ALLOWANCE
     + 32;
+
+// The original census grant covers each complete fixed backing, allocator
+// overhead and alignment before its only allocation. A Vec keeps the same
+// descriptor ceiling without transporting the whole array through owner Drop.
+fn slots_backing_bytes<T>() -> io::Result<u64> {
+    crate::disk_memory::add(
+        crate::disk_memory::allocation::<Option<T>>(MAX_FILES as u64)?,
+        u64::try_from(std::mem::align_of::<Option<T>>())
+            .map_err(|_| crate::disk_memory::overflow())?,
+    )
+}
+
+pub(super) fn workspace_provider_request_bytes(bytes: u64) -> io::Result<u64> {
+    crate::disk_memory::add(bytes, crate::disk_memory::allocation::<DiskMemoryLease>(1)?)
+}
+
+fn fixed_slots<T>() -> io::Result<Vec<Option<T>>> {
+    let mut slots = Vec::new();
+    slots
+        .try_reserve_exact(MAX_FILES)
+        .map_err(|_| io::ErrorKind::OutOfMemory)?;
+    if slots.capacity() != MAX_FILES {
+        return Err(io::ErrorKind::OutOfMemory.into());
+    }
+    // Capacity is already exact and fully funded; no push can grow it. Each
+    // empty slot is initialized directly in the backing, never as a big array.
+    for _ in 0..MAX_FILES {
+        slots.push(None);
+    }
+    Ok(slots)
+}
 
 struct FileOwner {
     file: Option<GroupFile>,
@@ -32,7 +63,7 @@ struct State {
     disk: Arc<ScratchDisk>,
     limit: u64,
     root: Option<FileOwner>,
-    files: [Option<FileOwner>; MAX_FILES],
+    files: Vec<Option<FileOwner>>,
     // A census releases the state lock around caller code. This monotonic
     // witness detects all namespace changes, including same-slot/name reuse.
     namespace_epoch: u64,
@@ -151,10 +182,108 @@ impl State {
 
 pub(crate) struct Owner {
     state: Mutex<Option<State>>,
-    // Closing files does not deallocate the retained Arc or its fixed slots.
-    // Keep that charge until this exact owner itself retires.
-    memory: Option<DiskMemoryLease>,
     admission: Arc<dyn crate::NodeDiskMemoryAdmission>,
+    acquisition_finished: std::sync::atomic::AtomicBool,
+    census_id: std::sync::OnceLock<crate::StorageOwnerId>,
+    root_error: std::sync::OnceLock<io::Error>,
+    root_preparation: Mutex<RootPreparation>,
+}
+enum RootMemoryDisposal {
+    NotEntered,
+    Entered,
+    Returned,
+    Panicked(Box<dyn std::any::Any + Send>),
+}
+struct RootPreparation {
+    memory: Option<DiskMemoryLease>,
+    disposal: RootMemoryDisposal,
+}
+
+pub(crate) struct OwnerCreationFailure {
+    original: Option<io::Error>,
+    owner: Option<crate::storage_census::StorageRegistration<Owner>>,
+}
+impl From<io::Error> for OwnerCreationFailure {
+    fn from(original: io::Error) -> Self {
+        Self {
+            original: Some(original),
+            owner: None,
+        }
+    }
+}
+impl std::fmt::Debug for OwnerCreationFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OwnerCreationFailure")
+            .field("original", &self.original)
+            .finish_non_exhaustive()
+    }
+}
+impl OwnerCreationFailure {
+    pub(super) fn original(&self) -> &io::Error {
+        self.original.as_ref().unwrap_or_else(|| {
+            self.owner
+                .as_ref()
+                .unwrap()
+                .owner()
+                .root_error
+                .get()
+                .unwrap()
+        })
+    }
+    pub(super) fn settle_root_memory(&self) -> bool {
+        self.owner
+            .as_ref()
+            .is_none_or(|owner| owner.owner().settle_root_memory())
+    }
+    pub(super) fn with_root_disposal<R>(
+        &self,
+        inspect: impl for<'a> FnOnce(
+            Option<kasumi_kv::TerminalObservation<'a, std::convert::Infallible>>,
+        ) -> R,
+    ) -> R {
+        let Some(owner) = &self.owner else {
+            return inspect(None);
+        };
+        let Ok(preparation) = owner.owner().root_preparation.try_lock() else {
+            return inspect(None);
+        };
+        inspect(Some(match &preparation.disposal {
+            RootMemoryDisposal::NotEntered => kasumi_kv::TerminalObservation::NotEntered,
+            RootMemoryDisposal::Entered => kasumi_kv::TerminalObservation::Entered,
+            RootMemoryDisposal::Returned => kasumi_kv::TerminalObservation::Returned(Ok(())),
+            RootMemoryDisposal::Panicked(original) => {
+                kasumi_kv::TerminalObservation::Panicked(original.as_ref())
+            }
+        }))
+    }
+    #[cfg(test)]
+    pub(super) fn kind(&self) -> io::ErrorKind {
+        self.original().kind()
+    }
+}
+impl Drop for OwnerCreationFailure {
+    fn drop(&mut self) {
+        // The whole producer-owned IO allocation leaves before its associated
+        // allocation-only owner can return the original metadata grant.
+        drop(self.original.take());
+        if let Some(owner) = self.owner.take() {
+            let _ = owner.retire();
+        }
+    }
+}
+
+impl crate::storage_census::StoragePayload for Owner {
+    const KIND: crate::storage_census::StorageOwnerKind =
+        crate::storage_census::StorageOwnerKind::SegmentGroup;
+
+    fn drive(&self) -> bool {
+        // Native opening/close owns the effects. The census observes the actual
+        // empty state and then frees the last Arc control before its own lease.
+        self.acquisition_finished
+            .load(std::sync::atomic::Ordering::Acquire)
+            && self.state.try_lock().is_ok_and(|state| state.is_none())
+            && self.settle_root_memory()
+    }
 }
 
 impl std::fmt::Debug for Owner {
@@ -164,38 +293,141 @@ impl std::fmt::Debug for Owner {
 }
 
 impl Owner {
-    pub(crate) fn new(disk: &Arc<ScratchDisk>, limit: u64) -> io::Result<Arc<Self>> {
+    pub(crate) fn census_id(&self) -> crate::StorageOwnerId {
+        *self.census_id.get().unwrap()
+    }
+    #[cfg(test)]
+    pub(super) fn provider(&self) -> Arc<dyn crate::NodeDiskMemoryAdmission> {
+        self.admission.clone()
+    }
+    pub(crate) fn new(
+        disk: &Arc<ScratchDisk>,
+        limit: u64,
+    ) -> Result<Arc<Self>, OwnerCreationFailure> {
         if limit < (2 * ROOT_SLOT_BYTES) as u64 {
-            return Err(io::ErrorKind::StorageFull.into());
+            return Err(io::Error::from(io::ErrorKind::StorageFull).into());
         }
-        let memory = disk
-            .memory()
-            .clone()
-            .reserve_installed(crate::disk_memory::add(
-                crate::disk_memory::arc::<Self>()?,
+        let provider = disk.memory().clone();
+        let registration = provider.storage_census().register(
+            provider.clone(),
+            crate::disk_memory::add(
                 crate::disk_memory::add(
                     64 << 10, // serialized spool resize zero-fill workspace
-                    crate::disk_memory::add(
-                        crate::disk_memory::size::<claim::GroupTransaction>()?,
-                        crate::disk_memory::arc::<super::ScratchTableDatabase>()?,
-                    )?,
-                )?, // prepared claim plus the one enclosing scratch table facade
-            )?)?;
-        let root = Self::file(disk, limit, None)?;
-        Ok(Arc::new(Self {
-            state: Mutex::new(Some(State {
-                disk: disk.clone(),
-                limit,
-                root: Some(root),
-                files: [const { None }; MAX_FILES],
-                namespace_epoch: 0,
-                failed: false,
-                close_entered: false,
-                transaction: None,
-            })),
-            memory: Some(memory),
-            admission: disk.memory().clone(),
-        }))
+                    crate::disk_memory::size::<claim::GroupTransaction>()?,
+                )?,
+                crate::disk_memory::add(
+                    slots_backing_bytes::<FileOwner>()?,
+                    // Both the resident transaction and its pre-installation
+                    // preparation previously lived inside this census quote.
+                    crate::disk_memory::mul(claim::GroupTransaction::prepared_backing_bytes()?, 2)?,
+                )?,
+            )?,
+            || Self {
+                state: Mutex::new(None),
+                admission: provider.clone(),
+                acquisition_finished: std::sync::atomic::AtomicBool::new(false),
+                census_id: std::sync::OnceLock::new(),
+                root_error: std::sync::OnceLock::new(),
+                root_preparation: Mutex::new(RootPreparation {
+                    memory: None,
+                    disposal: RootMemoryDisposal::NotEntered,
+                }),
+            },
+        )?;
+        registration
+            .owner()
+            .census_id
+            .set(registration.id())
+            .unwrap();
+        // Only empty slots exist here. Refusal retires their local backing
+        // before the returned registration can release its original grant.
+        // No root/file grant or physical root acquisition has been entered.
+        let files = match fixed_slots::<FileOwner>() {
+            Ok(files) => files,
+            Err(original) => {
+                registration.owner().root_error.set(original).unwrap();
+                registration
+                    .owner()
+                    .acquisition_finished
+                    .store(true, std::sync::atomic::Ordering::Release);
+                return Err(OwnerCreationFailure {
+                    original: None,
+                    owner: Some(registration),
+                });
+            }
+        };
+        let root = match registration.owner().prepare_root(disk, limit) {
+            Ok(root) => root,
+            Err(()) => {
+                registration
+                    .owner()
+                    .acquisition_finished
+                    .store(true, std::sync::atomic::Ordering::Release);
+                return Err(OwnerCreationFailure {
+                    original: None,
+                    owner: Some(registration),
+                });
+            }
+        };
+        *registration.owner().state.lock().unwrap() = Some(State {
+            disk: disk.clone(),
+            limit,
+            root: Some(root),
+            files,
+            namespace_epoch: 0,
+            failed: false,
+            close_entered: false,
+            transaction: None,
+        });
+        registration
+            .owner()
+            .acquisition_finished
+            .store(true, std::sync::atomic::Ordering::Release);
+        Ok(registration.owner_arc())
+    }
+
+    fn prepare_root(&self, disk: &Arc<ScratchDisk>, limit: u64) -> Result<FileOwner, ()> {
+        let memory = match disk.memory().clone().reserve_installed(FILE_MEMORY_BYTES) {
+            Ok(memory) => memory,
+            Err(original) => {
+                self.root_error.set(original).unwrap();
+                return Err(());
+            }
+        };
+        self.root_preparation.lock().unwrap().memory = Some(memory);
+        let spool = match EncryptedSpool::new_native(disk, limit) {
+            Ok(spool) => spool.retain(),
+            Err(original) => {
+                // The original cause is installed before the already-admitted
+                // grant can run a destructive callback or a second unwind.
+                self.root_error.set(original).unwrap();
+                return Err(());
+            }
+        };
+        Ok(FileOwner {
+            file: None,
+            spool,
+            _memory: self.root_preparation.lock().unwrap().memory.take().unwrap(),
+        })
+    }
+
+    fn settle_root_memory(&self) -> bool {
+        let Ok(mut preparation) = self.root_preparation.try_lock() else {
+            return false;
+        };
+        if !matches!(preparation.disposal, RootMemoryDisposal::NotEntered) {
+            return matches!(preparation.disposal, RootMemoryDisposal::Returned);
+        }
+        let Some(memory) = preparation.memory.take() else {
+            return true;
+        };
+        preparation.disposal = RootMemoryDisposal::Entered;
+        preparation.disposal =
+            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(memory))) {
+                Ok(()) => RootMemoryDisposal::Returned,
+                Err(original) => RootMemoryDisposal::Panicked(original),
+            };
+        matches!(preparation.disposal, RootMemoryDisposal::Returned)
     }
 
     fn file(disk: &Arc<ScratchDisk>, limit: u64, file: Option<GroupFile>) -> io::Result<FileOwner> {
@@ -308,7 +540,6 @@ impl Drop for Owner {
             // No exact drain proof exists. Preserve every undrained file,
             // key, buffer and lease; never use ordinary Drop as proof.
             std::mem::forget(retained);
-            std::mem::forget(self.memory.take());
         }
     }
 }
@@ -338,14 +569,7 @@ impl StorageAdmission for Owner {
             state.fail();
             AdmissionError::OwnerFailed
         })?;
-        let bytes = crate::disk_memory::add(
-            bytes,
-            crate::disk_memory::allocation::<DiskMemoryLease>(1).map_err(|_| {
-                state.fail();
-                AdmissionError::OwnerFailed
-            })?,
-        )
-        .map_err(|_| {
+        let bytes = workspace_provider_request_bytes(bytes).map_err(|_| {
             state.fail();
             AdmissionError::OwnerFailed
         })?;

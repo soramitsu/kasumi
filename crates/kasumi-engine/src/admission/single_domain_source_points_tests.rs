@@ -56,11 +56,12 @@ async fn single_domain_current_next_roots_reuse_one_actual_backing_under_full_pr
     assert_eq!(next.registered_reader_id(), next_id);
     assert_ne!(old_id, next_id);
     for _ in 0..3 {
-        let mut loan = old.point_reads(&mut points)?;
-        assert_eq!(loan.value_capacity(), 128);
-        assert_eq!(loan.get("payload", b"key", 128)?, Some(b"old".as_slice()));
-        assert!(loan.get("payload", b"absent", 128)?.is_none());
-        drop(loan);
+        {
+            let mut loan = old.point_reads(&mut points)?;
+            assert_eq!(loan.value_capacity(), 128);
+            assert_eq!(loan.get("payload", b"key", 128)?, Some(b"old".as_slice()));
+            assert!(loan.get("payload", b"absent", 128)?.is_none());
+        }
         let mut loan = next.point_reads(&mut points)?;
         assert_eq!(loan.get("payload", b"key", 128)?, Some(b"new".as_slice()));
         assert!(loan.get("payload", b"key", 129).is_err());
@@ -104,26 +105,27 @@ async fn single_domain_source_loans_recheck_expiry_for_cached_records_and_absenc
             fixture.stores.custody().store(),
             capacity.prepare(0)?.capture()?,
         )?;
-        let mut loan = source.point_reads(&mut points)?;
-        assert_eq!(
-            loan.get("payload", b"key", 128)?,
-            Some(b"resident".as_slice())
-        );
-        let before = fixture.node.cache_stats()?;
-        assert_eq!(
-            loan.get("payload", b"key", 128)?,
-            Some(b"resident".as_slice())
-        );
-        let after = fixture.node.cache_stats()?;
-        if cache != 0 {
-            assert!(after.hits > before.hits);
+        {
+            let mut loan = source.point_reads(&mut points)?;
+            assert_eq!(
+                loan.get("payload", b"key", 128)?,
+                Some(b"resident".as_slice())
+            );
+            let before = fixture.node.cache_stats()?;
+            assert_eq!(
+                loan.get("payload", b"key", 128)?,
+                Some(b"resident".as_slice())
+            );
+            let after = fixture.node.cache_stats()?;
+            if cache != 0 {
+                assert!(after.hits > before.hits);
+            }
+            fixture
+                .clock
+                .advance(kasumi_store::MAX_KEY_LEASE + Duration::from_nanos(1));
+            assert!(loan.get("payload", b"key", 128).is_err());
+            assert!(loan.get("payload", b"absent", 128).is_err());
         }
-        fixture
-            .clock
-            .advance(kasumi_store::MAX_KEY_LEASE + Duration::from_nanos(1));
-        assert!(loan.get("payload", b"key", 128).is_err());
-        assert!(loan.get("payload", b"absent", 128).is_err());
-        drop(loan);
         assert!(source.point_reads(&mut points).is_err());
         source.close()?;
         points.retire().expect("actual point backing retirement");
@@ -147,13 +149,16 @@ async fn single_domain_binder_rejects_foreign_store_provider_native_and_ordinary
         };
         let other = if mode == "native" {
             Some(
-                fixture.storage.create_new(
-                    fixture
-                        ._directory
-                        .path()
-                        .join("persistent/single-source-other.kv"),
-                    uuid::Uuid::from_u128(773),
-                )?,
+                fixture
+                    .storage
+                    .create_new(
+                        fixture
+                            ._directory
+                            .path()
+                            .join("persistent/single-source-other.kv"),
+                        uuid::Uuid::from_u128(773),
+                    )
+                    .unwrap_or_else(|original| std::panic::panic_any(original)),
             )
         } else {
             None

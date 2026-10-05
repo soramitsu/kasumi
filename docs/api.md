@@ -46,9 +46,13 @@ owns initialization of its installation, Control topology, credentials and clien
 profiles; see [standalone operation](standalone.md).
 
 `TransitConfig` contains an HTTPS `endpoint`, `mount`, `key_name`, an explicit
-renewable `credential` source, optional `namespace` and `ca_pem`, and `derived`
+renewable `credential` source, a required nonempty `ca_pem` bundle, optional
+`namespace`, and `derived`
 matching the Transit key. Use a different key and authority for each application,
-custody and service domain. `FileCredentialSource` reads the installed private
+custody and service domain. Every primary and historical Transit provider uses
+only that pinned CA bundle; system certificate roots are disabled. Installed
+Transit configuration requires an absolute `ca_certificate` path.
+`FileCredentialSource` reads the installed private
 credential path for requests; a constructor-time token snapshot or environment
 fallback is not a credential source. The provider performs fresh decrypt probes
 for retained key dependencies. See [Transit compatibility and permissions](COMPATIBILITY.md).
@@ -299,10 +303,13 @@ for resource limits, expiry, cancellation and snapshot lease invalidation.
 
 ## MCP 2026-07-28
 
-Use the configured HTTPS `/mcp` endpoint and an OAuth access token for that
-protected resource. Protected-resource metadata is available at
-`/.well-known/oauth-protected-resource/mcp`; its configured authorization server
-issues the token. Kasumi does not pass the caller's token to Transit or peers.
+Use the configured HTTPS `/mcp` endpoint and its access token. With an installed
+external OAuth provider, protected-resource metadata is available at
+`/.well-known/oauth-protected-resource/mcp` and
+`/.well-known/oauth-protected-resource`; the configured authorization server
+issues the token. Local standalone installations use preconfigured local bearer
+tokens: both discovery URLs return 404, and authentication challenges contain
+only `Bearer`. Kasumi does not pass the caller's token to Transit or peers.
 
 The current endpoint is stateless. Each request supplies protocol and client
 metadata; legacy initialization/session flows are rejected. An authenticated

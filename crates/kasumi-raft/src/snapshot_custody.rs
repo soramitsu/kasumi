@@ -213,7 +213,7 @@ pub(crate) fn capture(
     custody: &CustodyStore,
     meta: &SnapshotMeta<u64, BasicNode>,
     state: Option<RetiredSnapshotState>,
-) -> Result<Option<SnapshotRetirement>> {
+) -> Result<Option<SnapshotRetirement>, kasumi_store::ScratchOperationFailure> {
     let Some(state) = state else {
         return Ok(None);
     };

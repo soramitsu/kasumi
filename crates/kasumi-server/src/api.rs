@@ -70,23 +70,27 @@ impl DatabaseRegistry {
         tenant: &str,
         incarnation: &str,
     ) -> Result<Option<Arc<Database>>> {
-        let database = self
+        let databases = self
             .databases
             .read()
-            .map_err(|_| Error::new(ErrorCode::Unavailable, "tenant registry unavailable"))?
-            .get(tenant)
-            .cloned();
-        let Some(database) = database else {
+            .map_err(|_| Error::new(ErrorCode::Unavailable, "tenant registry unavailable"))?;
+        let Some(database) = databases.get(tenant) else {
             return Ok(None);
         };
-        match database.engine().generation() {
-            Ok(generation) if generation.incarnation() == incarnation => Ok(Some(database)),
-            Ok(_) => Ok(None),
-            // A sealed generation is an unavailable required group, not an
-            // excuse to stop counting the rest of the committed membership.
-            Err(error) if error.code == ErrorCode::Sealed => Ok(None),
-            Err(error) => Err(error),
-        }
+        // Registration binds this exact handle to its immutable installed
+        // identity before publishing the route. Observe that binding even when
+        // its access-fenced generation is unavailable, without opening state or
+        // authorizing any data operation. Keep the route lock through selection.
+        let sources = self
+            .retirement_sources
+            .read()
+            .map_err(|_| Error::new(ErrorCode::Unavailable, "source registry unavailable"))?;
+        Ok(matches!(
+            sources.get(&(tenant.to_owned(), incarnation.to_owned())),
+            Some(kasumi_engine::InstalledRetirementSource::Serving(installed))
+                if Arc::ptr_eq(installed, database)
+        )
+        .then(|| database.clone()))
     }
 
     /// Installed source custody is retained separately from mutable data routes.
@@ -482,13 +486,14 @@ mod tests {
         incarnation: uuid::Uuid,
         _dir: tempfile::TempDir,
         physical: kasumi_engine::test_utils::FixtureStorage,
-        node: Arc<NodeStore>,
+        node: NodeStore,
         db: Arc<Database>,
         registry: DatabaseRegistry,
         auth: Arc<Authenticator>,
         key: EncodingKey,
         audit_store: Arc<TenantStore>,
         audit: Arc<crate::runtime::SecurityAudit>,
+        failures: crate::administration::OriginalRecoveries,
     }
     impl Fixture {
         async fn new() -> Self {
@@ -512,6 +517,11 @@ mod tests {
             let dir = kasumi_store::test_utils::private_tempdir().unwrap();
             let physical =
                 crate::runtime_storage_fixtures::physical(dir.path(), Default::default()).unwrap();
+            let failures = crate::administration::OriginalRecoveries::new(
+                &physical.admission,
+                crate::administration::OriginalRecoveryParticipants::one("tenant-a"),
+            )
+            .unwrap();
             let node = physical
                 .create_new(
                     dir.path().join("persistent/node.kv"),
@@ -612,6 +622,7 @@ mod tests {
                 key,
                 audit_store,
                 audit,
+                failures,
             }
         }
         fn token(&self, principal: &str, tenant: &str, scope: &str) -> String {
@@ -982,7 +993,11 @@ mod tests {
             "tenant-a",
             "kasumi:read kasumi:write kasumi:admin",
         );
-        let admin = NativeAdmin::new(fixture.registry.clone(), fixture.auth.clone());
+        let admin = NativeAdmin::new(
+            fixture.registry.clone(),
+            fixture.auth.clone(),
+            fixture.failures.clone(),
+        );
         admin.replace_collection(native(proto::CollectionDefinitionRequest {
             definition_json: serde_json::to_vec(&CollectionDefinition {
                 retention_class: kasumi_types::CollectionRetentionClass::Operational,
@@ -1351,7 +1366,11 @@ name: "docs".into(),
                 .code(),
             Code::PermissionDenied
         );
-        let admin = NativeAdmin::new(fixture.registry.clone(), fixture.auth.clone());
+        let admin = NativeAdmin::new(
+            fixture.registry.clone(),
+            fixture.auth.clone(),
+            fixture.failures.clone(),
+        );
         assert_eq!(
             admin
                 .set_suspended(native(
@@ -1456,28 +1475,33 @@ name: "docs".into(),
     async fn protected_resource_metadata_and_challenges_advertise_only_configured_issuer() {
         let fixture = Fixture::new().await;
         let router = fixture.router();
-        let response = router
-            .clone()
-            .oneshot(
-                HttpRequest::builder()
-                    .uri("/.well-known/oauth-protected-resource/mcp")
-                    .body(Body::empty())
+        for path in [
+            "/.well-known/oauth-protected-resource/mcp",
+            "/.well-known/oauth-protected-resource",
+        ] {
+            let response = router
+                .clone()
+                .oneshot(
+                    HttpRequest::builder()
+                        .uri(path)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let body: Value = serde_json::from_slice(
+                &axum::body::to_bytes(response.into_body(), 65536)
+                    .await
                     .unwrap(),
             )
-            .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        let body: Value = serde_json::from_slice(
-            &axum::body::to_bytes(response.into_body(), 65536)
-                .await
-                .unwrap(),
-        )
-        .unwrap();
-        assert_eq!(body["resource"], "https://kasumi.example/mcp");
-        assert_eq!(
-            body["authorization_servers"],
-            json!(["https://issuer.example"])
-        );
+            assert_eq!(body["resource"], "https://kasumi.example/mcp");
+            assert_eq!(
+                body["authorization_servers"],
+                json!(["https://issuer.example"])
+            );
+        }
         let response = router
             .oneshot(
                 HttpRequest::builder()
@@ -1506,7 +1530,7 @@ name: "docs".into(),
                 .scan("security.audit")
                 .unwrap()
                 .into_iter()
-                .map(|(_, body)| serde_json::from_slice::<Value>(&body).unwrap())
+                .map(|(_, body)| serde_json::from_slice::<Value>(body).unwrap())
                 .filter(|event| {
                     matches!(
                         event["event"]["kind"].as_str(),
@@ -1708,7 +1732,7 @@ name: "docs".into(),
             assert_eq!(error.code, ErrorCode::Sealed);
             let records = fixture.audit_store.scan("security.audit").unwrap();
             assert_eq!(records.len(), 1);
-            let event: Value = serde_json::from_slice(&records[0].1).unwrap();
+            let event: Value = serde_json::from_slice(records[0].value()).unwrap();
             assert_eq!(event["event"]["kind"], "tenant_sealed");
             assert_eq!(event["event"]["request_id"], context.request_id);
             fixture.close().await;
@@ -1776,7 +1800,7 @@ name: "docs".into(),
             );
             let records = fixture.audit_store.scan("security.audit").unwrap();
             assert_eq!(records.len(), 1);
-            let event: Value = serde_json::from_slice(&records[0].1).unwrap();
+            let event: Value = serde_json::from_slice(records[0].value()).unwrap();
             assert_eq!(event["event"]["kind"], "access_denied");
             assert_eq!(event["event"]["request_id"], context.request_id);
             if mutation {
@@ -2053,6 +2077,12 @@ name: "docs".into(),
         )
         .unwrap();
         config.control.initial_policy = policy;
+        let original_recoveries =
+            crate::administration::original_serving_runtime::OriginalRecoveries::new(
+                fixture.audit.admission(),
+                crate::administration::OriginalRecoveryParticipants::configured(&config),
+            )
+            .unwrap();
         let manager = Administration::new(
             config,
             BTreeMap::new(),
@@ -2070,6 +2100,7 @@ name: "docs".into(),
             BTreeMap::new(),
             fixture.audit.admission().clone(),
             Arc::new(|_| anyhow::bail!("fixture has no installed authority credential")),
+            original_recoveries.clone(),
         )
         .unwrap();
         let token = fixture.resource_token("person", tenant, "kasumi:admin kasumi:read kasumi:write", Some(json!({"kind":"control","incarnation":control.engine().generation().unwrap().incarnation()})));
@@ -2081,7 +2112,11 @@ name: "docs".into(),
             ..Limits::default()
         };
         let payload = serde_json::to_vec(&limits).unwrap();
-        let bare = NativeAdmin::new(fixture.registry.clone(), fixture.auth.clone());
+        let bare = NativeAdmin::new(
+            fixture.registry.clone(),
+            fixture.auth.clone(),
+            original_recoveries,
+        );
         assert_eq!(
             bare.set_limits(native(
                 proto::SetLimitsRequest {

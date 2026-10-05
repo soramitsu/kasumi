@@ -102,7 +102,7 @@ impl TenantEngine {
         &self,
         admission: Arc<NodeAdmission>,
         timeout_ms: u64,
-    ) -> Result<SnapshotImage> {
+    ) -> std::result::Result<SnapshotImage, crate::SnapshotFailure> {
         let store = self.admitted_snapshot_store(&admission)?;
         let deadline = VerificationDeadline::new(timeout_ms).map_err(error)?;
         let token = QueryCancellation::default();
@@ -160,7 +160,7 @@ impl TenantEngine {
         image: SnapshotImage,
         admission: Arc<NodeAdmission>,
         timeout_ms: u64,
-    ) -> Result<PreparedSnapshotRestore> {
+    ) -> std::result::Result<PreparedSnapshotRestore, crate::SnapshotFailure> {
         let store = self.admitted_snapshot_store(&admission)?;
         let deadline = VerificationDeadline::new(timeout_ms).map_err(error)?;
         let token = QueryCancellation::default();
@@ -174,49 +174,58 @@ impl TenantEngine {
         };
         let wait_phase = VerificationPhase::start("public_restore.wait", Some(deadline));
         let output = deadline
-            .run(tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
-                work.check()?;
-                let phase = VerificationPhase::start("public_restore.framing", Some(deadline));
-                let layout = snapshot_bundle::inspect(&mut CheckedIo {
-                    io: image.reader(),
-                    work: &work,
-                })?;
-                phase.complete();
-                let additional = layout
-                    .materialization_workspace()?
-                    .checked_sub(WORKSPACE)
-                    .ok_or_else(|| anyhow::anyhow!("snapshot workspace overflow"))?;
-                work.reservation.reserve_additional(additional)?;
-                let phase = VerificationPhase::start("public_restore.decode", Some(deadline));
-                let generation = snapshot_bundle::read(
-                    prior.engine(),
-                    &prior.baseline(),
-                    &mut CheckedIo {
-                        io: image.reader(),
-                        work: &work,
-                    },
-                    Some(layout),
-                )?;
-                phase.complete();
-                work.check()?;
-                let prepared = PreparedSnapshotRestore {
-                    image,
-                    tenant: generation.state.tenant.clone(),
-                    incarnation: generation.state.incarnation.clone(),
-                    revision: generation.state.revision,
-                };
-                // The unpublished logical state drops before returning a small image
-                // handle; its proportional reservation does not become a long lease.
-                let phase = VerificationPhase::start("public_restore.discard", Some(deadline));
-                drop(generation);
-                drop(prior);
-                phase.complete();
-                Ok((prepared, work))
-            }))
+            .run(tokio::task::spawn_blocking(
+                move || -> std::result::Result<_, kasumi_store::ScratchOperationFailure> {
+                    let layout = kasumi_store::ScratchOperationFailure::ordinary(|| {
+                        work.check()?;
+                        let phase =
+                            VerificationPhase::start("public_restore.framing", Some(deadline));
+                        let layout = snapshot_bundle::inspect(&mut CheckedIo {
+                            io: image.reader(),
+                            work: &work,
+                        })?;
+                        phase.complete();
+                        let additional = layout
+                            .materialization_workspace()?
+                            .checked_sub(WORKSPACE)
+                            .ok_or_else(|| anyhow::anyhow!("snapshot workspace overflow"))?;
+                        work.reservation.reserve_additional(additional)?;
+                        Ok(layout)
+                    })?;
+                    let phase = VerificationPhase::start("public_restore.decode", Some(deadline));
+                    let generation = snapshot_bundle::read(
+                        prior.engine(),
+                        &prior.baseline(),
+                        &mut CheckedIo {
+                            io: image.reader(),
+                            work: &work,
+                        },
+                        Some(layout),
+                    )?;
+                    phase.complete();
+                    kasumi_store::ScratchOperationFailure::ordinary(|| {
+                        work.check()?;
+                        let prepared = PreparedSnapshotRestore {
+                            image,
+                            tenant: generation.state.tenant.clone(),
+                            incarnation: generation.state.incarnation.clone(),
+                            revision: generation.state.revision,
+                        };
+                        // The unpublished logical state drops before returning a small image
+                        // handle; its proportional reservation does not become a long lease.
+                        let phase =
+                            VerificationPhase::start("public_restore.discard", Some(deadline));
+                        drop(generation);
+                        drop(prior);
+                        phase.complete();
+                        Ok((prepared, work))
+                    })
+                },
+            ))
             .await
             .map_err(error)?
             .map_err(|e| error(e.into()))?
-            .map_err(error)?;
+            .map_err(crate::SnapshotFailure::from)?;
         output.1.check().map_err(error)?;
         wait_phase.complete();
         Ok(output.0)

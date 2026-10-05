@@ -21,21 +21,23 @@ fn status(session: &VerifiedBackupSession) -> Result<BackupSessionStatus> {
 const SESSION_WORKSPACE_BYTES: u64 = 16 << 20;
 const MAX_SESSION_FUTURE_BYTES: usize = 1 << 20;
 
-async fn admitted_session_work<T, F>(
+async fn admitted_session_work<T, E, F>(
     fence: &Arc<WorkFence>,
     admission: &Arc<NodeAdmission>,
     build: impl FnOnce() -> F + Send,
-) -> Result<T>
+) -> std::result::Result<T, E>
 where
     T: Send,
-    F: std::future::Future<Output = Result<T>> + Send,
+    E: From<Error>,
+    F: std::future::Future<Output = std::result::Result<T, E>> + Send,
 {
     let future_bytes = std::mem::size_of::<F>();
     if future_bytes > MAX_SESSION_FUTURE_BYTES {
         return Err(Error::new(
             ErrorCode::ResourceExhausted,
             "backup session future exceeds its workspace bound",
-        ));
+        )
+        .into());
     }
     let cancellation = QueryCancellation::default();
     let _cancel_on_drop = CancelOnDrop(cancellation.clone());
@@ -45,19 +47,24 @@ where
     // without consuming a second operation slot. Admission precedes even its
     // construction, and the box drops before the reservation on every exit.
     reservation.reserve_additional(future_bytes as u64)?;
-    let work: std::pin::Pin<Box<dyn std::future::Future<Output = Result<T>> + Send + '_>> =
-        Box::pin(build());
+    let work: std::pin::Pin<
+        Box<dyn std::future::Future<Output = std::result::Result<T, E>> + Send + '_>,
+    > = Box::pin(build());
     tokio::select! {
         result = tokio::time::timeout(Duration::from_secs(300), work) => result.map_err(|_| Error::new(ErrorCode::UnknownOutcome, "backup session operation deadline expired; inspect its durable outcome"))?,
-        _ = cancelled(&cancellation) => Err(cancelled_error()),
+        _ = cancelled(&cancellation) => Err(cancelled_error().into()),
     }
 }
 
 impl Database {
-    pub(super) async fn session_work<T, F>(&self, build: impl FnOnce() -> F + Send) -> Result<T>
+    pub(super) async fn session_work<T, E, F>(
+        &self,
+        build: impl FnOnce() -> F + Send,
+    ) -> std::result::Result<T, E>
     where
         T: Send,
-        F: std::future::Future<Output = Result<T>> + Send,
+        E: From<Error>,
+        F: std::future::Future<Output = std::result::Result<T, E>> + Send,
     {
         // The caller retains only the builder's captures. Its concrete future
         // is constructed after admission and erased before any work is polled.
@@ -166,7 +173,7 @@ impl Database {
         &self,
         context: RequestContext,
         request: AbortBackupSession,
-    ) -> Result<BackupSessionStatus> {
+    ) -> std::result::Result<BackupSessionStatus, crate::SnapshotFailure> {
         let result = self
             .session_work(|| async {
                 self.engine.authorize(&context, None, Action::Admin)?;
@@ -174,7 +181,8 @@ impl Database {
                     return Err(Error::new(
                         ErrorCode::InvalidArgument,
                         "backup abort reason outside bounds",
-                    ));
+                    )
+                    .into());
                 }
                 let destination = self.archive_destination(&request.destination)?;
                 let session = self
@@ -182,7 +190,7 @@ impl Database {
                     .await?
                     .ok_or_else(|| Error::new(ErrorCode::NotFound, "backup session not found"))?;
                 if session.outcome().is_some() {
-                    return status(&session);
+                    return status(&session).map_err(Into::into);
                 }
                 let root = destination
                     .session_get(
@@ -212,7 +220,7 @@ impl Database {
                             checkpoint.checkpoint(),
                         )
                         .await?;
-                    return status(&resolved);
+                    return status(&resolved).map_err(Into::into);
                 }
                 let outcome = BackupSessionOutcome::Aborted {
                     intent_ciphertext_sha256: session.intent_ciphertext_sha256().into(),
@@ -248,7 +256,8 @@ impl Database {
                     return Err(Error::new(
                         ErrorCode::UnknownOutcome,
                         "backup abort publication uncertain",
-                    ));
+                    )
+                    .into());
                 }
                 self.maintenance_audit(
                     context.clone(),
@@ -258,10 +267,10 @@ impl Database {
                 )
                 .await?;
                 self.response_fence(&context)?.check()?;
-                status(&resolved)
+                status(&resolved).map_err(Into::into)
             })
             .await;
-        self.audit_write_result(&context, result).await
+        self.audit_snapshot_write_result(&context, result).await
     }
     pub async fn cleanup_backup_session(
         &self,

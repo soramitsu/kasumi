@@ -187,10 +187,14 @@ async fn streamed_open_rejects_holes_malformed_keys_and_noncanonical_headers() -
             .to_string()
             .contains("hole")
     );
-    store.write_batch(&[
-        put(HEADERS, &key, original.clone()),
-        put(HEADERS, &[8, 9], original.clone()),
-    ])?;
+    kasumi_store::test_utils::FixtureWriteBatch::prepare(
+        store,
+        &[
+            kasumi_store::test_utils::FixtureWrite::Put(HEADERS, &key, original.as_bytes()),
+            kasumi_store::test_utils::FixtureWrite::Put(HEADERS, &[8, 9], original.as_bytes()),
+        ],
+    )?
+    .write(store)?;
     assert!(
         LogStore::open(stores.clone(), 1)
             .await
@@ -211,11 +215,24 @@ async fn streamed_open_rejects_holes_malformed_keys_and_noncanonical_headers() -
             .to_string()
             .contains("key/index mismatch")
     );
-    let mut alternate = original.clone();
-    alternate.push(b' ');
-    store.write_batch(&[put(HEADERS, &key, alternate)])?;
+    let alternate = kasumi_store::test_utils::FixturePlaintextCopy::with_suffix(
+        store,
+        original.as_bytes(),
+        b" ",
+    )?;
+    kasumi_store::test_utils::write_plaintext_copy_for_fixture(
+        store,
+        HEADERS,
+        &key,
+        alternate.as_bytes(),
+    )?;
     assert!(LogStore::open(stores.clone(), 1).await.is_err());
-    store.write_batch(&[put(HEADERS, &key, original)])?;
+    kasumi_store::test_utils::write_plaintext_copy_for_fixture(
+        store,
+        HEADERS,
+        &key,
+        original.as_bytes(),
+    )?;
     let reopened = LogStore::open(stores.clone(), 1).await?;
     drop((reopened, log));
     stores.shutdown().await?;
@@ -238,10 +255,12 @@ async fn point_log_reads_check_internal_metadata_commitment_and_current_custody_
         .store()
         .write_batch(&[put(HEADERS, &key, serde_json::to_vec(&changed)?)])?;
     assert!(log.try_get_log_entries(1..=1).await.is_err());
-    stores
-        .custody()
-        .store()
-        .write_batch(&[put(HEADERS, &key, original)])?;
+    kasumi_store::test_utils::write_plaintext_copy_for_fixture(
+        stores.custody().store(),
+        HEADERS,
+        &key,
+        original.as_bytes(),
+    )?;
     assert_eq!(log.try_get_log_entries(1..=1).await?[0].log_id, id(1));
     custody_provider.revoke();
     // Provider revocation is observed by a real refresh. It does not revoke

@@ -6,17 +6,18 @@ const TENANT: &str = "__kasumi_security";
 fn node(
     fixture_memory: Arc<dyn crate::NodeDiskMemoryAdmission>,
     fixture_scratch: std::sync::Arc<crate::ScratchDisk>,
-) -> Result<(tempfile::TempDir, Arc<NodeStore>)> {
+) -> Result<(tempfile::TempDir, NodeStore)> {
     let directory = crate::test_utils::private_tempdir()?;
     let node = NodeStore::create_new_fixture(
         directory.path().join("singleton.kv"),
         crate::test_utils::NODE_STORE_ID,
         fixture_memory.clone(),
         fixture_scratch.clone(),
-    )?;
+    )
+    .expect("bounded node fixture setup succeeds");
     Ok((directory, node))
 }
-fn input(node: Arc<NodeStore>, mode: Mode) -> Input {
+fn input(node: NodeStore, mode: Mode) -> Input {
     Input {
         node,
         tenant: TENANT.into(),
@@ -28,7 +29,7 @@ fn input(node: Arc<NodeStore>, mode: Mode) -> Input {
     }
 }
 fn contents(node: &NodeStore) -> Result<String> {
-    let tx = node.db.begin_read()?;
+    let tx = node.body().db.begin_read()?;
     let mut hash = Sha256::new();
     for (index, table) in [CATALOG, RECORDS].into_iter().enumerate() {
         hash.update((index as u64).to_be_bytes());
@@ -42,8 +43,10 @@ fn contents(node: &NodeStore) -> Result<String> {
     }
     Ok(hex::encode(hash.finalize()))
 }
-async fn drain(node: &NodeStore) -> Result<()> {
-    tokio::time::timeout(Duration::from_secs(5), node.drain_initializers()).await?
+async fn drain(node: &NodeStore) -> std::result::Result<(), crate::InitializerDrainFailure> {
+    tokio::time::timeout(Duration::from_secs(5), node.drain_initializers())
+        .await
+        .expect("actual original initializer settles within the same fixture deadline")
 }
 
 #[derive(Debug)]
@@ -97,7 +100,7 @@ async fn buffered(
         let _ = info.send(weak);
         delivery.await
     });
-    node.initializers.lock().await.handles.push(task);
+    node.body().initializers.lock().await.handles.push(task);
     let weak = tokio::time::timeout(Duration::from_secs(5), observed).await??;
     Ok((receive, weak))
 }
@@ -149,7 +152,7 @@ async fn production_singletons_reject_paired_capabilities_before_provider_or_cat
     }
     assert_eq!(provider.generate.load(Ordering::SeqCst), 0);
     assert_eq!(contents(&node)?, before);
-    assert!(node.initializers.lock().await.handles.is_empty());
+    assert!(node.body().initializers.lock().await.handles.is_empty());
     Ok(())
 }
 
@@ -168,7 +171,7 @@ async fn strict_singleton_creation_rejects_orphan_partial_and_existing_catalogs_
             None
         };
         if kind != "existing" {
-            let tx = node.db.begin_write()?;
+            let tx = node.body().db.begin_write()?;
             let hash = tenant_hash(TENANT);
             if kind == "orphan" {
                 let mut key = hash.to_vec();
@@ -198,7 +201,9 @@ async fn strict_singleton_creation_rejects_orphan_partial_and_existing_catalogs_
             owner.check_access()?;
             owner.shutdown().await.unwrap();
         }
-        drain(&node).await?;
+        drain(&node)
+            .await
+            .map_err(|original| anyhow::Error::new(original.observation()))?;
     }
     Ok(())
 }
@@ -223,7 +228,9 @@ async fn existing_singleton_requires_installed_catalog_and_never_repairs_cached_
     assert_eq!(contents(&node)?, before);
     owner.check_access()?;
     owner.shutdown().await.unwrap();
-    drain(&node).await
+    drain(&node)
+        .await
+        .map_err(|original| anyhow::Error::new(original.observation()))
 }
 
 #[tokio::test]
@@ -248,7 +255,9 @@ async fn buffered_singleton_success_publishes_only_on_claim_and_abandonment_pres
                 closed.shutdown().await.unwrap();
                 drop(closed);
             }
-            drain(&node).await?;
+            drain(&node)
+                .await
+                .map_err(|original| anyhow::Error::new(original.observation()))?;
             let before = contents(&node)?;
             let original_deadline = original.as_ref().map(|store| store.state.read().deadline);
             let request = input(
@@ -267,7 +276,9 @@ async fn buffered_singleton_success_publishes_only_on_claim_and_abandonment_pres
                 drop(receive);
                 None
             };
-            drain(&node).await?;
+            drain(&node)
+                .await
+                .map_err(|original| anyhow::Error::new(original.observation()))?;
             if installed != "fresh" {
                 assert_eq!(contents(&node)?, before);
             }
@@ -286,7 +297,7 @@ async fn buffered_singleton_success_publishes_only_on_claim_and_abandonment_pres
                     "abandoned unpublished worker owner leaked"
                 );
                 assert!(
-                    node.tenants.lock().await[TENANT]
+                    node.body().tenants.lock().await[TENANT]
                         .lock()
                         .await
                         .upgrade()
@@ -299,7 +310,9 @@ async fn buffered_singleton_success_publishes_only_on_claim_and_abandonment_pres
             if let Some(original) = original {
                 original.shutdown().await.unwrap();
             }
-            drain(&node).await?;
+            drain(&node)
+                .await
+                .map_err(|original| anyhow::Error::new(original.observation()))?;
         }
     }
     Ok(())
@@ -335,7 +348,9 @@ async fn borrowed_singleton_keeps_original_provider_clock_and_deadline() -> Resu
     assert_eq!(same.state.read().deadline, deadline);
     assert!(same.background.lock().await.handles.is_empty());
     same.shutdown().await.unwrap();
-    drain(&node).await
+    drain(&node)
+        .await
+        .map_err(|original| anyhow::Error::new(original.observation()))
 }
 
 #[tokio::test]
@@ -355,7 +370,9 @@ async fn buffered_singleton_preparation_errors_require_actual_claim_and_preserve
                     .await
                     .unwrap();
             }
-            drain(&node).await?;
+            drain(&node)
+                .await
+                .map_err(|original| anyhow::Error::new(original.observation()))?;
             let before = contents(&node)?;
             let mut request = input(
                 node.clone(),
@@ -390,11 +407,17 @@ async fn buffered_singleton_preparation_errors_require_actual_claim_and_preserve
             }
             let outcome = drain(&node).await;
             if claim {
-                outcome?;
+                outcome.map_err(|original| anyhow::Error::new(original.observation()))?;
             } else {
-                assert!(outcome.unwrap_err().is::<PreparationFailure>());
+                let failure = outcome.unwrap_err();
+                crate::test_utils::inspect_and_dispose_initializer(&failure, |original| {
+                    assert!(original.is::<PreparationFailure>());
+                })
+                .await;
             }
-            drain(&node).await?;
+            drain(&node)
+                .await
+                .map_err(|original| anyhow::Error::new(original.observation()))?;
             assert_eq!(contents(&node)?, before);
         }
     }
@@ -415,7 +438,9 @@ async fn buffered_singleton_preparation_errors_require_actual_claim_and_preserve
     let partial = contents(&node)?;
     assert!(open(input(node.clone(), Mode::Initialize)).await.is_err());
     assert_eq!(contents(&node)?, partial);
-    drain(&node).await
+    drain(&node)
+        .await
+        .map_err(|original| anyhow::Error::new(original.observation()))
 }
 
 #[tokio::test]
@@ -438,10 +463,16 @@ async fn cancelled_singleton_drain_retains_buffered_preparation_error() -> Resul
         wait.await?;
         Ok(())
     });
-    node.initializers.lock().await.handles.insert(0, pending);
+    node.body()
+        .initializers
+        .lock()
+        .await
+        .handles
+        .insert(0, pending);
     drop(receive);
     tokio::time::timeout(Duration::from_secs(5), async {
         while !node
+            .body()
             .initializers
             .lock()
             .await
@@ -454,25 +485,35 @@ async fn cancelled_singleton_drain_retains_buffered_preparation_error() -> Resul
         }
     })
     .await?;
-    let mut draining = Box::pin(node.drain_initializers());
-    std::future::poll_fn(|cx| {
-        assert!(draining.as_mut().poll(cx).is_pending());
-        Poll::Ready(())
-    })
-    .await;
-    drop(draining);
-    assert!(
-        node.initializers
-            .lock()
-            .await
-            .failure
-            .as_ref()
-            .unwrap()
-            .is::<PreparationFailure>()
-    );
+    let before = fixture_memory.snapshot();
+    let error = tokio::time::timeout(Duration::from_secs(5), node.drain_initializers())
+        .await?
+        .unwrap_err();
+    let original = error
+        .with_report(|report| {
+            let original = report.body_error().expect("original provider refusal");
+            assert!(original.is::<PreparationFailure>());
+            std::ptr::from_ref(original) as usize
+        })
+        .await;
+    assert_eq!(node.body().initializers.lock().await.handles.len(), 1);
+    let repeated = node.drain_initializers().await.unwrap_err();
+    repeated
+        .with_report(|report| {
+            assert_eq!(
+                std::ptr::from_ref(report.body_error().unwrap()) as usize,
+                original
+            );
+        })
+        .await;
+    assert_eq!(fixture_memory.snapshot(), before);
+    assert!(error.dispose_original().await);
+    drop(repeated);
+    drop(error);
     release.send(()).unwrap();
-    assert!(drain(&node).await.unwrap_err().is::<PreparationFailure>());
-    drain(&node).await
+    drain(&node)
+        .await
+        .map_err(|original| anyhow::Error::new(original.observation()))
 }
 
 struct PausedProvider {
@@ -532,16 +573,25 @@ async fn cancelling_during_singleton_key_preparation_retains_actual_node_until_p
     provider.release.notify_one();
     tokio::time::timeout(Duration::from_secs(5), provider.entered.notified()).await?;
     provider.release.notify_one();
-    assert!(format!("{:#}", drain(&node).await.unwrap_err()).contains("singleton receiver closed"));
-    drain(&node).await?;
+    let failure = drain(&node).await.unwrap_err();
+    crate::test_utils::inspect_and_dispose_initializer(&failure, |original| {
+        assert!(format!("{original:#}").contains("singleton receiver closed"));
+    })
+    .await;
+    drop(failure);
+    drain(&node)
+        .await
+        .map_err(|original| anyhow::Error::new(original.observation()))?;
     assert!(node.catalog(TENANT)?.is_none());
+    node.shutdown().await.unwrap();
     drop(node);
     let reopened = NodeStore::open_existing_fixture(
         directory.path().join("singleton.kv"),
         crate::test_utils::NODE_STORE_ID,
         fixture_memory.clone(),
         fixture_scratch.clone(),
-    )?;
+    )
+    .expect("bounded node fixture setup succeeds");
     assert!(reopened.catalog(TENANT)?.is_none());
     Ok(())
 }
@@ -562,8 +612,9 @@ async fn singleton_initialization_registers_before_waiting_for_native_writer() -
         disk,
         scratch,
         crate::test_utils::node_storage_config(),
-    )?;
-    let held = node.db.begin_write()?;
+    )
+    .unwrap_or_else(|original| std::panic::panic_any(original));
+    let held = node.body().db.begin_write()?;
     let initializing = tokio::spawn(open(input(node.clone(), Mode::Initialize)));
     let registered = tokio::time::timeout(Duration::from_secs(2), async {
         loop {

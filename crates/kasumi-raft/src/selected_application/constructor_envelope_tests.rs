@@ -267,16 +267,18 @@ async fn constructor_rejects_foreign_workspace_and_noncanonical_or_disconnected_
         "raft log contains a hole"
     );
     drop(failure);
-    let mut noncanonical = old;
-    noncanonical.push(b' ');
-    fixture.stores.write_batch(
-        &[],
-        &[WriteOp::put(
+    let store = fixture.stores.custody().store();
+    let noncanonical =
+        kasumi_store::test_utils::FixturePlaintextCopy::with_suffix(store, old.as_bytes(), b" ")?;
+    kasumi_store::test_utils::FixtureWriteBatch::prepare(
+        store,
+        &[kasumi_store::test_utils::FixtureWrite::Put(
             crate::control::HEADERS,
-            1u64.to_be_bytes().to_vec(),
-            noncanonical,
+            &1u64.to_be_bytes(),
+            noncanonical.as_bytes(),
         )],
-    )?;
+    )?
+    .write_custody(&fixture.stores)?;
     let failure = PreparedSourceCapacityEnvelope::for_constructor(
         &fixture.stores,
         &fixture.image,

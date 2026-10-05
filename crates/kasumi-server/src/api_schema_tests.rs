@@ -1,7 +1,11 @@
 #[tokio::test]
 async fn native_policy_limits_readback_is_admin_scoped_and_exact() {
     let fixture = Fixture::new().await;
-    let admin = NativeAdmin::new(fixture.registry.clone(), fixture.auth.clone());
+    let admin = NativeAdmin::new(
+        fixture.registry.clone(),
+        fixture.auth.clone(),
+        fixture.failures.clone(),
+    );
     let token = fixture.token("person", "tenant-a", "kasumi:admin");
     let read_only = fixture.token("person", "tenant-a", "kasumi:read");
     let other_tenant = fixture.token("person", "other", "kasumi:admin");
@@ -125,7 +129,11 @@ async fn native_schema_activation_is_atomic_scoped_permanent_and_private() {
     );
     let read_only = fixture.token("person", "tenant-a", "kasumi:read");
     let wrong_tenant = fixture.token("person", "other", "kasumi:admin");
-    let admin = NativeAdmin::new(fixture.registry.clone(), fixture.auth.clone());
+    let admin = NativeAdmin::new(
+        fixture.registry.clone(),
+        fixture.auth.clone(),
+        fixture.failures.clone(),
+    );
     let generation = fixture.db.engine().generation().unwrap();
     let request = kasumi_types::SchemaChangeSet {
         activation_id: "native-financial-schema".into(), expected_incarnation: generation.state.incarnation.clone(), expected_schema_epoch: generation.state.schema_epoch, read_set: vec![kasumi_types::ReadAssertion::Snapshot { incarnation: generation.state.incarnation.clone(), schema_epoch: generation.state.schema_epoch, policy_epoch: generation.state.policy_epoch }, kasumi_types::ReadAssertion::Before { not_after_ms: u64::MAX }],
@@ -217,7 +225,11 @@ async fn native_schema_activation_is_atomic_scoped_permanent_and_private() {
     let complete: kasumi_types::SchemaSnapshot =
         serde_json::from_slice(&complete.response_json).unwrap();
     assert_eq!(
-        complete.collections.keys().map(String::as_str).collect::<BTreeSet<_>>(),
+        complete
+            .collections
+            .keys()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>(),
         BTreeSet::from(["balances", "docs", "journal"])
     );
     assert!(complete.collections.values().all(Option::is_some));
@@ -383,7 +395,11 @@ async fn native_schema_activation_is_atomic_scoped_permanent_and_private() {
 async fn native_admin_json_rejects_unknown_nested_fields_before_mutation() {
     let fixture = Fixture::new().await;
     let token = fixture.token("person", "tenant-a", "kasumi:admin");
-    let admin = NativeAdmin::new(fixture.registry.clone(), fixture.auth.clone());
+    let admin = NativeAdmin::new(
+        fixture.registry.clone(),
+        fixture.auth.clone(),
+        fixture.failures.clone(),
+    );
     let generation = fixture.db.engine().generation().unwrap();
     let revision = generation.state.revision;
     let schema_epoch = generation.state.schema_epoch;

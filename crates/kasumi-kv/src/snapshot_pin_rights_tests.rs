@@ -33,16 +33,14 @@ fn protected_capacity_survives_ordinary_saturation_and_install_uses_no_admission
     let rights = pins.reserve_source_rights().unwrap();
     let a = pins.acquire(root(1)).unwrap();
     let b = pins.acquire(root(1)).unwrap();
-    assert!(matches!(
-        pins.acquire(root(1)),
-        Err(CoreError::CapacityDenied)
-    ));
+    assert!(
+        matches!(&(pins.acquire(root(1))), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::CapacityDenied)))
+    );
     let mut first = pins.prepare_protected(&rights).unwrap();
     let mut second = pins.prepare_protected(&rights).unwrap();
-    assert!(matches!(
-        pins.prepare_protected(&rights),
-        Err(CoreError::CapacityDenied)
-    ));
+    assert!(
+        matches!(&(pins.prepare_protected(&rights)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::CapacityDenied)))
+    );
     assert_eq!(counts(&pins), (2, 0, 2, 0));
     let before = admission.reserves.load(Ordering::Acquire);
     let checks = admission.checks.load(Ordering::Acquire);
@@ -75,10 +73,9 @@ fn history_swap_moves_lane_not_original_pin_or_root_and_retirement_does_not_recr
     let old_identity = old.identity();
     let old_clone = old.clone();
     let mut history = pins.reserve_history(&old).unwrap();
-    assert!(matches!(
-        pins.reserve_history(&old),
-        Err(CoreError::InvalidInput(_))
-    ));
+    assert!(
+        matches!(&(pins.reserve_history(&old)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput(_))))
+    );
     let ordinary = pins.acquire(root(2)).unwrap();
     assert_eq!(counts(&pins), (1, 1, 2, 1));
     let epoch = pins.epoch().unwrap();
@@ -90,10 +87,9 @@ fn history_swap_moves_lane_not_original_pin_or_root_and_retirement_does_not_recr
     assert_eq!(pins.epoch().unwrap(), epoch);
     pins.validate_capture(&capture).unwrap();
     assert_eq!(counts(&pins), (2, 0, 2, 0));
-    assert!(matches!(
-        pins.commit_history(&mut history),
-        Err(CoreError::InvalidInput(_))
-    ));
+    assert!(
+        matches!(&(pins.commit_history(&mut history)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput(_))))
+    );
     let untouched = pins.prepare_protected(&rights).unwrap();
     let mut next = pins.prepare_protected(&rights).unwrap();
     let fresh = pins.install_protected(&mut next, root(3)).unwrap();
@@ -117,10 +113,9 @@ fn pristine_ticket_and_history_cancel_preserve_roots_and_release_only_their_capa
     assert_eq!(admission.used.load(Ordering::Acquire), baseline);
     assert_eq!(pins.epoch().unwrap(), 0);
     let mut fresh = pins.prepare_protected(&rights).unwrap();
-    assert!(matches!(
-        pins.install_protected(&mut prepared, root(1)),
-        Err(CoreError::InvalidInput(_))
-    ));
+    assert!(
+        matches!(&(pins.install_protected(&mut prepared, root(1))), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput(_))))
+    );
     let pin = pins.install_protected(&mut fresh, root(1)).unwrap();
     let identity = pin.identity();
     let mut history = pins.reserve_history(&pin).unwrap();
@@ -129,10 +124,9 @@ fn pristine_ticket_and_history_cancel_preserve_roots_and_release_only_their_capa
     history.cancel().unwrap();
     assert_eq!(counts(&pins), (0, 0, 2, 1));
     assert_eq!(pin.identity(), identity);
-    assert!(matches!(
-        pins.commit_history(&mut history),
-        Err(CoreError::InvalidInput(_))
-    ));
+    assert!(
+        matches!(&(pins.commit_history(&mut history)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput(_))))
+    );
     let ordinary = pins.acquire(root(2)).unwrap();
     assert_eq!(counts(&pins), (1, 0, 2, 1));
     drop((ordinary, history, pin, fresh, prepared, rights));
@@ -144,31 +138,26 @@ fn equal_group_foreign_rights_tickets_and_history_are_rejected_without_consuming
     let (_, first) = setup(3);
     let (_, foreign) = setup(3);
     let rights = first.reserve_source_rights().unwrap();
-    assert!(matches!(
-        foreign.prepare_protected(&rights),
-        Err(CoreError::InvalidInput(_))
-    ));
+    assert!(
+        matches!(&(foreign.prepare_protected(&rights)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput(_))))
+    );
     let mut ticket = first.prepare_protected(&rights).unwrap();
-    assert!(matches!(
-        foreign.install_protected(&mut ticket, root(1)),
-        Err(CoreError::InvalidInput(_))
-    ));
+    assert!(
+        matches!(&(foreign.install_protected(&mut ticket, root(1))), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput(_))))
+    );
     let mut wrong = root(1);
     wrong.group_id = [99; 16];
-    assert!(matches!(
-        first.install_protected(&mut ticket, wrong),
-        Err(CoreError::InvalidInput(_))
-    ));
+    assert!(
+        matches!(&(first.install_protected(&mut ticket, wrong)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput(_))))
+    );
     let pin = first.install_protected(&mut ticket, root(1)).unwrap();
-    assert!(matches!(
-        foreign.reserve_history(&pin),
-        Err(CoreError::InvalidInput(_))
-    ));
+    assert!(
+        matches!(&(foreign.reserve_history(&pin)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput(_))))
+    );
     let mut history = first.reserve_history(&pin).unwrap();
-    assert!(matches!(
-        foreign.commit_history(&mut history),
-        Err(CoreError::InvalidInput(_))
-    ));
+    assert!(
+        matches!(&(foreign.commit_history(&mut history)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput(_))))
+    );
     assert_eq!(counts(&first), (0, 1, 2, 1));
     assert_eq!(counts(&foreign), (0, 0, 0, 0));
     first.commit_history(&mut history).unwrap();
@@ -200,17 +189,15 @@ fn multiple_sources_and_history_saturation_never_borrow_each_others_lanes() {
     let (_, pins) = setup(5);
     let first = pins.reserve_source_rights().unwrap();
     let second = pins.reserve_source_rights().unwrap();
-    assert!(matches!(
-        pins.reserve_source_rights(),
-        Err(CoreError::CapacityDenied)
-    ));
+    assert!(
+        matches!(&(pins.reserve_source_rights()), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::CapacityDenied)))
+    );
     let mut a = pins.prepare_protected(&first).unwrap();
     let pin = pins.install_protected(&mut a, root(1)).unwrap();
     let blocker = pins.acquire(root(2)).unwrap();
-    assert!(matches!(
-        pins.reserve_history(&pin),
-        Err(CoreError::CapacityDenied)
-    ));
+    assert!(
+        matches!(&(pins.reserve_history(&pin)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::CapacityDenied)))
+    );
     let mut b = pins.prepare_protected(&second).unwrap();
     let other = pins.install_protected(&mut b, root(3)).unwrap();
     assert_eq!(counts(&pins), (1, 0, 4, 2));
@@ -242,7 +229,9 @@ fn ordinary_acquisition_and_history_hold_race_for_only_the_unprotected_capacity(
         assert_ne!(ordinary.is_ok(), history.is_ok());
         match history {
             Ok(mut history) => {
-                assert!(matches!(ordinary, Err(CoreError::CapacityDenied)));
+                assert!(
+                    matches!(&(ordinary), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::CapacityDenied)))
+                );
                 assert_eq!(counts(&pins), (0, 1, 2, 1));
                 if generation.is_multiple_of(2) {
                     pins.commit_history(&mut history).unwrap();
@@ -253,7 +242,10 @@ fn ordinary_acquisition_and_history_hold_race_for_only_the_unprotected_capacity(
                 }
             }
             Err(error) => {
-                assert!(matches!(error, CoreError::CapacityDenied));
+                assert!(matches!(
+                    (error).rejected_cause(),
+                    Some(crate::CoreErrorCause::CapacityDenied)
+                ));
                 assert_eq!(counts(&pins), (1, 0, 2, 1));
                 drop(ordinary.unwrap());
             }
@@ -268,10 +260,9 @@ fn serial_exhaustion_refuses_before_capacity_changes_and_prepared_cancel_survive
     let (admission, pins) = setup(3);
     pins.inner.state.lock().unwrap().serial = u64::MAX;
     let baseline = admission.used.load(Ordering::Acquire);
-    assert!(matches!(
-        pins.reserve_source_rights(),
-        Err(CoreError::CapacityDenied)
-    ));
+    assert!(
+        matches!(&(pins.reserve_source_rights()), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::CapacityDenied)))
+    );
     assert_eq!(counts(&pins), (0, 0, 0, 0));
     assert_eq!(admission.used.load(Ordering::Acquire), baseline);
     assert_eq!(pins.epoch().unwrap(), 0);
@@ -285,10 +276,9 @@ fn serial_exhaustion_refuses_before_capacity_changes_and_prepared_cancel_survive
         panic!("poison prepared pin registry");
     }));
     assert!(poisoned.is_err());
-    assert!(matches!(
-        pins.install_protected(&mut prepared, root(1)),
-        Err(CoreError::OwnerFailed)
-    ));
+    assert!(
+        matches!(&(pins.install_protected(&mut prepared, root(1))), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+    );
     prepared.cancel().unwrap();
     drop((prepared, rights));
     let state = pins
@@ -336,7 +326,10 @@ fn corrupt_pending_ticket_cancel_retains_borrowed_owner_and_never_refunds_mismat
         }
     }
     let original = prepared.cancel().expect_err("mismatched ticket canceled");
-    assert!(matches!(original, CoreError::OwnerFailed));
+    assert!(matches!(
+        (original).rejected_cause(),
+        Some(crate::CoreErrorCause::OwnerFailed)
+    ));
     assert!(prepared.pending);
     assert!(prepared.pin.is_some());
     assert_eq!(admission.used.load(Ordering::Acquire), retained);

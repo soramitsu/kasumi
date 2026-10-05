@@ -177,7 +177,8 @@ fn read_manifest(fixture: &Fixture, built: &BuiltCollection) -> Result<Manifest>
 
 // Synchronous encrypted tree work must not starve the real key-renewal task.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn primary_bulk_two_level_mixed_stream_zero_version_and_old_pin() -> Result<()> {
+async fn primary_bulk_two_level_mixed_stream_zero_version_and_old_pin()
+-> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
     {
         let engine = engine(&fixture)?;
@@ -347,7 +348,8 @@ async fn primary_bulk_two_level_mixed_stream_zero_version_and_old_pin() -> Resul
 }
 
 #[tokio::test]
-async fn primary_bulk_empty_stream_has_definition_manifest_and_no_empty_page() -> Result<()> {
+async fn primary_bulk_empty_stream_has_definition_manifest_and_no_empty_page()
+-> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
     {
         let engine = engine(&fixture)?;
@@ -375,7 +377,8 @@ async fn primary_bulk_empty_stream_has_definition_manifest_and_no_empty_page() -
 }
 
 #[tokio::test]
-async fn primary_bulk_rejects_order_identity_and_epoch_without_final_manifest() -> Result<()> {
+async fn primary_bulk_rejects_order_identity_and_epoch_without_final_manifest()
+-> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
     {
         let engine = engine(&fixture)?;
@@ -413,7 +416,7 @@ async fn primary_bulk_rejects_order_identity_and_epoch_without_final_manifest() 
 
 #[tokio::test]
 async fn primary_bulk_swallowed_callback_stays_closed_and_keeps_independent_source_error()
--> Result<()> {
+-> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
     {
         let engine = engine(&fixture)?;
@@ -457,7 +460,8 @@ async fn primary_bulk_swallowed_callback_stays_closed_and_keeps_independent_sour
 }
 
 #[tokio::test]
-async fn primary_bulk_cancel_inside_large_dto_preserves_original_and_resumes_abort() -> Result<()> {
+async fn primary_bulk_cancel_inside_large_dto_preserves_original_and_resumes_abort()
+-> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
     {
         let engine = engine(&fixture)?;
@@ -530,7 +534,8 @@ async fn primary_bulk_cancel_inside_large_dto_preserves_original_and_resumes_abo
     clippy::result_large_err,
     reason = "The allocator witness keeps the real typed failure inline; boxing would add unclaimed backing."
 )]
-async fn primary_bulk_actual_frontier_allocation_stays_charged_through_dealloc() -> Result<()> {
+async fn primary_bulk_actual_frontier_allocation_stays_charged_through_dealloc()
+-> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
     {
         let engine = engine(&fixture)?;
@@ -587,7 +592,8 @@ async fn primary_bulk_actual_frontier_allocation_stays_charged_through_dealloc()
 }
 
 #[tokio::test]
-async fn primary_bulk_callback_error_survives_later_source_panic() -> Result<()> {
+async fn primary_bulk_callback_error_survives_later_source_panic()
+-> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
     {
         let engine = engine(&fixture)?;
@@ -636,7 +642,8 @@ async fn primary_bulk_callback_error_survives_later_source_panic() -> Result<()>
     clippy::result_large_err,
     reason = "The refusal witness keeps the real typed failure inline and must not allocate an error box."
 )]
-async fn primary_bulk_frontier_denial_precedes_backing_allocation_or_source_visit() -> Result<()> {
+async fn primary_bulk_frontier_denial_precedes_backing_allocation_or_source_visit()
+-> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
     {
         let engine = engine(&fixture)?;
@@ -676,7 +683,8 @@ async fn primary_bulk_frontier_denial_precedes_backing_allocation_or_source_visi
 }
 
 #[tokio::test]
-async fn primary_bulk_swallowed_callback_panic_permanently_stops_writes() -> Result<()> {
+async fn primary_bulk_swallowed_callback_panic_permanently_stops_writes()
+-> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
     {
         let engine = engine(&fixture)?;
@@ -746,8 +754,8 @@ fn framing_children(
 
 // The recursive encrypted frontier also needs renewal during synchronous work.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn primary_bulk_real_frontier_three_levels_recursive_spill_and_final_collapse() -> Result<()>
-{
+async fn primary_bulk_real_frontier_three_levels_recursive_spill_and_final_collapse()
+-> crate::test_fixture_failure::FixtureResult<()> {
     use bulk::frontier_fixture as framing;
 
     // Framing-only fixture: every descriptor names one real staged Archived DTO.

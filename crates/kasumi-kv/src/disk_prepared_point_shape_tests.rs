@@ -47,14 +47,12 @@ fn prepared_shape_uses_same_root_table_and_owner_without_output_or_new_grants() 
                 .unwrap(),
             None
         );
-        assert!(matches!(
-            old.point_length_prepared("missing", b"key", &mut workspace),
-            Err(CoreError::MissingTable)
-        ));
-        assert!(matches!(
-            foreign.point_length_prepared("shape", b"key", &mut workspace),
-            Err(CoreError::InvalidInput(_))
-        ));
+        assert!(
+            matches!(&(old.point_length_prepared("missing", b"key", &mut workspace)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::MissingTable)))
+        );
+        assert!(
+            matches!(&(foreign.point_length_prepared("shape", b"key", &mut workspace)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput(_))))
+        );
         assert_eq!(workspace.capacity(), 0);
     }
     assert_eq!(admission.calls.load(Ordering::Acquire), requests);

@@ -32,7 +32,8 @@ pub(in crate::application_sources) struct LaneFunding {
     _grant: Reservation,
 }
 impl LaneFunding {
-    pub(in crate::application_sources) fn new(
+    #[cfg(test)]
+    pub(in crate::application_sources) fn reserve(
         admission: Arc<NodeAdmission>,
         lane_bytes: u64,
     ) -> Result<LaneFundingRef> {

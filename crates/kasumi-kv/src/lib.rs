@@ -46,9 +46,10 @@ pub use cache_admission::{CacheMemoryLease, CacheMemoryQuote, CacheMemoryReserva
 pub use core::{
     AdmissionError, AdmittedValue, BackendCloseEntry, BackendCloseOutcome,
     BackendNativeDisposition, CacheWarmup, CacheWarmupState, CacheWarmupStatus, CommittedPosition,
-    Core, CoreError, CoreOpenFailure, CorePanic, MAX_BATCH_BYTES, MAX_KEY_BYTES, MAX_TABLE_BYTES,
-    MAX_VALUE_BYTES, Operation, OwnerFailed, PreparedPointRead, ReadSnapshot, ResidentLease,
-    StorageAdmission,
+    Core, CoreError, CoreErrorCause, CoreErrorDisposition, CoreOpenCleanup, CoreOpenFailure,
+    CorePanic, MAX_BATCH_BYTES, MAX_KEY_BYTES, MAX_TABLE_BYTES, MAX_VALUE_BYTES,
+    NativeDisposalReport, NativeOpenFailure, NativeOwnedDisposal, Operation, OwnerFailed,
+    PreparedPointRead, ReadSnapshot, ResidentLease, StorageAdmission,
 };
 pub use group::{
     ExistingFileSpace, FileKind, FileSpaceRange, GroupFile, ROOT_FILE_NAME, SegmentGroupBackend,
@@ -64,5 +65,9 @@ pub mod backends {
     pub use crate::group::InMemoryGroup;
 }
 
+mod native_backend;
+mod native_owned_arc;
+mod native_resident_lease;
+mod native_sync;
 mod resident_allocation;
 pub use resident_allocation::ResidentAllocation;

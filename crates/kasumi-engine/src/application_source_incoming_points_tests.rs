@@ -33,19 +33,23 @@ fn incoming_backing(
     let expectation =
         kasumi_raft::PublicationExpectation::for_entry(&fixture.stores, &position, &[], &response)?;
     let mut capture = Capture { fault, owned: None };
-    kasumi_raft::with_application_publisher_for_test(&fixture.stores, &position, |publisher| {
-        let receipt = publisher.commit_with_selection(
-            response,
-            &[],
-            &mut capture,
-            expectation.challenge()?,
-        )?;
-        expectation.consume(
-            receipt,
-            &capture.owned.as_ref().context("real plan absent")?.0,
-        )?;
-        Ok(())
-    })?;
+    kasumi_raft::with_application_publisher_for_test(
+        &fixture.stores,
+        &position,
+        |publisher| -> anyhow::Result<()> {
+            let receipt = publisher.commit_with_selection(
+                response,
+                &[],
+                &mut capture,
+                expectation.challenge()?,
+            )?;
+            expectation.consume(
+                receipt,
+                &capture.owned.as_ref().context("real plan absent")?.0,
+            )?;
+            Ok(())
+        },
+    )?;
     capture.owned.context("real incoming backing absent")
 }
 
@@ -69,7 +73,8 @@ fn combined<'a>(
 }
 
 #[tokio::test]
-async fn incoming_actual_points_preserve_each_pre_cell_rejection_with_drop_panic() -> Result<()> {
+async fn incoming_actual_points_preserve_each_pre_cell_rejection_with_drop_panic()
+-> crate::test_fixture_failure::FixtureResult<()> {
     // Both identities are rejected before any Cell, and the two local failures
     // exercise the source gate and its actual constructor reservation.
     for mode in ["plan", "points", "sealed", "capacity"] {
@@ -170,7 +175,8 @@ async fn incoming_actual_points_preserve_each_pre_cell_rejection_with_drop_panic
 }
 
 #[tokio::test]
-async fn incoming_actual_duplicate_preserves_panic_and_cancels_original_queue() -> Result<()> {
+async fn incoming_actual_duplicate_preserves_panic_and_cancels_original_queue()
+-> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
     let baseline = fixture.storage.admission.snapshot();
     let (plan, points) = incoming_backing(&fixture, None)?;
@@ -253,7 +259,7 @@ impl std::error::Error for IncomingOriginal {}
 
 #[tokio::test]
 async fn incoming_actual_points_retain_exact_error_or_panic_and_remain_unknown_in_cell()
--> Result<()> {
+-> crate::test_fixture_failure::FixtureResult<()> {
     for panics in [false, true] {
         let fixture = Fixture::new().await?;
         let baseline = fixture.storage.admission.snapshot();
@@ -313,7 +319,8 @@ async fn incoming_actual_points_retain_exact_error_or_panic_and_remain_unknown_i
 }
 
 #[tokio::test]
-async fn incoming_actual_points_clean_retirement_resumes_the_exact_original_unwind() -> Result<()> {
+async fn incoming_actual_points_clean_retirement_resumes_the_exact_original_unwind()
+-> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
     let baseline = fixture.storage.admission.snapshot();
     let (_, points) = incoming_backing(&fixture, None)?;

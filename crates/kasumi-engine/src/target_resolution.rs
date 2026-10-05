@@ -215,13 +215,15 @@ enum Source {
     Staged(Arc<EncryptedTable>),
 }
 impl Source {
-    fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
+    fn get(&self, key: &[u8]) -> Result<Option<crate::materialization_row::MaterializationRow>> {
         let result = match self {
-            Self::Durable(rows) => {
-                rows.store
-                    .get_bounded(&rows.binding.namespace(), key, MAX_ROW_BYTES)?
-            }
-            Self::Staged(table) => table.get(key)?,
+            Self::Durable(rows) => rows
+                .store
+                .get_bounded(&rows.binding.namespace(), key, MAX_ROW_BYTES)?
+                .map(crate::materialization_row::MaterializationRow::Stored),
+            Self::Staged(table) => table
+                .get(key)?
+                .map(crate::materialization_row::MaterializationRow::Staged),
         };
         ensure!(
             result
@@ -256,7 +258,7 @@ impl View {
     pub(crate) fn head(&self) -> &TargetResolutionPrefixHead {
         &self.head
     }
-    fn bytes(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
+    fn bytes(&self, key: &[u8]) -> Result<Option<crate::materialization_row::MaterializationRow>> {
         self.source
             .as_ref()
             .map(|s| s.get(key))
@@ -655,7 +657,7 @@ impl Builder {
         limit: u64,
         tenant: &str,
         origin: &str,
-    ) -> Result<Self> {
+    ) -> std::result::Result<Self, kasumi_store::ScratchOperationFailure> {
         Ok(Self {
             table: Arc::new(EncryptedTable::new(
                 disk,
@@ -663,7 +665,9 @@ impl Builder {
                 disk.native_cache_config(),
             )?),
             causal: EncryptedTable::new(disk, limit, disk.native_cache_config())?,
-            head: TargetResolutionPrefixHead::empty(tenant, origin)?,
+            head: TargetResolutionPrefixHead::empty(tenant, origin).map_err(|original| {
+                kasumi_store::ScratchOperationFailure::Operation(original.into())
+            })?,
         })
     }
     pub(crate) fn push(&mut self, row: &Row, state: &TenantState) -> Result<()> {

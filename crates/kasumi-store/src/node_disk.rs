@@ -41,7 +41,8 @@ use census::{Root, census, open_roots};
 pub use directory::{
     NodeDiskDirectory, NodeDiskDirectoryCloseError, NodeDiskDirectoryCursor,
     NodeDiskDirectoryEntry, NodeDiskDirectoryFailure, NodeDiskDirectoryOperation,
-    NodeDiskDirectoryOperationKind, NodeDiskDirectoryOperationStep, NodeDiskEntryKind,
+    NodeDiskDirectoryOperationKind, NodeDiskDirectoryOperationStep, NodeDiskDirectoryOriginals,
+    NodeDiskEntryKind,
 };
 #[cfg(test)]
 pub(crate) use file::FailedFileWitness;
@@ -363,12 +364,16 @@ impl NamespaceBinding {
     }
 
     fn child(self, name: &std::ffi::CStr) -> Self {
+        self.child_bytes(name.to_bytes())
+    }
+
+    fn child_bytes(self, name: &[u8]) -> Self {
         use sha2::{Digest, Sha256};
         let mut hash = Sha256::new();
         hash.update(b"kasumi-node-disk-child-v1\0");
         hash.update(self.0);
-        hash.update((name.to_bytes().len() as u64).to_le_bytes());
-        hash.update(name.to_bytes());
+        hash.update((name.len() as u64).to_le_bytes());
+        hash.update(name);
         Self(hash.finalize().into())
     }
 }
@@ -698,6 +703,47 @@ impl NodeDisk {
         &self.memory
     }
 
+    /// Observe the exact installed name's enrolled kind without allocating or
+    /// acquiring authority. The caller still verifies its ancestry through the
+    /// canonical directory owner before acting on this classification.
+    pub(crate) fn enrolled_name_kind(
+        &self,
+        root: &str,
+        relative: &std::path::Path,
+    ) -> io::Result<Option<NodeDiskEntryKind>> {
+        use std::{os::unix::ffi::OsStrExt, path::Component};
+        let mut state = self.lock_state();
+        if state.phase != NodeDiskPhase::Open || !self.device.lock().admission_ready() {
+            return Err(io::ErrorKind::Other.into());
+        }
+        let installed = self.roots.get(root).ok_or(io::ErrorKind::InvalidInput)?;
+        installed
+            .verify_nonallocating()
+            .inspect_err(|_| self.fail_locked(&mut state))?;
+        let mut binding = NamespaceBinding::root(installed.identity);
+        let mut depth = 0u32;
+        for component in relative.components() {
+            let Component::Normal(name) = component else {
+                return Err(io::ErrorKind::InvalidInput.into());
+            };
+            let name = name.as_bytes();
+            depth = depth.checked_add(1).ok_or(io::ErrorKind::InvalidInput)?;
+            if depth >= self.config.max_depth
+                || name.len() > self.config.max_name_bytes as usize
+                || name.contains(&0)
+            {
+                return Err(io::ErrorKind::InvalidInput.into());
+            }
+            binding = binding.child_bytes(name);
+        }
+        Ok(state.accounted.values().find_map(|entry| {
+            (entry.binding() == binding).then_some(match entry {
+                AccountedInode::File(_) => NodeDiskEntryKind::File,
+                AccountedInode::Directory(_) => NodeDiskEntryKind::Directory,
+            })
+        }))
+    }
+
     pub fn memory_requirements(config: &NodeDiskConfig) -> Result<DiskMemoryRequirements> {
         let (device_bytes, registration_bytes) = DeviceDisk::metadata_requirements()?;
         Ok(DiskMemoryRequirements {
@@ -893,9 +939,14 @@ impl NodeDisk {
     /// a live holder returns `OwnerFenced` at once, without waiting or census.
     /// Retained failed-file custody is internal and only the census retires
     /// it, so `pause`'s stricter drain check would make such a fence permanent.
-    /// The registry stays locked through the census, so a concurrent open sees
-    /// `RegistryBusy` or the fence, never a partially counted owner. The same
-    /// owner returns only after a fresh census is accepted. Cancellation, a
+    /// The exact checked owner Arc is retained before releasing the registry
+    /// and State guards. Pending-directory original diagnostics retire outside
+    /// those guards. The registry is then reacquired and the exact installed
+    /// owner, configuration, admission and roots are revalidated. The final
+    /// drain check, census and accounting publication hold the registry and
+    /// owner's State gate, so concurrent opens return `RegistryBusy` throughout
+    /// that census. The same owner returns only after a fresh census is accepted.
+    /// Cancellation, a
     /// census failure or shared device poison (restart-only) keep it fenced
     /// with every prior charge and promise; a started census that fails marks
     /// it Failed. An Open owner already reflects its last accepted census and
@@ -921,7 +972,7 @@ impl NodeDisk {
             !owner.state.is_poisoned(),
             "poisoned persistent ownership requires process restart",
         )?;
-        let mut state = owner.lock_state();
+        let state = owner.lock_state();
         if state.phase == NodeDiskPhase::Open {
             return Ok(owner.clone());
         }
@@ -932,9 +983,44 @@ impl NodeDisk {
             !owner.device.lock().poisoned(),
             "shared filesystem promises are poisoned; process restart required",
         )?;
-        owner.reconcile_locked(&mut state, cancel)?;
+        let retained = owner.clone();
         drop(state);
-        Ok(owner.clone())
+        drop(installed);
+        // Opaque original destructors must run outside registry and State.
+        // Their retained owner cannot authorize a census until the installed
+        // identity and complete drain are checked again under both gates.
+        retained.retire_pending_directory_diagnostics()?;
+        let installed = registry().try_lock().ok_or(DiskOpenError::RegistryBusy)?;
+        let owner = installed
+            .find(|entry| {
+                entry
+                    .config()
+                    .is_some_and(|installed| installed.roots == config.roots)
+            })
+            .context("no installed persistent owner to reopen")?
+            .owner()?;
+        disk_memory::require(
+            Arc::ptr_eq(owner, &retained),
+            "installed persistent owner changed during reopen",
+        )?;
+        owner.require_installed(config, &memory)?;
+        disk_memory::require(
+            !owner.state.is_poisoned(),
+            "poisoned persistent ownership requires process restart",
+        )?;
+        let mut state = owner.lock_state();
+        if state.phase == NodeDiskPhase::Open {
+            return Ok(retained);
+        }
+        if state.namespace_witnesses() != 0 || !state.external_owners_drained() {
+            return Err(state.fenced());
+        }
+        disk_memory::require(
+            !owner.device.lock().poisoned(),
+            "shared filesystem promises are poisoned; process restart required",
+        )?;
+        owner.reconcile_locked(&mut state, cancel)?;
+        Ok(retained)
     }
 
     /// Registered-owner identity shared by `open` and `reopen_fenced`: exact
@@ -1093,6 +1179,8 @@ impl NodeDisk {
             !self.state.is_poisoned(),
             "poisoned persistent ownership requires process restart"
         );
+        cancel.check()?;
+        self.retire_pending_directory_diagnostics()?;
         let mut state = self.lock_state();
         self.reconcile_locked(&mut state, cancel)
     }
@@ -1172,9 +1260,23 @@ impl NodeDisk {
             promises.fail_owner();
             return Err(error);
         }
+        if let Some(operation) = &mut state.pending_directory
+            && let Err(error) = operation.retire_before_release()
+        {
+            state.accounted.cancel_stage();
+            state.phase = NodeDiskPhase::Failed;
+            promises.fail_owner();
+            return Err(error.into());
+        }
         if let Err(error) = promises.set_pending(next) {
             state.accounted.cancel_stage();
             state.phase = NodeDiskPhase::Failed;
+            promises.fail_owner();
+            let error = if let Some(operation) = &mut state.pending_directory {
+                operation.retain_publication_error(error)
+            } else {
+                error
+            };
             return Err(error.into());
         }
         // This is the publication boundary: the complete candidate and shared

@@ -192,7 +192,9 @@ impl TargetProposal {
     async fn run(self) -> anyhow::Result<Result<TargetCompletionFact>> {
         let _guard = self
             .operation
-            .run(async { Ok(self.database.proposal_gate.clone().lock_owned().await) })
+            .run(async {
+                Ok::<_, anyhow::Error>(self.database.proposal_gate.clone().lock_owned().await)
+            })
             .await?;
         if let Err(error) = self.database.target_access(&self.operation) {
             return Ok(Err(error));
@@ -210,7 +212,13 @@ impl TargetProposal {
             authorization: authorization.clone(),
             input: self.input.clone(),
         };
-        let bytes = self.database.group.write(prepared.encode()?).await?;
+        let bytes = self
+            .database
+            .group
+            .write(kasumi_raft::ApplicationProposal::generated(
+                prepared.encode()?,
+            ))
+            .await?;
         match serde_json::from_slice::<Result<TargetOutcome>>(&bytes)? {
             Ok(TargetOutcome::Prepared(_)) => {}
             Ok(_) => return Ok(Err(unknown("target preparation response kind differs"))),
@@ -235,7 +243,13 @@ impl TargetProposal {
         };
         // Ownership of the serialized gate, original work and byte reservation
         // survives caller cancellation until actual consensus processing ends.
-        let bytes = self.database.group.write(command.encode()?).await?;
+        let bytes = self
+            .database
+            .group
+            .write(kasumi_raft::ApplicationProposal::generated(
+                command.encode()?,
+            ))
+            .await?;
         let result = match serde_json::from_slice::<Result<TargetOutcome>>(&bytes)? {
             Ok(TargetOutcome::Completed(fact)) => Ok(*fact),
             Ok(_) => Err(unknown("target response kind differs")),

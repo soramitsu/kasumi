@@ -132,7 +132,10 @@ impl NodeSegmentGroup {
             // Invalid caller plans leave healthy storage usable. Corruption in
             // the actual protected images invalidates the owner, and the exact
             // native error remains the source of the returned failure.
-            if matches!(error, kasumi_kv::CoreError::Corrupt(_)) {
+            if matches!(
+                (error).rejected_cause(),
+                Some(kasumi_kv::CoreErrorCause::Corrupt(_))
+            ) {
                 self.fence();
             }
             return Err(io::Error::other(error));

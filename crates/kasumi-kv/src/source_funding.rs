@@ -1,6 +1,7 @@
 //! Closed installed-provider funding for native protected source allocations.
 //! This is not a registered Store reader or a complete canonical read grant.
 use super::*;
+use crate::core::NativeResidentLease;
 use crate::core::SourceReadContext;
 use crate::snapshot_pins::SnapshotPins;
 use crate::tables::source_read::SourceDatabase;
@@ -647,15 +648,19 @@ impl NativeSourcePool {
     pub(crate) fn reserve_rights_into(
         &mut self,
         pins: &SnapshotPins,
-        target: &mut Option<Box<dyn ResidentLease>>,
+        target: &mut Option<NativeResidentLease>,
     ) -> Result<(), CoreError> {
         let owner = self
             .owner
             .as_ref()
-            .ok_or(CoreError::InvalidInput("source pool absent"))?
+            .ok_or(CoreError::new(crate::CoreErrorCause::InvalidInput(
+                "source pool absent",
+            )))?
             .get();
         if !self.installation.succeeded() || !owner.context.pins.same_owner(pins) {
-            return Err(CoreError::InvalidInput("foreign source rights funding"));
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
+                "foreign source rights funding",
+            )));
         }
         owner.context.check()?;
         let mut install = SourceChildInstall {
@@ -668,10 +673,12 @@ impl NativeSourcePool {
             .backend
             .get()
             .acquire_rights(&mut install)
-            .map_err(CoreError::Io)?;
-        self.rights_status
-            .result()
-            .map_err(|_| CoreError::InvalidInput("source rights binding failed"))?;
+            .map_err(|original| CoreError::new(crate::CoreErrorCause::Io(original)))?;
+        self.rights_status.result().map_err(|_| {
+            CoreError::new(crate::CoreErrorCause::InvalidInput(
+                "source rights binding failed",
+            ))
+        })?;
         // Closed conversion: Store's DiskMemoryLease is this exact shared
         // allocation holder. No user/provider continuation can run here.
         *target = self
@@ -842,11 +849,13 @@ impl NativeSourceFunding {
     }
     fn reserve(
         &mut self,
-        target: &mut Option<Box<dyn ResidentLease>>,
+        target: &mut Option<NativeResidentLease>,
         purpose: SourceFundingPurpose,
     ) -> Result<(), CoreError> {
         if !self.installation.succeeded() {
-            return Err(CoreError::InvalidInput("source account not installed"));
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
+                "source account not installed",
+            )));
         }
         let owner = self
             .owner
@@ -866,10 +875,12 @@ impl NativeSourceFunding {
             .unwrap()
             .get()
             .acquire(&mut install)
-            .map_err(CoreError::Io)?;
-        status
-            .result()
-            .map_err(|_| CoreError::InvalidInput("source child binding failed"))?;
+            .map_err(|original| CoreError::new(crate::CoreErrorCause::Io(original)))?;
+        status.result().map_err(|_| {
+            CoreError::new(crate::CoreErrorCause::InvalidInput(
+                "source child binding failed",
+            ))
+        })?;
         *target = self.child_credit[purpose as usize - 1]
             .take()
             .map(crate::ResidentAllocation::into_native);
@@ -878,7 +889,7 @@ impl NativeSourceFunding {
     pub(crate) fn reserve_backing_into(
         &mut self,
         context: &SourceReadContext,
-        target: &mut Option<Box<dyn ResidentLease>>,
+        target: &mut Option<NativeResidentLease>,
     ) -> Result<(), CoreError> {
         if !self
             .owner
@@ -888,14 +899,16 @@ impl NativeSourceFunding {
             .context
             .same_owner(context)
         {
-            return Err(CoreError::InvalidInput("foreign source backing"));
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
+                "foreign source backing",
+            )));
         }
         self.reserve(target, SourceFundingPurpose::Backing)
     }
     pub(crate) fn reserve_pin_into(
         &mut self,
         pins: &SnapshotPins,
-        target: &mut Option<Box<dyn ResidentLease>>,
+        target: &mut Option<NativeResidentLease>,
     ) -> Result<(), CoreError> {
         if !self
             .owner
@@ -906,7 +919,9 @@ impl NativeSourceFunding {
             .pins
             .same_owner(pins)
         {
-            return Err(CoreError::InvalidInput("foreign source pin"));
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
+                "foreign source pin",
+            )));
         }
         self.reserve(target, SourceFundingPurpose::Pin)
     }

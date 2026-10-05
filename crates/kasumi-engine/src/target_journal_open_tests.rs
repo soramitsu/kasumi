@@ -1,12 +1,19 @@
 use super::*;
-use kasumi_store::{NodeStore, StorageAccess, TenantStorageSet, test_utils::LocalKeyProvider};
+use crate::test_fixture_failure::FixtureResult;
+use kasumi_store::{
+    NodeStore, StorageAccess, TenantStorageSet,
+    test_utils::{
+        FixturePlaintextCopy, FixtureWrite, FixtureWriteBatch, LocalKeyProvider,
+        write_plaintext_copy_for_fixture,
+    },
+};
 use ring::signature::KeyPair;
 
 struct Fixture {
     storage: crate::test_utils::FixtureStorage,
     config: crate::admission::AdmissionConfig,
     id: Uuid,
-    node: Arc<NodeStore>,
+    node: NodeStore,
     store: Arc<TenantStore>,
     installed: TargetJournalInstallation,
     admission: Arc<crate::admission::NodeAdmission>,
@@ -32,6 +39,10 @@ impl Fixture {
                 principal: "target-node".into(),
                 certificate_sha256: "22".repeat(32),
             },
+            audit_placement_bindings: std::collections::BTreeMap::from([(
+                "documents".into(),
+                "ab".repeat(32),
+            )]),
         };
         let id = kasumi_store::node_store_ids::target_journal(
             installed.root.control_incarnation,
@@ -59,7 +70,9 @@ impl Fixture {
             &scratch_config,
             admission.clone(),
         )?;
-        let node = storage.create_new(directory.path().join("persistent/journal.kv"), id)?;
+        let node = storage
+            .create_new(directory.path().join("persistent/journal.kv"), id)
+            .unwrap_or_else(|original| std::panic::panic_any(original));
         let store = TenantStore::initialize_catalog(
             node.clone(),
             format!("kasumi.target.{}.1", installed.root.control_incarnation),
@@ -246,13 +259,131 @@ async fn missing_journal_head_never_initializes_and_explicit_installation_cannot
         "cached owner must not bypass durable head validation"
     );
     assert!(f.store.get(NS, b"metadata")?.is_none());
-    f.store
-        .write_batch(&[WriteOp::put(NS, b"metadata", head.as_slice())])?;
+    write_plaintext_copy_for_fixture(&f.store, NS, b"metadata", head.as_bytes())?;
     drop(journal);
     assert!(f.create().is_err());
     let journal = f.reopen()?;
-    assert_eq!(f.store.get(NS, b"metadata")?, Some(head));
+    assert_eq!(
+        f.store.get(NS, b"metadata")?.as_deref(),
+        Some(head.as_bytes())
+    );
     journal.shutdown().await.unwrap();
+    Ok(())
+}
+
+#[tokio::test]
+async fn audit_placement_roster_is_required_before_installation_and_first_target_effect()
+-> Result<()> {
+    let f = Fixture::new().await?;
+    let mut missing = serde_json::to_value(&f.installed)?;
+    missing
+        .as_object_mut()
+        .unwrap()
+        .remove("audit_placement_bindings");
+    assert!(serde_json::from_value::<TargetJournalInstallation>(missing).is_err());
+    let mut null = serde_json::to_value(&f.installed)?;
+    null["audit_placement_bindings"] = serde_json::Value::Null;
+    assert!(serde_json::from_value::<TargetJournalInstallation>(null).is_err());
+    for bindings in [
+        std::collections::BTreeMap::new(),
+        std::collections::BTreeMap::from([("documents".into(), "".into())]),
+        std::collections::BTreeMap::from([("documents".into(), "AB".repeat(32))]),
+        std::collections::BTreeMap::from([("__kasumi_control".into(), "ab".repeat(32))]),
+    ] {
+        let mut wrong = f.installed.clone();
+        wrong.audit_placement_bindings = bindings;
+        assert!(
+            TargetJournal::create_new(
+                f.store.clone(),
+                wrong,
+                TargetJournalLimits {
+                    max_metadata_bytes: 4 << 20
+                },
+                f.admission.clone(),
+            )
+            .is_err()
+        );
+        assert!(f.store.get(NS, b"metadata")?.is_none());
+    }
+    let journal = f.create()?;
+    let original = f.store.get(NS, b"metadata")?.unwrap();
+    assert_eq!(
+        journal.metadata()?.installation.audit_placement_bindings,
+        f.installed.audit_placement_bindings
+    );
+    let mut substituted = f.installed.clone();
+    substituted
+        .audit_placement_bindings
+        .insert("documents".into(), "cd".repeat(32));
+    // The empty journal already owns the choice: neither a cached owner nor a
+    // later reopen may substitute it before the first materialization.
+    assert!(
+        TargetJournal::open_existing(
+            f.store.clone(),
+            substituted.clone(),
+            TargetJournalLimits {
+                max_metadata_bytes: 4 << 20
+            },
+            f.admission.clone(),
+        )
+        .is_err()
+    );
+    assert_eq!(
+        f.store.get(NS, b"metadata")?.as_deref(),
+        Some(original.as_bytes())
+    );
+    drop(journal);
+    assert!(
+        TargetJournal::open_existing(
+            f.store.clone(),
+            substituted,
+            TargetJournalLimits {
+                max_metadata_bytes: 4 << 20
+            },
+            f.admission.clone(),
+        )
+        .is_err()
+    );
+
+    let mut missing_head = serde_json::to_value(decode_current::<Metadata>(&original)?)?;
+    missing_head["installation"]
+        .as_object_mut()
+        .unwrap()
+        .remove("audit_placement_bindings");
+    let mut old = decode_current::<Metadata>(&original)?;
+    old.format = 4;
+    for bytes in [
+        serde_json::to_vec(&missing_head)?,
+        serde_json::to_vec(&old)?,
+    ] {
+        write_plaintext_copy_for_fixture(&f.store, NS, b"metadata", &bytes)?;
+        assert!(f.reopen().is_err());
+        assert!(f.create().is_err());
+        assert_eq!(
+            f.store.get(NS, b"metadata")?.as_deref(),
+            Some(bytes.as_slice())
+        );
+    }
+    write_plaintext_copy_for_fixture(&f.store, NS, b"metadata", original.as_bytes())?;
+    f.reopen()?.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn first_dispatch_rejects_a_tenant_outside_the_installed_placement_roster() -> Result<()> {
+    let mut f = Fixture::new().await?;
+    f.installed.audit_placement_bindings =
+        std::collections::BTreeMap::from([("another-target".into(), "ab".repeat(32))]);
+    let journal = f.create()?;
+    let original = f.store.scan(NS)?;
+    let (lifecycle, phase, request) = initial_dispatch(&f, true)?;
+    assert!(
+        journal
+            .reserve_initial_dispatch(&f.installed.root, &phase, &lifecycle, &request)
+            .is_err()
+    );
+    assert_eq!(f.store.scan(NS)?, original);
+    journal.shutdown().await?;
     Ok(())
 }
 
@@ -265,11 +396,13 @@ async fn corrupt_or_wrong_installed_journal_head_is_rejected_without_replacement
     let mut wrong: Metadata = serde_json::from_slice(&original)?;
     wrong.installation.root.control_incarnation = Uuid::new_v4();
     for bytes in [b"{".to_vec(), serde_json::to_vec(&wrong)?] {
-        f.store
-            .write_batch(&[WriteOp::put(NS, b"metadata", bytes.as_slice())])?;
+        write_plaintext_copy_for_fixture(&f.store, NS, b"metadata", bytes.as_slice())?;
         assert!(f.reopen().is_err());
         assert!(f.create().is_err());
-        assert_eq!(f.store.get(NS, b"metadata")?, Some(bytes));
+        assert_eq!(
+            f.store.get(NS, b"metadata")?.as_deref(),
+            Some(bytes.as_slice())
+        );
     }
     f.store.shutdown().await.unwrap();
     Ok(())
@@ -280,14 +413,12 @@ async fn current_head_requires_exact_current_json_bytes() -> Result<()> {
     let f = Fixture::new().await?;
     drop(f.create()?);
     let original = f.store.get(NS, b"metadata")?.unwrap();
-    let mut alternate = original.clone();
-    alternate.push(b' ');
+    let alternate = FixturePlaintextCopy::with_suffix(&f.store, original.as_bytes(), b" ")?;
     assert_eq!(
         serde_json::from_slice::<Metadata>(&alternate)?,
         serde_json::from_slice::<Metadata>(&original)?
     );
-    f.store
-        .write_batch(&[WriteOp::put(NS, b"metadata", alternate.clone())])?;
+    write_plaintext_copy_for_fixture(&f.store, NS, b"metadata", alternate.as_bytes())?;
     let error = f
         .reopen()
         .err()
@@ -296,9 +427,11 @@ async fn current_head_requires_exact_current_json_bytes() -> Result<()> {
         format!("{error:#}").contains("noncanonical target journal record"),
         "{error:#}"
     );
-    assert_eq!(f.store.get(NS, b"metadata")?, Some(alternate));
-    f.store
-        .write_batch(&[WriteOp::put(NS, b"metadata", original)])?;
+    assert_eq!(
+        f.store.get(NS, b"metadata")?.as_deref(),
+        Some(alternate.as_bytes())
+    );
+    write_plaintext_copy_for_fixture(&f.store, NS, b"metadata", original.as_bytes())?;
     f.reopen()?.shutdown().await?;
     Ok(())
 }
@@ -326,10 +459,18 @@ async fn installed_empty_journal_reopens_only_its_exact_node_after_owner_drain()
     drop(store);
     drop(node);
     let path = directory.path().join("persistent/journal.kv");
-    let bytes = std::fs::read(&path)?;
+    let group_image = || {
+        kasumi_store::test_utils::capture_native_group_image(
+            &path,
+            storage.persistent.memory().clone(),
+        )
+    };
+    let bytes = group_image()?;
     assert!(storage.open_existing(&path, Uuid::new_v4()).is_err());
-    assert_eq!(std::fs::read(&path)?, bytes);
-    let node = storage.open_existing(&path, id)?;
+    assert_eq!(group_image()?, bytes);
+    let node = storage
+        .open_existing(&path, id)
+        .unwrap_or_else(|original| std::panic::panic_any(original));
     let store = TenantStore::open_existing(
         node.clone(),
         format!("kasumi.target.{}.1", installed.root.control_incarnation),
@@ -345,7 +486,10 @@ async fn installed_empty_journal_reopens_only_its_exact_node_after_owner_drain()
         },
         admission,
     )?;
-    assert_eq!(store.get(NS, b"metadata")?, Some(original));
+    assert_eq!(
+        store.get(NS, b"metadata")?.as_deref(),
+        Some(original.as_bytes())
+    );
     journal.shutdown().await.unwrap();
     store.shutdown().await?;
     node.shutdown().await?;
@@ -381,7 +525,10 @@ async fn paused_registry_handoff_cannot_publish_two_journal_mutation_owners() ->
         f.create().is_err(),
         "the shared owner cannot initialize the head again"
     );
-    assert_eq!(f.store.get(NS, b"metadata")?, Some(original));
+    assert_eq!(
+        f.store.get(NS, b"metadata")?.as_deref(),
+        Some(original.as_bytes())
+    );
     first.shutdown().await.unwrap();
     Ok(())
 }
@@ -390,7 +537,10 @@ async fn paused_registry_handoff_cannot_publish_two_journal_mutation_owners() ->
 async fn journal_rejects_foreign_equal_policy_core_before_creating_or_reopening_head() -> Result<()>
 {
     let f = Fixture::new().await?;
-    f.node.drain_initializers().await?;
+    f.node
+        .drain_initializers()
+        .await
+        .map_err(|failure| failure.observation())?;
     let foreign = crate::admission::NodeAdmission::with_fixed_memory(f.config.clone(), 2 << 30, 0)?;
     f.admission.memory().require_policy(&f.config)?;
     foreign.memory().require_policy(&f.config)?;
@@ -450,7 +600,10 @@ async fn journal_rejects_foreign_equal_policy_core_before_creating_or_reopening_
         error.to_string(),
         "engine and physical storage memory owners differ"
     );
-    assert_eq!(f.store.get(NS, b"metadata")?, Some(head.clone()));
+    assert_eq!(
+        f.store.get(NS, b"metadata")?.as_deref(),
+        Some(head.as_bytes())
+    );
     for (admission, prior) in [(&f.admission, before), (&foreign, foreign_before)] {
         let after = admission.snapshot();
         assert_eq!(after.reserved_bytes, prior.reserved_bytes);
@@ -458,7 +611,10 @@ async fn journal_rejects_foreign_equal_policy_core_before_creating_or_reopening_
         assert_eq!(after.inflight_operations, prior.inflight_operations);
     }
     let exact = f.reopen()?;
-    assert_eq!(f.store.get(NS, b"metadata")?, Some(head));
+    assert_eq!(
+        f.store.get(NS, b"metadata")?.as_deref(),
+        Some(head.as_bytes())
+    );
     assert!(Arc::ptr_eq(&exact.admission, &f.admission));
     exact.shutdown().await?;
     f.admission.drain_snapshot_startups().await?;
@@ -776,31 +932,50 @@ async fn verified_initial_prebind_persists_reopens_and_rejects_substituted_accep
     let (stores, access) =
         target_prebind_stores(&f, &lifecycle, verified.bootstrap_sha256()).await?;
     assert_eq!(
-        stores.custody().store().get("raft.meta", b"node_id")?,
-        Some(serde_json::to_vec(&f.installed.node.node_id)?)
+        stores
+            .custody()
+            .store()
+            .get("raft.meta", b"node_id")?
+            .as_deref(),
+        Some(serde_json::to_vec(&f.installed.node.node_id)?.as_slice())
     );
     assert_eq!(
-        stores.custody().store().get("raft.meta", b"group")?,
-        Some(serde_json::to_vec(&format!(
-            "{}/{}",
-            lifecycle.request.tenant, lifecycle.request.target_incarnation
-        ))?)
+        stores
+            .custody()
+            .store()
+            .get("raft.meta", b"group")?
+            .as_deref(),
+        Some(
+            serde_json::to_vec(&format!(
+                "{}/{}",
+                lifecycle.request.tenant, lifecycle.request.target_incarnation
+            ))?
+            .as_slice()
+        )
     );
     let materialized_identity = stores.custody().store().scan("raft.meta")?;
     let expected = verified.persist_target_raft_prebind(&journal, &stores)?;
-    for (key, value) in materialized_identity {
+    for (key, value) in &materialized_identity {
         assert_eq!(
-            stores.custody().store().get("raft.meta", &key)?,
+            stores.custody().store().get("raft.meta", key)?.as_deref(),
             Some(value)
         );
     }
     assert_eq!(
-        stores.custody().store().get("raft.meta", b"node_id")?,
-        Some(serde_json::to_vec(&f.installed.node.node_id)?)
+        stores
+            .custody()
+            .store()
+            .get("raft.meta", b"node_id")?
+            .as_deref(),
+        Some(serde_json::to_vec(&f.installed.node.node_id)?.as_slice())
     );
     assert_eq!(
-        stores.custody().store().get("raft.meta", b"group")?,
-        Some(serde_json::to_vec(&expected.group)?)
+        stores
+            .custody()
+            .store()
+            .get("raft.meta", b"group")?
+            .as_deref(),
+        Some(serde_json::to_vec(&expected.group)?.as_slice())
     );
     assert_eq!(
         read_target_first_membership_prebind(&stores, &expected)?,
@@ -855,8 +1030,7 @@ async fn verified_initial_prebind_persists_reopens_and_rejects_substituted_accep
     let substituted = serde_json::to_vec(&changed)?;
     journal.validate_dispatch_record(key.as_bytes(), &substituted)?;
     assert_ne!(accepted, substituted);
-    f.store
-        .write_batch(&[WriteOp::put(NS, key.as_bytes(), substituted)])?;
+    write_plaintext_copy_for_fixture(&f.store, NS, key.as_bytes(), &substituted)?;
     let error = later
         .persist_target_raft_prebind(&journal, &reopened)
         .err()
@@ -876,11 +1050,12 @@ async fn verified_initial_prebind_persists_reopens_and_rejects_substituted_accep
     // dispatch, the same comparison used before opt-in target Raft startup.
     let mut local_substitution = expected.clone();
     local_substitution.dispatch.attempt_id = Uuid::new_v4();
-    reopened.custody().store().write_batch(&[WriteOp::put(
+    write_plaintext_copy_for_fixture(
+        reopened.custody().store(),
         TARGET_PREBIND_NAMESPACE,
         TARGET_PREBIND_KEY,
-        serde_json::to_vec(&local_substitution)?,
-    )])?;
+        &serde_json::to_vec(&local_substitution)?,
+    )?;
     assert!(read_target_first_membership_prebind(&reopened, &expected).is_err());
     reopened.shutdown().await?;
     Ok(())
@@ -946,7 +1121,7 @@ async fn first_prebind_rejects_partial_or_competing_raft_identity_without_repair
 
 #[tokio::test]
 async fn historical_initial_membership_requires_exact_control_journal_and_applied_custody()
--> Result<()> {
+-> FixtureResult<()> {
     use super::dispatch::InitialDispatchReservation as Decision;
     let f = Fixture::new().await?;
     let journal = f.create()?;
@@ -955,7 +1130,7 @@ async fn historical_initial_membership_requires_exact_control_journal_and_applie
     let Decision::NewlyAccepted(candidate) =
         journal.reserve_initial_dispatch(&f.installed.root, &phase, &lifecycle, &request)?
     else {
-        anyhow::bail!("first dispatch returned no one-use candidate")
+        return Err(anyhow::anyhow!("first dispatch returned no one-use candidate").into());
     };
     let identity = candidate.identity().clone();
     let verified = candidate
@@ -1012,16 +1187,14 @@ async fn historical_initial_membership_requires_exact_control_journal_and_applie
         serde_json::from_value(substituted)?;
     let substituted = serde_json::to_vec(&substituted)?;
     journal.validate_dispatch_record(key.as_bytes(), &substituted)?;
-    f.store
-        .write_batch(&[WriteOp::put(NS, key.as_bytes(), substituted)])?;
+    write_plaintext_copy_for_fixture(&f.store, NS, key.as_bytes(), &substituted)?;
     assert!(
         journal
             .resolve_initial_membership_history(&control, &phase, &identity, &request, &stores)
             .is_err(),
         "a different valid journal row cannot inherit the applied fact"
     );
-    f.store
-        .write_batch(&[WriteOp::put(NS, key.as_bytes(), original)])?;
+    write_plaintext_copy_for_fixture(&f.store, NS, key.as_bytes(), original.as_bytes())?;
     stores.custody().store().write_batch(&[WriteOp::delete(
         kasumi_raft::TARGET_PREBIND_NAMESPACE,
         b"target_first_membership_association",
@@ -1047,7 +1220,7 @@ async fn historical_initial_membership_requires_exact_control_journal_and_applie
 
 #[tokio::test]
 async fn first_membership_terminal_requires_history_and_uses_original_reserved_capacity()
--> Result<()> {
+-> FixtureResult<()> {
     use super::dispatch::InitialDispatchReservation as Decision;
     let f = Fixture::new().await?;
     let journal = f.create()?;
@@ -1056,7 +1229,7 @@ async fn first_membership_terminal_requires_history_and_uses_original_reserved_c
     let Decision::NewlyAccepted(candidate) =
         journal.reserve_initial_dispatch(&f.installed.root, &phase, &lifecycle, &request)?
     else {
-        anyhow::bail!("first dispatch returned no one-use candidate")
+        return Err(anyhow::anyhow!("first dispatch returned no one-use candidate").into());
     };
     let identity = candidate.identity().clone();
     let candidate = candidate.verify_initial_membership(1, LifecyclePhase::Initialize)?;
@@ -1074,7 +1247,10 @@ async fn first_membership_terminal_requires_history_and_uses_original_reserved_c
         "accepted dispatch and prebind alone cannot terminalize a first membership"
     );
     assert!(f.store.get(NS, terminal_key.as_bytes())?.is_none());
-    assert_eq!(f.store.get(NS, b"metadata")?, Some(before.clone()));
+    assert_eq!(
+        f.store.get(NS, b"metadata")?.as_deref(),
+        Some(before.as_bytes())
+    );
     let first = kasumi_raft::historical_test_utils::publish_committed_first_membership(
         stores.clone(),
         &expected,
@@ -1104,8 +1280,8 @@ async fn first_membership_terminal_requires_history_and_uses_original_reserved_c
     assert!(terminal.len() as u64 <= DISPATCH_TERMINAL_RESERVE);
     journal.record_initial_membership_history(&control, &phase, &identity, &request, &stores)?;
     assert_eq!(
-        f.store.get(NS, terminal_key.as_bytes())?,
-        Some(terminal.clone())
+        f.store.get(NS, terminal_key.as_bytes())?.as_deref(),
+        Some(terminal.as_bytes())
     );
     assert_eq!(
         decode_current::<Metadata>(&f.store.get(NS, b"metadata")?.unwrap())?,
@@ -1118,7 +1294,10 @@ async fn first_membership_terminal_requires_history_and_uses_original_reserved_c
     drop(journal);
     let journal = f.reopen()?;
     journal.record_initial_membership_history(&control, &phase, &identity, &request, &stores)?;
-    assert_eq!(f.store.get(NS, terminal_key.as_bytes())?, Some(terminal));
+    assert_eq!(
+        f.store.get(NS, terminal_key.as_bytes())?.as_deref(),
+        Some(terminal.as_bytes())
+    );
     stores.shutdown().await?;
     journal.shutdown().await?;
     Ok(())
@@ -1126,7 +1305,7 @@ async fn first_membership_terminal_requires_history_and_uses_original_reserved_c
 
 #[tokio::test]
 async fn first_membership_terminal_rejects_substitution_missing_custody_and_torn_accounting()
--> Result<()> {
+-> FixtureResult<()> {
     use super::dispatch::InitialDispatchReservation as Decision;
     let f = Fixture::new().await?;
     let journal = f.create()?;
@@ -1135,7 +1314,7 @@ async fn first_membership_terminal_rejects_substitution_missing_custody_and_torn
     let Decision::NewlyAccepted(candidate) =
         journal.reserve_initial_dispatch(&f.installed.root, &phase, &lifecycle, &request)?
     else {
-        anyhow::bail!("first dispatch returned no one-use candidate")
+        return Err(anyhow::anyhow!("first dispatch returned no one-use candidate").into());
     };
     let identity = candidate.identity().clone();
     let candidate = candidate.verify_initial_membership(1, LifecyclePhase::Initialize)?;
@@ -1169,8 +1348,8 @@ async fn first_membership_terminal_rejects_substitution_missing_custody_and_torn
             .is_err()
     );
     assert_eq!(
-        f.store.get(NS, terminal_key.as_bytes())?,
-        Some(original.clone())
+        f.store.get(NS, terminal_key.as_bytes())?.as_deref(),
+        Some(original.as_bytes())
     );
 
     let association_key = b"target_first_membership_association";
@@ -1190,14 +1369,15 @@ async fn first_membership_terminal_rejects_substitution_missing_custody_and_torn
         "terminal alone cannot replace missing atomic Raft association"
     );
     assert_eq!(
-        f.store.get(NS, terminal_key.as_bytes())?,
-        Some(original.clone())
+        f.store.get(NS, terminal_key.as_bytes())?.as_deref(),
+        Some(original.as_bytes())
     );
-    stores.custody().store().write_batch(&[WriteOp::put(
+    write_plaintext_copy_for_fixture(
+        stores.custody().store(),
         "raft.meta",
         association_key,
-        association,
-    )])?;
+        association.as_bytes(),
+    )?;
     drop(journal);
 
     for (field, value) in [
@@ -1209,20 +1389,23 @@ async fn first_membership_terminal_rejects_substitution_missing_custody_and_torn
         invalid[field] = value;
         let invalid: super::dispatch::InitialMembershipTerminal = serde_json::from_value(invalid)?;
         let invalid = serde_json::to_vec(&invalid)?;
-        f.store
-            .write_batch(&[WriteOp::put(NS, terminal_key.as_bytes(), invalid.clone())])?;
+        write_plaintext_copy_for_fixture(&f.store, NS, terminal_key.as_bytes(), &invalid)?;
         assert!(f.reopen().is_err(), "substituted terminal {field} reopened");
-        assert_eq!(f.store.get(NS, terminal_key.as_bytes())?, Some(invalid));
-        f.store
-            .write_batch(&[WriteOp::put(NS, terminal_key.as_bytes(), original.clone())])?;
+        assert_eq!(
+            f.store.get(NS, terminal_key.as_bytes())?.as_deref(),
+            Some(invalid.as_slice())
+        );
+        write_plaintext_copy_for_fixture(
+            &f.store,
+            NS,
+            terminal_key.as_bytes(),
+            original.as_bytes(),
+        )?;
     }
-    let mut padded = original.clone();
-    padded.push(b' ');
-    f.store
-        .write_batch(&[WriteOp::put(NS, terminal_key.as_bytes(), padded)])?;
+    let padded = FixturePlaintextCopy::with_suffix(&f.store, original.as_bytes(), b" ")?;
+    write_plaintext_copy_for_fixture(&f.store, NS, terminal_key.as_bytes(), padded.as_bytes())?;
     assert!(f.reopen().is_err(), "noncanonical terminal reopened");
-    f.store
-        .write_batch(&[WriteOp::put(NS, terminal_key.as_bytes(), original.clone())])?;
+    write_plaintext_copy_for_fixture(&f.store, NS, terminal_key.as_bytes(), original.as_bytes())?;
 
     // A canonical terminal digest is still only retained observation. Exact
     // live local history must detect substitution at the same log position.
@@ -1230,8 +1413,7 @@ async fn first_membership_terminal_rejects_substitution_missing_custody_and_torn
     invalid["first_fact_sha256"] = serde_json::json!("33".repeat(32));
     let invalid: super::dispatch::InitialMembershipTerminal = serde_json::from_value(invalid)?;
     let invalid = serde_json::to_vec(&invalid)?;
-    f.store
-        .write_batch(&[WriteOp::put(NS, terminal_key.as_bytes(), invalid.clone())])?;
+    write_plaintext_copy_for_fixture(&f.store, NS, terminal_key.as_bytes(), &invalid)?;
     let journal = f.reopen()?;
     assert!(
         journal
@@ -1243,10 +1425,12 @@ async fn first_membership_terminal_rejects_substitution_missing_custody_and_torn
             .record_initial_membership_history(&control, &phase, &identity, &request, &stores,)
             .is_err()
     );
-    assert_eq!(f.store.get(NS, terminal_key.as_bytes())?, Some(invalid));
+    assert_eq!(
+        f.store.get(NS, terminal_key.as_bytes())?.as_deref(),
+        Some(invalid.as_slice())
+    );
     drop(journal);
-    f.store
-        .write_batch(&[WriteOp::put(NS, terminal_key.as_bytes(), original.clone())])?;
+    write_plaintext_copy_for_fixture(&f.store, NS, terminal_key.as_bytes(), original.as_bytes())?;
 
     f.store
         .write_batch(&[WriteOp::delete(NS, terminal_key.as_bytes())])?;
@@ -1254,25 +1438,21 @@ async fn first_membership_terminal_rejects_substitution_missing_custody_and_torn
         f.reopen().is_err(),
         "missing terminal with counted publication reopened"
     );
-    f.store
-        .write_batch(&[WriteOp::put(NS, terminal_key.as_bytes(), original)])?;
+    write_plaintext_copy_for_fixture(&f.store, NS, terminal_key.as_bytes(), original.as_bytes())?;
     let mut invalid: Metadata = decode_current(&original_head)?;
     invalid.dispatch_terminals = 0;
-    f.store
-        .write_batch(&[WriteOp::put(NS, b"metadata", serde_json::to_vec(&invalid)?)])?;
+    write_plaintext_copy_for_fixture(&f.store, NS, b"metadata", &serde_json::to_vec(&invalid)?)?;
     assert!(
         f.reopen().is_err(),
         "terminal without counted publication reopened"
     );
     invalid.format = 2;
-    f.store
-        .write_batch(&[WriteOp::put(NS, b"metadata", serde_json::to_vec(&invalid)?)])?;
+    write_plaintext_copy_for_fixture(&f.store, NS, b"metadata", &serde_json::to_vec(&invalid)?)?;
     assert!(
         f.reopen().is_err(),
         "retired format cannot be upgraded during reopen"
     );
-    f.store
-        .write_batch(&[WriteOp::put(NS, b"metadata", original_head)])?;
+    write_plaintext_copy_for_fixture(&f.store, NS, b"metadata", original_head.as_bytes())?;
     let journal = f.reopen()?;
     journal.resolve_initial_membership_history(&control, &phase, &identity, &request, &stores)?;
     stores.shutdown().await?;
@@ -1380,11 +1560,15 @@ async fn current_intent_and_generation_require_current_writer_bytes_on_reopen() 
         + generation_bytes.len() as u64
         + GENERATION_RESERVE;
     let head_bytes = serde_json::to_vec(&head)?;
-    f.store.write_batch(&[
-        WriteOp::put(NS, intent_key.clone(), intent_bytes.clone()),
-        WriteOp::put(NS, generation_key.clone(), generation_bytes.clone()),
-        WriteOp::put(NS, b"metadata", head_bytes.clone()),
-    ])?;
+    FixtureWriteBatch::prepare(
+        &f.store,
+        &[
+            FixtureWrite::Put(NS, &intent_key, &intent_bytes),
+            FixtureWrite::Put(NS, &generation_key, &generation_bytes),
+            FixtureWrite::Put(NS, b"metadata", &head_bytes),
+        ],
+    )?
+    .write(&f.store)?;
     drop(journal);
     drop(f.reopen()?);
 
@@ -1392,28 +1576,38 @@ async fn current_intent_and_generation_require_current_writer_bytes_on_reopen() 
         (intent_key, intent_bytes),
         (generation_key, generation_bytes),
     ] {
-        let mut alternate = original.clone();
-        alternate.push(b' ');
+        let alternate = FixturePlaintextCopy::with_suffix(&f.store, &original, b" ")?;
         assert_eq!(
             serde_json::from_slice::<serde_json::Value>(&alternate)?,
             serde_json::from_slice::<serde_json::Value>(&original)?
         );
         let mut alternate_head = head.clone();
         alternate_head.charged_bytes += 1;
-        f.store.write_batch(&[
-            WriteOp::put(NS, key.clone(), alternate.clone()),
-            WriteOp::put(NS, b"metadata", serde_json::to_vec(&alternate_head)?),
-        ])?;
+        FixtureWriteBatch::prepare(
+            &f.store,
+            &[
+                FixtureWrite::Put(NS, &key, alternate.as_bytes()),
+                FixtureWrite::Put(NS, b"metadata", &serde_json::to_vec(&alternate_head)?),
+            ],
+        )?
+        .write(&f.store)?;
         let error = f.reopen().err().expect("alternate journal row must reject");
         assert!(
             format!("{error:#}").contains("noncanonical target journal record"),
             "{error:#}"
         );
-        assert_eq!(f.store.get(NS, &key)?, Some(alternate));
-        f.store.write_batch(&[
-            WriteOp::put(NS, key, original),
-            WriteOp::put(NS, b"metadata", head_bytes.clone()),
-        ])?;
+        assert_eq!(
+            f.store.get(NS, &key)?.as_deref(),
+            Some(alternate.as_bytes())
+        );
+        FixtureWriteBatch::prepare(
+            &f.store,
+            &[
+                FixtureWrite::Put(NS, &key, &original),
+                FixtureWrite::Put(NS, b"metadata", &head_bytes),
+            ],
+        )?
+        .write(&f.store)?;
     }
     f.reopen()?.shutdown().await?;
     Ok(())
@@ -1436,8 +1630,7 @@ async fn serving_candidate_point_read_and_reopen_reject_alternate_json() -> Resu
         serde_json::from_slice::<serde_json::Value>(&alternate)?,
         candidate
     );
-    f.store
-        .write_batch(&[WriteOp::put(NS, key, alternate.clone())])?;
+    write_plaintext_copy_for_fixture(&f.store, NS, key, &alternate)?;
     let point_error = journal
         .serving_candidate("documents")
         .expect_err("alternate candidate point read must reject");
@@ -1454,7 +1647,7 @@ async fn serving_candidate_point_read_and_reopen_reject_alternate_json() -> Resu
         format!("{reopen_error:#}").contains("noncanonical target journal record"),
         "{reopen_error:#}"
     );
-    assert_eq!(f.store.get(NS, key)?, Some(alternate));
+    assert_eq!(f.store.get(NS, key)?.as_deref(), Some(alternate.as_slice()));
     f.store.write_batch(&[WriteOp::delete(NS, key)])?;
     f.reopen()?.shutdown().await?;
     Ok(())
@@ -1530,11 +1723,12 @@ async fn exact_dispatch_reservation_is_one_use_and_reopen_recounts_terminal_capa
     let metadata_before = f.store.get(NS, b"metadata")?.unwrap();
     let mut damaged_head: Metadata = serde_json::from_slice(&metadata_before)?;
     damaged_head.format = 1;
-    f.store.write_batch(&[WriteOp::put(
+    write_plaintext_copy_for_fixture(
+        &f.store,
         NS,
         b"metadata",
-        serde_json::to_vec(&damaged_head)?,
-    )])?;
+        &serde_json::to_vec(&damaged_head)?,
+    )?;
     assert!(
         journal
             .read_initial_dispatch_status(&f.installed.root, &identity, &request)
@@ -1545,13 +1739,15 @@ async fn exact_dispatch_reservation_is_one_use_and_reopen_recounts_terminal_capa
             .reserve_initial_dispatch(&f.installed.root, &phase, &lifecycle, &request)
             .is_err()
     );
-    f.store
-        .write_batch(&[WriteOp::put(NS, b"metadata", metadata_before.clone())])?;
+    write_plaintext_copy_for_fixture(&f.store, NS, b"metadata", metadata_before.as_bytes())?;
     assert!(matches!(
         journal.reserve_initial_dispatch(&f.installed.root, &phase, &lifecycle, &request)?,
         Decision::ExistingStatusOnly
     ));
-    assert_eq!(f.store.get(NS, b"metadata")?, Some(metadata_before.clone()));
+    assert_eq!(
+        f.store.get(NS, b"metadata")?.as_deref(),
+        Some(metadata_before.as_bytes())
+    );
     let mut changed = phase.clone();
     changed
         .effect_attempts
@@ -1576,8 +1772,7 @@ async fn exact_dispatch_reservation_is_one_use_and_reopen_recounts_terminal_capa
         &initialize_lifecycle.request.tenant,
         initialize_lifecycle.request.target_incarnation,
     );
-    f.store
-        .write_batch(&[WriteOp::put(NS, stopped_key.clone(), b"{}".to_vec())])?;
+    write_plaintext_copy_for_fixture(&f.store, NS, &stopped_key, b"{}")?;
     assert!(
         journal
             .reserve_initial_dispatch(
@@ -1599,7 +1794,7 @@ async fn exact_dispatch_reservation_is_one_use_and_reopen_recounts_terminal_capa
         Decision::NewlyAccepted(_)
     ));
     let metadata: Metadata = serde_json::from_slice(&f.store.get(NS, b"metadata")?.unwrap())?;
-    assert_eq!(metadata.format, 4);
+    assert_eq!(metadata.format, 5);
     assert_eq!(metadata.dispatches, 2);
     assert_eq!(metadata.dispatch_terminals, 0);
     assert_eq!(metadata.dispatch_starts, 0);
@@ -1628,65 +1823,68 @@ async fn previous_formats_and_corrupt_dispatch_or_accounting_fail_closed_on_reop
     for format in 1..4 {
         let mut old: Metadata = serde_json::from_slice(&original_head)?;
         old.format = format;
-        f.store
-            .write_batch(&[WriteOp::put(NS, b"metadata", serde_json::to_vec(&old)?)])?;
+        write_plaintext_copy_for_fixture(&f.store, NS, b"metadata", &serde_json::to_vec(&old)?)?;
         assert!(
             f.reopen().is_err(),
             "retired journal format {format} reopened"
         );
     }
-    f.store
-        .write_batch(&[WriteOp::put(NS, b"metadata", original_head.clone())])?;
+    write_plaintext_copy_for_fixture(&f.store, NS, b"metadata", original_head.as_bytes())?;
     let mut missing_field: serde_json::Value = serde_json::from_slice(&original_head)?;
     missing_field.as_object_mut().unwrap().remove("dispatches");
-    f.store.write_batch(&[WriteOp::put(
+    write_plaintext_copy_for_fixture(
+        &f.store,
         NS,
         b"metadata",
-        serde_json::to_vec(&missing_field)?,
-    )])?;
+        &serde_json::to_vec(&missing_field)?,
+    )?;
     assert!(f.reopen().is_err());
-    f.store
-        .write_batch(&[WriteOp::put(NS, b"metadata", original_head.clone())])?;
+    write_plaintext_copy_for_fixture(&f.store, NS, b"metadata", original_head.as_bytes())?;
     let mut wrong_count: Metadata = serde_json::from_slice(&original_head)?;
     wrong_count.dispatches = 0;
-    f.store.write_batch(&[WriteOp::put(
+    write_plaintext_copy_for_fixture(
+        &f.store,
         NS,
         b"metadata",
-        serde_json::to_vec(&wrong_count)?,
-    )])?;
+        &serde_json::to_vec(&wrong_count)?,
+    )?;
     assert!(f.reopen().is_err());
-    f.store
-        .write_batch(&[WriteOp::put(NS, b"metadata", original_head.clone())])?;
+    write_plaintext_copy_for_fixture(&f.store, NS, b"metadata", original_head.as_bytes())?;
     let mut wrong_bytes: Metadata = serde_json::from_slice(&original_head)?;
     wrong_bytes.charged_bytes -= 1;
-    f.store.write_batch(&[WriteOp::put(
+    write_plaintext_copy_for_fixture(
+        &f.store,
         NS,
         b"metadata",
-        serde_json::to_vec(&wrong_bytes)?,
-    )])?;
+        &serde_json::to_vec(&wrong_bytes)?,
+    )?;
     assert!(f.reopen().is_err());
-    f.store
-        .write_batch(&[WriteOp::put(NS, b"metadata", original_head.clone())])?;
-    let mut noncanonical = original_row.clone();
-    noncanonical.push(b' ');
-    f.store
-        .write_batch(&[WriteOp::put(NS, key.clone(), noncanonical)])?;
+    write_plaintext_copy_for_fixture(&f.store, NS, b"metadata", original_head.as_bytes())?;
+    let noncanonical = FixturePlaintextCopy::with_suffix(&f.store, original_row.as_bytes(), b" ")?;
+    write_plaintext_copy_for_fixture(&f.store, NS, &key, noncanonical.as_bytes())?;
     assert!(f.reopen().is_err());
     let mut altered: serde_json::Value = serde_json::from_slice(&original_row)?;
     altered["phase"]["effect_attempts"]["target_command"]["input_sha256"] =
         serde_json::Value::String("ff".repeat(32));
-    f.store
-        .write_batch(&[WriteOp::put(NS, key.clone(), serde_json::to_vec(&altered)?)])?;
+    write_plaintext_copy_for_fixture(&f.store, NS, &key, &serde_json::to_vec(&altered)?)?;
     assert!(f.reopen().is_err());
-    f.store.write_batch(&[
-        WriteOp::delete(NS, key.clone()),
-        WriteOp::put(NS, b"dispatch/foreign/phase", original_row.clone()),
-    ])?;
+    FixtureWriteBatch::prepare(
+        &f.store,
+        &[
+            FixtureWrite::Delete(NS, &key),
+            FixtureWrite::Put(NS, b"dispatch/foreign/phase", original_row.as_bytes()),
+        ],
+    )?
+    .write(&f.store)?;
     assert!(f.reopen().is_err());
-    f.store.write_batch(&[
-        WriteOp::delete(NS, b"dispatch/foreign/phase"),
-        WriteOp::put(NS, key, original_row),
-    ])?;
+    FixtureWriteBatch::prepare(
+        &f.store,
+        &[
+            FixtureWrite::Delete(NS, b"dispatch/foreign/phase"),
+            FixtureWrite::Put(NS, &key, original_row.as_bytes()),
+        ],
+    )?
+    .write(&f.store)?;
     let reopened = f.reopen()?;
     reopened.shutdown().await?;
     Ok(())

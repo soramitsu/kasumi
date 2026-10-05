@@ -204,14 +204,16 @@ fn corrupt_ids_versions_and_disagreeing_hydration_never_reach_the_loan() {
                 collection.documents.insert("a".into(), live("wrong", 1));
             }
             1 => {
-                collection.documents.insert("a".into(), live("a", 0));
+                collection.documents.insert("a".into(), live("a", u64::MAX));
             }
             2 => {
                 collection.documents.insert("a".into(), live("a", 8));
             }
             3 => {
                 collection.documents.remove("a");
-                collection.archived_documents.insert("a".into(), archive(0));
+                collection
+                    .archived_documents
+                    .insert("a".into(), archive(u64::MAX));
             }
             4 => {
                 collection.documents.remove("a");
@@ -242,6 +244,58 @@ fn corrupt_ids_versions_and_disagreeing_hydration_never_reach_the_loan() {
             "header fault {fault}"
         );
         assert!(!lent.get());
+    }
+}
+
+#[test]
+fn zero_version_live_and_archived_records_reach_the_exact_point_and_header_loan() {
+    for revision in [0, 7] {
+        for kind in [RecordKind::Live, RecordKind::Archived] {
+            let generation = fixture();
+            let mut collection = generation.state.collections["docs"].clone();
+            collection.data_epoch = revision;
+            collection.documents.clear();
+            collection.archived_documents.clear();
+            collection.archived_document_bytes = 0;
+            match kind {
+                RecordKind::Live => {
+                    collection.documents.insert("a".into(), live("a", 0));
+                }
+                RecordKind::Archived => {
+                    collection.archived_documents.insert("a".into(), archive(0));
+                    collection.archived_document_bytes = 128;
+                }
+            }
+            let mut restored =
+                generation.read_view(BTreeMap::from([("docs".into(), collection)]), vec![]);
+            restored.state.revision = revision;
+            restored.indexes = Arc::new(crate::index_source::build(&restored.state).unwrap());
+            let restored = Arc::new(restored);
+            let source = restored.document_source("docs").unwrap();
+            source
+                .with_record("a", Some(0), &token(), |record| {
+                    let record = record.expect("restored zero-version record exists");
+                    assert_eq!(record.version(), 0);
+                    assert_eq!(
+                        match record {
+                            Record::Live(_) => RecordKind::Live,
+                            Record::Archived(_) => RecordKind::Archived,
+                        },
+                        kind
+                    );
+                    Ok(())
+                })
+                .unwrap();
+            source
+                .header_after(None, &token(), |header| {
+                    let header = header.expect("restored zero-version header exists");
+                    assert_eq!(header.id, "a");
+                    assert_eq!(header.version, 0);
+                    assert_eq!(header.kind, kind);
+                    Ok(())
+                })
+                .unwrap();
+        }
     }
 }
 

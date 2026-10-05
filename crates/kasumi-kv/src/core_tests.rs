@@ -131,10 +131,9 @@ fn synchronous_compaction_returns_provider_pressure_without_spinning_or_fencing(
     // worker so the failing test never leaves an uncontrolled background loop.
     admission.deny_cache_growth.store(false, Ordering::Release);
     worker.join().unwrap();
-    assert!(matches!(
-        result.expect("compaction spun on provider refusal"),
-        Err(CoreError::CapacityDenied)
-    ));
+    assert!(
+        matches!(&(result.expect("compaction spun on provider refusal")), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::CapacityDenied)))
+    );
     assert!(admission.cache_denials.load(Ordering::Acquire) >= 2);
     assert_ne!(
         c.committed_position().unwrap(),
@@ -160,26 +159,20 @@ fn strict_create_rejects_existing_group_and_open_requires_exact_incarnation() {
     let c = core(group.clone(), Admission::new());
     seed(&c);
     let crash = group.crash();
-    assert!(matches!(
-        Core::create_with_backend(
+    assert!(matches!(&(Core::create_with_backend(
             crash.clone(),
             Admission::new(),
             GROUP,
             CacheConfig::default()
-        ),
-        Err(CoreError::InvalidInput(_))
-    ));
+        )), Err(native_error) if matches!(native_error.original_error().and_then(CoreError::rejected_cause), Some(crate::CoreErrorCause::InvalidInput(_)))));
     assert_eq!(crash.close_attempts(), 1);
     let crash = group.crash();
-    assert!(matches!(
-        Core::open_with_backend(
+    assert!(matches!(&(Core::open_with_backend(
             crash.clone(),
             Admission::new(),
             [3; 16],
             CacheConfig::default()
-        ),
-        Err(CoreError::Corrupt(_))
-    ));
+        )), Err(native_error) if matches!(native_error.original_error().and_then(CoreError::rejected_cause), Some(crate::CoreErrorCause::Corrupt(_)))));
     assert_eq!(crash.close_attempts(), 1);
     let reopened = Core::open_with_backend(
         group.crash(),
@@ -268,10 +261,9 @@ fn lower_bound_iteration_is_not_a_prefix_scan() {
             .unwrap()
             .is_none()
     );
-    assert!(matches!(
-        pin.next_key_admitted("missing", b"", None),
-        Err(CoreError::MissingTable)
-    ));
+    assert!(
+        matches!(&(pin.next_key_admitted("missing", b"", None)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::MissingTable)))
+    );
 }
 
 #[test]
@@ -281,10 +273,9 @@ fn snapshot_belongs_to_exact_owner_even_with_same_group_id() {
     seed(&a);
     seed(&b);
     let pin = a.snapshot().unwrap();
-    assert!(matches!(
-        b.get_admitted(&pin, "rows", b"a", 3),
-        Err(CoreError::InvalidInput(_))
-    ));
+    assert!(
+        matches!(&(b.get_admitted(&pin, "rows", b"a", 3)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput(_))))
+    );
     assert!(!b.is_fenced());
 }
 
@@ -294,19 +285,19 @@ fn cache_hit_still_obeys_owner_and_read_bound() {
     let c = core(InMemoryGroup::new(), admission.clone());
     seed(&c);
     let pin = c.snapshot().unwrap();
-    assert!(matches!(
-        c.get_admitted(&pin, "rows", b"a", 2),
-        Err(CoreError::InvalidInput(_))
-    ));
+    assert!(
+        matches!(&(c.get_admitted(&pin, "rows", b"a", 2)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput(_))))
+    );
     assert!(!c.is_fenced());
     c.get_admitted(&pin, "rows", b"a", 3).unwrap();
     admission.failed.store(true, Ordering::Release);
-    assert!(matches!(
-        c.get_admitted(&pin, "rows", b"a", 3),
-        Err(CoreError::OwnerFailed)
-    ));
+    assert!(
+        matches!(&(c.get_admitted(&pin, "rows", b"a", 3)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+    );
     admission.failed.store(false, Ordering::Release);
-    assert!(matches!(c.generation(), Err(CoreError::OwnerFailed)));
+    assert!(
+        matches!(&(c.generation()), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+    );
     assert_eq!(admission.notifications.load(Ordering::Acquire), 1);
 }
 
@@ -316,11 +307,15 @@ fn poisoned_state_fences_once_and_still_drains_exact_backend() {
     let group = InMemoryGroup::new();
     let c = core(group.clone(), admission.clone());
     let _ = catch_unwind(AssertUnwindSafe(|| {
-        let _guard = c.shared.state.lock().unwrap();
+        let _guard = c.shared.state.as_ref().unwrap().lock().unwrap();
         panic!("state holder");
     }));
-    assert!(matches!(c.generation(), Err(CoreError::OwnerFailed)));
-    assert!(matches!(c.snapshot(), Err(CoreError::OwnerFailed)));
+    assert!(
+        matches!(&(c.generation()), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+    );
+    assert!(
+        matches!(&(c.snapshot()), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+    );
     assert_eq!(admission.notifications.load(Ordering::Acquire), 1);
     assert_eq!(
         c.close().native_disposition(),
@@ -337,7 +332,9 @@ fn close_waits_for_snapshot_clones_and_retries_only_not_entered() {
     let clone = pin.clone();
     assert_eq!(c.close().entry(), BackendCloseEntry::NotEntered);
     assert_eq!(group.close_attempts(), 0);
-    assert!(matches!(c.snapshot(), Err(CoreError::Closed)));
+    assert!(
+        matches!(&(c.snapshot()), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::Closed)))
+    );
     drop(pin);
     drop(clone);
     group.close_not_entered_once();
@@ -360,17 +357,18 @@ fn constructor_retains_uncertain_close_and_does_not_repeat_it() {
     group.fail_close(io::ErrorKind::Other);
     let admission = Admission::new();
     admission.limit.store(0, Ordering::Release);
-    let Err(CoreError::OpeningFailure(mut failure)) =
+    let Err(mut original) =
         Core::create_with_backend(group.clone(), admission, GROUP, CacheConfig::default())
     else {
         panic!("expected retained opening failure")
     };
+    let failure = &mut original;
     assert!(matches!(
-        failure.original_error(),
-        CoreError::CapacityDenied
+        (failure.original_error().expect("original opening error")).rejected_cause(),
+        Some(crate::CoreErrorCause::CapacityDenied)
     ));
     assert_eq!(
-        failure.close_report().native_disposition(),
+        failure.close_report().unwrap().native_disposition(),
         BackendNativeDisposition::Retained
     );
     failure.retry_close();
@@ -383,20 +381,31 @@ fn constructor_retries_the_same_owner_after_proven_no_close_entry() {
     group.close_not_entered_once();
     let admission = Admission::new();
     admission.limit.store(0, Ordering::Release);
-    let Err(CoreError::OpeningFailure(mut failure)) =
+    let Err(mut original) =
         Core::create_with_backend(group.clone(), admission, GROUP, CacheConfig::default())
     else {
         panic!("expected retained opening failure")
     };
+    let failure = &mut original;
     assert_eq!(
-        failure.close_report().entry(),
+        failure.close_report().unwrap().entry(),
         BackendCloseEntry::NotEntered
     );
     assert_eq!(
-        failure.retry_close().native_disposition(),
+        failure.retry_close().unwrap().native_disposition(),
         BackendNativeDisposition::Drained
     );
     assert_eq!(group.close_attempts(), 2);
+    assert_eq!(
+        failure.close_report().unwrap().entry(),
+        BackendCloseEntry::NotEntered,
+        "first original outcome survives a distinct successful retry"
+    );
+    assert!(failure.dispose().complete());
+    let original = original
+        .into_disposed_error()
+        .expect("positive disposal permits only original cause extraction");
+    assert!(original.is_capacity_denied());
 }
 
 #[test]
@@ -404,7 +413,9 @@ fn snapshot_limit_denial_does_not_leak_close_count_or_fence() {
     let group = InMemoryGroup::new();
     let c = core(group.clone(), Admission::new());
     let pins: Vec<_> = (0..256).map(|_| c.snapshot().unwrap()).collect();
-    assert!(matches!(c.snapshot(), Err(CoreError::CapacityDenied)));
+    assert!(
+        matches!(&(c.snapshot()), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::CapacityDenied)))
+    );
     assert!(!c.is_fenced());
     drop(pins);
     c.close().into_result().unwrap();
@@ -560,7 +571,21 @@ fn public_output_fits_one_buffer_and_retains_its_charge_after_native_close() {
         drop(pin);
         c.close().into_result().unwrap();
         assert_eq!(group.close_attempts(), 1);
-        drop(c);
+        assert!(
+            admission.live() > output_charge,
+            "close still owns its native control and grants"
+        );
+        let mut disposal = c.into_disposal();
+        assert!(
+            disposal.dispose().complete(),
+            "actual native owner disposal incomplete"
+        );
+        drop(disposal);
+        assert_eq!(
+            group.close_attempts(),
+            1,
+            "disposal must not replay backend close"
+        );
         assert_eq!(
             admission.live(),
             output_charge,
@@ -578,11 +603,13 @@ fn closed_snapshot_result_does_not_reenter_a_poisoned_state() {
     let admission = Admission::new();
     let c = core(group.clone(), admission.clone());
     let _ = catch_unwind(AssertUnwindSafe(|| {
-        let _guard = c.shared.state.lock().unwrap();
+        let _guard = c.shared.state.as_ref().unwrap().lock().unwrap();
         panic!("interrupted state holder");
     }));
     c.close().into_result().unwrap();
-    assert!(matches!(c.snapshot(), Err(CoreError::Closed)));
+    assert!(
+        matches!(&(c.snapshot()), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::Closed)))
+    );
     assert_eq!(admission.notifications.load(Ordering::Acquire), 1);
     assert_eq!(group.close_attempts(), 1);
 }

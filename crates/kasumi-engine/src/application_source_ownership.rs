@@ -8,7 +8,9 @@ use std::{
 
 #[path = "application_source_capacity.rs"]
 mod capacity;
-pub(super) use capacity::{LaneFunding, LaneFundingRef};
+#[cfg(test)]
+pub(super) use capacity::LaneFunding;
+pub(super) use capacity::LaneFundingRef;
 
 enum CreditFunding {
     Ordinary(Reservation),

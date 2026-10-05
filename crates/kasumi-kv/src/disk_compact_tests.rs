@@ -260,7 +260,7 @@ fn density_publication_effect_failures_reopen_at_an_unchanged_logical_snapshot()
                     LARGE_CACHE,
                 )
                 .unwrap_or_else(|error| {
-                    panic!("{operation:?} {timing:?} {nth}: {error}; density {result:?}")
+                    panic!("{operation:?} {timing:?} {nth}: {error:?}; density {result:?}")
                 });
                 let current = reopened.snapshot().unwrap();
                 for (index, physical) in expected {
@@ -323,7 +323,7 @@ fn density_admission_denial_keeps_the_cursor_retryable_and_releases_workspace() 
         let physical = location(&state, state.selected, &long_key(0));
         admission.deny_nth(nth);
         match state.compact_step(1) {
-            Err(CoreError::CapacityDenied) => {
+            Err(error) if error.is_capacity_denied() => {
                 denials += 1;
                 assert!(!state.is_fenced(), "reservation {nth}");
                 assert_eq!(state.selected.generation, generation, "reservation {nth}");
@@ -642,7 +642,7 @@ fn relocation_and_unknown_publication_recover_a_value_larger_than_native_workspa
     group.fail(GroupOp::RootWrite, 1, FaultTiming::BeforeEffect);
     let result = state.compact_step(1);
     assert!(
-        matches!(result, Err(CoreError::UnknownCommit(_))),
+        matches!(&(result), Err(native_error) if native_error.is_unknown_commit()),
         "{result:?}"
     );
     assert!(state.is_fenced());
@@ -714,7 +714,7 @@ fn compaction_effect_failures_reopen_without_changing_logical_values() {
                 let mut reopened =
                     DiskState::open(Arc::new(group.crash()), admission, GROUP, LARGE_CACHE)
                         .unwrap_or_else(|error| {
-                            panic!("{op:?} {timing:?} {nth}: {error}; compact {result:?}")
+                            panic!("{op:?} {timing:?} {nth}: {error:?}; compact {result:?}")
                         });
                 let root = reopened.snapshot().unwrap();
                 assert_eq!(value(&mut reopened, &root, b"a").unwrap(), b"unchanged");
@@ -753,7 +753,7 @@ fn compaction_admission_denial_is_retryable_without_skipping_a_key() {
         admission.deny_nth(nth);
         let result = state.compact_step(1);
         let copied = match result {
-            Err(CoreError::CapacityDenied) => {
+            Err(error) if error.is_capacity_denied() => {
                 denials += 1;
                 assert!(!state.is_fenced(), "reservation {nth}");
                 assert_eq!(state.selected.generation, generation, "reservation {nth}");

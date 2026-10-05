@@ -162,7 +162,7 @@ impl Candidate {
     fn image(
         &self,
         disk: &Arc<kasumi_store::ScratchDisk>,
-    ) -> anyhow::Result<kasumi_store::SnapshotImage> {
+    ) -> crate::test_fixture_failure::FixtureResult<kasumi_store::SnapshotImage> {
         kasumi_store::SnapshotImage::capture(disk, self.state.limits.max_snapshot_bytes, |writer| {
             crate::snapshot_codec::write(
                 &self.state,
@@ -173,6 +173,7 @@ impl Candidate {
                 writer,
             )
         })
+        .map_err(Into::into)
     }
 }
 fn fresh() -> TenantEngine {
@@ -225,7 +226,9 @@ fn put(id: &str) -> Operation {
         }],
     })
 }
-fn seeded(disk: &Arc<kasumi_store::ScratchDisk>) -> anyhow::Result<TenantEngine> {
+fn seeded(
+    disk: &Arc<kasumi_store::ScratchDisk>,
+) -> crate::test_fixture_failure::FixtureResult<TenantEngine> {
     let engine = fresh();
     engine.apply_command(
         disk,
@@ -259,7 +262,7 @@ impl Read for CountedReader<'_> {
 
 #[test]
 fn validation_baseline_actual_bootstrap_absence_and_public_failure_are_distinct()
--> anyhow::Result<()> {
+-> crate::test_fixture_failure::FixtureResult<()> {
     let scratch = scratch()?;
     let initial = fresh();
     let image = initial.fixture_snapshot(&scratch.disk)?;
@@ -294,7 +297,8 @@ fn validation_baseline_actual_bootstrap_absence_and_public_failure_are_distinct(
 }
 
 #[test]
-fn validation_baseline_sealed_and_poisoned_owners_refuse_before_decode() -> anyhow::Result<()> {
+fn validation_baseline_sealed_and_poisoned_owners_refuse_before_decode()
+-> crate::test_fixture_failure::FixtureResult<()> {
     let scratch = scratch()?;
     for poison in [false, true] {
         let engine = seeded(&scratch.disk)?;
@@ -311,6 +315,7 @@ fn validation_baseline_sealed_and_poisoned_owners_refuse_before_decode() -> anyh
         // This is the actual public fixture restore route; its closed owner
         // must be acquired before opening/decoding the encrypted input.
         let error = engine.restore_candidate(&image).unwrap_err();
+        let error = error.operation_error().expect("ordinary owner refusal");
         assert_eq!(
             error.code,
             if poison {
@@ -352,6 +357,8 @@ fn validation_baseline_sealed_and_poisoned_owners_refuse_before_decode() -> anyh
             } else {
                 assert_eq!(
                     error
+                        .operation_error()
+                        .expect("ordinary restore owner refusal")
                         .root_cause()
                         .downcast_ref::<Error>()
                         .expect("typed current failure")
@@ -373,6 +380,8 @@ fn validation_baseline_sealed_and_poisoned_owners_refuse_before_decode() -> anyh
             .expect_err("sealed standalone validation treated current as absent");
             assert_eq!(
                 error
+                    .operation_error()
+                    .expect("ordinary validation owner refusal")
                     .root_cause()
                     .downcast_ref::<Error>()
                     .expect("typed owner failure")
@@ -390,22 +399,34 @@ struct AdvancingReader<'a> {
     engine: &'a TenantEngine,
     disk: &'a Arc<kasumi_store::ScratchDisk>,
     advanced: bool,
+    failure: Option<kasumi_raft::TestPublicationFailure>,
 }
 impl Read for AdvancingReader<'_> {
     fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+        if self.failure.is_some() {
+            return Err(std::io::ErrorKind::Other.into());
+        }
         if !self.advanced {
             self.advanced = true;
-            self.engine
-                .apply_command(self.disk, 3, command(self.engine, 3, put("later")))
-                .map_err(std::io::Error::other)?
-                .map_err(std::io::Error::other)?;
+            let outcome =
+                match self
+                    .engine
+                    .apply_command(self.disk, 3, command(self.engine, 3, put("later")))
+                {
+                    Ok(outcome) => outcome,
+                    Err(original) => {
+                        self.failure = Some(original);
+                        return Err(std::io::ErrorKind::Other.into());
+                    }
+                };
+            outcome.map_err(std::io::Error::other)?;
         }
         self.inner.read(bytes)
     }
 }
 #[test]
-fn validation_baseline_standalone_decode_uses_one_prior_during_real_advance() -> anyhow::Result<()>
-{
+fn validation_baseline_standalone_decode_uses_one_prior_during_real_advance()
+-> crate::test_fixture_failure::FixtureResult<()> {
     let scratch = scratch()?;
     let engine = seeded(&scratch.disk)?;
     let original = engine.generation()?;
@@ -418,12 +439,14 @@ fn validation_baseline_standalone_decode_uses_one_prior_during_real_advance() ->
         engine: &engine,
         disk: &scratch.disk,
         advanced: false,
+        failure: None,
     };
     let (validated, calls) = public_probe(true, || {
         engine.prepare_snapshot_reader(&captured.baseline(), &scratch.disk, &mut reader, None)
     });
     let validated = validated?;
     assert!(reader.advanced);
+    assert!(reader.failure.is_none());
     assert_eq!(calls, 0);
     assert_eq!(validated.state.revision, original.state.revision);
     assert_eq!(validated.receipts.head(), original.receipts.head());
@@ -441,6 +464,9 @@ fn validation_baseline_standalone_decode_uses_one_prior_during_real_advance() ->
     // Standalone validation does not publish. A later actual restore acquires
     // the then-current prior and rejects that same now-outdated receipt prefix.
     let error = engine.restore_candidate(&image).unwrap_err();
+    let error = error
+        .operation_error()
+        .expect("ordinary continuity refusal");
     assert_eq!(error.code, ErrorCode::Corruption);
     assert_eq!(
         error.message,
@@ -483,7 +509,9 @@ fn recovery_candidate() -> anyhow::Result<Candidate> {
     recovery::apply(&mut state, &command)?;
     Candidate::empty(state)
 }
-fn target_candidate(disk: &Arc<kasumi_store::ScratchDisk>) -> anyhow::Result<Candidate> {
+fn target_candidate(
+    disk: &Arc<kasumi_store::ScratchDisk>,
+) -> crate::test_fixture_failure::FixtureResult<Candidate> {
     let (mut state, rows) = crate::target_resolution::tests::linked_sealed_successor_rows();
     // The existing machine fixture establishes actual linked target outcomes.
     // Supply its real restoration lineage for complete tenant validation too.
@@ -509,7 +537,9 @@ fn target_candidate(disk: &Arc<kasumi_store::ScratchDisk>) -> anyhow::Result<Can
     candidate.targets = targets;
     Ok(candidate)
 }
-fn terminal_candidate(disk: &Arc<kasumi_store::ScratchDisk>) -> anyhow::Result<Candidate> {
+fn terminal_candidate(
+    disk: &Arc<kasumi_store::ScratchDisk>,
+) -> crate::test_fixture_failure::FixtureResult<Candidate> {
     use crate::staged_terminal::{AppliedIdentity, AppliedOrigin, Builder, Row};
     let mut state = fresh().generation()?.state.clone();
     state.revision = 1;
@@ -570,7 +600,9 @@ fn terminal_candidate(disk: &Arc<kasumi_store::ScratchDisk>) -> anyhow::Result<C
     candidate.terminals = terminals;
     Ok(candidate)
 }
-fn binding_candidate(disk: &Arc<kasumi_store::ScratchDisk>) -> anyhow::Result<Candidate> {
+fn binding_candidate(
+    disk: &Arc<kasumi_store::ScratchDisk>,
+) -> crate::test_fixture_failure::FixtureResult<Candidate> {
     let mut state = control_state();
     let mut row = crate::backup_binding::tests::row(
         &state,
@@ -596,7 +628,7 @@ fn assert_continuity(
     incoming: Candidate,
     code: ErrorCode,
     expected: &str,
-) -> anyhow::Result<()> {
+) -> crate::test_fixture_failure::FixtureResult<()> {
     // Neither rejection may be explained by malformed incoming state or a
     // malformed old fixture. Both pass the actual full validator independently.
     drop(
@@ -635,6 +667,9 @@ fn assert_continuity(
     let image = incoming.image(disk)?;
     let (rejected, calls) = public_probe(true, || engine.restore_candidate(&image));
     let error = rejected.expect_err("actual restore accepted a removed immutable prior fact");
+    let error = error
+        .operation_error()
+        .expect("ordinary continuity refusal");
     assert_eq!((error.code, error.message.as_str()), (code, expected));
     assert_eq!(calls, 0);
     assert!(Arc::ptr_eq(&original, &engine.generation()?));
@@ -642,7 +677,8 @@ fn assert_continuity(
 }
 
 #[test]
-fn validation_baseline_recovery_binding_continuity_refuses_valid_rollback() -> anyhow::Result<()> {
+fn validation_baseline_recovery_binding_continuity_refuses_valid_rollback()
+-> crate::test_fixture_failure::FixtureResult<()> {
     let scratch = scratch()?;
     let disk = &scratch.disk;
     // Actual recovery Start reducer constructs permanent operation/target IDs.
@@ -660,7 +696,8 @@ fn validation_baseline_recovery_binding_continuity_refuses_valid_rollback() -> a
 }
 
 #[test]
-fn validation_baseline_target_history_continuity_refuses_valid_rollback() -> anyhow::Result<()> {
+fn validation_baseline_target_history_continuity_refuses_valid_rollback()
+-> crate::test_fixture_failure::FixtureResult<()> {
     let scratch = scratch()?;
     let disk = &scratch.disk;
     // Immutable target origin; completion rows are removed with their head so
@@ -683,8 +720,8 @@ fn validation_baseline_target_history_continuity_refuses_valid_rollback() -> any
 }
 
 #[test]
-fn validation_baseline_control_installation_continuity_refuses_valid_rollback() -> anyhow::Result<()>
-{
+fn validation_baseline_control_installation_continuity_refuses_valid_rollback()
+-> crate::test_fixture_failure::FixtureResult<()> {
     let scratch = scratch()?;
     let disk = &scratch.disk;
     // Installed immutable Control identity.
@@ -702,7 +739,8 @@ fn validation_baseline_control_installation_continuity_refuses_valid_rollback() 
 }
 
 #[test]
-fn validation_baseline_lifecycle_intent_continuity_refuses_valid_rollback() -> anyhow::Result<()> {
+fn validation_baseline_lifecycle_intent_continuity_refuses_valid_rollback()
+-> crate::test_fixture_failure::FixtureResult<()> {
     let scratch = scratch()?;
     let disk = &scratch.disk;
     // An actual fully validated original lifecycle intent, under that install.
@@ -744,7 +782,8 @@ fn validation_baseline_lifecycle_intent_continuity_refuses_valid_rollback() -> a
 }
 
 #[test]
-fn validation_baseline_staged_terminal_continuity_refuses_valid_rollback() -> anyhow::Result<()> {
+fn validation_baseline_staged_terminal_continuity_refuses_valid_rollback()
+-> crate::test_fixture_failure::FixtureResult<()> {
     let scratch = scratch()?;
     let disk = &scratch.disk;
     // Canonical encrypted permanent staged row and its authenticated head.
@@ -765,7 +804,8 @@ fn validation_baseline_staged_terminal_continuity_refuses_valid_rollback() -> an
 }
 
 #[test]
-fn validation_baseline_target_terminal_continuity_refuses_valid_rollback() -> anyhow::Result<()> {
+fn validation_baseline_target_terminal_continuity_refuses_valid_rollback()
+-> crate::test_fixture_failure::FixtureResult<()> {
     let scratch = scratch()?;
     let disk = &scratch.disk;
     // Real completion-machine sealed rows in an encrypted causal table.
@@ -790,7 +830,8 @@ fn validation_baseline_target_terminal_continuity_refuses_valid_rollback() -> an
 }
 
 #[test]
-fn validation_baseline_backup_binding_continuity_refuses_valid_rollback() -> anyhow::Result<()> {
+fn validation_baseline_backup_binding_continuity_refuses_valid_rollback()
+-> crate::test_fixture_failure::FixtureResult<()> {
     let scratch = scratch()?;
     let disk = &scratch.disk;
     // Canonical encrypted permanent backup-binding row.
@@ -809,7 +850,8 @@ fn validation_baseline_backup_binding_continuity_refuses_valid_rollback() -> any
 }
 
 #[test]
-fn validation_baseline_mutation_receipt_continuity_refuses_valid_rollback() -> anyhow::Result<()> {
+fn validation_baseline_mutation_receipt_continuity_refuses_valid_rollback()
+-> crate::test_fixture_failure::FixtureResult<()> {
     let scratch = scratch()?;
     let disk = &scratch.disk;
     // Real ordinary mutation producer's selected encrypted receipt.
@@ -830,7 +872,8 @@ fn validation_baseline_mutation_receipt_continuity_refuses_valid_rollback() -> a
 }
 
 #[test]
-fn validation_baseline_foreign_same_identity_owner_refuses_before_read() -> anyhow::Result<()> {
+fn validation_baseline_foreign_same_identity_owner_refuses_before_read()
+-> crate::test_fixture_failure::FixtureResult<()> {
     let scratch = scratch()?;
     let first = fresh();
     let second = fresh();
@@ -849,6 +892,9 @@ fn validation_baseline_foreign_same_identity_owner_refuses_before_read() -> anyh
         Ok(_) => panic!("same-identity foreign baseline accepted"),
         Err(error) => error,
     };
+    let error = error
+        .operation_error()
+        .expect("ordinary foreign baseline refusal");
     assert_eq!(
         (error.code, error.message.as_str()),
         (
@@ -862,6 +908,8 @@ fn validation_baseline_foreign_same_identity_owner_refuses_before_read() -> anyh
         Err(error) => error,
     };
     let error = error
+        .operation_error()
+        .expect("ordinary bundle owner refusal")
         .downcast_ref::<Error>()
         .expect("bundle refusal preserves the typed foreign owner error");
     assert_eq!(
@@ -879,13 +927,13 @@ struct SourceFixture {
     engine: Arc<TenantEngine>,
     roots: crate::application_sources::SourceRootsRef,
     stores: Arc<kasumi_store::TenantStorageSet>,
-    node: Arc<kasumi_store::NodeStore>,
+    node: kasumi_store::NodeStore,
     buffers: Arc<kasumi_raft::SnapshotBufferOwner>,
     storage: crate::test_utils::FixtureStorage,
     _directory: tempfile::TempDir,
 }
 impl SourceFixture {
-    async fn new() -> anyhow::Result<Self> {
+    async fn new() -> crate::test_fixture_failure::FixtureResult<Self> {
         let directory = kasumi_store::test_utils::private_tempdir()?;
         let (mut persistent, mut scratch) =
             crate::test_utils::fixture_disk_configs(directory.path())?;
@@ -944,7 +992,7 @@ impl SourceFixture {
             _directory: directory,
         })
     }
-    async fn close(self) -> anyhow::Result<()> {
+    async fn close(self) -> crate::test_fixture_failure::FixtureResult<()> {
         self.engine.seal();
         self.buffers.drain_startup().await?;
         std::future::poll_fn(|cx| self.roots.poll_drain(cx)).await?;
@@ -957,7 +1005,7 @@ impl SourceFixture {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn validation_baseline_real_prepared_restore_holds_one_checked_apply_owner()
--> anyhow::Result<()> {
+-> crate::test_fixture_failure::FixtureResult<()> {
     use kasumi_raft::StateMachineBackend as _;
     let fixture = SourceFixture::new().await?;
     let original = fixture.engine.generation()?;
@@ -996,7 +1044,7 @@ async fn validation_baseline_real_prepared_restore_holds_one_checked_apply_owner
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn validation_baseline_failed_publish_retires_candidate_before_apply_owner()
--> anyhow::Result<()> {
+-> crate::test_fixture_failure::FixtureResult<()> {
     use kasumi_raft::StateMachineBackend as _;
     let fixture = SourceFixture::new().await?;
     let original = fixture.engine.generation()?;
@@ -1048,7 +1096,7 @@ async fn validation_baseline_failed_publish_retires_candidate_before_apply_owner
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn validation_baseline_real_ordered_retirement_uses_apply_prior_without_public_escape()
--> anyhow::Result<()> {
+-> crate::test_fixture_failure::FixtureResult<()> {
     use kasumi_raft::{AppliedEntryContext, AppliedInput, StateMachineBackend as _};
     let fixture = SourceFixture::new().await?;
     let before = fixture.engine.generation()?;

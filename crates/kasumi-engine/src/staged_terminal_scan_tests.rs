@@ -15,7 +15,8 @@ async fn three_rows() -> Result<(tempfile::TempDir, Arc<TenantStore>, TenantStat
         disk,
         scratch,
         kasumi_store::test_utils::node_storage_config(),
-    )?;
+    )
+    .unwrap_or_else(|original| std::panic::panic_any(original));
     let store = TenantStore::initialize_catalog_fixture(
         node,
         "tenant".into(),
@@ -126,6 +127,18 @@ async fn installed_scan_rejects_each_canonical_tamper_without_repair_and_keeps_p
     let original_head = store
         .get_bounded(&namespace, &ordinal_key(3), MAX_ROW_BYTES)?
         .unwrap();
+    enum TamperBytes {
+        Generated(Vec<u8>),
+        Copied(kasumi_store::test_utils::FixturePlaintextCopy),
+    }
+    impl TamperBytes {
+        fn as_bytes(&self) -> &[u8] {
+            match self {
+                Self::Generated(bytes) => bytes,
+                Self::Copied(bytes) => bytes.as_bytes(),
+            }
+        }
+    }
     for fault in 0..6 {
         let mut row = second.clone();
         let mut index: Ordinal = serde_json::from_slice(&original_index)?;
@@ -142,8 +155,8 @@ async fn installed_scan_rejects_each_canonical_tamper_without_repair_and_keeps_p
                 )])?;
                 (
                     id_key(&row.key),
-                    serde_json::to_vec(&row)?,
-                    original_point.clone(),
+                    TamperBytes::Generated(serde_json::to_vec(&row)?),
+                    original_point.as_slice(),
                     "terminal parent root differs",
                 )
             }
@@ -151,8 +164,8 @@ async fn installed_scan_rejects_each_canonical_tamper_without_repair_and_keeps_p
                 row.ordinal = 3;
                 (
                     id_key(&row.key),
-                    serde_json::to_vec(&row)?,
-                    original_point.clone(),
+                    TamperBytes::Generated(serde_json::to_vec(&row)?),
+                    original_point.as_slice(),
                     "terminal ordinal redirected",
                 )
             }
@@ -160,8 +173,8 @@ async fn installed_scan_rejects_each_canonical_tamper_without_repair_and_keeps_p
                 row.key = third.key.clone();
                 (
                     id_key(&second.key),
-                    serde_json::to_vec(&row)?,
-                    original_point.clone(),
+                    TamperBytes::Generated(serde_json::to_vec(&row)?),
+                    original_point.as_slice(),
                     "terminal point identity differs",
                 )
             }
@@ -169,8 +182,8 @@ async fn installed_scan_rejects_each_canonical_tamper_without_repair_and_keeps_p
                 index.sha256 = "ab".repeat(32);
                 (
                     ordinal_key(2),
-                    serde_json::to_vec(&index)?,
-                    original_index.clone(),
+                    TamperBytes::Generated(serde_json::to_vec(&index)?),
+                    original_index.as_bytes(),
                     "terminal row differs from ordinal commitment",
                 )
             }
@@ -178,43 +191,56 @@ async fn installed_scan_rejects_each_canonical_tamper_without_repair_and_keeps_p
                 head.sha256 = "bc".repeat(32);
                 (
                     ordinal_key(3),
-                    serde_json::to_vec(&head)?,
-                    original_head.clone(),
+                    TamperBytes::Generated(serde_json::to_vec(&head)?),
+                    original_head.as_bytes(),
                     "terminal selected root differs",
                 )
             }
             5 => {
-                let mut bytes = original_index.clone();
-                bytes.push(b' ');
+                let bytes = kasumi_store::test_utils::FixturePlaintextCopy::with_suffix(
+                    &store,
+                    original_index.as_bytes(),
+                    b" ",
+                )?;
                 (
                     ordinal_key(2),
-                    bytes,
-                    original_index.clone(),
+                    TamperBytes::Copied(bytes),
+                    original_index.as_bytes(),
                     "noncanonical staged terminal ordinal",
                 )
             }
             _ => unreachable!(),
         };
-        store.write_batch(&[WriteOp::put(&namespace, key.as_slice(), bytes.as_slice())])?;
+        kasumi_store::test_utils::write_plaintext_copy_for_fixture(
+            &store,
+            &namespace,
+            key.as_slice(),
+            bytes.as_bytes(),
+        )?;
         let error = view.records().collect::<Result<Vec<_>>>().unwrap_err();
         assert!(
             format!("{error:#}").contains(expected),
             "fault {fault}: {error:#}"
         );
         assert_eq!(
-            store.get_bounded(&namespace, &key, MAX_ROW_BYTES)?,
-            Some(bytes),
+            store
+                .get_bounded(&namespace, &key, MAX_ROW_BYTES)?
+                .as_deref(),
+            Some(bytes.as_bytes()),
             "failed scan repaired data"
         );
-        let mut restore = vec![WriteOp::put(&namespace, key.as_slice(), original)];
-        if fault == 0 {
-            restore.push(WriteOp::put(
+        let ordinal = ordinal_key(2);
+        let restore = [
+            kasumi_store::test_utils::FixtureWrite::Put(&namespace, key.as_slice(), original),
+            kasumi_store::test_utils::FixtureWrite::Put(
                 &namespace,
-                ordinal_key(2),
-                original_index.as_slice(),
-            ));
-        }
-        store.write_batch(&restore)?;
+                &ordinal,
+                original_index.as_bytes(),
+            ),
+        ];
+        let count = if fault == 0 { 2 } else { 1 };
+        kasumi_store::test_utils::FixtureWriteBatch::prepare(&store, &restore[..count])?
+            .write(&store)?;
         assert_eq!(view.records().collect::<Result<Vec<_>>>()?.len(), 3);
     }
     store.shutdown().await?;

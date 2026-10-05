@@ -25,6 +25,7 @@ mod snapshot_api;
 mod snapshot_bundle;
 #[path = "snapshot_validation.rs"]
 pub(crate) mod snapshot_validation;
+use crate::SnapshotFailure;
 use crate::accounting::{SnapshotAccounting, encoded_len};
 use arc_swap::ArcSwapOption;
 use kasumi_query::{QueryIndexes, check_unique, validate_collection};
@@ -251,9 +252,10 @@ impl ApplyScope {
         &self,
         pending: crate::staged_terminal::Pending,
         _previous_state: &TenantState,
-    ) -> anyhow::Result<crate::staged_terminal::View> {
+    ) -> std::result::Result<crate::staged_terminal::View, kasumi_store::ScratchOperationFailure>
+    {
         match self {
-            Self::Committed => pending.stage(),
+            Self::Committed => pending.stage().map_err(Into::into),
             #[cfg(any(test, feature = "test-utils"))]
             Self::Fixture(disk) => pending.stage_fixture(disk, _previous_state),
         }
@@ -300,10 +302,12 @@ impl kasumi_raft::StateMachineBackend for TenantEngine {
         position: &kasumi_raft::AppliedEntryContext,
         input: kasumi_raft::AppliedInput<'_>,
         publisher: &mut dyn kasumi_raft::ApplyPublisher,
-    ) -> anyhow::Result<()> {
+    ) -> std::result::Result<(), kasumi_store::ScratchOperationFailure> {
         let bytes = match input {
             kasumi_raft::AppliedInput::Metadata => {
-                return self.publish_metadata(position, publisher);
+                return self
+                    .publish_metadata(position, publisher)
+                    .map_err(Into::into);
             }
             kasumi_raft::AppliedInput::Command(bytes) => bytes,
         };
@@ -311,135 +315,163 @@ impl kasumi_raft::StateMachineBackend for TenantEngine {
         let position = input.position();
         let bytes = input.bytes();
         if bytes.starts_with(recovery::PREFIX) {
-            return self.apply_recovery(position, bytes, publisher);
+            return self
+                .apply_recovery(position, bytes, publisher)
+                .map_err(Into::into);
         }
         if bytes.starts_with(target::PREFIX) {
-            return self.apply_target(position, bytes, publisher);
+            return self
+                .apply_target(position, bytes, publisher)
+                .map_err(Into::into);
         }
         if bytes.starts_with(tenant_audit::PREFIX) {
-            return self.apply_audit_prune(position, bytes, publisher);
+            return self
+                .apply_audit_prune(position, bytes, publisher)
+                .map_err(Into::into);
         }
         ordered_command::apply_ordinary(self, input, publisher)
     }
-    fn capture_snapshot(&self) -> anyhow::Result<kasumi_raft::CapturedSnapshot> {
-        let generation = self.generation()?;
-        let retirement = custody_snapshot::retired(&generation.state)?;
-        let store = self
-            .snapshot_store
-            .get()
-            .cloned()
-            .ok_or_else(|| anyhow::anyhow!("snapshot storage not installed"))?;
-        let checkpoint_generation = generation.clone();
-        Ok(
-            kasumi_raft::CapturedSnapshot::new(retirement, move |writer| {
-                snapshot_bundle::write(&generation, &store, writer)
-            })
-            .with_checkpoint_writes(move |context| {
-                let mut writes = checkpoint_generation.receipts.checkpoint_writes(
-                    &checkpoint_generation.state,
-                    &context.checkpoint_sha256()?,
-                )?;
-                writes.extend(checkpoint_generation.backup_bindings.checkpoint_writes(
-                    &checkpoint_generation.state,
-                    &context.checkpoint_sha256()?,
-                )?);
-                writes.extend(checkpoint_generation.terminals.checkpoint_writes(
-                    &checkpoint_generation.state,
-                    &context.checkpoint_sha256()?,
-                )?);
-                writes.extend(checkpoint_generation.target_resolutions.checkpoint_writes(
-                    &checkpoint_generation.state,
-                    &context.checkpoint_sha256()?,
-                )?);
-                Ok(writes)
-            }),
-        )
+    fn capture_snapshot(
+        &self,
+    ) -> std::result::Result<kasumi_raft::CapturedSnapshot, kasumi_store::ScratchOperationFailure>
+    {
+        kasumi_store::ScratchOperationFailure::ordinary(|| {
+            let generation = self.generation()?;
+            let retirement = custody_snapshot::retired(&generation.state)?;
+            let store = self
+                .snapshot_store
+                .get()
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("snapshot storage not installed"))?;
+            let checkpoint_generation = generation.clone();
+            Ok(
+                kasumi_raft::CapturedSnapshot::new(retirement, move |writer| {
+                    snapshot_bundle::write(&generation, &store, writer).map_err(Into::into)
+                })
+                .with_checkpoint_writes(move |context| {
+                    let mut writes = checkpoint_generation.receipts.checkpoint_writes(
+                        &checkpoint_generation.state,
+                        &context.checkpoint_sha256()?,
+                    )?;
+                    writes.extend(checkpoint_generation.backup_bindings.checkpoint_writes(
+                        &checkpoint_generation.state,
+                        &context.checkpoint_sha256()?,
+                    )?);
+                    writes.extend(checkpoint_generation.terminals.checkpoint_writes(
+                        &checkpoint_generation.state,
+                        &context.checkpoint_sha256()?,
+                    )?);
+                    writes.extend(checkpoint_generation.target_resolutions.checkpoint_writes(
+                        &checkpoint_generation.state,
+                        &context.checkpoint_sha256()?,
+                    )?);
+                    Ok(writes)
+                }),
+            )
+        })
     }
     fn validate_snapshot(
         &self,
         bytes: &mut dyn std::io::Read,
-    ) -> anyhow::Result<Option<kasumi_raft::RetiredSnapshotState>> {
-        let prior = CapturedValidation::capture(self)?;
+    ) -> std::result::Result<
+        Option<kasumi_raft::RetiredSnapshotState>,
+        kasumi_store::ScratchOperationFailure,
+    > {
+        let prior = kasumi_store::ScratchOperationFailure::ordinary(|| {
+            CapturedValidation::capture(self).map_err(Into::into)
+        })?;
         let generation = snapshot_bundle::read(self, &prior.baseline(), bytes, None)?;
-        custody_snapshot::retired(&generation.state).map_err(Into::into)
+        kasumi_store::ScratchOperationFailure::ordinary(|| {
+            custody_snapshot::retired(&generation.state).map_err(Into::into)
+        })
     }
     fn prepare_restore<'a>(
         &'a self,
         context: &kasumi_raft::SnapshotRestoreContext,
         bytes: &mut dyn std::io::Read,
-    ) -> anyhow::Result<Box<dyn kasumi_raft::PreparedStateMachineRestore + 'a>> {
-        let apply = ApplyOwner::lock(self, || anyhow::anyhow!("tenant apply lock poisoned"))?;
-        let selection = self
-            .application_sources
-            .get()
-            .map(|sources| {
-                sources.prepare_restore(context, std::mem::size_of::<PreparedTenantRestore<'_>>())
-            })
-            .transpose()?;
+    ) -> std::result::Result<
+        Box<dyn kasumi_raft::PreparedStateMachineRestore + 'a>,
+        kasumi_store::ScratchOperationFailure,
+    > {
+        let (apply, selection) = kasumi_store::ScratchOperationFailure::ordinary(|| {
+            let apply = ApplyOwner::lock(self, || anyhow::anyhow!("tenant apply lock poisoned"))?;
+            let selection = self
+                .application_sources
+                .get()
+                .map(|sources| {
+                    sources
+                        .prepare_restore(context, std::mem::size_of::<PreparedTenantRestore<'_>>())
+                })
+                .transpose()?;
+            Ok((apply, selection))
+        })?;
         let mut generation =
             snapshot_bundle::read(self, &ValidationBaseline::from_apply(&apply), bytes, None)?;
-        let expected_revision = self
-            .revision_base
-            .checked_add(context.meta.last_log_id.map_or(0, |id| id.index))
-            .ok_or_else(|| anyhow::anyhow!("snapshot applied revision overflow"))?;
-        anyhow::ensure!(
-            generation.state.revision == expected_revision,
-            "snapshot logical and Raft applied positions differ"
-        );
-        let store = self
-            .snapshot_store
-            .get()
-            .ok_or_else(|| anyhow::anyhow!("snapshot storage not installed"))?;
-        let receipt_installation = generation.receipts.prepare_install(
-            store,
-            &generation.state,
-            &context.checkpoint_sha256()?,
-            context.mode == kasumi_raft::SnapshotRestoreMode::Reopen,
-        )?;
-        generation.receipts = receipt_installation.view.clone();
-        let binding_installation = generation.backup_bindings.prepare_install(
-            store,
-            &generation.state,
-            &context.checkpoint_sha256()?,
-            context.mode == kasumi_raft::SnapshotRestoreMode::Reopen,
-        )?;
-        generation.backup_bindings = binding_installation.view.clone();
-        let installation = generation.terminals.prepare_install(
-            store,
-            &generation.state,
-            &context.checkpoint_sha256()?,
-            context.mode == kasumi_raft::SnapshotRestoreMode::Reopen,
-        )?;
-        generation.terminals = installation.view.clone();
-        let target_installation = generation.target_resolutions.prepare_install(
-            store,
-            &generation.state,
-            &context.checkpoint_sha256()?,
-            context.mode == kasumi_raft::SnapshotRestoreMode::Reopen,
-        )?;
-        generation.target_resolutions = target_installation.view.clone();
-        let mut writes = receipt_installation.writes().to_vec();
-        writes.extend_from_slice(binding_installation.writes());
-        writes.extend_from_slice(installation.writes());
-        writes.extend_from_slice(target_installation.writes());
-        let retirement = custody_snapshot::retired(&generation.state)?;
-        #[cfg(test)]
-        let retirement_probe =
-            validation_baseline_tests::restore_retirement_probe(self, &generation);
-        Ok(Box::new(PreparedTenantRestore {
-            engine: self,
-            generation,
-            selection,
-            receipt_installation,
-            binding_installation,
-            installation,
-            target_installation,
-            writes,
-            retirement,
+        kasumi_store::ScratchOperationFailure::ordinary(|| {
+            let expected_revision = self
+                .revision_base
+                .checked_add(context.meta.last_log_id.map_or(0, |id| id.index))
+                .ok_or_else(|| anyhow::anyhow!("snapshot applied revision overflow"))?;
+            anyhow::ensure!(
+                generation.state.revision == expected_revision,
+                "snapshot logical and Raft applied positions differ"
+            );
+            let store = self
+                .snapshot_store
+                .get()
+                .ok_or_else(|| anyhow::anyhow!("snapshot storage not installed"))?;
+            let receipt_installation = generation.receipts.prepare_install(
+                store,
+                &generation.state,
+                &context.checkpoint_sha256()?,
+                context.mode == kasumi_raft::SnapshotRestoreMode::Reopen,
+            )?;
+            generation.receipts = receipt_installation.view.clone();
+            let binding_installation = generation.backup_bindings.prepare_install(
+                store,
+                &generation.state,
+                &context.checkpoint_sha256()?,
+                context.mode == kasumi_raft::SnapshotRestoreMode::Reopen,
+            )?;
+            generation.backup_bindings = binding_installation.view.clone();
+            let installation = generation.terminals.prepare_install(
+                store,
+                &generation.state,
+                &context.checkpoint_sha256()?,
+                context.mode == kasumi_raft::SnapshotRestoreMode::Reopen,
+            )?;
+            generation.terminals = installation.view.clone();
+            let target_installation = generation.target_resolutions.prepare_install(
+                store,
+                &generation.state,
+                &context.checkpoint_sha256()?,
+                context.mode == kasumi_raft::SnapshotRestoreMode::Reopen,
+            )?;
+            generation.target_resolutions = target_installation.view.clone();
+            let mut writes = receipt_installation.writes().to_vec();
+            writes.extend_from_slice(binding_installation.writes());
+            writes.extend_from_slice(installation.writes());
+            writes.extend_from_slice(target_installation.writes());
+            let retirement = custody_snapshot::retired(&generation.state)?;
             #[cfg(test)]
-            _retirement_probe: retirement_probe,
-            _apply: apply,
-        }))
+            let retirement_probe =
+                validation_baseline_tests::restore_retirement_probe(self, &generation);
+            Ok(Box::new(PreparedTenantRestore {
+                engine: self,
+                generation,
+                selection,
+                receipt_installation,
+                binding_installation,
+                installation,
+                target_installation,
+                writes,
+                retirement,
+                #[cfg(test)]
+                _retirement_probe: retirement_probe,
+                _apply: apply,
+            })
+                as Box<dyn kasumi_raft::PreparedStateMachineRestore + 'a>)
+        })
     }
 }
 
@@ -954,9 +986,9 @@ impl TenantEngine {
     pub(crate) fn from_bootstrap(
         expected_tenant: &str,
         bytes: &kasumi_store::SnapshotImage,
-    ) -> Result<Self> {
+    ) -> std::result::Result<Self, SnapshotFailure> {
         let decoded = crate::snapshot_codec::read(bytes.disk(), &mut bytes.reader())
-            .map_err(|_| Error::new(ErrorCode::Corruption, "invalid tenant bootstrap"))?;
+            .map_err(SnapshotFailure::from)?;
         let engine = Self::from_bootstrap_state(
             expected_tenant,
             decoded.state,
@@ -1006,7 +1038,7 @@ impl TenantEngine {
         incarnation: String,
         checkpoint: FullBackupCheckpoint,
         target_origin: Option<TargetOrigin>,
-    ) -> Result<kasumi_store::SnapshotImage> {
+    ) -> std::result::Result<kasumi_store::SnapshotImage, SnapshotFailure> {
         let crate::snapshot_codec::Decoded {
             mut state,
             receipts,
@@ -1015,9 +1047,9 @@ impl TenantEngine {
             target_resolutions,
             ..
         } = crate::snapshot_codec::read(bytes.disk(), &mut bytes.reader())
-            .map_err(|_| Error::new(ErrorCode::Corruption, "invalid logical backup"))?;
+            .map_err(SnapshotFailure::from)?;
         if state.tenant != expected_tenant {
-            return Err(Error::new(ErrorCode::Forbidden, "backup tenant mismatch"));
+            return Err(Error::new(ErrorCode::Forbidden, "backup tenant mismatch").into());
         }
         Self::verify_decoded_logical_state(
             &UninitializedEngine::new(&state)?,
@@ -1043,7 +1075,7 @@ impl TenantEngine {
                 )
             },
         )
-        .map_err(|e| Error::new(ErrorCode::Corruption, e.to_string()))
+        .map_err(|e| Error::new(ErrorCode::Corruption, e.to_string()).into())
     }
 
     fn rebind_restored_state(
@@ -1130,9 +1162,9 @@ impl TenantEngine {
         checkpoint: FullBackupCheckpoint,
         target_origin: Option<TargetOrigin>,
         handoff_workspace: impl FnOnce() -> Result<()>,
-    ) -> Result<(kasumi_store::SnapshotImage, Self)> {
+    ) -> std::result::Result<(kasumi_store::SnapshotImage, Self), SnapshotFailure> {
         if source.header().tenant != expected_tenant {
-            return Err(Error::new(ErrorCode::Forbidden, "backup tenant mismatch"));
+            return Err(Error::new(ErrorCode::Forbidden, "backup tenant mismatch").into());
         }
         use crate::backup_verify::VerificationPhase;
         let phase = VerificationPhase::start("restore.release_validation_indexes", None);
@@ -1153,7 +1185,7 @@ impl TenantEngine {
             target_resolutions,
             ..
         } = crate::snapshot_codec::read(image.disk(), &mut image.reader())
-            .map_err(|error| Error::new(ErrorCode::Corruption, error.to_string()))?;
+            .map_err(SnapshotFailure::from)?;
         drop(image);
         phase.complete();
         let phase = VerificationPhase::start("restore.rebind", None);
@@ -1225,6 +1257,14 @@ impl TenantEngine {
     }
 
     fn check_current_access(&self) -> Result<()> {
+        if let Some(store) = self.snapshot_store.get() {
+            store.check_access().map_err(|_| {
+                Error::new(
+                    ErrorCode::Sealed,
+                    "tenant key authorization expired; recovery required",
+                )
+            })?;
+        }
         if let Some(access) = self.access.get() {
             access.check().map_err(|_| {
                 Error::new(
@@ -1243,10 +1283,10 @@ impl TenantEngine {
     pub(crate) fn verify_logical_snapshot(
         _bytes: &kasumi_store::SnapshotImage,
         state: &TenantState,
-    ) -> Result<()> {
+    ) -> std::result::Result<(), SnapshotFailure> {
         let uninitialized = UninitializedEngine::new(state)?;
         let decoded = crate::snapshot_codec::read(_bytes.disk(), &mut _bytes.reader())
-            .map_err(terminal_error)?;
+            .map_err(SnapshotFailure::from)?;
         Self::verify_decoded_logical_state(
             &uninitialized,
             state,
@@ -1255,6 +1295,7 @@ impl TenantEngine {
             &decoded.terminals,
             &decoded.target_resolutions,
         )
+        .map_err(Into::into)
     }
 
     #[cfg(test)]
@@ -1362,30 +1403,40 @@ impl TenantEngine {
     /// Outer errors mean the replica cannot materialize committed state and must stop serving.
     /// Inner errors are deterministic command rejections and still advance the applied revision.
     #[cfg(any(test, feature = "test-utils"))]
+    #[allow(
+        clippy::result_large_err,
+        reason = "The fixture returns whole inline admitted publication custody without an error-path Box."
+    )]
     pub fn apply_command(
         &self,
         disk: &Arc<kasumi_store::ScratchDisk>,
         revision: u64,
         command: Command,
-    ) -> anyhow::Result<Result<WriteReceipt>> {
+    ) -> std::result::Result<Result<WriteReceipt>, kasumi_raft::TestPublicationFailure> {
         if self
             .snapshot_store
             .get()
             .is_some_and(|store| !store.storage_access().purpose().is_local_fixture())
         {
-            return Err(Error::new(
-                ErrorCode::Forbidden,
-                "fixture application cannot mutate production storage",
-            )
-            .into());
+            return Err(kasumi_raft::TestPublicationFailure::Operation(
+                Error::new(
+                    ErrorCode::Forbidden,
+                    "fixture application cannot mutate production storage",
+                )
+                .into(),
+            ));
         }
         let applied = crate::staged_terminal::AppliedIdentity {
             incarnation: self.incarnation.clone(),
             revision,
             timestamp_ms: command.timestamp_ms,
-            command_sha256: hex::encode(Sha256::digest(serde_json::to_vec(&command).map_err(
-                |_| Error::new(ErrorCode::Corruption, "fixture command encoding failed"),
-            )?)),
+            command_sha256: hex::encode(Sha256::digest(
+                serde_json::to_vec(&command)
+                    .map_err(|_| {
+                        Error::new(ErrorCode::Corruption, "fixture command encoding failed")
+                    })
+                    .map_err(anyhow::Error::from)?,
+            )),
             origin: crate::staged_terminal::AppliedOrigin::Fixture,
         };
         let response = crate::test_utils::capture_application(|publisher| {
@@ -1396,7 +1447,7 @@ impl TenantEngine {
                 publisher,
             )
         })?;
-        Ok(serde_json::from_slice(&response.data)?)
+        Ok(serde_json::from_slice(&response.data).map_err(anyhow::Error::from)?)
     }
     #[cfg(any(test, feature = "test-utils"))]
     fn apply_fixture_command(
@@ -1405,31 +1456,37 @@ impl TenantEngine {
         applied: crate::staged_terminal::AppliedIdentity,
         scope: ApplyScope,
         publisher: &mut dyn kasumi_raft::ApplyPublisher,
-    ) -> anyhow::Result<()> {
-        anyhow::ensure!(
-            matches!(&scope, ApplyScope::Fixture(_))
-                && matches!(
-                    &applied.origin,
-                    crate::staged_terminal::AppliedOrigin::Fixture
-                ),
-            "fixture application requires its actual local origin"
-        );
+    ) -> std::result::Result<(), kasumi_store::ScratchOperationFailure> {
+        kasumi_store::ScratchOperationFailure::ordinary(|| {
+            anyhow::ensure!(
+                matches!(&scope, ApplyScope::Fixture(_))
+                    && matches!(
+                        &applied.origin,
+                        crate::staged_terminal::AppliedOrigin::Fixture
+                    ),
+                "fixture application requires its actual local origin"
+            );
+            Ok(())
+        })?;
         let apply = ApplyOwner::lock(self, || anyhow::anyhow!("tenant apply lock poisoned"))?;
         let prepared = self.prepare_command_ordered(&apply, &command, &applied, &scope)?;
-        let response =
-            kasumi_raft::AppliedResponse::application(serde_json::to_vec(&prepared.outcome)?);
+        let response = kasumi_raft::AppliedResponse::application(
+            serde_json::to_vec(&prepared.outcome).map_err(anyhow::Error::from)?,
+        );
         match prepared.generation {
             None => {
                 let outcome = publisher.commit(response, &[]);
                 drop(apply);
                 outcome.map_err(Into::into)
             }
-            Some(candidate) => self.publish_prepared_generation(
-                apply.accept(candidate, prepared.changed)?,
-                response,
-                None,
-                publisher,
-            ),
+            Some(candidate) => self
+                .publish_prepared_generation(
+                    apply.accept(candidate, prepared.changed)?,
+                    response,
+                    None,
+                    publisher,
+                )
+                .map_err(Into::into),
         }
     }
 
@@ -1439,13 +1496,16 @@ impl TenantEngine {
         command: &Command,
         applied: &crate::staged_terminal::AppliedIdentity,
         scope: &ApplyScope,
-    ) -> anyhow::Result<PreparedCommand> {
+    ) -> std::result::Result<PreparedCommand, kasumi_store::ScratchOperationFailure> {
         apply.require_engine(self)?;
         let previous = apply.current();
         let revision = applied.revision;
-        self.check_operation_access_from(&previous.state, &command.operation)?;
+        self.check_operation_access_from(&previous.state, &command.operation)
+            .map_err(anyhow::Error::from)?;
         if revision <= previous.state.revision {
-            return Err(Error::new(ErrorCode::Corruption, "applied revision must increase").into());
+            return Err(kasumi_store::ScratchOperationFailure::Operation(
+                Error::new(ErrorCode::Corruption, "applied revision must increase").into(),
+            ));
         }
         if previous.state.retired {
             return Ok(PreparedCommand {
@@ -1458,7 +1518,7 @@ impl TenantEngine {
             });
         }
         if let Operation::Mutate(batch) = &command.operation {
-            return self.prepare_mutation_ordered(previous, command, batch, applied, scope);
+            return self.prepare_mutation_ordered(apply, command, batch, applied, scope);
         }
         #[cfg(any(test, feature = "test-utils"))]
         if matches!(scope, ApplyScope::Fixture(_)) {
@@ -1481,7 +1541,7 @@ impl TenantEngine {
         } else if let Err(error) = authorize_resource(&next, &command.context) {
             Err(error)
         } else {
-            if let Some(key) = staged_command_key(command)?
+            if let Some(key) = staged_command_key(command).map_err(anyhow::Error::from)?
                 && !next.staged_transactions.contains_key(&key)
                 && let Some(row) = terminal_owner.get(&key)?
             {
@@ -1500,7 +1560,9 @@ impl TenantEngine {
             // Invariant failures must leave the entire publication private,
             // including staged/schema outcomes and their audit/revision metadata.
             Ok((Err(error), _)) | Err(error) if error.code == ErrorCode::Corruption => {
-                return Err(error.into());
+                return Err(kasumi_store::ScratchOperationFailure::Operation(
+                    error.into(),
+                ));
             }
             Ok(value) => value,
             Err(error) => (Err(error), false),
@@ -1546,7 +1608,8 @@ impl TenantEngine {
                     .into(),
                     collection: None,
                 },
-            )?;
+            )
+            .map_err(anyhow::Error::from)?;
         }
         if !crate::accounting::audit_fits(&next) {
             let mut rejected = previous.state.clone();
@@ -1593,7 +1656,7 @@ impl TenantEngine {
             );
         }
         let changed = if changed_documents {
-            operation_changes(&previous.state, command)?
+            operation_changes(&previous.state, command).map_err(anyhow::Error::from)?
         } else {
             BTreeMap::new()
         };
@@ -1610,24 +1673,29 @@ impl TenantEngine {
                 &terminals,
             );
         }
-        let snapshot_accounting = previous.snapshot_accounting.updated(
-            &previous.state,
-            &next,
-            &changed,
-            &staged_changes(&previous.state, command)?,
-        )?;
-        if !snapshot_accounting.fits(&next)? || !lifecycle::completion_fits(&next)? {
+        let snapshot_accounting = previous
+            .snapshot_accounting
+            .updated(
+                &previous.state,
+                &next,
+                &changed,
+                &staged_changes(&previous.state, command).map_err(anyhow::Error::from)?,
+            )
+            .map_err(anyhow::Error::from)?;
+        if !snapshot_accounting
+            .fits(&next)
+            .map_err(anyhow::Error::from)?
+            || !lifecycle::completion_fits(&next).map_err(anyhow::Error::from)?
+        {
             return self.prepare_resource_rejection(previous, next, command, None, &terminals);
         }
         let indexes = if changed_documents
             && !matches!(command.operation, Operation::PublishHistoryArchive(_))
         {
-            Arc::new(crate::index_source::update(
-                &previous.indexes,
-                &previous.state,
-                &next,
-                &changed,
-            )?)
+            Arc::new(
+                crate::index_source::update(&previous.indexes, &previous.state, &next, &changed)
+                    .map_err(anyhow::Error::from)?,
+            )
         } else {
             previous.indexes.clone()
         };
@@ -1657,7 +1725,7 @@ impl TenantEngine {
         command: &Command,
         failure: Option<Error>,
         terminals: &PreparedTerminals<'_>,
-    ) -> anyhow::Result<PreparedCommand> {
+    ) -> std::result::Result<PreparedCommand, kasumi_store::ScratchOperationFailure> {
         let revision = next.revision;
         let error = failure.unwrap_or_else(|| {
             Error::new(
@@ -1672,11 +1740,14 @@ impl TenantEngine {
             Operation::Audit(_) | Operation::MaintenanceAudit(_)
         );
         if ordinary {
-            schema::reject_budget(&previous.state, &next, &mut rejected, command, &error)?;
-            retirement::reject_budget(&previous.state, &next, &mut rejected, command, &error)?;
+            schema::reject_budget(&previous.state, &next, &mut rejected, command, &error)
+                .map_err(anyhow::Error::from)?;
+            retirement::reject_budget(&previous.state, &next, &mut rejected, command, &error)
+                .map_err(anyhow::Error::from)?;
             if let Operation::FinalizeStaged(reference) = &command.operation {
-                let key =
-                    staged_digest(&(&command.context.principal, &reference.transaction_id))?.0;
+                let key = staged_digest(&(&command.context.principal, &reference.transaction_id))
+                    .map_err(anyhow::Error::from)?
+                    .0;
                 if previous
                     .state
                     .staged_transactions
@@ -1689,31 +1760,36 @@ impl TenantEngine {
                     completed.outcome = StagedOutcome::Finished {
                         outcome: Err(error.clone()),
                     };
-                    staging::replace_record(&mut rejected, key, completed)?;
+                    staging::replace_record(&mut rejected, key, completed)
+                        .map_err(anyhow::Error::from)?;
                 }
             }
             let mut event = next
                 .audits
                 .back()
-                .ok_or_else(|| Error::new(ErrorCode::Corruption, "required audit missing"))?
+                .ok_or_else(|| Error::new(ErrorCode::Corruption, "required audit missing"))
+                .map_err(anyhow::Error::from)?
                 .clone();
             event.outcome = "rejected".into();
-            append_audit(&mut rejected, event)?;
+            append_audit(&mut rejected, event).map_err(anyhow::Error::from)?;
             let rejected_terminals = crate::staged_terminal::Pending::prepare(
                 terminals.owner,
                 &previous.state,
                 &mut rejected,
                 terminals.applied,
             )?;
-            let accounting = previous.snapshot_accounting.updated(
-                &previous.state,
-                &rejected,
-                &BTreeMap::new(),
-                &staged_changes(&previous.state, command)?,
-            )?;
+            let accounting = previous
+                .snapshot_accounting
+                .updated(
+                    &previous.state,
+                    &rejected,
+                    &BTreeMap::new(),
+                    &staged_changes(&previous.state, command).map_err(anyhow::Error::from)?,
+                )
+                .map_err(anyhow::Error::from)?;
             if rejected.audit_retention.hot_bytes <= rejected.limits.audit_retention.hot_bytes
-                && accounting.fits(&rejected)?
-                && lifecycle::completion_fits(&rejected)?
+                && accounting.fits(&rejected).map_err(anyhow::Error::from)?
+                && lifecycle::completion_fits(&rejected).map_err(anyhow::Error::from)?
             {
                 let terminals = terminals
                     .scope
@@ -1809,7 +1885,10 @@ impl TenantEngine {
     }
 
     #[cfg(any(test, feature = "test-utils"))]
-    pub(crate) fn restore_candidate(&self, bytes: &kasumi_store::SnapshotImage) -> Result<()> {
+    pub(crate) fn restore_candidate(
+        &self,
+        bytes: &kasumi_store::SnapshotImage,
+    ) -> std::result::Result<(), SnapshotFailure> {
         let apply = ApplyOwner::lock_validation(self)?;
         let generation = self.prepare_snapshot_reader(
             &ValidationBaseline::from_apply(&apply),
@@ -1837,7 +1916,7 @@ impl TenantEngine {
         disk: &Arc<kasumi_store::ScratchDisk>,
         reader: &mut dyn std::io::Read,
         expected: Option<crate::snapshot_codec::StreamSummary>,
-    ) -> Result<Generation> {
+    ) -> std::result::Result<Generation, SnapshotFailure> {
         baseline.current_for(self)?;
         let crate::snapshot_codec::Decoded {
             state,
@@ -1846,13 +1925,13 @@ impl TenantEngine {
             terminals,
             target_resolutions,
             summary,
-        } = crate::snapshot_codec::read(disk, reader)
-            .map_err(|_| Error::new(ErrorCode::Corruption, "invalid tenant snapshot"))?;
+        } = crate::snapshot_codec::read(disk, reader).map_err(SnapshotFailure::from)?;
         if expected.is_some_and(|expected| expected != summary) {
             return Err(Error::new(
                 ErrorCode::Corruption,
                 "snapshot differs from admitted typed framing",
-            ));
+            )
+            .into());
         }
         self.prepare_state(
             baseline,
@@ -1862,6 +1941,7 @@ impl TenantEngine {
             terminals,
             target_resolutions,
         )
+        .map_err(Into::into)
     }
 
     fn prepare_state(
@@ -3524,7 +3604,13 @@ mod restore_budget_tests {
             checkpoint,
             None,
         );
-        assert_eq!(outcome.unwrap_err().code, ErrorCode::QuotaExceeded);
+        let original = outcome.unwrap_err();
+        assert!(original.creation().is_none());
+        assert!(original.source_error().is_none());
+        assert_eq!(
+            original.operation_error().unwrap().code,
+            ErrorCode::QuotaExceeded
+        );
         assert_eq!(engine.logical_snapshot(bytes.disk()).unwrap(), bytes);
     }
 }

@@ -212,12 +212,9 @@ impl ReaderState {
         let table_capacity = match &self.tables {
             Observation::Returned(Err(
                 NodeReadTablesError::Catalog(error) | NodeReadTablesError::Records(error),
-            )) => matches!(
-                error,
-                BoundedReadError::Table(kasumi_kv::TableError::Storage(
-                    kasumi_kv::StorageError::Core(kasumi_kv::CoreError::CapacityDenied)
-                ))
-            ),
+            )) => matches!(&(error), BoundedReadError::Table(kasumi_kv::TableError::Storage(
+                    kasumi_kv::StorageError::Core(native_error)
+                )) if matches!(native_error.rejected_cause(), Some(kasumi_kv::CoreErrorCause::CapacityDenied))),
             _ => false,
         };
         if table_capacity && body_unentered {
@@ -226,13 +223,13 @@ impl ReaderState {
         if !self.tables.success() {
             return None;
         }
-        let routine_read = matches!(
-            self.read_failure.borrow(),
-            TerminalObservation::Returned(Err(BoundedReadError::BoundExceeded
-                | BoundedReadError::Storage(kasumi_kv::StorageError::Core(
-                    kasumi_kv::CoreError::CapacityDenied
-                ))))
-        );
+        let routine_read = match self.read_failure.borrow() {
+            TerminalObservation::Returned(Err(BoundedReadError::BoundExceeded)) => true,
+            TerminalObservation::Returned(Err(BoundedReadError::Storage(
+                kasumi_kv::StorageError::Core(original),
+            ))) => original.is_capacity_denied(),
+            _ => false,
+        };
         let routine_output = matches!(self.output_admission.borrow(),
             TerminalObservation::Returned(Err(error)) if error.kind() == io::ErrorKind::OutOfMemory);
         let read_safe = routine_read
@@ -466,6 +463,17 @@ impl ReaderRequest {
         }
     }
 }
+impl crate::storage_census::NativeStartupChild for ReaderRequest {
+    const PURPOSE: crate::storage_census::NativeStartupChildPurpose =
+        crate::storage_census::NativeStartupChildPurpose::Verification;
+    fn report_bytes() -> io::Result<u64> {
+        AdmittedReadReport::request_bytes()
+    }
+    fn abandon_delivery(&self) {
+        let previous = self.facades.fetch_sub(1, Ordering::AcqRel);
+        assert_ne!(previous, 0, "original undelivered reader facade obligation");
+    }
+}
 impl StoragePayload for ReaderRequest {
     const KIND: StorageOwnerKind = StorageOwnerKind::Reader;
     fn drive(&self) -> bool {
@@ -640,7 +648,7 @@ impl RegisteredNodeOpening {
         {
             return Err(io::ErrorKind::InvalidInput.into());
         }
-        let provider = opening.file.disk().memory().clone();
+        let provider = owner.provider.clone();
         drop(opening);
         let report = AdmittedReadReport::new(
             &provider,
@@ -685,6 +693,73 @@ impl RegisteredNodeOpening {
         })
     }
 
+    #[cfg(test)]
+    pub(super) fn retained_verification_constructor_for_test(
+        provider: Arc<dyn NodeDiskMemoryAdmission>,
+        id: StorageOwnerId,
+    ) -> Option<NativeConstructorFailure> {
+        provider
+            .storage_census()
+            .retained_native_constructor::<ReaderRequest>(provider.clone(), id)
+    }
+    /// Prepare the exact startup verification child without beginning it. The
+    /// coordinator must install the returned facade before native dispatch.
+    pub(super) fn queue_startup_verification(
+        &self,
+    ) -> Result<RegisteredNodeRead, NativeConstructorFailure> {
+        let owner = self.registration.owner();
+        let Some(opening) = owner.state.try_lock() else {
+            return Err(NativeConstructorFailure::Preclaim(
+                io::ErrorKind::WouldBlock.into(),
+            ));
+        };
+        if !matches!(opening.mode, NodeOpeningMode::Existing)
+            || opening.phase != NodeOpeningPhase::Open
+            || owner.stopped.load(Ordering::Acquire)
+        {
+            return Err(NativeConstructorFailure::Preclaim(
+                io::ErrorKind::InvalidInput.into(),
+            ));
+        }
+        let provider = owner.provider.clone();
+        drop(opening);
+        let database = self.registration.clone();
+        let registration = provider.storage_census().register_native_startup_child(
+            provider.clone(),
+            &self.registration,
+            |_| Ok(()),
+            |grant| ReaderRequest {
+                database,
+                provider: provider.clone(),
+                facades: AtomicUsize::new(1),
+                auto_retire_routine_failure: AtomicBool::new(false),
+                state: AdmittedReadReport::new_startup(
+                    grant,
+                    ReaderState {
+                        phase: NodeReadPhase::Queued,
+                        transaction: None,
+                        source: None,
+                        begin: Observation::NotEntered,
+                        tables: Observation::NotEntered,
+                        outer: Observation::NotEntered,
+                        output_admission: Observation::NotEntered,
+                        read_failure: Observation::NotEntered,
+                        body_panic: Observation::NotEntered,
+                        finish_outer: Observation::NotEntered,
+                        outcomes_released: false,
+                    },
+                ),
+            },
+        )?;
+        let lease = ReadFacadeLease {
+            registration: Some(registration.clone()),
+        };
+        Ok(RegisteredNodeRead {
+            registration,
+            lease,
+        })
+    }
+
     /// Return the exact reader even if verification fails so its report and
     /// transaction can be inspected and retired.
     pub fn verify_existing_tables(&self) -> io::Result<RegisteredNodeRead> {
@@ -700,6 +775,16 @@ impl RegisteredNodeOpening {
     }
 }
 impl RegisteredNodeRead {
+    /// Recover the exact failed startup verification constructor by its
+    /// provider and generation. The separately installed report stays funded.
+    pub fn retained_constructor(
+        provider: Arc<dyn NodeDiskMemoryAdmission>,
+        id: StorageOwnerId,
+    ) -> Option<NativeConstructorFailure> {
+        provider
+            .storage_census()
+            .retained_native_constructor::<ReaderRequest>(provider.clone(), id)
+    }
     pub(crate) fn memory_requests() -> io::Result<[u64; 2]> {
         Ok([
             AdmittedReadReport::request_bytes()?,
@@ -1409,7 +1494,21 @@ mod retirement_tests {
             );
             std::thread::yield_now();
         }
-        let later = RegisteredNodeRead::retained(memory.clone(), id).unwrap();
+        // This exact registration and state guard still own the sole reader.
+        // Nonblocking lookup may observe the dropping worker's metadata borrow.
+        assert_eq!(held.id(), id);
+        assert_eq!(memory.storage_census().snapshot().readers, 1);
+        let later = loop {
+            if let Some(later) = RegisteredNodeRead::retained(memory.clone(), id) {
+                assert_eq!(later.id(), id);
+                break later;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "reader recovery remained busy during last drop"
+            );
+            std::thread::yield_now();
+        };
         drop(state);
         drop(held);
         worker.join().unwrap();
@@ -1706,9 +1805,9 @@ mod retirement_tests {
             transaction.commit().unwrap();
         }
         let provider: Arc<dyn NodeDiskMemoryAdmission> = memory.clone();
-        let database = crate::node_database::NodeDatabase::new_registered(
-            opening,
+        let database = crate::node_database::NodeDatabase::new_registered_locator(
             provider,
+            opening.id(),
             "reader metadata contention fixture",
         );
         let reader = database.queue_registered_read().unwrap();
@@ -1732,6 +1831,12 @@ mod retirement_tests {
 
         database.close().unwrap();
         assert_eq!(memory.storage_census().snapshot().readers, 0);
+        assert_eq!(memory.storage_census().snapshot().databases, 1);
+        assert_eq!(
+            opening.report().engine().settlement(),
+            DatabaseOpenSettlement::Disposed
+        );
+        assert_eq!(opening.retire(), StorageCensusDisposition::Retired);
         assert_eq!(memory.storage_census().snapshot().databases, 0);
         assert!(RegisteredNodeRead::retained(memory.clone(), reader_id).is_none());
     }
@@ -1797,9 +1902,9 @@ mod retirement_tests {
             })
             .unwrap();
         let child_id = child.id();
-        let database = crate::node_database::NodeDatabase::new_registered(
-            opening,
+        let database = crate::node_database::NodeDatabase::new_registered_locator(
             provider.clone(),
+            opening.id(),
             "disposed child census fixture",
         );
         let worker = std::thread::spawn(move || child.retire());
@@ -1831,6 +1936,12 @@ mod retirement_tests {
 
         database.close().unwrap();
         assert_eq!(memory.storage_census().snapshot().readers, 0);
+        assert_eq!(memory.storage_census().snapshot().databases, 1);
+        assert_eq!(
+            opening.report().engine().settlement(),
+            DatabaseOpenSettlement::Disposed
+        );
+        assert_eq!(opening.retire(), StorageCensusDisposition::Retired);
         assert_eq!(memory.storage_census().snapshot().databases, 0);
     }
 }

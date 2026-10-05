@@ -288,12 +288,14 @@ retain the previous valid configuration and log failure. Signer and wrapping-key
 rotation use their explicit maintenance operations.
 
 For a fresh standalone host, install the binaries into `/usr/local/bin`, create
-the dedicated user and parent directory, and initialize as that same user:
+the dedicated user and parent directory, and initialize as that same user. Supply
+the owner-only explicit placement map documented in the
+[standalone runbook](standalone.md):
 
 ```sh
 sudo useradd --system --user-group --home-dir /var/lib/kasumi --shell /usr/sbin/nologin kasumi
 sudo install -d -o kasumi -g kasumi -m 0700 /var/lib/kasumi
-sudo -u kasumi /usr/local/bin/kasumid init --mode standalone /var/lib/kasumi/installation --directory-policy /etc/kasumi/directory-policy.json --file-allocation-policy /etc/kasumi/file-allocation-policy.json --network /etc/kasumi/standalone-network.json
+sudo -u kasumi /usr/local/bin/kasumid init --mode standalone /var/lib/kasumi/installation --directory-policy /etc/kasumi/directory-policy.json --file-allocation-policy /etc/kasumi/file-allocation-policy.json --network /etc/kasumi/standalone-network.json --tenant-audit-placements /etc/kasumi/tenant-audit-placements.json
 sudo install -m 0644 systemd/kasumid.service /etc/systemd/system/kasumid.service
 sudo systemctl daemon-reload
 sudo systemctl enable --now kasumid

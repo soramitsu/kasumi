@@ -1101,6 +1101,8 @@ fn schema_shape_immutable_mode_snapshot_validation_and_retained_quota() {
                     .unwrap()
             )
             .unwrap_err()
+            .operation_error()
+            .expect("ordinary snapshot corruption original")
             .code,
         ErrorCode::Corruption
     );
@@ -1243,11 +1245,7 @@ async fn open(
     physical: &common::PhysicalFixture,
     path: &std::path::Path,
     create: bool,
-) -> (
-    Arc<Database>,
-    Arc<SecurityAudit>,
-    Arc<kasumi_store::NodeStore>,
-) {
+) -> (Arc<Database>, Arc<SecurityAudit>, kasumi_store::NodeStore) {
     let node = (if create {
         physical
             .storage

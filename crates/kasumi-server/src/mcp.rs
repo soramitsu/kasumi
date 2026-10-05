@@ -549,14 +549,20 @@ pub fn router(
 ) -> anyhow::Result<Router> {
     config.validate()?;
     let metadata = auth.protected_resource_metadata(&config.public_url);
-    let resource = resource_url(&config.public_url)?;
-    let metadata_url = format!(
-        "{}/.well-known/oauth-protected-resource/mcp",
-        resource.origin().ascii_serialization()
-    );
+    let challenge = match &metadata {
+        Some(_) => {
+            let resource = resource_url(&config.public_url)?;
+            let metadata_url = format!(
+                "{}/.well-known/oauth-protected-resource/mcp",
+                resource.origin().ascii_serialization()
+            );
+            HeaderValue::from_str(&format!("Bearer resource_metadata=\"{metadata_url}\""))?
+        }
+        None => HeaderValue::from_static("Bearer"),
+    };
     let state = HttpAuth {
         auth,
-        challenge: HeaderValue::from_str(&format!("Bearer resource_metadata=\"{metadata_url}\""))?,
+        challenge,
         origins: config
             .allowed_origins
             .iter()
@@ -585,6 +591,9 @@ pub fn router(
     let protected = Router::new()
         .route_service("/mcp", service)
         .route_layer(middleware::from_fn_with_state(state, authenticate));
+    let Some(metadata) = metadata else {
+        return Ok(protected);
+    };
     let metadata_again = metadata.clone();
     Ok(protected
         .route(

@@ -12,9 +12,9 @@ mod cache_test;
 
 use kasumi_kv::group::{FaultTiming, GroupFile, GroupOp, InMemoryGroup, SegmentGroupBackend};
 use kasumi_kv::{
-    AdmissionError, BackendCloseOutcome, CacheConfig, CommitError, CoreError, Database,
-    DatabaseOpenMode, DatabaseOpenSettlement, OwnerFailed, ROOT_SLOT_BYTES, ResidentLease,
-    RootSlot, StorageAdmission, StorageError, TableDefinition, TableError, TerminalObservation,
+    AdmissionError, BackendCloseOutcome, CacheConfig, CommitError, Database, DatabaseOpenMode,
+    DatabaseOpenSettlement, OwnerFailed, ROOT_SLOT_BYTES, ResidentLease, RootSlot,
+    StorageAdmission, StorageError, TableDefinition, TableError, TerminalObservation,
     TransactionError, WriteTerminalError, WriteTerminalOperation, WriteTerminalSettlement,
     WriteTransaction,
 };
@@ -335,10 +335,9 @@ fn denied_second_of_three_inserts_rolls_back_the_whole_writer() {
     // Commit repeats the original denial without any backend effect.
     drop(table);
     let error = write.commit().unwrap_err();
-    assert!(matches!(
-        error,
-        CommitError(StorageError::Core(CoreError::CapacityDenied))
-    ));
+    assert!(
+        matches!(&(error), CommitError(StorageError::Core(native_error)) if matches!(native_error.rejected_cause(), Some(kasumi_kv::CoreErrorCause::CapacityDenied)))
+    );
     assert_eq!(backend.effects(), effects);
     assert_eq!(backend.bytes(), image);
     assert_eq!(admission.live(), baseline);
@@ -469,12 +468,11 @@ fn commit_workspace_denial_settles_a_retained_writer_and_the_next_writer_commits
         let report = writer.commit();
         assert_eq!(report.operation(), Some(WriteTerminalOperation::Commit));
         assert_eq!(report.settlement(), WriteTerminalSettlement::Settled);
-        assert!(matches!(
-            report.terminal(),
-            TerminalObservation::Returned(Err(WriteTerminalError::Commit(CommitError(
-                StorageError::Core(CoreError::CapacityDenied)
-            ))))
-        ));
+        assert!(
+            matches!(&(report.terminal()), TerminalObservation::Returned(Err(WriteTerminalError::Commit(CommitError(
+                StorageError::Core(native_error)
+            )))) if matches!(native_error.rejected_cause(), Some(kasumi_kv::CoreErrorCause::CapacityDenied)))
+        );
         assert!(report.is_capacity_denied());
         assert!(
             report
@@ -534,10 +532,9 @@ fn rejected_commit_input_settles_and_releases_the_writer() {
         .unwrap();
     let report = writer.commit();
     assert_eq!(report.settlement(), WriteTerminalSettlement::Settled);
-    assert!(matches!(
-        report.rejected_no_effect(),
-        Some(StorageError::Core(CoreError::InvalidInput(_)))
-    ));
+    assert!(
+        matches!(&(report.rejected_no_effect()), Some(StorageError::Core(native_error)) if matches!(native_error.rejected_cause(), Some(kasumi_kv::CoreErrorCause::InvalidInput(_))))
+    );
     assert!(!report.is_capacity_denied());
     assert_eq!(backend.effects(), effects);
     assert!(
@@ -612,31 +609,28 @@ fn staging_owner_failure_keeps_the_batch_and_writer_gate_retained() {
     };
     Admission::set(&admission.fail_workspace, false);
     assert!(!error.is_capacity_denied());
-    assert!(matches!(
-        error,
-        TableError::Storage(StorageError::Core(CoreError::OwnerFailed))
-    ));
+    assert!(
+        matches!(&(error), TableError::Storage(StorageError::Core(native_error)) if matches!(native_error.rejected_cause(), Some(kasumi_kv::CoreErrorCause::OwnerFailed)))
+    );
     // Not a rollback: the staged leases remain and later calls report the
     // sticky owner failure instead of a capacity denial.
     assert!(admission.live() > baseline);
-    assert!(matches!(
-        table.get(b"kept"),
-        Err(TableError::Storage(StorageError::Core(
-            CoreError::OwnerFailed
-        )))
-    ));
+    assert!(
+        matches!(&(table.get(b"kept")), Err(TableError::Storage(StorageError::Core(
+            native_error
+        ))) if matches!(native_error.rejected_cause(), Some(kasumi_kv::CoreErrorCause::OwnerFailed)))
+    );
     assert_eq!(admission.owner_failures.load(Ordering::Acquire), 1);
     drop(table);
 
     let report = writer.commit();
     assert_eq!(report.settlement(), WriteTerminalSettlement::Retained);
     assert!(report.rejected_no_effect().is_none());
-    assert!(matches!(
-        report.terminal(),
-        TerminalObservation::Returned(Err(WriteTerminalError::Commit(CommitError(
-            StorageError::Core(CoreError::OwnerFailed)
-        ))))
-    ));
+    assert!(
+        matches!(&(report.terminal()), TerminalObservation::Returned(Err(WriteTerminalError::Commit(CommitError(
+            StorageError::Core(native_error)
+        )))) if matches!(native_error.rejected_cause(), Some(kasumi_kv::CoreErrorCause::OwnerFailed)))
+    );
     assert_eq!(backend.effects(), effects);
     assert!(
         !writer
@@ -694,15 +688,19 @@ fn group_sync_failure_keeps_the_writer_retained_until_reopen_decides() {
             ));
         }
         // The core fenced once and reported its owner failure.
-        assert!(matches!(
-            opening.report().fence().observation(),
-            Some(TerminalObservation::Returned(Ok(())))
-        ));
+        assert!(
+            opening
+                .report()
+                .fence()
+                .with_observation(|observation| matches!(
+                    observation,
+                    TerminalObservation::Returned(Ok(()))
+                ))
+        );
         assert_eq!(admission.owner_failures.load(Ordering::Acquire), 1);
-        assert!(matches!(
-            opening.database().unwrap().begin_read(),
-            Err(TransactionError(StorageError::Core(CoreError::OwnerFailed)))
-        ));
+        assert!(
+            matches!(&(opening.database().unwrap().begin_read()), Err(TransactionError(StorageError::Core(native_error))) if matches!(native_error.rejected_cause(), Some(kasumi_kv::CoreErrorCause::OwnerFailed)))
+        );
 
         // The retained writer still holds the gate: a queued writer waits
         // until close seals admission and wakes it.

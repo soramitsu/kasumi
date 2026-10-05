@@ -4,7 +4,7 @@
 
 use crate::AppliedResponse;
 use anyhow::Result;
-use kasumi_store::WriteOp;
+use kasumi_store::{ScratchOperationFailure, WriteOp};
 use std::fmt;
 
 #[path = "publication_receipt.rs"]
@@ -39,6 +39,11 @@ impl fmt::Display for PublishCallError {
 }
 
 impl std::error::Error for PublishCallError {}
+impl From<PublishCallError> for kasumi_store::ScratchOperationFailure {
+    fn from(original: PublishCallError) -> Self {
+        Self::Operation(anyhow::Error::new(original))
+    }
+}
 
 /// Publish one prepared response and its bounded application writes. The backend
 /// must call this exactly once before releasing its prepared application state.
@@ -142,6 +147,10 @@ impl std::error::Error for ApplyPublicationFailure {
 type PlainSink<'a> = dyn FnMut(&AppliedResponse, &[WriteOp]) -> Result<()> + 'a;
 pub(crate) enum SinkFailure {
     Unproven(anyhow::Error),
+    // Only the actual Entry sink's access check before planner entry constructs
+    // this disposition. It does not classify arbitrary preparation errors.
+    UnenteredAccessDenied(UnenteredAccessDenied),
+    RetiredPlannerAccessDenied(RetiredPlannerAccessDenied),
     CommittedAccessDenied(kasumi_store::CommittedAccessDenied),
 }
 impl From<anyhow::Error> for SinkFailure {
@@ -153,14 +162,43 @@ impl SinkFailure {
     pub(crate) fn into_parts(self) -> (anyhow::Error, bool) {
         match self {
             Self::Unproven(error) => (error, false),
+            Self::UnenteredAccessDenied(denied) => (denied.original, true),
+            Self::RetiredPlannerAccessDenied(denied) => (denied.original, true),
             Self::CommittedAccessDenied(denied) => (denied.into_error(), true),
         }
     }
     fn into_error(self) -> anyhow::Error {
         self.into_parts().0
     }
+    #[cfg(any(test, feature = "test-utils"))]
+    pub(crate) fn refusal_stage(&self) -> Option<ApplyRefusalStage> {
+        match self {
+            Self::Unproven(_) => None,
+            Self::UnenteredAccessDenied(_) => Some(ApplyRefusalStage::Unentered),
+            Self::RetiredPlannerAccessDenied(_) => Some(ApplyRefusalStage::PlannerRetired),
+            Self::CommittedAccessDenied(_) => Some(ApplyRefusalStage::Committed),
+        }
+    }
 }
 pub(crate) type SinkResult<T> = std::result::Result<T, SinkFailure>;
+
+// The private field prevents an unrelated sink from supplying an arbitrary
+// error with the Entry sink's pre-entry disposition.
+pub(crate) struct UnenteredAccessDenied {
+    original: anyhow::Error,
+}
+// Only the controlled Entry planner return below constructs this witness.
+pub(crate) struct RetiredPlannerAccessDenied {
+    original: anyhow::Error,
+}
+
+#[cfg(any(test, feature = "test-utils"))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ApplyRefusalStage {
+    Unentered,
+    PlannerRetired,
+    Committed,
+}
 
 pub(crate) trait PublicationSink {
     fn plain(&mut self, response: &AppliedResponse, writes: &[WriteOp]) -> SinkResult<()>;
@@ -184,6 +222,7 @@ pub(crate) struct ApplyPublication<'a> {
     repeated: bool,
     completion: Option<&'a crate::apply_failure::ApplyFailureSlot>,
     ordinary: Option<u64>,
+    input_retention: Option<&'a crate::ApplicationInputLoan>,
 }
 
 impl<'a> ApplyPublication<'a> {
@@ -195,6 +234,7 @@ impl<'a> ApplyPublication<'a> {
             repeated: false,
             completion: None,
             ordinary: None,
+            input_retention: None,
         }
     }
 
@@ -205,6 +245,7 @@ impl<'a> ApplyPublication<'a> {
             repeated: false,
             completion: None,
             ordinary: None,
+            input_retention: None,
         }
     }
 
@@ -216,11 +257,14 @@ impl<'a> ApplyPublication<'a> {
         publication.completion = Some(slot);
         publication
     }
+    pub(crate) fn retain_input(&mut self, input: Option<&'a crate::ApplicationInputLoan>) {
+        self.input_retention = input;
+    }
     /// Stores backend ownership before any outer callback. Ordinary failure is
     /// returned as the already admitted diagnostic, never a new composite box.
     pub(crate) fn finish_observed(
         self,
-        backend: std::thread::Result<Result<()>>,
+        backend: std::thread::Result<Result<(), ScratchOperationFailure>>,
         after_backend: impl FnOnce(),
     ) -> std::result::Result<FinishedPublication, FinishFailure> {
         if let Some(ordinal) = self.ordinary {
@@ -246,8 +290,43 @@ impl<'a> ApplyPublication<'a> {
             });
         }
         let backend = backend.unwrap_or_else(|payload| {
-            Err(crate::apply_failure::ApplyBackendPanic::new(payload).into())
+            Err(ScratchOperationFailure::Operation(
+                crate::apply_failure::ApplyBackendPanic::new(payload).into(),
+            ))
         });
+        let backend = match backend {
+            Ok(()) => Ok(()),
+            Err(ScratchOperationFailure::Operation(original)) => Err(original),
+            Err(
+                original @ (ScratchOperationFailure::Creation(_)
+                | ScratchOperationFailure::AdmissionRefused(_)),
+            ) => {
+                let slot = self
+                    .completion
+                    .expect("preparation failures require admitted apply custody");
+                let (publication, response, running) = match self.phase {
+                    Phase::Failed(original) => (Some(original), None, false),
+                    Phase::Committed(response) => (None, Some(response), false),
+                    Phase::Running => (None, None, true),
+                    Phase::Ready => (None, None, false),
+                };
+                let retained = slot
+                    .retain_preparation(crate::apply_failure::PreparationApplyFailure {
+                        original,
+                        publication,
+                        response,
+                        violation: if self.repeated {
+                            Some(crate::CompletionViolation::Repeated)
+                        } else if running {
+                            Some(crate::CompletionViolation::Interrupted)
+                        } else {
+                            None
+                        },
+                    })
+                    .unwrap_or_else(|original| std::panic::panic_any(original));
+                return Err(FinishFailure::Retained(retained));
+            }
+        };
         self.finish(backend)
             .map(|response| FinishedPublication {
                 response,
@@ -385,7 +464,8 @@ impl ApplyPublisher for ApplyPublication<'_> {
         let invocation = crate::CompletionInvocation::new(
             slot.completion().identity().expect("bound identity"),
             ordinal,
-        );
+        )
+        .with_input_retention(self.input_retention);
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             action.run(&invocation, &mut CompletionPublisher { parent: self, slot })
         }));
@@ -518,8 +598,53 @@ impl<'env> EntryPublicationSink<'env> {
                     .map_err(|_| anyhow::anyhow!("control publication lock poisoned"))
             })
             .transpose()?;
+        // No planner, preparer, native reader or writer has entered for this
+        // sink yet. Preserve this actual access refusal and its exact stage;
+        // access loss after this check still needs its own retirement witness.
+        self.stores.check_access().map_err(|original| {
+            SinkFailure::UnenteredAccessDenied(UnenteredAccessDenied { original })
+        })?;
         publish()
     }
+
+    fn entered_failure(&self, stage: EntryFailureStage, original: anyhow::Error) -> SinkFailure {
+        // Scalar provenance only: this neither examines the error nor grants
+        // native retirement authority. Keep the exact original allocation.
+        #[cfg(any(test, feature = "test-utils"))]
+        if std::env::var_os("KASUMI_TEST_ENTRY_FAILURE_TRACE").as_deref()
+            == Some(std::ffi::OsStr::new("1"))
+        {
+            eprintln!(
+                "entry_publication_failure index={} stage={stage:?}",
+                self.position.log_id.index
+            );
+        }
+        // This planner owns its entire snapshot/point session. It returns the
+        // unchanged bare access diagnostic only before acquisition or after
+        // positive backing retirement AND registered reader finish/retire.
+        // Unknown native/retirement/panic outcomes retain an outer owning
+        // wrapper. Contexts and nested sources must never supply this proof.
+        let outer: &(dyn std::error::Error + Send + Sync) = original.as_ref();
+        if matches!(stage, EntryFailureStage::Planner)
+            && outer
+                .downcast_ref::<kasumi_store::KeyAccessDenied>()
+                .is_some()
+        {
+            return SinkFailure::RetiredPlannerAccessDenied(RetiredPlannerAccessDenied {
+                original,
+            });
+        }
+        SinkFailure::Unproven(original)
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+enum EntryFailureStage {
+    Planner,
+    Challenge,
+    Receipt,
+    Preparer,
+    Publication,
 }
 impl PublicationSink for EntryPublicationSink<'_> {
     fn plain(&mut self, response: &AppliedResponse, writes: &[WriteOp]) -> SinkResult<()> {
@@ -528,8 +653,13 @@ impl PublicationSink for EntryPublicationSink<'_> {
                 self.stores,
                 self.position,
                 response.retirement.as_ref(),
-            )?;
-            publication_outcome(prepared.publish_outcome(self.stores, writes)?)
+            )
+            .map_err(|error| self.entered_failure(EntryFailureStage::Planner, error))?;
+            publication_outcome(
+                prepared
+                    .publish_outcome(self.stores, writes)
+                    .map_err(|error| self.entered_failure(EntryFailureStage::Publication, error))?,
+            )
         })
     }
     fn selected<'call>(
@@ -542,16 +672,27 @@ impl PublicationSink for EntryPublicationSink<'_> {
         self.run(response, || {
             let entered = challenge
                 .enter(self.stores, self.position, response, writes)
-                .map_err(anyhow::Error::from)?;
+                .map_err(|error| {
+                    self.entered_failure(EntryFailureStage::Challenge, error.into())
+                })?;
             let (prepared, plan, points) = crate::control::prepare_applied_and_selection(
                 self.stores,
                 self.position,
                 response.retirement.as_ref(),
                 writes,
+            )
+            .map_err(|error| self.entered_failure(EntryFailureStage::Planner, error))?;
+            let receipt = entered
+                .prepare(&plan)
+                .map_err(|error| self.entered_failure(EntryFailureStage::Receipt, error.into()))?;
+            preparer
+                .prepare(&plan, points)
+                .map_err(|error| self.entered_failure(EntryFailureStage::Preparer, error))?;
+            publication_outcome(
+                prepared
+                    .publish_outcome(self.stores, writes)
+                    .map_err(|error| self.entered_failure(EntryFailureStage::Publication, error))?,
             )?;
-            let receipt = entered.prepare(&plan).map_err(anyhow::Error::from)?;
-            preparer.prepare(&plan, points)?;
-            publication_outcome(prepared.publish_outcome(self.stores, writes)?)?;
             Ok(receipt.mint())
         })
     }
@@ -566,23 +707,206 @@ fn publication_outcome(outcome: kasumi_store::DomainPublicationOutcome) -> SinkR
     }
 }
 
+/// A fixture call owns its original backend preparation failure independently of
+/// the synchronous sink. Neither original is erased into an Anyhow allocation.
+#[cfg(any(test, feature = "test-utils"))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TestCaptureObservation {
+    pub attempted: bool,
+    pub invalid: bool,
+    pub repeated: bool,
+}
+#[cfg(any(test, feature = "test-utils"))]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "The fixture keeps both original failures and the actual response inline without an error-path allocation."
+)]
+pub enum TestPublicationFailure {
+    Operation(anyhow::Error),
+    Preparation {
+        original: ScratchOperationFailure,
+        publication: Option<anyhow::Error>,
+        response: Option<AppliedResponse>,
+        violation: Option<crate::CompletionViolation>,
+        capture: Option<TestCaptureObservation>,
+    },
+}
+#[cfg(any(test, feature = "test-utils"))]
+impl fmt::Debug for TestPublicationFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Operation(original) => {
+                formatter.debug_tuple("Operation").field(original).finish()
+            }
+            Self::Preparation {
+                original,
+                publication,
+                response,
+                violation,
+                capture,
+            } => formatter
+                .debug_struct("Preparation")
+                .field("original", original)
+                .field("publication", publication)
+                .field(
+                    "response_data_bytes",
+                    &response.as_ref().map(|response| response.data.len()),
+                )
+                .field(
+                    "response_retirement_retained",
+                    &response
+                        .as_ref()
+                        .map(|response| response.retirement.is_some()),
+                )
+                .field("violation", violation)
+                .field("capture", capture)
+                .finish(),
+        }
+    }
+}
+#[cfg(any(test, feature = "test-utils"))]
+impl TestPublicationFailure {
+    pub fn operation_error(&self) -> Option<&anyhow::Error> {
+        match self {
+            Self::Operation(original) => Some(original),
+            _ => None,
+        }
+    }
+    pub fn creation(&self) -> Option<&kasumi_store::ScratchCreationFailure> {
+        match self {
+            Self::Preparation { original, .. } => original.creation(),
+            _ => None,
+        }
+    }
+    pub fn preparation_error(&self) -> Option<&ScratchOperationFailure> {
+        match self {
+            Self::Preparation { original, .. } => Some(original),
+            _ => None,
+        }
+    }
+    pub fn admission_refusal(&self) -> Option<kasumi_store::ScratchAdmissionRefusal> {
+        match self {
+            Self::Preparation { original, .. } => original.admission_refusal(),
+            _ => None,
+        }
+    }
+}
+#[cfg(any(test, feature = "test-utils"))]
+impl From<anyhow::Error> for TestPublicationFailure {
+    fn from(original: anyhow::Error) -> Self {
+        Self::Operation(original)
+    }
+}
+#[cfg(any(test, feature = "test-utils"))]
+impl fmt::Display for TestPublicationFailure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Operation(original) => original.fmt(f),
+            Self::Preparation {
+                original,
+                publication,
+                violation,
+                ..
+            } => {
+                original.fmt(f)?;
+                if let Some(publication) = publication {
+                    write!(f, "; publication: {publication}")?;
+                }
+                if let Some(violation) = violation {
+                    write!(f, "; publication violation: {violation:?}")?;
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
+#[cfg(any(test, feature = "test-utils"))]
+mod test_publication_error {
+    pub trait Sealed {}
+    impl Sealed for anyhow::Error {}
+    impl Sealed for kasumi_store::ScratchOperationFailure {}
+}
+/// Closed fixture invocation errors. An ordinary callback cannot produce a
+/// creation owner; a typed callback retains it with the independent sink result.
+#[cfg(any(test, feature = "test-utils"))]
+pub trait TestPublicationError: test_publication_error::Sealed + Sized {
+    type Failure;
+    fn finish(
+        state: TestPublicationState<'_>,
+        backend: Result<(), Self>,
+    ) -> Result<AppliedResponse, Self::Failure>;
+}
+/// Only the fixture adapter constructs this synchronous original publisher.
+#[cfg(any(test, feature = "test-utils"))]
+pub struct TestPublicationState<'a>(ApplyPublication<'a>);
+#[cfg(any(test, feature = "test-utils"))]
+impl TestPublicationError for anyhow::Error {
+    type Failure = anyhow::Error;
+    fn finish(
+        state: TestPublicationState<'_>,
+        backend: Result<(), Self>,
+    ) -> Result<AppliedResponse> {
+        state.0.finish(backend)
+    }
+}
+#[cfg(any(test, feature = "test-utils"))]
+impl TestPublicationError for ScratchOperationFailure {
+    type Failure = TestPublicationFailure;
+    fn finish(
+        state: TestPublicationState<'_>,
+        backend: Result<(), Self>,
+    ) -> Result<AppliedResponse, Self::Failure> {
+        let publication = state.0;
+        match backend {
+            Ok(()) => publication.finish(Ok(())).map_err(Into::into),
+            Err(ScratchOperationFailure::Operation(original)) => {
+                publication.finish(Err(original)).map_err(Into::into)
+            }
+            Err(original) => {
+                let (publication_error, response, interrupted) = match publication.phase {
+                    Phase::Failed(original) => (Some(original), None, false),
+                    Phase::Committed(response) => (None, Some(response), false),
+                    Phase::Running => (None, None, true),
+                    Phase::Ready => (None, None, false),
+                };
+                Err(TestPublicationFailure::Preparation {
+                    original,
+                    publication: publication_error,
+                    response,
+                    capture: None,
+                    violation: if publication.repeated {
+                        Some(crate::CompletionViolation::Repeated)
+                    } else if interrupted {
+                        Some(crate::CompletionViolation::Interrupted)
+                    } else {
+                        None
+                    },
+                })
+            }
+        }
+    }
+}
+
 /// Execute a test backend against the actual custody producer and publication
 /// failure owner. No caller-built plan or synthetic successful sink is accepted.
 /// The test caller serializes its real stores; this helper mints no serving guard.
 #[cfg(any(test, feature = "test-utils"))]
-pub fn with_application_publisher_for_test(
+pub fn with_application_publisher_for_test<E: TestPublicationError + From<anyhow::Error>>(
     stores: &kasumi_store::TenantStorageSet,
     position: &crate::AppliedEntryContext,
-    invoke: impl FnOnce(&mut dyn ApplyPublisher) -> Result<()>,
-) -> Result<AppliedResponse> {
+    invoke: impl FnOnce(&mut dyn ApplyPublisher) -> Result<(), E>,
+) -> Result<AppliedResponse, E::Failure> {
     let mut sink = EntryPublicationSink::new(stores, position, None, false);
     let mut publication = ApplyPublication::new_with_selection(&mut sink);
     let backend =
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| invoke(&mut publication)))
             .unwrap_or_else(|payload| {
-                Err(crate::apply_failure::ApplyBackendPanic::new(payload).into())
+                Err(E::from(
+                    crate::apply_failure::ApplyBackendPanic::new(payload).into(),
+                ))
             });
-    publication.finish(backend)
+    E::finish(TestPublicationState(publication), backend)
 }
 
 /// Execute the actual bound adapter through outer finish. The response is handed
@@ -592,7 +916,7 @@ pub fn with_application_publisher_bound_for_test(
     buffers: &crate::SnapshotBufferOwner,
     stores: &kasumi_store::TenantStorageSet,
     position: &crate::AppliedEntryContext,
-    invoke: impl FnOnce(&mut dyn ApplyPublisher) -> Result<()>,
+    invoke: impl FnOnce(&mut dyn ApplyPublisher) -> Result<(), ScratchOperationFailure>,
 ) -> Result<AppliedResponse> {
     with_application_publisher_bound_observed_for_test(buffers, stores, position, invoke, || {})
 }
@@ -601,7 +925,7 @@ pub fn with_application_publisher_bound_observed_for_test(
     buffers: &crate::SnapshotBufferOwner,
     stores: &kasumi_store::TenantStorageSet,
     position: &crate::AppliedEntryContext,
-    invoke: impl FnOnce(&mut dyn ApplyPublisher) -> Result<()>,
+    invoke: impl FnOnce(&mut dyn ApplyPublisher) -> Result<(), ScratchOperationFailure>,
     after_backend: impl FnOnce(),
 ) -> Result<AppliedResponse> {
     if let Some(failure) = buffers.apply_failure() {
@@ -623,6 +947,10 @@ pub fn with_application_publisher_bound_observed_for_test(
         Err(FinishFailure::Single(error)) => Err(buffers.retain_apply_failure(error).into()),
     }
 }
+
+#[cfg(test)]
+#[path = "test_publication_denial_tests.rs"]
+mod test_publication_denial_tests;
 
 #[cfg(test)]
 mod tests {

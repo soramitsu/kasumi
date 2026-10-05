@@ -10,6 +10,78 @@ use std::{
 };
 use tokio::sync::Notify;
 
+#[derive(Debug)]
+enum FixtureFailure {
+    NodeStartup(kasumi_store::NodeStoreStartFailure),
+    Snapshot(kasumi_engine::SnapshotFailure),
+    Operation(anyhow::Error),
+}
+type FixtureResult<T> = std::result::Result<T, FixtureFailure>;
+impl std::fmt::Display for FixtureFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NodeStartup(original) => original.fmt(formatter),
+            Self::Snapshot(original) => original.fmt(formatter),
+            Self::Operation(original) => original.fmt(formatter),
+        }
+    }
+}
+impl From<kasumi_store::NodeStoreStartFailure> for FixtureFailure {
+    fn from(original: kasumi_store::NodeStoreStartFailure) -> Self {
+        Self::NodeStartup(original)
+    }
+}
+impl From<kasumi_engine::SnapshotFailure> for FixtureFailure {
+    fn from(original: kasumi_engine::SnapshotFailure) -> Self {
+        Self::Snapshot(original)
+    }
+}
+impl From<anyhow::Error> for FixtureFailure {
+    fn from(original: anyhow::Error) -> Self {
+        Self::Operation(original)
+    }
+}
+macro_rules! ordinary_failure {
+    ($($original:ty),+ $(,)?) => {$ (
+        impl From<$original> for FixtureFailure {
+            fn from(original: $original) -> Self {
+                Self::Operation(anyhow::Error::new(original))
+            }
+        }
+    )+};
+}
+ordinary_failure!(
+    std::io::Error,
+    kasumi_types::Error,
+    kasumi_types::drain::DrainFailure,
+    rcgen::Error,
+    tokio::time::error::Elapsed,
+);
+
+#[derive(Debug)]
+struct RetiredFixtureMarker {
+    index: usize,
+    stage: &'static str,
+}
+impl std::fmt::Display for RetiredFixtureMarker {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "retired-source fixture failure {}/{}",
+            self.index, self.stage
+        )
+    }
+}
+impl std::error::Error for RetiredFixtureMarker {}
+fn marker(
+    observation: crate::administration::original_serving_runtime::OriginalRecoveryObservation,
+) -> anyhow::Error {
+    anyhow::Error::new(RetiredFixtureMarker {
+        index: observation.index,
+        stage: observation.stage,
+    })
+}
+
 #[derive(Default)]
 struct HeldCore {
     owner: Mutex<Weak<kasumi_engine::RetiredCustody>>,
@@ -75,7 +147,7 @@ struct Fixture {
     _root: tempfile::TempDir,
     config: RuntimeConfig,
     network: Arc<ClusterNetwork>,
-    node: Arc<NodeStore>,
+    node: NodeStore,
     custody: Arc<CustodyStore>,
     audit: Arc<SecurityAudit>,
     admission: Arc<NodeAdmission>,
@@ -85,7 +157,7 @@ struct Fixture {
     expected_fingerprint: String,
 }
 impl Fixture {
-    async fn new() -> Result<Self> {
+    async fn new() -> FixtureResult<Self> {
         let root = kasumi_store::test_utils::private_tempdir()?;
         let mut config = example_config(
             kasumi_store::DirectoryPolicy::fixture(),
@@ -176,7 +248,8 @@ impl Fixture {
             .raft()
             .wait(Some(Duration::from_secs(10)))
             .current_leader(1, "retirement fixture source leader")
-            .await?;
+            .await
+            .map_err(anyhow::Error::new)?;
         let expected_fingerprint = persisted_replicated_bootstrap_fingerprint(&replicas[0].1)?;
         let binding = replicas[0]
             .1
@@ -300,7 +373,10 @@ impl Fixture {
         self.network.unregister_group(&self.group)?;
         self.resident.shutdown().await?;
         self.audit.shutdown().await?;
-        self.node.drain_initializers().await?;
+        self.node
+            .drain_initializers()
+            .await
+            .map_err(|failure| failure.observation())?;
         Ok(())
     }
 }
@@ -315,18 +391,35 @@ impl crate::startup_owner::Runtime for Opened {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn retired_custody_route_uses_original_bootstrap_without_application_provider() -> Result<()>
-{
+async fn retired_custody_route_uses_original_bootstrap_without_application_provider()
+-> FixtureResult<()> {
     let fixture = Fixture::new().await?;
     fixture.network.unregister_group(&fixture.group)?;
-    let custody = open_retired_source(
-        &fixture.config,
-        fixture.custody.clone(),
-        Some(&fixture.network),
-        fixture.audit.clone(),
-        fixture.admission.clone(),
-    )
-    .await?;
+    let inventory = crate::administration::original_serving_runtime::OriginalRecoveries::new(
+        &fixture.admission,
+        crate::administration::original_serving_runtime::OriginalRecoveryParticipants::configured(
+            &fixture.config,
+        ),
+    )?;
+    let index =
+        crate::administration::original_serving_runtime::OriginalRecoveries::configured_index(
+            &fixture.config,
+            &fixture.config.tenants[0].tenant,
+        )?;
+    let mut claim = inventory.claim(index).await;
+    assert!(claim.is_empty());
+    let custody = claim
+        .run_retired(open_retired_source(
+            &fixture.config,
+            fixture.custody.clone(),
+            Some(&fixture.network),
+            fixture.audit.clone(),
+            fixture.admission.clone(),
+        ))
+        .await
+        .map_err(marker)?;
+    drop(claim);
+    assert!(!inventory.retained().await);
     assert_eq!(
         fixture
             .network
@@ -344,12 +437,13 @@ async fn retired_custody_route_uses_original_bootstrap_without_application_provi
         "retired Raft route must close with custody before unregister"
     );
     drop(custody);
-    fixture.close().await
+    fixture.close().await?;
+    Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn retired_registration_rejection_retains_new_owner_until_cancelled_waiter_drains()
--> Result<()> {
+-> FixtureResult<()> {
     let _serial = crate::standalone::ownership_tests::drain_serial()
         .lock()
         .await;
@@ -366,12 +460,56 @@ async fn retired_registration_rejection_retains_new_owner_until_cancelled_waiter
     let store = fixture.custody.clone();
     let audit = fixture.audit.clone();
     let admission = fixture.admission.clone();
+    let inventory = crate::administration::original_serving_runtime::OriginalRecoveries::new(
+        &admission,
+        crate::administration::original_serving_runtime::OriginalRecoveryParticipants::configured(
+            &config,
+        ),
+    )?;
     let mut opening = Box::pin(crate::startup_owner::open(
         crate::startup_owner::Kind::Data,
         async move {
-            open_retired_source(&config, store, Some(&network), audit, admission)
-                .await
-                .map(Opened)
+            let index = crate::administration::original_serving_runtime::OriginalRecoveries::configured_index(
+                &config,
+                &config.tenants[0].tenant,
+            )?;
+            let mut claim = inventory.claim(index).await;
+            assert!(claim.is_empty());
+            let original_address = std::sync::atomic::AtomicUsize::new(0);
+            let work = async {
+                let outcome =
+                    open_retired_source(&config, store, Some(&network), audit, admission).await;
+                if let Err(original) = &outcome
+                    && let Some(ordinary) = original.original().source_error()
+                {
+                    let outer: &(dyn std::error::Error + Send + Sync + 'static) = ordinary.as_ref();
+                    original_address.store(
+                        std::ptr::from_ref(outer).cast::<()>() as usize,
+                        std::sync::atomic::Ordering::Relaxed,
+                    );
+                }
+                outcome
+            };
+            match claim.run_retired(work).await {
+                Ok(custody) => Ok(Opened(custody)),
+                Err(observation) => {
+                    claim
+                        .with_failure(|failure| {
+                            let original = failure.original().source_error().expect(
+                                "actual duplicate route registration returns an ordinary original",
+                            );
+                            let outer: &(dyn std::error::Error + Send + Sync + 'static) =
+                                original.as_ref();
+                            assert_eq!(
+                                std::ptr::from_ref(outer).cast::<()>() as usize,
+                                original_address.load(std::sync::atomic::Ordering::Relaxed)
+                            );
+                            assert!(original.to_string().contains("group already registered"));
+                        })
+                        .unwrap();
+                    Err(marker(observation))
+                }
+            }
         },
     ));
     std::future::poll_fn(|cx| {
@@ -429,7 +567,7 @@ async fn retired_registration_rejection_retains_new_owner_until_cancelled_waiter
         .context("retired startup ownership did not drain after core release")?
         .unwrap_err();
     assert!(
-        error.to_string().contains("group already registered"),
+        error.downcast_ref::<RetiredFixtureMarker>().is_some(),
         "{error:#}"
     );
     assert!(observation.owner.lock().unwrap().upgrade().is_none());
@@ -451,35 +589,75 @@ async fn retired_registration_rejection_retains_new_owner_until_cancelled_waiter
     drop(recovered);
     drop(reopened);
     drop(release);
-    fixture.close().await
+    fixture.close().await?;
+    Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn retired_preparation_panic_drains_only_new_custody_owner() -> Result<()> {
+async fn retired_preparation_panic_drains_only_new_custody_owner() -> FixtureResult<()> {
     let fixture = Fixture::new().await?;
     let fault =
         crate::startup_preparation::install(fixture.config.database_id, "retired-custody-owner");
-    let error = tokio::time::timeout(
-        Duration::from_secs(10),
-        open_retired_source(
+    let inventory = crate::administration::original_serving_runtime::OriginalRecoveries::new(
+        &fixture.admission,
+        crate::administration::original_serving_runtime::OriginalRecoveryParticipants::configured(
+            &fixture.config,
+        ),
+    )?;
+    let index =
+        crate::administration::original_serving_runtime::OriginalRecoveries::configured_index(
+            &fixture.config,
+            &fixture.config.tenants[0].tenant,
+        )?;
+    let mut claim = inventory.claim(index).await;
+    assert!(claim.is_empty());
+    let original_address = std::sync::atomic::AtomicUsize::new(0);
+    let work = async {
+        let outcome = open_retired_source(
             &fixture.config,
             fixture.custody.clone(),
             Some(&fixture.network),
             fixture.audit.clone(),
             fixture.admission.clone(),
-        ),
-    )
-    .await?
-    .err()
-    .context("injected panic unexpectedly succeeded")?;
-    assert!(
-        error
-            .downcast_ref::<crate::startup_preparation::PreparationPanic>()
-            .is_some()
-    );
+        )
+        .await;
+        if let Err(original) = &outcome
+            && let Some(ordinary) = original.original().source_error()
+            && let Some(panic) =
+                ordinary.downcast_ref::<crate::startup_preparation::PreparationPanic>()
+        {
+            original_address.store(
+                std::ptr::from_ref(panic) as usize,
+                std::sync::atomic::Ordering::Relaxed,
+            );
+        }
+        outcome
+    };
+    let _observation = tokio::time::timeout(Duration::from_secs(10), claim.run_retired(work))
+        .await?
+        .err()
+        .context("injected panic unexpectedly succeeded")?;
+    claim
+        .with_failure(|failure| {
+            let original = failure
+                .original()
+                .source_error()
+                .expect("actual preparation panic remains an ordinary original");
+            assert_eq!(
+                std::ptr::from_ref(
+                    original
+                        .downcast_ref::<crate::startup_preparation::PreparationPanic>()
+                        .unwrap(),
+                ) as usize,
+                original_address.load(std::sync::atomic::Ordering::Relaxed)
+            );
+        })
+        .unwrap();
     assert!(fixture.custody.store().check_access().is_err());
     fixture.resident.raft_group().check_access()?;
     fixture.audit.store().check_access()?;
     drop(fault);
-    fixture.close().await
+    drop(claim);
+    fixture.close().await?;
+    Ok(())
 }

@@ -19,12 +19,29 @@ pub(super) struct AutoWarm {
     evictions: u64,
     // Fixed owner-local scheduling metadata, included in DiskState admission.
     // These copies are never used for data reads or physical reclamation.
-    roots: [Option<DirectoryRoot>; MAX_PINNED_ROOTS],
+    roots: Vec<Option<DirectoryRoot>>,
 }
 
-impl Default for AutoWarm {
-    fn default() -> Self {
-        Self {
+impl AutoWarm {
+    pub(super) const fn backing_bytes() -> usize {
+        std::mem::size_of::<[Option<DirectoryRoot>; MAX_PINNED_ROOTS]>()
+            + (std::mem::align_of::<Option<DirectoryRoot>>() - 1)
+            + ALLOCATION_ALLOWANCE
+    }
+
+    // The caller's original fixed grant already covers this exact backing.
+    pub(super) fn new(_original: &NativeResidentLease) -> Result<Self, CoreError> {
+        let mut roots = Vec::new();
+        roots
+            .try_reserve_exact(MAX_PINNED_ROOTS)
+            .map_err(|_| CoreError::new(crate::CoreErrorCause::CapacityDenied))?;
+        if roots.capacity() != MAX_PINNED_ROOTS {
+            return Err(CoreError::new(crate::CoreErrorCause::CapacityDenied));
+        }
+        for _ in 0..MAX_PINNED_ROOTS {
+            roots.push(None);
+        }
+        Ok(Self {
             state: CacheWarmupState::Pending,
             complete: false,
             provider_limited: false,
@@ -33,8 +50,8 @@ impl Default for AutoWarm {
             byte_limit: 0,
             pinned_bytes: 0,
             evictions: 0,
-            roots: [None; MAX_PINNED_ROOTS],
-        }
+            roots,
+        })
     }
 }
 
@@ -86,7 +103,10 @@ impl DiskState {
     fn observe_auto_eligibility(&mut self) -> Result<(), CoreError> {
         self.owner.check()?;
         let (config, stats) = {
-            let cache = self.cache.lock().map_err(|_| CoreError::OwnerFailed)?;
+            let cache = self
+                .cache
+                .lock()
+                .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?;
             (cache.config(), cache.stats())
         };
         if config.byte_limit == 0 {
@@ -121,7 +141,10 @@ impl DiskState {
     fn begin_auto_attempt(&mut self) -> Result<(), CoreError> {
         self.pins
             .refresh_baseline(&mut self.auto_warm.roots, self.selected)?;
-        let cache = self.cache.lock().map_err(|_| CoreError::OwnerFailed)?;
+        let cache = self
+            .cache
+            .lock()
+            .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?;
         self.auto_warm.state = CacheWarmupState::Running;
         self.auto_warm.complete = false;
         self.auto_warm.provider_limited = false;
@@ -216,7 +239,7 @@ impl DiskState {
                         fully_resident: progress.fully_resident,
                     })
                 }
-                Err(CoreError::CapacityDenied) => {
+                Err(error) if error.is_capacity_denied() => {
                     // The exact refused cursor is retained. A lifecycle worker
                     // applies backoff before retrying this bounded item, so an
                     // in-step external pressure release cannot be missed.
@@ -255,7 +278,7 @@ impl DiskState {
             let byte_limit = state
                 .cache
                 .lock()
-                .map_err(|_| CoreError::OwnerFailed)?
+                .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?
                 .config()
                 .byte_limit;
             Ok(CacheWarmupStatus {

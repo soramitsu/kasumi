@@ -75,6 +75,7 @@ pub(crate) async fn initialize_standalone(
         kasumi_store::DirectoryPolicy::fixture(),
         kasumi_store::FileAllocationPolicy::fixture(),
         crate::standalone::StandaloneNetwork::fixture(),
+        crate::standalone::local_audit_placements(tenant),
         storage.clone(),
     )
     .await?;

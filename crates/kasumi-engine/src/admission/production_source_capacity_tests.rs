@@ -210,6 +210,9 @@ async fn production_source_selection_uses_exact_encrypted_root_and_preowned_smal
             .to_string()
             .contains("initial bootstrap identity is write-once")
     );
+    // Release the original clean write refusal's registered writer before
+    // taking the later pressure baseline or shutting down its node opening.
+    drop(rejected);
     fixture.stores.write_batch(
         &[],
         &[WriteOp::put("raft.meta", b"applied", b"not-json".to_vec())],
@@ -222,17 +225,18 @@ async fn production_source_selection_uses_exact_encrypted_root_and_preowned_smal
         .bind_source(&fixture.stores, first)?
         .into_source();
     let mut second = second_backing.bind_source(&fixture.stores, second)?;
-    let mut loan = first.point_reads(&mut first_backing)?;
-    assert_eq!(loan.value_capacity(), 256);
-    let selected = kasumi_raft::selected_application_at_source_loan(
-        &mut loan,
-        ApplicationBoundaryRef::Bootstrap(&image),
-        ApplicationSelectionMode::Serving,
-        &RaftLimits::default(),
-        first_grant,
-        None,
-    )?;
-    drop(loan);
+    let selected = {
+        let mut loan = first.point_reads(&mut first_backing)?;
+        assert_eq!(loan.value_capacity(), 256);
+        kasumi_raft::selected_application_at_source_loan(
+            &mut loan,
+            ApplicationBoundaryRef::Bootstrap(&image),
+            ApplicationSelectionMode::Serving,
+            &RaftLimits::default(),
+            first_grant,
+            None,
+        )?
+    };
     assert_eq!(selected.bootstrap().digest, image.sha256());
     assert!(selected.applied().is_none());
     let failure = kasumi_raft::selected_application_at_source(

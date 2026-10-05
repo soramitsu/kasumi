@@ -4,7 +4,9 @@ use super::*;
 use crate::group::{ExistingFileSpace, FileSpaceRange};
 
 fn overflow() -> CoreError {
-    CoreError::InvalidInput("segment transaction-space arithmetic overflow")
+    CoreError::new(crate::CoreErrorCause::InvalidInput(
+        "segment transaction-space arithmetic overflow",
+    ))
 }
 
 // This uses precisely the ordinary wire fields but never creates EncodedOp's
@@ -36,15 +38,17 @@ impl SegmentWriter {
         operations: &[Operation],
     ) -> Result<(Option<ExistingFileSpace>, FileSpaceRange), CoreError> {
         if self.fenced || self.prepared.is_some() {
-            return Err(CoreError::OwnerFailed);
+            return Err(CoreError::new(crate::CoreErrorCause::OwnerFailed));
         }
         if self.reserved.is_some() || !self.stage.is_empty() || self.stage_at != self.end {
-            return Err(CoreError::InvalidInput(
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
                 "segment transaction-space requires a settled tail",
-            ));
+            )));
         }
         if self.next_batch_seq == u64::MAX {
-            return Err(CoreError::InvalidInput("batch sequence overflow"));
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
+                "batch sequence overflow",
+            )));
         }
         validate_batch(operations)?;
         if first_fresh == 0
@@ -59,9 +63,9 @@ impl SegmentWriter {
             })
             || (self.active.is_none() && self.end != 0)
         {
-            return Err(CoreError::InvalidInput(
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
                 "invalid segment transaction-space start",
-            ));
+            )));
         }
         let mut existing = self.active.map(|id| ExistingFileSpace {
             file: GroupFile::segment(id),
@@ -80,7 +84,9 @@ impl SegmentWriter {
         let mut end = self.end;
         let mut add_record = |length: u64| -> Result<(), CoreError> {
             if length > self.capacity - SEGMENT_HEADER_BYTES {
-                return Err(CoreError::InvalidInput("record exceeds segment capacity"));
+                return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
+                    "record exceeds segment capacity",
+                )));
             }
             if !active || end.checked_add(length).ok_or_else(overflow)? > self.capacity {
                 if new.count != 0 {
@@ -232,10 +238,9 @@ mod tests {
         assert_eq!(writer.reserved, Some(1));
         writer.reserved = None;
         writer.fenced = true;
-        assert!(matches!(
-            writer.transaction_space(1, &operations),
-            Err(CoreError::OwnerFailed)
-        ));
+        assert!(
+            matches!(&(writer.transaction_space(1, &operations)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+        );
         assert!(writer.position().is_none());
     }
 }

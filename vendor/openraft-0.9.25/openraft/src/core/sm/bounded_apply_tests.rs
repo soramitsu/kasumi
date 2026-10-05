@@ -286,23 +286,55 @@ async fn dropped_core_notification_retains_the_actual_opaque_responses_and_origi
     assert_eq!(dropped.load(Ordering::Acquire), 2);
 }
 
+#[test]
+fn terminal_boundary_captures_last_coalesced_range_and_rejects_all_later_senders() {
+    use super::pending_apply::PendingApply;
+    use super::CommandPayload;
+
+    let cell = PendingApply::<Config>::new();
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    cell.send(&tx, Command::apply(0, id(2)).with_seq(1)).unwrap();
+    cell.send(&tx, Command::build_snapshot().with_seq(2)).unwrap();
+    cell.send(&tx, Command::apply(3, id(4)).with_seq(3)).unwrap();
+    cell.seal(&tx).unwrap();
+    assert!(
+        !tx.is_closed(),
+        "the admission seal must also govern upgraded weak senders"
+    );
+    assert!(cell.send(&tx, Command::apply(5, id(6)).with_seq(4)).is_err());
+    let (response, _receiver) = Config::oneshot();
+    assert!(cell.send(&tx, Command::get_snapshot(response)).is_err());
+    let boundary = cell.take_next(&mut rx).unwrap();
+    assert!(matches!(boundary.payload, CommandPayload::BuildSnapshot));
+    let before = boundary.apply_before.unwrap();
+    assert_eq!((before.since, before.upto, before.seq), (0, id(2), 1));
+    let terminal = cell.take_next(&mut rx).unwrap();
+    assert!(matches!(terminal.payload, CommandPayload::Stop));
+    let before = terminal.apply_before.unwrap();
+    assert_eq!((before.since, before.upto, before.seq), (3, id(4), 3));
+    cell.seal(&tx).unwrap();
+    assert!(cell.take_next(&mut rx).is_err());
+}
+
 #[tokio::test]
 async fn pending_snapshot_keeps_source_and_permit_after_waiter_cancel_until_safe_acceptance() {
     let cell = PendingSnapshot::<Config>::new();
     let gate = Arc::new(Mutex::new(()));
     let permit = gate.clone().lock_owned().await;
     let (tx, rx) = Config::oneshot();
-    cell.offer(
-        IncomingSnapshot {
-            vote: Vote::new(1, 1),
-            snapshot: Snapshot {
-                meta: meta(7),
-                snapshot: Box::new(Cursor::new(vec![4, 5, 6])),
+    assert!(cell
+        .offer(
+            IncomingSnapshot {
+                vote: Vote::new(1, 1),
+                snapshot: Snapshot {
+                    meta: meta(7),
+                    snapshot: Box::new(Cursor::new(vec![4, 5, 6])),
+                },
+                tx,
             },
-            tx,
-        },
-        permit,
-    );
+            permit,
+        )
+        .is_ok());
     drop(rx);
     assert!(gate.clone().try_lock_owned().is_err());
     assert!(

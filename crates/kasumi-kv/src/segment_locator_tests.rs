@@ -311,17 +311,14 @@ fn cached_locator_ignores_checksum_valid_fake_header_in_previous_payload() {
     let fake_header = (&fixture.backend.bytes[fake_at..fake_at + RECORD_HEADER_BYTES])
         .try_into()
         .unwrap();
-    assert!(matches!(
-        decode_record_header(
+    assert!(matches!(&(decode_record_header(
             fake_header,
             &GROUP,
             LogPosition {
                 segment_id: SEGMENT,
                 offset: fake_at as u64,
             },
-        ),
-        Err(CoreError::Corrupt("segment record has an unknown kind"))
-    ));
+        )), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::Corrupt("segment record has an unknown kind")))));
     let mut scratch = [0; CACHED_VALUE_LOCATOR_BYTES];
     let identity = fixture.inspect(&mut scratch).unwrap();
     assert_eq!(identity.table, "accounts");
@@ -347,9 +344,15 @@ fn cached_locator_rejects_bad_cached_payload_and_invalid_lengths_before_io() {
         let mut scratch = [0; CACHED_VALUE_LOCATOR_BYTES];
         let error = fixture.inspect(&mut scratch).unwrap_err();
         if (2..=4).contains(&change) {
-            assert!(matches!(error, CoreError::InvalidInput(_)));
+            assert!(matches!(
+                (error).rejected_cause(),
+                Some(crate::CoreErrorCause::InvalidInput(_))
+            ));
         } else {
-            assert!(matches!(error, CoreError::Corrupt(_)));
+            assert!(matches!(
+                (error).rejected_cause(),
+                Some(crate::CoreErrorCause::Corrupt(_))
+            ));
         }
         assert!(fixture.backend.reads.lock().unwrap().is_empty());
     }
@@ -382,8 +385,7 @@ fn cached_locator_checks_group_record_position_and_stored_checksums() {
         }
         let mut scratch = [0; CACHED_VALUE_LOCATOR_BYTES];
         assert!(
-            matches!(
-                inspect_cached_value_identity(
+            matches!(&(inspect_cached_value_identity(
                     &fixture.backend,
                     &group,
                     fixture.location,
@@ -391,9 +393,7 @@ fn cached_locator_checks_group_record_position_and_stored_checksums() {
                     fixture.key_len,
                     &fixture.cached,
                     &mut scratch
-                ),
-                Err(CoreError::Corrupt(_))
-            ),
+                )), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::Corrupt(_)))),
             "case {change}"
         );
     }
@@ -424,7 +424,7 @@ fn cached_locator_rejects_checksum_valid_noncanonical_envelopes() {
         fixture.seal();
         let mut scratch = [0; CACHED_VALUE_LOCATOR_BYTES];
         assert!(
-            matches!(fixture.inspect(&mut scratch), Err(CoreError::Corrupt(_))),
+            matches!(&(fixture.inspect(&mut scratch)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::Corrupt(_)))),
             "case {change}"
         );
     }
@@ -436,10 +436,9 @@ fn cached_locator_rejects_truncated_or_oversized_segment_and_preserves_io_failur
         let mut fixture = Fixture::new(RecordKind::Put, b"table", b"key", vec![9; 7]);
         fixture.backend.length = Some(length);
         let mut scratch = [0; CACHED_VALUE_LOCATOR_BYTES];
-        assert!(matches!(
-            fixture.inspect(&mut scratch),
-            Err(CoreError::Corrupt(_))
-        ));
+        assert!(
+            matches!(&(fixture.inspect(&mut scratch)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::Corrupt(_))))
+        );
         assert!(fixture.backend.reads.lock().unwrap().is_empty());
     }
     let mut fixture = Fixture::new(RecordKind::Put, b"table", b"key", vec![9; 7]);

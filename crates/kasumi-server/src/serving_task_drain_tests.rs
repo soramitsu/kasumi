@@ -24,7 +24,8 @@ async fn cancelled_serving_drain_retains_joined_panic_and_exact_pending_owner() 
     let node = physical
         .create_new(&path, kasumi_store::test_utils::NODE_STORE_ID)
         .unwrap();
-    let weak = Arc::downgrade(&node);
+    let weak = node.locator();
+    let mut weak_retirement = node.clone().retire();
     let (release, waiting) = tokio::sync::oneshot::channel();
     let pending = tasks.listeners.spawn(async move {
         waiting.await?;
@@ -42,7 +43,10 @@ async fn cancelled_serving_drain_retains_joined_panic_and_exact_pending_owner() 
     assert!(tasks.maintenance.is_empty());
     assert_eq!(tasks.listeners.len(), 1);
     assert!(!pending.is_finished());
-    assert!(weak.upgrade().is_some());
+    assert!(matches!(
+        weak.try_borrow(),
+        kasumi_store::NodeStoreLookup::Active(_)
+    ));
     assert!(
         physical
             .open_existing(&path, kasumi_store::test_utils::NODE_STORE_ID)
@@ -75,7 +79,13 @@ async fn cancelled_serving_drain_retains_joined_panic_and_exact_pending_owner() 
         &failure.issues()[0]
     ));
     assert!(pending.is_finished());
-    assert!(weak.upgrade().is_none());
+    assert!({
+        assert_eq!(
+            weak_retirement.retry(),
+            kasumi_store::StorageCensusDisposition::Retired
+        );
+        matches!(weak.try_borrow(), kasumi_store::NodeStoreLookup::Missing)
+    });
     assert!(tasks.listeners.is_empty());
     let repeated = tasks.shutdown().await.unwrap_err();
     assert!(kasumi_types::drain::DrainIssueRef::ptr_eq(
@@ -114,7 +124,8 @@ async fn required_listener_failure_interrupts_pending_startup_before_retained_ow
     let node = physical
         .create_new(&path, kasumi_store::test_utils::NODE_STORE_ID)
         .unwrap();
-    let weak = Arc::downgrade(&node);
+    let weak = node.locator();
+    let mut weak_retirement = node.clone().retire();
     let (release, retained) = tokio::sync::oneshot::channel();
     tasks.maintenance.spawn(async move {
         retained.await?;
@@ -155,7 +166,10 @@ async fn required_listener_failure_interrupts_pending_startup_before_retained_ow
     })
     .await;
     drop(drain);
-    assert!(weak.upgrade().is_some());
+    assert!(matches!(
+        weak.try_borrow(),
+        kasumi_store::NodeStoreLookup::Active(_)
+    ));
     assert!(
         physical
             .open_existing(&path, kasumi_store::test_utils::NODE_STORE_ID)
@@ -166,7 +180,13 @@ async fn required_listener_failure_interrupts_pending_startup_before_retained_ow
         .await
         .unwrap()
         .unwrap();
-    assert!(weak.upgrade().is_none());
+    assert!({
+        assert_eq!(
+            weak_retirement.retry(),
+            kasumi_store::StorageCensusDisposition::Retired
+        );
+        matches!(weak.try_borrow(), kasumi_store::NodeStoreLookup::Missing)
+    });
     assert!(error.is::<ListenerFailure>());
     let reopened = physical
         .open_existing(&path, kasumi_store::test_utils::NODE_STORE_ID)
@@ -270,7 +290,7 @@ async fn aborted_listener_retains_http1_and_http2_requests_until_exact_nested_jo
         }
     }
     struct Request {
-        _node: Arc<kasumi_store::NodeStore>,
+        _node: kasumi_store::NodeStore,
         entered: std::sync::Mutex<Option<oneshot::Sender<()>>>,
         release: Arc<Notify>,
     }
@@ -296,7 +316,8 @@ async fn aborted_listener_retains_http1_and_http2_requests_until_exact_nested_jo
         let node = physical
             .create_new(&path, kasumi_store::test_utils::NODE_STORE_ID)
             .unwrap();
-        let weak = Arc::downgrade(&node);
+        let weak = node.locator();
+        let mut weak_retirement = node.clone().retire();
         let rcgen::CertifiedKey { cert, signing_key } =
             rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
         let identity = TlsIdentity::from_pem(
@@ -362,7 +383,10 @@ async fn aborted_listener_retains_http1_and_http2_requests_until_exact_nested_jo
                 .is_err()
         );
         drop(first);
-        assert!(weak.upgrade().is_some());
+        assert!(matches!(
+            weak.try_borrow(),
+            kasumi_store::NodeStoreLookup::Active(_)
+        ));
         assert!(
             physical
                 .open_existing(&path, kasumi_store::test_utils::NODE_STORE_ID)
@@ -393,7 +417,13 @@ async fn aborted_listener_retains_http1_and_http2_requests_until_exact_nested_jo
                 .unwrap(),
             "joined request"
         );
-        assert!(weak.upgrade().is_none());
+        assert!({
+            assert_eq!(
+                weak_retirement.retry(),
+                kasumi_store::StorageCensusDisposition::Retired
+            );
+            matches!(weak.try_borrow(), kasumi_store::NodeStoreLookup::Missing)
+        });
         let reopened = physical
             .open_existing(&path, kasumi_store::test_utils::NODE_STORE_ID)
             .unwrap();

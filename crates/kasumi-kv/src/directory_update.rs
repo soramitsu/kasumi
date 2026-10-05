@@ -40,13 +40,13 @@ struct Replacement {
 
 impl Replacement {
     fn push(&mut self, carry: Carry) -> Result<(), CoreError> {
-        let slot =
-            self.children
-                .iter_mut()
-                .find(|slot| slot.is_none())
-                .ok_or(CoreError::Corrupt(
-                    "directory mutation split exceeds two pages",
-                ))?;
+        let slot = self
+            .children
+            .iter_mut()
+            .find(|slot| slot.is_none())
+            .ok_or(CoreError::new(crate::CoreErrorCause::Corrupt(
+                "directory mutation split exceeds two pages",
+            )))?;
         *slot = Some(carry);
         Ok(())
     }
@@ -54,7 +54,9 @@ impl Replacement {
     fn entries(&self) -> Result<u64, CoreError> {
         self.children.iter().flatten().try_fold(0u64, |sum, child| {
             sum.checked_add(child.entries)
-                .ok_or(CoreError::Corrupt("directory mutation entries overflow"))
+                .ok_or(CoreError::new(crate::CoreErrorCause::Corrupt(
+                    "directory mutation entries overflow",
+                )))
         })
     }
 }
@@ -91,14 +93,16 @@ impl Output<'_, '_> {
         let sha256 = page_digest(bytes);
         self.admission
             .check_owner()
-            .map_err(|_| CoreError::OwnerFailed)?;
+            .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?;
         let reference = self.backend.append_page(bytes)?;
         self.admission
             .check_owner()
-            .map_err(|_| CoreError::OwnerFailed)?;
+            .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?;
         reference.validate()?;
         if reference.sha256 != sha256 {
-            return Err(CoreError::Corrupt("appended directory page digest differs"));
+            return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                "appended directory page digest differs",
+            )));
         }
         self.replacement.push(Carry {
             key,
@@ -117,12 +121,14 @@ impl Output<'_, '_> {
         entries: u64,
     ) -> Result<(), CoreError> {
         if self.remaining == 0 {
-            return Err(CoreError::Corrupt(
+            return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
                 "directory mutation record count exceeds plan",
-            ));
+            )));
         }
         if value.len() != value_bytes(self.level) {
-            return Err(CoreError::Corrupt("directory mutation value size differs"));
+            return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                "directory mutation value size differs",
+            )));
         }
         // Split near half the byte population, but preserve at least two
         // records on each side. A short table minimum followed by maximum
@@ -155,9 +161,9 @@ impl Output<'_, '_> {
 
     fn finish(mut self) -> Result<Replacement, CoreError> {
         if self.remaining != 0 {
-            return Err(CoreError::Corrupt(
+            return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
                 "directory mutation record count is incomplete",
-            ));
+            )));
         }
         self.flush()?;
         Ok(self.replacement)
@@ -189,7 +195,7 @@ impl<'a> DirectoryMutator<'a> {
         workspace
             .admission
             .check_owner()
-            .map_err(|_| CoreError::OwnerFailed)?;
+            .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?;
         Ok(Self {
             backend,
             admission: &workspace.admission,
@@ -200,9 +206,9 @@ impl<'a> DirectoryMutator<'a> {
     }
     pub(super) fn require_mode(&self, mode: WriteMode) -> Result<(), CoreError> {
         if self.mode != mode {
-            return Err(CoreError::InvalidInput(
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
                 "directory write workspace operation differs",
-            ));
+            )));
         }
         Ok(())
     }
@@ -213,11 +219,11 @@ impl<'a> DirectoryMutator<'a> {
         key: DirectoryKey<'_>,
     ) -> Result<Option<DirectoryValue>, CoreError> {
         if self.failed {
-            return Err(CoreError::OwnerFailed);
+            return Err(CoreError::new(crate::CoreErrorCause::OwnerFailed));
         }
         if self.admission.check_owner().is_err() {
             self.failed = true;
-            return Err(CoreError::OwnerFailed);
+            return Err(CoreError::new(crate::CoreErrorCause::OwnerFailed));
         }
         root.validate()?;
         key.validate()?;
@@ -289,36 +295,36 @@ impl<'a> DirectoryMutator<'a> {
         replacements: &[Option<ValueLocation>],
     ) -> Result<DirectoryRoot, CoreError> {
         if self.failed {
-            return Err(CoreError::OwnerFailed);
+            return Err(CoreError::new(crate::CoreErrorCause::OwnerFailed));
         }
         if self.admission.check_owner().is_err() {
             self.failed = true;
-            return Err(CoreError::OwnerFailed);
+            return Err(CoreError::new(crate::CoreErrorCause::OwnerFailed));
         }
         if root != leaf.root {
-            return Err(CoreError::InvalidInput(
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
                 "directory leaf plan belongs to another root",
-            ));
+            )));
         }
         root.validate()?;
         if generation == 0 || generation < root.generation {
-            return Err(CoreError::InvalidInput(
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
                 "directory mutation generation is invalid",
-            ));
+            )));
         }
         if replacements.len() != leaf.len() {
-            return Err(CoreError::InvalidInput(
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
                 "directory leaf replacement count differs",
-            ));
+            )));
         }
         self.require_mode(WriteMode::LeafRewrite)?;
         match validate_page(&leaf.buffer.bytes, root, leaf.reference) {
             Ok(info) if info == leaf.info && info.level == 0 => {}
             result => {
                 self.failed = true;
-                return Err(result
-                    .err()
-                    .unwrap_or(CoreError::Corrupt("directory leaf plan page differs")));
+                return Err(result.err().unwrap_or(CoreError::new(
+                    crate::CoreErrorCause::Corrupt("directory leaf plan page differs"),
+                )));
             }
         }
         for ((_, value), replacement) in leaf.records().zip(replacements) {
@@ -326,17 +332,19 @@ impl<'a> DirectoryMutator<'a> {
                 continue;
             };
             let DirectoryValue::Row { value, .. } = value else {
-                return Err(CoreError::InvalidInput(
+                return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
                     "directory table cannot have a physical replacement",
-                ));
+                )));
             };
             replacement.validate().map_err(|_| {
-                CoreError::InvalidInput("directory replacement location is invalid")
+                CoreError::new(crate::CoreErrorCause::InvalidInput(
+                    "directory replacement location is invalid",
+                ))
             })?;
             if replacement.len != value.len || replacement.crc != value.crc {
-                return Err(CoreError::InvalidInput(
+                return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
                     "directory replacement changes logical value bytes",
-                ));
+                )));
             }
         }
         // Admission completes before path revalidation or any append. The
@@ -376,9 +384,9 @@ impl Editor<'_> {
                 let DirectoryValue::Row { batch_seq, .. } =
                     DirectoryValue::decode(entry.key, entry.value, leaf.info.generation)?
                 else {
-                    return Err(CoreError::Corrupt(
+                    return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
                         "validated leaf replacement is not a row",
-                    ));
+                    )));
                 };
                 DirectoryValue::Row {
                     batch_seq,
@@ -395,16 +403,16 @@ impl Editor<'_> {
             let frame = frame.expect("validated leaf plan path");
             self.admission
                 .check_owner()
-                .map_err(|_| CoreError::OwnerFailed)?;
+                .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?;
             self.backend.read_page(frame.reference, input)?;
             self.admission
                 .check_owner()
-                .map_err(|_| CoreError::OwnerFailed)?;
+                .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?;
             let info = validate_page(input, root, frame.reference)?;
             if info != frame.info {
-                return Err(CoreError::Corrupt(
+                return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
                     "directory parent changed during leaf rewrite",
-                ));
+                )));
             }
             let mut at = HEADER_BYTES;
             for _ in 0..frame.child {
@@ -412,9 +420,9 @@ impl Editor<'_> {
             }
             let (entry, _) = page_entry(input, at, info.used)?;
             if DirectoryPageRef::decode(&entry.value[..PAGE_REF_BYTES])? != old_child {
-                return Err(CoreError::Corrupt(
+                return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
                     "directory parent selected another leaf path",
-                ));
+                )));
             }
             let value_at = at + entry.key_bytes.len();
             child.encode(&mut input[value_at..value_at + PAGE_REF_BYTES]);
@@ -433,14 +441,16 @@ impl Editor<'_> {
         let digest = page_digest(input);
         self.admission
             .check_owner()
-            .map_err(|_| CoreError::OwnerFailed)?;
+            .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?;
         let reference = self.backend.append_page(input)?;
         self.admission
             .check_owner()
-            .map_err(|_| CoreError::OwnerFailed)?;
+            .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?;
         reference.validate()?;
         if reference.sha256 != digest {
-            return Err(CoreError::Corrupt("appended directory page digest differs"));
+            return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                "appended directory page digest differs",
+            )));
         }
         Ok(reference)
     }
@@ -456,23 +466,25 @@ impl DirectoryMutator<'_> {
             ..
         } = edit;
         if self.failed {
-            return Err(CoreError::OwnerFailed);
+            return Err(CoreError::new(crate::CoreErrorCause::OwnerFailed));
         }
         if self.admission.check_owner().is_err() {
             self.failed = true;
-            return Err(CoreError::OwnerFailed);
+            return Err(CoreError::new(crate::CoreErrorCause::OwnerFailed));
         }
         root.validate()?;
         key.validate()?;
         if generation == 0 || generation < root.generation {
-            return Err(CoreError::InvalidInput(
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
                 "directory mutation generation is invalid",
-            ));
+            )));
         }
         if let Some(value) = value {
-            value
-                .validate(key, generation)
-                .map_err(|_| CoreError::InvalidInput("directory value is invalid"))?;
+            value.validate(key, generation).map_err(|_| {
+                CoreError::new(crate::CoreErrorCause::InvalidInput(
+                    "directory value is invalid",
+                ))
+            })?;
         }
         // The operation-specific owner already admits the path, split carries,
         // helper frames and both actual pages before any private log effects.
@@ -584,10 +596,9 @@ impl Editor<'_> {
                 return Ok(next_root);
             }
             next_root.entries = match (found, value) {
-                (None, Some(_)) => root
-                    .entries
-                    .checked_add(1)
-                    .ok_or(CoreError::InvalidInput("directory entry count overflow"))?,
+                (None, Some(_)) => root.entries.checked_add(1).ok_or(CoreError::new(
+                    crate::CoreErrorCause::InvalidInput("directory entry count overflow"),
+                ))?,
                 (Some(_), None) => root.entries - 1,
                 _ => root.entries,
             };
@@ -661,11 +672,11 @@ impl Editor<'_> {
             let frame = frame.expect("descent recorded parent");
             self.admission
                 .check_owner()
-                .map_err(|_| CoreError::OwnerFailed)?;
+                .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?;
             self.backend.read_page(frame.reference, input)?;
             self.admission
                 .check_owner()
-                .map_err(|_| CoreError::OwnerFailed)?;
+                .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?;
             let info = validate_page(input, root, frame.reference)?;
             // The complete immutable reference was checked against ancestor
             // ranges on descent. Re-reading it cannot change its canonical
@@ -676,9 +687,9 @@ impl Editor<'_> {
                 || info.entries != frame.info.entries
                 || info.generation != frame.info.generation
             {
-                return Err(CoreError::Corrupt(
+                return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
                     "directory parent changed during mutation",
-                ));
+                )));
             }
             let replaced = nth_entry(input, info, frame.child)?;
             let payload = info.used - HEADER_BYTES - replaced.key_bytes.len() - BRANCH_VALUE_BYTES
@@ -709,12 +720,16 @@ impl Editor<'_> {
             replacement = writer.finish()?;
         }
         if replacement.entries()? != next_root.entries {
-            return Err(CoreError::Corrupt("directory mutation root count differs"));
+            return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                "directory mutation root count differs",
+            )));
         }
         let mut height = root.height.max(1);
         if replacement.children[1].is_some() {
             if height as usize == MAX_HEIGHT {
-                return Err(CoreError::InvalidInput("directory exceeds maximum height"));
+                return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
+                    "directory exceeds maximum height",
+                )));
             }
             let payload = replacement
                 .children
@@ -760,18 +775,18 @@ impl DirectoryMutator<'_> {
     /// the owner's durable root/log publication. This never publishes it.
     pub(crate) fn finish(&mut self, root: DirectoryRoot) -> Result<DirectoryRoot, CoreError> {
         if self.failed {
-            return Err(CoreError::OwnerFailed);
+            return Err(CoreError::new(crate::CoreErrorCause::OwnerFailed));
         }
         root.validate()?;
         let result = self
             .admission
             .check_owner()
-            .map_err(|_| CoreError::OwnerFailed)
+            .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))
             .and_then(|()| self.backend.sync_pages())
             .and_then(|()| {
                 self.admission
                     .check_owner()
-                    .map_err(|_| CoreError::OwnerFailed)
+                    .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))
             });
         if result.is_err() {
             self.failed = true;
@@ -794,7 +809,7 @@ pub(crate) struct DirectoryWriteWorkspace {
     buffers: Vec<u8>,
     admission: Arc<dyn StorageAdmission>,
     mode: WriteMode,
-    _lease: Box<dyn ResidentLease>,
+    _lease: NativeResidentLease,
 }
 impl DirectoryWriteWorkspace {
     pub(crate) fn for_edits(admission: Arc<dyn StorageAdmission>) -> Result<Self, CoreError> {
@@ -845,14 +860,14 @@ impl DirectoryWriteWorkspace {
         let mut buffers = Vec::new();
         buffers
             .try_reserve_exact(bytes)
-            .map_err(|_| CoreError::CapacityDenied)?;
+            .map_err(|_| CoreError::new(crate::CoreErrorCause::CapacityDenied))?;
         if buffers.capacity() != bytes {
-            return Err(CoreError::CapacityDenied);
+            return Err(CoreError::new(crate::CoreErrorCause::CapacityDenied));
         }
         buffers.resize(bytes, 0);
         admission
             .check_owner()
-            .map_err(|_| CoreError::OwnerFailed)?;
+            .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?;
         Ok(Self {
             buffers,
             admission,
@@ -878,7 +893,7 @@ impl DirectoryWriteWorkspace {
     ) -> Result<Option<DirectoryValue>, CoreError> {
         self.admission
             .check_owner()
-            .map_err(|_| CoreError::OwnerFailed)?;
+            .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?;
         root.validate()?;
         key.validate()?;
         let Some(reference) = root.page else {

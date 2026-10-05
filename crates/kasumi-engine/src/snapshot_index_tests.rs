@@ -34,11 +34,15 @@ fn pending_index_commits_full_prefix_and_final_tail_at_bounded_boundaries() {
         .insert(&16u64.to_be_bytes(), &[16], &mut || Ok(()))
         .unwrap();
     for id in 0u64..16 {
-        assert_eq!(index.get(&id.to_be_bytes()).unwrap(), Some(vec![id as u8]));
+        let current = index.get(&id.to_be_bytes()).unwrap();
+        assert_eq!(current.as_deref(), Some([id as u8].as_slice()));
     }
     assert!(index.get(&16u64.to_be_bytes()).unwrap().is_none());
     pending.flush(&mut || Ok(())).unwrap();
-    assert_eq!(index.get(&16u64.to_be_bytes()).unwrap(), Some(vec![16]));
+    {
+        let current = index.get(&16u64.to_be_bytes()).unwrap();
+        assert_eq!(current.as_deref(), Some([16_u8].as_slice()));
+    }
     // Finishing an already empty tail is harmless and retains every row.
     pending.flush(&mut || Ok(())).unwrap();
     let mut rows = 0;
@@ -82,7 +86,10 @@ fn denied_flush_and_duplicate_insert_drop_abort_only_the_pending_batch() {
     }
     assert!(index.get(b"first").unwrap().is_none());
     assert!(index.get(b"second").unwrap().is_none());
-    assert_eq!(index.get(b"retained").unwrap(), Some(b"committed".to_vec()));
+    {
+        let current = index.get(b"retained").unwrap();
+        assert_eq!(current.as_deref(), Some(b"committed".as_slice()));
+    }
     {
         let mut pending = PendingIndex::new(&index);
         pending
@@ -94,17 +101,20 @@ fn denied_flush_and_duplicate_insert_drop_abort_only_the_pending_batch() {
         assert!(error.to_string().contains("duplicate staged key"));
     }
     assert!(index.get(b"unpublished").unwrap().is_none());
-    assert_eq!(index.get(b"retained").unwrap(), Some(b"committed".to_vec()));
+    {
+        let current = index.get(b"retained").unwrap();
+        assert_eq!(current.as_deref(), Some(b"committed".as_slice()));
+    }
     // Both failures leave a healthy table able to admit an exact retry.
     let mut retry = PendingIndex::new(&index);
     retry
         .insert(b"unpublished", b"accepted", &mut || Ok(()))
         .unwrap();
     retry.flush(&mut || Ok(())).unwrap();
-    assert_eq!(
-        index.get(b"unpublished").unwrap(),
-        Some(b"accepted".to_vec())
-    );
+    {
+        let current = index.get(b"unpublished").unwrap();
+        assert_eq!(current.as_deref(), Some(b"accepted".as_slice()));
+    }
 }
 
 fn header() -> TenantState {

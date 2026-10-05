@@ -50,9 +50,9 @@ impl DiskState {
         }
         if root.directory().is_none() {
             if !root.garbage().is_empty() {
-                return Err(CoreError::Corrupt(
+                return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
                     "directory garbage has no committed root",
-                ));
+                )));
             }
             progress.complete = true;
             return Ok(progress);
@@ -77,7 +77,7 @@ impl DiskState {
                 let group = self.owner.group_id;
                 self.cache
                     .lock()
-                    .map_err(|_| CoreError::OwnerFailed)?
+                    .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?
                     .remove_matching(|key| match key {
                         NativeIdentity::Page {
                             group_id, arena_id, ..

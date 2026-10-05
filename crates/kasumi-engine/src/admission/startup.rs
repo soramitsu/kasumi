@@ -27,13 +27,34 @@ pub struct StartupScopeId {
     pub generation: u64,
 }
 
+#[path = "prepaid_startup.rs"]
+pub mod prepaid;
+pub use prepaid::{
+    PrepaidStartup, PreparedStartup, StartupBacking, StartupTerminal, StartupTerminalId,
+    StartupTerminalLoan, StartupWorkerReport,
+};
+
+fn next_generation() -> Result<u64> {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_update(
+        std::sync::atomic::Ordering::SeqCst,
+        std::sync::atomic::Ordering::SeqCst,
+        |value| value.checked_add(1),
+    )
+    .map_err(|_| Error::new(ErrorCode::Unavailable, "startup identity exhausted"))
+}
+
+enum CensusOwner {
+    Scope(Arc<StartupScope>),
+    Terminal(prepaid::ErasedTerminal),
+}
+
 struct CensusSlot {
     generation: u64,
     reserved: bool,
-    owner: Option<Arc<StartupScope>>,
+    owner: Option<CensusOwner>,
 }
 pub(super) struct Census {
-    next: u64,
     slots: Box<[CensusSlot]>,
 }
 impl Census {
@@ -49,7 +70,6 @@ impl Census {
             owner: None,
         });
         Ok(Self {
-            next: 0,
             slots: slots.into_boxed_slice(),
         })
     }
@@ -321,7 +341,9 @@ impl StartupScope {
         let retired = {
             let mut census = self.core.startups.lock().unwrap_or_else(|p| p.into_inner());
             let slot = &mut census.slots[self.id.slot];
-            if slot.generation != self.id.generation {
+            if slot.generation != self.id.generation
+                || !matches!(slot.owner.as_ref(), Some(CensusOwner::Scope(owner)) if std::ptr::eq(owner.as_ref(), self))
+            {
                 return;
             }
             slot.reserved = false;
@@ -443,10 +465,7 @@ impl MemoryCore {
                 .ok_or_else(|| {
                     Error::new(ErrorCode::ResourceExhausted, "startup scope census is full")
                 })?;
-            let generation = census.next;
-            census.next = generation.checked_add(1).ok_or_else(|| {
-                Error::new(ErrorCode::Unavailable, "startup scope identity exhausted")
-            })?;
+            let generation = next_generation()?;
             census.slots[slot].reserved = true;
             census.slots[slot].generation = generation;
             CensusTicket {
@@ -477,7 +496,7 @@ impl MemoryCore {
         });
         {
             let mut census = self.startups.lock().unwrap_or_else(|p| p.into_inner());
-            census.slots[ticket.id.slot].owner = Some(scope.clone());
+            census.slots[ticket.id.slot].owner = Some(CensusOwner::Scope(scope.clone()));
             ticket.published = true;
         }
         Ok(scope)
@@ -490,7 +509,10 @@ impl MemoryCore {
             .unwrap_or_else(|p| p.into_inner())
             .slots
             .get(index)
-            .and_then(|slot| slot.owner.clone())
+            .and_then(|slot| match slot.owner.as_ref() {
+                Some(CensusOwner::Scope(scope)) => Some(scope.clone()),
+                Some(CensusOwner::Terminal(_)) | None => None,
+            })
     }
     pub fn startup_scope_capacity(&self) -> usize {
         self.data.config.max_startup_scopes

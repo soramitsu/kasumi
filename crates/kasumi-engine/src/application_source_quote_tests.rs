@@ -31,29 +31,34 @@ fn producer_plan(
     let response = kasumi_raft::AppliedResponse::application(Vec::new());
     let expectation =
         kasumi_raft::PublicationExpectation::for_entry(&fixture.stores, &position, &[], &response)?;
-    kasumi_raft::with_application_publisher_for_test(&fixture.stores, &position, |publisher| {
-        let receipt = publisher.commit_with_selection(
-            response,
-            &[],
-            &mut capture,
-            expectation.challenge()?,
-        )?;
-        expectation.consume(
-            receipt,
-            &capture
-                .0
-                .as_ref()
-                .context("actual producer omitted plan")?
-                .0,
-        )?;
-        Ok(())
-    })?;
+    kasumi_raft::with_application_publisher_for_test(
+        &fixture.stores,
+        &position,
+        |publisher| -> anyhow::Result<()> {
+            let receipt = publisher.commit_with_selection(
+                response,
+                &[],
+                &mut capture,
+                expectation.challenge()?,
+            )?;
+            expectation.consume(
+                receipt,
+                &capture
+                    .0
+                    .as_ref()
+                    .context("actual producer omitted plan")?
+                    .0,
+            )?;
+            Ok(())
+        },
+    )?;
     let (plan, points) = capture.0.context("producer omitted exact plan")?;
     Ok((plan, position, points))
 }
 
 #[tokio::test]
-async fn source_quote_is_allocation_free_bound_and_covers_real_capture_peak() -> Result<()> {
+async fn source_quote_is_allocation_free_bound_and_covers_real_capture_peak()
+-> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
     let initial = fixture.storage.admission.snapshot();
     let (plan, position, points) = producer_plan(&fixture)?;
@@ -119,7 +124,7 @@ async fn source_quote_is_allocation_free_bound_and_covers_real_capture_peak() ->
 
 #[tokio::test]
 async fn source_quote_reader_retained_amount_matches_actual_installed_provider_requests()
--> Result<()> {
+-> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
     let quote = fixture.stores.quote_read_memory()?;
     let before = fixture.storage.admission.snapshot();
@@ -186,7 +191,8 @@ fn source_quote_actual_engine_provider_token_is_preclaimed_and_request_is_pure()
 }
 
 #[tokio::test]
-async fn source_quote_covered_planning_tracks_actual_rows_and_transferred_backing() -> Result<()> {
+async fn source_quote_covered_planning_tracks_actual_rows_and_transferred_backing()
+-> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
     let (advance, _, points) = producer_plan(&fixture)?;
     drop(points);

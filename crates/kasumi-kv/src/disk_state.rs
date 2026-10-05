@@ -6,6 +6,8 @@
 //! from replay without retaining a key map. Core retains the exact backend
 //! owner through opening failure and final native close.
 
+#[cfg(test)]
+use crate::core::ResidentLease;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -14,14 +16,16 @@ use crate::arena::{DirectoryArenaBackend, DirectoryArenaRoll, recover_directory_
 use crate::cache::{CacheConfig, CacheLoadError, CacheStats, CachedBytes, NativeCache};
 use crate::checked_group::CheckedGroup;
 use crate::core::{
-    CacheWarmup, CoreError, CorePanic, MAX_KEY_BYTES, MAX_TABLE_BYTES, Operation, ResidentLease,
-    StorageAdmission,
+    CacheWarmup, CoreError, CorePanic, MAX_KEY_BYTES, MAX_TABLE_BYTES, NativeResidentLease,
+    Operation, StorageAdmission,
 };
 use crate::directory::{
     DirectoryEdit, DirectoryKey, DirectoryMutator, DirectoryReader, DirectoryRecord, DirectoryRoot,
     DirectoryValue, DirectoryWriteWorkspace, MAX_DIRECTORY_BATCH_EDITS,
 };
 use crate::group::{GroupFile, SegmentGroupBackend};
+use crate::native_backend::BackendRef;
+use crate::native_owned_arc::NativeOwnedArc;
 use crate::page_cache::{CachedDirectoryBackend, NativeIdentity, NativeSharedCache};
 use crate::root::{
     DirectoryCommit, MAX_GARBAGE, RootSelection, Superblock, publish_root, repair_mirror,
@@ -65,22 +69,22 @@ const SEGMENT_FIXED_WORKSPACE: usize =
     (64 << 10) + MAX_TABLE_BYTES + MAX_KEY_BYTES + 128 + 3 * crate::root::ROOT_SLOT_BYTES;
 
 struct RootOwner {
-    backend: Arc<dyn SegmentGroupBackend>,
+    backend: BackendRef,
     admission: Arc<dyn StorageAdmission>,
     root: Mutex<Superblock>,
     group_id: [u8; 16],
     failed: AtomicBool,
-    _lease: Box<dyn ResidentLease>,
+    _lease: Option<NativeResidentLease>,
 }
 
 impl RootOwner {
     fn check(&self) -> Result<(), CoreError> {
         if self.failed.load(Ordering::Acquire) {
-            return Err(CoreError::OwnerFailed);
+            return Err(CoreError::new(crate::CoreErrorCause::OwnerFailed));
         }
         if self.admission.check_owner().is_err() {
             self.failed.store(true, Ordering::Release);
-            return Err(CoreError::OwnerFailed);
+            return Err(CoreError::new(crate::CoreErrorCause::OwnerFailed));
         }
         Ok(())
     }
@@ -89,7 +93,7 @@ impl RootOwner {
         self.check()?;
         self.root.lock().map_err(|_| {
             self.failed.store(true, Ordering::Release);
-            CoreError::OwnerFailed
+            CoreError::new(crate::CoreErrorCause::OwnerFailed)
         })
     }
 
@@ -131,7 +135,7 @@ impl DirectoryArenaRoll for RootOwner {
     }
 }
 
-struct Roll(Arc<RootOwner>);
+struct Roll(NativeOwnedArc<RootOwner>);
 impl SegmentRoll for Roll {
     fn reserve(&mut self, sealed: Option<SealedSegment>) -> Result<u64, CoreError> {
         let mut root = self.0.lock()?;
@@ -150,9 +154,9 @@ impl SegmentRoll for Roll {
 /// All data-sized state is on disk or in the one byte-bounded cache. The
 /// selected root, writer, one warm-up cursor and allocation owner are bounded.
 pub(crate) struct DiskState {
-    owner: Arc<RootOwner>,
-    arena: Arc<DirectoryArenaBackend>,
-    pages: CachedDirectoryBackend<Arc<DirectoryArenaBackend>>,
+    owner: NativeOwnedArc<RootOwner>,
+    arena: NativeOwnedArc<DirectoryArenaBackend>,
+    pages: CachedDirectoryBackend<NativeOwnedArc<DirectoryArenaBackend>>,
     cache: NativeSharedCache,
     writer: SegmentWriter,
     selected: DirectoryRoot,
@@ -161,187 +165,53 @@ pub(crate) struct DiskState {
     compact: Compaction,
     warmup: Warmup,
     auto_warm: AutoWarm,
-    _lease: Box<dyn ResidentLease>,
+    _lease: Option<NativeResidentLease>,
 }
 
+#[path = "disk_opening.rs"]
+mod opening;
+pub(crate) use opening::DiskOpening;
+
 impl DiskState {
+    #[cfg(test)]
+    pub(crate) fn owner_allocation_addresses_for_test(&self) -> [usize; 5] {
+        [
+            self.owner.as_ref() as *const RootOwner as usize,
+            self.owner
+                ._lease
+                .as_ref()
+                .expect("original root grant")
+                .allocation_address_for_test(),
+            self.arena.as_ref() as *const DirectoryArenaBackend as usize,
+            self.arena._lease_address_for_test(),
+            self.arena.roll_address_for_test(),
+        ]
+    }
+    #[cfg(test)]
+    #[allow(
+        clippy::result_large_err,
+        reason = "The fixture retains the actual opening and cleanup inline until observed disposal."
+    )]
     pub(crate) fn create(
         backend: Arc<dyn SegmentGroupBackend>,
         admission: Arc<dyn StorageAdmission>,
         group_id: [u8; 16],
         config: CacheConfig,
-    ) -> Result<Self, CoreError> {
-        let lease = fixed_admission(&admission)?;
-        let backend: Arc<dyn SegmentGroupBackend> =
-            Arc::new(CheckedGroup::new(backend, admission.clone()));
-        if !matches!(select_root(backend.as_ref())?, RootSelection::Empty) {
-            return Err(CoreError::InvalidInput("group already contains a root"));
-        }
-        let genesis = Superblock::genesis(group_id);
-        genesis.visit_census(backend.as_ref(), |_| Ok(()))?;
-        let root = genesis.initialized()?;
-        let state = Self::assemble(
-            backend.clone(),
-            admission,
-            root.clone(),
-            SegmentWriter::new(group_id),
-            empty_root(group_id),
-            config,
-            lease,
-        )?;
-        publish_root(backend.as_ref(), &genesis, &root)?;
-        state.owner.check()?;
-        Ok(state)
+    ) -> Result<Self, opening::DiskOpeningFailure> {
+        opening::fixture(backend, admission, group_id, config, true)
     }
-
+    #[cfg(test)]
+    #[allow(
+        clippy::result_large_err,
+        reason = "The fixture retains the actual opening and cleanup inline until observed disposal."
+    )]
     pub(crate) fn open(
         backend: Arc<dyn SegmentGroupBackend>,
         admission: Arc<dyn StorageAdmission>,
         group_id: [u8; 16],
         config: CacheConfig,
-    ) -> Result<Self, CoreError> {
-        let lease = fixed_admission(&admission)?;
-        let backend: Arc<dyn SegmentGroupBackend> =
-            Arc::new(CheckedGroup::new(backend, admission.clone()));
-        let RootSelection::Selected {
-            mut superblock,
-            slot,
-            mirrored,
-        } = select_root(backend.as_ref())?
-        else {
-            return Err(CoreError::Corrupt("group has no initialized root"));
-        };
-        if superblock.group_id() != &group_id {
-            return Err(CoreError::Corrupt("group incarnation differs from owner"));
-        }
-        if superblock.checkpoint().is_some() {
-            return Err(CoreError::Corrupt("checkpoint-only root is retired"));
-        }
-        let mut selected = superblock
-            .directory()
-            .map_or(empty_root(group_id), |commit| commit.root);
-        let mut state = Self::assemble(
-            backend.clone(),
-            admission.clone(),
-            superblock.clone(),
-            SegmentWriter::new(group_id),
-            selected,
-            config,
-            lease,
-        )?;
-        superblock.visit_census(backend.as_ref(), |_| Ok(()))?;
-        if !mirrored {
-            repair_mirror(backend.as_ref(), &superblock, slot)?;
-        }
-        if let Some(id) = superblock.pending_directory() {
-            recover_directory_intent(backend.as_ref(), &admission, group_id, id)?;
-            let next = superblock.confirm_directory(id)?;
-            publish_root(backend.as_ref(), &superblock, &next)?;
-            superblock = next;
-        }
-        let start = superblock
-            .directory()
-            .map_or(ReplayStart::GENESIS, |commit| commit.start);
-        validate_directory_anchor(backend.as_ref(), group_id, selected, &start)?;
-        let _replay_lease = admission
-            .reserve_workspace(segment::root_replay_workspace_bytes() + LEASE_ALLOWANCE as u64)?;
-        let end = replay_roots(
-            backend.as_ref(),
-            group_id,
-            &start,
-            &superblock.log_bounds(),
-            |batch| {
-                selected = batch.directory_root;
-                Ok(())
-            },
-        )?;
-        end.discard_tail(backend.as_ref())?;
-        if selected.generation != start.batch_seq {
-            let position = end
-                .directory_end
-                .ok_or(CoreError::Corrupt("replayed directory has no log position"))?;
-            let commit = DirectoryCommit {
-                root: selected,
-                start: ReplayStart {
-                    position,
-                    batch_seq: end.batch_seq,
-                    chain: end.chain,
-                },
-            };
-            validate_directory_anchor(backend.as_ref(), group_id, selected, &commit.start)?;
-            let next = superblock.install_directory(commit)?;
-            publish_root(backend.as_ref(), &superblock, &next)?;
-            superblock = next;
-        }
-        state.writer = SegmentWriter::resume(group_id, &end);
-        drop(_replay_lease);
-        state.selected = selected;
-        *state.owner.lock()? = superblock;
-        state.finish_recorded_garbage()?;
-        // Verify the selected root page before reporting an opened database.
-        // Subsequent descent validates every child digest and value location.
-        let _ = DirectoryReader::new(state.arena.as_ref(), state.owner.admission.clone()).next(
-            selected,
-            DirectoryKey::table("\0"),
-            false,
-        )?;
-        state.owner.check()?;
-        Ok(state)
-    }
-
-    fn assemble(
-        backend: Arc<dyn SegmentGroupBackend>,
-        admission: Arc<dyn StorageAdmission>,
-        root: Superblock,
-        writer: SegmentWriter,
-        selected: DirectoryRoot,
-        config: CacheConfig,
-        lease: Box<dyn ResidentLease>,
-    ) -> Result<Self, CoreError> {
-        let owner_lease = admission.reserve_workspace(
-            (std::mem::size_of::<RootOwner>()
-                + 2 * MAX_GARBAGE * std::mem::size_of::<GroupFile>()
-                + LEASE_ALLOWANCE
-                + 2 * ALLOCATION_ALLOWANCE) as u64,
-        )?;
-        let group_id = *root.group_id();
-        let owner = Arc::new(RootOwner {
-            backend: backend.clone(),
-            admission: admission.clone(),
-            root: Mutex::new(root),
-            group_id,
-            failed: AtomicBool::new(false),
-            _lease: owner_lease,
-        });
-        let arena = Arc::new(DirectoryArenaBackend::new(
-            backend,
-            owner.clone(),
-            admission.clone(),
-            group_id,
-        )?);
-        let cache = Arc::new(Mutex::new(NativeCache::new(config, admission.clone())));
-        let pins = SnapshotPins::new(admission.clone(), group_id, MAX_PINNED_ROOTS)?;
-        let pages = CachedDirectoryBackend::with_shared_cache(
-            arena.clone(),
-            admission,
-            group_id,
-            cache.clone(),
-        );
-        owner.check()?;
-        Ok(Self {
-            owner,
-            arena,
-            pages,
-            cache,
-            writer,
-            selected,
-            pins,
-            reclaim: Reclamation::default(),
-            compact: Compaction::default(),
-            warmup: Warmup::default(),
-            auto_warm: AutoWarm::default(),
-            _lease: lease,
-        })
+    ) -> Result<Self, opening::DiskOpeningFailure> {
+        opening::fixture(backend, admission, group_id, config, false)
     }
 
     fn run<T>(
@@ -354,14 +224,18 @@ impl DiskState {
             self.owner.check()?;
             Ok(value)
         }))
-        .unwrap_or_else(|panic| Err(CoreError::Panicked(Box::new(CorePanic::new(panic)))));
+        .unwrap_or_else(|panic| {
+            Err(CoreError::new(crate::CoreErrorCause::Panicked(
+                CorePanic::new(panic),
+            )))
+        });
         if self.writer.is_fenced() || result.as_ref().is_err_and(CoreError::fences_owner) {
             self.owner.failed.store(true, Ordering::Release);
         }
         if self.owner.failed.load(Ordering::Acquire)
             && result.as_ref().is_err_and(|error| !error.fences_owner())
         {
-            return Err(CoreError::OwnerFailed);
+            return Err(CoreError::new(crate::CoreErrorCause::OwnerFailed));
         }
         result
     }
@@ -378,7 +252,11 @@ impl DiskState {
     pub(crate) fn snapshot(&self) -> Result<SnapshotPin, CoreError> {
         self.owner.check()?;
         let result = catch_unwind(AssertUnwindSafe(|| self.pins.acquire(self.selected)))
-            .unwrap_or_else(|panic| Err(CoreError::Panicked(Box::new(CorePanic::new(panic)))));
+            .unwrap_or_else(|panic| {
+                Err(CoreError::new(crate::CoreErrorCause::Panicked(
+                    CorePanic::new(panic),
+                )))
+            });
         if result.as_ref().is_err_and(CoreError::fences_owner) {
             self.owner.failed.store(true, Ordering::Release);
         }
@@ -394,9 +272,9 @@ impl DiskState {
         let root = self.pins.validate(pin)?;
         root.validate()?;
         if root.group_id != self.owner.group_id || root.generation > self.selected.generation {
-            return Err(CoreError::InvalidInput(
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
                 "snapshot does not belong to this disk state",
-            ));
+            )));
         }
         Ok(root)
     }
@@ -427,16 +305,16 @@ impl DiskState {
             let root = state.check_snapshot(root)?;
             let reader = DirectoryReader::new(&state.pages, state.owner.admission.clone());
             if reader.get(root, DirectoryKey::table(table))?.is_none() {
-                return Err(CoreError::MissingTable);
+                return Err(CoreError::new(crate::CoreErrorCause::MissingTable));
             }
             match reader.get(root, DirectoryKey::row(table, key))? {
                 None => Ok(None),
                 Some(DirectoryValue::Row { value, .. }) => {
                     state.value(value, table, key, max_value_bytes).map(Some)
                 }
-                Some(DirectoryValue::Table { .. }) => {
-                    Err(CoreError::Corrupt("row lookup returned a table"))
-                }
+                Some(DirectoryValue::Table { .. }) => Err(CoreError::new(
+                    crate::CoreErrorCause::Corrupt("row lookup returned a table"),
+                )),
             }
         })
     }
@@ -452,7 +330,7 @@ impl DiskState {
             let root = state.check_snapshot(root)?;
             let reader = DirectoryReader::new(&state.pages, state.owner.admission.clone());
             if reader.get(root, DirectoryKey::table(table))?.is_none() {
-                return Err(CoreError::MissingTable);
+                return Err(CoreError::new(crate::CoreErrorCause::MissingTable));
             }
             let (lower, exclusive) = after
                 .filter(|after| *after >= prefix)
@@ -475,12 +353,15 @@ impl DiskState {
         self.owner.check()?;
         value.validate()?;
         if value.len as usize > max_value_bytes {
-            return Err(CoreError::InvalidInput(
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
                 "value exceeds the caller's read bound",
-            ));
+            )));
         }
         let identity = NativeIdentity::value(self.owner.group_id, value, table, key)?;
-        let mut cache = self.cache.lock().map_err(|_| CoreError::OwnerFailed)?;
+        let mut cache = self
+            .cache
+            .lock()
+            .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?;
         let result = cache
             .load(identity, value.len as usize, |out| {
                 self.owner.check()?;
@@ -489,7 +370,9 @@ impl DiskState {
                     .read(GroupFile::segment(value.segment_id), value.offset, out)?;
                 self.owner.check()?;
                 if crc32c(out) != value.crc {
-                    return Err(CoreError::Corrupt("value checksum differs"));
+                    return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                        "value checksum differs",
+                    )));
                 }
                 Ok(())
             })
@@ -499,20 +382,17 @@ impl DiskState {
             })?;
         self.owner.check()?;
         if result.as_bytes().len() != value.len as usize || crc32c(result.as_bytes()) != value.crc {
-            return Err(CoreError::Corrupt("cached value identity differs"));
+            return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                "cached value identity differs",
+            )));
         }
         Ok(result)
     }
 
     pub(crate) fn commit(&mut self, operations: &[Operation]) -> Result<(), CoreError> {
         self.run(|state| {
-            catch_unwind(AssertUnwindSafe(|| state.commit_inner(operations))).unwrap_or_else(
-                |panic| {
-                    Err(CoreError::UnknownCommit(std::io::Error::other(
-                        CorePanic::new(panic),
-                    )))
-                },
-            )
+            catch_unwind(AssertUnwindSafe(|| state.commit_inner(operations)))
+                .unwrap_or_else(|panic| Err(CoreError::unknown_commit(CorePanic::new(panic))))
         })
     }
 
@@ -520,28 +400,38 @@ impl DiskState {
         // Preflight table existence against the selected tree and earlier
         // creates in this batch. No growing all-table overlay is retained.
         if operations.is_empty() || operations.len() > MAX_BATCH_OPERATIONS {
-            return Err(CoreError::InvalidInput("empty or oversized transaction"));
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
+                "empty or oversized transaction",
+            )));
         }
         // Abort must never request its first reservation after private effects.
         // Hold its bounded replay workspace until prepare is committed or undone.
         let workspace_bytes = segment::prepared_batch_workspace_bytes(operations)?;
         let values_bytes = (operations.len() * std::mem::size_of::<Option<ValueLocation>>()) as u64;
-        let _values = self.owner.admission.reserve_workspace(
-            values_bytes
-                + std::mem::size_of::<crate::group::TransactionSpacePlan>() as u64
-                + (LEASE_ALLOWANCE + ALLOCATION_ALLOWANCE) as u64,
-        )?;
+        let _values = self
+            .owner
+            .admission
+            .reserve_workspace(
+                values_bytes
+                    + std::mem::size_of::<crate::group::TransactionSpacePlan>() as u64
+                    + (LEASE_ALLOWANCE + ALLOCATION_ALLOWANCE) as u64,
+            )
+            .map(NativeResidentLease::new)?;
         // One fixed borrowed edit run is reused below. Charge it and the
         // temporary descriptors before preparing any private log effects.
         let directory_batch_bytes = std::mem::size_of::<
             [DirectoryEdit<'_>; MAX_DIRECTORY_BATCH_EDITS],
         >() + 4 * std::mem::size_of::<DirectoryEdit<'_>>();
-        let _workspace = self.owner.admission.reserve_workspace(
-            (workspace_bytes - values_bytes)
-                .checked_add(LEASE_ALLOWANCE as u64)
-                .and_then(|bytes| bytes.checked_add(directory_batch_bytes as u64))
-                .ok_or(CoreError::CapacityDenied)?,
-        )?;
+        let _workspace = self
+            .owner
+            .admission
+            .reserve_workspace(
+                (workspace_bytes - values_bytes)
+                    .checked_add(LEASE_ALLOWANCE as u64)
+                    .and_then(|bytes| bytes.checked_add(directory_batch_bytes as u64))
+                    .ok_or(CoreError::new(crate::CoreErrorCause::CapacityDenied))?,
+            )
+            .map(NativeResidentLease::new)?;
         let mut directory_workspace =
             DirectoryWriteWorkspace::for_edits(self.owner.admission.clone())?;
         // All proof buffers and snapshot coverage are acquired before any
@@ -568,7 +458,7 @@ impl DiskState {
             if directory_workspace.get(&preflight, self.selected, DirectoryKey::table(table))?.is_none()
                 && !operations[..index].iter().any(|operation| matches!(operation, Operation::CreateTable { table: previous } if previous.as_ref() == table))
             {
-                return Err(CoreError::MissingTable);
+                return Err(CoreError::new(crate::CoreErrorCause::MissingTable));
             }
             verified_table = Some(table);
         }
@@ -578,18 +468,19 @@ impl DiskState {
         let plan = {
             let root = self.owner.lock()?;
             if root.pending_segment().is_some() || root.pending_directory().is_some() {
-                return Err(CoreError::InvalidInput(
+                return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
                     "transaction allocation intent outstanding",
-                ));
+                )));
             }
-            let first_segment = root
-                .last_segment_id()
-                .checked_add(1)
-                .ok_or(CoreError::InvalidInput("segment identifier overflow"))?;
+            let first_segment = root.last_segment_id().checked_add(1).ok_or(CoreError::new(
+                crate::CoreErrorCause::InvalidInput("segment identifier overflow"),
+            ))?;
             let first_directory = root
                 .last_directory_id()
                 .checked_add(1)
-                .ok_or(CoreError::InvalidInput("directory identifier overflow"))?;
+                .ok_or(CoreError::new(crate::CoreErrorCause::InvalidInput(
+                    "directory identifier overflow",
+                )))?;
             let (segment, new_segments) =
                 self.writer.transaction_space(first_segment, operations)?;
             let (directory, new_directories) = self.arena.transaction_space(
@@ -610,8 +501,12 @@ impl DiskState {
             .backend
             .reserve_transaction(&plan)
             .map_err(|error| match error {
-                crate::group::TransactionReserveError::CapacityDenied => CoreError::CapacityDenied,
-                crate::group::TransactionReserveError::Failed(original) => CoreError::Io(original),
+                crate::group::TransactionReserveError::CapacityDenied => {
+                    CoreError::new(crate::CoreErrorCause::CapacityDenied)
+                }
+                crate::group::TransactionReserveError::Failed(original) => {
+                    CoreError::new(crate::CoreErrorCause::Io(original))
+                }
             })?;
         let mut roll = Roll(self.owner.clone());
         let prepared =
@@ -694,7 +589,7 @@ impl DiskState {
                             NativeIdentity::value(self.owner.group_id, old, edit.key.table, row)?;
                         self.cache
                             .lock()
-                            .map_err(|_| CoreError::OwnerFailed)?
+                            .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?
                             .mark_publication_candidate(identity)?;
                     }
                 }
@@ -728,7 +623,7 @@ impl DiskState {
         drop(directory_workspace);
         let root = match result {
             Ok(root) => root,
-            Err(error @ CoreError::CapacityDenied) => {
+            Err(error) if error.is_capacity_denied() => {
                 // Private immutable arena pages may remain durable/accounted.
                 // Physical settlement releases unused promises, not published
                 // data. Only exact prepared-log replay can then prove rollback.
@@ -764,13 +659,13 @@ impl DiskState {
         // The log commit is durable. Any subsequent failure is indeterminate
         // to this caller and fences; reopen decides from that exact commit.
         self.owner.install(commit).map_err(|error| match error {
-            CoreError::UnknownCommit(_) => error,
-            _ => CoreError::UnknownCommit(std::io::Error::other(error)),
+            _ if error.is_unknown_commit() => error,
+            _ => error.into_unknown_commit(),
         })?;
         self.owner
             .backend
             .finish_transaction(plan.group_id, plan.batch_seq)
-            .map_err(CoreError::UnknownCommit)?;
+            .map_err(CoreError::unknown_io)?;
         self.selected = root;
         self.warmup = Warmup::default();
         // Publication is durable before pruning or filling. Remove obsolete
@@ -785,10 +680,10 @@ impl DiskState {
                         &mut publication.proof.directory,
                     )
                 })
-                .map_err(|error| CoreError::UnknownCommit(std::io::Error::other(error)))?;
+                .map_err(|error| error.into_unknown_commit())?;
         }
         self.observe_warm_publication(shrank)
-            .map_err(|error| CoreError::UnknownCommit(std::io::Error::other(error)))?;
+            .map_err(|error| error.into_unknown_commit())?;
         Ok(())
     }
 
@@ -806,7 +701,8 @@ impl DiskState {
                 self.selected.generation,
                 workspace,
             ) {
-                Ok(()) | Err(CoreError::CapacityDenied) => {}
+                Ok(()) => {}
+                Err(error) if error.is_capacity_denied() => {}
                 Err(error) => return Err(error),
             }
         }
@@ -825,12 +721,14 @@ impl DiskState {
             else {
                 continue;
             };
-            let location = location.ok_or(CoreError::Corrupt("committed put has no location"))?;
+            let location = location.ok_or(CoreError::new(crate::CoreErrorCause::Corrupt(
+                "committed put has no location",
+            )))?;
             let visible =
                 reader.get_with_workspace(self.selected, DirectoryKey::row(table, key), workspace);
             let visible = match visible {
                 Ok(visible) => visible,
-                Err(CoreError::CapacityDenied) => continue,
+                Err(error) if error.is_capacity_denied() => continue,
                 Err(error) => return Err(error),
             };
             if !matches!(visible, Some(DirectoryValue::Row { value, .. }) if value == location) {
@@ -841,7 +739,7 @@ impl DiskState {
             let loaded = self
                 .cache
                 .lock()
-                .map_err(|_| CoreError::OwnerFailed)?
+                .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?
                 .load_if_fits(identity, bytes.len(), |out| {
                     out.copy_from_slice(bytes);
                     Ok::<_, CoreError>(())
@@ -863,7 +761,7 @@ impl DiskState {
             .lock()
             .map_err(|_| {
                 self.owner.failed.store(true, Ordering::Release);
-                CoreError::OwnerFailed
+                CoreError::new(crate::CoreErrorCause::OwnerFailed)
             })?
             .stats())
     }
@@ -895,7 +793,9 @@ fn prepared_directory_edit(
             DirectoryKey::row(table, key),
             Some(DirectoryValue::Row {
                 batch_seq: generation,
-                value: location.ok_or(CoreError::Corrupt("prepared put has no location"))?,
+                value: location.ok_or(CoreError::new(crate::CoreErrorCause::Corrupt(
+                    "prepared put has no location",
+                )))?,
             }),
         ),
         Operation::Delete { table, key } => (DirectoryKey::row(table, key), None),
@@ -915,14 +815,17 @@ fn empty_root(group_id: [u8; 16]) -> DirectoryRoot {
 
 fn fixed_admission(
     admission: &Arc<dyn StorageAdmission>,
-) -> Result<Box<dyn ResidentLease>, CoreError> {
+) -> Result<NativeResidentLease, CoreError> {
     admission
         .check_owner()
-        .map_err(|_| CoreError::OwnerFailed)?;
-    let bytes = std::mem::size_of::<DiskState>()
+        .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?;
+    let bytes = std::mem::size_of::<DiskOpening>()
+        + AutoWarm::backing_bytes()
         + std::mem::size_of::<CheckedGroup>()
         + 2 * std::mem::size_of::<usize>()
         + std::mem::size_of::<Mutex<NativeCache<NativeIdentity>>>()
+        + 2 * std::mem::size_of::<usize>()
+        + crate::native_sync::mutex_backing_bytes()
         // Foreground publication owns only one fixed proof scope/candidate.
         // Its dynamic buffers/roots have separate pre-effect admissions.
         + std::mem::size_of::<publication::PublicationCache>()
@@ -934,6 +837,7 @@ fn fixed_admission(
         + LEASE_ALLOWANCE;
     admission
         .reserve_workspace(bytes as u64)
+        .map(NativeResidentLease::new)
         .map_err(Into::into)
 }
 

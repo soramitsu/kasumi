@@ -60,6 +60,10 @@ async fn initialize_owned(
     let result = crate::startup_preparation::capture("HA node enrollment", async {
         let admission = storage.facade(&config.admission)?;
         pending.owned_admissions.push(admission.clone());
+        pending.original_recoveries = Some(crate::administration::OriginalRecoveries::new(
+            &admission,
+            crate::administration::OriginalRecoveryParticipants::configured(&config),
+        )?);
         let (node, audit) = crate::node_provision::create(
             &config.database_path,
             config.database_id,
@@ -68,6 +72,10 @@ async fn initialize_owned(
             &config.security_audit,
             admission,
             &storage,
+            pending
+                .original_recoveries
+                .as_ref()
+                .expect("installed HA constructor inventory"),
         )
         .await?;
         pending.owned_nodes.push(node.clone());
@@ -75,7 +83,17 @@ async fn initialize_owned(
         #[cfg(test)]
         crate::startup_preparation::checkpoint(config.database_id, "ha-enrollment-node");
         let credential: CredentialSource = Arc::new(crate::runtime::file_secret);
-        provision(&config, node, audit, credential).await
+        provision(
+            &config,
+            node,
+            audit,
+            credential,
+            pending
+                .original_recoveries
+                .as_ref()
+                .expect("installed HA constructor inventory"),
+        )
+        .await
     })
     .await;
     let drained = crate::startup_owner::finish(&mut pending).await;
@@ -118,13 +136,19 @@ pub(crate) fn network(
 
 pub(crate) async fn provision(
     config: &RuntimeConfig,
-    node: Arc<NodeStore>,
+    node: NodeStore,
     audit: Arc<SecurityAudit>,
     credential: CredentialSource,
+    originals: &crate::administration::OriginalRecoveries,
 ) -> Result<()> {
     let mut pending = crate::startup_resources::Resources::default();
     let result = crate::startup_preparation::capture("HA enrollment provisioning", async {
         config.validate_selected_key_domains(&config.tenants.iter().collect::<Vec<_>>())?;
+        pending.signer_original_recoveries = config
+            .signer_verifier
+            .as_ref()
+            .map(|verifier| verifier.node_start_inventory(audit.admission()))
+            .transpose()?;
         let enrollment = Enrollment::begin(
             audit.store(),
             &Input::Data {
@@ -147,6 +171,10 @@ pub(crate) async fn provision(
                         node.persistent_disk().clone(),
                         node.scratch_disk().clone(),
                         audit.admission().clone(),
+                        pending
+                            .signer_original_recoveries
+                            .as_ref()
+                            .expect("installed HA signer constructor inventory"),
                     )
                     .await?,
             ),
@@ -178,6 +206,7 @@ pub(crate) async fn provision(
         let network = network(replication)?;
         let control = crate::control_genesis::bootstrap(config)?;
         let control_incarnation = Uuid::parse_str(&control.incarnation)?;
+        let mut control_seat = originals.claim(0).await;
         let control_fingerprint = initialize_domain(
             config,
             node.clone(),
@@ -190,8 +219,10 @@ pub(crate) async fn provision(
             StorageAccess::node_control(),
             None,
             credential.clone(),
+            &mut control_seat,
         )
         .await?;
+        drop(control_seat);
         enrollment.record_genesis_tenant(
             audit.store(),
             CONTROL_TENANT,
@@ -254,6 +285,8 @@ pub(crate) async fn provision(
                         tenant.incarnation.as_deref(),
                     )?
                     .context("tenant genesis missing")?;
+                let index = crate::administration::original_serving_runtime::OriginalRecoveries::configured_index(config, &tenant.tenant)?;
+                let mut constructor_seat = originals.claim(index).await;
                 initialize_domain(
                     config,
                     node.clone(),
@@ -266,6 +299,7 @@ pub(crate) async fn provision(
                     access,
                     grant.as_ref(),
                     credential.clone(),
+                    &mut constructor_seat,
                 )
                 .await
             }
@@ -305,7 +339,7 @@ pub(crate) async fn provision(
 #[allow(clippy::too_many_arguments)]
 async fn initialize_domain(
     config: &RuntimeConfig,
-    node: Arc<NodeStore>,
+    node: NodeStore,
     audit: Arc<SecurityAudit>,
     network: Arc<crate::cluster::ClusterNetwork>,
     tenant: &str,
@@ -315,6 +349,9 @@ async fn initialize_domain(
     access: StorageAccess,
     grant: Option<&VerifiedLease>,
     credential: CredentialSource,
+    constructor_seat: &mut crate::administration::original_serving_runtime::OriginalRecoveryGuard<
+        '_,
+    >,
 ) -> Result<String> {
     let mut pending = crate::startup_resources::Resources::default();
     pending.borrowed_nodes.push(node.clone());
@@ -343,7 +380,7 @@ async fn initialize_domain(
         if let Some(grant) = grant {
             grant.check()?;
         }
-        let database = kasumi_engine::open_replicated(
+        let database = constructor_seat.run_snapshot(kasumi_engine::open_replicated(
             config
                 .replication
                 .as_ref()
@@ -354,8 +391,8 @@ async fn initialize_domain(
             network,
             kasumi_raft::server_config(),
             audit,
-        )
-        .await?;
+        ))
+        .await.map_err(crate::administration::original_serving_runtime::OriginalRecoveryObservation::foreign_error)?;
         pending.databases.push(database);
         #[cfg(test)]
         if tenant == CONTROL_TENANT {

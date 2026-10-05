@@ -65,7 +65,7 @@ impl DatabaseConstruction {
         image: &kasumi_store::SnapshotImage,
         node_id: u64,
         name: String,
-    ) -> anyhow::Result<Arc<Database>> {
+    ) -> std::result::Result<Arc<Database>, crate::SnapshotFailure> {
         let buffers = self.admission().snapshot_buffer_owner()?;
         let (sources, binding) = crate::application_sources::SourceRoots::new(
             self.stores.clone(),
@@ -89,7 +89,7 @@ impl DatabaseConstruction {
         name: String,
         transport: Arc<dyn RaftTransport>,
         config: RaftGroupConfig,
-    ) -> anyhow::Result<Arc<Database>> {
+    ) -> std::result::Result<Arc<Database>, crate::SnapshotFailure> {
         let buffers = self.admission().snapshot_buffer_owner()?;
         let (sources, binding) = crate::application_sources::SourceRoots::new(
             self.stores.clone(),
@@ -118,7 +118,7 @@ impl DatabaseConstruction {
         transport: Arc<dyn RaftTransport>,
         config: RaftGroupConfig,
         expected: kasumi_raft::TargetFirstMembershipPrebind,
-    ) -> anyhow::Result<Arc<Database>> {
+    ) -> std::result::Result<Arc<Database>, crate::SnapshotFailure> {
         let buffers = self.admission().snapshot_buffer_owner()?;
         let (sources, binding) = crate::application_sources::SourceRoots::new(
             self.stores.clone(),

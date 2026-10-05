@@ -151,13 +151,15 @@ impl DirectoryBackend for PackFaultPages {
         let index = self.appends.fetch_add(1, AtomicOrdering::Relaxed);
         let fault = *self.fault.lock().unwrap();
         if matches!(fault, Some(FaultPoint::Append { after: false, index: at }) if at == index) {
-            return Err(CoreError::Io(std::io::Error::other(
-                "packing before append",
+            return Err(CoreError::new(crate::CoreErrorCause::Io(
+                std::io::Error::other("packing before append"),
             )));
         }
         let reference = self.inner.append_page(bytes)?;
         if matches!(fault, Some(FaultPoint::Append { after: true, index: at }) if at == index) {
-            return Err(CoreError::Io(std::io::Error::other("packing after append")));
+            return Err(CoreError::new(crate::CoreErrorCause::Io(
+                std::io::Error::other("packing after append"),
+            )));
         }
         Ok(reference)
     }
@@ -165,11 +167,15 @@ impl DirectoryBackend for PackFaultPages {
     fn sync_pages(&self) -> Result<(), CoreError> {
         let fault = *self.fault.lock().unwrap();
         if matches!(fault, Some(FaultPoint::Sync { after: false })) {
-            return Err(CoreError::Io(std::io::Error::other("packing before sync")));
+            return Err(CoreError::new(crate::CoreErrorCause::Io(
+                std::io::Error::other("packing before sync"),
+            )));
         }
         self.inner.sync_pages()?;
         if matches!(fault, Some(FaultPoint::Sync { after: true })) {
-            return Err(CoreError::Io(std::io::Error::other("packing after sync")));
+            return Err(CoreError::new(crate::CoreErrorCause::Io(
+                std::io::Error::other("packing after sync"),
+            )));
         }
         Ok(())
     }
@@ -581,14 +587,13 @@ fn pack_plan_and_workspace_denial_precede_effects_and_prepared_mutation_reuses_g
     let (root, model) = sparse_tree(&backend, 4);
     let denied = Admission::new(1);
     let before = backend.reads.load(AtomicOrdering::Relaxed);
-    assert!(matches!(
-        DirectoryReader::new(&backend, denied.clone()).pack_after(
+    assert!(
+        matches!(&(DirectoryReader::new(&backend, denied.clone()).pack_after(
             root,
             0,
             DirectoryKey::table("t")
-        ),
-        Err(CoreError::CapacityDenied)
-    ));
+        )), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::CapacityDenied)))
+    );
     assert_eq!(backend.reads.load(AtomicOrdering::Relaxed), before);
     assert_eq!(denied.0.used.load(AtomicOrdering::Relaxed), 0);
 
@@ -603,10 +608,9 @@ fn pack_plan_and_workspace_denial_precede_effects_and_prepared_mutation_reuses_g
     let reads = backend.reads.load(AtomicOrdering::Relaxed);
     let syncs = backend.syncs.load(AtomicOrdering::Relaxed);
     admission.deny(0);
-    assert!(matches!(
-        DirectoryWriteWorkspace::for_pack(admission.clone()),
-        Err(CoreError::CapacityDenied)
-    ));
+    assert!(
+        matches!(&(DirectoryWriteWorkspace::for_pack(admission.clone())), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::CapacityDenied)))
+    );
     assert_eq!(admission.inner.0.used.load(AtomicOrdering::Relaxed), used);
     assert_eq!(backend.pages.lock().unwrap().len(), pages);
     assert_eq!(backend.reads.load(AtomicOrdering::Relaxed), reads);
@@ -658,16 +662,14 @@ fn pack_pair_rejects_foreign_or_stale_plans_without_poisoning_a_valid_retry() {
             ..root
         },
     ] {
-        assert!(matches!(
-            mutator.pack_pair(foreign, 9, &plan),
-            Err(CoreError::InvalidInput(_))
-        ));
+        assert!(
+            matches!(&(mutator.pack_pair(foreign, 9, &plan)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput(_))))
+        );
     }
     for generation in [0, 6] {
-        assert!(matches!(
-            mutator.pack_pair(root, generation, &plan),
-            Err(CoreError::InvalidInput(_))
-        ));
+        assert!(
+            matches!(&(mutator.pack_pair(root, generation, &plan)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput(_))))
+        );
     }
     assert_eq!(backend.pages.lock().unwrap().len(), pages);
     let next = mutator.pack_pair(root, 8, &plan).unwrap();
@@ -699,12 +701,13 @@ fn both_source_pages_and_their_parent_paths_are_revalidated_before_append() {
         let pages = backend.pages.lock().unwrap().len();
         let mut mutator_workspace = DirectoryWriteWorkspace::for_pack(admission.clone()).unwrap();
         let mut mutator = DirectoryMutator::new(&backend, &mut mutator_workspace).unwrap();
-        assert!(matches!(
-            mutator.pack_pair(root, 8, &plan),
-            Err(CoreError::Corrupt(_))
-        ));
+        assert!(
+            matches!(&(mutator.pack_pair(root, 8, &plan)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::Corrupt(_))))
+        );
         assert_eq!(backend.pages.lock().unwrap().len(), pages);
-        assert!(matches!(mutator.finish(root), Err(CoreError::OwnerFailed)));
+        assert!(
+            matches!(&(mutator.finish(root)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+        );
         drop((plan, mutator));
         drop(mutator_workspace);
         assert_eq!(admission.0.used.load(AtomicOrdering::Relaxed), 0);
@@ -757,14 +760,11 @@ fn checksum_valid_malformed_shapes_and_nonadjacent_child_substitution_fail_close
         let count = pages.len();
         drop(pages);
         assert!(
-            matches!(
-                DirectoryReader::new(&backend, admission.clone()).pack_after(
+            matches!(&(DirectoryReader::new(&backend, admission.clone()).pack_after(
                     root,
                     0,
                     DirectoryKey::table("t")
-                ),
-                Err(CoreError::Corrupt(_))
-            ),
+                )), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::Corrupt(_)))),
             "damage {damage}"
         );
         assert_eq!(backend.pages.lock().unwrap().len(), count);
@@ -812,7 +812,9 @@ fn before_and_after_append_or_sync_failures_keep_old_roots_and_poison_the_batch(
         let result = mutator.pack_pair(root, 8, &plan);
         match fault {
             FaultPoint::Append { after, index } => {
-                assert!(matches!(result, Err(CoreError::Io(_))));
+                assert!(
+                    matches!(&(result), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::Io(_))))
+                );
                 assert_eq!(
                     backend.inner.pages.lock().unwrap().len() - original.len(),
                     index + usize::from(after)
@@ -821,14 +823,18 @@ fn before_and_after_append_or_sync_failures_keep_old_roots_and_poison_the_batch(
             FaultPoint::Sync { after } => {
                 let next = result.unwrap();
                 let before = backend.inner.syncs.load(AtomicOrdering::Relaxed);
-                assert!(matches!(mutator.finish(next), Err(CoreError::Io(_))));
+                assert!(
+                    matches!(&(mutator.finish(next)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::Io(_))))
+                );
                 assert_eq!(
                     backend.inner.syncs.load(AtomicOrdering::Relaxed) - before,
                     usize::from(after)
                 );
             }
         }
-        assert!(matches!(mutator.finish(root), Err(CoreError::OwnerFailed)));
+        assert!(
+            matches!(&(mutator.finish(root)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+        );
         assert_eq!(
             backend.inner.pages.lock().unwrap()[..original.len()],
             original

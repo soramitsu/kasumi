@@ -222,9 +222,11 @@ fn directory_read_into_preserves_backend_original_and_capacity_without_retry() {
             let original = Arc::new(());
             let backend = FailingPage {
                 error: Mutex::new(Some(if capacity {
-                    CoreError::CapacityDenied
+                    CoreError::new(crate::CoreErrorCause::CapacityDenied)
                 } else {
-                    CoreError::Io(std::io::Error::other(OriginalReadFailure(original.clone())))
+                    CoreError::new(crate::CoreErrorCause::Io(std::io::Error::other(
+                        OriginalReadFailure(original.clone()),
+                    )))
                 })),
                 calls: AtomicUsize::new(0),
             };
@@ -238,11 +240,12 @@ fn directory_read_into_preserves_backend_original_and_capacity_without_retry() {
             let mut out = [0xc3; DIRECTORY_PAGE_BYTES];
             let error = cache.read_page(reference(0, 7), &mut out).unwrap_err();
             if capacity {
-                assert!(matches!(error, CoreError::CapacityDenied));
+                assert!(matches!(
+                    (error).rejected_cause(),
+                    Some(crate::CoreErrorCause::CapacityDenied)
+                ));
             } else {
-                let CoreError::Io(error) = error else {
-                    panic!("original I/O failure changed")
-                };
+                let error = error.io_error().expect("original I/O failure changed");
                 let found = error
                     .get_ref()
                     .unwrap()
@@ -299,10 +302,9 @@ fn directory_read_into_rejects_corrupt_cached_identity_before_copy_or_io() {
                 .unwrap(),
         );
         let mut out = [0xc3; DIRECTORY_PAGE_BYTES];
-        assert!(matches!(
-            cache.read_page(page, &mut out),
-            Err(CoreError::Corrupt("cached directory page identity differs"))
-        ));
+        assert!(
+            matches!(&(cache.read_page(page, &mut out)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::Corrupt("cached directory page identity differs"))))
+        );
         assert_eq!(out, [0xc3; DIRECTORY_PAGE_BYTES]);
         assert_eq!(backend.reads.load(Ordering::Relaxed), 0);
         drop(cache);
@@ -328,27 +330,22 @@ fn directory_read_into_checks_owner_on_real_hits_and_never_retrains_invalid_inpu
     let before = cache.stats().unwrap();
     let reads = backend.reads.load(Ordering::Relaxed);
     out.fill(0xc3);
-    assert!(matches!(
-        cache.read_page(page, &mut out[..8]),
-        Err(CoreError::InvalidInput(
+    assert!(
+        matches!(&(cache.read_page(page, &mut out[..8])), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput(
             "directory page output length differs"
-        ))
-    ));
-    assert!(matches!(
-        cache.read_page(
+        ))))
+    );
+    assert!(matches!(&(cache.read_page(
             DirectoryPageRef {
                 arena_id: 0,
                 ..page
             },
             &mut out
-        ),
-        Err(CoreError::Corrupt("directory page reference is invalid"))
-    ));
+        )), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::Corrupt("directory page reference is invalid")))));
     admission.failed.store(true, Ordering::Release);
-    assert!(matches!(
-        cache.read_page(page, &mut out),
-        Err(CoreError::OwnerFailed)
-    ));
+    assert!(
+        matches!(&(cache.read_page(page, &mut out)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+    );
     assert_eq!(out, [0xc3; DIRECTORY_PAGE_BYTES]);
     assert_eq!(backend.reads.load(Ordering::Relaxed), reads);
     assert_eq!(cache.lock().unwrap().stats(), before);

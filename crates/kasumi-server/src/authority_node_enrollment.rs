@@ -1,5 +1,8 @@
 //! Explicit local authority installation. This owns all resources to terminal
 //! drain even if the initiating CLI drops its result; normal startup is strict.
+use crate::authority_enrollment_terminal::{
+    Body, BodyOutcome, EnrollmentFailure, EnrollmentTerminal, EnrollmentTerminalFacade, Genesis,
+};
 use crate::{
     authority_runtime::AuthorityRuntimeConfig,
     node_enrollment::{Enrollment, Input},
@@ -9,13 +12,18 @@ use kasumi_authority::IndependentAuthority;
 use kasumi_store::{StorageAccess, TenantStorageSet};
 use std::sync::Arc;
 
-pub(crate) async fn initialize(config: AuthorityRuntimeConfig) -> Result<()> {
+pub(crate) async fn initialize(
+    config: AuthorityRuntimeConfig,
+) -> std::result::Result<(), EnrollmentFailure> {
     config.validate()?;
     config.bootstrap.validate()?;
-    ensure!(
-        config.replication.voters()? == config.bootstrap.membership.voters,
-        "authority first enrollment requires its exact original voters"
-    );
+    (|| -> Result<()> {
+        ensure!(
+            config.replication.voters()? == config.bootstrap.membership.voters,
+            "authority first enrollment requires its exact original voters"
+        );
+        Ok(())
+    })()?;
     let storage = crate::runtime_memory::RuntimeStorage::installed(&config.admission)?;
     initialize_with_storage(config, storage).await
 }
@@ -23,45 +31,57 @@ pub(crate) async fn initialize(config: AuthorityRuntimeConfig) -> Result<()> {
 pub(crate) async fn initialize_with_storage(
     config: AuthorityRuntimeConfig,
     storage: crate::runtime_memory::RuntimeStorage,
-) -> Result<()> {
+) -> std::result::Result<(), EnrollmentFailure> {
     config.validate()?;
     config.bootstrap.validate()?;
-    ensure!(
-        config.replication.voters()? == config.bootstrap.membership.voters,
-        "authority first enrollment requires its exact original voters"
-    );
+    (|| -> Result<()> {
+        ensure!(
+            config.replication.voters()? == config.bootstrap.membership.voters,
+            "authority first enrollment requires its exact original voters"
+        );
+        Ok(())
+    })()?;
     storage.require_policy(&config.admission)?;
-    crate::startup_owner::open(
-        crate::startup_owner::Kind::Authority,
-        initialize_owned(config, storage),
-    )
-    .await?;
-    Ok(())
+    let admission = storage.facade(&config.admission)?;
+    let participant = crate::authority_runtime::AuthorityParticipantName::new(
+        config.installation.manifest.authority_id,
+        config.installation.partition,
+    );
+    let terminal = crate::administration::OriginalRecoveries::prepare_authority_enrollment(
+        &admission,
+        crate::administration::OriginalRecoveryParticipants::one(participant.as_str()),
+        config.database_id,
+    )?;
+    let loan = match terminal.begin() {
+        Ok(loan) => loan,
+        Err(_) => {
+            return Err(EnrollmentFailure::Retained(EnrollmentTerminalFacade {
+                terminal,
+            }));
+        }
+    };
+    // The gate and both actual terminal controls precede the named owned
+    // future. Its exact worker is installed synchronously before any await.
+    let terminal = loan.spawn(run_enrollment, (config, storage, admission));
+    EnrollmentTerminalFacade { terminal }.claim().await
 }
 
-// Only an actually drained outcome may cross the acknowledged startup handoff.
-struct Enrolled;
-impl crate::startup_owner::Runtime for Enrolled {
-    fn close(
-        &mut self,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = kasumi_types::drain::DrainResult> + Send + '_>,
-    > {
-        Box::pin(async { Ok(()) })
-    }
-}
-
-async fn initialize_owned(
-    config: AuthorityRuntimeConfig,
-    storage: crate::runtime_memory::RuntimeStorage,
-) -> Result<Enrolled> {
-    let mut pending = crate::startup_resources::Resources::default();
-    // Keep a dispatched blocking child outside the caught future too. An unwind
-    // after dispatch cannot replace its exact join with a storage-close guess.
-    let mut genesis = None;
-    let result = crate::startup_preparation::capture("authority enrollment", async {
-        let admission = storage.facade(&config.admission)?;
+#[allow(
+    clippy::manual_async_fn,
+    reason = "the named producer signature exposes the exact future type used by its prospective backing quote"
+)]
+fn initialize_body<'a>(
+    config: &'a AuthorityRuntimeConfig,
+    storage: &'a crate::runtime_memory::RuntimeStorage,
+    admission: Arc<kasumi_engine::admission::NodeAdmission>,
+    originals: &'a crate::administration::OriginalRecoveries,
+    pending: &'a mut crate::startup_resources::Resources,
+    genesis: &'a mut Genesis,
+) -> impl std::future::Future<Output = Result<BodyOutcome>> + Send + 'a {
+    async move {
         pending.owned_admissions.push(admission.clone());
+        pending.signer_original_recoveries =
+            Some(config.signer_verifier.node_start_inventory(&admission)?);
         let (node, audit) = crate::node_provision::create(
             &config.database_path,
             config.database_id,
@@ -69,7 +89,8 @@ async fn initialize_owned(
             &config.scratch_disk,
             &config.security_audit,
             admission.clone(),
-            &storage,
+            storage,
+            originals,
         )
         .await?;
         pending.owned_nodes.push(node.clone());
@@ -96,6 +117,10 @@ async fn initialize_owned(
                 node.persistent_disk().clone(),
                 node.scratch_disk().clone(),
                 admission.clone(),
+                pending
+                    .signer_original_recoveries
+                    .as_ref()
+                    .expect("same installed authority enrollment verifier inventory"),
             )
             .await?;
         pending.verifiers.push(installed.clone());
@@ -128,7 +153,7 @@ async fn initialize_owned(
         let physical = config.signer_verifier.identity.clone();
         #[cfg(test)]
         let database_id = config.database_id;
-        genesis = Some(tokio::task::spawn_blocking(move || {
+        genesis.handle = Some(tokio::task::spawn_blocking(move || {
             #[cfg(test)]
             tests::blocking_checkpoint(database_id);
             IndependentAuthority::initialize_storage(&stores, &installation, &bootstrap, &physical)
@@ -138,45 +163,83 @@ async fn initialize_owned(
             config.database_id,
             "authority-enrollment-genesis-dispatched",
         );
-        let created = genesis.as_mut().expect("genesis child was installed").await;
-        genesis.take();
-        created??;
+        if !genesis.join().await {
+            return Ok(BodyOutcome::GenesisRejected);
+        }
         #[cfg(test)]
         crate::startup_preparation::checkpoint(config.database_id, "authority-enrollment-genesis");
         enrollment.complete(audit.store())?;
         #[cfg(test)]
         crate::startup_preparation::checkpoint(config.database_id, "authority-enrollment-complete");
-        Ok(())
-    })
-    .await;
+        Ok(BodyOutcome::Completed)
+    }
+}
+
+pub(crate) fn body_backing() -> Result<kasumi_engine::admission::startup::StartupBacking> {
+    fn quote<F: std::future::Future>(
+        _: impl FnOnce(
+            &'static AuthorityRuntimeConfig,
+            &'static crate::runtime_memory::RuntimeStorage,
+            Arc<kasumi_engine::admission::NodeAdmission>,
+            &'static crate::administration::OriginalRecoveries,
+            &'static mut crate::startup_resources::Resources,
+            &'static mut Genesis,
+        ) -> F,
+    ) -> Result<kasumi_engine::admission::startup::StartupBacking> {
+        kasumi_engine::admission::startup::StartupBacking::empty().boxed::<F>()
+    }
+    // Pure type quotation: the constructor function is never invoked here.
+    quote(initialize_body)
+}
+
+async fn run_enrollment(
+    mut terminal: kasumi_engine::admission::startup::StartupTerminalLoan<EnrollmentTerminal>,
+    (config, storage, admission): (
+        AuthorityRuntimeConfig,
+        crate::runtime_memory::RuntimeStorage,
+        Arc<kasumi_engine::admission::NodeAdmission>,
+    ),
+) {
+    let parents = terminal
+        .parents
+        .as_ref()
+        .expect("same initial enrollment parent")
+        .clone();
+    {
+        let EnrollmentTerminal {
+            pending,
+            genesis,
+            body,
+            original,
+            ..
+        } = &mut *terminal;
+        Body::new(
+            initialize_body(
+                &config,
+                &storage,
+                admission,
+                &parents,
+                pending.as_mut().expect("preinstalled whole resources"),
+                genesis,
+            ),
+            body,
+            original,
+        )
+        .await;
+    }
     #[cfg(test)]
-    if result.is_err() {
+    if terminal.original.is_some() || terminal.body.panic.is_some() {
         crate::startup_preparation::failure_checkpoint(config.database_id).await;
     }
-    let mut report = kasumi_types::drain::DrainReport::default();
-    if let Some(child) = genesis.as_mut() {
+    if terminal.genesis.handle.is_some() {
         #[cfg(test)]
         tests::joining_checkpoint(config.database_id);
-        match child.await {
-            Ok(Ok(())) => {}
-            Ok(Err(error)) => {
-                report.record("authority enrollment genesis", 0, error);
-            }
-            Err(error) => {
-                report.record("authority enrollment genesis", 0, error.into());
-            }
-        }
-        genesis.take();
+        terminal.genesis.join().await;
     }
-    if let Err(error) = crate::startup_owner::finish(&mut pending).await {
-        report.merge(&error);
-    }
-    match (result, report.complete()) {
-        (Ok(()), Ok(())) => Ok(Enrolled),
-        (Err(error), Ok(())) => Err(error),
-        (Ok(()), Err(drain)) => Err(drain.into()),
-        (Err(error), Err(drain)) => Err(error.context(drain)),
-    }
+    // One actual cleanup attempt. Retained ownership is a delivered typed
+    // rejection; it never becomes permission to retry enrollment or refund.
+    crate::authority_enrollment_terminal::cleanup(&mut terminal).await;
+    terminal.ready = true;
 }
 
 #[cfg(test)]

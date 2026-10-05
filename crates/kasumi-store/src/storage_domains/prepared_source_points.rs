@@ -47,6 +47,7 @@ impl PreparedTenantPointWorkspace {
                 .view
                 .application
                 .node
+                .body()
                 .db
                 .require_registered_read(reader)?;
             session
@@ -145,8 +146,7 @@ impl PreparedTenantSourceReadView {
     ) -> Result<PreparedTenantSourcePointLoan<'a>> {
         self.0
             .require_domains(&workspace.application, &workspace.custody)?;
-        self.0
-            .require_memory(workspace.application.persistent_disk().memory())?;
+        self.0.require_memory(workspace.application.node.memory())?;
         self.0.application.check_access()?;
         self.0.custody.check_access()?;
         Ok(PreparedTenantSourcePointLoan {
@@ -250,18 +250,18 @@ impl TenantStorageSet {
         self.application.check_access()?;
         self.custody.store.check_access()?;
         ensure!(
-            Arc::ptr_eq(&self.application.node, &self.custody.store.node),
+            NodeStore::ptr_eq(&self.application.node, &self.custody.store.node),
             "source capacity domains use different native owners"
         );
-        let expected = self.application.persistent_disk().memory();
+        let expected = self.application.node.memory();
         for store in [&self.application, &self.custody.store] {
             ensure!(
-                Arc::ptr_eq(expected, store.persistent_disk().memory())
+                Arc::ptr_eq(expected, store.node.memory())
                     && Arc::ptr_eq(expected, store.scratch_disk().memory()),
                 "source capacity domains use different providers"
             );
         }
-        Ok(self.application.node.db.queue_source_capacity()?)
+        Ok(self.application.node.body().db.queue_source_capacity()?)
     }
 }
 

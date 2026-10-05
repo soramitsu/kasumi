@@ -18,7 +18,7 @@ pub async fn open_fixture(
     policy: Policy,
     limits: Limits,
     audit: Arc<SecurityAudit>,
-) -> anyhow::Result<Arc<Database>> {
+) -> std::result::Result<Arc<Database>, crate::SnapshotFailure> {
     check(&stores)?;
     open_local_inner(
         DatabaseConstruction::new(stores, audit)?,
@@ -36,9 +36,12 @@ pub async fn open_fixture_with_incarnation(
     limits: Limits,
     audit: Arc<SecurityAudit>,
     incarnation: uuid::Uuid,
-) -> anyhow::Result<Arc<Database>> {
+) -> std::result::Result<Arc<Database>, crate::SnapshotFailure> {
     check(&stores)?;
-    anyhow::ensure!(!incarnation.is_nil(), "nil fixture incarnation");
+    crate::SnapshotFailure::ordinary(|| {
+        anyhow::ensure!(!incarnation.is_nil(), "nil fixture incarnation");
+        Ok(())
+    })?;
     open_local_inner(
         DatabaseConstruction::new(stores, audit)?,
         policy,
@@ -56,7 +59,7 @@ pub async fn open_fixture_replicated(
     transport: Arc<dyn RaftTransport>,
     config: Config,
     audit: Arc<SecurityAudit>,
-) -> anyhow::Result<Arc<Database>> {
+) -> std::result::Result<Arc<Database>, crate::SnapshotFailure> {
     check(&stores)?;
     let (database, _, _) = open_replicated_inner(
         node_id,

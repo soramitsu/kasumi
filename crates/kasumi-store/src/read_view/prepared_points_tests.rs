@@ -3,7 +3,7 @@ use crate::test_utils::{LocalKeyProvider, ManualClock, TestDiskMemory, private_t
 
 struct Fixture {
     store: Arc<TenantStore>,
-    node: Arc<NodeStore>,
+    node: NodeStore,
     memory: Arc<TestDiskMemory>,
     clock: Arc<ManualClock>,
     _directory: tempfile::TempDir,
@@ -24,7 +24,8 @@ impl Fixture {
             disk,
             scratch,
             crate::test_utils::node_storage_config(),
-        )?;
+        )
+        .unwrap_or_else(|original| std::panic::panic_any(original));
         let clock = Arc::new(ManualClock::default());
         let store = TenantStore::initialize_catalog_fixture_with_clock(
             node.clone(),
@@ -193,12 +194,11 @@ async fn single_point_partial_admission_denial_keeps_actual_failure_and_has_no_a
     let failure = error
         .downcast_ref::<NodeScopedReadFailure>()
         .expect("actual failure custody");
-    assert!(matches!(
-        failure.report().read_failure(),
-        kasumi_kv::TerminalObservation::Returned(Err(kasumi_kv::BoundedReadError::Storage(
-            kasumi_kv::StorageError::Core(kasumi_kv::CoreError::CapacityDenied)
-        )))
-    ));
+    assert!(
+        matches!(&(failure.report().read_failure()), kasumi_kv::TerminalObservation::Returned(Err(kasumi_kv::BoundedReadError::Storage(
+            kasumi_kv::StorageError::Core(native_error)
+        ))) if matches!(native_error.rejected_cause(), Some(kasumi_kv::CoreErrorCause::CapacityDenied)))
+    );
     assert_eq!(failure.reader_id(), id);
     drop(error);
     assert_eq!(fixture.memory.storage_census().snapshot().readers, 0);

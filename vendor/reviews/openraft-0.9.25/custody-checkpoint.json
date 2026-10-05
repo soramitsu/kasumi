@@ -1,53 +1,150 @@
 {
-  "created_utc": "2026-09-27T05:44:04.245767+00:00",
+  "created_utc": "2026-10-04T09:05:38.971939+00:00",
+  "development_binary": {
+    "mtime_ns": 1791104122406786403,
+    "path": "/Users/mtakemiya/dev/kasumi/target/native-kv-plaintext-20261004/debug/deps/openraft-af539d4ed81d4888",
+    "sha256": "3685ca2931d39ef09018aa50929ef605b8172b505ae9ce2edea99bcdc38e03b2"
+  },
+  "development_source_manifests": [
+    {
+      "path": "/Users/mtakemiya/.cache/kasumi/native-kv-goal-20261004/openraft-bounded-apply-before-attempt03.json",
+      "sha256": "83e7637115f8965ebaac1f9fe8833db546b0390dc11140cdd94a53c93ff16a5f"
+    },
+    {
+      "path": "/Users/mtakemiya/.cache/kasumi/native-kv-goal-20261004/openraft-bounded-apply-after-attempt03.json",
+      "sha256": "cf27127774eafd2f4f12848a6db5c62408f38e64cb9628799a25b2a960efc357"
+    }
+  ],
+  "historical_checkpoint": {
+    "created_utc": "2026-09-27T05:44:04.245767+00:00",
+    "observed_tests": [
+      {
+        "path": "docs/evidence/g09-atomic-initial-entry-development-20260927/openraft-current-unit.log",
+        "sha256": "6fe20ac08fe7621a949cda6cc06b797852b1d32693e29b726e101f72736298cc"
+      },
+      {
+        "path": "docs/evidence/g09-atomic-initial-entry-development-20260927/openraft-current-api-membership.log",
+        "sha256": "0ef9cf8aad7af13900edd853126ce590835fb9440c37568a19c6594dc818e793"
+      },
+      {
+        "path": "docs/evidence/g09-atomic-initial-entry-development-20260927/native-lost-replies-first.log",
+        "sha256": "f285f52f12e2b963ed416774c5717bd6272c7d9c9bb86e48c88d6a66519e5bf1"
+      },
+      {
+        "path": "docs/evidence/g09-atomic-initial-entry-development-20260927/native-node1-down-first.log",
+        "sha256": "a0fc8b90c78fae9c38ccac35fddf86ea9973a3afa6d3119f6b4665023b6f48ab"
+      },
+      {
+        "path": "docs/evidence/g09-atomic-initial-entry-development-20260927/journal-atomic-negatives.log",
+        "sha256": "a92aac86c5afa2f6b9379868a17891d8ad37aa31035f6ab86ea692b2bc02bf5f"
+      }
+    ],
+    "observed_upstream_cases": {
+      "client_api": 13,
+      "library": 219,
+      "life_cycle": 23,
+      "membership": 41
+    },
+    "predecessor": {
+      "inventory_path": "docs/evidence/openraft-canonical-20260920/49-frozen-fallible-transfer-clippy/after-source.json",
+      "inventory_sha256": "70cce233f67865044d8550bd613c7696abfbe0b47f7fa0d436199a9a709bffa6",
+      "kind": "openraft-checkpoint",
+      "path": "docs/evidence/openraft-canonical-20260920/custody-checkpoint.json",
+      "sha256": "372a5cdb30571a154997e2dfcfd98d27e1c876c4aefcc58a05ed50695fe26323"
+    },
+    "qualification": "independent-source-review-and-recorded-development-tests-only",
+    "release_qualified": false,
+    "remaining": [
+      "full frozen upstream feature/platform cohort",
+      "all Kasumi final-source gates",
+      "actual OS-process crash matrix",
+      "nine-process HA acceptance",
+      "24-hour soak"
+    ],
+    "reviewed_change_sha256": "914797a34e4e4299ddc5b6ebfdeaeeb2a2b8eee033f75e380c9ddf16647939fe",
+    "reviewed_delta_sha256": "8d416386182a4fcda86f8ef8465c2c600417cfd3c8518fe7c11caaa4600b7a7e",
+    "source_bytes": 2641869,
+    "source_files": 600,
+    "source_inventory": "source-inventory.json",
+    "source_inventory_sha256": "6c0825d9d08e442f1a867206012ee65a29e8ea94d0422720d271062ed3116b24"
+  },
   "observed_tests": [
     {
-      "path": "docs/evidence/g09-atomic-initial-entry-development-20260927/openraft-current-unit.log",
-      "sha256": "6fe20ac08fe7621a949cda6cc06b797852b1d32693e29b726e101f72736298cc"
+      "passed": 13,
+      "path": "/Users/mtakemiya/.cache/kasumi/native-kv-goal-20261004/openraft-bounded-apply-attempt03.log",
+      "scope": "development; current local selected Rust features, not release qualification",
+      "sha256": "81a9e1a5af8c26302bebc34abe3734506cc147a276bbe99cbf5c0d273f6f8847"
     },
     {
-      "path": "docs/evidence/g09-atomic-initial-entry-development-20260927/openraft-current-api-membership.log",
-      "sha256": "0ef9cf8aad7af13900edd853126ce590835fb9440c37568a19c6594dc818e793"
+      "passed": 2,
+      "path": "/Users/mtakemiya/.cache/kasumi/native-kv-goal-20261004/openraft-shutdown-focused.log",
+      "scope": "development; current local selected Rust features, not release qualification",
+      "sha256": "ceda2ba213164074f1c32c8524f7dcbae1032907f0fb698fafa79de940a27326"
     },
     {
-      "path": "docs/evidence/g09-atomic-initial-entry-development-20260927/native-lost-replies-first.log",
-      "sha256": "f285f52f12e2b963ed416774c5717bd6272c7d9c9bb86e48c88d6a66519e5bf1"
+      "passed": 8,
+      "path": "/Users/mtakemiya/.cache/kasumi/native-kv-goal-20261004/openraft-incoming-snapshot-focused.log",
+      "scope": "development; current local selected Rust features, not release qualification",
+      "sha256": "2f68cb5f4a846c7e197f3e438cd077b9a9340cf5d17ecbf2790eacc777a2d1c3"
     },
     {
-      "path": "docs/evidence/g09-atomic-initial-entry-development-20260927/native-node1-down-first.log",
-      "sha256": "a0fc8b90c78fae9c38ccac35fddf86ea9973a3afa6d3119f6b4665023b6f48ab"
+      "passed": 4,
+      "path": "/Users/mtakemiya/.cache/kasumi/native-kv-goal-20261004/openraft-storage-custody-focused.log",
+      "scope": "development; current local selected Rust features, not release qualification",
+      "sha256": "4251b28ac7d7c4f0624dbd1e56b9ad3a428da170aa5a15b144aacdf91f2e815b"
     },
     {
-      "path": "docs/evidence/g09-atomic-initial-entry-development-20260927/journal-atomic-negatives.log",
-      "sha256": "a92aac86c5afa2f6b9379868a17891d8ad37aa31035f6ab86ea692b2bc02bf5f"
+      "passed": 3,
+      "path": "/Users/mtakemiya/.cache/kasumi/native-kv-goal-20261004/openraft-ticker-focused.log",
+      "scope": "development; current local selected Rust features, not release qualification",
+      "sha256": "dd867b42dbcc1b870327eaed889f48c384952e83196b84ff11eea4492453bca0"
     }
   ],
   "observed_upstream_cases": {
-    "client_api": 13,
-    "library": 219,
-    "life_cycle": 23,
-    "membership": 41
+    "bounded_apply_and_graceful_shutdown": 13,
+    "immediate_shutdown": 2,
+    "incoming_snapshot": 8,
+    "storage_custody": 4,
+    "ticker": 3
   },
-  "predecessor": {
-    "inventory_path": "docs/evidence/openraft-canonical-20260920/49-frozen-fallible-transfer-clippy/after-source.json",
-    "inventory_sha256": "70cce233f67865044d8550bd613c7696abfbe0b47f7fa0d436199a9a709bffa6",
-    "kind": "openraft-checkpoint",
-    "path": "docs/evidence/openraft-canonical-20260920/custody-checkpoint.json",
-    "sha256": "372a5cdb30571a154997e2dfcfd98d27e1c876c4aefcc58a05ed50695fe26323"
-  },
-  "qualification": "independent-source-review-and-recorded-development-tests-only",
+  "pending_development_cases": [],
+  "qualification": "focused independent graceful-drain review and recorded development tests only; complete fork review and final qualification pending",
   "release_qualified": false,
   "remaining": [
+    "complete current vendored fork source review and remaining conformance cases",
     "full frozen upstream feature/platform cohort",
     "all Kasumi final-source gates",
     "actual OS-process crash matrix",
     "nine-process HA acceptance",
     "24-hour soak"
   ],
-  "reviewed_change_sha256": "914797a34e4e4299ddc5b6ebfdeaeeb2a2b8eee033f75e380c9ddf16647939fe",
-  "reviewed_delta_sha256": "8d416386182a4fcda86f8ef8465c2c600417cfd3c8518fe7c11caaa4600b7a7e",
-  "source_bytes": 2641869,
-  "source_files": 600,
+  "review_status": "focused graceful-drain delta reviewed and focused regressions passed; complete current fork review and conformance pending",
+  "source_bytes": 2713329,
+  "source_change_hash_method": "SHA256 of canonical JSON inventory records for source_change_paths; sorted keys, compact separators",
+  "source_change_paths": [
+    "openraft/src/core/mod.rs",
+    "openraft/src/core/raft_core.rs",
+    "openraft/src/core/raft_msg/mod.rs",
+    "openraft/src/core/sm/apply_batch.rs",
+    "openraft/src/core/sm/bounded_apply_tests.rs",
+    "openraft/src/core/sm/command.rs",
+    "openraft/src/core/sm/handle.rs",
+    "openraft/src/core/sm/mod.rs",
+    "openraft/src/core/sm/pending_apply.rs",
+    "openraft/src/core/sm/pending_snapshot.rs",
+    "openraft/src/core/sm/response.rs",
+    "openraft/src/core/sm/tasks.rs",
+    "openraft/src/core/sm/worker.rs",
+    "openraft/src/error.rs",
+    "openraft/src/raft/bounded_apply_test.rs",
+    "openraft/src/raft/incoming_snapshot_test.rs",
+    "openraft/src/raft/mod.rs",
+    "openraft/src/raft/raft_inner.rs",
+    "openraft/src/raft/shutdown_test.rs",
+    "openraft/src/storage/sm_custody_test.rs"
+  ],
+  "source_change_sha256": "3a2ac668d0e91bdb142519714d58b835ff807be7783a723299e4df603d119cb5",
+  "source_files": 605,
   "source_inventory": "source-inventory.json",
-  "source_inventory_sha256": "6c0825d9d08e442f1a867206012ee65a29e8ea94d0422720d271062ed3116b24"
+  "source_inventory_sha256": "ba4dc0bcf1282deea19e7620c29995a8eefa5a3e63bede116e5508b2f77c5cef"
 }

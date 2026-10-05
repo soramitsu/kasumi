@@ -3,14 +3,13 @@ use kasumi_store::{DiskWork, NodeDisk, NodeDiskConfig, NodeDiskFile, NodeStore, 
 use std::{
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
-    sync::Weak,
     task::Poll,
 };
 use tokio::sync::{Notify, oneshot};
 
 struct PhysicalOwner {
     worker: Option<tokio::task::JoinHandle<()>>,
-    node: Arc<NodeStore>,
+    node: NodeStore,
     entered: Arc<Notify>,
     closing: Arc<Notify>,
     panic_run: bool,
@@ -60,7 +59,8 @@ struct Fixture {
     _directory: tempfile::TempDir,
     path: PathBuf,
     lock: PathBuf,
-    weak: Weak<NodeStore>,
+    locator: kasumi_store::NodeStoreLocator,
+    retirement: kasumi_store::NodeRetirement,
     disk: Arc<NodeDisk>,
     disk_config: NodeDiskConfig,
     scratch: Arc<ScratchDisk>,
@@ -116,7 +116,8 @@ fn fixture(panic_run: bool, panic_close: bool) -> (Fixture, PhysicalOwner, Regis
     let entered = Arc::new(Notify::new());
     let closing = Arc::new(Notify::new());
     let fixture = Fixture {
-        weak: Arc::downgrade(&node),
+        locator: node.locator(),
+        retirement: node.clone().retire(),
         disk: disk.clone(),
         disk_config: disk_config.clone(),
         scratch,
@@ -142,7 +143,10 @@ fn fixture(panic_run: bool, panic_close: bool) -> (Fixture, PhysicalOwner, Regis
 }
 impl Fixture {
     fn still_owned(&self) {
-        assert!(self.weak.upgrade().is_some());
+        assert!(matches!(
+            self.locator.try_borrow(),
+            kasumi_store::NodeStoreLookup::Active(_)
+        ));
         assert!(
             NodeStore::open_existing(
                 &self.path,
@@ -158,8 +162,15 @@ impl Fixture {
     fn release(&mut self) {
         self.release.take().unwrap().send(()).unwrap();
     }
-    async fn reopened(&self) {
-        assert!(self.weak.upgrade().is_none());
+    async fn reopened(&mut self) {
+        assert_eq!(
+            self.retirement.retry(),
+            kasumi_store::StorageCensusDisposition::Retired
+        );
+        assert!(matches!(
+            self.locator.try_borrow(),
+            kasumi_store::NodeStoreLookup::Missing
+        ));
         // Reuse the exact installed owners. A fixture re-census while holding
         // this same installation lock would correctly reject that live file.
         let _lock = open_lock(&self.disk, &self.disk_config, &self.lock).unwrap();
@@ -373,7 +384,7 @@ async fn unacknowledged_failure_fences_only_its_installation_and_drains_refused_
 #[tokio::test]
 async fn panicking_owner_destructor_retains_unavailable_census_without_respawn_churn() {
     struct DestructorPanic {
-        _node: Arc<NodeStore>,
+        _node: NodeStore,
         _lock: NodeDiskFile,
     }
     impl Owner for DestructorPanic {

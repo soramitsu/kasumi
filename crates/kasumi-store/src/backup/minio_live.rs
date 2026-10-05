@@ -206,7 +206,8 @@ async fn actual_minio_tls_sigv4_encrypted_roundtrip_create_only_and_access_denia
             crate::test_utils::NODE_STORE_ID,
             fixture_memory.clone(),
             fixture_scratch.clone(),
-        )?,
+        )
+        .expect("bounded node fixture setup succeeds"),
         "customer".into(),
         provider.clone(),
     )

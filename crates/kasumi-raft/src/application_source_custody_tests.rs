@@ -1,4 +1,5 @@
 use super::*;
+use crate::test_utils::FixtureResult;
 use kasumi_types::drain::{DrainCompletion, DrainFailure};
 use std::sync::atomic::AtomicUsize;
 
@@ -112,7 +113,7 @@ fn retained_owner(owner: &SnapshotBufferOwner) -> bool {
 #[tokio::test]
 async fn application_source_binding_is_single_use_idle_and_before_acquisition() -> anyhow::Result<()>
 {
-    let owner = SnapshotBufferOwner::new(1, Arc::new(()))?;
+    let owner = SnapshotBufferOwner::new(1, kasumi_types::SharedBudgetCharge::new(()))?;
     let sources = Sources::new(None);
     owner.bind_application_sources(crate::ApplicationSourceBinding::fixture(sources.clone()))?;
     assert!(retained_owner(&owner));
@@ -136,7 +137,7 @@ async fn application_source_binding_is_single_use_idle_and_before_acquisition() 
     );
     assert_eq!(Arc::strong_count(&rejected), 1);
 
-    let opening = SnapshotBufferOwner::new(1, Arc::new(()))?;
+    let opening = SnapshotBufferOwner::new(1, kasumi_types::SharedBudgetCharge::new(()))?;
     let claimant = opening.start(async { anyhow::bail!("selected opening fixture") });
     assert!(
         opening
@@ -157,8 +158,8 @@ async fn application_source_binding_is_single_use_idle_and_before_acquisition() 
 #[tokio::test]
 async fn application_source_idle_abandonment_and_cancelled_drain_keep_original_close()
 -> anyhow::Result<()> {
-    let charge = Arc::new(());
-    let owner = SnapshotBufferOwner::new(1, charge.clone())?;
+    let (charge, charge_retired) = crate::test_utils::observed_budget_charge();
+    let owner = SnapshotBufferOwner::new(1, charge)?;
     let weak = Arc::downgrade(&owner);
     let sources = Sources::new(Some(73));
     let original = sources.report.issues()[0].clone();
@@ -172,7 +173,7 @@ async fn application_source_idle_abandonment_and_cancelled_drain_keep_original_c
     drop(first);
     assert!(retained_owner(&owner));
     assert!(sources.sealed.load(Ordering::Acquire));
-    assert!(Arc::strong_count(&charge) > 1);
+    assert!(!charge_retired.load(std::sync::atomic::Ordering::Acquire));
     sources.finish(true);
     let failure = owner.drain_startup().await.unwrap_err();
     assert_eq!(failure.completion(), DrainCompletion::Complete);
@@ -197,14 +198,14 @@ async fn application_source_idle_abandonment_and_cancelled_drain_keep_original_c
     assert!(!retained_owner(&owner));
     drop(owner);
     assert!(weak.upgrade().is_none());
-    assert_eq!(Arc::strong_count(&charge), 1);
+    assert!(charge_retired.load(std::sync::atomic::Ordering::Acquire));
     Ok(())
 }
 
 #[tokio::test]
 async fn application_source_pending_retirement_blocks_buffer_and_group_release()
 -> anyhow::Result<()> {
-    let owner = SnapshotBufferOwner::new(1, Arc::new(()))?;
+    let owner = SnapshotBufferOwner::new(1, kasumi_types::SharedBudgetCharge::new(()))?;
     let sources = Sources::new(None);
     owner.bind_application_sources(crate::ApplicationSourceBinding::fixture(sources.clone()))?;
     let ownership = Arc::new(AtomicBool::new(true));
@@ -229,7 +230,7 @@ async fn application_source_pending_retirement_blocks_buffer_and_group_release()
 #[tokio::test]
 async fn application_source_failed_claim_cannot_release_unclosed_idle_roots() -> anyhow::Result<()>
 {
-    let owner = SnapshotBufferOwner::new(1, Arc::new(()))?;
+    let owner = SnapshotBufferOwner::new(1, kasumi_types::SharedBudgetCharge::new(()))?;
     let sources = Sources::new(None);
     owner.bind_application_sources(crate::ApplicationSourceBinding::fixture(sources.clone()))?;
     assert!(
@@ -255,13 +256,19 @@ async fn application_source_failed_claim_cannot_release_unclosed_idle_roots() ->
 #[tokio::test]
 async fn application_source_failed_startup_waits_real_storage_lease_before_final_drain()
 -> anyhow::Result<()> {
-    let owner = SnapshotBufferOwner::new(1, Arc::new(()))?;
+    let owner = SnapshotBufferOwner::new(1, kasumi_types::SharedBudgetCharge::new(()))?;
     let sources = Sources::new(Some(83));
     let original = sources.report.issues()[0].clone();
     owner.bind_application_sources(crate::ApplicationSourceBinding::fixture(sources.clone()))?;
     let (storage, lease) = crate::lifetime::StorageDrain::new();
+    let first_original = anyhow::Error::new(OriginalSourceFailure(89));
+    let first_address = std::ptr::from_ref(
+        first_original
+            .downcast_ref::<OriginalSourceFailure>()
+            .unwrap(),
+    );
     let mut first = Box::pin(crate::failed_startup(
-        OriginalSourceFailure(89).into(),
+        first_original.into(),
         &owner,
         &storage,
     ));
@@ -278,10 +285,20 @@ async fn application_source_failed_startup_waits_real_storage_lease_before_final
     drop(first);
     assert!(retained_owner(&owner));
     sources.finish(true);
-    let error = crate::failed_startup(OriginalSourceFailure(999).into(), &owner, &storage).await;
-    let failure = error.downcast_ref::<DrainFailure>().unwrap();
+    let second_original = anyhow::Error::new(OriginalSourceFailure(999));
+    let second_address = std::ptr::from_ref(
+        second_original
+            .downcast_ref::<OriginalSourceFailure>()
+            .unwrap(),
+    );
+    let error = crate::failed_startup(second_original.into(), &owner, &storage).await;
+    let failure = error
+        .operation_error()
+        .expect("actual ordinary startup drain diagnostic")
+        .downcast_ref::<DrainFailure>()
+        .unwrap();
     assert_eq!(failure.completion(), DrainCompletion::Complete);
-    assert_eq!(failure.issues().len(), 2);
+    assert_eq!(failure.issues().len(), 3);
     assert!(
         failure
             .issues()
@@ -301,6 +318,20 @@ async fn application_source_failed_startup_waits_real_storage_lease_before_final
             .0,
         89
     );
+    for (value, address) in [(89, first_address), (999, second_address)] {
+        let original = failure
+            .issues()
+            .iter()
+            .filter(|issue| issue.component() == "Raft startup")
+            .find_map(|issue| {
+                issue
+                    .error()
+                    .downcast_ref::<OriginalSourceFailure>()
+                    .filter(|original| original.0 == value)
+            })
+            .expect("each independent original startup failure remains owned");
+        assert_eq!(std::ptr::from_ref(original), address);
+    }
     assert!(!retained_owner(&owner));
     Ok(())
 }
@@ -308,27 +339,40 @@ async fn application_source_failed_startup_waits_real_storage_lease_before_final
 #[tokio::test]
 async fn application_source_nonpositive_close_keeps_original_error_and_registry()
 -> anyhow::Result<()> {
-    let owner = SnapshotBufferOwner::new(1, Arc::new(()))?;
+    let owner = SnapshotBufferOwner::new(1, kasumi_types::SharedBudgetCharge::new(()))?;
     let sources = Sources::new(Some(97));
     let original = sources.report.issues()[0].clone();
     owner.bind_application_sources(crate::ApplicationSourceBinding::fixture(sources.clone()))?;
+    let guard = owner.scratch_failure_guard().unwrap();
+    let earlier = owner.drain_buffers().await.unwrap_err();
+    assert_eq!(earlier.completion(), DrainCompletion::Retained);
+    let buffer_issue = earlier.issues()[0].clone();
+    assert_eq!(guard.capture_result(Ok(43)).unwrap(), 43);
     sources.finish(false);
     let failure = owner.drain_startup().await.unwrap_err();
     assert_eq!(failure.completion(), DrainCompletion::Retained);
-    assert!(kasumi_types::drain::DrainIssueRef::ptr_eq(
-        &original,
-        &failure.issues()[0]
-    ));
+    for expected in [&original, &buffer_issue] {
+        assert!(
+            failure
+                .issues()
+                .iter()
+                .any(|actual| { kasumi_types::drain::DrainIssueRef::ptr_eq(expected, actual) })
+        );
+    }
     assert!(retained_owner(&owner));
     // A later positive exact retirement can release custody, retaining the
     // same original error instead of substituting a successful-close string.
     sources.finish(true);
     let failure = owner.drain_startup().await.unwrap_err();
     assert_eq!(failure.completion(), DrainCompletion::Complete);
-    assert!(kasumi_types::drain::DrainIssueRef::ptr_eq(
-        &original,
-        &failure.issues()[0]
-    ));
+    for expected in [&original, &buffer_issue] {
+        assert!(
+            failure
+                .issues()
+                .iter()
+                .any(|actual| { kasumi_types::drain::DrainIssueRef::ptr_eq(expected, actual) })
+        );
+    }
     assert!(!retained_owner(&owner));
     Ok(())
 }
@@ -336,7 +380,7 @@ async fn application_source_nonpositive_close_keeps_original_error_and_registry(
 #[tokio::test]
 async fn application_source_retained_startup_never_seals_writer_preparation() -> anyhow::Result<()>
 {
-    let owner = SnapshotBufferOwner::new(1, Arc::new(()))?;
+    let owner = SnapshotBufferOwner::new(1, kasumi_types::SharedBudgetCharge::new(()))?;
     let sources = Sources::new(None);
     owner.bind_application_sources(crate::ApplicationSourceBinding::fixture(sources.clone()))?;
     let mut report = DrainReport::default();
@@ -356,7 +400,7 @@ async fn application_source_retained_startup_never_seals_writer_preparation() ->
 }
 
 async fn failed_final_handoff(panics: bool) -> anyhow::Result<()> {
-    let owner = SnapshotBufferOwner::new(1, Arc::new(()))?;
+    let owner = SnapshotBufferOwner::new(1, kasumi_types::SharedBudgetCharge::new(()))?;
     let weak = Arc::downgrade(&owner);
     let sources = Sources::new(None);
     if panics {
@@ -366,7 +410,7 @@ async fn failed_final_handoff(panics: bool) -> anyhow::Result<()> {
     }
     owner.bind_application_sources(crate::ApplicationSourceBinding::fixture(sources.clone()))?;
     let (release, paused) = tokio::sync::oneshot::channel();
-    let mut caller = Box::pin(owner.start(async {
+    let mut caller = Box::pin(owner.start::<_, anyhow::Error>(async {
         Ok(crate::startup_owner_tests::source_custody_fixture_group(
             tokio::spawn(async move {
                 paused.await.unwrap();
@@ -448,12 +492,12 @@ async fn failed_final_handoff(panics: bool) -> anyhow::Result<()> {
 }
 
 #[tokio::test]
-async fn application_source_final_check_precedes_group_delivery() -> anyhow::Result<()> {
-    let owner = SnapshotBufferOwner::new(1, Arc::new(()))?;
+async fn application_source_final_check_precedes_group_delivery() -> FixtureResult<()> {
+    let owner = SnapshotBufferOwner::new(1, kasumi_types::SharedBudgetCharge::new(()))?;
     let sources = Sources::new(None);
     owner.bind_application_sources(crate::ApplicationSourceBinding::fixture(sources.clone()))?;
     let group = owner
-        .start(async {
+        .start::<_, anyhow::Error>(async {
             Ok(crate::startup_owner_tests::source_custody_fixture_group(
                 tokio::spawn(async {}),
             ))
@@ -495,7 +539,7 @@ async fn application_source_panicked_final_check_and_cancelled_cleanup_keep_uncl
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn application_source_shutdown_during_final_check_cannot_deliver_group() -> anyhow::Result<()>
 {
-    let owner = SnapshotBufferOwner::new(1, Arc::new(()))?;
+    let owner = SnapshotBufferOwner::new(1, kasumi_types::SharedBudgetCharge::new(()))?;
     let sources = Sources::new(None);
     let (entered, ready) = std::sync::mpsc::channel();
     let (release, paused) = std::sync::mpsc::channel();
@@ -504,7 +548,7 @@ async fn application_source_shutdown_during_final_check_cannot_deliver_group() -
     let claiming = owner.clone();
     let caller = tokio::spawn(async move {
         claiming
-            .start(async {
+            .start::<_, anyhow::Error>(async {
                 Ok(crate::startup_owner_tests::source_custody_fixture_group(
                     tokio::spawn(async {}),
                 ))

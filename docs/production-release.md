@@ -12,7 +12,7 @@ implementation and qualification of the new goals remain open.
 
 ## Current verified status
 
-Updated 2026-09-26. **No source revision is release-qualified.** The table
+Updated 2026-10-05. **No source revision is release-qualified.** The table
 lists current `master` and every frozen attempt of the first-release cohort
 chain, newest first. That chain is every attempt that has a
 `first-release-*-check-*` or `first-release-*-interrupted-*` evidence
@@ -97,6 +97,294 @@ What this means for current `master`:
 G01–G14 and every final release gate remain open.
 
 ## Development checkpoints
+
+### 2026-10-05 Native startup children before dispatch
+
+The [startup-child checkpoint](evidence/native-startup-child-construction-20261005/README.md)
+uses closed Tables/Verification purposes, exact nonblocking parent claims and
+the existing paid constructor receiver. Both real Reader grants and original
+outcomes precede construction; the coordinator stores the exact verification
+child before begin. Compact purpose/ID delivery keeps postclaim diagnostics in
+the original receiver. Failed delivery has one observed abandonment, and the
+constructor gate prevents premature census drive/retirement. Parent credit
+requires actual child retirement; monotonic native receipts preserve earlier
+issued acknowledgements after same-slot reuse. No compatibility fallback,
+error Box, new lint allowance or fixture budget increase was added.
+
+Nine focused cases pass. The successor native all-feature Store library passes
+**815/815 runnable cases, zero failures, four ignored**, including a real
+one-byte report capacity refusal and actual coordinator failure handoff.
+The exact executable, outputs and source books are archived. Its 448-file Store
+dependency closure is stable; sixteen concurrent Engine/Raft changes prevent
+a whole-source freeze claim. The preceding seven-case full run passed 813/four
+ignored at its own exact source point. Repeated selections and descriptor
+child/parent summaries do not add distinct coverage.
+
+Strict KV/Store passes under the unchanged four lib owning-error and two old
+startup-return allowances. An interim 264-byte Opening variant failed lint and
+was replaced by the compact child marker. A later production check failed
+because concurrent input-custody work called a test-only primary accessor.
+The guarded successor borrows only the exact installed memory owner and passes
+default Store/Engine/Server compilation; it does not promote test primary graph
+or publication authority. All failed and preceding attempts are preserved.
+
+Full compact startup receiver/pin and checked handoff, outer/observer/destructor
+observations, early census-ID binding, final facade/root funding and
+allocator-null recovery remain OPEN. Directory pending-custody work is a
+separate successor; final DirectoryOwner/root/walk/cursor close proof remains
+OPEN. Full Engine/Server suites and every final native, installed, HA, capacity,
+benchmark, full-duration soak and artifact gate remain required. G01–G14,
+C01–C07 and M01–M07 remain OPEN.
+
+### 2026-10-05 Native constructor installation and original grant custody
+
+Native database construction now requires the exact installed provider's closed
+constructor installer. Its actual concrete grant, payload and original
+errors/panics remain in a preclaimed paid census receiver; callbacks run outside
+metadata, publication contention retains the same body, and failed construction
+travels as typed custody. Supported providers and callers are migrated directly.
+The Engine provider preserves ordinary admission origin inside audit scopes.
+An independently reviewed monotonic retirement receipt prevents a delayed old
+cleanup from replacing a newer same-slot receipt.
+
+The latest isolated all-feature Store library passes **806/806 runnable cases**
+with **four ignored**, including thirteen constructor cases and the forced
+stdio-lock diagnostic case. A descriptor-reuse fixture now runs its unchanged
+assertions in an isolated child process. The previous full runs remain archived:
+**771 passed/33 failed/four ignored**, **805/zero/four** at an earlier source
+point, and **804/two/four** with two EBADF failures before fixture isolation.
+The exact cross-test descriptor collision was not captured. Earlier scoped
+artifacts pass three distinct Engine constructor cases and four distinct Server
+startup cases; repeats, unmatched selectors and nested child summaries are not
+additional distinct cases.
+
+Default Store/Engine/Server production compilation and scoped 40-file formatting
+pass. The latest strict KV/Store command passes **under four outside-authored
+startup lint allowances**; its predecessor failed on four owning-error return
+sites. The Opening variant still owns custody reported as at least 208 bytes.
+The compact startup receiver is not implemented. Later shared Server changes are
+source observations without inherited compiler/test qualification.
+
+The [sealed checkpoint](evidence/native-constructor-install-20261005/README.md)
+preserves 1,291 payload files (52,144,166 bytes), manifest SHA256
+`2cc0e486bbe74bc0f43bf73dc9ae33fb52546f7ca37ccf5f878e9af50924e707`,
+actual command receipts, source books, original failures, inverse checks and
+independent reviews. Captured Markdown contexts and the first failed publication
+copy are explicit. This is development evidence, with no final-source release
+qualification. G01–G14, C01–C07 and M01–M07 remain OPEN. Next implement the
+funded compact startup/child protocol and fallible directory/walk retirement;
+allocator-null recovery, final facade funding and last observable roots also
+remain open.
+
+### 2026-10-05 Fallible backend placement and original grant custody
+
+The native backend now obtains fallible control/body backing under its original
+admission grant and transfers the exact original body once. Allocation refusal
+remains recoverable, without fencing a healthy owner. Partial allocations and
+original destructor/grant panics retain their real custody; an inline destructor
+panic blocks subsequent lower retirement. The private strong control uses
+checked layouts and deallocates its actual control before payload handoff.
+
+A fresh isolated default KV library artifact passes **608/608** cases, including
+eleven new allocator, alias, concurrent retirement and panic cases. A fresh
+isolated Store artifact passes **37 distinct selected cases**. Default Store
+production and all-feature Engine production checks pass; scoped formatting
+passes. Exact binary guards and scoped before/after source observations match on
+the latest executions. Ordinary stacks, budgets and assertions are unchanged.
+These are component development results, not a clean transitive freeze or full
+Store/Engine/platform/release qualification.
+
+Two preserved shared Store checks failed with 85 diagnostics each while reusing
+old KV metadata with removed generation and overlay dependency paths. Fresh
+isolated production artifacts compile the canonical native source. An earlier
+shared KV production check also reused metadata and cannot qualify the new cut.
+The latest KV execution repeats the same 608 names; historical passes are not
+added as distinct coverage. Original adapter/verifier preflight failures, outside
+lint allowances and their exact guarded removal remain preserved in the
+[development archive](evidence/native-backend-placement-20261005/README.md).
+
+Strict all-feature/all-target KV/Store Clippy still exits 101 with 24 lib/test
+messages at **twelve distinct large owning-error sites**. Implement the preclaimed
+constructor receiver and explicit ordinary installed-provider funding outside
+metadata/group locks, then the canonical in-place opening/lifecycle stage and
+direct API cut. No compatibility overload, lint suppression or unpaid error box
+closes that gap. Public Generation closure and all final gates remain open.
+G01–G14, C01–C07 and M01–M07 remain open; the persistent release goal is active.
+
+### 2026-10-05 Engine typed integration and native custody
+
+Fresh Engine unit builds now pass after shared caller repairs and the direct
+inline owning fixture cut. The latest recorded native artifact passes **41/41
+distinct selected cases**, including original-Store acquisition fencing,
+source-capacity retirement, actual allocation/deallocation credit tails,
+cancellation and retained publication errors. The complete 682-case package is
+not qualified. The original 77-diagnostic build remains historical evidence.
+
+The first selected cohort's 40 passes and one assertion failure are preserved.
+The fixture sealed before the new acquisition fence; its supported interleaving
+now seals that same Store immediately before the actual sink publication call.
+All original error/response pointer, empty-source, drain, reentry and shutdown
+assertions remain byte-identical. Budgets, timers and ordinary stacks are
+unchanged. The [Engine archive](evidence/engine-typed-integration-cutover-20261005/README.md)
+retains exact cuts, independent source reviews, actual build/artifact and case
+receipts, old failures and individual source observations.
+
+Twelve native owning-error Clippy diagnostics remain open. The reviewed earlier
+constructor/census funding and stage-placement proposal is unimplemented.
+Public Generation closure and full source/platform/installed/HA/capacity/soak
+qualification remain open. G01–G14, C01–C07 and M01–M07 remain open, with the
+persistent release goal active. Earlier dated checkpoints preserve their own
+artifact results and do not qualify changed source or executables.
+
+### 2026-10-05 Funded native buffers and retirement
+
+Work stayed on `/Users/mtakemiya/dev/kasumi` on `master`. Fallible, exact-capacity
+AutoWarm, walker and scratch backing is covered by the original grants; successful
+constructor bindings and partial facade retirement now release their original
+owners in the observed order. Supported fixture callers use the current typed
+API without compatibility layers. Original assertions, budgets and test stack
+settings are preserved.
+
+The latest KV artifact passes 49 executions covering **44 distinct cases**;
+the latest Store artifact passes **32 distinct cases**, including the original
+writer handoff assertion and the selected prior stack-abort paths. Scoped source
+formatting passes. These are focused development results on recorded artifacts,
+not complete suites or a simultaneous source freeze. Prior failed builds,
+assertions and aborts remain preserved.
+
+After five direct result annotations, the fresh Engine build reaches test
+integration and exits 101 with **77 diagnostics**. Strict server Clippy exits
+101 on **twelve large owning-error diagnostics**, now reporting bodies of at
+least 25,784/25,744 bytes. No allowance or unpaid error box was added. The
+[development archive](evidence/native-stage-cutover-20261005/README.md) retains
+actual command exits, case receipts, binary hashes, bounded disassembly,
+source-only reviews and individual source-drift observations. Public Generation
+closure, walker failure custody, complete native/installed/HA qualification,
+capacity measurements and all deliverables remain open. G01–G14, C01–C07 and
+M01–M07 remain open; the persistent release goal remains active. Earlier dated
+checkpoints below retain the results of their original artifacts.
+
+### 2026-10-04 Store ownership and native stack checkpoint
+
+On the authorized master checkout, a fresh native Store unit artifact builds.
+Its exact selected executions record four passes and four stack-overflow aborts,
+with twenty-six unrun selection slots across the failed cohorts. The new writer
+handoff does not reach its successful handoff assertion. The independently
+selected metadata-witness case and three scratch-creation cases pass, with
+unchanged artifact hashes; these limited passes cannot qualify the failed paths.
+The latest strict server check fails on twelve large owning-error diagnostics,
+and the fresh Engine unit build fails on seven ongoing Raft type/custody errors.
+All raw logs, original failures, supported direct API/test replacements and
+source drift are retained in the
+[readiness/ownership development archive](evidence/readiness-coverage-cutover-20261004/README.md).
+No release goal, final source/platform gate or cache milestone closes here.
+
+The current [2026-10-04 readiness coverage cutover](evidence/readiness-coverage-cutover-20261004/README.md)
+implements binding decision 5: complete fresh probes of actual installed groups
+and healthy node services determine readiness; group health is diagnostic.
+Exact original owner selection, missing-owner rejection, membership observers,
+original thirty-second certificate expiry, retained probe/drain custody and
+protected response fences remain. The direct API and supported writers/readers
+change together without compatibility aliases. Work uses only
+`/Users/mtakemiya/dev/kasumi` on `master`, preserving pending changes and older
+evidence.
+
+Separate native development runs pass the twelve selected readiness/probe cases
+on three recorded artifacts; the later artifact also passes one actual standalone
+native/MCP credential-lifecycle case. Installed TLS renewal and real sealed-owner
+response checks pass before a later negative-observation timeout. The original
+129-group HTTP wait and archive retained-writer failure remain failed evidence,
+with their actual source/binary scope and unrun selections. Later diagnostic and
+stable-owner fixture changes are reviewed source only; fresh strict checks fail
+in the ongoing native KV ownership cut. This checkpoint qualifies no frozen
+release. All release/cache/milestone goals remain open, including dedicated
+Control-only runtime, nine-process HA, native platform gates, exhaustive capacity
+and benchmarks, the genuine 86,400-second soak and usable reproducible artifacts.
+Earlier readiness claims that require every group's diagnostic health are
+superseded by this current binding rule.
+
+The [2026-10-04 checkpoint](evidence/release-resume-20261004/README.md)
+requires explicit installed Control/application incarnation UUIDs and pinned
+Transit CA bundles for every primary/historical key domain. It directly updates
+supported callers and rejects omitted/null identities and trust material.
+Native staging now funds fallible one-slot lease nodes, rolls back the complete
+batch on actual allocator refusal, retires physical backing before refunds,
+and preserves original panic/tail custody. G11 records a mandatory
+`dispatch_started` boundary so an indexed, fully retained preflight failure can
+be represented without inventing a child receipt. No compatibility path was
+introduced.
+
+The rebuilt native library passes **563/563**, including all **8** staging
+cases. Store key selection passes **31/31**, actual-file required-config load
+passes **2/2**, the runtime/signer selection passes **32/32**, and repository
+Python discovery passes **294/294**. Strict KV/Store Clippy and formatting pass
+at their recorded source checkpoint. Store/server binaries preceded the
+fallible native successor; later shared Store/Raft edits are preserved but
+unqualified by these earlier checks. Native dependency provenance and unchanged
+native inputs are recorded separately. These results close no release goal.
+
+Original compile failures, the superseded Box-based pass/approval, the
+interrupted build-lock wait and stale zero-test runs remain archived. Cargo's
+stale native fingerprint watched five obsolete overlay files; only that saved
+unit-test fingerprint was invalidated before the actual rebuild. The
+[source observations and receipts](evidence/release-resume-20261004/archive-manifest.json)
+bind every scoped result. Explicit tenant audit placement, original admitted
+scratch output/source retirement, production document/index activation and all
+final-source/platform/HA/capacity/endurance/artifact gates remain open.
+
+The later [2026-10-04 explicit audit-placement checkpoint](evidence/audit-placement-cutover-20261004/README.md)
+requires `tenant_audit_placements`: exactly Control plus every configured
+application tenant, choosing a closed local opt-in or nested external destination.
+Missing/null/duplicate/extra rows and obsolete shapes reject. Standalone APIs and
+both CLI init forms require the selected map and validate installed filesystem
+exclusions before directory/key creation. Staging publishes the choice atomically
+with its tenant and preserves it on replay. There are no compatibility aliases,
+legacy readers, missing-row repair or error-to-local fallback.
+
+Each target template owns its independent choice, including same-name and
+target-only deployments. Target journal format 5 binds its complete canonical
+roster before cache/external effects. Local recovery journal format 5 and
+physical marker format 2 retain the admitted original choice, phase inputs and
+observed cache. Resume, status, stop and activated reopen compare those bindings;
+credential contents can refresh only at their installed locations. Concrete
+filesystem guards reject cache aliases, deletion-tree descendants and owner
+substitution. Required Control coverage does not qualify dedicated Control-only
+process topology.
+
+Separate development results pass **295/295** Python, **49/49** selected server,
+**16/16** earlier Store audit, **18/18** fresh Store ownership, **21/21** Engine
+journal, **6/6** snapshot-index and **12/12** capacity/error-retirement cases.
+Strict all-feature/all-target Clippy for Store, Engine and server and scoped
+formatting pass. The original server stack abort and Engine directory-observer
+failure remain separate from successor passes. A 64-sample test observer omitted
+the fifth real plaintext grant at sample 72 of 81; its bounded 256-sample
+successor preserves the original geometry, overflow and retirement assertions.
+The final selected-source drain now releases the same inspected clean refusal
+error's registered writer before shutdown. Trait-object pointer annotations
+preserve original error-allocation identity.
+
+Original compile, selector, decoder, stack, observer and drain failures are
+archived with exact logs, source observations and binary hashes. Shared source
+continued to change during these checks; their passes are not one clean frozen
+revision or production stack qualification. Complete publication ownership,
+production document/index activation and every final platform/provider/HA/
+capacity/endurance/artifact gate remain open. G01–G14, C01–C07 and M01–M07 remain
+open; no source revision is release-qualified.
+
+The subsequent [local OAuth discovery checkpoint](evidence/local-oauth-discovery-cutover-20261004/README.md)
+removes both discovery routes and `resource_metadata` challenges for installed
+local credentials. The configured external provider retains its issuer, both
+routes and its challenge independently of deployment mode. The direct metadata
+API replacement and supported callers/runbooks are source-reviewed. Seven actual
+native cases pass on the recorded binary, covering both discovery choices, local
+MCP/credential lifecycle, external Standalone reopen, and unchanged authentication
+rejections. Scoped formatting passes; the original selector preflight ran no
+cases. Strict server all-feature/all-target dispatches fail in the separately
+changing native `CoreError` integration (678, then 8 compile diagnostics), with
+original logs retained and no strict pass or later-native result inheritance
+claimed. This is another focused development result; every release/cache goal
+and required combined-source, native platform, provider, HA, capacity, endurance
+and artifact gate remains open.
 
 The release goal remains active. Existing changes and prior release work are
 preserved through integration in the active checkout. This is the first release:

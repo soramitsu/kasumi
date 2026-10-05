@@ -47,8 +47,8 @@ fn small_projection<'a, 'b>(
 }
 
 #[tokio::test]
-async fn primary_stage_fixed_objects_are_journaled_and_old_pin_survives_bounded_abort() -> Result<()>
-{
+async fn primary_stage_fixed_objects_are_journaled_and_old_pin_survives_bounded_abort()
+-> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
     let engine = engine(&fixture)?;
     let input = fixture.storage.admission.reserve_document_source(1 << 20)?;
@@ -187,7 +187,8 @@ async fn primary_stage_fixed_objects_are_journaled_and_old_pin_survives_bounded_
 }
 
 #[tokio::test]
-async fn primary_stage_fixed_shape_refusal_creates_no_inventory_or_counter_change() -> Result<()> {
+async fn primary_stage_fixed_shape_refusal_creates_no_inventory_or_counter_change()
+-> crate::test_fixture_failure::FixtureResult<()> {
     for page in [true, false] {
         let fixture = Fixture::new().await?;
         let engine = engine(&fixture)?;
@@ -255,8 +256,8 @@ async fn primary_stage_fixed_shape_refusal_creates_no_inventory_or_counter_chang
 }
 
 #[tokio::test]
-async fn primary_stage_fixed_missing_or_corrupt_objects_refuse_before_abort_progress() -> Result<()>
-{
+async fn primary_stage_fixed_missing_or_corrupt_objects_refuse_before_abort_progress()
+-> crate::test_fixture_failure::FixtureResult<()> {
     for page in [true, false] {
         for missing in [true, false] {
             let fixture = Fixture::new().await?;
@@ -335,7 +336,7 @@ async fn primary_stage_fixed_missing_or_corrupt_objects_refuse_before_abort_prog
 
 #[tokio::test]
 async fn primary_stage_fixed_impossible_inventory_progress_refuses_without_erasing_custody()
--> Result<()> {
+-> crate::test_fixture_failure::FixtureResult<()> {
     for page in [true, false] {
         let fixture = Fixture::new().await?;
         let engine = engine(&fixture)?;
@@ -453,8 +454,8 @@ async fn primary_stage_fixed_impossible_inventory_progress_refuses_without_erasi
 }
 
 #[tokio::test]
-async fn primary_stage_fixed_page_framing_refuses_even_with_matching_inventory_digest() -> Result<()>
-{
+async fn primary_stage_fixed_page_framing_refuses_even_with_matching_inventory_digest()
+-> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
     let engine = engine(&fixture)?;
     let input = fixture.storage.admission.reserve_document_source(1 << 20)?;
@@ -548,7 +549,8 @@ async fn primary_stage_fixed_page_framing_refuses_even_with_matching_inventory_d
 }
 
 #[tokio::test]
-async fn primary_stage_fixed_page_buffer_returns_for_following_multichunk_dto() -> Result<()> {
+async fn primary_stage_fixed_page_buffer_returns_for_following_multichunk_dto()
+-> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
     let engine = engine(&fixture)?;
     let input = fixture.storage.admission.reserve_document_source(1 << 20)?;

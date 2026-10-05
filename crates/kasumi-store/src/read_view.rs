@@ -3,6 +3,8 @@ use super::*;
 mod point_retirement;
 pub use point_retirement::PointRetirementFailure;
 pub(crate) use point_retirement::retire_point_backing;
+#[cfg(test)]
+mod ordinary_visit_tests;
 mod prepared_points;
 pub use prepared_points::{
     PreparedTenantReadPoints, PreparedTenantReadSource, PreparedTenantReadSourceLoan,
@@ -45,8 +47,8 @@ pub(crate) enum ViewTransaction {
 impl ViewTransaction {
     pub(crate) fn begin(node: &NodeStore) -> Result<Self> {
         #[cfg(any(test, feature = "test-utils"))]
-        if node.db.has_fixture_direct_database() {
-            return Ok(Self::Fixture(node.db.begin_read()?));
+        if node.body().db.has_fixture_direct_database() {
+            return Ok(Self::Fixture(node.body().db.begin_read()?));
         }
         Ok(Self::Registered(node.begin_registered_read()?))
     }
@@ -168,18 +170,20 @@ impl TenantStore {
         let _access = AccessGuard(self);
         self.check_access()?;
         let _mutation = self.mutations.lock();
-        let tx = self.node.db.begin_write()?;
-        replace_domain(&tx, self, replacements)?;
-        {
-            let state = self.state.read();
-            self.require_access(&state)?;
-            let catalog = self.catalog.read();
-            write_domain(&tx, self, &state, &catalog, operations)?;
-        }
-        self.check_access()?;
-        tx.commit()
-            .context("table publication outcome may be unknown")?;
-        self.check_access()
+        self.node.with_registered_write(
+            &mut (),
+            |tx, _| {
+                replace_domain(tx, self, replacements)?;
+                {
+                    let state = self.state.read();
+                    self.require_access(&state)?;
+                    let catalog = self.catalog.read();
+                    write_domain(tx, self, &state, &catalog, operations)?;
+                }
+                self.check_access()
+            },
+            |_| self.check_access(),
+        )
     }
 }
 impl TenantReadView {
@@ -194,7 +198,7 @@ impl TenantReadView {
                     AdmittedKeyCatalog::decode(
                         bytes.as_bytes(),
                         tenant,
-                        self.store.node.persistent_disk().memory().clone(),
+                        self.store.node.memory().clone(),
                     )
                 })
                 .transpose(),
@@ -252,7 +256,7 @@ impl TenantReadView {
         namespace: &str,
         key: &[u8],
         max_value_bytes: usize,
-    ) -> Result<Option<Vec<u8>>> {
+    ) -> Result<Option<PlaintextValue>> {
         get_at(
             &self.store,
             self.transaction.as_ref().expect("live view transaction"),
@@ -261,27 +265,61 @@ impl TenantReadView {
             max_value_bytes,
         )
     }
+    /// Borrow each authenticated record under its installed plaintext charge.
+    /// The callback must admit any result it retains beyond this call.
     pub fn visit(
         &self,
         namespace: &str,
         max_value_bytes: usize,
         mut visitor: impl FnMut(&[u8], &[u8]) -> Result<()>,
     ) -> Result<()> {
-        visit_at(
-            &self.store,
-            self.transaction.as_ref().expect("live view transaction"),
-            namespace,
-            max_value_bytes,
-            &mut (),
-            |_, _| Ok(()),
-            |_, key, value| visitor(key, value),
-        )
+        let transaction = self.transaction.as_ref().expect("live view transaction");
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            visit_encrypted_at(
+                &self.store,
+                transaction,
+                namespace,
+                max_value_bytes,
+                |key, envelope| {
+                    let record = {
+                        let state = self.store.state.read();
+                        self.store.require_access(&state)?;
+                        let record = PlaintextRecord::prepare(
+                            &self.store,
+                            key,
+                            envelope,
+                            &state,
+                            namespace,
+                        )?;
+                        ensure!(
+                            record.value().len() <= max_value_bytes,
+                            "view record namespace or size differs"
+                        );
+                        record
+                    };
+                    visitor(record.key(), record.value())
+                },
+            )
+        })) {
+            Ok(result) => result.map_err(|error| transaction.preserve_report(error)),
+            Err(payload) => match transaction {
+                ViewTransaction::Registered(reader) => {
+                    reader.preserve_body_panic(payload);
+                    Err(transaction.preserve_report(NodeReadAccessError::Reported.into()))
+                }
+                #[cfg(any(test, feature = "test-utils"))]
+                ViewTransaction::Fixture(_) => Err(PointRetirementFailure::new(
+                    anyhow::anyhow!("ordinary record visit panicked"),
+                    payload,
+                )
+                .into()),
+            },
+        }
     }
 }
 
-// One canonical authenticated iterator for single and paired ordinary views.
-// The caller's real workspace remains borrowed through pre-decode admission and
-// visitation; this never creates a source pool, reader, or parallel sample.
+// Prepared custody visitation borrows the caller's original admission through
+// decode and callback. It must not acquire another plaintext reservation.
 pub(crate) fn visit_at<W>(
     store: &TenantStore,
     transaction: &ViewTransaction,
@@ -290,6 +328,38 @@ pub(crate) fn visit_at<W>(
     workspace: &mut W,
     mut prepare: impl FnMut(&mut W, &[u8]) -> Result<()>,
     mut visitor: impl FnMut(&mut W, &[u8], &[u8]) -> Result<()>,
+) -> Result<()> {
+    visit_encrypted_at(
+        store,
+        transaction,
+        namespace,
+        max_value_bytes,
+        |key, envelope| {
+            prepare(workspace, envelope)?;
+            let record = {
+                let state = store.state.read();
+                store.require_access(&state)?;
+                check_encrypted_record_budget(envelope, namespace.len(), 4096, max_value_bytes)?;
+                let record = store.decode_record(key, envelope, &state)?;
+                ensure!(
+                    record.namespace == namespace && record.value.len() <= max_value_bytes,
+                    "view record namespace or size differs"
+                );
+                record
+            };
+            visitor(workspace, &record.key, &record.value)
+        },
+    )
+}
+
+// The selected root, encrypted output owner and access/bounds checks are shared
+// by ordinary admitted records and caller-funded prepared custody visitation.
+fn visit_encrypted_at(
+    store: &TenantStore,
+    transaction: &ViewTransaction,
+    namespace: &str,
+    max_value_bytes: usize,
+    mut visitor: impl FnMut(&[u8], &[u8]) -> Result<()>,
 ) -> Result<()> {
     ensure!(
         max_value_bytes <= MAX_RECORD,
@@ -300,11 +370,18 @@ pub(crate) fn visit_at<W>(
     let prefix = {
         let state = store.state.read();
         store.require_access(&state)?;
-        namespace_prefix(
-            &store.tenant,
-            namespace,
-            state.keys.get(INDEX_KEY).context("index key missing")?,
-        )
+        let index = state.keys.get(INDEX_KEY).context("index key missing")?;
+        let mut prefix = [0u8; 64];
+        prefix[..32].copy_from_slice(&tenant_hash(&store.tenant));
+        prefix[32..].copy_from_slice(&keyed_hash(
+            index,
+            &[
+                b"kasumi.namespace.v1",
+                store.tenant.as_bytes(),
+                namespace.as_bytes(),
+            ],
+        ));
+        prefix
     };
     let mut visit_one = |key: &[u8], envelope: &[u8]| -> Result<()> {
         {
@@ -312,19 +389,7 @@ pub(crate) fn visit_at<W>(
             store.require_access(&state)?;
             check_encrypted_record_budget(envelope, namespace.len(), 4096, max_value_bytes)?;
         }
-        prepare(workspace, envelope)?;
-        let record = {
-            let state = store.state.read();
-            store.require_access(&state)?;
-            check_encrypted_record_budget(envelope, namespace.len(), 4096, max_value_bytes)?;
-            let record = store.decode_record(key, envelope, &state)?;
-            ensure!(
-                record.namespace == namespace && record.value.len() <= max_value_bytes,
-                "view record namespace or size differs"
-            );
-            record
-        };
-        visitor(workspace, &record.key, &record.value)?;
+        visitor(key, envelope)?;
         store.check_access()?;
         Ok(())
     };
@@ -367,11 +432,11 @@ pub(crate) fn visit_at<W>(
 ///
 /// All lengths are bytes; tenant means the actual encrypted domain catalog
 /// tenant (including the custody prefix for custody reads). The caller must fund
-/// this quote in its actual operation before the read, separately from native
-/// encrypted output/cache/census charges.
-/// It covers the physical-key/AAD construction, AEAD copy, decoded fields and the
-/// returned value's backing until that value is destroyed. It neither acquires
-/// admission nor attaches a lease to the returned Vec. Caller scratch, retained
+/// this conservative operation quote before the read, separately from native
+/// encrypted output/cache/census charges. The actual returned `PlaintextValue`
+/// independently acquires and retains its installed plaintext allocation lease
+/// until the last owned result drops. This pure quote grants no byte credit.
+/// Caller scratch, retained
 /// inputs, decoded JSON/DTOs, diagnostic backtraces, arbitrary provider/error
 /// payloads and native memory are not included. Access, authorization and the
 /// read's value bound still apply.
@@ -397,8 +462,9 @@ pub fn plaintext_get_workspace_bytes(
     let length = |value: usize| u64::try_from(value).map_err(|_| overflow());
     let rounded = |value: u64| value.checked_next_power_of_two().ok_or_else(overflow);
     // check_encrypted_record_budget admits at most P bytes of framed plaintext.
-    // Untrusted authenticated partitions may put nearly all P in namespace/key;
-    // the expected name lengths alone cannot bound their owned decoded copies.
+    // The whole authenticated backing is retained even though callers borrow
+    // only the value. The exact installed plaintext acquisition is performed by
+    // the canonical point owner before allocating that single backing.
     let plaintext = add(
         add(
             add(length(max_value_bytes)?, length(namespace_bytes)?)?,
@@ -415,8 +481,9 @@ pub fn plaintext_get_workspace_bytes(
     // These cumulative envelopes also cover old/new backing during reallocation.
     let keys = mul(2, rounded(256)?)?;
     let aad = rounded(mul(4, aad)?)?;
-    // Pinned aead 0.5.2 uses Vec::from(ciphertext[24..]), retaining the tag's
-    // 16 bytes of backing after successful in-place truncation.
+    // Retain this conservative historical operation upper bound. Ordinary
+    // reads now use inline identity/AAD and one admitted in-place AEAD buffer;
+    // changing source-envelope operation quotes is a separate contract change.
     let decrypted = rounded(add(plaintext, 16)?)?;
     let decoded = mul(3, rounded(plaintext)?)?;
     let backing = add(add(keys, aad)?, add(decrypted, decoded)?)?;
@@ -438,9 +505,24 @@ pub(crate) fn get_at(
     namespace: &str,
     key: &[u8],
     max_value_bytes: usize,
-) -> Result<Option<Vec<u8>>> {
-    get_at_body(store, transaction, namespace, key, max_value_bytes)
-        .map_err(|error| transaction.preserve_report(error))
+) -> Result<Option<PlaintextValue>> {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        get_at_body(store, transaction, namespace, key, max_value_bytes)
+    })) {
+        Ok(result) => result.map_err(|error| transaction.preserve_report(error)),
+        Err(payload) => match transaction {
+            ViewTransaction::Registered(reader) => {
+                reader.preserve_body_panic(payload);
+                Err(transaction.preserve_report(NodeReadAccessError::Reported.into()))
+            }
+            #[cfg(any(test, feature = "test-utils"))]
+            ViewTransaction::Fixture(_) => Err(PointRetirementFailure::new(
+                anyhow::anyhow!("ordinary point read panicked"),
+                payload,
+            )
+            .into()),
+        },
+    }
 }
 
 fn get_at_body(
@@ -449,7 +531,7 @@ fn get_at_body(
     namespace: &str,
     key: &[u8],
     max_value_bytes: usize,
-) -> Result<Option<Vec<u8>>> {
+) -> Result<Option<PlaintextValue>> {
     ensure!(
         max_value_bytes <= MAX_RECORD,
         "view record bound exceeds store limit"
@@ -459,7 +541,7 @@ fn get_at_body(
     store.check_access()?;
     let state = store.state.read();
     store.require_access(&state)?;
-    let disk_key = record_key(
+    let disk_key = inline_record_key(
         &store.tenant,
         namespace,
         key,
@@ -510,14 +592,16 @@ fn decode_get_record(
     namespace: &str,
     key: &[u8],
     max_value_bytes: usize,
-) -> Result<Vec<u8>> {
-    check_encrypted_record_budget(envelope, namespace.len(), key.len(), max_value_bytes)?;
-    let mut record = store.decode_record(disk_key, envelope, state)?;
-    ensure!(
-        record.namespace == namespace && record.key == key && record.value.len() <= max_value_bytes,
-        "view record identity or size differs"
-    );
-    Ok(std::mem::take(&mut record.value))
+) -> Result<PlaintextValue> {
+    PlaintextValue::prepare(
+        store,
+        disk_key,
+        envelope,
+        state,
+        namespace,
+        key,
+        max_value_bytes,
+    )
 }
 
 #[cfg(test)]

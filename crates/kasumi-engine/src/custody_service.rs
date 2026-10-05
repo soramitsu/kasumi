@@ -161,7 +161,7 @@ impl RetiredCustody {
         config: kasumi_raft::RaftGroupConfig,
         admission: Arc<NodeAdmission>,
         audit: Arc<SecurityAudit>,
-    ) -> anyhow::Result<Arc<Self>> {
+    ) -> std::result::Result<Arc<Self>, crate::SnapshotFailure> {
         audit.require_admission(&admission)?;
         admission.memory().require_store_memory(custody.store())?;
         let group = CustodyRaftGroup::open(

@@ -159,7 +159,7 @@ async fn actual_openbao_transit_roundtrip_rotation_backups_and_warm_revocation()
                 Arc::new(move || Ok(zeroize::Zeroizing::new(token.clone())))
             },
             namespace: None,
-            ca_pem: Some(ca.clone()),
+            ca_pem: ca.clone(),
             derived,
         })?);
         let original = provider.generate_key("tenant-a").await?;
@@ -180,7 +180,8 @@ async fn actual_openbao_transit_roundtrip_rotation_backups_and_warm_revocation()
                 kasumi_store::test_utils::NODE_STORE_ID,
                 fixture_memory.clone(),
                 fixture_scratch.clone(),
-            )?,
+            )
+            .expect("bounded node fixture setup succeeds"),
             "tenant-a".into(),
             provider.clone(),
         )

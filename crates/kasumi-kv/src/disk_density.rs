@@ -89,18 +89,16 @@ impl DiskState {
     }
 
     fn maintain_pair(&mut self, plan: &DirectoryPackPlan) -> Result<(), CoreError> {
-        catch_unwind(AssertUnwindSafe(|| self.maintain_pair_inner(plan))).unwrap_or_else(|panic| {
-            Err(CoreError::UnknownCommit(std::io::Error::other(
-                CorePanic::new(panic),
-            )))
-        })
+        catch_unwind(AssertUnwindSafe(|| self.maintain_pair_inner(plan)))
+            .unwrap_or_else(|panic| Err(CoreError::unknown_commit(CorePanic::new(panic))))
     }
 
     fn maintain_pair_inner(&mut self, plan: &DirectoryPackPlan) -> Result<(), CoreError> {
         let workspace = self
             .owner
             .admission
-            .reserve_workspace(segment::maintenance_workspace_bytes() + LEASE_ALLOWANCE as u64)?;
+            .reserve_workspace(segment::maintenance_workspace_bytes() + LEASE_ALLOWANCE as u64)
+            .map(NativeResidentLease::new)?;
         let mut directory_workspace =
             DirectoryWriteWorkspace::for_pack(self.owner.admission.clone())?;
         let prepared = self.writer.prepare_maintenance(
@@ -118,7 +116,7 @@ impl DiskState {
         drop(directory_workspace);
         let root = match result {
             Ok(root) => root,
-            Err(error @ CoreError::CapacityDenied) => {
+            Err(error) if error.is_capacity_denied() => {
                 self.writer.abort_prepared(
                     self.owner.backend.as_ref(),
                     prepared,
@@ -133,6 +131,6 @@ impl DiskState {
         };
         self.finish_maintenance(prepared, root, workspace)?;
         self.warm_maintenance_pages(root)
-            .map_err(|error| CoreError::UnknownCommit(std::io::Error::other(error)))
+            .map_err(|error| error.into_unknown_commit())
     }
 }

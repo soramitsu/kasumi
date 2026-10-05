@@ -2,8 +2,13 @@ use super::*;
 use kasumi_types::drain::DrainCompletion;
 use std::{future::Future, task::Poll, time::Duration};
 
+// This marker observes only fixture payload lifetime, not memory funding.
+struct FixtureCharge {
+    _alive: Arc<()>,
+}
+
 fn budget(slots: usize) -> BackgroundWorkBudget {
-    BackgroundWorkBudget::new(slots, Arc::new(())).unwrap()
+    BackgroundWorkBudget::new(slots, kasumi_types::SharedBudgetCharge::new(())).unwrap()
 }
 
 #[tokio::test]
@@ -21,7 +26,11 @@ async fn direct_blocking_child_retains_original_result_and_join_after_cancelled_
     let worker = Arc::new(BackgroundWork::default());
     let charge = Arc::new(());
     let weak_charge = Arc::downgrade(&charge);
-    let budget = BackgroundWorkBudget::new(1, charge).unwrap();
+    let budget = BackgroundWorkBudget::new(
+        1,
+        kasumi_types::SharedBudgetCharge::new(FixtureCharge { _alive: charge }),
+    )
+    .unwrap();
     let (entered, waiting) = tokio::sync::oneshot::channel();
     let (release, held) = std::sync::mpsc::channel();
     let original = identity.clone();
@@ -249,7 +258,11 @@ async fn actual_child_abort_keeps_its_original_cancelled_join_error() {
 async fn cancelled_drain_retains_exact_child_and_charge_after_all_facades_drop() {
     let charge = Arc::new(());
     let weak_charge = Arc::downgrade(&charge);
-    let budget = BackgroundWorkBudget::new(1, charge).unwrap();
+    let budget = BackgroundWorkBudget::new(
+        1,
+        kasumi_types::SharedBudgetCharge::new(FixtureCharge { _alive: charge }),
+    )
+    .unwrap();
     let worker = Arc::new(BackgroundWork::default());
     let weak = Arc::downgrade(&worker);
     let (release, waiting) = tokio::sync::oneshot::channel::<()>();

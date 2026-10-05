@@ -21,7 +21,11 @@ async fn native_history_archive_and_durable_feed_preserve_exact_rows_and_scope()
         "kasumi:read kasumi:write kasumi:admin",
     );
     let read_only = fixture.token("person", "tenant-a", "kasumi:read");
-    let admin = NativeAdmin::new(fixture.registry.clone(), fixture.auth.clone());
+    let admin = NativeAdmin::new(
+        fixture.registry.clone(),
+        fixture.auth.clone(),
+        fixture.failures.clone(),
+    );
     admin
         .create_collection(native(
             proto::CollectionDefinitionRequest {

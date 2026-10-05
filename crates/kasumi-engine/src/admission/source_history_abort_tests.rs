@@ -84,9 +84,9 @@ async fn actual_history_capacity_refusals_restore_encrypted_current_and_allow_re
             (
                 "native-pins",
                 SourceHistoryRefusal::Native(kasumi_kv::SourceHistoryRefusal::Native(
-                    kasumi_kv::StorageError::Core(kasumi_kv::CoreError::CapacityDenied),
+                    kasumi_kv::StorageError::Core(original),
                 )),
-            ) => {}
+            ) if original.is_capacity_denied() => {}
             _ => panic!("lost actual capacity cause: {refusal:?}"),
         }
         assert_eq!(reader.phase(), NodeReadPhase::SourceCaptured);

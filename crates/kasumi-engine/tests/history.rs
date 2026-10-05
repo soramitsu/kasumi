@@ -31,7 +31,7 @@ async fn open(
     path: &std::path::Path,
     limits: Limits,
     create: bool,
-) -> (Arc<Database>, Arc<SecurityAudit>, Arc<NodeStore>) {
+) -> (Arc<Database>, Arc<SecurityAudit>, NodeStore) {
     let node = (if create {
         physical
             .storage

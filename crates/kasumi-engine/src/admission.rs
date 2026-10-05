@@ -143,6 +143,7 @@ impl AdmissionConfig {
 }
 
 mod disk_memory;
+pub(crate) use disk_memory::ProposalBudget;
 mod installed;
 pub mod snapshot_work;
 pub mod startup;
@@ -1011,6 +1012,10 @@ impl NodeAdmission {
     pub fn memory(&self) -> &Arc<MemoryCore> {
         &self.core
     }
+    /// Borrow the immutable policy of this exact installed memory core.
+    pub fn policy(&self) -> &AdmissionConfig {
+        &self.core.data.config
+    }
     pub fn shares_memory(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.core, &other.core)
     }
@@ -1138,9 +1143,16 @@ impl NodeAdmission {
             .find(|slot| slot.is_none())
             .ok_or_else(|| anyhow::anyhow!("snapshot startup inventory exhausted"))?;
         let buffers = kasumi_raft::SNAPSHOT_BUFFER_SLOTS;
-        let bytes = kasumi_raft::SnapshotBufferOwner::required_bytes(buffers)?;
+        let bytes = kasumi_raft::SnapshotBufferOwner::required_bytes(buffers)?
+            .checked_add(kasumi_types::SharedBudgetCharge::required_bytes::<
+                Reservation,
+            >()?)
+            .ok_or_else(|| anyhow::anyhow!("snapshot budget control quote overflow"))?;
         let charge = self.reserve_resident(bytes)?;
-        let owner = kasumi_raft::SnapshotBufferOwner::new(buffers, Arc::new(charge))?;
+        let owner = kasumi_raft::SnapshotBufferOwner::new(
+            buffers,
+            kasumi_types::SharedBudgetCharge::new(charge),
+        )?;
         *slot = Some(Arc::downgrade(&owner));
         Ok(owner)
     }

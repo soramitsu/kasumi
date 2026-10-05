@@ -59,6 +59,12 @@ bounds regular-file allocation above rounded EOF, remains charged for closed
 files, and must be qualified on the diagnostic filesystem. The runner retains
 its exact bytes and hash and checks the generated configuration against it.
 
+The runner writes and retains a private `tenant-audit-placements.json` before
+initialization. It explicitly selects local replica only for Control and
+`capacity-smoke`, passes the mandatory `--tenant-audit-placements` input, and
+requires the generated configuration to preserve the exact two-row map. The
+provenance record includes the file's digest and selected choices.
+
 The runner reserves three loopback ports before `kasumid init`, supplies them in
 the required strict `--network` file, retains that file in provenance, and
 checks the generated configuration and profiles. It does not rewrite endpoints

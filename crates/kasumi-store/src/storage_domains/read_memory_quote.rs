@@ -80,16 +80,16 @@ impl TenantStorageSet {
     pub fn quote_read_memory(&self) -> io::Result<PairedReadMemoryQuote> {
         let application = &self.application;
         let custody = &self.custody.store;
-        if !Arc::ptr_eq(&application.node, &custody.node) {
+        if !NodeStore::ptr_eq(&application.node, &custody.node) {
             return Err(io::ErrorKind::InvalidInput.into());
         }
         #[cfg(any(test, feature = "test-utils"))]
-        if application.node.db.has_fixture_direct_database() {
+        if application.node.body().db.has_fixture_direct_database() {
             return Err(io::ErrorKind::Unsupported.into());
         }
-        let provider = application.persistent_disk().memory();
+        let provider = application.node.memory();
         for store in [application, custody] {
-            if !Arc::ptr_eq(provider, store.persistent_disk().memory())
+            if !Arc::ptr_eq(provider, store.node.memory())
                 || !Arc::ptr_eq(provider, store.scratch_disk().memory())
             {
                 return Err(io::ErrorKind::InvalidInput.into());
@@ -113,14 +113,15 @@ impl TenantStorageSet {
             )?,
         )?;
         // check_bytes_table drops one table before checking the other. Its type
-        // output and directory scratch retire before the temporary name Arc.
+        // probes retire before the separately admitted name/control backings.
         let type_probe = point_native(provider.as_ref(), 2)?;
         let names = [CATALOG.name().len(), RECORDS.name().len()];
         let mut begin_scratch = type_probe;
         for name in names {
-            begin_scratch = begin_scratch.max(
+            begin_scratch = begin_scratch.max(native_charge(
+                provider.as_ref(),
                 ProtectedReadRequests::table_name_backing_bytes(name).map_err(|_| overflow())?,
-            );
+            )?);
         }
         let rights = native_charge(
             provider.as_ref(),

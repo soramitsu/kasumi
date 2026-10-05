@@ -180,12 +180,6 @@
     "sha256": "16fbac05719e0cb4d39baaaa19b7bb6e117010d5ea4e08ab4e82d4eb2f6c8908"
   },
   {
-    "bytes": 211487,
-    "mode": "0o644",
-    "path": "change-log.md",
-    "sha256": "d6e9f2f8c356649ad4ba81a059def7f30ae6e33875399964f350e5cc47be0998"
-  },
-  {
     "bytes": 10075,
     "mode": "0o644",
     "path": "change-log/v0.6.1.md",
@@ -546,6 +540,12 @@
     "sha256": "d49768413c3e715ebd9c2a0293be35bf9355ac3db8b8921c8a5a163c522956db"
   },
   {
+    "bytes": 211487,
+    "mode": "0o644",
+    "path": "change-log.md",
+    "sha256": "d6e9f2f8c356649ad4ba81a059def7f30ae6e33875399964f350e5cc47be0998"
+  },
+  {
     "bytes": 70,
     "mode": "0o644",
     "path": "clippy.toml",
@@ -588,16 +588,16 @@
     "sha256": "abacb996d944a519cfe4eb6fa6a204bcd7aaae5b6eea3ab3ce927d3f6bc201cf"
   },
   {
-    "bytes": 9677,
-    "mode": "0o644",
-    "path": "cluster_benchmark/tests/benchmark/store.rs",
-    "sha256": "4bb9ebbfe5ef489a9b3c64a20b97d21775efacbb4ce719ba99387ae2d1c71eaa"
-  },
-  {
     "bytes": 706,
     "mode": "0o644",
     "path": "cluster_benchmark/tests/benchmark/store/test.rs",
     "sha256": "e43e8afdf09228ad41b012467d09b8d6fa6ef123ac788a77f5f9bde0d1b50c7f"
+  },
+  {
+    "bytes": 9677,
+    "mode": "0o644",
+    "path": "cluster_benchmark/tests/benchmark/store.rs",
+    "sha256": "4bb9ebbfe5ef489a9b3c64a20b97d21775efacbb4ce719ba99387ae2d1c71eaa"
   },
   {
     "bytes": 5095,
@@ -634,6 +634,108 @@
     "mode": "0o755",
     "path": "examples/memstore/test-cluster.sh",
     "sha256": "7fd2180b4c53b0c7aca8977e31e4c24566fbdc81105f89ca167f1bff69b493d8"
+  },
+  {
+    "bytes": 28,
+    "mode": "0o644",
+    "path": "examples/raft-kv-memstore/.gitignore",
+    "sha256": "a436797fcda75bd4db82c50ae69baab02b80619e20075a33258a33f28809a6dd"
+  },
+  {
+    "bytes": 1205,
+    "mode": "0o644",
+    "path": "examples/raft-kv-memstore/Cargo.toml",
+    "sha256": "583a66934fcabe41ec5b6e1debd6c135cf6eaece60aaffe6b884145e6d442bde"
+  },
+  {
+    "bytes": 4563,
+    "mode": "0o644",
+    "path": "examples/raft-kv-memstore/README.md",
+    "sha256": "6a27e6d64d947113cf863577b835c8fdb4b136f1431e7821321241788bde3d16"
+  },
+  {
+    "bytes": 434,
+    "mode": "0o644",
+    "path": "examples/raft-kv-memstore/src/app.rs",
+    "sha256": "5501a20339fc1638f53246a3205db56edcc6a44e5107208687fec89c0855a771"
+  },
+  {
+    "bytes": 732,
+    "mode": "0o644",
+    "path": "examples/raft-kv-memstore/src/bin/main.rs",
+    "sha256": "c316c903251234a36923628917ea9ab19c4d03ab5dac21010c4ce838fd86cff8"
+  },
+  {
+    "bytes": 7454,
+    "mode": "0o644",
+    "path": "examples/raft-kv-memstore/src/client.rs",
+    "sha256": "4c8a57917b002288555a2d31601204feccbf2b644ca648a36f0e961dcd485698"
+  },
+  {
+    "bytes": 3803,
+    "mode": "0o644",
+    "path": "examples/raft-kv-memstore/src/lib.rs",
+    "sha256": "6fdd5124178ae94fff1eb66b97af4ffb48814066b9c225dbd9a3c2a8b4c5fe71"
+  },
+  {
+    "bytes": 1763,
+    "mode": "0o644",
+    "path": "examples/raft-kv-memstore/src/network/api.rs",
+    "sha256": "8f92f17524e178119475aeed60f4bbbe8083b2213d6890441477e8196b427e4e"
+  },
+  {
+    "bytes": 2044,
+    "mode": "0o644",
+    "path": "examples/raft-kv-memstore/src/network/management.rs",
+    "sha256": "5ff48d50eea4d496a2f229459cd808e602e20e4cc5c0fdd68b7737e71b07e983"
+  },
+  {
+    "bytes": 153,
+    "mode": "0o644",
+    "path": "examples/raft-kv-memstore/src/network/mod.rs",
+    "sha256": "d23a6467f0eafb5f82f6aed54d4f80fdea32ec04855db8de3ebda72d85b76105"
+  },
+  {
+    "bytes": 952,
+    "mode": "0o644",
+    "path": "examples/raft-kv-memstore/src/network/raft.rs",
+    "sha256": "08650f8ace6910fd11eaeefd21a0ef5109b5099af7efc085f2a1ad0343377d30"
+  },
+  {
+    "bytes": 3416,
+    "mode": "0o644",
+    "path": "examples/raft-kv-memstore/src/network/raft_network_impl.rs",
+    "sha256": "dd7f1657b83183c0e8b5dfa075bc6eb10a511647c1ab2f8e2418ff38fcda6f09"
+  },
+  {
+    "bytes": 8481,
+    "mode": "0o644",
+    "path": "examples/raft-kv-memstore/src/store/mod.rs",
+    "sha256": "416e1189372351cd2ddaa72b220e65fd31188ada5f9c9e8a1905c7893233d1a2"
+  },
+  {
+    "bytes": 671,
+    "mode": "0o644",
+    "path": "examples/raft-kv-memstore/src/test.rs",
+    "sha256": "5b728497e46e8650ea65e9183fc7ed8c82aebc47edb1e7f3f4674a2577c48822"
+  },
+  {
+    "bytes": 3429,
+    "mode": "0o755",
+    "path": "examples/raft-kv-memstore/test-cluster.sh",
+    "sha256": "41318c56945ef3839479761d9eaa69266eef0218d27affe8a7a589e4d3efa6ee"
+  },
+  {
+    "bytes": 60,
+    "mode": "0o644",
+    "path": "examples/raft-kv-memstore/tests/cluster/main.rs",
+    "sha256": "b28a6b15a1080d7078934ffc37a3ef971c7cfc0ff8a62ba4ce7a6f305b0b7218"
+  },
+  {
+    "bytes": 8807,
+    "mode": "0o644",
+    "path": "examples/raft-kv-memstore/tests/cluster/test_cluster.rs",
+    "sha256": "92635d1bf93e234efb095bac5ebb7ea3f501d2fc808e56d2ac2de69e15ca0b8b"
   },
   {
     "bytes": 28,
@@ -852,108 +954,6 @@
     "sha256": "bd640e657631a1cb6684fb6ef9da9ba2ae76476fde6ffe664a9e0572c54f12e6"
   },
   {
-    "bytes": 28,
-    "mode": "0o644",
-    "path": "examples/raft-kv-memstore/.gitignore",
-    "sha256": "a436797fcda75bd4db82c50ae69baab02b80619e20075a33258a33f28809a6dd"
-  },
-  {
-    "bytes": 1205,
-    "mode": "0o644",
-    "path": "examples/raft-kv-memstore/Cargo.toml",
-    "sha256": "583a66934fcabe41ec5b6e1debd6c135cf6eaece60aaffe6b884145e6d442bde"
-  },
-  {
-    "bytes": 4563,
-    "mode": "0o644",
-    "path": "examples/raft-kv-memstore/README.md",
-    "sha256": "6a27e6d64d947113cf863577b835c8fdb4b136f1431e7821321241788bde3d16"
-  },
-  {
-    "bytes": 434,
-    "mode": "0o644",
-    "path": "examples/raft-kv-memstore/src/app.rs",
-    "sha256": "5501a20339fc1638f53246a3205db56edcc6a44e5107208687fec89c0855a771"
-  },
-  {
-    "bytes": 732,
-    "mode": "0o644",
-    "path": "examples/raft-kv-memstore/src/bin/main.rs",
-    "sha256": "c316c903251234a36923628917ea9ab19c4d03ab5dac21010c4ce838fd86cff8"
-  },
-  {
-    "bytes": 7454,
-    "mode": "0o644",
-    "path": "examples/raft-kv-memstore/src/client.rs",
-    "sha256": "4c8a57917b002288555a2d31601204feccbf2b644ca648a36f0e961dcd485698"
-  },
-  {
-    "bytes": 3803,
-    "mode": "0o644",
-    "path": "examples/raft-kv-memstore/src/lib.rs",
-    "sha256": "6fdd5124178ae94fff1eb66b97af4ffb48814066b9c225dbd9a3c2a8b4c5fe71"
-  },
-  {
-    "bytes": 1763,
-    "mode": "0o644",
-    "path": "examples/raft-kv-memstore/src/network/api.rs",
-    "sha256": "8f92f17524e178119475aeed60f4bbbe8083b2213d6890441477e8196b427e4e"
-  },
-  {
-    "bytes": 2044,
-    "mode": "0o644",
-    "path": "examples/raft-kv-memstore/src/network/management.rs",
-    "sha256": "5ff48d50eea4d496a2f229459cd808e602e20e4cc5c0fdd68b7737e71b07e983"
-  },
-  {
-    "bytes": 153,
-    "mode": "0o644",
-    "path": "examples/raft-kv-memstore/src/network/mod.rs",
-    "sha256": "d23a6467f0eafb5f82f6aed54d4f80fdea32ec04855db8de3ebda72d85b76105"
-  },
-  {
-    "bytes": 952,
-    "mode": "0o644",
-    "path": "examples/raft-kv-memstore/src/network/raft.rs",
-    "sha256": "08650f8ace6910fd11eaeefd21a0ef5109b5099af7efc085f2a1ad0343377d30"
-  },
-  {
-    "bytes": 3416,
-    "mode": "0o644",
-    "path": "examples/raft-kv-memstore/src/network/raft_network_impl.rs",
-    "sha256": "dd7f1657b83183c0e8b5dfa075bc6eb10a511647c1ab2f8e2418ff38fcda6f09"
-  },
-  {
-    "bytes": 8481,
-    "mode": "0o644",
-    "path": "examples/raft-kv-memstore/src/store/mod.rs",
-    "sha256": "416e1189372351cd2ddaa72b220e65fd31188ada5f9c9e8a1905c7893233d1a2"
-  },
-  {
-    "bytes": 671,
-    "mode": "0o644",
-    "path": "examples/raft-kv-memstore/src/test.rs",
-    "sha256": "5b728497e46e8650ea65e9183fc7ed8c82aebc47edb1e7f3f4674a2577c48822"
-  },
-  {
-    "bytes": 3429,
-    "mode": "0o755",
-    "path": "examples/raft-kv-memstore/test-cluster.sh",
-    "sha256": "41318c56945ef3839479761d9eaa69266eef0218d27affe8a7a589e4d3efa6ee"
-  },
-  {
-    "bytes": 60,
-    "mode": "0o644",
-    "path": "examples/raft-kv-memstore/tests/cluster/main.rs",
-    "sha256": "b28a6b15a1080d7078934ffc37a3ef971c7cfc0ff8a62ba4ce7a6f305b0b7218"
-  },
-  {
-    "bytes": 8807,
-    "mode": "0o644",
-    "path": "examples/raft-kv-memstore/tests/cluster/test_cluster.rs",
-    "sha256": "92635d1bf93e234efb095bac5ebb7ea3f501d2fc808e56d2ac2de69e15ca0b8b"
-  },
-  {
     "bytes": 653,
     "mode": "0o644",
     "path": "examples/raft-kv-rocksdb/.cargo/config.toml",
@@ -996,12 +996,6 @@
     "sha256": "82cadd174aac329ab6e81e74ae8787062201386dcff80010ee4ac21ca5c85ba0"
   },
   {
-    "bytes": 153,
-    "mode": "0o644",
-    "path": "examples/raft-kv-rocksdb/src/network.rs",
-    "sha256": "d23a6467f0eafb5f82f6aed54d4f80fdea32ec04855db8de3ebda72d85b76105"
-  },
-  {
     "bytes": 2429,
     "mode": "0o644",
     "path": "examples/raft-kv-rocksdb/src/network/api.rs",
@@ -1024,6 +1018,12 @@
     "mode": "0o644",
     "path": "examples/raft-kv-rocksdb/src/network/raft_network_impl.rs",
     "sha256": "4428369a9fd65b6ce6682af7866d698c9fce7439b9bd1b887ed9cad9b92c658d"
+  },
+  {
+    "bytes": 153,
+    "mode": "0o644",
+    "path": "examples/raft-kv-rocksdb/src/network.rs",
+    "sha256": "d23a6467f0eafb5f82f6aed54d4f80fdea32ec04855db8de3ebda72d85b76105"
   },
   {
     "bytes": 16257,
@@ -1392,10 +1392,10 @@
     "sha256": "0b351055ce019a3bd3716bff23947c91aef2d765d648f8f49c2e5fce3c9ff9c1"
   },
   {
-    "bytes": 807,
+    "bytes": 947,
     "mode": "0o644",
     "path": "openraft/src/core/mod.rs",
-    "sha256": "4aea3d3afa605f9d240b96835460fc028748c3051a4d76c3f60ce85edf7a59da"
+    "sha256": "811b5c20cdb2af1b235576ca4e00e590c48c1592a9990baa6a7150f1f5413a39"
   },
   {
     "bytes": 3069,
@@ -1404,10 +1404,10 @@
     "sha256": "3ba809382665c5a5454df9d701a723bbb565b278ce9d970de379403e89adcef4"
   },
   {
-    "bytes": 75154,
+    "bytes": 76525,
     "mode": "0o644",
     "path": "openraft/src/core/raft_core.rs",
-    "sha256": "e5303a0a285cc20ceb2d3a55f05f030bea055b648ec1a92b38c0604b29e9195c"
+    "sha256": "66a33a52d8aafec428a4292084ee1d9349470e844d942d6dbe31b398e0a153c7"
   },
   {
     "bytes": 1997,
@@ -1416,10 +1416,10 @@
     "sha256": "973fd4cff44d140940512d985ce52816af06b488add062432f13ea40359da4cf"
   },
   {
-    "bytes": 4273,
+    "bytes": 4066,
     "mode": "0o644",
     "path": "openraft/src/core/raft_msg/mod.rs",
-    "sha256": "4874f5ee6ed8d0a32db55f348406de7ba701db58fa10f5c627d9e89dc784d753"
+    "sha256": "afd2b5fc49aec40c124ef881247b515a68d7f6b2dcbfda742d305c9b9d6a6b53"
   },
   {
     "bytes": 795,
@@ -1434,40 +1434,64 @@
     "sha256": "d86f07ba001852270db74baa8ceb7ea82b3ee683a9e24588d3d4bd7a306f4432"
   },
   {
-    "bytes": 4701,
+    "bytes": 4333,
+    "mode": "0o644",
+    "path": "openraft/src/core/sm/apply_batch.rs",
+    "sha256": "62ccca22ee5dee638c0d0c1746a6653d36168b14dfd747b459071271c4c6dbb3"
+  },
+  {
+    "bytes": 20410,
+    "mode": "0o644",
+    "path": "openraft/src/core/sm/bounded_apply_tests.rs",
+    "sha256": "5a603eb728d774f62c7c7ba517a831db14817052f283c495db3d3a274b36d9e5"
+  },
+  {
+    "bytes": 5065,
     "mode": "0o644",
     "path": "openraft/src/core/sm/command.rs",
-    "sha256": "5e0c7cc700a06564f51ce0464ff4545a6ee3a1346458a0b0d67266d69900acb2"
+    "sha256": "8d7cf49f742d9fcf3c77054df990e471724b9424c44e88c1bd2c6c761fe3ac40"
   },
   {
-    "bytes": 2907,
+    "bytes": 3475,
     "mode": "0o644",
     "path": "openraft/src/core/sm/handle.rs",
-    "sha256": "063510bb074da3a1c4efc59647507a68e5d73dfab8c9dbeeedb3b0d84c478b64"
+    "sha256": "4ac0bab39fa7bcb1fbcb807e101d785f3f3ee3f927a7b700eeea0e08f20252eb"
   },
   {
-    "bytes": 598,
+    "bytes": 766,
     "mode": "0o644",
     "path": "openraft/src/core/sm/mod.rs",
-    "sha256": "e5e4cc6d066a38de116b6a63bed6975cb90412c54ac004a0bd55a1aaa1f6ec87"
+    "sha256": "63ca8157bde7edcf7e2f2006e3a2b7d86807267d90c7fc54d6d50e0161358641"
   },
   {
-    "bytes": 1118,
+    "bytes": 4375,
+    "mode": "0o644",
+    "path": "openraft/src/core/sm/pending_apply.rs",
+    "sha256": "b3ad3704bff070c3dda7e99a87cb727371359682ab4bec89786206799199a088"
+  },
+  {
+    "bytes": 4374,
+    "mode": "0o644",
+    "path": "openraft/src/core/sm/pending_snapshot.rs",
+    "sha256": "c4b1375712d4e2dacb21271ad84652da0a43cc8b47e3692afe822b43a4a07138"
+  },
+  {
+    "bytes": 1313,
     "mode": "0o644",
     "path": "openraft/src/core/sm/response.rs",
-    "sha256": "2381ba043ee5c48d41c61caebb4190df626163bda8702e52e599f7aca826d080"
+    "sha256": "8da872aa58ea9c09e30cfe19610eeed6213910aac69961fd6eead6de42665f4b"
   },
   {
-    "bytes": 3307,
+    "bytes": 3444,
     "mode": "0o644",
     "path": "openraft/src/core/sm/tasks.rs",
-    "sha256": "44bbd97a1ad111ef98eccbb291d02d29dc3946f86ab814cf8088755be236f317"
+    "sha256": "ed245905efbb11c410dfe5cbca888a98882d97a78583cb79131ef78adc7124c6"
   },
   {
-    "bytes": 8566,
+    "bytes": 12588,
     "mode": "0o644",
     "path": "openraft/src/core/sm/worker.rs",
-    "sha256": "57eca56d617095f75331aa2024d44d4e55abcee630028032de8884227ff6e897"
+    "sha256": "c3b47a62e09aa3bdbf1f68b9be4647d54865b61b74ede1ce91ee402fde659426"
   },
   {
     "bytes": 9841,
@@ -1480,12 +1504,6 @@
     "mode": "0o644",
     "path": "openraft/src/defensive.rs",
     "sha256": "abb2820703b255530c364a58f95075550e753d7a02fa3477731030aa6961193a"
-  },
-  {
-    "bytes": 489,
-    "mode": "0o644",
-    "path": "openraft/src/display_ext.rs",
-    "sha256": "2a1308af00535bfb0684191a1f50e0b4c37676a6d5791ca30afefeb1d48d0360"
   },
   {
     "bytes": 3110,
@@ -1504,6 +1522,12 @@
     "mode": "0o644",
     "path": "openraft/src/display_ext/display_slice.rs",
     "sha256": "fc80afecbbf2befd6f84f3776c705f3650ce9e422b7f5990deed585629b02902"
+  },
+  {
+    "bytes": 489,
+    "mode": "0o644",
+    "path": "openraft/src/display_ext.rs",
+    "sha256": "2a1308af00535bfb0684191a1f50e0b4c37676a6d5791ca30afefeb1d48d0360"
   },
   {
     "bytes": 980,
@@ -2040,12 +2064,6 @@
     "sha256": "443dc754444444232fa03a4ef819e7cc8dc422ba876307b8e16df01ff9b45fa7"
   },
   {
-    "bytes": 32596,
-    "mode": "0o644",
-    "path": "openraft/src/error.rs",
-    "sha256": "95c37acd2db4ad7f55ced5abcb3beace75e2f5683f76d048ee4a3b4006ba67bf"
-  },
-  {
     "bytes": 3430,
     "mode": "0o644",
     "path": "openraft/src/error/decompose.rs",
@@ -2068,6 +2086,12 @@
     "mode": "0o644",
     "path": "openraft/src/error/streaming_error.rs",
     "sha256": "6ecb2fb26ce7b95cbc0c433829131d510511cd06e5339de9cc9cc9260159f614"
+  },
+  {
+    "bytes": 34951,
+    "mode": "0o644",
+    "path": "openraft/src/error.rs",
+    "sha256": "eb3415209a402c554efc38450bf4465f8ae4feced44e5d0e23c5caaf501f0490"
   },
   {
     "bytes": 2211,
@@ -2412,6 +2436,12 @@
     "sha256": "65cb711eb05ebd4972b2e44d659ccc7c048e31eab8d36f61541494dcc1b6b926"
   },
   {
+    "bytes": 27026,
+    "mode": "0o644",
+    "path": "openraft/src/raft/bounded_apply_test.rs",
+    "sha256": "5964afd2fdb7f0cca695233d7cc10185b9d7d7528cf963f1dce6d1db6b12605c"
+  },
+  {
     "bytes": 1059,
     "mode": "0o644",
     "path": "openraft/src/raft/core_state.rs",
@@ -2436,10 +2466,10 @@
     "sha256": "73d08b3790eb22704fa9b3e62fc29a0eac2214a207f94b77602639465a0e32ca"
   },
   {
-    "bytes": 13508,
+    "bytes": 13149,
     "mode": "0o644",
     "path": "openraft/src/raft/incoming_snapshot_test.rs",
-    "sha256": "3382689c8f1c9986a975746ae3f7310831bf756a0899df29d1b20c411a91780a"
+    "sha256": "461cd29115a151887765a1c4769b75d021a22244da2780f23a247339699e17c2"
   },
   {
     "bytes": 4273,
@@ -2472,16 +2502,16 @@
     "sha256": "feb675aa79f477ea6887a9182178a0e47c7869d708e28e6448913bfa6c093942"
   },
   {
-    "bytes": 42275,
+    "bytes": 44333,
     "mode": "0o644",
     "path": "openraft/src/raft/mod.rs",
-    "sha256": "bb624d6065f9ad1f3fcac32e9067bbebb876cdf0cabf464d7f8769042ae01e83"
+    "sha256": "b2170e078fc84b18c1a58585e6099d8fe96d3faf451fcffc11140a062943a14d"
   },
   {
-    "bytes": 10420,
+    "bytes": 10289,
     "mode": "0o644",
     "path": "openraft/src/raft/raft_inner.rs",
-    "sha256": "75a4f31f2b3f229a0930837164273579d5c0d176f0e364c37ddc8958a88b5aae"
+    "sha256": "35494de7063e9bb590eccdccc5fffd332ef8ba2eb52e67f028fee83c6c35473e"
   },
   {
     "bytes": 1589,
@@ -2502,10 +2532,10 @@
     "sha256": "9c5f4756839c53fdcf98ab8fdbb16145f3e4fb23fc45ee505f273e9ad02e5ad9"
   },
   {
-    "bytes": 9508,
+    "bytes": 9246,
     "mode": "0o644",
     "path": "openraft/src/raft/shutdown_test.rs",
-    "sha256": "8ec1d23e45a014b73294c8dd3fd165230fe23f7de4171ea1cf88277ac8cdc2ac"
+    "sha256": "2eafe50db6a7d1febd460a848d61f1b75b27c3d1dac06a2315aad66d7f75096b"
   },
   {
     "bytes": 3169,
@@ -2520,16 +2550,16 @@
     "sha256": "24fc9f180d520e5a25db70195ae82b278f88eabfa934b63c995a4325d38bce2f"
   },
   {
-    "bytes": 3862,
-    "mode": "0o644",
-    "path": "openraft/src/raft_state/io_state.rs",
-    "sha256": "92be45e6fa2c063d98a9a0ef878d337513dd8d6cb58665e96588510b76285406"
-  },
-  {
     "bytes": 1309,
     "mode": "0o644",
     "path": "openraft/src/raft_state/io_state/log_io_id.rs",
     "sha256": "93a01715886312e0f33e432fcf4eefa29858f6d858a761a5d2470518236676fa"
+  },
+  {
+    "bytes": 3862,
+    "mode": "0o644",
+    "path": "openraft/src/raft_state/io_state.rs",
+    "sha256": "92be45e6fa2c063d98a9a0ef878d337513dd8d6cb58665e96588510b76285406"
   },
   {
     "bytes": 3126,
@@ -2706,10 +2736,10 @@
     "sha256": "9bef5cf8e78774bf36f4908adf40f7ef77d43d529794ca35e2ce54f1fed1ead2"
   },
   {
-    "bytes": 12887,
+    "bytes": 13410,
     "mode": "0o644",
     "path": "openraft/src/storage/sm_custody_test.rs",
-    "sha256": "307aef3a6969eaa5191cd914aefb350c9d6b12eed2ebf4d71a2cad8c9cb61cc7"
+    "sha256": "0eb6147db020ad2fd2e600d7ad2a72e1ba0ebb733e061113a0944afe0776d71f"
   },
   {
     "bytes": 609,
@@ -2718,16 +2748,16 @@
     "sha256": "ee69ebefd699b166a19dace58005b5be9955d6b14c57026e137c7fc2b02c8c15"
   },
   {
-    "bytes": 11546,
-    "mode": "0o644",
-    "path": "openraft/src/storage/v2.rs",
-    "sha256": "3bca9736b1e570fa507b7aef33654e019e7405007ae344e813df51e1dd178eac"
-  },
-  {
     "bytes": 1466,
     "mode": "0o644",
     "path": "openraft/src/storage/v2/raft_log_storage_ext.rs",
     "sha256": "a855112668081feba5fe198a305ea979551bc5612f3fe002fa4ce54307fd9314"
+  },
+  {
+    "bytes": 11546,
+    "mode": "0o644",
+    "path": "openraft/src/storage/v2.rs",
+    "sha256": "3bca9736b1e570fa507b7aef33654e019e7405007ae344e813df51e1dd178eac"
   },
   {
     "bytes": 10061,
@@ -2766,16 +2796,16 @@
     "sha256": "f944462a350c9ff0fd27e63a62d64f34f527c6ea91ea22c958082e96f99f6cd0"
   },
   {
-    "bytes": 5811,
-    "mode": "0o644",
-    "path": "openraft/src/type_config.rs",
-    "sha256": "8fdf163e32afc516b8bcd7730da94b1fbbcdd6518642eab29182fdb76b6fff7e"
-  },
-  {
     "bytes": 2278,
     "mode": "0o644",
     "path": "openraft/src/type_config/util.rs",
     "sha256": "06059d4158a8ed0f8697b3a208903cf8ffa94f3b617dd9ea803e1662cef4871e"
+  },
+  {
+    "bytes": 5811,
+    "mode": "0o644",
+    "path": "openraft/src/type_config.rs",
+    "sha256": "8fdf163e32afc516b8bcd7730da94b1fbbcdd6518642eab29182fdb76b6fff7e"
   },
   {
     "bytes": 2627,

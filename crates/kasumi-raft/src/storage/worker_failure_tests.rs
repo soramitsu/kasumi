@@ -1,5 +1,6 @@
 //! Detached-worker counterexamples use actual encrypted snapshot publication.
 use super::*;
+use crate::test_utils::FixtureResult;
 use std::time::Duration;
 
 struct RestoreFailureBackend {
@@ -52,24 +53,32 @@ impl StateMachineBackend for RestoreFailureBackend {
         position: &crate::AppliedEntryContext,
         input: crate::AppliedInput<'_>,
         publisher: &mut dyn crate::ApplyPublisher,
-    ) -> Result<()> {
+    ) -> std::result::Result<(), kasumi_store::ScratchOperationFailure> {
         self.current
             .apply_with_publisher(position, input, publisher)
     }
-    fn capture_snapshot(&self) -> Result<crate::CapturedSnapshot> {
+    fn capture_snapshot(
+        &self,
+    ) -> std::result::Result<crate::CapturedSnapshot, kasumi_store::ScratchOperationFailure> {
         self.current.capture_snapshot()
     }
     fn validate_snapshot(
         &self,
         bytes: &mut dyn std::io::Read,
-    ) -> Result<Option<crate::RetiredSnapshotState>> {
+    ) -> std::result::Result<
+        Option<crate::RetiredSnapshotState>,
+        kasumi_store::ScratchOperationFailure,
+    > {
         self.current.validate_snapshot(bytes)
     }
     fn prepare_restore<'a>(
         &'a self,
         context: &crate::SnapshotRestoreContext,
         bytes: &mut dyn std::io::Read,
-    ) -> Result<Box<dyn crate::PreparedStateMachineRestore + 'a>> {
+    ) -> std::result::Result<
+        Box<dyn crate::PreparedStateMachineRestore + 'a>,
+        kasumi_store::ScratchOperationFailure,
+    > {
         self.validate_snapshot(bytes)?;
         Ok(Box::new(RestoreFailureCandidate {
             backend: self,
@@ -82,7 +91,7 @@ impl StateMachineBackend for RestoreFailureBackend {
     }
 }
 
-async fn cancelled_publication_failure(panic: bool) -> Result<()> {
+async fn cancelled_publication_failure(panic: bool) -> FixtureResult<()> {
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
     let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
@@ -176,11 +185,13 @@ async fn cancelled_publication_failure(panic: bool) -> Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn cancelled_snapshot_waiter_cannot_hide_failure_after_durable_publication() -> Result<()> {
+async fn cancelled_snapshot_waiter_cannot_hide_failure_after_durable_publication()
+-> FixtureResult<()> {
     cancelled_publication_failure(false).await
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn cancelled_snapshot_waiter_cannot_hide_panic_after_durable_publication() -> Result<()> {
+async fn cancelled_snapshot_waiter_cannot_hide_panic_after_durable_publication() -> FixtureResult<()>
+{
     cancelled_publication_failure(true).await
 }

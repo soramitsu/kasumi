@@ -9,7 +9,8 @@ use super::{
     NodeStorageConfig, NodeTablesReport, NodeWriterPhase, RegisteredNodeOpening,
     RegisteredNodeRead, RegisteredNodeTables,
 };
-use crate::{NodeDisk, StorageCensusDisposition, StorageOwnerId};
+use crate::storage_census::NativeStartupChildPurpose;
+use crate::{NativeConstructorFailure, NodeDisk, StorageCensusDisposition, StorageOwnerId};
 use kasumi_kv::DatabaseOpenSettlement;
 use std::{io, path::Path, sync::Arc};
 use uuid::Uuid;
@@ -35,6 +36,7 @@ pub struct RegisteredNodeStartup {
     verification: Option<RegisteredNodeRead>,
     child_id: Option<StorageOwnerId>,
     child_disposition: Option<StorageCensusDisposition>,
+    child_constructor: Option<NativeStartupChildPurpose>,
     local_error: Option<io::Error>,
     close_requested: bool,
 }
@@ -49,6 +51,7 @@ pub struct NodeStartupFailureCustody {
     phase: NodeStartupPhase,
     child_id: Option<StorageOwnerId>,
     child_disposition: Option<StorageCensusDisposition>,
+    child_constructor: Option<NativeStartupChildPurpose>,
     local_error: Option<io::Error>,
 }
 impl NodeStartupFailureCustody {
@@ -70,6 +73,10 @@ impl NodeStartupFailureCustody {
     pub fn child_disposition(&self) -> Option<StorageCensusDisposition> {
         self.child_disposition
     }
+    pub fn child_constructor(&self) -> Option<NativeConstructorFailure> {
+        self.opening
+            .startup_child_constructor(self.child_id?, self.child_constructor?)
+    }
     pub fn local_error(&self) -> Option<&io::Error> {
         self.local_error.as_ref()
     }
@@ -87,7 +94,9 @@ impl NodeStartupFailureCustody {
         Option<StorageOwnerId>,
         Option<StorageCensusDisposition>,
         Option<io::Error>,
+        Option<NativeConstructorFailure>,
     ) {
+        let child_constructor = self.child_constructor();
         (
             self.opening,
             self.tables,
@@ -96,19 +105,20 @@ impl NodeStartupFailureCustody {
             self.child_id,
             self.child_disposition,
             self.local_error,
+            child_constructor,
         )
     }
 }
 impl RegisteredNodeStartup {
-    /// A prepare failure occurred before this coordinator owned an opening.
-    /// Once this returns, `opening_id` identifies the exact retained owner.
+    /// Constructor failures retain their original fixed census receiver. Once
+    /// preparation succeeds, `opening_id` identifies the exact opening owner.
     pub fn prepare(
         path: &Path,
         id: Uuid,
         disk: Arc<NodeDisk>,
         mode: NodeOpeningMode,
         config: NodeStorageConfig,
-    ) -> io::Result<Self> {
+    ) -> Result<Self, NativeConstructorFailure> {
         let existing = matches!(&mode, NodeOpeningMode::Existing);
         Ok(Self {
             opening: RegisteredNodeOpening::prepare(path, id, disk, mode, config)?,
@@ -118,6 +128,55 @@ impl RegisteredNodeStartup {
             verification: None,
             child_id: None,
             child_disposition: None,
+            child_constructor: None,
+            local_error: None,
+            close_requested: false,
+        })
+    }
+
+    pub(crate) fn prepare_node(
+        path: &Path,
+        id: Uuid,
+        disk: Arc<NodeDisk>,
+        scratch: Arc<crate::ScratchDisk>,
+        mode: NodeOpeningMode,
+        config: NodeStorageConfig,
+    ) -> Result<Self, NativeConstructorFailure> {
+        let existing = matches!(&mode, NodeOpeningMode::Existing);
+        Ok(Self {
+            opening: RegisteredNodeOpening::prepare_node(path, id, disk, scratch, mode, config)?,
+            existing,
+            phase: NodeStartupPhase::Prepared,
+            tables: None,
+            verification: None,
+            child_id: None,
+            child_disposition: None,
+            child_constructor: None,
+            local_error: None,
+            close_requested: false,
+        })
+    }
+
+    pub(crate) fn node_startup_failed(&self) {
+        self.opening.node_body().lifecycle.failed_startup();
+    }
+
+    #[cfg(any(test, feature = "test-utils"))]
+    pub(crate) fn prepare_fixture<B: kasumi_kv::SegmentGroupBackend + 'static>(
+        inputs: &mut Option<crate::NodeFixtureInputs<B>>,
+        id: Uuid,
+        existing: bool,
+        config: NodeStorageConfig,
+    ) -> Result<Self, NativeConstructorFailure> {
+        Ok(Self {
+            opening: RegisteredNodeOpening::prepare_fixture(inputs, id, existing, config)?,
+            existing,
+            phase: NodeStartupPhase::Prepared,
+            tables: None,
+            verification: None,
+            child_id: None,
+            child_disposition: None,
+            child_constructor: None,
             local_error: None,
             close_requested: false,
         })
@@ -143,6 +202,10 @@ impl RegisteredNodeStartup {
     }
     pub fn verification_report(&self) -> Option<NodeReadReport<'_>> {
         self.verification.as_ref().map(RegisteredNodeRead::report)
+    }
+    pub fn child_constructor(&self) -> Option<NativeConstructorFailure> {
+        self.opening
+            .startup_child_constructor(self.child_id?, self.child_constructor?)
     }
     pub fn local_error(&self) -> Option<&io::Error> {
         self.local_error.as_ref()
@@ -182,8 +245,34 @@ impl RegisteredNodeStartup {
             phase: self.phase,
             child_id: self.child_id,
             child_disposition: self.child_disposition,
+            child_constructor: self.child_constructor,
             local_error: self.local_error,
         })
+    }
+
+    /// Seal the exact original opening before retaining a coordinator whose
+    /// expected transfer could not complete. Every child and original record
+    /// survives even when close is waiting or returns an error.
+    pub(crate) fn retain_failure(mut self) -> (NodeStartupFailureCustody, Option<io::Error>) {
+        let close_error = if self.close_requested {
+            None
+        } else {
+            self.close_requested = true;
+            self.opening.close().err()
+        };
+        (
+            NodeStartupFailureCustody {
+                opening: self.opening,
+                tables: self.tables,
+                verification: self.verification,
+                phase: self.phase,
+                child_id: self.child_id,
+                child_disposition: self.child_disposition,
+                child_constructor: self.child_constructor,
+                local_error: self.local_error,
+            },
+            close_error,
+        )
     }
 
     /// Drive this original attempt once. A second call only observes its phase;
@@ -199,18 +288,34 @@ impl RegisteredNodeStartup {
         }
         if self.existing {
             self.phase = NodeStartupPhase::ExistingVerification;
-            let verification = match self.opening.verify_existing_tables() {
+            let verification = match self.opening.queue_startup_verification() {
                 Ok(verification) => verification,
                 Err(error) => {
-                    self.local_error = Some(error);
+                    match error {
+                        NativeConstructorFailure::Preclaim(original) => {
+                            self.local_error = Some(original)
+                        }
+                        retained @ NativeConstructorFailure::Retained(_) => {
+                            self.child_id = retained.id();
+                            self.child_constructor = Some(if self.existing {
+                                NativeStartupChildPurpose::Verification
+                            } else {
+                                NativeStartupChildPurpose::Tables
+                            });
+                            // Dropping this compact delivery leaves all actual
+                            // errors, payloads and grants in its paid receiver.
+                            drop(retained);
+                        }
+                    }
                     self.phase = NodeStartupPhase::Failed;
                     return self.phase;
                 }
             };
             self.child_id = Some(verification.id());
             self.verification = Some(verification);
-            let verified = self.opening.report().existing_tables_verified();
             let reader = self.verification.as_ref().expect("stored verification");
+            let _ = reader.begin();
+            let verified = self.opening.report().existing_tables_verified();
             if !verified || reader.phase() != NodeReadPhase::Active {
                 self.phase = NodeStartupPhase::Failed;
                 return self.phase;
@@ -234,10 +339,25 @@ impl RegisteredNodeStartup {
             }
         } else {
             self.phase = NodeStartupPhase::Tables;
-            let tables = match self.opening.queue_node_tables() {
+            let tables = match self.opening.queue_startup_tables() {
                 Ok(tables) => tables,
                 Err(error) => {
-                    self.local_error = Some(error);
+                    match error {
+                        NativeConstructorFailure::Preclaim(original) => {
+                            self.local_error = Some(original)
+                        }
+                        retained @ NativeConstructorFailure::Retained(_) => {
+                            self.child_id = retained.id();
+                            self.child_constructor = Some(if self.existing {
+                                NativeStartupChildPurpose::Verification
+                            } else {
+                                NativeStartupChildPurpose::Tables
+                            });
+                            // Dropping this compact delivery leaves all actual
+                            // errors, payloads and grants in its paid receiver.
+                            drop(retained);
+                        }
+                    }
                     self.phase = NodeStartupPhase::Failed;
                     return self.phase;
                 }
@@ -401,14 +521,23 @@ mod tests {
             };
             assert_eq!(std::ptr::from_ref(error), original_error);
         }
-        let (opening, tables, verification, phase, child_id, child_disposition, local_error) =
-            custody.into_parts();
+        let (
+            opening,
+            tables,
+            verification,
+            phase,
+            child_id,
+            child_disposition,
+            local_error,
+            child_constructor,
+        ) = custody.into_parts();
         assert!(tables.is_none());
         assert!(verification.is_none());
         assert_eq!(phase, NodeStartupPhase::Failed);
         assert_eq!(child_id, None);
         assert_eq!(child_disposition, None);
         assert!(local_error.is_none());
+        assert!(child_constructor.is_none());
         assert_eq!(opening.retire(), StorageCensusDisposition::Retired);
         assert_eq!(memory.storage_census().snapshot().databases, 0);
     }
@@ -452,16 +581,29 @@ mod tests {
         let custody = startup.into_failed_custody().ok().unwrap();
         assert_eq!(custody.child_id(), Some(original_child_id));
         assert_eq!(custody.child_disposition(), Some(original_disposition));
-        let (opening, tables, verification, phase, child_id, child_disposition, local_error) =
-            custody.into_parts();
+        let (
+            opening,
+            tables,
+            verification,
+            phase,
+            child_id,
+            child_disposition,
+            local_error,
+            child_constructor,
+        ) = custody.into_parts();
         assert!(tables.is_none());
         assert!(verification.is_none());
         assert_eq!(phase, NodeStartupPhase::Retained);
         assert_eq!(child_id, Some(original_child_id));
         assert_eq!(child_disposition, Some(original_disposition));
         assert!(local_error.is_none());
+        assert!(child_constructor.is_none());
         assert_eq!(retained_tables.retire(), StorageCensusDisposition::Retired);
         assert_eq!(opening.retire(), StorageCensusDisposition::Retired);
         assert_eq!(memory.storage_census().snapshot().databases, 0);
     }
 }
+
+#[cfg(test)]
+#[path = "../native_startup_child_receiver_tests.rs"]
+mod native_child_receiver_tests;

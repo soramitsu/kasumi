@@ -1179,6 +1179,43 @@ def attempt_namespace(root):
     return names
 
 
+def check_pre_dispatch_failure(root, record, admission, outcome):
+    """Retain a failed owned-launcher preflight without inventing a child.
+
+    The original launcher records this boundary before invoking its dispatcher.
+    Once dispatch begins, an absent receipt is uncertainty and cannot use this
+    path. Other native dispatchers need their own reviewed contract.
+    """
+    exact(outcome, {"schema", "status", "attempt_id", "started_at", "finished_at",
+                    "evidence_root", "source_root", "declaration_path", "custody_root",
+                    "source_files_sha256", "source_scripts", "tools", "declaration",
+                    "runner_process", "inner_report", "dispatch_started", "group_ledger",
+                    "descendant_census", "error"}, "pre-dispatch owned assembly outcome")
+    require(admission["kind"] == "repeatable-assembly"
+            and record["status"] in {"failed", "interrupted"}
+            and outcome["dispatch_started"] is False
+            and isinstance(outcome["error"], str) and outcome["error"]
+            and all(outcome[field] is None for field in
+                    ("runner_process", "inner_report", "group_ledger", "descendant_census")),
+            "empty process custody is not an original pre-dispatch failure")
+    # Retain the exact declaration even when parsing or validation failed. Its
+    # bytes are inside the original indexed outcome's admitted output.
+    declaration = outcome["declaration"]
+    exact(declaration, {"path", "sha256", "bytes"}, "pre-dispatch native declaration")
+    reference(root, {**declaration,
+                     "path": admission["output"] + "/" + relative_path(declaration["path"])})
+    output = root / admission["output"]
+    require(not any((output / name).exists() or (output / name).is_symlink()
+                    for name in ("runner", "assembly", "descendant-census.json")),
+            "pre-dispatch failure retains child output")
+    ledger = output / "descendant-groups.jsonl"
+    if ledger.exists() or ledger.is_symlink():
+        ledger_ref = attempt_index.file_ref(root, ledger)
+        reference(root, ledger_ref)
+        rows, _ = gate_process.read_group_ledger(ledger)
+        require(not rows, "pre-dispatch failure retains child admissions")
+
+
 def verify_attempts(root, attempts, selected):
     original_names = attempt_namespace(root)
     journal = attempt_index.file_ref(root, Path(root) / "attempts/index.jsonl")
@@ -1201,12 +1238,21 @@ def verify_attempts(root, attempts, selected):
                        "started_at", "finished_at", "processes"}, "attempt receipt")
         require(record["schema"] == SCHEMA and record["id"] == name and
                 record["status"] in {"passed", "failed", "interrupted"}, "attempt has no retained terminal result")
-        reference(root, record["evidence"])
+        outcome = json_reference(root, record["evidence"])
+        admission = admitted[name]["begin"]
+        if admission["kind"] == "repeatable-assembly":
+            require(type(outcome.get("dispatch_started")) is bool,
+                    "owned assembly dispatch boundary is missing or invalid")
+            require(not record["processes"] or outcome["dispatch_started"] is True,
+                    "pre-dispatch attempt claims child processes")
         if record["domain_observation"] is not None:
             reference(root, record["domain_observation"])
         selected_paths.add(record["evidence"]["path"])
         elapsed = (timestamp(record["finished_at"]) - timestamp(record["started_at"])).total_seconds()
-        check_processes(root, record["processes"], elapsed, passed=record["status"] == "passed")
+        if record["processes"]:
+            check_processes(root, record["processes"], elapsed, passed=record["status"] == "passed")
+        else:
+            check_pre_dispatch_failure(root, record, admission, outcome)
         if record["evidence"]["path"] in selected:
             require(record["status"] == "passed", "selected attempt failed")
         paths.add(attempt["receipt"]["path"])

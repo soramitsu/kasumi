@@ -18,6 +18,7 @@ pub(crate) struct PendingSnapshot<C: RaftTypeConfig> {
     state: Mutex<State<C>>,
 }
 struct State<C: RaftTypeConfig> {
+    sealed: bool,
     incoming: Option<IncomingSnapshot<C>>,
     permit: Option<OwnedMutexGuard<()>>,
     activated: bool,
@@ -40,6 +41,7 @@ impl<C: RaftTypeConfig> PendingSnapshot<C> {
     pub(crate) fn new() -> Arc<Self> {
         Arc::new(Self {
             state: Mutex::new(State {
+                sealed: false,
                 incoming: None,
                 permit: None,
                 activated: false,
@@ -47,8 +49,15 @@ impl<C: RaftTypeConfig> PendingSnapshot<C> {
             }),
         })
     }
-    pub(crate) fn offer(&self, incoming: IncomingSnapshot<C>, permit: OwnedMutexGuard<()>) {
+    pub(crate) fn offer(
+        &self,
+        incoming: IncomingSnapshot<C>,
+        permit: OwnedMutexGuard<()>,
+    ) -> Result<(), IncomingSnapshot<C>> {
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        if state.sealed {
+            return Err(incoming);
+        }
         assert!(
             state.incoming.is_none() && state.permit.is_none() && !state.accepting,
             "incoming snapshot permit reused"
@@ -56,6 +65,16 @@ impl<C: RaftTypeConfig> PendingSnapshot<C> {
         state.incoming = Some(incoming);
         state.permit = Some(permit);
         state.activated = false;
+        Ok(())
+    }
+    /// Admit no new owners. An offer that transferred ownership before this
+    /// cut belongs to the drain even if its actor activation was still queued.
+    pub(crate) fn seal(&self) {
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        state.sealed = true;
+        if state.incoming.is_some() {
+            state.activated = true;
+        }
     }
     pub(crate) fn activate(&self) {
         self.state.lock().unwrap_or_else(|error| error.into_inner()).activated = true;

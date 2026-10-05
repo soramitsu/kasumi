@@ -90,7 +90,7 @@ fn mandatory_capacity_denial_precedes_disk_effects_and_allows_retry() {
         let result = state.commit(&ops);
         admission.deny_at.store(usize::MAX, Ordering::Release);
         match result {
-            Err(CoreError::CapacityDenied) => {
+            Err(error) if error.is_capacity_denied() => {
                 denials += 1;
                 assert_eq!(
                     backend.effects.load(Ordering::Acquire),

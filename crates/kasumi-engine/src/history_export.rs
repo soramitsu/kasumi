@@ -133,13 +133,11 @@ impl Database {
                 "text-indexed history needs supported cold text storage",
             ));
         }
-        let _reservation = self.admission().reserve(
-            (MAX_ARCHIVE_SOURCE_BYTES * 3) as u64,
-            Some(cancellation.clone()),
-        )?;
-        let mut selected = BTreeMap::new();
+        // Validate the immutable prefix while borrowing its existing owners.
+        // The export workspace is not live during the ordered start audit.
+        let mut selected_count = 0usize;
         let mut source_bytes = 0usize;
-        for (id, document) in &collection.documents {
+        for document in collection.documents.values() {
             cancellation.check()?;
             if document.version > request.cutoff_revision {
                 continue;
@@ -149,15 +147,15 @@ impl Database {
                 .ok_or_else(|| {
                     Error::new(ErrorCode::ResourceExhausted, "archive source size overflow")
                 })?;
-            if source_bytes > MAX_ARCHIVE_SOURCE_BYTES || selected.len() >= MAX_ARCHIVE_DOCUMENTS {
+            if source_bytes > MAX_ARCHIVE_SOURCE_BYTES || selected_count >= MAX_ARCHIVE_DOCUMENTS {
                 return Err(Error::new(
                     ErrorCode::ResourceExhausted,
                     "archive prefix exceeds bounded export capacity; choose an earlier cutoff",
                 ));
             }
-            selected.insert(id.clone(), document.clone());
+            selected_count += 1;
         }
-        if selected.is_empty() {
+        if selected_count == 0 {
             return Err(Error::new(
                 ErrorCode::NotFound,
                 "archive prefix has no hot source documents",
@@ -166,6 +164,17 @@ impl Database {
         let destination = self.archive_destination(&request.destination)?;
         self.maintenance_audit_inner(context.clone(), "archive", "started", state.revision)
             .await?;
+        let reservation = self.admission().reserve(
+            (MAX_ARCHIVE_SOURCE_BYTES * 3) as u64,
+            Some(cancellation.clone()),
+        )?;
+        let mut selected = BTreeMap::new();
+        for (id, document) in &collection.documents {
+            cancellation.check()?;
+            if document.version <= request.cutoff_revision {
+                selected.insert(id.clone(), document.clone());
+            }
+        }
         let mut manifest = HistoryArchiveManifest {
             kind: HistoryArchiveKind::HistorySubset,
             archive_id: request.archive_id.clone(),
@@ -241,6 +250,12 @@ impl Database {
                 &cancellation,
             )
             .await?;
+        // The selection iterator is exhausted and publication returned. Destroy
+        // the final chunk's actual vector and aliases before releasing their
+        // workspace. The manifest stays covered by this original grant until
+        // submit installs its independently admitted command owner.
+        drop(chunk);
+        reservation.handoff_workspace(self.admission(), manifest_workspace(&manifest)?)?;
         self.engine
             .authorize_release(context, None, Action::Admin, state.policy_epoch)?;
         self.submit(
@@ -373,6 +388,62 @@ impl Database {
             ciphertext_sha256: verified.ciphertext_sha256,
         })
     }
+}
+
+fn manifest_workspace(manifest: &HistoryArchiveManifest) -> Result<u64> {
+    fn overflow() -> Error {
+        Error::new(
+            ErrorCode::ResourceExhausted,
+            "archive manifest workspace overflow",
+        )
+    }
+    fn backing(bytes: usize) -> Result<u64> {
+        if bytes == 0 {
+            return Ok(0);
+        }
+        bytes
+            .checked_next_power_of_two()
+            .and_then(|bytes| bytes.checked_add(4096))
+            .and_then(|bytes| u64::try_from(bytes).ok())
+            .ok_or_else(overflow)
+    }
+    fn add(total: &mut u64, bytes: usize) -> Result<()> {
+        *total = total.checked_add(backing(bytes)?).ok_or_else(overflow)?;
+        Ok(())
+    }
+    // Actual live capacities, with allocation rounding and per-allocation
+    // allowance. Fixed local custody and bounded publication identities remain
+    // covered until the command has taken ownership.
+    let mut total = 64 << 10;
+    add(
+        &mut total,
+        manifest
+            .chunks
+            .capacity()
+            .checked_mul(std::mem::size_of::<ArchiveChunkDescriptor>())
+            .ok_or_else(overflow)?,
+    )?;
+    for value in [
+        &manifest.archive_id,
+        &manifest.tenant,
+        &manifest.source_incarnation,
+        &manifest.collection,
+        &manifest.destination,
+    ] {
+        add(&mut total, value.capacity())?;
+    }
+    for chunk in &manifest.chunks {
+        for value in [
+            &chunk.object_id,
+            &chunk.ciphertext_sha256,
+            &chunk.plaintext_sha256,
+            &chunk.first_id,
+            &chunk.last_id,
+        ] {
+            add(&mut total, value.capacity())?;
+        }
+    }
+    Ok(total)
 }
 
 #[cfg(test)]

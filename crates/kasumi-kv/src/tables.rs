@@ -7,13 +7,16 @@
 //! writer, its staged batch and the gate for retained custody.
 
 use crate::cache::{CacheConfig, CacheStats};
+#[cfg(test)]
+use crate::core::ResidentLease;
 use crate::core::{
     AdmittedValue, BackendCloseEntry, BackendCloseOutcome, BackendNativeDisposition, Core,
-    CoreError, MAX_BATCH_BYTES, MAX_KEY_BYTES, MAX_VALUE_BYTES, Operation, ReadSnapshot,
-    ResidentLease, StorageAdmission,
+    CoreError, MAX_BATCH_BYTES, MAX_KEY_BYTES, MAX_VALUE_BYTES, NativeResidentLease, Operation,
+    ReadSnapshot, StorageAdmission,
 };
 use crate::core::{CacheWarmup, CacheWarmupStatus};
 use crate::group::SegmentGroupBackend;
+use crate::native_owned_arc::NativeOwnedArc;
 use std::collections::BTreeMap;
 use std::fmt;
 use std::io;
@@ -38,11 +41,11 @@ const STAGED_TABLE_OVERHEAD: usize = 2048;
 /// Staged rows draw on admitted chunks rather than one owner reservation per
 /// row. A smaller exact reservation is tried when a whole chunk is denied.
 const STAGING_CHUNK: usize = 64 << 10;
-/// Each chunk also admits its slot in the lease vector, whose capacity may
-/// double, before that vector grows.
-const STAGING_LEASE_SLOT: usize = 2 * size_of::<Box<dyn ResidentLease>>();
+/// Each chunk admits its own concrete lease node before allocation. There is
+/// no separately growing vector or backing retained after the grants retire.
+const STAGING_LEASE_NODE: usize = size_of::<StagingLease>() + 64;
 
-pub struct RetainedBackendOwner(Option<Arc<dyn std::any::Any + Send + Sync>>);
+pub struct RetainedBackendOwner(Option<NativeOwnedArc<DatabaseInner>>);
 
 impl Drop for RetainedBackendOwner {
     fn drop(&mut self) {
@@ -59,7 +62,7 @@ impl Drop for RetainedBackendOwner {
 pub enum StorageError {
     DatabaseClosed,
     Io(io::Error),
-    UnknownCommit(io::Error),
+    UnknownCommit(CoreError),
     Core(CoreError),
     RetainedOwner {
         error: io::Error,
@@ -87,7 +90,7 @@ impl fmt::Display for StorageError {
         match self {
             Self::DatabaseClosed => f.write_str("database is closed"),
             Self::Io(error) => error.fmt(f),
-            Self::UnknownCommit(error) => write!(f, "commit outcome is unknown: {error}"),
+            Self::UnknownCommit(error) => error.fmt(f),
             Self::Core(error) => error.fmt(f),
             Self::RetainedOwner { error, .. } => {
                 write!(f, "database backend remains retained: {error}")
@@ -100,10 +103,8 @@ impl std::error::Error for StorageError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::DatabaseClosed => None,
-            Self::Io(error) | Self::UnknownCommit(error) | Self::RetainedOwner { error, .. } => {
-                Some(error)
-            }
-            Self::Core(error) => Some(error),
+            Self::Io(error) | Self::RetainedOwner { error, .. } => Some(error),
+            Self::Core(error) | Self::UnknownCommit(error) => Some(error),
         }
     }
 }
@@ -113,7 +114,7 @@ impl StorageError {
     /// writes were proved aborted; the writer releases its complete batch and
     /// writer gate before returning the denial.
     pub fn is_capacity_denied(&self) -> bool {
-        matches!(self, Self::Core(CoreError::CapacityDenied))
+        matches!(self, Self::Core(original) if original.is_capacity_denied())
     }
 
     /// Errors that leave the physical owner or a backend effect uncertain.
@@ -128,11 +129,15 @@ impl StorageError {
 
 impl From<CoreError> for StorageError {
     fn from(error: CoreError) -> Self {
-        match error {
-            CoreError::Io(error) => Self::Io(error),
-            CoreError::UnknownCommit(error) => Self::UnknownCommit(error),
-            CoreError::Closed => Self::DatabaseClosed,
-            other => Self::Core(other),
+        if error.is_unknown_commit() {
+            return Self::UnknownCommit(error);
+        }
+        if matches!(error.rejected_cause(), Some(crate::CoreErrorCause::Closed)) {
+            return Self::DatabaseClosed;
+        }
+        match error.into_io() {
+            Ok(original) => Self::Io(original),
+            Err(original) => Self::Core(original),
         }
     }
 }
@@ -251,10 +256,16 @@ impl<T> fmt::Display for CloseError<T> {
 
 impl<T: Send + Sync + 'static> std::error::Error for CloseError<T> {}
 
-/// The table codec determines an on-disk type tag and how keys and values are
-/// passed to the table methods. Only the byte tables used in production and the
-/// integer tables used by type-mismatch tests are supported.
-pub trait TableCodec {
+mod codec_sealed {
+    pub trait Sealed {}
+    impl Sealed for &[u8] {}
+    impl Sealed for u64 {}
+}
+
+/// The table codec determines the on-disk type tag and owned/borrowed views.
+/// The supported types are byte slices and big-endian `u64`; the sealed boundary
+/// makes their bounded encoding and allocation behavior part of native storage.
+pub trait TableCodec: codec_sealed::Sealed {
     type Input<'a>: Copy;
     type Owned;
     type View<'a>;
@@ -264,6 +275,8 @@ pub trait TableCodec {
     fn encoded_owned_len(value: &Self::Owned) -> usize;
     fn encode(input: Self::Input<'_>) -> Vec<u8>;
     fn encode_owned(value: &Self::Owned) -> Vec<u8>;
+    #[doc(hidden)]
+    fn with_encoded<R>(input: Self::Input<'_>, operation: impl FnOnce(&[u8]) -> R) -> R;
     fn decode(bytes: Vec<u8>) -> Result<Self::Owned, TableError>;
     fn view<'a>(value: &'a Self::Owned) -> Self::View<'a>;
 }
@@ -288,6 +301,9 @@ impl TableCodec for &[u8] {
 
     fn encode_owned(value: &Self::Owned) -> Vec<u8> {
         value.clone()
+    }
+    fn with_encoded<R>(input: Self::Input<'_>, operation: impl FnOnce(&[u8]) -> R) -> R {
+        operation(input)
     }
 
     fn decode(bytes: Vec<u8>) -> Result<Self::Owned, TableError> {
@@ -319,6 +335,9 @@ impl TableCodec for u64 {
 
     fn encode_owned(value: &Self::Owned) -> Vec<u8> {
         value.to_be_bytes().to_vec()
+    }
+    fn with_encoded<R>(input: Self::Input<'_>, operation: impl FnOnce(&[u8]) -> R) -> R {
+        operation(&input.to_be_bytes())
     }
 
     fn decode(bytes: Vec<u8>) -> Result<Self::Owned, TableError> {
@@ -363,7 +382,7 @@ impl<K: TableCodec, V: TableCodec> TableDefinition<K, V> {
 
 pub struct AccessGuard<T: TableCodec> {
     value: T::Owned,
-    _lease: Box<dyn ResidentLease>,
+    _lease: NativeResidentLease,
     // The guard may outlive its table and transaction facade. Keep the exact
     // snapshot live until both its owned value and resident lease are gone.
     _snapshot: SnapshotHandle,
@@ -393,13 +412,16 @@ impl<T: TableCodec> AccessGuard<T> {
     }
 }
 
-type LeasedBytes = (Vec<u8>, Box<dyn ResidentLease>);
+type LeasedBytes = (Vec<u8>, NativeResidentLease);
 pub type OwnedByteRow = (AdmittedValue, AdmittedValue);
 pub type TableRow<K, V> = (AccessGuard<K>, AccessGuard<V>);
 
 fn check_key_bound<K: TableCodec>(key: K::Input<'_>) -> Result<(), TableError> {
     if K::encoded_len(key) > MAX_KEY_BYTES {
-        return Err(CoreError::InvalidInput("table key exceeds storage limit").into());
+        return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
+            "table key exceeds storage limit",
+        ))
+        .into());
     }
     Ok(())
 }
@@ -416,7 +438,7 @@ fn staged_row_charge(key_len: usize, value_len: usize) -> Result<usize, TableErr
     key_len
         .checked_add(value_len)
         .and_then(|bytes| bytes.checked_add(STAGED_ROW_OVERHEAD))
-        .ok_or_else(|| CoreError::CapacityDenied.into())
+        .ok_or_else(|| CoreError::new(crate::CoreErrorCause::CapacityDenied).into())
 }
 
 /// Commit workspace beyond the rows, which move from staging uncopied: the
@@ -424,7 +446,7 @@ fn staged_row_charge(key_len: usize, value_len: usize) -> Result<usize, TableErr
 /// type row.
 fn materialization_charge(
     operations: usize,
-    created: &BTreeMap<Arc<str>, [u8; 2]>,
+    created: &BTreeMap<SharedTableName, [u8; 2]>,
 ) -> Result<u64, CoreError> {
     let mut bytes = operations.checked_mul(size_of::<Operation>());
     if !created.is_empty() {
@@ -437,7 +459,7 @@ fn materialization_charge(
     }
     bytes
         .and_then(|bytes| u64::try_from(bytes).ok())
-        .ok_or(CoreError::CapacityDenied)
+        .ok_or(CoreError::new(crate::CoreErrorCause::CapacityDenied))
 }
 
 /// An `Arc<str>` allocation: its two reference counts and the name bytes.
@@ -483,61 +505,85 @@ impl Builder {
         self
     }
 
-    /// Create a new group. Existing or malformed groups are rejected.
-    pub fn create_with_backend(
+    /// Create a new group. The generic failure owns the exact sized backend.
+    #[allow(
+        clippy::result_large_err,
+        reason = "The failure owns the exact sized backend and cleanup without an error-path allocation."
+    )]
+    pub fn create_with_backend<B: SegmentGroupBackend + 'static>(
         self,
-        backend: impl SegmentGroupBackend + 'static,
-    ) -> Result<Database, DatabaseError> {
-        let admission = self.admission.clone();
-        Ok(Database::from_core(
-            Core::create_with_backend(backend, self.admission, self.group_id, self.cache)?,
-            admission,
-        ))
+        backend: B,
+    ) -> Result<Database, crate::NativeOpenFailure<B>> {
+        self.assemble_backend(backend, true, true)
     }
-
-    pub(crate) fn create_with_backend_retained(
+    #[allow(
+        clippy::result_large_err,
+        reason = "The failure owns the exact sized backend and cleanup without an error-path allocation."
+    )]
+    pub fn open_with_backend<B: SegmentGroupBackend + 'static>(
         self,
-        backend: impl SegmentGroupBackend + 'static,
-    ) -> Result<Database, DatabaseError> {
-        let admission = self.admission.clone();
-        Ok(Database::from_core(
-            Core::create_with_backend_retained(backend, self.admission, self.group_id, self.cache)?,
-            admission,
-        ))
+        backend: B,
+    ) -> Result<Database, crate::NativeOpenFailure<B>> {
+        self.assemble_backend(backend, false, true)
     }
-
-    /// Open an existing group with this builder's exact expected incarnation.
-    pub fn open_with_backend(
+    #[allow(
+        clippy::result_large_err,
+        reason = "The failure owns the exact sized backend and cleanup without an error-path allocation."
+    )]
+    pub(crate) fn create_with_backend_retained<B: SegmentGroupBackend + 'static>(
         self,
-        backend: impl SegmentGroupBackend + 'static,
-    ) -> Result<Database, DatabaseError> {
-        let admission = self.admission.clone();
-        Ok(Database::from_core(
-            Core::open_with_backend(backend, self.admission, self.group_id, self.cache)?,
-            admission,
-        ))
+        backend: B,
+    ) -> Result<Database, crate::NativeOpenFailure<B>> {
+        self.assemble_backend(backend, true, false)
     }
-
-    pub(crate) fn open_with_backend_retained(
+    #[allow(
+        clippy::result_large_err,
+        reason = "The failure owns the exact sized backend and cleanup without an error-path allocation."
+    )]
+    pub(crate) fn open_with_backend_retained<B: SegmentGroupBackend + 'static>(
         self,
-        backend: impl SegmentGroupBackend + 'static,
-    ) -> Result<Database, DatabaseError> {
-        let admission = self.admission.clone();
-        Ok(Database::from_core(
-            Core::open_with_backend_retained(backend, self.admission, self.group_id, self.cache)?,
-            admission,
-        ))
+        backend: B,
+    ) -> Result<Database, crate::NativeOpenFailure<B>> {
+        self.assemble_backend(backend, false, false)
+    }
+    #[allow(
+        clippy::result_large_err,
+        reason = "The failure owns the exact sized backend and cleanup without an error-path allocation."
+    )]
+    fn assemble_backend<B: SegmentGroupBackend + 'static>(
+        self,
+        backend: B,
+        create: bool,
+        close_on_failure: bool,
+    ) -> Result<Database, crate::NativeOpenFailure<B>> {
+        crate::core::opening::assemble(
+            backend,
+            self.admission,
+            self.group_id,
+            self.cache,
+            create,
+            close_on_failure,
+            true,
+        )
+        .map(|opened| opened.into_database())
     }
 }
 
 struct WriterGate {
     held: Mutex<bool>,
     changed: Condvar,
+    // A surviving writer lease keeps the same native admission alive through
+    // the final gate allocation and its synchronization controls, even after
+    // the database facade is dropped. Dispose these controls before Core.
+    _core: NativeOwnedArc<Core>,
 }
 
 impl WriterGate {
-    fn enter(self: &Arc<Self>, closing: &AtomicBool) -> Result<WriterLease, TransactionError> {
-        let mut held = self
+    fn enter(
+        this: &NativeOwnedArc<Self>,
+        closing: &AtomicBool,
+    ) -> Result<WriterLease, TransactionError> {
+        let mut held = this
             .held
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -545,7 +591,7 @@ impl WriterGate {
             if closing.load(Ordering::Acquire) {
                 return Err(StorageError::DatabaseClosed.into());
             }
-            held = self
+            held = this
                 .changed
                 .wait(held)
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -554,12 +600,12 @@ impl WriterGate {
             return Err(StorageError::DatabaseClosed.into());
         }
         *held = true;
-        Ok(WriterLease { gate: self.clone() })
+        Ok(WriterLease { gate: this.clone() })
     }
 }
 
 struct WriterLease {
-    gate: Arc<WriterGate>,
+    gate: NativeOwnedArc<WriterGate>,
 }
 
 impl Drop for WriterLease {
@@ -574,22 +620,33 @@ impl Drop for WriterLease {
     }
 }
 
+// Quoted by Core before allocating any of these three enclosing controls.
+// Each private owner retires its own control before disposing its payload.
+pub(crate) const fn facade_heap_bytes() -> usize {
+    size_of::<Core>()
+        + size_of::<DatabaseInner>()
+        + size_of::<WriterGate>()
+        + 6 * size_of::<usize>()
+        + 3 * 64
+        + crate::native_sync::mutex_backing_bytes()
+        + crate::native_sync::condvar_backing_bytes()
+}
 struct DatabaseInner {
-    core: Arc<Core>,
+    core: NativeOwnedArc<Core>,
     admission: Arc<dyn StorageAdmission>,
-    gate: Arc<WriterGate>,
+    gate: NativeOwnedArc<WriterGate>,
     closing: AtomicBool,
 }
 
 pub struct Database {
-    inner: Arc<DatabaseInner>,
+    inner: NativeOwnedArc<DatabaseInner>,
 }
 
 /// A borrowed transaction admission kept alive independently of a database
 /// owner's close mutex. A pending writer counts as live work; sealing the
 /// database wakes it before physical close can proceed.
 pub struct DatabaseTransactionAdmission {
-    inner: Arc<DatabaseInner>,
+    inner: NativeOwnedArc<DatabaseInner>,
 }
 
 impl DatabaseTransactionAdmission {
@@ -606,6 +663,213 @@ impl DatabaseTransactionAdmission {
         }
         .begin_write()
     }
+    pub fn configure_cache(&self, config: CacheConfig) -> Result<(), StorageError> {
+        Database {
+            inner: self.inner.clone(),
+        }
+        .configure_cache(config)
+    }
+    pub fn cache_stats(&self) -> Result<CacheStats, StorageError> {
+        Database {
+            inner: self.inner.clone(),
+        }
+        .cache_stats()
+    }
+    pub fn warm_cache(&self, work_limit: usize) -> Result<CacheWarmup, StorageError> {
+        Database {
+            inner: self.inner.clone(),
+        }
+        .warm_cache(work_limit)
+    }
+    pub fn warm_cache_if_needed(&self, work_limit: usize) -> Result<CacheWarmup, StorageError> {
+        Database {
+            inner: self.inner.clone(),
+        }
+        .warm_cache_if_needed(work_limit)
+    }
+    pub fn cache_warmup_status(&self) -> Result<CacheWarmupStatus, StorageError> {
+        Database {
+            inner: self.inner.clone(),
+        }
+        .cache_warmup_status()
+    }
+    pub fn request_cache_warm_retry(&self) -> Result<(), StorageError> {
+        Database {
+            inner: self.inner.clone(),
+        }
+        .request_cache_warm_retry()
+    }
+}
+
+/// Facade construction and teardown use the same preowned staging slots.
+/// Synchronization controls initialize while the original Core grant is live.
+pub(crate) struct FacadeOpening {
+    core: Option<NativeOwnedArc<Core>>,
+    held: Option<Mutex<bool>>,
+    changed: Option<Condvar>,
+    gate: Option<NativeOwnedArc<WriterGate>>,
+    database: Option<Database>,
+    steps: [crate::native_backend::DisposalObservation; 6],
+}
+impl Default for FacadeOpening {
+    fn default() -> Self {
+        Self {
+            core: None,
+            held: None,
+            changed: None,
+            gate: None,
+            database: None,
+            steps: std::array::from_fn(|_| crate::native_backend::DisposalObservation::default()),
+        }
+    }
+}
+impl FacadeOpening {
+    pub(crate) fn build(&mut self, core: Core, admission: Arc<dyn StorageAdmission>) {
+        self.core = Some(NativeOwnedArc::new(core));
+        let core = self.core.as_ref().expect("staged original Core");
+        self.held = Some(crate::native_sync::mutex(false, core.shell_lease()));
+        self.changed = Some(crate::native_sync::condvar(core.shell_lease()));
+        self.gate = Some(NativeOwnedArc::new(WriterGate {
+            held: self.held.take().expect("staged writer mutex"),
+            changed: self.changed.take().expect("staged writer condvar"),
+            _core: core.clone(),
+        }));
+        self.database = Some(Database {
+            inner: NativeOwnedArc::new(DatabaseInner {
+                core: self.core.take().expect("staged Core facade"),
+                admission,
+                gate: self.gate.take().expect("staged gate"),
+                closing: AtomicBool::new(false),
+            }),
+        });
+    }
+    pub(crate) fn adopt(&mut self, database: Database) {
+        assert!(self.database.is_none() && self.core.is_none());
+        self.database = Some(database);
+    }
+    pub(crate) fn core(&self) -> Option<&Core> {
+        self.database
+            .as_ref()
+            .map(|database| database.inner.core.as_ref())
+            .or(self.core.as_deref())
+            .or_else(|| self.gate.as_ref().map(|gate| gate._core.as_ref()))
+    }
+    pub(crate) fn take_completed(&mut self) -> Option<Database> {
+        self.database.take()
+    }
+    pub(crate) fn observation_count(&self) -> usize {
+        self.steps.len()
+    }
+    pub(crate) fn with_observation<R>(
+        &self,
+        index: usize,
+        inspect: impl FnOnce(crate::retained::TerminalObservation<'_, std::convert::Infallible>) -> R,
+    ) -> R {
+        self.steps[index].with_observation(inspect)
+    }
+    pub(crate) fn complete(&self) -> bool {
+        self.core.is_none()
+            && self.held.is_none()
+            && self.changed.is_none()
+            && self.gate.is_none()
+            && self.database.is_none()
+            && self.steps.iter().all(|step| {
+                matches!(
+                    step,
+                    crate::native_backend::DisposalObservation::NotEntered
+                        | crate::native_backend::DisposalObservation::Returned
+                )
+            })
+    }
+    pub(crate) fn dispose(&mut self, output: &mut Option<Core>) -> bool {
+        use crate::native_backend::{DisposalObservation, dispose_slot};
+        if let Some(database) = self.database.as_mut() {
+            if database.inner.get_mut().is_none() {
+                return false;
+            }
+            let Database { inner } = self.database.take().expect("original database facade");
+            let inner = match inner.try_unwrap() {
+                Ok(inner) => inner,
+                Err(inner) => {
+                    self.database = Some(Database { inner });
+                    return false;
+                }
+            };
+            self.core = Some(inner.core);
+            self.gate = Some(inner.gate);
+            self.steps[0] = DisposalObservation::Returned;
+            // The original Core remains staged during provider alias disposal.
+            self.steps[1].run(|| drop(inner.admission));
+            if !self.steps[1].returned() {
+                return false;
+            }
+        }
+        if let Some(gate) = self.gate.as_mut() {
+            if gate.get_mut().is_none() {
+                return false;
+            }
+            let gate = self.gate.take().expect("original writer gate");
+            let gate = match gate.try_unwrap() {
+                Ok(gate) => gate,
+                Err(gate) => {
+                    self.gate = Some(gate);
+                    return false;
+                }
+            };
+            self.held = Some(gate.held);
+            self.changed = Some(gate.changed);
+            self.steps[2] = DisposalObservation::Returned;
+            self.steps[3].run(|| drop(gate._core));
+            if !self.steps[3].returned() {
+                return false;
+            }
+        }
+        if !dispose_slot(&mut self.held, &mut self.steps[4])
+            || !dispose_slot(&mut self.changed, &mut self.steps[5])
+        {
+            return false;
+        }
+        if let Some(core) = self.core.as_mut() {
+            if core.get_mut().is_none() {
+                return false;
+            }
+            let core = self.core.take().expect("original Core facade control");
+            *output = match core.try_unwrap() {
+                Ok(core) => Some(core),
+                Err(core) => {
+                    self.core = Some(core);
+                    return false;
+                }
+            };
+        }
+        self.complete()
+    }
+}
+impl Drop for FacadeOpening {
+    fn drop(&mut self) {
+        if self.complete() {
+            return;
+        }
+        if let Some(owner) = self.core.take() {
+            std::mem::forget(owner);
+        }
+        if let Some(owner) = self.database.take() {
+            std::mem::forget(owner);
+        }
+        if let Some(owner) = self.gate.take() {
+            std::mem::forget(owner);
+        }
+        if let Some(owner) = self.held.take() {
+            std::mem::forget(owner);
+        }
+        if let Some(owner) = self.changed.take() {
+            std::mem::forget(owner);
+        }
+        std::mem::forget(std::mem::replace(
+            &mut self.steps,
+            std::array::from_fn(|_| crate::native_backend::DisposalObservation::default()),
+        ));
+    }
 }
 
 impl Database {
@@ -621,18 +885,12 @@ impl Database {
         }
     }
 
-    pub(crate) fn from_core(core: Core, admission: Arc<dyn StorageAdmission>) -> Self {
-        Self {
-            inner: Arc::new(DatabaseInner {
-                core: Arc::new(core),
-                admission,
-                gate: Arc::new(WriterGate {
-                    held: Mutex::new(false),
-                    changed: Condvar::new(),
-                }),
-                closing: AtomicBool::new(false),
-            }),
-        }
+    pub(crate) fn native_is_drained(&self) -> bool {
+        self.inner.core.native_is_drained()
+    }
+    /// Own actual disposal separately from the prior native close outcome.
+    pub fn into_disposal(self) -> crate::NativeOwnedDisposal {
+        crate::NativeOwnedDisposal::from_database(self)
     }
 
     pub(crate) fn admission(&self) -> Arc<dyn StorageAdmission> {
@@ -706,7 +964,7 @@ impl Database {
     }
 
     pub fn active_transactions(&self) -> usize {
-        Arc::strong_count(&self.inner).saturating_sub(1)
+        self.inner.strong_count().saturating_sub(1)
     }
 
     fn seal(&self) {
@@ -737,16 +995,17 @@ impl Database {
     }
 
     pub fn begin_write(&self) -> Result<WriteTransaction, TransactionError> {
-        let lease = self.inner.gate.enter(&self.inner.closing)?;
+        let lease = WriterGate::enter(&self.inner.gate, &self.inner.closing)?;
         self.inner.core.prepare_write()?;
         let snapshot = SnapshotHandle::capture(&self.inner.core)?;
         if self.inner.closing.load(Ordering::Acquire) {
             return Err(StorageError::DatabaseClosed.into());
         }
+        let staged = SharedPending::new(&self.inner.core, lease)?;
         Ok(WriteTransaction {
             inner: self.inner.clone(),
             snapshot: Some(snapshot),
-            staged: Arc::new(Mutex::new(Pending::new(lease))),
+            staged,
             terminal: false,
         })
     }
@@ -841,7 +1100,7 @@ struct SnapshotBacking {
     charge: SnapshotCharge,
 }
 
-struct SnapshotCharge(Option<Box<dyn ResidentLease>>);
+struct SnapshotCharge(Option<NativeResidentLease>);
 impl Drop for SnapshotCharge {
     fn drop(&mut self) {
         if let Some(lease) = self.0.take() {
@@ -856,14 +1115,85 @@ pub(crate) const fn snapshot_backing_request_bytes() -> u64 {
     SnapshotHandle::CHARGE_BYTES
 }
 
-/// The temporary table-name Arc is allocated after type probes have retired.
+/// Both table-name allocations and the original opaque grant backing.
 pub(crate) fn table_name_backing_bytes(name_bytes: usize) -> Result<u64, CoreError> {
     if name_bytes > 128 {
-        return Err(CoreError::InvalidInput(
+        return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
             "table name quote exceeds format limit",
-        ));
+        )));
     }
-    Ok((name_bytes + 2 * size_of::<usize>()).next_power_of_two() as u64 + 64)
+    Ok(
+        (name_bytes + 2 * size_of::<usize>()).next_power_of_two() as u64
+            + 64
+            + (size_of::<TableNameBacking>() + 2 * size_of::<usize>()).next_power_of_two() as u64
+            + 64
+            + 128,
+    )
+}
+
+struct TableNameBacking {
+    name: Arc<str>,
+    charge: SnapshotCharge,
+}
+
+// No Weak or raw Arc escapes. Every retained table/range/staged-map alias uses
+// this wrapper, so the final control and string backing retire before refund.
+struct SharedTableName(Option<Arc<TableNameBacking>>);
+impl SharedTableName {
+    fn new(core: &Core, name: &str) -> Result<Self, CoreError> {
+        let charge = SnapshotCharge(Some(
+            core.reserve_workspace(table_name_backing_bytes(name.len())?)?,
+        ));
+        let name = Arc::from(name);
+        Ok(Self(Some(Arc::new(TableNameBacking { name, charge }))))
+    }
+    // Publication borrows the original maps throughout Core::commit and drops
+    // every operation alias before either map's name owner can release credit.
+    fn operation_name(&self) -> Arc<str> {
+        self.0.as_ref().expect("live table name").name.clone()
+    }
+}
+impl Clone for SharedTableName {
+    fn clone(&self) -> Self {
+        Self(Some(self.0.as_ref().expect("live table name").clone()))
+    }
+}
+impl std::ops::Deref for SharedTableName {
+    type Target = str;
+    fn deref(&self) -> &str {
+        &self.0.as_ref().expect("live table name").name
+    }
+}
+impl std::borrow::Borrow<str> for SharedTableName {
+    fn borrow(&self) -> &str {
+        self
+    }
+}
+impl PartialEq for SharedTableName {
+    fn eq(&self, other: &Self) -> bool {
+        **self == **other
+    }
+}
+impl Eq for SharedTableName {}
+impl PartialOrd for SharedTableName {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl Ord for SharedTableName {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        (**self).cmp(&**other)
+    }
+}
+impl Drop for SharedTableName {
+    fn drop(&mut self) {
+        if let Some(TableNameBacking { name, charge }) =
+            Arc::into_inner(self.0.take().expect("live table name"))
+        {
+            drop(name);
+            drop(charge);
+        }
+    }
 }
 impl SnapshotHandle {
     // Arc counters, allocator rounding/slack, and the existing native lease
@@ -930,7 +1260,7 @@ impl Drop for SnapshotHandle {
 }
 
 pub struct ReadTransaction {
-    inner: Arc<DatabaseInner>,
+    inner: NativeOwnedArc<DatabaseInner>,
     snapshot: SnapshotHandle,
 }
 
@@ -956,7 +1286,7 @@ impl ReadTransaction {
     }
 
     pub fn belongs_to(&self, database: &Database) -> bool {
-        Arc::ptr_eq(&self.inner, &database.inner)
+        NativeOwnedArc::ptr_eq(&self.inner, &database.inner)
     }
 
     /// Tables, ranges and admitted access guards all carry this exact backing.
@@ -974,7 +1304,7 @@ impl ReadTransaction {
         Ok(ReadOnlyTable {
             inner: self.inner.clone(),
             snapshot: self.snapshot.clone(),
-            name: Arc::from(definition.name()),
+            name: SharedTableName::new(&self.inner.core, definition.name())?,
             _codec: PhantomData,
         })
     }
@@ -1082,7 +1412,7 @@ impl ReadTransaction {
 }
 
 /// Staged rows by table. A `None` value is a tombstone.
-type StagedRows = BTreeMap<Arc<str>, BTreeMap<Vec<u8>, Option<Vec<u8>>>>;
+type StagedRows = BTreeMap<SharedTableName, BTreeMap<Vec<u8>, Option<Vec<u8>>>>;
 
 /// Where a writer's staged batch stands. Only a capacity denial settles a
 /// writer before publication; an uncertain owner keeps it retained.
@@ -1103,28 +1433,128 @@ enum Staging {
 /// every chunk stays leased until the whole batch leaves the transaction.
 #[derive(Default)]
 struct StagingCredit {
-    leases: Vec<Box<dyn ResidentLease>>,
+    leases: Option<Vec<StagingLease>>,
     reserved: usize,
     used: usize,
+}
+
+struct StagingLease {
+    lease: NativeResidentLease,
+    next: Option<Vec<StagingLease>>,
+}
+
+impl StagingCredit {
+    fn push(&mut self, lease: NativeResidentLease) -> Result<(), CoreError> {
+        // The admitted concrete node owns a single fallibly allocated slot.
+        // Default Global reports the requested layout as capacity; reject any
+        // other capacity before moving the original tail into this backing.
+        let mut allocation = Vec::new();
+        if allocation.try_reserve_exact(1).is_err() || allocation.capacity() != 1 {
+            // Retire any empty backing before refunding the new prospective
+            // grant. A callback panic leaves the original tail untouched.
+            drop(allocation);
+            lease.retire();
+            return Err(CoreError::new(crate::CoreErrorCause::CapacityDenied));
+        }
+        allocation.push(StagingLease {
+            lease,
+            next: self.leases.take(),
+        });
+        self.leases = Some(allocation);
+        Ok(())
+    }
+}
+
+impl Drop for StagingCredit {
+    fn drop(&mut self) {
+        // Do not enter a new provider callback during an existing unwind.
+        // The exact unentered nodes and their original grants stay retained.
+        if std::thread::panicking() {
+            std::mem::forget(self.leases.take());
+            return;
+        }
+        while let Some(mut allocation) = self.leases.take() {
+            let StagingLease { lease, next } = allocation
+                .pop()
+                .expect("staging lease backing has exactly one node");
+            // The now-empty actual node backing retires before its grant.
+            // The opaque lease separately retires its Box before refunding.
+            drop(allocation);
+            self.leases = next;
+            if let Err(payload) = catch_unwind(AssertUnwindSafe(|| lease.retire())) {
+                // No clean retirement was observed. Avoid recursively dropping
+                // or entering another callback; preserve the original panic.
+                std::mem::forget(self.leases.take());
+                resume_unwind(payload);
+            }
+        }
+    }
 }
 
 /// A batch taken out of its transaction. Fields drop in order: the staged
 /// rows before the credit that admitted them, and the writer gate last.
 struct Discarded {
-    _created: BTreeMap<Arc<str>, [u8; 2]>,
+    _created: BTreeMap<SharedTableName, [u8; 2]>,
     _writes: StagedRows,
     _credit: StagingCredit,
     _writer: Option<WriterLease>,
 }
 
 struct Pending {
-    created: BTreeMap<Arc<str>, [u8; 2]>,
+    created: BTreeMap<SharedTableName, [u8; 2]>,
     writes: StagedRows,
     credit: StagingCredit,
     // The writer gate is held here rather than by the transaction facade, so
     // a rollback from any table handle releases it immediately.
     writer: Option<WriterLease>,
     staging: Staging,
+}
+
+// No Weak or raw Arc escapes. Every transaction, table and range clone owns
+// this closed wrapper, so one final into_inner retires the actual Arc/control
+// allocation before its resident grant is returned, including concurrent drops.
+struct PendingBacking {
+    pending: Mutex<Pending>,
+    charge: SnapshotCharge,
+}
+struct SharedPending(Option<Arc<PendingBacking>>);
+impl SharedPending {
+    const CHARGE_BYTES: u64 = (size_of::<PendingBacking>() + 2 * size_of::<usize>())
+        .next_power_of_two() as u64
+        + 64
+        + 128
+        + crate::native_sync::mutex_backing_bytes() as u64;
+    fn new(core: &Core, writer: WriterLease) -> Result<Self, CoreError> {
+        let charge = SnapshotCharge(Some(core.reserve_workspace(Self::CHARGE_BYTES)?));
+        Ok(Self(Some(Arc::new(PendingBacking {
+            pending: crate::native_sync::mutex(
+                Pending::new(writer),
+                charge.0.as_ref().expect("original staging control grant"),
+            ),
+            charge,
+        }))))
+    }
+}
+impl Clone for SharedPending {
+    fn clone(&self) -> Self {
+        Self(Some(self.0.as_ref().expect("live staged owner").clone()))
+    }
+}
+impl std::ops::Deref for SharedPending {
+    type Target = Mutex<Pending>;
+    fn deref(&self) -> &Self::Target {
+        &self.0.as_ref().expect("live staged owner").pending
+    }
+}
+impl Drop for SharedPending {
+    fn drop(&mut self) {
+        if let Some(PendingBacking { pending, charge }) =
+            Arc::into_inner(self.0.take().expect("live staged owner"))
+        {
+            drop(pending);
+            drop(charge);
+        }
+    }
 }
 
 impl Pending {
@@ -1141,8 +1571,10 @@ impl Pending {
     fn ensure_active(&self) -> Result<(), TableError> {
         match self.staging {
             Staging::Active => Ok(()),
-            Staging::RolledBack => Err(CoreError::CapacityDenied.into()),
-            Staging::Failed => Err(CoreError::OwnerFailed.into()),
+            Staging::RolledBack => {
+                Err(CoreError::new(crate::CoreErrorCause::CapacityDenied).into())
+            }
+            Staging::Failed => Err(CoreError::new(crate::CoreErrorCause::OwnerFailed).into()),
             Staging::Terminal => Err(TableError::Storage(StorageError::DatabaseClosed)),
         }
     }
@@ -1155,24 +1587,20 @@ impl Pending {
             .used
             .checked_add(bytes)
             .filter(|used| *used <= MAX_BATCH_BYTES)
-            .ok_or(CoreError::CapacityDenied)?;
+            .ok_or(CoreError::new(crate::CoreErrorCause::CapacityDenied))?;
         if used > self.credit.reserved {
             let deficit = used - self.credit.reserved;
             let desired = deficit.max(STAGING_CHUNK);
             let (credit, lease) =
-                match core.reserve_workspace((desired + STAGING_LEASE_SLOT) as u64) {
+                match core.reserve_workspace((desired + STAGING_LEASE_NODE) as u64) {
                     Ok(lease) => (desired, lease),
-                    Err(CoreError::CapacityDenied) if desired > deficit => (
+                    Err(error) if error.is_capacity_denied() && desired > deficit => (
                         deficit,
-                        core.reserve_workspace((deficit + STAGING_LEASE_SLOT) as u64)?,
+                        core.reserve_workspace((deficit + STAGING_LEASE_NODE) as u64)?,
                     ),
                     Err(error) => return Err(error.into()),
                 };
-            self.credit
-                .leases
-                .try_reserve(1)
-                .map_err(|_| CoreError::CapacityDenied)?;
-            self.credit.leases.push(lease);
+            self.credit.push(lease)?;
             self.credit.reserved += credit;
         }
         self.credit.used = used;
@@ -1180,18 +1608,20 @@ impl Pending {
     }
 
     /// Admit one staged row, and on a table's first row that table's own
-    /// staging structure and shared name.
+    /// staging structure. Its shared name already owns a separate admission.
     fn reserve_row(&mut self, core: &Core, table: &str, row: usize) -> Result<(), TableError> {
         let charge = if self.writes.contains_key(table) {
             Some(row)
         } else {
             row.checked_add(STAGED_TABLE_OVERHEAD)
-                .and_then(|bytes| bytes.checked_add(shared_name_charge(table.len())))
         };
-        self.reserve(core, charge.ok_or(CoreError::CapacityDenied)?)
+        self.reserve(
+            core,
+            charge.ok_or(CoreError::new(crate::CoreErrorCause::CapacityDenied))?,
+        )
     }
 
-    fn stage(&mut self, table: &Arc<str>, key: Vec<u8>, value: Option<Vec<u8>>) {
+    fn stage(&mut self, table: &SharedTableName, key: Vec<u8>, value: Option<Vec<u8>>) {
         self.writes
             .entry(table.clone())
             .or_default()
@@ -1230,9 +1660,9 @@ impl Pending {
 }
 
 pub struct WriteTransaction {
-    inner: Arc<DatabaseInner>,
+    inner: NativeOwnedArc<DatabaseInner>,
     snapshot: Option<SnapshotHandle>,
-    staged: Arc<Mutex<Pending>>,
+    staged: SharedPending,
     terminal: bool,
 }
 
@@ -1247,8 +1677,13 @@ pub struct CommittedWrite {
 }
 
 impl WriteTransaction {
+    /// Exact native policy quote for the separate shared staging control.
+    /// This allocation coexists with the writer snapshot and staged row grants.
+    pub const fn staging_backing_request_bytes() -> u64 {
+        SharedPending::CHARGE_BYTES
+    }
     pub fn belongs_to(&self, database: &Database) -> bool {
-        Arc::ptr_eq(&self.inner, &database.inner)
+        NativeOwnedArc::ptr_eq(&self.inner, &database.inner)
     }
 
     /// Whether this transaction still holds the database's writer gate. A
@@ -1266,23 +1701,31 @@ impl WriteTransaction {
         if name == TABLE_TYPES || name.is_empty() || name.len() > 128 {
             return Err(TableError::TypeMismatch(name.to_owned()));
         }
-        let name: Arc<str> = Arc::from(name);
-        let snapshot = staged_step(&self.inner.core, &self.staged, || {
+        let (snapshot, name) = staged_step(&self.inner.core, &self.staged, || {
             let mut pending = lock(&self.staged);
             pending.ensure_active()?;
-            let snapshot = self.snapshot.as_ref().ok_or(CoreError::Closed)?;
+            let snapshot = self
+                .snapshot
+                .as_ref()
+                .ok_or(CoreError::new(crate::CoreErrorCause::Closed))?;
             self.inner.core.check_read_owner()?;
-            if let Some(tags) = pending.created.get(&*name) {
+            let create = if let Some(tags) = pending.created.get(name) {
                 if *tags != definition.tags() {
                     return Err(TableError::TypeMismatch(name.to_string()));
                 }
-            } else if snapshot.table_exists(&name)? {
+                false
+            } else if snapshot.table_exists(name)? {
                 check_table_type(&self.inner.core, snapshot, definition)?;
+                false
             } else {
                 pending.reserve(&self.inner.core, name.len().saturating_add(512))?;
+                true
+            };
+            let name = SharedTableName::new(&self.inner.core, name)?;
+            if create {
                 pending.created.insert(name.clone(), definition.tags());
             }
-            Ok(snapshot.clone())
+            Ok((snapshot.clone(), name))
         })?;
         Ok(Table {
             inner: self.inner.clone(),
@@ -1301,18 +1744,20 @@ impl WriteTransaction {
         self.commit_inner_with_writer(false)
     }
 
-    fn commit_inner_with_writer(&mut self, hold_success: bool) -> Result<(), CoreError> {
+    pub(crate) fn commit_inner_with_writer(&mut self, hold_success: bool) -> Result<(), CoreError> {
         if self.terminal {
-            return Err(CoreError::Closed);
+            return Err(CoreError::new(crate::CoreErrorCause::Closed));
         }
         self.terminal = true;
         let mut pending = lock(&self.staged);
         match pending.staging {
             Staging::Active => {}
             // Rolled back before publication: repeat the original denial.
-            Staging::RolledBack => return Err(CoreError::CapacityDenied),
-            Staging::Failed => return Err(CoreError::OwnerFailed),
-            Staging::Terminal => return Err(CoreError::Closed),
+            Staging::RolledBack => {
+                return Err(CoreError::new(crate::CoreErrorCause::CapacityDenied));
+            }
+            Staging::Failed => return Err(CoreError::new(crate::CoreErrorCause::OwnerFailed)),
+            Staging::Terminal => return Err(CoreError::new(crate::CoreErrorCause::Closed)),
         }
         pending.staging = Staging::Terminal;
         let created = std::mem::take(&mut pending.created);
@@ -1341,25 +1786,25 @@ impl WriteTransaction {
     /// is allocated and drops before its lease; a denial has no effect.
     fn publish(
         &mut self,
-        created: BTreeMap<Arc<str>, [u8; 2]>,
-        writes: StagedRows,
+        created: BTreeMap<SharedTableName, [u8; 2]>,
+        mut writes: StagedRows,
     ) -> Result<(), CoreError> {
         let create_types = !created.is_empty()
             && !self
                 .snapshot
                 .as_ref()
-                .ok_or(CoreError::Closed)?
+                .ok_or(CoreError::new(crate::CoreErrorCause::Closed))?
                 .table_exists(TABLE_TYPES)?;
         let rows = writes
             .values()
             .try_fold(0usize, |rows, table| rows.checked_add(table.len()))
-            .ok_or(CoreError::CapacityDenied)?;
+            .ok_or(CoreError::new(crate::CoreErrorCause::CapacityDenied))?;
         let count = created
             .len()
             .checked_mul(2)
             .and_then(|count| count.checked_add(rows))
             .and_then(|count| count.checked_add(usize::from(create_types)))
-            .ok_or(CoreError::CapacityDenied)?;
+            .ok_or(CoreError::new(crate::CoreErrorCause::CapacityDenied))?;
         if count == 0 {
             drop(self.snapshot.take());
             return self.inner.core.check_owner();
@@ -1371,7 +1816,7 @@ impl WriteTransaction {
         let mut operations = Vec::new();
         operations
             .try_reserve_exact(count)
-            .map_err(|_| CoreError::CapacityDenied)?;
+            .map_err(|_| CoreError::new(crate::CoreErrorCause::CapacityDenied))?;
         if !created.is_empty() {
             let types: Arc<str> = Arc::from(TABLE_TYPES);
             if create_types {
@@ -1379,9 +1824,11 @@ impl WriteTransaction {
                     table: types.clone(),
                 });
             }
-            for (name, tags) in created {
+            for (name, tags) in &created {
                 let key = name.as_bytes().to_vec();
-                operations.push(Operation::CreateTable { table: name });
+                operations.push(Operation::CreateTable {
+                    table: name.operation_name(),
+                });
                 operations.push(Operation::Put {
                     table: types.clone(),
                     key,
@@ -1389,16 +1836,16 @@ impl WriteTransaction {
                 });
             }
         }
-        for (table, rows) in writes {
-            for (key, value) in rows {
+        for (table, rows) in &mut writes {
+            for (key, value) in std::mem::take(rows) {
                 operations.push(match value {
                     Some(value) => Operation::Put {
-                        table: table.clone(),
+                        table: table.operation_name(),
                         key,
                         value,
                     },
                     None => Operation::Delete {
-                        table: table.clone(),
+                        table: table.operation_name(),
                         key,
                     },
                 });
@@ -1416,7 +1863,7 @@ impl WriteTransaction {
 
     pub(crate) fn abort_inner(&mut self) -> Result<(), CoreError> {
         if self.terminal {
-            return Err(CoreError::Closed);
+            return Err(CoreError::new(crate::CoreErrorCause::Closed));
         }
         self.terminal = true;
         let mut pending = lock(&self.staged);
@@ -1425,8 +1872,8 @@ impl WriteTransaction {
             // The first capacity denial already discarded the batch and
             // released the writer gate; there is nothing left to abort.
             Staging::RolledBack => return Ok(()),
-            Staging::Failed => return Err(CoreError::OwnerFailed),
-            Staging::Terminal => return Err(CoreError::Closed),
+            Staging::Failed => return Err(CoreError::new(crate::CoreErrorCause::OwnerFailed)),
+            Staging::Terminal => return Err(CoreError::new(crate::CoreErrorCause::Closed)),
         }
         pending.staging = Staging::Terminal;
         drop(pending);
@@ -1508,10 +1955,10 @@ fn current_bytes(
 /// A writable table owns only handles to its transaction's staged changes.
 /// Dropping it never publishes a write.
 pub struct Table<K: TableCodec, V: TableCodec> {
-    inner: Arc<DatabaseInner>,
+    inner: NativeOwnedArc<DatabaseInner>,
     snapshot: SnapshotHandle,
-    staged: Arc<Mutex<Pending>>,
-    name: Arc<str>,
+    staged: SharedPending,
+    name: SharedTableName,
     _codec: PhantomData<fn() -> (K, V)>,
 }
 
@@ -1523,13 +1970,9 @@ impl<K: TableCodec, V: TableCodec> Table<K, V> {
     pub fn get(&self, key: K::Input<'_>) -> Result<Option<AccessGuard<V>>, TableError> {
         check_key_bound::<K>(key)?;
         self.step(|| {
-            current_bytes(
-                &self.inner,
-                &self.snapshot,
-                &self.staged,
-                &self.name,
-                &K::encode(key),
-            )?
+            K::with_encoded(key, |key| {
+                current_bytes(&self.inner, &self.snapshot, &self.staged, &self.name, key)
+            })?
             .map(|parts| AccessGuard::decode_parts(parts, &self.snapshot))
             .transpose()
         })
@@ -1596,13 +2039,15 @@ impl<K: TableCodec, V: TableCodec> Table<K, V> {
         check_key_bound::<K>(range.start)?;
         self.step(|| {
             lock(&self.staged).ensure_active()?;
-            TableRange::new(
-                self.inner.clone(),
-                self.snapshot.clone(),
-                Some(self.staged.clone()),
-                self.name.clone(),
-                K::encode(range.start),
-            )
+            K::with_encoded(range.start, |start| {
+                TableRange::new(
+                    self.inner.clone(),
+                    self.snapshot.clone(),
+                    Some(self.staged.clone()),
+                    self.name.clone(),
+                    start,
+                )
+            })
         })
     }
 
@@ -1614,7 +2059,7 @@ impl<K: TableCodec, V: TableCodec> Table<K, V> {
                 self.snapshot.clone(),
                 Some(self.staged.clone()),
                 self.name.clone(),
-                Vec::new(),
+                &[],
             )
         })
     }
@@ -1646,36 +2091,35 @@ impl<K: TableCodec, V: TableCodec> Table<K, V> {
 }
 
 pub struct ReadOnlyTable<K: TableCodec, V: TableCodec> {
-    inner: Arc<DatabaseInner>,
+    inner: NativeOwnedArc<DatabaseInner>,
     snapshot: SnapshotHandle,
-    name: Arc<str>,
+    name: SharedTableName,
     _codec: PhantomData<fn() -> (K, V)>,
 }
 
 impl<K: TableCodec, V: TableCodec> ReadOnlyTable<K, V> {
     pub fn get(&self, key: K::Input<'_>) -> Result<Option<AccessGuard<V>>, TableError> {
         check_key_bound::<K>(key)?;
-        self.inner
-            .core
-            .get_admitted(
-                &self.snapshot,
-                &self.name,
-                &K::encode(key),
-                MAX_TABLE_VALUE_BYTES,
-            )?
-            .map(|value| AccessGuard::decode_admitted(value, &self.snapshot))
-            .transpose()
+        K::with_encoded(key, |key| {
+            self.inner
+                .core
+                .get_admitted(&self.snapshot, &self.name, key, MAX_TABLE_VALUE_BYTES)
+        })?
+        .map(|value| AccessGuard::decode_admitted(value, &self.snapshot))
+        .transpose()
     }
 
     pub fn range(&self, range: RangeFrom<K::Input<'_>>) -> Result<TableRange<K, V>, TableError> {
         check_key_bound::<K>(range.start)?;
-        TableRange::new(
-            self.inner.clone(),
-            self.snapshot.clone(),
-            None,
-            self.name.clone(),
-            K::encode(range.start),
-        )
+        K::with_encoded(range.start, |start| {
+            TableRange::new(
+                self.inner.clone(),
+                self.snapshot.clone(),
+                None,
+                self.name.clone(),
+                start,
+            )
+        })
     }
 
     pub fn iter(&self) -> Result<TableRange<K, V>, TableError> {
@@ -1684,7 +2128,7 @@ impl<K: TableCodec, V: TableCodec> ReadOnlyTable<K, V> {
             self.snapshot.clone(),
             None,
             self.name.clone(),
-            Vec::new(),
+            &[],
         )
     }
 }
@@ -1696,30 +2140,55 @@ impl<K: TableCodec, V: TableCodec> ReadableTable<K, V> for ReadOnlyTable<K, V> {
 /// Ordered iterator over one immutable snapshot plus a writer's staged overlay.
 /// One value at a time is materialized from the backend.
 pub struct TableRange<K: TableCodec, V: TableCodec> {
-    inner: Arc<DatabaseInner>,
+    inner: NativeOwnedArc<DatabaseInner>,
     snapshot: SnapshotHandle,
-    staged: Option<Arc<Mutex<Pending>>>,
-    table: Arc<str>,
-    start: Vec<u8>,
+    staged: Option<SharedPending>,
+    table: SharedTableName,
+    start: OwnedKeyBytes,
     prefix_only: bool,
-    after: Option<Vec<u8>>,
-    _range_lease: Box<dyn ResidentLease>,
-    cursor_lease: Option<Box<dyn ResidentLease>>,
+    after: Option<OwnedKeyBytes>,
     done: bool,
     _codec: PhantomData<fn() -> (K, V)>,
 }
 
+// Continuations own only their admitted bytes and original opaque grant. Vec
+// backing drops first; SnapshotCharge retires the lease Box before its refund.
+struct OwnedKeyBytes {
+    bytes: Vec<u8>,
+    _charge: SnapshotCharge,
+}
+impl OwnedKeyBytes {
+    fn copy(core: &Core, input: &[u8], request: u64) -> Result<Self, TableError> {
+        let charge = SnapshotCharge(Some(core.reserve_workspace(request)?));
+        let mut bytes = Vec::new();
+        bytes
+            .try_reserve_exact(input.len())
+            .map_err(|_| CoreError::new(crate::CoreErrorCause::CapacityDenied))?;
+        if bytes.capacity() != input.len() {
+            return Err(CoreError::new(crate::CoreErrorCause::CapacityDenied).into());
+        }
+        bytes.extend_from_slice(input);
+        Ok(Self {
+            bytes,
+            _charge: charge,
+        })
+    }
+    fn as_bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+}
+
 impl<K: TableCodec, V: TableCodec> TableRange<K, V> {
     fn new(
-        inner: Arc<DatabaseInner>,
+        inner: NativeOwnedArc<DatabaseInner>,
         snapshot: SnapshotHandle,
-        staged: Option<Arc<Mutex<Pending>>>,
-        table: Arc<str>,
-        start: Vec<u8>,
+        staged: Option<SharedPending>,
+        table: SharedTableName,
+        start: &[u8],
     ) -> Result<Self, TableError> {
         inner.core.check_read_owner()?;
         let charge = start.len().saturating_add(table.len()).saturating_add(256);
-        let lease = inner.core.reserve_workspace(charge as u64)?;
+        let start = OwnedKeyBytes::copy(&inner.core, start, charge as u64)?;
         Ok(Self {
             inner,
             snapshot,
@@ -1728,8 +2197,6 @@ impl<K: TableCodec, V: TableCodec> TableRange<K, V> {
             start,
             prefix_only: false,
             after: None,
-            _range_lease: lease,
-            cursor_lease: None,
             done: false,
             _codec: PhantomData,
         })
@@ -1746,22 +2213,26 @@ impl<K: TableCodec, V: TableCodec> TableRange<K, V> {
                 None
             } else {
                 self.snapshot
-                    .next_key_admitted(&self.table, &self.start, self.after.as_deref())?
+                    .next_key_admitted(
+                        &self.table,
+                        self.start.as_bytes(),
+                        self.after.as_ref().map(OwnedKeyBytes::as_bytes),
+                    )?
                     .map(AdmittedValue::into_parts)
-                    .filter(|(key, _)| !self.prefix_only || key.starts_with(&self.start))
+                    .filter(|(key, _)| !self.prefix_only || key.starts_with(self.start.as_bytes()))
             };
             let (staged_key, staged_value) = if let Some(staged) = &self.staged {
                 let pending = lock(staged);
                 pending.ensure_active()?;
-                let start = match self.after.as_deref() {
-                    Some(after) if after >= self.start.as_slice() => Bound::Excluded(after),
-                    _ => Bound::Included(self.start.as_slice()),
+                let start = match self.after.as_ref().map(OwnedKeyBytes::as_bytes) {
+                    Some(after) if after >= self.start.as_bytes() => Bound::Excluded(after),
+                    _ => Bound::Included(self.start.as_bytes()),
                 };
                 pending
                     .writes
                     .get(&*self.table)
                     .and_then(|writes| writes.range::<[u8], _>((start, Bound::Unbounded)).next())
-                    .filter(|(key, _)| !self.prefix_only || key.starts_with(&self.start))
+                    .filter(|(key, _)| !self.prefix_only || key.starts_with(self.start.as_bytes()))
                     .map(|(key, value)| -> Result<_, TableError> {
                         let key = admit_clone(&self.inner.core, key)?;
                         let value = value
@@ -1783,9 +2254,12 @@ impl<K: TableCodec, V: TableCodec> TableRange<K, V> {
                 (Some(base), Some(staged)) if base.0 == staged.0 => (base, staged_value),
                 (Some(_), Some(staged)) => (staged, staged_value),
             };
-            let (cursor, cursor_lease) = admit_clone(&self.inner.core, &key.0)?;
+            let cursor = OwnedKeyBytes::copy(
+                &self.inner.core,
+                &key.0,
+                key.0.len().saturating_add(128) as u64,
+            )?;
             self.after = Some(cursor);
-            self.cursor_lease = Some(cursor_lease);
             let value = match staged_for_key {
                 Some(value) => value,
                 _ => self
@@ -2159,12 +2633,11 @@ mod tests {
 
         // This is genuine ordinary workspace refusal, while canonical tag
         // reads use the preowned native backing at the selected snapshot.
-        assert!(matches!(
-            old.open_table(BYTES),
-            Err(TableError::Storage(StorageError::Core(
-                CoreError::CapacityDenied
-            )))
-        ));
+        assert!(
+            matches!(&(old.open_table(BYTES)), Err(TableError::Storage(StorageError::Core(
+                native_error
+            ))) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::CapacityDenied)))
+        );
         old.check_bytes_table_prepared(BYTES, &mut workspace)
             .unwrap();
         current
@@ -2187,12 +2660,11 @@ mod tests {
                 Err(TableError::TypeMismatch(actual)) if actual == name
             ));
         }
-        assert!(matches!(
-            foreign.check_bytes_table_prepared(BYTES, &mut workspace),
-            Err(TableError::Storage(StorageError::Core(
-                CoreError::InvalidInput(_)
-            )))
-        ));
+        assert!(
+            matches!(&(foreign.check_bytes_table_prepared(BYTES, &mut workspace)), Err(TableError::Storage(StorageError::Core(
+                native_error
+            ))) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput(_))))
+        );
         // Failed validation cannot replace the old root or corrupt reusable
         // output; valid loans still use the same allocation afterward.
         old.check_bytes_table_prepared(BYTES, &mut workspace)
@@ -2258,14 +2730,12 @@ mod tests {
             );
             assert_eq!(workspace.output.bytes.as_ptr(), address);
         }
-        assert!(matches!(
-            foreign.get_bytes_prepared("records", b"key", 128, &mut workspace),
-            Err(CoreError::InvalidInput(_))
-        ));
-        assert!(matches!(
-            old.get_bytes_prepared("records", &599u32.to_be_bytes(), 2, &mut workspace),
-            Err(CoreError::InvalidInput(_))
-        ));
+        assert!(
+            matches!(&(foreign.get_bytes_prepared("records", b"key", 128, &mut workspace)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput(_))))
+        );
+        assert!(
+            matches!(&(old.get_bytes_prepared("records", &599u32.to_be_bytes(), 2, &mut workspace)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput(_))))
+        );
         assert_eq!(
             old.get_bytes_prepared("records", &599u32.to_be_bytes(), 128, &mut workspace)
                 .unwrap(),
@@ -2354,12 +2824,11 @@ mod tests {
         let write = database.begin_write().unwrap();
         let mut table = write.open_table(BYTES).unwrap();
         admission.limit.store(0, Ordering::Release);
-        assert!(matches!(
-            table.delete_key(b"key"),
-            Err(TableError::Storage(StorageError::Core(
-                CoreError::CapacityDenied
-            )))
-        ));
+        assert!(
+            matches!(&(table.delete_key(b"key")), Err(TableError::Storage(StorageError::Core(
+                native_error
+            ))) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::CapacityDenied)))
+        );
         admission.limit.store(u64::MAX, Ordering::Release);
         // The denial rolled the whole writer back: later calls repeat it and
         // the commit publishes nothing, even with capacity available again.
@@ -2392,12 +2861,11 @@ mod tests {
         let write = database.begin_write().unwrap();
         let mut table = write.open_table(BYTES).unwrap();
         let oversized = vec![0x44; MAX_KEY_BYTES + 1];
-        assert!(matches!(
-            table.delete_key(oversized.as_slice()),
-            Err(TableError::Storage(StorageError::Core(
-                CoreError::InvalidInput(_)
-            )))
-        ));
+        assert!(
+            matches!(&(table.delete_key(oversized.as_slice())), Err(TableError::Storage(StorageError::Core(
+                native_error
+            ))) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput(_))))
+        );
         table.delete_key(b"missing").unwrap();
         table.insert(b"key", b"first").unwrap();
         table.delete_key(b"key").unwrap();
@@ -2543,36 +3011,31 @@ mod tests {
         let mut prior_range = table.range(&b""[..]..).unwrap();
 
         admission.owner_failed();
-        assert!(matches!(
-            write.open_table(BYTES),
-            Err(TableError::Storage(StorageError::Core(
-                CoreError::OwnerFailed
-            )))
-        ));
-        assert!(matches!(
-            table.get(b"staged"),
-            Err(TableError::Storage(StorageError::Core(
-                CoreError::OwnerFailed
-            )))
-        ));
-        assert!(matches!(
-            table.get(b"absent"),
-            Err(TableError::Storage(StorageError::Core(
-                CoreError::OwnerFailed
-            )))
-        ));
-        assert!(matches!(
-            table.range(&b""[..]..),
-            Err(TableError::Storage(StorageError::Core(
-                CoreError::OwnerFailed
-            )))
-        ));
-        assert!(matches!(
-            prior_range.next(),
-            Some(Err(TableError::Storage(StorageError::Core(
-                CoreError::OwnerFailed
-            ))))
-        ));
+        assert!(
+            matches!(&(write.open_table(BYTES)), Err(TableError::Storage(StorageError::Core(
+                native_error
+            ))) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+        );
+        assert!(
+            matches!(&(table.get(b"staged")), Err(TableError::Storage(StorageError::Core(
+                native_error
+            ))) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+        );
+        assert!(
+            matches!(&(table.get(b"absent")), Err(TableError::Storage(StorageError::Core(
+                native_error
+            ))) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+        );
+        assert!(
+            matches!(&(table.range(&b""[..]..)), Err(TableError::Storage(StorageError::Core(
+                native_error
+            ))) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+        );
+        assert!(
+            matches!(&(prior_range.next()), Some(Err(TableError::Storage(StorageError::Core(
+                native_error
+            )))) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+        );
     }
 
     #[test]
@@ -2642,35 +3105,31 @@ mod tests {
         let write = database.begin_write().unwrap();
         {
             let table = write.open_table(BYTES).unwrap();
-            assert!(matches!(
-                table.get(&oversized),
-                Err(TableError::Storage(StorageError::Core(
-                    CoreError::InvalidInput(_)
-                )))
-            ));
-            assert!(matches!(
-                table.range(oversized.as_slice()..),
-                Err(TableError::Storage(StorageError::Core(
-                    CoreError::InvalidInput(_)
-                )))
-            ));
+            assert!(
+                matches!(&(table.get(&oversized)), Err(TableError::Storage(StorageError::Core(
+                    native_error
+                ))) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput(_))))
+            );
+            assert!(
+                matches!(&(table.range(oversized.as_slice()..)), Err(TableError::Storage(StorageError::Core(
+                    native_error
+                ))) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput(_))))
+            );
         }
         write.commit().unwrap();
 
         let read = database.begin_read().unwrap();
         let table = read.open_table(BYTES).unwrap();
-        assert!(matches!(
-            table.get(&oversized),
-            Err(TableError::Storage(StorageError::Core(
-                CoreError::InvalidInput(_)
-            )))
-        ));
-        assert!(matches!(
-            table.range(oversized.as_slice()..),
-            Err(TableError::Storage(StorageError::Core(
-                CoreError::InvalidInput(_)
-            )))
-        ));
+        assert!(
+            matches!(&(table.get(&oversized)), Err(TableError::Storage(StorageError::Core(
+                native_error
+            ))) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput(_))))
+        );
+        assert!(
+            matches!(&(table.range(oversized.as_slice()..)), Err(TableError::Storage(StorageError::Core(
+                native_error
+            ))) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput(_))))
+        );
     }
 
     #[test]
@@ -2997,8 +3456,16 @@ mod tests {
 }
 
 #[cfg(test)]
+#[path = "staging_credit_tests.rs"]
+pub(crate) mod staging_credit_tests;
+
+#[cfg(test)]
+#[path = "native_owned_arc_tests.rs"]
+pub(crate) mod native_owned_arc_tests;
+
+#[cfg(test)]
 #[path = "read_fork_tests.rs"]
-mod read_fork_tests;
+pub(crate) mod read_fork_tests;
 
 #[path = "source_read_backing.rs"]
 pub(crate) mod source_read;

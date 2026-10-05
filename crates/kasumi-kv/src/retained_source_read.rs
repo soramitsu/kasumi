@@ -327,10 +327,7 @@ impl SourceReadReport<'_> {
     }
     pub fn is_clean_capacity_refusal(&self) -> bool {
         self.owner.settlement == SourceReadSettlement::Disposed
-            && matches!(
-                self.owner.preparation,
-                Attempt::Done(Err(StorageError::Core(CoreError::CapacityDenied)))
-            )
+            && matches!(&(self.owner.preparation), Attempt::Done(Err(StorageError::Core(native_error))) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::CapacityDenied)))
             && matches!(self.owner.capture, Attempt::Pending)
             && self.owner.cancellation.succeeded()
             && self.owner.disposal.succeeded()
@@ -479,7 +476,10 @@ impl RetainedSourceRead {
             resources.context = Some(binding.context()?);
             let context = resources.context.as_ref().unwrap();
             if !native.belongs_to(&context.pins) {
-                return Err(CoreError::InvalidInput("source rights registry differs").into());
+                return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
+                    "source rights registry differs",
+                ))
+                .into());
             }
             prepare(resources, rights)?;
             binding.check_local()?;
@@ -732,12 +732,10 @@ impl RetainedReadTransaction {
 }
 impl RetainedSourceHistory {
     pub(super) fn history_abortable(&self) -> bool {
-        matches!(
-            self.preparation,
-            Attempt::Pending
-                | Attempt::Done(Ok(()))
-                | Attempt::Done(Err(StorageError::Core(CoreError::CapacityDenied)))
-        ) && matches!(self.exchange, Attempt::Pending)
+        (matches!(self.preparation, Attempt::Pending | Attempt::Done(Ok(())))
+            || matches!(&self.preparation,
+                Attempt::Done(Err(StorageError::Core(original))) if original.is_capacity_denied()))
+            && matches!(self.exchange, Attempt::Pending)
             && matches!(self.cancellation, Attempt::Pending | Attempt::Done(Ok(())))
             && matches!(self.disposal, Attempt::Pending | Attempt::Done(Ok(())))
             && matches!(
@@ -752,10 +750,7 @@ impl RetainedSourceHistory {
             || !self.disposal.succeeded()
             || !self.native_retirement.succeeded()
             || !matches!(self.exchange, Attempt::Pending)
-            || !matches!(
-                self.preparation,
-                Attempt::Done(Err(StorageError::Core(CoreError::CapacityDenied)))
-            )
+            || !matches!(&(self.preparation), Attempt::Done(Err(StorageError::Core(native_error))) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::CapacityDenied)))
         {
             return None;
         }
@@ -793,7 +788,10 @@ impl RetainedSourceHistory {
             self.context = Some(binding.context()?);
             let native = self.native.as_mut().unwrap();
             if !native.belongs_to(&self.context.as_ref().unwrap().pins) {
-                return Err(CoreError::InvalidInput("history database registry differs").into());
+                return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
+                    "history database registry differs",
+                ))
+                .into());
             }
             native.prepare_retained()?;
             binding.check_local()?;

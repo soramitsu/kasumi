@@ -1,7 +1,9 @@
 //! One real current/next source cohort. The install caller must first close
 //! accepted replay and ingress coverage; this type is not that authority.
 use super::*;
-use ownership::{LaneFunding, LaneFundingRef};
+#[cfg(test)]
+use ownership::LaneFunding;
+use ownership::LaneFundingRef;
 
 pub(super) struct SourceCohort {
     capacity: Mutex<CapacityState>,
@@ -15,6 +17,7 @@ pub(super) struct SourceCohort {
     transient: Mutex<Option<Reservation>>,
 }
 impl SourceCohort {
+    #[cfg(test)]
     pub(super) fn empty(envelope: kasumi_raft::PreparedOrdinarySourceEnvelope) -> Self {
         Self {
             capacity: Mutex::new(CapacityState::Empty),
@@ -30,6 +33,7 @@ impl SourceCohort {
     /// The enclosing SourceRoots already owns this inline object before any
     /// provider callback. Every successful partial construction is installed in
     /// its real field before the next callback can fail or unwind.
+    #[cfg(test)]
     pub(super) fn install(&self, roots: &SourceRootsRef) -> Result<()> {
         self.envelope.require_stores(&roots.stores)?;
         ensure!(
@@ -42,7 +46,7 @@ impl SourceCohort {
         let lane_bytes = cell_bytes()?
             .checked_add(self.envelope.retained_bytes())
             .context("source cohort lane quote overflow")?;
-        let funding = LaneFunding::new(roots.admission.clone(), lane_bytes)
+        let funding = LaneFunding::reserve(roots.admission.clone(), lane_bytes)
             .map_err(CohortAdmissionRefusal::new)?;
         *self.funding.lock().unwrap_or_else(|p| p.into_inner()) = Some(funding);
         let transient = self
@@ -127,6 +131,7 @@ impl SourceCohort {
         drop(state);
         self.seal();
     }
+    #[cfg(test)]
     pub(super) fn queue(
         &self,
         credit: &SourceCredit,
@@ -152,7 +157,9 @@ impl SourceCohort {
         }
         // No root/cell gate is held. A queue already entering this exact pool
         // completes before its admission facade is closed.
+        #[cfg(test)]
         let capacity = self.capacity.lock().unwrap_or_else(|p| p.into_inner());
+        #[cfg(test)]
         if let CapacityState::Installed(capacity) = &*capacity {
             capacity.seal();
         }
@@ -165,7 +172,15 @@ impl SourceCohort {
             match &*state {
                 CapacityState::Closed => return Some(Ok(())),
                 CapacityState::Running | CapacityState::Failed => return None,
-                CapacityState::Empty | CapacityState::NativeClosed => {
+                CapacityState::NativeClosed => {
+                    let points = self.points.try_lock().ok()?;
+                    if points.loaned {
+                        return None;
+                    }
+                    drop(points);
+                }
+                #[cfg(test)]
+                CapacityState::Empty => {
                     let points = self.points.try_lock().ok()?;
                     if points.loaned {
                         return None;
@@ -177,6 +192,7 @@ impl SourceCohort {
             std::mem::replace(&mut *state, CapacityState::Running)
         };
         let outcome = match current {
+            #[cfg(test)]
             CapacityState::Installed(capacity) => match capacity.close() {
                 kasumi_store::SourceCapacityClose::Pending(capacity) => {
                     (CapacityState::Installed(capacity), None)
@@ -188,9 +204,11 @@ impl SourceCohort {
                 kasumi_store::SourceCapacityClose::Retiring(token) => settle_capacity(token),
             },
             CapacityState::Retiring(token) => settle_capacity(token),
-            CapacityState::Empty | CapacityState::NativeClosed => {
+            CapacityState::NativeClosed => {
                 return self.retire_backing();
             }
+            #[cfg(test)]
+            CapacityState::Empty => return self.retire_backing(),
             _ => unreachable!("checked source capacity close state"),
         };
         let native_closed = matches!(outcome.0, CapacityState::NativeClosed);
@@ -265,7 +283,11 @@ struct PointState {
     loaned: bool,
 }
 enum CapacityState {
+    // Installation remains isolated until accepted ingress/replay coverage is
+    // available in the production constructor.
+    #[cfg(test)]
     Empty,
+    #[cfg(test)]
     Installed(kasumi_store::RegisteredSourceCapacity),
     Running,
     Retiring(kasumi_store::SourceCapacityRetirement),
@@ -335,6 +357,7 @@ pub(super) struct CohortAdmissionRefusal {
     original: anyhow::Error,
 }
 impl CohortAdmissionRefusal {
+    #[cfg(test)]
     fn new(error: impl Into<anyhow::Error>) -> Self {
         Self {
             original: error.into(),

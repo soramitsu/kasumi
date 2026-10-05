@@ -4,13 +4,14 @@ use crate::node_disk::{
     AccountedDirectory, AccountedInode, DiskWork, Identity, NamespaceBinding, NodeDisk,
     NodeDiskPhase, State, census,
     namespace::{self, ParentTransition, RetainedParent},
+    native_file::{self, CloseOutcome},
 };
 use std::{
     ffi::{CStr, CString},
     fs::File,
     io,
     mem::MaybeUninit,
-    os::fd::{AsRawFd, IntoRawFd},
+    os::fd::AsRawFd,
     sync::Arc,
 };
 
@@ -48,10 +49,6 @@ impl NodeDiskDirectoryFailure {
             errno: error.raw_os_error(),
         }
     }
-    fn error(self) -> io::Error {
-        self.errno
-            .map_or_else(|| self.kind.into(), io::Error::from_raw_os_error)
-    }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct NodeDiskDirectoryOperation {
@@ -77,8 +74,176 @@ pub(in crate::node_disk) struct PendingDirectory {
     identity: Option<Identity>,
     allocation: Option<Arc<MaybeUninit<DirectoryOwner>>>,
     plan: Option<ParentTransition>,
+    // Fixed custody is initialized in State before every descriptor/effect.
+    child_close: Option<CloseOutcome>,
+    walk_current_close: Option<CloseOutcome>,
+    walk_next_close: Option<CloseOutcome>,
+    original_error: Option<io::Error>,
+    original_panic: Option<Box<dyn std::any::Any + Send>>,
+    retirement: Retirement,
+    retirement_panic: Option<Box<dyn std::any::Any + Send>>,
+}
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Retirement {
+    NotEntered,
+    Entered,
+    DiagnosticsReturned,
+    Returned,
+    Panicked,
+}
+
+/// Borrow the actual originals without closing or retiring their custody.
+/// This holds the existing metadata gate until the borrowed view is dropped.
+pub struct NodeDiskDirectoryOriginals<'a> {
+    state: std::sync::MutexGuard<'a, State>,
+}
+impl NodeDiskDirectoryOriginals<'_> {
+    fn operation(&self) -> &PendingDirectory {
+        self.state
+            .pending_directory
+            .as_ref()
+            .expect("borrowed pending operation")
+    }
+    pub fn error(&self) -> Option<&io::Error> {
+        self.operation().original_error.as_ref()
+    }
+    pub fn panic(&self) -> Option<&(dyn std::any::Any + Send)> {
+        self.operation().original_panic.as_deref()
+    }
+    pub fn retirement_panic(&self) -> Option<&(dyn std::any::Any + Send)> {
+        self.operation().retirement_panic.as_deref()
+    }
+    pub fn retirement_entered(&self) -> bool {
+        self.operation().retirement != Retirement::NotEntered
+    }
+    pub fn retirement_completed(&self) -> bool {
+        let operation = self.operation();
+        operation.retirement == Retirement::Returned
+            && operation.original_error.is_none()
+            && operation.original_panic.is_none()
+    }
+    /// Fixed child/current/next/parent/parent-current/parent-next originals.
+    /// Empty slots carry no allocation or claim of a native close attempt.
+    pub fn close_errors(&mut self) -> [Option<(i32, &io::Error)>; 6] {
+        let operation = self
+            .state
+            .pending_directory
+            .as_mut()
+            .expect("borrowed pending operation");
+        let [parent, parent_current, parent_next] = operation.parent.directory_close_errors();
+        let [child, current, next] = [
+            &operation.child_close,
+            &operation.walk_current_close,
+            &operation.walk_next_close,
+        ]
+        .map(|outcome| {
+            outcome
+                .as_ref()
+                .map(|outcome| (outcome.descriptor, &outcome.error))
+        });
+        [child, current, next, parent, parent_current, parent_next]
+    }
+}
+// One actual original at a time crosses the metadata lock boundary; another
+// diagnostic remains in its receiver until the previous destructor returned.
+enum OriginalDiagnostic {
+    Error(io::Error),
+    Panic(Box<dyn std::any::Any + Send>),
+}
+impl NodeDisk {
+    pub(in crate::node_disk) fn retire_pending_directory_diagnostics(&self) -> io::Result<()> {
+        let mut owns_retirement = false;
+        loop {
+            let mut state = self.lock_state();
+            if state.pending_directory.is_none() {
+                return Ok(());
+            }
+            if !owns_retirement {
+                if state.namespace_witnesses() != 0 || !state.external_owners_drained() {
+                    return Err(io::ErrorKind::WouldBlock.into());
+                }
+                let operation = state.pending_directory.as_mut().expect("pending receiver");
+                match operation.retirement {
+                    Retirement::DiagnosticsReturned | Retirement::Returned => return Ok(()),
+                    Retirement::Entered => return Err(io::ErrorKind::WouldBlock.into()),
+                    Retirement::Panicked => return Err(io::ErrorKind::Other.into()),
+                    Retirement::NotEntered => {}
+                }
+                if let Err(error) = operation.close_resources() {
+                    self.fail_locked(&mut state);
+                    return Err(error);
+                }
+                operation.retirement = Retirement::Entered;
+                owns_retirement = true;
+            }
+            let operation = state
+                .pending_directory
+                .as_mut()
+                .expect("owned pending retirement");
+            assert!(operation.retirement == Retirement::Entered);
+            let original = operation
+                .parent
+                .take_directory_failure()
+                .map(OriginalDiagnostic::Error)
+                .or_else(|| {
+                    operation
+                        .original_error
+                        .take()
+                        .map(OriginalDiagnostic::Error)
+                })
+                .or_else(|| {
+                    operation
+                        .original_panic
+                        .take()
+                        .map(OriginalDiagnostic::Panic)
+                });
+            let Some(original) = original else {
+                operation.retirement = Retirement::DiagnosticsReturned;
+                return Ok(());
+            };
+            // No State, device, or registry lock may be held by this explicit
+            // cleanup caller during an opaque original's destructor.
+            drop(state);
+            let retired =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match original {
+                    OriginalDiagnostic::Error(error) => drop(error),
+                    OriginalDiagnostic::Panic(payload) => drop(payload),
+                }));
+            if let Err(payload) = retired {
+                let mut state = self.lock_state();
+                let operation = state
+                    .pending_directory
+                    .as_mut()
+                    .expect("retirement remains installed");
+                assert!(
+                    operation.retirement == Retirement::Entered
+                        && operation.retirement_panic.is_none()
+                );
+                operation.retirement_panic = Some(payload);
+                operation.retirement = Retirement::Panicked;
+                self.fail_locked(&mut state);
+                return Err(io::ErrorKind::Other.into());
+            }
+        }
+    }
+    pub fn pending_directory_originals(&self) -> io::Result<NodeDiskDirectoryOriginals<'_>> {
+        let state = self.lock_state();
+        if state.pending_directory.is_none() {
+            return Err(io::ErrorKind::NotFound.into());
+        }
+        Ok(NodeDiskDirectoryOriginals { state })
+    }
 }
 impl PendingDirectory {
+    pub(in crate::node_disk) fn retain_publication_error(&mut self, error: io::Error) -> io::Error {
+        let returned = native_file::projection(&error);
+        assert!(
+            self.original_error.is_none(),
+            "original publication outcome slot"
+        );
+        self.original_error = Some(error);
+        returned
+    }
     pub(in crate::node_disk) fn observed(&self) -> NodeDiskDirectoryOperation {
         self.observation
     }
@@ -123,7 +288,8 @@ impl PendingDirectory {
                 return Err(io::ErrorKind::InvalidData.into());
             }
             Self::close_owned(
-                self.walk_current.take(),
+                &mut self.walk_current,
+                &mut self.walk_current_close,
                 NodeDiskDirectoryOperationStep::Verify,
                 &mut self.observation,
             )?;
@@ -141,7 +307,8 @@ impl PendingDirectory {
             return Err(io::ErrorKind::InvalidData.into());
         }
         Self::close_owned(
-            self.walk_current.take(),
+            &mut self.walk_current,
+            &mut self.walk_current_close,
             NodeDiskDirectoryOperationStep::Verify,
             &mut self.observation,
         )
@@ -175,59 +342,147 @@ impl PendingDirectory {
         Ok(())
     }
     pub(in crate::node_disk) fn close_resources(&mut self) -> io::Result<()> {
-        if let Some(error) = self.observation.close_failure {
-            return Err(error.error());
+        if matches!(self.retirement, Retirement::Entered | Retirement::Panicked)
+            || (self.retirement == Retirement::Returned
+                && (self.original_error.is_some() || self.original_panic.is_some()))
+        {
+            return Err(io::ErrorKind::Other.into());
         }
-        Self::close_owned(
-            self.walk_next.take(),
+        // Attempt every independent descriptor once. A saved Unknown never
+        // retries a consumed, potentially recycled descriptor number.
+        let next = Self::close_owned(
+            &mut self.walk_next,
+            &mut self.walk_next_close,
             NodeDiskDirectoryOperationStep::Verify,
             &mut self.observation,
-        )?;
-        Self::close_owned(
-            self.walk_current.take(),
+        );
+        let current = Self::close_owned(
+            &mut self.walk_current,
+            &mut self.walk_current_close,
             NodeDiskDirectoryOperationStep::Verify,
             &mut self.observation,
-        )?;
-        self.close_one(true)?;
-        self.close_one(false)
-    }
-    fn close_one(&mut self, child: bool) -> io::Result<()> {
-        let (file, step) = if child {
-            (
-                self.child.take(),
-                NodeDiskDirectoryOperationStep::CloseChild,
-            )
-        } else {
-            (
-                self.parent.take_descriptor(),
-                NodeDiskDirectoryOperationStep::CloseParent,
-            )
-        };
-        Self::close_owned(file, step, &mut self.observation)
+        );
+        let child = Self::close_owned(
+            &mut self.child,
+            &mut self.child_close,
+            NodeDiskDirectoryOperationStep::CloseChild,
+            &mut self.observation,
+        );
+        #[cfg(test)]
+        let descriptor = self.parent.descriptor_for_test();
+        let parent = self.parent.close_resources();
+        #[cfg(test)]
+        let parent = parent.and_then(|()| {
+            if let Some(descriptor) = descriptor {
+                match injected(NodeDiskDirectoryOperationStep::CloseParent) {
+                    Ok(()) => Ok(()),
+                    Err(error) => {
+                        let returned = native_file::projection(&error);
+                        self.parent
+                            .record_closed_descriptor_for_test(descriptor, error);
+                        Err(returned)
+                    }
+                }
+            } else {
+                Ok(())
+            }
+        });
+        if let Err(error) = &parent {
+            self.observation.close_failure.get_or_insert_with(|| {
+                NodeDiskDirectoryFailure::new(NodeDiskDirectoryOperationStep::CloseParent, error)
+            });
+            if let Some((descriptor, _)) = self.parent.close_diagnostic() {
+                self.observation
+                    .uncertain_close_descriptor
+                    .get_or_insert(descriptor);
+            }
+        }
+        next.and(current).and(child).and(parent)?;
+        if !self.drained() {
+            return Err(io::ErrorKind::Other.into());
+        }
+        Ok(())
     }
     fn close_owned(
-        file: Option<File>,
+        file: &mut Option<File>,
+        outcome: &mut Option<CloseOutcome>,
         step: NodeDiskDirectoryOperationStep,
         observation: &mut NodeDiskDirectoryOperation,
     ) -> io::Result<()> {
-        let Some(file) = file else { return Ok(()) };
-        let fd = file.into_raw_fd();
-        // Exactly one close consumes the descriptor. A nonzero result is not
-        // permission to retry a possibly recycled descriptor or release credit.
-        let result = unsafe { libc::close(fd) };
-        let result = if result == 0 {
-            Ok(())
-        } else {
-            Err(io::Error::last_os_error())
-        };
         #[cfg(test)]
-        let result = result.and_then(|()| injected(step));
-        if let Err(error) = result {
-            observation.close_failure = Some(NodeDiskDirectoryFailure::new(step, &error));
-            observation.uncertain_close_descriptor = Some(fd);
-            return Err(error);
+        let descriptor = file.as_ref().map(AsRawFd::as_raw_fd);
+        let result = native_file::close(file, outcome);
+        #[cfg(test)]
+        let result = result.and_then(|()| {
+            if let Some(descriptor) = descriptor {
+                match injected(step) {
+                    Ok(()) => Ok(()),
+                    Err(error) => {
+                        let returned = native_file::projection(&error);
+                        *outcome = Some(CloseOutcome { descriptor, error });
+                        Err(returned)
+                    }
+                }
+            } else {
+                Ok(())
+            }
+        });
+        if let Some(outcome) = outcome {
+            observation
+                .close_failure
+                .get_or_insert_with(|| NodeDiskDirectoryFailure::new(step, &outcome.error));
+            observation
+                .uncertain_close_descriptor
+                .get_or_insert(outcome.descriptor);
         }
-        Ok(())
+        result
+    }
+    fn drained(&self) -> bool {
+        self.child.is_none()
+            && self.child_close.is_none()
+            && self.walk_current.is_none()
+            && self.walk_current_close.is_none()
+            && self.walk_next.is_none()
+            && self.walk_next_close.is_none()
+            && self.parent.known_drained()
+    }
+    pub(in crate::node_disk) fn retire_before_release(&mut self) -> io::Result<()> {
+        if self.retirement == Retirement::Returned {
+            return if self.original_error.is_none() && self.original_panic.is_none() {
+                Ok(())
+            } else {
+                Err(io::ErrorKind::Other.into())
+            };
+        }
+        if !matches!(
+            self.retirement,
+            Retirement::NotEntered | Retirement::DiagnosticsReturned
+        ) || !self.drained()
+            || self.original_error.is_some()
+            || self.original_panic.is_some()
+            || self.parent.has_directory_failure()
+        {
+            return Err(io::ErrorKind::Other.into());
+        }
+        // Keep the receiver installed throughout original diagnostic/backing
+        // retirement. An entered destructor cannot replay or return credit.
+        self.retirement = Retirement::Entered;
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            drop(std::mem::take(&mut self.root));
+            drop(std::mem::replace(&mut self.names, Box::new([])));
+            drop(self.allocation.take());
+            self.parent.retire_directory_backing();
+        })) {
+            Ok(()) => {
+                self.retirement = Retirement::Returned;
+                Ok(())
+            }
+            Err(payload) => {
+                self.retirement_panic = Some(payload);
+                self.retirement = Retirement::Panicked;
+                Err(io::ErrorKind::Other.into())
+            }
+        }
     }
 }
 
@@ -264,7 +519,8 @@ fn step(state: &mut State, step: NodeDiskDirectoryOperationStep) -> io::Result<(
     injected(step)?;
     Ok(())
 }
-fn record_failure(disk: &NodeDisk, state: &mut State, error: &io::Error) {
+fn record_failure(disk: &NodeDisk, state: &mut State, error: io::Error) -> io::Error {
+    let returned = native_file::projection(&error);
     let operation = state
         .pending_directory
         .as_mut()
@@ -272,11 +528,85 @@ fn record_failure(disk: &NodeDisk, state: &mut State, error: &io::Error) {
     if operation.observation.failure.is_none() {
         operation.observation.failure = Some(NodeDiskDirectoryFailure::new(
             operation.observation.step,
-            error,
+            &error,
         ));
     }
+    if operation.original_error.is_none() {
+        operation.original_error = Some(error);
+    }
     disk.fail_locked(state);
+    returned
 }
+fn catch_effect<'state, T>(
+    effect: &mut Effect<'state>,
+    body: impl FnOnce(&mut Effect<'state>) -> io::Result<T>,
+) -> io::Result<T> {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| body(effect))) {
+        Ok(result) => result,
+        Err(payload) => {
+            let operation = effect
+                .pending_directory
+                .as_mut()
+                .expect("pending operation during native unwind");
+            assert!(
+                operation.original_panic.is_none(),
+                "one original native operation panic"
+            );
+            operation.original_panic = Some(payload);
+            let returned = io::Error::from(io::ErrorKind::Other);
+            operation.observation.failure.get_or_insert_with(|| {
+                NodeDiskDirectoryFailure::new(operation.observation.step, &returned)
+            });
+            effect.disk.fail_locked(effect.state);
+            Err(returned)
+        }
+    }
+}
+fn finish_result<T>(disk: &NodeDisk, state: &mut State, result: io::Result<T>) -> io::Result<T> {
+    match result {
+        Ok(value) => Ok(value),
+        Err(error) => Err(record_failure(disk, state, error)),
+    }
+}
+fn finish_open(
+    disk: &NodeDisk,
+    state: &mut State,
+    result: io::Result<NodeDiskDirectory>,
+) -> io::Result<NodeDiskDirectory> {
+    let Err(error) = result else {
+        return result;
+    };
+    let operation = state
+        .pending_directory
+        .as_ref()
+        .expect("retained open operation");
+    let absent = error.kind() == io::ErrorKind::NotFound
+        && operation.observation.step == NodeDiskDirectoryOperationStep::OpenChild
+        && !state
+            .accounted
+            .values()
+            .any(|entry| entry.binding() == operation.binding);
+    if !absent {
+        return Err(record_failure(disk, state, error));
+    }
+    let operation = state.pending_directory.as_mut().expect("retained absence");
+    operation.observation.failure = Some(NodeDiskDirectoryFailure::new(
+        operation.observation.step,
+        &error,
+    ));
+    match operation_absent(state) {
+        Ok(()) => Err(error),
+        Err(close) => {
+            state
+                .pending_directory
+                .as_mut()
+                .expect("retained uncertain absence")
+                .original_error = Some(error);
+            Err(record_failure(disk, state, close))
+        }
+    }
+}
+
 fn ready(disk: &NodeDisk, state: &State) -> io::Result<()> {
     if state.phase != NodeDiskPhase::Open
         || state.pending_directory.is_some()
@@ -370,9 +700,9 @@ impl NodeDiskDirectory {
             disk,
             state: &mut state,
         };
-        let result: io::Result<Self> = (|| {
-            acquire_parent(owner, &mut effect)?;
-            step(&mut effect, NodeDiskDirectoryOperationStep::OpenChild)?;
+        let result: io::Result<Self> = catch_effect(&mut effect, |effect| {
+            acquire_parent(owner, effect)?;
+            step(effect, NodeDiskDirectoryOperationStep::OpenChild)?;
             let operation = effect
                 .pending_directory
                 .as_mut()
@@ -409,35 +739,9 @@ impl NodeDiskDirectory {
                 .as_mut()
                 .expect("retained operation")
                 .identity = Some(identity);
-            Ok(publish_child(disk, &mut effect))
-        })();
-        if let Err(error) = &result {
-            // A verified parent's unknown final absence is the only healthy
-            // failed acquisition. Close every actual descriptor and backing
-            // before returning its prepared slot; close uncertainty stays owned.
-            let operation = effect
-                .pending_directory
-                .as_ref()
-                .expect("retained operation");
-            let absent = error.kind() == io::ErrorKind::NotFound
-                && operation.observation.step == NodeDiskDirectoryOperationStep::OpenChild
-                && !effect
-                    .accounted
-                    .values()
-                    .any(|entry| entry.binding() == operation.binding);
-            if absent {
-                let operation = effect.pending_directory.as_mut().expect("retained absence");
-                operation.observation.failure = Some(NodeDiskDirectoryFailure::new(
-                    operation.observation.step,
-                    error,
-                ));
-                operation_absent(&mut effect)
-                    .inspect_err(|close| record_failure(disk, &mut effect, close))?;
-            } else {
-                record_failure(disk, &mut effect, error);
-            }
-        }
-        result
+            Ok(publish_child(disk, effect))
+        });
+        finish_open(disk, &mut effect, result)
     }
 
     /// Create exactly one absent child with its full policy allowance prepared
@@ -488,21 +792,18 @@ impl NodeDiskDirectory {
             disk,
             state: &mut state,
         };
-        let result = (|| {
-            acquire_parent(owner, &mut effect)?;
+        let result = catch_effect(&mut effect, |effect| {
+            acquire_parent(owner, effect)?;
             effect
                 .pending_directory
                 .as_ref()
                 .expect("retained operation")
                 .plan
                 .expect("create plan")
-                .activate(&mut effect);
-            create_effect(disk, &mut effect)
-        })();
-        if let Err(error) = &result {
-            record_failure(disk, &mut effect, error);
-        }
-        result
+                .activate(effect);
+            create_effect(disk, effect)
+        });
+        finish_result(disk, &mut effect, result)
     }
 
     /// Remove an empty non-root directory, consuming the sole handle. Other
@@ -569,14 +870,21 @@ impl NodeDiskDirectory {
             identity: Some(identity),
             allocation: None,
             plan: Some(plan),
+            child_close: None,
+            walk_current_close: None,
+            walk_next_close: None,
+            original_error: None,
+            original_panic: None,
+            retirement: Retirement::NotEntered,
+            retirement_panic: None,
         });
         drop(owner);
         let mut effect = Effect {
             disk: &disk,
             state: &mut state,
         };
-        let result = (|| {
-            verify_preflight(&disk, &mut effect)?;
+        let result = catch_effect(&mut effect, |effect| {
+            verify_preflight(&disk, effect)?;
             effect
                 .pending_directory
                 .as_mut()
@@ -591,19 +899,16 @@ impl NodeDiskDirectory {
                 .expect("retained child")
                 .metadata()?;
             verify_enrolled(&effect.accounted, identity, &metadata)?;
-            plan.activate(&mut effect);
+            plan.activate(effect);
             effect
                 .accounted
                 .get_mut(&identity)
                 .and_then(AccountedInode::directory_mut)
                 .expect("retained child")
                 .settled = false;
-            remove_effect(&disk, &mut effect, entry)
-        })();
-        if let Err(error) = &result {
-            record_failure(&disk, &mut effect, error);
-        }
-        result
+            remove_effect(&disk, effect, entry)
+        });
+        finish_result(&disk, &mut effect, result)
     }
 }
 
@@ -657,11 +962,18 @@ pub(super) fn open_existing(
         identity: None,
         allocation: Some(allocation),
         plan: None,
+        child_close: None,
+        walk_current_close: None,
+        walk_next_close: None,
+        original_error: None,
+        original_panic: None,
+        retirement: Retirement::NotEntered,
+        retirement_panic: None,
     });
     let mut effect = Effect { disk, state };
-    let result: io::Result<NodeDiskDirectory> = (|| {
-        acquire_rooted_parent(disk, &mut effect)?;
-        step(&mut effect, NodeDiskDirectoryOperationStep::OpenChild)?;
+    let result: io::Result<NodeDiskDirectory> = catch_effect(&mut effect, |effect| {
+        acquire_rooted_parent(disk, effect)?;
+        step(effect, NodeDiskDirectoryOperationStep::OpenChild)?;
         let operation = effect
             .pending_directory
             .as_mut()
@@ -696,32 +1008,9 @@ pub(super) fn open_existing(
             .as_mut()
             .expect("retained operation")
             .identity = Some(identity);
-        Ok(publish_child(disk, &mut effect))
-    })();
-    if let Err(error) = &result {
-        let operation = effect
-            .pending_directory
-            .as_ref()
-            .expect("retained operation");
-        let absent = error.kind() == io::ErrorKind::NotFound
-            && operation.observation.step == NodeDiskDirectoryOperationStep::OpenChild
-            && !effect
-                .accounted
-                .values()
-                .any(|entry| entry.binding() == binding);
-        if absent {
-            let operation = effect.pending_directory.as_mut().expect("retained absence");
-            operation.observation.failure = Some(NodeDiskDirectoryFailure::new(
-                operation.observation.step,
-                error,
-            ));
-            operation_absent(&mut effect)
-                .inspect_err(|close| record_failure(disk, &mut effect, close))?;
-        } else {
-            record_failure(disk, &mut effect, error);
-        }
-    }
-    result
+        Ok(publish_child(disk, effect))
+    });
+    finish_open(disk, &mut effect, result)
 }
 fn acquire_rooted_parent(disk: &NodeDisk, state: &mut State) -> io::Result<()> {
     let State {
@@ -758,7 +1047,8 @@ fn acquire_rooted_parent(disk: &NodeDisk, state: &mut State) -> io::Result<()> {
         }
         operation.parent.observe_ancestor(index + 1, identity);
         PendingDirectory::close_owned(
-            operation.walk_current.take(),
+            &mut operation.walk_current,
+            &mut operation.walk_current_close,
             NodeDiskDirectoryOperationStep::Verify,
             &mut operation.observation,
         )?;
@@ -933,6 +1223,13 @@ fn prepare_child(
         identity: None,
         allocation: Some(allocation),
         plan,
+        child_close: None,
+        walk_current_close: None,
+        walk_next_close: None,
+        original_error: None,
+        original_panic: None,
+        retirement: Retirement::NotEntered,
+        retirement_panic: None,
     });
     Ok(())
 }
@@ -947,6 +1244,11 @@ fn operation_absent(state: &mut State) -> io::Result<()> {
         .open_directories
         .checked_sub(1)
         .ok_or(io::ErrorKind::InvalidData)?;
+    state
+        .pending_directory
+        .as_mut()
+        .expect("retained absence")
+        .retire_before_release()?;
     drop(state.pending_directory.take());
     namespace::retire_parent(state, parent);
     state.open_directories = owners;
@@ -1040,7 +1342,16 @@ fn create_effect(disk: &Arc<NodeDisk>, state: &mut State) -> io::Result<NodeDisk
 }
 fn publish_child(disk: &Arc<NodeDisk>, state: &mut State) -> NodeDiskDirectory {
     let mut operation = state.pending_directory.take().expect("settled operation");
-    assert!(operation.walk_current.is_none() && operation.walk_next.is_none());
+    assert!(
+        operation.walk_current.is_none()
+            && operation.walk_next.is_none()
+            && operation.walk_current_close.is_none()
+            && operation.walk_next_close.is_none()
+            && operation.child_close.is_none()
+            && operation.original_error.is_none()
+            && operation.original_panic.is_none()
+            && operation.retirement == Retirement::NotEntered
+    );
     let mut allocation = operation.allocation.take().expect("preallocated owner");
     Arc::get_mut(&mut allocation)
         .expect("private owner allocation")
@@ -1240,6 +1551,11 @@ fn remove_effect(disk: &NodeDisk, state: &mut State, entry: AccountedDirectory) 
         .ok_or(io::ErrorKind::InvalidData)?;
     // Close and all fallible checks precede credit. Names, ancestor backing and
     // the prepared control allocation die before the slot becomes reusable.
+    state
+        .pending_directory
+        .as_mut()
+        .expect("retained removal")
+        .retire_before_release()?;
     promises.set_pending(shared)?;
     drop(state.pending_directory.take());
     state
@@ -1258,9 +1574,31 @@ fn remove_effect(disk: &NodeDisk, state: &mut State, entry: AccountedDirectory) 
 #[cfg(test)]
 thread_local! {
     static FAILURE: std::cell::Cell<Option<NodeDiskDirectoryOperationStep>> = const { std::cell::Cell::new(None) };
+    static ORIGINAL_FAILURE: std::cell::RefCell<Option<(NodeDiskDirectoryOperationStep, io::Error)>> = const { std::cell::RefCell::new(None) };
+    static ORIGINAL_PANIC: std::cell::RefCell<Option<(NodeDiskDirectoryOperationStep, Box<dyn std::any::Any + Send>)>> = const { std::cell::RefCell::new(None) };
 }
 #[cfg(test)]
 fn injected(step: NodeDiskDirectoryOperationStep) -> io::Result<()> {
+    if let Some(payload) = ORIGINAL_PANIC.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        if slot.as_ref().is_some_and(|(at, _)| *at == step) {
+            slot.take().map(|(_, payload)| payload)
+        } else {
+            None
+        }
+    }) {
+        std::panic::resume_unwind(payload);
+    }
+    if let Some(error) = ORIGINAL_FAILURE.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        if slot.as_ref().is_some_and(|(at, _)| *at == step) {
+            slot.take().map(|(_, error)| error)
+        } else {
+            None
+        }
+    }) {
+        return Err(error);
+    }
     if FAILURE.with(|failure| {
         if failure.get() == Some(step) {
             failure.set(None);
@@ -1274,5 +1612,7 @@ fn injected(step: NodeDiskDirectoryOperationStep) -> io::Result<()> {
         Ok(())
     }
 }
+#[cfg(test)]
+mod custody_tests;
 #[cfg(test)]
 mod tests;

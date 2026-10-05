@@ -6,7 +6,7 @@ use kasumi_store::{
 
 struct Installation {
     storage: crate::test_utils::FixtureStorage,
-    node: Arc<NodeStore>,
+    node: NodeStore,
     stores: Arc<TenantStorageSet>,
     audit: Arc<SecurityAudit>,
     access: StorageAccess,
@@ -14,23 +14,16 @@ struct Installation {
     directory: tempfile::TempDir,
 }
 impl Installation {
-    async fn new() -> anyhow::Result<Self> {
+    async fn new() -> crate::test_fixture_failure::FixtureResult<Self> {
         let directory = kasumi_store::test_utils::private_tempdir()?;
         let (persistent_config, scratch_config) =
             crate::test_utils::fixture_disk_configs(directory.path())?;
-        // Keep the 128 MiB ordinary margin available alongside the installed
-        // security audit and maintenance owners. Add the physical metadata.
-        let config = crate::admission::AdmissionConfig {
-            max_inflight_bytes: Some(
-                (384_u64 << 20)
-                    .checked_add(crate::test_utils::isolated_disk_metadata_bytes(
-                        &persistent_config,
-                        &scratch_config,
-                    )?)
-                    .ok_or_else(|| anyhow::anyhow!("fixture metadata budget overflow"))?,
-            ),
-            ..Default::default()
-        };
+        // The positive installation admits its actual fixed owners and all
+        // mandatory floors separately from the declared workload allowance.
+        let config = super::existing_replicated_tests::replica_budget::planned_config(
+            &persistent_config,
+            &scratch_config,
+        )?;
         let admission = crate::admission::NodeAdmission::with_fixed_memory(config, 2 << 30, 0)?;
         let storage = crate::test_utils::FixtureStorage::with_admission(
             &persistent_config,
@@ -76,11 +69,11 @@ impl Installation {
         self.audit.shutdown().await.unwrap();
         self.node.shutdown().await.unwrap();
     }
-    fn seed_bootstrap(&self) -> anyhow::Result<()> {
+    fn seed_bootstrap(&self) -> crate::test_fixture_failure::FixtureResult<()> {
         bind_deployment(&self.stores, b"local-v1")?;
-        persist_new(&self.stores, &self.image()?)
+        Ok(persist_new(&self.stores, &self.image()?)?)
     }
-    fn image(&self) -> anyhow::Result<SnapshotImage> {
+    fn image(&self) -> crate::test_fixture_failure::FixtureResult<SnapshotImage> {
         let engine = TenantEngine::new(
             "tenant".into(),
             self.incarnation.to_string(),
@@ -92,7 +85,7 @@ impl Installation {
     fn first_publish(
         &self,
         image: &SnapshotImage,
-        manifest_bytes: Vec<u8>,
+        manifest_bytes: impl AsRef<[u8]>,
         custody_digest: &str,
         first_chunk: Option<Vec<u8>>,
     ) -> anyhow::Result<()> {
@@ -120,6 +113,16 @@ impl Installation {
                 self.incarnation
             ),
         )?;
+        let manifest_bytes = manifest_bytes.as_ref();
+        let _manifest_copy = self
+            .stores
+            .application()
+            .plaintext_memory_owner()
+            .clone()
+            .reserve_installed(
+                (NS.len() + b"manifest".len() + manifest_bytes.len()) as u64
+                    + 3 * kasumi_store::DiskMemoryLease::token_allocation_bytes::<u8>()?,
+            )?;
         self.stores.write_batch(
             &[WriteOp::put(NS, b"manifest", manifest_bytes)],
             &[
@@ -144,10 +147,15 @@ fn manifest_for(image: &SnapshotImage) -> ApplicationBootstrapManifest {
     }
 }
 
-fn assert_bounded_read_failure<T>(result: anyhow::Result<T>) {
+fn assert_bounded_read_failure<T, E: Into<crate::SnapshotFailure>>(
+    result: std::result::Result<T, E>,
+) {
     let error = match result {
         Ok(_) => panic!("oversized first publication passed a bounded read"),
-        Err(error) => error,
+        Err(error) => error.into(),
+    };
+    let crate::SnapshotFailure::Source(error) = error else {
+        panic!("bounded read lost its original registered ordinary diagnostic: {error:?}")
     };
     let failure = error
         .downcast::<TenantPointReadFailure>()
@@ -159,7 +167,9 @@ fn assert_bounded_read_failure<T>(result: anyhow::Result<T>) {
     assert_eq!(reader.retire(), StorageCensusDisposition::Retired);
 }
 
-async fn reject_existing_local_without_repair(fixture: &Installation) -> anyhow::Result<()> {
+async fn reject_existing_local_without_repair(
+    fixture: &Installation,
+) -> crate::test_fixture_failure::FixtureResult<()> {
     let before = retained(&fixture.stores)?;
     assert!(
         open_existing_local(
@@ -185,7 +195,9 @@ fn policy() -> Policy {
     }
 }
 
-fn retained(stores: &TenantStorageSet) -> anyhow::Result<Vec<Option<Vec<u8>>>> {
+fn retained(
+    stores: &TenantStorageSet,
+) -> anyhow::Result<Vec<Option<kasumi_store::PlaintextValue>>> {
     let mut values = Vec::new();
     let first_chunk = 0u64.to_be_bytes();
     for store in [stores.application(), stores.custody().store()] {
@@ -202,12 +214,18 @@ fn retained(stores: &TenantStorageSet) -> anyhow::Result<Vec<Option<Vec<u8>>>> {
     Ok(values)
 }
 
-fn assert_rejected<T>(result: anyhow::Result<T>) {
+fn assert_rejected<T, E: Into<crate::SnapshotFailure>>(result: std::result::Result<T, E>) {
     let error = match result {
         Ok(_) => panic!("corrupt bootstrap row was accepted"),
-        Err(error) => error,
+        Err(error) => error.into(),
     };
-    if let Ok(failure) = error.downcast::<kasumi_store::TenantPointReadFailure>() {
+    assert!(
+        error.creation().is_none(),
+        "logical rejection changed to creation failure: {error:?}"
+    );
+    if let crate::SnapshotFailure::Source(error) = error
+        && let Ok(failure) = error.downcast::<kasumi_store::TenantPointReadFailure>()
+    {
         assert_eq!(failure.stage(), "record bytes");
         let reader = failure.into_reader();
         assert_eq!(reader.finish(), kasumi_store::NodeReadPhase::Finished);
@@ -220,7 +238,7 @@ fn assert_rejected<T>(result: anyhow::Result<T>) {
 
 #[tokio::test]
 async fn bootstrap_manifest_rejects_alternate_and_oversized_rows_without_repair()
--> anyhow::Result<()> {
+-> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Installation::new().await?;
     fixture.seed_bootstrap()?;
     let store = fixture.stores.application();
@@ -247,15 +265,26 @@ async fn bootstrap_manifest_rejects_alternate_and_oversized_rows_without_repair(
         manifest.format
     )
     .into_bytes();
-    let mut padded = canonical.clone();
-    padded.push(b' ');
-    let mut oversized = canonical.clone();
-    oversized.resize(MAX_BOOTSTRAP_MANIFEST_BYTES + 1, b' ');
-    for altered in [reordered, padded, oversized] {
+    let padded = kasumi_store::test_utils::FixturePlaintextCopy::with_suffix(
+        fixture.stores.application(),
+        canonical.as_bytes(),
+        b" ",
+    )?;
+    let oversized = kasumi_store::test_utils::FixturePlaintextCopy::resized(
+        fixture.stores.application(),
+        canonical.as_bytes(),
+        MAX_BOOTSTRAP_MANIFEST_BYTES + 1,
+        b' ',
+    )?;
+    for altered in [
+        reordered.as_slice(),
+        padded.as_bytes(),
+        oversized.as_bytes(),
+    ] {
         let fixture = Installation::new().await?;
         let image = fixture.image()?;
         let store = fixture.stores.application();
-        fixture.first_publish(&image, altered.clone(), image.sha256(), None)?;
+        fixture.first_publish(&image, altered, image.sha256(), None)?;
         if altered.len() > MAX_BOOTSTRAP_MANIFEST_BYTES {
             assert_bounded_read_failure(read_current_manifest(store));
             assert_bounded_read_failure(persisted_bootstrap_digest(store));
@@ -267,7 +296,7 @@ async fn bootstrap_manifest_rejects_alternate_and_oversized_rows_without_repair(
             assert_rejected(load(store));
             assert_rejected(recovery_workspace_bytes(&fixture.stores));
         }
-        assert_eq!(store.get(NS, b"manifest")?, Some(altered));
+        assert_eq!(store.get(NS, b"manifest")?.as_deref(), Some(altered));
         drop(image);
         fixture.shutdown().await;
     }
@@ -286,8 +315,9 @@ async fn bootstrap_manifest_rejects_alternate_and_oversized_rows_without_repair(
         oversized_fixture
             .stores
             .application()
-            .get(NS, &first_chunk)?,
-        Some(oversized_chunk)
+            .get(NS, &first_chunk)?
+            .as_deref(),
+        Some(oversized_chunk.as_slice())
     );
     drop(image);
     oversized_fixture.shutdown().await;
@@ -296,7 +326,7 @@ async fn bootstrap_manifest_rejects_alternate_and_oversized_rows_without_repair(
 
 #[tokio::test]
 async fn existing_local_requires_both_local_bindings_and_an_initialized_bootstrap()
--> anyhow::Result<()> {
+-> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Installation::new().await?;
     let before = retained(&fixture.stores)?;
     assert!(
@@ -349,7 +379,7 @@ async fn existing_local_requires_both_local_bindings_and_an_initialized_bootstra
 
 #[tokio::test]
 async fn existing_local_rejects_corrupt_manifest_body_and_custody_commitment_without_repair()
--> anyhow::Result<()> {
+-> crate::test_fixture_failure::FixtureResult<()> {
     for invalid_format in [false, true] {
         let fixture = Installation::new().await?;
         let image = fixture.image()?;
@@ -399,7 +429,7 @@ async fn existing_local_rejects_corrupt_manifest_body_and_custody_commitment_wit
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn authenticated_bootstrap_cannot_change_the_standalone_catalog_incarnation()
--> anyhow::Result<()> {
+-> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Installation::new().await?;
     bind_deployment(&fixture.stores, b"local-v1")?;
     let wrong = TenantEngine::new(
@@ -427,9 +457,52 @@ async fn authenticated_bootstrap_cannot_change_the_standalone_catalog_incarnatio
     Ok(())
 }
 
+#[tokio::test]
+async fn installed_engine_generation_rejects_closed_original_store()
+-> crate::test_fixture_failure::FixtureResult<()> {
+    let fixture = Installation::new().await?;
+    let image = fixture.image()?;
+    let engine = TenantEngine::from_bootstrap("tenant", &image)?;
+    engine.install_storage_access(fixture.stores.application())?;
+    assert!(Arc::ptr_eq(
+        engine.snapshot_store.get().unwrap(),
+        fixture.stores.application()
+    ));
+    let retained = engine.generation()?;
+    assert_eq!(retained.tenant(), "tenant");
+    assert_eq!(retained.incarnation(), fixture.incarnation.to_string());
+    assert_eq!(retained.revision(), 0);
+    assert!(engine.snapshot_bytes()? > 0);
+
+    // No Database or asynchronous seal monitor exists for this Engine. Its
+    // independent standalone capability stays valid after the real Store closes.
+    fixture.stores.application().seal();
+    let denied = fixture.stores.application().check_access().unwrap_err();
+    assert!(denied.is::<kasumi_store::KeyAccessDenied>());
+    assert_eq!(denied.chain().count(), 1);
+    fixture.access.check()?;
+    assert_eq!(engine.generation().err().unwrap().code, ErrorCode::Sealed);
+    assert_eq!(engine.snapshot_bytes().unwrap_err().code, ErrorCode::Sealed);
+    // This acquisition holds apply_lock before checking the original Store.
+    // The denied path must return without recursively entering Engine::seal.
+    let denied_restore = engine.restore_candidate(&image).unwrap_err();
+    assert!(denied_restore.creation().is_none());
+    assert!(denied_restore.source_error().is_none());
+    assert_eq!(
+        denied_restore.operation_error().unwrap().code,
+        ErrorCode::Sealed
+    );
+
+    drop(retained);
+    drop(engine);
+    drop(image);
+    fixture.shutdown().await;
+    Ok(())
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn existing_local_reopens_the_same_committed_standalone_after_complete_shutdown()
--> anyhow::Result<()> {
+-> crate::test_fixture_failure::FixtureResult<()> {
     use anyhow::Context as _;
     let fixture = Installation::new().await?;
     let database = open_local_with_incarnation(
@@ -440,7 +513,12 @@ async fn existing_local_reopens_the_same_committed_standalone_after_complete_shu
         fixture.incarnation,
     )
     .await
-    .context("local reopen fixture: initial Database startup")?;
+    .map_err(
+        |original| crate::test_fixture_failure::FixtureFailure::SnapshotContext {
+            context: "local reopen fixture: initial Database startup",
+            original,
+        },
+    )?;
     let context = RequestContext {
         authorization: RequestAuthorization::service_identity(),
         tenant: "tenant".into(),
@@ -501,7 +579,12 @@ async fn existing_local_reopens_the_same_committed_standalone_after_complete_shu
     let audit = SecurityAudit::open(audit_store, Default::default(), storage.admission.clone())?;
     let reopened = open_existing_local(stores.clone(), audit.clone(), incarnation)
         .await
-        .context("local reopen fixture: existing Database startup")?;
+        .map_err(
+            |original| crate::test_fixture_failure::FixtureFailure::SnapshotContext {
+                context: "local reopen fixture: existing Database startup",
+                original,
+            },
+        )?;
     let generation = reopened.engine().generation()?;
     assert_eq!(generation.state.incarnation, incarnation.to_string());
     assert_eq!(generation.state.revision, expected_revision);
@@ -516,7 +599,7 @@ async fn existing_local_reopens_the_same_committed_standalone_after_complete_shu
 
 #[tokio::test]
 async fn existing_control_requires_the_non_nil_configured_incarnation_before_startup()
--> anyhow::Result<()> {
+-> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Installation::new().await?;
     let stores = TenantStorageSet::initialize_catalogs(
         fixture.node.clone(),

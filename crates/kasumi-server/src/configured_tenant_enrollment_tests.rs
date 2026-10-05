@@ -256,6 +256,7 @@ async fn abandoned_fresh_standalone_preparation_drains_without_publication_and_r
         incarnation: Uuid::new_v4(),
         initial_policy: config.tenants[0].initial_policy.clone(),
         initial_limits: config.tenants[0].initial_limits.clone(),
+        audit_placement: crate::audit_destination::TenantAuditPlacementConfig::LocalReplicaOnly,
     };
     Box::pin(crate::standalone::stage_tenant_with_storage(
         &installed.configuration,

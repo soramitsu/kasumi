@@ -58,7 +58,9 @@ pub(crate) fn maintenance_operation_bytes(
                 || source.segment_id == u64::MAX
                 || source.validate().is_err()
             {
-                return Err(CoreError::InvalidInput("relocation metadata is invalid"));
+                return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
+                    "relocation metadata is invalid",
+                )));
             }
             Ok(RECORD_HEADER_BYTES
                 + RELOCATE_PREFIX_BYTES
@@ -75,35 +77,39 @@ fn validate_maintenance(
     capacity: u64,
 ) -> Result<(), CoreError> {
     if operations.is_empty() || operations.len() > MAX_MAINTENANCE_OPERATIONS {
-        return Err(CoreError::InvalidInput(
+        return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
             "empty or oversized maintenance batch",
-        ));
+        )));
     }
     let mut encoded = 0usize;
     for &operation in operations {
         match operation {
             MaintenanceOp::DirectoryOnly if operations.len() != 1 => {
-                return Err(CoreError::InvalidInput(
+                return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
                     "directory maintenance marker must stand alone",
-                ));
+                )));
             }
             MaintenanceOp::Relocate {
                 logical_batch_seq, ..
             } if logical_batch_seq > last_batch_seq => {
-                return Err(CoreError::InvalidInput("relocation metadata is invalid"));
+                return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
+                    "relocation metadata is invalid",
+                )));
             }
             _ => {}
         }
         let bytes = maintenance_operation_bytes(operation)?;
         if bytes as u64 > capacity - SEGMENT_HEADER_BYTES {
-            return Err(CoreError::InvalidInput("record exceeds segment capacity"));
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
+                "record exceeds segment capacity",
+            )));
         }
         encoded = encoded
             .checked_add(bytes)
             .filter(|&bytes| bytes <= MAX_BATCH_BYTES)
-            .ok_or(CoreError::InvalidInput(
+            .ok_or(CoreError::new(crate::CoreErrorCause::InvalidInput(
                 "maintenance batch exceeds encoded byte bound",
-            ))?;
+            )))?;
     }
     Ok(())
 }
@@ -122,31 +128,33 @@ impl SegmentWriter {
         roll: &mut dyn SegmentRoll,
     ) -> Result<PreparedBatch, CoreError> {
         if self.fenced || self.prepared.is_some() {
-            return Err(CoreError::OwnerFailed);
+            return Err(CoreError::new(crate::CoreErrorCause::OwnerFailed));
         }
         if self.next_batch_seq == u64::MAX {
-            return Err(CoreError::InvalidInput("batch sequence overflow"));
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
+                "batch sequence overflow",
+            )));
         }
         validate_maintenance(operations, self.last_batch_seq, self.capacity)?;
         if self.stage.capacity() < IO_WINDOW {
             self.stage
                 .try_reserve_exact(IO_WINDOW - self.stage.len())
-                .map_err(|_| CoreError::CapacityDenied)?;
+                .map_err(|_| CoreError::new(crate::CoreErrorCause::CapacityDenied))?;
         }
         if self.stage.capacity() > IO_WINDOW {
             self.stage = Vec::new();
-            return Err(CoreError::CapacityDenied);
+            return Err(CoreError::new(crate::CoreErrorCause::CapacityDenied));
         }
         let mut values = Vec::new();
         values
             .try_reserve_exact(operations.len())
-            .map_err(|_| CoreError::CapacityDenied)?;
+            .map_err(|_| CoreError::new(crate::CoreErrorCause::CapacityDenied))?;
         let mut window = Vec::new();
         window
             .try_reserve_exact(IO_WINDOW)
-            .map_err(|_| CoreError::CapacityDenied)?;
+            .map_err(|_| CoreError::new(crate::CoreErrorCause::CapacityDenied))?;
         if window.capacity() != IO_WINDOW || values.capacity() != operations.len() {
-            return Err(CoreError::CapacityDenied);
+            return Err(CoreError::new(crate::CoreErrorCause::CapacityDenied));
         }
         window.resize(IO_WINDOW, 0);
         let start = ReplayStart {
@@ -183,11 +191,15 @@ impl SegmentWriter {
                 if read_segment_header(backend, &self.group_id, source.segment_id)?
                     != HeaderState::Valid
                 {
-                    return Err(CoreError::Corrupt("relocation source header is damaged"));
+                    return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                        "relocation source header is damaged",
+                    )));
                 }
                 let len = backend.len(GroupFile::segment(source.segment_id))?;
                 if len > SEGMENT_BYTES || source.offset + u64::from(source.len) > len {
-                    return Err(CoreError::Corrupt("relocation source exceeds its segment"));
+                    return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                        "relocation source exceeds its segment",
+                    )));
                 }
                 read_source(backend, source, window, |chunk| {
                     body_crc.update(chunk);
@@ -298,7 +310,9 @@ fn read_source(
         read += len;
     }
     if crc.finish() != source.crc {
-        return Err(CoreError::Corrupt("relocation source checksum differs"));
+        return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+            "relocation source checksum differs",
+        )));
     }
     Ok(())
 }

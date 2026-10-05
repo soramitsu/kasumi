@@ -1,6 +1,6 @@
 use super::*;
-use crate::RetainedSpool;
 use crate::allocation_tests::measure;
+use crate::{NodeDiskMemoryAdmission, RetainedSpool};
 use kasumi_kv::{
     AdmissionError, GroupFile, OwnerFailed, ROOT_SLOT_BYTES, RootSlot, SegmentGroupBackend,
     StorageAdmission,
@@ -127,17 +127,36 @@ fn failed_bootstrap_closes_the_exact_spool_before_returning() {
     let error = EncryptedTable::initialize(database, owner.clone())
         .err()
         .unwrap();
-    let setup = error.downcast_ref::<ScratchTableSetupFailure>().unwrap();
-    assert!(
-        setup
-            .original
-            .downcast_ref::<kasumi_kv::CommitError>()
-            .is_some()
-    );
-    assert!(setup.close.is_ok());
+    error.with_diagnostic(|report| {
+        let report = report.unwrap();
+        let terminal = report.setup_terminal().unwrap();
+        assert!(matches!(
+            terminal.terminal(),
+            kasumi_kv::TerminalObservation::Returned(Err(kasumi_kv::WriteTerminalError::Commit(_)))
+        ));
+        assert_eq!(
+            terminal.settlement(),
+            kasumi_kv::WriteTerminalSettlement::Settled
+        );
+        assert!(terminal.disposal_complete());
+        let close = report.setup_close().unwrap();
+        assert_eq!(
+            close.native_disposition(),
+            BackendNativeDisposition::Drained
+        );
+        assert_eq!(
+            close.settlement(),
+            kasumi_kv::DatabaseCloseSettlement::Disposed
+        );
+        assert!(close.disposal().complete());
+    });
     assert!(owner.drained());
     assert_eq!(disk.snapshot().live_files, 0);
     assert_eq!(disk.snapshot().charged_bytes, 0);
+    assert_eq!(
+        error.retire().disposition(),
+        crate::StorageCensusDisposition::Retired
+    );
 }
 
 struct FailSecondSync {
@@ -226,26 +245,63 @@ fn failed_bootstrap_retains_unproved_close_and_original_outcomes() {
     let error = EncryptedTable::initialize(database, owner.clone())
         .err()
         .unwrap();
-    let setup = error.downcast_ref::<ScratchTableSetupFailure>().unwrap();
-    assert!(
-        setup
-            .original
-            .downcast_ref::<kasumi_kv::CommitError>()
-            .is_some()
+    let original = error.with_diagnostic(|report| {
+        let report = report.unwrap();
+        let terminal = report.setup_terminal().unwrap();
+        assert_eq!(
+            terminal.settlement(),
+            kasumi_kv::WriteTerminalSettlement::Retained
+        );
+        let original = match terminal.terminal() {
+            kasumi_kv::TerminalObservation::Returned(Err(
+                original @ kasumi_kv::WriteTerminalError::Commit(_),
+            )) => original,
+            _ => panic!("actual failed setup commit missing"),
+        };
+        let close = report.setup_close().unwrap();
+        assert_eq!(
+            close.native_disposition(),
+            BackendNativeDisposition::Retained
+        );
+        assert!(!close.disposal().complete());
+        std::ptr::from_ref(original) as usize
+    });
+    let retirement = error.retire();
+    assert_eq!(
+        retirement.disposition(),
+        crate::StorageCensusDisposition::Retained
     );
-    let first = setup.close.as_ref().unwrap_err();
-    assert_eq!(first.completion(), DrainCompletion::Retained);
-    let second = setup.retry_close().unwrap_err();
-    assert!(kasumi_types::drain::DrainIssueRef::ptr_eq(
-        &first.issues()[0],
-        &second.issues()[0]
-    ));
+    assert_eq!(
+        retirement.retry(),
+        crate::StorageCensusDisposition::Retained
+    );
+    retirement.with_diagnostic(|report| {
+        let report = report.unwrap();
+        let terminal = report.setup_terminal().unwrap();
+        let second = match terminal.terminal() {
+            kasumi_kv::TerminalObservation::Returned(Err(
+                original @ kasumi_kv::WriteTerminalError::Commit(_),
+            )) => original,
+            _ => panic!("original failed setup commit lost on retry"),
+        };
+        assert_eq!(std::ptr::from_ref(second) as usize, original);
+        assert_eq!(
+            terminal.settlement(),
+            kasumi_kv::WriteTerminalSettlement::Retained
+        );
+        let close = report.setup_close().unwrap();
+        assert_eq!(
+            close.native_disposition(),
+            BackendNativeDisposition::Retained
+        );
+        assert!(!close.disposal().complete());
+    });
     assert_eq!(syncs.load(Ordering::SeqCst), 2);
     let charged = disk.snapshot().charged_bytes;
     let files = disk.snapshot().live_files;
     assert!(charged > 0);
     assert_eq!(disk.snapshot().live_files, files);
-    drop(error);
+    drop(retirement);
     assert_eq!(disk.snapshot().charged_bytes, charged);
     assert_eq!(disk.snapshot().live_files, files);
     assert!(!owner.drained());
@@ -275,7 +331,10 @@ fn unpublished_batch_aborts_on_drop_and_preserves_duplicate_error() {
     drop(dropped);
     assert_eq!(table.get(b"abandoned").unwrap(), None);
     table.insert(b"identity", b"later").unwrap();
-    assert_eq!(table.get(b"identity").unwrap(), Some(b"later".to_vec()));
+    assert_eq!(
+        table.get(b"identity").unwrap().as_deref(),
+        Some(b"later".as_slice())
+    );
     table.close().unwrap();
     assert_eq!(disk.snapshot().live_files, 0);
     assert_eq!(disk.snapshot().charged_bytes, 0);
@@ -474,16 +533,7 @@ fn explicit_scratch_close_retains_original_physical_failure_on_retry() {
     let database = kasumi_kv::Database::builder(owner.clone(), GROUP, CACHE)
         .create_with_backend(backend)
         .unwrap();
-    let table = EncryptedTable {
-        owner: Arc::new(ScratchTableDatabase {
-            database: Some(crate::node_database::NodeDatabase::new(
-                database,
-                "encrypted scratch table",
-            )),
-            admission: owner.clone(),
-            retained_batches: std::sync::Mutex::new(None),
-        }),
-    };
+    let table = EncryptedTable::initialize(database, owner.clone()).unwrap();
     let before = disk.snapshot();
     let address = spool_address(&owner);
     owner.owner_failed();
@@ -500,8 +550,8 @@ fn explicit_scratch_close_retains_original_physical_failure_on_retry() {
     {
         assert_eq!(spool_address(&owner), address);
     }
-    // The consuming NodeDatabase still lacks installed failed-owner custody.
-    // This test supplies explicit owner custody without claiming that migration.
+    // Retain this fixture's additional diagnostic Owner alias. The admitted
+    // creation request independently keeps the exact failed native owner.
     static RETAINED: std::sync::Mutex<Option<Arc<Owner>>> = std::sync::Mutex::new(None);
     *RETAINED.lock().unwrap() = Some(owner);
 }
@@ -526,18 +576,29 @@ fn strict_create_rejects_a_non_empty_spool_instead_of_adopting_its_frames() {
     assert!(!owner.with_root(|root| root.spool().unwrap().is_empty()));
     assert_eq!(disk.snapshot().live_files, 3);
     let error = EncryptedTable::create(owner.clone(), CACHE).err().unwrap();
-    let database = error.downcast_ref::<kasumi_kv::DatabaseError>().unwrap();
-    assert!(matches!(
-        database.0,
-        kasumi_kv::StorageError::Core(kasumi_kv::CoreError::InvalidInput(
-            "group already contains a root"
-        ))
-    ));
+    error.with_diagnostic(|report| {
+        let report = report.unwrap();
+        assert!(matches!(
+            report.opening_error().unwrap().rejected_cause(),
+            Some(kasumi_kv::CoreErrorCause::InvalidInput(
+                "group already contains a root"
+            ))
+        ));
+        assert_eq!(
+            report.opening_close().unwrap().native_disposition(),
+            BackendNativeDisposition::Drained
+        );
+        assert!(report.opening_disposal().unwrap().complete());
+    });
     // The rejected spool is observed closed before the error is returned.
     assert!(owner.drained());
     assert!(owner.check_owner().is_err());
     assert_eq!(disk.snapshot().live_files, 0);
     assert_eq!(disk.snapshot().charged_bytes, 0);
+    assert_eq!(
+        error.retire().disposition(),
+        crate::StorageCensusDisposition::Retired
+    );
     drop(planted);
 }
 
@@ -632,7 +693,10 @@ fn dropping_a_drained_table_closes_natively_once_without_allocating() {
     let directory = crate::test_utils::private_tempdir().unwrap();
     let disk = ScratchDisk::isolated_fixture(directory.path(), 16 << 20, memory);
     let (table, owner, closes) = counted_table(&disk);
-    assert_eq!(table.get(b"identity").unwrap(), Some(b"value".to_vec()));
+    assert_eq!(
+        table.get(b"identity").unwrap().as_deref(),
+        Some(b"value".as_slice())
+    );
     assert!(disk.snapshot().charged_bytes > 0);
     let ((), allocations) = measure(|| drop(table));
     assert_eq!(allocations, 0);
@@ -787,8 +851,8 @@ fn segmented_scratch_streams_rows_larger_than_its_explicit_cache() {
         .unwrap();
     assert_eq!(seen, 128);
     assert_eq!(
-        table.get(&93u32.to_be_bytes()).unwrap(),
-        Some(vec![93; 4096])
+        table.get(&93u32.to_be_bytes()).unwrap().as_deref(),
+        Some(vec![93; 4096].as_slice())
     );
     assert_eq!(disk.snapshot().live_files, 3);
     // No recoverable plaintext path or anonymous-file directory survives.
@@ -804,8 +868,9 @@ fn segmented_scratch_limits_aggregate_extents_before_mutation_and_reuses_drained
     let memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
     let directory = crate::test_utils::private_tempdir().unwrap();
     let disk = ScratchDisk::isolated_fixture(directory.path(), 8 << 20, memory.clone());
-    let baseline = memory.snapshot().used_bytes;
+    let baseline = memory.snapshot();
     let (owner, backend) = owner(&disk, 128 << 10);
+    let census_id = owner.census_id();
     let other = GroupFile::directory(1);
     backend.create(DATA).unwrap();
     backend.create(other).unwrap();
@@ -844,10 +909,21 @@ fn segmented_scratch_limits_aggregate_extents_before_mutation_and_reuses_drained
         })
         .unwrap();
     assert_eq!(entries.len(), 3);
-    backend.close().into_result().unwrap();
+    let (closed, native) = backend.close().into_parts();
+    assert_eq!(native, BackendNativeDisposition::Drained);
+    closed.unwrap();
+    assert!(owner.drained());
     drop((backend, owner));
+    assert_eq!(
+        memory.storage_census().drain_owner(census_id),
+        crate::StorageCensusDisposition::Retired
+    );
     assert_eq!(disk.snapshot().live_files, 0);
-    assert_eq!(memory.snapshot().used_bytes, baseline);
+    assert_eq!(memory.snapshot().used_bytes, baseline.used_bytes);
+    assert_eq!(
+        memory.snapshot().live_reservations,
+        baseline.live_reservations
+    );
 }
 
 #[test]
@@ -855,8 +931,9 @@ fn segmented_scratch_descriptor_ceiling_is_pre_admitted_and_does_not_open_on_den
     let memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
     let directory = crate::test_utils::private_tempdir().unwrap();
     let disk = ScratchDisk::isolated_fixture(directory.path(), 8 << 20, memory.clone());
-    let baseline = memory.snapshot().used_bytes;
+    let baseline = memory.snapshot();
     let (owner, backend) = owner(&disk, 4 << 20);
+    let census_id = owner.census_id();
     for id in 1..=group::MAX_FILES as u64 {
         backend.create(GroupFile::segment(id)).unwrap();
     }
@@ -877,10 +954,21 @@ fn segmented_scratch_descriptor_ceiling_is_pre_admitted_and_does_not_open_on_den
     owner.check_owner().unwrap();
     backend.unlink(GroupFile::segment(1)).unwrap();
     backend.create(GroupFile::segment(1_000)).unwrap();
-    backend.close().into_result().unwrap();
+    let (closed, native) = backend.close().into_parts();
+    assert_eq!(native, BackendNativeDisposition::Drained);
+    closed.unwrap();
+    assert!(owner.drained());
     drop((backend, owner));
+    assert_eq!(
+        memory.storage_census().drain_owner(census_id),
+        crate::StorageCensusDisposition::Retired
+    );
     assert_eq!(disk.snapshot().live_files, 0);
-    assert_eq!(memory.snapshot().used_bytes, baseline);
+    assert_eq!(memory.snapshot().used_bytes, baseline.used_bytes);
+    assert_eq!(
+        memory.snapshot().live_reservations,
+        baseline.live_reservations
+    );
 }
 
 #[test]
@@ -1018,6 +1106,9 @@ fn scratch_group_census_rejects_namespace_mutation_and_same_slot_reuse_without_r
 
 #[path = "scratch_table_workspace_tests.rs"]
 mod workspace_tests;
+
+#[path = "scratch_table_value_tests.rs"]
+mod value_tests;
 
 #[test]
 fn batch_reuses_one_real_typed_table_instead_of_repeating_cold_catalog_reads() {
@@ -1189,18 +1280,75 @@ fn batch_with_retirement_panic(
 
 #[test]
 fn independently_failed_live_batches_keep_each_real_table_and_shell_charge() {
-    use crate::NodeDiskMemoryAdmission;
+    use kasumi_kv::{ProtectedReadRequests, WriteTransaction};
     const SLOTS: usize = 32;
     let memory = crate::test_utils::TestDiskMemory::new(64 << 20, SLOTS);
     let directory = crate::test_utils::private_tempdir().unwrap();
     let disk = ScratchDisk::isolated_fixture(directory.path(), 16 << 20, memory.clone());
     let table = EncryptedTable::new(&disk, 8 << 20, CacheConfig { byte_limit: 0 }).unwrap();
     let baseline = memory.snapshot();
-    // The native transaction owns two independent grants: its SnapshotBacking
-    // and the actual SnapshotPin allocation. The typed table aliases both.
-    let native_transaction = table.owner.database().begin_write().unwrap();
+    let native_charge = |request| {
+        memory
+            .quote_installed(group::workspace_provider_request_bytes(request).unwrap())
+            .unwrap()
+    };
+    let snapshot_requests = [
+        native_charge(ProtectedReadRequests::snapshot_backing_request_bytes()),
+        native_charge(ProtectedReadRequests::pin_backing_request_bytes()),
+    ];
+    let (read, observed_read) = crate::test_utils::source_quote_observer::measure(&memory, || {
+        table.owner.database().begin_read().unwrap()
+    });
+    assert!(!observed_read.overflow);
+    assert_eq!(observed_read.refused_count, 0);
+    assert_eq!(observed_read.count, snapshot_requests.len());
+    assert_eq!(
+        &observed_read.requests[..observed_read.count],
+        &snapshot_requests
+    );
+    assert_eq!(
+        memory.snapshot().live_reservations - baseline.live_reservations,
+        snapshot_requests.len()
+    );
+    assert_eq!(
+        memory.snapshot().used_bytes - baseline.used_bytes,
+        snapshot_requests.iter().sum::<u64>()
+    );
+    drop(read);
+    assert_eq!(
+        memory.snapshot().live_reservations,
+        baseline.live_reservations
+    );
+    assert_eq!(memory.snapshot().used_bytes, baseline.used_bytes);
+
+    // A writer keeps the same two snapshot allocations and the separate
+    // admitted SharedPending control. Every request is the actual native quote
+    // wrapped by this installed scratch provider, rather than an unknown slot.
+    let write_requests = [
+        snapshot_requests[0],
+        snapshot_requests[1],
+        native_charge(WriteTransaction::staging_backing_request_bytes()),
+    ];
+    let (native_transaction, observed_write) =
+        crate::test_utils::source_quote_observer::measure(&memory, || {
+            table.owner.database().begin_write().unwrap()
+        });
+    assert!(!observed_write.overflow);
+    assert_eq!(observed_write.refused_count, 0);
+    assert_eq!(observed_write.count, write_requests.len());
+    assert_eq!(
+        &observed_write.requests[..observed_write.count],
+        &write_requests
+    );
     let native = memory.snapshot();
-    assert_eq!(native.live_reservations - baseline.live_reservations, 2);
+    assert_eq!(
+        native.live_reservations - baseline.live_reservations,
+        write_requests.len()
+    );
+    assert_eq!(
+        native.used_bytes - baseline.used_bytes,
+        write_requests.iter().sum::<u64>()
+    );
     drop(native_transaction);
     assert_eq!(
         memory.snapshot().live_reservations,
@@ -1215,7 +1363,26 @@ fn independently_failed_live_batches_keep_each_real_table_and_shell_charge() {
         assert_eq!(memory.snapshot().live_reservations, SLOTS);
         blockers
     };
-    let mut first = table.begin_batch().unwrap();
+    let shell_charge = native_charge(batch_workspace_bytes().unwrap());
+    let name_charge =
+        native_charge(ProtectedReadRequests::table_name_backing_bytes(TABLE.name().len()).unwrap());
+    let retained_requests = write_requests.len() + 2;
+    let retained_bytes = write_requests.iter().sum::<u64>() + shell_charge + name_charge;
+    let (mut first, admitted) =
+        crate::test_utils::source_quote_observer::measure(&memory, || table.begin_batch().unwrap());
+    assert!(!admitted.overflow);
+    assert_eq!(admitted.refused_count, 0);
+    assert!(admitted.requests[..admitted.count].starts_with(&write_requests));
+    assert_eq!(admitted.requests[write_requests.len()], shell_charge);
+    assert_eq!(admitted.requests[admitted.count - 1], name_charge);
+    assert_eq!(
+        memory.snapshot().live_reservations - baseline.live_reservations,
+        retained_requests
+    );
+    assert_eq!(
+        memory.snapshot().used_bytes - baseline.used_bytes,
+        retained_bytes
+    );
     let blockers = exhaust();
     assert!(first.insert(b"first", b"unpublished").is_err());
     drop(blockers);
@@ -1227,16 +1394,20 @@ fn independently_failed_live_batches_keep_each_real_table_and_shell_charge() {
     assert!(second.insert(b"second", b"unpublished").is_err());
     drop(blockers);
     let two_failed = memory.snapshot();
-    // Each failed facade additionally retains its own independently admitted
-    // batch shell/name/link, even after native denial releases the writer gate.
-    assert_eq!(one_failed.live_reservations - baseline.live_reservations, 3);
+    // Each failed facade still owns those exact snapshot, pending, name and
+    // shell grants, even after native denial releases the writer gate.
+    assert_eq!(
+        one_failed.live_reservations - baseline.live_reservations,
+        retained_requests
+    );
+    assert_eq!(one_failed.used_bytes - baseline.used_bytes, retained_bytes);
     assert_eq!(
         two_failed.live_reservations - one_failed.live_reservations,
-        3
+        retained_requests
     );
     assert_eq!(
         two_failed.used_bytes - one_failed.used_bytes,
-        one_failed.used_bytes - baseline.used_bytes
+        retained_bytes
     );
     assert!(one_failed.used_bytes - baseline.used_bytes >= batch_workspace_bytes().unwrap());
     drop(first);
@@ -1276,16 +1447,7 @@ fn batch_open_retirement_keeps_actual_type_error_and_actual_lease_panic() {
         .open_table(TableDefinition::<u64, u64>::new(TABLE.name()))
         .unwrap();
     transaction.commit().unwrap();
-    let table = EncryptedTable {
-        owner: Arc::new(ScratchTableDatabase {
-            database: Some(crate::node_database::NodeDatabase::new(
-                database,
-                "batch type fixture",
-            )),
-            admission,
-            retained_batches: std::sync::Mutex::new(None),
-        }),
-    };
+    let table = creation::initialize_without_table_setup(database, admission).unwrap();
     let transaction = table.owner.database().begin_write().unwrap();
     let lease = table
         .owner
@@ -1416,7 +1578,7 @@ fn an_existing_unwind_keeps_the_actual_batch_lease_unentered_and_charged() {
         first_address
     );
     {
-        let retained = table.owner.retained_batches.lock().unwrap();
+        let retained = table.owner.retained_batches.lock();
         let link = retained
             .as_ref()
             .expect("actual lease linked before callback");

@@ -5,6 +5,7 @@ use super::*;
 use crate::group::InMemoryGroup;
 use crate::{CacheConfig, CacheMemoryLease, CacheMemoryQuote};
 use std::alloc::Layout;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 const POOL: usize = 0;
@@ -587,7 +588,7 @@ fn actual_child_token_and_native_outer_box_deallocate_before_final_credit() {
     let allocation = target.take().unwrap();
     let inner = allocation.token_address_for_test();
     let native = allocation.into_native();
-    let outer = native.as_ref() as *const dyn ResidentLease as *const () as usize;
+    let outer = native.allocation_address_for_test();
     for ((target, freed), address) in TARGETS.iter().zip(&FREED).zip([inner, outer]) {
         freed.store(false, Ordering::Release);
         target.store(address, Ordering::Release);

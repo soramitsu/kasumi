@@ -9,7 +9,7 @@ use std::sync::Arc;
 /// Format a single borrowed observation only after a fixture already failed.
 /// None and Busy remain distinct and neither proves successful apply or drain.
 /// The closure never waits, retries, clears, or moves an original out of custody.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-utils"))]
 pub(crate) fn retained_apply_diagnostic(
     group: &kasumi_raft::RaftGroup,
 ) -> std::result::Result<Option<String>, kasumi_raft::ReportBusy> {
@@ -18,13 +18,29 @@ pub(crate) fn retained_apply_diagnostic(
 
     group.try_with_retained_apply_report(|report| match report {
         RetainedApplyReport::Single(error) => format!("single original: {error:#}"),
+        RetainedApplyReport::Preparation {
+            original,
+            publication,
+            response,
+            violation,
+        } => {
+            let mut text = format!(
+                "original preparation: {original:#}; violation={violation:?}; response_retained={}",
+                response.is_some(),
+            );
+            if let Some(publication) = publication {
+                let _ = write!(&mut text, "; original publication: {publication:#}");
+            }
+            text
+        }
         RetainedApplyReport::Ordinary(report) => {
             let mut text = format!(
-                "ordinary ordinal={}; violation={:?}; response_retained={}; wake_panic_retained={}",
+                "ordinary ordinal={}; violation={:?}; response_retained={}; wake_panic_retained={}; custody_guards={:?}",
                 report.ordinal,
                 report.violation,
                 report.response.is_some(),
                 report.wake_panic.is_some(),
+                report.custody_guards,
             );
             if let Some(error) = report.single {
                 let _ = write!(&mut text, "; prior single: {error:#}");
@@ -44,6 +60,12 @@ pub(crate) fn retained_apply_diagnostic(
                     ApplyObservationRef::Returned => text.push_str("returned"),
                     ApplyObservationRef::Error(error) => {
                         let _ = write!(&mut text, "original error: {error:#}");
+                    }
+                    ApplyObservationRef::AdmissionRefused(original) => {
+                        let _ = write!(&mut text, "original admission refusal: {original:?}");
+                    }
+                    ApplyObservationRef::Creation(original) => {
+                        let _ = write!(&mut text, "original creation: {original:#}");
                     }
                     ApplyObservationRef::Unwound(_) => text.push_str("original panic retained"),
                     ApplyObservationRef::Refused(reason) => {
@@ -79,6 +101,7 @@ pub struct CaptureApplyPublisher {
     pub response: Option<kasumi_raft::AppliedResponse>,
     attempted: bool,
     invalid: bool,
+    repeated: bool,
 }
 
 impl kasumi_raft::ApplyPublisher for CaptureApplyPublisher {
@@ -101,6 +124,7 @@ impl kasumi_raft::ApplyPublisher for CaptureApplyPublisher {
         kasumi_raft::PublishCallError,
     > {
         let repeated = self.attempted;
+        self.repeated |= repeated;
         self.attempted = true;
         self.invalid = true;
         Err(if repeated {
@@ -117,6 +141,7 @@ impl kasumi_raft::ApplyPublisher for CaptureApplyPublisher {
     ) -> std::result::Result<(), kasumi_raft::PublishCallError> {
         if self.attempted {
             self.invalid = true;
+            self.repeated = true;
             return Err(kasumi_raft::PublishCallError::Repeated);
         }
         self.attempted = true;
@@ -129,17 +154,87 @@ impl kasumi_raft::ApplyPublisher for CaptureApplyPublisher {
     }
 }
 
-/// Run the canonical publication path with a local response-only fixture sink.
-pub fn capture_application(
-    apply: impl FnOnce(&mut dyn kasumi_raft::ApplyPublisher) -> anyhow::Result<()>,
-) -> anyhow::Result<kasumi_raft::AppliedResponse> {
-    let mut publisher = CaptureApplyPublisher::default();
-    apply(&mut publisher)?;
-    anyhow::ensure!(!publisher.invalid, "invalid fixture publication attempt");
-    publisher
-        .response
-        .ok_or_else(|| anyhow::anyhow!("fixture application did not publish"))
+impl CaptureApplyPublisher {
+    fn finish(self, backend: anyhow::Result<()>) -> anyhow::Result<kasumi_raft::AppliedResponse> {
+        backend?;
+        anyhow::ensure!(!self.invalid, "invalid fixture publication attempt");
+        self.response
+            .ok_or_else(|| anyhow::anyhow!("fixture application did not publish"))
+    }
 }
+
+mod capture_error {
+    pub trait Sealed {}
+    impl Sealed for anyhow::Error {}
+    impl Sealed for kasumi_store::ScratchOperationFailure {}
+}
+
+/// The invocation's static error type determines the complete fixture result.
+/// A typed creation failure keeps the independent captured response inline.
+pub trait TestCaptureError: capture_error::Sealed + Sized {
+    type Failure;
+    fn finish(
+        state: TestCaptureState,
+        backend: std::result::Result<(), Self>,
+    ) -> std::result::Result<kasumi_raft::AppliedResponse, Self::Failure>;
+}
+
+/// Only `capture_application` constructs this original synchronous sink state.
+pub struct TestCaptureState(CaptureApplyPublisher);
+
+impl TestCaptureError for anyhow::Error {
+    type Failure = anyhow::Error;
+
+    fn finish(
+        state: TestCaptureState,
+        backend: anyhow::Result<()>,
+    ) -> anyhow::Result<kasumi_raft::AppliedResponse> {
+        state.0.finish(backend)
+    }
+}
+
+impl TestCaptureError for kasumi_store::ScratchOperationFailure {
+    type Failure = kasumi_raft::TestPublicationFailure;
+
+    fn finish(
+        state: TestCaptureState,
+        backend: std::result::Result<(), Self>,
+    ) -> std::result::Result<kasumi_raft::AppliedResponse, Self::Failure> {
+        match backend {
+            Ok(()) => state.0.finish(Ok(())).map_err(Into::into),
+            Err(Self::Operation(original)) => state.0.finish(Err(original)).map_err(Into::into),
+            Err(original) => {
+                let capture = kasumi_raft::TestCaptureObservation {
+                    attempted: state.0.attempted,
+                    invalid: state.0.invalid,
+                    repeated: state.0.repeated,
+                };
+                Err(kasumi_raft::TestPublicationFailure::Preparation {
+                    original,
+                    publication: None,
+                    response: state.0.response,
+                    violation: capture
+                        .repeated
+                        .then_some(kasumi_raft::CompletionViolation::Repeated),
+                    capture: Some(capture),
+                })
+            }
+        }
+    }
+}
+
+/// Run the canonical publication path with a local response-only fixture sink.
+pub fn capture_application<E: TestCaptureError>(
+    apply: impl FnOnce(&mut dyn kasumi_raft::ApplyPublisher) -> std::result::Result<(), E>,
+) -> std::result::Result<kasumi_raft::AppliedResponse, E::Failure> {
+    let mut publisher = CaptureApplyPublisher::default();
+    let backend = apply(&mut publisher);
+    E::finish(TestCaptureState(publisher), backend)
+}
+
+#[cfg(test)]
+#[path = "capture_application_tests.rs"]
+mod capture_application_tests;
 
 // Replay requires an installed tenant audit placement and never selects one.
 // These fixture entry points make the explicit local-replica-only opt-in that
@@ -163,7 +258,7 @@ pub async fn open_fixture(
     policy: Policy,
     limits: Limits,
     audit: Arc<SecurityAudit>,
-) -> anyhow::Result<Arc<Database>> {
+) -> std::result::Result<Arc<Database>, crate::SnapshotFailure> {
     install_fixture_audit_placement(stores.application())?;
     crate::bootstrap::fixtures::open_fixture(stores, policy, limits, audit).await
 }
@@ -174,7 +269,7 @@ pub async fn open_fixture_with_incarnation(
     limits: Limits,
     audit: Arc<SecurityAudit>,
     incarnation: uuid::Uuid,
-) -> anyhow::Result<Arc<Database>> {
+) -> std::result::Result<Arc<Database>, crate::SnapshotFailure> {
     install_fixture_audit_placement(stores.application())?;
     crate::bootstrap::fixtures::open_fixture_with_incarnation(
         stores,
@@ -193,7 +288,7 @@ pub async fn open_fixture_replicated(
     transport: Arc<dyn kasumi_raft::RaftTransport>,
     config: kasumi_raft::Config,
     audit: Arc<SecurityAudit>,
-) -> anyhow::Result<Arc<Database>> {
+) -> std::result::Result<Arc<Database>, crate::SnapshotFailure> {
     install_fixture_audit_placement(stores.application())?;
     crate::bootstrap::fixtures::open_fixture_replicated(
         node_id, stores, bootstrap, transport, config, audit,
@@ -369,11 +464,15 @@ impl FixtureStorage {
         })
     }
 
+    #[allow(
+        clippy::result_large_err,
+        reason = "The fixture returns whole inline admitted native startup custody without an error-path Box."
+    )]
     pub fn create_new(
         &self,
         path: impl AsRef<std::path::Path>,
         id: uuid::Uuid,
-    ) -> anyhow::Result<std::sync::Arc<kasumi_store::NodeStore>> {
+    ) -> std::result::Result<kasumi_store::NodeStore, kasumi_store::NodeStoreStartFailure> {
         kasumi_store::NodeStore::create_new(
             path,
             id,
@@ -383,11 +482,15 @@ impl FixtureStorage {
         )
     }
 
+    #[allow(
+        clippy::result_large_err,
+        reason = "The fixture returns whole inline admitted native startup custody without an error-path Box."
+    )]
     pub fn open_existing(
         &self,
         path: impl AsRef<std::path::Path>,
         id: uuid::Uuid,
-    ) -> anyhow::Result<std::sync::Arc<kasumi_store::NodeStore>> {
+    ) -> std::result::Result<kasumi_store::NodeStore, kasumi_store::NodeStoreStartFailure> {
         kasumi_store::NodeStore::open_existing(
             path,
             id,
@@ -424,17 +527,23 @@ pub trait SnapshotFixture {
     fn fixture_snapshot(
         &self,
         disk: &std::sync::Arc<kasumi_store::ScratchDisk>,
-    ) -> Result<SnapshotImage>;
-    fn fixture_restore(&self, candidate: &SnapshotImage) -> Result<()>;
+    ) -> std::result::Result<SnapshotImage, crate::SnapshotFailure>;
+    fn fixture_restore(
+        &self,
+        candidate: &SnapshotImage,
+    ) -> std::result::Result<(), crate::SnapshotFailure>;
 }
 impl SnapshotFixture for TenantEngine {
     fn fixture_snapshot(
         &self,
         disk: &std::sync::Arc<kasumi_store::ScratchDisk>,
-    ) -> Result<SnapshotImage> {
-        self.logical_snapshot(disk)
+    ) -> std::result::Result<SnapshotImage, crate::SnapshotFailure> {
+        self.logical_snapshot(disk).map_err(Into::into)
     }
-    fn fixture_restore(&self, candidate: &SnapshotImage) -> Result<()> {
+    fn fixture_restore(
+        &self,
+        candidate: &SnapshotImage,
+    ) -> std::result::Result<(), crate::SnapshotFailure> {
         self.restore_candidate(candidate)
     }
 }
@@ -505,10 +614,12 @@ pub fn snapshot_accounted_bytes(candidate: &SnapshotImage) -> Result<u64> {
         })
         .map_err(|error| Error::new(ErrorCode::Corruption, error.to_string()))
 }
-pub fn decode_snapshot_candidate(candidate: &SnapshotImage) -> Result<SnapshotCandidate> {
+pub fn decode_snapshot_candidate(
+    candidate: &SnapshotImage,
+) -> std::result::Result<SnapshotCandidate, crate::SnapshotFailure> {
     crate::snapshot_codec::read(candidate.disk(), &mut candidate.reader())
         .map(SnapshotCandidate)
-        .map_err(|error| Error::new(ErrorCode::Corruption, error.to_string()))
+        .map_err(Into::into)
 }
 
 // Corruption fixtures must be able to encode intentionally inconsistent heads.
@@ -590,12 +701,16 @@ mod physical_fixture_tests {
         assert!(admission.reserve(1, None).is_err());
         drop(payload_lease);
         let path = directory.path().join("persistent/node.kv");
-        let first = storage.create_new(&path, kasumi_store::test_utils::NODE_STORE_ID)?;
+        let first = storage
+            .create_new(&path, kasumi_store::test_utils::NODE_STORE_ID)
+            .unwrap_or_else(|original| std::panic::panic_any(original));
         assert!(Arc::ptr_eq(first.persistent_disk(), &storage.persistent));
         assert!(Arc::ptr_eq(first.scratch_disk(), &storage.scratch));
         first.shutdown().await?;
         drop(first);
-        let reopened = storage.open_existing(&path, kasumi_store::test_utils::NODE_STORE_ID)?;
+        let reopened = storage
+            .open_existing(&path, kasumi_store::test_utils::NODE_STORE_ID)
+            .unwrap_or_else(|original| std::panic::panic_any(original));
         assert!(Arc::ptr_eq(reopened.persistent_disk(), &storage.persistent));
         assert!(admission.snapshot().reserved_bytes > after.reserved_bytes);
         reopened.shutdown().await?;

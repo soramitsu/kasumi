@@ -214,7 +214,9 @@ impl ActivationProposal {
     async fn run(self) -> anyhow::Result<Result<TargetActivationFact>> {
         let _guard = self
             .operation
-            .run(async { Ok(self.database.proposal_gate.clone().lock_owned().await) })
+            .run(async {
+                Ok::<_, anyhow::Error>(self.database.proposal_gate.clone().lock_owned().await)
+            })
             .await?;
         if let Err(error) = self.database.target_activation_access(&self.operation) {
             return Ok(Err(error));
@@ -232,7 +234,13 @@ impl ActivationProposal {
             authorization,
             activation: Box::new(self.activation.clone()),
         };
-        let bytes = self.database.group.write(command.encode()?).await?;
+        let bytes = self
+            .database
+            .group
+            .write(kasumi_raft::ApplicationProposal::generated(
+                command.encode()?,
+            ))
+            .await?;
         let result = match serde_json::from_slice::<Result<TargetOutcome>>(&bytes)? {
             Ok(TargetOutcome::Activated(fact)) => Ok(*fact),
             Ok(_) => Err(unknown("target response kind differs")),

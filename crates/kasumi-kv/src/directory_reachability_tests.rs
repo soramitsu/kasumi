@@ -181,10 +181,9 @@ fn membership_requires_the_complete_reference_and_matching_group() {
         group_id: [99; 16],
         ..root
     };
-    assert!(matches!(
-        reader.contains_page(foreign, reference, &bytes),
-        Err(CoreError::Corrupt(_))
-    ));
+    assert!(
+        matches!(&(reader.contains_page(foreign, reference, &bytes)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::Corrupt(_))))
+    );
     assert_eq!(admission.0.used.load(AtomicOrdering::Relaxed), 0);
 }
 
@@ -226,10 +225,7 @@ fn malformed_candidates_fail_even_for_empty_or_older_roots_before_io() {
             },
         ] {
             assert!(
-                matches!(
-                    reader.contains_page(target, candidate, &bytes),
-                    Err(CoreError::Corrupt(_))
-                ),
+                matches!(&(reader.contains_page(target, candidate, &bytes)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::Corrupt(_)))),
                 "damage {damage}"
             );
         }
@@ -237,10 +233,9 @@ fn malformed_candidates_fail_even_for_empty_or_older_roots_before_io() {
     }
     let mut bad_digest = reference;
     bad_digest.sha256[0] ^= 1;
-    assert!(matches!(
-        reader.contains_page(empty_root(), bad_digest, &original),
-        Err(CoreError::Corrupt(_))
-    ));
+    assert!(
+        matches!(&(reader.contains_page(empty_root(), bad_digest, &original)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::Corrupt(_))))
+    );
     assert_eq!(admission.0.used.load(AtomicOrdering::Relaxed), 0);
 }
 
@@ -287,10 +282,7 @@ fn malformed_roots_and_ancestor_bounds_never_prove_absence() {
         root.page.as_mut().unwrap().sha256 = page_digest(bytes);
         drop(pages);
         assert!(
-            matches!(
-                reader.contains_page(root, candidate, &candidate_bytes),
-                Err(CoreError::Corrupt(_))
-            ),
+            matches!(&(reader.contains_page(root, candidate, &candidate_bytes)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::Corrupt(_)))),
             "damage {damage}"
         );
         assert_eq!(admission.0.used.load(AtomicOrdering::Relaxed), 0);
@@ -327,10 +319,9 @@ fn a_probe_below_the_first_separator_still_checks_the_child_minimum() {
         ..leaf
     };
     drop(page);
-    assert!(matches!(
-        DirectoryReader::new(&backend, admission.clone()).contains_page(root, candidate, &bytes),
-        Err(CoreError::Corrupt(_))
-    ));
+    assert!(
+        matches!(&(DirectoryReader::new(&backend, admission.clone()).contains_page(root, candidate, &bytes)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::Corrupt(_))))
+    );
     assert_eq!(admission.0.used.load(AtomicOrdering::Relaxed), 0);
 }
 
@@ -365,31 +356,28 @@ fn proof_denial_and_owner_expiry_precede_or_fence_reads() {
     drop(leaf);
     let before = backend.reads.load(AtomicOrdering::Relaxed);
     let denied = Admission::new(1);
-    assert!(matches!(
-        DirectoryReader::new(&backend, denied.clone()).contains_page(root, reference, &bytes),
-        Err(CoreError::CapacityDenied)
-    ));
+    assert!(
+        matches!(&(DirectoryReader::new(&backend, denied.clone()).contains_page(root, reference, &bytes)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::CapacityDenied)))
+    );
     assert_eq!(backend.reads.load(AtomicOrdering::Relaxed), before);
     assert_eq!(denied.0.used.load(AtomicOrdering::Relaxed), 0);
     let expiring = ExpiringReads {
         pages: &backend,
         admission: admission.clone(),
     };
-    assert!(matches!(
-        DirectoryReader::new(&expiring, admission.clone()).contains_page(root, reference, &bytes),
-        Err(CoreError::OwnerFailed)
-    ));
+    assert!(
+        matches!(&(DirectoryReader::new(&expiring, admission.clone()).contains_page(root, reference, &bytes)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+    );
     assert_eq!(backend.reads.load(AtomicOrdering::Relaxed), before + 1);
     assert_eq!(admission.0.used.load(AtomicOrdering::Relaxed), 0);
     let root_bytes = candidate_bytes(&backend, root.page.unwrap());
-    assert!(matches!(
-        DirectoryReader::new(&backend, admission).contains_page(
+    assert!(
+        matches!(&(DirectoryReader::new(&backend, admission).contains_page(
             root,
             root.page.unwrap(),
             &root_bytes
-        ),
-        Err(CoreError::OwnerFailed)
-    ));
+        )), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+    );
     assert_eq!(backend.reads.load(AtomicOrdering::Relaxed), before + 1);
 }
 
@@ -398,8 +386,8 @@ fn a_failed_path_read_is_not_a_proof_of_absence() {
     struct FailedReads;
     impl DirectoryBackend for FailedReads {
         fn read_page(&self, _: DirectoryPageRef, _: &mut [u8]) -> Result<(), CoreError> {
-            Err(CoreError::Io(std::io::Error::other(
-                "membership read failure",
+            Err(CoreError::new(crate::CoreErrorCause::Io(
+                std::io::Error::other("membership read failure"),
             )))
         }
         fn append_page(&self, _: &[u8]) -> Result<DirectoryPageRef, CoreError> {
@@ -419,10 +407,9 @@ fn a_failed_path_read_is_not_a_proof_of_absence() {
     let reference = leaf.reference();
     let bytes = candidate_bytes(&backend, reference);
     drop(leaf);
-    assert!(matches!(
-        DirectoryReader::new(&FailedReads, admission.clone())
-            .contains_page(root, reference, &bytes),
-        Err(CoreError::Io(_))
-    ));
+    assert!(
+        matches!(&(DirectoryReader::new(&FailedReads, admission.clone())
+            .contains_page(root, reference, &bytes)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::Io(_))))
+    );
     assert_eq!(admission.0.used.load(AtomicOrdering::Relaxed), 0);
 }

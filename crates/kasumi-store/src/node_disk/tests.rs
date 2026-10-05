@@ -3051,6 +3051,39 @@ fn explicit_file_close_drains_original_resources_before_credit_and_closed_calls(
 
 #[test]
 fn explicit_unknown_data_close_keeps_exact_owner_error_and_never_retries_integer() {
+    // This case deliberately replaces a consumed descriptor number. A fresh
+    // process keeps dup2 from closing another parallel fixture's live File.
+    const CHILD: &str = "KASUMI_NODE_DISK_UNKNOWN_DATA_CLOSE_CHILD";
+    const CASE: &str = "node_disk::tests::explicit_unknown_data_close_keeps_exact_owner_error_and_never_retries_integer";
+    if std::env::var_os(CHILD).is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", CASE, "--nocapture"])
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let one_case = stdout.contains("running 1 test")
+            && stdout.contains(&format!("test {CASE} ... ok"))
+            && stdout.contains("test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured;")
+            && stdout
+                .lines()
+                .filter(|line| line.starts_with("test result:"))
+                .count()
+                == 1;
+        // libtest captures this on an ordinary successful full run; --nocapture
+        // preserves both the actual child result and a failed child's output.
+        print!("{stdout}");
+        eprint!("{stderr}");
+        assert!(
+            output.status.success() && one_case,
+            "isolated descriptor-reuse case failed: status={} stdout={} stderr={}",
+            output.status,
+            stdout,
+            stderr
+        );
+        return;
+    }
     use std::os::fd::{AsRawFd, FromRawFd};
     let (_directory, disk, mut file) = explicit_close_fixture();
     let data = file.data_descriptor();

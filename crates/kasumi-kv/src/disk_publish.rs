@@ -37,7 +37,7 @@ impl DiskState {
         if self
             .cache
             .lock()
-            .map_err(|_| CoreError::OwnerFailed)?
+            .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?
             .config()
             .byte_limit
             == 0
@@ -48,7 +48,7 @@ impl DiskState {
         let proof = CachedIdentityProofWorkspace::new(&self.owner.admission)?;
         self.cache
             .lock()
-            .map_err(|_| CoreError::OwnerFailed)?
+            .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?
             .begin_publication_candidates()?;
         Ok(Some(PublicationCache {
             cache: self.cache.clone(),
@@ -66,7 +66,7 @@ impl DiskState {
             let candidate = self
                 .cache
                 .lock()
-                .map_err(|_| CoreError::OwnerFailed)?
+                .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?
                 .pop_publication_candidate()?;
             let Some(candidate) = candidate else { break };
             if !self.cached_identity_is_live_with(
@@ -79,19 +79,22 @@ impl DiskState {
                 if !self
                     .cache
                     .lock()
-                    .map_err(|_| CoreError::OwnerFailed)?
+                    .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?
                     .remove_if_unchanged(&candidate)?
                 {
-                    return Err(CoreError::Corrupt(
+                    return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
                         "publication candidate changed under owner lock",
-                    ));
+                    )));
                 }
             }
             // Returning cache capacity requires dropping the proof's payload
             // Arc as well; external readers continue to carry their own charge.
             drop(candidate);
         }
-        let mut cache = self.cache.lock().map_err(|_| CoreError::OwnerFailed)?;
+        let mut cache = self
+            .cache
+            .lock()
+            .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?;
         cache.clear_publication_candidates()?;
         publication.active = false;
         cache.trim_metadata()?;

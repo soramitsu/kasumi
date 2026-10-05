@@ -280,11 +280,24 @@ async fn actual_child_panic_fences_admission_and_cancelled_drain_keeps_original_
 #[tokio::test]
 async fn request_registry_metadata_charge_outlives_cancelled_waiters_and_dropped_facade() {
     let admission = kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap();
-    let bytes = authority_request_metadata_bytes().unwrap();
+    let bytes =
+        authority_request_metadata_bytes()
+            .unwrap()
+            .checked_add(
+                kasumi_types::SharedBudgetCharge::required_bytes::<
+                    kasumi_engine::admission::Reservation,
+                >()
+                .unwrap(),
+            )
+            .unwrap();
     let baseline = admission.snapshot().reserved_bytes;
     let charge = admission.memory().reserve_resident(bytes).unwrap();
     let jobs = RequestJobs::new(
-        BackgroundWorkBudget::new(AUTHORITY_REQUEST_SLOTS, Arc::new(charge)).unwrap(),
+        BackgroundWorkBudget::new(
+            AUTHORITY_REQUEST_SLOTS,
+            kasumi_types::SharedBudgetCharge::new(charge),
+        )
+        .unwrap(),
     )
     .unwrap();
     let requests = Arc::new(tokio::sync::Semaphore::new(AUTHORITY_REQUEST_SLOTS));

@@ -125,6 +125,20 @@ async fn committed_custody_with_expired_ack_recovers_only_with_fresh_authority()
     let context = fixture.credential(Arc::new(CustodyCommitObservedClock(
         fixture.db.raft_group().clone(),
     )));
+    // Keep serialized leader admission at this credential's original UTC
+    // observation. Its unchanged elapsed-clock deadline expires only when the
+    // actual custody policy commit advances the observed epoch.
+    let observed_utc = context
+        .authorization
+        .expires_at_ms()
+        .unwrap()
+        .checked_sub(1000)
+        .unwrap();
+    *fixture.db.command_clock.lock().unwrap() = Arc::new(ControlledCommandClock(
+        std::sync::atomic::AtomicU64::new(observed_utc),
+    ));
+    drop(custody);
+    let custody = fixture.db.retired_custody().unwrap();
     let request = credential_custody_rotation(&reference, "committed-custody", 1);
     assert_eq!(
         custody
@@ -244,7 +258,7 @@ async fn custody_observations_preserve_mutation_capacity_and_exhaustion_can_expa
         .unwrap()
         .into_iter()
         .filter_map(|(_, bytes)| {
-            let record: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            let record: serde_json::Value = serde_json::from_slice(bytes).unwrap();
             (record["event"]["kind"]["retirement_observed"]["custody_policy_epoch"] == 2)
                 .then_some(record)
         })

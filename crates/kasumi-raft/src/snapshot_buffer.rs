@@ -1,7 +1,10 @@
 //! Bounded snapshot transfer children. The retained owner, never an awaiting
 //! future or a background reaper, owns every actual blocking-task handle.
 use kasumi_store::{EncryptedSpool, SnapshotImage};
-use kasumi_types::drain::{DrainReport, DrainResult};
+use kasumi_types::{
+    SharedBudgetCharge,
+    drain::{DrainReport, DrainResult},
+};
 use std::{
     collections::BTreeMap,
     future::Future,
@@ -14,6 +17,26 @@ use std::{
     task::{Context, Poll, Wake, Waker},
 };
 use tokio::io::{AsyncRead, AsyncSeek, AsyncWrite, ReadBuf};
+
+// Map a returned error without an async generator around the actual opening.
+// The retained startup owner must keep the exact pinned future after its poll
+// panics. A generator wrapper would drop that future during unwinding.
+#[repr(transparent)]
+struct OpeningFailureMap<F>(F);
+impl<F, E> Future for OpeningFailureMap<F>
+where
+    F: Future<Output = Result<crate::startup_owner::StartedGroup, E>>,
+    E: Into<kasumi_store::ScratchOperationFailure>,
+{
+    type Output = Result<crate::startup_owner::StartedGroup, kasumi_store::ScratchOperationFailure>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        // SAFETY: the private single field is structurally pinned. No method
+        // moves it out after pinning, and this wrapper has no custom Drop.
+        let original = unsafe { self.map_unchecked_mut(|wrapper| &mut wrapper.0) };
+        original.poll(cx).map(|outcome| outcome.map_err(Into::into))
+    }
+}
 
 const WORKSPACE: usize = 64 << 10;
 // Two 64KiB encrypted-spool buffers, one transfer Vec, and the bounded
@@ -228,7 +251,8 @@ pub struct SnapshotBufferOwner {
     pub(crate) local_startup_gate: Mutex<Option<Arc<crate::startup_test_utils::LocalStartupGate>>>,
     report: Mutex<DrainReport>,
     apply_failure: crate::apply_failure::ApplyFailureSlot,
-    _charge: Arc<dyn Send + Sync>,
+    scratch_failures: crate::scratch_failure_inventory::ScratchFailureInventory,
+    _charge: SharedBudgetCharge,
 }
 impl std::fmt::Debug for SnapshotBufferOwner {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -249,6 +273,12 @@ impl SnapshotBufferOwner {
             max_buffers > 0 && max_buffers <= 4096,
             "snapshot buffer inventory outside supported bounds"
         );
+        let scratch_failures =
+            crate::scratch_failure_inventory::ScratchFailureInventory::required_bytes(max_buffers)?
+                .checked_add(std::mem::size_of::<
+                    crate::scratch_failure_inventory::ScratchFailureInventory,
+                >() as u64)
+                .ok_or_else(|| anyhow::anyhow!("scratch failure inventory quote overflow"))?;
         u64::try_from(max_buffers)?
             .checked_mul(BUFFER_WORKSPACE + CELL_METADATA + RECEIVING_BACKING)
             .and_then(|bytes| {
@@ -259,13 +289,18 @@ impl SnapshotBufferOwner {
                         + std::mem::size_of::<(OnceLock<ApplicationSourceBinding>, AtomicBool)>()
                             as u64
                         + crate::apply_failure::ApplyFailureSlot::required_bytes()
-                        + std::mem::size_of::<crate::apply_failure::ApplyFailureSlot>() as u64,
+                        + std::mem::size_of::<crate::apply_failure::ApplyFailureSlot>() as u64
+                        + scratch_failures,
                 )
             })
             .ok_or_else(|| anyhow::anyhow!("snapshot buffer inventory overflow"))
     }
-    pub fn new(max_buffers: usize, charge: Arc<dyn Send + Sync>) -> anyhow::Result<Arc<Self>> {
+    pub fn new(max_buffers: usize, charge: SharedBudgetCharge) -> anyhow::Result<Arc<Self>> {
         Self::required_bytes(max_buffers)?;
+        let scratch_failures = crate::scratch_failure_inventory::ScratchFailureInventory::new(
+            max_buffers,
+            charge.clone(),
+        )?;
         let owner = Arc::new(Self {
             id: uuid::Uuid::new_v4(),
             cells: Mutex::new((0..max_buffers).map(|_| None).collect()),
@@ -280,13 +315,14 @@ impl SnapshotBufferOwner {
             local_startup_gate: Default::default(),
             report: Default::default(),
             apply_failure: crate::apply_failure::ApplyFailureSlot::new(charge.clone()),
+            scratch_failures,
             _charge: charge,
         });
         Ok(owner)
     }
     #[cfg(any(test, feature = "test-utils"))]
     pub fn fixture() -> Arc<Self> {
-        Self::new(SNAPSHOT_BUFFER_SLOTS, Arc::new(())).unwrap()
+        Self::new(SNAPSHOT_BUFFER_SLOTS, SharedBudgetCharge::new(())).unwrap()
     }
 
     /// Enroll one pre-admitted application source registry before native source
@@ -377,6 +413,42 @@ impl SnapshotBufferOwner {
         registry.insert(self.id, self.clone());
         Ok(())
     }
+    pub(crate) fn scratch_failure_guard(
+        &self,
+    ) -> Result<
+        crate::scratch_failure_inventory::ScratchFailureGuard,
+        kasumi_store::ScratchOperationFailure,
+    > {
+        use crate::scratch_failure_inventory::ScratchInventoryRefusal;
+        match self.scratch_failures.acquire() {
+            Ok(guard) => Ok(guard),
+            Err(ScratchInventoryRefusal::Occupied(original)) => {
+                Err(kasumi_store::ScratchOperationFailure::Creation(original))
+            }
+            Err(ScratchInventoryRefusal::Busy) => {
+                Err(kasumi_store::ScratchOperationFailure::AdmissionRefused(
+                    kasumi_store::ScratchAdmissionRefusal::Busy,
+                ))
+            }
+            Err(ScratchInventoryRefusal::Sealed) => {
+                Err(kasumi_store::ScratchOperationFailure::AdmissionRefused(
+                    kasumi_store::ScratchAdmissionRefusal::Sealed,
+                ))
+            }
+        }
+    }
+    /// The actual prepaid admission report survives dropped external errors.
+    /// Borrowing it does not acknowledge or dispose its original diagnostic.
+    pub fn retained_scratch_admission(
+        &self,
+        index: usize,
+    ) -> Option<kasumi_store::ScratchCreationFailure> {
+        self.scratch_failures.original_failure(index)
+    }
+    pub fn scratch_admission_capacity(&self) -> usize {
+        self.scratch_failures.capacity()
+    }
+
     pub(crate) fn apply_slot(&self) -> &crate::apply_failure::ApplyFailureSlot {
         &self.apply_failure
     }
@@ -423,7 +495,7 @@ impl SnapshotBufferOwner {
         earlier: Option<kasumi_types::drain::DrainFailure>,
         report: &mut DrainReport,
     ) -> Option<kasumi_types::drain::DrainFailure> {
-        if earlier.is_none() || !self.failed_apply_resources_drained() {
+        if earlier.is_none() {
             return earlier;
         }
         let final_census = self.drain_buffers().await;
@@ -488,12 +560,16 @@ impl SnapshotBufferOwner {
         report.outcome(unresolved)
     }
 
-    pub(crate) fn start<F>(
+    pub(crate) fn start<F, E>(
         self: &Arc<Self>,
         future: F,
-    ) -> impl Future<Output = anyhow::Result<crate::startup_owner::StartedGroup>> + Send + '_
+    ) -> impl Future<
+        Output = Result<crate::startup_owner::StartedGroup, kasumi_store::ScratchOperationFailure>,
+    > + Send
+    + '_
     where
-        F: Future<Output = anyhow::Result<crate::startup_owner::StartedGroup>> + Send + 'static,
+        F: Future<Output = Result<crate::startup_owner::StartedGroup, E>> + Send + 'static,
+        E: Into<kasumi_store::ScratchOperationFailure> + Send + 'static,
     {
         // Synchronous admission erases F before any caller awaits. A single
         // owner can never accumulate multiple prepared, charged allocations.
@@ -512,7 +588,7 @@ impl SnapshotBufferOwner {
             );
             // install checks the concrete opening + cleanup sizes before boxing.
             // Registry custody exists before the first actual Opening poll.
-            startup.install(future)?;
+            startup.install(OpeningFailureMap(future))?;
             registry.insert(self.id, self.clone());
             Ok(())
         })();
@@ -522,7 +598,7 @@ impl SnapshotBufferOwner {
     async fn claim_startup(
         self: &Arc<Self>,
         prepared: anyhow::Result<()>,
-    ) -> anyhow::Result<crate::startup_owner::StartedGroup> {
+    ) -> Result<crate::startup_owner::StartedGroup, kasumi_store::ScratchOperationFailure> {
         prepared?;
         // This non-generic future contains only the owner and admission result.
         let mut startup = self.startup.lock().await;
@@ -534,6 +610,7 @@ impl SnapshotBufferOwner {
         if startup.can_release_custody()
             && self.application_sources_drained.load(Ordering::Acquire)
             && self.completion_released()
+            && !self.scratch_failures.retirement_blocked()
             && !self.apply_failure.has_live_ownership()
             && !self.apply_failure_unresolved()
             && cells.iter().all(Option::is_none)
@@ -562,7 +639,9 @@ impl SnapshotBufferOwner {
         self.apply_failure.bind_ownership(ownership, identity)
     }
     pub(crate) fn release_group_ownership(&self) {
-        if !self.application_sources_drained.load(Ordering::Acquire) || !self.completion_released()
+        if !self.application_sources_drained.load(Ordering::Acquire)
+            || !self.completion_released()
+            || self.scratch_failures.retirement_blocked()
         {
             return;
         }
@@ -573,6 +652,7 @@ impl SnapshotBufferOwner {
             && startup.can_release_custody()
             && self.application_sources_drained.load(Ordering::Acquire)
             && self.completion_released()
+            && !self.scratch_failures.retirement_blocked()
             && !self.apply_failure_unresolved()
             && self
                 .cells
@@ -611,22 +691,42 @@ impl SnapshotBufferOwner {
         }
     }
 
+    pub(crate) fn record_startup_preparation(
+        &self,
+        original: &kasumi_store::ScratchOperationFailure,
+    ) -> kasumi_types::drain::DrainFailure {
+        self.failed.store(true, Ordering::Release);
+        let mut report = self.report.lock().unwrap_or_else(|p| p.into_inner());
+        // The foreign shutdown marker borrows the typed preparation outcome.
+        // The marker never contains its original native custody.
+        let issue = report.record("Raft scratch startup", 0, anyhow::anyhow!("{original}"));
+        report
+            .outcome(Some(kasumi_types::drain::DrainFailure::retained(issue)))
+            .expect_err("startup preparation remains unresolved")
+    }
+
     pub(crate) fn record_startup_error(
         &self,
         error: anyhow::Error,
     ) -> kasumi_types::drain::DrainFailure {
         self.failed.store(true, Ordering::Release);
         let mut report = self.report.lock().unwrap_or_else(|p| p.into_inner());
-        let unresolved = match error.downcast::<kasumi_types::drain::DrainFailure>() {
-            Ok(failure) => {
-                report.merge(&failure);
-                (failure.completion() == kasumi_types::drain::DrainCompletion::Retained)
-                    .then_some(failure)
-            }
-            Err(error) => {
-                report.record("Raft startup", 0, error);
-                None
-            }
+        // Observe only the outer ordinary value. An owning context must remain
+        // in the original Anyhow allocation throughout startup and native drain.
+        let outer: &(dyn std::error::Error + Send + Sync + 'static) = error.as_ref();
+        // An independent live allocation has an independent report seat. Its
+        // address cannot be reused while this report retains the original.
+        let instance = outer as *const _ as *const () as usize;
+        let original_drain = outer
+            .downcast_ref::<kasumi_types::drain::DrainFailure>()
+            .cloned();
+        report.record("Raft startup", instance, error);
+        let unresolved = if let Some(failure) = original_drain {
+            report.merge(&failure);
+            (failure.completion() == kasumi_types::drain::DrainCompletion::Retained)
+                .then_some(failure)
+        } else {
+            None
         };
         report
             .outcome(unresolved)
@@ -813,19 +913,18 @@ impl SnapshotBufferOwner {
             .cloned();
         // A retained startup error is independent and stays retained. Revisit
         // only the buffer owner after its real source census has completed.
-        let buffer_unresolved =
-            if buffer_unresolved.is_some() && self.failed_apply_resources_drained() {
-                buffers = self.drain_buffers().await;
-                buffers
-                    .as_ref()
-                    .err()
-                    .filter(|failure| {
-                        failure.completion() == kasumi_types::drain::DrainCompletion::Retained
-                    })
-                    .cloned()
-            } else {
-                buffer_unresolved
-            };
+        let buffer_unresolved = if buffer_unresolved.is_some() {
+            buffers = self.drain_buffers().await;
+            buffers
+                .as_ref()
+                .err()
+                .filter(|failure| {
+                    failure.completion() == kasumi_types::drain::DrainCompletion::Retained
+                })
+                .cloned()
+        } else {
+            buffer_unresolved
+        };
         let unresolved = startup_unresolved
             .or(source_unresolved)
             .or(buffer_unresolved);
@@ -838,6 +937,7 @@ impl SnapshotBufferOwner {
         if drain_completed(&result)
             && self.application_sources_drained.load(Ordering::Acquire)
             && self.completion_released()
+            && !self.scratch_failures.retirement_blocked()
             && !self.apply_failure.has_live_ownership()
             && startup.can_release_custody()
         {
@@ -852,6 +952,7 @@ impl SnapshotBufferOwner {
     // Startup error cleanup and a retained unclaimed group's shutdown must not
     // await the startup gate that currently owns their future.
     pub(crate) async fn drain_buffers(&self) -> DrainResult {
+        self.scratch_failures.seal();
         self.closed.store(true, Ordering::Release);
         let _exclusive = self.drain_gate.lock().await;
         let result = std::future::poll_fn(|cx| {
@@ -896,6 +997,13 @@ impl SnapshotBufferOwner {
                         kasumi_types::drain::DrainFailure::retained(issue)
                     })
                 });
+                let unresolved = unresolved.or_else(|| {
+                    self.scratch_failures.retirement_blocked().then(|| {
+                        let issue = report.record("Raft scratch admission custody", 0,
+                            anyhow::anyhow!("scratch constructor job or original admission diagnostic remains owned"));
+                        kasumi_types::drain::DrainFailure::retained(issue)
+                    })
+                });
                 Poll::Ready(report.outcome(unresolved))
             } else {
                 Poll::Pending
@@ -909,6 +1017,7 @@ impl SnapshotBufferOwner {
             && drain_completed(&result)
             && self.application_sources_drained.load(Ordering::Acquire)
             && self.completion_released()
+            && !self.scratch_failures.retirement_blocked()
             && !self.apply_failure.has_live_ownership()
         {
             retained()
@@ -1355,6 +1464,10 @@ impl AsyncSeek for SnapshotBuffer {
 #[cfg(test)]
 #[path = "snapshot_buffer_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "snapshot_buffer_startup_report_tests.rs"]
+mod startup_report_tests;
 
 #[cfg(test)]
 #[path = "application_source_custody_tests.rs"]

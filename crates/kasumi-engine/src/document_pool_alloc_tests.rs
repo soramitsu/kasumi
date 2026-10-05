@@ -425,3 +425,24 @@ pub(crate) fn check_topology_input_drop(
     assert!(BODY.finished.load(Ordering::Acquire));
     assert_eq!(BODY.count.load(Ordering::Acquire), 1);
 }
+
+// Drop the real non-Send ApplyOwner on its original thread. A separate
+// observer pauses exactly its paid change-tree allocation at System.dealloc,
+// checks the original ledger and then permits that same deallocation to return.
+pub(crate) fn check_mutation_change_tree_drop(
+    address: usize,
+    dispose: impl FnOnce(),
+    check: impl FnOnce() + Send + 'static,
+) {
+    let _serial = SERIAL.lock().unwrap_or_else(|p| p.into_inner());
+    let release = BODY.arm(address);
+    let observer = std::thread::spawn(move || {
+        BODY.wait();
+        check();
+        release.release();
+    });
+    dispose();
+    observer.join().unwrap();
+    assert!(BODY.finished.load(Ordering::Acquire));
+    assert_eq!(BODY.count.load(Ordering::Acquire), 1);
+}

@@ -50,7 +50,7 @@ fn prepare_actual_entry(
         kasumi_raft::with_application_publisher_for_test(
             &fixture.stores,
             &position,
-            |publisher| {
+            |publisher| -> anyhow::Result<()> {
                 receipt = Some(publisher.commit_with_selection(
                     response,
                     &[],
@@ -125,7 +125,7 @@ fn remove_only_injected_unknown(fixture: &Fixture, cell: &CellRef) {
 
 #[tokio::test]
 async fn selected_sources_actual_point_drop_panic_preserves_capture_error_and_separate_payload()
--> Result<()> {
+-> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
     let baseline = fixture.storage.admission.snapshot().live_reservations;
     let probe = Probe::begin(fixture.storage.admission.memory());
@@ -150,6 +150,7 @@ async fn selected_sources_actual_point_drop_panic_preserves_capture_error_and_se
         .unwrap()
         .err()
         .context("wrong Entry boundary captured")?;
+    assert!(super::super::captured_key_access_denied(&error).is_none());
     assert!(probe.fired(), "actual installed lease fault did not run");
     assert!(prepared.points.is_none());
     let body = cell.failure.get().expect("actual capture error retained");
@@ -191,7 +192,8 @@ async fn selected_sources_actual_point_drop_panic_preserves_capture_error_and_se
 }
 
 #[tokio::test]
-async fn selected_sources_actual_point_drop_panic_still_cancels_queued_reader() -> Result<()> {
+async fn selected_sources_actual_point_drop_panic_still_cancels_queued_reader()
+-> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
     let baseline = fixture.storage.admission.snapshot().live_reservations;
     let probe = Probe::begin(fixture.storage.admission.memory());

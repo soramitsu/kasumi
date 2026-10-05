@@ -1,6 +1,6 @@
 use super::*;
 use crate::{
-    ScratchDisk,
+    NodeDiskMemoryAdmission, ScratchDisk,
     allocation_tests::{DeallocationObservation, measure, observe_deallocation},
     test_utils::TestDiskMemory,
 };
@@ -449,6 +449,7 @@ fn group_root_and_data_files_are_independently_encrypted_anonymous_spools() {
     let disk = ScratchDisk::isolated_fixture(directory.path(), 8 << 20, memory.clone());
     let baseline = memory.snapshot().used_bytes;
     let owner = crate::scratch_table::group::Owner::new(&disk, 4 << 20).unwrap();
+    let owner_id = owner.census_id();
     let backend = crate::scratch_table::group::Backend(owner.clone());
     let first = GroupFile::segment(1);
     let second = GroupFile::directory(1);
@@ -485,6 +486,10 @@ fn group_root_and_data_files_are_independently_encrypted_anonymous_spools() {
     assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 0);
     backend.close().into_result().unwrap();
     drop((backend, owner));
+    assert_eq!(
+        memory.storage_census().drain_owner(owner_id),
+        crate::StorageCensusDisposition::Retired
+    );
     assert_eq!(disk.snapshot().charged_bytes, 0);
     assert_eq!(disk.snapshot().live_files, 0);
     assert_eq!(memory.snapshot().used_bytes, baseline);

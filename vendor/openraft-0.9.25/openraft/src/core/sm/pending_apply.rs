@@ -22,6 +22,7 @@ pub(crate) struct PendingApply<C: RaftTypeConfig> {
 }
 
 struct State<C: RaftTypeConfig> {
+    sealed: bool,
     range: Option<ApplyRange<C>>,
     // Retain continuity across a range already taken by the worker. A real
     // snapshot install establishes the next log boundary explicitly.
@@ -32,6 +33,7 @@ impl<C: RaftTypeConfig> PendingApply<C> {
     pub(crate) fn new() -> Arc<Self> {
         Arc::new(Self {
             pending: Mutex::new(State {
+                sealed: false,
                 range: None,
                 last: None,
             }),
@@ -45,7 +47,7 @@ impl<C: RaftTypeConfig> PendingApply<C> {
         mut command: Command<C>,
     ) -> Result<(), mpsc::error::SendError<Command<C>>> {
         let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
-        if sender.is_closed() || command.apply_before.is_some() {
+        if pending.sealed || sender.is_closed() || command.apply_before.is_some() {
             return Err(mpsc::error::SendError(command));
         }
         if let CommandPayload::Apply { since, upto } = &command.payload {
@@ -80,6 +82,22 @@ impl<C: RaftTypeConfig> PendingApply<C> {
             // commit cannot be selected ahead of this real command boundary.
             sender.send(command)
         }
+    }
+
+    /// Capture the last coalesced range and close every producer, including
+    /// snapshot readers, under the same ordering lock as ordinary admission.
+    pub(crate) fn seal(
+        &self,
+        sender: &mpsc::UnboundedSender<Command<C>>,
+    ) -> Result<(), mpsc::error::SendError<Command<C>>> {
+        let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+        if pending.sealed {
+            return Ok(());
+        }
+        let mut stop = Command::stop();
+        stop.apply_before = pending.range.take();
+        pending.sealed = true;
+        sender.send(stop)
     }
 
     /// Select queued boundaries before the single range following them.

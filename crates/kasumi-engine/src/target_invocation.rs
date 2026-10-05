@@ -42,13 +42,16 @@ impl TargetLifecycleInvocation {
         }
         self.gate.check_target(serving, phase).map_err(unauthorized)
     }
-    pub(crate) async fn run<T>(
+    pub(crate) async fn run<T, E>(
         &self,
         token: &kasumi_query::QueryCancellation,
-        future: impl Future<Output = anyhow::Result<T>>,
-    ) -> anyhow::Result<T> {
-        self.check()?;
-        token.check()?;
+        future: impl Future<Output = std::result::Result<T, E>>,
+    ) -> std::result::Result<T, E>
+    where
+        E: From<anyhow::Error>,
+    {
+        self.check().map_err(anyhow::Error::from)?;
+        token.check().map_err(anyhow::Error::from)?;
         let mut closed = self.gate.notifications();
         let monitoring = async {
             loop {
@@ -63,11 +66,11 @@ impl TargetLifecycleInvocation {
         tokio::pin!(future);
         let result = tokio::select! {
             biased;
-            expired=monitoring=>return Err(expired.err().unwrap_or_else(||unauthorized("target phase closed")).into()),
+            expired=monitoring=>return Err(anyhow::Error::from(expired.err().unwrap_or_else(||unauthorized("target phase closed"))).into()),
             result=&mut future=>result?,
         };
-        token.check()?;
-        self.check()?;
+        token.check().map_err(anyhow::Error::from)?;
+        self.check().map_err(anyhow::Error::from)?;
         Ok(result)
     }
     pub(crate) fn prepare(
@@ -309,11 +312,14 @@ impl TargetRequestAdmission {
         self.elapsed.check().map_err(unauthorized)?;
         self.deadline.check().map_err(unauthorized)
     }
-    pub async fn run<T>(
+    pub async fn run<T, E>(
         &self,
-        future: impl Future<Output = anyhow::Result<T>>,
-    ) -> anyhow::Result<T> {
-        self.check()?;
+        future: impl Future<Output = std::result::Result<T, E>>,
+    ) -> std::result::Result<T, E>
+    where
+        E: From<anyhow::Error>,
+    {
+        self.check().map_err(anyhow::Error::from)?;
         let monitoring = async {
             loop {
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -324,10 +330,10 @@ impl TargetRequestAdmission {
         };
         let result = tokio::select! {
             biased;
-            closed = monitoring => return Err(closed.err().unwrap_or_else(|| unauthorized("request closed")).into()),
+            closed = monitoring => return Err(anyhow::Error::from(closed.err().unwrap_or_else(|| unauthorized("request closed"))).into()),
             result = self.deadline.run(future) => result??,
         };
-        self.check()?;
+        self.check().map_err(anyhow::Error::from)?;
         Ok(result)
     }
 }
@@ -489,10 +495,13 @@ impl TargetOperation {
             self.admission.dispatch_not_after_ms,
         )
     }
-    pub fn run<'a, T>(
+    pub fn run<'a, T, E>(
         &'a self,
-        future: impl Future<Output = anyhow::Result<T>> + 'a,
-    ) -> impl Future<Output = anyhow::Result<T>> + 'a {
+        future: impl Future<Output = std::result::Result<T, E>> + 'a,
+    ) -> impl Future<Output = std::result::Result<T, E>> + 'a
+    where
+        E: From<anyhow::Error> + 'a,
+    {
         // Recovery verification futures retain typed lineage and graph state.
         // Put that state on the heap before composing the nested phase, request
         // and timeout monitors, so each monitor carries only its pinned owner.
@@ -598,7 +607,7 @@ mod admission_tests {
             admission
                 .run(async {
                     polled.store(true, Ordering::SeqCst);
-                    Ok(())
+                    Ok::<(), anyhow::Error>(())
                 })
                 .await
                 .is_err()

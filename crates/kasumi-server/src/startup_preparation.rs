@@ -1,6 +1,5 @@
 //! Catch preparation unwinds only while its actual resource owners live outside
 //! the caught future. This is not recovery from process abort or a drain panic.
-use anyhow::Result;
 use std::{any::Any, fmt, future::Future, panic::AssertUnwindSafe, sync::Mutex, task::Poll};
 
 /// Retain the original payload while redacting this error's display. The
@@ -26,10 +25,10 @@ impl std::error::Error for PreparationPanic {}
 /// The caller must retain pending resources and any partial runtime outside
 /// `preparing`, then drain those exact owners on every returned error. The caught
 /// future is never polled again after unwinding; its mutable state is not reused.
-pub(crate) fn capture<T>(
+pub(crate) fn capture<T, E: From<anyhow::Error>>(
     component: &'static str,
-    preparing: impl Future<Output = Result<T>>,
-) -> impl Future<Output = Result<T>> {
+    preparing: impl Future<Output = std::result::Result<T, E>>,
+) -> impl Future<Output = std::result::Result<T, E>> {
     // Box before constructing the returned future. Keeping a large preparation
     // inline in an async wrapper duplicates its state in each enclosing startup
     // layer and can overflow a normal executor thread before the first poll.
@@ -37,11 +36,10 @@ pub(crate) fn capture<T>(
     std::future::poll_fn(move |cx| {
         match std::panic::catch_unwind(AssertUnwindSafe(|| preparing.as_mut().poll(cx))) {
             Ok(result) => result,
-            Err(payload) => Poll::Ready(Err(PreparationPanic {
+            Err(payload) => Poll::Ready(Err(E::from(anyhow::Error::new(PreparationPanic {
                 component,
                 _payload: Mutex::new(payload),
-            }
-            .into())),
+            })))),
         }
     })
 }
@@ -125,7 +123,7 @@ mod tests {
         let payload = [31_u8; 128 << 10];
         let inner = capture("inner", async move {
             tokio::task::yield_now().await;
-            Ok(std::hint::black_box(payload)[(128 << 10) - 1])
+            Ok::<_, anyhow::Error>(std::hint::black_box(payload)[(128 << 10) - 1])
         });
         assert!(std::mem::size_of_val(&inner) < 1024);
         let outer = capture("outer", inner);
@@ -137,7 +135,7 @@ mod tests {
     async fn preparation_panic_keeps_original_payload_without_exposing_it() {
         #[derive(Debug, PartialEq)]
         struct Original(u64);
-        let failure = capture::<()>("test owner", async {
+        let failure = capture::<(), anyhow::Error>("test owner", async {
             tokio::task::yield_now().await;
             std::panic::panic_any(Original(29));
         })

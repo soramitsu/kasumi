@@ -241,13 +241,15 @@ enum Source {
     Staged(Arc<EncryptedTable>),
 }
 impl Source {
-    fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
+    fn get(&self, key: &[u8]) -> Result<Option<crate::materialization_row::MaterializationRow>> {
         let result = match self {
-            Self::Durable(rows) => {
-                rows.store
-                    .get_bounded(&rows.binding.namespace(), key, MAX_ROW_BYTES)?
-            }
-            Self::Staged(table) => table.get(key)?,
+            Self::Durable(rows) => rows
+                .store
+                .get_bounded(&rows.binding.namespace(), key, MAX_ROW_BYTES)?
+                .map(crate::materialization_row::MaterializationRow::Stored),
+            Self::Staged(table) => table
+                .get(key)?
+                .map(crate::materialization_row::MaterializationRow::Staged),
         };
         ensure!(
             result
@@ -282,7 +284,7 @@ impl View {
     pub(crate) fn head(&self) -> &StagedTerminalHead {
         &self.head
     }
-    fn bytes(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
+    fn bytes(&self, key: &[u8]) -> Result<Option<crate::materialization_row::MaterializationRow>> {
         self.source
             .as_ref()
             .map(|s| s.get(key))
@@ -432,21 +434,25 @@ impl Builder {
         limit: u64,
         tenant: &str,
         origin: &str,
-    ) -> Result<Self> {
+    ) -> std::result::Result<Self, kasumi_store::ScratchOperationFailure> {
         let phase = crate::backup_verify::VerificationPhase::start("snapshot.terminal_setup", None);
         let table = Arc::new(EncryptedTable::new(
             disk,
             limit,
             disk.native_cache_config(),
         )?);
-        let batch = table.begin_batch()?;
+        let batch = table
+            .begin_batch()
+            .map_err(kasumi_store::ScratchOperationFailure::Operation)?;
         phase.complete();
         Ok(Self {
             table,
             batch: Some(batch),
             batch_bytes: 0,
             batch_rows: 0,
-            head: StagedTerminalHead::empty(tenant, origin)?,
+            head: StagedTerminalHead::empty(tenant, origin).map_err(|original| {
+                kasumi_store::ScratchOperationFailure::Operation(original.into())
+            })?,
             failed: false,
         })
     }
@@ -797,19 +803,22 @@ impl Pending {
         mut self,
         disk: &Arc<ScratchDisk>,
         state: &TenantState,
-    ) -> Result<View> {
+    ) -> std::result::Result<View, kasumi_store::ScratchOperationFailure> {
         self.previous.check_fixture_source()?;
         if self.rows.is_empty() {
-            return self.stage();
+            return self.stage().map_err(Into::into);
         }
-        ensure!(
-            self.rows
-                .iter()
-                .all(|row| matches!(row.applied.origin, AppliedOrigin::Fixture)),
-            "fixture terminal staging requires its actual local origin"
-        );
+        kasumi_store::ScratchOperationFailure::ordinary(|| {
+            ensure!(
+                self.rows
+                    .iter()
+                    .all(|row| matches!(row.applied.origin, AppliedOrigin::Fixture)),
+                "fixture terminal staging requires its actual local origin"
+            );
+            Ok(())
+        })?;
         self.previous = self.previous.fixture_owner(disk, state)?;
-        self.stage()
+        self.stage().map_err(Into::into)
     }
 
     /// Preserve immutable row/index pairs before selecting the returned view.
@@ -911,14 +920,16 @@ impl View {
         &self,
         disk: &Arc<ScratchDisk>,
         state: &TenantState,
-    ) -> Result<Self> {
-        self.check_fixture_source()?;
+    ) -> std::result::Result<Self, kasumi_store::ScratchOperationFailure> {
+        self.check_fixture_source()
+            .map_err(kasumi_store::ScratchOperationFailure::Operation)?;
         if self.source.is_some() {
             return Ok(self.clone());
         }
         let table = Arc::new(EncryptedTable::new(
             disk,
-            scratch_limit(state.limits.max_snapshot_bytes)?,
+            scratch_limit(state.limits.max_snapshot_bytes)
+                .map_err(kasumi_store::ScratchOperationFailure::Operation)?,
             disk.native_cache_config(),
         )?);
         Ok(Self {

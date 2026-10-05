@@ -115,8 +115,10 @@ pub(super) fn publish(
         Err(original) => return Err(publication.into_failure(original)),
     };
     let mut accepted = Some(accepted);
-    let outcome =
-        kasumi_raft::with_application_publisher_for_test(&fixture.stores, position, |publisher| {
+    let outcome = kasumi_raft::with_application_publisher_for_test(
+        &fixture.stores,
+        position,
+        |publisher| -> anyhow::Result<()> {
             accepted
                 .as_ref()
                 .expect("owned accepted")
@@ -152,7 +154,8 @@ pub(super) fn publish(
             publication.enter_visibility()?;
             accepted.take().expect("owned accepted").publish();
             Ok(())
-        });
+        },
+    );
     // Actual finish retained its original publication/backend errors; graph,
     // effects and candidate never moved into the publisher's unwind catcher.
     drop(accepted);
@@ -174,7 +177,7 @@ fn advance_without_visibility(fixture: &Fixture, prepared: &Prepared<'_>) -> Res
     let error = kasumi_raft::with_application_publisher_for_test(
         &fixture.stores,
         prepared.position(),
-        |publisher| {
+        |publisher| -> anyhow::Result<()> {
             publisher.commit(response, &[])?;
             anyhow::bail!("fixture canonical commit before visibility");
         },
@@ -219,8 +222,8 @@ fn selected_version(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn primary_cow_two_real_publications_preserve_old_pin_and_commit_five_effects() -> Result<()>
-{
+async fn primary_cow_two_real_publications_preserve_old_pin_and_commit_five_effects()
+-> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
     fixture.seed(50, true)?;
     fixture.publish(Operation::CreateCollection(definition("other")))?;
@@ -291,8 +294,12 @@ async fn primary_cow_two_real_publications_preserve_old_pin_and_commit_five_effe
                 unreachable!()
             };
             assert_eq!(
-                fixture.stores.application().get(&namespace, &key)?,
-                Some(value)
+                fixture
+                    .stores
+                    .application()
+                    .get(&namespace, &key)?
+                    .as_deref(),
+                Some(value.as_slice())
             );
         }
         let selected = fixture.selector()?;
@@ -384,7 +391,8 @@ async fn primary_cow_two_real_publications_preserve_old_pin_and_commit_five_effe
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn primary_cow_actual_durable_ahead_refuses_before_new_attempt() -> Result<()> {
+async fn primary_cow_actual_durable_ahead_refuses_before_new_attempt()
+-> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
     fixture.seed(1, false)?;
     let prior = fixture.fresh()?;
@@ -421,7 +429,8 @@ async fn primary_cow_actual_durable_ahead_refuses_before_new_attempt() -> Result
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn primary_cow_late_actual_replay_refuses_before_final_effects() -> Result<()> {
+async fn primary_cow_late_actual_replay_refuses_before_final_effects()
+-> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
     fixture.seed(1, false)?;
     let prior = fixture.fresh()?;
@@ -456,7 +465,8 @@ async fn primary_cow_late_actual_replay_refuses_before_final_effects() -> Result
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn primary_cow_authentic_receipt_rejects_captured_mapping_substitution() -> Result<()> {
+async fn primary_cow_authentic_receipt_rejects_captured_mapping_substitution()
+-> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
     fixture.seed(1, false)?;
     let prior = fixture.fresh()?;
@@ -513,7 +523,8 @@ async fn primary_cow_authentic_receipt_rejects_captured_mapping_substitution() -
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn primary_cow_closed_factory_retains_cancellation_and_final_grant_refusal() -> Result<()> {
+async fn primary_cow_closed_factory_retains_cancellation_and_final_grant_refusal()
+-> crate::test_fixture_failure::FixtureResult<()> {
     for cancel in [true, false] {
         let fixture = Fixture::new().await?;
         fixture.seed(1, false)?;
@@ -577,7 +588,8 @@ async fn primary_cow_closed_factory_retains_cancellation_and_final_grant_refusal
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn primary_cow_real_publisher_admission_refusal_keeps_exact_final_effects() -> Result<()> {
+async fn primary_cow_real_publisher_admission_refusal_keeps_exact_final_effects()
+-> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
     fixture.seed(1, false)?;
     let prior = fixture.fresh()?;
@@ -621,7 +633,7 @@ async fn primary_cow_real_publisher_admission_refusal_keeps_exact_final_effects(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn primary_cow_actual_final_effect_allocations_and_baseline_grants_retire_in_order()
--> Result<()> {
+-> crate::test_fixture_failure::FixtureResult<()> {
     for which in 0..2 {
         let fixture = Fixture::new().await?;
         fixture.seed(1, false)?;

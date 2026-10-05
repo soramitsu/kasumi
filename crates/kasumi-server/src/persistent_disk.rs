@@ -149,10 +149,38 @@ impl crate::runtime::RuntimeConfig {
         {
             paths.push(directory);
         }
-        for archive in self.tenant_audit_archives.values() {
-            if let crate::audit_destination::AuditDestinationConfig::Filesystem { directory } =
-                archive
+        for placement in
+            self.tenant_audit_placements
+                .values()
+                .chain(self.target_recovery.iter().flat_map(|target| {
+                    target
+                        .tenants
+                        .values()
+                        .map(|template| &template.audit_placement)
+                }))
+        {
+            if let crate::audit_destination::TenantAuditPlacementConfig::External {
+                destination:
+                    crate::audit_destination::AuditDestinationConfig::Filesystem { directory },
+            } = placement
             {
+                if let Some(target) = &self.target_recovery {
+                    anyhow::ensure!(
+                        !directory.starts_with(&target.generation_root),
+                        "external tenant audit archive is inside the generation deletion root"
+                    );
+                }
+                if self.mode == crate::runtime::DeploymentMode::Standalone {
+                    let generations = self
+                        .database_path
+                        .parent()
+                        .ok_or_else(|| anyhow::anyhow!("standalone data directory missing"))?
+                        .join("generations");
+                    anyhow::ensure!(
+                        !directory.starts_with(&generations),
+                        "external tenant audit archive is inside the local generation deletion root"
+                    );
+                }
                 paths.push(directory);
             }
         }
@@ -380,16 +408,54 @@ mod tests {
         );
         assert!(config.validate_persistent_disk().is_err());
         config.backup_destinations.clear();
-        config.tenant_audit_archives.insert(
+        config.tenant_audit_placements.insert(
             "acme".into(),
-            crate::audit_destination::AuditDestinationConfig::Filesystem {
-                directory: "/uninstalled/archives".into(),
+            crate::audit_destination::TenantAuditPlacementConfig::External {
+                destination: crate::audit_destination::AuditDestinationConfig::Filesystem {
+                    directory: "/uninstalled/archives".into(),
+                },
             },
         );
         assert!(config.validate_persistent_disk().is_err());
-        config.tenant_audit_archives.clear();
+        config.tenant_audit_placements.insert(
+            "acme".into(),
+            crate::audit_destination::TenantAuditPlacementConfig::LocalReplicaOnly,
+        );
         config.signer_verifier.as_mut().unwrap().database_path = "/uninstalled/trust.kv".into();
         assert!(config.validate_persistent_disk().is_err());
+    }
+
+    #[test]
+    fn external_tenant_history_cannot_be_owned_by_local_generation_cleanup() {
+        let mut config = crate::runtime::example_config(
+            kasumi_store::DirectoryPolicy::fixture(),
+            kasumi_store::FileAllocationPolicy::fixture(),
+        )
+        .unwrap();
+        config.mode = crate::runtime::DeploymentMode::Standalone;
+        config.tenant_audit_placements.insert(
+            "acme".into(),
+            crate::audit_destination::TenantAuditPlacementConfig::External {
+                destination: crate::audit_destination::AuditDestinationConfig::Filesystem {
+                    directory: config
+                        .database_path
+                        .parent()
+                        .unwrap()
+                        .join("generations/target/history"),
+                },
+            },
+        );
+        let error = config.validate_persistent_disk().unwrap_err();
+        assert!(error.to_string().contains("local generation deletion root"));
+        config.tenant_audit_placements.insert(
+            "acme".into(),
+            crate::audit_destination::TenantAuditPlacementConfig::External {
+                destination: crate::audit_destination::AuditDestinationConfig::Filesystem {
+                    directory: "/var/lib/kasumi/archives/acme".into(),
+                },
+            },
+        );
+        config.validate_persistent_disk().unwrap();
     }
 
     #[test]

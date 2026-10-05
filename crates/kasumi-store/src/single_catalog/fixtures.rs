@@ -4,7 +4,7 @@ use super::*;
 
 impl TenantStore {
     pub async fn initialize_catalog_fixture(
-        node: Arc<NodeStore>,
+        node: NodeStore,
         tenant: String,
         provider: Arc<dyn KeyProvider>,
     ) -> Result<Arc<Self>> {
@@ -22,7 +22,7 @@ impl TenantStore {
         .await
     }
     pub async fn initialize_catalog_fixture_with_clock(
-        node: Arc<NodeStore>,
+        node: NodeStore,
         tenant: String,
         provider: Arc<dyn KeyProvider>,
         clock: Arc<dyn LeaseClock>,
@@ -40,7 +40,7 @@ impl TenantStore {
         .await
     }
     pub async fn initialize_catalog_fixture_with_access(
-        node: Arc<NodeStore>,
+        node: NodeStore,
         tenant: String,
         provider: Arc<dyn KeyProvider>,
         access: StorageAccess,
@@ -58,7 +58,7 @@ impl TenantStore {
         .await
     }
     pub async fn initialize_catalog_fixture_with_clock_and_access(
-        node: Arc<NodeStore>,
+        node: NodeStore,
         tenant: String,
         provider: Arc<dyn KeyProvider>,
         clock: Arc<dyn LeaseClock>,
@@ -76,7 +76,7 @@ impl TenantStore {
         .await
     }
     pub async fn open_existing_fixture(
-        node: Arc<NodeStore>,
+        node: NodeStore,
         tenant: String,
         provider: Arc<dyn KeyProvider>,
     ) -> Result<Arc<Self>> {
@@ -94,7 +94,7 @@ impl TenantStore {
         .await
     }
     pub async fn open_existing_fixture_with_clock(
-        node: Arc<NodeStore>,
+        node: NodeStore,
         tenant: String,
         provider: Arc<dyn KeyProvider>,
         clock: Arc<dyn LeaseClock>,
@@ -112,7 +112,7 @@ impl TenantStore {
         .await
     }
     pub async fn open_existing_fixture_with_access(
-        node: Arc<NodeStore>,
+        node: NodeStore,
         tenant: String,
         provider: Arc<dyn KeyProvider>,
         access: StorageAccess,
@@ -130,7 +130,7 @@ impl TenantStore {
         .await
     }
     pub async fn open_existing_fixture_with_clock_and_access(
-        node: Arc<NodeStore>,
+        node: NodeStore,
         tenant: String,
         provider: Arc<dyn KeyProvider>,
         clock: Arc<dyn LeaseClock>,

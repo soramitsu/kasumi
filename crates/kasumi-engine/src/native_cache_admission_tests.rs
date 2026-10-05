@@ -22,6 +22,19 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+// This isolated positive fixture may project a native opening failure only
+// after the actual owner has disposed every native resource. An unproved
+// failure remains whole in the panic payload.
+fn disposed_opening_error<B: SegmentGroupBackend + 'static>(
+    mut failure: kasumi_kv::NativeOpenFailure<B>,
+) -> anyhow::Error {
+    let _ = failure.dispose();
+    match failure.into_disposed_error() {
+        Ok(original) => anyhow::Error::new(original),
+        Err(original) => std::panic::panic_any(original),
+    }
+}
+
 const GROUP_ID: [u8; 16] = [0x8b; 16];
 const ROWS: u32 = 16_513;
 const VALUE: [u8; 128] = [0x73; 128];
@@ -413,7 +426,8 @@ fn sixteen_thousand_rows_fit_with_one_hundred_twenty_eight_governor_slots() -> a
         first_admission,
         GROUP_ID,
         CacheConfig { byte_limit: 0 },
-    )?;
+    )
+    .map_err(disposed_opening_error)?;
     let mut operations = Vec::with_capacity(ROWS as usize + 1);
     operations.push(Operation::create_table("rows"));
     for index in 0..ROWS {
@@ -422,7 +436,12 @@ fn sixteen_thousand_rows_fit_with_one_hundred_twenty_eight_governor_slots() -> a
     first.commit(&operations)?;
     drop(operations);
     first.close().into_result()?;
-    drop(first);
+    let mut disposal = first.into_disposal();
+    assert!(
+        disposal.dispose().complete(),
+        "actual native disposal incomplete"
+    );
+    drop(disposal);
     assert_eq!(memory.snapshot().reserved_bytes, baseline.reserved_bytes);
 
     let admission = Admission::new(memory.clone());
@@ -434,7 +453,8 @@ fn sixteen_thousand_rows_fit_with_one_hundred_twenty_eight_governor_slots() -> a
         CacheConfig {
             byte_limit: CACHE_BYTES,
         },
-    )?;
+    )
+    .map_err(disposed_opening_error)?;
     let cold = memory.snapshot();
     assert_eq!(core.cache_stats()?.entries, 0);
     let cold_reads = backend.reads();
@@ -504,7 +524,12 @@ fn sixteen_thousand_rows_fit_with_one_hundred_twenty_eight_governor_slots() -> a
     assert_eq!(core.cache_warmup_status()?.cumulative_work, work);
     assert_eq!(backend.reads(), warm_reads);
     core.close().into_result()?;
-    drop(core);
+    let mut disposal = core.into_disposal();
+    assert!(
+        disposal.dispose().complete(),
+        "actual native disposal incomplete"
+    );
+    drop(disposal);
     assert_eq!(memory.snapshot().reserved_bytes, baseline.reserved_bytes);
     assert_eq!(
         memory.snapshot().live_reservations,

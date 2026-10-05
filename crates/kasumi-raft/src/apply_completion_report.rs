@@ -25,8 +25,23 @@ pub enum ApplyObservationRef<'a> {
     Running,
     Returned,
     Error(&'a anyhow::Error),
+    AdmissionRefused(kasumi_store::ScratchAdmissionRefusal),
+    Creation(&'a kasumi_store::ScratchCreationFailure),
     Unwound(&'a (dyn Any + Send)),
     Refused(CompletionSettleError),
+}
+#[cfg(any(test, feature = "test-utils"))]
+#[derive(Clone, Copy, Debug)]
+pub struct CompletionCustodyDiagnostics {
+    pub sealed: bool,
+    pub failed: bool,
+    pub drained: bool,
+    pub repeated: bool,
+    pub waking: bool,
+    pub sink_no_native_children: bool,
+    pub refusal_stage: Option<crate::apply_publication::ApplyRefusalStage>,
+    /// Exact stored proof for this action's unchanged original; no capability.
+    pub action_error_retired: bool,
 }
 pub struct OrdinaryApplyReport<'a> {
     pub ordinal: u64,
@@ -40,9 +55,18 @@ pub struct OrdinaryApplyReport<'a> {
     pub cleanup: ApplyObservationRef<'a>,
     pub drain: ApplyObservationRef<'a>,
     pub wake_panic: Option<&'a (dyn Any + Send)>,
+    /// Borrowed scalar diagnostics; these carry no retirement capability.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub custody_guards: CompletionCustodyDiagnostics,
 }
 pub enum RetainedApplyReport<'a> {
     Single(&'a anyhow::Error),
+    Preparation {
+        original: &'a kasumi_store::ScratchOperationFailure,
+        publication: Option<&'a anyhow::Error>,
+        response: Option<&'a AppliedResponse>,
+        violation: Option<CompletionViolation>,
+    },
     Ordinary(OrdinaryApplyReport<'a>),
 }
 
@@ -51,6 +75,8 @@ pub(crate) enum Observation {
     Running,
     Returned,
     Error(anyhow::Error),
+    AdmissionRefused(kasumi_store::ScratchAdmissionRefusal),
+    Creation(kasumi_store::ScratchCreationFailure),
     Unwound(Box<dyn Any + Send>),
     Refused(CompletionSettleError),
 }
@@ -61,6 +87,8 @@ impl Observation {
             Self::Running => ApplyObservationRef::Running,
             Self::Returned => ApplyObservationRef::Returned,
             Self::Error(e) => ApplyObservationRef::Error(e),
+            Self::AdmissionRefused(original) => ApplyObservationRef::AdmissionRefused(*original),
+            Self::Creation(original) => ApplyObservationRef::Creation(original),
             Self::Unwound(p) => ApplyObservationRef::Unwound(p.as_ref()),
             Self::Refused(e) => ApplyObservationRef::Refused(*e),
         }
@@ -68,10 +96,20 @@ impl Observation {
     fn returned(&self) -> bool {
         matches!(self, Self::Returned)
     }
-    fn from_caught(result: std::thread::Result<anyhow::Result<()>>) -> Self {
+    fn from_caught(
+        result: std::thread::Result<Result<(), kasumi_store::ScratchOperationFailure>>,
+    ) -> Self {
         match result {
             Ok(Ok(())) => Self::Returned,
-            Ok(Err(e)) => Self::Error(e),
+            Ok(Err(kasumi_store::ScratchOperationFailure::Operation(original))) => {
+                Self::Error(original)
+            }
+            Ok(Err(kasumi_store::ScratchOperationFailure::AdmissionRefused(original))) => {
+                Self::AdmissionRefused(original)
+            }
+            Ok(Err(kasumi_store::ScratchOperationFailure::Creation(original))) => {
+                Self::Creation(original)
+            }
             Err(p) => Self::Unwound(p),
         }
     }
@@ -83,10 +121,14 @@ const SETTLED: u8 = 3;
 const FAILED: u8 = 4;
 struct EntryState {
     ordinal: u64,
+    #[cfg(any(test, feature = "test-utils"))]
+    binding_address: usize,
     violation: Option<CompletionViolation>,
     response: Option<AppliedResponse>,
     sink: Observation,
     sink_no_native_children: bool,
+    #[cfg(any(test, feature = "test-utils"))]
+    refusal_stage: Option<crate::apply_publication::ApplyRefusalStage>,
     action: Observation,
     backend: Observation,
     finish: Observation,
@@ -97,10 +139,14 @@ impl EntryState {
     fn empty(ordinal: u64) -> Self {
         Self {
             ordinal,
+            #[cfg(any(test, feature = "test-utils"))]
+            binding_address: 0,
             violation: None,
             response: None,
             sink: Observation::NotEntered,
             sink_no_native_children: false,
+            #[cfg(any(test, feature = "test-utils"))]
+            refusal_stage: None,
             action: Observation::NotEntered,
             backend: Observation::NotEntered,
             finish: Observation::NotEntered,
@@ -121,6 +167,17 @@ impl EntryState {
             cleanup: self.cleanup.borrowed(),
             drain: self.drain.borrowed(),
             wake_panic: None,
+            #[cfg(any(test, feature = "test-utils"))]
+            custody_guards: CompletionCustodyDiagnostics {
+                sealed: false,
+                failed: false,
+                drained: false,
+                repeated: false,
+                waking: false,
+                sink_no_native_children: self.sink_no_native_children,
+                refusal_stage: self.refusal_stage,
+                action_error_retired: false,
+            },
         })
     }
 }
@@ -131,6 +188,7 @@ pub(crate) struct CompletionState {
     waiter: Mutex<Option<Waker>>,
     waking: AtomicBool,
     pending_drain: Mutex<Option<Observation>>,
+    retired_action: OnceLock<CompletionActionFailureIdentity>,
     wake_panic: OnceLock<Mutex<Box<dyn Any + Send>>>,
     phase: AtomicU8,
     failed: AtomicBool,
@@ -146,6 +204,7 @@ impl CompletionState {
             waiter: Mutex::new(None),
             waking: AtomicBool::new(false),
             pending_drain: Mutex::new(None),
+            retired_action: OnceLock::new(),
             wake_panic: OnceLock::new(),
             phase: AtomicU8::new(IDLE),
             failed: AtomicBool::new(false),
@@ -171,8 +230,8 @@ impl CompletionState {
         )
     }
     /// The failure remains latched and its original remains inspectable. Only
-    /// the exact Store disposition plus positive actual cleanup can retire its
-    /// native custody; arbitrary errors and every other failed producer cannot.
+    /// an exact Store disposition or the actual capture error's sealed source
+    /// retirement can retire its native custody. Arbitrary errors cannot.
     pub(crate) fn failure_ownership_drained(&self) -> bool {
         if !self.failed()
             || !self.sealed.load(Ordering::Acquire)
@@ -183,16 +242,28 @@ impl CompletionState {
         {
             return false;
         }
+        let Some(binding) = self.binding.get() else {
+            return false;
+        };
+        let identity = binding.identity();
+        // poll_drain already captured this exact owner's observation outside
+        // every report mutex, including any independent callback panic.
+        let retired_action = self.retired_action.get().copied();
         let state = match self.state.try_lock() {
             Ok(state) => state,
             Err(std::sync::TryLockError::Poisoned(_))
             | Err(std::sync::TryLockError::WouldBlock) => return false,
         };
-        state.sink_no_native_children
+        let exact_failed_work_retired = (state.sink_no_native_children
+            && matches!(state.sink, Observation::Error(_))
+            && state.action.returned())
+            || (state.sink.returned()
+                && matches!(&state.action, Observation::Error(original)
+                    if retired_action.is_some_and(|proof|
+                        proof.matches(identity, state.ordinal, original))));
+        exact_failed_work_retired
             && state.response.is_some()
             && state.violation.is_none()
-            && matches!(state.sink, Observation::Error(_))
-            && state.action.returned()
             && state.backend.returned()
             && state.finish.returned()
             && matches!(
@@ -235,6 +306,10 @@ impl CompletionState {
         // A successful entry is empty before reset; no old original may retire here.
         assert!(state.response.is_none());
         *state = EntryState::empty(ordinal);
+        #[cfg(any(test, feature = "test-utils"))]
+        {
+            state.binding_address = std::ptr::from_ref(actual) as usize;
+        }
         state.action = Observation::Running;
         self.phase.store(ENTERED, Ordering::Release);
         Ok(ordinal)
@@ -288,6 +363,10 @@ impl CompletionState {
                 Ok(value)
             }
             Ok(Err(Some(failure))) => {
+                #[cfg(any(test, feature = "test-utils"))]
+                {
+                    state.refusal_stage = failure.refusal_stage();
+                }
                 let (error, no_native_children) = failure.into_parts();
                 state.sink = Observation::Error(error);
                 state.sink_no_native_children = no_native_children;
@@ -304,7 +383,7 @@ impl CompletionState {
     }
     pub(crate) fn action(
         &self,
-        result: std::thread::Result<anyhow::Result<()>>,
+        result: std::thread::Result<Result<(), kasumi_store::ScratchOperationFailure>>,
     ) -> Result<(), CompletionCallError> {
         let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
         assert!(matches!(state.action, Observation::Running));
@@ -318,7 +397,10 @@ impl CompletionState {
             Ok(())
         }
     }
-    pub(crate) fn record_backend(&self, backend: std::thread::Result<anyhow::Result<()>>) {
+    pub(crate) fn record_backend(
+        &self,
+        backend: std::thread::Result<Result<(), kasumi_store::ScratchOperationFailure>>,
+    ) {
         let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
         assert!(matches!(state.backend, Observation::NotEntered));
         state.backend = Observation::from_caught(backend);
@@ -426,6 +508,17 @@ impl CompletionState {
             .map(|p| p.lock().unwrap_or_else(|p| p.into_inner()));
         let mut report = state.borrowed(single);
         if let RetainedApplyReport::Ordinary(view) = &mut report {
+            #[cfg(any(test, feature = "test-utils"))]
+            {
+                view.custody_guards.sealed = self.sealed.load(Ordering::Acquire);
+                view.custody_guards.failed = self.failed();
+                view.custody_guards.drained = self.drained();
+                view.custody_guards.repeated = self.repeated.load(Ordering::Acquire);
+                view.custody_guards.waking = self.waking.load(Ordering::Acquire);
+                view.custody_guards.action_error_retired = matches!(&state.action, Observation::Error(original)
+                        if self.retired_action.get().is_some_and(|proof|
+                            proof.matches_observed(state.binding_address, state.ordinal, original)));
+            }
             if let Some(pending) = pending.as_ref().and_then(|guard| guard.as_ref()) {
                 view.drain = pending.borrowed()
             }
@@ -542,14 +635,23 @@ impl CompletionState {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             match binding.poll_drain(cx) {
                 Poll::Pending => Poll::Pending,
-                Poll::Ready(Ok(())) if binding.is_drained() => Poll::Ready(Ok(())),
+                Poll::Ready(Ok(())) if binding.is_drained() => {
+                    Poll::Ready(Ok(binding.retired_action_failure()))
+                }
                 Poll::Ready(Ok(())) => Poll::Ready(Err(CompletionSettleError::Retained)),
                 Poll::Ready(Err(error)) => Poll::Ready(Err(error)),
             }
         }));
         let outcome = match result {
             Ok(Poll::Pending) => return Poll::Pending,
-            Ok(Poll::Ready(Ok(()))) => Observation::Returned,
+            Ok(Poll::Ready(Ok(proof))) => {
+                if let Some(proof) = proof {
+                    // This is one sealed failed invocation. No reset/replay can
+                    // replace its error allocation or terminal observation.
+                    assert!(self.retired_action.set(proof).is_ok());
+                }
+                Observation::Returned
+            }
             Ok(Poll::Ready(Err(error))) => Observation::Refused(error),
             Err(payload) => Observation::Unwound(payload),
         };

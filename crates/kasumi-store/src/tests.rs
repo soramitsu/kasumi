@@ -106,24 +106,38 @@ fn failed_node_table_setup_observes_the_original_native_close() {
     )
     .err()
     .expect("the table setup sync is injected to fail");
-    let failure = error.downcast_ref::<NodeStoreSetupFailure>().unwrap();
+    let NodeStoreStartFailure::Opening(failure) = error.original() else {
+        panic!("the exact admitted table request must retain its original startup failure");
+    };
+    let tables = failure
+        .custody()
+        .tables()
+        .expect("failed original table request");
+    let report = tables.report();
+    let terminal = report.terminal().expect("actual attempted commit");
+    let TerminalObservation::Returned(Err(original)) = terminal.terminal() else {
+        panic!("injected table setup sync must retain the original commit error");
+    };
+    let kasumi_kv::WriteTerminalError::Commit(kasumi_kv::CommitError(kasumi_kv::StorageError::Io(
+        original,
+    ))) = original
+    else {
+        panic!("injected table setup sync must retain its original native I/O error");
+    };
     assert!(
-        failure
-            .original_error()
-            .unwrap()
+        original
             .to_string()
             .contains("injected table setup sync failure")
     );
-    failure.with_close_report(|report| {
-        assert_eq!(
-            report.native_disposition(),
-            BackendNativeDisposition::Drained
-        );
-        assert_eq!(
-            report.settlement(),
-            DatabaseCloseSettlement::DrainedWithFailure
-        );
-    });
+    let opening = failure.custody().opening().report();
+    assert_eq!(
+        opening.engine().native_disposition(),
+        BackendNativeDisposition::Drained
+    );
+    assert_eq!(
+        opening.engine().settlement(),
+        kasumi_kv::DatabaseOpenSettlement::DrainedWithFailure
+    );
     assert_eq!(backend.closes.load(Ordering::Acquire), 1);
 }
 
@@ -302,7 +316,12 @@ async fn canceled_shutdown_drains_blocked_probe_and_releases_the_database_file()
         fixture_scratch.clone(),
     )
     .unwrap();
-    let weak_node = Arc::downgrade(&node);
+    let weak_node = node.locator();
+    let mut node_retirement = node.clone().retire();
+    assert_eq!(
+        node_retirement.disposition(),
+        StorageCensusDisposition::Retained
+    );
     let provider = Arc::new(Blocked {
         inner: LocalKeyProvider::new([39; 32]),
         block: AtomicBool::new(false),
@@ -354,9 +373,11 @@ async fn canceled_shutdown_drains_blocked_probe_and_releases_the_database_file()
     let (first, second) = tokio::join!(store.shutdown(), store.shutdown());
     first.unwrap();
     second.unwrap();
+    store.node.shutdown().await.unwrap();
     drop(store);
     assert!(weak_store.upgrade().is_none());
-    assert!(weak_node.upgrade().is_none());
+    assert_eq!(node_retirement.retry(), StorageCensusDisposition::Retired);
+    assert!(matches!(weak_node.try_borrow(), NodeStoreLookup::Missing));
 
     // Reopen immediately: completion, rather than a file-lock retry or sleep,
     // proves no background owner can retain the previous database.
@@ -376,8 +397,8 @@ async fn canceled_shutdown_drains_blocked_probe_and_releases_the_database_file()
     .await
     .unwrap();
     assert_eq!(
-        reopened.get("documents", b"durable").unwrap(),
-        Some(b"value".to_vec())
+        reopened.get("documents", b"durable").unwrap().as_deref(),
+        Some(b"value".as_slice())
     );
     reopened.shutdown().await.unwrap();
 }
@@ -435,7 +456,12 @@ async fn cancelled_store_drain_retains_joined_panic_and_pending_physical_owner()
         .write_batch(&[WriteOp::put("documents", b"retained", b"value")])
         .unwrap();
     let node = store.node.clone();
-    let weak_node = Arc::downgrade(&node);
+    let weak_node = node.locator();
+    let mut node_retirement = node.clone().retire();
+    assert_eq!(
+        node_retirement.disposition(),
+        StorageCensusDisposition::Retained
+    );
     let (release, waiting) = tokio::sync::oneshot::channel();
     let pending = tokio::spawn(async move {
         let _node = node;
@@ -506,8 +532,10 @@ async fn cancelled_store_drain_retains_joined_panic_and_pending_physical_owner()
         &issue,
         &store.shutdown().await.unwrap_err().issues()[0]
     ));
+    store.node.shutdown().await.unwrap();
     drop(store);
-    assert!(weak_node.upgrade().is_none());
+    assert_eq!(node_retirement.retry(), StorageCensusDisposition::Retired);
+    assert!(matches!(weak_node.try_borrow(), NodeStoreLookup::Missing));
     let reopened = TenantStore::open_existing_fixture_with_clock(
         NodeStore::open_existing_fixture(
             &path,
@@ -523,8 +551,8 @@ async fn cancelled_store_drain_retains_joined_panic_and_pending_physical_owner()
     .await
     .unwrap();
     assert_eq!(
-        reopened.get("documents", b"retained").unwrap(),
-        Some(b"value".to_vec())
+        reopened.get("documents", b"retained").unwrap().as_deref(),
+        Some(b"value".as_slice())
     );
     reopened.shutdown().await.unwrap();
 }
@@ -602,6 +630,8 @@ async fn atomic_batches_and_cross_namespace_isolation_survive_reopen() {
     assert!(other.get("documents", b"a").unwrap().is_none());
     drop(other);
     drop(same);
+    store.shutdown().await.unwrap();
+    store.node.shutdown().await.unwrap();
     drop(store);
     let store = TenantStore::open_existing_fixture_with_clock(
         NodeStore::open_existing_fixture(
@@ -617,10 +647,13 @@ async fn atomic_batches_and_cross_namespace_isolation_survive_reopen() {
     )
     .await
     .unwrap();
-    assert_eq!(store.get("documents", b"a").unwrap(), Some(b"one".to_vec()));
     assert_eq!(
-        store.get("receipts", b"a").unwrap(),
-        Some(b"receipt".to_vec())
+        store.get("documents", b"a").unwrap().as_deref(),
+        Some(b"one".as_slice())
+    );
+    assert_eq!(
+        store.get("receipts", b"a").unwrap().as_deref(),
+        Some(b"receipt".as_slice())
     );
     assert!(store.get("documents", b"gone").unwrap().is_none());
 }
@@ -644,8 +677,8 @@ async fn invalid_batch_does_not_apply_earlier_operations() {
             .is_err()
     );
     assert_eq!(
-        store.get("documents", b"a").unwrap(),
-        Some(b"before".to_vec())
+        store.get("documents", b"a").unwrap().as_deref(),
+        Some(b"before".as_slice())
     );
     assert!(
         store
@@ -668,7 +701,7 @@ async fn names_keys_and_values_are_absent_from_disk_and_nonce_changes_on_overwri
     let read_raw = || {
         let state = store.state.read();
         let disk_key = record_key(store.tenant(), ns, key, state.keys.get(INDEX_KEY).unwrap());
-        let tx = store.node.db.begin_read().unwrap();
+        let tx = store.node.body().db.begin_read().unwrap();
         let table = tx.open_table(RECORDS).unwrap();
         table
             .get(disk_key.as_slice())
@@ -727,13 +760,13 @@ async fn ciphertext_corruption_swapping_and_wrong_tenant_are_rejected() {
     let a = physical(&store, b"a");
     let b = physical(&store, b"b");
     let cross = physical(&other, b"a");
-    let tx = store.node.db.begin_read().unwrap();
+    let tx = store.node.body().db.begin_read().unwrap();
     let table = tx.open_table(RECORDS).unwrap();
     let original = table.get(a.as_slice()).unwrap().unwrap().value().to_vec();
     drop(table);
     drop(tx);
     let raw_write = |key: &[u8], bytes: &[u8]| {
-        let tx = store.node.db.begin_write().unwrap();
+        let tx = store.node.body().db.begin_write().unwrap();
         {
             tx.open_table(RECORDS).unwrap().insert(key, bytes).unwrap();
         }
@@ -959,6 +992,8 @@ async fn rewrap_preserves_documents_after_retiring_old_wrapping_versions() {
     store.rewrap_keys().await.unwrap();
     provider.set_minimum_version(2);
     store.refresh_lease().await.unwrap();
+    store.shutdown().await.unwrap();
+    store.node.shutdown().await.unwrap();
     drop(store);
     let store = TenantStore::open_existing_fixture_with_clock(
         NodeStore::open_existing_fixture(
@@ -975,8 +1010,8 @@ async fn rewrap_preserves_documents_after_retiring_old_wrapping_versions() {
     .await
     .unwrap();
     assert_eq!(
-        store.get("docs", b"a").unwrap(),
-        Some(b"before rotation".to_vec())
+        store.get("docs", b"a").unwrap().as_deref(),
+        Some(b"before rotation".as_slice())
     );
 }
 
@@ -1051,7 +1086,7 @@ async fn every_injected_commit_failure_recovers_whole_batch_or_previous_state() 
         )
         .await
         .unwrap();
-        let after = recovered.get("docs", b"a").unwrap() == Some(b"after".to_vec());
+        let after = recovered.get("docs", b"a").unwrap().as_deref() == Some(b"after".as_slice());
         assert_eq!(
             recovered.get("receipts", b"receipt").unwrap().is_some(),
             after,
@@ -1188,6 +1223,8 @@ async fn faulty_provider_rewrap_cannot_replace_data_keys_or_break_recovery() {
             .to_string()
             .contains("changed data key")
     );
+    store.shutdown().await.unwrap();
+    store.node.shutdown().await.unwrap();
     drop(store);
     let store = TenantStore::open_existing_fixture_with_clock(
         NodeStore::open_existing_fixture(
@@ -1204,8 +1241,8 @@ async fn faulty_provider_rewrap_cannot_replace_data_keys_or_break_recovery() {
     .await
     .unwrap();
     assert_eq!(
-        store.get("docs", b"a").unwrap(),
-        Some(b"still recoverable".to_vec())
+        store.get("docs", b"a").unwrap().as_deref(),
+        Some(b"still recoverable".as_slice())
     );
 }
 
@@ -1281,8 +1318,8 @@ async fn wrapping_catalog_is_atomic_across_every_injected_commit_failure() {
             "partial catalog at failure {position}"
         );
         assert_eq!(
-            recovered.get("docs", b"a").unwrap(),
-            Some(b"survives key rotation".to_vec())
+            recovered.get("docs", b"a").unwrap().as_deref(),
+            Some(b"survives key rotation".as_slice())
         );
         if outcome.is_ok() {
             assert_eq!(versions[0], 2);
@@ -1338,12 +1375,12 @@ async fn expiry_during_fsync_reports_unknown_outcome_and_preserves_committed_bat
     .await
     .unwrap();
     assert_eq!(
-        recovered.get("docs", b"a").unwrap(),
-        Some(b"committed".to_vec())
+        recovered.get("docs", b"a").unwrap().as_deref(),
+        Some(b"committed".as_slice())
     );
     assert_eq!(
-        recovered.get("receipts", b"r").unwrap(),
-        Some(b"committed".to_vec())
+        recovered.get("receipts", b"r").unwrap().as_deref(),
+        Some(b"committed".as_slice())
     );
 }
 
@@ -1391,8 +1428,8 @@ async fn expiry_during_key_catalog_fsync_does_not_acknowledge_rotation() {
     .unwrap();
     assert_eq!(recovered.catalog.read().keys.len(), 3);
     assert_eq!(
-        recovered.get("docs", b"a").unwrap(),
-        Some(b"old ciphertext".to_vec())
+        recovered.get("docs", b"a").unwrap().as_deref(),
+        Some(b"old ciphertext".as_slice())
     );
 }
 
@@ -1478,14 +1515,14 @@ async fn completed_shutdown_allows_distinct_store_without_reviving_retained_hand
     .unwrap();
     assert!(!Arc::ptr_eq(&fresh, &original));
     assert_eq!(
-        fresh.get("docs", b"retained").unwrap(),
-        Some(b"durable".to_vec())
+        fresh.get("docs", b"retained").unwrap().as_deref(),
+        Some(b"durable".as_slice())
     );
     assert!(retained.get("docs", b"retained").is_err());
     original.shutdown().await.unwrap();
     assert_eq!(
-        fresh.get("docs", b"retained").unwrap(),
-        Some(b"durable".to_vec())
+        fresh.get("docs", b"retained").unwrap().as_deref(),
+        Some(b"durable".as_slice())
     );
     fresh.shutdown().await.unwrap();
 }

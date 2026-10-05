@@ -593,23 +593,19 @@ fn invalid_batch_inputs_reject_without_reads_or_appends_and_do_not_poison() {
     let pages = backend.pages.lock().unwrap().len();
     let reads = backend.reads.load(AtomicOrdering::Relaxed);
     for edits in cases {
-        assert!(matches!(
-            mutator.try_set_leaf_batch(root, 2, &edits),
-            Err(CoreError::InvalidInput(_))
-        ));
+        assert!(
+            matches!(&(mutator.try_set_leaf_batch(root, 2, &edits)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput(_))))
+        );
     }
     for generation in [0, 2] {
-        assert!(matches!(
-            mutator.try_set_leaf_batch(
+        assert!(matches!(&(mutator.try_set_leaf_batch(
                 DirectoryRoot {
                     generation: 3,
                     ..root
                 },
                 generation,
                 &pair()
-            ),
-            Err(CoreError::InvalidInput(_))
-        ));
+            )), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput(_)))));
     }
     assert_eq!(backend.pages.lock().unwrap().len(), pages);
     assert_eq!(backend.reads.load(AtomicOrdering::Relaxed), reads);
@@ -630,10 +626,9 @@ fn batch_workspace_denial_and_expired_owner_do_not_start_page_effects() {
     let pages = backend.pages.lock().unwrap().len();
     let reads = backend.reads.load(AtomicOrdering::Relaxed);
     let denied = Admission::new(16 << 10);
-    assert!(matches!(
-        DirectoryWriteWorkspace::for_edits(denied.clone()),
-        Err(CoreError::CapacityDenied)
-    ));
+    assert!(
+        matches!(&(DirectoryWriteWorkspace::for_edits(denied.clone())), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::CapacityDenied)))
+    );
     assert_eq!(denied.0.used.load(AtomicOrdering::Relaxed), 0);
     denied.check_owner().unwrap();
     assert_eq!(backend.pages.lock().unwrap().len(), pages);
@@ -643,15 +638,13 @@ fn batch_workspace_denial_and_expired_owner_do_not_start_page_effects() {
     let mut mutator_workspace = DirectoryWriteWorkspace::for_edits(admission.clone()).unwrap();
     let mut mutator = DirectoryMutator::new(&backend, &mut mutator_workspace).unwrap();
     admission.0.failed.store(true, AtomicOrdering::Relaxed);
-    assert!(matches!(
-        mutator.try_set_leaf_batch(root, 2, &pair()),
-        Err(CoreError::OwnerFailed)
-    ));
+    assert!(
+        matches!(&(mutator.try_set_leaf_batch(root, 2, &pair())), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+    );
     admission.0.failed.store(false, AtomicOrdering::Relaxed);
-    assert!(matches!(
-        mutator.try_set_leaf_batch(root, 2, &pair()),
-        Err(CoreError::OwnerFailed)
-    ));
+    assert!(
+        matches!(&(mutator.try_set_leaf_batch(root, 2, &pair())), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+    );
     assert_eq!(backend.pages.lock().unwrap().len(), pages);
     assert_eq!(backend.reads.load(AtomicOrdering::Relaxed), reads);
     drop(mutator_workspace);
@@ -675,13 +668,14 @@ fn corrupted_root_leaf_is_an_error_not_a_declined_fast_path() {
         drop(pages);
         let mut mutator_workspace = DirectoryWriteWorkspace::for_edits(admission.clone()).unwrap();
         let mut mutator = DirectoryMutator::new(&backend, &mut mutator_workspace).unwrap();
-        assert!(matches!(
-            mutator.try_set_leaf_batch(root, 2, &pair()),
-            Err(CoreError::Corrupt(_))
-        ));
+        assert!(
+            matches!(&(mutator.try_set_leaf_batch(root, 2, &pair())), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::Corrupt(_))))
+        );
         assert_eq!(backend.pages.lock().unwrap().len(), count);
         backend.pages.lock().unwrap()[root.page.unwrap().page_index as usize] = original;
-        assert!(matches!(mutator.finish(root), Err(CoreError::OwnerFailed)));
+        assert!(
+            matches!(&(mutator.finish(root)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+        );
         drop(mutator_workspace);
         assert_eq!(admission.0.used.load(AtomicOrdering::Relaxed), 0);
     }
@@ -717,13 +711,14 @@ fn corrupted_deeper_root_or_selected_leaf_is_not_a_declined_fast_path() {
         ];
         let mut mutator_workspace = DirectoryWriteWorkspace::for_edits(admission.clone()).unwrap();
         let mut mutator = DirectoryMutator::new(&backend, &mut mutator_workspace).unwrap();
-        assert!(matches!(
-            mutator.try_set_leaf_batch(root, 2, &edits),
-            Err(CoreError::Corrupt(_))
-        ));
+        assert!(
+            matches!(&(mutator.try_set_leaf_batch(root, 2, &edits)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::Corrupt(_))))
+        );
         assert_eq!(backend.pages.lock().unwrap().len(), before);
         backend.pages.lock().unwrap()[page_index] = original;
-        assert!(matches!(mutator.finish(root), Err(CoreError::OwnerFailed)));
+        assert!(
+            matches!(&(mutator.finish(root)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+        );
         drop(mutator_workspace);
         assert_eq!(admission.0.used.load(AtomicOrdering::Relaxed), 0);
     }
@@ -741,14 +736,14 @@ impl DirectoryBackend for FaultPages {
     }
     fn append_page(&self, bytes: &[u8]) -> Result<DirectoryPageRef, CoreError> {
         if self.append.load(AtomicOrdering::Relaxed) == 1 {
-            return Err(CoreError::Io(std::io::Error::other(
-                "batch append before effect",
+            return Err(CoreError::new(crate::CoreErrorCause::Io(
+                std::io::Error::other("batch append before effect"),
             )));
         }
         let reference = self.inner.append_page(bytes)?;
         if self.append.load(AtomicOrdering::Relaxed) == 2 {
-            return Err(CoreError::Io(std::io::Error::other(
-                "batch append after effect",
+            return Err(CoreError::new(crate::CoreErrorCause::Io(
+                std::io::Error::other("batch append after effect"),
             )));
         }
         Ok(reference)
@@ -756,8 +751,8 @@ impl DirectoryBackend for FaultPages {
     fn sync_pages(&self) -> Result<(), CoreError> {
         self.inner.sync_pages()?;
         if self.sync.load(AtomicOrdering::Relaxed) {
-            return Err(CoreError::Io(std::io::Error::other(
-                "batch sync after effect",
+            return Err(CoreError::new(crate::CoreErrorCause::Io(
+                std::io::Error::other("batch sync after effect"),
             )));
         }
         Ok(())
@@ -780,12 +775,16 @@ fn append_and_sync_failures_poison_only_the_private_batch_and_preserve_old_root(
             }
             let result = mutator.try_set_leaf_batch(root, 2, &pair());
             if failure < 3 {
-                assert!(matches!(result, Err(CoreError::Io(_))));
+                assert!(
+                    matches!(&(result), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::Io(_))))
+                );
             } else {
                 let (private, consumed) = result.unwrap().unwrap();
                 assert_eq!(consumed, 2);
                 backend.sync.store(true, AtomicOrdering::Relaxed);
-                assert!(matches!(mutator.finish(private), Err(CoreError::Io(_))));
+                assert!(
+                    matches!(&(mutator.finish(private)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::Io(_))))
+                );
             }
             assert_eq!(
                 backend.inner.pages.lock().unwrap().len() - before,
@@ -797,11 +796,12 @@ fn append_and_sync_failures_poison_only_the_private_batch_and_preserve_old_root(
             );
             backend.append.store(0, AtomicOrdering::Relaxed);
             backend.sync.store(false, AtomicOrdering::Relaxed);
-            assert!(matches!(
-                mutator.try_set_leaf_batch(root, 2, &pair()),
-                Err(CoreError::OwnerFailed)
-            ));
-            assert!(matches!(mutator.finish(root), Err(CoreError::OwnerFailed)));
+            assert!(
+                matches!(&(mutator.try_set_leaf_batch(root, 2, &pair())), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+            );
+            assert!(
+                matches!(&(mutator.finish(root)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+            );
             drop(mutator_workspace);
             assert_directory_model(&backend, admission.clone(), root, &model);
             assert_eq!(admission.0.used.load(AtomicOrdering::Relaxed), 0);

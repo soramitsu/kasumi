@@ -5,19 +5,19 @@ use kasumi_store::{NodeStore, test_utils::LocalKeyProvider};
 use std::time::Duration;
 
 #[path = "bootstrap_replica_budget.rs"]
-mod replica_budget;
+pub(super) mod replica_budget;
 
 const NODE_STORE_ID: uuid::Uuid = uuid::Uuid::from_u128(0xa1f9_93e5_2727_480a_9e7c_6e39_eb51_5f01);
 
 struct Replica {
     storage: crate::test_utils::FixtureStorage,
-    node: Arc<NodeStore>,
+    node: NodeStore,
     stores: Arc<TenantStorageSet>,
     audit: Arc<SecurityAudit>,
     directory: tempfile::TempDir,
 }
 impl Replica {
-    async fn new() -> anyhow::Result<Self> {
+    async fn new() -> crate::test_fixture_failure::FixtureResult<Self> {
         Self::with_config(replica_budget::planned_config).await
     }
     async fn with_config(
@@ -25,7 +25,7 @@ impl Replica {
             &kasumi_store::NodeDiskConfig,
             &kasumi_store::ScratchDiskConfig,
         ) -> anyhow::Result<crate::admission::AdmissionConfig>,
-    ) -> anyhow::Result<Self> {
+    ) -> crate::test_fixture_failure::FixtureResult<Self> {
         let directory = kasumi_store::test_utils::private_tempdir()?;
         let (persistent_config, scratch_config) =
             crate::test_utils::fixture_disk_configs(directory.path())?;
@@ -58,7 +58,7 @@ impl Replica {
     }
     async fn existing(
         (directory, storage): (tempfile::TempDir, crate::test_utils::FixtureStorage),
-    ) -> anyhow::Result<Self> {
+    ) -> crate::test_fixture_failure::FixtureResult<Self> {
         let node =
             storage.open_existing(directory.path().join("persistent/node.kv"), NODE_STORE_ID)?;
         let stores = TenantStorageSet::open_existing_fixture(
@@ -79,7 +79,7 @@ impl Replica {
         })
     }
     async fn audit(
-        node: Arc<NodeStore>,
+        node: NodeStore,
         existing: bool,
         admission: Arc<crate::admission::NodeAdmission>,
     ) -> anyhow::Result<Arc<SecurityAudit>> {
@@ -117,18 +117,21 @@ impl Replica {
         &self,
         installed: &ReplicatedBootstrap,
         actual_incarnation: &str,
-    ) -> anyhow::Result<()> {
+    ) -> crate::test_fixture_failure::FixtureResult<()> {
         bind_deployment(
             &self.stores,
             &serde_json::to_vec(&("replicated", installed))?,
         )?;
-        persist_new(&self.stores, &self.image(installed, actual_incarnation)?)
+        Ok(persist_new(
+            &self.stores,
+            &self.image(installed, actual_incarnation)?,
+        )?)
     }
     fn image(
         &self,
         installed: &ReplicatedBootstrap,
         actual_incarnation: &str,
-    ) -> anyhow::Result<SnapshotImage> {
+    ) -> crate::test_fixture_failure::FixtureResult<SnapshotImage> {
         let engine = TenantEngine::new(
             "replica".into(),
             actual_incarnation.into(),
@@ -186,7 +189,7 @@ impl Replica {
         node_id: u64,
         expected_incarnation: uuid::Uuid,
         expected: &str,
-    ) -> anyhow::Result<()> {
+    ) -> crate::test_fixture_failure::FixtureResult<()> {
         let before = retained(&self.stores)?;
         let error = open_existing_replicated(
             node_id,
@@ -218,7 +221,7 @@ async fn reject_first_installed_descriptor(
     installed: &ReplicatedBootstrap,
     bytes: &[u8],
     diagnostic: &str,
-) -> anyhow::Result<()> {
+) -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Replica::new().await?;
     fixture.stores.write_batch(
         &[WriteOp::put("engine.deployment", b"mode", bytes)],
@@ -229,7 +232,7 @@ async fn reject_first_installed_descriptor(
     fixture
         .reject(
             1,
-            uuid::Uuid::parse_str(&installed.incarnation)?,
+            uuid::Uuid::parse_str(&installed.incarnation).map_err(anyhow::Error::from)?,
             diagnostic,
         )
         .await?;
@@ -300,7 +303,8 @@ fn retained(stores: &TenantStorageSet) -> anyhow::Result<String> {
 }
 
 #[tokio::test]
-async fn installed_raft_identity_uses_the_bootstrap_view_generation() -> anyhow::Result<()> {
+async fn installed_raft_identity_uses_the_bootstrap_view_generation()
+-> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Replica::new().await?;
     let custody = fixture.stores.custody().store();
     fixture.stores.write_batch(
@@ -333,8 +337,8 @@ async fn installed_raft_identity_uses_the_bootstrap_view_generation() -> anyhow:
 }
 
 #[tokio::test]
-async fn physical_a_to_b_generation_keeps_pinned_bootstrap_and_reopens_only_b() -> anyhow::Result<()>
-{
+async fn physical_a_to_b_generation_keeps_pinned_bootstrap_and_reopens_only_b()
+-> crate::test_fixture_failure::FixtureResult<()> {
     use kasumi_store::test_utils::inject_authenticated_rows_below_facade;
 
     let fixture = Replica::new().await?;
@@ -393,9 +397,12 @@ async fn physical_a_to_b_generation_keeps_pinned_bootstrap_and_reopens_only_b() 
     // The old view still sees only A, including its independently encrypted
     // descriptor, manifest/chunks, digest, and Raft node/group rows.
     assert_eq!(
-        installed_replicated_bootstrap(&old, uuid::Uuid::parse_str(&installed_a.incarnation)?)?
-            .0
-            .incarnation,
+        installed_replicated_bootstrap(
+            &old,
+            uuid::Uuid::parse_str(&installed_a.incarnation).map_err(anyhow::Error::from)?
+        )?
+        .0
+        .incarnation,
         installed_a.incarnation
     );
     let pinned_image = load_at(&old, fixture.node.scratch_disk())?.expect("pinned A image");
@@ -407,9 +414,12 @@ async fn physical_a_to_b_generation_keeps_pinned_bootstrap_and_reopens_only_b() 
     );
     let newer = fixture.stores.read_view()?;
     assert_eq!(
-        installed_replicated_bootstrap(&newer, uuid::Uuid::parse_str(&installed_b.incarnation)?)?
-            .0
-            .incarnation,
+        installed_replicated_bootstrap(
+            &newer,
+            uuid::Uuid::parse_str(&installed_b.incarnation).map_err(anyhow::Error::from)?
+        )?
+        .0
+        .incarnation,
         installed_b.incarnation
     );
     let new_image = load_at(&newer, fixture.node.scratch_disk())?.expect("B image");
@@ -425,14 +435,14 @@ async fn physical_a_to_b_generation_keeps_pinned_bootstrap_and_reopens_only_b() 
     reopened
         .reject(
             1,
-            uuid::Uuid::parse_str(&installed_a.incarnation)?,
+            uuid::Uuid::parse_str(&installed_a.incarnation).map_err(anyhow::Error::from)?,
             "installed replicated genesis differs from expected incarnation",
         )
         .await?;
     let opened = open_existing_replicated(
         2,
         reopened.stores.clone(),
-        uuid::Uuid::parse_str(&installed_b.incarnation)?,
+        uuid::Uuid::parse_str(&installed_b.incarnation).map_err(anyhow::Error::from)?,
         Arc::new(InProcessRouter::default()),
         raft_config(),
         reopened.audit.clone(),
@@ -447,8 +457,8 @@ async fn physical_a_to_b_generation_keeps_pinned_bootstrap_and_reopens_only_b() 
 }
 
 #[tokio::test]
-async fn one_sided_physical_identity_fault_after_pin_rejects_existing_reopen() -> anyhow::Result<()>
-{
+async fn one_sided_physical_identity_fault_after_pin_rejects_existing_reopen()
+-> crate::test_fixture_failure::FixtureResult<()> {
     use kasumi_store::test_utils::inject_authenticated_rows_below_facade;
 
     for case in 0..3 {
@@ -518,7 +528,7 @@ async fn one_sided_physical_identity_fault_after_pin_rejects_existing_reopen() -
         reopened
             .reject(
                 1,
-                uuid::Uuid::parse_str(&installed.incarnation)?,
+                uuid::Uuid::parse_str(&installed.incarnation).map_err(anyhow::Error::from)?,
                 diagnostic,
             )
             .await?;
@@ -529,13 +539,13 @@ async fn one_sided_physical_identity_fault_after_pin_rejects_existing_reopen() -
 
 #[tokio::test]
 async fn existing_replica_never_creates_missing_bootstrap_or_changes_consensus_identity()
--> anyhow::Result<()> {
+-> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Replica::new().await?;
     let installed = bootstrap();
     fixture
         .reject(
             1,
-            uuid::Uuid::parse_str(&installed.incarnation)?,
+            uuid::Uuid::parse_str(&installed.incarnation).map_err(anyhow::Error::from)?,
             "required deployment binding",
         )
         .await?;
@@ -546,7 +556,7 @@ async fn existing_replica_never_creates_missing_bootstrap_or_changes_consensus_i
     fixture
         .reject(
             1,
-            uuid::Uuid::parse_str(&installed.incarnation)?,
+            uuid::Uuid::parse_str(&installed.incarnation).map_err(anyhow::Error::from)?,
             "replicated bootstrap is not initialized",
         )
         .await?;
@@ -575,7 +585,7 @@ async fn existing_replica_never_creates_missing_bootstrap_or_changes_consensus_i
     fixture
         .reject(
             2,
-            uuid::Uuid::parse_str(&installed.incarnation)?,
+            uuid::Uuid::parse_str(&installed.incarnation).map_err(anyhow::Error::from)?,
             "consensus identity differs",
         )
         .await?;
@@ -593,9 +603,9 @@ async fn existing_replica_never_creates_missing_bootstrap_or_changes_consensus_i
 
 #[tokio::test]
 async fn existing_replica_rejects_corrupt_manifest_body_and_authenticated_incarnation()
--> anyhow::Result<()> {
+-> crate::test_fixture_failure::FixtureResult<()> {
     let installed = bootstrap();
-    let expected = uuid::Uuid::parse_str(&installed.incarnation)?;
+    let expected = uuid::Uuid::parse_str(&installed.incarnation).map_err(anyhow::Error::from)?;
     for case in 0..5 {
         let fixture = Replica::new().await?;
         let binding = serde_json::to_vec(&("replicated", &installed))?;
@@ -649,10 +659,10 @@ async fn existing_replica_rejects_corrupt_manifest_body_and_authenticated_incarn
 
 #[tokio::test]
 async fn paired_bootstrap_guard_rejects_orphan_divergence_and_reader_rejects_alternate_bytes()
--> anyhow::Result<()> {
+-> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Replica::new().await?;
     let descriptor = bootstrap();
-    let expected = uuid::Uuid::parse_str(&descriptor.incarnation)?;
+    let expected = uuid::Uuid::parse_str(&descriptor.incarnation).map_err(anyhow::Error::from)?;
     let binding = serde_json::to_vec(&("replicated", &descriptor))?;
     let pristine = retained(&fixture.stores)?;
     // One-sided initial publication is forbidden by the writable facade.
@@ -723,10 +733,10 @@ async fn paired_bootstrap_guard_rejects_orphan_divergence_and_reader_rejects_alt
 
 #[tokio::test]
 async fn existing_replica_validates_authenticated_genesis_tag_domains_and_descriptor()
--> anyhow::Result<()> {
+-> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Replica::new().await?;
     let installed = bootstrap();
-    let expected = uuid::Uuid::parse_str(&installed.incarnation)?;
+    let expected = uuid::Uuid::parse_str(&installed.incarnation).map_err(anyhow::Error::from)?;
     fixture.seed(&installed, &installed.incarnation)?;
     fixture
         .reject(1, uuid::Uuid::nil(), "nil expected replicated incarnation")
@@ -766,7 +776,7 @@ async fn existing_replica_validates_authenticated_genesis_tag_domains_and_descri
     )
     .await?;
     reject_first_installed_descriptor(&installed, b"{", "unexpected deployment token").await?;
-    let canonical = std::str::from_utf8(&binding)?;
+    let canonical = std::str::from_utf8(&binding).map_err(anyhow::Error::from)?;
     reject_first_installed_descriptor(
         &installed,
         canonical.replace("\"1\":", "\"01\":").as_bytes(),
@@ -833,7 +843,8 @@ async fn existing_replica_validates_authenticated_genesis_tag_domains_and_descri
 }
 
 #[tokio::test]
-async fn target_deployment_requires_paired_current_writer_bytes() -> anyhow::Result<()> {
+async fn target_deployment_requires_paired_current_writer_bytes()
+-> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Replica::new().await?;
     let installed = bootstrap();
     let binding = serde_json::to_vec(&("replicated", &installed))?;
@@ -906,7 +917,8 @@ async fn target_deployment_requires_paired_current_writer_bytes() -> anyhow::Res
 }
 
 #[tokio::test]
-async fn target_deployment_accepts_valid_writer_bytes_above_legacy_cap() -> anyhow::Result<()> {
+async fn target_deployment_accepts_valid_writer_bytes_above_legacy_cap()
+-> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Replica::new().await?;
     let mut installed = bootstrap();
     installed
@@ -929,7 +941,7 @@ async fn target_deployment_accepts_valid_writer_bytes_above_legacy_cap() -> anyh
 }
 
 async fn leader(nodes: &BTreeMap<u64, Arc<Database>>) -> anyhow::Result<u64> {
-    Ok(tokio::time::timeout(Duration::from_secs(10), async {
+    tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             for (&id, node) in nodes {
                 // Release the metrics read lock before awaiting a barrier;
@@ -965,11 +977,12 @@ async fn leader(nodes: &BTreeMap<u64, Arc<Database>>) -> anyhow::Result<u64> {
             })
             .collect();
         format!("linearizable leader barrier did not complete; {observations:?}")
-    })?)
+    })
 }
 
 #[tokio::test]
-async fn initialize_replicated_keeps_custody_binding_before_membership() -> anyhow::Result<()> {
+async fn initialize_replicated_keeps_custody_binding_before_membership()
+-> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Replica::new().await?;
     let installed = bootstrap();
     let router = Arc::new(InProcessRouter::default());
@@ -1004,7 +1017,7 @@ async fn initialize_replicated_keeps_custody_binding_before_membership() -> anyh
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn existing_replicas_replay_committed_state_and_membership_after_full_close()
--> anyhow::Result<()> {
+-> crate::test_fixture_failure::FixtureResult<()> {
     use anyhow::Context as _;
 
     // Observe actual vote collectors and engine decisions across runtime tasks.
@@ -1051,9 +1064,9 @@ async fn existing_replicas_replay_committed_state_and_membership_after_full_clos
     let mut fixtures = BTreeMap::new();
     let mut nodes = BTreeMap::new();
     for id in 1..=4 {
-        let fixture = Replica::new()
-            .await
-            .with_context(|| format!("create initial replica {id} fixture"))?;
+        let fixture = Replica::new().await.inspect_err(|original| {
+            eprintln!("create initial replica {id} fixture: {original:#}")
+        })?;
         let database = fixtures::open_fixture_replicated(
             id,
             fixture.stores.clone(),
@@ -1063,7 +1076,7 @@ async fn existing_replicas_replay_committed_state_and_membership_after_full_clos
             fixture.audit.clone(),
         )
         .await
-        .with_context(|| format!("open initial replica {id}"))?;
+        .inspect_err(|original| eprintln!("open initial replica {id}: {original:#}"))?;
         router.register(group.clone(), id, database.raft_group().raft().clone());
         nodes.insert(id, database);
         fixtures.insert(id, fixture);
@@ -1105,16 +1118,43 @@ async fn existing_replicas_replay_committed_state_and_membership_after_full_clos
         .add_learner(4, BasicNode::new("relocated-4"))
         .await
         .context("add relocated replica 4 as learner")?;
+    let membership_leader = leader(&nodes)
+        .await
+        .context("select current leader after relocated learner catch-up")?;
     // Keep the current leader in the replacement voter set, avoiding an
     // intentionally ambiguous leader-removal response in this reopen fixture.
-    let removed = (1..=3).find(|id| *id != first).unwrap();
+    let removed = (1..=3).find(|id| *id != membership_leader).unwrap();
     let voters = (1..=4).filter(|id| *id != removed).collect::<BTreeSet<_>>();
-    nodes[&first]
+    let membership_before = nodes[&membership_leader]
+        .raft_group()
+        .raft()
+        .metrics()
+        .borrow()
+        .membership_config
+        .clone();
+    nodes[&membership_leader]
         .raft_group()
         .change_membership(voters.clone())
         .await
-        .context("commit replacement voter membership")?;
-    let membership_log = (*nodes[&first]
+        .with_context(|| {
+            let observations = nodes
+                .iter()
+                .map(|(id, node)| {
+                    let metrics = node.raft_group().raft().metrics().borrow().clone();
+                    format!(
+                        "node {id}: leader={:?}; last_log={:?}; last_applied={:?}; membership={:?}",
+                        metrics.current_leader,
+                        metrics.last_log_index,
+                        metrics.last_applied,
+                        metrics.membership_config
+                    )
+                })
+                .collect::<Vec<_>>();
+            format!(
+                "commit replacement voter membership at current leader {membership_leader}; before={membership_before:?}; actual observations={observations:?}"
+            )
+        })?;
+    let membership_log = (*nodes[&membership_leader]
         .raft_group()
         .raft()
         .metrics()
@@ -1205,9 +1245,9 @@ async fn existing_replicas_replay_committed_state_and_membership_after_full_clos
             drop(directory);
             continue;
         }
-        let fixture = Replica::existing(directory)
-            .await
-            .with_context(|| format!("reopen replica {id} storage fixture"))?;
+        let fixture = Replica::existing(directory).await.inspect_err(|original| {
+            eprintln!("reopen replica {id} storage fixture: {original:#}")
+        })?;
         let pinned = fixture.stores.read_view()?;
         let installed_identity = Some((id, group.clone()));
         assert_eq!(
@@ -1241,13 +1281,15 @@ async fn existing_replicas_replay_committed_state_and_membership_after_full_clos
         let opened = open_existing_replicated(
             id,
             fixture.stores.clone(),
-            uuid::Uuid::parse_str(&installed.incarnation)?,
+            uuid::Uuid::parse_str(&installed.incarnation).map_err(anyhow::Error::from)?,
             router.clone(),
             raft_config(),
             fixture.audit.clone(),
         )
         .await
-        .with_context(|| format!("open existing replicated database {id}"))?;
+        .inspect_err(|original| {
+            eprintln!("open existing replicated database {id}: {original:#}")
+        })?;
         assert_eq!(
             serde_json::to_vec(&opened.bootstrap)?,
             serde_json::to_vec(&installed)?
@@ -1318,7 +1360,7 @@ async fn existing_replicas_replay_committed_state_and_membership_after_full_clos
 
 #[tokio::test]
 async fn legacy_replica_total_refuses_maintenance_without_consuming_existing_owners()
--> anyhow::Result<()> {
+-> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Replica::with_config(replica_budget::legacy_invalid_config).await?;
     let quiescent = fixture.audit.quiescent_jobs_for_test().await;
     let before = fixture.storage.admission.snapshot();

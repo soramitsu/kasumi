@@ -2,12 +2,37 @@
 use super::*;
 use crate::startup_resources::Resources;
 
+#[derive(Debug)]
+pub(super) struct SnapshotStopped {
+    index: usize,
+    stage: &'static str,
+}
+impl std::fmt::Display for SnapshotStopped {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "operator snapshot preparation {}/{} retained",
+            self.index, self.stage
+        )
+    }
+}
+impl std::error::Error for SnapshotStopped {}
+
+pub(super) fn snapshot_marker(
+    observation: crate::administration::original_serving_runtime::OriginalRecoveryObservation,
+) -> anyhow::Error {
+    anyhow::Error::new(SnapshotStopped {
+        index: observation.index,
+        stage: observation.stage,
+    })
+}
+
 /// Resource-bearing fields precede the scope that retains the installation lock.
 /// Public operations execute in the LocalOperator registry; this owner never
 /// escapes into an unregistered caller while acquisition or cleanup is pending.
 pub(crate) struct OperatorState {
     pub(crate) config: RuntimeConfig,
-    pub(crate) node: Arc<NodeStore>,
+    pub(crate) node: NodeStore,
     pub(crate) audit: Arc<kasumi_engine::SecurityAudit>,
     pub(crate) credentials: Arc<LocalCredentials>,
     pub(crate) installed_owner: Arc<InstalledStandaloneOwner>,
@@ -15,6 +40,10 @@ pub(crate) struct OperatorState {
     resources: tokio::sync::Mutex<Resources>,
 }
 impl OperatorState {
+    #[allow(
+        clippy::result_large_err,
+        reason = "the native constructor returns whole inline custody into the same preadmitted inventory before any foreign marker; boxing the error would allocate outside that boundary"
+    )]
     pub(crate) async fn open(
         config: &RuntimeConfig,
         storage: crate::runtime_memory::RuntimeStorage,
@@ -24,6 +53,12 @@ impl OperatorState {
             config.validate()?;
             let admission = storage.facade(&config.admission)?;
             pending.owned_admissions.push(admission.clone());
+            pending.original_recoveries = Some(
+                crate::administration::original_serving_runtime::OriginalRecoveries::new(
+                    &admission,
+                    crate::administration::original_serving_runtime::OriginalRecoveryParticipants::configured(config),
+                )?,
+            );
             let persistent_disk = crate::persistent_disk::open(&config.persistent_disk, &storage)?;
             let installed_owner =
                 claim(config, &persistent_disk)?.context("operator requires standalone mode")?;
@@ -31,13 +66,27 @@ impl OperatorState {
             let AuthKeySource::Local { signer_file } = &config.auth.source else {
                 anyhow::bail!("operator requires a local issuer");
             };
-            let node = NodeStore::open_existing(
-                &config.database_path,
-                config.database_id,
-                persistent_disk.clone(),
-                storage.open_scratch(&config.scratch_disk)?,
-                persistent_disk.native_storage_config(),
-            )?;
+            let scratch = storage.open_scratch(&config.scratch_disk)?;
+            let node = {
+                let mut seat = pending
+                    .original_recoveries
+                    .as_ref()
+                    .expect("operator owns the same installed constructor inventory")
+                    .claim(0)
+                    .await;
+                seat.begin_node()
+                    .map_err(|observed| observed.foreign_error())?
+                    .run_node(|| {
+                    NodeStore::open_existing(
+                        &config.database_path,
+                        config.database_id,
+                        persistent_disk.clone(),
+                        scratch.clone(),
+                        persistent_disk.native_storage_config(),
+                    )
+                })
+                .map_err(|observed| observed.foreign_error())?
+            };
             pending.owned_nodes.push(node.clone());
             #[cfg(test)]
             super::ownership_tests::checkpoint(&config.database_path, "node").await?;
@@ -83,7 +132,7 @@ impl OperatorState {
             Err(error) => finish_resources(&mut pending, Err(error)).await,
         }
     }
-    pub(crate) fn retain_node(&self, node: Arc<NodeStore>) {
+    pub(crate) fn retain_node(&self, node: NodeStore) {
         self.resources
             .try_lock()
             .expect("exclusive operator acquisition")
@@ -105,6 +154,42 @@ impl OperatorState {
             .databases
             .push(database);
     }
+    pub(crate) async fn snapshot<T>(
+        &self,
+        participant: &str,
+        work: impl std::future::Future<Output = std::result::Result<T, kasumi_engine::SnapshotFailure>>,
+    ) -> Result<T> {
+        let index =
+            crate::administration::original_serving_runtime::OriginalRecoveries::configured_index(
+                &self.config,
+                participant,
+            )?;
+        let resources = self.resources.lock().await;
+        let inventory = resources
+            .original_recoveries
+            .as_ref()
+            .expect("operator owns the original recovery inventory");
+        let mut seat = inventory.claim(index).await;
+        seat.run_snapshot(work).await.map_err(snapshot_marker)
+    }
+    /// Borrowing this same inventory introduces no new control or grant. The
+    /// caller claims its seat and begins the loan before constructing work.
+    pub(crate) async fn node_inventory(
+        &self,
+        participant: &str,
+    ) -> Result<(crate::administration::OriginalRecoveries, usize)> {
+        let index =
+            crate::administration::original_serving_runtime::OriginalRecoveries::configured_index(
+                &self.config,
+                participant,
+            )?;
+        let resources = self.resources.lock().await;
+        let inventory = resources
+            .original_recoveries
+            .as_ref()
+            .expect("operator owns the same installed constructor inventory");
+        Ok((inventory.clone(), index))
+    }
     pub(crate) async fn control(&self) -> Result<Arc<kasumi_engine::Database>> {
         let mut control = self.control.lock().await;
         if let Some(database) = control.as_ref() {
@@ -124,18 +209,19 @@ impl OperatorState {
         #[cfg(test)]
         super::ownership_tests::checkpoint(&config.database_path, "control-pair").await?;
         config.install_tenant_audit_archive(stores.application(), None)?;
-        let database = kasumi_engine::open_existing_local(
-            stores,
-            self.audit.clone(),
-            Uuid::parse_str(
-                config
-                    .control
-                    .incarnation
-                    .as_deref()
-                    .context("control incarnation missing")?,
-            )?,
-        )
-        .await?;
+        let incarnation = Uuid::parse_str(
+            config
+                .control
+                .incarnation
+                .as_deref()
+                .context("control incarnation missing")?,
+        )?;
+        let database = self
+            .snapshot(
+                crate::runtime::CONTROL_TENANT,
+                kasumi_engine::open_existing_local(stores, self.audit.clone(), incarnation),
+            )
+            .await?;
         self.retain_database(database.clone());
         *control = Some(database.clone());
         Ok(database)

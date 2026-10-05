@@ -45,8 +45,8 @@ impl StagedSnapshot {
         image: SnapshotImage,
         max_index_disk_bytes: u64,
         mut check: impl FnMut() -> Result<()>,
-    ) -> Result<Self> {
-        check()?;
+    ) -> std::result::Result<Self, kasumi_store::ScratchOperationFailure> {
+        check().map_err(kasumi_store::ScratchOperationFailure::Operation)?;
         let phase = crate::backup_verify::VerificationPhase::start("snapshot.index_setup", None);
         let index = EncryptedTable::new(
             image.disk(),
@@ -54,151 +54,159 @@ impl StagedSnapshot {
             image.disk().native_cache_config(),
         )?;
         phase.complete();
-        let mut counts = [0u64; KINDS];
-        let mut spans = [None; KINDS];
-        let mut previous_change_item = None;
-        let mut group: Option<(u8, String, u64, u64, u64)> = None;
-        let mut pending = PendingIndex::new(&index);
-        let summary = crate::snapshot_codec::visit(&mut image.reader(), |position, record| {
-            check()?;
-            let key = record.order();
-            let kind_changed = group
-                .as_ref()
-                .is_some_and(|(kind, _, _, _, _)| *kind != key.0);
-            if group
-                .as_ref()
-                .is_some_and(|(kind, primary, _, _, _)| *kind != key.0 || primary != &key.1)
-            {
-                write_group(
-                    &mut pending,
-                    group.take().expect("present group"),
-                    &mut check,
-                )?;
-            }
-            // The canonical stream groups records in increasing kind order. Every
-            // structural dependency below points to an earlier kind (header,
-            // collection, stage, change, recovery operation or phase), so make
-            // that kind's bounded batches visible before any dependent lookup.
-            if kind_changed {
-                pending.flush(&mut check)?;
-            }
-            match &record {
-                Record::Document(collection, _) | Record::Archived(collection, _, _) => {
-                    require(&index, &(2, collection.clone(), String::new()))?;
-                }
-                Record::StageChunk(stage, _, _) | Record::ActiveStage(stage) => {
-                    require(&index, &(6, stage.clone(), String::new()))?;
-                }
-                Record::ChangeItem(sequence, item, _) => {
-                    require(&index, &(9, format!("{sequence:020}"), String::new()))?;
-                    let expected = match previous_change_item {
-                        Some((old, next)) if old == *sequence => next,
-                        _ => 0,
-                    };
-                    ensure!(*item == expected, "change record sequence differs");
-                    previous_change_item = Some((
-                        *sequence,
-                        item.checked_add(1)
-                            .ok_or_else(|| anyhow::anyhow!("change item count overflow"))?,
-                    ));
-                }
-                Record::RecoveryPhase(_, record) => {
-                    require(
-                        &index,
-                        &(18, record.operation_id.to_string(), String::new()),
-                    )?;
-                }
-                Record::RecoveryCompletionHistory(_, history) => {
-                    require(
-                        &index,
-                        &(18, history.operation_id.to_string(), String::new()),
-                    )?;
-                    require(
-                        &index,
-                        &(19, history.scope.intent.to_string(), String::new()),
-                    )?;
-                    require(&index, &(19, history.terminal.to_string(), String::new()))?;
-                    require(
-                        &index,
-                        &(19, history.successor_intent.to_string(), String::new()),
-                    )?;
-                }
-                Record::RecoveryTarget(_, operation) => {
-                    require(&index, &(18, operation.to_string(), String::new()))?;
-                }
-                Record::BackupBinding(_) => {
-                    let header = get_record(&image, &index, &(0, String::new(), String::new()))?;
-                    ensure!(
-                        matches!(header, Some(Record::Header(head))
+        kasumi_store::ScratchOperationFailure::ordinary(|| {
+            let mut counts = [0u64; KINDS];
+            let mut spans = [None; KINDS];
+            let mut previous_change_item = None;
+            let mut group: Option<(u8, String, u64, u64, u64)> = None;
+            let mut pending = PendingIndex::new(&index);
+            let summary = crate::snapshot_codec::visit::<anyhow::Error>(
+                &mut image.reader(),
+                |position, record| {
+                    check()?;
+                    let key = record.order();
+                    let kind_changed = group
+                        .as_ref()
+                        .is_some_and(|(kind, _, _, _, _)| *kind != key.0);
+                    if group
+                        .as_ref()
+                        .is_some_and(|(kind, primary, _, _, _)| *kind != key.0 || primary != &key.1)
+                    {
+                        write_group(
+                            &mut pending,
+                            group.take().expect("present group"),
+                            &mut check,
+                        )?;
+                    }
+                    // The canonical stream groups records in increasing kind order. Every
+                    // structural dependency below points to an earlier kind (header,
+                    // collection, stage, change, recovery operation or phase), so make
+                    // that kind's bounded batches visible before any dependent lookup.
+                    if kind_changed {
+                        pending.flush(&mut check)?;
+                    }
+                    match &record {
+                        Record::Document(collection, _) | Record::Archived(collection, _, _) => {
+                            require(&index, &(2, collection.clone(), String::new()))?;
+                        }
+                        Record::StageChunk(stage, _, _) | Record::ActiveStage(stage) => {
+                            require(&index, &(6, stage.clone(), String::new()))?;
+                        }
+                        Record::ChangeItem(sequence, item, _) => {
+                            require(&index, &(9, format!("{sequence:020}"), String::new()))?;
+                            let expected = match previous_change_item {
+                                Some((old, next)) if old == *sequence => next,
+                                _ => 0,
+                            };
+                            ensure!(*item == expected, "change record sequence differs");
+                            previous_change_item = Some((
+                                *sequence,
+                                item.checked_add(1)
+                                    .ok_or_else(|| anyhow::anyhow!("change item count overflow"))?,
+                            ));
+                        }
+                        Record::RecoveryPhase(_, record) => {
+                            require(
+                                &index,
+                                &(18, record.operation_id.to_string(), String::new()),
+                            )?;
+                        }
+                        Record::RecoveryCompletionHistory(_, history) => {
+                            require(
+                                &index,
+                                &(18, history.operation_id.to_string(), String::new()),
+                            )?;
+                            require(
+                                &index,
+                                &(19, history.scope.intent.to_string(), String::new()),
+                            )?;
+                            require(&index, &(19, history.terminal.to_string(), String::new()))?;
+                            require(
+                                &index,
+                                &(19, history.successor_intent.to_string(), String::new()),
+                            )?;
+                        }
+                        Record::RecoveryTarget(_, operation) => {
+                            require(&index, &(18, operation.to_string(), String::new()))?;
+                        }
+                        Record::BackupBinding(_) => {
+                            let header =
+                                get_record(&image, &index, &(0, String::new(), String::new()))?;
+                            ensure!(
+                                matches!(header, Some(Record::Header(head))
                         if head.tenant == crate::control::CONTROL_TENANT
                         && head.lifecycle_control.is_some()),
-                        "backup binding point row requires installed Control"
+                                "backup binding point row requires installed Control"
+                            );
+                        }
+                        Record::RecoveryOperation(_, _) => {
+                            let header =
+                                get_record(&image, &index, &(0, String::new(), String::new()))?;
+                            ensure!(
+                                matches!(header, Some(Record::Header(head)) if head.tenant == crate::control::CONTROL_TENANT && head.lifecycle_control.is_some()),
+                                "recovery coordinator requires installed Control state"
+                            );
+                        }
+                        Record::Intent(_, _) | Record::ControlChange(_, _) => {
+                            // The header is independently point-addressed. Embedded maps
+                            // have already been rejected by the canonical decoder.
+                            let header =
+                                get_record(&image, &index, &(0, String::new(), String::new()))?;
+                            ensure!(
+                                matches!(header, Some(Record::Header(head)) if head.lifecycle_control.is_some()),
+                                "control installation missing"
+                            );
+                        }
+                        _ => {}
+                    }
+                    let kind = usize::from(key.0);
+                    counts[kind] = counts[kind]
+                        .checked_add(1)
+                        .ok_or_else(|| anyhow::anyhow!("snapshot index count overflow"))?;
+                    let end = position
+                        .offset
+                        .checked_add(position.bytes)
+                        .ok_or_else(|| anyhow::anyhow!("snapshot index offset overflow"))?;
+                    let first = spans[kind].map(|(first, _)| first).unwrap_or(
+                        position.offset - crate::snapshot_codec::FRAME_HEADER_BYTES as u64,
                     );
-                }
-                Record::RecoveryOperation(_, _) => {
-                    let header = get_record(&image, &index, &(0, String::new(), String::new()))?;
-                    ensure!(
-                        matches!(header, Some(Record::Header(head)) if head.tenant == crate::control::CONTROL_TENANT && head.lifecycle_control.is_some()),
-                        "recovery coordinator requires installed Control state"
-                    );
-                }
-                Record::Intent(_, _) | Record::ControlChange(_, _) => {
-                    // The header is independently point-addressed. Embedded maps
-                    // have already been rejected by the canonical decoder.
-                    let header = get_record(&image, &index, &(0, String::new(), String::new()))?;
-                    ensure!(
-                        matches!(header, Some(Record::Header(head)) if head.lifecycle_control.is_some()),
-                        "control installation missing"
-                    );
-                }
-                _ => {}
+                    spans[kind] = Some((first, end));
+                    let group = group.get_or_insert((
+                        key.0,
+                        key.1.clone(),
+                        position.offset - crate::snapshot_codec::FRAME_HEADER_BYTES as u64,
+                        end,
+                        0,
+                    ));
+                    group.3 = end;
+                    group.4 = group
+                        .4
+                        .checked_add(1)
+                        .ok_or_else(|| anyhow::anyhow!("snapshot group count overflow"))?;
+                    let mut location = [0u8; 16];
+                    location[..8].copy_from_slice(&position.offset.to_be_bytes());
+                    location[8..].copy_from_slice(&position.bytes.to_be_bytes());
+                    pending.insert(&serde_json::to_vec(&key)?, &location, &mut check)?;
+                    check()
+                },
+            )?;
+            if let Some(group) = group {
+                write_group(&mut pending, group, &mut check)?;
             }
-            let kind = usize::from(key.0);
-            counts[kind] = counts[kind]
-                .checked_add(1)
-                .ok_or_else(|| anyhow::anyhow!("snapshot index count overflow"))?;
-            let end = position
-                .offset
-                .checked_add(position.bytes)
-                .ok_or_else(|| anyhow::anyhow!("snapshot index offset overflow"))?;
-            let first = spans[kind]
-                .map(|(first, _)| first)
-                .unwrap_or(position.offset - crate::snapshot_codec::FRAME_HEADER_BYTES as u64);
-            spans[kind] = Some((first, end));
-            let group = group.get_or_insert((
-                key.0,
-                key.1.clone(),
-                position.offset - crate::snapshot_codec::FRAME_HEADER_BYTES as u64,
-                end,
-                0,
-            ));
-            group.3 = end;
-            group.4 = group
-                .4
-                .checked_add(1)
-                .ok_or_else(|| anyhow::anyhow!("snapshot group count overflow"))?;
-            let mut location = [0u8; 16];
-            location[..8].copy_from_slice(&position.offset.to_be_bytes());
-            location[8..].copy_from_slice(&position.bytes.to_be_bytes());
-            pending.insert(&serde_json::to_vec(&key)?, &location, &mut check)?;
-            check()
-        })?;
-        if let Some(group) = group {
-            write_group(&mut pending, group, &mut check)?;
-        }
-        ensure!(
-            summary.bytes == image.len(),
-            "snapshot image length differs"
-        );
-        pending.flush(&mut check)?;
-        drop(pending);
-        check()?;
-        Ok(Self {
-            image,
-            index,
-            counts,
-            spans,
-            summary,
+            ensure!(
+                summary.bytes == image.len(),
+                "snapshot image length differs"
+            );
+            pending.flush(&mut check)?;
+            drop(pending);
+            check()?;
+            Ok(Self {
+                image,
+                index,
+                counts,
+                spans,
+                summary,
+            })
         })
     }
 

@@ -21,7 +21,7 @@ async fn open(
     path: &Path,
     limits: Limits,
     create: bool,
-) -> (Arc<Database>, Arc<SecurityAudit>, Arc<NodeStore>) {
+) -> (Arc<Database>, Arc<SecurityAudit>, NodeStore) {
     let node = (if create {
         physical
             .storage
@@ -101,7 +101,7 @@ async fn open(
     }
     (db, audit, node)
 }
-async fn close(db: Arc<Database>, audit: Arc<SecurityAudit>, node: Arc<NodeStore>) {
+async fn close(db: Arc<Database>, audit: Arc<SecurityAudit>, node: NodeStore) {
     db.shutdown().await.unwrap();
     audit.shutdown().await.unwrap();
     node.shutdown().await.unwrap();

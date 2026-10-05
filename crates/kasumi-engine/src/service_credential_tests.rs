@@ -1,6 +1,6 @@
 struct CredentialFixture {
     storage: crate::test_utils::FixtureStorage,
-    node: Arc<kasumi_store::NodeStore>,
+    node: kasumi_store::NodeStore,
     db: Arc<Database>,
     audit: Arc<SecurityAudit>,
     context: RequestContext,
@@ -400,7 +400,7 @@ async fn committed_effect_with_expired_ack_is_resolved_by_fresh_credential() {
         .get(&fixture.context, "docs", "committed")
         .await
         .unwrap()
-            .expect("document exists");
+        .expect("document exists");
     assert_eq!(document.version, receipt.revision);
     assert_eq!(
         fixture
@@ -530,9 +530,15 @@ async fn long_backup_verification_and_encoded_read_recheck_original_credential()
     let clock = Arc::new(CredentialClock(std::sync::atomic::AtomicU64::new(0)));
     let context = fixture.credential_with_validity(clock.clone(), LONG_BACKUP_CREDENTIAL_MS);
     let fence = fixture.db.response_fence(&context).unwrap();
-    let _encoded =
-        serde_json::to_vec(&fixture.db.get(&context, "docs", "read").await.unwrap()
-            .expect("document exists")).unwrap();
+    let _encoded = serde_json::to_vec(
+        &fixture
+            .db
+            .get(&context, "docs", "read")
+            .await
+            .unwrap()
+            .expect("document exists"),
+    )
+    .unwrap();
     let result = {
         let mut verify = std::pin::pin!(fixture.db.verify_backup_checkpoint(
             context,
@@ -553,7 +559,10 @@ async fn long_backup_verification_and_encoded_read_recheck_original_credential()
         paused.release.notify_one();
         verify.await
     };
-    assert_eq!(result.unwrap_err().code, ErrorCode::Unauthorized);
+    assert_eq!(
+        result.unwrap_err().operation_error().unwrap().code,
+        ErrorCode::Unauthorized
+    );
     assert_eq!(fence.check().unwrap_err().code, ErrorCode::Unauthorized);
     drop(fence);
     // Creation can have already published immutable encrypted objects when its
@@ -579,7 +588,10 @@ async fn long_backup_verification_and_encoded_read_recheck_original_credential()
         paused.release.notify_one();
         create.await
     };
-    assert_eq!(result.unwrap_err().code, ErrorCode::UnknownOutcome);
+    assert_eq!(
+        result.unwrap_err().operation_error().unwrap().code,
+        ErrorCode::UnknownOutcome
+    );
     fixture.close().await;
 }
 

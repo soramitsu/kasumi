@@ -99,7 +99,7 @@ struct Fixture {
     admission: Arc<kasumi_engine::admission::NodeAdmission>,
     // The admission ledger's total reservation cap.
     budget: u64,
-    node: Arc<NodeStore>,
+    node: NodeStore,
     _directory: tempfile::TempDir,
 }
 impl Fixture {

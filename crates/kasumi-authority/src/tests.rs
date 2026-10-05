@@ -13,6 +13,10 @@ use std::{
 };
 use uuid::Uuid;
 
+#[path = "fixture_failure.rs"]
+mod fixture_failure;
+use fixture_failure::FixtureResult;
+
 /// One modeled physical process. The caller retains both private directories
 /// and the same admitted disk owners through every file close/reopen.
 struct PhysicalFixture {
@@ -56,9 +60,22 @@ impl PhysicalFixture {
 fn request_budget(
     admission: &Arc<kasumi_engine::admission::NodeAdmission>,
 ) -> BackgroundWorkBudget {
-    let bytes = authority_request_metadata_bytes().unwrap();
+    let bytes =
+        authority_request_metadata_bytes()
+            .unwrap()
+            .checked_add(
+                kasumi_types::SharedBudgetCharge::required_bytes::<
+                    kasumi_engine::admission::Reservation,
+                >()
+                .unwrap(),
+            )
+            .unwrap();
     let charge = admission.memory().reserve_resident(bytes).unwrap();
-    BackgroundWorkBudget::new(AUTHORITY_REQUEST_SLOTS, Arc::new(charge)).unwrap()
+    BackgroundWorkBudget::new(
+        AUTHORITY_REQUEST_SLOTS,
+        kasumi_types::SharedBudgetCharge::new(charge),
+    )
+    .unwrap()
 }
 
 async fn commit_directive(
@@ -108,7 +125,7 @@ struct Fixture {
     router: Arc<InProcessRouter>,
     services: Vec<Arc<IndependentAuthority>>,
     stores: Vec<Arc<TenantStorageSet>>,
-    nodes: BTreeMap<u64, Arc<NodeStore>>,
+    nodes: BTreeMap<u64, NodeStore>,
     clock: Arc<Clock>,
     epoch: Arc<EpochClock>,
     installation: AuthorityInstallation,

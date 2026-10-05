@@ -206,10 +206,9 @@ fn denied_cache_disable_invalidates_residency_after_releasing_lookup_ownership()
         .get(&pin, "accounts", b"a", usize::MAX)
         .unwrap()
         .unwrap();
-    assert!(matches!(
-        state.configure_cache(CacheConfig { byte_limit: 0 }),
-        Err(CoreError::CapacityDenied)
-    ));
+    assert!(
+        matches!(&(state.configure_cache(CacheConfig { byte_limit: 0 })), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::CapacityDenied)))
+    );
     assert_eq!(
         state.warm_status().unwrap().state,
         CacheWarmupState::Pending
@@ -266,15 +265,15 @@ fn disabled_cache_is_idle_and_manual_warming_keeps_its_explicit_restart_semantic
     assert!(warm_all(&mut state).fully_resident);
     assert_parked(&mut state, &reads, &admission);
     admission.owner_failed();
-    assert!(matches!(
-        state.warm_if_needed(1),
-        Err(CoreError::OwnerFailed)
-    ));
-    assert!(matches!(state.warm_status(), Err(CoreError::OwnerFailed)));
-    assert!(matches!(
-        state.request_warm_retry(),
-        Err(CoreError::OwnerFailed)
-    ));
+    assert!(
+        matches!(&(state.warm_if_needed(1)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+    );
+    assert!(
+        matches!(&(state.warm_status()), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+    );
+    assert!(
+        matches!(&(state.request_warm_retry()), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+    );
 }
 
 struct PayloadGate {

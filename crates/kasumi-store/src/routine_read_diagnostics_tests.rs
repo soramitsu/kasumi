@@ -5,7 +5,7 @@ struct Fixture {
     _directory: tempfile::TempDir,
     _scratch: tempfile::TempDir,
     memory: Arc<PausedRegistrationMemory>,
-    node: Arc<NodeStore>,
+    node: NodeStore,
 }
 impl Fixture {
     fn new() -> Self {
@@ -31,7 +31,7 @@ impl Fixture {
         }
     }
     fn write(&self, value: &[u8]) {
-        let transaction = self.node.db.begin_write().unwrap();
+        let transaction = self.node.body().db.begin_write().unwrap();
         transaction
             .open_table(crate::CATALOG)
             .unwrap()
@@ -187,9 +187,9 @@ async fn routine_read_native_and_outer_capacity_keep_exact_errors_without_cleanu
                 match report.read_failure() {
                     TerminalObservation::Returned(Err(
                         error @ kasumi_kv::BoundedReadError::Storage(kasumi_kv::StorageError::Core(
-                            kasumi_kv::CoreError::CapacityDenied,
+                            original,
                         )),
-                    )) => std::ptr::from_ref(error) as usize,
+                    )) if original.is_capacity_denied() => std::ptr::from_ref(error) as usize,
                     _ => panic!("missing original native capacity failure"),
                 }
             } else {
@@ -334,7 +334,7 @@ async fn routine_early_capacity_keeps_original_after_real_native_and_database_re
     // skips exactly the first required tag output, not an ordinal provider call.
     for stage in 0..3 {
         let fixture = Fixture::new();
-        let reader = fixture.node.db.queue_registered_read().unwrap();
+        let reader = fixture.node.body().db.queue_registered_read().unwrap();
         if stage == 0 {
             fixture
                 .memory
@@ -382,12 +382,11 @@ async fn routine_early_capacity_keeps_original_after_real_native_and_database_re
                     | (2, NodeReadTablesError::Records(error)) => error,
                     _ => panic!("wrong required table verification failed"),
                 };
-                assert!(matches!(
-                    original,
-                    kasumi_kv::BoundedReadError::Table(kasumi_kv::TableError::Storage(
-                        kasumi_kv::StorageError::Core(kasumi_kv::CoreError::CapacityDenied)
-                    ))
-                ));
+                assert!(
+                    matches!(&(original), kasumi_kv::BoundedReadError::Table(kasumi_kv::TableError::Storage(
+                        kasumi_kv::StorageError::Core(native_error)
+                    )) if matches!(native_error.rejected_cause(), Some(kasumi_kv::CoreErrorCause::CapacityDenied)))
+                );
             }
         }
         if stage != 0 {
@@ -466,7 +465,7 @@ async fn routine_early_capacity_keeps_original_after_real_native_and_database_re
 async fn routine_early_capacity_last_facade_never_blocks_on_retained_report() {
     for table in [false, true] {
         let fixture = Fixture::new();
-        let reader = fixture.node.db.queue_registered_read().unwrap();
+        let reader = fixture.node.body().db.queue_registered_read().unwrap();
         if table {
             fixture
                 .memory
@@ -518,7 +517,7 @@ async fn routine_early_capacity_last_facade_never_blocks_on_retained_report() {
 #[tokio::test]
 async fn routine_early_capacity_recovered_unknown_revokes_both_retirement_paths() {
     let fixture = Fixture::new();
-    let reader = fixture.node.db.queue_registered_read().unwrap();
+    let reader = fixture.node.body().db.queue_registered_read().unwrap();
     fixture
         .memory
         .deny_installed_next
@@ -561,7 +560,7 @@ async fn routine_early_capacity_recovered_unknown_revokes_both_retirement_paths(
 async fn routine_early_unknown_and_native_panic_never_gain_clean_acquisition_permission() {
     for panic in [false, true] {
         let fixture = Fixture::new();
-        let reader = fixture.node.db.queue_registered_read().unwrap();
+        let reader = fixture.node.body().db.queue_registered_read().unwrap();
         if panic {
             fixture.memory.panic_next.store(true, Ordering::Release);
         } else {
@@ -576,19 +575,17 @@ async fn routine_early_unknown_and_native_panic_never_gain_clean_acquisition_per
             let native = report.acquisition_failure().unwrap();
             assert!(!native.is_clean_capacity_refusal());
             if panic {
-                assert!(matches!(
-                    native.original(),
-                    kasumi_kv::TransactionError(kasumi_kv::StorageError::Core(
-                        kasumi_kv::CoreError::Panicked(_)
-                    ))
-                ));
+                assert!(
+                    matches!(&(native.original()), kasumi_kv::TransactionError(kasumi_kv::StorageError::Core(
+                        native_error
+                    )) if matches!(native_error.rejected_cause(), Some(kasumi_kv::CoreErrorCause::Panicked(_))))
+                );
             } else {
-                assert!(matches!(
-                    native.original(),
-                    kasumi_kv::TransactionError(kasumi_kv::StorageError::Core(
-                        kasumi_kv::CoreError::OwnerFailed
-                    ))
-                ));
+                assert!(
+                    matches!(&(native.original()), kasumi_kv::TransactionError(kasumi_kv::StorageError::Core(
+                        native_error
+                    )) if matches!(native_error.rejected_cause(), Some(kasumi_kv::CoreErrorCause::OwnerFailed)))
+                );
             }
             assert!(report.close().is_none());
             std::ptr::from_ref(native.original()) as usize

@@ -426,12 +426,14 @@ fn fixture_publish(
     revision: u64,
     input: &Command,
     publisher: &mut dyn kasumi_raft::ApplyPublisher,
-) -> anyhow::Result<()> {
+) -> std::result::Result<(), kasumi_store::ScratchOperationFailure> {
     let applied = crate::staged_terminal::AppliedIdentity {
         incarnation: engine.incarnation.clone(),
         revision,
         timestamp_ms: input.timestamp_ms,
-        command_sha256: hex::encode(Sha256::digest(serde_json::to_vec(input)?)),
+        command_sha256: hex::encode(Sha256::digest(
+            serde_json::to_vec(input).map_err(anyhow::Error::from)?,
+        )),
         origin: crate::staged_terminal::AppliedOrigin::Fixture,
     };
     engine.apply_fixture_command(
@@ -470,7 +472,10 @@ fn failed_publication_keeps_staged_receipt_hidden_until_exact_retry() {
     let mut failed = ObservingPublisher::new(&engine, true);
     let error = fixture_publish(&engine, 3, &input, &mut failed).unwrap_err();
     assert_eq!(
-        error.downcast_ref::<kasumi_raft::PublishCallError>(),
+        error
+            .operation_error()
+            .unwrap()
+            .downcast_ref::<kasumi_raft::PublishCallError>(),
         Some(&kasumi_raft::PublishCallError::Failed)
     );
     let selected = engine.generation().unwrap();
@@ -781,7 +786,11 @@ fn text_materialization_failure_is_outer_and_does_not_select_a_receipt() {
     let failure = engine
         .apply_command(&engine.disk, 4, command(Operation::Mutate(failed), 4))
         .expect_err("index materialization must be an outer replica failure");
-    let materialization = failure.downcast_ref::<Error>().unwrap();
+    let materialization = failure
+        .operation_error()
+        .unwrap()
+        .downcast_ref::<Error>()
+        .unwrap();
     assert_eq!(materialization.code, ErrorCode::Unavailable);
     assert!(
         materialization
@@ -1483,7 +1492,12 @@ fn captured_index_corruption_is_outer_before_mutation_receipt_or_text_publicatio
         let failure = fixture_publish(&engine, 4, &input, &mut publisher)
             .expect_err("captured index/source corruption cannot select a receipt");
         assert_eq!(
-            failure.downcast_ref::<Error>().unwrap().code,
+            failure
+                .operation_error()
+                .unwrap()
+                .downcast_ref::<Error>()
+                .unwrap()
+                .code,
             ErrorCode::Corruption
         );
         assert_eq!(publisher.calls, 0);
@@ -1597,7 +1611,12 @@ fn captured_index_corruption_leaves_staged_terminal_unselected_but_conflict_is_d
     let failure = fixture_publish(&engine, 6, &input, &mut publisher)
         .expect_err("ordered caller must preserve outer staging corruption");
     assert_eq!(
-        failure.downcast_ref::<Error>().unwrap().code,
+        failure
+            .operation_error()
+            .unwrap()
+            .downcast_ref::<Error>()
+            .unwrap()
+            .code,
         ErrorCode::Corruption
     );
     assert_eq!(publisher.calls, 0);

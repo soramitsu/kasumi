@@ -78,12 +78,7 @@ pub(super) fn exchange_blocks(slot: &Slot, metadata: &Metadata) -> bool {
 
 impl StorageCensus {
     fn source_generation(&self) -> io::Result<u64> {
-        self.next_generation
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
-                value.checked_add(1)
-            })
-            .map(|old| old + 1)
-            .map_err(|_| io::ErrorKind::Other.into())
+        super::owner_generation()
     }
     fn source_lock(&self, index: usize) -> io::Result<MutexGuard<'_, Metadata>> {
         let slot = self.slots.get(index).ok_or(io::ErrorKind::InvalidInput)?;

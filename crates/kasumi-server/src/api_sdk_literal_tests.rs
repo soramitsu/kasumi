@@ -8,8 +8,8 @@ async fn native_sdk_query_feed_schema_preserve_literal_values_and_admission() {
     use kasumi_transport::{ClientAuthentication, TlsIdentity};
     use kasumi_types::{
         Aggregation, ChangeFeedPage, ChangeFeedStart, CollectionRetentionClass,
-        CollectionWriteMode, Precondition, QueryRequest, ReadAssertion, ReadChangeFeed,
-        ReadSchema, SchemaChange, SchemaChangeSet,
+        CollectionWriteMode, Precondition, QueryRequest, ReadAssertion, ReadChangeFeed, ReadSchema,
+        SchemaChange, SchemaChangeSet,
     };
     use std::{collections::BTreeMap, time::Duration};
 
@@ -58,7 +58,11 @@ async fn native_sdk_query_feed_schema_preserve_literal_values_and_admission() {
         TlsIdentity::from_pem(certificate.pem().as_bytes(), key.serialize_pem().as_bytes()).unwrap()
     };
     let client_identity = identity();
-    let admin = NativeAdmin::new(fixture.registry.clone(), fixture.auth.clone());
+    let admin = NativeAdmin::new(
+        fixture.registry.clone(),
+        fixture.auth.clone(),
+        fixture.failures.clone(),
+    );
     let routers = [
         tonic::service::Routes::new(fixture.data().service()).into_axum_router(),
         tonic::service::Routes::new(admin.service()).into_axum_router(),

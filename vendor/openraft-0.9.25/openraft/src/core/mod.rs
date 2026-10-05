@@ -22,3 +22,9 @@ pub(crate) use replication_state::replication_lag;
 pub use server_state::ServerState;
 pub(crate) use tick::Tick;
 pub(crate) use tick::TickHandle;
+
+/// The first shutdown signal owns the stop policy across cancelled waiters.
+pub(crate) enum ShutdownMode {
+    Immediate,
+    Graceful,
+}

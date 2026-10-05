@@ -12,7 +12,7 @@ struct Installation {
     storage: crate::test_utils::FixtureStorage,
     metadata_bytes: u64,
     admission: Arc<NodeAdmission>,
-    node: std::sync::Mutex<Option<Arc<kasumi_store::NodeStore>>>,
+    node: std::sync::Mutex<Option<kasumi_store::NodeStore>>,
     _directory: tempfile::TempDir,
 }
 impl Installation {
@@ -58,9 +58,13 @@ impl Installation {
     }
     async fn store(&self, create: bool) -> Result<Arc<TenantStore>> {
         let node = if create {
-            self.storage.create_new(&self.path, self.id)?
+            self.storage
+                .create_new(&self.path, self.id)
+                .unwrap_or_else(|original| std::panic::panic_any(original))
         } else {
-            self.storage.open_existing(&self.path, self.id)?
+            self.storage
+                .open_existing(&self.path, self.id)
+                .unwrap_or_else(|original| std::panic::panic_any(original))
         };
         *self.node.lock().unwrap() = Some(node.clone());
         let provider = Arc::new(FileKeyProvider::open(&self.keys)?);
@@ -107,7 +111,7 @@ fn event() -> SecurityEvent {
         outcome: SecurityOutcome::Succeeded,
     }
 }
-type LogicalRecords = Vec<(Vec<u8>, Vec<u8>)>;
+type LogicalRecords = kasumi_store::PlaintextScan;
 
 fn retained(store: &TenantStore) -> Result<Vec<LogicalRecords>> {
     [

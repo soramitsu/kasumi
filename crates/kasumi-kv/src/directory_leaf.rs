@@ -28,7 +28,7 @@ pub(crate) struct DirectoryLeaf {
     pub(super) buffer: PageBuffer,
     first_index: usize,
     admission: Arc<dyn StorageAdmission>,
-    _lease: Box<dyn ResidentLease>,
+    _lease: NativeResidentLease,
 }
 
 impl DirectoryLeaf {
@@ -64,11 +64,11 @@ impl DirectoryLeaf {
     pub(crate) fn owned_record(&self, index: usize) -> Result<DirectoryRecord, CoreError> {
         self.admission
             .check_owner()
-            .map_err(|_| CoreError::OwnerFailed)?;
+            .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?;
         if index >= self.len() {
-            return Err(CoreError::InvalidInput(
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
                 "directory leaf record index is invalid",
-            ));
+            )));
         }
         let entry = nth_entry(&self.buffer.bytes, self.info, index)?;
         let lease = reserve(
@@ -77,15 +77,15 @@ impl DirectoryLeaf {
         )?;
         let mut key = Vec::new();
         key.try_reserve_exact(entry.key_bytes.len())
-            .map_err(|_| CoreError::CapacityDenied)?;
+            .map_err(|_| CoreError::new(crate::CoreErrorCause::CapacityDenied))?;
         if key.capacity() != entry.key_bytes.len() {
-            return Err(CoreError::CapacityDenied);
+            return Err(CoreError::new(crate::CoreErrorCause::CapacityDenied));
         }
         key.extend_from_slice(entry.key_bytes);
         let value = DirectoryValue::decode(entry.key, entry.value, self.info.generation)?;
         self.admission
             .check_owner()
-            .map_err(|_| CoreError::OwnerFailed)?;
+            .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?;
         Ok(DirectoryRecord {
             key,
             value,
@@ -100,28 +100,40 @@ impl DirectoryLeaf {
         reader: &DirectoryReader<'_>,
         input: &mut [u8],
     ) -> Result<(), CoreError> {
-        let mut reference = self
-            .root
-            .page
-            .ok_or(CoreError::Corrupt("leaf plan has an empty root"))?;
+        let mut reference =
+            self.root
+                .page
+                .ok_or(CoreError::new(crate::CoreErrorCause::Corrupt(
+                    "leaf plan has an empty root",
+                )))?;
         let mut bounds = Bounds::root(self.root);
         for frame in &self.path[..self.depth] {
-            let frame = frame.ok_or(CoreError::Corrupt("leaf plan path is incomplete"))?;
+            let frame = frame.ok_or(CoreError::new(crate::CoreErrorCause::Corrupt(
+                "leaf plan path is incomplete",
+            )))?;
             if frame.reference != reference {
-                return Err(CoreError::Corrupt("leaf plan path reference differs"));
+                return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                    "leaf plan path reference differs",
+                )));
             }
             let info = reader.load(input, self.root, reference, &bounds)?;
             if info != frame.info || info.level == 0 {
-                return Err(CoreError::Corrupt("leaf plan parent differs"));
+                return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                    "leaf plan parent differs",
+                )));
             }
             reference = bounds.child(input, info, frame.child)?;
         }
         if reference != self.reference {
-            return Err(CoreError::Corrupt("leaf plan selected reference differs"));
+            return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                "leaf plan selected reference differs",
+            )));
         }
         let info = reader.load(input, self.root, reference, &bounds)?;
         if info != self.info || info.level != 0 || &*input != self.buffer.bytes.as_slice() {
-            return Err(CoreError::Corrupt("leaf plan page differs"));
+            return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                "leaf plan page differs",
+            )));
         }
         Ok(())
     }
@@ -155,11 +167,13 @@ impl DirectoryReader<'_> {
                 let (entry, end) = page_entry(&buffer.bytes, at, info.used)?;
                 if info.level == 0 && entry.key == first.key() {
                     if info.count > MAX_DIRECTORY_LEAF_RECORDS {
-                        return Err(CoreError::Corrupt("directory leaf exceeds record ceiling"));
+                        return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                            "directory leaf exceeds record ceiling",
+                        )));
                     }
                     self.admission
                         .check_owner()
-                        .map_err(|_| CoreError::OwnerFailed)?;
+                        .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?;
                     return Ok(Some(DirectoryLeaf {
                         root,
                         reference,
@@ -179,7 +193,9 @@ impl DirectoryReader<'_> {
                 at = end;
             }
             if info.level == 0 {
-                return Err(CoreError::Corrupt("leaf plan successor disappeared"));
+                return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                    "leaf plan successor disappeared",
+                )));
             }
             path[depth] = Some(LeafFrame {
                 reference,

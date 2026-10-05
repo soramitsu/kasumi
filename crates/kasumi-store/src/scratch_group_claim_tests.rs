@@ -276,12 +276,9 @@ fn scratch_claim_corrupt_protected_roots_fence_the_real_owner_and_keep_original_
     let TransactionReserveError::Failed(original) = &error else {
         panic!("corruption is never a capacity refusal");
     };
-    assert!(matches!(
-        original
+    assert!(matches!(&(original
             .get_ref()
-            .and_then(|source| source.downcast_ref::<kasumi_kv::CoreError>()),
-        Some(kasumi_kv::CoreError::Corrupt(_))
-    ));
+            .and_then(|source| source.downcast_ref::<kasumi_kv::CoreError>())), Some(native_error) if matches!(native_error.rejected_cause(), Some(kasumi_kv::CoreErrorCause::Corrupt(_)))));
     let guard = owner.state.lock().unwrap();
     let state = guard.as_ref().unwrap();
     assert!(state.failed);

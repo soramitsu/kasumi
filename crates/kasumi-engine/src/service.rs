@@ -1,4 +1,6 @@
-use crate::admission::{CancelOnDrop, NodeAdmission, Reservation, WorkFence, WorkRegistration};
+use crate::admission::{
+    CancelOnDrop, NodeAdmission, ProposalBudget, Reservation, WorkFence, WorkRegistration,
+};
 use crate::output::{AdmittedOutput, OUTPUT_CHARGE_BYTES};
 use crate::{SecurityAudit, SecurityEvent, SecurityEventKind, SecurityOutcome, TenantEngine};
 #[path = "audit_maintenance_service.rs"]
@@ -197,8 +199,42 @@ struct ProposalWork {
     clock: Arc<dyn CommandClock>,
     source_engine: Arc<TenantEngine>,
     admission: Arc<NodeAdmission>,
-    _reservation: Reservation,
     _registration: Arc<WorkRegistration>,
+    // LAST: work fields/control aliases are retired before the same credit.
+    _reservation: ProposalBudget,
+}
+
+// Concrete Command fields are immutable across these two serialization passes.
+// The first pass allocates no bytes. Exactly counted capacity is then allocated
+// under the prospective original proposal grant, before consensus submission.
+fn proposal_input_len(command: &Command) -> anyhow::Result<usize> {
+    struct Count(usize);
+    impl std::io::Write for Count {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0 = self
+                .0
+                .checked_add(bytes.len())
+                .ok_or(std::io::ErrorKind::InvalidInput)?;
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut count = Count(0);
+    serde_json::to_writer(&mut count, command)?;
+    Ok(count.0)
+}
+fn encode_proposal_input(command: &Command, max_bytes: usize) -> anyhow::Result<Vec<u8>> {
+    let count = proposal_input_len(command)?;
+    anyhow::ensure!(count <= max_bytes, "command exceeds proposal byte budget");
+    let mut bytes = Vec::with_capacity(count);
+    serde_json::to_writer(&mut bytes, command)?;
+    anyhow::ensure!(
+        bytes.len() == count && bytes.capacity() == count,
+        "concrete command encoding differs from its prospective input quote"
+    );
+    Ok(bytes)
 }
 
 impl ProposalWork {
@@ -307,7 +343,7 @@ impl ProposalWork {
         }) {
             return Ok(serde_json::to_vec(&Err::<WriteReceipt, _>(error))?);
         }
-        let bytes = serde_json::to_vec(command)?;
+        let bytes = encode_proposal_input(command, max_bytes)?;
         anyhow::ensure!(
             bytes.len() <= max_bytes,
             "command exceeds proposal byte budget"
@@ -324,7 +360,26 @@ impl ProposalWork {
             }
             self.group.write_retirement(bytes, seed).await
         } else {
-            self.group.write(bytes).await
+            let provider: Arc<dyn kasumi_store::NodeDiskMemoryAdmission> =
+                self.admission.memory().clone();
+            let mut input = kasumi_raft::ApplicationInputInstall::new(bytes, provider);
+            if let Operation::Mutate(batch) = &command.operation {
+                input.prepare_mutation_change_tree(batch).map_err(|error| {
+                    anyhow::anyhow!("mutation change-tree recipe refused: {error:?}")
+                })?;
+            }
+            self.admission
+                .memory()
+                .bind_application_input(&self._reservation, &mut input)
+                .map_err(|error| {
+                    anyhow::anyhow!("original proposal input binding refused: {error:?}")
+                })?;
+            let input = input
+                .finish()
+                .unwrap_or_else(|_| unreachable!("original input installed once"));
+            self.group
+                .write(kasumi_raft::ApplicationProposal::admitted_input(input))
+                .await
         };
         match response {
             Err(error) if kasumi_raft::is_application_write_capacity_denied(&error) => {
@@ -1195,22 +1250,32 @@ impl Database {
         let mut report = self.shutdown_gate.lock().await;
         let mut retained = None;
         if detach_custody && !self.custody_detached.load(Ordering::Acquire) {
-            let detached = (|| -> anyhow::Result<()> {
-                let control = kasumi_raft::ControlLog::installed(
-                    self.group.storage_domains().custody().clone(),
-                )?
-                .ok_or_else(|| anyhow::anyhow!("installed custody identity absent"))?;
-                anyhow::ensure!(
-                    control.recover_retired()?,
-                    "source is not permanently retired"
-                );
-                Ok(())
-            })();
+            let detached = self
+                .group
+                .recover_retired_custody(self.stores.custody())
+                .and_then(|retired| {
+                    if retired {
+                        Ok(())
+                    } else {
+                        Err(kasumi_store::ScratchOperationFailure::Operation(
+                            anyhow::anyhow!("source is not permanently retired"),
+                        ))
+                    }
+                });
             if let Err(error) = detached {
+                let marker = match error {
+                    kasumi_store::ScratchOperationFailure::Operation(original) => original,
+                    preparation => {
+                        // The group's prepaid seat retains an initial admission
+                        // original; the Store census retains registered native
+                        // originals. This foreign marker owns neither original.
+                        anyhow::anyhow!("{preparation}")
+                    }
+                };
                 return Err(DrainFailure::retained(report.record(
                     "custody detach",
                     0,
-                    error,
+                    marker,
                 )));
             }
             self.custody_detached.store(true, Ordering::Release);
@@ -1702,6 +1767,59 @@ impl Database {
         }
     }
 
+    async fn audit_snapshot_result<T>(
+        &self,
+        context: &RequestContext,
+        result: std::result::Result<T, crate::SnapshotFailure>,
+    ) -> std::result::Result<T, crate::SnapshotFailure> {
+        match result {
+            Err(crate::SnapshotFailure::AdmissionRefused(original)) => {
+                Err(crate::SnapshotFailure::AdmissionRefused(original))
+            }
+            Err(crate::SnapshotFailure::Creation(original)) => {
+                Err(crate::SnapshotFailure::Creation(original))
+            }
+            Err(crate::SnapshotFailure::Source(original)) => {
+                Err(crate::SnapshotFailure::Source(original))
+            }
+            Err(crate::SnapshotFailure::Operation(original)) => self
+                .audit_result(context, Err(original))
+                .await
+                .map_err(Into::into),
+            Ok(value) => self
+                .audit_result(context, Ok(value))
+                .await
+                .map_err(Into::into),
+        }
+    }
+
+    async fn audit_snapshot_write_result<T>(
+        &self,
+        context: &RequestContext,
+        result: std::result::Result<T, crate::SnapshotFailure>,
+    ) -> std::result::Result<T, crate::SnapshotFailure> {
+        let committed = result.is_ok();
+        let result = self.audit_snapshot_result(context, result).await;
+        if committed {
+            result.map_err(|original| match original {
+                crate::SnapshotFailure::AdmissionRefused(original) => {
+                    crate::SnapshotFailure::AdmissionRefused(original)
+                }
+                crate::SnapshotFailure::Operation(original) => {
+                    credential_acknowledgement(original).into()
+                }
+                crate::SnapshotFailure::Creation(original) => {
+                    crate::SnapshotFailure::Creation(original)
+                }
+                crate::SnapshotFailure::Source(original) => {
+                    crate::SnapshotFailure::Source(original)
+                }
+            })
+        } else {
+            result
+        }
+    }
+
     pub async fn administer(
         &self,
         context: RequestContext,
@@ -1807,7 +1925,7 @@ impl Database {
         context: RequestContext,
         destination: &dyn BackupDestination,
         session_id: uuid::Uuid,
-    ) -> Result<uuid::Uuid> {
+    ) -> std::result::Result<uuid::Uuid, crate::SnapshotFailure> {
         self.backup_checkpoint(context, destination, session_id)
             .await
             .map(|proof| proof.backup_id())
@@ -1978,15 +2096,54 @@ impl Database {
         drop(preflight);
         drop(staged_read);
         self.proposals.prepare(self.admission())?;
+        // This exact input/control/token quote is additional to the existing
+        // producer work estimate. It does not certify that estimate as an apply
+        // candidate model. A known mutation change-tree recipe is included
+        // separately above the old estimate; all scopes share ONE reservation.
+        let max_bytes = max_command_payload.saturating_add(64 << 10);
+        let input_requirements = kasumi_raft::ApplicationInputRequirements::for_capacity(max_bytes);
+        let input_requirements = if let Operation::Mutate(batch) = operation {
+            input_requirements
+                .with_mutation_change_tree(batch)
+                .map_err(|_| {
+                    Error::new(
+                        ErrorCode::ResourceExhausted,
+                        "mutation change-tree quote overflow",
+                    )
+                })?
+        } else {
+            input_requirements
+        };
+        let input_request = input_requirements
+            .with_token::<ProposalBudget>()
+            .map_err(|_| {
+                Error::new(
+                    ErrorCode::ResourceExhausted,
+                    "proposal input quote overflow",
+                )
+            })?;
+        let command_budget = command_budget
+            .checked_add(input_request)
+            .and_then(|bytes| {
+                ProposalBudget::required_bytes()
+                    .ok()
+                    .and_then(|control| bytes.checked_add(control))
+            })
+            .ok_or_else(|| {
+                Error::new(
+                    ErrorCode::ResourceExhausted,
+                    "proposal input quote overflow",
+                )
+            })?;
         let reservation = self.admission().reserve(command_budget, None)?;
         let release_context = context.clone();
         // Transfer the actual input and its exact optional grant together;
         // even an unpolled/refused proposal future has one ordered owner.
         let command = input.into_command(context);
-        let bytes = serde_json::to_vec(&command.command)
+        let encoded_len = proposal_input_len(&command.command)
             .map_err(|_| Error::new(ErrorCode::InvalidArgument, "command encoding failed"))?;
         let max_bytes = max_command_payload.saturating_add(64 << 10);
-        if bytes.len() > max_bytes {
+        if encoded_len > max_bytes {
             return Err(Error::new(
                 ErrorCode::ResourceExhausted,
                 "command too large",
@@ -2004,7 +2161,7 @@ impl Database {
                     .lock()
                     .map_err(|_| Error::new(ErrorCode::Unavailable, "command clock unavailable"))?
                     .clone(),
-                _reservation: reservation,
+                _reservation: ProposalBudget::new(reservation),
                 _registration: Arc::new(registration),
             },
             command,

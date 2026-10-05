@@ -68,7 +68,7 @@ impl Publication {
                 })?;
                 publication.check()?;
                 phase.complete();
-                Ok((prepared, serial))
+                Ok::<_, anyhow::Error>((prepared, serial))
             })
             .await?;
         phase.complete();

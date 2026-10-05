@@ -18,7 +18,7 @@ fn policy() -> Policy {
 struct Fixture {
     _directory: tempfile::TempDir,
     storage: crate::test_utils::FixtureStorage,
-    node: Arc<kasumi_store::NodeStore>,
+    node: kasumi_store::NodeStore,
     stores: Arc<TenantStorageSet>,
     image: SnapshotImage,
     roots: SourceRootsRef,
@@ -26,10 +26,13 @@ struct Fixture {
     budget: u64,
 }
 impl Fixture {
-    async fn new() -> Result<Self> {
+    async fn new() -> crate::test_fixture_failure::FixtureResult<Self> {
         Self::with_bootstrap(1, None).await
     }
-    async fn with_bootstrap(node_id: u64, bootstrap: Option<&SnapshotImage>) -> Result<Self> {
+    async fn with_bootstrap(
+        node_id: u64,
+        bootstrap: Option<&SnapshotImage>,
+    ) -> crate::test_fixture_failure::FixtureResult<Self> {
         let directory = kasumi_store::test_utils::private_tempdir()?;
         let (mut persistent, mut scratch) =
             crate::test_utils::fixture_disk_configs(directory.path())?;
@@ -106,7 +109,7 @@ impl Fixture {
             .prepare()?
             .capture(ApplicationBoundaryRef::Bootstrap(&self.image), false)
     }
-    async fn close(self) -> Result<()> {
+    async fn close(self) -> crate::test_fixture_failure::FixtureResult<()> {
         self._buffers.drain_startup().await?;
         std::future::poll_fn(|cx| self.roots.poll_drain(cx)).await?;
         assert!(self.roots.is_drained());
@@ -121,7 +124,8 @@ fn drain(roots: &SourceRoots) -> Poll<DrainResult> {
 }
 
 #[tokio::test]
-async fn selected_sources_last_selected_handle_closes_during_ordinary_operation() -> Result<()> {
+async fn selected_sources_last_selected_handle_closes_during_ordinary_operation()
+-> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
     let before = fixture.storage.admission.snapshot();
     let selected = fixture.select()?;
@@ -144,7 +148,8 @@ async fn selected_sources_last_selected_handle_closes_during_ordinary_operation(
 }
 
 #[tokio::test]
-async fn selected_sources_shutdown_closes_native_parent_with_metadata_alias_alive() -> Result<()> {
+async fn selected_sources_shutdown_closes_native_parent_with_metadata_alias_alive()
+-> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
     let selected = fixture.select()?;
     fixture.roots.finish_reconstruction()?;
@@ -159,8 +164,8 @@ async fn selected_sources_shutdown_closes_native_parent_with_metadata_alias_aliv
 }
 
 #[tokio::test]
-async fn selected_sources_fork_seal_closes_registered_child_before_releasing_permit() -> Result<()>
-{
+async fn selected_sources_fork_seal_closes_registered_child_before_releasing_permit()
+-> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
     let selected = fixture.select()?;
     let (child, permit) = selected.begin_fork()?;
@@ -184,7 +189,8 @@ async fn selected_sources_fork_seal_closes_registered_child_before_releasing_per
 }
 
 #[tokio::test]
-async fn selected_sources_failed_consuming_close_never_becomes_success_from_none() -> Result<()> {
+async fn selected_sources_failed_consuming_close_never_becomes_success_from_none()
+-> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
     let selected = fixture.select()?;
     let cell = selected.cell.clone();
@@ -218,7 +224,7 @@ async fn selected_sources_failed_consuming_close_never_becomes_success_from_none
 
 #[tokio::test]
 async fn selected_sources_canonical_failure_closes_parent_preserves_original_and_issue()
--> Result<()> {
+-> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
     let wrong = TenantEngine::new(
         "selected-sources".into(),
@@ -252,7 +258,7 @@ async fn selected_sources_canonical_failure_closes_parent_preserves_original_and
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn selected_sources_real_local_startup_publishes_entry_and_drains_surviving_generation()
--> Result<()> {
+-> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
     let audit_store = kasumi_store::TenantStore::initialize_catalog_fixture(
         fixture.node.clone(),
@@ -309,7 +315,7 @@ async fn selected_sources_real_local_startup_publishes_entry_and_drains_survivin
 
 #[tokio::test]
 async fn selected_sources_prospective_denial_preserves_cursor_generation_and_original_then_retries()
--> Result<()> {
+-> crate::test_fixture_failure::FixtureResult<()> {
     use kasumi_raft::StateMachineBackend;
     let fixture = Fixture::new().await?;
     crate::test_utils::install_fixture_audit_placement(fixture.stores.application())?;
@@ -337,11 +343,17 @@ async fn selected_sources_prospective_denial_preserves_cursor_generation_and_ori
         kasumi_raft::with_application_publisher_for_test(&fixture.stores, &position, invoke)
             .err()
             .context("unfunded source publication succeeded")?;
-    assert!(error.chain().any(|cause| {
-        cause
-            .downcast_ref::<kasumi_types::Error>()
-            .is_some_and(|error| error.code == kasumi_types::ErrorCode::ResourceExhausted)
-    }));
+    assert!(
+        error
+            .operation_error()
+            .expect("ordinary prospective refusal")
+            .chain()
+            .any(|cause| {
+                cause
+                    .downcast_ref::<kasumi_types::Error>()
+                    .is_some_and(|error| error.code == kasumi_types::ErrorCode::ResourceExhausted)
+            })
+    );
     assert!(Arc::ptr_eq(&previous, &engine.generation()?));
     assert!(
         fixture
@@ -384,7 +396,8 @@ async fn selected_sources_prospective_denial_preserves_cursor_generation_and_ori
 }
 
 #[tokio::test]
-async fn selected_sources_missing_prospective_callback_never_publishes_generation() -> Result<()> {
+async fn selected_sources_missing_prospective_callback_never_publishes_generation()
+-> crate::test_fixture_failure::FixtureResult<()> {
     use kasumi_raft::StateMachineBackend;
     struct OmitPreparation<'a> {
         stores: &'a kasumi_store::TenantStorageSet,
@@ -431,7 +444,7 @@ async fn selected_sources_missing_prospective_callback_never_publishes_generatio
             let outcome = kasumi_raft::with_application_publisher_for_test(
                 self.stores,
                 self.position,
-                |publisher| {
+                |publisher| -> anyhow::Result<()> {
                     receipt = Some(
                         publisher.commit_with_selection(response, writes, &mut Other, challenge)?,
                     );
@@ -486,7 +499,7 @@ async fn selected_sources_missing_prospective_callback_never_publishes_generatio
 
 #[tokio::test]
 async fn selected_sources_repeated_prospective_callback_is_sticky_and_cancels_queued_reader()
--> Result<()> {
+-> crate::test_fixture_failure::FixtureResult<()> {
     struct CapturePlan(Option<(PreparedSelectionPlan, PreparedTenantPointWorkspace)>);
     impl SelectionPreparer for CapturePlan {
         fn prepare(
@@ -511,37 +524,45 @@ async fn selected_sources_repeated_prospective_callback_is_sticky_and_cancels_qu
     let response = kasumi_raft::AppliedResponse::application(Vec::new());
     let expectation =
         kasumi_raft::PublicationExpectation::for_entry(&fixture.stores, &position, &[], &response)?;
-    kasumi_raft::with_application_publisher_for_test(&fixture.stores, &position, |publisher| {
-        let receipt = publisher.commit_with_selection(
-            response,
-            &[],
-            &mut actual,
-            expectation.challenge()?,
-        )?;
-        expectation.consume(
-            receipt,
-            &actual.0.as_ref().context("actual producer omitted plan")?.0,
-        )?;
-        Ok(())
-    })?;
+    kasumi_raft::with_application_publisher_for_test(
+        &fixture.stores,
+        &position,
+        |publisher| -> anyhow::Result<()> {
+            let receipt = publisher.commit_with_selection(
+                response,
+                &[],
+                &mut actual,
+                expectation.challenge()?,
+            )?;
+            expectation.consume(
+                receipt,
+                &actual.0.as_ref().context("actual producer omitted plan")?.0,
+            )?;
+            Ok(())
+        },
+    )?;
     let (plan, points) = actual.0.take().context("actual producer omitted plan")?;
     // The same actual producer supplies a second independently funded backing.
     let response = kasumi_raft::AppliedResponse::application(Vec::new());
     let expectation =
         kasumi_raft::PublicationExpectation::for_entry(&fixture.stores, &position, &[], &response)?;
-    kasumi_raft::with_application_publisher_for_test(&fixture.stores, &position, |publisher| {
-        let receipt = publisher.commit_with_selection(
-            response,
-            &[],
-            &mut actual,
-            expectation.challenge()?,
-        )?;
-        expectation.consume(
-            receipt,
-            &actual.0.as_ref().context("repeat producer omitted plan")?.0,
-        )?;
-        Ok(())
-    })?;
+    kasumi_raft::with_application_publisher_for_test(
+        &fixture.stores,
+        &position,
+        |publisher| -> anyhow::Result<()> {
+            let receipt = publisher.commit_with_selection(
+                response,
+                &[],
+                &mut actual,
+                expectation.challenge()?,
+            )?;
+            expectation.consume(
+                receipt,
+                &actual.0.as_ref().context("repeat producer omitted plan")?.0,
+            )?;
+            Ok(())
+        },
+    )?;
     let (_, repeated_points) = actual.0.take().context("repeat backing absent")?;
     let held_points = fixture.storage.admission.snapshot().live_reservations;
     assert!(held_points > before_points);
@@ -605,7 +626,7 @@ async fn selected_sources_repeated_prospective_callback_is_sticky_and_cancels_qu
 
 #[tokio::test]
 async fn selected_sources_routine_bounded_read_error_retires_with_original_report_alive()
--> Result<()> {
+-> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
     // Deliberately corrupt trusted metadata with an encrypted row one byte over
     // the canonical custody bound. The failure must come from the real bounded
@@ -648,7 +669,7 @@ async fn selected_sources_routine_bounded_read_error_retires_with_original_repor
 
 #[tokio::test]
 async fn selected_sources_fork_keeps_exact_old_native_generation_after_parent_retirement()
--> Result<()> {
+-> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
     fixture.stores.write_batch(
         &[kasumi_store::WriteOp::put(
@@ -682,22 +703,28 @@ async fn selected_sources_fork_keeps_exact_old_native_generation_after_parent_re
         .unwrap()
         .clone();
     assert_eq!(
-        view.application_get("source-fixture", b"key", 16)?,
-        Some(b"old".to_vec())
+        view.application_get("source-fixture", b"key", 16)?
+            .as_deref(),
+        Some(b"old".as_slice())
     );
     drop(view);
     drop(child);
     assert!(fixture.roots.gate.lock().unwrap().cells.is_empty());
     assert_eq!(
-        fixture.stores.application().get("source-fixture", b"key")?,
-        Some(b"new".to_vec())
+        fixture
+            .stores
+            .application()
+            .get("source-fixture", b"key")?
+            .as_deref(),
+        Some(b"new".as_slice())
     );
     drop(parent_cell);
     fixture.close().await
 }
 
 #[tokio::test]
-async fn selected_sources_unknown_capture_panic_without_view_never_drains_as_clean() -> Result<()> {
+async fn selected_sources_unknown_capture_panic_without_view_never_drains_as_clean()
+-> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
     let preparation = fixture.roots.prepare()?;
     let cell = preparation.cell.clone();
@@ -763,8 +790,8 @@ async fn selected_sources_unknown_capture_panic_without_view_never_drains_as_cle
 }
 
 #[tokio::test]
-async fn selected_sources_alias_refusal_preserves_later_actual_native_close_failure() -> Result<()>
-{
+async fn selected_sources_alias_refusal_preserves_later_actual_native_close_failure()
+-> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
     fixture.stores.write_batch(
         &[kasumi_store::WriteOp::put(
@@ -825,7 +852,8 @@ async fn selected_sources_alias_refusal_preserves_later_actual_native_close_fail
 }
 
 #[tokio::test]
-async fn selected_sources_capture_finalization_settles_handle_before_retirement() -> Result<()> {
+async fn selected_sources_capture_finalization_settles_handle_before_retirement()
+-> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
     let mut preparation = fixture.roots.prepare()?;
     let cell = preparation.cell.clone();
@@ -960,12 +988,12 @@ fn selected_sources_maintenance_publication_requires_actual_scope_for_owner_and_
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_identity()
--> Result<()> {
+-> crate::test_fixture_failure::FixtureResult<()> {
     async fn audit(
-        node: &Arc<kasumi_store::NodeStore>,
+        node: &kasumi_store::NodeStore,
         admission: &Arc<NodeAdmission>,
         existing: bool,
-    ) -> Result<Arc<crate::SecurityAudit>> {
+    ) -> crate::test_fixture_failure::FixtureResult<Arc<crate::SecurityAudit>> {
         let key = Arc::new(LocalKeyProvider::new([121; 32]));
         let store = if existing {
             kasumi_store::TenantStore::open_existing_fixture(
@@ -983,9 +1011,17 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
             .await?
         };
         if existing {
-            crate::SecurityAudit::open(store, Default::default(), admission.clone())
+            Ok(crate::SecurityAudit::open(
+                store,
+                Default::default(),
+                admission.clone(),
+            )?)
         } else {
-            crate::SecurityAudit::initialize(store, Default::default(), admission.clone())
+            Ok(crate::SecurityAudit::initialize(
+                store,
+                Default::default(),
+                admission.clone(),
+            )?)
         }
     }
     fn snapshot_identity(
@@ -1206,7 +1242,8 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn selected_sources_covered_capture_cannot_settle_after_serving_handoff() -> Result<()> {
+async fn selected_sources_covered_capture_cannot_settle_after_serving_handoff()
+-> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
     let audit_store = kasumi_store::TenantStore::initialize_catalog_fixture(
         fixture.node.clone(),
@@ -1372,7 +1409,7 @@ pub(super) mod completion_tests;
 
 #[tokio::test]
 async fn selected_sources_actual_entry_hands_point_backing_to_capture_and_queue_cancellation()
--> Result<()> {
+-> crate::test_fixture_failure::FixtureResult<()> {
     for capture in [false, true] {
         let fixture = Fixture::new().await?;
         let position = kasumi_raft::AppliedEntryContext {
@@ -1395,7 +1432,7 @@ async fn selected_sources_actual_entry_hands_point_backing_to_capture_and_queue_
         kasumi_raft::with_application_publisher_for_test(
             &fixture.stores,
             &position,
-            |publisher| {
+            |publisher| -> anyhow::Result<()> {
                 receipt = Some(publisher.commit_with_selection(
                     response,
                     &[],
@@ -1482,7 +1519,8 @@ async fn selected_sources_actual_entry_hands_point_backing_to_capture_and_queue_
 mod point_retirement_tests;
 
 #[tokio::test]
-async fn selected_sources_initial_install_fits_actual_rows_below_format_ceiling() -> Result<()> {
+async fn selected_sources_initial_install_fits_actual_rows_below_format_ceiling()
+-> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
     crate::test_utils::install_fixture_audit_placement(fixture.stores.application())?;
     let engine = TenantEngine::from_bootstrap("selected-sources", &fixture.image)?;

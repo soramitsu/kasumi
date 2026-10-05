@@ -64,14 +64,18 @@ async fn audit_maintenance_rejects_foreign_equal_policy_core_and_keeps_exact_poo
         &scratch,
         admission.clone(),
     )?;
-    let node = physical.create_new(directory.path().join("persistent/node.kv"), NODE_STORE_ID)?;
+    let node = physical
+        .create_new(directory.path().join("persistent/node.kv"), NODE_STORE_ID)
+        .unwrap_or_else(|original| std::panic::panic_any(original));
     let store = TenantStore::initialize_catalog_fixture(
         node.clone(),
         "maintenance".into(),
         Arc::new(LocalKeyProvider::new([189; 32])),
     )
     .await?;
-    node.drain_initializers().await?;
+    node.drain_initializers()
+        .await
+        .map_err(|failure| failure.observation())?;
     let engine = TenantEngine::new(
         "maintenance".into(),
         "initial".into(),

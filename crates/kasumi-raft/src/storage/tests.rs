@@ -1,4 +1,5 @@
 use super::*;
+use crate::test_utils::FixtureResult;
 use kasumi_store::{
     NodeStore,
     test_utils::{FaultBackend, LocalKeyProvider, ManualClock},
@@ -33,8 +34,8 @@ impl crate::PreparedStateMachineRestore for PreparedFixtureRestore<'_> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn cancelled_log_future_retains_drain_lease_until_blocking_persistence_finishes() -> Result<()>
-{
+async fn cancelled_log_future_retains_drain_lease_until_blocking_persistence_finishes()
+-> FixtureResult<()> {
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
     let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
@@ -126,18 +127,24 @@ impl StateMachineBackend for BytesBackend {
         _: &crate::AppliedEntryContext,
         input: crate::AppliedInput<'_>,
         publisher: &mut dyn crate::ApplyPublisher,
-    ) -> Result<()> {
+    ) -> std::result::Result<(), kasumi_store::ScratchOperationFailure> {
         let crate::AppliedInput::Command(bytes) = input else {
-            publisher.commit(crate::AppliedResponse::application(Vec::new()), &[])?;
+            publisher
+                .commit(crate::AppliedResponse::application(Vec::new()), &[])
+                .map_err(anyhow::Error::from)?;
             return Ok(());
         };
         let mut selected = self.0.lock().unwrap();
         let prepared = bytes.to_vec();
-        publisher.commit(crate::AppliedResponse::application(bytes.to_vec()), &[])?;
+        publisher
+            .commit(crate::AppliedResponse::application(bytes.to_vec()), &[])
+            .map_err(anyhow::Error::from)?;
         *selected = prepared;
         Ok(())
     }
-    fn capture_snapshot(&self) -> Result<crate::CapturedSnapshot> {
+    fn capture_snapshot(
+        &self,
+    ) -> std::result::Result<crate::CapturedSnapshot, kasumi_store::ScratchOperationFailure> {
         let data = self.0.lock().unwrap().clone();
         Ok(crate::CapturedSnapshot::new(None, move |writer| {
             writer.write_all(&data)?;
@@ -147,7 +154,10 @@ impl StateMachineBackend for BytesBackend {
     fn validate_snapshot(
         &self,
         bytes: &mut dyn std::io::Read,
-    ) -> Result<Option<crate::RetiredSnapshotState>> {
+    ) -> std::result::Result<
+        Option<crate::RetiredSnapshotState>,
+        kasumi_store::ScratchOperationFailure,
+    > {
         let mut captured = Vec::new();
         bytes.read_to_end(&mut captured)?;
         ensure!(captured != b"invalid", "invalid application snapshot");
@@ -157,7 +167,10 @@ impl StateMachineBackend for BytesBackend {
         &'a self,
         _context: &crate::SnapshotRestoreContext,
         bytes: &mut dyn std::io::Read,
-    ) -> Result<Box<dyn crate::PreparedStateMachineRestore + 'a>> {
+    ) -> std::result::Result<
+        Box<dyn crate::PreparedStateMachineRestore + 'a>,
+        kasumi_store::ScratchOperationFailure,
+    > {
         let mut captured = Vec::new();
         bytes.read_to_end(&mut captured)?;
         self.validate_snapshot(&mut captured.as_slice())?;
@@ -180,7 +193,8 @@ async fn new_fault_store(
             disk,
             kasumi_store::test_utils::storage_admission(),
             fixture_scratch.clone(),
-        )?,
+        )
+        .expect("explicit synthetic snapshot fixture must open its admitted native node"),
         "snapshot-test".into(),
         Arc::new(LocalKeyProvider::new([7; 32])),
         Arc::new(ManualClock::new()),
@@ -197,7 +211,8 @@ async fn existing_fault_store(
             disk,
             kasumi_store::test_utils::storage_admission(),
             fixture_scratch.clone(),
-        )?,
+        )
+        .expect("explicit synthetic snapshot fixture must open its admitted native node"),
         "snapshot-test".into(),
         Arc::new(LocalKeyProvider::new([7; 32])),
         Arc::new(ManualClock::new()),
@@ -207,7 +222,7 @@ async fn existing_fault_store(
 
 #[tokio::test(flavor = "current_thread")]
 async fn applied_metadata_does_not_block_runtime_while_snapshot_capture_holds_state_lock()
--> Result<()> {
+-> FixtureResult<()> {
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
     let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
@@ -224,15 +239,22 @@ async fn applied_metadata_does_not_block_runtime_while_snapshot_capture_holds_st
             _: &crate::AppliedEntryContext,
             input: crate::AppliedInput<'_>,
             publisher: &mut dyn crate::ApplyPublisher,
-        ) -> Result<()> {
+        ) -> std::result::Result<(), kasumi_store::ScratchOperationFailure> {
             let crate::AppliedInput::Command(bytes) = input else {
-                publisher.commit(crate::AppliedResponse::application(Vec::new()), &[])?;
+                publisher
+                    .commit(crate::AppliedResponse::application(Vec::new()), &[])
+                    .map_err(anyhow::Error::from)?;
                 return Ok(());
             };
-            publisher.commit(crate::AppliedResponse::application(bytes.to_vec()), &[])?;
+            publisher
+                .commit(crate::AppliedResponse::application(bytes.to_vec()), &[])
+                .map_err(anyhow::Error::from)?;
             Ok(())
         }
-        fn capture_snapshot(&self) -> Result<crate::CapturedSnapshot> {
+        fn capture_snapshot(
+            &self,
+        ) -> std::result::Result<crate::CapturedSnapshot, kasumi_store::ScratchOperationFailure>
+        {
             self.entered
                 .lock()
                 .unwrap()
@@ -254,14 +276,20 @@ async fn applied_metadata_does_not_block_runtime_while_snapshot_capture_holds_st
         fn validate_snapshot(
             &self,
             _: &mut dyn std::io::Read,
-        ) -> Result<Option<crate::RetiredSnapshotState>> {
+        ) -> std::result::Result<
+            Option<crate::RetiredSnapshotState>,
+            kasumi_store::ScratchOperationFailure,
+        > {
             Ok(None)
         }
         fn prepare_restore<'a>(
             &'a self,
             _context: &crate::SnapshotRestoreContext,
             _: &mut dyn std::io::Read,
-        ) -> Result<Box<dyn crate::PreparedStateMachineRestore + 'a>> {
+        ) -> std::result::Result<
+            Box<dyn crate::PreparedStateMachineRestore + 'a>,
+            kasumi_store::ScratchOperationFailure,
+        > {
             Ok(Box::new(PreparedFixtureRestore {
                 retirement: None,
                 commit: Box::new(|| Ok(())),
@@ -326,7 +354,7 @@ fn envelope(bytes: Vec<u8>, fixture_scratch: Arc<kasumi_store::ScratchDisk>) -> 
 }
 
 #[tokio::test]
-async fn invalid_backend_snapshot_never_replaces_durable_recoverable_state() -> Result<()> {
+async fn invalid_backend_snapshot_never_replaces_durable_recoverable_state() -> FixtureResult<()> {
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
     let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
@@ -392,7 +420,8 @@ async fn invalid_backend_snapshot_never_replaces_durable_recoverable_state() -> 
 }
 
 #[tokio::test]
-async fn first_membership_snapshot_install_reopen_and_substitution_are_bound() -> Result<()> {
+async fn first_membership_snapshot_install_reopen_and_substitution_are_bound() -> FixtureResult<()>
+{
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
     let scratch_directory = kasumi_store::test_utils::private_tempdir()?;
     let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
@@ -526,7 +555,7 @@ async fn first_membership_snapshot_install_reopen_and_substitution_are_bound() -
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn snapshots_larger_than_store_record_limit_are_chunked_and_recovered() -> Result<()> {
+async fn snapshots_larger_than_store_record_limit_are_chunked_and_recovered() -> FixtureResult<()> {
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
     let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
@@ -570,7 +599,7 @@ async fn snapshots_larger_than_store_record_limit_are_chunked_and_recovered() ->
 
 #[tokio::test]
 async fn snapshot_install_power_loss_at_every_storage_operation_keeps_whole_old_or_new_snapshot()
--> Result<()> {
+-> FixtureResult<()> {
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
     let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
@@ -644,7 +673,7 @@ async fn snapshot_install_power_loss_at_every_storage_operation_keeps_whole_old_
 }
 
 #[tokio::test]
-async fn raft_open_rejects_missing_initial_identity_without_publishing_it() -> Result<()> {
+async fn raft_open_rejects_missing_initial_identity_without_publishing_it() -> FixtureResult<()> {
     let memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
     let scratch_directory = kasumi_store::test_utils::private_tempdir()?;
     let scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), memory.clone());
@@ -667,7 +696,7 @@ async fn raft_open_rejects_missing_initial_identity_without_publishing_it() -> R
     )
     .await?;
     let error = match LogStore::open(domains.clone(), 1).await {
-        Ok(_) => anyhow::bail!("Raft open created missing initial identity"),
+        Ok(_) => return Err(anyhow::anyhow!("Raft open created missing initial identity").into()),
         Err(error) => error,
     };
     assert!(format!("{error:#}").contains("persisted raft node identity is missing"));
@@ -679,7 +708,7 @@ async fn raft_open_rejects_missing_initial_identity_without_publishing_it() -> R
 }
 
 #[tokio::test]
-async fn eight_mib_command_uses_compact_log_record_and_replays_after_reopen() -> Result<()> {
+async fn eight_mib_command_uses_compact_log_record_and_replays_after_reopen() -> FixtureResult<()> {
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
     let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
@@ -691,7 +720,7 @@ async fn eight_mib_command_uses_compact_log_record_and_replays_after_reopen() ->
         path: &std::path::Path,
         create: bool,
         fixture_scratch: Arc<kasumi_store::ScratchDisk>,
-    ) -> Result<Arc<TenantStore>> {
+    ) -> FixtureResult<Arc<TenantStore>> {
         let node = (if create {
             NodeStore::create_new_fixture(
                 path,
@@ -714,6 +743,7 @@ async fn eight_mib_command_uses_compact_log_record_and_replays_after_reopen() ->
                 Arc::new(LocalKeyProvider::new([9; 32])),
             )
             .await
+            .map_err(Into::into)
         } else {
             TenantStore::open_existing_fixture(
                 node,
@@ -721,6 +751,7 @@ async fn eight_mib_command_uses_compact_log_record_and_replays_after_reopen() ->
                 Arc::new(LocalKeyProvider::new([9; 32])),
             )
             .await
+            .map_err(Into::into)
         }
     }
     {
@@ -781,7 +812,8 @@ async fn eight_mib_command_uses_compact_log_record_and_replays_after_reopen() ->
 mod snapshot_custody_tests;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn snapshot_materialization_releases_applied_lock_and_keeps_captured_root() -> Result<()> {
+async fn snapshot_materialization_releases_applied_lock_and_keeps_captured_root()
+-> FixtureResult<()> {
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
     let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
@@ -797,18 +829,25 @@ async fn snapshot_materialization_releases_applied_lock_and_keeps_captured_root(
             _: &crate::AppliedEntryContext,
             input: crate::AppliedInput<'_>,
             publisher: &mut dyn crate::ApplyPublisher,
-        ) -> Result<()> {
+        ) -> std::result::Result<(), kasumi_store::ScratchOperationFailure> {
             let crate::AppliedInput::Command(bytes) = input else {
-                publisher.commit(crate::AppliedResponse::application(Vec::new()), &[])?;
+                publisher
+                    .commit(crate::AppliedResponse::application(Vec::new()), &[])
+                    .map_err(anyhow::Error::from)?;
                 return Ok(());
             };
             let mut selected = self.bytes.lock().unwrap();
             let prepared = bytes.to_vec();
-            publisher.commit(crate::AppliedResponse::application(bytes.to_vec()), &[])?;
+            publisher
+                .commit(crate::AppliedResponse::application(bytes.to_vec()), &[])
+                .map_err(anyhow::Error::from)?;
             *selected = prepared;
             Ok(())
         }
-        fn capture_snapshot(&self) -> Result<crate::CapturedSnapshot> {
+        fn capture_snapshot(
+            &self,
+        ) -> std::result::Result<crate::CapturedSnapshot, kasumi_store::ScratchOperationFailure>
+        {
             let bytes = self.bytes.lock().unwrap().clone();
             let entered = self.entered.clone();
             let release = self.release.clone();
@@ -818,7 +857,8 @@ async fn snapshot_materialization_releases_applied_lock_and_keeps_captured_root(
                     release
                         .lock()
                         .unwrap()
-                        .recv_timeout(std::time::Duration::from_secs(10))?;
+                        .recv_timeout(std::time::Duration::from_secs(10))
+                        .map_err(anyhow::Error::from)?;
                 }
                 writer.write_all(&bytes)?;
                 Ok(())
@@ -827,14 +867,20 @@ async fn snapshot_materialization_releases_applied_lock_and_keeps_captured_root(
         fn validate_snapshot(
             &self,
             _: &mut dyn Read,
-        ) -> Result<Option<crate::RetiredSnapshotState>> {
+        ) -> std::result::Result<
+            Option<crate::RetiredSnapshotState>,
+            kasumi_store::ScratchOperationFailure,
+        > {
             Ok(None)
         }
         fn prepare_restore<'a>(
             &'a self,
             _context: &crate::SnapshotRestoreContext,
             _: &mut dyn Read,
-        ) -> Result<Box<dyn crate::PreparedStateMachineRestore + 'a>> {
+        ) -> std::result::Result<
+            Box<dyn crate::PreparedStateMachineRestore + 'a>,
+            kasumi_store::ScratchOperationFailure,
+        > {
             Ok(Box::new(PreparedFixtureRestore {
                 retirement: None,
                 commit: Box::new(|| Ok(())),
@@ -879,7 +925,7 @@ async fn snapshot_materialization_releases_applied_lock_and_keeps_captured_root(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn snapshot_storage_metadata_requires_current_writer_bytes_and_v4_id() -> Result<()> {
+async fn snapshot_storage_metadata_requires_current_writer_bytes_and_v4_id() -> FixtureResult<()> {
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
     let scratch_directory = kasumi_store::test_utils::private_tempdir()?;
     let scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
@@ -1002,7 +1048,7 @@ async fn snapshot_storage_metadata_requires_current_writer_bytes_and_v4_id() -> 
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn coverage_writer_refuses_one_byte_past_reader_limit_before_staging() -> Result<()> {
+async fn coverage_writer_refuses_one_byte_past_reader_limit_before_staging() -> FixtureResult<()> {
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
     let scratch_directory = kasumi_store::test_utils::private_tempdir()?;
     let scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);

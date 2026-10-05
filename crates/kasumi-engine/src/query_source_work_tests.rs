@@ -29,10 +29,12 @@ use std::{
 
 struct Fixture {
     store: Arc<TenantStore>,
-    node: Arc<NodeStore>,
+    node: NodeStore,
     physical: crate::test_utils::FixtureStorage,
     generation: Arc<Generation>,
     max_bytes: u64,
+    max_reservations: usize,
+    cache_work_headroom: (u64, usize),
     _directory: tempfile::TempDir,
 }
 impl Fixture {
@@ -64,6 +66,8 @@ impl Fixture {
         )
         .unwrap();
         let max_bytes = config.max_inflight_bytes.unwrap();
+        let max_reservations = config.max_reservations;
+        let cache_work_headroom = config.cache_work_headroom(max_bytes);
         let admission = match probe {
             Some((probe, clock)) => NodeAdmission::create(config, 1 << 30, probe, clock).unwrap(),
             None => NodeAdmission::with_fixed_memory(config, 1 << 30, 0).unwrap(),
@@ -140,6 +144,8 @@ impl Fixture {
             physical,
             generation: Arc::new(generation),
             max_bytes,
+            max_reservations,
+            cache_work_headroom,
             _directory: directory,
         })
     }
@@ -710,13 +716,29 @@ async fn rejected_metadata_admission_returns_exact_selected_source_for_cleanup()
         plan.input.memory.live_bytes(),
         plan.input.memory.peak_bytes(),
     );
-    let before = fixture.admission().snapshot();
-    let protected_slots = 128 - before.live_reservations;
+    let selected = fixture.admission().snapshot();
+    let (mandatory_bytes, mandatory_slots) = fixture.cache_work_headroom;
+    let protected_slots = fixture
+        .max_reservations
+        .checked_sub(selected.live_reservations)
+        .and_then(|available| available.checked_sub(mandatory_slots))
+        .unwrap();
     let protection = fixture
         .admission()
         .memory()
         .protect_ordinary(0, protected_slots)
         .unwrap();
+    // Protection preserves the real mandatory-work floor. Retained resident
+    // grants consume that floor before testing ordinary metadata admission.
+    let blockers: Vec<_> = (0..mandatory_slots)
+        .map(|_| fixture.admission().reserve_resident(0).unwrap())
+        .collect();
+    let before = fixture.admission().snapshot();
+    assert_eq!(before.reserved_bytes, selected.reserved_bytes);
+    assert_eq!(
+        before.live_reservations,
+        selected.live_reservations + mandatory_slots
+    );
     let rejection = match fixture
         .admission()
         .prepare_snapshot_work_from_existing::<QuerySourceWork<DiskOwner>>(plan)
@@ -727,6 +749,10 @@ async fn rejected_metadata_admission_returns_exact_selected_source_for_cleanup()
     assert_eq!(
         rejection.error().unwrap().code,
         ErrorCode::ResourceExhausted
+    );
+    assert_eq!(
+        rejection.error().unwrap().message,
+        "snapshot work metadata budget exhausted"
     );
     let after = fixture.admission().snapshot();
     assert_eq!(after.reserved_bytes, before.reserved_bytes);
@@ -752,16 +778,31 @@ async fn rejected_metadata_admission_returns_exact_selected_source_for_cleanup()
         Some(id)
     );
     fence_pending(&fence).await;
+    drop(blockers);
     drop(protection);
+    let before = fixture.admission().snapshot();
+    assert_eq!(before.reserved_bytes, selected.reserved_bytes);
+    assert_eq!(before.live_reservations, selected.live_reservations);
     let bytes = fixture
         .max_bytes
         .checked_sub(before.reserved_bytes)
+        .and_then(|available| available.checked_sub(mandatory_bytes))
         .unwrap();
     let protection = fixture
         .admission()
         .memory()
         .protect_ordinary(bytes, 0)
         .unwrap();
+    let blocker = fixture
+        .admission()
+        .reserve_resident(mandatory_bytes)
+        .unwrap();
+    let before = fixture.admission().snapshot();
+    assert_eq!(
+        before.reserved_bytes,
+        selected.reserved_bytes + mandatory_bytes
+    );
+    assert_eq!(before.live_reservations, selected.live_reservations + 1);
     let rejection = match fixture
         .admission()
         .prepare_snapshot_work_from_existing::<QuerySourceWork<DiskOwner>>(plan)
@@ -772,6 +813,10 @@ async fn rejected_metadata_admission_returns_exact_selected_source_for_cleanup()
     assert_eq!(
         rejection.error().unwrap().code,
         ErrorCode::ResourceExhausted
+    );
+    assert_eq!(
+        rejection.error().unwrap().message,
+        "snapshot work metadata budget exhausted"
     );
     let after = fixture.admission().snapshot();
     assert_eq!(after.reserved_bytes, before.reserved_bytes);
@@ -795,7 +840,11 @@ async fn rejected_metadata_admission_returns_exact_selected_source_for_cleanup()
         Some(id)
     );
     assert_eq!(gate.cleanup_calls.load(Ordering::Acquire), 0);
+    drop(blocker);
     drop(protection);
+    let released = fixture.admission().snapshot();
+    assert_eq!(released.reserved_bytes, selected.reserved_bytes);
+    assert_eq!(released.live_reservations, selected.live_reservations);
     cleanup_rejected(plan).await;
     fence.drain().await;
     assert_eq!(fixture.admission().snapshot().inflight_operations, 0);

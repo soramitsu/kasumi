@@ -377,13 +377,13 @@ impl RetirementLogSeed {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub enum RaftCommand {
-    Application(Vec<u8>),
+    Application(crate::ApplicationPayload),
     Retirement { application: Vec<u8>, seed: Vec<u8> },
     Custody(Vec<u8>),
 }
 impl RaftCommand {
     pub fn application(bytes: Vec<u8>) -> Self {
-        Self::Application(bytes)
+        Self::Application(crate::ApplicationPayload::ingress(bytes))
     }
     pub fn retirement(bytes: Vec<u8>, seed: RetirementLogSeed) -> Result<Self> {
         seed.check_command(&bytes)?;
@@ -397,7 +397,8 @@ impl RaftCommand {
     }
     pub fn bytes(&self) -> &[u8] {
         match self {
-            Self::Application(bytes) | Self::Custody(bytes) => bytes,
+            Self::Application(bytes) => bytes.as_bytes(),
+            Self::Custody(bytes) => bytes,
             Self::Retirement { application, .. } => application,
         }
     }

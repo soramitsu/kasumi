@@ -7,6 +7,7 @@
 #[path = "apply_completion_report.rs"]
 pub(crate) mod completion;
 use completion::{CompletionState, ReportBusy, RetainedApplyReport};
+use kasumi_types::SharedBudgetCharge;
 
 use std::{
     any::Any,
@@ -21,11 +22,18 @@ use std::{
 /// error and the Arc allocation before releasing the final admission charge.
 struct FailureState {
     error: OnceLock<anyhow::Error>,
+    preparation: OnceLock<PreparationApplyFailure>,
     pub(crate) completion: CompletionState,
     // A retained diagnostic keeps the duplicate-open fence independently of
     // the group facade. Its exact store allocation must remain alive too:
     // LIVE_GROUPS uses that allocation's address as its identity.
     ownership: OnceLock<BoundOwnership>,
+}
+pub(crate) struct PreparationApplyFailure {
+    pub(crate) original: kasumi_store::ScratchOperationFailure,
+    pub(crate) publication: Option<anyhow::Error>,
+    pub(crate) response: Option<crate::AppliedResponse>,
+    pub(crate) violation: Option<completion::CompletionViolation>,
 }
 struct BoundOwnership {
     live: Arc<AtomicBool>,
@@ -37,7 +45,7 @@ struct BoundOwnership {
 #[derive(Clone)]
 struct ChargedSlot {
     state: Arc<FailureState>,
-    _charge: Arc<dyn Send + Sync>,
+    _charge: SharedBudgetCharge,
 }
 
 /// Construct this owner before dispatching any application work. Callers must
@@ -65,10 +73,11 @@ impl ApplyFailureSlot {
 
     /// `charge` already covers `required_bytes`. Every diagnostic clone keeps
     /// that same charge alive, including after the lifecycle owner is dropped.
-    pub(crate) fn new(charge: Arc<dyn Send + Sync>) -> Self {
+    pub(crate) fn new(charge: SharedBudgetCharge) -> Self {
         Self(ChargedSlot {
             state: Arc::new(FailureState {
                 error: OnceLock::new(),
+                preparation: OnceLock::new(),
                 completion: CompletionState::new(),
                 ownership: OnceLock::new(),
             }),
@@ -142,15 +151,31 @@ impl ApplyFailureSlot {
         Ok(RetainedApplyFailure(self.0.clone()))
     }
 
+    #[allow(
+        clippy::result_large_err,
+        reason = "An occupied prepaid slot returns the original preparation custody without allocating."
+    )]
+    pub(crate) fn retain_preparation(
+        &self,
+        original: PreparationApplyFailure,
+    ) -> Result<RetainedApplyFailure, PreparationApplyFailure> {
+        self.0.state.preparation.set(original)?;
+        Ok(self.diagnostic())
+    }
+
     pub(crate) fn failure_ownership_drained(&self) -> bool {
-        self.0.state.error.get().is_none() && self.0.state.completion.failure_ownership_drained()
+        self.0.state.preparation.get().is_none()
+            && self.0.state.error.get().is_none()
+            && self.0.state.completion.failure_ownership_drained()
     }
 
     /// A stable diagnostic of the first failure, with no ownership transfer or
     /// new allocation. Call again after storage drain to observe late workers.
     pub(crate) fn failure(&self) -> Option<RetainedApplyFailure> {
-        (self.0.state.error.get().is_some() || self.0.state.completion.failed())
-            .then(|| RetainedApplyFailure(self.0.clone()))
+        (self.0.state.preparation.get().is_some()
+            || self.0.state.error.get().is_some()
+            || self.0.state.completion.failed())
+        .then(|| RetainedApplyFailure(self.0.clone()))
     }
 }
 
@@ -164,7 +189,14 @@ impl RetainedApplyFailure {
         &self,
         inspect: impl for<'a> FnOnce(RetainedApplyReport<'a>) -> R,
     ) -> Result<R, ReportBusy> {
-        if self.0.state.completion.failed() {
+        if let Some(original) = self.0.state.preparation.get() {
+            Ok(inspect(RetainedApplyReport::Preparation {
+                original: &original.original,
+                publication: original.publication.as_ref(),
+                response: original.response.as_ref(),
+                violation: original.violation,
+            }))
+        } else if self.0.state.completion.failed() {
             self.0
                 .state
                 .completion
@@ -191,7 +223,7 @@ impl fmt::Display for RetainedApplyFailure {
 
 impl std::error::Error for RetainedApplyFailure {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        if self.0.state.completion.failed() {
+        if self.0.state.preparation.get().is_some() || self.0.state.completion.failed() {
             None
         } else {
             self.0.state.error.get().map(|error| error.as_ref())
@@ -279,7 +311,7 @@ mod tests {
     fn first_failure_is_stable_and_rejection_returns_the_exact_second_owner() {
         let first_drops = Arc::new(AtomicUsize::new(0));
         let second_drops = Arc::new(AtomicUsize::new(0));
-        let slot = ApplyFailureSlot::new(Arc::new(()));
+        let slot = ApplyFailureSlot::new(kasumi_types::SharedBudgetCharge::new(()));
         assert!(slot.failure().is_none());
         let first = original(17, &first_drops);
         let first_address = first.downcast_ref::<OriginalFailure>().unwrap() as *const _;
@@ -325,7 +357,7 @@ mod tests {
     #[test]
     fn source_and_downcast_preserve_original_contexts_after_parent_drop() {
         let drops = Arc::new(AtomicUsize::new(0));
-        let slot = ApplyFailureSlot::new(Arc::new(()));
+        let slot = ApplyFailureSlot::new(kasumi_types::SharedBudgetCharge::new(()));
         let retained = slot
             .retain(original(41, &drops).context("publication context"))
             .unwrap();
@@ -375,7 +407,7 @@ mod tests {
         let payload_drops = Arc::new(AtomicUsize::new(0));
         let charge_drops = Arc::new(AtomicUsize::new(0));
         let wrong_order = Arc::new(AtomicBool::new(false));
-        let slot = ApplyFailureSlot::new(Arc::new(Charge {
+        let slot = ApplyFailureSlot::new(kasumi_types::SharedBudgetCharge::new(Charge {
             payload_drops: payload_drops.clone(),
             charge_drops: charge_drops.clone(),
             wrong_order: wrong_order.clone(),
@@ -436,7 +468,7 @@ mod tests {
             });
         })
         .unwrap_err();
-        let slot = ApplyFailureSlot::new(Arc::new(()));
+        let slot = ApplyFailureSlot::new(kasumi_types::SharedBudgetCharge::new(()));
         let retained = slot
             .retain(
                 BothFailures {
@@ -503,7 +535,7 @@ mod tests {
 
     #[test]
     fn diagnostics_are_static_and_do_not_format_original_payloads() {
-        let slot = ApplyFailureSlot::new(Arc::new(()));
+        let slot = ApplyFailureSlot::new(kasumi_types::SharedBudgetCharge::new(()));
         let retained = slot.retain(Unformattable.into()).unwrap();
         assert_eq!(
             retained.to_string(),
@@ -526,7 +558,7 @@ mod tests {
 
     #[test]
     fn retained_diagnostic_keeps_exact_group_fence_after_facade_and_slot_drop() {
-        let slot = ApplyFailureSlot::new(Arc::new(()));
+        let slot = ApplyFailureSlot::new(kasumi_types::SharedBudgetCharge::new(()));
         let ownership = Arc::new(AtomicBool::new(true));
         let weak = Arc::downgrade(&ownership);
         let identity_drops = Arc::new(AtomicUsize::new(0));
@@ -565,7 +597,7 @@ mod tests {
         let identity_drops = Arc::new(AtomicUsize::new(0));
         let charge_drops = Arc::new(AtomicUsize::new(0));
         let wrong_order = Arc::new(AtomicBool::new(false));
-        let slot = ApplyFailureSlot::new(Arc::new(Charge {
+        let slot = ApplyFailureSlot::new(kasumi_types::SharedBudgetCharge::new(Charge {
             payload_drops: identity_drops.clone(),
             charge_drops: charge_drops.clone(),
             wrong_order: wrong_order.clone(),

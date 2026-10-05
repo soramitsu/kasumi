@@ -1,6 +1,7 @@
 use super::*;
 use crate::{
-    CATALOG, NodeDiskMemoryAdmission, NodeStore, NodeStoreOpeningFailure, RECORDS, ScratchDisk,
+    CATALOG, NativeConstructorFailure, NodeDiskMemoryAdmission, NodeStore, NodeStoreStartFailure,
+    RECORDS, ScratchDisk,
     test_utils::{TestDiskMemory, private_tempdir, retry_disk_registry},
 };
 use std::{
@@ -102,6 +103,66 @@ fn retained_reader_keeps_one_snapshot_and_admitted_bytes_through_close() {
     assert_eq!(verification.retire(), StorageCensusDisposition::Retired);
     assert_eq!(existing.close().unwrap(), DatabaseOpenSettlement::Closed);
     assert_eq!(existing.retire(), StorageCensusDisposition::Retired);
+}
+
+#[test]
+fn native_close_keeps_resources_until_observed_disposal_before_census_retirement() {
+    let directory = private_tempdir().unwrap();
+    let path = directory.path().join("observed-native-disposal.kv");
+    let memory = TestDiskMemory::new(256 << 20, 4096);
+    let disk = disk(&path, &memory);
+    let opening = RegisteredNodeOpening::prepare(
+        &path,
+        ID,
+        disk,
+        NodeOpeningMode::Create,
+        crate::test_utils::node_storage_config(),
+    )
+    .unwrap();
+    assert_eq!(opening.open(), NodeOpeningPhase::Open);
+    let id = opening.id();
+    let actual_owner = std::ptr::from_ref(opening.registration.owner());
+    assert_eq!(opening.close().unwrap(), DatabaseOpenSettlement::Closed);
+    {
+        let report = opening.report();
+        assert_eq!(report.engine().settlement(), DatabaseOpenSettlement::Closed);
+        assert!(!report.engine().disposal().complete());
+        assert!(matches!(
+            report.engine().database_close().unwrap().backend(),
+            TerminalObservation::Returned(Ok(()))
+        ));
+    }
+    let closed_credit = memory.snapshot();
+    // The live facade still owns the actual census payload, so the census
+    // cannot retire its control or metadata lease. It can independently drive
+    // the native resource disposal and retain that exact positive report.
+    assert_eq!(
+        memory.storage_census().drain_owner(id),
+        StorageCensusDisposition::Retained
+    );
+    {
+        let report = opening.report();
+        assert_eq!(
+            std::ptr::from_ref(opening.registration.owner()),
+            actual_owner
+        );
+        assert_eq!(
+            report.engine().settlement(),
+            DatabaseOpenSettlement::Disposed
+        );
+        assert!(report.engine().disposal().complete());
+        assert!(matches!(
+            report.engine().database_close().unwrap().backend(),
+            TerminalObservation::Returned(Ok(()))
+        ));
+    }
+    let disposed_credit = memory.snapshot();
+    assert!(disposed_credit.used_bytes < closed_credit.used_bytes);
+    assert!(disposed_credit.live_reservations < closed_credit.live_reservations);
+    assert_eq!(opening.close().unwrap(), DatabaseOpenSettlement::Closed);
+    assert_eq!(memory.snapshot(), disposed_credit);
+    assert_eq!(opening.retire(), StorageCensusDisposition::Retired);
+    assert_eq!(memory.storage_census().snapshot().databases, 0);
 }
 
 #[test]
@@ -535,13 +596,7 @@ impl PausedRegistrationMemory {
         owner.census.bind_provider(&provider).unwrap();
         (owner, observe, resume)
     }
-}
-impl kasumi_kv::SourceMemoryProvider for PausedRegistrationMemory {}
-impl NodeDiskMemoryAdmission for PausedRegistrationMemory {
-    fn storage_census(&self) -> &crate::StorageCensus {
-        &self.census
-    }
-    fn reserve_installed(self: Arc<Self>, bytes: u64) -> io::Result<crate::DiskMemoryLease> {
+    fn admit_installed(&self, bytes: u64) -> io::Result<()> {
         // Tests arm this only after queueing the real reader, or target the
         // exact required two-byte native table-tag output (cache uses admit).
         let target = bytes != 0 && self.deny_installed_bytes.load(Ordering::Acquire) == bytes;
@@ -586,7 +641,49 @@ impl NodeDiskMemoryAdmission for PausedRegistrationMemory {
             self.entered.send(()).unwrap();
             self.resume.lock().recv().unwrap();
         }
+        Ok(())
+    }
+}
+impl kasumi_kv::SourceMemoryProvider for PausedRegistrationMemory {}
+impl NodeDiskMemoryAdmission for PausedRegistrationMemory {
+    fn storage_census(&self) -> &crate::StorageCensus {
+        &self.census
+    }
+    fn reserve_installed(self: Arc<Self>, bytes: u64) -> io::Result<crate::DiskMemoryLease> {
+        self.admit_installed(bytes)?;
         self.backing.clone().reserve_installed(bytes)
+    }
+
+    fn install_native_constructor(
+        self: Arc<Self>,
+        install: &mut crate::NativeConstructorInstall<'_>,
+    ) -> std::io::Result<()> {
+        let provider: Arc<dyn NodeDiskMemoryAdmission> = self.clone();
+        let permit = install
+            .try_begin_bind(provider)
+            .map_err(|_| std::io::ErrorKind::InvalidInput)?;
+        let requested_bytes = permit.request_bytes();
+        if let Err(error) = self.admit_installed(requested_bytes) {
+            return if error.kind() == io::ErrorKind::OutOfMemory {
+                Err(permit.refuse_capacity(error))
+            } else {
+                Err(error)
+            };
+        }
+        let bytes = crate::disk_memory::add(
+            requested_bytes,
+            crate::DiskMemoryLease::token_allocation_bytes::<crate::DiskMemoryLease>()?,
+        )?;
+        match self.backing.clone().reserve_installed(bytes) {
+            Ok(token) => {
+                permit.bind(token);
+                Ok(())
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::OutOfMemory => {
+                Err(permit.refuse_capacity(error))
+            }
+            Err(error) => Err(error),
+        }
     }
 
     fn quote_cache_memory(&self, bytes: u64) -> std::io::Result<kasumi_kv::CacheMemoryQuote> {
@@ -962,10 +1059,14 @@ fn registered_node_tables_retains_actual_transaction_and_reports_through_physica
         memory.storage_census().drain_owner(id),
         StorageCensusDisposition::Retained
     );
-    assert_eq!(
-        opening.report().engine().settlement(),
-        DatabaseOpenSettlement::Closed
-    );
+    {
+        let report = opening.report();
+        assert_eq!(
+            report.engine().settlement(),
+            DatabaseOpenSettlement::Disposed
+        );
+        assert!(report.engine().disposal().complete());
+    }
     // The returned report's real request owner remains charged after physical
     // close. Only its own actual disposal can remove the writer cell.
     assert_eq!(memory.storage_census().snapshot().writers, 1);
@@ -1292,7 +1393,11 @@ fn abandoned_failed_open_keeps_original_after_positive_close_until_explicit_repo
     let retained = RegisteredNodeOpening::retained(memory.clone(), id).unwrap();
     {
         let report = retained.report();
-        assert_eq!(report.engine().settlement(), DatabaseOpenSettlement::Closed);
+        assert_eq!(
+            report.engine().settlement(),
+            DatabaseOpenSettlement::Disposed
+        );
+        assert!(report.engine().disposal().complete());
         let TerminalObservation::Returned(Err(error)) = report.acquisition() else {
             panic!("original acquisition error lost");
         };
@@ -1322,7 +1427,13 @@ fn a_new_close_error_is_not_relinquished_by_the_call_that_first_starts_close() {
     let file_owner = {
         let state = opening.registration.owner().state.lock();
         assert!(!state.outcomes_released);
-        state.file.retained_file_custody().unwrap().0
+        state
+            .file
+            .physical()
+            .unwrap()
+            .retained_file_custody()
+            .unwrap()
+            .0
     };
     let physical = group_image(&path);
     let admitted = disk.snapshot();
@@ -1359,7 +1470,13 @@ fn a_new_close_error_is_not_relinquished_by_the_call_that_first_starts_close() {
         let TerminalObservation::Returned(Err(backend)) = close.backend() else {
             panic!("failed file owner must not produce positive backend close");
         };
-        let (owner, native) = report.state.file.retained_file_custody().unwrap();
+        let (owner, native) = report
+            .state
+            .file
+            .physical()
+            .unwrap()
+            .retained_file_custody()
+            .unwrap();
         assert_eq!(owner, file_owner);
         assert!(
             native.is_some(),
@@ -1408,13 +1525,20 @@ fn a_new_close_error_is_not_relinquished_by_the_call_that_first_starts_close() {
             };
             assert_eq!(std::ptr::from_ref(error), backend);
             assert_eq!(
-                report.state.file.retained_file_custody(),
+                report
+                    .state
+                    .file
+                    .physical()
+                    .unwrap()
+                    .retained_file_custody(),
                 Some((file_owner, native))
             );
             assert!(
                 report
                     .state
                     .file
+                    .physical()
+                    .unwrap()
                     .len(kasumi_kv::GroupFile::segment(1))
                     .is_err()
             );
@@ -1592,7 +1716,13 @@ fn explicit_failed_close_requires_original_acknowledgement_then_accepted_disk_ce
         let TerminalObservation::Returned(Err(backend)) = close.backend() else {
             panic!("backend error absent")
         };
-        let (_, native) = report.state.file.retained_file_custody().unwrap();
+        let (_, native) = report
+            .state
+            .file
+            .physical()
+            .unwrap()
+            .retained_file_custody()
+            .unwrap();
         let mut seen = None;
         let mut error_count = 0;
         let (ack, allocations) = crate::allocation_tests::measure(|| {
@@ -1638,7 +1768,15 @@ fn explicit_failed_close_requires_original_acknowledgement_then_accepted_disk_ce
         };
         assert_eq!(std::ptr::from_ref(error), backend);
         assert!(report.acknowledge_failed_close(|_| ()).is_err());
-        assert!(report.state.file.failed_close_witness().is_err());
+        assert!(
+            report
+                .state
+                .file
+                .physical()
+                .unwrap()
+                .failed_close_witness()
+                .is_err()
+        );
     }
     assert_eq!(
         memory.storage_census().drain_owner(id),
@@ -1679,7 +1817,7 @@ fn explicit_failed_close_requires_original_acknowledgement_then_accepted_disk_ce
 }
 
 #[test]
-fn failed_acknowledgement_cannot_cross_memory_cores_with_equal_public_owner_ids() {
+fn failed_acknowledgement_cannot_cross_memory_cores_with_same_census_slot_indices() {
     let first_dir = private_tempdir().unwrap();
     let second_dir = private_tempdir().unwrap();
     let first_path = first_dir.path().join("first.kasumi");
@@ -1706,11 +1844,14 @@ fn failed_acknowledgement_cannot_cross_memory_cores_with_equal_public_owner_ids(
     .unwrap();
     assert_eq!(first.open(), NodeOpeningPhase::Open);
     assert_eq!(second.open(), NodeOpeningPhase::Open);
+    // Both real owners occupy the same slot position in their own census;
+    // process-wide generations keep their public identities distinct.
+    assert_eq!(first_memory.storage_census().owner_at(0), Some(first.id()));
     assert_eq!(
-        first.id(),
-        second.id(),
-        "regression requires equal per-core public IDs"
+        second_memory.storage_census().owner_at(0),
+        Some(second.id())
     );
+    assert_ne!(first.id(), second.id());
     first_disk.fail();
     second_disk.fail();
     let first_id = first.id();
@@ -1720,7 +1861,13 @@ fn failed_acknowledgement_cannot_cross_memory_cores_with_equal_public_owner_ids(
     let first = RegisteredNodeOpening::retained(first_memory.clone(), first_id).unwrap();
     let second = RegisteredNodeOpening::retained(second_memory.clone(), second_id).unwrap();
     let wrong = first.report().acknowledge_failed_close(|_| ()).unwrap();
-    let second_custody = second.report().state.file.retained_file_custody();
+    let second_custody = second
+        .report()
+        .state
+        .file
+        .physical()
+        .unwrap()
+        .retained_file_custody();
     assert_eq!(
         second.recover_failed_close(wrong).unwrap_err().kind(),
         io::ErrorKind::InvalidInput
@@ -1730,7 +1877,13 @@ fn failed_acknowledgement_cannot_cross_memory_cores_with_equal_public_owner_ids(
         DatabaseOpenSettlement::DrainedWithFailure
     );
     assert_eq!(
-        second.report().state.file.retained_file_custody(),
+        second
+            .report()
+            .state
+            .file
+            .physical()
+            .unwrap()
+            .retained_file_custody(),
         second_custody
     );
     for (opening, disk, memory) in [
@@ -1769,7 +1922,13 @@ fn disposed_failed_owner_resumes_after_actual_transfer_contention_without_replay
     assert_eq!(opening.retire(), StorageCensusDisposition::Retained);
     let retained = RegisteredNodeOpening::retained(memory.clone(), id).unwrap();
     let acknowledgement = retained.report().acknowledge_failed_close(|_| ()).unwrap();
-    let physical_owner = retained.report().state.file.retained_file_custody();
+    let physical_owner = retained
+        .report()
+        .state
+        .file
+        .physical()
+        .unwrap()
+        .retained_file_custody();
     let (start_send, start_receive) = std::sync::mpsc::sync_channel(0);
     let (ready_send, ready_receive) = std::sync::mpsc::sync_channel(0);
     let (release_send, release_receive) = std::sync::mpsc::sync_channel(0);
@@ -1828,7 +1987,13 @@ fn disposed_failed_owner_resumes_after_actual_transfer_contention_without_replay
         release_send.send(()).unwrap();
         holder.join().unwrap();
         assert_eq!(
-            retained.report().state.file.retained_file_custody(),
+            retained
+                .report()
+                .state
+                .file
+                .physical()
+                .unwrap()
+                .retained_file_custody(),
             physical_owner
         );
         assert_eq!(
@@ -1903,7 +2068,12 @@ fn unknown_native_opening_close_vetoes_acknowledgement_and_never_retries_the_han
         );
         (
             std::ptr::from_ref(error),
-            report.state.file.retained_file_custody(),
+            report
+                .state
+                .file
+                .physical()
+                .unwrap()
+                .retained_file_custody(),
         )
     };
     let charged = disk.snapshot().charged_bytes;
@@ -1924,7 +2094,15 @@ fn unknown_native_opening_close_vetoes_acknowledgement_and_never_retries_the_han
             panic!("original error erased")
         };
         assert_eq!(std::ptr::from_ref(error), backend);
-        assert_eq!(report.state.file.retained_file_custody(), native_owner);
+        assert_eq!(
+            report
+                .state
+                .file
+                .physical()
+                .unwrap()
+                .retained_file_custody(),
+            native_owner
+        );
         assert!(matches!(
             engine.failed_disposal(),
             TerminalObservation::NotEntered
@@ -1987,12 +2165,31 @@ fn private_opening_arc_is_admitted_before_any_prepared_owner_allocation() {
             crate::test_utils::node_storage_config(),
         )
     });
-    assert!(matches!(denied, Err(error) if error.kind() == io::ErrorKind::OutOfMemory));
+    let denied = denied
+        .err()
+        .expect("complete opening backing must be denied");
+    assert!(denied.is_capacity_denied());
+    denied.with_report(|report| {
+        let report = report.expect("preclaimed constructor keeps the original refusal");
+        assert!(matches!(
+            report.provider(),
+            TerminalObservation::Returned(Err(original))
+                if original.kind() == io::ErrorKind::OutOfMemory
+        ));
+        assert!(matches!(
+            report.construction(),
+            TerminalObservation::NotEntered
+        ));
+        assert!(!report.has_lease());
+        assert!(!report.has_payload());
+    });
     assert_eq!(
         allocations, 0,
         "denial precedes group, path, slots, backend and proxy allocations"
     );
     assert_eq!(memory.snapshot().used_bytes, full.used_bytes);
+    assert_eq!(memory.storage_census().snapshot().databases, 1);
+    assert_eq!(denied.cleanup(), StorageCensusDisposition::Retired);
     assert_eq!(memory.storage_census().snapshot().databases, 0);
     assert_eq!(disk.snapshot().open_files, 0);
     assert!(!path.exists());
@@ -2084,6 +2281,48 @@ fn failed_existing_name_acquisition_retires_the_registered_opening() {
     assert_eq!(std::fs::read(&path).unwrap(), b"unowned existing bytes");
 }
 
+// Native shutdown deliberately retains this live facade and its census fee.
+// Observe original native disposal before consuming the final facade; only the
+// actual Retired receipt allows the original zero-database assertions below.
+fn retire_completed_native_node(
+    node: NodeStore,
+    backing: &TestDiskMemory,
+    constructor_token_bytes: u64,
+) {
+    let id = node.registered_opening_id().unwrap();
+    let provider = node.memory().clone();
+    let requested = RegisteredNodeOpening::node_request_bytes(
+        node.group_path().unwrap(),
+        crate::test_utils::node_storage_config(),
+    )
+    .unwrap();
+    let parent_charge = TestDiskMemory::required_reservation_bytes(
+        crate::disk_memory::add(requested, constructor_token_bytes).unwrap(),
+    )
+    .unwrap();
+    let before_retirement = backing.snapshot();
+    assert_eq!(provider.storage_census().snapshot().databases, 1);
+    assert!(before_retirement.used_bytes >= parent_charge);
+    assert!(node.body().db.native_resources_disposed());
+    {
+        let opening = RegisteredNodeOpening::retained(provider.clone(), id)
+            .expect("native shutdown keeps the exact charged parent");
+        let report = opening.report();
+        assert_eq!(
+            report.engine().settlement(),
+            DatabaseOpenSettlement::Disposed
+        );
+        assert!(report.engine().disposal().complete());
+    }
+    let retirement = node.retire();
+    assert_eq!(retirement.id(), id);
+    assert_eq!(retirement.disposition(), StorageCensusDisposition::Retired);
+    let retired = backing.snapshot();
+    assert!(retired.used_bytes <= before_retirement.used_bytes - parent_charge);
+    assert!(retired.live_reservations < before_retirement.live_reservations);
+    assert_eq!(retired.attempts, before_retirement.attempts);
+}
+
 #[tokio::test]
 async fn production_node_create_reopen_and_shutdown_use_registered_owner() {
     let directory = private_tempdir().unwrap();
@@ -2103,13 +2342,13 @@ async fn production_node_create_reopen_and_shutdown_use_registered_owner() {
     .unwrap();
     assert_eq!(memory.storage_census().snapshot().databases, 1);
     {
-        let tx = node.db.begin_read().unwrap();
+        let tx = node.body().db.begin_read().unwrap();
         tx.open_table(CATALOG).unwrap();
         tx.open_table(RECORDS).unwrap();
     }
     node.shutdown().await.unwrap();
+    retire_completed_native_node(node, &memory, 0);
     assert_eq!(memory.storage_census().snapshot().databases, 0);
-    drop(node);
 
     let reopened = NodeStore::open_existing(
         &path,
@@ -2121,6 +2360,7 @@ async fn production_node_create_reopen_and_shutdown_use_registered_owner() {
     .unwrap();
     assert_eq!(memory.storage_census().snapshot().databases, 1);
     reopened.shutdown().await.unwrap();
+    retire_completed_native_node(reopened, &memory, 0);
     assert_eq!(memory.storage_census().snapshot().databases, 0);
 }
 
@@ -2217,10 +2457,10 @@ async fn queued_production_catalog_reader_is_cancelled_with_registered_custody()
         crate::test_utils::node_storage_config(),
     )
     .unwrap();
-    let reader = node.db.queue_registered_read().unwrap();
+    let reader = node.body().db.queue_registered_read().unwrap();
     let reader_id = reader.id();
     assert_eq!(memory.storage_census().snapshot().readers, 1);
-    node.db.stop();
+    node.body().db.stop();
     assert_eq!(reader.begin(), NodeReadPhase::Cancelled);
     drop(reader);
     let reader = RegisteredNodeRead::retained(memory.clone(), reader_id)
@@ -2232,6 +2472,7 @@ async fn queued_production_catalog_reader_is_cancelled_with_registered_custody()
     ));
     assert_eq!(reader.retire(), StorageCensusDisposition::Retired);
     node.shutdown().await.unwrap();
+    retire_completed_native_node(node, &memory, 0);
     assert_eq!(memory.storage_census().snapshot().databases, 0);
 }
 
@@ -2252,7 +2493,7 @@ async fn production_catalog_bounded_failure_retires_when_error_is_dropped() {
     )
     .unwrap();
     let oversized = vec![0x5a; crate::MAX_KEY_CATALOG_BYTES + 1];
-    let tx = node.db.begin_write().unwrap();
+    let tx = node.body().db.begin_write().unwrap();
     tx.open_table(CATALOG)
         .unwrap()
         .insert(
@@ -2279,6 +2520,7 @@ async fn production_catalog_bounded_failure_retires_when_error_is_dropped() {
     assert_eq!(memory.storage_census().snapshot().readers, 0);
     assert!(RegisteredNodeRead::retained(memory.clone(), id).is_none());
     node.shutdown().await.unwrap();
+    retire_completed_native_node(node, &memory, 0);
     assert_eq!(memory.storage_census().snapshot().databases, 0);
 }
 
@@ -2319,6 +2561,11 @@ async fn production_catalog_output_capacity_failure_retires_when_error_is_droppe
     assert_eq!(memory.storage_census().snapshot().readers, 0);
     assert!(RegisteredNodeRead::retained(memory.clone(), id).is_none());
     node.shutdown().await.unwrap();
+    retire_completed_native_node(
+        node,
+        &memory.backing,
+        crate::DiskMemoryLease::token_allocation_bytes::<crate::DiskMemoryLease>().unwrap(),
+    );
     assert_eq!(memory.storage_census().snapshot().databases, 0);
 }
 
@@ -2364,7 +2611,7 @@ async fn production_catalog_decode_failure_retires_its_clean_registered_reader()
             .is_some_and(|read| read == &catalog)
     );
     assert_eq!(memory.storage_census().snapshot().readers, 0);
-    let tx = node.db.begin_write().unwrap();
+    let tx = node.body().db.begin_write().unwrap();
     tx.open_table(CATALOG)
         .unwrap()
         .insert(crate::tenant_hash("tenant").as_slice(), b"{".as_slice())
@@ -2375,6 +2622,7 @@ async fn production_catalog_decode_failure_retires_its_clean_registered_reader()
     assert!(format!("{error:#}").contains("invalid key catalog"));
     assert_eq!(memory.storage_census().snapshot().readers, 0);
     node.shutdown().await.unwrap();
+    retire_completed_native_node(node, &memory, 0);
     assert_eq!(memory.storage_census().snapshot().databases, 0);
 }
 
@@ -2398,7 +2646,7 @@ async fn production_pristine_probe_classifies_large_orphan_without_value_admissi
     let mut key = hash.to_vec();
     key.push(1);
     let oversized_orphan = vec![0x5a; 8 << 20];
-    let tx = node.db.begin_write().unwrap();
+    let tx = node.body().db.begin_write().unwrap();
     tx.open_table(RECORDS)
         .unwrap()
         .insert(key.as_slice(), oversized_orphan.as_slice())
@@ -2580,8 +2828,8 @@ async fn production_read_view_keeps_exact_child_until_explicit_close() {
     let view = store.read_view().unwrap();
     let id = view.registered_reader_id().unwrap();
     assert_eq!(
-        view.get("docs", b"key", 16).unwrap(),
-        Some(b"value".to_vec())
+        view.get("docs", b"key", 16).unwrap().as_deref(),
+        Some(b"value".as_slice())
     );
     let mut visited = 0;
     view.visit("docs", 16, |key, value| {
@@ -2605,7 +2853,9 @@ async fn production_read_view_keeps_exact_child_until_explicit_close() {
     assert!(RegisteredNodeRead::retained(memory.clone(), id).is_some());
     view.close().unwrap();
     assert_eq!(memory.storage_census().snapshot().readers, 0);
+    drop(store);
     node.shutdown().await.unwrap();
+    retire_completed_native_node(node, &memory, 0);
     assert_eq!(memory.storage_census().snapshot().databases, 0);
 }
 
@@ -2640,8 +2890,10 @@ async fn production_delete_needs_no_prior_ciphertext_headroom_and_survives_reope
         .unwrap();
     let view = store.read_view().unwrap();
     assert_eq!(
-        view.get("docs", b"large", large_value.len()).unwrap(),
-        Some(large_value.clone())
+        view.get("docs", b"large", large_value.len())
+            .unwrap()
+            .as_deref(),
+        Some(large_value.as_slice())
     );
 
     let before_fill = memory.snapshot();
@@ -2664,14 +2916,17 @@ async fn production_delete_needs_no_prior_ciphertext_headroom_and_survives_reope
     drop(fill);
 
     assert_eq!(
-        view.get("docs", b"large", large_value.len()).unwrap(),
-        Some(large_value)
+        view.get("docs", b"large", large_value.len())
+            .unwrap()
+            .as_deref(),
+        Some(large_value.as_slice())
     );
     view.close().unwrap();
     store.shutdown().await.unwrap();
     drop(store);
     node.shutdown().await.unwrap();
-    drop(node);
+    retire_completed_native_node(node, &memory, 0);
+    assert_eq!(memory.storage_census().snapshot().databases, 0);
 
     let reopened = NodeStore::open_existing(
         &path,
@@ -2694,7 +2949,9 @@ async fn production_delete_needs_no_prior_ciphertext_headroom_and_survives_reope
         None
     );
     reopened_store.shutdown().await.unwrap();
+    drop(reopened_store);
     reopened.shutdown().await.unwrap();
+    retire_completed_native_node(reopened, &memory, 0);
     assert_eq!(memory.storage_census().snapshot().databases, 0);
 }
 
@@ -2824,12 +3081,12 @@ async fn production_paired_view_keeps_one_registered_generation_until_close() {
         .write_batch(std::slice::from_ref(&new), std::slice::from_ref(&new))
         .unwrap();
     assert_eq!(
-        view.application_get("docs", b"key", 16).unwrap(),
-        Some(b"old".to_vec())
+        view.application_get("docs", b"key", 16).unwrap().as_deref(),
+        Some(b"old".as_slice())
     );
     assert_eq!(
-        view.custody_get("docs", b"key", 16).unwrap(),
-        Some(b"old".to_vec())
+        view.custody_get("docs", b"key", 16).unwrap().as_deref(),
+        Some(b"old".as_slice())
     );
     assert_eq!(memory.storage_census().snapshot().readers, 1);
     stores.shutdown().await.unwrap();
@@ -2988,7 +3245,9 @@ async fn production_tenant_get_accepts_maximum_writer_value() {
     drop(value);
     assert_eq!(memory.storage_census().snapshot().readers, 0);
     store.shutdown().await.unwrap();
+    drop(store);
     node.shutdown().await.unwrap();
+    retire_completed_native_node(node, &memory, 0);
     assert_eq!(memory.storage_census().snapshot().databases, 0);
 }
 
@@ -3006,7 +3265,8 @@ async fn production_record_writer_refuses_unadmitted_live_envelope_peak() -> any
         disk,
         scratch,
         crate::test_utils::node_storage_config(),
-    )?;
+    )
+    .expect("installed record-writer fixture node startup");
     let store = crate::TenantStore::initialize_catalog(
         node.clone(),
         "__kasumi_security".into(),
@@ -3033,16 +3293,74 @@ async fn production_record_writer_refuses_unadmitted_live_envelope_peak() -> any
         headroom
     );
 
+    let limited_census = memory.storage_census().snapshot();
     let denied = store.write_batch(&[crate::WriteOp::put("docs", b"large", value.clone())]);
     assert!(
         denied.is_err(),
         "record write published without funding its simultaneous resident envelope"
     );
     let after_denial = memory.snapshot();
+    assert!(after_denial.used_bytes > limited.used_bytes);
+    assert_eq!(
+        after_denial.live_reservations,
+        limited.live_reservations + 1
+    );
+    let failure = denied
+        .as_ref()
+        .unwrap_err()
+        .downcast_ref::<crate::NodeScopedWriteFailure>()
+        .expect("actual paid record-writer failure facade");
+    let writer_id = failure.writer_id();
+    assert_eq!(
+        memory.storage_census().snapshot().writers,
+        limited_census.writers + 1
+    );
+    let original_address = {
+        let report = failure.report();
+        assert_eq!(report.phase(), NodeWriterPhase::Finished);
+        assert!(matches!(
+            report.post_commit(),
+            TerminalObservation::NotEntered
+        ));
+        let terminal = report.terminal().unwrap();
+        assert_eq!(
+            terminal.operation(),
+            Some(kasumi_kv::WriteTerminalOperation::Abort)
+        );
+        assert_eq!(
+            terminal.settlement(),
+            kasumi_kv::WriteTerminalSettlement::Settled
+        );
+        assert!(terminal.disposal_complete());
+        let TerminalObservation::Returned(Err(original)) = report.body() else {
+            panic!("original record-writer body error absent");
+        };
+        std::ptr::from_ref(original)
+    };
+    let retained = RegisteredNodeWrite::retained(memory.clone(), writer_id)
+        .expect("same paid writer remains installed while original error is held");
+    assert_eq!(retained.id(), writer_id);
+    {
+        let report = retained.report();
+        let TerminalObservation::Returned(Err(original)) = report.body() else {
+            panic!("retained record-writer body error absent");
+        };
+        assert_eq!(std::ptr::from_ref(original), original_address);
+    }
+    assert_eq!(memory.snapshot(), after_denial);
+    drop(retained);
+    assert_eq!(memory.snapshot(), after_denial);
+    drop(denied);
+    let after_denial = memory.snapshot();
     assert_eq!(after_denial.used_bytes, limited.used_bytes);
     assert_eq!(after_denial.live_reservations, limited.live_reservations);
+    assert_eq!(memory.storage_census().snapshot(), limited_census);
+    assert!(RegisteredNodeWrite::retained(memory.clone(), writer_id).is_none());
     drop(fill);
-    assert_eq!(store.get("docs", b"sentinel")?, Some(b"kept".to_vec()));
+    assert_eq!(
+        store.get("docs", b"sentinel")?.as_deref(),
+        Some(b"kept".as_slice())
+    );
     assert!(store.get("docs", b"large")?.is_none());
     store.write_batch(&[crate::WriteOp::put("docs", b"large", value)])?;
     assert_eq!(store.get("docs", b"large")?.unwrap().len(), 1 << 20);
@@ -3065,7 +3383,8 @@ async fn production_record_writer_denies_before_output_allocation() -> anyhow::R
         disk,
         scratch,
         crate::test_utils::node_storage_config(),
-    )?;
+    )
+    .expect("installed record-writer fixture node startup");
     let store = crate::TenantStore::initialize_catalog(
         node.clone(),
         "__kasumi_security".into(),
@@ -3088,6 +3407,7 @@ async fn production_record_writer_denies_before_output_allocation() -> anyhow::R
         headroom
     );
 
+    let limited_census = memory.storage_census().snapshot();
     let error = store
         .write_batch(&[crate::WriteOp::put("docs", b"large", value.clone())])
         .unwrap_err();
@@ -3098,8 +3418,60 @@ async fn production_record_writer_denies_before_output_allocation() -> anyhow::R
         "unexpected refusal: {error:#}"
     );
     let after_denial = memory.snapshot();
+    assert!(after_denial.used_bytes > limited.used_bytes);
+    assert_eq!(
+        after_denial.live_reservations,
+        limited.live_reservations + 1
+    );
+    let failure = error
+        .downcast_ref::<crate::NodeScopedWriteFailure>()
+        .expect("actual paid record-writer failure facade");
+    let writer_id = failure.writer_id();
+    assert_eq!(
+        memory.storage_census().snapshot().writers,
+        limited_census.writers + 1
+    );
+    let original_address = {
+        let report = failure.report();
+        assert_eq!(report.phase(), NodeWriterPhase::Finished);
+        assert!(matches!(
+            report.post_commit(),
+            TerminalObservation::NotEntered
+        ));
+        let terminal = report.terminal().unwrap();
+        assert_eq!(
+            terminal.operation(),
+            Some(kasumi_kv::WriteTerminalOperation::Abort)
+        );
+        assert_eq!(
+            terminal.settlement(),
+            kasumi_kv::WriteTerminalSettlement::Settled
+        );
+        assert!(terminal.disposal_complete());
+        let TerminalObservation::Returned(Err(original)) = report.body() else {
+            panic!("original record-writer body error absent");
+        };
+        std::ptr::from_ref(original)
+    };
+    let retained = RegisteredNodeWrite::retained(memory.clone(), writer_id)
+        .expect("same paid writer remains installed while original error is held");
+    assert_eq!(retained.id(), writer_id);
+    {
+        let report = retained.report();
+        let TerminalObservation::Returned(Err(original)) = report.body() else {
+            panic!("retained record-writer body error absent");
+        };
+        assert_eq!(std::ptr::from_ref(original), original_address);
+    }
+    assert_eq!(memory.snapshot(), after_denial);
+    drop(retained);
+    assert_eq!(memory.snapshot(), after_denial);
+    drop(error);
+    let after_denial = memory.snapshot();
     assert_eq!(after_denial.used_bytes, limited.used_bytes);
     assert_eq!(after_denial.live_reservations, limited.live_reservations);
+    assert_eq!(memory.storage_census().snapshot(), limited_census);
+    assert!(RegisteredNodeWrite::retained(memory.clone(), writer_id).is_none());
     drop(fill);
     assert!(store.get("docs", b"large")?.is_none());
     store.write_batch(&[crate::WriteOp::put("docs", b"large", value)])?;
@@ -3155,11 +3527,14 @@ async fn production_tenant_get_missing_and_tiny_rows_fit_low_headroom() {
         8 << 20
     );
     assert_eq!(store.get("docs", b"missing").unwrap(), None);
-    assert_eq!(store.get("docs", b"key").unwrap(), Some(b"x".to_vec()));
+    assert_eq!(
+        store.get("docs", b"key").unwrap().as_deref(),
+        Some(b"x".as_slice())
+    );
     assert_eq!(store.get_bounded("docs", b"missing", 0).unwrap(), None);
     assert_eq!(
-        store.get_bounded("docs", b"empty", 0).unwrap(),
-        Some(Vec::new())
+        store.get_bounded("docs", b"empty", 0).unwrap().as_deref(),
+        Some(&[][..])
     );
     let after_reads = memory.snapshot();
     assert_eq!(after_reads.used_bytes, low_headroom.used_bytes);
@@ -3171,16 +3546,18 @@ async fn production_tenant_get_missing_and_tiny_rows_fit_low_headroom() {
 
     drop(fill);
     store.shutdown().await.unwrap();
+    drop(store);
     node.shutdown().await.unwrap();
+    retire_completed_native_node(node, &memory, 0);
     assert_eq!(memory.storage_census().snapshot().databases, 0);
 }
 
 #[tokio::test]
-async fn production_present_point_row_uses_native_credit_without_duplicate_outer_charge() {
+async fn production_present_point_row_refuses_insufficient_plaintext_headroom() {
     let directory = private_tempdir().unwrap();
     let path = directory
         .path()
-        .join("production-native-only-point-read.kv");
+        .join("production-insufficient-plaintext-point-read.kv");
     let memory = TestDiskMemory::new(256 << 20, 4096);
     let disk = disk(&path, &memory);
     let scratch_directory = private_tempdir().unwrap();
@@ -3211,7 +3588,7 @@ async fn production_present_point_row_uses_native_credit_without_duplicate_outer
         .unwrap();
 
     let before_probe = memory.snapshot();
-    let probe = node.db.queue_registered_read().unwrap();
+    let probe = node.body().db.queue_registered_read().unwrap();
     assert_eq!(probe.begin(), NodeReadPhase::Active);
     let with_reader = memory.snapshot();
     let reader_charge = with_reader.used_bytes - before_probe.used_bytes;
@@ -3226,8 +3603,15 @@ async fn production_present_point_row_uses_native_credit_without_duplicate_outer
         crate::disk_memory::allocation::<u8>(envelope_len as u64).unwrap(),
     )
     .unwrap();
+    let plaintext_len = envelope_len
+        .checked_sub(4 + store.catalog.read().active.len() + 40)
+        .expect("framed ciphertext contains the authenticated plaintext");
+    let plaintext_charge = memory
+        .quote_installed(crate::disk_memory::allocation::<u8>(plaintext_len as u64).unwrap())
+        .unwrap();
     let headroom = reader_charge + native_charge + duplicate_outer_charge / 2;
     assert!(headroom < reader_charge + native_charge + duplicate_outer_charge);
+    assert!(headroom < reader_charge + native_charge + plaintext_charge);
     let reserve_overhead = TestDiskMemory::required_reservation_bytes(0).unwrap();
     let fill_bytes = (256u64 << 20)
         .checked_sub(before_probe.bookkeeping_bytes + before_probe.used_bytes + headroom)
@@ -3240,10 +3624,174 @@ async fn production_present_point_row_uses_native_credit_without_duplicate_outer
         headroom
     );
 
+    let (denied, observed) = crate::test_utils::source_quote_observer::measure(&memory, || {
+        store.get_bounded("docs", b"capacity", value_len)
+    });
+    let original = denied.expect_err("ciphertext-only headroom must refuse unpaid plaintext");
+    assert_eq!(
+        original.downcast_ref::<io::Error>().unwrap().kind(),
+        io::ErrorKind::OutOfMemory
+    );
+    assert_eq!(original.to_string(), "record plaintext admission denied");
+    assert!(!observed.overflow);
+    assert_eq!(observed.refused_count, 1);
+    assert_eq!(observed.last_refused_bytes, plaintext_charge);
+    assert!(observed.requests[..observed.count].contains(&native_charge));
+    let after_denial = memory.snapshot();
+    assert_eq!(after_denial.used_bytes, limited.used_bytes);
+    assert_eq!(after_denial.live_reservations, limited.live_reservations);
+    assert_eq!(memory.storage_census().snapshot().readers, 0);
+    drop(original);
+    let after_read = memory.snapshot();
+    assert_eq!(after_read.used_bytes, limited.used_bytes);
+    assert_eq!(after_read.live_reservations, limited.live_reservations);
+    assert_eq!(memory.storage_census().snapshot().readers, 0);
+
+    drop(fill);
+    let before_recovery = memory.snapshot();
     let value = store
         .get_bounded("docs", b"capacity", value_len)
         .unwrap()
         .unwrap();
+    assert_eq!(value.len(), value_len);
+    assert!(value.iter().all(|byte| *byte == 0x6b));
+    drop(value);
+    assert_eq!(memory.snapshot().used_bytes, before_recovery.used_bytes);
+    assert_eq!(
+        memory.snapshot().live_reservations,
+        before_recovery.live_reservations
+    );
+    assert_eq!(memory.storage_census().snapshot().readers, 0);
+    store.shutdown().await.unwrap();
+    drop(store);
+    node.shutdown().await.unwrap();
+    retire_completed_native_node(node, &memory, 0);
+    assert_eq!(memory.storage_census().snapshot().databases, 0);
+}
+
+#[tokio::test]
+async fn production_present_point_row_uses_native_credit_without_duplicate_outer_charge() {
+    let directory = private_tempdir().unwrap();
+    let path = directory
+        .path()
+        .join("production-native-plaintext-point-read.kv");
+    let memory = TestDiskMemory::new(256 << 20, 4096);
+    let disk = disk(&path, &memory);
+    let scratch_directory = private_tempdir().unwrap();
+    let scratch = ScratchDisk::fixture(scratch_directory.path(), memory.clone());
+    let node = NodeStore::create_new(
+        &path,
+        ID,
+        disk,
+        scratch,
+        crate::test_utils::node_storage_config(),
+    )
+    .unwrap();
+    let store = crate::TenantStore::initialize_catalog(
+        node.clone(),
+        "__kasumi_security".into(),
+        Arc::new(crate::test_utils::LocalKeyProvider::new([42; 32])),
+        crate::StorageAccess::security_audit(),
+    )
+    .await
+    .unwrap();
+    let value_len = 1 << 20;
+    store
+        .write_batch(&[crate::WriteOp::put(
+            "docs",
+            b"capacity",
+            vec![0x6b; value_len],
+        )])
+        .unwrap();
+
+    let before_probe = memory.snapshot();
+    let probe = node.body().db.queue_registered_read().unwrap();
+    assert_eq!(probe.begin(), NodeReadPhase::Active);
+    let with_reader = memory.snapshot();
+    let reader_charge = with_reader.used_bytes - before_probe.used_bytes;
+    assert_eq!(probe.finish(), NodeReadPhase::Finished);
+    assert_eq!(probe.retire(), StorageCensusDisposition::Retired);
+    assert_eq!(memory.snapshot().used_bytes, before_probe.used_bytes);
+
+    let active_key_id_bytes = store.catalog.read().active.len();
+    let envelope_len = crate::encrypted_record_length(
+        "docs".len(),
+        b"capacity".len(),
+        value_len,
+        active_key_id_bytes,
+    )
+    .unwrap();
+    let plaintext_len = envelope_len
+        .checked_sub(4 + active_key_id_bytes + 40)
+        .expect("framed ciphertext contains the authenticated plaintext");
+    assert_eq!(
+        plaintext_len,
+        12 + "docs".len() + b"capacity".len() + value_len
+    );
+    let requests = kasumi_kv::PointReadRequests::new(envelope_len).unwrap();
+    let native = |request| {
+        memory
+            .quote_installed(
+                crate::node_file::segment_group::workspace_provider_request_bytes(request).unwrap(),
+            )
+            .unwrap()
+    };
+    let native_charge = native(requests.output_request_bytes());
+    assert_eq!(
+        native_charge,
+        TestDiskMemory::required_reservation_bytes(native_output_bytes(envelope_len)).unwrap()
+    );
+    let directory_charge =
+        native(requests.bounds_request_bytes()) + native(requests.page_request_bytes());
+    let plaintext_charge = memory
+        .quote_installed(crate::disk_memory::allocation::<u8>(plaintext_len as u64).unwrap())
+        .unwrap();
+    let duplicate_outer_charge = TestDiskMemory::required_reservation_bytes(
+        crate::disk_memory::allocation::<u8>(envelope_len as u64).unwrap(),
+    )
+    .unwrap();
+    let headroom = reader_charge + directory_charge.max(native_charge + plaintext_charge);
+    assert_eq!(headroom, reader_charge + native_charge + plaintext_charge);
+    assert!(headroom < reader_charge + native_charge + plaintext_charge + duplicate_outer_charge);
+    for actual in [
+        native(requests.bounds_request_bytes()),
+        native(requests.page_request_bytes()),
+        native_charge,
+        plaintext_charge,
+    ] {
+        assert_ne!(duplicate_outer_charge, actual);
+    }
+    let reserve_overhead = TestDiskMemory::required_reservation_bytes(0).unwrap();
+    let fill_bytes = (256u64 << 20)
+        .checked_sub(before_probe.bookkeeping_bytes + before_probe.used_bytes + headroom)
+        .and_then(|available| available.checked_sub(reserve_overhead))
+        .expect("startup leaves capacity for the reader, native ciphertext and plaintext");
+    let fill = memory.clone().reserve_installed(fill_bytes).unwrap();
+    let limited = memory.snapshot();
+    assert_eq!(
+        (256u64 << 20) - limited.bookkeeping_bytes - limited.used_bytes,
+        headroom
+    );
+
+    let (value, observed) = crate::test_utils::source_quote_observer::measure(&memory, || {
+        store.get_bounded("docs", b"capacity", value_len)
+    });
+    let value = value.unwrap().unwrap();
+    assert!(!observed.overflow);
+    assert_eq!(observed.refused_count, 0);
+    assert_eq!(observed.peak_bytes, headroom);
+    assert!(observed.requests[..observed.count].contains(&native_charge));
+    assert!(observed.requests[..observed.count].contains(&plaintext_charge));
+    assert!(!observed.requests[..observed.count].contains(&duplicate_outer_charge));
+    assert_eq!(
+        memory.snapshot().used_bytes,
+        limited.used_bytes + plaintext_charge
+    );
+    assert_eq!(
+        memory.snapshot().live_reservations,
+        limited.live_reservations + 1
+    );
+    assert_eq!(memory.storage_census().snapshot().readers, 0);
     assert_eq!(value.len(), value_len);
     assert!(value.iter().all(|byte| *byte == 0x6b));
     drop(value);
@@ -3254,7 +3802,9 @@ async fn production_present_point_row_uses_native_credit_without_duplicate_outer
 
     drop(fill);
     store.shutdown().await.unwrap();
+    drop(store);
     node.shutdown().await.unwrap();
+    retire_completed_native_node(node, &memory, 0);
     assert_eq!(memory.storage_census().snapshot().databases, 0);
 }
 
@@ -3286,8 +3836,8 @@ async fn production_tenant_point_read_retires_routine_failures_and_keeps_cancell
         .write_batch(&[crate::WriteOp::put("docs", b"key", b"payload".to_vec())])
         .unwrap();
     assert_eq!(
-        store.get_bounded("docs", b"key", 7).unwrap(),
-        Some(b"payload".to_vec())
+        store.get_bounded("docs", b"key", 7).unwrap().as_deref(),
+        Some(b"payload".as_slice())
     );
     assert_eq!(memory.storage_census().snapshot().readers, 0);
 
@@ -3296,7 +3846,7 @@ async fn production_tenant_point_read_retires_routine_failures_and_keeps_cancell
     let envelope_len = 4 + store.catalog.read().active.len() + 24 + 12 + 4 + 3 + 7 + 16;
     let native_bytes = native_output_bytes(envelope_len);
     let before_denial = memory.backing.snapshot();
-    let probe = node.db.queue_registered_read().unwrap();
+    let probe = node.body().db.queue_registered_read().unwrap();
     assert_eq!(probe.begin(), NodeReadPhase::Active);
     let active_reader = memory.backing.snapshot();
     assert!(active_reader.used_bytes > before_denial.used_bytes);
@@ -3314,12 +3864,11 @@ async fn production_tenant_point_read_retires_routine_failures_and_keeps_cancell
     let denied_id = denied.reader().id();
     {
         let report = denied.reader().report();
-        assert!(matches!(
-            report.read_failure(),
-            TerminalObservation::Returned(Err(kasumi_kv::BoundedReadError::Storage(
-                kasumi_kv::StorageError::Core(kasumi_kv::CoreError::CapacityDenied)
-            )))
-        ));
+        assert!(
+            matches!(&(report.read_failure()), TerminalObservation::Returned(Err(kasumi_kv::BoundedReadError::Storage(
+                kasumi_kv::StorageError::Core(native_error)
+            ))) if matches!(native_error.rejected_cause(), Some(kasumi_kv::CoreErrorCause::CapacityDenied)))
+        );
         assert!(matches!(
             report.output_admission(),
             TerminalObservation::NotEntered
@@ -3358,7 +3907,7 @@ async fn production_tenant_point_read_retires_routine_failures_and_keeps_cancell
             .expect_err("stopped node cannot fall back to a direct read")
     });
     entered.recv_timeout(Duration::from_secs(5)).unwrap();
-    node.db.stop();
+    node.body().db.stop();
     resume.send(()).unwrap();
     let cancelled = worker
         .join()
@@ -3378,7 +3927,13 @@ async fn production_tenant_point_read_retires_routine_failures_and_keeps_cancell
     assert_eq!(cancelled.retire(), StorageCensusDisposition::Retired);
     assert_eq!(memory.storage_census().snapshot().readers, 0);
     store.shutdown().await.unwrap();
+    drop(store);
     node.shutdown().await.unwrap();
+    retire_completed_native_node(
+        node,
+        &memory.backing,
+        crate::DiskMemoryLease::token_allocation_bytes::<crate::DiskMemoryLease>().unwrap(),
+    );
     assert_eq!(memory.storage_census().snapshot().databases, 0);
 }
 
@@ -3399,9 +3954,10 @@ async fn production_node_post_open_failure_retains_exact_registered_custody() {
         crate::test_utils::node_storage_config(),
     )
     .err()
-    .expect("child census denial must fail setup")
-    .downcast::<NodeStoreOpeningFailure>()
-    .expect("production failure retains typed custody");
+    .expect("child census denial must fail setup");
+    let NodeStoreStartFailure::Opening(error) = error else {
+        panic!("production failure must retain typed opening custody: {error:?}");
+    };
     assert_eq!(error.custody().phase(), NodeStartupPhase::Failed);
     assert!(error.custody().local_error().is_some());
     assert_eq!(memory.storage_census().snapshot().databases, 1);
@@ -3442,7 +3998,8 @@ async fn production_node_rejects_wrong_identity_with_recoverable_failed_opening_
     )
     .unwrap();
     node.shutdown().await.unwrap();
-    drop(node);
+    retire_completed_native_node(node, &memory, 0);
+    assert_eq!(memory.storage_census().snapshot().databases, 0);
     let other_id = Uuid::from_u128(ID.as_u128() + 1);
     let error = NodeStore::open_existing(
         &path,
@@ -3452,9 +4009,10 @@ async fn production_node_rejects_wrong_identity_with_recoverable_failed_opening_
         crate::test_utils::node_storage_config(),
     )
     .err()
-    .unwrap()
-    .downcast::<NodeStoreOpeningFailure>()
     .unwrap();
+    let NodeStoreStartFailure::Opening(error) = error else {
+        panic!("wrong identity must retain typed opening custody: {error:?}");
+    };
     let opening_id = error.opening_id();
     assert_eq!(memory.storage_census().snapshot().databases, 1);
     assert!(matches!(
@@ -3518,7 +4076,9 @@ async fn installed_native_cache_and_descriptor_ceilings_precede_allocation_and_e
         let (result, allocations) = crate::allocation_tests::measure(|| {
             RegisteredNodeOpening::prepare(&path, ID, disk.clone(), NodeOpeningMode::Create, denied)
         });
-        assert!(matches!(result, Err(error) if error.kind() == io::ErrorKind::InvalidInput));
+        assert!(
+            matches!(result, Err(NativeConstructorFailure::Preclaim(error)) if error.kind() == io::ErrorKind::InvalidInput)
+        );
         assert_eq!(allocations, 0);
         assert_eq!(memory.snapshot(), baseline);
         assert!(!path.exists());
@@ -3558,3 +4118,265 @@ async fn installed_native_cache_and_descriptor_ceilings_precede_allocation_and_e
 
 #[path = "routine_read_diagnostics_tests.rs"]
 mod routine_read_diagnostics;
+
+// This observer is a prebuilt test fixture allocation, separately charged
+// before the actual native constructor starts. Its Drop removes and destroys
+// that allocation before refunding the original fixture grant.
+type OwnerIdentityObserver = Box<dyn FnMut(&DatabaseOwner)>;
+thread_local! {
+    static OWNER_IDENTITY_OBSERVER: std::cell::RefCell<Option<OwnerIdentityObserver>> =
+        const { std::cell::RefCell::new(None) };
+    static OWNER_IDENTITY_BEFORE_PUBLICATION: std::cell::Cell<Option<StorageOwnerId>> =
+        const { std::cell::Cell::new(None) };
+    static OWNER_IDENTITY_OBSERVATIONS: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
+}
+struct OwnerIdentityObserverGrant(Option<crate::DiskMemoryLease>);
+impl OwnerIdentityObserverGrant {
+    fn install<F: FnMut(&DatabaseOwner) + 'static>(
+        memory: &Arc<TestDiskMemory>,
+        observe: F,
+    ) -> Self {
+        let bytes = crate::disk_memory::allocation::<F>(1).unwrap();
+        let grant = memory.clone().reserve_installed(bytes).unwrap();
+        OWNER_IDENTITY_BEFORE_PUBLICATION.with(|id| id.set(None));
+        OWNER_IDENTITY_OBSERVATIONS.with(|count| count.set(0));
+        OWNER_IDENTITY_OBSERVER.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            assert!(slot.is_none(), "one original observer");
+            *slot = Some(Box::new(observe));
+        });
+        Self(Some(grant))
+    }
+}
+impl Drop for OwnerIdentityObserverGrant {
+    fn drop(&mut self) {
+        let observer = OWNER_IDENTITY_OBSERVER.with(|slot| slot.borrow_mut().take());
+        drop(observer);
+        drop(self.0.take());
+    }
+}
+pub(super) fn observe_owner_identity_before_publication(owner: &DatabaseOwner) {
+    OWNER_IDENTITY_OBSERVER.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        let Some(observer) = slot.as_mut() else {
+            return;
+        };
+        let census = owner.provider.storage_census();
+        assert!(
+            (0..census.snapshot().capacity)
+                .any(|index| census.owner_at(index) == Some(owner.census_id))
+        );
+        assert!(
+            RegisteredNodeOpening::retained(owner.provider.clone(), owner.census_id).is_none(),
+            "the original actual body is still Constructing, not publicly delivered"
+        );
+        let state = owner
+            .state
+            .try_lock()
+            .expect("body was initialized outside census metadata");
+        assert_eq!(state.phase, NodeOpeningPhase::Prepared);
+        assert!(matches!(
+            state.acquisition.borrow(),
+            kasumi_kv::TerminalObservation::NotEntered
+        ));
+        drop(state);
+        if let Some(node) = &owner.node {
+            assert_eq!(node.db.registered_opening_id(), Some(owner.census_id));
+        }
+        OWNER_IDENTITY_BEFORE_PUBLICATION.with(|id| id.set(Some(owner.census_id)));
+        OWNER_IDENTITY_OBSERVATIONS.with(|count| count.set(count.get() + 1));
+        observer(owner);
+    });
+}
+
+#[test]
+fn actual_composite_owner_and_node_locator_bind_original_id_before_publication() {
+    let directory = private_tempdir().unwrap();
+    let path = directory.path().join("identity-before-publication.kv");
+    let memory = TestDiskMemory::new(256 << 20, 4096);
+    let disk = disk(&path, &memory);
+    let scratch_directory = private_tempdir().unwrap();
+    let scratch = ScratchDisk::fixture(scratch_directory.path(), memory.clone());
+    let observed_memory = memory.clone();
+    let _observer = OwnerIdentityObserverGrant::install(&memory, move |owner| {
+        assert!(
+            owner.node.is_some(),
+            "actual composite body, not a test payload"
+        );
+        let expected: Arc<dyn NodeDiskMemoryAdmission> = observed_memory.clone();
+        assert!(Arc::ptr_eq(&owner.provider, &expected));
+    });
+    let opening = RegisteredNodeOpening::prepare_node(
+        &path,
+        ID,
+        disk,
+        scratch,
+        NodeOpeningMode::Create,
+        crate::test_utils::node_storage_config(),
+    )
+    .unwrap();
+    assert_eq!(OWNER_IDENTITY_OBSERVATIONS.with(std::cell::Cell::get), 1);
+    assert_eq!(
+        OWNER_IDENTITY_BEFORE_PUBLICATION.with(std::cell::Cell::get),
+        Some(opening.id())
+    );
+    assert_eq!(
+        opening.node_body().db.registered_opening_id(),
+        Some(opening.id())
+    );
+    assert!(
+        !path.join(kasumi_kv::ROOT_FILE_NAME).exists(),
+        "identity installation made no physical open"
+    );
+    // This private fixture abandons the original unpromoted node explicitly.
+    // The candidate does not bypass its real Preparing lifecycle gate.
+    opening.node_body().lifecycle.failed_startup();
+    assert_eq!(
+        opening.close().unwrap(),
+        kasumi_kv::DatabaseOpenSettlement::Closed
+    );
+    assert_eq!(opening.retire(), StorageCensusDisposition::Retired);
+    assert_eq!(memory.storage_census().snapshot().databases, 0);
+}
+
+struct OwnerPublicationMetadataHold {
+    release: Option<std::sync::mpsc::Sender<()>>,
+    worker: Option<std::thread::JoinHandle<()>>,
+}
+impl OwnerPublicationMetadataHold {
+    fn finish(mut self) {
+        self.release.take().unwrap().send(()).unwrap();
+        self.worker.take().unwrap().join().unwrap();
+    }
+}
+impl Drop for OwnerPublicationMetadataHold {
+    fn drop(&mut self) {
+        // An assertion failure must release the actual metadata observation.
+        if let Some(release) = self.release.take() {
+            let _ = release.send(());
+        }
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
+}
+fn constructor_original_receiver_identity(
+    memory: &TestDiskMemory,
+    failure: &NativeConstructorFailure,
+) -> (usize, StorageOwnerId, u64) {
+    let id = failure.id().expect("original retained receiver generation");
+    // Successful TerminalObservation values do not borrow original Results.
+    // The actual fixed census allocation and its issued generation ID identify
+    // this receiver; with_report validates that ID and concrete payload type.
+    let census = std::ptr::from_ref(memory.storage_census()) as usize;
+    failure.with_report(|report| {
+        let report = report.expect("same actual fixed constructor receiver");
+        let kasumi_kv::TerminalObservation::Returned(provider) = report.provider() else {
+            panic!("actual original provider returned");
+        };
+        let kasumi_kv::TerminalObservation::Returned(construction) = report.construction() else {
+            panic!("actual original body construction returned");
+        };
+        assert!(provider.is_ok() && construction.is_ok());
+        assert!(report.has_lease() && report.has_payload());
+        assert_eq!(report.protocol(), None);
+        assert!(!report.capacity_refused());
+        (census, id, report.request_bytes())
+    })
+}
+
+#[test]
+fn actual_direct_opening_failed_delivery_keeps_prebound_identity_and_original_receiver() {
+    let directory = private_tempdir().unwrap();
+    let path = directory.path().join("identity-before-failed-delivery.kv");
+    let memory = TestDiskMemory::new(256 << 20, 4096);
+    let disk = disk(&path, &memory);
+    // Only prebuilt scheduling channels and a default-stack worker are used;
+    // the actual failure is the production publication try_lock below.
+    let (identity_send, identity_receive) = std::sync::mpsc::channel();
+    let (entered_send, entered_receive) = std::sync::mpsc::channel();
+    let (release, resume) = std::sync::mpsc::channel();
+    let holding = memory.clone();
+    let worker = std::thread::spawn(move || {
+        let id = identity_receive
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap();
+        holding
+            .storage_census()
+            .with_owner_metadata_held_for_test(id, || {
+                entered_send.send(()).unwrap();
+                resume.recv_timeout(Duration::from_secs(5)).unwrap();
+            });
+    });
+    let held = OwnerPublicationMetadataHold {
+        release: Some(release),
+        worker: Some(worker),
+    };
+    let observer = OwnerIdentityObserverGrant::install(&memory, move |owner| {
+        assert!(
+            owner.node.is_none(),
+            "direct-opening purpose has no composite node lifecycle"
+        );
+        identity_send.send(owner.census_id).unwrap();
+        entered_receive
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap();
+    });
+    let standing = memory.snapshot();
+    let failure = RegisteredNodeOpening::prepare(
+        &path,
+        ID,
+        disk.clone(),
+        NodeOpeningMode::Create,
+        crate::test_utils::node_storage_config(),
+    )
+    .err()
+    .expect("actual original metadata blocks publication");
+    let id = failure.id().unwrap();
+    assert_eq!(
+        OWNER_IDENTITY_BEFORE_PUBLICATION.with(std::cell::Cell::get),
+        Some(id)
+    );
+    assert_eq!(OWNER_IDENTITY_OBSERVATIONS.with(std::cell::Cell::get), 1);
+    assert!(!path.join(kasumi_kv::ROOT_FILE_NAME).exists());
+    let original = constructor_original_receiver_identity(&memory, &failure);
+    assert_eq!(
+        memory.snapshot().live_reservations,
+        standing.live_reservations + 1
+    );
+    assert_eq!(failure.cleanup(), StorageCensusDisposition::Retained);
+    assert_eq!(
+        constructor_original_receiver_identity(&memory, &failure),
+        original
+    );
+    held.finish();
+    drop(failure);
+    let retained = memory
+        .storage_census()
+        .retained_native_constructor::<DatabaseOwner>(memory.clone(), id)
+        .expect("caller loss leaves the actual fixed receiver");
+    assert_eq!(
+        constructor_original_receiver_identity(&memory, &retained),
+        original
+    );
+    assert_eq!(
+        OWNER_IDENTITY_OBSERVATIONS.with(std::cell::Cell::get),
+        1,
+        "lookup did not reconstruct the original body"
+    );
+    assert_eq!(
+        memory.snapshot().live_reservations,
+        standing.live_reservations + 1
+    );
+    assert_eq!(retained.cleanup(), StorageCensusDisposition::Retired);
+    assert_eq!(retained.cleanup(), StorageCensusDisposition::Retired);
+    assert_eq!(memory.storage_census().snapshot().databases, 0);
+    assert_eq!(memory.snapshot().used_bytes, standing.used_bytes);
+    assert_eq!(
+        memory.snapshot().live_reservations,
+        standing.live_reservations
+    );
+    assert!(!path.join(kasumi_kv::ROOT_FILE_NAME).exists());
+    drop(observer);
+}

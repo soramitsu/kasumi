@@ -511,8 +511,8 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(
-            reopened.get("docs", b"a").unwrap(),
-            Some(b"private".to_vec())
+            reopened.get("docs", b"a").unwrap().as_deref(),
+            Some(b"private".as_slice())
         );
         assert!(StorageAccess::standalone(installation, "__kasumi_control", incarnation).is_err());
         assert!(StorageAccess::standalone(Uuid::nil(), "tenant", incarnation).is_err());

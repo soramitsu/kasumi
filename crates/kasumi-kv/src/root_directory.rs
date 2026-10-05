@@ -46,14 +46,18 @@ impl Superblock {
     /// can be outstanding; even an empty or abandoned arena consumes its ID.
     pub(crate) fn reserve_directory(&self) -> Result<(Self, u64), CoreError> {
         if self.pending_directory().is_some() {
-            return Err(CoreError::InvalidInput("a directory intent is outstanding"));
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
+                "a directory intent is outstanding",
+            )));
         }
         let mut next = self.successor()?;
         let id = self.next_directory_id;
-        next.next_directory_id = id
-            .checked_add(1)
-            .filter(|&next| next != u64::MAX)
-            .ok_or(CoreError::InvalidInput("directory identifier overflow"))?;
+        next.next_directory_id =
+            id.checked_add(1)
+                .filter(|&next| next != u64::MAX)
+                .ok_or(CoreError::new(crate::CoreErrorCause::InvalidInput(
+                    "directory identifier overflow",
+                )))?;
         Ok((next, id))
     }
 
@@ -61,9 +65,9 @@ impl Superblock {
     /// synchronized. Confirmation does not publish any data pages.
     pub(crate) fn confirm_directory(&self, arena_id: u64) -> Result<Self, CoreError> {
         if self.pending_directory() != Some(arena_id) {
-            return Err(CoreError::InvalidInput(
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
                 "directory is not the outstanding intent",
-            ));
+            )));
         }
         let mut next = self.successor()?;
         next.last_directory_id = arena_id;
@@ -74,12 +78,14 @@ impl Superblock {
     /// pages and validated log commit. The root is published as one unit.
     pub(crate) fn install_directory(&self, commit: DirectoryCommit) -> Result<Self, CoreError> {
         if !directory_successor(self.directory, Some(commit)) || self.directory == Some(commit) {
-            return Err(CoreError::InvalidInput("directory commit does not advance"));
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
+                "directory commit does not advance",
+            )));
         }
         let mut next = self.successor()?;
         next.directory = Some(commit);
         if let Some(reason) = next.directory_invariant_violation() {
-            return Err(CoreError::InvalidInput(reason));
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(reason)));
         }
         Ok(next)
     }
@@ -104,37 +110,39 @@ impl Superblock {
         proofs: &[ReachabilityProof],
     ) -> Result<Self, CoreError> {
         if proofs.is_empty() || proofs.len() > MAX_GARBAGE {
-            return Err(CoreError::InvalidInput(
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
                 "directory retirement batch is empty or oversized",
-            ));
+            )));
         }
-        let current = self.directory.ok_or(CoreError::InvalidInput(
-            "no installed directory covers retirement",
-        ))?;
+        let current = self
+            .directory
+            .ok_or(CoreError::new(crate::CoreErrorCause::InvalidInput(
+                "no installed directory covers retirement",
+            )))?;
         for (index, proof) in proofs.iter().enumerate() {
             if proof.directory_commit() != current
                 || proof.publication_generation() != self.generation
             {
-                return Err(CoreError::InvalidInput(
+                return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
                     "directory reachability proof is stale",
-                ));
+                )));
             }
             let file = proof.file();
             if !self.directory_file_is_retirable(file) {
-                return Err(CoreError::InvalidInput(
+                return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
                     "directory retirement file is protected",
-                ));
+                )));
             }
             if self.garbage.binary_search(&file).is_ok()
                 || proofs[..index].iter().any(|earlier| earlier.file() == file)
             {
-                return Err(CoreError::InvalidInput(
+                return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
                     "directory retirement file is duplicated",
-                ));
+                )));
             }
         }
         if proofs.len() > MAX_GARBAGE - self.garbage.len() {
-            return Err(CoreError::CapacityDenied);
+            return Err(CoreError::new(crate::CoreErrorCause::CapacityDenied));
         }
         let mut next = self.successor()?;
         for proof in proofs {
@@ -238,7 +246,9 @@ pub(super) fn decode_directory(
     bytes: &[u8],
     group_id: [u8; 16],
 ) -> Result<(u64, u64, Option<DirectoryCommit>), CoreError> {
-    let layout = CoreError::Corrupt("root directory has an unsupported layout");
+    let layout = CoreError::new(crate::CoreErrorCause::Corrupt(
+        "root directory has an unsupported layout",
+    ));
     if bytes[16] > 1 || bytes[17..24].iter().any(|&byte| byte != 0) {
         return Err(layout);
     }
@@ -251,11 +261,24 @@ pub(super) fn decode_directory(
         let root =
             DirectoryRoot::decode(bytes[24..120].try_into().expect("96-byte directory root"))
                 .map_err(|error| match error {
-                    CoreError::Corrupt("directory root is noncanonical") => layout,
-                    _ => CoreError::Corrupt("root directory commit is invalid"),
+                    error
+                        if matches!(
+                            error.rejected_cause(),
+                            Some(crate::CoreErrorCause::Corrupt(
+                                "directory root is noncanonical"
+                            ))
+                        ) =>
+                    {
+                        layout
+                    }
+                    _ => CoreError::new(crate::CoreErrorCause::Corrupt(
+                        "root directory commit is invalid",
+                    )),
                 })?;
         if root.group_id != group_id {
-            return Err(CoreError::Corrupt("root directory commit is invalid"));
+            return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                "root directory commit is invalid",
+            )));
         }
         Some(DirectoryCommit {
             root,
@@ -380,12 +403,9 @@ mod tests {
             GroupFile::checkpoint(1),
         ] {
             assert!(
-                matches!(
-                    root.retire_directory_file(&proof(&root, file)),
-                    Err(CoreError::InvalidInput(
-                        "directory retirement file is protected"
-                    ))
-                ),
+                matches!(&(root.retire_directory_file(&proof(&root, file))), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput(
+                    "directory retirement file is protected"
+                )))),
                 "{file:?}"
             );
         }
@@ -419,22 +439,20 @@ mod tests {
         let old_proof = proof(&root, GroupFile::directory(1));
         let (new_allocation, _) = root.reserve_directory().unwrap();
         assert_eq!(new_allocation.directory(), root.directory());
-        assert!(matches!(
-            new_allocation.retire_directory_file(&old_proof),
-            Err(CoreError::InvalidInput(
+        assert!(
+            matches!(&(new_allocation.retire_directory_file(&old_proof)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput(
                 "directory reachability proof is stale"
-            ))
-        ));
+            ))))
+        );
         let mut other_commit = root.directory().unwrap();
         other_commit.start.chain[0] ^= 1;
         let other_proof =
             ReachabilityProof::for_test(other_commit, root.generation(), GroupFile::directory(1));
-        assert!(matches!(
-            root.retire_directory_file(&other_proof),
-            Err(CoreError::InvalidInput(
+        assert!(
+            matches!(&(root.retire_directory_file(&other_proof)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput(
                 "directory reachability proof is stale"
-            ))
-        ));
+            ))))
+        );
         let mut next_commit = commit(2);
         next_commit.root.page.as_mut().unwrap().arena_id = 3;
         next_commit.start.position.segment_id = 4;
@@ -444,12 +462,11 @@ mod tests {
             advanced.generation(),
             GroupFile::directory(1),
         );
-        assert!(matches!(
-            advanced.retire_directory_file(&forged_generation),
-            Err(CoreError::InvalidInput(
+        assert!(
+            matches!(&(advanced.retire_directory_file(&forged_generation)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput(
                 "directory reachability proof is stale"
-            ))
-        ));
+            ))))
+        );
     }
 
     #[test]
@@ -459,20 +476,18 @@ mod tests {
             let (next, id) = root.reserve_directory().unwrap();
             root = next.confirm_directory(id).unwrap();
         }
-        assert!(matches!(
-            root.retire_directory_files(&[]),
-            Err(CoreError::InvalidInput(_))
-        ));
+        assert!(
+            matches!(&(root.retire_directory_files(&[])), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput(_))))
+        );
         let duplicates = [
             proof(&root, GroupFile::directory(1)),
             proof(&root, GroupFile::directory(1)),
         ];
-        assert!(matches!(
-            root.retire_directory_files(&duplicates),
-            Err(CoreError::InvalidInput(
+        assert!(
+            matches!(&(root.retire_directory_files(&duplicates)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput(
                 "directory retirement file is duplicated"
-            ))
-        ));
+            ))))
+        );
         assert!(root.garbage().is_empty());
         let proofs: Vec<_> = (1..root.last_directory_id())
             .filter(|id| *id != 3)
@@ -481,10 +496,9 @@ mod tests {
         assert_eq!(proofs.len(), MAX_GARBAGE);
         let full = root.retire_directory_files(&proofs).unwrap();
         assert_eq!(full.garbage().len(), MAX_GARBAGE);
-        assert!(matches!(
-            full.retire_directory_file(&proof(&full, GroupFile::segment(1))),
-            Err(CoreError::CapacityDenied)
-        ));
+        assert!(
+            matches!(&(full.retire_directory_file(&proof(&full, GroupFile::segment(1)))), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::CapacityDenied)))
+        );
         assert_eq!(full.garbage().len(), MAX_GARBAGE);
     }
 
@@ -539,10 +553,7 @@ mod tests {
             let mut invalid = root.clone();
             invalid.garbage = vec![file];
             assert!(
-                matches!(
-                    invalid.encode(),
-                    Err(CoreError::InvalidInput("root garbage list is invalid"))
-                ),
+                matches!(&(invalid.encode()), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput("root garbage list is invalid")))),
                 "{file:?}"
             );
         }
@@ -796,10 +807,9 @@ mod tests {
                     root = next;
                     let next = root.install_directory(commit(2)).unwrap();
                     group.fail(op, occurrence, timing);
-                    assert!(matches!(
-                        publish_root(&group, &root, &next),
-                        Err(CoreError::UnknownCommit(_))
-                    ));
+                    assert!(
+                        matches!(&(publish_root(&group, &root, &next)), Err(native_error) if native_error.is_unknown_commit())
+                    );
                     let RootSelection::Selected {
                         superblock: selected,
                         ..
