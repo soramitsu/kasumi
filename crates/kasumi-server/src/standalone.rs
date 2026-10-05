@@ -2,6 +2,7 @@
 #[path = "standalone_tenant_staging.rs"]
 mod tenant_staging;
 use crate::{
+    audit_destination::TenantAuditPlacementConfig,
     auth::{AuthConfig, AuthKeySource},
     local_auth::{LocalCredentials, initialize_signer},
     runtime::{DeploymentMode, KeyProviderSettings, RuntimeConfig, TlsFiles, example_config},
@@ -317,8 +318,7 @@ pub(crate) fn offline_context(
 ) -> Result<kasumi_types::RequestContext> {
     let generation = database.engine().generation()?;
     let principal = generation
-        .state
-        .policy
+        .policy()
         .grants
         .iter()
         .find(|grant| grant.collection.is_none() && grant.actions.contains(&Action::Admin))
@@ -328,7 +328,7 @@ pub(crate) fn offline_context(
     Ok(kasumi_types::RequestContext {
         authorization: kasumi_types::RequestAuthorization::service_identity(),
         principal,
-        tenant: generation.state.tenant.clone(),
+        tenant: generation.tenant().to_owned(),
         scopes: BTreeSet::from([Action::Read, Action::Write, Action::Admin, Action::Audit]),
         request_id: Uuid::new_v4().to_string(),
     })
@@ -336,10 +336,14 @@ pub(crate) fn offline_context(
 
 type OperatorTenants = (
     Vec<crate::runtime::TenantConfig>,
-    std::collections::BTreeMap<String, Arc<NodeStore>>,
+    std::collections::BTreeMap<String, NodeStore>,
 );
 
 /// Resolve operational generations without rewriting immutable installation settings.
+#[allow(
+    clippy::result_large_err,
+    reason = "the native constructor returns whole inline custody into the same preadmitted inventory before any foreign marker; boxing the error would allocate outside that boundary"
+)]
 async fn operator_tenants(
     config: &RuntimeConfig,
     store: &TenantStore,
@@ -387,12 +391,21 @@ async fn operator_tenants(
             match crate::local_recovery::active_generation(config, store, &tenant.tenant)? {
                 Some(active) => {
                     tenant.incarnation = Some(active.incarnation.to_string());
-                    NodeStore::open_existing(
-                        active.directory.join("node.kv"),
-                        active.database_id(config, &tenant.tenant)?,
-                        owner.node.persistent_disk().clone(),
-                        owner.node.scratch_disk().clone(),
-                    )?
+                    let id = active.database_id(config, &tenant.tenant)?;
+                    let (inventory, index) = owner.node_inventory(&tenant.tenant).await?;
+                    let mut seat = inventory.claim(index).await;
+                    seat.begin_node()
+                        .map_err(|observed| observed.foreign_error())?
+                        .run_node(|| {
+                            NodeStore::open_existing(
+                                active.directory.join("node.kv"),
+                                id,
+                                owner.node.persistent_disk().clone(),
+                                owner.node.scratch_disk().clone(),
+                                owner.node.persistent_disk().native_storage_config(),
+                            )
+                        })
+                        .map_err(|observed| observed.foreign_error())?
                 }
                 None => owner.node.clone(),
             };
@@ -528,19 +541,22 @@ async fn recover_administrator_owned(
                 .await?;
                 owner.retain_stores(&stores);
                 config.install_tenant_audit_archive(stores.application(), None)?;
-                let database = kasumi_engine::open_existing_local(
-                    stores,
-                    audit.clone(),
-                    Uuid::parse_str(incarnation)?,
-                )
-                .await?;
+                let database = owner
+                    .snapshot(
+                        tenant,
+                        kasumi_engine::open_existing_local(
+                            stores,
+                            audit.clone(),
+                            Uuid::parse_str(incarnation)?,
+                        ),
+                    )
+                    .await?;
                 owner.retain_database(database.clone());
                 database
             };
             let generation = database.engine().generation()?;
             let principal = generation
-                .state
-                .policy
+                .policy()
                 .grants
                 .iter()
                 .find(|grant| grant.collection.is_none() && grant.actions.contains(&Action::Admin))
@@ -968,30 +984,86 @@ async fn backup_operator_keys_owned(
     owner.finish(result).await
 }
 
+/// Require each initial tenant's explicit choice before creating any installation.
+pub(crate) fn validate_initial_audit_placements(
+    tenant: &str,
+    placements: &BTreeMap<String, TenantAuditPlacementConfig>,
+) -> Result<()> {
+    kasumi_types::validate_name(tenant)?;
+    ensure!(
+        !tenant.starts_with("kasumi.") && !tenant.starts_with("__kasumi_"),
+        "reserved tenant name"
+    );
+    validate_audit_placement_keys(
+        &BTreeSet::from([crate::runtime::CONTROL_TENANT.to_owned(), tenant.to_owned()]),
+        placements,
+    )
+}
+fn validate_audit_placement_keys(
+    expected: &BTreeSet<String>,
+    placements: &BTreeMap<String, TenantAuditPlacementConfig>,
+) -> Result<()> {
+    ensure!(
+        placements.keys().cloned().collect::<BTreeSet<_>>() == *expected,
+        "initial tenant audit placements must contain exactly Control and all initialized tenants"
+    );
+    for placement in placements.values() {
+        placement.validate()?;
+    }
+    Ok(())
+}
+/// These fixtures explicitly opt both installed groups into local replica only.
+#[cfg(test)]
+pub(crate) fn local_audit_placements(tenant: &str) -> BTreeMap<String, TenantAuditPlacementConfig> {
+    BTreeMap::from([
+        (
+            crate::runtime::CONTROL_TENANT.into(),
+            TenantAuditPlacementConfig::LocalReplicaOnly,
+        ),
+        (tenant.into(), TenantAuditPlacementConfig::LocalReplicaOnly),
+    ])
+}
+
 /// Creates an exclusive private directory. Failure leaves a visibly incomplete
 /// private installation; it never overwrites or adopts an existing directory.
 pub async fn initialize(
     directory: &Path,
     tenant: &str,
     directory_policy: kasumi_store::DirectoryPolicy,
+    file_allocation_policy: kasumi_store::FileAllocationPolicy,
     network: StandaloneNetwork,
+    tenant_audit_placements: BTreeMap<String, TenantAuditPlacementConfig>,
 ) -> Result<InitializedInstallation> {
     network.validate()?;
+    validate_initial_audit_placements(tenant, &tenant_audit_placements)?;
     let storage = crate::runtime_memory::RuntimeStorage::installed(
-        &example_config(directory_policy)?.admission,
+        &example_config(directory_policy, file_allocation_policy)?.admission,
     )?;
-    initialize_with_storage(directory, tenant, directory_policy, network, storage).await
+    initialize_with_storage(
+        directory,
+        tenant,
+        directory_policy,
+        file_allocation_policy,
+        network,
+        tenant_audit_placements,
+        storage,
+    )
+    .await
 }
 
 pub(crate) async fn initialize_with_storage(
     directory: &Path,
     tenant: &str,
     directory_policy: kasumi_store::DirectoryPolicy,
+    file_allocation_policy: kasumi_store::FileAllocationPolicy,
     network: StandaloneNetwork,
+    tenant_audit_placements: BTreeMap<String, TenantAuditPlacementConfig>,
     storage: crate::runtime_memory::RuntimeStorage,
 ) -> Result<InitializedInstallation> {
     directory_policy.validate()?;
+    file_allocation_policy.validate()?;
     network.validate()?;
+    validate_initial_audit_placements(tenant, &tenant_audit_placements)?;
     // The owned operation retains its exclusive lock and drains every database
     // even if the CLI invocation loses its reply. Installation completion is a
     // durable marker written only after those owners have drained.
@@ -1002,7 +1074,9 @@ pub(crate) async fn initialize_with_storage(
             &directory,
             &tenant,
             directory_policy,
+            file_allocation_policy,
             network,
+            tenant_audit_placements,
             InitializationOptions::default(),
             storage,
         )
@@ -1019,26 +1093,27 @@ pub(crate) async fn initialize_with_storage_and_tenant_archive(
     storage: crate::runtime_memory::RuntimeStorage,
     archive: crate::audit_destination::AuditDestinationConfig,
 ) -> Result<InitializedInstallation> {
-    let directory_policy = kasumi_store::DirectoryPolicy::fixture();
-    let network = StandaloneNetwork::fixture();
-    directory_policy.validate()?;
-    network.validate()?;
-    let directory = directory.to_owned();
-    let tenant = tenant.to_owned();
-    operator::run(async move {
-        initialize_owned(
-            &directory,
-            &tenant,
-            directory_policy,
-            network,
-            InitializationOptions {
-                tenant_audit_archive: Some(archive),
-                ..Default::default()
+    let placements = BTreeMap::from([
+        (
+            crate::runtime::CONTROL_TENANT.into(),
+            TenantAuditPlacementConfig::LocalReplicaOnly,
+        ),
+        (
+            tenant.into(),
+            TenantAuditPlacementConfig::External {
+                destination: archive,
             },
-            storage,
-        )
-        .await
-    })
+        ),
+    ]);
+    initialize_with_storage(
+        directory,
+        tenant,
+        kasumi_store::DirectoryPolicy::fixture(),
+        kasumi_store::FileAllocationPolicy::fixture(),
+        StandaloneNetwork::fixture(),
+        placements,
+        storage,
+    )
     .await
 }
 /// Install actual encrypted local groups in one owned offline initialization.
@@ -1054,13 +1129,26 @@ pub(crate) async fn initialize_many_with_storage(
         (1..=10_000).contains(&tenant_count),
         "fixture tenant count is invalid"
     );
+    let placements = std::iter::once((
+        crate::runtime::CONTROL_TENANT.into(),
+        TenantAuditPlacementConfig::LocalReplicaOnly,
+    ))
+    .chain((0..tenant_count).map(|index| {
+        (
+            format!("healthy-{index:03}"),
+            TenantAuditPlacementConfig::LocalReplicaOnly,
+        )
+    }))
+    .collect();
     let directory = directory.to_owned();
     operator::run(async move {
         initialize_owned(
             &directory,
             "healthy-000",
             kasumi_store::DirectoryPolicy::fixture(),
+            kasumi_store::FileAllocationPolicy::fixture(),
             StandaloneNetwork::fixture(),
+            placements,
             InitializationOptions {
                 extra_tenants: tenant_count - 1,
                 ..Default::default()
@@ -1077,19 +1165,32 @@ struct InitializationOptions {
     obstruct_profile_publication: bool,
     #[cfg(test)]
     extra_tenants: usize,
-    #[cfg(test)]
-    tenant_audit_archive: Option<crate::audit_destination::AuditDestinationConfig>,
 }
+// The full placement map remains a required input alongside each installation policy.
+#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::result_large_err,
+    reason = "the native constructor returns whole inline custody into the same preadmitted inventory before any foreign marker; boxing the error would allocate outside that boundary"
+)]
 async fn initialize_owned(
     directory: &Path,
     tenant: &str,
     directory_policy: kasumi_store::DirectoryPolicy,
+    file_allocation_policy: kasumi_store::FileAllocationPolicy,
     network: StandaloneNetwork,
+    tenant_audit_placements: BTreeMap<String, TenantAuditPlacementConfig>,
     options: InitializationOptions,
     storage: crate::runtime_memory::RuntimeStorage,
 ) -> Result<InitializedInstallation> {
     #[cfg(not(test))]
     let _ = options;
+    let expected = BTreeSet::from([crate::runtime::CONTROL_TENANT.to_owned(), tenant.to_owned()]);
+    #[cfg(test)]
+    let expected = expected
+        .into_iter()
+        .chain((1..=options.extra_tenants).map(|index| format!("healthy-{index:03}")))
+        .collect();
+    validate_audit_placement_keys(&expected, &tenant_audit_placements)?;
     kasumi_types::validate_name(tenant)?;
     ensure!(
         !tenant.starts_with("kasumi.") && !tenant.starts_with("__kasumi_"),
@@ -1099,29 +1200,54 @@ async fn initialize_owned(
         directory.is_absolute(),
         "installation directory must be absolute"
     );
-    let mut config = example_config(directory_policy)?;
+    // Resolve only the existing parent. The installation itself does not exist
+    // yet, and a selected archive never supplies another accounting root.
+    let parent = directory.parent().context("installation parent missing")?;
+    let name = directory.file_name().context("installation name missing")?;
+    let prospective_directory = std::fs::canonicalize(parent)?.join(name);
+    let data = prospective_directory.join("data");
+    let persistent_config = storage.new_installation_disk_config(
+        BTreeMap::from([
+            ("data".into(), data.clone()),
+            ("backups".into(), prospective_directory.join("backups")),
+        ]),
+        directory_policy,
+        file_allocation_policy,
+    )?;
+    let mut config = example_config(directory_policy, file_allocation_policy)?;
     config.admission = storage.policy().clone();
+    config.mode = DeploymentMode::Standalone;
+    config.signer_verifier = None;
+    config.database_path = data.join("node.kv");
+    config.scratch_disk.directory = prospective_directory.join("scratch");
+    config.persistent_disk = persistent_config.clone();
+    config.tenant_audit_placements = tenant_audit_placements;
+    // Apply the final runtime's full installed-path validation before mkdir,
+    // key generation or provider opening, including local generation exclusion.
+    config.validate_persistent_disk()?;
     let admission = storage.facade(&config.admission)?;
     let mut pending = crate::startup_resources::Resources::default();
     pending.owned_admissions.push(admission.clone());
+    pending.original_recoveries = Some(
+        crate::administration::original_serving_runtime::OriginalRecoveries::new(
+            &admission,
+            crate::administration::original_serving_runtime::OriginalRecoveryParticipants::enrollment(tenant, &expected),
+        )?,
+    );
     private_files::create_directory(directory)?;
     let directory = std::fs::canonicalize(directory)?;
+    ensure!(
+        directory == prospective_directory,
+        "installation parent changed after preflight"
+    );
     for name in ["data", "operator", "tls", "profiles", "backups"] {
         private_files::create_directory(&directory.join(name))?;
     }
-    let data = directory.join("data");
     let operator = directory.join("operator");
     let tls = directory.join("tls");
     let profiles = directory.join("profiles");
     // Root directory creation remains the explicit installer boundary. Directory
     // mutation/accounting below those roots still needs its own NodeDisk API.
-    let persistent_config = storage.new_installation_disk_config(
-        BTreeMap::from([
-            ("data".into(), data.clone()),
-            ("backups".into(), directory.join("backups")),
-        ]),
-        directory_policy,
-    )?;
     let persistent_disk = crate::persistent_disk::open(&persistent_config, &storage)?;
     pending.standalone_lock = Some(create_installed_file(
         &persistent_config,
@@ -1255,14 +1381,10 @@ async fn initialize_owned(
         config.tenants[0].initial_policy = policy;
         config.tenants[0].incarnation = Some(tenant_incarnation.to_string());
         #[cfg(test)]
-        if let Some(archive) = &options.tenant_audit_archive {
-            config
-                .tenant_audit_archives
-                .insert(tenant.into(), archive.clone());
-        }
-        #[cfg(test)]
-        for index in 1..=options.extra_tenants {
-            let name = format!("healthy-{index:03}");
+        for name in expected.iter().filter(|name| {
+            name.as_str() != crate::runtime::CONTROL_TENANT && name.as_str() != tenant
+        }) {
+            let name = name.clone();
             let application = format!("{name}-application");
             let custody = format!("{name}-custody");
             FileKeyProvider::initialize(
@@ -1278,12 +1400,27 @@ async fn initialize_owned(
             config.tenants.push(extra);
         }
         config.validate()?;
-        let node = NodeStore::create_new(
-            &database_path,
-            installation.database_id,
-            persistent_disk.clone(),
-            storage.open_scratch(&config.scratch_disk)?,
-        )?;
+        let scratch = storage.open_scratch(&config.scratch_disk)?;
+        let node = {
+            let mut seat = pending
+                .original_recoveries
+                .as_ref()
+                .expect("initializer owns the same installed constructor inventory")
+                .claim(0)
+                .await;
+            seat.begin_node()
+                .map_err(|observed| observed.foreign_error())?
+                .run_node(|| {
+                    NodeStore::create_new(
+                        &database_path,
+                        installation.database_id,
+                        persistent_disk.clone(),
+                        scratch.clone(),
+                        persistent_disk.native_storage_config(),
+                    )
+                })
+                .map_err(|observed| observed.foreign_error())?
+        };
         pending.owned_nodes.push(node.clone());
         #[cfg(test)]
         ownership_tests::checkpoint(&database_path, "initialize-node").await?;
@@ -1304,7 +1441,16 @@ async fn initialize_owned(
         pending.audits.push(audit.clone());
         #[cfg(test)]
         ownership_tests::checkpoint(&database_path, "initialize-audit").await?;
-        provision_databases(&config, node.clone(), audit.clone()).await?;
+        provision_databases(
+            &config,
+            node.clone(),
+            audit.clone(),
+            pending
+                .original_recoveries
+                .as_ref()
+                .expect("initializer owns the original recovery inventory"),
+        )
+        .await?;
         let result = async {
             #[cfg(test)]
             if options.obstruct_profile_publication {
@@ -1480,8 +1626,9 @@ fn initial_topology(config: &RuntimeConfig) -> Result<kasumi_engine::control::Co
 
 async fn provision_databases(
     config: &RuntimeConfig,
-    node: Arc<NodeStore>,
+    node: NodeStore,
     audit: Arc<kasumi_engine::SecurityAudit>,
+    original_recoveries: &crate::administration::original_serving_runtime::OriginalRecoveries,
 ) -> Result<()> {
     config.validate_selected_key_domains(&config.tenants.iter().collect::<Vec<_>>())?;
     let enrollment = crate::node_enrollment::Enrollment::begin(
@@ -1528,6 +1675,14 @@ async fn provision_databases(
     })) {
         let mut pending = crate::startup_resources::Resources::default();
         pending.borrowed_nodes.push(node.clone());
+        let index =
+            crate::administration::original_serving_runtime::OriginalRecoveries::configured_index(
+                config, tenant,
+            )?;
+        let mut seat = original_recoveries.claim(index).await;
+        if !seat.is_empty() {
+            return Err(operator::snapshot_marker(seat.observation()));
+        }
         let configured = async {
             let source = Arc::new(crate::runtime::file_secret);
             let stores = kasumi_store::TenantStorageSet::initialize_catalogs(
@@ -1541,14 +1696,17 @@ async fn provision_databases(
             pending.stores.push(stores.application().clone());
             pending.stores.push(stores.custody().store().clone());
             config.install_tenant_audit_archive(stores.application(), None)?;
-            let database = kasumi_engine::open_local_with_incarnation(
-                stores.clone(),
-                policy.clone(),
-                limits.clone(),
-                audit.clone(),
-                Uuid::parse_str(incarnation)?,
-            )
-            .await?;
+            let incarnation = Uuid::parse_str(incarnation)?;
+            let database = seat
+                .run_snapshot(kasumi_engine::open_local_with_incarnation(
+                    stores.clone(),
+                    policy.clone(),
+                    limits.clone(),
+                    audit.clone(),
+                    incarnation,
+                ))
+                .await
+                .map_err(operator::snapshot_marker)?;
             pending.databases.push(database.clone());
             if tenant == crate::runtime::CONTROL_TENANT {
                 let plane = kasumi_engine::control::ControlPlane::new(database)?;
@@ -1566,6 +1724,7 @@ async fn provision_databases(
             crate::runtime::persisted_bootstrap_fingerprint(stores.application())
         }
         .await;
+        drop(seat);
         let drained = crate::startup_owner::finish(&mut pending).await;
         let fingerprint = match (configured, drained) {
             (Err(error), Err(drain)) => {

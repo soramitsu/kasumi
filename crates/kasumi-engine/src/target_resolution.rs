@@ -1,5 +1,6 @@
 //! Immutable target completion and budget facts, selected by a causal prefix.
 //! Physical rows written beyond the selected head are not committed observations.
+use crate::namespace_installation::PreparedRows;
 use anyhow::{Context, Result, ensure};
 use kasumi_store::{EncryptedTable, ScratchDisk, TenantStore, WriteOp};
 use kasumi_types::*;
@@ -214,13 +215,15 @@ enum Source {
     Staged(Arc<EncryptedTable>),
 }
 impl Source {
-    fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
+    fn get(&self, key: &[u8]) -> Result<Option<crate::materialization_row::MaterializationRow>> {
         let result = match self {
-            Self::Durable(rows) => {
-                rows.store
-                    .get_bounded(&rows.binding.namespace(), key, MAX_ROW_BYTES)?
-            }
-            Self::Staged(table) => table.get(key)?,
+            Self::Durable(rows) => rows
+                .store
+                .get_bounded(&rows.binding.namespace(), key, MAX_ROW_BYTES)?
+                .map(crate::materialization_row::MaterializationRow::Stored),
+            Self::Staged(table) => table
+                .get(key)?
+                .map(crate::materialization_row::MaterializationRow::Staged),
         };
         ensure!(
             result
@@ -255,7 +258,7 @@ impl View {
     pub(crate) fn head(&self) -> &TargetResolutionPrefixHead {
         &self.head
     }
-    fn bytes(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
+    fn bytes(&self, key: &[u8]) -> Result<Option<crate::materialization_row::MaterializationRow>> {
         self.source
             .as_ref()
             .map(|s| s.get(key))
@@ -654,11 +657,17 @@ impl Builder {
         limit: u64,
         tenant: &str,
         origin: &str,
-    ) -> Result<Self> {
+    ) -> std::result::Result<Self, kasumi_store::ScratchOperationFailure> {
         Ok(Self {
-            table: Arc::new(EncryptedTable::new(disk, limit)?),
-            causal: EncryptedTable::new(disk, limit)?,
-            head: TargetResolutionPrefixHead::empty(tenant, origin)?,
+            table: Arc::new(EncryptedTable::new(
+                disk,
+                limit,
+                disk.native_cache_config(),
+            )?),
+            causal: EncryptedTable::new(disk, limit, disk.native_cache_config())?,
+            head: TargetResolutionPrefixHead::empty(tenant, origin).map_err(|original| {
+                kasumi_store::ScratchOperationFailure::Operation(original.into())
+            })?,
         })
     }
     pub(crate) fn push(&mut self, row: &Row, state: &TenantState) -> Result<()> {
@@ -689,8 +698,10 @@ impl Builder {
             .insert(&id_key(&row.key), &serde_json::to_vec(row)?)?;
         self.table
             .insert(&ordinal_key(row.ordinal), &serde_json::to_vec(&index)?)?;
+        // The immutable rows retain every outcome; this per-origin cursor
+        // advances to the latest validated completion and budget selections.
         self.causal
-            .insert(origin.as_bytes(), &serde_json::to_vec(&causal)?)?;
+            .set(origin.as_bytes(), &serde_json::to_vec(&causal)?)?;
         Ok(())
     }
     fn validate_current(&self, state: &TenantState) -> Result<()> {
@@ -722,7 +733,7 @@ impl Builder {
 
 #[cfg(test)]
 #[path = "target_resolution_tests.rs"]
-mod tests;
+pub(crate) mod tests;
 pub(crate) fn advance(head: &mut TargetResolutionPrefixHead, row: &Row) -> Result<()> {
     ensure!(
         row.ordinal
@@ -746,16 +757,16 @@ pub(crate) fn advance(head: &mut TargetResolutionPrefixHead, row: &Row) -> Resul
 /// catalog writes with the enclosing checkpoint/applied cursor before publishing
 /// `view`. Dropping this object leaves only encrypted temporary staging.
 pub(crate) struct Installation {
-    replacement: Option<Arc<EncryptedTable>>,
+    replacement: Option<PreparedRows>,
     namespace: String,
     writes: Vec<WriteOp>,
     pub(crate) view: View,
 }
 impl Installation {
-    pub(crate) fn replacements(&self) -> Vec<(&str, &EncryptedTable)> {
+    pub(crate) fn replacements(&self) -> Vec<kasumi_store::NamespaceReplacement<'_>> {
         self.replacement
             .as_ref()
-            .map(|table| vec![(self.namespace.as_str(), table.as_ref())])
+            .map(|rows| vec![rows.replacement(&self.namespace)])
             .unwrap_or_default()
     }
     pub(crate) fn writes(&self) -> &[WriteOp] {
@@ -835,11 +846,8 @@ impl View {
             });
         }
         let replacement = match self.source.as_deref() {
-            Some(Source::Staged(table)) => table.clone(),
-            None if self.head.count == 0 => Arc::new(EncryptedTable::new(
-                store.scratch_disk(),
-                scratch_limit(state.limits.max_target_resolution_bytes)?,
-            )?),
+            Some(Source::Staged(table)) => PreparedRows::Staged(table.clone()),
+            None if self.head.count == 0 => PreparedRows::Empty,
             _ => anyhow::bail!("namespace installation requires verified staged rows"),
         };
         let binding = NamespaceBinding {
@@ -948,7 +956,9 @@ impl Pending {
             row: Some(row),
         })
     }
-    pub(crate) fn persist(self) -> Result<View> {
+    /// Preserve immutable row/index pairs before selecting the returned view.
+    /// An exact replay may reuse this durable prefix after publication fails.
+    pub(crate) fn stage(self) -> Result<View> {
         let Some(row) = self.row else {
             return Ok(self.previous);
         };

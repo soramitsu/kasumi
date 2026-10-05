@@ -39,7 +39,7 @@ fn permanent_kind_cannot_forward_a_resident_payload_to_semantic_consumers() {
         assert_eq!(layout.kinds[usize::from(kind)].records, 1);
         assert!(layout.materialization_workspace().unwrap() >= 64 << 20);
         let mut forwarded = 0;
-        let error = visit(&mut bytes.as_slice(), |_, _| {
+        let error = visit::<anyhow::Error>(&mut bytes.as_slice(), |_, _| {
             forwarded += 1;
             Ok(())
         })
@@ -68,7 +68,7 @@ fn typed_inspection_rejects_bounds_kind_order_and_terminal_substitutions() {
         // There are no payload bytes: both paths must reject the kind/length
         // before attempting a proportional read or DTO allocation.
         let frame_error = inspect(&mut bytes.as_slice()).unwrap_err().to_string();
-        let decode_error = visit(&mut bytes.as_slice(), |_, _| Ok(()))
+        let decode_error = visit::<anyhow::Error>(&mut bytes.as_slice(), |_, _| Ok(()))
             .unwrap_err()
             .to_string();
         assert!(frame_error.contains("limit") || frame_error.contains("kind"));
@@ -84,7 +84,7 @@ fn typed_inspection_rejects_bounds_kind_order_and_terminal_substitutions() {
     let layout = inspect(&mut original.as_slice()).unwrap();
     assert_eq!(
         layout,
-        visit(&mut original.as_slice(), |_, _| Ok(())).unwrap()
+        visit::<anyhow::Error>(&mut original.as_slice(), |_, _| Ok(())).unwrap()
     );
     assert_eq!(layout.resident_bytes().unwrap(), original.len() as u64);
     for offset in [
@@ -95,13 +95,13 @@ fn typed_inspection_rejects_bounds_kind_order_and_terminal_substitutions() {
         let mut changed = original.clone();
         changed[offset] ^= 1;
         assert!(inspect(&mut changed.as_slice()).is_err());
-        assert!(visit(&mut changed.as_slice(), |_, _| Ok(())).is_err());
+        assert!(visit::<anyhow::Error>(&mut changed.as_slice(), |_, _| Ok(())).is_err());
     }
     for magic in [b"KASUMIT4", b"KASUMIT5"] {
         let mut old = original.clone();
         old[..8].copy_from_slice(magic);
         assert!(inspect(&mut old.as_slice()).is_err());
-        assert!(visit(&mut old.as_slice(), |_, _| Ok(())).is_err());
+        assert!(visit::<anyhow::Error>(&mut old.as_slice(), |_, _| Ok(())).is_err());
     }
 }
 
@@ -163,7 +163,7 @@ fn inspection_reads_large_typed_payload_in_fixed_chunks_before_any_dto() {
     .unwrap();
     let image = raw(&[(0, header()), (3, payload)]);
     let layout = inspect(&mut Bounded(&image)).unwrap();
-    let verified = visit(&mut image.as_slice(), |_, _| Ok(())).unwrap();
+    let verified = visit::<anyhow::Error>(&mut image.as_slice(), |_, _| Ok(())).unwrap();
     assert_eq!(layout, verified);
     assert!(layout.kinds[3].maximum_decode_work > layout.kinds[3].maximum_payload_bytes);
 }
@@ -174,7 +174,7 @@ fn obsolete_receipt_tuple_and_resident_header_fields_are_rejected() {
     let bytes = raw(&[(0, header()), (5, serde_json::to_vec(&old_row).unwrap())]);
     let mut forwarded = 0;
     assert!(
-        visit(&mut bytes.as_slice(), |_, _| {
+        visit::<anyhow::Error>(&mut bytes.as_slice(), |_, _| {
             forwarded += 1;
             Ok(())
         })
@@ -212,7 +212,7 @@ fn obsolete_receipt_tuple_and_resident_header_fields_are_rejected() {
         let bytes = raw(&[(0, serde_json::to_vec(&header).unwrap())]);
         let mut forwarded = 0;
         assert!(
-            visit(&mut bytes.as_slice(), |_, _| {
+            visit::<anyhow::Error>(&mut bytes.as_slice(), |_, _| {
                 forwarded += 1;
                 Ok(())
             })

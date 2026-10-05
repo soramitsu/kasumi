@@ -42,6 +42,7 @@ pub struct TargetBackupSource {
 #[serde(deny_unknown_fields)]
 pub struct TargetTenantTemplate {
     pub authority: String,
+    pub audit_placement: crate::audit_destination::TenantAuditPlacementConfig,
     pub application_keys: KeyProviderSettings,
     pub custody_keys: KeyProviderSettings,
     pub source_backups: BTreeMap<Uuid, TargetBackupSource>,
@@ -120,6 +121,17 @@ impl TargetRecoveryConfig {
         let mut target_keys = BTreeSet::new();
         for (tenant, template) in &self.tenants {
             kasumi_types::validate_name(tenant)?;
+            template.audit_placement.validate()?;
+            if let crate::audit_destination::TenantAuditPlacementConfig::External {
+                destination:
+                    crate::audit_destination::AuditDestinationConfig::Filesystem { directory },
+            } = &template.audit_placement
+            {
+                ensure!(
+                    !directory.starts_with(&self.generation_root),
+                    "external target audit archive is inside the generation deletion root"
+                );
+            }
             ensure!(
                 !tenant.starts_with("__kasumi_") && !tenant.starts_with("kasumi."),
                 "reserved target tenant"

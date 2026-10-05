@@ -13,6 +13,42 @@ use uuid::Uuid;
 use zeroize::Zeroizing;
 
 const MAX_KEYRING_BYTES: usize = 1 << 20;
+#[path = "file_key_workspace.rs"]
+mod workspace;
+
+/// The exact bounded, zeroizing input selected for one FileKeyProvider open.
+/// Its bytes stay private and cannot be changed between quoting and decoding.
+/// This is an operator-file input, not a key authorization or storage lease.
+///
+/// The caller must retain its input reservation throughout this value's life,
+/// and grow it to `workspace_bytes` before `finish`. That same reservation must
+/// then accompany the returned provider until its last allocation is destroyed.
+/// Reading/decoding does not invoke an admission callback or hold its locks.
+pub struct FileKeyOpenInput<'a> {
+    path: &'a Path,
+    bytes: Zeroizing<Vec<u8>>,
+}
+impl FileKeyOpenInput<'_> {
+    /// Pure bound for the actual retained input, concrete serde decoder,
+    /// key validation, canonical comparison and returned provider. Optional
+    /// backtraces and subsequent caller formatting are separate diagnostics.
+    pub fn workspace_bytes(&self) -> std::io::Result<u64> {
+        workspace::decode(
+            self.bytes.len(),
+            self.bytes.capacity(),
+            self.path.as_os_str().as_encoded_bytes().len(),
+        )
+    }
+    /// Complete the exact selected input under the caller's existing grant.
+    /// This does not reopen a pathname or transfer any caller budget authority.
+    pub fn finish(self) -> Result<FileKeyProvider> {
+        let ring = FileKeyProvider::decode(&self.bytes)?;
+        Ok(FileKeyProvider {
+            path: self.path.into(),
+            key_ref: ring.key_ref(),
+        })
+    }
+}
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Keyring {
@@ -91,21 +127,40 @@ impl FileKeyProvider {
         Self::open(path)
     }
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
-        let path = path.as_ref();
+        Self::prepare_open(path.as_ref())?.finish()
+    }
+    /// Pure pre-admission bound for the <=1 MiB input read and fixed errors.
+    /// Supply the native encoded path length; this method never accesses it.
+    /// Before decoding, use the prepared input's actual-length workspace quote
+    /// rather than permanently reserving a worst-case decoded keyring.
+    pub fn open_input_workspace_bytes(path_bytes: usize) -> std::io::Result<u64> {
+        workspace::read(path_bytes)
+    }
+    /// Read one bounded input after the caller claims `open_input_workspace_bytes`.
+    /// Keep that real grant until the input is consumed/dropped; claim its pure
+    /// `workspace_bytes` before invoking the concrete decoder via `finish`.
+    pub fn prepare_open(path: &Path) -> Result<FileKeyOpenInput<'_>> {
         ensure!(path.is_absolute(), "file keyring path must be absolute");
         private_files::check_directory(path.parent().context("keyring has no parent")?)?;
-        let ring = Self::read(path)?;
-        Ok(Self {
-            path: path.into(),
-            key_ref: ring.key_ref(),
+        Ok(FileKeyOpenInput {
+            path,
+            bytes: private_files::read(path, MAX_KEYRING_BYTES)?,
         })
+    }
+    /// Pure retained heap bound for this exact provider. It excludes enclosing
+    /// owner/charge backing and gives no authority to adopt an unadmitted value.
+    pub fn retained_workspace_bytes(&self) -> std::io::Result<u64> {
+        workspace::retained(self.path.capacity(), self.key_ref.capacity())
     }
     pub fn key_ref(&self) -> &str {
         &self.key_ref
     }
     fn read(path: &Path) -> Result<Keyring> {
         let bytes = private_files::read(path, MAX_KEYRING_BYTES)?;
-        let ring: Keyring = serde_json::from_slice(&bytes)?;
+        Self::decode(&bytes)
+    }
+    fn decode(bytes: &[u8]) -> Result<Keyring> {
+        let ring: Keyring = serde_json::from_slice(bytes)?;
         ring.validate()?;
         // Re-serialize into the bounded original row, never another full
         // secret-bearing buffer. Every current writer uses to_vec on Keyring.
@@ -130,7 +185,7 @@ impl FileKeyProvider {
             }
         }
         let mut exact = Exact {
-            original: bytes.as_slice(),
+            original: bytes,
             offset: 0,
         };
         serde_json::to_writer(&mut exact, &ring).context("noncanonical file keyring")?;
@@ -456,8 +511,8 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(
-            reopened.get("docs", b"a").unwrap(),
-            Some(b"private".to_vec())
+            reopened.get("docs", b"a").unwrap().as_deref(),
+            Some(b"private".as_slice())
         );
         assert!(StorageAccess::standalone(installation, "__kasumi_control", incarnation).is_err());
         assert!(StorageAccess::standalone(Uuid::nil(), "tenant", incarnation).is_err());

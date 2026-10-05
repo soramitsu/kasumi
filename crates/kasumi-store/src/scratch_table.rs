@@ -1,156 +1,75 @@
-//! Temporary point-addressed staging. Transaction frames, including keys and
-//! values, are encrypted in an anonymous spool; the ordered key index is resident.
-use crate::{EncryptedSpool, ScratchDisk};
+//! Temporary point-addressed staging with encrypted segmented storage and a
+//! bounded native page/value cache. The ordered directory also lives on disk.
+use crate::ScratchDisk;
 use anyhow::{Result, ensure};
-use kasumi_kv::{
-    AdmissionError, BackendNativeDisposition, OwnerFailed, StorageAdmission, StorageBackend,
-    TableDefinition,
+#[cfg(test)]
+use kasumi_kv::BackendNativeDisposition;
+use kasumi_kv::{CacheConfig, StorageAdmission, TableDefinition};
+use kasumi_types::drain::DrainResult;
+use std::sync::Arc;
+
+#[path = "scratch_group.rs"]
+pub(crate) mod group;
+#[cfg(test)]
+use group::Backend;
+use group::Owner;
+
+#[path = "scratch_table_value.rs"]
+mod value;
+pub use value::ScratchTableValue;
+
+#[path = "scratch_creation.rs"]
+mod creation;
+pub use creation::{
+    ScratchAdmissionRefusal, ScratchAdmissionSlot, ScratchCreationFailure, ScratchCreationReport,
+    ScratchCreationRetirement, ScratchOperationFailure,
 };
-use kasumi_types::drain::{DrainCompletion, DrainResult};
-use std::io::{self, Read, Seek, SeekFrom, Write};
-use std::sync::{Arc, Mutex};
+
 const TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("staged");
 
-/// Both database capabilities retain this exact anonymous file; no independently
-/// constructed governor can admit a different spool or turn errors into capacity.
-#[derive(Debug)]
-struct Owner(Mutex<Option<EncryptedSpool>>);
-impl Owner {
-    fn with<T>(&self, work: impl FnOnce(&mut EncryptedSpool) -> io::Result<T>) -> io::Result<T> {
-        let mut owner = self.0.lock().map_err(|poisoned| {
-            if let Some(spool) = poisoned.into_inner().as_ref() {
-                spool.owner_failed();
-            }
-            io::Error::from(io::ErrorKind::Other)
-        })?;
-        let spool = owner
-            .as_mut()
-            .ok_or_else(|| io::Error::from(io::ErrorKind::BrokenPipe))?;
-        spool.check_owner()?;
-        work(spool)
-    }
-}
-impl StorageAdmission for Owner {
-    fn check_owner(&self) -> std::result::Result<(), OwnerFailed> {
-        self.with(|_| Ok(())).map_err(|_| OwnerFailed)
-    }
-    fn reserve_workspace(
-        &self,
-        bytes: u64,
-    ) -> std::result::Result<Box<dyn kasumi_kv::ResidentLease>, AdmissionError> {
-        self.with(|spool| {
-            let bytes = crate::disk_memory::add(
-                bytes,
-                crate::disk_memory::allocation::<crate::DiskMemoryLease>(1)
-                    .map_err(|_| io::ErrorKind::OutOfMemory)?,
-            )
-            .map_err(|_| io::ErrorKind::OutOfMemory)?;
-            let lease = match spool.disk().memory().clone().reserve_installed(bytes) {
-                Ok(lease) => lease,
-                Err(error) if error.kind() == io::ErrorKind::OutOfMemory => return Err(error),
-                Err(error) => {
-                    spool.owner_failed();
-                    return Err(error);
-                }
-            };
-            Ok(Box::new(lease) as Box<dyn kasumi_kv::ResidentLease>)
-        })
-        .map_err(|error| {
-            if error.kind() == io::ErrorKind::OutOfMemory {
-                AdmissionError::CapacityDenied
-            } else {
-                AdmissionError::OwnerFailed
-            }
-        })
-    }
-    fn reserve_growth(
-        &self,
-        current: u64,
-        requested: u64,
-    ) -> std::result::Result<(), AdmissionError> {
-        self.with(|spool| {
-            let result = spool.reserve_growth(current, requested);
-            // A pure pre-I/O denial leaves the exact owner healthy. An OS error
-            // that also fences the physical owner is never a recoverable denial.
-            if result
-                .as_ref()
-                .is_err_and(|error| error.kind() == io::ErrorKind::StorageFull)
-                && spool.check_owner().is_err()
-            {
-                return Err(io::Error::from(io::ErrorKind::Other));
-            }
-            result
-        })
-        .map_err(|error| {
-            if error.kind() == io::ErrorKind::StorageFull {
-                AdmissionError::CapacityDenied
-            } else {
-                AdmissionError::OwnerFailed
-            }
-        })
-    }
-    fn settle_growth(&self, actual: u64) -> std::result::Result<(), OwnerFailed> {
-        self.with(|spool| spool.settle_growth(actual))
-            .map_err(|_| OwnerFailed)
-    }
-    fn owner_failed(&self) {
-        let owner = self
-            .0
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if let Some(spool) = owner.as_ref() {
-            spool.owner_failed();
-        }
-    }
-}
-
-#[derive(Clone, Debug)]
-struct Backend(Arc<Owner>);
-impl StorageBackend for Backend {
-    fn len(&self) -> io::Result<u64> {
-        self.0.with(|spool| Ok(spool.len()))
-    }
-    fn read(&self, offset: u64, out: &mut [u8]) -> io::Result<()> {
-        self.0.with(|spool| {
-            spool.seek(SeekFrom::Start(offset))?;
-            spool.read_exact(out)
-        })
-    }
-    fn set_len(&self, length: u64) -> io::Result<()> {
-        self.0.with(|spool| spool.resize(length))
-    }
-    fn sync_data(&self) -> io::Result<()> {
-        self.0.with(EncryptedSpool::sync_all)
-    }
-    fn write(&self, offset: u64, bytes: &[u8]) -> io::Result<()> {
-        self.0.with(|spool| {
-            spool.seek(SeekFrom::Start(offset))?;
-            spool.write_all(bytes)
-        })
-    }
-    fn close(&self) -> kasumi_kv::BackendCloseOutcome {
-        let mut owner = self.0.0.lock().unwrap_or_else(|poisoned| {
-            let owner = poisoned.into_inner();
-            if let Some(spool) = owner.as_ref() {
-                spool.owner_failed();
-            }
-            owner
-        });
-        let Some(spool) = owner.as_mut() else {
-            // Only a positively drained prior call removes this exact spool.
-            return kasumi_kv::BackendCloseOutcome::drained(Ok(()));
-        };
-        let outcome = spool.close_once();
-        if outcome.native_disposition() == kasumi_kv::BackendNativeDisposition::Drained {
-            // Native retirement precedes key/buffer retirement and its charge.
-            // An uncertain close keeps the original spool installed here.
-            drop(owner.take());
-        }
-        outcome
-    }
-}
 struct ScratchTableDatabase {
     database: Option<crate::node_database::NodeDatabase>,
+    admission: Arc<Owner>,
+    // An already-unwinding batch transfers its actual still-charged lease
+    // here before the new provider callback could cause a second panic.
+    // This inline lock is included in the concrete owner quote; its first
+    // nonblocking census probe needs no separately allocated native backing.
+    retained_batches: parking_lot::Mutex<Option<Box<BatchMemoryLink>>>,
+    retirement: (
+        Arc<dyn crate::NodeDiskMemoryAdmission>,
+        crate::StorageOwnerId,
+    ),
+}
+
+/// Every public table/value/batch alias schedules its exact independently paid
+/// request after its own Arc has actually left. This is a request to drive;
+/// positive native and payload disposal still come only from the census.
+struct ScratchTableRef(Option<Arc<ScratchTableDatabase>>);
+impl ScratchTableRef {
+    fn new(owner: Arc<ScratchTableDatabase>) -> Self {
+        Self(Some(owner))
+    }
+}
+impl Clone for ScratchTableRef {
+    fn clone(&self) -> Self {
+        Self::new(self.0.as_ref().unwrap().clone())
+    }
+}
+impl std::ops::Deref for ScratchTableRef {
+    type Target = Arc<ScratchTableDatabase>;
+    fn deref(&self) -> &Self::Target {
+        self.0.as_ref().unwrap()
+    }
+}
+impl Drop for ScratchTableRef {
+    fn drop(&mut self) {
+        let owner = self.0.take().unwrap();
+        let (provider, id) = owner.retirement.clone();
+        drop(owner);
+        if !std::thread::panicking() {
+            let _ = provider.storage_census().drain_owner(id);
+        }
+    }
 }
 
 impl ScratchTableDatabase {
@@ -173,70 +92,75 @@ impl Drop for ScratchTableDatabase {
         // retires the descriptor, key and buffers before the scratch charge;
         // any other outcome, including an earlier failed explicit close, keeps
         // the exact spool and its charge alive for the process lifetime.
-        if database.close_native_for_drop() == BackendNativeDisposition::Drained {
+        let retained_batches = self.retained_batches.get_mut().take();
+        let closed = database.close_direct_native().is_some();
+        let disposed = closed
+            && database
+                .dispose_direct_native()
+                .is_some_and(|report| report.disposal_complete());
+        if disposed && retained_batches.is_none() {
             drop(database);
         } else {
             std::mem::forget(database);
+            std::mem::forget(retained_batches);
         }
-    }
-}
-
-struct ScratchTableSetupFailure {
-    original: anyhow::Error,
-    close: DrainResult,
-    retained: Option<Arc<ScratchTableDatabase>>,
-}
-
-impl std::fmt::Debug for ScratchTableSetupFailure {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("ScratchTableSetupFailure")
-            .field("original", &self.original)
-            .field("close", &self.close)
-            .field("retained", &self.retained.is_some())
-            .finish()
-    }
-}
-
-impl std::fmt::Display for ScratchTableSetupFailure {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(formatter, "scratch table setup failed: {}", self.original)?;
-        if let Err(close) = &self.close {
-            write!(formatter, "; close: {close}")?;
-        }
-        Ok(())
-    }
-}
-
-impl std::error::Error for ScratchTableSetupFailure {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        Some(self.original.as_ref())
-    }
-}
-
-impl ScratchTableSetupFailure {
-    #[cfg(test)]
-    fn retry_close(&self) -> DrainResult {
-        self.retained
-            .as_ref()
-            .map_or_else(|| self.close.clone(), |owner| owner.close())
     }
 }
 
 pub struct EncryptedTable {
-    owner: Arc<ScratchTableDatabase>,
+    owner: ScratchTableRef,
 }
 /// An unpublished, bounded staging transaction. A healthy dropped transaction
 /// aborts its pending writes; a committed batch remains private until its caller
 /// publishes the enclosing verified namespace.
 pub struct EncryptedTableBatch {
+    // This actual typed handle owns the validated table name and aliases the
+    // transaction's admitted snapshot. Retire it before abort/commit so the
+    // completed writer leaves no extra pin on the old root.
+    table: Option<kasumi_kv::Table<&'static [u8], &'static [u8]>>,
     transaction: kasumi_kv::WriteTransaction,
-    // The transaction drops before this owner. If the table is gone, the last
-    // batch still gets an observed close after its write settles or aborts.
-    _owner: Arc<ScratchTableDatabase>,
     bytes: usize,
     entries: usize,
     failed: bool,
+    // Failed native staging may release its writer gate early. Every still-live
+    // batch therefore owns its own charge through the last field retirement.
+    _memory: BatchMemory,
+}
+struct BatchMemoryLink {
+    lease: Box<dyn kasumi_kv::ResidentLease>,
+    next: Option<Box<BatchMemoryLink>>,
+}
+struct BatchMemory {
+    link: Option<Box<BatchMemoryLink>>,
+    // Keep the real database alive until the grant callback has returned, even
+    // when the original table was dropped before this batch.
+    owner: ScratchTableRef,
+}
+impl Drop for BatchMemory {
+    fn drop(&mut self) {
+        let Some(mut link) = self.link.take() else {
+            return;
+        };
+        if std::thread::panicking() {
+            // No new callback during an existing unwind. The real preadmitted
+            // link, lease and byte credit stay with this exact failed owner.
+            self.owner.admission.owner_failed();
+            let mut retained = self.owner.retained_batches.lock();
+            link.next = retained.take();
+            *retained = Some(link);
+            return;
+        }
+        // Deallocate this link before returning its charge through the actual
+        // opaque lease. A normally retiring link was never in the retained list.
+        let BatchMemoryLink { lease, next } = *link;
+        drop(next);
+        if let Err(payload) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            lease.retire();
+        })) {
+            self.owner.admission.owner_failed();
+            std::panic::resume_unwind(payload);
+        }
+    }
 }
 impl EncryptedTableBatch {
     pub const MAX_BYTES: usize = 4 << 20;
@@ -258,8 +182,14 @@ impl EncryptedTableBatch {
             bytes <= Self::MAX_BYTES && self.entries < Self::MAX_ENTRIES,
             "staging batch capacity exceeded"
         );
-        let mut table = self.transaction.open_table(TABLE)?;
-        ensure!(table.insert(key, value)?.is_none(), "duplicate staged key");
+        ensure!(
+            self.table
+                .as_mut()
+                .expect("live staging batch table")
+                .insert(key, value)?
+                .is_none(),
+            "duplicate staged key"
+        );
         self.bytes = bytes;
         self.entries += 1;
         self.failed = false;
@@ -267,57 +197,119 @@ impl EncryptedTableBatch {
     }
 
     pub fn commit(self) -> Result<()> {
-        ensure!(!self.failed, "staging batch previously failed");
-        self.transaction.commit()?;
-        Ok(())
+        let Self {
+            table,
+            transaction,
+            failed,
+            _memory: memory,
+            ..
+        } = self;
+        let owner = memory.owner.clone();
+        if failed {
+            return settle_batch_retirement(
+                Err(anyhow::anyhow!("staging batch previously failed")),
+                owner,
+                || {
+                    drop(table);
+                    drop(transaction);
+                    drop(memory);
+                },
+            );
+        }
+        // Release the actual alias before native publication can retire its
+        // old snapshot. The owner and this batch's charge outlive the commit.
+        drop(table);
+        let result = transaction.commit().map_err(anyhow::Error::from);
+        settle_batch_retirement(result, owner, || drop(memory))
     }
 }
-impl EncryptedTable {
-    pub fn new(disk: &Arc<ScratchDisk>, max_disk_bytes: u64) -> Result<Self> {
-        let owner = Arc::new(Owner(Mutex::new(Some(EncryptedSpool::new(
-            disk,
-            max_disk_bytes,
-        )?))));
-        Self::create(owner)
-    }
 
-    /// A scratch table is created only on its own fresh spool. Strict creation
-    /// rejects an existing extent instead of adopting its frames, and the
-    /// engine closes the rejected spool before reporting.
-    fn create(owner: Arc<Owner>) -> Result<Self> {
-        let database = kasumi_kv::Database::builder(owner.clone())
-            .create_strict_with_backend(Backend(owner))?;
-        Self::initialize(database)
-    }
-
-    fn initialize(database: kasumi_kv::Database) -> Result<Self> {
-        let table = Self {
-            owner: Arc::new(ScratchTableDatabase {
-                database: Some(crate::node_database::NodeDatabase::new(
-                    database,
-                    "encrypted scratch table",
-                )),
-            }),
-        };
-        let setup = (|| -> Result<()> {
-            let tx = table.owner.database().begin_write()?;
-            tx.open_table(TABLE)?;
-            tx.commit()?;
-            Ok(())
-        })();
-        if let Err(original) = setup {
-            let close = table.close();
-            let retained = close.as_ref().err().and_then(|failure| {
-                (failure.completion() == DrainCompletion::Retained).then(|| table.owner.clone())
-            });
-            return Err(ScratchTableSetupFailure {
-                original,
-                close,
-                retained,
+/// A new batch grant's retirement is an actual provider callback. Keep the
+/// original outcome outside the narrow catch; a panic proves no clean release.
+fn settle_batch_retirement<T>(
+    result: Result<T>,
+    owner: ScratchTableRef,
+    retire: impl FnOnce(),
+) -> Result<T> {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(retire)) {
+        Ok(()) => result,
+        Err(payload) => {
+            owner.admission.owner_failed();
+            Err(ScratchBatchRetirementFailure {
+                original: result.err(),
+                _payload: std::sync::Mutex::new(payload),
+                _owner: owner,
             }
-            .into());
+            .into())
         }
-        Ok(table)
+    }
+}
+
+/// This error owns the exact scratch owner and both observations. Dropping a
+/// diagnostic does not prove drain: the fenced native owner retains its files.
+struct ScratchBatchRetirementFailure {
+    original: Option<anyhow::Error>,
+    _payload: std::sync::Mutex<Box<dyn std::any::Any + Send>>,
+    _owner: ScratchTableRef,
+}
+impl std::fmt::Debug for ScratchBatchRetirementFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ScratchBatchRetirementFailure")
+            .field("original", &self.original)
+            .finish_non_exhaustive()
+    }
+}
+impl std::fmt::Display for ScratchBatchRetirementFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("scratch batch retirement panicked")
+    }
+}
+impl std::error::Error for ScratchBatchRetirementFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.original.as_ref().map(|error| error.as_ref() as _)
+    }
+}
+
+/// The complete retained batch shell and its fixed Arc<str> name. Shared
+/// native snapshot and staged-row backing keeps its own original admission.
+fn batch_workspace_bytes() -> std::io::Result<u64> {
+    crate::disk_memory::add(
+        crate::disk_memory::add(
+            crate::disk_memory::size::<EncryptedTableBatch>()?,
+            crate::disk_memory::allocation::<BatchMemoryLink>(1)?,
+        )?,
+        crate::disk_memory::add(
+            crate::disk_memory::allocation::<u8>(TABLE.name().len() as u64)?,
+            2 * crate::disk_memory::size::<usize>()?,
+        )?,
+    )
+}
+
+impl EncryptedTable {
+    pub fn new(
+        disk: &Arc<ScratchDisk>,
+        max_disk_bytes: u64,
+        cache: CacheConfig,
+    ) -> std::result::Result<Self, ScratchCreationFailure> {
+        creation::create(disk, max_disk_bytes, cache)
+    }
+
+    /// A scratch table owns a fresh encrypted group and an explicit incarnation.
+    /// Strict creation never adopts a pre-existing segmented image.
+    #[cfg(test)]
+    fn create(
+        owner: Arc<Owner>,
+        cache: CacheConfig,
+    ) -> std::result::Result<Self, ScratchCreationFailure> {
+        creation::create_owned(owner, cache)
+    }
+
+    #[cfg(test)]
+    fn initialize(
+        database: kasumi_kv::Database,
+        admission: Arc<Owner>,
+    ) -> std::result::Result<Self, ScratchCreationFailure> {
+        creation::initialize(database, admission)
     }
     /// Fence new transactions and retain the exact database while accepted
     /// readers or writers drain. Repeated calls preserve the original outcome.
@@ -325,12 +317,38 @@ impl EncryptedTable {
         self.owner.close()
     }
     pub fn begin_batch(&self) -> Result<EncryptedTableBatch> {
+        let transaction = self.owner.database().begin_write()?;
+        let lease = self
+            .owner
+            .admission
+            .reserve_workspace(batch_workspace_bytes()?)?;
+        let memory = BatchMemory {
+            link: Some(Box::new(BatchMemoryLink { lease, next: None })),
+            owner: self.owner.clone(),
+        };
+        self.open_batch(transaction, memory)
+    }
+    fn open_batch(
+        &self,
+        transaction: kasumi_kv::WriteTransaction,
+        memory: BatchMemory,
+    ) -> Result<EncryptedTableBatch> {
+        let table = match transaction.open_table(TABLE) {
+            Ok(table) => table,
+            Err(original) => {
+                return settle_batch_retirement(Err(original.into()), self.owner.clone(), || {
+                    drop(transaction);
+                    drop(memory);
+                });
+            }
+        };
         Ok(EncryptedTableBatch {
-            transaction: self.owner.database().begin_write()?,
-            _owner: self.owner.clone(),
+            table: Some(table),
+            transaction,
             bytes: 0,
             entries: 0,
             failed: false,
+            _memory: memory,
         })
     }
     pub fn insert(&self, key: &[u8], value: &[u8]) -> Result<()> {
@@ -346,10 +364,12 @@ impl EncryptedTable {
         tx.commit()?;
         Ok(())
     }
-    pub fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
+    pub fn get(&self, key: &[u8]) -> Result<Option<ScratchTableValue>> {
         let tx = self.owner.database().begin_read()?;
         let table = tx.open_table(TABLE)?;
-        Ok(table.get(key)?.map(|v| v.value().to_vec()))
+        Ok(table
+            .get(key)?
+            .map(|value| ScratchTableValue::new(value, self.owner.clone())))
     }
     /// Replace a scratch accumulator. Permanent identities use `insert`, which
     /// rejects duplicates; this operation is only for unpublished working tables.

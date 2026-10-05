@@ -172,7 +172,7 @@ async fn installed_mcp_mutation_release_keeps_original_deadline_and_receipt_impl
         "read_set": [],
         "operations": [{
             "op": "put", "collection": "docs", "id": "one",
-            "body": {"retained": true}, "expected": {"kind": "absent"}
+            "body": {"retained": true}, "expected": "absent"
         }]
     });
     let _: MutationBatch = serde_json::from_value(batch.clone()).unwrap();
@@ -266,7 +266,8 @@ async fn installed_mcp_mutation_release_keeps_original_deadline_and_receipt_impl
         serde_json::to_value(receipt.outcome.unwrap()).unwrap()
     );
     assert_eq!(
-        database.get(&service, "docs", "one").await.unwrap().body,
+        database.get(&service, "docs", "one").await.unwrap()
+            .expect("document exists").body,
         json!({"retained": true})
     );
 

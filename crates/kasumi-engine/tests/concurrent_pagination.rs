@@ -108,7 +108,7 @@ async fn snapshot_pages_overlap_atomic_writers_and_current_policy_revocation() {
         .unwrap();
     let revision = first.revision;
     let mut next = request();
-    next.cursor = first.cursor;
+    next.cursor = first.cursor.clone();
     let mut seen = BTreeSet::from([first.rows[0].id.clone()]);
     assert_eq!(first.rows[0].body["phase"], 0);
 
@@ -142,7 +142,7 @@ async fn snapshot_pages_overlap_atomic_writers_and_current_policy_revocation() {
                 seen.insert(page.rows[0].id.clone()),
                 "duplicate historical row"
             );
-            next.cursor = page.cursor;
+            next.cursor = page.cursor.clone();
             rendezvous.wait().await;
         }
         assert!(next.cursor.is_none());
@@ -160,6 +160,7 @@ async fn snapshot_pages_overlap_atomic_writers_and_current_policy_revocation() {
             .get(&identity("owner"), "docs", "00")
             .await
             .unwrap()
+            .expect("document exists")
             .body["phase"],
         31
     );
@@ -169,10 +170,10 @@ async fn snapshot_pages_overlap_atomic_writers_and_current_policy_revocation() {
         .await
         .unwrap();
     let mut reader_cursor = request();
-    reader_cursor.cursor = reader_page.cursor;
+    reader_cursor.cursor = reader_page.cursor.clone();
     let owner_page = database.query(&identity("owner"), request()).await.unwrap();
     let mut owner_cursor = request();
-    owner_cursor.cursor = owner_page.cursor;
+    owner_cursor.cursor = owner_page.cursor.clone();
     let rendezvous = Arc::new(tokio::sync::Barrier::new(2));
     let revoke_db = database.clone();
     let revoke_barrier = rendezvous.clone();
@@ -229,6 +230,108 @@ async fn snapshot_pages_overlap_atomic_writers_and_current_policy_revocation() {
         ErrorCode::CursorExpired
     );
     assert!(database.query(&identity("reader"), request()).await.is_ok());
+    database.shutdown().await.unwrap();
+    audit.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn large_documents_page_by_bytes_instead_of_failing_and_count_reads_nothing() {
+    let directory = kasumi_store::test_utils::private_tempdir().unwrap();
+    let physical =
+        common::PhysicalFixture::new(&directory.path().join("node.kv"), Default::default());
+    let node = physical
+        .storage
+        .create_new(
+            directory.path().join("node.kv"),
+            kasumi_store::test_utils::NODE_STORE_ID,
+        )
+        .unwrap();
+    let audit = common::security_audit(node.clone(), physical.storage.admission.clone()).await;
+    let store = TenantStore::initialize_catalog_fixture(
+        node,
+        "pages".into(),
+        Arc::new(LocalKeyProvider::new([63; 32])),
+    )
+    .await
+    .unwrap();
+    // Ten 20 KiB documents exceed one 64 KiB page several times over.
+    let limits = Limits {
+        max_result_bytes: 64 << 10,
+        ..Limits::default()
+    };
+    let database = open_fixture(
+        kasumi_store::test_utils::initialize_custody_fixture(
+            store,
+            Arc::new(LocalKeyProvider::new([242; 32])),
+        )
+        .await
+        .unwrap(),
+        policy(false),
+        limits,
+        audit.clone(),
+    )
+    .await
+    .unwrap();
+    database
+        .administer(
+            identity("owner"),
+            Operation::CreateCollection(CollectionDefinition {
+                retention_class: kasumi_types::CollectionRetentionClass::Operational,
+                write_mode: kasumi_types::CollectionWriteMode::Mutable,
+                name: "docs".into(),
+                schema: json!({"type":"object"}),
+                indexes: vec![],
+                strict_read_audit: false,
+            }),
+        )
+        .await
+        .unwrap();
+    let mut batch = MutationBatch::with_key("large");
+    for ordinal in 0..10 {
+        batch = batch.insert(
+            "docs",
+            format!("{ordinal:02}"),
+            json!({"ordinal": ordinal, "payload": "x".repeat(20 << 10)}),
+        );
+    }
+    database.mutate(identity("owner"), batch).await.unwrap();
+
+    let mut query = QueryRequest::new("docs").limit(100);
+    let mut seen = Vec::new();
+    let mut pages = 0;
+    loop {
+        let page = database
+            .query(&identity("owner"), query.clone())
+            .await
+            .unwrap();
+        assert!(!page.rows.is_empty() && page.rows.len() <= 3);
+        assert!(serde_json::to_vec(&*page).unwrap().len() <= 64 << 10);
+        seen.extend(page.rows.iter().map(|row| row.id.clone()));
+        pages += 1;
+        match page.cursor.clone() {
+            Some(cursor) => query.cursor = Some(cursor),
+            None => break,
+        }
+    }
+    assert!(pages >= 4);
+    assert_eq!(
+        seen,
+        (0..10)
+            .map(|ordinal| format!("{ordinal:02}"))
+            .collect::<Vec<_>>()
+    );
+    let count = database
+        .query(
+            &identity("owner"),
+            QueryRequest::new("docs").aggregate("n", Aggregation::count()),
+        )
+        .await
+        .unwrap();
+    assert!(count.rows.is_empty() && count.cursor.is_none());
+    assert_eq!(
+        count.aggregates,
+        [json!({"group": {}, "values": {"n": 10}})]
+    );
     database.shutdown().await.unwrap();
     audit.shutdown().await.unwrap();
 }

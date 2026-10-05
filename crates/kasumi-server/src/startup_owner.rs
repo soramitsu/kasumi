@@ -478,7 +478,10 @@ mod tests {
         let repeated = finish(&mut workers).await.unwrap_err();
         assert_eq!(repeated.completion(), DrainCompletion::Complete);
         assert_eq!(repeated.issues().len(), 1);
-        assert!(Arc::ptr_eq(&issue, &repeated.issues()[0]));
+        assert!(kasumi_types::drain::DrainIssueRef::ptr_eq(
+            &issue,
+            &repeated.issues()[0]
+        ));
         // Preparation and cleanup both failed: retain the typed original child
         // report as context, exactly as the startup callers do.
         let preparation = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
@@ -489,7 +492,10 @@ mod tests {
         );
         let propagated = combined.downcast_ref::<DrainFailure>().unwrap();
         assert_eq!(propagated.completion(), DrainCompletion::Complete);
-        assert!(Arc::ptr_eq(&issue, &propagated.issues()[0]));
+        assert!(kasumi_types::drain::DrainIssueRef::ptr_eq(
+            &issue,
+            &propagated.issues()[0]
+        ));
         drop(workers);
         // Error evidence remains the actual JoinError after resource owner drop.
         assert!(
@@ -555,7 +561,10 @@ mod tests {
         let failure = &error;
         assert_eq!(failure.completion(), DrainCompletion::Complete);
         assert_eq!(failure.issues().len(), 1);
-        assert!(Arc::ptr_eq(&original, &failure.issues()[0]));
+        assert!(kasumi_types::drain::DrainIssueRef::ptr_eq(
+            &original,
+            &failure.issues()[0]
+        ));
         Ok(())
     }
 

@@ -96,11 +96,18 @@ impl BindingPutRequest {
                 .check_access()
                 .map_err(BindingInstallBodyError::CustodyAccess)?;
             let transaction = state.transaction.as_ref().unwrap().transaction().unwrap();
-            transaction
+            let mut table = transaction
                 .open_table(crate::RECORDS)
-                .map_err(BindingInstallBodyError::Table)?
-                .insert(state.plan.key().as_slice(), state.plan.envelope())
                 .map_err(BindingInstallBodyError::Table)?;
+            {
+                #[cfg(test)]
+                let _staging =
+                    crate::test_utils::BindingStagingScope::enter(self.application.node.memory());
+                table
+                    .insert(state.plan.key().as_slice(), state.plan.envelope())
+                    .map_err(BindingInstallBodyError::Table)?;
+            }
+            drop(table);
             self.application
                 .check_access()
                 .map_err(BindingInstallBodyError::ApplicationAccess)?;
@@ -116,7 +123,14 @@ impl BindingPutRequest {
         state.phase = NodeWriterPhase::Terminal;
         #[cfg(test)]
         if state.fail_owner_before_terminal {
-            owner.state.lock().file.disk().fail();
+            owner
+                .state
+                .lock()
+                .file
+                .physical()
+                .expect("physical test fixture")
+                .disk()
+                .fail();
         }
         let transaction = state.transaction.as_mut().unwrap();
         if state.body.success() {
@@ -322,8 +336,8 @@ impl RegisteredNodeOpening {
         application: Arc<crate::TenantStore>,
         custody: Arc<crate::TenantStore>,
     ) -> io::Result<RegisteredBindingPut> {
-        if !Arc::ptr_eq(&application.node, &custody.node)
-            || application.node.db.registered_opening_id() != Some(self.id())
+        if !crate::NodeStore::ptr_eq(&application.node, &custody.node)
+            || application.node.body().db.registered_opening_id() != Some(self.id())
         {
             return Err(io::ErrorKind::InvalidInput.into());
         }
@@ -339,7 +353,7 @@ impl RegisteredNodeOpening {
         {
             return Err(io::ErrorKind::InvalidInput.into());
         }
-        let provider = opening.file.disk().memory().clone();
+        let provider = owner.provider.clone();
         if !Arc::ptr_eq(&provider, plan.provider()) {
             return Err(io::ErrorKind::InvalidInput.into());
         }

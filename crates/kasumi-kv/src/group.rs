@@ -9,16 +9,17 @@
 //! so an owner that adopts a present name it did not create in this process
 //! synchronizes the names first.
 
-use std::ffi::OsString;
+use std::ffi::OsStr;
 use std::io;
 
 use crate::core::BackendCloseOutcome;
 use crate::root::{ROOT_SLOT_BYTES, RootSlot};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) enum FileKind {
+pub enum FileKind {
     Segment,
     Checkpoint,
+    Directory,
 }
 
 impl FileKind {
@@ -26,6 +27,7 @@ impl FileKind {
         match self {
             Self::Segment => ".kvseg",
             Self::Checkpoint => ".kvckpt",
+            Self::Directory => ".kvdir",
         }
     }
 
@@ -33,6 +35,7 @@ impl FileKind {
         match self {
             Self::Segment => 1,
             Self::Checkpoint => 2,
+            Self::Directory => 3,
         }
     }
 
@@ -40,6 +43,7 @@ impl FileKind {
         match tag {
             1 => Some(Self::Segment),
             2 => Some(Self::Checkpoint),
+            3 => Some(Self::Directory),
             _ => None,
         }
     }
@@ -47,40 +51,49 @@ impl FileKind {
 
 /// One owned file of a group. Identifier zero is never allocated.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) struct GroupFile {
-    pub(crate) kind: FileKind,
-    pub(crate) id: u64,
+pub struct GroupFile {
+    pub kind: FileKind,
+    pub id: u64,
 }
 
 impl GroupFile {
-    pub(crate) const fn segment(id: u64) -> Self {
+    pub const fn segment(id: u64) -> Self {
         Self {
             kind: FileKind::Segment,
             id,
         }
     }
 
-    pub(crate) const fn checkpoint(id: u64) -> Self {
+    pub const fn checkpoint(id: u64) -> Self {
         Self {
             kind: FileKind::Checkpoint,
             id,
         }
     }
 
+    pub const fn directory(id: u64) -> Self {
+        Self {
+            kind: FileKind::Directory,
+            id,
+        }
+    }
+
     /// The deterministic directory entry. Identifiers use sixteen lowercase
     /// hexadecimal digits so a name has exactly one spelling.
-    pub(crate) fn file_name(self) -> String {
+    pub fn file_name(self) -> String {
         format!("{:016x}{}", self.id, self.kind.suffix())
     }
 
     /// Parse a census entry. Any other spelling is not a group file.
-    pub(crate) fn parse_name(name: &str) -> Option<Self> {
+    pub fn parse_name(name: &str) -> Option<Self> {
         let (digits, kind) = if let Some(digits) = name.strip_suffix(FileKind::Segment.suffix()) {
             (digits, FileKind::Segment)
+        } else if let Some(digits) = name.strip_suffix(FileKind::Checkpoint.suffix()) {
+            (digits, FileKind::Checkpoint)
         } else {
             (
-                name.strip_suffix(FileKind::Checkpoint.suffix())?,
-                FileKind::Checkpoint,
+                name.strip_suffix(FileKind::Directory.suffix())?,
+                FileKind::Directory,
             )
         };
         if digits.len() != 16
@@ -96,7 +109,133 @@ impl GroupFile {
 }
 
 /// The name of the root file holding both superblock slots.
-pub(crate) const ROOT_FILE_NAME: &str = "root.kvroot";
+pub const ROOT_FILE_NAME: &str = "root.kvroot";
+
+/// Scalar maximum extent for one existing native file. Byte lengths exclude
+/// any enclosing store envelope; the backend adds its actual filesystem costs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ExistingFileSpace {
+    pub file: GroupFile,
+    pub initial_len: u64,
+    pub maximum_len: u64,
+}
+
+/// Consecutive fresh file identifiers. Each non-final file is bounded by
+/// `full_len`, the final file by `last_len`, and their summed native EOFs by
+/// `total_len`. A zero count requires every field to be zero. The scalar sum
+/// avoids charging every short intermediate segment as a full segment.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FileSpaceRange {
+    pub first_id: u64,
+    pub count: u64,
+    pub minimum_len: u64,
+    pub full_len: u64,
+    pub last_len: u64,
+    pub total_len: u64,
+}
+impl FileSpaceRange {
+    pub fn validate(&self) -> io::Result<()> {
+        if self.count == 0 {
+            return if *self == Self::default() {
+                Ok(())
+            } else {
+                Err(io::ErrorKind::InvalidInput.into())
+            };
+        }
+        let minimum = self.count.checked_mul(self.minimum_len);
+        let maximum = self
+            .count
+            .checked_sub(1)
+            .and_then(|n| n.checked_mul(self.full_len))
+            .and_then(|n| n.checked_add(self.last_len));
+        if self.first_id == 0
+            || self.minimum_len == 0
+            || self.minimum_len > self.last_len
+            || minimum.is_none_or(|minimum| self.total_len < minimum)
+            || self.last_len == 0
+            || self.full_len == 0
+            || self.last_len > self.full_len
+            || self.full_len > i64::MAX as u64
+            || self.total_len < self.last_len
+            || maximum.is_none_or(|maximum| self.total_len > maximum)
+            || self.first_id.checked_add(self.count - 1).is_none()
+        {
+            return Err(io::ErrorKind::InvalidInput.into());
+        }
+        Ok(())
+    }
+    pub fn maximum_len(&self, id: u64) -> Option<u64> {
+        let offset = id.checked_sub(self.first_id)?;
+        if offset >= self.count {
+            return None;
+        }
+        Some(if offset + 1 == self.count {
+            self.last_len
+        } else {
+            self.full_len
+        })
+    }
+}
+
+/// Complete pre-effect promise for one exact selected native incarnation.
+/// Root generation and batch sequence are checked against the actual selected
+/// root; the backend owns this plan until explicit completion or cancellation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TransactionSpacePlan {
+    pub group_id: [u8; 16],
+    pub root_generation: u64,
+    pub batch_seq: u64,
+    pub segment: Option<ExistingFileSpace>,
+    pub directory: Option<ExistingFileSpace>,
+    pub new_segments: FileSpaceRange,
+    pub new_directories: FileSpaceRange,
+}
+impl TransactionSpacePlan {
+    pub fn validate(&self) -> io::Result<()> {
+        if self.root_generation == 0 || self.batch_seq == 0 {
+            return Err(io::ErrorKind::InvalidInput.into());
+        }
+        for (existing, kind) in [
+            (self.segment, FileKind::Segment),
+            (self.directory, FileKind::Directory),
+        ] {
+            if let Some(existing) = existing
+                && (existing.file.kind != kind
+                    || existing.file.id == 0
+                    || existing.initial_len > existing.maximum_len
+                    || existing.maximum_len > i64::MAX as u64)
+            {
+                return Err(io::ErrorKind::InvalidInput.into());
+            }
+        }
+        self.new_segments.validate()?;
+        self.new_directories.validate()
+    }
+}
+
+/// Only a backend's complete pre-effect reservation may mint `CapacityDenied`.
+/// All other original errors stay owned, including failed physical observation.
+#[derive(Debug)]
+pub enum TransactionReserveError {
+    CapacityDenied,
+    Failed(io::Error),
+}
+impl std::fmt::Display for TransactionReserveError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::CapacityDenied => f.write_str("transaction space capacity denied before effects"),
+            Self::Failed(error) => std::fmt::Display::fmt(error, f),
+        }
+    }
+}
+impl std::error::Error for TransactionReserveError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Failed(error) => Some(error),
+            Self::CapacityDenied => None,
+        }
+    }
+}
 
 /// Exact multi-file backing for one segmented log.
 ///
@@ -112,16 +251,33 @@ pub(crate) const ROOT_FILE_NAME: &str = "root.kvroot";
 /// listing shows, and no name it no longer shows, survives power loss.
 /// The root file is established with the group and holds two fixed slots; an
 /// unwritten slot reads as zeros.
-pub(crate) trait SegmentGroupBackend: Send + Sync {
+pub trait SegmentGroupBackend: Send + Sync {
+    /// Install the complete promise before the first transaction effect.
+    /// Implementations must reserve bytes, namespace and peak descriptor rights;
+    /// installed disk backends cannot implement this as a free-space check.
+    fn reserve_transaction(
+        &self,
+        plan: &TransactionSpacePlan,
+    ) -> Result<(), TransactionReserveError>;
+    /// Positively settle all consumed file rights before refunding unused ones.
+    fn finish_transaction(&self, group_id: [u8; 16], batch_seq: u64) -> io::Result<()>;
+    /// Cancel only an untouched reservation. An entered effect is retained.
+    fn cancel_transaction(&self, group_id: [u8; 16], batch_seq: u64) -> io::Result<()>;
     fn read_root(&self, slot: RootSlot, out: &mut [u8; ROOT_SLOT_BYTES]) -> io::Result<()>;
     fn write_root(&self, slot: RootSlot, bytes: &[u8; ROOT_SLOT_BYTES]) -> io::Result<()>;
     fn sync_root(&self) -> io::Result<()>;
-    /// Every entry of the group directory, unfiltered and in any order,
-    /// including `ROOT_FILE_NAME`. The census fails closed on any other name
-    /// that `GroupFile::parse_name` rejects, such as a temporary file, another
-    /// spelling of an identifier, or a subdirectory, so an implementation
-    /// must not hide entries it does not recognize.
-    fn entries(&self) -> io::Result<Vec<OsString>>;
+    /// Visit every entry of the group directory in any order, including
+    /// `ROOT_FILE_NAME`, without retaining a collection of names. Each name
+    /// is borrowed only for its callback. Implementations must not hide names
+    /// they do not recognize: the census fails closed on non-group entries.
+    /// A non-file entry, including a directory named like a group file, makes
+    /// the pass fail. Successful callbacks alone never prove a complete pass.
+    ///
+    /// A callback error stops the pass. Any error invalidates the whole pass;
+    /// callers discard partial output before retrying. Implementations never
+    /// restart a pass after delivering a callback. The callback must not
+    /// reenter this backend, which may hold its namespace lock for the pass.
+    fn visit_entries(&self, visitor: &mut dyn FnMut(&OsStr) -> io::Result<()>) -> io::Result<()>;
     fn exists(&self, file: GroupFile) -> io::Result<bool>;
     fn create(&self, file: GroupFile) -> io::Result<()>;
     fn len(&self, file: GroupFile) -> io::Result<u64>;
@@ -138,14 +294,81 @@ pub(crate) trait SegmentGroupBackend: Send + Sync {
     fn close(&self) -> BackendCloseOutcome;
 }
 
-#[cfg(test)]
-pub(crate) use memory::{FaultTiming, GroupOp, InMemoryGroup};
+// Preserve one shared owner across the native core, cache and installed-store
+// lifecycle registry without a second filesystem adapter.
+macro_rules! forward_group_backend {
+    ($owner:ty) => {
+        impl<T: SegmentGroupBackend + ?Sized> SegmentGroupBackend for $owner {
+            fn reserve_transaction(
+                &self,
+                plan: &TransactionSpacePlan,
+            ) -> Result<(), TransactionReserveError> {
+                (**self).reserve_transaction(plan)
+            }
+            fn finish_transaction(&self, group_id: [u8; 16], batch_seq: u64) -> io::Result<()> {
+                (**self).finish_transaction(group_id, batch_seq)
+            }
+            fn cancel_transaction(&self, group_id: [u8; 16], batch_seq: u64) -> io::Result<()> {
+                (**self).cancel_transaction(group_id, batch_seq)
+            }
+            fn read_root(&self, slot: RootSlot, out: &mut [u8; ROOT_SLOT_BYTES]) -> io::Result<()> {
+                (**self).read_root(slot, out)
+            }
+            fn write_root(&self, slot: RootSlot, bytes: &[u8; ROOT_SLOT_BYTES]) -> io::Result<()> {
+                (**self).write_root(slot, bytes)
+            }
+            fn sync_root(&self) -> io::Result<()> {
+                (**self).sync_root()
+            }
+            fn visit_entries(
+                &self,
+                visitor: &mut dyn FnMut(&OsStr) -> io::Result<()>,
+            ) -> io::Result<()> {
+                (**self).visit_entries(visitor)
+            }
+            fn exists(&self, file: GroupFile) -> io::Result<bool> {
+                (**self).exists(file)
+            }
+            fn create(&self, file: GroupFile) -> io::Result<()> {
+                (**self).create(file)
+            }
+            fn len(&self, file: GroupFile) -> io::Result<u64> {
+                (**self).len(file)
+            }
+            fn read(&self, file: GroupFile, at: u64, out: &mut [u8]) -> io::Result<()> {
+                (**self).read(file, at, out)
+            }
+            fn write(&self, file: GroupFile, at: u64, bytes: &[u8]) -> io::Result<()> {
+                (**self).write(file, at, bytes)
+            }
+            fn set_len(&self, file: GroupFile, length: u64) -> io::Result<()> {
+                (**self).set_len(file, length)
+            }
+            fn sync(&self, file: GroupFile) -> io::Result<()> {
+                (**self).sync(file)
+            }
+            fn unlink(&self, file: GroupFile) -> io::Result<()> {
+                (**self).unlink(file)
+            }
+            fn sync_names(&self) -> io::Result<()> {
+                (**self).sync_names()
+            }
+            fn close(&self) -> BackendCloseOutcome {
+                (**self).close()
+            }
+        }
+    };
+}
+
+forward_group_backend!(Box<T>);
+forward_group_backend!(std::sync::Arc<T>);
+
+pub use memory::{FaultTiming, GroupOp, InMemoryGroup};
 
 /// Volatile group with explicit durable images for crash and fault tests.
-#[cfg(test)]
 mod memory {
     use std::collections::{BTreeMap, BTreeSet};
-    use std::ffi::OsString;
+    use std::ffi::{OsStr, OsString};
     use std::io;
     use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
 
@@ -154,7 +377,7 @@ mod memory {
     use crate::root::{ROOT_SLOT_BYTES, RootSlot};
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    pub(crate) enum GroupOp {
+    pub enum GroupOp {
         Create,
         Write,
         SetLen,
@@ -168,7 +391,7 @@ mod memory {
     /// `AfterEffect` applies the volatile effect (or persists it for a sync)
     /// and still reports failure, which is the unknown-outcome case.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    pub(crate) enum FaultTiming {
+    pub enum FaultTiming {
         BeforeEffect,
         AfterEffect,
     }
@@ -208,6 +431,7 @@ mod memory {
         close_not_entered: bool,
         close_error: Option<io::ErrorKind>,
         close_attempts: usize,
+        transaction: Option<(super::TransactionSpacePlan, bool)>,
     }
 
     impl GroupState {
@@ -223,10 +447,14 @@ mod memory {
                 close_not_entered: false,
                 close_error: None,
                 close_attempts: 0,
+                transaction: None,
             }
         }
 
         fn fault(&mut self, op: GroupOp) -> Option<FaultTiming> {
+            if let Some((_, entered)) = self.transaction.as_mut() {
+                *entered = true;
+            }
             let position = self.faults.iter().position(|fault| fault.op == op)?;
             let fault = &mut self.faults[position];
             fault.remaining -= 1;
@@ -254,10 +482,16 @@ mod memory {
     }
 
     #[derive(Clone)]
-    pub(crate) struct InMemoryGroup(Arc<Mutex<GroupState>>);
+    pub struct InMemoryGroup(Arc<Mutex<GroupState>>);
+
+    impl Default for InMemoryGroup {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
 
     impl InMemoryGroup {
-        pub(crate) fn new() -> Self {
+        pub fn new() -> Self {
             Self(Arc::new(Mutex::new(GroupState::new())))
         }
 
@@ -276,7 +510,7 @@ mod memory {
         }
 
         /// Fail the `nth` next call of `op`, counting from one.
-        pub(crate) fn fail(&self, op: GroupOp, nth: usize, timing: FaultTiming) {
+        pub fn fail(&self, op: GroupOp, nth: usize, timing: FaultTiming) {
             assert!(nth > 0);
             self.state().faults.push(Fault {
                 op,
@@ -287,13 +521,13 @@ mod memory {
 
         /// Restart from the durable images. Unsynchronized bytes, unsynced
         /// creations, and unsynced unlinks are lost.
-        pub(crate) fn crash(&self) -> Self {
+        pub fn crash(&self) -> Self {
             self.crash_with(|_| {})
         }
 
         /// Restart as if `keep` bytes of `file`'s unsynchronized append had
         /// reached the medium before the crash.
-        pub(crate) fn crash_torn(&self, file: GroupFile, keep: usize) -> Self {
+        pub fn crash_torn(&self, file: GroupFile, keep: usize) -> Self {
             self.crash_with(|state| {
                 let entry = state.files.get_mut(&file).expect("torn file exists");
                 let start = entry.durable.len();
@@ -307,7 +541,7 @@ mod memory {
 
         /// Restart as if the first `keep` bytes of an unsynchronized root slot
         /// write had reached the medium.
-        pub(crate) fn crash_torn_root(&self, slot: RootSlot, keep: usize) -> Self {
+        pub fn crash_torn_root(&self, slot: RootSlot, keep: usize) -> Self {
             self.crash_with(|state| {
                 let range = slot_range(slot);
                 let end = range.start + keep.min(ROOT_SLOT_BYTES);
@@ -345,7 +579,7 @@ mod memory {
         }
 
         /// Edit the durable image of a present file, as media damage would.
-        pub(crate) fn with_durable(&self, file: GroupFile, edit: impl FnOnce(&mut Vec<u8>)) {
+        pub fn with_durable(&self, file: GroupFile, edit: impl FnOnce(&mut Vec<u8>)) {
             let mut state = self.state();
             let entry = state.files.get_mut(&file).expect("damaged file exists");
             edit(&mut entry.durable);
@@ -355,7 +589,7 @@ mod memory {
         }
 
         /// Edit the durable image of one root slot.
-        pub(crate) fn with_durable_root(&self, slot: RootSlot, edit: impl FnOnce(&mut [u8])) {
+        pub fn with_durable_root(&self, slot: RootSlot, edit: impl FnOnce(&mut [u8])) {
             let mut state = self.state();
             let range = slot_range(slot);
             edit(&mut state.root_durable[range.clone()]);
@@ -365,7 +599,7 @@ mod memory {
 
         /// Insert a durable file outside the group protocol, as a foreign
         /// writer or restored image would.
-        pub(crate) fn insert_foreign(&self, file: GroupFile, bytes: Vec<u8>) {
+        pub fn insert_foreign(&self, file: GroupFile, bytes: Vec<u8>) {
             let mut state = self.state();
             state.durable_names.insert(file);
             state.files.insert(
@@ -380,16 +614,16 @@ mod memory {
         }
 
         /// Remove a durable file outside the group protocol.
-        pub(crate) fn remove_foreign(&self, file: GroupFile) {
+        pub fn remove_foreign(&self, file: GroupFile) {
             self.state().files.remove(&file);
         }
 
         /// Place a durable directory entry that is not a group file.
-        pub(crate) fn insert_stray(&self, name: &str) {
+        pub fn insert_stray(&self, name: &str) {
             self.state().strays.insert(name.into());
         }
 
-        pub(crate) fn durable_image(&self, file: GroupFile) -> Option<Vec<u8>> {
+        pub fn durable_image(&self, file: GroupFile) -> Option<Vec<u8>> {
             self.state()
                 .files
                 .get(&file)
@@ -397,14 +631,14 @@ mod memory {
                 .map(|entry| entry.durable.clone())
         }
 
-        pub(crate) fn durable_exists(&self, file: GroupFile) -> bool {
+        pub fn durable_exists(&self, file: GroupFile) -> bool {
             self.state()
                 .files
                 .get(&file)
                 .is_some_and(|entry| entry.name_durable)
         }
 
-        pub(crate) fn durable_len(&self, file: GroupFile) -> Option<usize> {
+        pub fn durable_len(&self, file: GroupFile) -> Option<usize> {
             self.state()
                 .files
                 .get(&file)
@@ -412,20 +646,80 @@ mod memory {
                 .map(|entry| entry.durable.len())
         }
 
-        pub(crate) fn fail_close(&self, kind: io::ErrorKind) {
+        pub fn fail_close(&self, kind: io::ErrorKind) {
             self.state().close_error = Some(kind);
         }
 
-        pub(crate) fn close_not_entered_once(&self) {
+        /// Test-only collection convenience. The production boundary streams.
+        pub fn entries(&self) -> io::Result<Vec<OsString>> {
+            let mut names = Vec::new();
+            self.visit_entries(&mut |name| {
+                names.push(name.to_owned());
+                Ok(())
+            })?;
+            Ok(names)
+        }
+
+        pub fn close_not_entered_once(&self) {
             self.state().close_not_entered = true;
         }
 
-        pub(crate) fn close_attempts(&self) -> usize {
+        pub fn close_attempts(&self) -> usize {
             self.state().close_attempts
         }
     }
 
     impl SegmentGroupBackend for InMemoryGroup {
+        /// This synthetic image backend has no persistent quota. It retains the
+        /// explicit attempt and enforces cancellation/identity, but does not
+        /// attest installed filesystem capacity or allocator admission.
+        fn reserve_transaction(
+            &self,
+            plan: &super::TransactionSpacePlan,
+        ) -> Result<(), super::TransactionReserveError> {
+            plan.validate()
+                .map_err(super::TransactionReserveError::Failed)?;
+            let mut state = self
+                .open_state()
+                .map_err(super::TransactionReserveError::Failed)?;
+            if state.transaction.is_some() {
+                return Err(super::TransactionReserveError::Failed(
+                    io::ErrorKind::WouldBlock.into(),
+                ));
+            }
+            let a: &[u8; ROOT_SLOT_BYTES] = state.root_volatile[..ROOT_SLOT_BYTES]
+                .try_into()
+                .expect("root image");
+            let b: &[u8; ROOT_SLOT_BYTES] = state.root_volatile[ROOT_SLOT_BYTES..]
+                .try_into()
+                .expect("root image");
+            crate::root::validate_transaction_space_roots(plan, a, b)
+                .map_err(|error| super::TransactionReserveError::Failed(io::Error::other(error)))?;
+            state.transaction = Some((*plan, false));
+            Ok(())
+        }
+        fn finish_transaction(&self, group_id: [u8; 16], batch_seq: u64) -> io::Result<()> {
+            let mut state = self.open_state()?;
+            if !state
+                .transaction
+                .as_ref()
+                .is_some_and(|(plan, _)| plan.group_id == group_id && plan.batch_seq == batch_seq)
+            {
+                return Err(io::ErrorKind::InvalidInput.into());
+            }
+            state.transaction = None;
+            Ok(())
+        }
+        fn cancel_transaction(&self, group_id: [u8; 16], batch_seq: u64) -> io::Result<()> {
+            let mut state = self.open_state()?;
+            if !state.transaction.as_ref().is_some_and(|(plan, entered)| {
+                !entered && plan.group_id == group_id && plan.batch_seq == batch_seq
+            }) {
+                return Err(io::ErrorKind::InvalidInput.into());
+            }
+            state.transaction = None;
+            Ok(())
+        }
         fn read_root(&self, slot: RootSlot, out: &mut [u8; ROOT_SLOT_BYTES]) -> io::Result<()> {
             let state = self.open_state()?;
             out.copy_from_slice(&state.root_volatile[slot_range(slot)]);
@@ -458,17 +752,21 @@ mod memory {
             }
         }
 
-        fn entries(&self) -> io::Result<Vec<OsString>> {
+        fn visit_entries(
+            &self,
+            visitor: &mut dyn FnMut(&OsStr) -> io::Result<()>,
+        ) -> io::Result<()> {
             let state = self.open_state()?;
-            let files = state
-                .files
-                .iter()
-                .filter(|(_, entry)| entry.linked)
-                .map(|(file, _)| file.file_name().into());
-            Ok(std::iter::once(ROOT_FILE_NAME.into())
-                .chain(files)
-                .chain(state.strays.iter().cloned())
-                .collect())
+            visitor(OsStr::new(ROOT_FILE_NAME))?;
+            for (file, entry) in &state.files {
+                if entry.linked {
+                    visitor(OsStr::new(&file.file_name()))?;
+                }
+            }
+            for name in &state.strays {
+                visitor(name)?;
+            }
+            Ok(())
         }
 
         fn exists(&self, file: GroupFile) -> io::Result<bool> {
@@ -650,6 +948,32 @@ mod memory {
 mod tests {
     use super::*;
     use crate::core::{BackendCloseEntry, BackendNativeDisposition};
+    use std::ffi::OsString;
+
+    #[test]
+    fn shared_backends_stream_entries_and_do_not_replay_a_stopped_visit() {
+        let group = std::sync::Arc::new(InMemoryGroup::new());
+        group.create(GroupFile::segment(1)).unwrap();
+        group.create(GroupFile::directory(1)).unwrap();
+        let backend: Box<std::sync::Arc<dyn SegmentGroupBackend>> = Box::new(group);
+        let mut visited = 0;
+        let error = backend
+            .visit_entries(&mut |_| {
+                visited += 1;
+                Err(io::ErrorKind::Interrupted.into())
+            })
+            .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+        assert_eq!(visited, 1);
+        backend
+            .visit_entries(&mut |_| {
+                visited += 1;
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(visited, 4);
+        backend.close().into_result().unwrap();
+    }
 
     #[test]
     fn names_are_deterministic_and_have_one_spelling() {

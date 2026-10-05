@@ -3,7 +3,7 @@
 use crate::{
     api::{
         DatabaseRegistry, MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES, decode_json, encode_json,
-        mutation_release, release_response, status,
+        mutation_release, release_response, response_owner, status,
     },
     auth::Authenticator,
 };
@@ -31,6 +31,9 @@ mod control_signer;
 #[path = "rpc_security_audit.rs"]
 mod security_audit;
 #[cfg(test)]
+#[path = "rpc_snapshot_failure_tests.rs"]
+mod snapshot_failure_tests;
+#[cfg(test)]
 pub(crate) use security_audit::AuditReleaseGate;
 #[path = "rpc_credentials.rs"]
 mod credentials;
@@ -52,7 +55,7 @@ mod recovery_tests;
 mod control_signer_tests;
 
 #[derive(Clone)]
-pub struct NativeData {
+pub(crate) struct NativeData {
     registry: DatabaseRegistry,
     auth: Arc<Authenticator>,
 }
@@ -60,6 +63,7 @@ pub struct NativeData {
 pub struct NativeAdmin {
     registry: DatabaseRegistry,
     auth: Arc<Authenticator>,
+    failures: crate::administration::OriginalRecoveries,
     management: Option<Arc<crate::administration::Administration>>,
     telemetry: Arc<crate::observability::Telemetry>,
     control_signer: Option<Arc<crate::control_signer_runtime::ControlSignerRuntime>>,
@@ -124,22 +128,60 @@ fn native_write_receipt_encodes_canonical_map_order_as_visible_rows() {
         vec!["/rows/a", "/rows/z"]
     );
 }
-fn document(value: kasumi_types::Document) -> Result<Document, Status> {
-    Ok(Document {
-        id: value.id,
-        version: value.version,
-        body_json: encode_json(&value.body).map_err(status)?,
-    })
+/// Build the native data HTTP service with its mandatory response owner.
+/// Register the returned service with tonic's router on the data TLS listener.
+/// The raw protobuf handler stays inside this crate, so embedders cannot omit
+/// the body/frame ownership wrapper or extract its direct protobuf responses.
+///
+/// ```compile_fail
+/// use kasumi_server::rpc::NativeData;
+/// ```
+///
+/// The returned HTTP service cannot be used as an unwrapped protobuf handler:
+///
+/// ```compile_fail
+/// use kasumi_server::{
+///     api::DatabaseRegistry,
+///     auth::Authenticator,
+///     rpc::{native_data_service, proto::kasumi_data_server::KasumiDataServer},
+/// };
+/// use std::sync::Arc;
+///
+/// fn bypass(registry: DatabaseRegistry, auth: Arc<Authenticator>) {
+///     let service = native_data_service(registry, auth);
+///     let unwrapped = KasumiDataServer::new(service);
+///     let _router = tonic::service::Routes::new(unwrapped);
+/// }
+/// ```
+pub fn native_data_service(
+    registry: DatabaseRegistry,
+    auth: Arc<Authenticator>,
+) -> impl tonic::server::NamedService
++ Clone
++ Send
++ Sync
++ 'static
++ tower::Service<
+    axum::http::Request<tonic::body::Body>,
+    Response = axum::http::Response<tonic::body::Body>,
+    Error = std::convert::Infallible,
+    Future: Send + 'static,
+> {
+    NativeData::new(registry, auth).service()
 }
 
 impl NativeData {
-    pub fn new(registry: DatabaseRegistry, auth: Arc<Authenticator>) -> Self {
+    pub(crate) fn new(registry: DatabaseRegistry, auth: Arc<Authenticator>) -> Self {
         Self { registry, auth }
     }
-    pub fn service(self) -> kasumi_data_server::KasumiDataServer<Self> {
-        kasumi_data_server::KasumiDataServer::new(self)
-            .max_decoding_message_size(MAX_REQUEST_BYTES)
-            .max_encoding_message_size(MAX_RESPONSE_BYTES)
+    pub(crate) fn service(
+        self,
+    ) -> response_owner::AdmittedService<kasumi_data_server::KasumiDataServer<Self>> {
+        response_owner::AdmittedService::new(
+            kasumi_data_server::KasumiDataServer::new(self)
+                .max_decoding_message_size(MAX_REQUEST_BYTES)
+                .max_encoding_message_size(MAX_RESPONSE_BYTES),
+        )
     }
 }
 
@@ -154,23 +196,24 @@ impl kasumi_data_server::KasumiData for NativeData {
         let database = routed(&self.registry, &self.auth, &context).await?;
         let fence = self
             .auth
-            .audit_result(&context, database.response_fence(&context))
+            .audit_result(&context, database.owned_response_fence(&context))
             .await
             .map_err(status)?;
         let result = database
             .read_change_feed(&context, request)
             .await
             .map_err(|error| self.registry.status(&context, error))?;
-        let response = ReadChangeFeedResponse {
-            response_json: encode_json(&result).map_err(status)?,
-        };
-        Ok(Response::new(
-            release_response(&self.auth, &context, fence, response, false)
-                .await
-                .map_err(status)?,
-        ))
+        response_owner::PendingReply::new(result, fence)
+            .convert(|result, fence| {
+                Ok(ReadChangeFeedResponse {
+                    response_json: response_owner::encode_json(result, fence)?,
+                })
+            })
+            .map_err(status)?
+            .release(&self.auth, &context)
+            .await
     }
-    async fn get(&self, request: Request<GetRequest>) -> Result<Response<Document>, Status> {
+    async fn get(&self, request: Request<GetRequest>) -> Result<Response<GetResponse>, Status> {
         let context = verified(&self.auth, &request).await?;
         let request = request.into_inner();
         validate_name(&request.collection).map_err(status)?;
@@ -178,18 +221,38 @@ impl kasumi_data_server::KasumiData for NativeData {
         let database = routed(&self.registry, &self.auth, &context).await?;
         let fence = self
             .auth
-            .audit_result(&context, database.response_fence(&context))
+            .audit_result(&context, database.owned_response_fence(&context))
             .await
             .map_err(status)?;
         let result = database
             .get(&context, &request.collection, &request.id)
             .await;
-        let result = result.map_err(|error| self.registry.status(&context, error))?;
-        let response = document(result)?;
-        let response = release_response(&self.auth, &context, fence, response, false)
+        let Some(result) = result.map_err(|error| self.registry.status(&context, error))? else {
+            return Ok(Response::new(
+                release_response(
+                    &self.auth,
+                    &context,
+                    fence,
+                    GetResponse { document: None },
+                    false,
+                )
+                .await
+                .map_err(status)?,
+            ));
+        };
+        response_owner::PendingReply::new(result, fence)
+            .convert(|result, fence| {
+                Ok(GetResponse {
+                    document: Some(Document {
+                        id: response_owner::clone_string(fence, &result.id)?,
+                        version: result.version,
+                        body_json: response_owner::encode_json(&result.body, fence)?,
+                    }),
+                })
+            })
+            .map_err(status)?
+            .release(&self.auth, &context)
             .await
-            .map_err(status)?;
-        Ok(Response::new(response))
     }
     async fn query(
         &self,
@@ -200,65 +263,46 @@ impl kasumi_data_server::KasumiData for NativeData {
         let database = routed(&self.registry, &self.auth, &context).await?;
         let fence = self
             .auth
-            .audit_result(&context, database.response_fence(&context))
-            .await
-            .map_err(status)?;
-        let result = database.query(&context, query).await;
-        let result = result.map_err(|error| self.registry.status(&context, error))?;
-        let rows = result
-            .rows
-            .into_iter()
-            .map(|row| {
-                Ok(QueryRow {
-                    document: Some(document(kasumi_types::Document {
-                        id: row.id,
-                        version: row.version,
-                        body: row.body,
-                    })?),
-                    score: row.score,
-                })
-            })
-            .collect::<Result<Vec<_>, Status>>()?;
-        let aggregates_json = result
-            .aggregates
-            .iter()
-            .map(|value| encode_json(value).map_err(status))
-            .collect::<Result<_, _>>()?;
-        let response = QueryResponse {
-            revision: result.revision,
-            rows,
-            aggregates_json,
-            cursor: result.cursor,
-        };
-        let response = release_response(&self.auth, &context, fence, response, false)
-            .await
-            .map_err(status)?;
-        Ok(Response::new(response))
-    }
-    async fn ordered_seek(
-        &self,
-        request: Request<OrderedSeekRequest>,
-    ) -> Result<Response<OrderedSeekResponse>, Status> {
-        let context = verified(&self.auth, &request).await?;
-        let input = decode_json(&request.into_inner().request_json).map_err(status)?;
-        let database = routed(&self.registry, &self.auth, &context).await?;
-        let fence = self
-            .auth
-            .audit_result(&context, database.response_fence(&context))
+            .audit_result(&context, database.owned_response_fence(&context))
             .await
             .map_err(status)?;
         let result = database
-            .ordered_seek(&context, input)
+            .query(&context, query)
             .await
             .map_err(|error| self.registry.status(&context, error))?;
-        let response = OrderedSeekResponse {
-            response_json: encode_json(&result).map_err(status)?,
-        };
-        Ok(Response::new(
-            release_response(&self.auth, &context, fence, response, false)
-                .await
-                .map_err(status)?,
-        ))
+        response_owner::PendingReply::new(result, fence)
+            .convert(|result, fence| {
+                response_owner::claim_vec::<QueryRow>(fence, result.rows.len())?;
+                let mut rows = Vec::with_capacity(result.rows.len());
+                for row in &result.rows {
+                    rows.push(QueryRow {
+                        document: Some(Document {
+                            id: response_owner::clone_string(fence, &row.id)?,
+                            version: row.version,
+                            body_json: response_owner::encode_json(&row.body, fence)?,
+                        }),
+                        score: row.score,
+                    });
+                }
+                response_owner::claim_vec::<Vec<u8>>(fence, result.aggregates.len())?;
+                let mut aggregates_json = Vec::with_capacity(result.aggregates.len());
+                for value in &result.aggregates {
+                    aggregates_json.push(response_owner::encode_json(value, fence)?);
+                }
+                Ok(QueryResponse {
+                    revision: result.revision,
+                    rows,
+                    aggregates_json,
+                    cursor: result
+                        .cursor
+                        .as_deref()
+                        .map(|cursor| response_owner::clone_string(fence, cursor))
+                        .transpose()?,
+                })
+            })
+            .map_err(status)?
+            .release(&self.auth, &context)
+            .await
     }
     async fn read_restore_lineage(
         &self,
@@ -303,20 +347,22 @@ impl kasumi_data_server::KasumiData for NativeData {
         let database = routed(&self.registry, &self.auth, &context).await?;
         let fence = self
             .auth
-            .audit_result(&context, database.response_fence(&context))
+            .audit_result(&context, database.owned_response_fence(&context))
             .await
             .map_err(status)?;
         let result = database
             .read_snapshot(&context, snapshot)
             .await
             .map_err(|error| self.registry.status(&context, error))?;
-        let response = ReadSnapshotResponse {
-            response_json: encode_json(&result).map_err(status)?,
-        };
-        let response = release_response(&self.auth, &context, fence, response, false)
+        response_owner::PendingReply::new(result, fence)
+            .convert(|result, fence| {
+                Ok(ReadSnapshotResponse {
+                    response_json: response_owner::encode_json(result, fence)?,
+                })
+            })
+            .map_err(status)?
+            .release(&self.auth, &context)
             .await
-            .map_err(status)?;
-        Ok(Response::new(response))
     }
 
     async fn mutate(
@@ -504,7 +550,7 @@ impl kasumi_data_server::KasumiData for NativeData {
         let database = routed(&self.registry, &self.auth, &context).await?;
         let mut fence = self
             .auth
-            .audit_result(&context, database.response_fence(&context))
+            .audit_result(&context, database.owned_response_fence(&context))
             .await
             .map_err(status)?;
         self.auth
@@ -515,13 +561,15 @@ impl kasumi_data_server::KasumiData for NativeData {
             .read_snapshot_page(&context, input)
             .await
             .map_err(|error| self.registry.status(&context, error))?;
-        let response = ReadSnapshotResponse {
-            response_json: encode_json(&result).map_err(status)?,
-        };
-        let response = release_response(&self.auth, &context, fence, response, false)
+        response_owner::PendingReply::new(result, fence)
+            .convert(|result, fence| {
+                Ok(ReadSnapshotResponse {
+                    response_json: response_owner::encode_json(result, fence)?,
+                })
+            })
+            .map_err(status)?
+            .release(&self.auth, &context)
             .await
-            .map_err(status)?;
-        Ok(Response::new(response))
     }
 
     async fn scan_snapshot_page(
@@ -534,7 +582,7 @@ impl kasumi_data_server::KasumiData for NativeData {
         let database = routed(&self.registry, &self.auth, &context).await?;
         let mut fence = self
             .auth
-            .audit_result(&context, database.response_fence(&context))
+            .audit_result(&context, database.owned_response_fence(&context))
             .await
             .map_err(status)?;
         self.auth
@@ -545,13 +593,15 @@ impl kasumi_data_server::KasumiData for NativeData {
             .scan_snapshot_page(&context, input)
             .await
             .map_err(|error| self.registry.status(&context, error))?;
-        let response = SnapshotScanPageResponse {
-            response_json: encode_json(&result).map_err(status)?,
-        };
-        let response = release_response(&self.auth, &context, fence, response, false)
+        response_owner::PendingReply::new(result, fence)
+            .convert(|result, fence| {
+                Ok(SnapshotScanPageResponse {
+                    response_json: response_owner::encode_json(result, fence)?,
+                })
+            })
+            .map_err(status)?
+            .release(&self.auth, &context)
             .await
-            .map_err(status)?;
-        Ok(Response::new(response))
     }
 
     async fn close_snapshot_lease(
@@ -661,10 +711,15 @@ impl NativeAdmin {
     pub(crate) fn audit_release_gate(&self) -> Arc<tokio::sync::Mutex<Option<AuditReleaseGate>>> {
         self.audit_release_gate.clone()
     }
-    pub fn new(registry: DatabaseRegistry, auth: Arc<Authenticator>) -> Self {
+    pub fn new(
+        registry: DatabaseRegistry,
+        auth: Arc<Authenticator>,
+        failures: crate::administration::OriginalRecoveries,
+    ) -> Self {
         Self {
             registry,
             auth,
+            failures,
             management: None,
             telemetry: crate::observability::Telemetry::new(),
             control_signer: None,
@@ -717,6 +772,69 @@ impl NativeAdmin {
         } else {
             routed(&self.registry, &self.auth, context).await?
         })
+    }
+
+    /// Claim the original paid RPC seat before polling constructor-reaching
+    /// work. A foreign status receives a native-free diagnostic only after the
+    /// whole returned failure is installed in that independently retained seat.
+    async fn snapshot_call<
+        T: crate::administration::original_serving_runtime::RpcSnapshotOutput,
+    >(
+        &self,
+        context: &RequestContext,
+        mutation: bool,
+        work: impl std::future::Future<Output = std::result::Result<T, kasumi_engine::SnapshotFailure>>,
+    ) -> Result<T, Status> {
+        let guard = self
+            .failures
+            .rpc_claim(&context.tenant)
+            .await
+            .map_err(|refusal| {
+                let (code, message) = match refusal {
+                    kasumi_store::ScratchAdmissionRefusal::Busy => (
+                        kasumi_types::ErrorCode::ResourceExhausted,
+                        "administrative operation custody exhausted",
+                    ),
+                    kasumi_store::ScratchAdmissionRefusal::Sealed => (
+                        kasumi_types::ErrorCode::Unavailable,
+                        "administrative operation custody closed",
+                    ),
+                };
+                self.registry
+                    .status(context, kasumi_types::Error::new(code, message))
+            })?;
+        match guard.run_snapshot(work).await {
+            Ok(value) => Ok(value),
+            Err(guard) => {
+                let marker = guard.with_report(|report| {
+                    use crate::administration::original_serving_runtime::CleanupEntry;
+                    let observation = report.observation();
+                    if observation.entry() == CleanupEntry::Returned
+                        && observation.future_disposal() == CleanupEntry::Returned
+                        && let Some(kasumi_engine::SnapshotFailure::Operation(original)) =
+                            report.original()
+                    {
+                        return original.clone();
+                    }
+                    // A returned error, successful output, poll panic and
+                    // future-disposal panic stay independently in the seat.
+                    kasumi_types::Error::new(
+                        if mutation {
+                            kasumi_types::ErrorCode::UnknownOutcome
+                        } else {
+                            kasumi_types::ErrorCode::Unavailable
+                        },
+                        "administrative failure remains in its original admitted custody",
+                    )
+                });
+                let marker = if mutation {
+                    mutation_release::<()>(Err(marker)).unwrap_err()
+                } else {
+                    marker
+                };
+                Err(self.registry.status(context, marker))
+            }
+        }
     }
 
     async fn apply(
@@ -887,13 +1005,16 @@ impl kasumi_admin_server::KasumiAdmin for NativeAdmin {
                     .audit_result(&context, database.response_fence(&context))
                     .await
                     .map_err(status)?;
-                let proof = Box::pin(database.backup_checkpoint_named(
-                    context.clone(),
-                    &request.destination,
-                    request.session_id,
-                ))
-                .await
-                .map_err(|error| self.registry.status(&context, error))?;
+                let proof = self
+                    .snapshot_call(&context, true, async {
+                        Box::pin(database.backup_checkpoint_named(
+                            context.clone(),
+                            &request.destination,
+                            request.session_id,
+                        ))
+                        .await
+                    })
+                    .await?;
                 let fence = self
                     .auth
                     .audit_result(
@@ -933,13 +1054,16 @@ impl kasumi_admin_server::KasumiAdmin for NativeAdmin {
                     .audit_result(&context, database.response_fence(&context))
                     .await
                     .map_err(status)?;
-                let proof = Box::pin(database.verify_backup_checkpoint_named(
-                    context.clone(),
-                    &request.destination,
-                    request.backup_id,
-                ))
-                .await
-                .map_err(|error| self.registry.status(&context, error))?;
+                let proof = self
+                    .snapshot_call(&context, false, async {
+                        Box::pin(database.verify_backup_checkpoint_named(
+                            context.clone(),
+                            &request.destination,
+                            request.backup_id,
+                        ))
+                        .await
+                    })
+                    .await?;
                 let fence = self
                     .auth
                     .audit_result(

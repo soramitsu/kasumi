@@ -85,14 +85,16 @@ impl Administration {
             self.config
                 .install_tenant_audit_archive(stores.application(), None)?;
             self.check_enrollment(&prepared.invocation)?;
-            let database = kasumi_engine::open_local_with_incarnation(
+            let constructor_index = crate::administration::original_serving_runtime::OriginalRecoveries::configured_index(&self.config, tenant)?;
+            let mut constructor_seat = self.original_recoveries.claim(constructor_index).await;
+            let database = constructor_seat.run_snapshot(kasumi_engine::open_local_with_incarnation(
                 stores.clone(),
                 proposal.initial_policy.clone(),
                 proposal.initial_limits.clone(),
                 self.audit.clone(),
                 incarnation,
             )
-            .await?;
+            ).await.map_err(crate::administration::original_serving_runtime::OriginalRecoveryObservation::foreign_error)?;
             prepared.resources.databases.push(database.clone());
             let resident = ManagedTenant {
                 database,
@@ -136,9 +138,14 @@ impl Administration {
             .push(stores.custody().store().clone());
         self.config
             .install_tenant_audit_archive(stores.application(), None)?;
-        let database =
-            kasumi_engine::open_existing_local(stores.clone(), self.audit.clone(), incarnation)
-                .await?;
+        let constructor_index =
+            crate::administration::original_serving_runtime::OriginalRecoveries::configured_index(
+                &self.config,
+                tenant,
+            )?;
+        let mut constructor_seat = self.original_recoveries.claim(constructor_index).await;
+        let database = constructor_seat.run_snapshot(kasumi_engine::open_existing_local(stores.clone(), self.audit.clone(), incarnation)
+                ).await.map_err(crate::administration::original_serving_runtime::OriginalRecoveryObservation::foreign_error)?;
         prepared.resources.databases.push(database.clone());
         for (alias, destination) in &self.destinations {
             database.install_archive_destination(alias.clone(), destination.clone())?;
@@ -161,7 +168,10 @@ impl Administration {
             lease: None,
         };
         self.require_resident_proposal(&resident, &proposal)?;
-        self.node.drain_initializers().await?;
+        self.node
+            .drain_initializers()
+            .await
+            .map_err(|failure| failure.observation())?;
         prepared.resident = Some(resident);
         prepared.publish = true;
         Ok(())

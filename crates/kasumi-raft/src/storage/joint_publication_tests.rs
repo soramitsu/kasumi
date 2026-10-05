@@ -1,5 +1,6 @@
 //! Actual encrypted replacement tables join snapshot and applied publication.
 use super::*;
+use crate::test_utils::FixtureResult;
 use sha2::Digest;
 use std::time::Duration;
 
@@ -84,10 +85,15 @@ impl crate::PreparedStateMachineRestore for PreparedJoint<'_> {
     fn retirement(&self) -> Option<crate::RetiredSnapshotState> {
         None
     }
-    fn application_replacements(&self) -> Vec<(&str, &kasumi_store::EncryptedTable)> {
+    fn application_replacements(&self) -> Vec<kasumi_store::NamespaceReplacement<'_>> {
         self.replacement
             .as_ref()
-            .map(|table| vec![(self.selected.namespace.as_str(), table)])
+            .map(|table| {
+                vec![kasumi_store::NamespaceReplacement::from_table(
+                    &self.selected.namespace,
+                    table,
+                )]
+            })
             .unwrap_or_default()
     }
     fn application_writes(&self) -> &[WriteOp] {
@@ -114,13 +120,24 @@ impl StateMachineBackend for JointBackend {
     fn close_application(&self) {
         self.current.lock().unwrap().take();
     }
-    fn apply(&self, _: &crate::AppliedEntryContext, _: &[u8]) -> Result<crate::AppliedResponse> {
-        anyhow::bail!("joint fixture accepts only snapshot installation")
-    }
-    fn apply_metadata(&self, _position: &crate::AppliedEntryContext) -> anyhow::Result<()> {
+    fn apply_with_publisher(
+        &self,
+        _: &crate::AppliedEntryContext,
+        input: crate::AppliedInput<'_>,
+        publisher: &mut dyn crate::ApplyPublisher,
+    ) -> std::result::Result<(), kasumi_store::ScratchOperationFailure> {
+        ensure!(
+            matches!(input, crate::AppliedInput::Metadata),
+            "joint fixture accepts only snapshot installation"
+        );
+        publisher
+            .commit(crate::AppliedResponse::application(Vec::new()), &[])
+            .map_err(anyhow::Error::from)?;
         Ok(())
     }
-    fn capture_snapshot(&self) -> Result<crate::CapturedSnapshot> {
+    fn capture_snapshot(
+        &self,
+    ) -> std::result::Result<crate::CapturedSnapshot, kasumi_store::ScratchOperationFailure> {
         let tag = self
             .current
             .lock()
@@ -136,7 +153,10 @@ impl StateMachineBackend for JointBackend {
     fn validate_snapshot(
         &self,
         bytes: &mut dyn std::io::Read,
-    ) -> Result<Option<crate::RetiredSnapshotState>> {
+    ) -> std::result::Result<
+        Option<crate::RetiredSnapshotState>,
+        kasumi_store::ScratchOperationFailure,
+    > {
         let mut data = Vec::new();
         bytes.take(2).read_to_end(&mut data)?;
         ensure!(
@@ -149,7 +169,10 @@ impl StateMachineBackend for JointBackend {
         &'a self,
         context: &crate::SnapshotRestoreContext,
         bytes: &mut dyn std::io::Read,
-    ) -> Result<Box<dyn crate::PreparedStateMachineRestore + 'a>> {
+    ) -> std::result::Result<
+        Box<dyn crate::PreparedStateMachineRestore + 'a>,
+        kasumi_store::ScratchOperationFailure,
+    > {
         let mut data = Vec::new();
         bytes.take(2).read_to_end(&mut data)?;
         self.validate_snapshot(&mut data.as_slice())?;
@@ -163,7 +186,11 @@ impl StateMachineBackend for JointBackend {
                 // the KV engine reserves commit headers and admitted index metadata
                 // at creation. This tests publication faults, so fund
                 // initialization and the two bounded rows explicitly.
-                let table = kasumi_store::EncryptedTable::new(self.store.scratch_disk(), 8 << 20)?;
+                let table = kasumi_store::EncryptedTable::new(
+                    self.store.scratch_disk(),
+                    8 << 20,
+                    self.store.scratch_disk().native_cache_config(),
+                )?;
                 for ordinal in 0..2 {
                     table.insert(&[ordinal], &row(selected.tag, ordinal))?;
                 }
@@ -184,7 +211,7 @@ fn image(tag: u8, index: u64, fixture_scratch: Arc<kasumi_store::ScratchDisk>) -
     result.meta.last_log_id.as_mut().unwrap().index = index;
     result
 }
-async fn install(machine: &mut StateMachine, image: &SnapshotEnvelope) -> Result<()> {
+async fn install(machine: &mut StateMachine, image: &SnapshotEnvelope) -> FixtureResult<()> {
     machine
         .install_snapshot(
             &image.meta,
@@ -200,7 +227,7 @@ async fn open(
     disk: FaultBackend,
     create: bool,
     fixture_scratch: Arc<kasumi_store::ScratchDisk>,
-) -> Result<(Arc<TenantStore>, Arc<JointBackend>, StateMachine)> {
+) -> FixtureResult<(Arc<TenantStore>, Arc<JointBackend>, StateMachine)> {
     let store = if create {
         new_fault_store(disk, fixture_scratch.clone()).await?
     } else {
@@ -232,7 +259,7 @@ async fn selected(
     store: &TenantStore,
     backend: &JointBackend,
     machine: &mut StateMachine,
-) -> Result<Selection> {
+) -> FixtureResult<Selection> {
     let snapshot = load_snapshot(store, 64 << 20)?.context("joint snapshot missing")?;
     let context = crate::SnapshotRestoreContext {
         mode: crate::SnapshotRestoreMode::Reopen,
@@ -254,8 +281,8 @@ async fn selected(
 }
 
 #[tokio::test]
-async fn joint_immutable_table_snapshot_power_loss_selects_complete_old_or_new_prefix() -> Result<()>
-{
+async fn joint_immutable_table_snapshot_power_loss_selects_complete_old_or_new_prefix()
+-> FixtureResult<()> {
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
     let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
@@ -300,8 +327,8 @@ async fn joint_immutable_table_snapshot_power_loss_selects_complete_old_or_new_p
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn cancelled_joint_table_publication_seals_and_reopens_exact_committed_prefix() -> Result<()>
-{
+async fn cancelled_joint_table_publication_seals_and_reopens_exact_committed_prefix()
+-> FixtureResult<()> {
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
     let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);

@@ -12,8 +12,8 @@ pub enum DrainCompletion {
     Retained,
 }
 
-/// One terminal observation for one local owner. Clones of this Arc preserve the
-/// original error object and identify repeated reports of the same failure.
+/// One terminal observation for one local owner. The opaque shared handle preserves
+/// the original error object and identifies repeated reports of this failure.
 #[derive(Debug)]
 pub struct DrainIssue {
     component: &'static str,
@@ -37,13 +37,72 @@ impl fmt::Display for DrainIssue {
     }
 }
 
+/// Shared identity for one actual observation. The Arc is private: callers
+/// cannot retain an unfunded weak shell. Every clone releases through
+/// `Arc::into_inner`, which frees the final Arc allocation before dropping the
+/// original error and any resource credit retained by that error.
+///
+/// This ordering covers the issue allocation. It does not account the enclosing
+/// report/collection or the error's own allocation; those retain their own owners.
+///
+/// ```compile_fail
+/// use kasumi_types::drain::DrainReport;
+/// let issue = DrainReport::default().record("worker", 0, anyhow::anyhow!("failed"));
+/// let weak = std::sync::Arc::downgrade(&issue);
+/// ```
+#[derive(Debug)]
+pub struct DrainIssueRef {
+    inner: Option<Arc<DrainIssue>>,
+}
+impl DrainIssueRef {
+    fn new(issue: DrainIssue) -> Self {
+        Self {
+            inner: Some(Arc::new(issue)),
+        }
+    }
+    fn arc(&self) -> &Arc<DrainIssue> {
+        self.inner.as_ref().expect("live drain issue")
+    }
+    /// Whether both handles retain the exact same original observation.
+    pub fn ptr_eq(first: &Self, second: &Self) -> bool {
+        Arc::ptr_eq(first.arc(), second.arc())
+    }
+}
+impl Clone for DrainIssueRef {
+    fn clone(&self) -> Self {
+        Self {
+            inner: Some(self.arc().clone()),
+        }
+    }
+}
+impl std::ops::Deref for DrainIssueRef {
+    type Target = DrainIssue;
+    fn deref(&self) -> &DrainIssue {
+        self.arc()
+    }
+}
+impl fmt::Display for DrainIssueRef {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&**self, f)
+    }
+}
+impl Drop for DrainIssueRef {
+    fn drop(&mut self) {
+        // All strong owners use into_inner, so even racing final drops extract
+        // the issue exactly once. No Weak can outlive the allocation.
+        drop(Arc::into_inner(
+            self.inner.take().expect("live drain issue"),
+        ));
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct DrainFailure {
     completion: DrainCompletion,
-    issues: Vec<Arc<DrainIssue>>,
+    issues: Vec<DrainIssueRef>,
 }
 impl DrainFailure {
-    pub fn retained(issue: Arc<DrainIssue>) -> Self {
+    pub fn retained(issue: DrainIssueRef) -> Self {
         Self {
             completion: DrainCompletion::Retained,
             issues: vec![issue],
@@ -52,7 +111,7 @@ impl DrainFailure {
     pub fn completion(&self) -> DrainCompletion {
         self.completion
     }
-    pub fn issues(&self) -> &[Arc<DrainIssue>] {
+    pub fn issues(&self) -> &[DrainIssueRef] {
         &self.issues
     }
 }
@@ -79,11 +138,11 @@ impl std::error::Error for DrainFailure {
 /// their own Arc identities even when components use the same local slot names.
 #[derive(Default, Debug)]
 pub struct DrainReport {
-    local: BTreeMap<(&'static str, usize), Arc<DrainIssue>>,
-    issues: Vec<Arc<DrainIssue>>,
+    local: BTreeMap<(&'static str, usize), DrainIssueRef>,
+    issues: Vec<DrainIssueRef>,
 }
 impl DrainReport {
-    pub fn issues(&self) -> &[Arc<DrainIssue>] {
+    pub fn issues(&self) -> &[DrainIssueRef] {
         &self.issues
     }
     pub fn record(
@@ -91,12 +150,12 @@ impl DrainReport {
         component: &'static str,
         instance: usize,
         error: anyhow::Error,
-    ) -> Arc<DrainIssue> {
+    ) -> DrainIssueRef {
         let issue = self
             .local
             .entry((component, instance))
             .or_insert_with(|| {
-                Arc::new(DrainIssue {
+                DrainIssueRef::new(DrainIssue {
                     component,
                     instance,
                     error,
@@ -106,8 +165,12 @@ impl DrainReport {
         self.include(issue.clone());
         issue
     }
-    fn include(&mut self, issue: Arc<DrainIssue>) {
-        if !self.issues.iter().any(|prior| Arc::ptr_eq(prior, &issue)) {
+    fn include(&mut self, issue: DrainIssueRef) {
+        if !self
+            .issues
+            .iter()
+            .any(|prior| DrainIssueRef::ptr_eq(prior, &issue))
+        {
             self.issues.push(issue);
         }
     }
@@ -140,7 +203,10 @@ impl DrainReport {
                 failure.completion = DrainCompletion::Retained;
                 let mut issues = self.issues.clone();
                 for issue in failure.issues {
-                    if !issues.iter().any(|prior| Arc::ptr_eq(prior, &issue)) {
+                    if !issues
+                        .iter()
+                        .any(|prior| DrainIssueRef::ptr_eq(prior, &issue))
+                    {
                         issues.push(issue);
                     }
                 }
@@ -164,7 +230,7 @@ mod tests {
         let original = report.record("worker", 0, WorkerFailure(7).into());
         for _ in 0..1000 {
             let repeated = report.record("worker", 0, WorkerFailure(99).into());
-            assert!(Arc::ptr_eq(&original, &repeated));
+            assert!(DrainIssueRef::ptr_eq(&original, &repeated));
         }
         let complete = report.complete().unwrap_err();
         assert_eq!(complete.completion(), DrainCompletion::Complete);

@@ -44,6 +44,19 @@ impl RaftTypeConfig for TestConfig {
     type Responder = crate::impls::OneshotResponder<Self>;
 }
 
+struct NoLogs;
+impl crate::RaftLogReader<TestConfig> for NoLogs {
+    async fn try_get_log_entries<RB: std::ops::RangeBounds<u64> + Clone + std::fmt::Debug + OptionalSend>(
+        &mut self,
+        _range: RB,
+    ) -> Result<Vec<crate::Entry<TestConfig>>, StorageError<u64>> {
+        Err(
+            StorageIOError::read_state_machine(anyerror::AnyError::error("snapshot-only fixture requested a log"))
+                .into(),
+        )
+    }
+}
+
 #[derive(Clone, Copy)]
 enum Exit {
     Normal,
@@ -170,7 +183,9 @@ impl RaftStateMachine<TestConfig> for Machine {
 fn same_original(left: &TaskError<TestConfig>, right: &TaskError<TestConfig>) {
     match (left, right) {
         (ShutdownTaskError::Join(a), ShutdownTaskError::Join(b)) => assert!(Arc::ptr_eq(a, b)),
-        (ShutdownTaskError::Storage(a), ShutdownTaskError::Storage(b)) => assert!(Arc::ptr_eq(a, b)),
+        (ShutdownTaskError::Storage(a), ShutdownTaskError::Storage(b)) => {
+            assert!(Arc::ptr_eq(a, b))
+        }
         _ => panic!("terminal error changed kind"),
     }
 }
@@ -209,7 +224,7 @@ async fn cancelled_worker_join_retains_actual_panic_and_storage_failure() {
             counts: Arc::default(),
             dropped: dropped.clone(),
         };
-        let (mut handle, tasks) = Worker::spawn(machine, mpsc::unbounded_channel().0);
+        let (mut handle, tasks) = Worker::spawn(machine, NoLogs, 64, mpsc::unbounded_channel().0);
         let (tx, _rx) = TestConfig::oneshot();
         handle.send(Command::begin_receiving_snapshot(tx)).unwrap();
         entered(entry).await;
@@ -254,7 +269,7 @@ async fn worker_completion_never_discards_held_snapshot_or_either_failure() {
                 counts: counts.clone(),
                 dropped: dropped.clone(),
             };
-            let (mut handle, tasks) = Worker::spawn(machine, mpsc::unbounded_channel().0);
+            let (mut handle, tasks) = Worker::spawn(machine, NoLogs, 64, mpsc::unbounded_channel().0);
             handle.send(Command::build_snapshot()).unwrap();
             entered(entry).await;
             if worker_panics {
@@ -309,7 +324,7 @@ async fn live_worker_observes_snapshot_failure_without_detached_monitor() {
             counts: Arc::default(),
             dropped: dropped.clone(),
         };
-        let (mut handle, tasks) = Worker::spawn(machine, mpsc::unbounded_channel().0);
+        let (mut handle, tasks) = Worker::spawn(machine, NoLogs, 64, mpsc::unbounded_channel().0);
         handle.send(Command::build_snapshot()).unwrap();
         entered(entry).await;
         release.send(()).unwrap();
@@ -331,7 +346,7 @@ async fn successful_snapshot_history_reuses_one_joined_builder_cell() {
         dropped: Arc::default(),
     };
     let (tx, mut rx) = mpsc::unbounded_channel();
-    let (mut handle, tasks) = Worker::spawn(machine, tx);
+    let (mut handle, tasks) = Worker::spawn(machine, NoLogs, 64, tx);
     for _ in 0..32 {
         handle.send(Command::build_snapshot()).unwrap();
         assert!(tokio::time::timeout(Duration::from_secs(5), rx.recv()).await.unwrap().is_some());

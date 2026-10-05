@@ -44,7 +44,7 @@ impl Expected {
             || request
                 .queries
                 .iter()
-                .any(|query| query.limit > call.limits.max_rows || query.cursor.is_some())
+                .any(|query| query.page_size() > call.limits.max_rows || query.cursor.is_some())
         {
             return Err(exhausted());
         }
@@ -65,8 +65,13 @@ impl Expected {
                 .iter()
                 .map(|query| QueryBound {
                     collection: query.collection.clone(),
-                    limit: query.limit,
-                    aggregates: !query.aggregates.is_empty(),
+                    // Aggregate queries return groups and never rows.
+                    limit: if query.is_aggregate() {
+                        0
+                    } else {
+                        query.page_size()
+                    },
+                    aggregates: query.is_aggregate(),
                 })
                 .collect(),
             lease: None,

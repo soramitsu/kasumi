@@ -519,12 +519,17 @@ impl Authenticator {
         })
     }
 
-    pub fn protected_resource_metadata(&self, mcp_resource: &str) -> serde_json::Value {
-        let mut metadata = serde_json::json!({"resource":mcp_resource,"scopes_supported":["kasumi:read","kasumi:write"],"bearer_methods_supported":["header"]});
-        if matches!(self.config.source, AuthKeySource::ExternalOAuth { .. }) {
-            metadata["authorization_servers"] = serde_json::json!([self.config.issuer]);
+    /// Only an installed external authorization provider advertises discovery.
+    pub fn protected_resource_metadata(&self, mcp_resource: &str) -> Option<serde_json::Value> {
+        match &self.config.source {
+            AuthKeySource::ExternalOAuth { .. } => Some(serde_json::json!({
+                "resource": mcp_resource,
+                "authorization_servers": [self.config.issuer],
+                "scopes_supported": ["kasumi:read", "kasumi:write"],
+                "bearer_methods_supported": ["header"]
+            })),
+            AuthKeySource::Local { .. } => None,
         }
-        metadata
     }
 }
 

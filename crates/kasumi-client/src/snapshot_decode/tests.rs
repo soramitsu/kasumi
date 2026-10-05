@@ -319,7 +319,8 @@ async fn parser_error_payload_drops_before_worker_admission_is_released() {
         error,
         ClientError::DecodeRejected {
             code: tonic::Code::DataLoss,
-            reason: "native JSON failed validation"
+            reason: "native JSON failed validation",
+            database: None,
         }
     ));
     assert_eq!(options.resources.usage(), ClientResourceUsage::default());
@@ -344,10 +345,20 @@ fn transport_error_retains_code_without_peer_message_details_or_metadata() {
         error,
         ClientError::DecodeRejected {
             code: tonic::Code::Unavailable,
-            reason: "native transport failed"
+            reason: "native transport failed",
+            database: None,
         }
     ));
     assert_eq!(options.resources.usage(), ClientResourceUsage::default());
+    // A Kasumi status keeps its closed error code, never its peer message.
+    let status = tonic::Status::with_details(
+        tonic::Code::FailedPrecondition,
+        "peer text",
+        Bytes::from(br#"{"code":"INDEX_REQUIRED","message":"declare an index"}"#.to_vec()),
+    );
+    let error = normalize(ClientError::Transport(status));
+    assert_eq!(error.code(), Some(kasumi_types::ErrorCode::IndexRequired));
+    assert!(!error.to_string().contains("peer text"));
 }
 
 #[test]
@@ -357,10 +368,8 @@ fn query_rows_cannot_advance_beyond_their_collection_epoch() {
     let input = ReadSnapshotRequest {
         documents: vec![],
         queries: vec![
-            serde_json::from_value(
-                json!({"collection":"docs", "filter":{"op":"all"}, "limit":2, "allow_scan":true}),
-            )
-            .unwrap(),
+            serde_json::from_value(json!({"collection":"docs", "limit":2, "allow_scan":true}))
+                .unwrap(),
         ],
         time_bounds: None,
     };
@@ -382,4 +391,55 @@ fn query_rows_cannot_advance_beyond_their_collection_epoch() {
     };
     assert_eq!(decoded.queries[0].rows[0].version, 2);
     assert_eq!(decoded.collection_epochs["docs"], 2);
+}
+
+#[test]
+fn shared_document_bridge_retains_real_decode_owner_and_drains_after_last_clone() {
+    let mut options = options();
+    options.resources = ClientResources::new(options.limits.accounted_bytes().unwrap(), 1).unwrap();
+    let call = options.admit().unwrap();
+    let raw = br#"{"amount":90071992547409931234567890.123456789,"nested":{"items":[true,null,"value"]},"$serde_json::private::Number":"literal key"}"#;
+    tokens::admit(raw, &call).unwrap();
+    let value = AdmittedResponse::new(
+        kasumi_types::Document {
+            id: "one".into(),
+            version: 7,
+            body: tokens::literal(raw, &call).unwrap(),
+        },
+        &call,
+    );
+    let original = value.clone();
+    let expected = serde_json::to_vec(&*value).unwrap();
+    let initial = options.resources.usage();
+    assert_eq!(initial.live_owners, 1);
+    let shared = value.into_shared_document();
+    assert!(std::ptr::eq(&*original, shared.as_ref()));
+    assert_eq!(options.resources.usage(), initial);
+    assert_eq!(serde_json::to_vec(&shared).unwrap(), expected);
+    let clone = shared.clone();
+    assert!(std::ptr::eq(shared.as_ref(), clone.as_ref()));
+    // Completion/cancellation does not detach the released immutable payload's
+    // charge or make another decode slot available while it is still held.
+    drop(call.waiter());
+    assert!(call.check().is_err());
+    drop(call);
+    drop(original);
+    drop(shared);
+    assert!(options.admit().is_err());
+    assert_eq!(options.resources.usage(), initial);
+    std::thread::spawn(move || {
+        assert_eq!(clone.id, "one");
+        assert_eq!(clone.version, 7);
+        assert_eq!(
+            clone.body["amount"].to_string(),
+            "90071992547409931234567890.123456789"
+        );
+        assert_eq!(clone.body["$serde_json::private::Number"], "literal key");
+        drop(clone);
+    })
+    .join()
+    .unwrap();
+    assert_eq!(options.resources.usage(), ClientResourceUsage::default());
+    drop(options.admit().unwrap());
+    assert_eq!(options.resources.usage(), ClientResourceUsage::default());
 }

@@ -29,7 +29,7 @@ fn sample(index: usize, quorum: bool) -> Sample {
 fn complete(coverage: &Coverage, groups: usize, now: Instant) {
     coverage.begin(epoch(), groups, now);
     for index in 0..groups {
-        coverage.record(sample(index, true), true, now + FRESHNESS);
+        coverage.record(sample(index, true), true);
     }
     coverage.finish(epoch());
 }
@@ -49,26 +49,28 @@ fn complete_coverage_exceeds_diagnostic_page_without_group_count_cutoff() {
 }
 
 #[test]
-fn failure_beyond_detail_page_immediately_revokes_previous_complete_sweep() {
+fn unhealthy_group_beyond_detail_page_preserves_complete_coverage_and_original_token() {
     let coverage = Coverage::new(&admission(4 << 20)).unwrap();
     let now = Instant::now();
     complete(&coverage, 130, now);
     let token = coverage.snapshot(epoch(), now).token.unwrap();
     coverage.begin(epoch(), 130, now + Duration::from_secs(1));
     for index in 0..129 {
-        coverage.record(sample(index, true), true, now + FRESHNESS);
+        coverage.record(sample(index, true), true);
     }
     assert!(coverage.snapshot(epoch(), now).status.ready());
     assert!(coverage.check(token, epoch(), now));
-    coverage.record(sample(129, false), false, now + FRESHNESS);
-    assert!(!coverage.check(token, epoch(), now));
+    coverage.record(sample(129, false), false);
+    assert!(coverage.check(token, epoch(), now));
     coverage.finish(epoch());
-    let failed = coverage.snapshot(epoch(), now);
-    assert!(failed.status.complete && failed.status.fresh);
-    assert_eq!(failed.status.examined_groups, 130);
-    assert_eq!(failed.status.healthy_groups, 129);
-    assert!(!failed.status.ready());
-    assert!(failed.details.iter().all(|sample| sample.quorum));
+    let completed = coverage.snapshot(epoch(), now);
+    assert!(completed.status.complete && completed.status.fresh);
+    assert_eq!(completed.status.examined_groups, 130);
+    assert_eq!(completed.status.healthy_groups, 129);
+    assert!(completed.status.ready());
+    assert!(coverage.check(token, epoch(), now));
+    assert_eq!(completed.details.len(), DETAIL_LIMIT);
+    assert!(completed.details.iter().all(|sample| sample.quorum));
 }
 
 #[test]
@@ -77,12 +79,12 @@ fn partial_and_slow_complete_sweeps_do_not_certify_readiness() {
     let now = Instant::now();
     assert!(!coverage.snapshot(epoch(), now).status.ready());
     coverage.begin(epoch(), 2, now);
-    coverage.record(sample(0, true), true, now + FRESHNESS);
+    coverage.record(sample(0, true), true);
     let partial = coverage.snapshot(epoch(), now);
     assert_eq!(partial.status.examined_groups, 1);
     assert!(!partial.status.complete && !partial.status.fresh);
     assert!(partial.token.is_none());
-    coverage.record(sample(1, true), true, now + FRESHNESS * 2);
+    coverage.record(sample(1, true), true);
     coverage.finish(epoch());
     let expired = coverage.snapshot(epoch(), now + FRESHNESS);
     assert!(expired.status.complete);
@@ -98,7 +100,7 @@ fn refreshing_and_renewed_coverage_never_extend_original_release_deadline() {
     complete(&coverage, 2, now);
     let original = coverage.snapshot(epoch(), now).token.unwrap();
     coverage.begin(epoch(), 2, now + Duration::from_secs(1));
-    coverage.record(sample(0, true), true, now + FRESHNESS * 2);
+    coverage.record(sample(0, true), true);
     assert!(
         coverage
             .snapshot(epoch(), now + Duration::from_secs(1))
@@ -106,7 +108,7 @@ fn refreshing_and_renewed_coverage_never_extend_original_release_deadline() {
             .ready()
     );
     assert!(coverage.check(original, epoch(), now + Duration::from_secs(1)));
-    coverage.record(sample(1, true), true, now + FRESHNESS * 2);
+    coverage.record(sample(1, true), true);
     coverage.finish(epoch());
     let refreshed = coverage.snapshot(epoch(), now + FRESHNESS);
     assert!(refreshed.status.ready());
@@ -115,26 +117,27 @@ fn refreshing_and_renewed_coverage_never_extend_original_release_deadline() {
 }
 
 #[test]
-fn original_authority_expiry_clips_whole_coverage_even_outside_details() {
+fn original_coverage_freshness_deadline_applies_even_beyond_detail_page() {
     let coverage = Coverage::new(&admission(4 << 20)).unwrap();
     let now = Instant::now();
     coverage.begin(epoch(), 130, now);
     for index in 0..130 {
-        let expiry = now
-            + if index == 129 {
-                Duration::from_secs(2)
-            } else {
-                FRESHNESS
-            };
-        coverage.record(sample(index, true), true, expiry);
+        coverage.record(sample(index, true), true);
     }
     coverage.finish(epoch());
-    let token = coverage.snapshot(epoch(), now).token.unwrap();
-    let deadline = now + Duration::from_secs(2);
+    let original = coverage.snapshot(epoch(), now);
+    assert_eq!(original.details.len(), DETAIL_LIMIT);
+    let token = original.token.unwrap();
+    let deadline = now + FRESHNESS;
+    let before_deadline = deadline - Duration::from_millis(1);
+    assert!(coverage.check(token, epoch(), before_deadline));
+    assert!(coverage.snapshot(epoch(), before_deadline).status.ready());
     assert!(!coverage.check(token, epoch(), deadline));
     assert!(!coverage.snapshot(epoch(), deadline).status.ready());
     complete(&coverage, 130, now + Duration::from_secs(1));
-    assert!(coverage.snapshot(epoch(), deadline).status.ready());
+    let renewed = coverage.snapshot(epoch(), deadline);
+    assert!(renewed.status.ready());
+    assert!(coverage.check(renewed.token.unwrap(), epoch(), deadline));
     assert!(!coverage.check(token, epoch(), deadline));
 }
 

@@ -2,10 +2,34 @@
 use super::*;
 use kasumi_kv::{BoundedReadError, ReadCloseSettlement, RetainedReadTransaction};
 use std::sync::atomic::AtomicUsize;
+#[path = "read_report.rs"]
+mod read_report;
+pub(crate) use read_report::AdmittedReadReport;
+mod source_pool;
+pub(super) use source_pool::drain_source_owners;
+pub use source_pool::{
+    PreparedRegisteredSource, RegisteredSourceCapacity, SourceCapacityClose, SourceCapacityFailure,
+    SourceCapacityReport, SourceCapacityRetirement, SourceHistoryAbort, SourceHistoryRefusal,
+    SourcePoolPhase,
+};
+#[cfg(any(test, feature = "test-utils"))]
+pub use source_pool::{
+    RegisteredSourceFundingFixture, SourceCompletionFault, SourceReadDiagnostic,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NodeReadPhase {
     Queued,
+    /// Registered selected-snapshot intent. Public begin must never turn this
+    /// into a current-root read, even through a recovered census facade.
+    ForkQueued,
+    /// Registered protected-source intent; ordinary begin/read cannot dispatch it.
+    SourceQueued,
+    SourcePreparing,
+    SourcePrepared,
+    SourceCapturing,
+    SourceCaptured,
+    SourceHistory,
     Begin,
     Tables,
     Active,
@@ -106,10 +130,34 @@ impl std::error::Error for NodeReadTablesError {
     }
 }
 
+// Native disposition stays attached to its exact original error. Local
+// rejections cannot manufacture the native clean-acquisition proof.
+enum ReadBeginFailure {
+    Native(kasumi_kv::ReadAcquisitionFailure),
+    Local(kasumi_kv::TransactionError),
+}
+impl ReadBeginFailure {
+    fn original(&self) -> &kasumi_kv::TransactionError {
+        match self {
+            Self::Native(error) => error.original(),
+            Self::Local(error) => error,
+        }
+    }
+}
+#[derive(Clone, Copy)]
+enum RoutineReadFailure {
+    Acquisition,
+    Tables,
+    Body,
+}
+
 struct ReaderState {
     phase: NodeReadPhase,
     transaction: Option<RetainedReadTransaction>,
-    begin: Observation<kasumi_kv::TransactionError>,
+    // Private typed source purpose stays present even after native disposal.
+    // Its inline layout is included in every owning report quote.
+    source: Option<source_pool::SourceReaderState>,
+    begin: Observation<ReadBeginFailure>,
     tables: Observation<NodeReadTablesError>,
     outer: Observation<std::convert::Infallible>,
     output_admission: Observation<io::Error>,
@@ -117,43 +165,120 @@ struct ReaderState {
     body_panic: Observation<std::convert::Infallible>,
     finish_outer: Observation<std::convert::Infallible>,
     outcomes_released: bool,
-    auto_retire_routine_failure: bool,
 }
 impl ReaderState {
     fn has_failures(&self) -> bool {
-        observed_failure(self.begin.borrow())
+        let failures = observed_failure(self.begin.borrow())
             || observed_failure(self.tables.borrow())
             || observed_failure(self.outer.borrow())
             || observed_failure(self.output_admission.borrow())
             || observed_failure(self.read_failure.borrow())
             || observed_failure(self.body_panic.borrow())
-            || observed_failure(self.finish_outer.borrow())
+            || observed_failure(self.finish_outer.borrow());
+        let failures = failures
+            || self
+                .source
+                .as_ref()
+                .is_some_and(source_pool::SourceReaderState::has_failures);
+        failures
             || self.transaction.as_ref().is_some_and(|transaction| {
                 let report = transaction.report();
-                observed_failure(report.release()) || observed_failure(report.disposal())
+                observed_failure(report.release())
+                    || observed_failure(report.disposal())
+                    || observed_failure(report.native_retirement())
             })
     }
 
-    // Only these reported read failures are ordinary request/capacity denials.
-    // An I/O failure, panic, or uncertain transaction disposal retains its
-    // census owner for explicit diagnosis instead of disappearing on drop.
-    fn recoverable_read_failure(&self) -> bool {
-        if self.outcomes_released
-            || observed_failure(self.body_panic.borrow())
-            || !matches!(self.phase, NodeReadPhase::Failed | NodeReadPhase::Finished)
-        {
+    // Classify every observation together; a known capacity result cannot
+    // acknowledge an unrelated unknown result introduced by a recovered facade.
+    fn routine_failure(&self) -> Option<RoutineReadFailure> {
+        if self.source.is_some() {
+            return None;
+        }
+        if !self.outer.success() || !matches!(self.body_panic, Observation::NotEntered) {
+            return None;
+        }
+        let body_unentered = matches!(self.read_failure, Observation::NotEntered)
+            && matches!(self.output_admission, Observation::NotEntered);
+        if let Observation::Returned(Err(ReadBeginFailure::Native(error))) = &self.begin {
+            return (error.is_clean_capacity_refusal()
+                && matches!(self.tables, Observation::NotEntered)
+                && body_unentered)
+                .then_some(RoutineReadFailure::Acquisition);
+        }
+        if !self.begin.success() {
+            return None;
+        }
+        let table_capacity = match &self.tables {
+            Observation::Returned(Err(
+                NodeReadTablesError::Catalog(error) | NodeReadTablesError::Records(error),
+            )) => matches!(&(error), BoundedReadError::Table(kasumi_kv::TableError::Storage(
+                    kasumi_kv::StorageError::Core(native_error)
+                )) if matches!(native_error.rejected_cause(), Some(kasumi_kv::CoreErrorCause::CapacityDenied))),
+            _ => false,
+        };
+        if table_capacity && body_unentered {
+            return Some(RoutineReadFailure::Tables);
+        }
+        if !self.tables.success() {
+            return None;
+        }
+        let routine_read = match self.read_failure.borrow() {
+            TerminalObservation::Returned(Err(BoundedReadError::BoundExceeded)) => true,
+            TerminalObservation::Returned(Err(BoundedReadError::Storage(
+                kasumi_kv::StorageError::Core(original),
+            ))) => original.is_capacity_denied(),
+            _ => false,
+        };
+        let routine_output = matches!(self.output_admission.borrow(),
+            TerminalObservation::Returned(Err(error)) if error.kind() == io::ErrorKind::OutOfMemory);
+        let read_safe = routine_read
+            || matches!(
+                self.read_failure.borrow(),
+                TerminalObservation::NotEntered | TerminalObservation::Returned(Ok(()))
+            );
+        let output_safe = routine_output
+            || matches!(
+                self.output_admission.borrow(),
+                TerminalObservation::NotEntered | TerminalObservation::Returned(Ok(()))
+            );
+        (read_safe && output_safe && (routine_read || routine_output))
+            .then_some(RoutineReadFailure::Body)
+    }
+
+    fn routine_diagnostic_detachable(&self) -> bool {
+        if self.phase != NodeReadPhase::Finished || !self.finish_outer.success() {
             return false;
         }
-        matches!(
-            self.read_failure.borrow(),
-            TerminalObservation::Returned(Err(BoundedReadError::BoundExceeded
-                | BoundedReadError::Storage(kasumi_kv::StorageError::Core(
-                    kasumi_kv::CoreError::CapacityDenied
-                ))))
-        ) || matches!(
-            self.output_admission.borrow(),
-            TerminalObservation::Returned(Err(error)) if error.kind() == io::ErrorKind::OutOfMemory
-        )
+        let Some(failure) = self.routine_failure() else {
+            return false;
+        };
+        if matches!(failure, RoutineReadFailure::Acquisition) {
+            // Absence only corroborates the native-minted normal-return proof.
+            // It never substitutes for that proof or invents close observations.
+            return self.transaction.is_none();
+        }
+        let Some(transaction) = &self.transaction else {
+            return false;
+        };
+        let native = transaction.report();
+        native.settlement() == ReadCloseSettlement::Disposed
+            && !native.retains_transaction()
+            && !native.retains_database()
+            && matches!(native.release(), TerminalObservation::Returned(Ok(())))
+            && matches!(native.disposal(), TerminalObservation::Returned(Ok(())))
+            && matches!(
+                native.native_retirement(),
+                TerminalObservation::Returned(Ok(()))
+            )
+    }
+
+    fn acknowledge_settled_routine(&mut self) -> bool {
+        if !self.routine_diagnostic_detachable() {
+            return false;
+        }
+        self.outcomes_released = true;
+        true
     }
 }
 
@@ -161,7 +286,9 @@ struct ReaderRequest {
     database: StorageRegistration<DatabaseOwner>,
     provider: Arc<dyn NodeDiskMemoryAdmission>,
     facades: AtomicUsize,
-    state: Mutex<ReaderState>,
+    // Last-facade retry intent must survive a held immutable report without blocking Drop.
+    auto_retire_routine_failure: AtomicBool,
+    state: AdmittedReadReport,
 }
 impl ReaderRequest {
     fn begin_locked(&self, state: &mut ReaderState) {
@@ -174,8 +301,9 @@ impl ReaderRequest {
         state.begin = Observation::Entered;
         let opening = owner.state.lock();
         let Some(database) = opening.engine.database() else {
-            state.begin =
-                Observation::Returned(Err(kasumi_kv::StorageError::DatabaseClosed.into()));
+            state.begin = Observation::Returned(Err(ReadBeginFailure::Local(
+                kasumi_kv::StorageError::DatabaseClosed.into(),
+            )));
             state.phase = NodeReadPhase::Failed;
             return;
         };
@@ -186,13 +314,55 @@ impl ReaderRequest {
             }
             Err(error) => {
                 state.phase = NodeReadPhase::Failed;
-                Observation::Returned(Err(error))
+                Observation::Returned(Err(ReadBeginFailure::Native(error)))
             }
         };
         drop(opening);
         if !state.begin.success() {
             return;
         }
+        self.verify_tables_locked(state);
+    }
+
+    fn fork_locked(&self, state: &mut ReaderState, parent: &ReaderState) {
+        let owner = self.database.owner();
+        if owner.stopped.load(Ordering::Acquire) {
+            state.phase = NodeReadPhase::Cancelled;
+            return;
+        }
+        state.phase = NodeReadPhase::Begin;
+        state.begin = Observation::Entered;
+        let opening = owner.state.lock();
+        if opening.phase != NodeOpeningPhase::Open
+            || opening.engine.database().is_none()
+            || parent.phase != NodeReadPhase::Active
+        {
+            state.begin = Observation::Returned(Err(ReadBeginFailure::Local(
+                kasumi_kv::StorageError::DatabaseClosed.into(),
+            )));
+            state.phase = NodeReadPhase::Failed;
+            return;
+        }
+        let parent = parent
+            .transaction
+            .as_ref()
+            .expect("active parent transaction");
+        state.begin = match parent.fork() {
+            Ok(transaction) => {
+                // Install the actual child before another fallible stage. It
+                // owns a different backing while sharing the original pin.
+                state.transaction = Some(transaction);
+                Observation::Returned(Ok(()))
+            }
+            Err(error) => {
+                state.phase = NodeReadPhase::Failed;
+                Observation::Returned(Err(ReadBeginFailure::Native(error)))
+            }
+        };
+    }
+
+    fn verify_tables_locked(&self, state: &mut ReaderState) {
+        let owner = self.database.owner();
         state.phase = NodeReadPhase::Tables;
         state.tables = Observation::Entered;
         let transaction = state.transaction.as_ref().expect("installed reader");
@@ -219,7 +389,13 @@ impl ReaderRequest {
     }
 
     fn finish_locked(&self, state: &mut ReaderState) -> NodeReadPhase {
-        if state.phase == NodeReadPhase::Queued {
+        if state.source.is_some() {
+            return source_pool::finish_source_locked(self, state);
+        }
+        if matches!(
+            state.phase,
+            NodeReadPhase::Queued | NodeReadPhase::ForkQueued
+        ) {
             state.phase = NodeReadPhase::Cancelled;
             return state.phase;
         }
@@ -287,6 +463,17 @@ impl ReaderRequest {
         }
     }
 }
+impl crate::storage_census::NativeStartupChild for ReaderRequest {
+    const PURPOSE: crate::storage_census::NativeStartupChildPurpose =
+        crate::storage_census::NativeStartupChildPurpose::Verification;
+    fn report_bytes() -> io::Result<u64> {
+        AdmittedReadReport::request_bytes()
+    }
+    fn abandon_delivery(&self) {
+        let previous = self.facades.fetch_sub(1, Ordering::AcqRel);
+        assert_ne!(previous, 0, "original undelivered reader facade obligation");
+    }
+}
 impl StoragePayload for ReaderRequest {
     const KIND: StorageOwnerKind = StorageOwnerKind::Reader;
     fn drive(&self) -> bool {
@@ -302,6 +489,9 @@ impl StoragePayload for ReaderRequest {
             return false;
         }
         let phase = self.finish_observed(&mut state);
+        if self.auto_retire_routine_failure.load(Ordering::Acquire) {
+            state.acknowledge_settled_routine();
+        }
         matches!(phase, NodeReadPhase::Finished | NodeReadPhase::Cancelled)
             && (state.outcomes_released || !state.has_failures())
     }
@@ -312,7 +502,11 @@ struct ReadFacadeLease {
 }
 impl Drop for ReadFacadeLease {
     fn drop(&mut self) {
-        let registration = self.registration.take().expect("read facade registration");
+        let Some(registration) = self.registration.take() else {
+            // The private routine path already released this facade without
+            // acknowledging observations again or waiting for a report guard.
+            return;
+        };
         let request = registration.owner();
         let previous = request.facades.fetch_sub(1, Ordering::AcqRel);
         debug_assert_ne!(previous, 0);
@@ -322,27 +516,23 @@ impl Drop for ReadFacadeLease {
         // held the census owner through the first drain attempt.
         // Unknown I/O and panics still retain their census cell and report.
         let retry = if previous == 1 {
-            let mut state = request.state.lock();
-            if state.recoverable_read_failure() {
-                state.outcomes_released = true;
-                state.auto_retire_routine_failure = true;
-                request.finish_observed(&mut state);
-            }
-            if state.phase == NodeReadPhase::Retained {
-                state.auto_retire_routine_failure = false;
-            }
-            if state.auto_retire_routine_failure {
-                Some((
-                    matches!(
-                        state.phase,
-                        NodeReadPhase::Finished | NodeReadPhase::Cancelled
-                    ),
-                    request.provider.clone(),
-                    registration.id(),
-                ))
+            request
+                .auto_retire_routine_failure
+                .store(true, Ordering::Release);
+            let settled = if let Some(mut state) = request.state.try_lock() {
+                if state.routine_failure().is_some() {
+                    request.finish_observed(&mut state);
+                    Some(state.acknowledge_settled_routine())
+                } else {
+                    request
+                        .auto_retire_routine_failure
+                        .store(false, Ordering::Release);
+                    None
+                }
             } else {
-                None
-            }
+                Some(false)
+            };
+            settled.map(|settled| (settled, request.provider.clone(), registration.id()))
         } else {
             None
         };
@@ -409,12 +599,17 @@ impl RegisteredNodeOpening {
                 continue;
             }
             let settled = if let Some(mut state) = request.state.try_lock() {
-                if !state.auto_retire_routine_failure {
+                if !request.auto_retire_routine_failure.load(Ordering::Acquire)
+                    || state.routine_failure().is_none()
+                {
                     false
                 } else {
                     let phase = request.finish_observed(&mut state);
+                    state.acknowledge_settled_routine();
                     if phase == NodeReadPhase::Retained {
-                        state.auto_retire_routine_failure = false;
+                        request
+                            .auto_retire_routine_failure
+                            .store(false, Ordering::Release);
                     }
                     matches!(phase, NodeReadPhase::Finished | NodeReadPhase::Cancelled)
                         && state.outcomes_released
@@ -434,6 +629,14 @@ impl RegisteredNodeOpening {
     /// After registration, concurrent close yields the exact cancelled reader
     /// so the caller retains its ID, report, and retirement responsibility.
     pub fn queue_read(&self) -> io::Result<RegisteredNodeRead> {
+        self.queue_reader(NodeReadPhase::Queued)
+    }
+
+    fn queue_reader(&self, phase: NodeReadPhase) -> io::Result<RegisteredNodeRead> {
+        debug_assert!(matches!(
+            phase,
+            NodeReadPhase::Queued | NodeReadPhase::ForkQueued
+        ));
         let owner = self.registration.owner();
         if owner.stopped.load(Ordering::Acquire) {
             return Err(io::ErrorKind::BrokenPipe.into());
@@ -445,8 +648,24 @@ impl RegisteredNodeOpening {
         {
             return Err(io::ErrorKind::InvalidInput.into());
         }
-        let provider = opening.file.disk().memory().clone();
+        let provider = owner.provider.clone();
         drop(opening);
+        let report = AdmittedReadReport::new(
+            &provider,
+            ReaderState {
+                phase,
+                transaction: None,
+                source: None,
+                begin: Observation::NotEntered,
+                tables: Observation::NotEntered,
+                outer: Observation::NotEntered,
+                output_admission: Observation::NotEntered,
+                read_failure: Observation::NotEntered,
+                body_panic: Observation::NotEntered,
+                finish_outer: Observation::NotEntered,
+                outcomes_released: false,
+            },
+        )?;
         let database = self.registration.clone();
         let registration = provider.storage_census().register_child(
             provider.clone(),
@@ -456,19 +675,8 @@ impl RegisteredNodeOpening {
                 database,
                 provider: provider.clone(),
                 facades: AtomicUsize::new(1),
-                state: Mutex::new(ReaderState {
-                    phase: NodeReadPhase::Queued,
-                    transaction: None,
-                    begin: Observation::NotEntered,
-                    tables: Observation::NotEntered,
-                    outer: Observation::NotEntered,
-                    output_admission: Observation::NotEntered,
-                    read_failure: Observation::NotEntered,
-                    body_panic: Observation::NotEntered,
-                    finish_outer: Observation::NotEntered,
-                    outcomes_released: false,
-                    auto_retire_routine_failure: false,
-                }),
+                auto_retire_routine_failure: AtomicBool::new(false),
+                state: report,
             },
         )?;
         if owner.stopped.load(Ordering::Acquire)
@@ -476,6 +684,73 @@ impl RegisteredNodeOpening {
         {
             registration.owner().state.lock().phase = NodeReadPhase::Cancelled;
         }
+        let lease = ReadFacadeLease {
+            registration: Some(registration.clone()),
+        };
+        Ok(RegisteredNodeRead {
+            registration,
+            lease,
+        })
+    }
+
+    #[cfg(test)]
+    pub(super) fn retained_verification_constructor_for_test(
+        provider: Arc<dyn NodeDiskMemoryAdmission>,
+        id: StorageOwnerId,
+    ) -> Option<NativeConstructorFailure> {
+        provider
+            .storage_census()
+            .retained_native_constructor::<ReaderRequest>(provider.clone(), id)
+    }
+    /// Prepare the exact startup verification child without beginning it. The
+    /// coordinator must install the returned facade before native dispatch.
+    pub(super) fn queue_startup_verification(
+        &self,
+    ) -> Result<RegisteredNodeRead, NativeConstructorFailure> {
+        let owner = self.registration.owner();
+        let Some(opening) = owner.state.try_lock() else {
+            return Err(NativeConstructorFailure::Preclaim(
+                io::ErrorKind::WouldBlock.into(),
+            ));
+        };
+        if !matches!(opening.mode, NodeOpeningMode::Existing)
+            || opening.phase != NodeOpeningPhase::Open
+            || owner.stopped.load(Ordering::Acquire)
+        {
+            return Err(NativeConstructorFailure::Preclaim(
+                io::ErrorKind::InvalidInput.into(),
+            ));
+        }
+        let provider = owner.provider.clone();
+        drop(opening);
+        let database = self.registration.clone();
+        let registration = provider.storage_census().register_native_startup_child(
+            provider.clone(),
+            &self.registration,
+            |_| Ok(()),
+            |grant| ReaderRequest {
+                database,
+                provider: provider.clone(),
+                facades: AtomicUsize::new(1),
+                auto_retire_routine_failure: AtomicBool::new(false),
+                state: AdmittedReadReport::new_startup(
+                    grant,
+                    ReaderState {
+                        phase: NodeReadPhase::Queued,
+                        transaction: None,
+                        source: None,
+                        begin: Observation::NotEntered,
+                        tables: Observation::NotEntered,
+                        outer: Observation::NotEntered,
+                        output_admission: Observation::NotEntered,
+                        read_failure: Observation::NotEntered,
+                        body_panic: Observation::NotEntered,
+                        finish_outer: Observation::NotEntered,
+                        outcomes_released: false,
+                    },
+                ),
+            },
+        )?;
         let lease = ReadFacadeLease {
             registration: Some(registration.clone()),
         };
@@ -500,6 +775,87 @@ impl RegisteredNodeOpening {
     }
 }
 impl RegisteredNodeRead {
+    /// Recover the exact failed startup verification constructor by its
+    /// provider and generation. The separately installed report stays funded.
+    pub fn retained_constructor(
+        provider: Arc<dyn NodeDiskMemoryAdmission>,
+        id: StorageOwnerId,
+    ) -> Option<NativeConstructorFailure> {
+        provider
+            .storage_census()
+            .retained_native_constructor::<ReaderRequest>(provider.clone(), id)
+    }
+    pub(crate) fn memory_requests() -> io::Result<[u64; 2]> {
+        Ok([
+            AdmittedReadReport::request_bytes()?,
+            crate::StorageCensus::registration_request_bytes::<ReaderRequest>(0)?,
+        ])
+    }
+
+    pub(crate) fn belongs_to(&self, opening: &RegisteredNodeOpening) -> bool {
+        std::ptr::eq(
+            self.registration.owner().database.owner(),
+            opening.registration.owner(),
+        )
+    }
+
+    fn queue_fork(&self) -> io::Result<Self> {
+        let opening = RegisteredNodeOpening {
+            registration: self.registration.owner().database.clone(),
+        };
+        opening.queue_reader(NodeReadPhase::ForkQueued)
+    }
+
+    /// Register an independent reader before forking this exact selected pin.
+    /// An error is pre-registration refusal. Every registered outcome returns
+    /// its actual child ID/report, including failed or cancelled forks.
+    pub fn fork(&self) -> io::Result<Self> {
+        let child = self.queue_fork()?;
+        child.begin_fork(self);
+        Ok(child)
+    }
+
+    fn begin_fork(&self, parent: &Self) -> NodeReadPhase {
+        let request = self.registration.owner();
+        let parent_request = parent.registration.owner();
+        // These are private construction invariants; no caller can nominate a
+        // foreign opening or substitute the child for its selected parent.
+        assert!(!std::ptr::eq(request, parent_request));
+        assert!(std::ptr::eq(
+            request.database.owner(),
+            parent_request.database.owner()
+        ));
+        let parent_state = parent_request.state.lock();
+        let mut state = request.state.lock();
+        // The census can expose a facade immediately after registration. A
+        // recovered begin cannot dispatch ForkQueued; a finish/retire may win
+        // and cancel it. Never overwrite that winning terminal observation.
+        if state.phase != NodeReadPhase::ForkQueued {
+            return state.phase;
+        }
+        state.outcomes_released = false;
+        state.outer = Observation::Entered;
+        match catch_unwind(AssertUnwindSafe(|| {
+            request.fork_locked(&mut state, &parent_state);
+            drop(parent_state);
+            if state.begin.success() {
+                request.verify_tables_locked(&mut state);
+            }
+        })) {
+            Ok(()) => state.outer = Observation::Returned(Ok(())),
+            Err(payload) => {
+                state.outer = Observation::Panicked(payload);
+                state.phase = NodeReadPhase::Failed;
+                request
+                    .database
+                    .owner()
+                    .stopped
+                    .store(true, Ordering::Release);
+            }
+        }
+        state.phase
+    }
+
     /// Keep the exact request and its native observations alive when a
     /// long-lived view returns an error before its own facade is dropped.
     pub(crate) fn retain_report_facade(&self) -> Self {
@@ -523,22 +879,28 @@ impl RegisteredNodeRead {
     /// The body owns the first unwind payload. It cannot be resumed after
     /// custody transfers to this exact census child.
     pub(crate) fn preserve_body_panic(&self, payload: Box<dyn std::any::Any + Send>) {
-        let mut state = self.registration.owner().state.lock();
+        let request = self.registration.owner();
+        let mut state = request.state.lock();
         if matches!(state.body_panic, Observation::NotEntered) {
             state.body_panic = Observation::Panicked(payload);
             state.outcomes_released = false;
-            state.auto_retire_routine_failure = false;
+            request
+                .auto_retire_routine_failure
+                .store(false, Ordering::Release);
         }
     }
 
     /// Drop during an external unwind has no access to that payload. Mark
     /// the interrupted body so a clean native close cannot auto-retire it.
     pub(crate) fn mark_unwinding_body(&self) {
-        let mut state = self.registration.owner().state.lock();
+        let request = self.registration.owner();
+        let mut state = request.state.lock();
         if matches!(state.body_panic, Observation::NotEntered) {
             state.body_panic = Observation::Entered;
             state.outcomes_released = false;
-            state.auto_retire_routine_failure = false;
+            request
+                .auto_retire_routine_failure
+                .store(false, Ordering::Release);
         }
     }
 
@@ -566,11 +928,59 @@ impl RegisteredNodeRead {
     pub fn id(&self) -> StorageOwnerId {
         self.registration.id()
     }
+    pub(crate) fn admitted_report(&self) -> AdmittedReadReport {
+        self.registration.owner().state.clone()
+    }
+    pub(crate) fn provider(&self) -> Arc<dyn NodeDiskMemoryAdmission> {
+        self.registration.owner().provider.clone()
+    }
+    /// Permission and the exact recognized outcome are one transition. An
+    /// observer can keep the report locked indefinitely; retirement never waits
+    /// for that observer and never acknowledges a later unknown observation.
+    pub(crate) fn try_acknowledge_routine(&self) -> bool {
+        let request = self.registration.owner();
+        let Some(mut state) = request.state.try_lock() else {
+            return false;
+        };
+        request.finish_observed(&mut state);
+        state.acknowledge_settled_routine()
+    }
+
+    /// Release an already-checked facade without re-acknowledging outcomes.
+    /// A recovered facade may have added an unknown failure since permission;
+    /// its reset outcomes_released flag must still prevent census retirement.
+    pub(crate) fn retire_acknowledged(self) -> StorageCensusDisposition {
+        let Self {
+            registration,
+            mut lease,
+        } = self;
+        let facade = lease.registration.take().expect("read facade registration");
+        let previous = facade.owner().facades.fetch_sub(1, Ordering::AcqRel);
+        debug_assert_ne!(previous, 0);
+        drop(facade);
+        drop(lease);
+        registration.retire()
+    }
     pub fn begin(&self) -> NodeReadPhase {
+        self.begin_queued(false)
+            .expect("ordinary begin always reports its phase")
+    }
+
+    /// Dispatch only a still-unbegun request. The phase check and actual native
+    /// acquisition share one state lock, so a recovered begin can never lend an
+    /// older Active root to prospective publication capture.
+    pub(crate) fn begin_unbegun(&self) -> Option<NodeReadPhase> {
+        self.begin_queued(true)
+    }
+
+    fn begin_queued(&self, require_unbegun: bool) -> Option<NodeReadPhase> {
         let request = self.registration.owner();
         let mut state = request.state.lock();
         if state.phase != NodeReadPhase::Queued {
-            return state.phase;
+            return (!require_unbegun).then_some(state.phase);
+        }
+        if require_unbegun && state.has_failures() {
+            return None;
         }
         state.outcomes_released = false;
         state.outer = Observation::Entered;
@@ -586,7 +996,7 @@ impl RegisteredNodeRead {
                     .store(true, Ordering::Release);
             }
         }
-        state.phase
+        Some(state.phase)
     }
     pub fn phase(&self) -> NodeReadPhase {
         self.registration.owner().state.lock().phase
@@ -707,6 +1117,52 @@ impl RegisteredNodeRead {
                 })
             })
     }
+    /// Ordinary construction through this actual Active registered reader.
+    /// The report owns any provider/native failure before it can escape.
+    pub(crate) fn prepare_point_read(
+        &self,
+        max_value_bytes: usize,
+    ) -> Result<kasumi_kv::PreparedPointRead, NodeReadAccessError> {
+        self.read_current(|transaction| transaction.prepare_point_read(max_value_bytes))
+    }
+
+    pub(crate) fn record_length_prepared(
+        &self,
+        key: &[u8],
+        workspace: &mut kasumi_kv::PreparedPointRead,
+    ) -> Result<Option<usize>, NodeReadAccessError> {
+        if key.is_empty() || key.len() > 4096 {
+            return Err(NodeReadAccessError::InvalidInput);
+        }
+        if self.is_protected_source() {
+            return self.source_record_length_prepared(key, workspace);
+        }
+        self.read_current(|transaction| {
+            transaction.point_length_prepared(crate::RECORDS, key, workspace)
+        })
+    }
+
+    pub(crate) fn record_bytes_prepared<'workspace>(
+        &self,
+        key: &[u8],
+        max_value_bytes: usize,
+        workspace: &'workspace mut kasumi_kv::PreparedPointRead,
+    ) -> Result<Option<&'workspace [u8]>, NodeReadAccessError> {
+        if key.is_empty()
+            || key.len() > 4096
+            || max_value_bytes == 0
+            || max_value_bytes > crate::MAX_BATCH
+        {
+            return Err(NodeReadAccessError::InvalidInput);
+        }
+        if self.is_protected_source() {
+            return self.source_record_bytes_prepared(key, max_value_bytes, workspace);
+        }
+        self.read_current(|transaction| {
+            transaction.get_bytes_prepared(crate::RECORDS, key, max_value_bytes, workspace)
+        })
+    }
+
     pub fn catalog_exists(&self, hash: [u8; 32]) -> Result<bool, NodeReadAccessError> {
         self.read_current(|transaction| transaction.key_exists(crate::CATALOG, hash.as_slice()))
     }
@@ -772,10 +1228,17 @@ impl RegisteredNodeRead {
         let request = self.registration.owner();
         let mut clean_finished = false;
         if let Some(mut state) = request.state.try_lock() {
-            if state.phase == NodeReadPhase::Queued {
+            if matches!(
+                state.phase,
+                NodeReadPhase::Queued | NodeReadPhase::ForkQueued
+            ) {
                 state.phase = NodeReadPhase::Cancelled;
             }
-            state.outcomes_released = true;
+            // A recovered ordinary facade cannot acknowledge source exchange
+            // or cleanup originals. Its private source owner has a separate gate.
+            if state.source.is_none() {
+                state.outcomes_released = true;
+            }
             clean_finished = state.phase == NodeReadPhase::Finished && !state.has_failures();
         }
         let retry = clean_finished.then(|| (request.provider.clone(), self.registration.id()));
@@ -803,7 +1266,23 @@ impl NodeReadReport<'_> {
         self.state.phase
     }
     pub fn begin(&self) -> TerminalObservation<'_, kasumi_kv::TransactionError> {
-        self.state.begin.borrow()
+        match self.state.begin.borrow() {
+            TerminalObservation::NotEntered => TerminalObservation::NotEntered,
+            TerminalObservation::Entered => TerminalObservation::Entered,
+            TerminalObservation::Returned(Ok(())) => TerminalObservation::Returned(Ok(())),
+            TerminalObservation::Returned(Err(error)) => {
+                TerminalObservation::Returned(Err(error.original()))
+            }
+            TerminalObservation::Panicked(payload) => TerminalObservation::Panicked(payload),
+        }
+    }
+    /// The actual native acquisition outcome, distinct from local rejection or
+    /// an absent transaction. Its original error remains at the same address.
+    pub fn acquisition_failure(&self) -> Option<&kasumi_kv::ReadAcquisitionFailure> {
+        match &self.state.begin {
+            Observation::Returned(Err(ReadBeginFailure::Native(error))) => Some(error),
+            _ => None,
+        }
     }
     pub fn tables(&self) -> TerminalObservation<'_, NodeReadTablesError> {
         self.state.tables.borrow()
@@ -854,6 +1333,92 @@ mod retirement_tests {
     }
 
     #[test]
+    fn routine_permission_never_acknowledges_recovered_unknown_after_its_state_transition() {
+        let directory = private_tempdir().unwrap();
+        let path = directory.path().join("routine-permission-race.kv");
+        let memory = TestDiskMemory::new(256 << 20, 4096);
+        let disk =
+            retry_disk_registry(|| NodeDisk::fixture_for_path(&path, memory.clone())).unwrap();
+        let opening = RegisteredNodeOpening::prepare(
+            &path,
+            NODE_STORE_ID,
+            disk,
+            NodeOpeningMode::Create,
+            crate::test_utils::node_storage_config(),
+        )
+        .unwrap();
+        assert_eq!(opening.open(), NodeOpeningPhase::Open);
+        let tables = opening.queue_node_tables().unwrap();
+        assert_eq!(tables.run(), NodeWriterPhase::Finished);
+        opening.publish_ready_after_tables(&tables).unwrap();
+        assert_eq!(tables.retire(), StorageCensusDisposition::Retired);
+        let hash = [12u8; 32];
+        {
+            let state = opening.registration.owner().state.lock();
+            let transaction = state.engine.database().unwrap().begin_write().unwrap();
+            transaction
+                .open_table(crate::CATALOG)
+                .unwrap()
+                .insert(hash.as_slice(), b"ciphertext".as_slice())
+                .unwrap();
+            transaction.commit().unwrap();
+        }
+        let reader = opening.queue_read().unwrap();
+        assert_eq!(reader.begin(), NodeReadPhase::Active);
+        assert!(matches!(
+            reader.catalog_bytes(hash, 1),
+            Err(NodeReadAccessError::Reported)
+        ));
+        let id = reader.id();
+        let report = reader.admitted_report();
+        let recovered = RegisteredNodeRead::retained(memory.clone(), id).unwrap();
+        assert!(reader.try_acknowledge_routine());
+        // The exact production split permits another existing facade to win
+        // here. Its original payload must revoke routine retirement permission.
+        let recovered = std::thread::spawn(move || {
+            recovered.preserve_body_panic(Box::new(0xbad_u64));
+            recovered
+        })
+        .join()
+        .unwrap();
+        assert_eq!(
+            reader.retire_acknowledged(),
+            StorageCensusDisposition::Retained
+        );
+        assert!(
+            !recovered
+                .registration
+                .owner()
+                .state
+                .lock()
+                .outcomes_released
+        );
+        drop(recovered);
+        assert_eq!(
+            memory.storage_census().drain_owner(id),
+            StorageCensusDisposition::Retained
+        );
+        assert!(!report.try_routine_diagnostic());
+        {
+            let report = report.report();
+            let TerminalObservation::Panicked(payload) = report.body_panic() else {
+                panic!()
+            };
+            assert_eq!(payload.downcast_ref::<u64>(), Some(&0xbad));
+        }
+        // Explicit legacy acknowledgment is used only to clean up this test's
+        // deliberately injected unknown. The routine path never performed it.
+        assert_eq!(
+            RegisteredNodeRead::retained(memory.clone(), id)
+                .unwrap()
+                .retire(),
+            StorageCensusDisposition::Retired
+        );
+        assert_eq!(opening.close().unwrap(), DatabaseOpenSettlement::Closed);
+        assert_eq!(opening.retire(), StorageCensusDisposition::Retired);
+    }
+
+    #[test]
     fn finished_reader_retries_a_transient_busy_census_owner() {
         let memory = TestDiskMemory::new(1 << 20, 1);
         let provider: Arc<dyn NodeDiskMemoryAdmission> = memory.clone();
@@ -886,9 +1451,14 @@ mod retirement_tests {
         let memory = TestDiskMemory::new(256 << 20, 4096);
         let disk =
             retry_disk_registry(|| NodeDisk::fixture_for_path(&path, memory.clone())).unwrap();
-        let opening =
-            RegisteredNodeOpening::prepare(&path, NODE_STORE_ID, disk, NodeOpeningMode::Create)
-                .unwrap();
+        let opening = RegisteredNodeOpening::prepare(
+            &path,
+            NODE_STORE_ID,
+            disk,
+            NodeOpeningMode::Create,
+            crate::test_utils::node_storage_config(),
+        )
+        .unwrap();
         assert_eq!(opening.open(), NodeOpeningPhase::Open);
         let tables = opening.queue_node_tables().unwrap();
         assert_eq!(tables.run(), NodeWriterPhase::Finished);
@@ -924,7 +1494,21 @@ mod retirement_tests {
             );
             std::thread::yield_now();
         }
-        let later = RegisteredNodeRead::retained(memory.clone(), id).unwrap();
+        // This exact registration and state guard still own the sole reader.
+        // Nonblocking lookup may observe the dropping worker's metadata borrow.
+        assert_eq!(held.id(), id);
+        assert_eq!(memory.storage_census().snapshot().readers, 1);
+        let later = loop {
+            if let Some(later) = RegisteredNodeRead::retained(memory.clone(), id) {
+                assert_eq!(later.id(), id);
+                break later;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "reader recovery remained busy during last drop"
+            );
+            std::thread::yield_now();
+        };
         drop(state);
         drop(held);
         worker.join().unwrap();
@@ -943,9 +1527,14 @@ mod retirement_tests {
         let memory = TestDiskMemory::new(256 << 20, 4096);
         let disk =
             retry_disk_registry(|| NodeDisk::fixture_for_path(&path, memory.clone())).unwrap();
-        let opening =
-            RegisteredNodeOpening::prepare(&path, NODE_STORE_ID, disk, NodeOpeningMode::Create)
-                .unwrap();
+        let opening = RegisteredNodeOpening::prepare(
+            &path,
+            NODE_STORE_ID,
+            disk,
+            NodeOpeningMode::Create,
+            crate::test_utils::node_storage_config(),
+        )
+        .unwrap();
         assert_eq!(opening.open(), NodeOpeningPhase::Open);
         let tables = opening.queue_node_tables().unwrap();
         assert_eq!(tables.run(), NodeWriterPhase::Finished);
@@ -986,6 +1575,7 @@ mod retirement_tests {
             uuid::Uuid::from_u128(2),
             other_disk,
             NodeOpeningMode::Create,
+            crate::test_utils::node_storage_config(),
         )
         .unwrap();
         assert_eq!(other_opening.open(), NodeOpeningPhase::Open);
@@ -1040,9 +1630,14 @@ mod retirement_tests {
         let memory = TestDiskMemory::new(256 << 20, 4096);
         let disk =
             retry_disk_registry(|| NodeDisk::fixture_for_path(&path, memory.clone())).unwrap();
-        let opening =
-            RegisteredNodeOpening::prepare(&path, NODE_STORE_ID, disk, NodeOpeningMode::Create)
-                .unwrap();
+        let opening = RegisteredNodeOpening::prepare(
+            &path,
+            NODE_STORE_ID,
+            disk,
+            NodeOpeningMode::Create,
+            crate::test_utils::node_storage_config(),
+        )
+        .unwrap();
         assert_eq!(opening.open(), NodeOpeningPhase::Open);
         let tables = opening.queue_node_tables().unwrap();
         assert_eq!(tables.run(), NodeWriterPhase::Finished);
@@ -1106,9 +1701,14 @@ mod retirement_tests {
         let memory = TestDiskMemory::new(256 << 20, 4096);
         let disk =
             retry_disk_registry(|| NodeDisk::fixture_for_path(&path, memory.clone())).unwrap();
-        let opening =
-            RegisteredNodeOpening::prepare(&path, NODE_STORE_ID, disk, NodeOpeningMode::Create)
-                .unwrap();
+        let opening = RegisteredNodeOpening::prepare(
+            &path,
+            NODE_STORE_ID,
+            disk,
+            NodeOpeningMode::Create,
+            crate::test_utils::node_storage_config(),
+        )
+        .unwrap();
         assert_eq!(opening.open(), NodeOpeningPhase::Open);
         let tables = opening.queue_node_tables().unwrap();
         assert_eq!(tables.run(), NodeWriterPhase::Finished);
@@ -1180,9 +1780,14 @@ mod retirement_tests {
         let memory = TestDiskMemory::new(256 << 20, 4096);
         let disk =
             retry_disk_registry(|| NodeDisk::fixture_for_path(&path, memory.clone())).unwrap();
-        let opening =
-            RegisteredNodeOpening::prepare(&path, NODE_STORE_ID, disk, NodeOpeningMode::Create)
-                .unwrap();
+        let opening = RegisteredNodeOpening::prepare(
+            &path,
+            NODE_STORE_ID,
+            disk,
+            NodeOpeningMode::Create,
+            crate::test_utils::node_storage_config(),
+        )
+        .unwrap();
         assert_eq!(opening.open(), NodeOpeningPhase::Open);
         let tables = opening.queue_node_tables().unwrap();
         assert_eq!(tables.run(), NodeWriterPhase::Finished);
@@ -1200,9 +1805,9 @@ mod retirement_tests {
             transaction.commit().unwrap();
         }
         let provider: Arc<dyn NodeDiskMemoryAdmission> = memory.clone();
-        let database = crate::node_database::NodeDatabase::new_registered(
-            opening,
+        let database = crate::node_database::NodeDatabase::new_registered_locator(
             provider,
+            opening.id(),
             "reader metadata contention fixture",
         );
         let reader = database.queue_registered_read().unwrap();
@@ -1226,6 +1831,12 @@ mod retirement_tests {
 
         database.close().unwrap();
         assert_eq!(memory.storage_census().snapshot().readers, 0);
+        assert_eq!(memory.storage_census().snapshot().databases, 1);
+        assert_eq!(
+            opening.report().engine().settlement(),
+            DatabaseOpenSettlement::Disposed
+        );
+        assert_eq!(opening.retire(), StorageCensusDisposition::Retired);
         assert_eq!(memory.storage_census().snapshot().databases, 0);
         assert!(RegisteredNodeRead::retained(memory.clone(), reader_id).is_none());
     }
@@ -1261,9 +1872,14 @@ mod retirement_tests {
         let memory = TestDiskMemory::new(256 << 20, 4096);
         let disk =
             retry_disk_registry(|| NodeDisk::fixture_for_path(&path, memory.clone())).unwrap();
-        let opening =
-            RegisteredNodeOpening::prepare(&path, NODE_STORE_ID, disk, NodeOpeningMode::Create)
-                .unwrap();
+        let opening = RegisteredNodeOpening::prepare(
+            &path,
+            NODE_STORE_ID,
+            disk,
+            NodeOpeningMode::Create,
+            crate::test_utils::node_storage_config(),
+        )
+        .unwrap();
         assert_eq!(opening.open(), NodeOpeningPhase::Open);
         let tables = opening.queue_node_tables().unwrap();
         assert_eq!(tables.run(), NodeWriterPhase::Finished);
@@ -1286,9 +1902,9 @@ mod retirement_tests {
             })
             .unwrap();
         let child_id = child.id();
-        let database = crate::node_database::NodeDatabase::new_registered(
-            opening,
+        let database = crate::node_database::NodeDatabase::new_registered_locator(
             provider.clone(),
+            opening.id(),
             "disposed child census fixture",
         );
         let worker = std::thread::spawn(move || child.retire());
@@ -1320,6 +1936,16 @@ mod retirement_tests {
 
         database.close().unwrap();
         assert_eq!(memory.storage_census().snapshot().readers, 0);
+        assert_eq!(memory.storage_census().snapshot().databases, 1);
+        assert_eq!(
+            opening.report().engine().settlement(),
+            DatabaseOpenSettlement::Disposed
+        );
+        assert_eq!(opening.retire(), StorageCensusDisposition::Retired);
         assert_eq!(memory.storage_census().snapshot().databases, 0);
     }
 }
+
+#[cfg(test)]
+#[path = "read_fork_tests.rs"]
+mod fork_tests;

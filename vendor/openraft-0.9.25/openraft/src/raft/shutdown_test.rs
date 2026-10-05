@@ -108,15 +108,12 @@ async fn fixture(core_exit: CoreExit, ticker_panics: bool) -> Fixture {
         tx_shutdown: Mutex::new(None),
         core_state: Mutex::new(CoreState::Running(core)),
         snapshot: Mutex::new(None),
+        snapshot_install: Arc::new(Mutex::new(())),
+        pending_snapshot: crate::core::sm::pending_snapshot::PendingSnapshot::new(),
     };
-    tokio::time::timeout(Duration::from_secs(5), observed)
-        .await
-        .unwrap()
-        .unwrap();
+    tokio::time::timeout(Duration::from_secs(5), observed).await.unwrap().unwrap();
     Fixture {
-        raft: Raft {
-            inner: Arc::new(inner),
-        },
+        raft: Raft { inner: Arc::new(inner) },
         release,
         core_dropped,
         ticker_dropped,
@@ -130,18 +127,10 @@ async fn cancel_after_core_join(raft: &Raft<ShutdownConfig>) {
     tokio::time::timeout(
         Duration::from_secs(5),
         std::future::poll_fn(|cx| {
-            assert!(
-                closing.as_mut().poll(cx).is_pending(),
-                "ticker must still be owned"
-            );
+            assert!(closing.as_mut().poll(cx).is_pending(), "ticker must still be owned");
             // The core JoinHandle wakes this waiter if its join was not ready yet.
             // Once shutdown reaches the held ticker, the exact core result is Done.
-            if raft
-                .inner
-                .core_state
-                .try_lock()
-                .is_ok_and(|state| matches!(*state, CoreState::Done(_)))
-            {
+            if raft.inner.core_state.try_lock().is_ok_and(|state| matches!(*state, CoreState::Done(_))) {
                 Poll::Ready(())
             } else {
                 Poll::Pending
@@ -165,11 +154,7 @@ async fn cancelled_shutdown_after_core_join_retains_ticker_and_both_failures() {
                 core_task_id,
                 ticker_task_id,
             } = fixture(
-                if core_panics {
-                    CoreExit::Panic
-                } else {
-                    CoreExit::Normal
-                },
+                if core_panics { CoreExit::Panic } else { CoreExit::Normal },
                 ticker_panics,
             )
             .await;
@@ -180,9 +165,7 @@ async fn cancelled_shutdown_after_core_join_retains_ticker_and_both_failures() {
             cancel_after_core_join(&raft.clone()).await;
             assert!(!ticker_dropped.load(Ordering::Acquire));
             release.send(()).unwrap();
-            let result = tokio::time::timeout(Duration::from_secs(5), raft.shutdown())
-                .await
-                .unwrap();
+            let result = tokio::time::timeout(Duration::from_secs(5), raft.shutdown()).await.unwrap();
             if core_panics || ticker_panics {
                 let failure = result.unwrap_err();
                 assert_eq!(failure.core(), core_panics.then_some(&Fatal::Panicked));
@@ -217,10 +200,7 @@ async fn cancelled_shutdown_after_core_join_retains_ticker_and_both_failures() {
                     ));
                 }
                 if let Some(original) = ticker_error {
-                    assert!(Arc::ptr_eq(
-                        &original.upgrade().unwrap(),
-                        again.ticker().unwrap()
-                    ));
+                    assert!(Arc::ptr_eq(&original.upgrade().unwrap(), again.ticker().unwrap()));
                 }
             } else {
                 result.unwrap();
@@ -245,10 +225,7 @@ async fn aborted_core_still_drains_ticker_and_retains_distinct_cancellation() {
     assert!(core_dropped.load(Ordering::Acquire));
     assert!(!ticker_dropped.load(Ordering::Acquire));
     release.send(()).unwrap();
-    let failure = tokio::time::timeout(Duration::from_secs(5), raft.shutdown())
-        .await
-        .unwrap()
-        .unwrap_err();
+    let failure = tokio::time::timeout(Duration::from_secs(5), raft.shutdown()).await.unwrap().unwrap_err();
     assert_eq!(failure.core(), Some(&Fatal::Cancelled));
     assert!(failure.core_join_error().unwrap().is_cancelled());
     assert_eq!(failure.core_join_error().unwrap().id(), core_task_id);
@@ -260,8 +237,5 @@ async fn aborted_core_still_drains_ticker_and_retains_distinct_cancellation() {
         failure.core_join_error().unwrap(),
         again.core_join_error().unwrap()
     ));
-    assert!(Arc::ptr_eq(
-        failure.ticker().unwrap(),
-        again.ticker().unwrap()
-    ));
+    assert!(Arc::ptr_eq(failure.ticker().unwrap(), again.ticker().unwrap()));
 }

@@ -43,39 +43,48 @@ pub(crate) fn check_format(custody: &CustodyStore) -> Result<()> {
     }
     Ok(())
 }
-pub(crate) fn stage(image: &SnapshotImage, limit: u64) -> Result<(EncryptedTable, WriteOp)> {
-    ensure!(
-        image.len() <= limit,
-        "closed snapshot exceeds configured disk budget"
-    );
-    let table = EncryptedTable::new(
-        image.disk(),
+pub(crate) fn stage(
+    image: &SnapshotImage,
+    limit: u64,
+) -> std::result::Result<(EncryptedTable, WriteOp), kasumi_store::ScratchOperationFailure> {
+    let disk_budget = kasumi_store::ScratchOperationFailure::ordinary(|| {
+        ensure!(
+            image.len() <= limit,
+            "closed snapshot exceeds configured disk budget"
+        );
         image
             .len()
             .checked_mul(4)
             .and_then(|n| n.checked_add(64 << 20))
-            .context("closed snapshot staging overflow")?,
+            .context("closed snapshot staging overflow")
+    })?;
+    let table = EncryptedTable::new(
+        image.disk(),
+        disk_budget,
+        image.disk().native_cache_config(),
     )?;
-    let manifest = Manifest {
-        version: 1,
-        bytes: image.len(),
-        chunks: image.len().div_ceil(CHUNK as u64),
-        sha256: image.sha256().into(),
-    };
-    let mut reader = image.reader();
-    let mut remaining = image.len();
-    let mut buffer = vec![0u8; CHUNK];
-    for index in 0..manifest.chunks {
-        let size = remaining.min(CHUNK as u64) as usize;
-        reader.read_exact(&mut buffer[..size])?;
-        table.insert(&index.to_be_bytes(), &buffer[..size])?;
-        remaining -= size as u64;
-    }
-    ensure!(remaining == 0, "closed snapshot chunks incomplete");
-    Ok((
-        table,
-        WriteOp::put(META, MANIFEST, serde_json::to_vec(&manifest)?),
-    ))
+    kasumi_store::ScratchOperationFailure::ordinary(|| {
+        let manifest = Manifest {
+            version: 1,
+            bytes: image.len(),
+            chunks: image.len().div_ceil(CHUNK as u64),
+            sha256: image.sha256().into(),
+        };
+        let mut reader = image.reader();
+        let mut remaining = image.len();
+        let mut buffer = vec![0u8; CHUNK];
+        for index in 0..manifest.chunks {
+            let size = remaining.min(CHUNK as u64) as usize;
+            reader.read_exact(&mut buffer[..size])?;
+            table.insert(&index.to_be_bytes(), &buffer[..size])?;
+            remaining -= size as u64;
+        }
+        ensure!(remaining == 0, "closed snapshot chunks incomplete");
+        Ok((
+            table,
+            WriteOp::put(META, MANIFEST, serde_json::to_vec(&manifest)?),
+        ))
+    })
 }
 pub(crate) fn load_image(custody: &CustodyStore, limit: u64) -> Result<Option<SnapshotImage>> {
     let store = custody.store();

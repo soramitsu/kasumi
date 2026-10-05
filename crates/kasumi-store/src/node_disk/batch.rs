@@ -279,6 +279,7 @@ pub(super) fn reserved_entries(state: &State) -> usize {
         .namespace_batch
         .as_ref()
         .map_or(0, BatchRecord::reserved_entries)
+        + usize::try_from(state.transaction_files).expect("admitted transaction entry count")
 }
 pub(super) fn reserved_binding(state: &State, binding: NamespaceBinding) -> bool {
     state
@@ -424,6 +425,7 @@ impl NodeDisk {
         if state
             .files
             .checked_add(u64::from(files))
+            .and_then(|n| n.checked_add(state.transaction_files))
             .is_none_or(|n| n > self.config.max_persistent_files)
             || state
                 .directories
@@ -433,6 +435,7 @@ impl NodeDisk {
             || state
                 .open_files
                 .checked_add(files)
+                .and_then(|n| n.checked_add(state.transaction_descriptors))
                 .is_none_or(|n| n > self.config.max_open_files)
             || state
                 .open_directories
@@ -441,6 +444,11 @@ impl NodeDisk {
         {
             return Err(io::ErrorKind::StorageFull.into());
         }
+        state
+            .namespace_generation
+            .checked_add(state.transaction_files)
+            .and_then(|n| n.checked_add(requests.len() as u64))
+            .ok_or(io::ErrorKind::StorageFull)?;
         let id = state
             .namespace_batch_generation
             .checked_add(1)
@@ -488,7 +496,7 @@ impl NodeDisk {
             }
             let count = parent_enrolled
                 .and_then(AccountedInode::directory)
-                .map_or(0, |e| e.children)
+                .map_or(0, |e| e.children + e.transaction_children)
                 .checked_add(
                     record
                         .parts
@@ -512,7 +520,7 @@ impl NodeDisk {
                         return Err(io::ErrorKind::InvalidInput.into());
                     }
                     (
-                        super::rounded(length, self.unit)?,
+                        super::file_ceiling(length, self.unit, self.config.file_allocation_policy)?,
                         Backing::File(Arc::new_uninit()),
                     )
                 }
@@ -531,8 +539,17 @@ impl NodeDisk {
                 progress: Progress::Reserved,
             });
         }
-        state.accounted.try_reserve(requests.len())?;
-        state.live.try_reserve(files as usize)?;
+        let accounted = requests
+            .len()
+            .checked_add(
+                usize::try_from(state.transaction_files).map_err(|_| io::ErrorKind::OutOfMemory)?,
+            )
+            .ok_or(io::ErrorKind::OutOfMemory)?;
+        let live = (files as usize)
+            .checked_add(state.transaction_descriptors as usize)
+            .ok_or(io::ErrorKind::OutOfMemory)?;
+        state.accounted.try_reserve(accounted)?;
+        state.live.try_reserve(live)?;
         // All bounded names and actual owner Arc backing exist before aggregate
         // byte admission and before the first future native descriptor effect.
         self.reserve(&mut state, bytes, work)?;

@@ -5,12 +5,14 @@ mod audit_cli;
 pub mod audit_destination;
 pub mod auth;
 pub mod authority_client;
+mod authority_enrollment_terminal;
 mod authority_node_enrollment;
 pub mod authority_runtime;
 mod backup_cli;
 mod backup_destination_installation;
 pub mod cluster;
 mod control_genesis;
+pub mod data_cli;
 mod data_node_enrollment;
 mod installed_clients;
 #[cfg(test)]
@@ -26,8 +28,11 @@ mod observability;
 mod persistent_disk;
 mod readiness;
 mod readiness_probe;
+#[cfg(test)]
+mod recovery_allocation_watch;
 mod recovery_cli;
 pub mod recovery_runtime;
+mod retired_source_failure;
 pub mod rpc;
 pub mod runtime;
 #[cfg(test)]

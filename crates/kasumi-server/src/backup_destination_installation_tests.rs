@@ -14,21 +14,17 @@ async fn installed() -> (
     let config = RuntimeConfig::load(installation.configuration).unwrap();
     (directory, config, storage)
 }
+type FixtureInstallation = (
+    crate::standalone::InitializedInstallation,
+    crate::runtime_memory::RuntimeStorage,
+);
+type FixtureInitialization =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<FixtureInstallation>> + Send>>;
+
 // Keep the aggregate installer future's construction and poll storage outside
 // the test's frame; use the normal test/runtime stack without increasing it.
 #[inline(never)]
-fn initialize_fixture(
-    directory: PathBuf,
-) -> std::pin::Pin<
-    Box<
-        dyn std::future::Future<
-                Output = Result<(
-                    crate::standalone::InitializedInstallation,
-                    crate::runtime_memory::RuntimeStorage,
-                )>,
-            > + Send,
-    >,
-> {
+fn initialize_fixture(directory: PathBuf) -> FixtureInitialization {
     Box::pin(async move {
         crate::runtime_storage_fixtures::initialize_standalone(&directory, "tenant").await
     })

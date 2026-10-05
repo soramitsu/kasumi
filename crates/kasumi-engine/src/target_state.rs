@@ -70,17 +70,17 @@ impl TenantEngine {
         &self,
         position: &kasumi_raft::AppliedEntryContext,
         bytes: &[u8],
-    ) -> anyhow::Result<kasumi_raft::AppliedResponse> {
+        publisher: &mut dyn kasumi_raft::ApplyPublisher,
+    ) -> anyhow::Result<()> {
         anyhow::ensure!(
             bytes.len() <= MAX_COMMAND_BYTES && position.retirement_seed.is_none(),
             "invalid target command size or custody seed"
         );
         let command: TargetCommand = super::decode_canonical_json(&bytes[PREFIX.len()..])?;
-        let _guard = self
-            .apply_lock
-            .lock()
-            .map_err(|_| error(ErrorCode::Unavailable, "target apply lock poisoned"))?;
-        let previous = self.generation()?;
+        let apply = ApplyOwner::lock(self, || {
+            error(ErrorCode::Unavailable, "target apply lock poisoned").into()
+        })?;
+        let previous = apply.current();
         let revision = self
             .revision_base
             .checked_add(position.log_id.index)
@@ -220,14 +220,14 @@ impl TenantEngine {
         }
         let target_resolutions = if outcome.is_ok() {
             match pending {
-                Some(pending) => pending.persist()?,
+                Some(pending) => pending.stage()?,
                 None => previous.target_resolutions.clone(),
             }
         } else {
             previous.target_resolutions.clone()
         };
         target_resolutions.validate_state(&next)?;
-        self.publish_generation(Some(Arc::new(Generation {
+        let candidate = Arc::new(Generation {
             terminals: previous.terminals.clone(),
             target_resolutions,
             state: next,
@@ -235,11 +235,16 @@ impl TenantEngine {
             receipts: previous.receipts.clone(),
             backup_bindings: previous.backup_bindings.clone(),
             snapshot_accounting: accounting,
+            application_selection: std::sync::OnceLock::new(),
             _read_reservations: vec![],
-        })));
-        Ok(kasumi_raft::AppliedResponse::application(
-            serde_json::to_vec(&outcome)?,
-        ))
+        });
+        let response = kasumi_raft::AppliedResponse::application(serde_json::to_vec(&outcome)?);
+        self.publish_prepared_generation(
+            apply.accept(candidate, ChangedIds::new())?,
+            response,
+            Some(position),
+            publisher,
+        )
     }
 }
 fn complete(

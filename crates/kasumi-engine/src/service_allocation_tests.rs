@@ -86,7 +86,7 @@ fn cancelled_release_retires_its_future_charge_after_inner_drop() {
     let expected = u64::try_from(std::mem::size_of::<ChargeVisibleOnDrop>()).unwrap()
         + RELEASE_FUTURE_ALLOCATION_ALLOWANCE;
     let mut operation = Box::pin(admitted_release_future(&node, || ChargeVisibleOnDrop {
-        node: Arc::clone(&node),
+        node: node.clone(),
         before: before.clone(),
         expected_charge: expected,
         dropped: Arc::clone(&dropped),

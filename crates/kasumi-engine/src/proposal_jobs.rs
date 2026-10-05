@@ -1,7 +1,9 @@
 //! Exact proposal children outlive cancelled callers under process-local custody.
 //! No join/reaper task exists: callers, subsequent admission and typed drain
 //! observe the original BackgroundWork handle directly.
-use super::{Command, ProposalWork, Reservation, WorkRegistration};
+use super::{
+    ProposalBudget, ProposalWork, Reservation, WorkRegistration, proposal_input::ProposalCommand,
+};
 use crate::admission::NodeAdmission;
 use kasumi_serving::{BackgroundWork, BackgroundWorkBudget};
 use kasumi_types::{Error, ErrorCode, Result, drain::*};
@@ -32,8 +34,9 @@ struct State {
 pub(super) struct Response {
     pub(super) bytes: Vec<u8>,
     // Preserve the original owners through response decoding and strict audit.
-    _reservation: Reservation,
     _registration: Arc<WorkRegistration>,
+    // LAST: response/registration backing precedes the same original credit.
+    _reservation: ProposalBudget,
 }
 pub(super) struct Call<T> {
     worker: Arc<BackgroundWork>,
@@ -54,7 +57,11 @@ impl Drop for TerminalFence {
 
 impl Jobs {
     fn required_bytes() -> anyhow::Result<u64> {
-        BackgroundWorkBudget::required_bytes(MAX_PROPOSALS, 1)
+        BackgroundWorkBudget::required_bytes(MAX_PROPOSALS, 1)?
+            .checked_add(kasumi_types::SharedBudgetCharge::required_bytes::<
+                Reservation,
+            >()?)
+            .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::InvalidInput).into())
     }
 
     fn observe_locked(&self, state: &mut State) {
@@ -107,7 +114,11 @@ impl Jobs {
             let mut charge = admission.reserve(bytes, None)?;
             charge.retain(bytes);
             state.budget = Some(
-                BackgroundWorkBudget::new(MAX_PROPOSALS, Arc::new(charge)).map_err(|_| {
+                BackgroundWorkBudget::new(
+                    MAX_PROPOSALS,
+                    kasumi_types::SharedBudgetCharge::new(charge),
+                )
+                .map_err(|_| {
                     Error::new(
                         ErrorCode::ResourceExhausted,
                         "proposal metadata budget unavailable",
@@ -121,7 +132,7 @@ impl Jobs {
     pub(super) fn start(
         &self,
         mut work: ProposalWork,
-        command: Command,
+        command: ProposalCommand,
         max_bytes: usize,
     ) -> Result<Call<Response>> {
         self.start_task(Box::pin(async move {

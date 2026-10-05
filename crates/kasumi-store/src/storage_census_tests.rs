@@ -45,7 +45,7 @@ fn denied_child_registration_never_increments_parent_count() {
     let provider: Arc<dyn NodeDiskMemoryAdmission> = memory.clone();
     let parent = memory
         .storage_census()
-        .register(provider.clone(), 0, || ReadyDatabase)
+        .register_native(provider.clone(), 0, |_| ReadyDatabase)
         .unwrap();
     let constructed = AtomicBool::new(false);
     assert!(
@@ -69,7 +69,7 @@ fn child_registration_waits_for_parent_metadata_observation() {
     let provider: Arc<dyn NodeDiskMemoryAdmission> = memory.clone();
     let parent = memory
         .storage_census()
-        .register(provider.clone(), 0, || ReadyDatabase)
+        .register_native(provider.clone(), 0, |_| ReadyDatabase)
         .unwrap();
     let metadata = memory.storage_census().slots[parent.id().index]
         .metadata
@@ -113,7 +113,7 @@ fn poisoned_parent_metadata_fences_child_registration() {
     let provider: Arc<dyn NodeDiskMemoryAdmission> = memory.clone();
     let parent = memory
         .storage_census()
-        .register(provider.clone(), 0, || ReadyDatabase)
+        .register_native(provider.clone(), 0, |_| ReadyDatabase)
         .unwrap();
     let index = parent.id().index;
     let _ = catch_unwind(AssertUnwindSafe(|| {
@@ -144,7 +144,7 @@ fn panicked_child_constructor_retains_parent_and_both_leases() {
     let provider: Arc<dyn NodeDiskMemoryAdmission> = memory.clone();
     let parent = memory
         .storage_census()
-        .register(provider.clone(), 0, || ReadyDatabase)
+        .register_native(provider.clone(), 0, |_| ReadyDatabase)
         .unwrap();
     assert!(
         memory
@@ -261,7 +261,7 @@ fn settlement_unwind_keeps_the_actual_owner_and_exact_original_payload() {
     let drops = Arc::new(AtomicUsize::new(0));
     let registration = memory
         .storage_census()
-        .register(provider, 0, || PanicOwner {
+        .register_native(provider, 0, |_| PanicOwner {
             cause: Mutex::new(Some(original)),
             actual: Box::new(919),
             drops: drops.clone(),

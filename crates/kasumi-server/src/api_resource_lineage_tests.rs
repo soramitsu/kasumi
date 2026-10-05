@@ -39,7 +39,12 @@ async fn native_resources_and_two_restore_hops_preserve_immutable_issuer_facts()
         )
         .await
         .unwrap();
-    let original_document = fixture.db.get(&owner, "docs", "original").await.unwrap();
+    let original_document = fixture
+        .db
+        .get(&owner, "docs", "original")
+        .await
+        .unwrap()
+        .expect("document exists");
     let original_bytes = serde_json::to_vec(&original_document).unwrap();
     let old_token = fixture.token(
         "person",
@@ -251,7 +256,7 @@ async fn native_resources_and_two_restore_hops_preserve_immutable_issuer_facts()
         let registry = DatabaseRegistry::default();
         registry.insert(restored.clone()).unwrap();
         let data = NativeData::new(registry.clone(), fixture.auth.clone());
-        let admin = NativeAdmin::new(registry, fixture.auth.clone());
+        let admin = NativeAdmin::new(registry, fixture.auth.clone(), fixture.failures.clone());
         let get = || proto::GetRequest {
             collection: "docs".into(),
             id: "original".into(),
@@ -281,7 +286,13 @@ async fn native_resources_and_two_restore_hops_preserve_immutable_issuer_facts()
             "kasumi:read",
             Some(json!({"kind":"database","incarnation":target_incarnation})),
         );
-        let doc = data.get(native(get(), &token)).await.unwrap().into_inner();
+        let doc = data
+            .get(native(get(), &token))
+            .await
+            .unwrap()
+            .into_inner()
+            .document
+            .unwrap();
         assert_eq!(
             serde_json::from_slice::<Value>(&doc.body_json).unwrap(),
             original
@@ -304,6 +315,7 @@ async fn native_resources_and_two_restore_hops_preserve_immutable_issuer_facts()
                     .get(&current_context, "docs", "original")
                     .await
                     .unwrap()
+                    .expect("document exists")
             )
             .unwrap(),
             original_bytes

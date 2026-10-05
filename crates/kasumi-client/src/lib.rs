@@ -34,7 +34,7 @@ pub use retirement_pool::KasumiRetirementPool;
 mod recovery;
 pub use recovery::KasumiRecoveryClient;
 mod lifecycle;
-pub use lifecycle::KasumiLifecycleClient;
+pub use lifecycle::{CurrentControlTopology, CurrentControlTopologyRelease, KasumiLifecycleClient};
 mod authority;
 mod authority_pool;
 mod control_signer;
@@ -44,9 +44,7 @@ pub use signer_publication::CurrentSignerPublication;
 mod data_pool;
 mod mutation_receipt;
 pub use authority_pool::KasumiAuthorityPool;
-pub use data_pool::{
-    KasumiClientPool, RoutedOrderedSeekPage, RoutedQueryPage, RoutedSnapshotLease,
-};
+pub use data_pool::{KasumiClientPool, RoutedQueryPage, RoutedSnapshotLease};
 pub use mutation_receipt::verify_mutation_receipt;
 mod restore_lineage_proof;
 mod retirement_proof;
@@ -58,6 +56,18 @@ pub use retirement_proof::{
 mod backup_proof;
 mod retirement;
 pub use backup_proof::VerifiedBackupCheckpoint;
+
+mod kasumi;
+pub use kasumi::{Kasumi, QueryPage, TypedDocument};
+
+/// Everything needed to read and write data: `use kasumi_client::prelude::*;`.
+pub mod prelude {
+    pub use crate::{ClientError, Kasumi, QueryPage, TypedDocument};
+    pub use kasumi_types::{
+        Aggregation, Condition, Document, ErrorCode, Filter, Mutation, MutationBatch, Precondition,
+        QueryRequest, QueryResponse, QueryRow, Sort, TextMode, TextSearch, WriteReceipt,
+    };
+}
 
 pub mod proto {
     tonic::include_proto!("kasumi.v1");
@@ -92,11 +102,13 @@ pub enum ClientError {
     #[error("native transport failed: {0}")]
     Transport(#[from] tonic::Status),
     /// Admitted decode failures retain no peer-controlled strings or metadata after
-    /// their admission owner is released. The code remains usable for routing.
+    /// their admission owner is released. The code remains usable for routing,
+    /// and `database` keeps the server's Kasumi error code when it reported one.
     #[error("native decode failed ({code:?}): {reason}")]
     DecodeRejected {
         code: tonic::Code,
         reason: &'static str,
+        database: Option<kasumi_types::ErrorCode>,
     },
     #[error("invalid native JSON")]
     Json(#[from] serde_json::Error),
@@ -106,6 +118,27 @@ pub enum ClientError {
     Authorization,
     #[error("native request exceeds its byte limit")]
     RequestTooLarge,
+}
+
+impl ClientError {
+    /// The database's own error code, when the server rejected the request.
+    /// It is more specific than the gRPC status: `IndexRequired`,
+    /// `CursorExpired` and `Sealed` share one gRPC code, for example, and
+    /// `UnknownOutcome` means "resolve or retry the same batch", never "give up".
+    pub fn code(&self) -> Option<kasumi_types::ErrorCode> {
+        match self {
+            Self::Transport(status) => database_code(status),
+            Self::DecodeRejected { database, .. } => *database,
+            _ => None,
+        }
+    }
+}
+
+/// Kasumi statuses carry `{"code": ..., "message": ...}` in their details.
+pub(crate) fn database_code(status: &tonic::Status) -> Option<kasumi_types::ErrorCode> {
+    serde_json::from_slice::<kasumi_types::Error>(status.details())
+        .ok()
+        .map(|error| error.code)
 }
 
 /// Operator-selected connection identity and trust. Deliberately not Debug or

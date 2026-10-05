@@ -7,9 +7,9 @@ async fn native_sdk_query_feed_schema_preserve_literal_values_and_admission() {
     };
     use kasumi_transport::{ClientAuthentication, TlsIdentity};
     use kasumi_types::{
-        AggregateFunction, Aggregation, ChangeFeedPage, ChangeFeedStart, CollectionRetentionClass,
-        CollectionWriteMode, Precondition, Predicate, QueryRequest, ReadAssertion, ReadChangeFeed,
-        ReadSchema, SchemaChange, SchemaChangeSet,
+        Aggregation, ChangeFeedPage, ChangeFeedStart, CollectionRetentionClass,
+        CollectionWriteMode, Precondition, QueryRequest, ReadAssertion, ReadChangeFeed, ReadSchema,
+        SchemaChange, SchemaChangeSet,
     };
     use std::{collections::BTreeMap, time::Duration};
 
@@ -58,7 +58,11 @@ async fn native_sdk_query_feed_schema_preserve_literal_values_and_admission() {
         TlsIdentity::from_pem(certificate.pem().as_bytes(), key.serialize_pem().as_bytes()).unwrap()
     };
     let client_identity = identity();
-    let admin = NativeAdmin::new(fixture.registry.clone(), fixture.auth.clone());
+    let admin = NativeAdmin::new(
+        fixture.registry.clone(),
+        fixture.auth.clone(),
+        fixture.failures.clone(),
+    );
     let routers = [
         tonic::service::Routes::new(fixture.data().service()).into_axum_router(),
         tonic::service::Routes::new(admin.service()).into_axum_router(),
@@ -279,18 +283,7 @@ async fn native_sdk_query_feed_schema_preserve_literal_values_and_admission() {
     drop(admitted_batch);
     drained(&resources).await;
 
-    let query = QueryRequest {
-        collection: "literal".into(),
-        filter: Predicate::All,
-        sort: vec![],
-        projection: vec![],
-        aggregates: vec![],
-        group_by: vec![],
-        text: None,
-        limit: 1,
-        cursor: None,
-        allow_scan: true,
-    };
+    let query = QueryRequest::new("literal").allow_scan().limit(1);
     let first = pool.query(&query, &options()).await.unwrap();
     let original_query_revision = first.response().revision;
     let original_cursor = first.response().cursor.clone().unwrap();
@@ -341,20 +334,15 @@ async fn native_sdk_query_feed_schema_preserve_literal_values_and_admission() {
     drained(&resources).await;
 
     let mut aggregate = query.clone();
-    aggregate.limit = 16;
-    aggregate.aggregates = [
+    aggregate.limit = None;
+    aggregate.aggregate = [
         "$serde_json::private::Number",
         "$serde_json::private::RawValue",
     ]
-    .map(|alias| Aggregation {
-        alias: alias.into(),
-        function: AggregateFunction::Count,
-        field: None,
-        scale: None,
-    })
+    .map(|alias| (alias.to_owned(), Aggregation::count()))
     .into();
     let result = data.query(bearer, &aggregate, &options()).await.unwrap();
-    assert_eq!(result.rows.len(), 3);
+    assert!(result.rows.is_empty());
     assert_eq!(result.aggregates.len(), 1);
     assert_eq!(
         result.aggregates[0]["values"],

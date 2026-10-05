@@ -59,18 +59,18 @@ impl NodeDisk {
         let owners = mul(add(handles, 1)?, add(handle, terminal_io)?)?;
         let directory_owner = add(
             add(size::<directory::DirectoryOwner>()?, 16)?,
-            add(
-                NATIVE_HANDLE_WORKSPACE,
-                add(
-                    NATIVE_HANDLE_WORKSPACE,
-                    add(parent_ancestry, add(paths, components)?)?,
-                )?,
-            )?,
+            add(parent_ancestry, add(paths, components)?)?,
         )?;
-        let directory_owners = mul(
-            add(u64::from(config.max_open_directories), 1)?,
-            directory_owner,
-        )?;
+        let directory_count = u64::from(config.max_open_directories);
+        let directory_backing = mul(add(directory_count, 1)?, directory_owner)?;
+        // Each counted operational owner retains at most its child and parent.
+        // State serializes one pending operation or operational verification
+        // walk. Fund that single six-slot descriptor/outcome envelope once,
+        // rather than once per owner; it also covers an unpublished root open.
+        // Pending original/outcome/panic fields are included in arc::<Self>()
+        // below. These slot allowances do not qualify native allocator/RSS use.
+        let directory_native = mul(add(mul(2, directory_count)?, 6)?, NATIVE_HANDLE_WORKSPACE)?;
+        let directory_owners = add(directory_backing, directory_native)?;
         // Operational cursors retain counted DirectoryOwners, so a census may
         // not overlap them. At most max_depth operational streams reuse these
         // existing census slots. This does not qualify the underlying native

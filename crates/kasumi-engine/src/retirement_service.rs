@@ -7,25 +7,26 @@ impl Database {
         &self,
         context: RequestContext,
         request: RetireSourceRequest,
-    ) -> Result<VerifiedRetirementReceipt> {
+    ) -> std::result::Result<VerifiedRetirementReceipt, crate::SnapshotFailure> {
         // Verification is a substantial state machine. Keep its resident
         // future off callers' stacks without detaching cancellation or guards.
         let result = Box::pin(self.retire_source_inner(&context, request)).await;
-        self.audit_write_result(&context, result).await
+        self.audit_snapshot_write_result(&context, result).await
     }
 
     async fn retire_source_inner(
         &self,
         context: &RequestContext,
         request: RetireSourceRequest,
-    ) -> Result<VerifiedRetirementReceipt> {
+    ) -> std::result::Result<VerifiedRetirementReceipt, crate::SnapshotFailure> {
         self.access()?;
         request.validate()?;
         if self.engine.generation()?.state.retired {
             return self
                 .retired_custody()?
                 .verify_retirement_receipt(context.clone(), &request.reference()?)
-                .await;
+                .await
+                .map_err(Into::into);
         }
         self.engine.authorize(context, None, Action::Admin)?;
         let reference = request.reference()?;
@@ -37,7 +38,8 @@ impl Database {
             outcome?;
             return self
                 .verify_retirement_receipt(context.clone(), &reference)
-                .await;
+                .await
+                .map_err(Into::into);
         }
         let destination = self.archive_destination(&request.destination)?;
         let verified_closure_digest = self
@@ -62,14 +64,16 @@ impl Database {
         }
         .await;
         release.map_err(|error| {
-            if error.code == ErrorCode::UnknownOutcome {
-                error
-            } else {
-                Error::new(
-                    ErrorCode::UnknownOutcome,
-                    "retirement committed; resolve its exact permanent outcome",
-                )
-            }
+            crate::SnapshotFailure::from({
+                if error.code == ErrorCode::UnknownOutcome {
+                    error
+                } else {
+                    Error::new(
+                        ErrorCode::UnknownOutcome,
+                        "retirement committed; resolve its exact permanent outcome",
+                    )
+                }
+            })
         })
     }
 

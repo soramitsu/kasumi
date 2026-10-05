@@ -6,7 +6,7 @@ use anyhow::{Context, ensure};
 use kasumi_clock::{EpochClock, LeaseClock};
 use kasumi_raft::{BasicNode, Config, RaftGroup, RaftTransport};
 use kasumi_serving::*;
-use kasumi_store::TenantStorageSet;
+use kasumi_store::{ScratchOperationFailure, TenantStorageSet};
 use kasumi_types::drain::{DrainCompletion, DrainFailure, DrainReport, DrainResult};
 use kasumi_types::{Error, ErrorCode, RequestContext, Result};
 use std::{
@@ -219,7 +219,7 @@ impl IndependentAuthority {
         config: Config,
         request_budget: BackgroundWorkBudget,
         snapshot_buffers: Arc<kasumi_raft::SnapshotBufferOwner>,
-    ) -> anyhow::Result<Arc<Self>> {
+    ) -> std::result::Result<Arc<Self>, ScratchOperationFailure> {
         Self::open_existing_with_clock(
             stores,
             installation,
@@ -246,65 +246,76 @@ impl IndependentAuthority {
         request_budget: BackgroundWorkBudget,
         snapshot_buffers: Arc<kasumi_raft::SnapshotBufferOwner>,
         clock: Arc<EpochClock>,
-    ) -> anyhow::Result<Arc<Self>> {
-        installation.validate()?;
-        settings.validate(node_id)?;
-        let request_jobs = RequestJobs::new(request_budget)?;
-        ensure!(
-            settings.installed_members[&node_id].verifier == signer.verifier_identity()?,
-            "operational signer physical verifier differs from installed authority member"
-        );
-        let installed =
-            crate::bootstrap::load(&stores, &installation, &signer.verifier_identity()?)?;
-        let bootstrap = installed.bootstrap;
-        let voters = bootstrap.voters();
-        let partition = installation
-            .manifest
-            .partitions
-            .get(&installation.partition)
-            .context("partition absent")?;
-        ensure!(
-            signer.certificate().identity.domain
-                == installation
+    ) -> std::result::Result<Arc<Self>, ScratchOperationFailure> {
+        let (request_jobs, backend, bootstrap, voters, group_name, bootstrap_digest) =
+            ScratchOperationFailure::ordinary(|| -> anyhow::Result<_> {
+                installation.validate()?;
+                settings.validate(node_id)?;
+                let request_jobs = RequestJobs::new(request_budget)?;
+                ensure!(
+                    settings.installed_members[&node_id].verifier == signer.verifier_identity()?,
+                    "operational signer physical verifier differs from installed authority member"
+                );
+                let installed =
+                    crate::bootstrap::load(&stores, &installation, &signer.verifier_identity()?)?;
+                let bootstrap = installed.bootstrap;
+                let voters = bootstrap.voters();
+                let partition = installation
                     .manifest
-                    .signing_domain(installation.partition)?,
-            "installed operational signer differs from authority installation root"
-        );
-        ensure!(
-            signer.certificate().identity.generation != 1
-                || *signer.certificate() == bootstrap.initial_signer_certificate,
-            "generation-one signer differs from immutable bootstrap certificate"
-        );
-        signer.check()?;
-        ensure!(
-            settings.resource_budget_bytes >= installed.resource_floor,
-            "authority resource budget is below its durably acknowledged maintenance floor"
-        );
-        let backend = Backend::open_existing(
-            stores.application().clone(),
-            installation.clone(),
-            &bootstrap,
-            settings.resource_budget_bytes,
-        )?;
-        let current = backend.operational_configuration()?;
-        ensure!(
-            current.capacity.max_state_bytes <= settings.resource_budget_bytes,
-            "configured authority node resources cannot fit current durable capacity"
-        );
-        for (id, member) in current.membership.members {
-            ensure!(
-                settings.installed_members.get(&id) == Some(&member),
-                "installed peer trust differs from committed authority membership"
-            );
-        }
-        let bootstrap_digest = digest(&(
-            "kasumi.authority-bootstrap.v1",
-            &installation,
-            &installed.binding,
-        ))?;
+                    .partitions
+                    .get(&installation.partition)
+                    .context("partition absent")?;
+                ensure!(
+                    signer.certificate().identity.domain
+                        == installation
+                            .manifest
+                            .signing_domain(installation.partition)?,
+                    "installed operational signer differs from authority installation root"
+                );
+                ensure!(
+                    signer.certificate().identity.generation != 1
+                        || *signer.certificate() == bootstrap.initial_signer_certificate,
+                    "generation-one signer differs from immutable bootstrap certificate"
+                );
+                signer.check()?;
+                ensure!(
+                    settings.resource_budget_bytes >= installed.resource_floor,
+                    "authority resource budget is below its durably acknowledged maintenance floor"
+                );
+                let backend = Backend::open_existing(
+                    stores.application().clone(),
+                    installation.clone(),
+                    &bootstrap,
+                    settings.resource_budget_bytes,
+                )?;
+                let current = backend.operational_configuration()?;
+                ensure!(
+                    current.capacity.max_state_bytes <= settings.resource_budget_bytes,
+                    "configured authority node resources cannot fit current durable capacity"
+                );
+                for (id, member) in current.membership.members {
+                    ensure!(
+                        settings.installed_members.get(&id) == Some(&member),
+                        "installed peer trust differs from committed authority membership"
+                    );
+                }
+                let bootstrap_digest = digest(&(
+                    "kasumi.authority-bootstrap.v1",
+                    &installation,
+                    installed.binding.as_bytes(),
+                ))?;
+                Ok((
+                    request_jobs,
+                    backend,
+                    bootstrap,
+                    voters,
+                    partition.group.clone(),
+                    bootstrap_digest,
+                ))
+            })?;
         let group = RaftGroup::open(
             node_id,
-            partition.group.clone(),
+            group_name,
             stores,
             backend.clone(),
             transport,
@@ -429,7 +440,9 @@ impl IndependentAuthority {
     async fn write_proposal(&self, command: Vec<u8>, term: u64) -> Result<Vec<u8>> {
         self.check_open()?;
         let mut metrics = self.group.raft().metrics();
-        let response = self.group.write(command);
+        let response = self
+            .group
+            .write(kasumi_raft::ApplicationProposal::generated(command));
         tokio::pin!(response);
         tokio::time::timeout(Duration::from_secs(5), async {
             loop {

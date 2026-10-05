@@ -17,12 +17,15 @@ membership changes or expiry/invalidation of the original readiness coverage
 also withhold the result. Authentication and authorization failures are audited. Failure responses contain no diagnostic state.
 
 `/health` reports whether startup completed and the daemon is serving. `/ready`
-additionally requires an accessible service audit store, usable unpressured node
-admission, complete, fresh coverage of every locally assigned group, fresh diagnostic
-store/serving-authority observations, and a successful quorum barrier for each
-group in the completed sweep. It returns 503
-when these conditions do not hold. A listening socket or remembered leader alone
-does not establish readiness. Draining begins before listeners and workers stop.
+additionally requires an accessible service audit store without persistence
+failure, usable unpressured node admission, ready persistent-disk admission, no
+pending standalone recovery, and complete, fresh coverage of every locally
+hosted group at the current membership epoch. A completed probe reporting a
+negative group state, unavailable quorum, or expired HA serving lease updates
+diagnostics without by itself making the node unready. The healthy-group count
+is diagnostic. `/ready` returns 503 when coverage or the node's own service
+conditions do not hold. A listening socket or remembered leader alone does not
+establish readiness. Draining begins before listeners and workers stop.
 
 `GET /recovery/{operation_id}` takes a canonical hyphenated UUID and returns only
 the exact durable Control operation's
@@ -46,7 +49,9 @@ scrape from reserving its workspace and return 503.
 
 A retained background worker probes every locally assigned group, including
 Control, sequentially with a one-second diagnostic deadline per group. There is
-no group-count cutoff. The worker retains one separately admitted Control topology document and
+no group-count cutoff. A negative local-state probe retains the actual installed
+runtime handle; a missing handle makes coverage unavailable and cannot produce a
+fabricated completed probe. The worker retains one separately admitted Control topology document and
 one selected group at a time. Its fixed coverage metadata is charged to node
 admission; the document and bounded probe workspace have a separate lifetime
 charge. The existing serving task inventory owns and joins the worker during
@@ -59,13 +64,15 @@ runtime first drains the selected tenant and Control Raft cores, then observes
 the retained query and releases its charge. A caught panic or fatal probe error
 keeps its original payload and charge until that shutdown boundary.
 
-A complete sweep is fresh for at most 30 seconds measured from its first probe,
-clipped by the earliest HA serving-lease expiry observed anywhere in the sweep.
-A sweep taking longer than that cannot establish readiness. The previous complete
-sweep remains available during a refresh at the same membership epoch; any newly
-observed failure immediately invalidates it. Partial, stale, unavailable, or
-membership-invalidated coverage never establishes readiness. A later sweep or
-lease renewal cannot extend an already encoded response's original deadline.
+A complete sweep is fresh for at most 30 seconds measured from its first probe.
+HA serving-lease expiry does not clip that coverage deadline. A sweep taking
+longer than 30 seconds cannot establish readiness. The previous complete sweep
+remains available during a refresh at the same membership epoch, including
+completed negative group probes. Unavailable observations, diagnostic timeouts,
+fatal probe failures, and membership changes invalidate coverage. Partial,
+stale, unavailable, or membership-invalidated coverage never establishes
+readiness. A later sweep or lease renewal cannot extend an already encoded
+response's original deadline.
 
 The membership epoch covers the Control topology document, installed route
 mutations, and actual Raft effective membership changes. A synchronous observer in
@@ -73,6 +80,8 @@ OpenRaft invalidates it before membership append, commit, truncation, and snapsh
 changes, including changes not yet published in Control. After each quorum
 barrier, an actor-ordered membership observation checks that membership is applied,
 nonjoint, contains this node, and agrees with the tenant's committed voters.
+The quorum and membership-check results describe group health; a completed
+negative result does not by itself invalidate fresh current-epoch coverage.
 Release checks the original epoch and coverage token in constant time without a
 whole-topology scan or a lagging metrics watch.
 
@@ -220,8 +229,10 @@ open owner, usable filesystem admission and sufficient sampled free space for th
 shared pending growth and minimum-free reservation. Its response fence rechecks
 that requirement immediately before releasing a ready observation.
 
- Health JSON includes `scratch_disk`; Prometheus exposes
+Health JSON includes `scratch_disk`, including its configured per-table
+`native_cache_bytes` ceiling; Prometheus exposes
 `kasumi_scratch_disk_max_bytes`, `kasumi_scratch_disk_min_free_bytes`,
+`kasumi_scratch_disk_native_cache_bytes`,
 `kasumi_scratch_disk_charged_bytes`, `kasumi_scratch_disk_live_files`,
 `kasumi_scratch_disk_filesystem_pending_bytes`, and the optional fresh
 `kasumi_scratch_disk_filesystem_available_bytes` sample, plus optional

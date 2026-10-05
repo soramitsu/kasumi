@@ -4,9 +4,9 @@ extern crate self as kasumi_types;
 pub mod control_topology;
 mod control_topology_protocol;
 pub mod drain;
+mod shared_budget_charge;
 pub use control_topology_protocol::*;
-mod ordered_seek;
-pub use ordered_seek::*;
+pub use shared_budget_charge::SharedBudgetCharge;
 mod security_audit;
 pub use security_audit::*;
 mod tenant_audit;
@@ -54,12 +54,16 @@ mod atomic;
 pub use atomic::*;
 mod history;
 pub use history::*;
+mod shared_document;
+pub use shared_document::{AdmittedDocumentOwner, SharedDocument};
 mod retirement;
 pub use retirement::*;
 mod custody;
 pub use custody::*;
 mod schema;
 pub use schema::*;
+mod query;
+pub use query::*;
 mod signing;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -173,6 +177,24 @@ pub struct RequestContext {
     pub request_id: String,
 }
 
+impl RequestContext {
+    /// Context for an embedding application that has already authenticated
+    /// `principal`. Current policy grants still decide every action.
+    pub fn trusted(
+        tenant: impl Into<String>,
+        principal: impl Into<String>,
+        scopes: impl IntoIterator<Item = Action>,
+    ) -> Self {
+        Self {
+            authorization: RequestAuthorization::service_identity(),
+            principal: principal.into(),
+            tenant: tenant.into(),
+            scopes: scopes.into_iter().collect(),
+            request_id: uuid::Uuid::new_v4().to_string(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
 pub enum Action {
@@ -265,6 +287,9 @@ pub struct Limits {
     pub max_result_bytes: usize,
     pub max_page_size: usize,
     pub max_cursors: usize,
+    /// Admitted resident bytes a tenant's open cursors may retain (each pinned
+    /// document is charged as if only the cursor kept it), and the archived
+    /// plaintext one cold read may materialize.
     pub max_cursor_bytes: usize,
     pub cursor_ttl_ms: u64,
 }
@@ -293,7 +318,7 @@ impl Default for Limits {
             max_result_bytes: 8 << 20,
             max_page_size: 1000,
             max_cursors: 128,
-            max_cursor_bytes: 64 << 20,
+            max_cursor_bytes: 256 << 20,
             cursor_ttl_ms: 60_000,
         }
     }
@@ -383,6 +408,8 @@ pub enum Analyzer {
     JapaneseV1,
 }
 
+/// One write in a batch. `expected` is checked against the document's current
+/// state when the batch applies and defaults to `any`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Mutation {
@@ -391,47 +418,260 @@ pub enum Mutation {
         id: String,
         #[serde(serialize_with = "canonical_json::serialize")]
         body: Value,
-        #[serde(default)]
+        #[serde(default, skip_serializing_if = "Precondition::is_any")]
+        expected: Precondition,
+    },
+    /// Apply an RFC 7396 JSON Merge Patch to an existing document: members
+    /// set to `null` are removed, objects merge recursively, and every other
+    /// value replaces the member. The result is validated like a `put` body.
+    Patch {
+        collection: String,
+        id: String,
+        #[serde(serialize_with = "canonical_json::serialize")]
+        patch: Value,
+        #[serde(default, skip_serializing_if = "Precondition::is_any")]
         expected: Precondition,
     },
     Delete {
         collection: String,
         id: String,
-        #[serde(default)]
+        #[serde(default, skip_serializing_if = "Precondition::is_any")]
         expected: Precondition,
     },
 }
 impl Mutation {
+    pub fn put(
+        collection: impl Into<String>,
+        id: impl Into<String>,
+        body: impl Into<Value>,
+        expected: Precondition,
+    ) -> Self {
+        Self::Put {
+            collection: collection.into(),
+            id: id.into(),
+            body: body.into(),
+            expected,
+        }
+    }
+    pub fn patch(
+        collection: impl Into<String>,
+        id: impl Into<String>,
+        patch: impl Into<Value>,
+        expected: Precondition,
+    ) -> Self {
+        Self::Patch {
+            collection: collection.into(),
+            id: id.into(),
+            patch: patch.into(),
+            expected,
+        }
+    }
+    pub fn delete(
+        collection: impl Into<String>,
+        id: impl Into<String>,
+        expected: Precondition,
+    ) -> Self {
+        Self::Delete {
+            collection: collection.into(),
+            id: id.into(),
+            expected,
+        }
+    }
     pub fn target(&self) -> (&str, &str) {
         match self {
-            Self::Put { collection, id, .. } | Self::Delete { collection, id, .. } => {
-                (collection, id)
-            }
+            Self::Put { collection, id, .. }
+            | Self::Patch { collection, id, .. }
+            | Self::Delete { collection, id, .. } => (collection, id),
         }
     }
     pub fn expected(&self) -> &Precondition {
         match self {
-            Self::Put { expected, .. } | Self::Delete { expected, .. } => expected,
+            Self::Put { expected, .. }
+            | Self::Patch { expected, .. }
+            | Self::Delete { expected, .. } => expected,
         }
     }
 }
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(tag = "kind", content = "version", rename_all = "snake_case")]
+
+/// Nesting accepted in one merge patch; documents allow less.
+pub const MAX_MERGE_PATCH_DEPTH: usize = 64;
+
+/// Apply an RFC 7396 JSON Merge Patch to `target` in place. A document patch
+/// must be an object; `null` members remove, objects merge recursively and
+/// any other value (including arrays) replaces the member.
+pub fn apply_merge_patch(target: &mut Value, patch: &Value) -> Result<()> {
+    fn merge(target: &mut Value, patch: &Value, depth: usize) -> Result<()> {
+        let Value::Object(members) = patch else {
+            *target = patch.clone();
+            return Ok(());
+        };
+        if depth > MAX_MERGE_PATCH_DEPTH {
+            return Err(Error::new(
+                ErrorCode::InvalidArgument,
+                "merge patch exceeds its nesting limit",
+            ));
+        }
+        if !target.is_object() {
+            *target = Value::Object(serde_json::Map::new());
+        }
+        let Value::Object(object) = target else {
+            unreachable!("target was just made an object")
+        };
+        for (key, value) in members {
+            if value.is_null() {
+                object.remove(key);
+            } else {
+                merge(
+                    object.entry(key.clone()).or_insert(Value::Null),
+                    value,
+                    depth + 1,
+                )?;
+            }
+        }
+        Ok(())
+    }
+    if !patch.is_object() {
+        return Err(Error::new(
+            ErrorCode::InvalidArgument,
+            "a document merge patch must be a JSON object",
+        ));
+    }
+    merge(target, patch, 0)
+}
+/// Expected current document state: `"any"`, `"absent"` or `{"version": 42}`.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
 pub enum Precondition {
     #[default]
     Any,
     Absent,
     Version(u64),
 }
+impl Precondition {
+    pub fn is_any(&self) -> bool {
+        *self == Self::Any
+    }
+}
+
+/// An atomic, idempotent set of writes within one tenant.
+///
+/// Retry an uncertain outcome with the same batch value: it keeps its
+/// idempotency key, so the database applies it at most once.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct MutationBatch {
     pub idempotency_key: String,
+    /// Reads this batch depends on, checked against one pre-write state.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub read_set: Vec<ReadAssertion>,
     pub operations: Vec<Mutation>,
 }
 
+impl Default for MutationBatch {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MutationBatch {
+    /// An empty batch with a fresh random idempotency key.
+    pub fn new() -> Self {
+        Self::with_key(uuid::Uuid::new_v4().to_string())
+    }
+    /// An empty batch with a caller-chosen idempotency key, for example one
+    /// derived from an application request ID.
+    pub fn with_key(idempotency_key: impl Into<String>) -> Self {
+        Self {
+            idempotency_key: idempotency_key.into(),
+            read_set: Vec::new(),
+            operations: Vec::new(),
+        }
+    }
+    /// Create a document that must not already exist.
+    pub fn insert(
+        self,
+        collection: impl Into<String>,
+        id: impl Into<String>,
+        body: impl Into<Value>,
+    ) -> Self {
+        self.push(Mutation::put(collection, id, body, Precondition::Absent))
+    }
+    /// Create or overwrite a document.
+    pub fn upsert(
+        self,
+        collection: impl Into<String>,
+        id: impl Into<String>,
+        body: impl Into<Value>,
+    ) -> Self {
+        self.push(Mutation::put(collection, id, body, Precondition::Any))
+    }
+    /// Overwrite a document only if it is still at `version`.
+    pub fn replace(
+        self,
+        collection: impl Into<String>,
+        id: impl Into<String>,
+        body: impl Into<Value>,
+        version: u64,
+    ) -> Self {
+        self.push(Mutation::put(
+            collection,
+            id,
+            body,
+            Precondition::Version(version),
+        ))
+    }
+    /// Merge `patch` into an existing document (RFC 7396): `null` removes a
+    /// member and nested objects merge. Use `patch_version` to also require
+    /// that the document is still at a known version.
+    pub fn patch(
+        self,
+        collection: impl Into<String>,
+        id: impl Into<String>,
+        patch: impl Into<Value>,
+    ) -> Self {
+        self.push(Mutation::patch(collection, id, patch, Precondition::Any))
+    }
+    pub fn patch_version(
+        self,
+        collection: impl Into<String>,
+        id: impl Into<String>,
+        patch: impl Into<Value>,
+        version: u64,
+    ) -> Self {
+        self.push(Mutation::patch(
+            collection,
+            id,
+            patch,
+            Precondition::Version(version),
+        ))
+    }
+    /// Delete a document if it exists.
+    pub fn delete(self, collection: impl Into<String>, id: impl Into<String>) -> Self {
+        self.push(Mutation::delete(collection, id, Precondition::Any))
+    }
+    /// Delete a document only if it is still at `version`.
+    pub fn delete_version(
+        self,
+        collection: impl Into<String>,
+        id: impl Into<String>,
+        version: u64,
+    ) -> Self {
+        self.push(Mutation::delete(
+            collection,
+            id,
+            Precondition::Version(version),
+        ))
+    }
+    pub fn push(mut self, mutation: Mutation) -> Self {
+        self.operations.push(mutation);
+        self
+    }
+    /// Fence this batch on earlier reads, e.g. `snapshot.read_assertions()`.
+    pub fn read_set(mut self, assertions: impl IntoIterator<Item = ReadAssertion>) -> Self {
+        self.read_set.extend(assertions);
+        self
+    }
+
     /// Exact canonical input identity retained with the mutation outcome.
     /// Includes the original idempotency key, read set and preconditions.
     pub fn digest(&self) -> Result<String> {
@@ -439,13 +679,9 @@ impl MutationBatch {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(
-    tag = "kind",
-    content = "version",
-    rename_all = "snake_case",
-    deny_unknown_fields
-)]
+/// Expected state of a read dependency: `"absent"` or `{"version": 42}`.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
 pub enum ReadPrecondition {
     Absent,
     Version(u64),
@@ -705,138 +941,11 @@ fn serialize_resident_map<V: Serialize + Clone, S: serde::Serializer>(
     map.serialize(serializer)
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
-#[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
-pub enum Predicate {
-    #[default]
-    All,
-    Eq {
-        field: String,
-        value: Value,
-    },
-    In {
-        field: String,
-        values: Vec<Value>,
-    },
-    Compare {
-        field: String,
-        comparison: Comparison,
-        value: Value,
-    },
-    Exists {
-        field: String,
-        exists: bool,
-    },
-    Contains {
-        field: String,
-        value: Value,
-    },
-    And {
-        predicates: Vec<Predicate>,
-    },
-    Or {
-        predicates: Vec<Predicate>,
-    },
-    Not {
-        predicate: Box<Predicate>,
-    },
-}
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum Comparison {
-    Lt,
-    Lte,
-    Gt,
-    Gte,
-}
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct Sort {
-    pub field: String,
-    pub direction: Direction,
-}
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Direction {
     Asc,
     Desc,
-}
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct Aggregation {
-    pub alias: String,
-    pub function: AggregateFunction,
-    pub field: Option<String>,
-    pub scale: Option<i64>,
-}
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum AggregateFunction {
-    Count,
-    Sum,
-    Min,
-    Max,
-    Avg,
-}
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct TextSearch {
-    pub index: String,
-    pub query: String,
-    pub mode: TextMode,
-    #[serde(default = "default_distance")]
-    pub distance: u8,
-}
-fn default_distance() -> u8 {
-    1
-}
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum TextMode {
-    Terms,
-    Phrase,
-    Prefix,
-    Fuzzy,
-}
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(deny_unknown_fields)]
-pub struct QueryRequest {
-    pub collection: String,
-    #[serde(default)]
-    pub filter: Predicate,
-    #[serde(default)]
-    pub sort: Vec<Sort>,
-    #[serde(default)]
-    pub projection: Vec<String>,
-    #[serde(default)]
-    pub aggregates: Vec<Aggregation>,
-    #[serde(default)]
-    pub group_by: Vec<String>,
-    #[serde(default)]
-    pub text: Option<TextSearch>,
-    #[serde(default = "default_limit")]
-    pub limit: usize,
-    #[serde(default)]
-    pub cursor: Option<String>,
-    #[serde(default)]
-    pub allow_scan: bool,
-}
-fn default_limit() -> usize {
-    100
-}
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct QueryRow {
-    pub id: String,
-    pub version: u64,
-    pub body: Value,
-    pub score: Option<f32>,
-}
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct QueryResponse {
-    pub revision: u64,
-    pub rows: Vec<QueryRow>,
-    pub aggregates: Vec<Value>,
-    pub cursor: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -1074,22 +1183,113 @@ mod tests {
     fn first_release_nested_query_fields_reject_unknown_keys() {
         let query = serde_json::json!({
             "collection":"docs",
-            "sort":[{"field":"/amount","direction":"asc"}],
-            "aggregates":[{"alias":"count","function":"count","field":null,"scale":null}],
-            "text":{"index":"body","query":"foo","mode":"terms","distance":1}
+            "sort":["/amount"],
+            "aggregate":{"n":{"count":"*"}},
+            "search":{"index":"body","query":"foo","mode":"fuzzy","distance":1}
         });
         assert!(serde_json::from_value::<QueryRequest>(query.clone()).is_ok());
-        for path in ["sort", "aggregates", "text"] {
+        for (path, field) in [("aggregate", Some("n")), ("search", None)] {
             let mut changed = query.clone();
-            if path == "text" {
-                changed[path]["legacy_text"] = serde_json::json!(true);
-            } else {
-                changed[path][0]["legacy_field"] = serde_json::json!(true);
+            match field {
+                Some(alias) => changed[path][alias]["legacy_field"] = serde_json::json!(true),
+                None => changed[path]["legacy_text"] = serde_json::json!(true),
             }
             assert!(
                 serde_json::from_value::<QueryRequest>(changed).is_err(),
                 "{path}"
             );
         }
+    }
+
+    #[test]
+    fn merge_patch_follows_rfc_7396() {
+        // The RFC's own test vectors, applied to object documents.
+        for (target, patch, expected) in [
+            (r#"{"a":"b"}"#, r#"{"a":"c"}"#, r#"{"a":"c"}"#),
+            (r#"{"a":"b"}"#, r#"{"b":"c"}"#, r#"{"a":"b","b":"c"}"#),
+            (r#"{"a":"b"}"#, r#"{"a":null}"#, r#"{}"#),
+            (r#"{"a":"b","b":"c"}"#, r#"{"a":null}"#, r#"{"b":"c"}"#),
+            (r#"{"a":["b"]}"#, r#"{"a":"c"}"#, r#"{"a":"c"}"#),
+            (r#"{"a":"c"}"#, r#"{"a":["b"]}"#, r#"{"a":["b"]}"#),
+            (
+                r#"{"a":{"b":"c"}}"#,
+                r#"{"a":{"b":"d","c":null}}"#,
+                r#"{"a":{"b":"d"}}"#,
+            ),
+            (r#"{"a":[{"b":"c"}]}"#, r#"{"a":[1]}"#, r#"{"a":[1]}"#),
+            (r#"{"e":null}"#, r#"{"a":1}"#, r#"{"e":null,"a":1}"#),
+            (
+                r#"{}"#,
+                r#"{"a":{"bb":{"ccc":null}}}"#,
+                r#"{"a":{"bb":{}}}"#,
+            ),
+            (
+                r#"{"a":1.000000000000000000001}"#,
+                r#"{"b":2}"#,
+                r#"{"a":1.000000000000000000001,"b":2}"#,
+            ),
+        ] {
+            let mut document: Value = serde_json::from_str(target).unwrap();
+            apply_merge_patch(&mut document, &serde_json::from_str(patch).unwrap()).unwrap();
+            assert_eq!(
+                document,
+                serde_json::from_str::<Value>(expected).unwrap(),
+                "{patch}"
+            );
+        }
+        let mut document = serde_json::json!({"a": 1});
+        assert!(apply_merge_patch(&mut document, &serde_json::json!(["a"])).is_err());
+        let mut deep = serde_json::json!({});
+        for _ in 0..=MAX_MERGE_PATCH_DEPTH + 1 {
+            deep = serde_json::json!({ "n": deep });
+        }
+        assert!(apply_merge_patch(&mut document, &deep).is_err());
+        let batch = MutationBatch::with_key("p").patch("docs", "a", serde_json::json!({"x": null}));
+        assert_eq!(
+            serde_json::to_value(&batch).unwrap()["operations"][0],
+            serde_json::json!({"op":"patch","collection":"docs","id":"a","patch":{"x":null}})
+        );
+        assert_eq!(batch.operations[0].target(), ("docs", "a"));
+    }
+
+    #[test]
+    fn preconditions_and_batches_use_compact_json() {
+        let batch = MutationBatch::with_key("order-7")
+            .insert("docs", "a", serde_json::json!({"n": 1}))
+            .replace("docs", "b", serde_json::json!({"n": 2}), 4)
+            .delete("docs", "c");
+        let encoded = serde_json::to_value(&batch).unwrap();
+        assert_eq!(
+            encoded,
+            serde_json::json!({
+                "idempotency_key": "order-7",
+                "operations": [
+                    {"op":"put","collection":"docs","id":"a","body":{"n":1},"expected":"absent"},
+                    {"op":"put","collection":"docs","id":"b","body":{"n":2},"expected":{"version":4}},
+                    {"op":"delete","collection":"docs","id":"c"}
+                ]
+            })
+        );
+        assert_eq!(
+            serde_json::from_value::<MutationBatch>(encoded).unwrap(),
+            batch
+        );
+        assert_ne!(
+            MutationBatch::new().idempotency_key,
+            MutationBatch::new().idempotency_key
+        );
+        let assertion: ReadAssertion = serde_json::from_value(serde_json::json!(
+            {"kind":"document","collection":"docs","id":"a","expected":{"version":3}}
+        ))
+        .unwrap();
+        assert_eq!(
+            assertion,
+            ReadAssertion::Document {
+                collection: "docs".into(),
+                id: "a".into(),
+                expected: ReadPrecondition::Version(3),
+            }
+        );
+        assert!(serde_json::from_value::<ReadPrecondition>(serde_json::json!("any")).is_err());
     }
 }

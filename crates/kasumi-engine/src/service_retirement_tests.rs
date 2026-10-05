@@ -191,6 +191,8 @@ async fn committed_retirement_with_expired_reply_has_fresh_authorized_receipt_re
             .retire_source(credential.clone(), prepared.request)
             .await
             .unwrap_err()
+            .operation_error()
+            .expect("actual retirement operation outcome")
             .code,
         ErrorCode::UnknownOutcome
     );

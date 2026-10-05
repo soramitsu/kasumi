@@ -177,10 +177,13 @@ impl Database {
         let state = &generation.state;
         self.engine
             .authorize_release(&context, None, Action::Admin, state.policy_epoch)?;
-        let reservation = Arc::new(
-            self.admission()
-                .reserve((96 << 20) as u64, Some(cancellation.clone()))?,
-        );
+        // Intent publication and bounded session readback precede the stream.
+        // Retain their own workspace while their small metadata remains live;
+        // stream buffers do not exist yet and must not occupy their later grant
+        // while the ordered "started" audit publishes its selected source.
+        let _intent_reservation = self
+            .admission()
+            .reserve(16 << 20, Some(cancellation.clone()))?;
         let intent = BackupSessionIntent {
             session_id,
             tenant: state.tenant.clone(),
@@ -227,6 +230,10 @@ impl Database {
         let destination: &dyn BackupDestination = &objects;
         self.maintenance_audit_inner(context.clone(), "backup", "started", state.revision)
             .await?;
+        let reservation = Arc::new(
+            self.admission()
+                .reserve(96 << 20, Some(cancellation.clone()))?,
+        );
         let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
         let work = StreamWork {
             generation: generation.clone(),
@@ -433,6 +440,11 @@ impl Database {
                 &cancellation,
             )
             .await?;
+        // All stream chunks and publication buffers have left this scope, and
+        // the producer's actual completion has been received. Release this
+        // caller's stream grant before the ordered completion audit. Any still
+        // retained worker clone continues to own its original grant.
+        drop(reservation);
         self.maintenance_audit_inner(context.clone(), "backup", "completed", state.revision)
             .await?;
         self.engine

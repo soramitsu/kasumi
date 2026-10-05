@@ -2,8 +2,13 @@ use super::*;
 use kasumi_types::drain::DrainCompletion;
 use std::{future::Future, task::Poll, time::Duration};
 
+// This marker observes only fixture payload lifetime, not memory funding.
+struct FixtureCharge {
+    _alive: Arc<()>,
+}
+
 fn budget(slots: usize) -> BackgroundWorkBudget {
-    BackgroundWorkBudget::new(slots, Arc::new(())).unwrap()
+    BackgroundWorkBudget::new(slots, kasumi_types::SharedBudgetCharge::new(())).unwrap()
 }
 
 #[tokio::test]
@@ -21,7 +26,11 @@ async fn direct_blocking_child_retains_original_result_and_join_after_cancelled_
     let worker = Arc::new(BackgroundWork::default());
     let charge = Arc::new(());
     let weak_charge = Arc::downgrade(&charge);
-    let budget = BackgroundWorkBudget::new(1, charge).unwrap();
+    let budget = BackgroundWorkBudget::new(
+        1,
+        kasumi_types::SharedBudgetCharge::new(FixtureCharge { _alive: charge }),
+    )
+    .unwrap();
     let (entered, waiting) = tokio::sync::oneshot::channel();
     let (release, held) = std::sync::mpsc::channel();
     let original = identity.clone();
@@ -57,7 +66,10 @@ async fn direct_blocking_child_retains_original_result_and_join_after_cancelled_
         .unwrap();
     assert!(Arc::ptr_eq(&identity, &actual.0));
     let repeated = recovered.drain().await.unwrap_err();
-    assert!(Arc::ptr_eq(&failure.issues()[0], &repeated.issues()[0]));
+    assert!(kasumi_types::drain::DrainIssueRef::ptr_eq(
+        &failure.issues()[0],
+        &repeated.issues()[0]
+    ));
     drop(recovered);
     assert!(weak_charge.upgrade().is_none());
 }
@@ -80,7 +92,10 @@ async fn direct_blocking_panic_preserves_original_join_error() {
             .is_panic()
     );
     let repeated = worker.drain().await.unwrap_err();
-    assert!(Arc::ptr_eq(&failure.issues()[0], &repeated.issues()[0]));
+    assert!(kasumi_types::drain::DrainIssueRef::ptr_eq(
+        &failure.issues()[0],
+        &repeated.issues()[0]
+    ));
 }
 
 #[tokio::test]
@@ -138,7 +153,10 @@ async fn fallible_child_retains_original_error_after_cancelled_drain_and_facade_
     assert!(Arc::ptr_eq(&identity, &actual.0));
     assert!(!custody().lock().unwrap().contains_key(&id));
     let repeated = recovered.drain().await.unwrap_err();
-    assert!(Arc::ptr_eq(&first.issues()[0], &repeated.issues()[0]));
+    assert!(kasumi_types::drain::DrainIssueRef::ptr_eq(
+        &first.issues()[0],
+        &repeated.issues()[0]
+    ));
     assert!(
         recovered
             .start_result(async { Ok(()) }, &budget(1))
@@ -196,14 +214,20 @@ async fn repeated_and_concurrent_drains_preserve_original_join_error() {
     let first = first.unwrap_err();
     let second = second.unwrap_err();
     assert_eq!(first.completion(), DrainCompletion::Complete);
-    assert!(Arc::ptr_eq(&first.issues()[0], &second.issues()[0]));
+    assert!(kasumi_types::drain::DrainIssueRef::ptr_eq(
+        &first.issues()[0],
+        &second.issues()[0]
+    ));
     let original = first.issues()[0]
         .error()
         .downcast_ref::<tokio::task::JoinError>()
         .unwrap();
     assert!(original.is_panic());
     let again = worker.drain().await.unwrap_err();
-    assert!(Arc::ptr_eq(&first.issues()[0], &again.issues()[0]));
+    assert!(kasumi_types::drain::DrainIssueRef::ptr_eq(
+        &first.issues()[0],
+        &again.issues()[0]
+    ));
 }
 
 #[tokio::test]
@@ -224,14 +248,21 @@ async fn actual_child_abort_keeps_its_original_cancelled_join_error() {
             .is_cancelled()
     );
     let repeated = worker.drain().await.unwrap_err();
-    assert!(Arc::ptr_eq(&failed.issues()[0], &repeated.issues()[0]));
+    assert!(kasumi_types::drain::DrainIssueRef::ptr_eq(
+        &failed.issues()[0],
+        &repeated.issues()[0]
+    ));
 }
 
 #[tokio::test]
 async fn cancelled_drain_retains_exact_child_and_charge_after_all_facades_drop() {
     let charge = Arc::new(());
     let weak_charge = Arc::downgrade(&charge);
-    let budget = BackgroundWorkBudget::new(1, charge).unwrap();
+    let budget = BackgroundWorkBudget::new(
+        1,
+        kasumi_types::SharedBudgetCharge::new(FixtureCharge { _alive: charge }),
+    )
+    .unwrap();
     let worker = Arc::new(BackgroundWork::default());
     let weak = Arc::downgrade(&worker);
     let (release, waiting) = tokio::sync::oneshot::channel::<()>();

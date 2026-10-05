@@ -126,7 +126,8 @@ struct Journal {
     installation_id: Uuid,
     database_path: PathBuf,
     target_directory: PathBuf,
-    database_file: Option<private_files::FileIdentity>,
+    audit_placement_binding: String,
+    database_group: Option<kasumi_store::NodeGroupIdentity>,
     target_preparation: TargetPreparation,
     #[serde(deserialize_with = "kasumi_types::require_explicit_option")]
     archive_directory: Option<private_files::DirectoryIdentity>,
@@ -199,7 +200,7 @@ fn record(store: &TenantStore, operation: Uuid) -> Result<Journal> {
             .context("local recovery operation is unknown")?,
     )?;
     ensure!(
-        journal.format == 3 && journal.status.request.operation_id == operation,
+        journal.format == 5 && journal.status.request.operation_id == operation,
         "unsupported or substituted local recovery record"
     );
     Ok(journal)
@@ -217,17 +218,49 @@ fn phase_entry(journal: &Journal) -> Result<WriteOp> {
     Ok(WriteOp::put(
         PHASES,
         journal.status.phase_id.as_bytes(),
-        encoded(&(
-            journal.status.phase,
-            &journal.status.request,
-            journal.installation_id,
-            &journal.database_path,
-            &journal.target_directory,
-            &journal.source_provider,
-            &journal.application_provider,
-            &journal.custody_provider,
-        ))?,
+        phase_binding(journal)?,
     ))
+}
+fn phase_binding(journal: &Journal) -> Result<Vec<u8>> {
+    // Terminal observations retain their original dispatch ID. Verify that
+    // dispatch's immutable inputs rather than invent a replacement dispatch.
+    let dispatched_phase = match journal.status.phase {
+        LocalRecoveryPhase::Finished => LocalRecoveryPhase::Publish,
+        LocalRecoveryPhase::Stopped => LocalRecoveryPhase::Stopping,
+        phase => phase,
+    };
+    encoded(&(
+        dispatched_phase,
+        &journal.status.request,
+        journal.installation_id,
+        &journal.database_path,
+        &journal.target_directory,
+        &journal.audit_placement_binding,
+        &journal.source_provider,
+        &journal.application_provider,
+        &journal.custody_provider,
+    ))
+}
+fn validate_audit_placement(config: &RuntimeConfig, journal: &Journal) -> Result<()> {
+    kasumi_types::validate_sha256(&journal.audit_placement_binding)?;
+    ensure!(
+        journal.audit_placement_binding
+            == config
+                .tenant_audit_placement(&journal.status.request.tenant)?
+                .canonical_binding()?,
+        "local recovery audit placement binding differs"
+    );
+    Ok(())
+}
+fn validate_phase_binding(store: &TenantStore, journal: &Journal) -> Result<()> {
+    ensure!(
+        store
+            .get(PHASES, journal.status.phase_id.as_bytes())?
+            .context("local recovery original phase binding is missing")?
+            == phase_binding(journal)?,
+        "local recovery original phase binding differs"
+    );
+    Ok(())
 }
 fn directory(config: &RuntimeConfig, target: Uuid) -> Result<PathBuf> {
     Ok(config
@@ -284,6 +317,8 @@ pub(crate) fn active_generation(
         "standalone generation is permanently stopped or belongs to another operation"
     );
     let journal = record(store, active.operation_id)?;
+    validate_audit_placement(config, &journal)?;
+    validate_phase_binding(store, &journal)?;
     ensure!(
         journal.installation_id == installation_id(config, tenant)?
             && journal.status.request.tenant == tenant
@@ -297,9 +332,9 @@ pub(crate) fn active_generation(
         "active generation differs from committed recovery"
     );
     check_binding(config, store.persistent_disk(), &journal)?;
-    check_database_file(&journal)?;
+    check_database_group(&journal)?;
     ensure!(
-        active.directory.join("node.kv").is_file(),
+        active.directory.join("node.kv").is_dir(),
         "activated standalone database is missing"
     );
     Ok(Some(active))
@@ -386,19 +421,21 @@ impl Operator {
     fn validate(&self, journal: &Journal) -> Result<()> {
         journal.status.request.validate()?;
         ensure!(
-            journal.format == 3,
+            journal.format == 5,
             "unsupported local recovery journal format"
         );
+        validate_audit_placement(&self.config, journal)?;
+        validate_phase_binding(self.store(), journal)?;
         ensure!(
             !matches!(
                 journal.target_preparation,
                 TargetPreparation::CatalogsReady | TargetPreparation::MaterializationDispatched
-            ) || journal.database_file.is_some(),
+            ) || journal.database_group.is_some(),
             "prepared local target lacks its durable physical binding"
         );
         ensure!(
             journal.target_preparation != TargetPreparation::Uncreated
-                || journal.database_file.is_none(),
+                || journal.database_group.is_none(),
             "uncreated local target has a physical binding"
         );
         ensure!(
@@ -587,11 +624,15 @@ async fn start_owned(
             "target generation directory already exists"
         );
         let journal = Journal {
-            format: 3,
+            format: 5,
             installation_id: installation_id(&operator.config, &request.tenant)?,
             database_path: operator.config.database_path.clone(),
             target_directory,
-            database_file: None,
+            audit_placement_binding: operator
+                .config
+                .tenant_audit_placement(&request.tenant)?
+                .canonical_binding()?,
+            database_group: None,
             target_preparation: TargetPreparation::Uncreated,
             archive_directory: None,
             source_provider: request.source_keys.identity_descriptor()?,
@@ -831,15 +872,17 @@ struct PhysicalBinding {
     incarnation: Uuid,
     tenant: String,
     coordinator: PathBuf,
+    audit_placement_binding: String,
 }
 fn binding(journal: &Journal) -> PhysicalBinding {
     PhysicalBinding {
-        format: 1,
+        format: 2,
         installation: journal.installation_id,
         operation: journal.status.request.operation_id,
         incarnation: journal.status.request.target_incarnation,
         tenant: journal.status.request.tenant.clone(),
         coordinator: journal.database_path.clone(),
+        audit_placement_binding: journal.audit_placement_binding.clone(),
     }
 }
 fn check_binding(
@@ -872,15 +915,15 @@ fn local_node_id(journal: &Journal) -> Result<Uuid> {
         journal.status.request.target_incarnation,
     )
 }
-fn check_database_file(journal: &Journal) -> Result<()> {
+fn check_database_group(journal: &Journal) -> Result<()> {
     let path = journal.target_directory.join("node.kv");
     let identity = journal
-        .database_file
+        .database_group
         .as_ref()
-        .context("target file has no durable physical binding")?;
+        .context("target group has no durable physical binding")?;
     ensure!(
-        &private_files::file_identity(&path)? == identity,
-        "target database inode has been substituted"
+        &kasumi_store::NodeGroupIdentity::read(&path)? == identity,
+        "target database group has been substituted"
     );
     Ok(())
 }
@@ -936,28 +979,46 @@ impl Operator {
             ),
         ])
     }
-    fn prepare_database_file(
+    #[allow(
+        clippy::result_large_err,
+        reason = "the native constructor returns whole inline custody into the same preadmitted inventory before any foreign marker; boxing the error would allocate outside that boundary"
+    )]
+    async fn prepare_database_group(
         &self,
         journal: &mut Journal,
-    ) -> Result<Option<Arc<kasumi_store::NodeStore>>> {
+    ) -> Result<Option<kasumi_store::NodeStore>> {
+        self.validate(journal)?;
         self.prepare_directory(journal)?;
         self.prepare_archives(journal)?;
         let path = journal.target_directory.join("node.kv");
         let created = if journal.target_preparation == TargetPreparation::Uncreated {
             ensure!(
-                journal.database_file.is_none(),
+                journal.database_group.is_none(),
                 "uncreated local target has a physical binding"
             );
             // Commit the one original dispatch before any physical creation.
             // Replay never recovers creation permission from an absent/empty file.
             self.prepare_stage(journal, TargetPreparation::CreationDispatched)?;
-            let node = kasumi_store::NodeStore::create_new(
-                &path,
-                local_node_id(journal)?,
-                self.store().persistent_disk().clone(),
-                self.store().scratch_disk().clone(),
-            )?;
-            journal.database_file = Some(private_files::file_identity(&path)?);
+            let id = local_node_id(journal)?;
+            let (inventory, index) = self
+                .state
+                .node_inventory(&journal.status.request.tenant)
+                .await?;
+            let mut seat = inventory.claim(index).await;
+            let node = seat
+                .begin_node()
+                .map_err(|observed| observed.foreign_error())?
+                .run_node(|| {
+                    kasumi_store::NodeStore::create_new(
+                        &path,
+                        id,
+                        self.store().persistent_disk().clone(),
+                        self.store().scratch_disk().clone(),
+                        self.store().persistent_disk().native_storage_config(),
+                    )
+                })
+                .map_err(|observed| observed.foreign_error())?;
+            journal.database_group = Some(node.physical_identity()?);
             self.store().write_batch(&[
                 WriteOp::put(
                     OPERATIONS,
@@ -967,14 +1028,14 @@ impl Operator {
                 WriteOp::put(
                     PHASES,
                     format!("{}/physical", journal.status.phase_id).as_bytes(),
-                    encoded(&journal.database_file)?,
+                    encoded(&journal.database_group)?,
                 ),
             ])?;
             Some(node)
         } else {
             None
         };
-        check_database_file(journal)?;
+        check_database_group(journal)?;
         Ok(created)
     }
     fn directory_child(
@@ -1044,18 +1105,23 @@ impl Operator {
         }
         check_binding(&self.config, self.store().persistent_disk(), journal).map(drop)
     }
+    #[allow(
+        clippy::result_large_err,
+        reason = "the native constructor returns whole inline custody into the same preadmitted inventory before any foreign marker; boxing the error would allocate outside that boundary"
+    )]
     async fn target(&self, journal: &mut Journal, mode: TargetOpen) -> Result<LocalTarget> {
+        self.validate(journal)?;
         let mut pending = crate::startup_resources::Resources::default();
         let result = async {
         let request = journal.status.request.clone();
         let outcome: GenerationRecord = decode(&self.store().get(GENERATIONS, request.target_incarnation.as_bytes())?.context("target generation reservation missing")?)?;
         ensure!(matches!(outcome, GenerationRecord::Reserved { operation_id } | GenerationRecord::Active { operation_id } if operation_id == request.operation_id), "target generation is permanently stopped or substituted");
-        let original_creation = if mode == TargetOpen::Materialize { self.prepare_database_file(journal)? } else {
+        let original_creation = if mode == TargetOpen::Materialize { self.prepare_database_group(journal).await? } else {
             ensure!(journal.target_preparation == TargetPreparation::MaterializationDispatched, "local target materialization was never dispatched");
             None
         };
         check_binding(&self.config, self.store().persistent_disk(), journal)?;
-        check_database_file(journal)?;
+        check_database_group(journal)?;
         let path = journal.target_directory.join("node.kv");
         let tenant = self.config.tenants.iter().find(|tenant| tenant.tenant == request.tenant).context("installed tenant missing")?;
         ensure!(journal.application_provider == tenant.keys.identity_descriptor()? && journal.custody_provider == tenant.custody_keys.identity_descriptor()?, "local target wrapping-key identity differs");
@@ -1069,7 +1135,14 @@ impl Operator {
         let fresh = original_creation.is_some();
         let node = match original_creation {
             Some(node) => node,
-            None => kasumi_store::NodeStore::open_existing(&path, local_node_id(journal)?, self.store().persistent_disk().clone(), self.store().scratch_disk().clone())?,
+            None => {
+                let id = local_node_id(journal)?;
+                let (inventory, index) = self.state.node_inventory(&request.tenant).await?;
+                let mut seat = inventory.claim(index).await;
+                seat.begin_node().map_err(|observed| observed.foreign_error())?.run_node(|| {
+                    kasumi_store::NodeStore::open_existing(&path, id, self.store().persistent_disk().clone(), self.store().scratch_disk().clone(), self.store().persistent_disk().native_storage_config())
+                }).map_err(|observed| observed.foreign_error())?
+            }
         };
         pending.owned_nodes.push(node.clone());
         let stores = if fresh {
@@ -1082,7 +1155,7 @@ impl Operator {
         if journal.target_preparation == TargetPreparation::CreationDispatched {
             self.prepare_stage(journal, TargetPreparation::CatalogsReady)?;
         }
-        self.config.install_tenant_audit_archive(
+        self.config.tenant_audit_placement(&request.tenant)?.install(
             stores.application(),
             Some(self.observed_archives(journal)?),
         )?;
@@ -1092,12 +1165,12 @@ impl Operator {
         }
         let admission = self.audit.admission().clone();
         let database = if initialized {
-            kasumi_engine::open_existing_local(
+            self.snapshot(&request.tenant, kasumi_engine::open_existing_local(
                 stores.clone(),
                 self.audit.clone(),
                 request.target_incarnation,
             )
-            .await?
+            ).await?
         } else {
             let source_context = self
                 .context(
@@ -1129,7 +1202,7 @@ impl Operator {
                 timeout_ms: request.phase_timeout_ms,
             };
             self.prepare_stage(journal, TargetPreparation::MaterializationDispatched)?;
-            kasumi_engine::restore_local(
+            self.snapshot(&request.tenant, kasumi_engine::restore_local(
                 &source,
                 stores.clone(),
                 kasumi_engine::LocalRestoreRequest {
@@ -1142,14 +1215,14 @@ impl Operator {
                 admission.clone(),
                 self.audit.clone(),
             )
-            .await?
+            ).await?
         };
         pending.databases.push(database.clone());
         let validated = (|| {
             let generation = database.engine().generation()?;
             ensure!(
-                generation.state.incarnation == request.target_incarnation.to_string()
-                    && generation.state.restored_from.as_ref() == Some(&request.checkpoint),
+                generation.incarnation() == request.target_incarnation.to_string()
+                    && generation.restored_from().as_ref() == Some(&request.checkpoint),
                 "target materialization differs from exact local recovery checkpoint"
             );
             for (alias, destination) in &self.config.backup_destinations {
@@ -1164,7 +1237,7 @@ impl Operator {
             Ok::<_, anyhow::Error>(())
         })();
         validated?;
-        node.drain_initializers().await?;
+        node.drain_initializers().await.map_err(|failure| failure.observation())?;
         Ok(database)
         }.await;
         match result {
@@ -1215,7 +1288,7 @@ impl Operator {
             LocalRecoveryPhase::Activate => {
                 let mut target = self.target(journal, TargetOpen::Existing).await?;
                 let ready = target.engine().generation().map(|generation| {
-                    generation.state.pending_restore.is_none() && generation.state.suspended
+                    generation.pending_restore().is_none() && generation.suspended()
                 });
                 target.shutdown().await?;
                 drop(target);
@@ -1334,10 +1407,12 @@ impl Operator {
             }
             for entry in &entries {
                 ensure!(
-                    (entry.file_type()?.is_file()
-                        && matches!(entry.file_name().to_str(), Some("binding.json" | "node.kv")))
+                    (entry.file_type()?.is_file() && entry.file_name() == "binding.json")
                         || (entry.file_type()?.is_dir()
-                            && entry.file_name() == "tenant-audit-archives"),
+                            && matches!(
+                                entry.file_name().to_str(),
+                                Some("node.kv" | "tenant-audit-archives")
+                            )),
                     "cleanup refuses an unrelated or linked target entry"
                 );
             }
@@ -1351,21 +1426,35 @@ impl Operator {
                     journal.target_preparation != TargetPreparation::Uncreated,
                     "cleanup refuses a file without an original creation dispatch"
                 );
-                if journal.database_file.is_some() {
-                    check_database_file(journal)?;
+                if let Some(expected) = &journal.database_group {
+                    ensure!(
+                        private_files::directory_identity(&database)? == expected.directory,
+                        "target database group has been substituted"
+                    );
                 }
-                // A lost file-binding commit can leave our exact Prepared or Ready
+                // A lost group-binding commit can leave our exact Prepared or Ready
                 // envelope. Claim its deterministic generation identity without
-                // opening/recovering the KV engine. Empty, torn or unrelated files stay intact.
+                // opening/recovering the KV engine. Torn or unrelated groups stay intact; an empty directory can finish interrupted cleanup.
                 let ownership = kasumi_store::NodeStore::claim_cleanup(
                     &database,
                     local_node_id(journal)?,
                     self.store().persistent_disk().clone(),
+                    self.store().persistent_disk().native_storage_config(),
                 )?;
                 ensure!(
-                    ownership.identity() == &private_files::file_identity(&database)?,
-                    "local cleanup path changed during ownership handoff"
+                    ownership.directory_identity()?
+                        == private_files::directory_identity(&database)?,
+                    "local cleanup directory changed during ownership handoff"
                 );
+                if let Some(expected) = &journal.database_group {
+                    ensure!(
+                        ownership.directory_identity()? == expected.directory,
+                        "local cleanup directory identity differs"
+                    );
+                    if let Some(root) = ownership.root_identity()? {
+                        ensure!(root == expected.root, "local cleanup root identity differs");
+                    }
+                }
                 Some(ownership)
             } else {
                 None
@@ -1405,7 +1494,7 @@ impl Operator {
                 "kasumi.local-cleanup.v2",
                 &binding(journal),
                 &journal.target_directory,
-                &journal.database_file,
+                &journal.database_group,
                 &journal.archive_directory,
             ))?
             .0,
@@ -1443,9 +1532,7 @@ impl Operator {
                     &administrator.tenant,
                     &administrator.principal,
                     kasumi_types::CredentialResource::Control {
-                        incarnation: Uuid::parse_str(
-                            &control.engine().generation()?.state.incarnation,
-                        )?,
+                        incarnation: Uuid::parse_str(control.engine().generation()?.incarnation())?,
                     },
                     journal.status.phase_id,
                 )
@@ -1501,7 +1588,7 @@ impl Operator {
                 .replace_topology(
                     context,
                     publication.topology.clone(),
-                    publication.expected.clone(),
+                    publication.expected,
                     publication.id.to_string(),
                 )
                 .await?;
@@ -1526,10 +1613,10 @@ impl Operator {
                 .await?;
             let state = target.engine().generation()?;
             ensure!(
-                state.state.pending_restore.is_none(),
+                state.pending_restore().is_none(),
                 "local target completion has not committed"
             );
-            if state.state.suspended {
+            if state.suspended() {
                 target
                     .administer(context, kasumi_types::Operation::Suspend(false))
                     .await?;

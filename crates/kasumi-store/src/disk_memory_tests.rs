@@ -1,6 +1,6 @@
 use super::*;
 use crate::{
-    allocation_tests::{DeallocationObservation, observe_deallocation},
+    allocation_tests::{DeallocationObservation, observe_deallocation, observe_one_allocation},
     test_utils::TestDiskMemory,
 };
 use std::{
@@ -9,10 +9,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-fn allocation_address(lease: &DiskMemoryLease) -> *const () {
-    std::ptr::from_ref::<dyn RetireLease>(lease.0.as_deref().expect("live lease")).cast::<()>()
-}
-
 // Release before joining even on an assertion panic, so this test cannot leave
 // an allocator thread parked or silently detach the actual watched destructor.
 struct PausedRetirement {
@@ -20,12 +16,11 @@ struct PausedRetirement {
     worker: Option<std::thread::JoinHandle<()>>,
 }
 impl PausedRetirement {
-    fn start(lease: DiskMemoryLease) -> Self {
+    fn start(lease: DiskMemoryLease, address: usize) -> Self {
         let observation = Arc::new(DeallocationObservation::new(true));
         let worker_observation = observation.clone();
         let worker = std::thread::spawn(move || {
-            let address = allocation_address(&lease);
-            observe_deallocation(address, &worker_observation, || drop(lease));
+            observe_deallocation(address as *const (), &worker_observation, || drop(lease));
         });
         Self {
             observation,
@@ -64,10 +59,13 @@ fn installed_lease_cannot_return_bytes_or_slot_before_actual_box_deallocation() 
         TestDiskMemory::required_bookkeeping_bytes(1).unwrap() + required,
         1,
     );
-    let lease = memory.clone().reserve_installed(workspace).unwrap();
+    let token_bytes = usize::try_from(required - workspace - ALLOCATION_ALLOWANCE).unwrap();
+    let (lease, address) = observe_one_allocation(token_bytes, || {
+        memory.clone().reserve_installed(workspace).unwrap()
+    });
     assert_eq!(memory.snapshot().used_bytes, required);
     assert_eq!(memory.snapshot().live_reservations, 1);
-    let mut retirement = PausedRetirement::start(lease);
+    let mut retirement = PausedRetirement::start(lease, address);
     retirement.entered();
     assert!(!retirement.observation.finished());
     assert_eq!(memory.snapshot().used_bytes, required);
@@ -118,16 +116,17 @@ fn panicking_token_keeps_single_retirement_and_frees_box_before_field_unwind() {
     let observation = Arc::new(DeallocationObservation::new(false));
     let live = Arc::new(AtomicUsize::new(1));
     let drops = Arc::new(AtomicUsize::new(0));
-    let lease = DiskMemoryLease::new(PanickingToken {
-        _credit: Credit {
-            observation: observation.clone(),
-            live: live.clone(),
-            drops: drops.clone(),
-        },
+    let (lease, address) = observe_one_allocation(std::mem::size_of::<PanickingToken>(), || {
+        DiskMemoryLease::new(PanickingToken {
+            _credit: Credit {
+                observation: observation.clone(),
+                live: live.clone(),
+                drops: drops.clone(),
+            },
+        })
     });
-    let address = allocation_address(&lease);
     let error = catch_unwind(AssertUnwindSafe(|| {
-        observe_deallocation(address, &observation, || drop(lease));
+        observe_deallocation(address as *const (), &observation, || drop(lease));
     }))
     .unwrap_err();
     assert_eq!(
@@ -144,13 +143,16 @@ fn panicking_token_keeps_single_retirement_and_frees_box_before_field_unwind() {
     // lease uses the same allocator on this thread.
     let successor_observation = Arc::new(DeallocationObservation::new(false));
     live.store(1, Ordering::Release);
-    let successor = DiskMemoryLease::new(Credit {
-        observation: successor_observation.clone(),
-        live: live.clone(),
-        drops: drops.clone(),
-    });
+    let (successor, successor_address) =
+        observe_one_allocation(std::mem::size_of::<Credit>(), || {
+            DiskMemoryLease::new(Credit {
+                observation: successor_observation.clone(),
+                live: live.clone(),
+                drops: drops.clone(),
+            })
+        });
     observe_deallocation(
-        allocation_address(&successor),
+        successor_address as *const (),
         &successor_observation,
         || drop(successor),
     );

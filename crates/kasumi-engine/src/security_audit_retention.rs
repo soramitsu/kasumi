@@ -354,10 +354,11 @@ impl SecurityAudit {
                 .store
                 .get_bounded(META, b"pending-ciphertext", MAX_AUDIT_SEGMENT_BYTES)?
                 .context("pending archive bytes missing")?;
-            return Ok(Some(PreparedAuditSegment {
-                reference,
-                ciphertext,
-            }));
+            return Ok(Some(
+                self.writer
+                    .store
+                    .recover_audit_segment(reference, ciphertext)?,
+            ));
         }
         let position = &state.head.position;
         if position.hot_bytes <= self.writer.budget.drains_to()
@@ -416,11 +417,15 @@ impl SecurityAudit {
         );
         let mut updated = state.head.clone();
         updated.position.draining = true;
-        if let Err(error) = self.writer.store.write_batch(&[
-            updated.write()?,
-            WriteOp::put(META, b"pending", serde_json::to_vec(&segment.reference)?),
-            WriteOp::put(META, b"pending-ciphertext", segment.ciphertext.clone()),
-        ]) {
+        if let Err(error) = self.writer.store.write_audit_ciphertext_batch(
+            [
+                updated.write()?,
+                WriteOp::put(META, b"pending", serde_json::to_vec(&segment.reference)?),
+            ],
+            META,
+            b"pending-ciphertext",
+            &segment,
+        ) {
             state.failed = true;
             return Err(
                 kasumi_types::drain::DrainFailure::retained(self.record_terminal(
@@ -722,7 +727,7 @@ impl SecurityAudit {
                 );
             }
             let end = cursor.through_sequence;
-            let hot_record = |sequence: u64| -> Result<Vec<u8>> {
+            let hot_record = |sequence: u64| -> Result<kasumi_store::PlaintextValue> {
                 audit
                     .writer
                     .store
@@ -1024,33 +1029,75 @@ mod tests {
         &error.message
     }
     /// The same JSON value in another spelling; only exact admission rejects it.
-    fn alternate(bytes: &[u8]) -> Vec<u8> {
-        let mut changed = b"{ ".to_vec();
-        changed.extend_from_slice(&bytes[1..]);
-        changed
+    fn alternate(
+        store: &TenantStore,
+        bytes: &[u8],
+    ) -> kasumi_store::test_utils::FixturePlaintextCopy {
+        kasumi_store::test_utils::FixturePlaintextCopy::with_suffix(store, b"{ ", &bytes[1..])
+            .unwrap()
     }
-    type LogicalRows = Vec<(&'static str, Vec<(Vec<u8>, Vec<u8>)>)>;
+    type LogicalRows = [(&'static str, kasumi_store::PlaintextScan); 3];
     fn logical_rows(store: &TenantStore) -> LogicalRows {
         [META, "security.audit", ARCHIVES]
-            .into_iter()
             .map(|namespace| (namespace, store.scan(namespace).unwrap()))
-            .collect()
     }
     /// Replace every audit row with an earlier copy of the same installation,
     /// as a stopped node restored from an older disk image would observe it.
     fn roll_back(store: &TenantStore, copy: &LogicalRows) {
+        let current = logical_rows(store);
+        let count = current
+            .iter()
+            .chain(copy.iter())
+            .try_fold(0usize, |count, (_, rows)| {
+                count
+                    .checked_add(rows.len())
+                    .context("fixture rollback count overflow")
+            })
+            .unwrap();
+        let metadata_bytes = u64::try_from(
+            count
+                .checked_mul(std::mem::size_of::<
+                    kasumi_store::test_utils::FixtureWrite<'_>,
+                >())
+                .unwrap(),
+        )
+        .unwrap()
+        .checked_add(kasumi_store::DiskMemoryLease::token_allocation_bytes::<u8>().unwrap())
+        .unwrap();
+        let _metadata_charge = store
+            .plaintext_memory_owner()
+            .clone()
+            .reserve_installed(metadata_bytes)
+            .unwrap();
         let mut operations = Vec::new();
-        for (namespace, rows) in logical_rows(store) {
+        operations.try_reserve_exact(count).unwrap();
+        assert!(
+            operations
+                .capacity()
+                .checked_mul(std::mem::size_of::<
+                    kasumi_store::test_utils::FixtureWrite<'_>,
+                >())
+                .unwrap() as u64
+                <= metadata_bytes
+        );
+        for (namespace, rows) in &current {
             for (key, _) in rows {
-                operations.push(WriteOp::delete(namespace, key));
+                operations.push(kasumi_store::test_utils::FixtureWrite::Delete(
+                    namespace, key,
+                ));
             }
         }
         for (namespace, rows) in copy {
             for (key, value) in rows {
-                operations.push(WriteOp::put(*namespace, key.clone(), value.clone()));
+                operations.push(kasumi_store::test_utils::FixtureWrite::Put(
+                    namespace, key, value,
+                ));
             }
         }
-        store.write_batch(&operations).unwrap();
+        kasumi_store::test_utils::FixtureWriteBatch::prepare(store, &operations)
+            .unwrap()
+            .write(store)
+            .unwrap();
     }
 
     /// One installed security store with an explicit archive and restartable node.
@@ -1060,7 +1107,7 @@ mod tests {
         provider: Arc<LocalKeyProvider>,
         archive: Arc<UncertainArchive>,
         budget: AuditRetentionBudget,
-        node: Arc<kasumi_store::NodeStore>,
+        node: kasumi_store::NodeStore,
         store: Arc<TenantStore>,
         _directory: tempfile::TempDir,
     }
@@ -1500,41 +1547,45 @@ mod tests {
         let (original, mut substituted) = root(0);
         substituted.object.ciphertext_sha256 = "0".repeat(64);
         substituted.validate().unwrap();
-        fixture
-            .store
-            .write_batch(&[WriteOp::put(
-                ARCHIVES,
-                0u64.to_be_bytes(),
-                serde_json::to_vec(&substituted).unwrap(),
-            )])
-            .unwrap();
+        kasumi_store::test_utils::write_plaintext_copy_for_fixture(
+            &fixture.store,
+            ARCHIVES,
+            &(0u64.to_be_bytes()),
+            &(serde_json::to_vec(&substituted).unwrap()),
+        )
+        .unwrap();
         let error = audit.verify_archive(1).await.unwrap_err();
         assert!(format!("{error:#}").contains("chain link differs"));
         assert!(audit.verify_archive(0).await.is_err());
-        fixture
-            .store
-            .write_batch(&[WriteOp::put(ARCHIVES, 0u64.to_be_bytes(), original)])
-            .unwrap();
+        kasumi_store::test_utils::write_plaintext_copy_for_fixture(
+            &fixture.store,
+            ARCHIVES,
+            &(0u64.to_be_bytes()),
+            original.as_bytes(),
+        )
+        .unwrap();
         audit.verify_archive(1).await.unwrap();
         // The last root must be exactly the committed head.
         let last = segments - 1;
         let (original, mut substituted) = root(last);
         substituted.key.provider = "substituted".into();
         substituted.validate().unwrap();
-        fixture
-            .store
-            .write_batch(&[WriteOp::put(
-                ARCHIVES,
-                last.to_be_bytes(),
-                serde_json::to_vec(&substituted).unwrap(),
-            )])
-            .unwrap();
+        kasumi_store::test_utils::write_plaintext_copy_for_fixture(
+            &fixture.store,
+            ARCHIVES,
+            &(last.to_be_bytes()),
+            &(serde_json::to_vec(&substituted).unwrap()),
+        )
+        .unwrap();
         let error = audit.verify_archive(last).await.unwrap_err();
         assert!(format!("{error:#}").contains("root differs from head"));
-        fixture
-            .store
-            .write_batch(&[WriteOp::put(ARCHIVES, last.to_be_bytes(), original)])
-            .unwrap();
+        kasumi_store::test_utils::write_plaintext_copy_for_fixture(
+            &fixture.store,
+            ARCHIVES,
+            &(last.to_be_bytes()),
+            original.as_bytes(),
+        )
+        .unwrap();
         audit.verify_archive(last).await.unwrap();
         fixture.close(audit).await;
     }
@@ -1568,24 +1619,30 @@ mod tests {
         ];
         for (namespace, key) in rows {
             let original = fixture.store.get(namespace, &key).unwrap().unwrap();
-            let changed = alternate(&original);
+            let changed = alternate(&fixture.store, &original);
             assert_eq!(
                 serde_json::from_slice::<serde_json::Value>(&changed).unwrap(),
                 serde_json::from_slice::<serde_json::Value>(&original).unwrap()
             );
-            fixture
-                .store
-                .write_batch(&[WriteOp::put(namespace, key.clone(), changed)])
-                .unwrap();
+            kasumi_store::test_utils::write_plaintext_copy_for_fixture(
+                &fixture.store,
+                namespace,
+                &(key),
+                &(changed),
+            )
+            .unwrap();
             let Err(error) = fixture.open() else {
                 panic!("alternate {namespace} row opened");
             };
             assert!(format!("{error:#}").contains("noncanonical"), "{namespace}");
             assert_eq!(fixture.archive.remote.load(Ordering::SeqCst), remote);
-            fixture
-                .store
-                .write_batch(&[WriteOp::put(namespace, key, original)])
-                .unwrap();
+            kasumi_store::test_utils::write_plaintext_copy_for_fixture(
+                &fixture.store,
+                namespace,
+                &(key),
+                original.as_bytes(),
+            )
+            .unwrap();
         }
         // An untyped hot row is not a service audit record either.
         let key = status.position.pruned_before.to_be_bytes();
@@ -1595,10 +1652,13 @@ mod tests {
             "body": {"document": true}
         }))
         .unwrap();
-        fixture
-            .store
-            .write_batch(&[WriteOp::put("security.audit", key, untyped)])
-            .unwrap();
+        kasumi_store::test_utils::write_plaintext_copy_for_fixture(
+            &fixture.store,
+            "security.audit",
+            &(key),
+            &(untyped),
+        )
+        .unwrap();
         let Err(error) = fixture.open() else {
             panic!("untyped hot row opened");
         };
@@ -1608,10 +1668,13 @@ mod tests {
             "{message}"
         );
         assert_eq!(fixture.archive.remote.load(Ordering::SeqCst), remote);
-        fixture
-            .store
-            .write_batch(&[WriteOp::put("security.audit", key, original)])
-            .unwrap();
+        kasumi_store::test_utils::write_plaintext_copy_for_fixture(
+            &fixture.store,
+            "security.audit",
+            &(key),
+            original.as_bytes(),
+        )
+        .unwrap();
 
         // Restart with the exact current-writer pending publication resumes it.
         let fixture = fixture.restart(None).await;
@@ -1650,22 +1713,40 @@ mod tests {
         let mut unnamed: SecurityAuditRecord = serde_json::from_slice(&original).unwrap();
         unnamed.event.request_id = String::new();
         let prefix = audit.export_page(None, 2).await.unwrap();
+        enum TamperBytes {
+            Generated(Vec<u8>),
+            Copied(kasumi_store::test_utils::FixturePlaintextCopy),
+        }
+        impl TamperBytes {
+            fn as_bytes(&self) -> &[u8] {
+                match self {
+                    Self::Generated(bytes) => bytes,
+                    Self::Copied(bytes) => bytes.as_bytes(),
+                }
+            }
+        }
         for (changed, expected) in [
-            (alternate(&original), "noncanonical"),
-            (untyped, "unknown field"),
             (
-                serde_json::to_vec(&unsupported).unwrap(),
+                TamperBytes::Copied(alternate(&fixture.store, &original)),
+                "noncanonical",
+            ),
+            (TamperBytes::Generated(untyped), "unknown field"),
+            (
+                TamperBytes::Generated(serde_json::to_vec(&unsupported).unwrap()),
                 "invalid stored service audit record: unsupported service audit record format",
             ),
             (
-                serde_json::to_vec(&unnamed).unwrap(),
+                TamperBytes::Generated(serde_json::to_vec(&unnamed).unwrap()),
                 "invalid stored service audit record",
             ),
         ] {
-            fixture
-                .store
-                .write_batch(&[WriteOp::put("security.audit", key, changed)])
-                .unwrap();
+            kasumi_store::test_utils::write_plaintext_copy_for_fixture(
+                &fixture.store,
+                "security.audit",
+                &(key),
+                changed.as_bytes(),
+            )
+            .unwrap();
             for error in [
                 audit.export_page(None, 5).await.unwrap_err(),
                 audit.export_page(prefix.cursor(), 3).await.unwrap_err(),
@@ -1685,17 +1766,25 @@ mod tests {
             .unwrap();
         let mut substituted = prefix.records[1].clone();
         substituted.timestamp_ms += 1;
-        fixture
-            .store
-            .write_batch(&[
-                WriteOp::put("security.audit", key, original),
-                WriteOp::put(
+        let substituted = serde_json::to_vec(&substituted).unwrap();
+        kasumi_store::test_utils::FixtureWriteBatch::prepare(
+            &fixture.store,
+            &[
+                kasumi_store::test_utils::FixtureWrite::Put(
                     "security.audit",
-                    1u64.to_be_bytes(),
-                    serde_json::to_vec(&substituted).unwrap(),
+                    &key,
+                    original.as_bytes(),
                 ),
-            ])
-            .unwrap();
+                kasumi_store::test_utils::FixtureWrite::Put(
+                    "security.audit",
+                    &1u64.to_be_bytes(),
+                    &substituted,
+                ),
+            ],
+        )
+        .unwrap()
+        .write(&fixture.store)
+        .unwrap();
         let error = audit.export_page(Some(tail.clone()), 3).await.unwrap_err();
         assert!(invalid_argument(&error).contains("previous record differs"));
 
@@ -1705,32 +1794,42 @@ mod tests {
         let original = fixture.store.get("security.audit", &key).unwrap().unwrap();
         let mut substituted: SecurityAuditRecord = serde_json::from_slice(&original).unwrap();
         substituted.timestamp_ms += 1;
-        fixture
-            .store
-            .write_batch(&[
-                WriteOp::put("security.audit", 1u64.to_be_bytes(), prefix_anchor),
-                WriteOp::put(
+        let substituted = serde_json::to_vec(&substituted).unwrap();
+        kasumi_store::test_utils::FixtureWriteBatch::prepare(
+            &fixture.store,
+            &[
+                kasumi_store::test_utils::FixtureWrite::Put(
                     "security.audit",
-                    key,
-                    serde_json::to_vec(&substituted).unwrap(),
+                    &1u64.to_be_bytes(),
+                    prefix_anchor.as_bytes(),
                 ),
-            ])
-            .unwrap();
+                kasumi_store::test_utils::FixtureWrite::Put("security.audit", &key, &substituted),
+            ],
+        )
+        .unwrap()
+        .write(&fixture.store)
+        .unwrap();
         let error = audit.export_page(Some(tail.clone()), 1).await.unwrap_err();
         assert!(invalid_argument(&error).contains("snapshot tail differs"));
         // The writer's own capture differing from its storage is corruption.
         let error = audit.export_page(None, 1).await.unwrap_err();
         assert!(storage_failure(&error).contains("hot tail differs from its writer"));
-        fixture
-            .store
-            .write_batch(&[WriteOp::put("security.audit", key, alternate(&original))])
-            .unwrap();
+        kasumi_store::test_utils::write_plaintext_copy_for_fixture(
+            &fixture.store,
+            "security.audit",
+            &(key),
+            &(alternate(&fixture.store, &original)),
+        )
+        .unwrap();
         let error = audit.export_page(Some(tail.clone()), 1).await.unwrap_err();
         assert!(storage_failure(&error).contains("noncanonical"));
-        fixture
-            .store
-            .write_batch(&[WriteOp::put("security.audit", key, original)])
-            .unwrap();
+        kasumi_store::test_utils::write_plaintext_copy_for_fixture(
+            &fixture.store,
+            "security.audit",
+            &(key),
+            original.as_bytes(),
+        )
+        .unwrap();
         assert_eq!(export_rest(&audit, Some(tail), 1, event).await, 5);
         fixture.close(audit).await;
     }

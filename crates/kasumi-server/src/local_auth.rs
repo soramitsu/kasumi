@@ -592,7 +592,6 @@ mod tests {
         );
         assert!(
             auth.protected_resource_metadata("https://localhost/mcp")
-                .get("authorization_servers")
                 .is_none()
         );
         let revoked = manager.revoke(issued.family_id, "administrator").unwrap();
@@ -743,7 +742,7 @@ mod tests {
                 assert_eq!(store.get(ISSUANCES, &key).unwrap().unwrap(), alternate);
             }
             store
-                .write_batch(&[WriteOp::put(ISSUANCES, key, current)])
+                .write_batch(&[WriteOp::put(ISSUANCES, key, current.as_bytes())])
                 .unwrap();
         }
         assert_eq!(
@@ -843,7 +842,11 @@ mod tests {
             omitted
         );
         store
-            .write_batch(&[WriteOp::put(FAMILIES, family.as_bytes(), current)])
+            .write_batch(&[WriteOp::put(
+                FAMILIES,
+                family.as_bytes(),
+                current.as_bytes(),
+            )])
             .unwrap();
         assert_eq!(manager.status(family).unwrap(), status);
         assert_eq!(

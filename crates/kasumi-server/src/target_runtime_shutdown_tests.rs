@@ -3,6 +3,15 @@ use std::{collections::BTreeSet, future::Future, task::Poll};
 
 #[tokio::test]
 async fn target_monitor_and_outer_owner_survive_cancelled_shutdown_until_journal_reopens() {
+    target_worker_shutdown_fixture(false).await;
+}
+
+#[tokio::test]
+async fn target_cache_workers_wait_for_parent_handoff_and_drain_late_generation() {
+    target_worker_shutdown_fixture(true).await;
+}
+
+async fn target_worker_shutdown_fixture(activate: bool) {
     tokio::time::timeout(std::time::Duration::from_secs(15), async {
         let directory = kasumi_store::test_utils::private_tempdir().unwrap();
         let physical =
@@ -41,7 +50,8 @@ async fn target_monitor_and_outer_owner_survive_cancelled_shutdown_until_journal
         )
         .unwrap();
         let node = physical.create_new(&path, node_id).unwrap();
-        let weak_node = Arc::downgrade(&node);
+        let weak_node = node.locator();
+        let mut weak_node_retirement = node.clone().retire();
         let provider = Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([41; 32]));
         let journal_tenant = format!("kasumi.target.{}.1", root.control_incarnation);
         let access = StorageAccess::target_journal(&root, &identity).unwrap();
@@ -56,9 +66,13 @@ async fn target_monitor_and_outer_owner_survive_cancelled_shutdown_until_journal
         let admission = physical.admission.clone();
         let journal = TargetJournal::create_new(
             store.clone(),
-            TargetJournalInstallation {
+            kasumi_engine::TargetJournalInstallation {
                 root: root.clone(),
                 node: identity.clone(),
+                audit_placement_bindings: std::collections::BTreeMap::from([(
+                    "unused-target".into(),
+                    "ab".repeat(32),
+                )]),
             },
             TargetJournalLimits {
                 max_metadata_bytes: 4 << 20,
@@ -87,8 +101,11 @@ async fn target_monitor_and_outer_owner_survive_cancelled_shutdown_until_journal
             Default::default(),
         )
         .unwrap();
-        let config =
-            crate::runtime::example_config(kasumi_store::DirectoryPolicy::fixture()).unwrap();
+        let config = crate::runtime::example_config(
+            kasumi_store::DirectoryPolicy::fixture(),
+            kasumi_store::FileAllocationPolicy::fixture(),
+        )
+        .unwrap();
         // No network or recovery operation is dispatched by this ownership fixture.
         // The actual monitor is stopped at its first upgrade, before discovery.
         let installed = TargetRecoveryConfig {
@@ -121,6 +138,7 @@ async fn target_monitor_and_outer_owner_survive_cancelled_shutdown_until_journal
             recovery_health: std::sync::Mutex::new(serving::RecoveryHealth::new()),
             registry: Default::default(),
             serving_monitor: Default::default(),
+            cache_warming_ready: AtomicBool::new(false),
             shutdown_gate: Mutex::new(DrainReport::default()),
             config,
             authority_trusts: BTreeMap::new(),
@@ -150,7 +168,8 @@ async fn target_monitor_and_outer_owner_survive_cancelled_shutdown_until_journal
         let partial_path = directory.path().join("persistent/partial-target.kv");
         let partial_id = Uuid::new_v4();
         let partial_node = physical.create_new(&partial_path, partial_id).unwrap();
-        let weak_partial = Arc::downgrade(&partial_node);
+        let weak_partial = partial_node.locator();
+        let partial_opening_id = partial_node.registered_opening_id().unwrap();
         let partial_store = TenantStore::initialize_catalog_fixture(
             partial_node.clone(),
             "city".into(),
@@ -171,34 +190,93 @@ async fn target_monitor_and_outer_owner_survive_cancelled_shutdown_until_journal
             stores: Some(partial_stores),
             ..Default::default()
         }));
+        // Preparation follows exact runtime/generation retention. A serving
+        // registration observed before the parent claims its startup ticket
+        // cannot activate either native worker.
+        runtime.journal_node.prepare_cache_warming().await.unwrap();
+        {
+            let generation = late_generation.lock().await;
+            let generation_node = generation.node.as_ref().unwrap();
+            generation_node.prepare_cache_warming().await.unwrap();
+            runtime.activate_generation_cache(&generation).unwrap();
+            for node in [&runtime.journal_node, generation_node] {
+                let status = node.cache_worker_status();
+                assert!(status.started);
+                assert!(!status.active);
+                assert_eq!(status.steps, 0);
+            }
+        }
+        tokio::task::yield_now().await;
+        {
+            let generation = late_generation.lock().await;
+            let generation_node = generation.node.as_ref().unwrap();
+            assert_eq!(runtime.journal_node.cache_worker_status().steps, 0);
+            assert_eq!(generation_node.cache_worker_status().steps, 0);
+            if activate {
+                runtime.activate_cache_warming().unwrap();
+                assert!(runtime.journal_node.cache_worker_status().active);
+                assert!(!generation_node.cache_worker_status().active);
+                // Reconciliation's acknowledged serving/custody registration
+                // rechecks the now-ready parent before enabling this node.
+                runtime.activate_generation_cache(&generation).unwrap();
+                assert!(generation_node.cache_worker_status().active);
+                tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                    while runtime.journal_node.cache_worker_status().steps == 0
+                        || generation_node.cache_worker_status().steps == 0
+                    {
+                        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                    }
+                })
+                .await
+                .unwrap();
+            }
+        }
         let pause = runtime.serving_monitor.pause_next_upgrade();
-        let bytes = kasumi_serving::BackgroundWorkBudget::required_bytes(1, 1).unwrap();
+        let bytes = kasumi_serving::BackgroundWorkBudget::required_bytes(1, 1)
+            .unwrap()
+            .checked_add(
+                kasumi_types::SharedBudgetCharge::required_bytes::<
+                    kasumi_engine::admission::Reservation,
+                >()
+                .unwrap(),
+            )
+            .unwrap();
         let mut charge = runtime.admission.reserve(bytes, None).unwrap();
         charge.retain(bytes);
-        let budget = kasumi_serving::BackgroundWorkBudget::new(1, Arc::new(charge)).unwrap();
+        let budget = kasumi_serving::BackgroundWorkBudget::new(
+            1,
+            kasumi_types::SharedBudgetCharge::new(charge),
+        )
+        .unwrap();
         runtime.start_serving_reconciliation(&budget).unwrap();
         pause.entered.notified().await;
         let monitor = runtime.serving_monitor.work();
         let calls = runtime.calls.clone();
         let permit = calls.clone().acquire_owned().await.unwrap();
         let (finish_call, blocked_call) = tokio::sync::oneshot::channel::<()>();
-        let installer = runtime.clone();
-        let response = runtime
+        let submission = runtime
             .call_jobs
-            .submit(
+            .acquire_submission::<()>(
                 tokio::time::Instant::now() + std::time::Duration::from_secs(5),
-                async move {
-                    blocked_call.await?;
-                    installer
-                        .generations
-                        .lock()
-                        .await
-                        .insert(("city".into(), Uuid::new_v4()), late_generation);
-                    drop(permit);
-                    Ok::<(), anyhow::Error>(())
-                },
+                runtime.call_jobs.acquire_failure().unwrap(),
             )
             .await
+            .unwrap();
+        let installer = runtime.clone();
+        // Metadata observer of the actual receipt produced by Generation::close.
+        // It holds no native node alias after that close completes.
+        let late_generation_receipt = late_generation.clone();
+        let response = submission
+            .submit(async move {
+                blocked_call.await?;
+                installer
+                    .generations
+                    .lock()
+                    .await
+                    .insert(("city".into(), Uuid::new_v4()), late_generation);
+                drop(permit);
+                Ok::<(), anyhow::Error>(())
+            })
             .unwrap();
         drop(response);
         assert_eq!(calls.available_permits(), MAX_CALLS as usize - 1);
@@ -214,6 +292,7 @@ async fn target_monitor_and_outer_owner_survive_cancelled_shutdown_until_journal
             outer.is_some(),
             "cancelled outer shutdown lost its target owner"
         );
+        assert!(outer.as_ref().unwrap().activate_cache_warming().is_err());
         let mut retry = Box::pin(shutdown_target(&mut outer));
         std::future::poll_fn(|cx| {
             assert!(retry.as_mut().poll(cx).is_pending());
@@ -248,9 +327,24 @@ async fn target_monitor_and_outer_owner_survive_cancelled_shutdown_until_journal
         assert_eq!(calls.available_permits(), MAX_CALLS as usize - 1);
         finish_call.send(()).unwrap();
         retry.await.unwrap();
+        let cache_status = node.cache_worker_status();
+        assert!(cache_status.stopped);
+        if !activate {
+            assert_eq!(cache_status.steps, 0);
+        }
         assert!(outer.is_none());
         assert!(weak_runtime.upgrade().is_none());
-        assert!(weak_partial.upgrade().is_none());
+        {
+            let generation = late_generation_receipt.lock().await;
+            let receipt = generation.node_retirement.as_ref().unwrap();
+            assert_eq!(receipt.id(), partial_opening_id);
+            assert!(receipt.is_retired());
+            assert!(generation.node.is_none());
+        }
+        assert!(matches!(
+            weak_partial.try_borrow(),
+            kasumi_store::NodeStoreLookup::Missing
+        ));
         physical
             .open_existing(&partial_path, partial_id)
             .unwrap()
@@ -265,7 +359,16 @@ async fn target_monitor_and_outer_owner_survive_cancelled_shutdown_until_journal
         drop(audit);
         drop(store);
         drop(node);
-        assert!(weak_node.upgrade().is_none());
+        assert!({
+            assert_eq!(
+                weak_node_retirement.retry(),
+                kasumi_store::StorageCensusDisposition::Retired
+            );
+            matches!(
+                weak_node.try_borrow(),
+                kasumi_store::NodeStoreLookup::Missing
+            )
+        });
         let reopened = physical.open_existing(&path, node_id).unwrap();
         let store = TenantStore::open_existing(reopened.clone(), journal_tenant, provider, access)
             .await
@@ -304,7 +407,7 @@ async fn stop_local_generation_root_substitution_fences_before_cleanup_claim() {
     let node = physical.create_new(&path, file_id).unwrap();
     node.shutdown().await.unwrap();
     drop(node);
-    assert!(path.is_file());
+    assert!(path.is_dir());
 
     // An operator or attacker substitutes the configured root after startup.
     // The original inode remains under the moved directory, while the new
@@ -313,7 +416,7 @@ async fn stop_local_generation_root_substitution_fences_before_cleanup_claim() {
     std::fs::rename(&generation_root, &moved).unwrap();
     kasumi_store::private_files::create_directory(&generation_root).unwrap();
     let retained_file = moved.join(path.file_name().unwrap());
-    assert!(retained_file.is_file());
+    assert!(retained_file.is_dir());
     assert!(!path.exists());
 
     // This is the exact path gate called by StopLocal cleanup before it can
@@ -326,9 +429,17 @@ async fn stop_local_generation_root_substitution_fences_before_cleanup_claim() {
         physical.persistent.snapshot().phase,
         kasumi_store::NodeDiskPhase::Failed
     );
-    assert!(NodeStore::claim_cleanup(&path, file_id, physical.persistent.clone()).is_err());
     assert!(
-        retained_file.is_file(),
+        NodeStore::claim_cleanup(
+            &path,
+            file_id,
+            physical.persistent.clone(),
+            physical.persistent.native_storage_config()
+        )
+        .is_err()
+    );
+    assert!(
+        retained_file.is_dir(),
         "failed cleanup must retain the original inode"
     );
 }
@@ -371,7 +482,7 @@ async fn transient_root_swap_during_path_probe_cannot_prove_target_absence() {
     // path lookup into an absence proof. The managed observation sees the
     // retained file or rejects changed directory accounting.
     assert!(target_absence_from_installed_disk(&config, &physical.persistent, &path).is_err());
-    assert!(path.is_file(), "the original target inode must remain");
+    assert!(path.is_dir(), "the original target group must remain");
 }
 
 #[test]
@@ -426,7 +537,7 @@ async fn missing_previously_enrolled_target_leaf_is_not_an_absence_proof() {
     let node = physical.create_new(&path, Uuid::new_v4()).unwrap();
     node.shutdown().await.unwrap();
     drop(node);
-    std::fs::remove_file(&path).unwrap();
+    std::fs::remove_dir_all(&path).unwrap();
     assert!(!target_file_exists(&path).unwrap());
     assert!(target_absence_from_installed_disk(&config, &physical.persistent, &path).is_err());
     assert_eq!(
@@ -440,9 +551,13 @@ fn target_absence_requires_a_successful_filesystem_observation() {
     let directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let path = directory.path().join("target.kv");
     assert!(!target_file_exists(&path).unwrap());
-    std::fs::write(&path, b"owned").unwrap();
+    std::fs::write(&path, b"obsolete single-file image").unwrap();
+    assert!(target_file_exists(&path).is_err());
+    std::fs::remove_file(&path).unwrap();
+    std::fs::create_dir(&path).unwrap();
     assert!(target_file_exists(&path).unwrap());
-    assert!(target_file_exists(directory.path()).is_err());
+    // A positive kind check is a hint only; managed acquisition still checks
+    // enrollment, root envelope and exact incarnation before any data is read.
     let alias = directory.path().join("alias");
     std::os::unix::fs::symlink(&path, &alias).unwrap();
     assert!(target_file_exists(&alias).is_err());
@@ -494,7 +609,8 @@ async fn target_generation_close_joins_cancelled_catalog_initializers_before_fil
         let path = directory.path().join("persistent/unpublished-target.kv");
         let id = Uuid::new_v4();
         let node = physical.create_new(&path, id).unwrap();
-        let weak = Arc::downgrade(&node);
+        let weak = node.locator();
+        let opening_id = node.registered_opening_id().unwrap();
         let provider = Arc::new(PausedCatalogProvider {
             inner: kasumi_store::test_utils::LocalKeyProvider::new([63; 32]),
             paused: AtomicBool::new(false),
@@ -548,30 +664,135 @@ async fn target_generation_close_joins_cancelled_catalog_initializers_before_fil
         .await;
         drop(closing);
         assert!(generation.node.is_some());
-        assert!(weak.upgrade().is_some());
-        assert!(NodeStore::claim_cleanup(&path, id, physical.persistent.clone()).is_err());
+        assert!(matches!(
+            weak.try_borrow(),
+            kasumi_store::NodeStoreLookup::Active(_)
+        ));
+        assert!(
+            NodeStore::claim_cleanup(
+                &path,
+                id,
+                physical.persistent.clone(),
+                physical.persistent.native_storage_config()
+            )
+            .is_err()
+        );
         provider.release.notify_one();
         let failure = generation.close(&cluster, &registry).await.unwrap_err();
-        assert_eq!(failure.completion(), DrainCompletion::Complete);
+        assert_eq!(failure.completion(), DrainCompletion::Retained);
         let issue = failure
             .issues()
             .iter()
             .find(|issue| issue.component() == "node catalog initialization")
             .expect("original cancelled initializer diagnostic")
             .clone();
-        assert!(format!("{:#}", issue.error()).contains("catalog initialization receiver closed"));
+        let outer: &(dyn std::error::Error + Send + Sync) = issue.error().as_ref();
+        let observed = outer
+            .downcast_ref::<kasumi_store::InitializerDrainObservation>()
+            .expect("foreign issue owns only the actual registered scalar observation");
+        assert_eq!(observed.opening_id(), opening_id);
+        let original = kasumi_store::InitializerDrainFailure::retained(
+            physical.persistent.memory().clone(),
+            opening_id,
+        )
+        .await
+        .expect("same original registered initializer failure");
+        let inspect = |report: kasumi_store::InitializerDrainReport<'_>| {
+            let original = report
+                .body_error()
+                .expect("actual closed receiver original");
+            assert!(format!("{original:#}").contains("catalog initialization receiver closed"));
+            assert!(report.join_error().is_none());
+            assert!(matches!(
+                report.handle_disposal(),
+                kasumi_store::TerminalObservation::Returned(Ok(()))
+            ));
+            assert!(matches!(
+                report.original_disposal(),
+                kasumi_store::TerminalObservation::NotEntered
+            ));
+            let outer: &(dyn std::error::Error + Send + Sync) = original.as_ref();
+            std::ptr::from_ref(outer).cast::<()>() as usize
+        };
+        let original_address = original.with_report(inspect).await;
+        drop(original);
         let repeated = generation.close(&cluster, &registry).await.unwrap_err();
-        assert_eq!(repeated.completion(), DrainCompletion::Complete);
+        assert_eq!(repeated.completion(), DrainCompletion::Retained);
         let repeated_issue = repeated
             .issues()
             .iter()
             .find(|entry| entry.component() == "node catalog initialization")
             .unwrap();
-        assert!(Arc::ptr_eq(&issue, repeated_issue));
+        assert!(kasumi_types::drain::DrainIssueRef::ptr_eq(
+            &issue,
+            repeated_issue
+        ));
+        assert!(generation.node.is_some());
+        assert!(generation.node_retirement.is_none());
+        let original = kasumi_store::InitializerDrainFailure::retained(
+            physical.persistent.memory().clone(),
+            opening_id,
+        )
+        .await
+        .expect("facade loss never disposes the actual original");
+        assert_eq!(original.with_report(inspect).await, original_address);
+        assert!(
+            NodeStore::claim_cleanup(
+                &path,
+                id,
+                physical.persistent.clone(),
+                physical.persistent.native_storage_config()
+            )
+            .is_err()
+        );
+        // Only this actual destructor returning vacates the original slot.
+        assert!(original.dispose_original().await);
+        drop(original);
+        assert!(
+            kasumi_store::InitializerDrainFailure::retained(
+                physical.persistent.memory().clone(),
+                opening_id
+            )
+            .await
+            .is_none()
+        );
+        let completed = generation.close(&cluster, &registry).await.unwrap_err();
+        assert_eq!(completed.completion(), DrainCompletion::Complete);
+        let completed_issue = completed
+            .issues()
+            .iter()
+            .find(|entry| entry.component() == "node catalog initialization")
+            .unwrap();
+        assert!(kasumi_types::drain::DrainIssueRef::ptr_eq(
+            &issue,
+            completed_issue
+        ));
+        let repeated = generation.close(&cluster, &registry).await.unwrap_err();
+        assert_eq!(repeated.completion(), DrainCompletion::Complete);
+        assert!(kasumi_types::drain::DrainIssueRef::ptr_eq(
+            &issue,
+            repeated
+                .issues()
+                .iter()
+                .find(|entry| entry.component() == "node catalog initialization")
+                .unwrap()
+        ));
         assert!(generation.node.is_none());
         assert!(!generation.fresh_catalogs);
-        assert!(weak.upgrade().is_none());
-        let ownership = NodeStore::claim_cleanup(&path, id, physical.persistent.clone()).unwrap();
+        let receipt = generation.node_retirement.as_ref().unwrap();
+        assert_eq!(receipt.id(), opening_id);
+        assert!(receipt.is_retired());
+        assert!(matches!(
+            weak.try_borrow(),
+            kasumi_store::NodeStoreLookup::Missing
+        ));
+        let ownership = NodeStore::claim_cleanup(
+            &path,
+            id,
+            physical.persistent.clone(),
+            physical.persistent.native_storage_config(),
+        )
+        .unwrap();
         ownership.delete().unwrap();
         assert!(!path.exists());
     })

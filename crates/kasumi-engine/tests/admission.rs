@@ -62,7 +62,8 @@ async fn reserved_capacity_rejects_proposals_and_queries_but_committed_raft_work
         kasumi_engine::test_utils::open_fixture(stores, policy, Limits::default(), audit.clone())
             .await
             .unwrap();
-    kasumi_engine::test_utils::install_fixture_native_maintenance(&database, &admission).unwrap();
+    // The canonical bootstrap already installs native maintenance before Raft
+    // replay; a second installation after the initial log entry is invalid.
     let group = database.raft_group().clone();
     // Startup and audit use the same healthy facade. A real retained reservation
     // exhausts capacity after startup; no governor is replaced or reconfigured.
@@ -108,7 +109,9 @@ async fn reserved_capacity_rejects_proposals_and_queries_but_committed_raft_work
         operation,
     };
     let result = group
-        .write(serde_json::to_vec(&command).unwrap())
+        .write(kasumi_raft::ApplicationProposal::generated(
+            serde_json::to_vec(&command).unwrap(),
+        ))
         .await
         .unwrap();
     assert!(
@@ -240,7 +243,12 @@ async fn explicit_local_bootstrap_reads_the_complete_committed_generation() {
         .await
         .unwrap();
     assert_eq!(
-        database.get(&context, "docs", "a").await.unwrap().body,
+        database
+            .get(&context, "docs", "a")
+            .await
+            .unwrap()
+            .expect("document exists")
+            .body,
         body
     );
     let query: QueryRequest = serde_json::from_value(json!({"collection":"docs"})).unwrap();

@@ -520,7 +520,9 @@ async fn run(
                 timeout,
             )?)
             .await?
-            .into_inner();
+            .into_inner()
+            .document
+            .ok_or_else(|| anyhow::anyhow!("native document is absent"))?;
         ensure!(
             response.id == id && response.version > 0,
             "native document identity differs"

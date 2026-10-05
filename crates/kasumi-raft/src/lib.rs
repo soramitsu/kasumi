@@ -1,7 +1,75 @@
 //! Durable byte-command replication. Application outcomes are encoded in response bytes;
 //! backend errors are fatal materialization failures, never replica-local rejections.
 
+// Fresh ordinary validation errors convert into the enclosing result type.
+// Incoming scratch creation custody never passes through this macro.
+macro_rules! ensure_result {
+    ($condition:expr, $($message:tt)+) => {
+        if !$condition {
+            return Err(anyhow::anyhow!($($message)+).into());
+        }
+    };
+    ($condition:expr $(,)?) => {
+        if !$condition {
+            return Err(anyhow::anyhow!(
+                concat!("Condition failed: `", stringify!($condition), "`")
+            ).into());
+        }
+    };
+}
+pub(crate) use ensure_result;
+
+#[cfg(any(test, feature = "test-utils"))]
+pub mod test_utils;
+
+mod selected_application;
+pub use selected_application::{
+    ApplicationBoundaryRef, ApplicationSelectionMode, PreparedOrdinarySourceEnvelope,
+    PreparedSelectionPlan, PreparedSourceCapacityEnvelope, SelectedApplicationPosition,
+    SelectedAppliedRef, SelectedSnapshotRef, SelectionFailure, SelectionReadIdentity,
+    SelectionWorkspace, selected_application_at, selected_application_at_planned,
+    selected_application_at_prepared, selected_application_at_source,
+    selected_application_at_source_loan,
+};
+
+/// Fixed canonical cursor read specification for the test-only primary
+/// predecessor check. This provides bounds, not a decoded proof or authority.
+#[cfg(any(test, feature = "test-utils"))]
+pub const fn primary_applied_cursor_read_spec_for_test() -> (&'static str, &'static [u8], usize) {
+    PreparedSelectionPlan::applied_cursor_read_spec()
+}
+
+mod apply_completion;
+pub use apply_completion::{
+    CompletionAction, CompletionActionFailureIdentity, CompletionBinding, CompletionCallError,
+    CompletionCustody, CompletionFinalization, CompletionIdentity, CompletionInvocation,
+    CompletionSettleError, CompletionVerdict,
+};
+mod apply_failure;
+pub use apply_failure::completion::{
+    ApplyObservationRef, CompletionViolation, OrdinaryApplyReport, ReportBusy, RetainedApplyReport,
+};
+mod accepted_input;
+mod replay_input;
+pub use accepted_input::{
+    AdmittedApplicationInput, ApplicationInputInstall, ApplicationInputLoan,
+    ApplicationInputPermit, ApplicationInputRequirements, InputBindingError,
+    MutationChangeTreeRetention,
+};
+mod application_payload;
+mod apply_publication;
 mod command;
+pub use application_payload::{ApplicationPayload, ApplicationProposal};
+pub use apply_publication::{
+    AppliedInput, ApplyPublisher, JointPublicationReceipt, PublicationChallenge,
+    PublicationExpectation, PublicationExpectationError, PublishCallError, SelectionPreparer,
+};
+#[cfg(any(test, feature = "test-utils"))]
+pub use apply_publication::{
+    ApplyRefusalStage, TestCaptureObservation, TestPublicationError, TestPublicationFailure,
+    TestPublicationState, with_application_publisher_bound_for_test,
+    with_application_publisher_bound_observed_for_test, with_application_publisher_for_test,
+};
 mod control;
 mod entry;
 pub use entry::Entry;
@@ -26,6 +94,7 @@ pub use initialization_association::{
 mod lifetime;
 mod network;
 mod quorum;
+mod scratch_failure_inventory;
 mod snapshot_buffer;
 mod snapshot_codec;
 mod snapshot_custody;
@@ -39,7 +108,7 @@ mod storage;
 mod timing;
 mod write_errors;
 
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result};
 pub use command::{
     MAX_RETIREMENT_SEED_BYTES, RaftCommand, RetirementLogSeed, RetirementReplayState,
 };
@@ -51,7 +120,8 @@ pub use control::{
 };
 pub use custody_command::{CustodyCommand, MAX_CUSTODY_COMMAND_BYTES};
 pub use custody_group::{CustodyRaftGroup, CustodyView};
-use kasumi_store::TenantStorageSet;
+use ensure_result as ensure;
+use kasumi_store::{ScratchOperationFailure, TenantStorageSet};
 use lifetime::StorageDrain;
 pub use network::{
     InProcessRouter, RaftTransport, ReadIndexError, ReadIndexResponse, RpcPayloadTooLarge,
@@ -60,7 +130,10 @@ pub use network::{
 pub use openraft::{
     BasicNode, Config, LogId, MembershipObserver, SnapshotMeta, SnapshotPolicy, StoredMembership,
 };
-pub use snapshot_buffer::{SNAPSHOT_BUFFER_SLOTS, SnapshotBuffer, SnapshotBufferOwner};
+pub use snapshot_buffer::{
+    ApplicationSourceBinding, ApplicationSourceCustody, SNAPSHOT_BUFFER_SLOTS, SnapshotBuffer,
+    SnapshotBufferOwner,
+};
 pub use snapshot_state::RetiredSnapshotState;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
@@ -124,7 +197,9 @@ impl AppliedResponse {
     }
 }
 
-type SnapshotWriter = dyn Fn(&mut dyn std::io::Write) -> Result<()> + Send + Sync;
+type SnapshotWriter = dyn Fn(&mut dyn std::io::Write) -> std::result::Result<(), ScratchOperationFailure>
+    + Send
+    + Sync;
 type CheckpointWrites =
     dyn Fn(&SnapshotRestoreContext) -> Result<Vec<kasumi_store::WriteOp>> + Send + Sync;
 /// Immutable logical roots captured at one applied position. Materialization
@@ -137,7 +212,10 @@ pub struct CapturedSnapshot {
 impl CapturedSnapshot {
     pub fn new(
         retirement: Option<RetiredSnapshotState>,
-        writer: impl Fn(&mut dyn std::io::Write) -> Result<()> + Send + Sync + 'static,
+        writer: impl Fn(&mut dyn std::io::Write) -> std::result::Result<(), ScratchOperationFailure>
+        + Send
+        + Sync
+        + 'static,
     ) -> Self {
         Self {
             retirement,
@@ -161,14 +239,17 @@ impl CapturedSnapshot {
     ) -> Result<Vec<kasumi_store::WriteOp>> {
         (self.checkpoint_writes)(context)
     }
-    pub fn write(&self, writer: &mut dyn std::io::Write) -> Result<()> {
+    pub fn write(
+        &self,
+        writer: &mut dyn std::io::Write,
+    ) -> std::result::Result<(), ScratchOperationFailure> {
         (self.writer)(writer)
     }
 }
 
 /// Only the Raft adapter may call mutation methods after the group starts.
-/// `apply` must publish the complete command atomically; business errors belong in
-/// its returned bytes. `restore` must validate before atomically replacing state.
+/// Application effects publish through the adapter's synchronous callback;
+/// business rejections belong in the committed response bytes.
 /// Validated backend state held unpublished while Raft durably installs its
 /// encrypted tables and the matching snapshot/applied cursor. The borrowed
 /// lifetime keeps the backend's mutation lock and tracked storage owner alive.
@@ -206,7 +287,7 @@ impl SnapshotRestoreContext {
 
 pub trait PreparedStateMachineRestore {
     fn retirement(&self) -> Option<RetiredSnapshotState>;
-    fn application_replacements(&self) -> Vec<(&str, &kasumi_store::EncryptedTable)>;
+    fn application_replacements(&self) -> Vec<kasumi_store::NamespaceReplacement<'_>>;
     fn application_writes(&self) -> &[kasumi_store::WriteOp];
     /// Called only after durable publication succeeds. A release failure seals
     /// the replica; restart must recover the already committed snapshot exactly.
@@ -214,12 +295,22 @@ pub trait PreparedStateMachineRestore {
 }
 
 pub trait StateMachineBackend: Send + Sync + 'static {
-    fn apply(&self, position: &AppliedEntryContext, command: &[u8]) -> Result<AppliedResponse>;
-    /// Advance the logical snapshot cursor for consensus-only entries without
-    /// decoding an application command or manufacturing an application effect.
-    fn apply_metadata(&self, position: &AppliedEntryContext) -> Result<()>;
-    fn capture_snapshot(&self) -> Result<CapturedSnapshot>;
-    fn snapshot(&self, writer: &mut dyn std::io::Write) -> Result<Option<RetiredSnapshotState>> {
+    /// Prepare under the backend's mutation guard, commit exactly once, then
+    /// release the prepared generation only after the callback succeeds. Keep
+    /// the guard through that release. Metadata commits an empty response without
+    /// retirement; its application writes use the same publication boundary.
+    /// Outer errors fence this replica.
+    fn apply_with_publisher(
+        &self,
+        position: &AppliedEntryContext,
+        input: AppliedInput<'_>,
+        publisher: &mut dyn ApplyPublisher,
+    ) -> std::result::Result<(), ScratchOperationFailure>;
+    fn capture_snapshot(&self) -> std::result::Result<CapturedSnapshot, ScratchOperationFailure>;
+    fn snapshot(
+        &self,
+        writer: &mut dyn std::io::Write,
+    ) -> std::result::Result<Option<RetiredSnapshotState>, ScratchOperationFailure> {
         let captured = self.capture_snapshot()?;
         captured.write(writer)?;
         Ok(captured.retirement)
@@ -230,12 +321,12 @@ pub trait StateMachineBackend: Send + Sync + 'static {
     fn validate_snapshot(
         &self,
         bytes: &mut dyn std::io::Read,
-    ) -> Result<Option<RetiredSnapshotState>>;
+    ) -> std::result::Result<Option<RetiredSnapshotState>, ScratchOperationFailure>;
     fn prepare_restore<'a>(
         &'a self,
         context: &SnapshotRestoreContext,
         bytes: &mut dyn std::io::Read,
-    ) -> Result<Box<dyn PreparedStateMachineRestore + 'a>>;
+    ) -> std::result::Result<Box<dyn PreparedStateMachineRestore + 'a>, ScratchOperationFailure>;
     /// Irreversibly evict resident application material before publishing an
     /// installed closed custody snapshot. This cannot grant data access.
     fn close_application(&self);
@@ -271,6 +362,7 @@ pub struct RaftGroup {
     transport: Arc<dyn RaftTransport>,
     machine_failed: Arc<AtomicBool>,
     storage_drain: StorageDrain,
+    proposal_storage_lease: Weak<lifetime::StorageLease>,
     snapshot_buffers: Arc<SnapshotBufferOwner>,
     shutdown_report: Arc<tokio::sync::Mutex<kasumi_types::drain::DrainReport>>,
     store: Arc<TenantStorageSet>,
@@ -292,26 +384,29 @@ impl StateMachineBackend for OwnedBackend {
     fn close_application(&self) {
         self.inner.close_application();
     }
-    fn apply(&self, position: &AppliedEntryContext, command: &[u8]) -> Result<AppliedResponse> {
-        self.inner.apply(position, command)
+    fn apply_with_publisher(
+        &self,
+        position: &AppliedEntryContext,
+        input: AppliedInput<'_>,
+        publisher: &mut dyn ApplyPublisher,
+    ) -> std::result::Result<(), ScratchOperationFailure> {
+        self.inner.apply_with_publisher(position, input, publisher)
     }
-    fn apply_metadata(&self, position: &AppliedEntryContext) -> Result<()> {
-        self.inner.apply_metadata(position)
-    }
-    fn capture_snapshot(&self) -> Result<CapturedSnapshot> {
+    fn capture_snapshot(&self) -> std::result::Result<CapturedSnapshot, ScratchOperationFailure> {
         self.inner.capture_snapshot()
     }
     fn validate_snapshot(
         &self,
         bytes: &mut dyn std::io::Read,
-    ) -> Result<Option<RetiredSnapshotState>> {
+    ) -> std::result::Result<Option<RetiredSnapshotState>, ScratchOperationFailure> {
         self.inner.validate_snapshot(bytes)
     }
     fn prepare_restore<'a>(
         &'a self,
         context: &SnapshotRestoreContext,
         bytes: &mut dyn std::io::Read,
-    ) -> Result<Box<dyn PreparedStateMachineRestore + 'a>> {
+    ) -> std::result::Result<Box<dyn PreparedStateMachineRestore + 'a>, ScratchOperationFailure>
+    {
         self.inner.prepare_restore(context, bytes)
     }
 }
@@ -339,18 +434,63 @@ fn claim_custody(store: &kasumi_store::CustodyStore) -> Result<Arc<AtomicBool>> 
 }
 
 async fn failed_startup(
-    error: anyhow::Error,
+    error: ScratchOperationFailure,
     snapshot_buffers: &Arc<SnapshotBufferOwner>,
     storage_drain: &StorageDrain,
-) -> anyhow::Error {
-    let startup = snapshot_buffers.record_startup_error(error);
-    let failure = snapshot_buffers
-        .drain_buffers()
-        .await
-        .err()
-        .unwrap_or(startup);
+) -> ScratchOperationFailure {
+    snapshot_buffers.seal_application_source_consumers();
+    let (startup, preparation) = match error {
+        ScratchOperationFailure::Operation(original) => {
+            (snapshot_buffers.record_startup_error(original), None)
+        }
+        original @ (ScratchOperationFailure::Creation(_)
+        | ScratchOperationFailure::AdmissionRefused(_)) => (
+            snapshot_buffers.record_startup_preparation(&original),
+            Some(original),
+        ),
+    };
+    let mut report = kasumi_types::drain::DrainReport::default();
+    report.merge(&startup);
+    let startup_unresolved =
+        (startup.completion() == kasumi_types::drain::DrainCompletion::Retained).then_some(startup);
+    let mut buffer_unresolved = None;
+    if let Err(failure) = snapshot_buffers.drain_buffers().await {
+        report.merge(&failure);
+        if failure.completion() == kasumi_types::drain::DrainCompletion::Retained {
+            buffer_unresolved = Some(failure);
+        }
+    }
     storage_drain.wait().await;
-    failure.into()
+    // A canceled apply waiter can leave a worker that records its failure late.
+    if let Err(failure) = snapshot_buffers.drain_buffers().await {
+        report.merge(&failure);
+        if failure.completion() == kasumi_types::drain::DrainCompletion::Retained {
+            buffer_unresolved = Some(failure);
+        }
+    }
+    let mut source_unresolved = None;
+    if let Err(failure) = snapshot_buffers.drain_application_sources().await {
+        report.merge(&failure);
+        if failure.completion() == kasumi_types::drain::DrainCompletion::Retained {
+            source_unresolved = Some(failure);
+        }
+    }
+    let buffer_unresolved = snapshot_buffers
+        .finish_failed_buffer_drain(buffer_unresolved, &mut report)
+        .await;
+    let unresolved = startup_unresolved
+        .or(source_unresolved)
+        .or(buffer_unresolved);
+    if unresolved.is_none() {
+        snapshot_buffers.release_group_ownership();
+    }
+    let diagnostic = report
+        .outcome(unresolved)
+        .expect_err("startup error retained");
+    match preparation {
+        Some(original) => original,
+        None => ScratchOperationFailure::Operation(diagnostic.into()),
+    }
 }
 
 impl RaftGroup {
@@ -364,7 +504,7 @@ impl RaftGroup {
         transport: Arc<dyn RaftTransport>,
         config: RaftGroupConfig,
         snapshot_buffers: Arc<SnapshotBufferOwner>,
-    ) -> Result<Self> {
+    ) -> Result<Self, ScratchOperationFailure> {
         let owner = snapshot_buffers.clone();
         match owner
             .start(async move {
@@ -402,7 +542,7 @@ impl RaftGroup {
         config: RaftGroupConfig,
         snapshot_buffers: Arc<SnapshotBufferOwner>,
         expected: TargetFirstMembershipPrebind,
-    ) -> Result<Self> {
+    ) -> Result<Self, ScratchOperationFailure> {
         let owner = snapshot_buffers.clone();
         match owner
             .start(async move {
@@ -436,7 +576,7 @@ impl RaftGroup {
         config: RaftGroupConfig,
         snapshot_buffers: Arc<SnapshotBufferOwner>,
         target_prebind: Option<TargetFirstMembershipPrebind>,
-    ) -> Result<Self> {
+    ) -> Result<Self, ScratchOperationFailure> {
         let RaftGroupConfig {
             raft: mut config,
             limits,
@@ -446,7 +586,7 @@ impl RaftGroup {
             "snapshot limit must be positive"
         );
         config.cluster_name = group.clone();
-        let config = Arc::new(config.validate()?);
+        let config = Arc::new(config.validate().map_err(anyhow::Error::from)?);
         if let Some(expected) = &target_prebind {
             ensure!(
                 expected.node.node_id == id && expected.group == group,
@@ -455,6 +595,8 @@ impl RaftGroup {
             read_target_first_membership_prebind(&store, expected)?;
         }
         let ownership = claim_store(&store)?;
+        snapshot_buffers
+            .bind_group_ownership(ownership.clone(), store.custody().store().clone())?;
         let backend = Arc::new(OwnedBackend {
             inner: backend,
             _ownership: ownership.clone(),
@@ -462,7 +604,9 @@ impl RaftGroup {
         let (storage_drain, lease) = StorageDrain::new();
         let opened = async {
             let log = LogStore::open_tracked(store.clone(), id, lease.clone()).await?;
-            log.bind_group(group.clone()).await?;
+            log.bind_group(group.clone())
+                .await
+                .map_err(anyhow::Error::from)?;
             let machine = StateMachine::open_tracked(
                 store.clone(),
                 backend,
@@ -479,10 +623,12 @@ impl RaftGroup {
                 log,
                 machine,
             )
-            .await?;
-            Ok::<_, anyhow::Error>((raft, machine_failed))
+            .await
+            .map_err(anyhow::Error::from)?;
+            Ok::<_, ScratchOperationFailure>((raft, machine_failed))
         }
         .await;
+        let proposal_storage_lease = Arc::downgrade(&lease);
         drop(lease);
         let (raft, machine_failed) = match opened {
             Ok(value) => value,
@@ -497,6 +643,7 @@ impl RaftGroup {
             transport,
             machine_failed,
             storage_drain,
+            proposal_storage_lease,
             snapshot_buffers,
             shutdown_report: Default::default(),
             store,
@@ -512,7 +659,7 @@ impl RaftGroup {
         store: Arc<TenantStorageSet>,
         backend: Arc<dyn StateMachineBackend>,
         snapshot_buffers: Arc<SnapshotBufferOwner>,
-    ) -> Result<Self> {
+    ) -> Result<Self, ScratchOperationFailure> {
         let owner = snapshot_buffers.clone();
         match owner
             .start(async move {
@@ -533,7 +680,7 @@ impl RaftGroup {
         store: Arc<TenantStorageSet>,
         backend: Arc<dyn StateMachineBackend>,
         snapshot_buffers: Arc<SnapshotBufferOwner>,
-    ) -> Result<Self> {
+    ) -> Result<Self, ScratchOperationFailure> {
         let router = Arc::new(InProcessRouter::default());
         let mut instance = Self::open_inner(
             id,
@@ -579,9 +726,55 @@ impl RaftGroup {
             let startup = instance.snapshot_buffers.record_startup_error(error);
             // This is a live group: join its SDK children before draining the
             // buffers and storage leases. The owner retains the startup issue.
-            return Err(instance.shutdown().await.err().unwrap_or(startup).into());
+            return Err(ScratchOperationFailure::Operation(
+                instance.shutdown().await.err().unwrap_or(startup).into(),
+            ));
         }
         Ok(instance)
+    }
+
+    /// Borrow this group's actual retained apply report without draining or
+    /// releasing custody. `Ok(None)` means no terminal failure is latched at
+    /// this observation; `ReportBusy` means inspection is temporarily busy.
+    /// Neither result proves that apply or shutdown has completed.
+    ///
+    /// The synchronous callback must not wait for the failed worker or drain.
+    /// See [`SnapshotBufferOwner::try_with_retained_apply_report`] for the
+    /// borrowed-report and original-outcome ownership contract.
+    pub fn try_with_retained_apply_report<R>(
+        &self,
+        inspect: impl for<'a> FnOnce(RetainedApplyReport<'a>) -> R,
+    ) -> std::result::Result<Option<R>, ReportBusy> {
+        self.snapshot_buffers
+            .try_with_retained_apply_report(inspect)
+    }
+
+    /// Recover this installed group's retirement with its existing prepaid
+    /// constructor seat. An initial admission original stays in that seat even
+    /// when a shutdown adapter returns only a foreign diagnostic marker.
+    pub fn recover_retired_custody(
+        &self,
+        custody: &Arc<kasumi_store::CustodyStore>,
+    ) -> Result<bool, ScratchOperationFailure> {
+        let guard = self.snapshot_buffers.scratch_failure_guard()?;
+        guard.capture_result((|| {
+            let control = ControlLog::installed(custody.clone())?
+                .ok_or_else(|| anyhow::anyhow!("installed custody identity absent"))?;
+            control.recover_retired()
+        })())
+    }
+
+    /// Borrow an original initial admission diagnostic held by this group's
+    /// prepaid inventory. This facade carries no native disposal authority.
+    pub fn retained_scratch_admission(
+        &self,
+        index: usize,
+    ) -> Option<kasumi_store::ScratchCreationFailure> {
+        self.snapshot_buffers.retained_scratch_admission(index)
+    }
+
+    pub fn scratch_admission_capacity(&self) -> usize {
+        self.snapshot_buffers.scratch_admission_capacity()
     }
 
     pub fn raft(&self) -> &Raft {
@@ -708,11 +901,12 @@ impl RaftGroup {
 
     /// Success means quorum persistence followed by local atomic application.
     /// Timeout/cancellation does not imply rollback: retry with an application idempotency key.
-    pub async fn write(&self, command: Vec<u8>) -> Result<Vec<u8>> {
+    pub async fn write(&self, command: ApplicationProposal) -> Result<Vec<u8>> {
         self.check_proposal()?;
+        let command = command.admit(self.store.application(), &self.proposal_storage_lease)?;
         let response = self
             .raft
-            .client_write(RaftCommand::application(command))
+            .client_write(RaftCommand::Application(command))
             .await?;
         self.check_access().context(PostCommitAccessLost)?;
         Ok(response.data)
@@ -883,22 +1077,47 @@ impl RaftGroup {
     }
 
     pub async fn shutdown(&self) -> kasumi_types::drain::DrainResult {
+        self.snapshot_buffers.seal_application_source_consumers();
         let mut report = self.shutdown_report.lock().await;
+        let mut buffer_unresolved = None;
         if let Some((router, group, id)) = &self.local_route {
             router.unregister(group, *id);
         }
-        if let Err(error) = self.raft.shutdown().await {
+        if let Err(error) = self.raft.shutdown_gracefully().await {
             report.record("OpenRaft runtime", 0, error.into());
         }
         if let Err(failure) = self.snapshot_buffers.drain_buffers().await {
             report.merge(&failure);
+            if failure.completion() == kasumi_types::drain::DrainCompletion::Retained {
+                buffer_unresolved = Some(failure);
+            }
         }
         self.storage_drain.wait().await;
+        if let Err(failure) = self.snapshot_buffers.drain_buffers().await {
+            report.merge(&failure);
+            if failure.completion() == kasumi_types::drain::DrainCompletion::Retained {
+                buffer_unresolved = Some(failure);
+            }
+        }
+        let mut source_unresolved = None;
+        if let Err(failure) = self.snapshot_buffers.drain_application_sources().await {
+            report.merge(&failure);
+            if failure.completion() == kasumi_types::drain::DrainCompletion::Retained {
+                source_unresolved = Some(failure);
+            }
+        }
         // SDK shutdown has joined every runtime child. Its failed incoming
         // facade is now unusable because the independent buffer owner closed
         // every backing; keep the original errors while establishing completion.
-        self.ownership.store(false, Ordering::Release);
-        report.complete()
+        let buffer_unresolved = self
+            .snapshot_buffers
+            .finish_failed_buffer_drain(buffer_unresolved, &mut report)
+            .await;
+        let unresolved = source_unresolved.or(buffer_unresolved);
+        if unresolved.is_none() {
+            self.snapshot_buffers.release_group_ownership();
+        }
+        report.outcome(unresolved)
     }
 }
 

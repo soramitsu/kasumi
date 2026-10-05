@@ -107,6 +107,7 @@ fn request(config: &RuntimeConfig) -> StageTenantRequest {
         incarnation: Uuid::new_v4(),
         initial_policy: config.tenants[0].initial_policy.clone(),
         initial_limits: config.tenants[0].initial_limits.clone(),
+        audit_placement: crate::audit_destination::TenantAuditPlacementConfig::LocalReplicaOnly,
     }
 }
 async fn entered(pause: &Pause) {
@@ -164,6 +165,11 @@ async fn cancelled_staging_impl() -> Result<()> {
             .iter()
             .all(|entry| entry.tenant != request.tenant)
     );
+    assert!(
+        !RuntimeConfig::load(&installed.configuration)?
+            .tenant_audit_placements
+            .contains_key(&request.tenant)
+    );
     pause.release.notify_one();
     tokio::time::timeout(
         std::time::Duration::from_secs(10),
@@ -181,6 +187,10 @@ async fn cancelled_staging_impl() -> Result<()> {
         "completed"
     );
     let updated = RuntimeConfig::load(&installed.configuration)?;
+    assert_eq!(
+        serde_json::to_value(updated.tenant_audit_placement(&request.tenant)?)?,
+        serde_json::to_value(&request.audit_placement)?
+    );
     assert!(
         updated
             .tenants
@@ -189,6 +199,14 @@ async fn cancelled_staging_impl() -> Result<()> {
     );
     let mut owner = OperatorState::open(&updated, storage.clone()).await?;
     let checked = (|| {
+        let mut altered =
+            load(&owner, request.operation_id)?.context("completed staging record absent")?;
+        altered.request.audit_placement = TenantAuditPlacementConfig::External {
+            destination: crate::audit_destination::AuditDestinationConfig::Filesystem {
+                directory: installation_root(&updated)?.join("backups/changed-staged-audit"),
+            },
+        };
+        assert!(altered.validate(&owner, &installed.configuration).is_err());
         assert!(
             crate::node_enrollment::tenant_record(owner.audit.store(), &request.tenant)?.is_none()
         );
@@ -258,6 +276,19 @@ async fn staging_replay_impl() -> Result<()> {
         private_files::read(&keys.join("application.json"), MAX_KEYRING)?.as_slice(),
         before.as_slice()
     );
+    let external_directory = keys.join("changed-archive");
+    let mut changed_placement = request.clone();
+    changed_placement.audit_placement = TenantAuditPlacementConfig::External {
+        destination: crate::audit_destination::AuditDestinationConfig::Filesystem {
+            directory: external_directory.clone(),
+        },
+    };
+    assert!(
+        stage_tenant_with_storage(&installed.configuration, changed_placement, storage.clone())
+            .await
+            .is_err()
+    );
+    assert!(!external_directory.exists());
     let mut conflicting = request;
     conflicting.initial_limits.max_documents -= 1;
     assert!(
@@ -393,7 +424,7 @@ async fn respelled_staging_record_impl() -> Result<()> {
     let before_configuration = private_files::read(&installed.configuration, 2 << 20)?;
     let record_key = key(request.operation_id);
     let mut owner = OperatorState::open(&config, storage.clone()).await?;
-    let read = |owner: &OperatorState| -> Result<Vec<u8>> {
+    let read = |owner: &OperatorState| -> Result<kasumi_store::PlaintextValue> {
         owner
             .audit
             .store()
@@ -407,10 +438,10 @@ async fn respelled_staging_record_impl() -> Result<()> {
         .into_bytes();
     let reordered = serde_json::to_vec(&serde_json::from_slice::<serde_json::Value>(&current)?)?;
     for alternate in [spaced, reordered] {
-        ensure!(alternate != current);
+        ensure!(alternate.as_slice() != current.as_ref());
         // Serde alone admits the alternate as the original receipt.
         let admitted: Record = serde_json::from_slice(&alternate)?;
-        ensure!(serde_json::to_vec(&admitted)? == current);
+        ensure!(serde_json::to_vec(&admitted)?.as_slice() == current.as_ref());
         let mut owner = OperatorState::open(&config, storage.clone()).await?;
         let replaced = owner
             .audit
@@ -448,11 +479,11 @@ async fn respelled_staging_record_impl() -> Result<()> {
             .write_batch(&[kasumi_store::WriteOp::put(
                 NS,
                 record_key.as_bytes(),
-                current.clone(),
+                current.as_ref(),
             )]);
         owner.finish(restored).await?;
         drop(owner);
-        assert_eq!(retained?, alternate);
+        assert_eq!(retained?.as_ref(), alternate.as_slice());
         assert_eq!(
             private_files::read(&installed.configuration, 2 << 20)?.as_slice(),
             before_configuration.as_slice()
@@ -568,4 +599,28 @@ async fn early_panic_impl(installation: std::path::PathBuf) -> Result<()> {
     entered(&pause).await;
     drop(staged);
     std::panic::panic_any("injected pre-release fixture panic")
+}
+
+#[test]
+fn stage_request_requires_canonical_explicit_audit_placement() -> Result<()> {
+    let config = example_config(
+        kasumi_store::DirectoryPolicy::fixture(),
+        kasumi_store::FileAllocationPolicy::fixture(),
+    )?;
+    let selected = request(&config);
+    let original = serde_json::to_value(&selected)?;
+    assert!(serde_json::from_value::<StageTenantRequest>(original.clone()).is_ok());
+    let mut missing = original.clone();
+    missing.as_object_mut().unwrap().remove("audit_placement");
+    assert!(serde_json::from_value::<StageTenantRequest>(missing).is_err());
+    for obsolete in [
+        serde_json::Value::Null,
+        serde_json::json!({"kind":"filesystem","directory":"/archive"}),
+        serde_json::json!({"kind":"local_replica_only","implicit":true}),
+    ] {
+        let mut invalid = original.clone();
+        invalid["audit_placement"] = obsolete;
+        assert!(serde_json::from_value::<StageTenantRequest>(invalid).is_err());
+    }
+    Ok(())
 }

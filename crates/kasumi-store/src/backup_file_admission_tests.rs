@@ -4,7 +4,9 @@ use std::{io, os::unix::fs::MetadataExt};
 
 fn installed(path: &Path, payload_bytes: u64, files: u64) -> Arc<crate::NodeDisk> {
     let mut config = crate::NodeDisk::fixture_config(path.join("unused")).unwrap();
-    config.max_bytes = config.directory_policy.extent_bytes + payload_bytes;
+    config.max_bytes = config.directory_policy.extent_bytes
+        + payload_bytes
+        + files * config.file_allocation_policy.maximum_extra_extent_bytes;
     config.maintenance_reserve_bytes = 0;
     config.max_persistent_files = files;
     let memory = TestDiskMemory::new(256 << 20, 4096);
@@ -82,8 +84,18 @@ fn backup_file_publishes_original_inode_with_complete_precreation_reservation() 
     let original = pending.metadata().unwrap();
     assert_eq!(original.len(), 0);
     assert!(!path.exists());
-    assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes + 8192);
-    assert_eq!(disk.snapshot().pending_bytes, before.pending_bytes + 8192);
+    assert_eq!(
+        disk.snapshot().charged_bytes,
+        before.charged_bytes
+            + 8192
+            + crate::FileAllocationPolicy::fixture().maximum_extra_extent_bytes
+    );
+    assert_eq!(
+        disk.snapshot().pending_bytes,
+        before.pending_bytes
+            + 8192
+            + crate::FileAllocationPolicy::fixture().maximum_extra_extent_bytes
+    );
     assert_eq!(disk.snapshot().persistent_files, 1);
     release.send(()).unwrap();
     worker.join().unwrap().unwrap();
@@ -96,8 +108,16 @@ fn backup_file_publishes_original_inode_with_complete_precreation_reservation() 
     assert_eq!(std::fs::read(path).unwrap(), [73; 8192]);
     assert!(!pending.exists());
     assert_eq!(disk.snapshot().phase, crate::NodeDiskPhase::Open);
-    assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes + 8192);
-    assert_eq!(disk.snapshot().pending_bytes, before.pending_bytes);
+    assert_eq!(
+        disk.snapshot().charged_bytes,
+        before.charged_bytes
+            + 8192
+            + crate::FileAllocationPolicy::fixture().maximum_extra_extent_bytes
+    );
+    assert_eq!(
+        disk.snapshot().pending_bytes,
+        before.pending_bytes + crate::FileAllocationPolicy::fixture().maximum_extra_extent_bytes
+    );
     assert_eq!(disk.snapshot().persistent_files, 1);
 }
 
@@ -208,8 +228,18 @@ fn backup_file_failed_creation_retains_complete_charge_until_explicit_census() {
         test_sync::fail(temporary.path(), &name, &[test_sync::Point::BackupCreated]).unwrap();
     assert!(directory.put_backup(id, &[73; 8192]).is_err());
     assert_eq!(disk.snapshot().phase, crate::NodeDiskPhase::Failed);
-    assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes + 8192);
-    assert_eq!(disk.snapshot().pending_bytes, before.pending_bytes + 8192);
+    assert_eq!(
+        disk.snapshot().charged_bytes,
+        before.charged_bytes
+            + 8192
+            + crate::FileAllocationPolicy::fixture().maximum_extra_extent_bytes
+    );
+    assert_eq!(
+        disk.snapshot().pending_bytes,
+        before.pending_bytes
+            + 8192
+            + crate::FileAllocationPolicy::fixture().maximum_extra_extent_bytes
+    );
     assert_eq!(pending.metadata().unwrap().len(), 0);
     assert!(!temporary.path().join(&name).exists());
     assert!(directory.put_backup(id, &[91; 8192]).is_err());

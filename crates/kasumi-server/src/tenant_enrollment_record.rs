@@ -25,26 +25,39 @@ impl Proposal {
             !Uuid::parse_str(&self.route.incarnation)?.is_nil(),
             "nil enrollment incarnation"
         );
-        let mut topology = kasumi_engine::control::ControlTopology {
-            nodes: self.nodes.clone(),
-            tenants: BTreeMap::new(),
-        };
-        topology
-            .tenants
-            .insert(self.tenant.clone(), self.route.clone());
-        topology.validate()?;
-        kasumi_engine::TenantEngine::new(
-            self.tenant.clone(),
-            self.route.incarnation.clone(),
-            self.initial_policy.clone(),
-            self.initial_limits.clone(),
+        kasumi_engine::control::ControlTopology::validate_single_route(
+            &self.nodes,
+            &self.tenant,
+            &self.route,
         )?;
+        kasumi_engine::validate_genesis_inputs(
+            &self.tenant,
+            &self.route.incarnation,
+            &self.initial_policy,
+            &self.initial_limits,
+        )?;
+        let mut writer = DigestWriter(Sha256::new());
+        serde_json::to_writer(&mut writer, self)?;
         Ok(format!(
             "enrollment-v1-{}",
-            hex::encode(Sha256::digest(serde_json::to_vec(self)?))
+            hex::encode(writer.0.finalize())
         ))
     }
 }
+// The serializer and field order are identical to to_vec; only the sink changes.
+// Validation scratch and the returned digest String still allocate separately.
+struct DigestWriter(Sha256);
+impl std::io::Write for DigestWriter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0.update(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "origin", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum Origin {
@@ -247,3 +260,7 @@ pub(crate) fn update_tenant(
         serde_json::to_vec(after)?,
     )])
 }
+
+#[cfg(test)]
+#[path = "tenant_enrollment_digest_tests.rs"]
+mod digest_tests;

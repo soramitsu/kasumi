@@ -186,7 +186,7 @@ async fn native_pool_replays_uncertain_batches_and_never_moves_historical_pages(
         "conflicts are never failover signals"
     );
     let query = serde_json::from_value(
-        json!({"collection":"docs", "filter":{"op":"all"}, "limit":1, "allow_scan":true}),
+        json!({"collection":"docs", "limit":1, "allow_scan":true}),
     )
     .unwrap();
     let snapshot_resources = kasumi_client::ClientResources::new(64 << 20, 8).unwrap();

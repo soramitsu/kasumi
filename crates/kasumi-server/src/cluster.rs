@@ -572,11 +572,18 @@ impl ClusterNetwork {
     }
 }
 
-fn candidate(request: &RpcRequest) -> Option<u64> {
+fn request_source_authorized(raft: &Raft, request: &RpcRequest, source: u64) -> bool {
     match request {
-        RpcRequest::Append(request) => request.vote.leader_id.voted_for(),
-        RpcRequest::Vote(request) => request.vote.leader_id.voted_for(),
-        RpcRequest::Snapshot(request) => request.vote.leader_id.voted_for(),
+        RpcRequest::Append(request) => request.vote.leader_id.voted_for() == Some(source),
+        RpcRequest::Vote(request) => request.vote.leader_id.voted_for() == Some(source),
+        RpcRequest::Snapshot(request) => request.vote.leader_id.voted_for() == Some(source),
+        RpcRequest::ReadIndex { .. } => raft
+            .metrics()
+            .borrow()
+            .membership_config
+            .membership()
+            .get_node(&source)
+            .is_some(),
     }
 }
 
@@ -614,15 +621,15 @@ async fn receive(
     let source = peer
         .certificate_pin()
         .and_then(|pin| network.certificate_nodes.get(&pin).copied());
-    if source != Some(message.source)
-        || message.target != network.local_node_id
-        || candidate(&message.request) != source
-    {
+    if source != Some(message.source) || message.target != network.local_node_id {
         return network.denied(source, &message.group).await;
     }
     let Ok(raft) = network.authorize(&message.group, message.source) else {
         return network.denied(source, &message.group).await;
     };
+    if !request_source_authorized(&raft, &message.request, message.source) {
+        return network.denied(source, &message.group).await;
+    }
     match network.fingerprint(&message.group) {
         Ok(expected) if expected == message.bootstrap_sha256.0 => {}
         _ => return network.denied(source, &message.group).await,
@@ -724,10 +731,14 @@ impl RaftTransport for ClusterNetwork {
         request: RpcRequest,
     ) -> Result<RpcResponse> {
         ensure!(
-            source == self.local_node_id && candidate(&request) == Some(source),
+            source == self.local_node_id,
             "RPC source is not this authenticated node"
         );
-        self.authorize(group, target)?;
+        let raft = self.authorize(group, target)?;
+        ensure!(
+            request_source_authorized(&raft, &request, source),
+            "RPC source is not authorized for this request"
+        );
         let peer = self
             .clients
             .get(&target)

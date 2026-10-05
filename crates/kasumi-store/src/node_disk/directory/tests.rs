@@ -34,8 +34,12 @@ fn census_charges_directory_ceilings_and_records_actual_blocks_and_remaining_pro
     file.sync_all().unwrap();
     let disk = open(&config, &memory);
     let directories = blocks(directory.path()) + blocks(&child);
-    let (file_bytes, file_pending) =
-        super::super::extent(&file.metadata().unwrap(), disk.unit).unwrap();
+    let (file_bytes, file_pending) = super::super::file_extent(
+        &file.metadata().unwrap(),
+        disk.unit,
+        config.file_allocation_policy,
+    )
+    .unwrap();
     let snapshot = disk.snapshot();
     assert_eq!(snapshot.persistent_directories, 2);
     assert_eq!(snapshot.observed_directory_bytes, directories);
@@ -240,9 +244,24 @@ fn failed_directory_census_replacement_retains_previous_entries_and_charge() {
         .iter()
         .map(|(key, entry)| (*key, *entry))
         .collect::<std::collections::BTreeMap<_, _>>();
+    let unentered = CensusCancellation::default();
+    unentered.cancel();
+    assert!(disk.reconcile(&unentered).is_err());
+    assert_eq!(disk.snapshot().phase, NodeDiskPhase::Open);
+    assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes);
     let cancel = CensusCancellation::default();
-    cancel.cancel();
+    // Checkpoint 1 rejects before pending diagnostic retirement. Checkpoint 2
+    // is inside the real census, after State has sealed new directory ingress.
+    cancel
+        .cancel_at
+        .store(2, std::sync::atomic::Ordering::Relaxed);
     assert!(disk.reconcile(&cancel).is_err());
+    assert_eq!(
+        cancel
+            .checkpoints
+            .load(std::sync::atomic::Ordering::Relaxed),
+        2
+    );
     assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes);
     assert_eq!(
         disk.lock_state()

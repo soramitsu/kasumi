@@ -1,7 +1,7 @@
-use crate::QueryCancellation;
 use crate::scalar::{exhausted, invalid};
+use crate::{CollectionRecords, DocumentChanges, QueryCancellation, ReadResult, Record};
 use kasumi_types::{
-    Analyzer, CollectionDefinition, CollectionState, Error, ErrorCode, Result, TextMode, TextSearch,
+    Analyzer, CollectionDefinition, Error, ErrorCode, Result, TextMode, TextSearch,
 };
 use serde_json::Value;
 use std::{
@@ -151,13 +151,10 @@ pub(crate) fn validate_text_document(
 }
 
 impl TextSnapshot {
-    pub fn build(collection: &CollectionState) -> Result<Option<Self>> {
-        if collection
-            .definition
-            .indexes
-            .iter()
-            .all(|i| i.text.is_none())
-        {
+    pub fn build<R: CollectionRecords + ?Sized>(
+        source: &R,
+    ) -> ReadResult<Option<Self>, R::Failure> {
+        if source.definition().indexes.iter().all(|i| i.text.is_none()) {
             return Ok(None);
         }
         let mut builder = Schema::builder();
@@ -165,7 +162,7 @@ impl TextSnapshot {
         let id_field = builder.add_text_field("_kasumi_id", STRING);
         let mut indexes = BTreeMap::new();
         let mut sequence = 0;
-        for definition in &collection.definition.indexes {
+        for definition in &source.definition().indexes {
             let Some(text) = &definition.text else {
                 continue;
             };
@@ -213,18 +210,29 @@ impl TextSnapshot {
             .index
             .writer_with_num_threads::<TantivyDocument>(1, 15_000_000)
             .map_err(search_error)?;
-        let mut sorted: Vec<String> = collection.documents.keys().cloned().collect();
-        sorted.sort();
         let mut ids = imbl::HashMap::new();
         let mut rows = imbl::HashMap::new();
-        for (row, id) in sorted.iter().enumerate() {
-            let row = row as u64;
+        let mut next_row = 0u64;
+        // The checked source lends logical IDs in strict order. Archived rows
+        // have no resident text body; only live rows receive a text row, as in
+        // the original build. No collection-sized ID sort buffer is needed.
+        // A source failure drops this private writer and returns its original
+        // owner before any TextSnapshot can be published.
+        source.visit_records(|id, record| {
+            let Record::Live(document) = record else {
+                return Ok(());
+            };
+            let row = next_row;
+            next_row = next_row
+                .checked_add(1)
+                .ok_or_else(|| search_error("text row identifier exhausted"))?;
             writer
-                .add_document(core.document(id, row, &collection.documents[id].body))
+                .add_document(core.document(id, row, &document.body))
                 .map_err(search_error)?;
-            ids.insert(row, id.clone());
-            rows.insert(id.clone(), row);
-        }
+            ids.insert(row, id.to_owned());
+            rows.insert(id.to_owned(), row);
+            Ok(())
+        })?;
         writer.commit().map_err(search_error)?;
         writer.wait_merging_threads().map_err(search_error)?;
         let searcher = core.capture()?;
@@ -233,41 +241,45 @@ impl TextSnapshot {
             searcher,
             ids,
             rows,
-            next_row: sorted.len() as u64,
+            next_row,
             generation: 0,
         }))
     }
 
-    pub fn fields_changed(
+    pub fn fields_changed<D: DocumentChanges + ?Sized>(
         &self,
-        old: &CollectionState,
-        new: &CollectionState,
-        changed: &BTreeSet<String>,
-    ) -> bool {
-        changed
-            .iter()
-            .any(|id| match (old.documents.get(id), new.documents.get(id)) {
-                (Some(old), Some(new)) => self.core.indexes.values().any(|index| {
-                    index
-                        .paths
-                        .iter()
-                        .any(|(path, _, _)| old.body.pointer(path) != new.body.pointer(path))
-                }),
-                (None, None) => false,
-                _ => true,
-            })
+        changes: &D,
+    ) -> ReadResult<bool, D::Failure> {
+        let mut changed = false;
+        // The enclosing index preparation has validated every new live body,
+        // including text limits, before this comparison-only pass. Visit every
+        // delta so a later source failure cannot hide behind an earlier change.
+        changes.visit_changes(|delta| {
+            changed |= match (delta.old, delta.new) {
+                (Some(Record::Live(old)), Some(Record::Live(new))) => {
+                    self.core.indexes.values().any(|index| {
+                        index
+                            .paths
+                            .iter()
+                            .any(|(path, _, _)| old.body.pointer(path) != new.body.pointer(path))
+                    })
+                }
+                (Some(Record::Live(_)), _) | (_, Some(Record::Live(_))) => true,
+                _ => false,
+            };
+            Ok(())
+        })?;
+        Ok(changed)
     }
 
-    pub fn update(&self, collection: &CollectionState, changed: &BTreeSet<String>) -> Result<Self> {
+    pub fn update<D: DocumentChanges + ?Sized>(&self, changes: &D) -> ReadResult<Self, D::Failure> {
         let mut active = self
             .core
             .active
             .lock()
             .map_err(|_| search_error("text writer unavailable"))?;
         if *active != Some(self.generation) {
-            return Err(search_error(
-                "cannot advance a stale or failed text generation",
-            ));
+            return Err(search_error("cannot advance a stale or failed text generation").into());
         }
         *active = None;
         let mut writer = self
@@ -278,13 +290,17 @@ impl TextSnapshot {
         let mut ids = self.ids.clone();
         let mut rows = self.rows.clone();
         let mut next_row = self.next_row;
-        for id in changed {
+        // Any replay/read error after this point leaves active=None. The old
+        // reader remains immutable, but the shared writer corridor must recover;
+        // a source failure is never flattened into a deterministic query error.
+        changes.visit_changes(|delta| {
+            let id = delta.id;
             let old_row = rows.remove(id);
             if let Some(row) = old_row {
                 ids.remove(&row);
                 writer.delete_term(Term::from_field_text(self.core.id_field, id));
             }
-            if let Some(document) = collection.documents.get(id) {
+            if let Some(Record::Live(document)) = delta.new {
                 let row = if let Some(row) = old_row {
                     row
                 } else {
@@ -297,10 +313,11 @@ impl TextSnapshot {
                 writer
                     .add_document(self.core.document(id, row, &document.body))
                     .map_err(search_error)?;
-                ids.insert(row, id.clone());
-                rows.insert(id.clone(), row);
+                ids.insert(row, id.to_owned());
+                rows.insert(id.to_owned(), row);
             }
-        }
+            Ok(())
+        })?;
         writer.commit().map_err(search_error)?;
         writer.wait_merging_threads().map_err(search_error)?;
         let searcher = self.core.capture()?;
@@ -334,7 +351,7 @@ impl TextSnapshot {
         })?;
         let fuzzy = request.mode == TextMode::Fuzzy;
         let surface_query = fuzzy || request.mode == TextMode::Prefix;
-        if fuzzy && request.distance > 2 {
+        if fuzzy && request.fuzzy_distance() > 2 {
             return Err(invalid("fuzzy distance must be 0, 1, or 2"));
         }
         let terms = tokens(fields.analyzer, &request.query, surface_query, 64)?;
@@ -388,7 +405,7 @@ impl TextSnapshot {
                     cancellation.check()?;
                     let query: Box<dyn Query> = if fuzzy {
                         let japanese = fields.analyzer == Analyzer::JapaneseV1;
-                        if !japanese && request.distance > 0 && text.chars().count() < 3 {
+                        if !japanese && request.fuzzy_distance() > 0 && text.chars().count() < 3 {
                             return Err(invalid("fuzzy term is too short"));
                         }
                         // Single-character Japanese particles remain exact; editing
@@ -396,7 +413,7 @@ impl TextSnapshot {
                         let distance = if japanese && text.chars().count() < 2 {
                             0
                         } else {
-                            request.distance
+                            request.fuzzy_distance()
                         };
                         let dfa = Arc::new(
                             levenshtein_automata::LevenshteinAutomatonBuilder::new(distance, true)
@@ -672,5 +689,272 @@ impl TextCore {
             .map_err(search_error)?;
         reader.reload().map_err(search_error)?;
         Ok(reader.searcher())
+    }
+}
+
+#[cfg(test)]
+mod lending_tests {
+    use super::*;
+    use crate::{DocumentDelta, QueryIndexes, ReadFailure, SourceIdentity};
+    use kasumi_types::{ArchivedDocument, Document};
+    use serde_json::json;
+    use std::cell::Cell;
+
+    #[derive(Debug)]
+    struct SourceFailure(Arc<()>);
+    impl std::fmt::Display for SourceFailure {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("original text input failure")
+        }
+    }
+    impl std::error::Error for SourceFailure {}
+
+    enum Stored {
+        Live(Document),
+        Archived(ArchivedDocument),
+    }
+    impl Stored {
+        fn record(&self) -> Record<'_> {
+            match self {
+                Self::Live(document) => Record::Live(document),
+                Self::Archived(document) => Record::Archived(document),
+            }
+        }
+    }
+    fn live(id: &str, body: Value) -> Stored {
+        Stored::Live(Document {
+            id: id.to_owned(),
+            version: 1,
+            body,
+        })
+    }
+    fn archived() -> Stored {
+        Stored::Archived(ArchivedDocument {
+            version: 1,
+            archive_id: "archive".to_owned(),
+            chunk_index: 0,
+            document_sha256: "12".repeat(32),
+            document_bytes: 64,
+            indexed_fields: BTreeMap::new(),
+        })
+    }
+    fn definition() -> CollectionDefinition {
+        serde_json::from_value(json!({
+            "name":"docs", "schema":{"type":"object"},
+            "write_mode":"mutable", "retention_class":"operational",
+            "strict_read_audit":false,
+            "indexes":[{"name":"text", "fields":[{"path":"/title", "kind":"string"}],
+                "unique":false, "text":{"analyzer":"unicode_v1"}}]
+        }))
+        .unwrap()
+    }
+    struct Records {
+        definition: CollectionDefinition,
+        rows: Vec<(&'static str, Stored)>,
+        fail_after: Option<usize>,
+        failure: Arc<()>,
+    }
+    impl Records {
+        fn new(rows: Vec<(&'static str, Stored)>) -> Self {
+            Self {
+                definition: definition(),
+                rows,
+                fail_after: None,
+                failure: Arc::new(()),
+            }
+        }
+    }
+    impl CollectionRecords for Records {
+        type Failure = SourceFailure;
+        fn identity(&self) -> SourceIdentity<'_> {
+            SourceIdentity::new(self, "tenant", "incarnation", "docs")
+        }
+        fn definition(&self) -> &CollectionDefinition {
+            &self.definition
+        }
+        fn visit_records(
+            &self,
+            mut lend: impl for<'a> FnMut(&'a str, Record<'a>) -> Result<()>,
+        ) -> ReadResult<(), Self::Failure> {
+            for (index, (id, record)) in self.rows.iter().enumerate() {
+                if self.fail_after == Some(index) {
+                    return Err(ReadFailure::Source(SourceFailure(self.failure.clone())));
+                }
+                lend(id, record.record())?;
+            }
+            Ok(())
+        }
+    }
+    type Pair = (&'static str, Option<Stored>, Option<Stored>);
+    struct Changes {
+        definition: CollectionDefinition,
+        indexes: QueryIndexes,
+        owners: [u8; 2],
+        pairs: Vec<Pair>,
+        fail_after: Option<usize>,
+        failure: Arc<()>,
+        visits: Cell<usize>,
+    }
+    impl Changes {
+        fn new(pairs: Vec<Pair>) -> Self {
+            Self {
+                definition: definition(),
+                indexes: QueryIndexes::default(),
+                owners: [0, 1],
+                pairs,
+                fail_after: None,
+                failure: Arc::new(()),
+                visits: Cell::new(0),
+            }
+        }
+    }
+    impl DocumentChanges for Changes {
+        type Failure = SourceFailure;
+        fn old_identity(&self) -> SourceIdentity<'_> {
+            SourceIdentity::new(&self.owners[0], "tenant", "incarnation", "docs")
+        }
+        fn new_identity(&self) -> SourceIdentity<'_> {
+            SourceIdentity::new(&self.owners[1], "tenant", "incarnation", "docs")
+        }
+        fn old_definition(&self) -> &CollectionDefinition {
+            &self.definition
+        }
+        fn new_definition(&self) -> &CollectionDefinition {
+            &self.definition
+        }
+        fn indexes(&self) -> &QueryIndexes {
+            &self.indexes
+        }
+        fn visit_changes(
+            &self,
+            mut lend: impl for<'a> FnMut(DocumentDelta<'a>) -> Result<()>,
+        ) -> ReadResult<(), Self::Failure> {
+            for (index, (id, old, new)) in self.pairs.iter().enumerate() {
+                if self.fail_after == Some(index) {
+                    return Err(ReadFailure::Source(SourceFailure(self.failure.clone())));
+                }
+                self.visits.set(self.visits.get() + 1);
+                lend(DocumentDelta {
+                    id,
+                    old: old.as_ref().map(Stored::record),
+                    new: new.as_ref().map(Stored::record),
+                })?;
+            }
+            Ok(())
+        }
+    }
+    fn hits(snapshot: &TextSnapshot, query: &str) -> Vec<String> {
+        snapshot
+            .search(
+                &TextSearch::new("text", query),
+                10,
+                &QueryCancellation::default(),
+            )
+            .unwrap()
+            .into_keys()
+            .collect()
+    }
+    fn original(error: ReadFailure<SourceFailure>, expected: &Arc<()>) {
+        let ReadFailure::Source(SourceFailure(owner)) = error else {
+            panic!("text input failure lost its original owner")
+        };
+        assert!(Arc::ptr_eq(&owner, expected));
+    }
+
+    #[test]
+    fn private_text_build_preserves_source_error_and_skips_archived_rows() {
+        let mut records = Records::new(vec![
+            ("a", live("a", json!({"title":"live alpha"}))),
+            ("b", archived()),
+            ("c", live("c", json!({"title":"live gamma"}))),
+        ]);
+        records.fail_after = Some(2);
+        original(TextSnapshot::build(&records).unwrap_err(), &records.failure);
+        // Dropping the failed private writer must not publish or poison a
+        // separate build from the same authoritative input.
+        records.fail_after = None;
+        let snapshot = TextSnapshot::build(&records).unwrap().unwrap();
+        assert_eq!(snapshot.next_row, 2);
+        assert_eq!(snapshot.rows.get("a"), Some(&0));
+        assert_eq!(snapshot.rows.get("c"), Some(&1));
+        assert!(!snapshot.rows.contains_key("b"));
+        assert_eq!(hits(&snapshot, "live"), vec!["a", "c"]);
+    }
+
+    #[test]
+    fn text_pair_detection_preserves_live_presence_and_selected_field_semantics() {
+        let records = Records::new(vec![("a", live("a", json!({"title":"old"})))]);
+        let snapshot = TextSnapshot::build(&records).unwrap().unwrap();
+        for (old, new, expected) in [
+            (None, None, false),
+            (None, Some(archived()), false),
+            (Some(archived()), Some(archived()), false),
+            (
+                Some(live("a", json!({"other":1}))),
+                Some(live("a", json!({"other":2}))),
+                false,
+            ),
+            (
+                Some(live("a", json!({"title":"old","other":1}))),
+                Some(live("a", json!({"title":"old","other":2}))),
+                false,
+            ),
+            (
+                Some(live("a", json!({}))),
+                Some(live("a", json!({"title":"new"}))),
+                true,
+            ),
+            (Some(live("a", json!({"title":"old"}))), None, true),
+            (None, Some(live("a", json!({"title":"new"}))), true),
+            (Some(live("a", json!({}))), Some(archived()), true),
+            (Some(archived()), Some(live("a", json!({}))), true),
+        ] {
+            let changes = Changes::new(vec![("a", old, new)]);
+            assert_eq!(snapshot.fields_changed(&changes).unwrap(), expected);
+            assert_eq!(*snapshot.core.active.lock().unwrap(), Some(0));
+        }
+    }
+
+    #[test]
+    fn text_preparation_failure_stays_private_but_materialization_failure_fences_writer() {
+        let records = Records::new(vec![
+            ("a", live("a", json!({"title":"old alpha"}))),
+            ("b", live("b", json!({"title":"old beta"}))),
+        ]);
+        let snapshot = TextSnapshot::build(&records).unwrap().unwrap();
+        let mut changes = Changes::new(vec![
+            (
+                "a",
+                Some(live("a", json!({"title":"old alpha"}))),
+                Some(live("a", json!({"title":"new alpha"}))),
+            ),
+            (
+                "b",
+                Some(live("b", json!({"title":"old beta"}))),
+                Some(live("b", json!({"title":"new beta"}))),
+            ),
+        ]);
+        changes.fail_after = Some(1);
+        original(
+            snapshot.fields_changed(&changes).unwrap_err(),
+            &changes.failure,
+        );
+        assert_eq!(*snapshot.core.active.lock().unwrap(), Some(0));
+        changes.fail_after = None;
+        assert!(snapshot.fields_changed(&changes).unwrap());
+
+        // Replay can fail after a delete/add has touched the shared writer.
+        // Preserve that original failure and require recovery, while the old
+        // published immutable reader continues to see only the old contents.
+        changes.fail_after = Some(1);
+        original(snapshot.update(&changes).unwrap_err(), &changes.failure);
+        assert_eq!(*snapshot.core.active.lock().unwrap(), None);
+        assert_eq!(hits(&snapshot, "old"), vec!["a", "b"]);
+        assert!(hits(&snapshot, "new").is_empty());
+        changes.fail_after = None;
+        let visits = changes.visits.get();
+        assert!(matches!(snapshot.update(&changes),
+            Err(ReadFailure::Query(error)) if error.code == ErrorCode::Unavailable));
+        assert_eq!(changes.visits.get(), visits);
     }
 }

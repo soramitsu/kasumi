@@ -50,7 +50,7 @@ async fn retired_runtime_reopens_current_custody_without_constructing_applicatio
     ) {
         let transit = transit.transit_mut().unwrap();
         transit.endpoint = endpoint.clone();
-        transit.ca_certificate = Some(files.certificate.clone());
+        transit.ca_certificate = files.certificate.clone();
     }
     let context = RequestContext {
         authorization: kasumi_types::RequestAuthorization::service_identity(),

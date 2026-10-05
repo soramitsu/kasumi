@@ -2,6 +2,7 @@ use super::*;
 use crate::NodeDiskPhase;
 use crate::test_utils::{TestDiskMemory, private_tempdir, retry_disk_registry};
 use std::{
+    ffi::OsString,
     fs::{File, OpenOptions},
     io::Read,
     os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt},
@@ -122,11 +123,22 @@ fn tree(path: &Path) -> Vec<(PathBuf, Option<Vec<u8>>)> {
     images
 }
 
-/// The NodeDisk charge of one file: its logical or allocated size, whichever
-/// is larger, rounded to the filesystem allocation unit.
+/// The fixture's standing file charge includes its declared allocation
+/// allowance, even after close or census; observed allocation must fit it.
 fn file_extent(path: &Path, unit: u64) -> u64 {
     let metadata = std::fs::symlink_metadata(path).unwrap();
-    metadata.len().max(metadata.blocks() * 512).div_ceil(unit) * unit
+    assert!(metadata.is_file());
+    let extra = crate::FileAllocationPolicy::fixture().maximum_extra_extent_bytes;
+    let ceiling = (metadata.len().div_ceil(unit) * unit)
+        .checked_add(extra.div_ceil(unit) * unit)
+        .unwrap();
+    let allocated = metadata.blocks().checked_mul(512).unwrap();
+    assert!(
+        allocated <= ceiling,
+        "{} allocated {allocated} bytes beyond its admitted ceiling {ceiling}",
+        path.display()
+    );
+    ceiling
 }
 
 /// Recompute the installed census charge of a whole fixture root from the
@@ -672,6 +684,12 @@ fn registered_group_is_one_census_owner_until_its_failed_owners_are_accepted() {
     assert!(!group.failed_transfer_accepted());
     disk.reconcile(&CensusCancellation::default()).unwrap();
     assert!(group.failed_transfer_accepted());
+    // The outstanding acknowledgement still retains its admitted identity.
+    assert_eq!(
+        census.drain_owner(id),
+        crate::StorageCensusDisposition::Retained
+    );
+    drop(witness);
     assert_eq!(
         registration.retire(),
         crate::StorageCensusDisposition::Retired
@@ -740,9 +758,7 @@ fn previous_formats_and_foreign_files_are_rejected_before_any_mutation() {
     let single = directory.path().join("single");
     let disk = fixture_disk(&single, &memory);
     let node = super::super::NodeFile::create_new(&single, ID, disk.clone()).unwrap();
-    kasumi_kv::StorageBackend::close(&node.backend())
-        .into_result()
-        .unwrap();
+    node.backend().close().into_result().unwrap();
     drop(node);
     let before = tree(directory.path());
     for mode in [NodeOpeningMode::Existing, NodeOpeningMode::Create] {
@@ -940,6 +956,11 @@ fn admitted_growth_pins_the_newest_segment_and_capacity_denial_has_no_effect() {
     let group = ready_group(&path, &disk, 1);
     put(&group, GroupFile::segment(1), b"old");
     group.create(GroupFile::segment(2)).unwrap();
+    let unit = crate::node_disk::filesystem(&File::open(directory.path()).unwrap())
+        .unwrap()
+        .1;
+    let segment = path.join(GroupFile::segment(2).file_name());
+    let initial_extent = file_extent(&segment, unit);
     let before = disk.snapshot().charged_bytes;
     StorageAdmission::reserve_growth(&*group, 0, 1 << 20).unwrap();
     assert!(disk.snapshot().charged_bytes >= before + (1 << 20));
@@ -952,12 +973,11 @@ fn admitted_growth_pins_the_newest_segment_and_capacity_denial_has_no_effect() {
     assert!(group.exists(GroupFile::segment(2)).unwrap());
     group.write(GroupFile::segment(2), 0, &[7; 4096]).unwrap();
     StorageAdmission::settle_growth(&*group, 4096).unwrap();
-    let unit = crate::node_disk::filesystem(&File::open(directory.path()).unwrap())
-        .unwrap()
-        .1;
+    // The created empty file already owns its standing allocation allowance.
+    // Settlement replaces that exact charge with the durable EOF's charge.
     assert_eq!(
         disk.snapshot().charged_bytes,
-        before + file_extent(&path.join(GroupFile::segment(2).file_name()), unit)
+        before - initial_extent + file_extent(&segment, unit)
     );
     assert_eq!(read_all(&group, GroupFile::segment(1)), b"old");
 
@@ -1017,7 +1037,33 @@ fn journal_owned_empty_root_is_initialized_only_when_exact() {
     let other = unrelated.identity().unwrap();
     unrelated.close().unwrap();
     drop(child);
-    let (group, acquired) = acquire(&path, &disk, NodeOpeningMode::OwnedEmpty(other), CACHE);
+    let (group, acquired) = acquire(
+        &path,
+        &disk,
+        NodeOpeningMode::OwnedEmpty(NodeGroupIdentity {
+            directory: crate::private_files::directory_identity(path.parent().unwrap()).unwrap(),
+            root: identity.clone(),
+        }),
+        CACHE,
+    );
+    assert!(
+        acquired.is_err(),
+        "matching root cannot authorize a different directory"
+    );
+    close(&group);
+    assert_eq!(
+        std::fs::metadata(path.join(ROOT_FILE_NAME)).unwrap().len(),
+        0
+    );
+    let (group, acquired) = acquire(
+        &path,
+        &disk,
+        NodeOpeningMode::OwnedEmpty(NodeGroupIdentity {
+            directory: crate::private_files::directory_identity(&path).unwrap(),
+            root: other,
+        }),
+        CACHE,
+    );
     assert!(acquired.is_err());
     close(&group);
     assert_eq!(
@@ -1027,7 +1073,10 @@ fn journal_owned_empty_root_is_initialized_only_when_exact() {
     let (group, acquired) = acquire(
         &path,
         &disk,
-        NodeOpeningMode::OwnedEmpty(identity.clone()),
+        NodeOpeningMode::OwnedEmpty(NodeGroupIdentity {
+            directory: crate::private_files::directory_identity(&path).unwrap(),
+            root: identity.clone(),
+        }),
         CACHE,
     );
     acquired.unwrap();
@@ -1043,7 +1092,15 @@ fn journal_owned_empty_root_is_initialized_only_when_exact() {
     assert_eq!(read_all(&group, GroupFile::segment(1)), b"owned");
     close(&group);
     // A populated directory is never re-initialized.
-    let (group, acquired) = acquire(&path, &disk, NodeOpeningMode::OwnedEmpty(identity), CACHE);
+    let (group, acquired) = acquire(
+        &path,
+        &disk,
+        NodeOpeningMode::OwnedEmpty(NodeGroupIdentity {
+            directory: crate::private_files::directory_identity(&path).unwrap(),
+            root: identity,
+        }),
+        CACHE,
+    );
     assert!(acquired.is_err());
     close(&group);
     let group = reopen(&path, &disk, CACHE);
@@ -1264,5 +1321,338 @@ fn census_equals_extents_after_crash_child_restart() {
     assert_eq!(disk.snapshot().persistent_files, 12);
     let group = reopen(&path, &disk, 4);
     assert_eq!(read_all(&group, GroupFile::segment(13)), b"resumed roll");
+    close(&group);
+}
+
+#[test]
+fn shared_native_backend_serves_every_file_kind_and_root_slot() {
+    let memory = memory();
+    let directory = private_tempdir().unwrap();
+    let path = directory.path().join("group");
+    let disk = fixture_disk(&path, &memory);
+    let (group, created) = acquire(&path, &disk, NodeOpeningMode::Create, 1);
+    created.unwrap();
+    let backend: Arc<dyn SegmentGroupBackend> = group.clone();
+    for (slot, value) in [(RootSlot::A, 0x3a), (RootSlot::B, 0xb7)] {
+        backend.write_root(slot, &[value; ROOT_SLOT_BYTES]).unwrap();
+    }
+    backend.sync_root().unwrap();
+    group.publish_ready().unwrap();
+    let files = [
+        GroupFile::segment(1),
+        GroupFile::checkpoint(1),
+        GroupFile::directory(1),
+    ];
+    for (index, file) in files.into_iter().enumerate() {
+        assert!(!backend.exists(file).unwrap());
+        backend.create(file).unwrap();
+        backend.write(file, 0, &[index as u8; 9]).unwrap();
+        backend.set_len(file, 7).unwrap();
+        backend.sync(file).unwrap();
+        assert_eq!(backend.len(file).unwrap(), 7);
+    }
+    backend.sync_names().unwrap();
+    backend.close().into_result().unwrap();
+
+    let group = reopen(&path, &disk, 1);
+    let backend: Box<dyn SegmentGroupBackend> = Box::new(group.clone());
+    for (slot, value) in [(RootSlot::A, 0x3a), (RootSlot::B, 0xb7)] {
+        let mut bytes = [0; ROOT_SLOT_BYTES];
+        backend.read_root(slot, &mut bytes).unwrap();
+        assert_eq!(bytes, [value; ROOT_SLOT_BYTES]);
+    }
+    for (index, file) in files.into_iter().enumerate() {
+        let mut bytes = [0; 7];
+        backend.read(file, 0, &mut bytes).unwrap();
+        assert_eq!(bytes, [index as u8; 7]);
+        backend.unlink(file).unwrap();
+        assert!(!backend.exists(file).unwrap());
+    }
+    let mut count = 0;
+    backend
+        .visit_entries(&mut |name| {
+            assert_eq!(name, ROOT_FILE_NAME);
+            count += 1;
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(count, 1);
+    backend.close().into_result().unwrap();
+    assert_eq!(disk.snapshot().open_files, 0);
+}
+
+#[test]
+fn native_entry_visitor_stops_once_and_retires_its_cursor_without_fencing() {
+    let memory = memory();
+    let directory = private_tempdir().unwrap();
+    let path = directory.path().join("group");
+    let disk = fixture_disk(&path, &memory);
+    let group = ready_group(&path, &disk, 1);
+    for id in 1..=12 {
+        put(&group, GroupFile::directory(id), b"page arena");
+    }
+    let backend: Box<Arc<dyn SegmentGroupBackend>> = Box::new(group.clone());
+    let mut visited = 0;
+    let error = backend
+        .visit_entries(&mut |_| {
+            visited += 1;
+            if visited == 2 {
+                Err(io::ErrorKind::Interrupted.into())
+            } else {
+                Ok(())
+            }
+        })
+        .unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+    assert_eq!(visited, 2);
+    assert_eq!(disk.snapshot().phase, NodeDiskPhase::Open);
+    assert_eq!(disk.snapshot().open_directory_cursors, 0);
+    let mut count = 0;
+    backend
+        .visit_entries(&mut |_| {
+            count += 1;
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(count, 13);
+    assert_eq!(disk.snapshot().open_directory_cursors, 0);
+    assert_eq!(group.cached_files(), 1);
+    close(&group);
+}
+
+#[test]
+fn native_entry_visitor_does_not_replay_callbacks_after_a_namespace_race() {
+    let memory = memory();
+    let directory = private_tempdir().unwrap();
+    let path = directory.path().join("group");
+    let disk = fixture_disk(&path, &memory);
+    let group = ready_group(&path, &disk, 1);
+    put(&group, GroupFile::directory(1), b"arena");
+    let neighbor = directory.path().join("neighbor");
+    let (root, relative) = disk.binding(&neighbor).unwrap();
+    let mut created = None;
+    let mut visited = 0;
+    let error = SegmentGroupBackend::visit_entries(&*group, &mut |_| {
+        visited += 1;
+        // A different installed owner changes the shared namespace generation.
+        // This pass must abort, even though the group names did not change.
+        created = Some(disk.create_file(root, relative, DiskWork::Foreground)?);
+        Ok(())
+    })
+    .unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
+    assert_eq!(visited, 1);
+    assert_eq!(disk.snapshot().phase, NodeDiskPhase::Open);
+    assert_eq!(disk.snapshot().open_directory_cursors, 0);
+    let mut count = 0;
+    SegmentGroupBackend::visit_entries(&*group, &mut |_| {
+        count += 1;
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(count, 2);
+    disk.delete_file(created.take().unwrap()).unwrap();
+    close(&group);
+}
+
+#[test]
+fn sealed_group_witness_is_allocation_free_and_rejects_foreign_identity() {
+    let memory = memory();
+    let directory = private_tempdir().unwrap();
+    let first_path = directory.path().join("first");
+    let second_path = directory.path().join("second");
+    let disk = fixture_disk(&first_path, &memory);
+    let first = ready_group(&first_path, &disk, 2);
+    let second = ready_group(&second_path, &disk, 2);
+    put(&first, GroupFile::segment(1), b"one");
+    put(&first, GroupFile::segment(2), b"two");
+    assert!(first.failed_close_witness().is_err());
+    StorageAdmission::owner_failed(first.as_ref());
+    assert!(first.close().into_result().is_err());
+    assert!(second.close().into_result().is_err());
+    let (witness, allocations) = crate::allocation_tests::measure(|| first.failed_close_witness());
+    let witness = witness.unwrap();
+    assert_eq!(allocations, 0);
+    let foreign = second.failed_close_witness().unwrap();
+    let custody = first.retained_file_custody();
+    assert_eq!(
+        first.transfer_failed(&foreign).unwrap_err().kind(),
+        io::ErrorKind::InvalidInput
+    );
+    let mut callbacks = 0;
+    assert_eq!(
+        first
+            .with_failed_close_reports(&foreign, |_| callbacks += 1)
+            .unwrap_err()
+            .kind(),
+        io::ErrorKind::InvalidInput
+    );
+    assert_eq!(callbacks, 0);
+    assert_eq!(first.retained_file_custody(), custody);
+    let (reports, allocations) = crate::allocation_tests::measure(|| {
+        first.with_failed_close_reports(&witness, |_| callbacks += 1)
+    });
+    reports.unwrap();
+    assert_eq!(callbacks, 3);
+    assert_eq!(allocations, 0);
+    // Exercise the exact partial-transfer primitive before retrying the group:
+    // completed members are gone and the sealed set can only shrink.
+    {
+        let mut guard = first.state.write();
+        let GroupState {
+            slots, transfers, ..
+        } = &mut *guard;
+        let slot = &mut slots[0];
+        assert!(transfer_failed_handle(&mut slot.handle, &mut slot.failed, transfers).unwrap());
+        assert_eq!(transfers.len(), 1);
+    }
+    assert_eq!(first.retained_failed_files(), 2);
+    assert!(first.create(GroupFile::segment(3)).is_err());
+    assert!(
+        first
+            .write(GroupFile::segment(1), 0, b"replacement")
+            .is_err()
+    );
+    assert!(first.acquire_prepared(&NodeOpeningMode::Create).is_err());
+    assert!(!first_path.join(GroupFile::segment(3).file_name()).exists());
+    let attempts = NodeDiskFile::native_close_attempts();
+    let (transferred, allocations) =
+        crate::allocation_tests::measure(|| first.transfer_failed(&witness));
+    assert!(transferred.unwrap());
+    assert_eq!(allocations, 0);
+    assert_eq!(NodeDiskFile::native_close_attempts(), attempts);
+    assert_eq!(first.state.read().transfers.len(), 3);
+    assert!(first.transfer_failed(&witness).is_err());
+    assert!(second.transfer_failed(&foreign).unwrap());
+    disk.reconcile(&CensusCancellation::default()).unwrap();
+    assert!(first.failed_transfer_accepted());
+    assert!(second.failed_transfer_accepted());
+}
+
+#[test]
+fn direct_group_witness_retains_fixed_backing_until_final_identity_drop() {
+    let memory = TestDiskMemory::new(256 << 20, 4096);
+    let provider: Arc<dyn crate::NodeDiskMemoryAdmission> = memory.clone();
+    let directory = private_tempdir().unwrap();
+    let path = directory.path().join("group");
+    let disk = fixture_disk(&path, &provider);
+    let baseline = memory.snapshot().used_bytes;
+    let fixed = TestDiskMemory::required_reservation_bytes(
+        NodeSegmentGroup::prepared_backing_bytes(&path, 2).unwrap(),
+    )
+    .unwrap();
+    let group = NodeSegmentGroup::owned_prepared(&path, ID, disk.clone(), 2).unwrap();
+    group.acquire_prepared(&NodeOpeningMode::Create).unwrap();
+    StorageAdmission::owner_failed(group.as_ref());
+    assert!(group.close().into_result().is_err());
+    let witness = group.failed_close_witness().unwrap();
+    assert!(group.transfer_failed(&witness).unwrap());
+    disk.reconcile(&CensusCancellation::default()).unwrap();
+    drop(group);
+    assert_eq!(memory.snapshot().used_bytes, baseline + fixed);
+    drop(witness);
+    assert_eq!(memory.snapshot().used_bytes, baseline);
+}
+
+#[test]
+fn native_entry_visitor_allows_admission_and_read_reentry_without_locking_callbacks() {
+    let memory = memory();
+    let directory = private_tempdir().unwrap();
+    let path = directory.path().join("group");
+    let disk = fixture_disk(&path, &memory);
+    let group = ready_group(&path, &disk, 1);
+    let file = GroupFile::segment(1);
+    put(&group, file, b"resident");
+    let worker_group = group.clone();
+    let (finished, result) = std::sync::mpsc::sync_channel(1);
+    let worker = std::thread::spawn(move || {
+        let mut visited = 0;
+        let outcome = worker_group.visit_entries(&mut |_| {
+            StorageAdmission::check_owner(worker_group.as_ref()).unwrap();
+            let lease = StorageAdmission::reserve_workspace(worker_group.as_ref(), 64).unwrap();
+            let mut bytes = [0; 8];
+            worker_group.read(file, 0, &mut bytes)?;
+            assert_eq!(&bytes, b"resident");
+            let mut root = [0; ROOT_SLOT_BYTES];
+            worker_group.read_root(RootSlot::A, &mut root)?;
+            assert_eq!(root, [0x5a; ROOT_SLOT_BYTES]);
+            drop(lease);
+            visited += 1;
+            Ok(())
+        });
+        finished.send((outcome, visited)).unwrap();
+    });
+    let (outcome, visited) = result
+        .recv_timeout(Duration::from_secs(5))
+        .expect("directory callback admission/read reentry deadlocked");
+    outcome.unwrap();
+    assert_eq!(visited, 2);
+    worker.join().unwrap();
+    assert_eq!(disk.snapshot().open_directory_cursors, 0);
+    assert_eq!(disk.snapshot().phase, NodeDiskPhase::Open);
+    close(&group);
+}
+
+#[test]
+fn native_entry_visitor_same_owner_mutation_interrupts_once_and_can_retry() {
+    let memory = memory();
+    let directory = private_tempdir().unwrap();
+    let path = directory.path().join("group");
+    let disk = fixture_disk(&path, &memory);
+    let group = ready_group(&path, &disk, 1);
+    let file = GroupFile::segment(1);
+    put(&group, file, b"retained");
+    let worker_group = group.clone();
+    let (finished, result) = std::sync::mpsc::sync_channel(1);
+    let worker = std::thread::spawn(move || {
+        let mut visited = 0;
+        let outcome = worker_group.visit_entries(&mut |_| {
+            visited += 1;
+            // Net names/count are unchanged, but this must invalidate the
+            // pass before a second callback rather than silently restarting.
+            let temporary = GroupFile::directory(1);
+            worker_group.create(temporary)?;
+            worker_group.unlink(temporary)
+        });
+        finished.send((outcome, visited)).unwrap();
+    });
+    let (outcome, visited) = result
+        .recv_timeout(Duration::from_secs(5))
+        .expect("directory callback namespace reentry deadlocked");
+    assert_eq!(outcome.unwrap_err().kind(), io::ErrorKind::Interrupted);
+    assert_eq!(visited, 1);
+    worker.join().unwrap();
+    assert_eq!(disk.snapshot().open_directory_cursors, 0);
+    assert_eq!(disk.snapshot().phase, NodeDiskPhase::Open);
+    let mut visited = 0;
+    group
+        .visit_entries(&mut |_| {
+            visited += 1;
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(visited, 2);
+    assert_eq!(read_all(&group, file), b"retained");
+    close(&group);
+}
+
+#[test]
+fn native_entry_visitor_epoch_cannot_wrap_after_namespace_effect() {
+    let memory = memory();
+    let directory = private_tempdir().unwrap();
+    let path = directory.path().join("group");
+    let disk = fixture_disk(&path, &memory);
+    let group = ready_group(&path, &disk, 1);
+    let file = GroupFile::segment(1);
+    put(&group, file, b"retained");
+    group.state.write().open_mut().unwrap().0.namespace_epoch = u64::MAX;
+    let before = tree(&path);
+    assert_eq!(
+        group.create(GroupFile::segment(2)).unwrap_err().kind(),
+        io::ErrorKind::Other
+    );
+    assert_eq!(group.unlink(file).unwrap_err().kind(), io::ErrorKind::Other);
+    assert_eq!(tree(&path), before);
+    assert_eq!(disk.snapshot().phase, NodeDiskPhase::Open);
     close(&group);
 }

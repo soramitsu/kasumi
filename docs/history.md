@@ -15,6 +15,14 @@ principal and exact collection scope. A cursor is a position, never a grant:
 every request checks current authority, a quorum read barrier, release policy,
 tenant key access and any required strict read audit.
 
+The Engine returns `AdmittedOutput<ChangeFeedPage>`; borrow its page with
+`as_ref()` to inspect events or clone a continuation cursor. Keeping that output
+keeps its memory reservation until disposal, including after database shutdown.
+Event after-images are owned `Document` values. The SDK retains its decoded page
+in `AdmittedResponse<ChangeFeedPage>`. Native response bodies and emitted frames
+retain source and conversion charges through their last holder. These ownership
+rules do not extend the authority granted when the response was released.
+
 Successful document mutations append full after-images or deletion tombstones
 in canonical collection/ID order. All records of an atomic command have one
 revision and carry a global sequence, ordinal and total commit event count.

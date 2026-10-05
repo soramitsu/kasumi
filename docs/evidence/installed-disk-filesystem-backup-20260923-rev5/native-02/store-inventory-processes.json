@@ -1,8 +1,0 @@
-[
-  {
-    "pid": 4357,
-    "ppid": 99169,
-    "pgid": 4357,
-    "command": "/Users/mtakemiya/dev/kasumi/target/installed-disk-validation/filesystem-backup-admission-revision5/native-02/store-test-binary --list"
-  }
-]

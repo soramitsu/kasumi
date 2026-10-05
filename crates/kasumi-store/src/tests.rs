@@ -1,10 +1,11 @@
 use super::*;
 use crate::test_utils::{FaultBackend, LocalKeyProvider, ManualClock};
 use async_trait::async_trait;
+use kasumi_kv::SegmentGroupBackend;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 struct FailingNodeSetupBackend {
-    inner: kasumi_kv::backends::InMemoryBackend,
+    inner: kasumi_kv::backends::InMemoryGroup,
     syncs: std::sync::atomic::AtomicUsize,
     closes: std::sync::atomic::AtomicUsize,
 }
@@ -12,35 +13,83 @@ struct FailingNodeSetupBackend {
 impl FailingNodeSetupBackend {
     fn new() -> Arc<Self> {
         Arc::new(Self {
-            inner: kasumi_kv::backends::InMemoryBackend::new(),
+            inner: kasumi_kv::backends::InMemoryGroup::new(),
             syncs: std::sync::atomic::AtomicUsize::new(0),
             closes: std::sync::atomic::AtomicUsize::new(0),
         })
     }
 }
 
-impl kasumi_kv::StorageBackend for FailingNodeSetupBackend {
-    fn len(&self) -> std::io::Result<u64> {
-        kasumi_kv::StorageBackend::len(&self.inner)
+impl SegmentGroupBackend for FailingNodeSetupBackend {
+    fn reserve_transaction(
+        &self,
+        plan: &kasumi_kv::TransactionSpacePlan,
+    ) -> std::result::Result<(), kasumi_kv::TransactionReserveError> {
+        self.inner.reserve_transaction(plan)
     }
-    fn read(&self, at: u64, out: &mut [u8]) -> std::io::Result<()> {
-        kasumi_kv::StorageBackend::read(&self.inner, at, out)
+    fn finish_transaction(&self, group_id: [u8; 16], batch_seq: u64) -> std::io::Result<()> {
+        self.inner.finish_transaction(group_id, batch_seq)
     }
-    fn write(&self, at: u64, bytes: &[u8]) -> std::io::Result<()> {
-        kasumi_kv::StorageBackend::write(&self.inner, at, bytes)
+    fn cancel_transaction(&self, group_id: [u8; 16], batch_seq: u64) -> std::io::Result<()> {
+        self.inner.cancel_transaction(group_id, batch_seq)
     }
-    fn set_len(&self, length: u64) -> std::io::Result<()> {
-        kasumi_kv::StorageBackend::set_len(&self.inner, length)
+
+    fn read_root(
+        &self,
+        slot: kasumi_kv::RootSlot,
+        out: &mut [u8; kasumi_kv::ROOT_SLOT_BYTES],
+    ) -> std::io::Result<()> {
+        self.inner.read_root(slot, out)
     }
-    fn sync_data(&self) -> std::io::Result<()> {
+    fn write_root(
+        &self,
+        slot: kasumi_kv::RootSlot,
+        bytes: &[u8; kasumi_kv::ROOT_SLOT_BYTES],
+    ) -> std::io::Result<()> {
+        self.inner.write_root(slot, bytes)
+    }
+    fn sync_root(&self) -> std::io::Result<()> {
+        self.inner.sync_root()
+    }
+    fn visit_entries(
+        &self,
+        visitor: &mut dyn FnMut(&std::ffi::OsStr) -> std::io::Result<()>,
+    ) -> std::io::Result<()> {
+        self.inner.visit_entries(visitor)
+    }
+    fn exists(&self, file: kasumi_kv::GroupFile) -> std::io::Result<bool> {
+        self.inner.exists(file)
+    }
+    fn create(&self, file: kasumi_kv::GroupFile) -> std::io::Result<()> {
+        self.inner.create(file)
+    }
+    fn len(&self, file: kasumi_kv::GroupFile) -> std::io::Result<u64> {
+        self.inner.len(file)
+    }
+    fn read(&self, file: kasumi_kv::GroupFile, at: u64, out: &mut [u8]) -> std::io::Result<()> {
+        self.inner.read(file, at, out)
+    }
+    fn write(&self, file: kasumi_kv::GroupFile, at: u64, bytes: &[u8]) -> std::io::Result<()> {
+        self.inner.write(file, at, bytes)
+    }
+    fn set_len(&self, file: kasumi_kv::GroupFile, length: u64) -> std::io::Result<()> {
+        self.inner.set_len(file, length)
+    }
+    fn sync(&self, file: kasumi_kv::GroupFile) -> std::io::Result<()> {
         if self.syncs.fetch_add(1, Ordering::AcqRel) == 1 {
             return Err(std::io::Error::other("injected table setup sync failure"));
         }
-        kasumi_kv::StorageBackend::sync_data(&self.inner)
+        self.inner.sync(file)
+    }
+    fn unlink(&self, file: kasumi_kv::GroupFile) -> std::io::Result<()> {
+        self.inner.unlink(file)
+    }
+    fn sync_names(&self) -> std::io::Result<()> {
+        self.inner.sync_names()
     }
     fn close(&self) -> kasumi_kv::BackendCloseOutcome {
         self.closes.fetch_add(1, Ordering::AcqRel);
-        kasumi_kv::StorageBackend::close(&self.inner)
+        self.inner.close()
     }
 }
 
@@ -50,39 +99,57 @@ fn failed_node_table_setup_observes_the_original_native_close() {
     let scratch_directory = crate::test_utils::private_tempdir().unwrap();
     let scratch = crate::ScratchDisk::fixture(scratch_directory.path(), fixture_memory);
     let backend = FailingNodeSetupBackend::new();
-    let error = NodeStore::open_with_backend(
+    let error = NodeStore::create_with_backend(
         backend.clone(),
         crate::test_utils::storage_admission(),
         scratch,
     )
     .err()
     .expect("the table setup sync is injected to fail");
-    let failure = error.downcast_ref::<NodeStoreSetupFailure>().unwrap();
+    let NodeStoreStartFailure::Opening(failure) = error.original() else {
+        panic!("the exact admitted table request must retain its original startup failure");
+    };
+    let tables = failure
+        .custody()
+        .tables()
+        .expect("failed original table request");
+    let report = tables.report();
+    let terminal = report.terminal().expect("actual attempted commit");
+    let TerminalObservation::Returned(Err(original)) = terminal.terminal() else {
+        panic!("injected table setup sync must retain the original commit error");
+    };
+    let kasumi_kv::WriteTerminalError::Commit(kasumi_kv::CommitError(kasumi_kv::StorageError::Io(
+        original,
+    ))) = original
+    else {
+        panic!("injected table setup sync must retain its original native I/O error");
+    };
     assert!(
-        failure
-            .original_error()
-            .unwrap()
+        original
             .to_string()
             .contains("injected table setup sync failure")
     );
-    failure.with_close_report(|report| {
-        assert_eq!(
-            report.native_disposition(),
-            BackendNativeDisposition::Drained
-        );
-        assert_eq!(
-            report.settlement(),
-            DatabaseCloseSettlement::DrainedWithFailure
-        );
-    });
+    let opening = failure.custody().opening().report();
+    assert_eq!(
+        opening.engine().native_disposition(),
+        BackendNativeDisposition::Drained
+    );
+    assert_eq!(
+        opening.engine().settlement(),
+        kasumi_kv::DatabaseOpenSettlement::DrainedWithFailure
+    );
     assert_eq!(backend.closes.load(Ordering::Acquire), 1);
 }
 
 #[test]
 fn failed_node_setup_keeps_the_original_panic_and_closes() {
-    let database = Database::builder(crate::test_utils::storage_admission())
-        .create_with_backend(kasumi_kv::backends::InMemoryBackend::new())
-        .unwrap();
+    let database = Database::builder(
+        crate::test_utils::storage_admission(),
+        *crate::test_utils::NODE_STORE_ID.as_bytes(),
+        kasumi_kv::CacheConfig::default(),
+    )
+    .create_with_backend(kasumi_kv::backends::InMemoryGroup::new())
+    .unwrap();
     let error = NodeStore::finish_setup(database, |_| panic!("injected setup panic"))
         .err()
         .expect("setup panicked");
@@ -249,7 +316,12 @@ async fn canceled_shutdown_drains_blocked_probe_and_releases_the_database_file()
         fixture_scratch.clone(),
     )
     .unwrap();
-    let weak_node = Arc::downgrade(&node);
+    let weak_node = node.locator();
+    let mut node_retirement = node.clone().retire();
+    assert_eq!(
+        node_retirement.disposition(),
+        StorageCensusDisposition::Retained
+    );
     let provider = Arc::new(Blocked {
         inner: LocalKeyProvider::new([39; 32]),
         block: AtomicBool::new(false),
@@ -301,9 +373,11 @@ async fn canceled_shutdown_drains_blocked_probe_and_releases_the_database_file()
     let (first, second) = tokio::join!(store.shutdown(), store.shutdown());
     first.unwrap();
     second.unwrap();
+    store.node.shutdown().await.unwrap();
     drop(store);
     assert!(weak_store.upgrade().is_none());
-    assert!(weak_node.upgrade().is_none());
+    assert_eq!(node_retirement.retry(), StorageCensusDisposition::Retired);
+    assert!(matches!(weak_node.try_borrow(), NodeStoreLookup::Missing));
 
     // Reopen immediately: completion, rather than a file-lock retry or sleep,
     // proves no background owner can retain the previous database.
@@ -323,8 +397,8 @@ async fn canceled_shutdown_drains_blocked_probe_and_releases_the_database_file()
     .await
     .unwrap();
     assert_eq!(
-        reopened.get("documents", b"durable").unwrap(),
-        Some(b"value".to_vec())
+        reopened.get("documents", b"durable").unwrap().as_deref(),
+        Some(b"value".as_slice())
     );
     reopened.shutdown().await.unwrap();
 }
@@ -363,7 +437,10 @@ async fn dormant_store_workers_stop_cooperatively_and_external_abort_is_reported
             .is_cancelled()
     );
     let repeated = store.shutdown().await.unwrap_err();
-    assert!(Arc::ptr_eq(&first.issues()[0], &repeated.issues()[0]));
+    assert!(kasumi_types::drain::DrainIssueRef::ptr_eq(
+        &first.issues()[0],
+        &repeated.issues()[0]
+    ));
 }
 
 #[tokio::test]
@@ -379,7 +456,12 @@ async fn cancelled_store_drain_retains_joined_panic_and_pending_physical_owner()
         .write_batch(&[WriteOp::put("documents", b"retained", b"value")])
         .unwrap();
     let node = store.node.clone();
-    let weak_node = Arc::downgrade(&node);
+    let weak_node = node.locator();
+    let mut node_retirement = node.clone().retire();
+    assert_eq!(
+        node_retirement.disposition(),
+        StorageCensusDisposition::Retained
+    );
     let (release, waiting) = tokio::sync::oneshot::channel();
     let pending = tokio::spawn(async move {
         let _node = node;
@@ -442,13 +524,18 @@ async fn cancelled_store_drain_retains_joined_panic_and_pending_physical_owner()
         failure.completion(),
         kasumi_types::drain::DrainCompletion::Complete
     );
-    assert!(Arc::ptr_eq(&issue, &failure.issues()[0]));
-    assert!(Arc::ptr_eq(
+    assert!(kasumi_types::drain::DrainIssueRef::ptr_eq(
+        &issue,
+        &failure.issues()[0]
+    ));
+    assert!(kasumi_types::drain::DrainIssueRef::ptr_eq(
         &issue,
         &store.shutdown().await.unwrap_err().issues()[0]
     ));
+    store.node.shutdown().await.unwrap();
     drop(store);
-    assert!(weak_node.upgrade().is_none());
+    assert_eq!(node_retirement.retry(), StorageCensusDisposition::Retired);
+    assert!(matches!(weak_node.try_borrow(), NodeStoreLookup::Missing));
     let reopened = TenantStore::open_existing_fixture_with_clock(
         NodeStore::open_existing_fixture(
             &path,
@@ -464,8 +551,8 @@ async fn cancelled_store_drain_retains_joined_panic_and_pending_physical_owner()
     .await
     .unwrap();
     assert_eq!(
-        reopened.get("documents", b"retained").unwrap(),
-        Some(b"value".to_vec())
+        reopened.get("documents", b"retained").unwrap().as_deref(),
+        Some(b"value".as_slice())
     );
     reopened.shutdown().await.unwrap();
 }
@@ -543,6 +630,8 @@ async fn atomic_batches_and_cross_namespace_isolation_survive_reopen() {
     assert!(other.get("documents", b"a").unwrap().is_none());
     drop(other);
     drop(same);
+    store.shutdown().await.unwrap();
+    store.node.shutdown().await.unwrap();
     drop(store);
     let store = TenantStore::open_existing_fixture_with_clock(
         NodeStore::open_existing_fixture(
@@ -558,10 +647,13 @@ async fn atomic_batches_and_cross_namespace_isolation_survive_reopen() {
     )
     .await
     .unwrap();
-    assert_eq!(store.get("documents", b"a").unwrap(), Some(b"one".to_vec()));
     assert_eq!(
-        store.get("receipts", b"a").unwrap(),
-        Some(b"receipt".to_vec())
+        store.get("documents", b"a").unwrap().as_deref(),
+        Some(b"one".as_slice())
+    );
+    assert_eq!(
+        store.get("receipts", b"a").unwrap().as_deref(),
+        Some(b"receipt".as_slice())
     );
     assert!(store.get("documents", b"gone").unwrap().is_none());
 }
@@ -585,8 +677,8 @@ async fn invalid_batch_does_not_apply_earlier_operations() {
             .is_err()
     );
     assert_eq!(
-        store.get("documents", b"a").unwrap(),
-        Some(b"before".to_vec())
+        store.get("documents", b"a").unwrap().as_deref(),
+        Some(b"before".as_slice())
     );
     assert!(
         store
@@ -609,7 +701,7 @@ async fn names_keys_and_values_are_absent_from_disk_and_nonce_changes_on_overwri
     let read_raw = || {
         let state = store.state.read();
         let disk_key = record_key(store.tenant(), ns, key, state.keys.get(INDEX_KEY).unwrap());
-        let tx = store.node.db.begin_read().unwrap();
+        let tx = store.node.body().db.begin_read().unwrap();
         let table = tx.open_table(RECORDS).unwrap();
         table
             .get(disk_key.as_slice())
@@ -621,9 +713,15 @@ async fn names_keys_and_values_are_absent_from_disk_and_nonce_changes_on_overwri
     let before = read_raw();
     store.write_batch(&[WriteOp::put(ns, key, value)]).unwrap();
     assert_ne!(before, read_raw());
-    let bytes = std::fs::read(dir.path().join("database.kv")).unwrap();
-    for secret in [ns.as_bytes(), key.as_slice(), value.as_slice()] {
-        assert!(!bytes.windows(secret.len()).any(|window| window == secret));
+    for path in crate::test_utils::node_group_files(&dir.path().join("database.kv")) {
+        let bytes = std::fs::read(&path).unwrap();
+        for secret in [ns.as_bytes(), key.as_slice(), value.as_slice()] {
+            assert!(
+                !bytes.windows(secret.len()).any(|window| window == secret),
+                "plaintext record field in {}",
+                path.display()
+            );
+        }
     }
 }
 
@@ -662,13 +760,13 @@ async fn ciphertext_corruption_swapping_and_wrong_tenant_are_rejected() {
     let a = physical(&store, b"a");
     let b = physical(&store, b"b");
     let cross = physical(&other, b"a");
-    let tx = store.node.db.begin_read().unwrap();
+    let tx = store.node.body().db.begin_read().unwrap();
     let table = tx.open_table(RECORDS).unwrap();
     let original = table.get(a.as_slice()).unwrap().unwrap().value().to_vec();
     drop(table);
     drop(tx);
     let raw_write = |key: &[u8], bytes: &[u8]| {
-        let tx = store.node.db.begin_write().unwrap();
+        let tx = store.node.body().db.begin_write().unwrap();
         {
             tx.open_table(RECORDS).unwrap().insert(key, bytes).unwrap();
         }
@@ -894,6 +992,8 @@ async fn rewrap_preserves_documents_after_retiring_old_wrapping_versions() {
     store.rewrap_keys().await.unwrap();
     provider.set_minimum_version(2);
     store.refresh_lease().await.unwrap();
+    store.shutdown().await.unwrap();
+    store.node.shutdown().await.unwrap();
     drop(store);
     let store = TenantStore::open_existing_fixture_with_clock(
         NodeStore::open_existing_fixture(
@@ -910,8 +1010,8 @@ async fn rewrap_preserves_documents_after_retiring_old_wrapping_versions() {
     .await
     .unwrap();
     assert_eq!(
-        store.get("docs", b"a").unwrap(),
-        Some(b"before rotation".to_vec())
+        store.get("docs", b"a").unwrap().as_deref(),
+        Some(b"before rotation".as_slice())
     );
 }
 
@@ -924,7 +1024,7 @@ async fn every_injected_commit_failure_recovers_whole_batch_or_previous_state() 
     let backend = FaultBackend::new();
     let provider = Arc::new(LocalKeyProvider::new([51; 32]));
     let clock = Arc::new(ManualClock::new());
-    let node = NodeStore::open_with_backend(
+    let node = NodeStore::create_with_backend(
         backend.clone(),
         crate::test_utils::storage_admission(),
         fixture_scratch.clone(),
@@ -986,7 +1086,7 @@ async fn every_injected_commit_failure_recovers_whole_batch_or_previous_state() 
         )
         .await
         .unwrap();
-        let after = recovered.get("docs", b"a").unwrap() == Some(b"after".to_vec());
+        let after = recovered.get("docs", b"a").unwrap().as_deref() == Some(b"after".as_slice());
         assert_eq!(
             recovered.get("receipts", b"receipt").unwrap().is_some(),
             after,
@@ -1123,6 +1223,8 @@ async fn faulty_provider_rewrap_cannot_replace_data_keys_or_break_recovery() {
             .to_string()
             .contains("changed data key")
     );
+    store.shutdown().await.unwrap();
+    store.node.shutdown().await.unwrap();
     drop(store);
     let store = TenantStore::open_existing_fixture_with_clock(
         NodeStore::open_existing_fixture(
@@ -1139,8 +1241,8 @@ async fn faulty_provider_rewrap_cannot_replace_data_keys_or_break_recovery() {
     .await
     .unwrap();
     assert_eq!(
-        store.get("docs", b"a").unwrap(),
-        Some(b"still recoverable".to_vec())
+        store.get("docs", b"a").unwrap().as_deref(),
+        Some(b"still recoverable".as_slice())
     );
 }
 
@@ -1154,7 +1256,7 @@ async fn wrapping_catalog_is_atomic_across_every_injected_commit_failure() {
     let provider = Arc::new(LocalKeyProvider::new([19; 32]));
     let clock = Arc::new(ManualClock::new());
     let store = TenantStore::initialize_catalog_fixture_with_clock(
-        NodeStore::open_with_backend(
+        NodeStore::create_with_backend(
             backend.clone(),
             crate::test_utils::storage_admission(),
             fixture_scratch.clone(),
@@ -1216,8 +1318,8 @@ async fn wrapping_catalog_is_atomic_across_every_injected_commit_failure() {
             "partial catalog at failure {position}"
         );
         assert_eq!(
-            recovered.get("docs", b"a").unwrap(),
-            Some(b"survives key rotation".to_vec())
+            recovered.get("docs", b"a").unwrap().as_deref(),
+            Some(b"survives key rotation".as_slice())
         );
         if outcome.is_ok() {
             assert_eq!(versions[0], 2);
@@ -1238,7 +1340,7 @@ async fn expiry_during_fsync_reports_unknown_outcome_and_preserves_committed_bat
     let provider = Arc::new(LocalKeyProvider::new([38; 32]));
     let clock = Arc::new(ManualClock::new());
     let store = TenantStore::initialize_catalog_fixture_with_clock(
-        NodeStore::open_with_backend(
+        NodeStore::create_with_backend(
             disk.clone(),
             crate::test_utils::storage_admission(),
             fixture_scratch.clone(),
@@ -1273,12 +1375,12 @@ async fn expiry_during_fsync_reports_unknown_outcome_and_preserves_committed_bat
     .await
     .unwrap();
     assert_eq!(
-        recovered.get("docs", b"a").unwrap(),
-        Some(b"committed".to_vec())
+        recovered.get("docs", b"a").unwrap().as_deref(),
+        Some(b"committed".as_slice())
     );
     assert_eq!(
-        recovered.get("receipts", b"r").unwrap(),
-        Some(b"committed".to_vec())
+        recovered.get("receipts", b"r").unwrap().as_deref(),
+        Some(b"committed".as_slice())
     );
 }
 
@@ -1292,7 +1394,7 @@ async fn expiry_during_key_catalog_fsync_does_not_acknowledge_rotation() {
     let provider = Arc::new(LocalKeyProvider::new([39; 32]));
     let clock = Arc::new(ManualClock::new());
     let store = TenantStore::initialize_catalog_fixture_with_clock(
-        NodeStore::open_with_backend(
+        NodeStore::create_with_backend(
             disk.clone(),
             crate::test_utils::storage_admission(),
             fixture_scratch.clone(),
@@ -1326,8 +1428,8 @@ async fn expiry_during_key_catalog_fsync_does_not_acknowledge_rotation() {
     .unwrap();
     assert_eq!(recovered.catalog.read().keys.len(), 3);
     assert_eq!(
-        recovered.get("docs", b"a").unwrap(),
-        Some(b"old ciphertext".to_vec())
+        recovered.get("docs", b"a").unwrap().as_deref(),
+        Some(b"old ciphertext".as_slice())
     );
 }
 
@@ -1413,21 +1515,21 @@ async fn completed_shutdown_allows_distinct_store_without_reviving_retained_hand
     .unwrap();
     assert!(!Arc::ptr_eq(&fresh, &original));
     assert_eq!(
-        fresh.get("docs", b"retained").unwrap(),
-        Some(b"durable".to_vec())
+        fresh.get("docs", b"retained").unwrap().as_deref(),
+        Some(b"durable".as_slice())
     );
     assert!(retained.get("docs", b"retained").is_err());
     original.shutdown().await.unwrap();
     assert_eq!(
-        fresh.get("docs", b"retained").unwrap(),
-        Some(b"durable".to_vec())
+        fresh.get("docs", b"retained").unwrap().as_deref(),
+        Some(b"durable".as_slice())
     );
     fresh.shutdown().await.unwrap();
 }
 
 #[cfg(unix)]
-#[test]
-fn node_files_are_private_nofollow_and_keep_exclusive_database_ownership() {
+#[tokio::test]
+async fn node_files_are_private_nofollow_and_keep_exclusive_database_ownership() {
     let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
     let scratch_directory = crate::test_utils::private_tempdir().unwrap();
     let fixture_scratch =
@@ -1444,10 +1546,22 @@ fn node_files_are_private_nofollow_and_keep_exclusive_database_ownership() {
         fixture_scratch.clone(),
     )
     .unwrap();
-    assert_eq!(
-        std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
-        0o600
-    );
+    let root_file = path.join(kasumi_kv::ROOT_FILE_NAME);
+    let metadata = std::fs::symlink_metadata(&path).unwrap();
+    assert!(metadata.is_dir());
+    assert_eq!(metadata.permissions().mode() & 0o777, 0o700);
+    for file in crate::test_utils::node_group_files(&path) {
+        assert_eq!(
+            std::fs::symlink_metadata(&file)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600,
+            "{}",
+            file.display()
+        );
+    }
     assert!(
         NodeStore::open_existing_fixture(
             &path,
@@ -1457,9 +1571,10 @@ fn node_files_are_private_nofollow_and_keep_exclusive_database_ownership() {
         )
         .is_err()
     );
-    assert!(crate::private_files::ExclusiveLock::acquire(&path).is_err());
+    assert!(crate::private_files::ExclusiveLock::acquire(&root_file).is_err());
+    node.shutdown().await.unwrap();
     drop(node);
-    let cleanup_lock = crate::private_files::ExclusiveLock::acquire(&path).unwrap();
+    let cleanup_lock = crate::private_files::ExclusiveLock::acquire(&root_file).unwrap();
     assert!(
         NodeStore::open_existing_fixture(
             &path,
@@ -1484,8 +1599,8 @@ fn node_files_are_private_nofollow_and_keep_exclusive_database_ownership() {
     // A new census rejects every symlink in the installed root, even when
     // reopening a different file. Remove the deliberately invalid fixture.
     std::fs::remove_file(&alias).unwrap();
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
-    let original = std::fs::read(&path).unwrap();
+    std::fs::set_permissions(&root_file, std::fs::Permissions::from_mode(0o640)).unwrap();
+    let original = std::fs::read(&root_file).unwrap();
     assert!(
         NodeStore::open_existing_fixture(
             &path,
@@ -1495,17 +1610,17 @@ fn node_files_are_private_nofollow_and_keep_exclusive_database_ownership() {
         )
         .is_err()
     );
-    assert_eq!(original, std::fs::read(&path).unwrap());
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
-    assert!(
-        NodeStore::open_existing_fixture(
-            &path,
-            crate::test_utils::NODE_STORE_ID,
-            fixture_memory.clone(),
-            fixture_scratch.clone()
-        )
-        .is_ok()
-    );
+    assert_eq!(original, std::fs::read(&root_file).unwrap());
+    std::fs::set_permissions(&root_file, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let reopened = NodeStore::open_existing_fixture(
+        &path,
+        crate::test_utils::NODE_STORE_ID,
+        fixture_memory.clone(),
+        fixture_scratch.clone(),
+    )
+    .unwrap();
+    assert!(crate::private_files::ExclusiveLock::acquire(&root_file).is_err());
+    reopened.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -1522,12 +1637,17 @@ async fn pinned_read_roots_and_streamed_namespace_publication_preserve_isolation
         ])
         .unwrap();
     let pinned = store.read_view().unwrap();
-    let staged = EncryptedTable::new(&fixture_scratch.clone(), 64 << 20).unwrap();
+    let staged = EncryptedTable::new(
+        &fixture_scratch.clone(),
+        64 << 20,
+        fixture_scratch.clone().native_cache_config(),
+    )
+    .unwrap();
     staged.insert(b"new", b"replacement").unwrap();
     assert!(staged.insert(b"new", b"substituted").is_err());
     store
         .replace_namespaces(
-            &[("authority", &staged)],
+            &[NamespaceReplacement::from_table("authority", &staged)],
             &[WriteOp::put("meta", b"position", b"new")],
         )
         .unwrap();
@@ -1541,14 +1661,20 @@ async fn pinned_read_roots_and_streamed_namespace_publication_preserve_isolation
     assert!(
         store
             .replace_namespaces(
-                &[("authority", &staged)],
+                &[NamespaceReplacement::from_table("authority", &staged)],
                 &[WriteOp::put("authority", b"unexpected", b"overlap")]
             )
             .is_err()
     );
     assert!(
         store
-            .replace_namespaces(&[("authority", &staged), ("authority", &staged)], &[])
+            .replace_namespaces(
+                &[
+                    NamespaceReplacement::from_table("authority", &staged),
+                    NamespaceReplacement::from_table("authority", &staged)
+                ],
+                &[]
+            )
             .is_err()
     );
     assert!(store.get("authority", b"old").unwrap().is_none());
@@ -1560,7 +1686,11 @@ async fn pinned_read_roots_and_streamed_namespace_publication_preserve_isolation
         store.get("unrelated", b"key").unwrap().unwrap(),
         b"must-stay"
     );
-    assert!(store.replace_namespaces(&[("", &staged)], &[]).is_err());
+    assert!(
+        store
+            .replace_namespaces(&[NamespaceReplacement::from_table("", &staged)], &[])
+            .is_err()
+    );
     assert_eq!(
         store.get("authority", b"new").unwrap().unwrap(),
         b"replacement"
@@ -1578,6 +1708,7 @@ async fn separate_node_stores_and_pinned_reads_share_one_scratch_budget() {
             directory: directory.path().join("scratch"),
             max_bytes: 192 << 10,
             min_free_bytes: 0,
+            native_cache_bytes: 8 << 20,
         },
         fixture_memory.clone(),
     )
@@ -1623,4 +1754,82 @@ async fn separate_node_stores_and_pinned_reads_share_one_scratch_budget() {
     let retry = SnapshotImage::from_bytes(second.scratch_disk(), &[29; 128 << 10]).unwrap();
     drop(retry);
     assert_eq!(disk.snapshot().charged_bytes, 0);
+}
+
+#[tokio::test]
+async fn explicit_empty_namespace_clears_atomically_without_scratch_and_keeps_pinned_root() {
+    let memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = crate::test_utils::private_tempdir().unwrap();
+    let scratch = ScratchDisk::fixture(scratch_directory.path(), memory.clone());
+    let (_directory, store, _, _) = fixture(memory, scratch.clone()).await;
+    store
+        .write_batch(&[
+            WriteOp::put("authority", b"old", b"original"),
+            WriteOp::put("unrelated", b"key", b"must-stay"),
+            WriteOp::put("meta", b"position", b"old"),
+        ])
+        .unwrap();
+    let pinned = store.read_view().unwrap();
+    let before = scratch.snapshot();
+    store
+        .replace_namespaces(
+            &[NamespaceReplacement::empty("authority")],
+            &[WriteOp::put("meta", b"position", b"new")],
+        )
+        .unwrap();
+    let after = scratch.snapshot();
+    assert_eq!(after.live_files, before.live_files);
+    assert_eq!(after.charged_bytes, before.charged_bytes);
+    assert!(store.get("authority", b"old").unwrap().is_none());
+    assert_eq!(store.get("meta", b"position").unwrap().unwrap(), b"new");
+    assert_eq!(
+        store.get("unrelated", b"key").unwrap().unwrap(),
+        b"must-stay"
+    );
+    assert_eq!(
+        pinned.get("authority", b"old", 1024).unwrap().unwrap(),
+        b"original"
+    );
+    assert_eq!(
+        pinned.get("meta", b"position", 1024).unwrap().unwrap(),
+        b"old"
+    );
+
+    // An omitted replacement retains the namespace even when metadata changes.
+    store
+        .replace_namespaces(&[], &[WriteOp::put("meta", b"position", b"newer")])
+        .unwrap();
+    assert_eq!(
+        store.get("unrelated", b"key").unwrap().unwrap(),
+        b"must-stay"
+    );
+    let empty = EncryptedTable::new(&scratch, 8 << 20, scratch.native_cache_config()).unwrap();
+    for replacements in [
+        vec![NamespaceReplacement::empty("")],
+        vec![
+            NamespaceReplacement::empty("unrelated"),
+            NamespaceReplacement::empty("unrelated"),
+        ],
+        vec![
+            NamespaceReplacement::empty("unrelated"),
+            NamespaceReplacement::from_table("unrelated", &empty),
+        ],
+    ] {
+        assert!(store.replace_namespaces(&replacements, &[]).is_err());
+    }
+    assert!(
+        store
+            .replace_namespaces(
+                &[NamespaceReplacement::empty("unrelated")],
+                &[WriteOp::put("unrelated", b"key", b"overlap")],
+            )
+            .is_err()
+    );
+    assert_eq!(
+        store.get("unrelated", b"key").unwrap().unwrap(),
+        b"must-stay"
+    );
+    empty.close().unwrap();
+    store.seal();
+    assert!(pinned.get("authority", b"old", 1024).is_err());
 }

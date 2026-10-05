@@ -1,6 +1,9 @@
 //! Immutable terminal transaction rows. A logical view selects a prefix; durable
 //! rows beyond that prefix are never evidence that their command was applied.
-//! Reads open short point transactions and do not pin unrelated KV values.
+//! Point lookups open short transactions; ordered scans own one exact read root.
+use crate::namespace_installation::PreparedRows;
+#[path = "staged_terminal_scan.rs"]
+mod scan;
 use anyhow::{Context, Result, ensure};
 use kasumi_store::{EncryptedTable, EncryptedTableBatch, ScratchDisk, TenantStore, WriteOp};
 use kasumi_types::*;
@@ -238,13 +241,15 @@ enum Source {
     Staged(Arc<EncryptedTable>),
 }
 impl Source {
-    fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
+    fn get(&self, key: &[u8]) -> Result<Option<crate::materialization_row::MaterializationRow>> {
         let result = match self {
-            Self::Durable(rows) => {
-                rows.store
-                    .get_bounded(&rows.binding.namespace(), key, MAX_ROW_BYTES)?
-            }
-            Self::Staged(table) => table.get(key)?,
+            Self::Durable(rows) => rows
+                .store
+                .get_bounded(&rows.binding.namespace(), key, MAX_ROW_BYTES)?
+                .map(crate::materialization_row::MaterializationRow::Stored),
+            Self::Staged(table) => table
+                .get(key)?
+                .map(crate::materialization_row::MaterializationRow::Staged),
         };
         ensure!(
             result
@@ -279,7 +284,7 @@ impl View {
     pub(crate) fn head(&self) -> &StagedTerminalHead {
         &self.head
     }
-    fn bytes(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
+    fn bytes(&self, key: &[u8]) -> Result<Option<crate::materialization_row::MaterializationRow>> {
         self.source
             .as_ref()
             .map(|s| s.get(key))
@@ -306,7 +311,7 @@ impl View {
         );
         Ok(entry)
     }
-    pub(crate) fn check_head(&self, tenant: &str) -> Result<()> {
+    pub(crate) fn check_head_metadata(&self, tenant: &str) -> Result<()> {
         validate_name(&self.head.origin_incarnation)?;
         ensure!(digest(&self.head.sha256), "invalid terminal head digest");
         if self.head.count == 0 {
@@ -316,8 +321,17 @@ impl View {
             );
         } else {
             ensure!(
-                self.head.encoded_bytes > 0
-                    && self.index(self.head.count)?.sha256 == self.head.sha256,
+                self.head.encoded_bytes > 0,
+                "terminal physical prefix differs from selected root"
+            );
+        }
+        Ok(())
+    }
+    pub(crate) fn check_head(&self, tenant: &str) -> Result<()> {
+        self.check_head_metadata(tenant)?;
+        if self.head.count != 0 {
+            ensure!(
+                self.index(self.head.count)?.sha256 == self.head.sha256,
                 "terminal physical prefix differs from selected root"
             );
         }
@@ -394,8 +408,8 @@ impl View {
         ensure!(row.ordinal == ordinal, "terminal ordinal redirected");
         Ok(row)
     }
-    pub(crate) fn records(&self) -> impl Iterator<Item = Result<Row>> + Send + '_ {
-        (1..=self.head.count).map(|ordinal| self.row(ordinal))
+    pub(crate) fn records(&self) -> scan::Records {
+        scan::Records::new(self)
     }
 }
 
@@ -420,15 +434,25 @@ impl Builder {
         limit: u64,
         tenant: &str,
         origin: &str,
-    ) -> Result<Self> {
-        let table = Arc::new(EncryptedTable::new(disk, limit)?);
-        let batch = table.begin_batch()?;
+    ) -> std::result::Result<Self, kasumi_store::ScratchOperationFailure> {
+        let phase = crate::backup_verify::VerificationPhase::start("snapshot.terminal_setup", None);
+        let table = Arc::new(EncryptedTable::new(
+            disk,
+            limit,
+            disk.native_cache_config(),
+        )?);
+        let batch = table
+            .begin_batch()
+            .map_err(kasumi_store::ScratchOperationFailure::Operation)?;
+        phase.complete();
         Ok(Self {
             table,
             batch: Some(batch),
             batch_bytes: 0,
             batch_rows: 0,
-            head: StagedTerminalHead::empty(tenant, origin)?,
+            head: StagedTerminalHead::empty(tenant, origin).map_err(|original| {
+                kasumi_store::ScratchOperationFailure::Operation(original.into())
+            })?,
             failed: false,
         })
     }
@@ -464,10 +488,12 @@ impl Builder {
                 .checked_add(bytes)
                 .is_none_or(|total| total > Self::BATCH_BYTES)
         {
+            let phase = self.batch_phase();
             self.batch
                 .take()
                 .context("terminal staging batch missing")?
                 .commit()?;
+            phase.complete();
             self.batch = Some(self.table.begin_batch()?);
             self.batch_bytes = 0;
             self.batch_rows = 0;
@@ -483,15 +509,28 @@ impl Builder {
         self.failed = false;
         Ok(())
     }
+    fn batch_phase(&self) -> crate::backup_verify::VerificationPhase {
+        let phase = crate::backup_verify::VerificationPhase::start("snapshot.terminal_batch", None);
+        tracing::debug!(
+            target: "kasumi_engine::restore_phase",
+            event = "snapshot_terminal_batch",
+            rows = self.batch_rows as u64,
+            bytes = self.batch_bytes as u64,
+            "restore terminal staging batch"
+        );
+        phase
+    }
     pub(crate) fn finish(self, expected: &StagedTerminalHead) -> Result<View> {
         ensure!(!self.failed, "terminal staging builder previously failed");
         ensure!(
             &self.head == expected,
             "terminal stream final root/count/bytes differ"
         );
+        let phase = self.batch_phase();
         self.batch
             .context("terminal staging batch missing")?
             .commit()?;
+        phase.complete();
         Ok(View {
             source: Some(Arc::new(Source::Staged(self.table))),
             head: self.head,
@@ -521,16 +560,16 @@ pub(crate) fn advance(head: &mut StagedTerminalHead, row: &Row) -> Result<()> {
 /// catalog writes with the enclosing checkpoint/applied cursor before publishing
 /// `view`. Dropping this object leaves only encrypted temporary staging.
 pub(crate) struct Installation {
-    replacement: Option<Arc<EncryptedTable>>,
+    replacement: Option<PreparedRows>,
     namespace: String,
     writes: Vec<WriteOp>,
     pub(crate) view: View,
 }
 impl Installation {
-    pub(crate) fn replacements(&self) -> Vec<(&str, &EncryptedTable)> {
+    pub(crate) fn replacements(&self) -> Vec<kasumi_store::NamespaceReplacement<'_>> {
         self.replacement
             .as_ref()
-            .map(|table| vec![(self.namespace.as_str(), table.as_ref())])
+            .map(|rows| vec![rows.replacement(&self.namespace)])
             .unwrap_or_default()
     }
     pub(crate) fn writes(&self) -> &[WriteOp] {
@@ -610,11 +649,8 @@ impl View {
             });
         }
         let replacement = match self.source.as_deref() {
-            Some(Source::Staged(table)) => table.clone(),
-            None if self.head.count == 0 => Arc::new(EncryptedTable::new(
-                store.scratch_disk(),
-                scratch_limit(state.limits.max_snapshot_bytes)?,
-            )?),
+            Some(Source::Staged(table)) => PreparedRows::Staged(table.clone()),
+            None if self.head.count == 0 => PreparedRows::Empty,
             _ => anyhow::bail!("namespace installation requires verified staged rows"),
         };
         let binding = NamespaceBinding {
@@ -759,7 +795,35 @@ impl Pending {
         }
         Ok(self.previous.get(key)?.map(|row| row.stage))
     }
-    pub(crate) fn persist(self) -> Result<View> {
+    /// Fixture commands without new terminal rows retain their selected view
+    /// without constructing an unused native database. Existing sources remain
+    /// selected, and only actual local-origin rows may acquire fixture storage.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub(crate) fn stage_fixture(
+        mut self,
+        disk: &Arc<ScratchDisk>,
+        state: &TenantState,
+    ) -> std::result::Result<View, kasumi_store::ScratchOperationFailure> {
+        self.previous.check_fixture_source()?;
+        if self.rows.is_empty() {
+            return self.stage().map_err(Into::into);
+        }
+        kasumi_store::ScratchOperationFailure::ordinary(|| {
+            ensure!(
+                self.rows
+                    .iter()
+                    .all(|row| matches!(row.applied.origin, AppliedOrigin::Fixture)),
+                "fixture terminal staging requires its actual local origin"
+            );
+            Ok(())
+        })?;
+        self.previous = self.previous.fixture_owner(disk, state)?;
+        self.stage().map_err(Into::into)
+    }
+
+    /// Preserve immutable row/index pairs before selecting the returned view.
+    /// An exact replay may reuse this durable prefix after publication fails.
+    pub(crate) fn stage(self) -> Result<View> {
         if self.rows.is_empty() {
             return Ok(self.previous);
         }
@@ -807,14 +871,26 @@ impl Pending {
                     .all(|row| matches!(row.applied.origin, AppliedOrigin::Fixture)) =>
             {
                 for row in &self.rows {
-                    table.insert(&id_key(&row.key), &serde_json::to_vec(row)?)?;
-                    table.insert(
-                        &ordinal_key(row.ordinal),
-                        &serde_json::to_vec(&Ordinal {
-                            key: row.key.clone(),
-                            sha256: row.sha256()?,
-                        })?,
-                    )?;
+                    let id = id_key(&row.key);
+                    let ordinal = ordinal_key(row.ordinal);
+                    let bytes = serde_json::to_vec(row)?;
+                    let index = serde_json::to_vec(&Ordinal {
+                        key: row.key.clone(),
+                        sha256: row.sha256()?,
+                    })?;
+                    match (source.get(&id)?, source.get(&ordinal)?) {
+                        (Some(old_row), Some(old_index)) => ensure!(
+                            old_row == bytes && old_index == index,
+                            "future terminal row differs from exact original command replay"
+                        ),
+                        (None, None) => {
+                            let mut pair = table.begin_batch()?;
+                            pair.insert(&id, &bytes)?;
+                            pair.insert(&ordinal, &index)?;
+                            pair.commit()?;
+                        }
+                        _ => anyhow::bail!("partially published terminal row/index"),
+                    }
                 }
             }
             Source::Staged(_) => {
@@ -832,18 +908,29 @@ impl Pending {
 
 #[cfg(any(test, feature = "test-utils"))]
 impl View {
+    pub(crate) fn check_fixture_source(&self) -> Result<()> {
+        ensure!(
+            self.source.is_some() || self.head.count == 0,
+            "fixture terminal prefix has no owner"
+        );
+        Ok(())
+    }
+
     pub(crate) fn fixture_owner(
         &self,
         disk: &Arc<ScratchDisk>,
         state: &TenantState,
-    ) -> Result<Self> {
+    ) -> std::result::Result<Self, kasumi_store::ScratchOperationFailure> {
+        self.check_fixture_source()
+            .map_err(kasumi_store::ScratchOperationFailure::Operation)?;
         if self.source.is_some() {
             return Ok(self.clone());
         }
-        ensure!(self.head.count == 0, "fixture terminal prefix has no owner");
         let table = Arc::new(EncryptedTable::new(
             disk,
-            scratch_limit(state.limits.max_snapshot_bytes)?,
+            scratch_limit(state.limits.max_snapshot_bytes)
+                .map_err(kasumi_store::ScratchOperationFailure::Operation)?,
+            disk.native_cache_config(),
         )?);
         Ok(Self {
             source: Some(Arc::new(Source::Staged(table))),

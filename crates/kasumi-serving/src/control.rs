@@ -6,6 +6,10 @@ use kasumi_types::*;
 use ring::signature::{ED25519, UnparsedPublicKey};
 use std::collections::BTreeMap;
 
+#[cfg(test)]
+#[path = "control_topology_tests.rs"]
+mod topology_tests;
+
 fn verify<T: serde::Serialize>(key: &str, domain: &str, value: &T, signature: &str) -> Result<()> {
     validate_sha256(key)?;
     let signature = hex::decode(signature)?;

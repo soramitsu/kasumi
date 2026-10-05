@@ -5,6 +5,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::sync::Mutex;
 
+use super::pending_apply::PendingApply;
 use crate::core::sm;
 use crate::core::sm::tasks::Task;
 use crate::core::sm::tasks::TaskError;
@@ -14,15 +15,19 @@ use crate::Snapshot;
 
 /// State machine worker handle for sending command to it.
 pub(crate) struct Handle<C>
-where C: RaftTypeConfig
+where
+    C: RaftTypeConfig,
 {
+    pub(in crate::core::sm) pending_apply: Arc<PendingApply<C>>,
+
     pub(in crate::core::sm) cmd_tx: mpsc::UnboundedSender<sm::Command<C>>,
 
     pub(in crate::core::sm) task: Arc<Mutex<Task<C>>>,
 }
 
 impl<C> Handle<C>
-where C: RaftTypeConfig
+where
+    C: RaftTypeConfig,
 {
     /// Observe actual worker termination without consuming its original result.
     pub(crate) async fn stopped(&self) -> Result<(), TaskError<C>> {
@@ -31,20 +36,26 @@ where C: RaftTypeConfig
 
     pub(crate) fn send(&mut self, cmd: sm::Command<C>) -> Result<(), mpsc::error::SendError<sm::Command<C>>> {
         tracing::debug!("sending command to state machine worker: {:?}", cmd);
-        self.cmd_tx.send(cmd)
+        self.pending_apply.send(&self.cmd_tx, cmd)
+    }
+
+    pub(crate) fn seal(&self) -> Result<(), mpsc::error::SendError<sm::Command<C>>> {
+        self.pending_apply.seal(&self.cmd_tx)
     }
 
     /// Create a [`SnapshotReader`] to get the current snapshot from the state machine.
     pub(crate) fn new_snapshot_reader(&self) -> SnapshotReader<C> {
         SnapshotReader {
             cmd_tx: self.cmd_tx.downgrade(),
+            pending_apply: Arc::downgrade(&self.pending_apply),
         }
     }
 }
 
 /// A handle for retrieving a snapshot from the state machine.
 pub(crate) struct SnapshotReader<C>
-where C: RaftTypeConfig
+where
+    C: RaftTypeConfig,
 {
     /// Weak command sender to the state machine worker.
     ///
@@ -52,10 +63,12 @@ where C: RaftTypeConfig
     ///
     /// [`Worker`]: sm::worker::Worker
     cmd_tx: mpsc::WeakUnboundedSender<sm::Command<C>>,
+    pending_apply: std::sync::Weak<PendingApply<C>>,
 }
 
 impl<C> SnapshotReader<C>
-where C: RaftTypeConfig
+where
+    C: RaftTypeConfig,
 {
     /// Get a snapshot from the state machine.
     ///
@@ -73,7 +86,10 @@ where C: RaftTypeConfig
         };
 
         // If fail to send command, cmd is dropped and tx will be dropped.
-        let _ = cmd_tx.send(cmd);
+        let Some(pending_apply) = self.pending_apply.upgrade() else {
+            return Err("state machine apply handoff has shutdown");
+        };
+        let _ = pending_apply.send(&cmd_tx, cmd);
 
         let got = match rx.await {
             Ok(x) => x,

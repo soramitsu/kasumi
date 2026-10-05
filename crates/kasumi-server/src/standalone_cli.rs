@@ -1,8 +1,11 @@
 //! Local operator commands. Bearer material is written only to private files.
-use crate::standalone::{ClientProfile, StandaloneNetwork, initialize};
+use crate::{
+    audit_destination::TenantAuditPlacementConfig,
+    standalone::{ClientProfile, StandaloneNetwork, initialize, validate_initial_audit_placements},
+};
 use anyhow::{Context, Result, ensure};
 use kasumi_store::private_files;
-use std::path::Path;
+use std::{collections::BTreeMap, path::Path};
 use uuid::Uuid;
 
 pub async fn command(arguments: &[String]) -> Result<bool> {
@@ -141,13 +144,19 @@ pub async fn command(arguments: &[String]) -> Result<bool> {
             directory,
             policy_flag,
             policy,
+            allocation_flag,
+            allocation,
             network_flag,
             network,
+            placements_flag,
+            placements,
         ] if command == "init"
             && mode_flag == "--mode"
             && mode == "standalone"
             && policy_flag == "--directory-policy"
-            && network_flag == "--network" =>
+            && allocation_flag == "--file-allocation-policy"
+            && network_flag == "--network"
+            && placements_flag == "--tenant-audit-placements" =>
         {
             println!(
                 "{}",
@@ -156,7 +165,9 @@ pub async fn command(arguments: &[String]) -> Result<bool> {
                         Path::new(directory),
                         "default",
                         directory_policy(Path::new(policy))?,
-                        standalone_network(Path::new(network))?
+                        file_allocation_policy(Path::new(allocation))?,
+                        standalone_network(Path::new(network))?,
+                        tenant_audit_placements(Path::new(placements), "default")?,
                     )
                     .await?
                 )?
@@ -169,15 +180,21 @@ pub async fn command(arguments: &[String]) -> Result<bool> {
             directory,
             policy_flag,
             policy,
+            allocation_flag,
+            allocation,
             network_flag,
             network,
+            placements_flag,
+            placements,
             tenant_flag,
             tenant,
         ] if command == "init"
             && mode_flag == "--mode"
             && mode == "standalone"
             && policy_flag == "--directory-policy"
+            && allocation_flag == "--file-allocation-policy"
             && network_flag == "--network"
+            && placements_flag == "--tenant-audit-placements"
             && tenant_flag == "--tenant" =>
         {
             println!(
@@ -187,7 +204,9 @@ pub async fn command(arguments: &[String]) -> Result<bool> {
                         Path::new(directory),
                         tenant,
                         directory_policy(Path::new(policy))?,
-                        standalone_network(Path::new(network))?
+                        file_allocation_policy(Path::new(allocation))?,
+                        standalone_network(Path::new(network))?,
+                        tenant_audit_placements(Path::new(placements), tenant)?,
                     )
                     .await?
                 )?
@@ -369,6 +388,23 @@ pub fn directory_policy(path: &Path) -> Result<kasumi_store::DirectoryPolicy> {
     Ok(policy)
 }
 
+/// Read the caller's explicit per-file physical allowance before installation.
+/// This finite bound must be qualified for the selected filesystem.
+pub fn file_allocation_policy(path: &Path) -> Result<kasumi_store::FileAllocationPolicy> {
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)?
+        .take(4097)
+        .read_to_end(&mut bytes)?;
+    anyhow::ensure!(
+        bytes.len() <= 4096,
+        "file allocation policy exceeds size limit"
+    );
+    let policy: kasumi_store::FileAllocationPolicy = serde_json::from_slice(&bytes)?;
+    policy.validate()?;
+    Ok(policy)
+}
+
 /// Read the complete selected loopback identity before creating installation files.
 pub fn standalone_network(path: &Path) -> Result<StandaloneNetwork> {
     use std::io::Read;
@@ -380,6 +416,24 @@ pub fn standalone_network(path: &Path) -> Result<StandaloneNetwork> {
     let network: StandaloneNetwork = serde_json::from_slice(&bytes)?;
     network.validate()?;
     Ok(network)
+}
+
+/// Load an owner-only, bounded map with one explicit choice for each initial group.
+pub fn tenant_audit_placements(
+    path: &Path,
+    tenant: &str,
+) -> Result<BTreeMap<String, TenantAuditPlacementConfig>> {
+    #[derive(serde::Deserialize)]
+    struct PlacementMap(
+        #[serde(
+            deserialize_with = "crate::audit_destination::deserialize_tenant_audit_placements"
+        )]
+        BTreeMap<String, TenantAuditPlacementConfig>,
+    );
+    let bytes = private_files::read(path, 64 << 10)?;
+    let PlacementMap(placements) = serde_json::from_slice(&bytes)?;
+    validate_initial_audit_placements(tenant, &placements)?;
+    Ok(placements)
 }
 
 #[cfg(test)]
@@ -436,5 +490,167 @@ mod directory_policy_tests {
         std::fs::write(&path, vec![b' '; 4097]).unwrap();
         assert!(directory_policy(&path).is_err());
         assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 1);
+    }
+}
+
+#[cfg(test)]
+mod file_allocation_policy_tests {
+    use super::*;
+
+    #[test]
+    fn explicit_allowance_is_bounded_strict_and_preserves_zero_or_selected_bytes() {
+        let directory = kasumi_store::test_utils::private_tempdir().unwrap();
+        let path = directory.path().join("allocation.json");
+        for allowance in [0, 1048576] {
+            std::fs::write(
+                &path,
+                format!("{{\"maximum_extra_extent_bytes\":{allowance}}}"),
+            )
+            .unwrap();
+            assert_eq!(
+                file_allocation_policy(&path)
+                    .unwrap()
+                    .maximum_extra_extent_bytes,
+                allowance
+            );
+        }
+        for bytes in [
+            br#"{}"#.as_slice(),
+            br#"{"maximum_extra_extent_bytes":true}"#.as_slice(),
+            br#"{"maximum_extra_extent_bytes":-1}"#.as_slice(),
+            br#"{"maximum_extra_extent_bytes":9223372036854775808}"#.as_slice(),
+            br#"{"maximum_extra_extent_bytes":1,"legacy_default":true}"#.as_slice(),
+            br#"{"maximum_extra_extent_bytes":1,"maximum_extra_extent_bytes":2}"#.as_slice(),
+        ] {
+            std::fs::write(&path, bytes).unwrap();
+            assert!(file_allocation_policy(&path).is_err());
+        }
+        std::fs::write(&path, vec![b' '; 4097]).unwrap();
+        assert!(file_allocation_policy(&path).is_err());
+        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn init_without_explicit_file_allowance_cannot_create_an_installation() {
+        std::thread::Builder::new()
+            .name("CLI missing file allocation policy fixture".into())
+            .stack_size(16 << 20)
+            .spawn(|| {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap()
+                    .block_on(Box::pin(init_without_file_allowance_impl()))
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    async fn init_without_file_allowance_impl() {
+        let directory = kasumi_store::test_utils::private_tempdir().unwrap();
+        let target = directory.path().join("new-installation");
+        let arguments = [
+            "init".into(),
+            "--mode".into(),
+            "standalone".into(),
+            target.to_string_lossy().into_owned(),
+            "--directory-policy".into(),
+            "unused-directory-policy.json".into(),
+            "--network".into(),
+            "unused-network.json".into(),
+        ];
+        assert!(!command(&arguments).await.unwrap());
+        assert!(!target.exists());
+    }
+}
+
+#[cfg(test)]
+mod tenant_audit_placement_tests {
+    use super::*;
+
+    #[test]
+    fn explicit_placements_are_private_bounded_complete_and_strict() -> Result<()> {
+        let directory = kasumi_store::test_utils::private_tempdir()?;
+        let path = directory.path().join("placements.json");
+        let selected = serde_json::json!({
+            "__kasumi_control": {"kind": "local_replica_only"},
+            "default": {"kind": "external", "destination": {
+                "kind": "filesystem", "directory": directory.path().join("archives")
+            }}
+        });
+        private_files::create(&path, &serde_json::to_vec_pretty(&selected)?)?;
+        assert_eq!(
+            serde_json::to_value(tenant_audit_placements(&path, "default")?)?,
+            selected
+        );
+        assert!(!directory.path().join("archives").exists());
+        for invalid in [
+            serde_json::json!(null),
+            serde_json::json!({}),
+            serde_json::json!({"default": {"kind":"local_replica_only"}}),
+            serde_json::json!({"__kasumi_control": {"kind":"local_replica_only"}}),
+            serde_json::json!({"__kasumi_control": {"kind":"local_replica_only"}, "default":null}),
+            serde_json::json!({"__kasumi_control": {"kind":"local_replica_only"}, "default":{"kind":"filesystem","directory":"/archive"}}),
+            serde_json::json!({"__kasumi_control": {"kind":"local_replica_only"}, "default":{"kind":"local_replica_only","legacy":true}}),
+            serde_json::json!({"__kasumi_control": {"kind":"local_replica_only"}, "default":{"kind":"external","destination":{"kind":"filesystem","directory":"relative"}}}),
+            serde_json::json!({"__kasumi_control": {"kind":"local_replica_only"}, "default":{"kind":"unknown"}}),
+            serde_json::json!({"__kasumi_control": {"kind":"local_replica_only"}, "default":{"kind":"local_replica_only"}, "other":{"kind":"local_replica_only"}}),
+        ] {
+            private_files::replace(&path, &serde_json::to_vec(&invalid)?)?;
+            assert!(tenant_audit_placements(&path, "default").is_err());
+        }
+        private_files::replace(&path, br#"{"__kasumi_control":{"kind":"local_replica_only"},"default":{"kind":"local_replica_only"},"default":{"kind":"local_replica_only"}}"#)?;
+        assert!(tenant_audit_placements(&path, "default").is_err());
+        private_files::replace(&path, &vec![b' '; (64 << 10) + 1])?;
+        assert!(tenant_audit_placements(&path, "default").is_err());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            private_files::replace(&path, &serde_json::to_vec(&selected)?)?;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644))?;
+            assert!(tenant_audit_placements(&path, "default").is_err());
+            let alias = directory.path().join("alias.json");
+            std::os::unix::fs::symlink(&path, &alias)?;
+            assert!(tenant_audit_placements(&alias, "default").is_err());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn init_without_explicit_audit_placements_cannot_create_an_installation() -> Result<()> {
+        std::thread::Builder::new()
+            .name("CLI missing tenant audit placements fixture".into())
+            .stack_size(16 << 20)
+            .spawn(|| {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()?
+                    .block_on(Box::pin(missing_audit_placements_impl()))
+            })?
+            .join()
+            .unwrap()
+    }
+    async fn missing_audit_placements_impl() -> Result<()> {
+        let root = kasumi_store::test_utils::private_tempdir()?;
+        let directory = root.path().join("new-installation");
+        let arguments = vec![
+            "init".into(),
+            "--mode".into(),
+            "standalone".into(),
+            directory.display().to_string(),
+            "--directory-policy".into(),
+            "missing-policy.json".into(),
+            "--file-allocation-policy".into(),
+            "missing-allocation.json".into(),
+            "--network".into(),
+            "missing-network.json".into(),
+        ];
+        assert!(!command(&arguments).await?);
+        let mut named = arguments;
+        named.extend(["--tenant".into(), "default".into()]);
+        assert!(!command(&named).await?);
+        assert!(!directory.exists());
+        Ok(())
     }
 }

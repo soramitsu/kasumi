@@ -86,7 +86,7 @@ async fn native_listener_reloads_complete_tls_and_rejects_invalid_replacement() 
     let token = fixture.token("person", "tenant-a", "kasumi:read");
     let token = token.strip_prefix("Bearer ").unwrap();
     let query = serde_json::from_value(
-        json!({"collection":"docs", "filter":{"op":"all"}, "allow_scan":true}),
+        json!({"collection":"docs", "allow_scan":true}),
     )
     .unwrap();
     let decode_resources = kasumi_client::ClientResources::new(64 << 20, 4).unwrap();

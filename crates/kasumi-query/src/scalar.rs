@@ -1,3 +1,4 @@
+use crate::{QueryMemory, QueryWorkspace, allocation};
 use bigdecimal::BigDecimal;
 use kasumi_types::{Error, ErrorCode, Result, ScalarType};
 use serde_json::Value;
@@ -54,11 +55,52 @@ pub(crate) fn scalar(value: Option<&Value>, kind: Option<ScalarType>) -> Result<
             Ok(Scalar::String(text.clone()))
         }
         (Some(ScalarType::Number | ScalarType::NumberArray) | None, Value::Number(n)) => {
-            Ok(Scalar::Number(decimal(&n.to_string())?))
+            Ok(Scalar::Number(decimal(n.as_str())?))
         }
         (Some(ScalarType::Boolean) | None, Value::Bool(b)) => Ok(Scalar::Boolean(*b)),
         _ => Err(invalid("value does not match the declared scalar type")),
     }
+}
+
+// Explicit provisional allowances, not measured bounds on bigdecimal/num-bigint
+// allocation. Parsing, normalization and numeric comparisons need a separate
+// library audit before complete decimal workspace accounting is qualified.
+const PROVISIONAL_DECIMAL_KEY_BYTES: u64 = 256;
+pub(crate) const PROVISIONAL_DECIMAL_SCRATCH_BYTES: u64 = 4096;
+
+/// Sort-key copies admit their actual String backing before construction.
+/// Decimal ownership and temporary arithmetic remain explicitly provisional.
+pub(crate) fn query_scalar<W: QueryWorkspace>(
+    value: Option<&Value>,
+    kind: Option<ScalarType>,
+    memory: &mut QueryMemory<W>,
+) -> Result<(Scalar, u64)> {
+    let numeric = matches!(
+        (kind, value),
+        (Some(ScalarType::Decimal), Some(Value::String(_)))
+            | (
+                Some(ScalarType::Number | ScalarType::NumberArray) | None,
+                Some(Value::Number(_))
+            )
+    );
+    if numeric {
+        let key = memory.scope::<_, Error>(|memory| {
+            memory.reserve(allocation::add(
+                PROVISIONAL_DECIMAL_KEY_BYTES,
+                PROVISIONAL_DECIMAL_SCRATCH_BYTES,
+            )?)?;
+            Ok((scalar(value, kind)?, PROVISIONAL_DECIMAL_KEY_BYTES))
+        })?;
+        return Ok((key, PROVISIONAL_DECIMAL_KEY_BYTES));
+    }
+    let bytes = match (kind, value) {
+        (Some(ScalarType::String | ScalarType::StringArray) | None, Some(Value::String(text))) => {
+            allocation::string_clone_bytes(text)?
+        }
+        _ => 0,
+    };
+    memory.reserve(bytes)?;
+    Ok((scalar(value, kind)?, bytes))
 }
 
 pub(crate) fn indexed_values(value: Option<&Value>, kind: ScalarType) -> Result<Vec<Scalar>> {
@@ -101,7 +143,12 @@ pub(crate) fn validate_pointer(path: &str) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn numeric_value(n: &BigDecimal) -> Value {
-    // Exact numbers are returned as decimal strings, including aggregate values.
-    Value::String(n.normalized().to_string())
+/// An exact computed number in its field's declared form: a decimal string
+/// for `decimal` fields and an exact JSON number otherwise.
+pub(crate) fn numeric_value(n: &BigDecimal, kind: Option<ScalarType>) -> Result<Value> {
+    let text = n.normalized().to_string();
+    if kind == Some(ScalarType::Decimal) {
+        return Ok(Value::String(text));
+    }
+    serde_json::from_str(&text).map_err(|_| invalid("cannot encode exact number"))
 }

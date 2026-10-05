@@ -10,9 +10,13 @@ use std::{
 };
 use tokio::sync::watch;
 
+#[path = "bootstrap_append_probe.rs"]
+mod append;
+
 const VOTE_SLOTS: usize = 32;
 type MemberMetrics = watch::Receiver<RaftMetrics<u64, BasicNode>>;
 
+#[derive(Clone)]
 struct ErrorText {
     bytes: [u8; 128],
     len: usize,
@@ -118,12 +122,14 @@ pub(super) struct BootstrapVoteProbe {
     origin: Instant,
     metrics: Mutex<[Option<MemberMetrics>; 3]>,
     history: Mutex<History>,
+    append: append::Probe,
 }
 impl BootstrapVoteProbe {
     pub(super) fn new(router: Arc<InProcessRouter>) -> Self {
+        let origin = Instant::now();
         Self {
             router,
-            origin: Instant::now(),
+            origin,
             metrics: Mutex::new(std::array::from_fn(|_| None)),
             history: Mutex::new(History {
                 slots: std::array::from_fn(|_| None),
@@ -134,6 +140,7 @@ impl BootstrapVoteProbe {
                 evicted: 0,
                 omitted_while_full: 0,
             }),
+            append: append::Probe::new(origin),
         }
     }
     pub(super) fn register(&self, node: u64, metrics: MemberMetrics) {
@@ -160,7 +167,8 @@ impl BootstrapVoteProbe {
         self.history.lock().unwrap_or_else(|p| p.into_inner())
     }
     pub(super) fn diagnostic(&self) -> String {
-        format!("at={:?} {:?}", self.origin.elapsed(), self.history())
+        let votes = format!("at={:?} {:?}", self.origin.elapsed(), self.history());
+        format!("{votes}\nappend_transport={}", self.append.diagnostic())
     }
     fn begin(&self, source: u64, target: u64, request: &VoteRequest<u64>) -> Guard<'_> {
         let started = Instant::now();
@@ -254,7 +262,14 @@ impl RaftTransport for BootstrapVoteProbe {
             RpcRequest::Vote(vote) => Some(self.begin(source, target, vote)),
             _ => None,
         };
+        let mut append = match &request {
+            RpcRequest::Append(request) => Some(self.append.begin(source, target, request)),
+            _ => None,
+        };
         let result = self.router.send(group, source, target, node, request).await;
+        if let Some(append) = &mut append {
+            append.returned(&result);
+        }
         if let Some(guard) = &mut guard {
             let outcome = match &result {
                 Ok(RpcResponse::Vote(Ok(response))) => Outcome::ReturnedVote(response.clone()),

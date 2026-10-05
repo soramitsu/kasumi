@@ -10,7 +10,7 @@ import tempfile
 import unittest
 
 import package_release as package
-from release_gate import functional_gates, inventory, sha256, write_json
+from release_gate import GENERATED_OUTPUTS, functional_gates, generated_output_paths, inventory, sha256, write_json
 
 
 class PackageReleaseTests(unittest.TestCase):
@@ -75,6 +75,14 @@ class PackageReleaseTests(unittest.TestCase):
                         timeout_seconds=14400, timed_out=False, received_signals=[], process_error=None)
             gate["executables"] = artifacts if name == "production" else {}
             gate["compiled_packages"] = {}
+            gate["generated_outputs"] = []
+            if name in GENERATED_OUTPUTS:
+                paths = generated_output_paths(name)
+                retained = root / paths["path"]
+                retained.mkdir(parents=True)
+                (retained / "fixture.log").write_text("synthetic upstream test output\n")
+                write_json(root / paths["files"], inventory(retained))
+                gate["generated_outputs"] = [{**paths, "files_sha256": sha256(root / paths["files"])}]
             if name == "production":
                 gate["compiled_packages"] = {"fixture": {"features": [], "targets": [
                     {"name": executable, "kind": ["bin"], "crate_types": ["bin"]}

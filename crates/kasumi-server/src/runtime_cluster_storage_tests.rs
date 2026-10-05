@@ -49,6 +49,8 @@ fn duplicate_owners_and_excess_rss_are_rejected_before_disk_installation() {
         directory: directory.path().join("scratch"),
         max_bytes: 256 << 30,
         min_free_bytes: 0,
+
+        native_cache_bytes: 8 << 20,
     };
     let error = budget(
         &AdmissionConfig::default(),
@@ -97,6 +99,8 @@ async fn shared_physical_owner_keeps_facade_shutdown_and_replacement_independent
         directory: directory.path().join("unused-template"),
         max_bytes: 256 << 30,
         min_free_bytes: 0,
+
+        native_cache_bytes: 8 << 20,
     };
     let cluster = ClusterStorage::prepare(
         directory.path(),
@@ -144,6 +148,7 @@ async fn shared_physical_owner_keeps_facade_shutdown_and_replacement_independent
         a_id,
         disk.clone(),
         scratch_a.clone(),
+        disk.native_storage_config(),
     )
     .unwrap();
     let b = NodeStore::create_new(
@@ -151,6 +156,7 @@ async fn shared_physical_owner_keeps_facade_shutdown_and_replacement_independent
         b_id,
         disk.clone(),
         scratch_b.clone(),
+        disk.native_storage_config(),
     )
     .unwrap();
     let provider = Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([3; 32]));
@@ -206,6 +212,7 @@ async fn shared_physical_owner_keeps_facade_shutdown_and_replacement_independent
         a_id,
         disk.clone(),
         scratch_a.clone(),
+        disk.native_storage_config(),
     )
     .unwrap();
     let reopened_store = TenantStore::open_existing(

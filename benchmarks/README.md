@@ -22,7 +22,7 @@ per measured workload:
 
 ```sh
 cargo build --release -p kasumi-bench --features embedded-fixture
-./target/release/kasumi-bench --output benchmarks/results/local-release.json
+./target/release/kasumi-bench --output benchmarks/results/local/release.json
 ```
 
 For independent memory estimates, run each mode and tenant count in a separate
@@ -30,7 +30,7 @@ process. This also avoids allocator retention between cases:
 
 ```sh
 ./target/release/kasumi-bench --documents 1000000 --tenants 100 \
-  --operations 10000 --modes local --output benchmarks/results/local-100.json
+  --operations 10000 --modes local --output benchmarks/results/local/local-100.json
 ```
 
 The `--smoke` option uses 100 documents, 1/3 tenants and 32 operations. Explicit

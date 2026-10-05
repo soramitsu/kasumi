@@ -49,7 +49,7 @@ package environment. Reusing an old image does not adopt the new recipe.
 The validation Dockerfile accepts `RUST_BUILD_IMAGE` for an explicit platform
 manifest from `rust-image.json`. This avoids a legacy Docker image-store conflict
 when building both architectures from the same multi-platform index on one VM.
-Keep the compiler check in `validate_linux.sh`; a build argument never waives the
+Keep the compiler check in `release_gate.py`; a build argument never waives the
 Rust 1.97.1 requirement. Record the exact recipe, selected manifest and built image
 identity in acceptance evidence. Translated x86 execution is not native
 performance or endurance acceptance.

@@ -55,7 +55,7 @@ fn context(database: &Database, clock: &EpochClock) -> RequestContext {
         request_id: "clock-fixture".into(),
     }
 }
-async fn audit(node: Arc<NodeStore>, admission: Arc<NodeAdmission>) -> Arc<SecurityAudit> {
+async fn audit(node: NodeStore, admission: Arc<NodeAdmission>) -> Arc<SecurityAudit> {
     SecurityAudit::initialize(
         TenantStore::initialize_catalog_fixture(
             node,
@@ -150,7 +150,7 @@ async fn one_epoch_expires_leases_and_credentials_but_preserves_permanent_comman
     );
     let first = database.query(&original, query()).await.unwrap();
     let mut next = query();
-    next.cursor = Some(first.cursor.unwrap());
+    next.cursor = Some(first.cursor.as_ref().unwrap().clone());
     let lease = database
         .open_snapshot_lease(&original, OpenSnapshotLease { ttl_ms: 60_000 })
         .await
@@ -240,7 +240,12 @@ async fn one_epoch_expires_leases_and_credentials_but_preserves_permanent_comman
         ErrorCode::Conflict
     );
     assert_eq!(
-        database.get(&fresh, "docs", "0").await.unwrap().body["version"],
+        database
+            .get(&fresh, "docs", "0")
+            .await
+            .unwrap()
+            .expect("document exists")
+            .body["version"],
         1
     );
     let mut next_command = batch(2);
@@ -248,7 +253,12 @@ async fn one_epoch_expires_leases_and_credentials_but_preserves_permanent_comman
     let replacement = database.mutate(fresh.clone(), next_command).await.unwrap();
     assert!(replacement.revision > receipt.revision);
     assert_eq!(
-        database.get(&fresh, "docs", "0").await.unwrap().body["version"],
+        database
+            .get(&fresh, "docs", "0")
+            .await
+            .unwrap()
+            .expect("document exists")
+            .body["version"],
         2
     );
     assert_eq!(

@@ -5,7 +5,7 @@ use kasumi_types::{Action, BackupBindingClaim, BackupNamespaceBinding, Grant, Li
 use sha2::Digest as _;
 use std::collections::{BTreeMap, BTreeSet};
 
-fn state() -> TenantState {
+pub(crate) fn state() -> TenantState {
     let incarnation = uuid::Uuid::from_u128(99).to_string();
     let mut state = crate::TenantEngine::new(
         crate::control::CONTROL_TENANT.into(),
@@ -58,7 +58,7 @@ fn state() -> TenantState {
     });
     state
 }
-fn row(state: &TenantState, bytes: &[u8], session_id: uuid::Uuid) -> Row {
+pub(crate) fn row(state: &TenantState, bytes: &[u8], session_id: uuid::Uuid) -> Row {
     let claim = BackupBindingClaim {
         session_id,
         tenant: "tenant-a".into(),
@@ -173,14 +173,18 @@ async fn selected_physical_rows_require_current_writer_bytes_without_repair() ->
     );
     let _ = selected.row(1)?;
 
-    let mut alternate_ordinal = canonical_ordinal.clone();
-    alternate_ordinal.push(b' ');
+    let alternate_ordinal = kasumi_store::test_utils::FixturePlaintextCopy::with_suffix(
+        &store,
+        canonical_ordinal.as_bytes(),
+        b" ",
+    )?;
     assert!(serde_json::from_slice::<Ordinal>(&alternate_ordinal).is_ok());
-    store.write_batch(&[WriteOp::put(
+    kasumi_store::test_utils::write_plaintext_copy_for_fixture(
+        &store,
         &namespace,
         ordinal_key.as_slice(),
-        alternate_ordinal.as_slice(),
-    )])?;
+        alternate_ordinal.as_bytes(),
+    )?;
     let Err(error) = selected.row(1) else {
         panic!("selected ordinal accepted alternate writer bytes");
     };
@@ -188,26 +192,32 @@ async fn selected_physical_rows_require_current_writer_bytes_without_repair() ->
         format!("{error:#}").contains("noncanonical backup binding ordinal"),
         "{error:#}"
     );
+    let observed_ordinal = store.get_bounded(&namespace, &ordinal_key, MAX_ROW_BYTES)?;
     assert_eq!(
-        store.get_bounded(&namespace, &ordinal_key, MAX_ROW_BYTES)?,
-        Some(alternate_ordinal),
+        observed_ordinal.as_deref(),
+        Some(alternate_ordinal.as_bytes()),
         "failed selected read repaired ordinal bytes"
     );
-    store.write_batch(&[WriteOp::put(
+    kasumi_store::test_utils::write_plaintext_copy_for_fixture(
+        &store,
         &namespace,
         ordinal_key.as_slice(),
-        canonical_ordinal.as_slice(),
-    )])?;
+        canonical_ordinal.as_bytes(),
+    )?;
     let _ = selected.row(1)?;
 
-    let mut alternate_point = canonical_point.clone();
-    alternate_point.push(b' ');
+    let alternate_point = kasumi_store::test_utils::FixturePlaintextCopy::with_suffix(
+        &store,
+        canonical_point.as_bytes(),
+        b" ",
+    )?;
     assert!(serde_json::from_slice::<Row>(&alternate_point).is_ok());
-    store.write_batch(&[WriteOp::put(
+    kasumi_store::test_utils::write_plaintext_copy_for_fixture(
+        &store,
         &namespace,
         point_key.as_slice(),
-        alternate_point.as_slice(),
-    )])?;
+        alternate_point.as_bytes(),
+    )?;
     // The same physical row is still ahead of the old view's applied cursor.
     assert!(old.get(session_id)?.is_none());
     let Err(error) = selected.get(session_id) else {
@@ -217,16 +227,18 @@ async fn selected_physical_rows_require_current_writer_bytes_without_repair() ->
         format!("{error:#}").contains("noncanonical backup binding point"),
         "{error:#}"
     );
+    let observed_point = store.get_bounded(&namespace, &point_key, MAX_ROW_BYTES)?;
     assert_eq!(
-        store.get_bounded(&namespace, &point_key, MAX_ROW_BYTES)?,
-        Some(alternate_point),
+        observed_point.as_deref(),
+        Some(alternate_point.as_bytes()),
         "failed selected read repaired point bytes"
     );
-    store.write_batch(&[WriteOp::put(
+    kasumi_store::test_utils::write_plaintext_copy_for_fixture(
+        &store,
         &namespace,
         point_key.as_slice(),
-        canonical_point.as_slice(),
-    )])?;
+        canonical_point.as_bytes(),
+    )?;
     assert_eq!(
         selected
             .get(session_id)?
@@ -252,14 +264,18 @@ async fn checkpoint_catalog_requires_current_writer_bytes_without_repair() -> Re
     assert!(View::checkpoint_exists(&store, &checkpoint)?);
     selected.prepare_install(&store, &state, &checkpoint, true)?;
 
-    let mut alternate = canonical.clone();
-    alternate.push(b' ');
+    let alternate = kasumi_store::test_utils::FixturePlaintextCopy::with_suffix(
+        &store,
+        canonical.as_bytes(),
+        b" ",
+    )?;
     assert!(serde_json::from_slice::<NamespaceBinding>(&alternate).is_ok());
-    store.write_batch(&[WriteOp::put(
+    kasumi_store::test_utils::write_plaintext_copy_for_fixture(
+        &store,
         CATALOG,
         checkpoint.as_bytes(),
-        alternate.as_slice(),
-    )])?;
+        alternate.as_bytes(),
+    )?;
     assert!(View::checkpoint_exists(&store, &checkpoint)?);
     let error = selected
         .prepare_install(&store, &state, &checkpoint, true)
@@ -269,17 +285,19 @@ async fn checkpoint_catalog_requires_current_writer_bytes_without_repair() -> Re
         format!("{error:#}").contains("noncanonical backup binding checkpoint binding"),
         "{error:#}"
     );
+    let observed_catalog = store.get_bounded(CATALOG, checkpoint.as_bytes(), 64 << 10)?;
     assert_eq!(
-        store.get_bounded(CATALOG, checkpoint.as_bytes(), 64 << 10)?,
-        Some(alternate),
+        observed_catalog.as_deref(),
+        Some(alternate.as_bytes()),
         "failed installation repaired the checkpoint binding"
     );
 
-    store.write_batch(&[WriteOp::put(
+    kasumi_store::test_utils::write_plaintext_copy_for_fixture(
+        &store,
         CATALOG,
         checkpoint.as_bytes(),
-        canonical.as_slice(),
-    )])?;
+        canonical.as_bytes(),
+    )?;
     let restored = selected.prepare_install(&store, &state, &checkpoint, true)?;
     assert!(restored.replacements().is_empty());
     assert_eq!(restored.view.head(), selected.head());
@@ -644,11 +662,33 @@ async fn snapshot_bootstrap_rejects_missing_catalog_point_and_corrupt_index_afte
         drop(healthy);
 
         let damage = match fault {
-            "catalog" => WriteOp::delete(CATALOG, checkpoint.as_bytes()),
-            "point" => WriteOp::delete(&namespace, id_key(&session_id.to_string())),
-            "index" => WriteOp::put(&namespace, ordinal_key(1), b"not-json".to_vec()),
+            "catalog" => kasumi_store::test_utils::FixtureWriteBatch::prepare(
+                &store,
+                &[kasumi_store::test_utils::FixtureWrite::Delete(
+                    CATALOG,
+                    checkpoint.as_bytes(),
+                )],
+            )
+            .unwrap(),
+            "point" => kasumi_store::test_utils::FixtureWriteBatch::prepare(
+                &store,
+                &[kasumi_store::test_utils::FixtureWrite::Delete(
+                    &namespace,
+                    &id_key(&session_id.to_string()),
+                )],
+            )
+            .unwrap(),
+            "index" => kasumi_store::test_utils::FixtureWriteBatch::prepare(
+                &store,
+                &[kasumi_store::test_utils::FixtureWrite::Put(
+                    &namespace,
+                    &ordinal_key(1),
+                    b"not-json",
+                )],
+            )
+            .unwrap(),
             "alternate-index" => {
-                let mut bytes = store
+                let bytes = store
                     .get_bounded(&namespace, &ordinal_key(1), MAX_ROW_BYTES)
                     .unwrap()
                     .unwrap();
@@ -657,12 +697,25 @@ async fn snapshot_bootstrap_rejects_missing_catalog_point_and_corrupt_index_afte
                         .unwrap(),
                     bytes
                 );
-                bytes.push(b' ');
-                WriteOp::put(&namespace, ordinal_key(1), bytes)
+                let alternate = kasumi_store::test_utils::FixturePlaintextCopy::with_suffix(
+                    &store,
+                    bytes.as_bytes(),
+                    b" ",
+                )
+                .unwrap();
+                kasumi_store::test_utils::FixtureWriteBatch::prepare(
+                    &store,
+                    &[kasumi_store::test_utils::FixtureWrite::Put(
+                        &namespace,
+                        &ordinal_key(1),
+                        alternate.as_bytes(),
+                    )],
+                )
+                .unwrap()
             }
             _ => unreachable!(),
         };
-        store.write_batch(&[damage]).unwrap();
+        damage.write(&store).unwrap();
         match fault {
             "catalog" => assert!(
                 store

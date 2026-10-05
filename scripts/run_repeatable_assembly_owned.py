@@ -282,17 +282,20 @@ def launch(evidence, declaration, output, attempt_root, attempt_id):
               "declaration_path": str(declaration), "custody_root": str(output),
               "source_files_sha256": None, "source_scripts": None, "tools": None,
               "declaration": None, "runner_process": None, "inner_report": None,
+              "dispatch_started": False,
               "group_ledger": None, "descendant_census": None,
               "error": None}
     write_json(result_path, result)
     try:
-        inputs = assembly_inputs.validate_declaration(assembly.read(declaration))
+        result["declaration"] = assembly.retain(output, declaration)
+        write_json(result_path, result)
+        inputs = assembly_inputs.validate_declaration(
+            assembly.read(assembly.check_ref(output, result["declaration"])))
         require(str(Path(sys.executable).resolve(strict=True)) == inputs["tools"]["python"]["path"],
                 "launcher interpreter differs from declared native Python")
         result["source_files_sha256"] = sha256(evidence / "source-files.json")
         result["source_scripts"] = source_scripts(evidence, source)
         result["tools"] = inputs["tools"]
-        result["declaration"] = assembly.retain(output, declaration)
         write_json(result_path, result)
         home = output / "home"
         home.mkdir()
@@ -313,6 +316,11 @@ def launch(evidence, declaration, output, attempt_root, attempt_id):
             if not census["complete"] or any(item["signals"] for item in census["groups"]):
                 raise ValueError("nested process groups required cleanup or did not drain")
         selected = command(inputs, source, evidence, declaration, output)
+        # Publish the boundary before the dispatcher can create any child. A
+        # missing receipt after this point is uncertainty, never a preflight
+        # failure with no process custody.
+        result["dispatch_started"] = True
+        write_json(result_path, result)
         item = assembly.run_owned(output, "runner", selected, str(source), environment, TIMEOUT_SECONDS,
                                   before_cleanup=seal, after_cleanup=finish_descendants)
         result["runner_process"] = item
@@ -348,9 +356,9 @@ def verify(root, ref):
     assembly.exact(record, {"schema", "status", "attempt_id", "started_at", "finished_at", "evidence_root",
                             "source_root", "declaration_path", "custody_root", "source_files_sha256",
                             "source_scripts", "tools", "declaration", "runner_process", "inner_report",
-                            "group_ledger", "descendant_census", "error"}, "owned assembly launcher")
+                            "dispatch_started", "group_ledger", "descendant_census", "error"}, "owned assembly launcher")
     require(record["schema"] == SCHEMA and record["status"] == "passed" and record["error"] is None
-            and isinstance(record["attempt_id"], str),
+            and record["dispatch_started"] is True and isinstance(record["attempt_id"], str),
             "owned assembly launcher did not pass")
     started = dt.datetime.fromisoformat(record["started_at"])
     finished = dt.datetime.fromisoformat(record["finished_at"])

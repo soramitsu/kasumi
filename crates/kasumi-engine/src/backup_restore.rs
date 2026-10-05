@@ -4,7 +4,7 @@ use super::*;
 use crate::{
     admission::NodeAdmission,
     backup_format::*,
-    backup_verify::{BackupReader, VerificationDeadline, VerifiedBackup},
+    backup_verify::{BackupReader, VerificationDeadline, VerificationPhase, VerifiedBackup},
 };
 #[path = "target_restore_authorization.rs"]
 mod authorization;
@@ -55,46 +55,62 @@ impl VerifiedBackup {
         tenant: String,
         incarnation: String,
         target_origin: Option<TargetOrigin>,
-    ) -> anyhow::Result<PreparedState> {
-        let crate::backup_verify::VerifiedState::Indexed(source) = &self.state else {
-            anyhow::bail!("restore requires independently verified indexed state");
-        };
-        // The authenticated index records exact resident and point spans. The
-        // permanent ciphertext tables remain on the shared scratch governor.
-        let workspace = source.index().summary().materialization_workspace()?;
+    ) -> std::result::Result<PreparedState, kasumi_store::ScratchOperationFailure> {
+        let workspace = kasumi_store::ScratchOperationFailure::ordinary(|| {
+            let crate::backup_verify::VerifiedState::Indexed(source) = &self.state else {
+                anyhow::bail!("restore requires independently verified indexed state");
+            };
+            // The authenticated index records exact resident and point spans. The
+            // permanent ciphertext tables remain on the shared scratch governor.
+            source.index().summary().materialization_workspace()
+        })?;
         // The completed verifier owns one operation and its bounded indexes.
         // Its worker transfers that charge only after dropping those indexes.
         let materialization = self._reservation.clone();
         let retained_materialization = materialization.clone();
-        deadline
-            .blocking(materialization, self._registration.clone(), move || {
-                let crate::backup_verify::VerifiedState::Indexed(source) = self.state else {
-                    anyhow::bail!("restore requires independently verified indexed state");
-                };
-                drop(self.bytes);
-                let (bytes, engine) = TenantEngine::materialize_verified_restore(
-                    *source,
-                    &tenant,
-                    incarnation,
-                    self.checkpoint,
-                    target_origin,
-                    || retained_materialization.handoff_workspace(&admission, workspace),
-                )?;
-                // This is still the original reservation identity and work slot.
-                // The prepared result owns it through target publication.
-                drop(self._reservation);
-                deadline.check()?;
-                let engine = Arc::new(engine);
-                let sha256 = bytes.sha256().to_owned();
-                Ok(PreparedState {
-                    bytes,
-                    engine,
-                    sha256,
-                    _materialization: retained_materialization,
-                    registration: self._registration,
-                })
-            })
-            .await
+        let phase = VerificationPhase::start("restore.genesis_wait", Some(deadline));
+        let result = deadline
+            .blocking(
+                materialization,
+                self._registration.clone(),
+                move || -> std::result::Result<_, kasumi_store::ScratchOperationFailure> {
+                    let source =
+                        kasumi_store::ScratchOperationFailure::ordinary(|| match self.state {
+                            crate::backup_verify::VerifiedState::Indexed(source) => Ok(source),
+                            _ => anyhow::bail!(
+                                "restore requires independently verified indexed state"
+                            ),
+                        })?;
+                    drop(self.bytes);
+                    let (bytes, engine) = TenantEngine::materialize_verified_restore(
+                        *source,
+                        &tenant,
+                        incarnation,
+                        self.checkpoint,
+                        target_origin,
+                        || retained_materialization.handoff_workspace(&admission, workspace),
+                    )
+                    .map_err(crate::SnapshotFailure::into_scratch_failure)?;
+                    kasumi_store::ScratchOperationFailure::ordinary(|| {
+                        // This is still the original reservation identity and work slot.
+                        // The prepared result owns it through target publication.
+                        drop(self._reservation);
+                        deadline.check()?;
+                        let engine = Arc::new(engine);
+                        let sha256 = bytes.sha256().to_owned();
+                        Ok(PreparedState {
+                            bytes,
+                            engine,
+                            sha256,
+                            _materialization: retained_materialization,
+                            registration: self._registration,
+                        })
+                    })
+                },
+            )
+            .await?;
+        phase.complete();
+        Ok(result)
     }
 }
 
@@ -234,10 +250,7 @@ impl BackupReader for RestoreReader<'_> {
         )
         .await?;
         self.check_access().await?;
-        Ok(kasumi_store::PreparedAuditSegment {
-            reference,
-            ciphertext,
-        })
+        self.target.copy_audit_segment(reference, &ciphertext)
     }
     async fn object<'a>(
         &'a self,
@@ -282,62 +295,73 @@ pub(super) async fn load_authorized(
     deadline: VerificationDeadline,
     work: Option<Arc<crate::backup_verify::VerificationWork>>,
     token: Option<kasumi_query::QueryCancellation>,
-) -> anyhow::Result<VerifiedBackup> {
-    validate_name(&source.destination_alias)?;
-    if let RestoreAuthorization::Lifecycle(invocation) = &authorization {
+) -> std::result::Result<VerifiedBackup, kasumi_store::ScratchOperationFailure> {
+    let reader = async {
+        validate_name(&source.destination_alias)?;
+        if let RestoreAuthorization::Lifecycle(invocation) = &authorization {
+            anyhow::ensure!(
+                work.as_ref().is_some_and(|w| w.binds(invocation)) && token.is_some(),
+                "target verification lacks original registered work"
+            );
+        }
+        let bound_checkpoint = authorization.bound_checkpoint(target, backup_id)?;
+        authorization.check_access(target, audit).await?;
+        let phase = VerificationPhase::start("restore.session_verification", Some(deadline));
+        let session = deadline
+            .run(kasumi_store::verify_backup_session(
+                source.destination.as_ref(),
+                backup_id,
+                target,
+                source.keys.clone(),
+            ))
+            .await??
+            .ok_or_else(|| anyhow::anyhow!("backup session missing"))?;
+        phase.complete();
+        if let RestoreAuthorization::Local(request) = &authorization {
+            anyhow::ensure!(
+                session.source_purpose() == &request.source_purpose,
+                "local backup source purpose differs from authorized recovery"
+            );
+        }
+        let completed = match session.outcome() {
+            Some(BackupSessionOutcome::Complete { checkpoint, .. }) => checkpoint.clone(),
+            _ => anyhow::bail!("restore requires a permanently completed backup session"),
+        };
         anyhow::ensure!(
-            work.as_ref().is_some_and(|w| w.binds(invocation)) && token.is_some(),
-            "target verification lacks original registered work"
+            bound_checkpoint
+                .as_ref()
+                .is_none_or(|expected| expected == &completed),
+            "completed session differs from authorized checkpoint"
         );
-    }
-    let bound_checkpoint = authorization.bound_checkpoint(target, backup_id)?;
-    authorization.check_access(target, audit).await?;
-    let session = deadline
-        .run(kasumi_store::verify_backup_session(
-            source.destination.as_ref(),
-            backup_id,
+        let bound_checkpoint = Some(completed);
+        let reader = RestoreReader {
+            source,
             target,
-            source.keys.clone(),
-        ))
-        .await??
-        .ok_or_else(|| anyhow::anyhow!("backup session missing"))?;
-    if let RestoreAuthorization::Local(request) = &authorization {
-        anyhow::ensure!(
-            session.source_purpose() == &request.source_purpose,
-            "local backup source purpose differs from authorized recovery"
-        );
+            authorization,
+            audit,
+            bound_checkpoint,
+            session,
+            work,
+            token,
+        };
+        Ok::<_, anyhow::Error>(reader)
     }
-    let completed = match session.outcome() {
-        Some(BackupSessionOutcome::Complete { checkpoint, .. }) => checkpoint.clone(),
-        _ => anyhow::bail!("restore requires a permanently completed backup session"),
-    };
-    anyhow::ensure!(
-        bound_checkpoint
-            .as_ref()
-            .is_none_or(|expected| expected == &completed),
-        "completed session differs from authorized checkpoint"
-    );
-    let bound_checkpoint = Some(completed);
-    let reader = RestoreReader {
-        source,
-        target,
-        authorization,
-        audit,
-        bound_checkpoint,
-        session,
-        work,
-        token,
-    };
+    .await?;
+    let phase = VerificationPhase::start("restore.graph_verification", Some(deadline));
     let verified = Box::pin(crate::backup_verify::verify(
         &reader, backup_id, admission, deadline, None,
     ))
     .await?;
-    if let Some(expected) = &reader.bound_checkpoint {
-        anyhow::ensure!(
-            &verified.checkpoint == expected,
-            "verified restore graph differs from signed authority checkpoint"
-        );
-    }
+    phase.complete();
+    kasumi_store::ScratchOperationFailure::ordinary(|| {
+        if let Some(expected) = &reader.bound_checkpoint {
+            anyhow::ensure!(
+                &verified.checkpoint == expected,
+                "verified restore graph differs from signed authority checkpoint"
+            );
+        }
+        Ok(())
+    })?;
     let VerifiedBackup {
         state,
         bytes,
@@ -353,37 +377,48 @@ pub(super) async fn load_authorized(
     let relocation_reservation = reservation.clone();
     let relocation_admission = admission.clone();
     let relocation_cancellation = reader.cancellation();
+    let phase = VerificationPhase::start("restore.relocation_wait", Some(deadline));
     let (state, bytes) = deadline
-        .blocking(reservation.clone(), registration.clone(), move || {
-            drop(bytes.ok_or_else(|| anyhow::anyhow!("restore snapshot image missing"))?);
-            let state = match state {
-                crate::backup_verify::VerifiedState::Indexed(state) => state,
-                _ => anyhow::bail!("restore requires independently verified indexed state"),
-            };
-            let state = (*state).relocate(
-                &alias,
-                backup_id,
-                |layout| {
-                    relocation_reservation
-                        .handoff_workspace(&relocation_admission, layout.index_workspace()?)
-                        .map_err(Into::into)
-                },
-                || {
-                    deadline.check()?;
-                    if let Some(work) = &relocation_work {
-                        work.check()?;
-                    }
-                    if let Some(token) = &relocation_cancellation {
-                        token.check()?;
-                    }
-                    Ok(())
-                },
-            )?;
-            let bytes = state.image().clone();
-            Ok((state, bytes))
-        })
+        .blocking(
+            reservation.clone(),
+            registration.clone(),
+            move || -> std::result::Result<_, kasumi_store::ScratchOperationFailure> {
+                let state = kasumi_store::ScratchOperationFailure::ordinary(|| {
+                    drop(bytes.ok_or_else(|| anyhow::anyhow!("restore snapshot image missing"))?);
+                    let state = match state {
+                        crate::backup_verify::VerifiedState::Indexed(state) => state,
+                        _ => anyhow::bail!("restore requires independently verified indexed state"),
+                    };
+                    Ok(state)
+                })?;
+                let state = (*state).relocate(
+                    &alias,
+                    backup_id,
+                    |layout| {
+                        relocation_reservation
+                            .handoff_workspace(&relocation_admission, layout.index_workspace()?)
+                            .map_err(Into::into)
+                    },
+                    || {
+                        deadline.check()?;
+                        if let Some(work) = &relocation_work {
+                            work.check()?;
+                        }
+                        if let Some(token) = &relocation_cancellation {
+                            token.check()?;
+                        }
+                        Ok(())
+                    },
+                )?;
+                let bytes = state.image().clone();
+                Ok((state, bytes))
+            },
+        )
         .await?;
+    phase.complete();
+    let phase = VerificationPhase::start("restore.final_access", Some(deadline));
     reader.check_access().await?;
+    phase.complete();
     Ok(VerifiedBackup {
         source_purpose,
         state: crate::backup_verify::VerifiedState::Indexed(Box::new(state)),
@@ -406,7 +441,7 @@ mod tests {
         let deadline = VerificationDeadline::new(100).unwrap();
         let task = tokio::spawn(async move {
             deadline
-                .blocking(reservation, None, move || {
+                .blocking(reservation, None, move || -> anyhow::Result<_> {
                     let _ = started_tx.send(());
                     release_rx.recv()?;
                     Ok(())

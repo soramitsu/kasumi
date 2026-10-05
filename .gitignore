@@ -8,7 +8,15 @@ target/
 # Default local benchmark output; reviewed result cohorts remain tracked
 /kasumi-benchmark.json
 /benchmarks/results/network-loopback-*.json
+/benchmarks/results/local/
 *.json.tmp
+
+# Development evidence is a local archive; keep only the retention policy
+/docs/evidence/*
+!/docs/evidence/README.md
+
+# OpenRaft integration tests write trace logs beside their fixtures
+/vendor/openraft-*/tests/_log/
 
 # Local credentials and deployment configuration
 .env
@@ -54,7 +62,7 @@ htmlcov/
 *.profraw
 *.profdata
 
-# Ad hoc root logs; docs/evidence and benchmarks/results retain reviewed logs
+# Ad hoc root command logs
 /*.log
 
 # Local scratch and editor files

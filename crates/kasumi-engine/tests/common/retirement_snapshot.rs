@@ -178,6 +178,31 @@ async fn actual_retired_snapshot_only_replica_preserves_rotated_custody_after_en
     )
     .await
     .unwrap();
+    let allowance = kasumi_store::DiskMemoryLease::token_allocation_bytes::<u8>().unwrap();
+    let mut copied_bytes =
+        (bootstrap_digest.len() + "raft.meta".len() + b"application_bootstrap_sha256".len()) as u64
+            + 3 * allowance;
+    for (key, value) in &bootstrap_rows {
+        copied_bytes = copied_bytes
+            .checked_add(
+                ("engine.bootstrap".len() + key.len() + value.len()) as u64 + 3 * allowance,
+            )
+            .unwrap();
+    }
+    copied_bytes = copied_bytes
+        .checked_add(
+            kasumi_store::DiskMemoryLease::token_allocation_bytes::<WriteOp>()
+                .unwrap()
+                .checked_mul(bootstrap_rows.len() as u64 + 1)
+                .unwrap(),
+        )
+        .unwrap();
+    let copy_charge = domains
+        .application()
+        .plaintext_memory_owner()
+        .clone()
+        .reserve_installed(copied_bytes)
+        .unwrap();
     let application_ops = bootstrap_rows
         .into_iter()
         .map(|(key, value)| WriteOp::put("engine.bootstrap", key, value))
@@ -185,10 +210,13 @@ async fn actual_retired_snapshot_only_replica_preserves_rotated_custody_after_en
     let mut custody_ops = vec![WriteOp::put(
         "raft.meta",
         b"application_bootstrap_sha256",
-        bootstrap_digest,
+        bootstrap_digest.as_bytes(),
     )];
     custody_ops.extend(kasumi_raft::initial_storage_identity(2, &group).unwrap());
     domains.write_batch(&application_ops, &custody_ops).unwrap();
+    drop(application_ops);
+    drop(custody_ops);
+    drop(copy_charge);
     assert_ne!(
         source_binding,
         domains.custody().binding().digest().unwrap()

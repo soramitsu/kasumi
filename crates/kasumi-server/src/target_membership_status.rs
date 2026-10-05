@@ -12,9 +12,18 @@ pub(crate) struct TargetInitialMembershipReply {
     bearer: Zeroizing<String>,
     admission: TargetRequestAdmission,
     _permit: tokio::sync::OwnedSemaphorePermit,
+    failure: TargetCallSeat,
 }
 impl TargetInitialMembershipReply {
-    pub(crate) async fn release(&self) -> Result<()> {
+    pub(crate) async fn release(&self) -> std::result::Result<(), TargetCallFailure> {
+        self.failure
+            .begin()?
+            .run(self.release_inner())
+            .await?
+            .claim()?;
+        Ok(())
+    }
+    async fn release_inner(&self) -> SnapshotResult<()> {
         let current = self
             .runtime
             .check_initial_membership_status(
@@ -25,7 +34,7 @@ impl TargetInitialMembershipReply {
                 &self.admission,
             )
             .await?;
-        ensure!(
+        snapshot_ensure!(
             current.identity == self.status.identity
                 && current.first_log_index == self.status.first_log_index
                 && current.applied_log_index >= self.status.applied_log_index
@@ -41,7 +50,26 @@ impl TargetRecoveryRuntime {
         context: RequestContext,
         bearer: Zeroizing<String>,
         query: TargetInitialMembershipHistoryRequest,
-    ) -> Result<TargetInitialMembershipReply> {
+    ) -> std::result::Result<TargetInitialMembershipReply, TargetCallFailure> {
+        let failure = self.call_jobs.acquire_failure()?;
+        failure
+            .begin()?
+            .run(self.read_initial_membership_history_inner(
+                context,
+                bearer,
+                query,
+                failure.clone(),
+            ))
+            .await
+            .and_then(|ticket| ticket.claim())
+    }
+    async fn read_initial_membership_history_inner(
+        self: &Arc<Self>,
+        context: RequestContext,
+        bearer: Zeroizing<String>,
+        query: TargetInitialMembershipHistoryRequest,
+        failure: TargetCallSeat,
+    ) -> SnapshotResult<TargetInitialMembershipReply> {
         query.validate_for_node(self.installed.node.node_id)?;
         let admission = TargetRequestAdmission::capture_until(
             context.clone(),
@@ -51,11 +79,11 @@ impl TargetRecoveryRuntime {
         context
             .authorization
             .require_control(&self.installed.control_root.control_incarnation.to_string())?;
-        ensure!(
+        snapshot_ensure!(
             context.tenant == "__kasumi_control" && context.scopes.contains(&Action::Admin),
             "target requires current Control Admin"
         );
-        ensure!(
+        snapshot_ensure!(
             !self.closing.load(Ordering::Acquire),
             "target runtime closing"
         );
@@ -66,17 +94,20 @@ impl TargetRecoveryRuntime {
             .context("target invocation capacity exhausted")?;
         let key = (query.request.tenant.clone(), query.target_incarnation);
         let owner = admission
-            .run(async {
-                self.generations
+            .run::<_, SnapshotFailure>(async {
+                Ok(self
+                    .generations
                     .lock()
                     .await
                     .get(&key)
                     .cloned()
-                    .context("original Start generation is not owned")
+                    .ok_or_else(|| {
+                        missing_target_owner("original Start generation is not owned")
+                    })?)
             })
             .await?;
         let generation = admission
-            .run(async { Ok(owner.lock_owned().await) })
+            .run::<_, SnapshotFailure>(async { Ok(owner.lock_owned().await) })
             .await?;
         let status = self
             .check_initial_membership_status(&generation, &query, &context, &bearer, &admission)
@@ -90,6 +121,7 @@ impl TargetRecoveryRuntime {
             bearer,
             admission,
             _permit: permit,
+            failure,
         })
     }
 
@@ -100,9 +132,9 @@ impl TargetRecoveryRuntime {
         context: &RequestContext,
         bearer: &Zeroizing<String>,
         admission: &TargetRequestAdmission,
-    ) -> Result<TargetInitialMembershipHistoryStatus> {
+    ) -> SnapshotResult<TargetInitialMembershipHistoryStatus> {
         query.validate_for_node(self.installed.node.node_id)?;
-        ensure!(
+        snapshot_ensure!(
             !self.closing.load(Ordering::Acquire),
             "target runtime closing"
         );
@@ -121,14 +153,14 @@ impl TargetRecoveryRuntime {
         let phase = generation
             .phase
             .as_ref()
-            .context("original Start phase is not owned")?;
-        ensure!(
+            .ok_or_else(|| missing_target_owner("original Start phase is not owned"))?;
+        snapshot_ensure!(
             phase.original().observation().intent == original.observation().intent
                 && phase.original().observation().root == original.observation().root,
             "Start child belongs to another installed Control phase"
         );
         phase.scope().invocation().check()?;
-        ensure!(
+        snapshot_ensure!(
             generation.registered_group.as_deref()
                 == Some(&format!(
                     "{}/{}",
@@ -139,11 +171,11 @@ impl TargetRecoveryRuntime {
         let child = generation
             .replica
             .as_ref()
-            .context("original Start child is not owned")?;
+            .ok_or_else(|| missing_target_owner("original Start child is not owned"))?;
         let stores = generation
             .stores
             .as_deref()
-            .context("original membership stores are not owned")?;
+            .ok_or_else(|| missing_target_owner("original membership stores are not owned"))?;
         let history = self.journal.resolve_initial_membership_history(
             &original,
             &marked,
@@ -163,7 +195,7 @@ impl TargetRecoveryRuntime {
         };
         status.validate_for(query)?;
         admission.check()?;
-        ensure!(
+        snapshot_ensure!(
             !self.closing.load(Ordering::Acquire),
             "target runtime closing"
         );

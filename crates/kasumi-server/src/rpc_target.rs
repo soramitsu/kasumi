@@ -26,6 +26,9 @@ fn error(e: anyhow::Error) -> kasumi_types::Error {
             )
         })
 }
+fn retained_error(original: crate::target_runtime::TargetCallFailure) -> kasumi_types::Error {
+    original.marker()
+}
 fn unresolved(_: impl std::fmt::Display) -> Status {
     status(kasumi_types::Error::new(
         kasumi_types::ErrorCode::UnknownOutcome,
@@ -138,20 +141,20 @@ impl kasumi_target_recovery_server::KasumiTargetRecovery for NativeTargetRecover
             .await;
         let result = self
             .auth
-            .audit_result(&context, result.map_err(error))
+            .audit_result(&context, result.map_err(retained_error))
             .await;
         let reply = result.map_err(status)?;
         let response = TargetHistoryStatus {
             status_json: encode_json(&reply.status).map_err(status)?,
         };
         self.auth
-            .audit_result(&context, reply.release().await.map_err(error))
+            .audit_result(&context, reply.release().await.map_err(retained_error))
             .await
             .map_err(status)?;
         reply
             .release()
             .await
-            .map_err(|cause| status(error(cause)))?;
+            .map_err(|cause| status(retained_error(cause)))?;
         context.authorization.check_live().map_err(status)?;
         Ok(Response::new(response))
     }
@@ -202,7 +205,7 @@ impl kasumi_target_recovery_server::KasumiTargetRecovery for NativeTargetRecover
             Err(failure) => {
                 #[cfg(test)]
                 eprintln!("target RPC execution command={command_id} error={failure:#}");
-                let failure = error(failure);
+                let failure = retained_error(failure);
                 let failure = self
                     .auth
                     .audit_result::<()>(&context, Err(failure))
@@ -223,7 +226,7 @@ impl kasumi_target_recovery_server::KasumiTargetRecovery for NativeTargetRecover
                         "target RPC audited release command={} error={failure:#}",
                         reply.response.command_id
                     );
-                    error(failure)
+                    retained_error(failure)
                 }),
             )
             .await
@@ -234,7 +237,7 @@ impl kasumi_target_recovery_server::KasumiTargetRecovery for NativeTargetRecover
                 "target RPC final release command={} error={failure:#}",
                 reply.response.command_id
             );
-            unresolved(failure)
+            status(retained_error(failure))
         })?;
         context.authorization.check_live().map_err(unresolved)?;
         Ok(Response::new(response))

@@ -9,21 +9,21 @@ impl Backend {
         revision: u64,
         read: impl Fn(&str) -> Result<Option<Record>>,
     ) -> Result<(ControlVerifierAdmission, SignerVerifierRegistration)> {
-        directive.validate()?;
+        directive.validate().map_err(reject_conflict)?;
         let domain = self
             .installation
             .manifest
             .signing_domain(self.installation.partition)?;
-        ensure!(
+        reject_unless!(
             directive.domain_sha256 == domain.digest()?,
             "remote directive issuer domain differs"
         );
         let Some(Record::ControlVerifier(control)) =
             read(&control_key(directive.root.control_incarnation))?
         else {
-            anyhow::bail!("physical Control admission absent");
+            reject_bail!("physical Control admission absent");
         };
-        ensure!(
+        reject_unless!(
             control.admission.root == directive.root
                 && control.admission.partition
                     == self
@@ -36,9 +36,9 @@ impl Backend {
         );
         let Some(Record::Verifier(registration)) = read(&verifier_key(&directive.node.verifier))?
         else {
-            anyhow::bail!("physical Control verifier registration absent");
+            reject_bail!("physical Control verifier registration absent");
         };
-        ensure!(
+        reject_unless!(
             registration.enrollment.verifier == directive.node.verifier
                 && registration.revision < revision,
             "remote physical verifier position differs"
@@ -46,14 +46,14 @@ impl Backend {
         let Some(Record::Maintenance(stage)) =
             read(&operation_key(directive.global_stage_operation_id))?
         else {
-            anyhow::bail!("global signer stage outcome absent");
+            reject_bail!("global signer stage outcome absent");
         };
         let AuthorityMaintenanceAction::StageSignerGeneration { certificate } =
             &stage.command.action
         else {
-            anyhow::bail!("global stage identity belongs to another operation");
+            reject_bail!("global stage identity belongs to another operation");
         };
-        ensure!(
+        reject_unless!(
             stage.phase == AuthorityMaintenancePhase::Completed
                 && stage.progress_revision < revision,
             "global stage did not precede remote permission"
@@ -61,7 +61,7 @@ impl Backend {
         match &directive.command.action {
             SignerTrustAction::Stage {
                 certificate: requested,
-            } => ensure!(
+            } => reject_unless!(
                 requested == certificate,
                 "remote certificate differs from committed global stage"
             ),
@@ -72,12 +72,12 @@ impl Backend {
                 let Some(Record::Maintenance(activation)) = read(&operation_key(
                     directive
                         .global_activation_operation_id
-                        .context("global activation identity absent")?,
+                        .ok_or_else(|| reject_conflict("global activation identity absent"))?,
                 ))?
                 else {
-                    anyhow::bail!("global activation outcome absent");
+                    reject_bail!("global activation outcome absent");
                 };
-                ensure!(
+                reject_unless!(
                     activation.phase == AuthorityMaintenancePhase::Completed
                         && activation.progress_revision < revision
                         && matches!(&activation.command.action, AuthorityMaintenanceAction::ActivateSignerGeneration {
@@ -87,15 +87,15 @@ impl Backend {
                 );
                 let Some(Record::Maintenance(local)) = read(&operation_key(*staged_operation_id))?
                 else {
-                    anyhow::bail!("original local stage directive absent");
+                    reject_bail!("original local stage directive absent");
                 };
                 let AuthorityMaintenanceAction::AuthorizeControlSigner {
                     directive: previous,
                 } = &local.command.action
                 else {
-                    anyhow::bail!("local stage belongs to another permission");
+                    reject_bail!("local stage belongs to another permission");
                 };
-                ensure!(
+                reject_unless!(
                     local.phase == AuthorityMaintenancePhase::Completed
                         && local.progress_revision < revision
                         && previous.root == directive.root
@@ -109,7 +109,7 @@ impl Backend {
                     "remote activation substituted its original physical local stage"
                 );
             }
-            _ => anyhow::bail!("unsupported remote signer effect"),
+            _ => reject_bail!("unsupported remote signer effect"),
         }
         Ok((control.admission, registration))
     }
@@ -118,7 +118,9 @@ impl Backend {
         meta: &Meta,
         directive: &ControlSignerDirective,
     ) -> Result<()> {
-        directive.validate_for_head(&meta.signing)?;
+        directive
+            .validate_for_head(&meta.signing)
+            .map_err(reject_conflict)?;
         self.control_signer_dependencies(
             directive,
             meta.revision

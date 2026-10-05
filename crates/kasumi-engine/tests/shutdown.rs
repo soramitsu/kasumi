@@ -98,7 +98,12 @@ async fn full_shutdown_reopens_immediately_with_receipts_and_retained_plaintext(
                 .unwrap();
         } else {
             assert_eq!(
-                database.get(&context, "docs", "a").await.unwrap().body["n"],
+                database
+                    .get(&context, "docs", "a")
+                    .await
+                    .unwrap()
+                    .expect("document exists")
+                    .body["n"],
                 round - 1
             );
             assert!(
@@ -130,7 +135,11 @@ async fn full_shutdown_reopens_immediately_with_receipts_and_retained_plaintext(
             )
             .await
             .unwrap();
-        let retained = database.get_shared(&context, "docs", "a").await.unwrap();
+        let retained = database
+            .get_shared(&context, "docs", "a")
+            .await
+            .unwrap()
+            .expect("document exists");
         let page = database
             .query(
                 &context,

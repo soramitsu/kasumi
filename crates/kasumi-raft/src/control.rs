@@ -15,6 +15,9 @@ use std::{
 };
 use uuid::Uuid;
 
+mod point_reads;
+pub(crate) use point_reads::{CustodyRead, prepare_applied, prepare_applied_and_selection};
+
 pub(crate) const META: &str = "raft.meta";
 pub(crate) const HEADERS: &str = "raft.headers";
 pub(crate) const SEEDS: &str = "raft.retirement-seeds";
@@ -111,18 +114,33 @@ impl TargetFirstMembershipPrebind {
     pub fn validate_prebind_storage(&self, stores: &TenantStorageSet) -> Result<()> {
         self.validate_storage(stores)?;
         let store = stores.custody().store();
-        ensure!(
-            store.scan(META)?
-                == vec![
-                    (
-                        b"application_bootstrap_sha256".to_vec(),
-                        serde_json::to_vec(&self.bootstrap_sha256)?,
-                    ),
-                    (b"group".to_vec(), serde_json::to_vec(&self.group)?),
-                    (b"node_id".to_vec(), serde_json::to_vec(&self.node.node_id)?),
-                ],
-            "target Raft metadata is not a pristine materialized identity"
-        );
+        {
+            let metadata = store.scan(META)?;
+            // The tenant name is bounded to 256 bytes; the group adds '/' and
+            // a UUID. Preserve exact JSON spelling, including escaped names,
+            // while borrowing the admitted row and using only inline workspace.
+            let mut text_json = [0u8; 6 * (256 + 1 + 36) + 2];
+            let mut quoted = |bytes: &[u8], expected: &str| -> Result<bool> {
+                let mut cursor = std::io::Cursor::new(text_json.as_mut_slice());
+                serde_json::to_writer(&mut cursor, expected)?;
+                let len = usize::try_from(cursor.position())?;
+                Ok(bytes == &text_json[..len])
+            };
+            let mut node_json = [0u8; 20];
+            let mut cursor = std::io::Cursor::new(node_json.as_mut_slice());
+            serde_json::to_writer(&mut cursor, &self.node.node_id)?;
+            let node_len = usize::try_from(cursor.position())?;
+            ensure!(
+                metadata.len() == 3
+                    && metadata[0].key() == b"application_bootstrap_sha256"
+                    && quoted(metadata[0].value(), &self.bootstrap_sha256)?
+                    && metadata[1].key() == b"group"
+                    && quoted(metadata[1].value(), &self.group)?
+                    && metadata[2].key() == b"node_id"
+                    && metadata[2].value() == &node_json[..node_len],
+                "target Raft metadata is not a pristine materialized identity"
+            );
+        }
         for namespace in [
             HEADERS,
             SEEDS,
@@ -162,14 +180,20 @@ impl TargetFirstMembershipPrebind {
     }
 
     pub(crate) fn validate_custody(&self, custody: &CustodyStore) -> Result<()> {
+        self.validate_custody_at(&mut custody.store().as_ref())
+    }
+
+    pub(crate) fn validate_custody_at(&self, reads: &mut impl CustodyRead) -> Result<()> {
         self.validate()?;
         ensure!(
-            load::<u64>(custody.store(), META, b"node_id")? == Some(self.node.node_id)
-                && load::<String>(custody.store(), META, b"group")?.as_ref() == Some(&self.group),
+            reads.load::<u64>(META, b"node_id")? == Some(self.node.node_id)
+                && reads.load::<String>(META, b"group")?.as_ref() == Some(&self.group),
             "target Raft prebind installed group differs"
         );
         ensure!(
-            load::<String>(custody.store(), META, b"application_bootstrap_sha256")?.as_ref()
+            reads
+                .load::<String>(META, b"application_bootstrap_sha256")?
+                .as_ref()
                 == Some(&self.bootstrap_sha256),
             "target Raft prebind installed bootstrap differs"
         );
@@ -232,60 +256,66 @@ impl TargetFirstMembershipHistory {
 pub fn read_target_first_membership_history(
     stores: &TenantStorageSet,
     expected: &TargetFirstMembershipPrebind,
-) -> Result<TargetFirstMembershipHistory> {
+) -> std::result::Result<TargetFirstMembershipHistory, kasumi_store::ScratchOperationFailure> {
     let control_gate = crate::storage::control_gate(stores.custody())?;
     let _control = control_gate
         .lock()
         .map_err(|_| anyhow::anyhow!("target history control gate poisoned"))?;
-    read_target_first_membership_prebind(stores, expected)?;
-    let custody = stores.custody();
-    let store = custody.store();
-    let first =
-        first_applied_membership(store)?.context("target first applied membership absent")?;
-    local_first_association_write(custody, Some(&first), None)?;
-    crate::initialization_association::load_state(custody, Some(&first))?;
-    if let Some(active) =
-        load::<LogHeader>(store, HEADERS, &first.header.log_id.index.to_be_bytes())?
-    {
-        ensure!(
-            active == first.header,
-            "target first membership active header differs"
-        );
-    } else {
-        let purged: Option<LogId<u64>> = load(store, META, b"purged")?;
-        let snapshot = crate::storage::load_snapshot_coverage(store)?;
-        ensure!(
-            purged.is_some_and(|id| id.index >= first.header.log_id.index)
-                || snapshot
-                    .as_ref()
-                    .and_then(|coverage| coverage.meta.last_log_id)
-                    .is_some_and(|id| id >= first.header.log_id),
-            "target first membership lacks purged or snapshot log coverage"
-        );
-    }
-    let applied =
-        load::<AppliedCursor>(store, META, b"applied")?.context("target applied cursor absent")?;
-    let applied_log_id = applied
-        .log_id()
-        .context("target applied cursor lacks log coverage")?;
-    let latest = match &applied {
-        AppliedCursor::Entry(position) => &position.membership,
-        AppliedCursor::Snapshot { meta, .. } => &meta.last_membership,
-    };
-    first.validate_covered(Some(applied_log_id), latest)?;
-    let committed_log_id =
-        committed_coverage(store)?.context("target committed coverage absent")?;
-    ensure!(
-        committed_log_id >= applied_log_id,
-        "target applied cursor exceeds committed coverage"
-    );
+    let (first, applied, applied_log_id, committed_log_id) =
+        kasumi_store::ScratchOperationFailure::ordinary(|| {
+            read_target_first_membership_prebind(stores, expected)?;
+            let custody = stores.custody();
+            let store = custody.store();
+            let first = first_applied_membership(store)?
+                .context("target first applied membership absent")?;
+            local_first_association_write(custody, Some(&first), None)?;
+            crate::initialization_association::load_state(custody, Some(&first))?;
+            if let Some(active) =
+                load::<LogHeader>(store, HEADERS, &first.header.log_id.index.to_be_bytes())?
+            {
+                ensure!(
+                    active == first.header,
+                    "target first membership active header differs"
+                );
+            } else {
+                let purged: Option<LogId<u64>> = load(store, META, b"purged")?;
+                let snapshot = crate::storage::load_snapshot_coverage(store)?;
+                ensure!(
+                    purged.is_some_and(|id| id.index >= first.header.log_id.index)
+                        || snapshot
+                            .as_ref()
+                            .and_then(|coverage| coverage.meta.last_log_id)
+                            .is_some_and(|id| id >= first.header.log_id),
+                    "target first membership lacks purged or snapshot log coverage"
+                );
+            }
+            let applied = load::<AppliedCursor>(store, META, b"applied")?
+                .context("target applied cursor absent")?;
+            let applied_log_id = applied
+                .log_id()
+                .context("target applied cursor lacks log coverage")?;
+            let latest = match &applied {
+                AppliedCursor::Entry(position) => &position.membership,
+                AppliedCursor::Snapshot { meta, .. } => &meta.last_membership,
+            };
+            first.validate_covered(Some(applied_log_id), latest)?;
+            let committed_log_id =
+                committed_coverage(store)?.context("target committed coverage absent")?;
+            ensure!(
+                committed_log_id >= applied_log_id,
+                "target applied cursor exceeds committed coverage"
+            );
+            Ok((first, applied, applied_log_id, committed_log_id))
+        })?;
     crate::storage::validate_target_history_snapshot(stores, &first, &applied)?;
-    stores.check_access()?;
-    Ok(TargetFirstMembershipHistory {
-        first_fact_sha256: sha256(&serde_json::to_vec(&first)?),
-        first_log_id: first.header.log_id,
-        applied_log_id,
-        committed_log_id,
+    kasumi_store::ScratchOperationFailure::ordinary(|| {
+        stores.check_access()?;
+        Ok(TargetFirstMembershipHistory {
+            first_fact_sha256: sha256(&serde_json::to_vec(&first)?),
+            first_log_id: first.header.log_id,
+            applied_log_id,
+            committed_log_id,
+        })
     })
 }
 
@@ -513,11 +543,22 @@ pub(crate) fn local_first_association_write(
     existing_first: Option<&FirstAppliedMembership>,
     incoming_first: Option<&FirstAppliedMembership>,
 ) -> Result<Option<WriteOp>> {
-    let store = custody.store();
+    local_first_association_write_at(
+        existing_first,
+        incoming_first,
+        &mut custody.store().as_ref(),
+    )
+}
+
+pub(crate) fn local_first_association_write_at(
+    existing_first: Option<&FirstAppliedMembership>,
+    incoming_first: Option<&FirstAppliedMembership>,
+    reads: &mut impl CustodyRead,
+) -> Result<Option<WriteOp>> {
     let prebind =
-        load::<TargetFirstMembershipPrebind>(store, TARGET_PREBIND_NAMESPACE, TARGET_PREBIND_KEY)?;
+        reads.load::<TargetFirstMembershipPrebind>(TARGET_PREBIND_NAMESPACE, TARGET_PREBIND_KEY)?;
     let existing_association =
-        load::<LocalFirstMembershipAssociation>(store, META, LOCAL_FIRST_ASSOCIATION_KEY)?;
+        reads.load::<LocalFirstMembershipAssociation>(META, LOCAL_FIRST_ASSOCIATION_KEY)?;
     let Some(prebind) = prebind else {
         ensure!(
             existing_association.is_none(),
@@ -525,7 +566,7 @@ pub(crate) fn local_first_association_write(
         );
         return Ok(None);
     };
-    prebind.validate_custody(custody)?;
+    prebind.validate_custody_at(reads)?;
     if let Some(existing) = existing_first {
         let expected = LocalFirstMembershipAssociation::expected(&prebind, existing)?;
         let actual = existing_association
@@ -597,7 +638,13 @@ impl FirstAppliedMembership {
 pub(crate) fn first_applied_membership(
     store: &TenantStore,
 ) -> Result<Option<FirstAppliedMembership>> {
-    let fact = load::<FirstAppliedMembership>(store, META, b"first_membership")?;
+    first_applied_membership_at(&mut &*store)
+}
+
+pub(crate) fn first_applied_membership_at(
+    reads: &mut impl CustodyRead,
+) -> Result<Option<FirstAppliedMembership>> {
+    let fact = reads.load::<FirstAppliedMembership>(META, b"first_membership")?;
     if let Some(fact) = &fact {
         fact.stored_membership()?;
     }
@@ -631,7 +678,18 @@ pub(crate) fn validate_snapshot_first_membership(
 /// Durable control JSON has exactly the current writer's byte spelling.
 /// Semantic equivalence cannot make an alternate on-disk record authoritative.
 pub(crate) fn decode_canonical<T: DeserializeOwned + Serialize>(bytes: &[u8]) -> Result<T> {
+    decode_canonical_admitted(bytes, |_| Ok(()))
+}
+
+/// The selected-view reader funds the exact canonical representation after
+/// typed decode and before its buffer allocation. Existing callers retain their
+/// original admission and validation order through the wrapper above.
+pub(crate) fn decode_canonical_admitted<T: DeserializeOwned + Serialize>(
+    bytes: &[u8],
+    before_encode: impl FnOnce(&T) -> Result<()>,
+) -> Result<T> {
     let record: T = serde_json::from_slice(bytes).context("invalid raft control record")?;
+    before_encode(&record)?;
     ensure!(
         serde_json::to_vec(&record)? == bytes,
         "noncanonical raft control record"
@@ -651,8 +709,14 @@ pub(crate) fn load<T: DeserializeOwned + Serialize>(
 }
 
 pub(crate) fn committed_coverage(store: &TenantStore) -> Result<Option<LogId<u64>>> {
-    let log = load::<Option<LogId<u64>>>(store, META, b"committed")?.flatten();
-    let snapshot = crate::snapshot_custody::committed_snapshot(store)?;
+    committed_coverage_at(&mut &*store)
+}
+
+fn committed_coverage_at(reads: &mut impl CustodyRead) -> Result<Option<LogId<u64>>> {
+    let log = reads
+        .load::<Option<LogId<u64>>>(META, b"committed")?
+        .flatten();
+    let snapshot = crate::snapshot_custody::committed_snapshot_at(reads)?;
     if let (Some(log), Some(snapshot)) = (log, snapshot) {
         ensure!(
             log.index.cmp(&snapshot.index) == log.cmp(&snapshot),
@@ -766,7 +830,7 @@ impl ControlLog {
     /// Completes only an independently committed, deterministically successful
     /// retirement seed. This is installed startup recovery, never current Admin
     /// authorization or proof release. No application record is read.
-    pub fn recover_retired(&self) -> Result<bool> {
+    pub fn recover_retired(&self) -> Result<bool, kasumi_store::ScratchOperationFailure> {
         let gate = crate::storage::control_gate(&self.custody)?;
         let _gate = gate
             .lock()
@@ -778,12 +842,29 @@ impl ControlLog {
         }
         let store = self.custody.store();
         let mut candidate = None;
+        let mut coverage = None;
         // The control gate keeps the candidate set and coverage stable. A read
         // view releases its key-state guard before the callback's point reads;
         // retaining a normal visit guard here could deadlock key renewal.
         store.read_view()?.visit(SEEDS, 2 << 20, |key, _| {
             let key: [u8; 8] = key.try_into().context("invalid retirement index")?;
             let index = u64::from_be_bytes(key);
+            // Resolve coverage only for the first authenticated, well-formed
+            // seed key, preserving the empty-scan and malformed-key behavior.
+            // The held control gate excludes commit/snapshot publication. Every
+            // row is still authenticated and checked by visit, but a physical
+            // tail beyond this stable boundary needs no repeated metadata reads.
+            let committed = match coverage {
+                Some(committed) => committed,
+                None => {
+                    let committed = self.committed()?;
+                    coverage = Some(committed);
+                    committed
+                }
+            };
+            if committed.is_none_or(|committed| index > committed.index) {
+                return Ok(());
+            }
             let Some(seed) = self.retirement_seed(index)? else {
                 return Ok(());
             };
@@ -806,7 +887,7 @@ impl ControlLog {
             return Ok(false);
         };
         let old = load::<AppliedCursor>(store, META, b"applied")?;
-        ensure!(
+        crate::ensure_result!(
             old.as_ref()
                 .and_then(AppliedCursor::log_id)
                 .is_none_or(|id| id.index < committed.log_id.index),
@@ -858,7 +939,7 @@ impl ControlLog {
             }
             Ok(())
         })?;
-        ensure!(
+        crate::ensure_result!(
             previous.is_some_and(|id| id.index.checked_add(1) == Some(committed.log_id.index))
                 && membership.membership().voter_ids().next().is_some(),
             "committed retirement predecessor or membership unavailable"
@@ -886,10 +967,13 @@ impl ControlLog {
                 receipt: boundary.receipt.clone(),
             },
             kasumi_types::CustodyLimits::default(),
-        )?;
+        )
+        .map_err(anyhow::Error::from)?;
         store.write_batch(&[
             WriteOp::put(META, b"retired_boundary", serde_json::to_vec(&boundary)?),
-            crate::custody_tables::CustodyHead::from_state(&state)?.write()?,
+            crate::custody_tables::CustodyHead::from_state(&state)
+                .map_err(anyhow::Error::from)?
+                .write()?,
             WriteOp::put(
                 META,
                 b"applied",
@@ -1005,26 +1089,40 @@ pub(crate) struct RetiredBoundary {
 }
 
 pub(crate) fn retired_boundary(custody: &CustodyStore) -> Result<Option<RetiredBoundary>> {
-    let store = custody.store();
-    let value = load::<RetiredBoundary>(store, META, b"retired_boundary")?;
+    retired_boundary_at(custody, &mut custody.store().as_ref())
+}
+
+fn retired_boundary_at(
+    custody: &CustodyStore,
+    reads: &mut impl CustodyRead,
+) -> Result<Option<RetiredBoundary>> {
+    let value = reads.load::<RetiredBoundary>(META, b"retired_boundary")?;
     if let Some(boundary) = &value {
-        validate_retired_boundary(custody, boundary)?;
+        validate_retired_boundary_at(custody, boundary, reads)?;
     }
     Ok(value)
 }
 
 fn validate_retired_boundary(custody: &CustodyStore, boundary: &RetiredBoundary) -> Result<()> {
-    let store = custody.store();
+    validate_retired_boundary_at(custody, boundary, &mut custody.store().as_ref())
+}
+
+fn validate_retired_boundary_at(
+    custody: &CustodyStore,
+    boundary: &RetiredBoundary,
+    reads: &mut impl CustodyRead,
+) -> Result<()> {
     boundary.receipt.validate()?;
     ensure!(
         boundary.receipt.request_digest == boundary.request.reference()?.request_digest,
         "retired boundary request differs"
     );
-    let source: RetainedSeed = load(store, SEEDS, &boundary.position.log_id.index.to_be_bytes())?
+    let source: RetainedSeed = reads
+        .load(SEEDS, &boundary.position.log_id.index.to_be_bytes())?
         .context("retired boundary seed absent")?;
     source.header.validate()?;
     let seed = RetirementLogSeed::decode(&source.seed)?;
-    let committed = committed_coverage(store)?.context("retired boundary commit absent")?;
+    let committed = committed_coverage_at(reads)?.context("retired boundary commit absent")?;
     ensure!(
         committed >= boundary.position.log_id && committed.index >= boundary.position.log_id.index,
         "retired boundary is outside committed prefix"
@@ -1038,9 +1136,11 @@ fn validate_retired_boundary(custody: &CustodyStore, boundary: &RetiredBoundary)
     ensure!(
         seed.source().tenant == custody.binding().tenant()
             && source.storage_binding_sha256 == custody.binding().digest()?
-            && load::<String>(store, META, b"application_bootstrap_sha256")?.as_ref()
+            && reads
+                .load::<String>(META, b"application_bootstrap_sha256")?
+                .as_ref()
                 == Some(&source.bootstrap_sha256)
-            && load::<String>(store, META, b"group")?.as_deref()
+            && reads.load::<String>(META, b"group")?.as_deref()
                 == Some(format!("{}/{}", seed.source().tenant, seed.source().incarnation).as_str()),
         "retired boundary installed source differs"
     );
@@ -1059,13 +1159,45 @@ fn validate_retired_boundary(custody: &CustodyStore, boundary: &RetiredBoundary)
     Ok(())
 }
 
-pub(crate) fn persist_applied(
+/// Validated custody effects for one adapter-assigned applied position.
+/// A replay covered by newer durable custody still publishes application writes.
+pub(crate) enum PreparedApplied {
+    Advance(Vec<WriteOp>),
+    CoveredReplay { snapshot: bool },
+}
+impl PreparedApplied {
+    pub(crate) fn custody_writes(&self) -> &[WriteOp] {
+        match self {
+            Self::Advance(writes) => writes,
+            Self::CoveredReplay { .. } => &[],
+        }
+    }
+    #[cfg(any(test, feature = "test-utils"))]
+    pub(crate) fn publish(self, domains: &TenantStorageSet, application: &[WriteOp]) -> Result<()> {
+        self.publish_outcome(domains, application)?.into_result()
+    }
+    pub(crate) fn publish_outcome(
+        self,
+        domains: &TenantStorageSet,
+        application: &[WriteOp],
+    ) -> Result<kasumi_store::DomainPublicationOutcome> {
+        let custody = self.custody_writes();
+        if application.is_empty() && custody.is_empty() {
+            domains.check_access()?;
+            Ok(kasumi_store::DomainPublicationOutcome::Acknowledged)
+        } else {
+            domains.write_batch_replacing_outcome(application, custody, &[], &[])
+        }
+    }
+}
+
+fn prepare_applied_at(
     domains: &TenantStorageSet,
     context: &AppliedEntryContext,
-    retirement: Option<kasumi_types::RetirementReceipt>,
-) -> Result<()> {
+    retirement: Option<&kasumi_types::RetirementReceipt>,
+    reads: &mut impl CustodyRead,
+) -> Result<PreparedApplied> {
     domains.check_access()?;
-    let store = domains.custody().store();
     let boundary = retirement
         .map(|receipt| -> Result<RetiredBoundary> {
             let seed = context
@@ -1077,30 +1209,34 @@ pub(crate) fn persist_applied(
                 .revision_base
                 .checked_add(context.log_id.index)
                 .context("retired source revision overflow")?;
-            seed.validate_receipt(revision, &receipt)?;
+            seed.validate_receipt(revision, receipt)?;
             Ok(RetiredBoundary {
                 position: context.record(),
                 request: seed.request().clone(),
-                receipt,
+                receipt: receipt.clone(),
                 seed_sha256: sha256(&seed.encoded()?),
             })
         })
         .transpose()?;
     if let Some(boundary) = &boundary {
-        validate_retired_boundary(domains.custody(), boundary)?;
+        validate_retired_boundary_at(domains.custody(), boundary, reads)?;
     }
-    let existing_boundary = if boundary.is_some() {
-        retired_boundary(domains.custody())?
+    let existing_boundary: Option<RetiredBoundary> = if boundary.is_some() {
+        reads.load(META, b"retired_boundary")?
     } else {
         None
     };
     if let (Some(existing), Some(new)) = (&existing_boundary, &boundary) {
+        // An unequal immutable boundary is rejected before following its
+        // unrelated seed identity. Equal boundaries use the already-preflighted
+        // incoming index and retain every original validation below.
         ensure!(existing == new, "immutable retired boundary differs");
+        validate_retired_boundary_at(domains.custody(), existing, reads)?;
     }
-    let previous = load::<AppliedCursor>(store, META, b"applied")?;
-    let existing_first = first_applied_membership(store)?;
-    crate::initialization_association::load_state(domains.custody(), existing_first.as_ref())?;
-    local_first_association_write(domains.custody(), existing_first.as_ref(), None)?;
+    let previous = reads.load::<AppliedCursor>(META, b"applied")?;
+    let existing_first = first_applied_membership_at(reads)?;
+    crate::initialization_association::load_state_at(existing_first.as_ref(), reads)?;
+    local_first_association_write_at(existing_first.as_ref(), None, reads)?;
     let previous_membership = previous.as_ref().and_then(|cursor| match cursor {
         AppliedCursor::Entry(position) => *position.membership.log_id(),
         AppliedCursor::Snapshot { meta, .. } => *meta.last_membership.log_id(),
@@ -1133,7 +1269,9 @@ pub(crate) fn persist_applied(
             boundary.is_none() || existing_boundary == boundary,
             "previously applied retirement lacks its atomic boundary"
         );
-        return Ok(());
+        return Ok(PreparedApplied::CoveredReplay {
+            snapshot: matches!(previous, AppliedCursor::Snapshot { .. }),
+        });
     }
     let new_first = match (existing_first.as_ref(), *context.membership.log_id()) {
         (None, None) => None,
@@ -1142,7 +1280,8 @@ pub(crate) fn persist_applied(
                 membership_id == context.log_id && previous_membership.is_none(),
                 "later membership cannot synthesize a first applied fact"
             );
-            let header: LogHeader = load(store, HEADERS, &context.log_id.index.to_be_bytes())?
+            let header: LogHeader = reads
+                .load(HEADERS, &context.log_id.index.to_be_bytes())?
                 .context("first membership lacks its exact retained log header")?;
             let fact = FirstAppliedMembership { header };
             fact.validate_covered(Some(context.log_id), &context.membership)?;
@@ -1156,13 +1295,10 @@ pub(crate) fn persist_applied(
     };
     let mut writes = vec![applied_write(context)?];
     if let Some(fact) = new_first {
-        writes.extend(crate::initialization_association::initial_writes(
-            domains.custody(),
-            &fact,
+        writes.extend(crate::initialization_association::initial_writes_at(
+            &fact, reads,
         )?);
-        if let Some(association) =
-            local_first_association_write(domains.custody(), None, Some(&fact))?
-        {
+        if let Some(association) = local_first_association_write_at(None, Some(&fact), reads)? {
             writes.push(association);
         }
         writes.push(WriteOp::put(
@@ -1190,7 +1326,7 @@ pub(crate) fn persist_applied(
             )?;
             writes.push(crate::custody_tables::CustodyHead::from_state(&state)?.write()?);
         } else {
-            crate::custody_tables::load(store)?;
+            crate::custody_tables::load_at(reads)?;
         }
         writes.push(WriteOp::put(
             META,
@@ -1198,7 +1334,17 @@ pub(crate) fn persist_applied(
             serde_json::to_vec(&boundary)?,
         ));
     }
-    domains.write_batch(&[], &writes)
+    Ok(PreparedApplied::Advance(writes))
+}
+
+// Fixture-only convenience; production publication runs through ApplyPublisher.
+#[cfg(any(test, feature = "test-utils"))]
+pub(crate) fn persist_applied(
+    domains: &TenantStorageSet,
+    context: &AppliedEntryContext,
+    retirement: Option<kasumi_types::RetirementReceipt>,
+) -> Result<()> {
+    prepare_applied(domains, context, retirement.as_ref())?.publish(domains, &[])
 }
 
 #[cfg(test)]

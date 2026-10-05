@@ -1,7 +1,9 @@
 //! Independent application snapshot validation with encrypted point lookups.
 //! No document, receipt, staged payload, or retained-history map is materialized.
 use super::*;
-use crate::{snapshot_codec::Record, snapshot_index::StagedSnapshot};
+use crate::{
+    backup_verify::VerificationPhase, snapshot_codec::Record, snapshot_index::StagedSnapshot,
+};
 use anyhow::{Context, ensure};
 use kasumi_store::{EncryptedTable, SnapshotImage};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -17,30 +19,67 @@ impl ValidatedApplicationSnapshot {
         image: SnapshotImage,
         index_disk_bytes: u64,
         mut check: impl FnMut() -> anyhow::Result<()>,
-    ) -> anyhow::Result<Self> {
+    ) -> std::result::Result<Self, kasumi_store::ScratchOperationFailure> {
+        let phase = VerificationPhase::start("snapshot.structural_index", None);
         let index = StagedSnapshot::new(image, index_disk_bytes, &mut check)?;
-        let Some(Record::Header(header)) = index.get(0, "", "")? else {
-            anyhow::bail!("snapshot metadata absent");
-        };
-        let scratch = EncryptedTable::new(index.image().disk(), index_disk_bytes)?;
+        phase.complete();
+        let header = kasumi_store::ScratchOperationFailure::ordinary(|| {
+            let phase = VerificationPhase::start("snapshot.semantic_setup", None);
+            let Some(Record::Header(header)) = index.get(0, "", "")? else {
+                anyhow::bail!("snapshot metadata absent");
+            };
+            phase.complete();
+            let phase = VerificationPhase::start("snapshot.header", None);
+            // Header semantics use only the bounded metadata and structural index.
+            // Reject invalid application input before allocating lineage scratch.
+            Self::validate_header(&header, &index)?;
+            phase.complete();
+            Ok(header)
+        })?;
+        let phase = VerificationPhase::start("snapshot.lineage", None);
+        let scratch = EncryptedTable::new(
+            index.image().disk(),
+            index_disk_bytes,
+            index.image().disk().native_cache_config(),
+        )?;
         let result = Self {
             index,
             header,
             lineage: scratch,
         };
-        result.validate_header()?;
-        result.validate_lineage(&mut check)?;
-        result.validate_receipts(&mut check)?;
-        result.validate_documents(&mut check)?;
-        result.validate_staging(&mut check)?;
-        result.validate_change_feed(&mut check)?;
-        result.validate_history(&mut check)?;
-        result.validate_permanent(&mut check)?;
-        result.validate_audits(&mut check)?;
-        result.validate_targets(&mut check)?;
-        result.validate_target_resolutions(&mut check)?;
-        check()?;
-        Ok(result)
+        kasumi_store::ScratchOperationFailure::ordinary(|| {
+            result.validate_lineage(&mut check)?;
+            phase.complete();
+            let phase = VerificationPhase::start("snapshot.receipts", None);
+            result.validate_receipts(&mut check)?;
+            phase.complete();
+            let phase = VerificationPhase::start("snapshot.documents", None);
+            result.validate_documents(&mut check)?;
+            phase.complete();
+            let phase = VerificationPhase::start("snapshot.staging", None);
+            result.validate_staging(&mut check)?;
+            phase.complete();
+            let phase = VerificationPhase::start("snapshot.change_feed", None);
+            result.validate_change_feed(&mut check)?;
+            phase.complete();
+            let phase = VerificationPhase::start("snapshot.history", None);
+            result.validate_history(&mut check)?;
+            phase.complete();
+            let phase = VerificationPhase::start("snapshot.permanent", None);
+            result.validate_permanent(&mut check)?;
+            phase.complete();
+            let phase = VerificationPhase::start("snapshot.audits", None);
+            result.validate_audits(&mut check)?;
+            phase.complete();
+            let phase = VerificationPhase::start("snapshot.targets", None);
+            result.validate_targets(&mut check)?;
+            phase.complete();
+            let phase = VerificationPhase::start("snapshot.target_resolutions", None);
+            result.validate_target_resolutions(&mut check)?;
+            phase.complete();
+            check()?;
+            Ok(result)
+        })
     }
 
     pub(crate) fn header(&self) -> &TenantState {
@@ -61,7 +100,17 @@ impl ValidatedApplicationSnapshot {
         backup_id: uuid::Uuid,
         mut admit: impl FnMut(&crate::snapshot_codec::StreamSummary) -> anyhow::Result<()>,
         mut check: impl FnMut() -> anyhow::Result<()>,
-    ) -> anyhow::Result<Self> {
+    ) -> std::result::Result<Self, kasumi_store::ScratchOperationFailure> {
+        if self.index.count(11)? == 0 {
+            // Semantic validation already proved zero catalog bytes and no
+            // archived references without a catalog entry. Relocation changes
+            // nothing in this case, so retain the exact verified image and its
+            // indexes while preserving the caller's admission and live checks.
+            check()?;
+            admit(&self.index.summary())?;
+            check()?;
+            return Ok(self);
+        }
         let mut history_bytes = 0u64;
         self.index.visit(11, |record| {
             check()?;
@@ -80,20 +129,23 @@ impl ValidatedApplicationSnapshot {
             crate::target_resolution::snapshot_limit(&self.header)?,
             |writer| {
                 let mut encoder = crate::snapshot_codec::Encoder::new(writer)?;
-                crate::snapshot_codec::visit(&mut self.image().reader(), |_, mut record| {
-                    check()?;
-                    match &mut record {
-                        Record::Header(header) => {
-                            header.history_archive_bytes = usize::try_from(history_bytes)?
+                crate::snapshot_codec::visit::<anyhow::Error>(
+                    &mut self.image().reader(),
+                    |_, mut record| {
+                        check()?;
+                        match &mut record {
+                            Record::Header(header) => {
+                                header.history_archive_bytes = usize::try_from(history_bytes)?
+                            }
+                            Record::Archive(_, archive) => {
+                                Arc::make_mut(archive).storage_destination = alias.to_owned();
+                                Arc::make_mut(archive).storage_backup_session = Some(backup_id);
+                            }
+                            _ => {}
                         }
-                        Record::Archive(_, archive) => {
-                            Arc::make_mut(archive).storage_destination = alias.to_owned();
-                            Arc::make_mut(archive).storage_backup_session = Some(backup_id);
-                        }
-                        _ => {}
-                    }
-                    encoder.record(record)
-                })?;
+                        encoder.record(record)
+                    },
+                )?;
                 check()?;
                 encoder.finish()
             },
@@ -109,10 +161,13 @@ impl ValidatedApplicationSnapshot {
         let layout = StagedSnapshot::inspect(&image, &mut check)?;
         admit(&layout)?;
         let validated = Self::validate(image, disk, check)?;
-        ensure!(
-            validated.index.summary() == layout,
-            "relocated backup differs from admitted typed framing"
-        );
+        kasumi_store::ScratchOperationFailure::ordinary(|| {
+            ensure!(
+                validated.index.summary() == layout,
+                "relocated backup differs from admitted typed framing"
+            );
+            Ok(())
+        })?;
         Ok(validated)
     }
     pub(crate) fn authorize_source(
@@ -193,22 +248,21 @@ impl ValidatedApplicationSnapshot {
             _ => anyhow::bail!("snapshot indexed lineage absent"),
         }
     }
-    fn validate_header(&self) -> anyhow::Result<()> {
-        let h = &self.header;
+    fn validate_header(h: &TenantState, index: &StagedSnapshot) -> anyhow::Result<()> {
         validate_name(&h.tenant)?;
         validate_name(&h.incarnation)?;
         validate_limits(&h.limits)?;
         validate_policy(&h.policy, &h.limits)?;
         ensure!(
             h.lifecycle_control.is_none()
-                && self.index.count(15)? == 0
-                && self.index.count(16)? == 0
+                && index.count(15)? == 0
+                && index.count(16)? == 0
                 && h.recovery_control.is_empty()
-                && self.index.count(18)? == 0
-                && self.index.count(19)? == 0
-                && self.index.count(20)? == 0
-                && self.index.count(23)? == 0
-                && self.index.count(24)? == 0
+                && index.count(18)? == 0
+                && index.count(19)? == 0
+                && index.count(20)? == 0
+                && index.count(23)? == 0
+                && index.count(24)? == 0
                 && h.backup_binding_head
                     == BackupBindingHead::empty(&h.backup_binding_head.origin_incarnation)?,
             "Control state cannot be an application backup"
@@ -216,7 +270,7 @@ impl ValidatedApplicationSnapshot {
         ensure!(
             h.revision >= h.revision_base
                 && h.schema_epoch <= h.policy_epoch
-                && (self.index.count(2)? == 0 || h.schema_epoch > 0),
+                && (index.count(2)? == 0 || h.schema_epoch > 0),
             "snapshot revision or schema epoch differs"
         );
         ensure!(
@@ -247,24 +301,24 @@ impl ValidatedApplicationSnapshot {
                 "pending restore lacks authenticated origin"
             );
         }
-        let headroom = crate::accounting::snapshot_headroom(&self.target_budget_state()?)?
+        let headroom = crate::accounting::snapshot_headroom(&target_budget_state(h, index)?)?
             .checked_add(20 - h.revision.to_string().len() as u64)
             .context("snapshot headroom overflow")?;
-        let permanent_receipt_bytes = self.index.framed_bytes(5)?;
+        let permanent_receipt_bytes = index.framed_bytes(5)?;
         ensure!(
-            self.index
+            index
                 .summary()
                 .bytes
-                .checked_sub(self.index.framed_bytes(22)?)
+                .checked_sub(index.framed_bytes(22)?)
                 .and_then(|n| n.checked_sub(permanent_receipt_bytes))
                 .and_then(|n| n.checked_add(headroom))
                 .is_some_and(|n| n <= h.limits.max_snapshot_bytes),
             "snapshot exceeds serialized byte quota"
         );
         ensure!(
-            self.index.count(5)? == h.mutation_receipt_head.count
+            index.count(5)? == h.mutation_receipt_head.count
                 && h.mutation_receipt_head.encoded_bytes <= h.limits.max_mutation_receipt_bytes
-                && self.index.count(2)? <= h.limits.max_collections as u64,
+                && index.count(2)? <= h.limits.max_collections as u64,
             "snapshot record quota exceeded"
         );
         Ok(())
@@ -407,7 +461,8 @@ impl ValidatedApplicationSnapshot {
                 name == collection.definition.name && collection.data_epoch <= h.revision,
                 "snapshot collection identity or epoch differs"
             );
-            validate_collection(&collection.definition, &Default::default())?;
+            let source = crate::index_source::StateCollection::new(h, &name, &collection);
+            validate_collection(&source).map_err(kasumi_query::ReadFailure::into_query_error)?;
             schema_bytes = schema_bytes
                 .checked_add(encoded_len(&collection.definition)? as u64)
                 .context("schema byte overflow")?;
@@ -428,8 +483,12 @@ impl ValidatedApplicationSnapshot {
                 let collection = self.collection(&name)?;
                 // Only the current collection's empty indexes keep its compiled
                 // schema alive while documents are checked individually.
-                let validators =
-                    QueryIndexes::build(&BTreeMap::from([(name.clone(), collection.clone())]))?;
+                let validators = QueryIndexes::build([crate::index_source::StateCollection::new(
+                    h,
+                    &name,
+                    &collection,
+                )])
+                .map_err(kasumi_query::ReadFailure::into_query_error)?;
                 current = Some((name.clone(), collection, validators));
             }
             let (_, collection, validators) =
@@ -956,7 +1015,7 @@ impl ValidatedApplicationSnapshot {
                 &row.ordinal,
             )?;
             crate::target_resolution::advance(&mut selected, &row)?;
-            insert(
+            set(
                 &self.lineage,
                 &("target-terminal-causal", &incarnation),
                 &causal,
@@ -998,13 +1057,7 @@ impl ValidatedApplicationSnapshot {
     }
 
     fn target_budget_state(&self) -> anyhow::Result<TenantState> {
-        let mut state = self.header.as_ref().clone();
-        if let Some(Record::Target(_, target)) = self.index.get(17, &state.incarnation, "")? {
-            state
-                .target_lifecycle
-                .insert(state.incarnation.clone(), *target);
-        }
-        Ok(state)
+        target_budget_state(&self.header, &self.index)
     }
 
     fn validate_targets(
@@ -1083,6 +1136,19 @@ impl ValidatedApplicationSnapshot {
     }
 }
 
+fn target_budget_state(
+    header: &TenantState,
+    index: &StagedSnapshot,
+) -> anyhow::Result<TenantState> {
+    let mut state = header.clone();
+    if let Some(Record::Target(_, target)) = index.get(17, &state.incarnation, "")? {
+        state
+            .target_lifecycle
+            .insert(state.incarnation.clone(), *target);
+    }
+    Ok(state)
+}
+
 #[derive(Default, Serialize, Deserialize)]
 struct Counts {
     count: u64,
@@ -1132,8 +1198,11 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    fn state() -> TenantState {
-        let mut state = TenantEngine::new(
+    // These fixtures hold the image, structural index and semantic scratch
+    // table together. Match the other multi-table fixtures' bounded slot count;
+    // the 64 MiB byte cap and semantic/admission assertions remain unchanged.
+    fn empty_state() -> TenantState {
+        TenantEngine::new(
             "tenant".into(),
             "generation".into(),
             Policy {
@@ -1150,7 +1219,10 @@ mod tests {
         .generation()
         .unwrap()
         .state
-        .clone();
+        .clone()
+    }
+    fn state() -> TenantState {
+        let mut state = empty_state();
         state.revision = 3;
         state.schema_epoch = 1;
         state.policy_epoch = 1;
@@ -1289,13 +1361,14 @@ mod tests {
     fn indexed(
         disk: &Arc<kasumi_store::ScratchDisk>,
         state: &TenantState,
-    ) -> anyhow::Result<ValidatedApplicationSnapshot> {
+    ) -> std::result::Result<ValidatedApplicationSnapshot, kasumi_store::ScratchOperationFailure>
+    {
         ValidatedApplicationSnapshot::validate(image(disk, state), 128 << 20, || Ok(()))
     }
     #[test]
     fn indexed_terminal_provenance_retains_the_intermediate_incarnation_genesis() {
         let scratch = crate::codec_fixture::ScratchScope::new(
-            kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 32),
+            kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 64),
         )
         .unwrap();
         let disk = &scratch.disk;
@@ -1336,7 +1409,7 @@ mod tests {
             let proof = ValidatedApplicationSnapshot {
                 index: StagedSnapshot::new(image, 128 << 20, || Ok(())).unwrap(),
                 header: Box::new(header),
-                lineage: EncryptedTable::new(disk, 128 << 20).unwrap(),
+                lineage: EncryptedTable::new(disk, 128 << 20, disk.native_cache_config()).unwrap(),
             };
             proof.validate_lineage(&mut || Ok(())).unwrap();
             proof
@@ -1393,6 +1466,9 @@ mod tests {
         let selected = indexed.staging_lineage("middle", Some("middle")).unwrap();
         assert_eq!(selected.restore_lineage.len(), 2);
         assert!(selected.restore_lineage.contains(&state.restore_lineage[0]));
+        // The selected lineage is owned metadata. Release the unused scratch
+        // proof before constructing independent malformed snapshots.
+        drop(indexed);
 
         // Recompute the stream's final root for each substituted row, so these
         // failures must come from provenance rather than a stale digest.
@@ -1415,23 +1491,227 @@ mod tests {
                 .is_err()
         );
     }
+
+    fn target_resolution_proof(
+        disk: &Arc<kasumi_store::ScratchDisk>,
+        state: &TenantState,
+        rows: &[crate::target_resolution::Row],
+    ) -> ValidatedApplicationSnapshot {
+        let mut header = crate::snapshot_codec::metadata(state);
+        header.target_resolution_head = TargetResolutionPrefixHead::empty(
+            &state.tenant,
+            &state.target_resolution_head.origin_incarnation,
+        )
+        .unwrap();
+        for row in rows {
+            row.validate(state).unwrap();
+            crate::target_resolution::advance(&mut header.target_resolution_head, row).unwrap();
+        }
+        // This proof isolates target-terminal semantics. The shared fixture
+        // independently validates the source rows and current target selectors.
+        let image = SnapshotImage::capture(disk, 128 << 20, |writer| {
+            let mut encoder = crate::snapshot_codec::Encoder::new(writer)?;
+            encoder.record(Record::Header(Box::new(header.clone())))?;
+            for (incarnation, target) in &state.target_lifecycle {
+                encoder.record(Record::Target(
+                    incarnation.clone(),
+                    Box::new(target.clone()),
+                ))?;
+            }
+            for row in rows {
+                encoder.record(Record::TargetResolution(Box::new(row.clone())))?;
+            }
+            encoder.finish()
+        })
+        .unwrap();
+        ValidatedApplicationSnapshot {
+            index: StagedSnapshot::new(image, 128 << 20, || Ok(())).unwrap(),
+            header: Box::new(header),
+            lineage: EncryptedTable::new(disk, 128 << 20, disk.native_cache_config()).unwrap(),
+        }
+    }
+
+    #[test]
+    fn indexed_target_resolutions_preserve_linked_seals_for_one_incarnation() {
+        let scratch = crate::codec_fixture::ScratchScope::new(
+            kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 64),
+        )
+        .unwrap();
+        let disk = &scratch.disk;
+        let (state, rows) = crate::target_resolution::tests::linked_sealed_successor_rows();
+        let proof = target_resolution_proof(disk, &state, &rows);
+        proof.validate_target_resolutions(&mut || Ok(())).unwrap();
+        assert_eq!(
+            proof.header.target_resolution_head,
+            state.target_resolution_head
+        );
+        for row in &rows {
+            assert_eq!(
+                get::<u64>(&proof.lineage, &("target-terminal-key", &row.key)).unwrap(),
+                Some(row.ordinal)
+            );
+            let Some(Record::TargetResolution(actual)) = proof
+                .index
+                .get(22, &format!("{:020}", row.ordinal), "")
+                .unwrap()
+            else {
+                panic!("verified target terminal row missing");
+            };
+            assert_eq!(actual.as_ref(), row);
+        }
+        drop(proof);
+        assert_eq!(disk.snapshot().live_files, 0);
+        assert_eq!(disk.snapshot().charged_bytes, 0);
+    }
+
+    #[test]
+    fn indexed_target_resolutions_reject_changed_predecessors_and_duplicate_identity() {
+        use crate::target_completion_machine::{CompletionMachine, tests as fixture};
+
+        let scratch = crate::codec_fixture::ScratchScope::new(
+            kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 64),
+        )
+        .unwrap();
+        let disk = &scratch.disk;
+        let (mut state, rows) = crate::target_resolution::tests::linked_sealed_successor_rows();
+        for missing in [true, false] {
+            let mut changed = rows.clone();
+            let TargetResolutionRecord::Completion(fact) = &mut changed[1].record else {
+                unreachable!()
+            };
+            if missing {
+                fact.input.attempt.input.predecessor = None;
+            } else {
+                fact.input
+                    .attempt
+                    .input
+                    .predecessor
+                    .as_mut()
+                    .unwrap()
+                    .fact_sha256 = "ab".repeat(32);
+            }
+            fact.input.attempt.intent.request.phase_input_sha256 =
+                fact.input.attempt.input.digest().unwrap();
+            fact.input.attempt.intent.request_sha256 =
+                staged_digest(&fact.input.attempt.intent.request).unwrap().0;
+            fact.resolution_intent.request.phase_input_sha256 = fact.input.digest().unwrap();
+            fact.resolution_intent.request_sha256 =
+                staged_digest(&fact.resolution_intent.request).unwrap().0;
+            fact.validate().unwrap();
+            // The point-index stream and final root are recomputed around the
+            // typed-valid substitution, so rejection must come from causality.
+            let proof = target_resolution_proof(disk, &state, &changed);
+            let error = proof
+                .validate_target_resolutions(&mut || Ok(()))
+                .unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("exact ordered sealed predecessor"),
+                "{error:#}"
+            );
+            assert!(
+                get::<u64>(&proof.lineage, &("target-terminal-key", &rows[1].key))
+                    .unwrap()
+                    .is_none()
+            );
+            drop(proof);
+            assert_eq!(disk.snapshot().live_files, 0);
+            assert_eq!(disk.snapshot().charged_bytes, 0);
+        }
+
+        let TargetResolutionRecord::Completion(first) = &rows[0].record else {
+            unreachable!()
+        };
+        let TargetResolutionRecord::Completion(second) = &rows[1].record else {
+            unreachable!()
+        };
+        let origin = second.input.attempt.origin.clone();
+        let mut successor = fixture::attempt(
+            &origin,
+            Some(second.sealed_reference().unwrap()),
+            7,
+            7,
+            820,
+            850,
+        );
+        // Reuse an earlier immutable identity while otherwise advancing the
+        // valid predecessor, Control revision and actual applying position.
+        successor.intent.request.command_id = first.input.attempt.intent.request.command_id;
+        successor.intent.request_sha256 = staged_digest(&successor.intent.request).unwrap().0;
+        successor.validate().unwrap();
+        let (input, mut intent) = fixture::resolution(&successor, 8);
+        intent.accepted_at_ms = 840;
+        let mut machine = CompletionMachine {
+            origin: &origin,
+            head: state.target_completion_head.as_mut().unwrap(),
+            completion: None,
+            terminal_bytes: state.target_resolution_head.encoded_bytes,
+            maximum_bytes: state.limits.max_target_resolution_bytes,
+        };
+        machine.prepare(successor, Some(second), None).unwrap();
+        let fact = machine
+            .resolve(input, fixture::applied(intent, 850, 9), None)
+            .unwrap();
+        state.revision = fact.revision;
+        let applied = kasumi_raft::AppliedEntryContext {
+            log_id: openraft::LogId::new(
+                openraft::CommittedLeaderId::new(fact.position.term, fact.position.leader_node_id),
+                fact.position.index,
+            ),
+            previous: None,
+            membership: Default::default(),
+            command_sha256: fact.position.command_sha256.clone(),
+            retirement_seed: None,
+        };
+        let duplicate = crate::target_resolution::Row::ordered(
+            &state.target_resolution_head,
+            TargetResolutionRecord::Completion(Box::new(fact)),
+            &applied,
+        )
+        .unwrap();
+        duplicate.validate(&state).unwrap();
+        assert_eq!(duplicate.key, rows[0].key);
+        let proof =
+            target_resolution_proof(disk, &state, &[rows[0].clone(), rows[1].clone(), duplicate]);
+        let error = proof
+            .validate_target_resolutions(&mut || Ok(()))
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("duplicate permanent target terminal identity"),
+            "{error:#}"
+        );
+        assert_eq!(
+            get::<u64>(&proof.lineage, &("target-terminal-key", &rows[0].key)).unwrap(),
+            Some(rows[0].ordinal)
+        );
+        drop(proof);
+        assert_eq!(disk.snapshot().live_files, 0);
+        assert_eq!(disk.snapshot().charged_bytes, 0);
+    }
+
     #[test]
     fn indexed_verification_keeps_all_staging_on_the_image_owner_until_drain() {
         let scratch = crate::codec_fixture::ScratchScope::new(
-            kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 32),
+            kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 64),
         )
         .unwrap();
         let disk = &scratch.disk;
         let initial = image(disk, &state());
         let disk = initial.disk().clone();
         let image_bytes = disk.snapshot().charged_bytes;
-        assert_eq!(disk.snapshot().live_files, 1);
+        let image_files = disk.snapshot().live_files;
+        assert_eq!(image_files, 1);
         let verified =
             ValidatedApplicationSnapshot::validate(initial, 128 << 20, || Ok(())).unwrap();
-        assert_eq!(disk.snapshot().live_files, 3);
+        // Each native table owns a root, log and directory, potentially more
+        // after rolling. Test custody independently of that physical layout.
+        assert!(disk.snapshot().live_files > image_files);
         assert!(disk.snapshot().charged_bytes > image_bytes);
         let retained_image = verified.into_image();
-        assert_eq!(disk.snapshot().live_files, 1);
+        assert_eq!(disk.snapshot().live_files, image_files);
         assert_eq!(disk.snapshot().charged_bytes, image_bytes);
         drop(retained_image);
         assert_eq!(disk.snapshot().live_files, 0);
@@ -1453,14 +1733,150 @@ mod tests {
     }
 
     #[test]
+    fn archive_free_relocation_preserves_verified_image_and_admission() {
+        let scratch = crate::codec_fixture::ScratchScope::new(
+            kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 64),
+        )
+        .unwrap();
+        let disk = &scratch.disk;
+        let original = image(disk, &state());
+        let image_bytes = disk.snapshot().charged_bytes;
+        let image_files = disk.snapshot().live_files;
+        let verified =
+            ValidatedApplicationSnapshot::validate(original.clone(), 128 << 20, || Ok(())).unwrap();
+        assert_eq!(verified.index.count(11).unwrap(), 0);
+        assert_eq!(verified.index.count(4).unwrap(), 0);
+        assert_eq!(verified.header.history_archive_bytes, 0);
+        let header_owner = std::ptr::from_ref(verified.header());
+        let header_bytes = serde_json::to_vec(verified.header()).unwrap();
+        let summary = verified.index.summary();
+        let before = disk.snapshot();
+        let callbacks = std::cell::RefCell::new(Vec::new());
+        let relocated = verified
+            .relocate(
+                "new-destination",
+                uuid::Uuid::from_u128(81),
+                |layout| {
+                    callbacks.borrow_mut().push("admit");
+                    assert_eq!(*layout, summary);
+                    assert_eq!(disk.snapshot().live_files, before.live_files);
+                    assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes);
+                    Ok(())
+                },
+                || {
+                    callbacks.borrow_mut().push("check");
+                    Ok(())
+                },
+            )
+            .unwrap();
+        assert_eq!(*callbacks.borrow(), ["check", "admit", "check"]);
+        assert_eq!(std::ptr::from_ref(relocated.header()), header_owner);
+        assert_eq!(
+            serde_json::to_vec(relocated.header()).unwrap(),
+            header_bytes
+        );
+        assert_eq!(relocated.index.summary(), summary);
+        assert_eq!(relocated.image(), &original);
+        assert_eq!(
+            relocated.image().read_bounded(1 << 20).unwrap(),
+            original.read_bounded(1 << 20).unwrap()
+        );
+        // Keeping the original image alive makes any replacement spool visible
+        // in these counts even after the former proof's indexes have drained.
+        assert_eq!(disk.snapshot().live_files, before.live_files);
+        assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes);
+        drop(relocated);
+        assert_eq!(disk.snapshot().live_files, image_files);
+        assert_eq!(disk.snapshot().charged_bytes, image_bytes);
+        drop(original);
+        assert_eq!(disk.snapshot().live_files, 0);
+        assert_eq!(disk.snapshot().charged_bytes, 0);
+    }
+
+    #[test]
+    fn archive_free_relocation_propagates_callbacks_and_releases_proof() {
+        #[derive(Debug)]
+        struct RelocationFailure(Arc<()>);
+        impl std::fmt::Display for RelocationFailure {
+            fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("original relocation callback failure")
+            }
+        }
+        impl std::error::Error for RelocationFailure {}
+
+        let scratch = crate::codec_fixture::ScratchScope::new(
+            kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 64),
+        )
+        .unwrap();
+        let disk = &scratch.disk;
+        let state = empty_state();
+        // Fail the initial live check, admission, then the live check after
+        // admission. Each error must retain its exact typed identity.
+        for failed_callback in 0..3 {
+            let original = image(disk, &state);
+            let image_bytes = disk.snapshot().charged_bytes;
+            let image_files = disk.snapshot().live_files;
+            let verified =
+                ValidatedApplicationSnapshot::validate(original.clone(), 128 << 20, || Ok(()))
+                    .unwrap();
+            let summary = verified.index.summary();
+            let marker = Arc::new(());
+            let callbacks = std::cell::RefCell::new(Vec::new());
+            let callback = |name| {
+                let mut calls = callbacks.borrow_mut();
+                calls.push(name);
+                if calls.len() - 1 == failed_callback {
+                    Err(anyhow::Error::new(RelocationFailure(marker.clone())))
+                } else {
+                    Ok(())
+                }
+            };
+            let result = verified.relocate(
+                "new-destination",
+                uuid::Uuid::from_u128(82),
+                |layout| {
+                    assert_eq!(*layout, summary);
+                    callback("admit")
+                },
+                || callback("check"),
+            );
+            let Err(error) = result else {
+                panic!("relocation ignored a failed callback");
+            };
+            assert!(Arc::ptr_eq(
+                &error
+                    .operation_error()
+                    .expect("original ordinary relocation callback failure")
+                    .downcast_ref::<RelocationFailure>()
+                    .unwrap()
+                    .0,
+                &marker
+            ));
+            assert_eq!(
+                callbacks.borrow().as_slice(),
+                &["check", "admit", "check"][..=failed_callback]
+            );
+            assert_eq!(disk.snapshot().live_files, image_files);
+            assert_eq!(disk.snapshot().charged_bytes, image_bytes);
+            drop(original);
+            assert_eq!(disk.snapshot().live_files, 0);
+            assert_eq!(disk.snapshot().charged_bytes, 0);
+        }
+    }
+
+    #[test]
     fn indexed_validation_matches_full_restore_and_canonical_closure() {
         let scratch = crate::codec_fixture::ScratchScope::new(
-            kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 32),
+            kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 64),
         )
         .unwrap();
         let disk = &scratch.disk;
         let state = state();
-        TenantEngine::verify_logical_snapshot(&image(disk, &state), &state).unwrap();
+        let valid = image(disk, &state);
+        TenantEngine::verify_logical_snapshot(&valid, &state).unwrap();
+        let mut wrong_state = state.clone();
+        wrong_state.document_count += 1;
+        assert!(TenantEngine::verify_logical_snapshot(&valid, &wrong_state).is_err());
         let indexed = indexed(disk, &state).unwrap();
         let records = indexed
             .index
@@ -1487,10 +1903,41 @@ mod tests {
             crate::retirement_closure::digest_verified(&verified, || Ok(())).unwrap()
         );
     }
+
+    #[test]
+    fn zero_version_snapshot_passes_indexed_validation_and_full_restore() {
+        let scratch = crate::codec_fixture::ScratchScope::new(
+            kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 64),
+        )
+        .unwrap();
+        let mut state = state();
+        Arc::make_mut(
+            state
+                .collections
+                .get_mut("rows")
+                .unwrap()
+                .documents
+                .get_mut("a")
+                .unwrap(),
+        )
+        .version = 0;
+        let image = image(&scratch.disk, &state);
+        let validated =
+            ValidatedApplicationSnapshot::validate(image.clone(), 128 << 20, || Ok(())).unwrap();
+        let Some(Record::Document(_, document)) = validated.index.get(3, "rows", "a").unwrap()
+        else {
+            panic!("validated zero-version document absent");
+        };
+        assert_eq!(document.version, 0);
+        assert_eq!(document.body, state.collections["rows"].documents["a"].body);
+        // This path reconstructs the real runtime QueryIndexes after the same
+        // canonical snapshot checks, so both input adapters are exercised.
+        TenantEngine::verify_logical_snapshot(&image, &state).unwrap();
+    }
     #[test]
     fn receipt_original_scope_and_position_are_checked_in_both_snapshot_paths() {
         let scratch = crate::codec_fixture::ScratchScope::new(
-            kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 32),
+            kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 64),
         )
         .unwrap();
         let disk = &scratch.disk;
@@ -1532,12 +1979,9 @@ mod tests {
             case: &str,
         ) {
             let image = encoded(disk, state, row);
-            let full = crate::snapshot_codec::read(image.disk(), &mut image.reader()).and_then(
-                |decoded| {
-                    TenantEngine::verify_logical_snapshot(&image, &decoded.state)
-                        .map_err(Into::into)
-                },
-            );
+            let full = crate::snapshot_codec::read(image.disk(), &mut image.reader())
+                .map_err(SnapshotFailure::from)
+                .and_then(|decoded| TenantEngine::verify_logical_snapshot(&image, &decoded.state));
             assert_eq!(full.is_ok(), accepted, "full {case}: {full:?}");
             let indexed = ValidatedApplicationSnapshot::validate(image, 128 << 20, || Ok(()));
             assert_eq!(indexed.is_ok(), accepted, "indexed {case}");
@@ -1655,7 +2099,7 @@ mod tests {
     #[test]
     fn authenticated_semantic_substitutions_fail_both_validation_paths() {
         let scratch = crate::codec_fixture::ScratchScope::new(
-            kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 32),
+            kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 64),
         )
         .unwrap();
         let disk = &scratch.disk;
@@ -1743,7 +2187,7 @@ mod tests {
     #[test]
     fn indexing_never_returns_a_proof_after_cancellation_or_corrupt_footer() {
         let scratch = crate::codec_fixture::ScratchScope::new(
-            kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 32),
+            kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 64),
         )
         .unwrap();
         let disk = &scratch.disk;
@@ -1767,6 +2211,7 @@ mod tests {
             Ok(())
         })
         .unwrap();
+        assert!(TenantEngine::verify_logical_snapshot(&corrupt, &state).is_err());
         assert!(ValidatedApplicationSnapshot::validate(corrupt, 128 << 20, || Ok(())).is_err());
     }
 }

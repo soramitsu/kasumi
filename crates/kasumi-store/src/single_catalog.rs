@@ -12,7 +12,7 @@ enum Mode {
 }
 
 struct Input {
-    node: Arc<NodeStore>,
+    node: NodeStore,
     tenant: String,
     provider: Arc<dyn KeyProvider>,
     access: StorageAccess,
@@ -28,7 +28,7 @@ impl TenantStore {
     /// authorizes retry to adopt that catalog. Retain the node and drain its
     /// initializers before releasing physical installation ownership.
     pub async fn initialize_catalog(
-        node: Arc<NodeStore>,
+        node: NodeStore,
         tenant: String,
         provider: Arc<dyn KeyProvider>,
         access: StorageAccess,
@@ -51,7 +51,7 @@ impl TenantStore {
     /// its original provider, clock or capability. The caller retains the node
     /// through acknowledged handoff or completed initializer drain.
     pub async fn open_existing(
-        node: Arc<NodeStore>,
+        node: NodeStore,
         tenant: String,
         provider: Arc<dyn KeyProvider>,
         access: StorageAccess,
@@ -158,9 +158,17 @@ async fn begin(input: Input) -> Result<oneshot::Receiver<Ticket>> {
     );
     let (send, receive) = oneshot::channel();
     let node = input.node.clone();
-    let mut tasks = node.initializers.lock().await;
-    ensure!(!node.db.is_stopped(), "node catalog admission is closed");
-    tasks.reap_finished().await?;
+    let mut tasks = node.body().initializers.lock().await;
+    ensure!(
+        !node.body().db.is_stopped(),
+        "node catalog admission is closed"
+    );
+    if !tasks.reap_finished().await {
+        return Err(crate::InitializerDrainObservation {
+            opening_id: node.opening.id(),
+        }
+        .into());
+    }
     tasks.handles.push(tokio::spawn(async move {
         let outcome = prepare(input, &send).await;
         deliver(outcome, send).await
@@ -200,6 +208,7 @@ async fn prepare(input: Input, receiver: &oneshot::Sender<Ticket>) -> Result<Pre
         mode,
     } = input;
     let gate = node
+        .body()
         .tenants
         .lock()
         .await
@@ -312,8 +321,8 @@ async fn prepare(input: Input, receiver: &oneshot::Sender<Ticket>) -> Result<Pre
 
 fn require_pristine(node: &NodeStore, tenant: &str) -> Result<()> {
     #[cfg(any(test, feature = "test-utils"))]
-    if node.db.has_fixture_direct_database() {
-        let tx = node.db.begin_read()?;
+    if node.body().db.has_fixture_direct_database() {
+        let tx = node.body().db.begin_read()?;
         let hash = tenant_hash(tenant);
         ensure!(
             tx.open_table(CATALOG)?.get(hash.as_slice())?.is_none(),
@@ -343,10 +352,10 @@ fn save_new_catalog(store: &TenantStore) -> Result<()> {
     let catalog = store.catalog.read();
     catalog.validate(store.tenant())?;
     #[cfg(any(test, feature = "test-utils"))]
-    if store.node.db.has_fixture_direct_database() {
+    if store.node.body().db.has_fixture_direct_database() {
         let bytes = serde_json::to_vec(&*catalog)?;
         let hash = tenant_hash(store.tenant());
-        let tx = store.node.db.begin_write()?;
+        let tx = store.node.body().db.begin_write()?;
         {
             let mut catalogs = tx.open_table(CATALOG)?;
             ensure!(
@@ -367,7 +376,7 @@ fn save_new_catalog(store: &TenantStore) -> Result<()> {
         return store.access.check();
     }
 
-    let provider = store.node.persistent_disk().memory().clone();
+    let provider = store.node.memory().clone();
     let plan = crate::storage_opening::write_plan::AdmittedCatalogPut::prepare_fresh(
         store.tenant(),
         &catalog,
@@ -376,7 +385,7 @@ fn save_new_catalog(store: &TenantStore) -> Result<()> {
     drop(catalog);
     let payload_bytes = u64::try_from(plan.bytes().len())?;
     store.access.check()?;
-    let writer = store.node.db.queue_registered_catalog_put(plan)?;
+    let writer = store.node.body().db.queue_registered_catalog_put(plan)?;
     let _ = writer.run();
     let (committed, rejection, denied) = {
         let report = writer.report();

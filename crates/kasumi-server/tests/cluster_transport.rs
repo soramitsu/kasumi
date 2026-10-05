@@ -1,8 +1,17 @@
 mod tls_support;
 
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result};
+macro_rules! ensure {
+    ($condition:expr, $($message:tt)+) => {
+        if !$condition {
+            return Err(anyhow::anyhow!($($message)+).into());
+        }
+    };
+}
+use kasumi_raft::test_utils::FixtureResult;
 use kasumi_raft::{
-    BasicNode, Config, RaftGroup, RaftTransport, RpcRequest, SnapshotPolicy, StateMachineBackend,
+    BasicNode, Config, RaftGroup, RaftTransport, RpcRequest, RpcResponse, SnapshotPolicy,
+    StateMachineBackend,
 };
 use kasumi_server::{
     cluster::{ClusterNetwork, PeerConfig, PeerLimits},
@@ -28,7 +37,7 @@ impl kasumi_raft::PreparedStateMachineRestore for PreparedRestore<'_> {
     fn retirement(&self) -> Option<kasumi_raft::RetiredSnapshotState> {
         None
     }
-    fn application_replacements(&self) -> Vec<(&str, &kasumi_store::EncryptedTable)> {
+    fn application_replacements(&self) -> Vec<kasumi_store::NamespaceReplacement<'_>> {
         vec![]
     }
     fn application_writes(&self) -> &[kasumi_store::WriteOp] {
@@ -48,19 +57,35 @@ impl StateMachineBackend for Backend {
     fn close_application(&self) {
         self.0.lock().unwrap().clear();
     }
-    fn apply(
+    fn apply_with_publisher(
         &self,
         position: &kasumi_raft::AppliedEntryContext,
-        command: &[u8],
-    ) -> Result<kasumi_raft::AppliedResponse> {
-        let index = position.log_id.index;
-        self.0.lock().unwrap().insert(index, command.to_vec());
-        Ok(kasumi_raft::AppliedResponse::application(command.to_vec()))
-    }
-    fn apply_metadata(&self, _position: &kasumi_raft::AppliedEntryContext) -> Result<()> {
+        input: kasumi_raft::AppliedInput<'_>,
+        publisher: &mut dyn kasumi_raft::ApplyPublisher,
+    ) -> std::result::Result<(), kasumi_store::ScratchOperationFailure> {
+        match input {
+            kasumi_raft::AppliedInput::Command(command) => {
+                let mut current = self.0.lock().unwrap();
+                let mut candidate = current.clone();
+                candidate.insert(position.log_id.index, command.to_vec());
+                let response = kasumi_raft::AppliedResponse::application(command.to_vec());
+                publisher
+                    .commit(response, &[])
+                    .map_err(anyhow::Error::from)?;
+                *current = candidate;
+            }
+            kasumi_raft::AppliedInput::Metadata => {
+                publisher
+                    .commit(kasumi_raft::AppliedResponse::application(Vec::new()), &[])
+                    .map_err(anyhow::Error::from)?;
+            }
+        }
         Ok(())
     }
-    fn capture_snapshot(&self) -> Result<kasumi_raft::CapturedSnapshot> {
+    fn capture_snapshot(
+        &self,
+    ) -> std::result::Result<kasumi_raft::CapturedSnapshot, kasumi_store::ScratchOperationFailure>
+    {
         let data = self.0.lock().unwrap().clone();
         Ok(kasumi_raft::CapturedSnapshot::new(None, move |writer| {
             serde_json::to_writer(writer, &data)?;
@@ -70,7 +95,10 @@ impl StateMachineBackend for Backend {
     fn validate_snapshot(
         &self,
         bytes: &mut dyn std::io::Read,
-    ) -> Result<Option<kasumi_raft::RetiredSnapshotState>> {
+    ) -> std::result::Result<
+        Option<kasumi_raft::RetiredSnapshotState>,
+        kasumi_store::ScratchOperationFailure,
+    > {
         serde_json::from_reader::<_, BTreeMap<u64, Vec<u8>>>(bytes)?;
         Ok(None)
     }
@@ -78,7 +106,10 @@ impl StateMachineBackend for Backend {
         &'a self,
         _context: &kasumi_raft::SnapshotRestoreContext,
         bytes: &mut dyn std::io::Read,
-    ) -> Result<Box<dyn kasumi_raft::PreparedStateMachineRestore + 'a>> {
+    ) -> std::result::Result<
+        Box<dyn kasumi_raft::PreparedStateMachineRestore + 'a>,
+        kasumi_store::ScratchOperationFailure,
+    > {
         let current = self.0.lock().unwrap();
         let restored = serde_json::from_reader(bytes)?;
         Ok(Box::new(PreparedRestore { current, restored }))
@@ -89,7 +120,7 @@ fn vote(source: u64) -> serde_json::Value {
     serde_json::json!({"rpc":"vote","payload":{"vote":{"leader_id":{"term":100,"node_id":source},"committed":false},"last_log_id":null}})
 }
 
-async fn store(node: Arc<NodeStore>) -> Result<Arc<TenantStore>> {
+async fn store(node: NodeStore) -> Result<Arc<TenantStore>> {
     TenantStore::initialize_catalog_fixture(
         node,
         "tenant-a".into(),
@@ -104,13 +135,14 @@ fn physical(root: &std::path::Path) -> Result<kasumi_engine::test_utils::Fixture
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn real_three_node_raft_replicates_over_pinned_mutual_tls_http() -> Result<()> {
+async fn real_three_voter_raft_and_learner_replicate_and_read_over_pinned_mutual_tls_http()
+-> FixtureResult<()> {
     let ca = Authority::new()?;
     let dir = kasumi_store::test_utils::private_tempdir()?;
     let mut listeners = Vec::new();
     let mut identities = Vec::new();
     let mut peers = Vec::new();
-    for id in 1..=3 {
+    for id in 1..=4 {
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let identity = ca.issue("127.0.0.1")?.tls()?;
         peers.push(PeerConfig {
@@ -176,7 +208,7 @@ async fn real_three_node_raft_replicates_over_pinned_mutual_tls_http() -> Result
         network.register_group(
             "tenant-a".into(),
             group.raft().clone(),
-            BTreeSet::from([1, 2, 3]),
+            BTreeSet::from([1, 2, 3, 4]),
         )?;
         let observed = http_versions.clone();
         let router = network.router().layer(axum::middleware::from_fn(
@@ -223,9 +255,30 @@ async fn real_three_node_raft_replicates_over_pinned_mutual_tls_http() -> Result
     })
     .await
     .context("no leader over authenticated network")?;
+    let term = groups[leader].raft().metrics().borrow().current_term;
+    let prospective_read = networks[3]
+        .send(
+            "tenant-a",
+            4,
+            leader as u64 + 1,
+            &BasicNode::new("http://untrusted.invalid"),
+            RpcRequest::ReadIndex { term },
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(
+        prospective_read.to_string(),
+        "RPC source is not authorized for this request",
+        "a configured peer must join membership before requesting a read index"
+    );
+    groups[leader]
+        .add_learner(4, BasicNode::new("http://untrusted.invalid"))
+        .await?;
     ensure!(
         groups[leader]
-            .write(b"quorum-durable-over-tls".to_vec())
+            .write(kasumi_raft::ApplicationProposal::generated(
+                b"quorum-durable-over-tls".to_vec()
+            ))
             .await?
             == b"quorum-durable-over-tls",
         "wrong replicated response"
@@ -254,6 +307,26 @@ async fn real_three_node_raft_replicates_over_pinned_mutual_tls_http() -> Result
                 .collect::<Vec<_>>(),
             vec![b"quorum-durable-over-tls".to_vec()]
         );
+        if index != leader {
+            let term = group.raft().metrics().borrow().current_term;
+            let response = networks[index]
+                .send(
+                    "tenant-a",
+                    index as u64 + 1,
+                    leader as u64 + 1,
+                    &BasicNode::new("http://untrusted.invalid"),
+                    RpcRequest::ReadIndex { term },
+                )
+                .await?;
+            let RpcResponse::ReadIndex(Ok(response)) = response else {
+                return Err(anyhow::anyhow!(
+                    "current voter or learner read index was rejected: {response:?}"
+                )
+                .into());
+            };
+            assert_eq!(response.term, term);
+            assert!(response.read_log_id.is_some_and(|read| read >= target));
+        }
     }
     {
         let versions = http_versions.lock().unwrap();
@@ -284,7 +357,7 @@ async fn real_three_node_raft_replicates_over_pinned_mutual_tls_http() -> Result
 
 #[tokio::test]
 async fn peer_requests_bind_certificate_source_candidate_target_and_group_and_limit_body()
--> Result<()> {
+-> FixtureResult<()> {
     let ca = Authority::new()?;
     let dir = kasumi_store::test_utils::private_tempdir()?;
     let identities = [
@@ -365,7 +438,8 @@ async fn peer_requests_bind_certificate_source_candidate_target_and_group_and_li
             .post(&endpoint)
             .json(&normal)
             .send()
-            .await?
+            .await
+            .map_err(anyhow::Error::from)?
             .status(),
         reqwest::StatusCode::SERVICE_UNAVAILABLE,
         "missing security audit must fail closed"
@@ -377,7 +451,8 @@ async fn peer_requests_bind_certificate_source_candidate_target_and_group_and_li
             .post(&endpoint)
             .json(&normal)
             .send()
-            .await?
+            .await
+            .map_err(anyhow::Error::from)?
             .status(),
         reqwest::StatusCode::OK
     );
@@ -391,7 +466,8 @@ async fn peer_requests_bind_certificate_source_candidate_target_and_group_and_li
             .post(&endpoint)
             .json(&missing_bootstrap)
             .send()
-            .await?
+            .await
+            .map_err(anyhow::Error::from)?
             .status(),
         reqwest::StatusCode::UNPROCESSABLE_ENTITY,
         "omitted bootstrap binding must not decode as null"
@@ -409,7 +485,8 @@ async fn peer_requests_bind_certificate_source_candidate_target_and_group_and_li
                 .post(&endpoint)
                 .json(&forged)
                 .send()
-                .await?
+                .await
+                .map_err(anyhow::Error::from)?
                 .status(),
             reqwest::StatusCode::FORBIDDEN,
             "{field}"
@@ -422,7 +499,8 @@ async fn peer_requests_bind_certificate_source_candidate_target_and_group_and_li
             .post(&endpoint)
             .json(&unassigned)
             .send()
-            .await?
+            .await
+            .map_err(anyhow::Error::from)?
             .status(),
         reqwest::StatusCode::FORBIDDEN
     );
@@ -433,9 +511,23 @@ async fn peer_requests_bind_certificate_source_candidate_target_and_group_and_li
             .post(&endpoint)
             .json(&unassigned)
             .send()
-            .await?
+            .await
+            .map_err(anyhow::Error::from)?
             .status(),
         reqwest::StatusCode::OK
+    );
+    let mut read_index = normal.clone();
+    read_index["request"] = serde_json::json!({"rpc":"read_index","payload":{"term":100}});
+    assert_eq!(
+        authorized
+            .post(&endpoint)
+            .json(&read_index)
+            .send()
+            .await
+            .map_err(anyhow::Error::from)?
+            .status(),
+        reqwest::StatusCode::FORBIDDEN,
+        "a pinned, group-authorized peer outside current membership cannot request a read index"
     );
     assert!(
         network
@@ -451,7 +543,8 @@ async fn peer_requests_bind_certificate_source_candidate_target_and_group_and_li
             .post(&endpoint)
             .json(&unassigned)
             .send()
-            .await?
+            .await
+            .map_err(anyhow::Error::from)?
             .status(),
         reqwest::StatusCode::FORBIDDEN,
         "audit failure must never lift a denial"
@@ -465,7 +558,8 @@ async fn peer_requests_bind_certificate_source_candidate_target_and_group_and_li
             .header("content-type", "application/json")
             .body(vec![b' '; 2048])
             .send()
-            .await?
+            .await
+            .map_err(anyhow::Error::from)?
             .status(),
         reqwest::StatusCode::PAYLOAD_TOO_LARGE
     );

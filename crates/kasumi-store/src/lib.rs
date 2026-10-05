@@ -7,10 +7,15 @@
 //! kernel, device durability and the embedding process are trusted. A successful
 //! store call can return owned plaintext to its caller; that copy is not revocable.
 
+mod application_bootstrap;
+pub use application_bootstrap::{
+    APPLICATION_BOOTSTRAP_CHUNK_BYTES, APPLICATION_BOOTSTRAP_MANIFEST_BYTES,
+    ApplicationBootstrapManifest,
+};
 mod archive_objects;
 mod audit_archive;
 pub use audit_archive::{
-    AuditArchiveDestination, AuditArchivePublicationObserver, AuditSegmentBuilder,
+    AuditArchiveDestination, AuditArchivePublicationObserver, AuditCiphertext, AuditSegmentBuilder,
     FilesystemAuditArchive, HistoricalAuditVerifier, InspectedAuditDependency,
     PreparedAuditSegment, S3AuditArchive, TenantAuditPlacement, VerifiedAuditSegment,
 };
@@ -19,64 +24,99 @@ mod backup_destination_index;
 pub use backup_destination_index::{ExactBackupDestinationIndex, MAX_EXACT_BACKUP_DESTINATIONS};
 mod backup_marker;
 mod backup_sessions;
+mod cache_warmer;
 mod catalog_read_budget;
+mod key_access_denied;
 pub use backup_sessions::{
     BackupSessionObject, BackupSessionObjectPage, BackupSessionObjects, BackupSessionSlot,
     MAX_SESSION_GC_OBJECTS, MAX_SESSION_RECORD_BYTES, VerifiedBackupAbort, VerifiedBackupSession,
     verify_backup_session,
 };
+pub use cache_warmer::CacheWorkerStatus;
 use catalog_read_budget::AdmittedKeyCatalog;
+pub use key_access_denied::KeyAccessDenied;
 #[cfg(test)]
 mod allocation_tests;
 mod device_disk;
 mod disk_memory;
+mod source_metadata;
+pub use source_metadata::{
+    SourceMetadataCallError, SourceMetadataInstall, SourceMetadataPermit, SourceMetadataPurpose,
+};
 mod storage_census;
 mod storage_opening;
 pub use disk_memory::{
     DiskMemoryLease, DiskMemoryRequirements, DiskOpenError, NodeDiskMemoryAdmission,
 };
+#[cfg(any(test, feature = "test-utils"))]
+pub use storage_census::NativeConstructorProbe;
 pub use storage_census::{
-    StorageCensus, StorageCensusDisposition, StorageCensusObservation, StorageCensusPanicPhase,
-    StorageCensusSnapshot, StorageOwnerId, StorageOwnerKind,
+    NativeConstructorCallError, NativeConstructorCustody, NativeConstructorFailure,
+    NativeConstructorInstall, NativeConstructorPermit, NativeConstructorReport, StorageCensus,
+    StorageCensusDisposition, StorageCensusObservation, StorageCensusPanicPhase,
+    StorageCensusSnapshot, StorageOwnerId, StorageOwnerKind, StorageWriteOutputObservation,
 };
 pub use storage_opening::{
     AdmittedReadBytes, BindingInstallBodyError, FailedOpeningAcknowledgement,
     FailedOpeningRecovery, NodeBindingWriteReport, NodeCatalogPutBodyError, NodeCatalogWriteReport,
-    NodeOpeningMode, NodeOpeningPhase, NodeOpeningReport, NodeReadAccessError, NodeReadPhase,
-    NodeReadReport, NodeReadTablesError, NodeStartupFailureCustody, NodeStartupPhase,
-    NodeTablesBodyError, NodeTablesReport, NodeWriterPhase, OwnedEncryptedRow,
-    RegisteredBindingPut, RegisteredCatalogPut, RegisteredNodeOpening, RegisteredNodeRead,
-    RegisteredNodeStartup, RegisteredNodeTables,
+    NodeGroupIdentity, NodeOpeningMode, NodeOpeningPhase, NodeOpeningReport, NodeReadAccessError,
+    NodeReadPhase, NodeReadReport, NodeReadTablesError, NodeStartupFailureCustody,
+    NodeStartupPhase, NodeStorageConfig, NodeTablesBodyError, NodeTablesReport, NodeWriterPhase,
+    OwnedEncryptedRow, RegisteredBindingPut, RegisteredCatalogPut, RegisteredNodeOpening,
+    RegisteredNodeRead, RegisteredNodeStartup, RegisteredNodeTables,
 };
+pub use storage_opening::{NodeWriteReport, RegisteredNodeWrite};
+#[cfg(any(test, feature = "test-utils"))]
+mod fixture_node;
 mod keys;
 mod node_database;
+#[cfg(any(test, feature = "test-utils"))]
+pub use fixture_node::{NodeFixtureInputs, NodeFixtureStartFailure};
 mod node_disk;
 mod node_file;
-pub use node_file::NodeFileCleanup;
+pub use node_file::segment_group::NodeSegmentGroupCleanup;
 pub mod node_store_ids;
+mod plaintext_scan;
+mod point_read_backing;
 mod read_view;
+pub use plaintext_scan::{PlaintextRecord, PlaintextScan};
 mod registered_read_scope;
+mod registered_write_scope;
+pub use registered_write_scope::{NodeScopedWriteFailure, NodeScopedWriteRetirement};
+mod visit_record;
 pub use node_disk::{
-    CensusCancellation, DirectoryPolicy, DiskWork, NodeDisk, NodeDiskConfig, NodeDiskDirectory,
-    NodeDiskDirectoryCloseError, NodeDiskDirectoryCursor, NodeDiskDirectoryEntry,
-    NodeDiskDirectoryFailure, NodeDiskDirectoryOperation, NodeDiskDirectoryOperationKind,
-    NodeDiskDirectoryOperationStep, NodeDiskEntryKind, NodeDiskFile, NodeDiskPhase,
-    NodeDiskSnapshot,
+    CensusCancellation, DirectoryPolicy, DiskWork, FileAllocationPolicy, NodeDisk, NodeDiskConfig,
+    NodeDiskDirectory, NodeDiskDirectoryCloseError, NodeDiskDirectoryCursor,
+    NodeDiskDirectoryEntry, NodeDiskDirectoryFailure, NodeDiskDirectoryOperation,
+    NodeDiskDirectoryOperationKind, NodeDiskDirectoryOperationStep, NodeDiskDirectoryOriginals,
+    NodeDiskEntryKind, NodeDiskFile, NodeDiskPhase, NodeDiskSnapshot,
 };
 mod scratch_disk;
 mod scratch_table;
 pub use scratch_disk::{ScratchDisk, ScratchDiskConfig, ScratchDiskSnapshot};
 mod serving_access;
 mod spool;
-pub use read_view::TenantReadView;
+pub use read_view::{
+    NamespaceReplacement, PointRetirementFailure, PreparedTenantReadPoints,
+    PreparedTenantReadSource, PreparedTenantReadSourceLoan, PreparedTenantReadWorkspace,
+    TenantReadView, plaintext_get_workspace_bytes,
+};
 pub use registered_read_scope::{NodeScopedReadFailure, NodeScopedReadRetirement};
-pub use scratch_table::{EncryptedTable, EncryptedTableBatch};
+pub use scratch_table::{
+    EncryptedTable, EncryptedTableBatch, ScratchAdmissionRefusal, ScratchAdmissionSlot,
+    ScratchCreationFailure, ScratchCreationReport, ScratchCreationRetirement,
+    ScratchOperationFailure, ScratchTableValue,
+};
 mod storage_domains;
 pub use serving_access::{StorageAccess, StoragePurpose};
+pub use storage_domains::{
+    PreparedTenantSourcePointLoan, PreparedTenantSourcePointReads, PreparedTenantSourceReadView,
+    SourceHistoryDisposition,
+};
 mod file_keys;
 mod live_trust;
 pub mod private_files;
-pub use file_keys::FileKeyProvider;
+pub use file_keys::{FileKeyOpenInput, FileKeyProvider};
 pub use spool::{EncryptedSpool, RetainedSpool, SnapshotImage, SnapshotReader, SpoolClosePhase};
 #[cfg(any(test, feature = "test-utils"))]
 pub mod test_utils;
@@ -88,7 +128,7 @@ pub use backup::{
 };
 pub use backup::{MAX_BACKUP_BUNDLE_BYTES, MAX_BACKUP_OBJECT_BYTES};
 use kasumi_clock::{LeaseClock, SystemLeaseClock};
-use kasumi_types::drain::{DrainReport, DrainResult};
+use kasumi_types::drain::{DrainFailure, DrainReport, DrainResult};
 pub use keys::{
     GeneratedKey, HistoricalKeyResolver, HistoricalKeySource, HistoricalSourceSecurityDescriptor,
     KeyProvider, SecretKey, TransitConfig, TransitKeyProvider, WrappedKey, WrappingIdentity,
@@ -96,7 +136,10 @@ pub use keys::{
 };
 pub use storage_domains::{
     AdmittedDeploymentBinding, BindingInstallWriteFailure, BindingInstallWriteRetirement,
-    CustodyStore, StorageBinding, TenantStorageReadView, TenantStorageSet,
+    CommittedAccessDenied, CustodyStore, DomainPublicationOutcome, PairedReadMemoryQuote,
+    PointReadMemoryQuote, PreparedTenantPointBounds, PreparedTenantPointReads,
+    PreparedTenantPointWorkspace, PreparedTenantStorageReadView, StorageBinding,
+    TenantStorageReadView, TenantStorageSet,
 };
 
 use std::{
@@ -116,7 +159,8 @@ use chacha20poly1305::{
 };
 use hmac::{Hmac, Mac};
 use kasumi_kv::TableDefinition;
-#[cfg(any(test, feature = "test-utils"))]
+pub use kasumi_kv::TerminalObservation;
+#[cfg(test)]
 use kasumi_kv::{
     BackendNativeDisposition, Database, DatabaseCloseReport, DatabaseCloseSettlement,
     RetainedDatabase,
@@ -124,15 +168,20 @@ use kasumi_kv::{
 use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-#[cfg(any(test, feature = "test-utils"))]
+#[cfg(test)]
+use std::fmt;
 use std::{
     any::Any,
-    fmt,
     panic::{AssertUnwindSafe, catch_unwind},
 };
 use tokio::sync::{Mutex as AsyncMutex, watch};
 use uuid::Uuid;
 use zeroize::{Zeroize, Zeroizing};
+
+mod plaintext_value;
+pub use plaintext_value::PlaintextValue;
+mod retained_plaintext_value;
+pub use retained_plaintext_value::RetainedPlaintextValue;
 
 const CATALOG: TableDefinition<&[u8], &[u8]> = TableDefinition::new("wrapped_keys_v1");
 const RECORDS: TableDefinition<&[u8], &[u8]> = TableDefinition::new("encrypted_records_v1");
@@ -208,36 +257,228 @@ impl WriteOp {
 #[derive(Default)]
 struct InitializerRegistry {
     handles: Vec<tokio::task::JoinHandle<Result<()>>>,
-    // A joined failure is still unreported while a cancelled drain has more
-    // owners to await. Keep that outcome with the surviving task registry.
-    failure: Option<anyhow::Error>,
+    // The first original joined result is staged before its exact handle is
+    // removed or destroyed. Failure fences later joins, so this fixed slot can
+    // never discard a second original or require a failure-time allocation.
+    completion: Option<InitializerCompletion>,
 }
+
+enum InitializerHandleDisposal {
+    NotEntered,
+    Entered,
+    Returned,
+    Panicked(Box<dyn Any + Send>),
+}
+
+struct InitializerCompletion {
+    outcome: Option<std::result::Result<Result<()>, tokio::task::JoinError>>,
+    handle_disposal: InitializerHandleDisposal,
+    original_disposal: InitializerHandleDisposal,
+}
+
+impl InitializerCompletion {
+    fn clean(&self) -> bool {
+        matches!(self.outcome, Some(Ok(Ok(()))))
+            && matches!(self.handle_disposal, InitializerHandleDisposal::Returned)
+    }
+}
+
 impl InitializerRegistry {
-    async fn reap_finished(&mut self) -> Result<()> {
+    async fn join_original(&mut self, index: usize) -> bool {
+        if self.completion.is_some() {
+            return false;
+        }
+        let outcome = (&mut self.handles[index]).await;
+        self.completion = Some(InitializerCompletion {
+            outcome: Some(outcome),
+            handle_disposal: InitializerHandleDisposal::NotEntered,
+            original_disposal: InitializerHandleDisposal::NotEntered,
+        });
+        let handle = self.handles.swap_remove(index);
+        self.completion.as_mut().unwrap().handle_disposal = InitializerHandleDisposal::Entered;
+        let disposal = catch_unwind(AssertUnwindSafe(|| drop(handle)));
+        self.completion.as_mut().unwrap().handle_disposal = match disposal {
+            Ok(()) => InitializerHandleDisposal::Returned,
+            Err(original) => InitializerHandleDisposal::Panicked(original),
+        };
+        if self.completion.as_ref().unwrap().clean() {
+            // This contains only the actual returned unit and returned handle
+            // disposal. Arbitrary task-body/output qualification stays separate.
+            self.completion = None;
+            true
+        } else {
+            false
+        }
+    }
+
+    async fn reap_finished(&mut self) -> bool {
+        if self.completion.is_some() {
+            return false;
+        }
         while let Some(index) = self
             .handles
             .iter()
             .position(tokio::task::JoinHandle::is_finished)
         {
-            let result = (&mut self.handles[index]).await;
-            drop(self.handles.swap_remove(index));
-            if let Err(error) = result
-                .context("catalog initializer task join failed")
-                .and_then(|outcome| outcome)
-            {
-                self.failure.get_or_insert(error);
+            if !self.join_original(index).await {
+                return false;
             }
         }
-        self.take_failure()
+        true
     }
-    fn take_failure(&mut self) -> Result<()> {
-        self.failure.take().map_or(Ok(()), |error| {
-            Err(error.context("catalog initializer task failed"))
+}
+
+/// The exact first initializer original remains in the paid node body. This
+/// move-only facade allocates no error shell and cannot be erased into Anyhow.
+pub struct InitializerDrainFailure {
+    node: NodeStore,
+}
+
+/// A foreign diagnostic only. The whole result/panic and all later handles
+/// remain in the same registered node body; this is no drain or disposal proof.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct InitializerDrainObservation {
+    opening_id: StorageOwnerId,
+}
+impl InitializerDrainObservation {
+    pub fn opening_id(self) -> StorageOwnerId {
+        self.opening_id
+    }
+}
+impl std::fmt::Display for InitializerDrainObservation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "node initializer original retained by opening {:?}",
+            self.opening_id
+        )
+    }
+}
+impl std::error::Error for InitializerDrainObservation {}
+
+pub struct InitializerDrainReport<'a> {
+    completion: &'a InitializerCompletion,
+}
+
+impl InitializerDrainReport<'_> {
+    pub fn body_error(&self) -> Option<&anyhow::Error> {
+        match &self.completion.outcome {
+            Some(Ok(Err(original))) => Some(original),
+            _ => None,
+        }
+    }
+    pub fn join_error(&self) -> Option<&tokio::task::JoinError> {
+        self.completion
+            .outcome
+            .as_ref()
+            .and_then(|outcome| outcome.as_ref().err())
+    }
+    pub fn handle_disposal(&self) -> TerminalObservation<'_, std::convert::Infallible> {
+        match &self.completion.handle_disposal {
+            InitializerHandleDisposal::NotEntered => TerminalObservation::NotEntered,
+            InitializerHandleDisposal::Entered => TerminalObservation::Entered,
+            InitializerHandleDisposal::Returned => TerminalObservation::Returned(Ok(())),
+            InitializerHandleDisposal::Panicked(original) => {
+                TerminalObservation::Panicked(original.as_ref())
+            }
+        }
+    }
+    pub fn original_disposal(&self) -> TerminalObservation<'_, std::convert::Infallible> {
+        match &self.completion.original_disposal {
+            InitializerHandleDisposal::NotEntered => TerminalObservation::NotEntered,
+            InitializerHandleDisposal::Entered => TerminalObservation::Entered,
+            InitializerHandleDisposal::Returned => TerminalObservation::Returned(Ok(())),
+            InitializerHandleDisposal::Panicked(original) => {
+                TerminalObservation::Panicked(original.as_ref())
+            }
+        }
+    }
+}
+
+impl InitializerDrainFailure {
+    /// Recover the same first-failure facade. An unavailable metadata guard is
+    /// not proof of disposal and no initializer or native operation is replayed.
+    pub async fn retained(
+        provider: Arc<dyn NodeDiskMemoryAdmission>,
+        id: StorageOwnerId,
+    ) -> Option<Self> {
+        let node = NodeStore::retained(provider, id)?;
+        let present = node.body().initializers.lock().await.completion.is_some();
+        present.then_some(Self { node })
+    }
+
+    pub fn opening_id(&self) -> StorageOwnerId {
+        self.node.opening.id()
+    }
+    pub fn observation(&self) -> InitializerDrainObservation {
+        InitializerDrainObservation {
+            opening_id: self.opening_id(),
+        }
+    }
+    /// Explicit fixture-only disposition of the already inspected original.
+    /// A new destructor panic occupies the same slot and forbids reentry. The
+    /// slot is vacated only after that actual destructive callback returned.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub async fn dispose_original(&self) -> bool {
+        let mut registry = self.node.body().initializers.lock().await;
+        let Some(completion) = registry.completion.as_mut() else {
+            return false;
+        };
+        if !matches!(
+            completion.handle_disposal,
+            InitializerHandleDisposal::Returned
+        ) || !matches!(
+            completion.original_disposal,
+            InitializerHandleDisposal::NotEntered
+        ) {
+            return false;
+        }
+        completion.original_disposal = InitializerHandleDisposal::Entered;
+        let result = catch_unwind(AssertUnwindSafe(|| drop(completion.outcome.take())));
+        completion.original_disposal = match result {
+            Ok(()) => InitializerHandleDisposal::Returned,
+            Err(original) => InitializerHandleDisposal::Panicked(original),
+        };
+        if matches!(
+            completion.original_disposal,
+            InitializerHandleDisposal::Returned
+        ) {
+            registry.completion = None;
+            true
+        } else {
+            false
+        }
+    }
+    pub async fn with_report<R>(
+        &self,
+        inspect: impl for<'a> FnOnce(InitializerDrainReport<'a>) -> R,
+    ) -> R {
+        let registry = self.node.body().initializers.lock().await;
+        inspect(InitializerDrainReport {
+            completion: registry
+                .completion
+                .as_ref()
+                .expect("first initializer original remains installed"),
         })
     }
 }
 
-#[cfg(any(test, feature = "test-utils"))]
+impl std::fmt::Debug for InitializerDrainFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(self, f)
+    }
+}
+impl std::fmt::Display for InitializerDrainFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "node initializer original retained by opening {:?}",
+            self.opening_id()
+        )
+    }
+}
+
+#[cfg(test)]
 enum NodeStoreSetupCause {
     Error(anyhow::Error),
     Panicked(Mutex<Box<dyn Any + Send>>),
@@ -247,13 +488,13 @@ enum NodeStoreSetupCause {
 /// database close observation. An unproved native owner is never dropped into
 /// an implicit backend close.
 #[must_use]
-#[cfg(any(test, feature = "test-utils"))]
+#[cfg(test)]
 pub struct NodeStoreSetupFailure {
     cause: NodeStoreSetupCause,
     owner: Mutex<Option<RetainedDatabase>>,
 }
 
-#[cfg(any(test, feature = "test-utils"))]
+#[cfg(test)]
 impl NodeStoreSetupFailure {
     fn new(database: Database, cause: NodeStoreSetupCause) -> Self {
         let mut owner = database.retain();
@@ -300,7 +541,7 @@ impl NodeStoreSetupFailure {
     }
 }
 
-#[cfg(any(test, feature = "test-utils"))]
+#[cfg(test)]
 impl fmt::Debug for NodeStoreSetupFailure {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -314,7 +555,7 @@ impl fmt::Debug for NodeStoreSetupFailure {
     }
 }
 
-#[cfg(any(test, feature = "test-utils"))]
+#[cfg(test)]
 impl fmt::Display for NodeStoreSetupFailure {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.cause {
@@ -324,14 +565,14 @@ impl fmt::Display for NodeStoreSetupFailure {
     }
 }
 
-#[cfg(any(test, feature = "test-utils"))]
+#[cfg(test)]
 impl std::error::Error for NodeStoreSetupFailure {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         self.original_error().map(|error| error.as_ref())
     }
 }
 
-#[cfg(any(test, feature = "test-utils"))]
+#[cfg(test)]
 impl Drop for NodeStoreSetupFailure {
     fn drop(&mut self) {
         let Some(owner) = self.owner.get_mut().take() else {
@@ -387,7 +628,35 @@ impl std::fmt::Display for NodeStoreOpeningFailure {
         )
     }
 }
-impl std::error::Error for NodeStoreOpeningFailure {}
+/// Native constructor and startup ownership remain in their original census
+/// receivers. This failure cannot be boxed into an owning diagnostic wrapper.
+pub enum NodeStoreStartFailure {
+    Operation(anyhow::Error),
+    Constructor(NativeConstructorFailure),
+    Opening(NodeStoreOpeningFailure),
+}
+impl std::fmt::Debug for NodeStoreStartFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Operation(original) => f.debug_tuple("Operation").field(original).finish(),
+            Self::Constructor(original) => f
+                .debug_struct("Constructor")
+                .field("owner", &original.id())
+                .field("capacity_denied", &original.is_capacity_denied())
+                .finish_non_exhaustive(),
+            Self::Opening(original) => f.debug_tuple("Opening").field(original).finish(),
+        }
+    }
+}
+impl std::fmt::Display for NodeStoreStartFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Operation(original) => original.fmt(f),
+            Self::Constructor(original) => original.fmt(f),
+            Self::Opening(original) => original.fmt(f),
+        }
+    }
+}
 
 /// A failed fixed catalog read keeps its exact registered child and original
 /// read/close observations. Dropping this facade leaves the census cell intact.
@@ -777,7 +1046,7 @@ impl std::error::Error for TenantPointReadRetirement {
     }
 }
 
-pub struct NodeStore {
+pub(crate) struct RegisteredNodeBody {
     db: node_database::NodeDatabase,
     persistent_disk: Option<Arc<NodeDisk>>,
     scratch_disk: Arc<ScratchDisk>,
@@ -786,207 +1055,458 @@ pub struct NodeStore {
     // Retain initialization tasks through rejected/cancelled result delivery.
     initializers: AsyncMutex<InitializerRegistry>,
     shutdown_report: AsyncMutex<DrainReport>,
+    cache_warmer: cache_warmer::CacheWarmer,
+    lifecycle: node_lifecycle::NodeLifecycle,
+}
+
+#[cfg(test)]
+mod composite_node_tests;
+mod node_lifecycle;
+impl RegisteredNodeBody {
+    fn prepare(
+        path: Option<&Path>,
+        disk: Option<Arc<NodeDisk>>,
+        scratch: Arc<ScratchDisk>,
+        provider: Arc<dyn NodeDiskMemoryAdmission>,
+        census_id: StorageOwnerId,
+    ) -> Self {
+        Self {
+            db: node_database::NodeDatabase::new_registered_locator(
+                provider,
+                census_id,
+                "node database",
+            ),
+            persistent_disk: disk,
+            scratch_disk: scratch,
+            path: path.map(Path::to_owned),
+            tenants: AsyncMutex::new(HashMap::new()),
+            initializers: AsyncMutex::new(InitializerRegistry::default()),
+            shutdown_report: AsyncMutex::new(DrainReport::default()),
+            cache_warmer: cache_warmer::CacheWarmer::default(),
+            lifecycle: node_lifecycle::NodeLifecycle::preparing(),
+        }
+    }
+}
+
+/// The same already-paid registration/control, held inline by each caller.
+pub struct NodeStore {
+    opening: RegisteredNodeOpening,
+}
+
+impl Clone for NodeStore {
+    fn clone(&self) -> Self {
+        Self {
+            opening: self.opening.clone_facade(),
+        }
+    }
 }
 
 impl NodeStore {
-    /// Claim an exact recognized Prepared or Ready inode for independently
+    /// Borrow actual fixed node metadata while this facade protects its owner.
+    /// No payload reference is exposed publicly and no mutable dereference exists.
+    fn body(&self) -> &crate::RegisteredNodeBody {
+        self.opening.node_body()
+    }
+
+    pub fn ptr_eq(left: &Self, right: &Self) -> bool {
+        left.opening.same_owner(&right.opening)
+    }
+
+    pub(crate) fn memory(&self) -> &Arc<dyn NodeDiskMemoryAdmission> {
+        self.opening.provider()
+    }
+
+    pub(crate) fn group_path(&self) -> Option<&std::path::Path> {
+        self.body().path.as_deref()
+    }
+
+    /// Existing body recovery only; None means unavailable, never disposal proof.
+    pub fn retained(
+        provider: Arc<dyn NodeDiskMemoryAdmission>,
+        id: StorageOwnerId,
+    ) -> Option<Self> {
+        let opening = RegisteredNodeOpening::retained(provider, id)?;
+        (opening.has_node_body() && opening.node_body().lifecycle.has_ready_origin())
+            .then_some(Self { opening })
+    }
+
+    pub fn locator(&self) -> NodeStoreLocator {
+        NodeStoreLocator {
+            provider: self.opening.provider().clone(),
+            id: self.opening.id(),
+        }
+    }
+
+    /// Release this facade, then observe the actual census disposal/fee outcome.
+    /// Native shutdown is an independent prerequisite, never inferred here.
+    pub fn retire(self) -> NodeRetirement {
+        let id = self.opening.id();
+        let provider = self.opening.provider().clone();
+        let disposition = self.opening.release_node_facade();
+        NodeRetirement {
+            provider,
+            id,
+            disposition,
+        }
+    }
+}
+
+/// No node body alias; safe to retain in the node's own idle supervisor.
+#[derive(Clone)]
+pub struct NodeStoreLocator {
+    provider: Arc<dyn NodeDiskMemoryAdmission>,
+    id: StorageOwnerId,
+}
+
+pub enum NodeStoreLookup {
+    Active(NodeStore),
+    Busy,
+    Missing,
+}
+
+impl NodeStoreLocator {
+    pub fn try_borrow(&self) -> NodeStoreLookup {
+        // The actual census implementation must distinguish metadata contention
+        // from absent generation; both remain distinct from retirement receipts.
+        match RegisteredNodeOpening::try_retained(self.provider.clone(), self.id) {
+            crate::storage_opening::OpeningLookup::Active(opening) => {
+                if opening.has_node_body() && opening.node_body().lifecycle.has_ready_origin() {
+                    NodeStoreLookup::Active(NodeStore { opening })
+                } else {
+                    NodeStoreLookup::Missing
+                }
+            }
+            crate::storage_opening::OpeningLookup::Busy => NodeStoreLookup::Busy,
+            crate::storage_opening::OpeningLookup::Missing => NodeStoreLookup::Missing,
+        }
+    }
+}
+
+/// Closed inline locator/report. The actual original remains in its census cell
+/// whenever disposal or original token retirement is unproved.
+#[must_use]
+pub struct NodeRetirement {
+    provider: Arc<dyn NodeDiskMemoryAdmission>,
+    id: StorageOwnerId,
+    disposition: StorageCensusDisposition,
+}
+
+impl NodeRetirement {
+    pub fn id(&self) -> StorageOwnerId {
+        self.id
+    }
+
+    pub fn disposition(&self) -> StorageCensusDisposition {
+        self.disposition
+    }
+
+    pub fn is_retired(&self) -> bool {
+        self.disposition == StorageCensusDisposition::Retired
+    }
+
+    pub fn retry(&mut self) -> StorageCensusDisposition {
+        if self.disposition == StorageCensusDisposition::Retained {
+            self.disposition = self.provider.storage_census().drain_owner(self.id);
+        }
+        // Stale never upgrades to a receipt by looking for absence. Retired was
+        // already produced by actual original body/control/token disposal.
+        self.disposition
+    }
+}
+
+impl NodeStore {
+    /// Claim an exact recognized Prepared or Ready group for independently
     /// authorized cleanup. No database open, initialization or repair takes place.
     /// This physical guard grants no authority to stop or delete a generation.
     pub fn claim_cleanup(
         path: impl AsRef<Path>,
         expected_id: Uuid,
         persistent_disk: Arc<NodeDisk>,
-    ) -> Result<NodeFileCleanup> {
-        node_file::NodeFile::claim_cleanup(path.as_ref(), expected_id, persistent_disk)
+        config: NodeStorageConfig,
+    ) -> Result<NodeSegmentGroupCleanup> {
+        config.validate_within(persistent_disk.native_storage_config())?;
+        node_file::segment_group::NodeSegmentGroup::claim_cleanup(
+            path.as_ref(),
+            expected_id,
+            persistent_disk,
+            config.cached_files,
+        )
     }
 
-    /// Initialize a new, exclusively created inode. Its parent must exist.
-    /// The caller durably chooses `node_store_id` before creating the file and
+    /// Initialize a new, exclusively created directory and root. Its parent must exist.
+    /// The caller durably chooses `node_store_id` before creating the group and
     /// retains responsibility for exact partial/uncertain initialization cleanup.
+    #[allow(
+        clippy::result_large_err,
+        reason = "original startup custody stays inline; an error Box would allocate at refusal"
+    )]
     pub fn create_new(
         path: impl AsRef<Path>,
         node_store_id: Uuid,
         persistent_disk: Arc<NodeDisk>,
         scratch_disk: Arc<ScratchDisk>,
-    ) -> Result<Arc<Self>> {
+        config: NodeStorageConfig,
+    ) -> std::result::Result<Self, NodeStoreStartFailure> {
         Self::start_registered(
             path.as_ref(),
             node_store_id,
             persistent_disk,
             scratch_disk,
             NodeOpeningMode::Create,
+            config,
         )
     }
 
-    /// Initialize the exact empty inode already durably owned by an installation
-    /// or recovery journal. A populated/partial file is never adopted or reset.
+    /// Initialize the exact directory and empty root already durably owned by an
+    /// installation journal. A populated or partial group is never reset.
+    #[allow(
+        clippy::result_large_err,
+        reason = "original startup custody stays inline; an error Box would allocate at refusal"
+    )]
     pub fn initialize_owned_empty(
         path: impl AsRef<Path>,
-        expected_file: &private_files::FileIdentity,
+        expected_group: &NodeGroupIdentity,
         node_store_id: Uuid,
         persistent_disk: Arc<NodeDisk>,
         scratch_disk: Arc<ScratchDisk>,
-    ) -> Result<Arc<Self>> {
+        config: NodeStorageConfig,
+    ) -> std::result::Result<Self, NodeStoreStartFailure> {
         Self::start_registered(
             path.as_ref(),
             node_store_id,
             persistent_disk,
             scratch_disk,
-            NodeOpeningMode::OwnedEmpty(expected_file.clone()),
+            NodeOpeningMode::OwnedEmpty(expected_group.clone()),
+            config,
         )
     }
 
     /// Reopen only the exact recognized installed payload through the same
     /// registered owner used for table verification and later close.
+    #[allow(
+        clippy::result_large_err,
+        reason = "original startup custody stays inline; an error Box would allocate at refusal"
+    )]
     pub fn open_existing(
         path: impl AsRef<Path>,
         expected_id: Uuid,
         persistent_disk: Arc<NodeDisk>,
         scratch_disk: Arc<ScratchDisk>,
-    ) -> Result<Arc<Self>> {
+        config: NodeStorageConfig,
+    ) -> std::result::Result<Self, NodeStoreStartFailure> {
         Self::start_registered(
             path.as_ref(),
             expected_id,
             persistent_disk,
             scratch_disk,
             NodeOpeningMode::Existing,
+            config,
         )
     }
 
+    #[allow(
+        clippy::result_large_err,
+        reason = "original startup custody stays inline; an error Box would allocate at refusal"
+    )]
     fn start_registered(
         path: &Path,
         id: Uuid,
         persistent_disk: Arc<NodeDisk>,
         scratch_disk: Arc<ScratchDisk>,
         mode: NodeOpeningMode,
-    ) -> Result<Arc<Self>> {
-        ensure!(
-            Arc::ptr_eq(persistent_disk.memory(), scratch_disk.memory()),
-            "persistent and scratch disks require the same installed memory admission"
-        );
-        let provider = persistent_disk.memory().clone();
-        let mut startup = RegisteredNodeStartup::prepare(path, id, persistent_disk.clone(), mode)?;
-        if startup.advance() != NodeStartupPhase::Ready {
-            let close_error = startup.close_failed().err();
-            let custody = startup.into_failed_custody().map_err(|_| {
-                anyhow::anyhow!("failed startup did not retain exact closing custody")
-            })?;
-            return Err(NodeStoreOpeningFailure {
-                custody,
-                close_error,
-            }
-            .into());
+        config: NodeStorageConfig,
+    ) -> std::result::Result<Self, NodeStoreStartFailure> {
+        if !Arc::ptr_eq(persistent_disk.memory(), scratch_disk.memory()) {
+            return Err(NodeStoreStartFailure::Operation(anyhow::anyhow!(
+                "persistent and scratch disks require the same installed memory admission"
+            )));
         }
-        let opening = startup
-            .into_opening()
-            .map_err(|_| anyhow::anyhow!("ready registered startup lost its opening"))?;
-        Ok(Arc::new(Self {
-            db: node_database::NodeDatabase::new_registered(opening, provider, "node database"),
-            persistent_disk: Some(persistent_disk),
+        let startup = RegisteredNodeStartup::prepare_node(
+            path,
+            id,
+            persistent_disk.clone(),
             scratch_disk,
-            path: Some(path.to_owned()),
-            tenants: AsyncMutex::new(HashMap::new()),
-            initializers: AsyncMutex::new(InitializerRegistry::default()),
-            shutdown_report: AsyncMutex::new(DrainReport::default()),
-        }))
+            mode,
+            config,
+        )
+        .map_err(NodeStoreStartFailure::Constructor)?;
+        Self::finish_registered_startup(startup)
     }
 
-    /// Synthetic fixtures keep their direct, test-only owner so unrelated
-    /// suites can model an implicit process-exit drop. Installed production
-    /// constructors above always use the registered opening and explicit close.
+    #[allow(
+        clippy::result_large_err,
+        reason = "original startup custody stays inline; an error Box would allocate at refusal"
+    )]
+    fn finish_registered_startup(
+        mut startup: RegisteredNodeStartup,
+    ) -> std::result::Result<Self, NodeStoreStartFailure> {
+        if startup.advance() != NodeStartupPhase::Ready {
+            startup.node_startup_failed();
+            let mut close_error = startup.close_failed().err();
+            let custody = match startup.into_failed_custody() {
+                Ok(custody) => custody,
+                Err(startup) => {
+                    let (custody, retained_close_error) = startup.retain_failure();
+                    if close_error.is_none() {
+                        close_error = retained_close_error;
+                    }
+                    custody
+                }
+            };
+            return Err(NodeStoreStartFailure::Opening(NodeStoreOpeningFailure {
+                custody,
+                close_error,
+            }));
+        }
+        let opening = match startup.into_opening() {
+            Ok(opening) => opening,
+            Err(startup) => {
+                startup.node_startup_failed();
+                let (custody, close_error) = startup.retain_failure();
+                return Err(NodeStoreStartFailure::Opening(NodeStoreOpeningFailure {
+                    custody,
+                    close_error,
+                }));
+            }
+        };
+        opening.node_body().lifecycle.promote();
+        Ok(Self { opening })
+    }
+
+    /// Positive physical fixtures use the same installed composite owner.
     #[cfg(any(test, feature = "test-utils"))]
+    #[allow(
+        clippy::result_large_err,
+        reason = "original startup custody stays inline; an error Box would allocate at refusal"
+    )]
     pub(crate) fn create_new_fixture_direct(
         path: &Path,
         id: Uuid,
         persistent_disk: Arc<NodeDisk>,
         scratch_disk: Arc<ScratchDisk>,
-    ) -> Result<Arc<Self>> {
-        ensure!(
-            Arc::ptr_eq(persistent_disk.memory(), scratch_disk.memory()),
-            "persistent and scratch disks require the same installed memory admission"
-        );
-        Self::initialize_fixture(
-            node_file::NodeFile::create_new(path, id, persistent_disk)?,
+    ) -> std::result::Result<Self, NodeStoreStartFailure> {
+        Self::start_registered(
+            path,
+            id,
+            persistent_disk,
             scratch_disk,
+            NodeOpeningMode::Create,
+            test_utils::node_storage_config(),
         )
     }
 
     #[cfg(any(test, feature = "test-utils"))]
+    #[allow(
+        clippy::result_large_err,
+        reason = "original startup custody stays inline; an error Box would allocate at refusal"
+    )]
     pub(crate) fn initialize_owned_empty_fixture_direct(
         path: &Path,
-        expected_file: &private_files::FileIdentity,
+        expected_group: &NodeGroupIdentity,
         id: Uuid,
         persistent_disk: Arc<NodeDisk>,
         scratch_disk: Arc<ScratchDisk>,
-    ) -> Result<Arc<Self>> {
-        ensure!(
-            Arc::ptr_eq(persistent_disk.memory(), scratch_disk.memory()),
-            "persistent and scratch disks require the same installed memory admission"
-        );
-        Self::initialize_fixture(
-            node_file::NodeFile::initialize_owned_empty(path, expected_file, id, persistent_disk)?,
+    ) -> std::result::Result<Self, NodeStoreStartFailure> {
+        Self::start_registered(
+            path,
+            id,
+            persistent_disk,
             scratch_disk,
+            NodeOpeningMode::OwnedEmpty(expected_group.clone()),
+            test_utils::node_storage_config(),
         )
     }
 
     #[cfg(any(test, feature = "test-utils"))]
-    fn initialize_fixture(
-        file: Arc<node_file::NodeFile>,
-        scratch_disk: Arc<ScratchDisk>,
-    ) -> Result<Arc<Self>> {
-        let db = Database::builder(file.clone()).create_with_backend(file.backend())?;
-        let db = Self::finish_setup(db, |db| {
-            Self::initialize_tables(db)?;
-            file.publish_ready()?;
-            Ok(())
-        })?;
-        Ok(Self::installed(
-            db,
-            Some(file.path().to_owned()),
-            Some(file.disk().clone()),
-            scratch_disk,
-        ))
-    }
-
-    #[cfg(any(test, feature = "test-utils"))]
+    #[allow(
+        clippy::result_large_err,
+        reason = "original startup custody stays inline; an error Box would allocate at refusal"
+    )]
     pub(crate) fn open_existing_fixture_direct(
         path: &Path,
-        expected_id: Uuid,
+        id: Uuid,
         persistent_disk: Arc<NodeDisk>,
         scratch_disk: Arc<ScratchDisk>,
-    ) -> Result<Arc<Self>> {
-        ensure!(
-            Arc::ptr_eq(persistent_disk.memory(), scratch_disk.memory()),
-            "persistent and scratch disks require the same installed memory admission"
-        );
-        let file = node_file::NodeFile::open_existing(path, expected_id, persistent_disk)?;
-        let db = Database::builder(file.clone()).create_with_backend(file.backend())?;
-        let db = Self::finish_setup(db, |db| {
-            let tx = db.begin_read()?;
-            tx.open_table(CATALOG)?;
-            tx.open_table(RECORDS)?;
-            Ok(())
-        })?;
-        Ok(Self::installed(
-            db,
-            Some(file.path().to_owned()),
-            Some(file.disk().clone()),
+    ) -> std::result::Result<Self, NodeStoreStartFailure> {
+        Self::start_registered(
+            path,
+            id,
+            persistent_disk,
             scratch_disk,
-        ))
+            NodeOpeningMode::Existing,
+            test_utils::node_storage_config(),
+        )
     }
 
     #[cfg(any(test, feature = "test-utils"))]
-    pub fn open_with_backend(
-        backend: impl kasumi_kv::StorageBackend + 'static,
+    #[allow(
+        clippy::result_large_err,
+        reason = "original startup custody stays inline; an error Box would allocate at refusal"
+    )]
+    pub fn create_with_backend<B: kasumi_kv::SegmentGroupBackend + 'static>(
+        backend: B,
         admission: Arc<dyn kasumi_kv::StorageAdmission>,
         scratch_disk: Arc<ScratchDisk>,
-    ) -> Result<Arc<Self>> {
-        let db = Database::builder(admission).create_with_backend(backend)?;
-        let db = Self::finish_setup(db, Self::initialize_tables)?;
-        Ok(Self::installed(db, None, None, scratch_disk))
+    ) -> std::result::Result<Self, NodeFixtureStartFailure<B>> {
+        Self::start_fixture(backend, admission, None, scratch_disk, false)
     }
 
     #[cfg(any(test, feature = "test-utils"))]
+    #[allow(
+        clippy::result_large_err,
+        reason = "original startup custody stays inline; an error Box would allocate at refusal"
+    )]
+    pub fn open_with_backend<B: kasumi_kv::SegmentGroupBackend + 'static>(
+        backend: B,
+        admission: Arc<dyn kasumi_kv::StorageAdmission>,
+        scratch_disk: Arc<ScratchDisk>,
+    ) -> std::result::Result<Self, NodeFixtureStartFailure<B>> {
+        Self::start_fixture(backend, admission, None, scratch_disk, true)
+    }
+
+    #[cfg(any(test, feature = "test-utils"))]
+    #[allow(
+        clippy::result_large_err,
+        reason = "original startup custody stays inline; an error Box would allocate at refusal"
+    )]
+    fn start_fixture<B: kasumi_kv::SegmentGroupBackend + 'static>(
+        backend: B,
+        admission: Arc<dyn kasumi_kv::StorageAdmission>,
+        persistent: Option<Arc<NodeDisk>>,
+        scratch: Arc<ScratchDisk>,
+        existing: bool,
+    ) -> std::result::Result<Self, NodeFixtureStartFailure<B>> {
+        let mut inputs = Some(NodeFixtureInputs {
+            backend,
+            admission,
+            persistent,
+            scratch,
+        });
+        let startup = match RegisteredNodeStartup::prepare_fixture(
+            &mut inputs,
+            test_utils::NODE_STORE_ID,
+            existing,
+            test_utils::node_storage_config(),
+        ) {
+            Ok(startup) => startup,
+            Err(original) => {
+                return Err(NodeFixtureStartFailure {
+                    original: NodeStoreStartFailure::Constructor(original),
+                    unentered: inputs,
+                });
+            }
+        };
+        debug_assert!(
+            inputs.is_none(),
+            "original inputs moved only after admission"
+        );
+        Self::finish_registered_startup(startup).map_err(|original| NodeFixtureStartFailure {
+            original,
+            unentered: inputs,
+        })
+    }
+
+    #[cfg(test)]
     pub(crate) fn finish_setup(
         database: Database,
         setup: impl FnOnce(&Database) -> Result<()>,
@@ -1004,31 +1524,115 @@ impl NodeStore {
         }
     }
 
+    /// Exact identities verified through this installed group's retained descriptors.
+    pub fn physical_identity(&self) -> Result<NodeGroupIdentity> {
+        self.body().db.physical_identity()
+    }
+
+    pub fn configure_cache(
+        &self,
+        config: kasumi_kv::CacheConfig,
+    ) -> Result<(), kasumi_kv::StorageError> {
+        if self
+            .body()
+            .persistent_disk
+            .as_ref()
+            .is_some_and(|disk| config.byte_limit > disk.native_storage_config().cache.byte_limit)
+        {
+            return Err(std::io::Error::from(std::io::ErrorKind::InvalidInput).into());
+        }
+        self.body().db.configure_cache(config)
+    }
+
+    pub fn cache_stats(&self) -> Result<kasumi_kv::CacheStats, kasumi_kv::StorageError> {
+        self.body().db.cache_stats()
+    }
+
+    pub fn warm_cache(
+        &self,
+        work_limit: usize,
+    ) -> Result<kasumi_kv::CacheWarmup, kasumi_kv::StorageError> {
+        self.body().db.warm_cache(work_limit)
+    }
+
+    pub fn warm_cache_if_needed(
+        &self,
+        work_limit: usize,
+    ) -> Result<kasumi_kv::CacheWarmup, kasumi_kv::StorageError> {
+        self.body().db.warm_cache_if_needed(work_limit)
+    }
+
+    pub fn cache_warmup_status(
+        &self,
+    ) -> Result<kasumi_kv::CacheWarmupStatus, kasumi_kv::StorageError> {
+        self.body().db.cache_warmup_status()
+    }
+
+    pub fn request_cache_warm_retry(&self) -> Result<(), kasumi_kv::StorageError> {
+        self.body().db.request_cache_warm_retry()
+    }
+
     /// Exact installed census owner for this node's database and close report.
     /// A retained close can be inspected through `RegisteredNodeOpening::retained`
     /// on the same installed memory provider and this ID.
     pub fn registered_opening_id(&self) -> Option<StorageOwnerId> {
-        self.db.registered_opening_id()
+        self.body().db.registered_opening_id()
     }
 
     /// Every production node has one mandatory installed physical owner.
     pub fn persistent_disk(&self) -> &Arc<NodeDisk> {
-        self.persistent_disk
+        self.body()
+            .persistent_disk
             .as_ref()
             .expect("synthetic backend fixture has no installed physical disk")
     }
 
-    /// Stop new database work, join retained initializers, then explicitly close
+    /// Stop new database work, drain cache warming and retained initializers, then close
     /// the database. The caller first drains its tenant and Raft workers. Busy retains
     /// the exact database and all physical charges for a later shutdown retry.
     pub async fn shutdown(&self) -> DrainResult {
-        self.db.stop();
-        let mut report = self.shutdown_report.lock().await;
-        if let Err(error) = self.drain_initializers().await {
-            report.record("node catalog initialization", 0, error);
+        // This facade owns the actual opening, so ingress sealing cannot depend
+        // on a nonblocking locator lookup while census metadata is contended.
+        self.opening.seal_store_transactions();
+        self.body().cache_warmer.stop(self);
+        let mut report = self.body().shutdown_report.lock().await;
+        let lifecycle = &self.body().lifecycle;
+        lifecycle.begin_shutdown();
+        lifecycle.enter_resource(node_lifecycle::NodeResource::Cache);
+        if let Err(failure) = self.body().cache_warmer.drain().await {
+            report.merge(&failure);
+            if failure.completion() == kasumi_types::drain::DrainCompletion::Retained {
+                return report.outcome(Some(failure));
+            }
         }
-        match self.db.close() {
-            Ok(()) => report.complete(),
+        lifecycle.resource_returned(node_lifecycle::NodeResource::Cache);
+        lifecycle.enter_resource(node_lifecycle::NodeResource::Initializers);
+        if let Err(original) = self.drain_initializers().await {
+            // The whole original stays in the same registry; this fixed outward
+            // diagnostic owns no node facade and cannot form a self-cycle.
+            let issue = report.record(
+                "node catalog initialization",
+                0,
+                original.observation().into(),
+            );
+            return report.outcome(Some(DrainFailure::retained(issue)));
+        }
+        lifecycle.resource_returned(node_lifecycle::NodeResource::Initializers);
+        lifecycle.enter_resource(node_lifecycle::NodeResource::Native);
+        match self.body().db.close() {
+            Ok(()) => {
+                if !self.body().db.native_resources_disposed() {
+                    let issue = report.record(
+                        "node database",
+                        0,
+                        anyhow::anyhow!("original native disposal remains unproved"),
+                    );
+                    return report.outcome(Some(DrainFailure::retained(issue)));
+                }
+                lifecycle.resource_returned(node_lifecycle::NodeResource::Native);
+                assert!(lifecycle.finish_shutdown());
+                report.complete()
+            }
             Err(failure)
                 if failure.completion() == kasumi_types::drain::DrainCompletion::Retained =>
             {
@@ -1036,6 +1640,11 @@ impl NodeStore {
             }
             Err(failure) => {
                 report.merge(&failure);
+                if !self.body().db.native_resources_disposed() {
+                    return report.outcome(Some(failure));
+                }
+                lifecycle.resource_returned(node_lifecycle::NodeResource::Native);
+                assert!(lifecycle.finish_shutdown());
                 report.complete()
             }
         }
@@ -1043,48 +1652,19 @@ impl NodeStore {
 
     /// Every temporary image/table on this node shares this explicit owner.
     pub fn scratch_disk(&self) -> &Arc<ScratchDisk> {
-        &self.scratch_disk
-    }
-
-    #[cfg(any(test, feature = "test-utils"))]
-    fn initialize_tables(db: &Database) -> Result<()> {
-        let tx = db.begin_write()?;
-        {
-            tx.open_table(CATALOG)?;
-            tx.open_table(RECORDS)?;
-        }
-        tx.commit()?;
-        Ok(())
-    }
-
-    #[cfg(any(test, feature = "test-utils"))]
-    fn installed(
-        db: Database,
-        path: Option<PathBuf>,
-        persistent_disk: Option<Arc<NodeDisk>>,
-        scratch_disk: Arc<ScratchDisk>,
-    ) -> Arc<Self> {
-        Arc::new(Self {
-            db: node_database::NodeDatabase::new(db, "node database"),
-            persistent_disk,
-            scratch_disk,
-            path,
-            tenants: AsyncMutex::new(HashMap::new()),
-            initializers: AsyncMutex::new(InitializerRegistry::default()),
-            shutdown_report: AsyncMutex::new(DrainReport::default()),
-        })
+        &self.body().scratch_disk
     }
 
     fn catalog(&self, tenant: &str) -> Result<Option<AdmittedKeyCatalog>> {
         // Synthetic process-exit fixtures intentionally have a direct backend;
         // an installed production node always has a registered opening.
         #[cfg(any(test, feature = "test-utils"))]
-        if self.db.has_fixture_direct_database() {
-            return Self::catalog_at(&self.db.begin_read()?, tenant)
+        if self.body().db.has_fixture_direct_database() {
+            return Self::catalog_at(&self.body().db.begin_read()?, tenant)
                 .map(|catalog| catalog.map(AdmittedKeyCatalog::unadmitted));
         }
 
-        let reader = self.db.queue_registered_read()?;
+        let reader = self.body().db.queue_registered_read()?;
         if reader.begin() != NodeReadPhase::Active {
             return Err(NodeCatalogReadFailure {
                 reader,
@@ -1109,11 +1689,7 @@ impl NodeStore {
         let decoded = bytes
             .as_ref()
             .map(|bytes| {
-                AdmittedKeyCatalog::decode(
-                    bytes.as_bytes(),
-                    tenant,
-                    self.persistent_disk().memory().clone(),
-                )
+                AdmittedKeyCatalog::decode(bytes.as_bytes(), tenant, self.memory().clone())
             })
             .transpose();
         drop(bytes);
@@ -1130,7 +1706,7 @@ impl NodeStore {
         let disposition = reader.retire();
         if disposition != StorageCensusDisposition::Retired {
             return Err(NodeCatalogReadRetirement {
-                provider: self.persistent_disk().memory().clone(),
+                provider: self.memory().clone(),
                 id,
                 disposition,
                 validation_error: decoded.err(),
@@ -1191,23 +1767,23 @@ impl NodeStore {
         // Only synthetic process-exit fixtures own a direct database. An
         // installed node always registers its exact write before native begin.
         #[cfg(any(test, feature = "test-utils"))]
-        if self.db.has_fixture_direct_database() {
+        if self.body().db.has_fixture_direct_database() {
             catalog.validate(tenant)?;
             let bytes = serde_json::to_vec(catalog)?;
-            let tx = self.db.begin_write()?;
+            let tx = self.body().db.begin_write()?;
             tx.open_table(CATALOG)?
                 .insert(tenant_hash(tenant).as_slice(), bytes.as_slice())?;
             return tx.commit().context("committing wrapped-key catalog");
         }
 
-        let provider = self.persistent_disk().memory().clone();
+        let provider = self.memory().clone();
         let plan = storage_opening::write_plan::AdmittedCatalogPut::prepare(
             tenant,
             catalog,
             provider.clone(),
         )?;
         let payload_bytes = u64::try_from(plan.bytes().len())?;
-        let writer = self.db.queue_registered_catalog_put(plan)?;
+        let writer = self.body().db.queue_registered_catalog_put(plan)?;
         let _ = writer.run();
         let (committed, denied) = {
             let report = writer.report();
@@ -1289,12 +1865,17 @@ struct DecodedRecord {
     key: Vec<u8>,
     value: Vec<u8>,
 }
+struct DecodedRecordRef<'plaintext> {
+    namespace: &'plaintext str,
+    key: &'plaintext [u8],
+    value: &'plaintext [u8],
+}
 
 /// A tenant's per-replica key cache. All keys are zeroized when the cache is sealed.
 /// Consumers holding resident documents must also discard their own copies on the
 /// `seal_notifications()` signal and gate response emission with `check_access()`.
 pub struct TenantStore {
-    node: Arc<NodeStore>,
+    node: NodeStore,
     tenant: String,
     access: StorageAccess,
     provider: Arc<dyn KeyProvider>,
@@ -1377,7 +1958,7 @@ impl TenantStore {
     /// Construct an unpublished owner. The caller retains its open gate until
     /// either publication or completed shutdown of this exact new owner.
     fn unpublished(
-        node: Arc<NodeStore>,
+        node: NodeStore,
         tenant: String,
         provider: Arc<dyn KeyProvider>,
         access: StorageAccess,
@@ -1544,12 +2125,20 @@ impl TenantStore {
     pub fn tenant(&self) -> &str {
         &self.tenant
     }
+    /// Actual installed owner for ordinary authenticated plaintext outputs.
+    /// Synthetic direct fixtures explicitly use their scratch provider.
+    pub fn plaintext_memory_owner(&self) -> &Arc<dyn NodeDiskMemoryAdmission> {
+        #[cfg(any(test, feature = "test-utils"))]
+        if self.node.body().db.has_fixture_direct_database() {
+            return self.node.scratch_disk().memory();
+        }
+        self.node.memory()
+    }
     /// Archive defaults share the durable installation root. Test-only memory
     /// backends must supply an explicit archive destination instead.
     pub fn durable_directory(&self) -> Result<&Path> {
         self.node
-            .path
-            .as_deref()
+            .group_path()
             .and_then(Path::parent)
             .context("storage backend has no durable directory")
     }
@@ -1599,7 +2188,7 @@ impl TenantStore {
         }
         drop(state);
         self.seal();
-        bail!("tenant is sealed: key-access lease unavailable or expired")
+        Err(KeyAccessDenied::new().into())
     }
 
     fn lease_failed(&self, failure: LeaseFailure) {
@@ -1631,11 +2220,11 @@ impl TenantStore {
     }
 
     fn require_access(&self, state: &KeyState) -> Result<()> {
-        ensure!(
-            self.valid(state),
-            "tenant is sealed: key-access lease unavailable or expired"
-        );
-        Ok(())
+        if self.valid(state) {
+            Ok(())
+        } else {
+            Err(KeyAccessDenied::new().into())
+        }
     }
 
     /// Each retained wrapping-key version is live-decrypted. No cached plaintext
@@ -1721,7 +2310,7 @@ impl TenantStore {
         Ok(())
     }
 
-    pub fn get(&self, namespace: &str, key: &[u8]) -> Result<Option<Vec<u8>>> {
+    pub fn get(&self, namespace: &str, key: &[u8]) -> Result<Option<PlaintextValue>> {
         self.get_bounded(namespace, key, MAX_RECORD)
     }
 
@@ -1732,7 +2321,36 @@ impl TenantStore {
         namespace: &str,
         key: &[u8],
         max_value_bytes: usize,
-    ) -> Result<Option<Vec<u8>>> {
+    ) -> Result<Option<PlaintextValue>> {
+        self.get_plaintext_bounded::<PlaintextValue>(namespace, key, max_value_bytes)
+    }
+
+    pub fn get_retained(
+        &self,
+        namespace: &str,
+        key: &[u8],
+    ) -> Result<Option<RetainedPlaintextValue>> {
+        self.get_retained_bounded(namespace, key, MAX_RECORD)
+    }
+
+    /// Share one immutable authenticated point result under the SAME original
+    /// point-read lease. Its named fixed control is quoted before that lease and
+    /// plaintext backing are allocated. No existing underquoted value is wrapped.
+    pub fn get_retained_bounded(
+        &self,
+        namespace: &str,
+        key: &[u8],
+        max_value_bytes: usize,
+    ) -> Result<Option<RetainedPlaintextValue>> {
+        self.get_plaintext_bounded::<RetainedPlaintextValue>(namespace, key, max_value_bytes)
+    }
+
+    fn get_plaintext_bounded<T: plaintext_value::PointReadValue>(
+        &self,
+        namespace: &str,
+        key: &[u8],
+        max_value_bytes: usize,
+    ) -> Result<Option<T>> {
         ensure!(
             max_value_bytes <= MAX_RECORD,
             "record read budget exceeds storage limit"
@@ -1742,15 +2360,15 @@ impl TenantStore {
         self.check_access()?;
         let state = self.state.read();
         self.require_access(&state)?;
-        let disk_key = record_key(
+        let disk_key = inline_record_key(
             &self.tenant,
             namespace,
             key,
             state.keys.get(INDEX_KEY).context("index key missing")?,
         );
         #[cfg(any(test, feature = "test-utils"))]
-        let mut result = if self.node.db.has_fixture_direct_database() {
-            let tx = self.node.db.begin_read()?;
+        let result = if self.node.body().db.has_fixture_direct_database() {
+            let tx = self.node.body().db.begin_read()?;
             let table = tx.open_table(RECORDS)?;
             table
                 .get(disk_key.as_slice())?
@@ -1769,29 +2387,27 @@ impl TenantStore {
             self.get_bounded_registered(&disk_key, namespace, key, max_value_bytes, &state)?
         };
         #[cfg(not(any(test, feature = "test-utils")))]
-        let mut result =
+        let result =
             self.get_bounded_registered(&disk_key, namespace, key, max_value_bytes, &state)?;
         self.require_access(&state)?;
-        Ok(result
-            .as_mut()
-            .map(|record| std::mem::take(&mut record.value)))
+        Ok(result)
     }
 
-    fn get_bounded_registered(
+    fn get_bounded_registered<T: plaintext_value::PointReadValue>(
         &self,
         disk_key: &[u8],
         namespace: &str,
         key: &[u8],
         max_value_bytes: usize,
         state: &KeyState,
-    ) -> Result<Option<DecodedRecord>> {
+    ) -> Result<Option<T>> {
         // A valid envelope contains a retained key ID, three length fields,
         // a nonce and an authentication tag. Bound the *owned ciphertext copy*
         // before reading; the existing plaintext budget is checked again below.
         let encrypted_limit =
             encrypted_record_limit(namespace.len(), key.len(), max_value_bytes, state)?;
 
-        let reader = self.node.db.queue_registered_read()?;
+        let reader = self.node.body().db.queue_registered_read()?;
         if reader.begin() != NodeReadPhase::Active {
             return Err(TenantPointReadFailure {
                 reader,
@@ -1813,24 +2429,42 @@ impl TenantStore {
                 .into());
             }
         };
-        let decoded = encrypted
-            .as_ref()
-            .map(|bytes| {
-                self.decode_bounded_record(
-                    disk_key,
-                    bytes.as_bytes(),
-                    namespace,
-                    key,
-                    max_value_bytes,
-                    state,
-                )
-            })
-            .transpose()
-            .and_then(|record| {
-                self.require_access(state)?;
-                Ok(record)
-            });
+        let decoded = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            encrypted
+                .as_ref()
+                .map(|bytes| {
+                    self.decode_bounded_record(
+                        disk_key,
+                        bytes.as_bytes(),
+                        namespace,
+                        key,
+                        max_value_bytes,
+                        state,
+                    )
+                })
+                .transpose()
+                .and_then(|record| {
+                    self.require_access(state)?;
+                    Ok(record)
+                })
+        }));
         drop(encrypted);
+        let decoded = match decoded {
+            Ok(decoded) => decoded,
+            Err(payload) => {
+                // Preserve this original admission/decode panic in the exact
+                // registered child. A later drain must never prove it clean.
+                reader.preserve_body_panic(payload);
+                let _ = reader.finish();
+                return Err(TenantPointReadFailure {
+                    reader,
+                    stage: "body panic",
+                    access: None,
+                    validation_error: None,
+                }
+                .into());
+            }
+        };
         if reader.finish() != NodeReadPhase::Finished {
             return Err(TenantPointReadFailure {
                 reader,
@@ -1844,7 +2478,7 @@ impl TenantStore {
         let disposition = reader.retire();
         if disposition != StorageCensusDisposition::Retired {
             return Err(TenantPointReadRetirement {
-                provider: self.node.persistent_disk().memory().clone(),
+                provider: self.node.memory().clone(),
                 id,
                 disposition,
                 validation_error: decoded.err(),
@@ -1854,7 +2488,7 @@ impl TenantStore {
         decoded
     }
 
-    fn decode_bounded_record(
+    fn decode_bounded_record<T: plaintext_value::PointReadValue>(
         &self,
         disk_key: &[u8],
         envelope: &[u8],
@@ -1862,23 +2496,22 @@ impl TenantStore {
         key: &[u8],
         max_value_bytes: usize,
         state: &KeyState,
-    ) -> Result<DecodedRecord> {
-        check_encrypted_record_budget(envelope, namespace.len(), key.len(), max_value_bytes)?;
-        let record = self.decode_record(disk_key, envelope, state)?;
-        ensure!(
-            record.value.len() <= max_value_bytes,
-            "record value exceeds read budget"
-        );
-        ensure!(
-            record.namespace == namespace && record.key == key,
-            "record identity mismatch"
-        );
-        Ok(record)
+    ) -> Result<T> {
+        T::prepare(
+            self,
+            disk_key,
+            envelope,
+            state,
+            namespace,
+            key,
+            max_value_bytes,
+        )
     }
 
     /// Visits one authenticated record at a time without retaining a namespace's
     /// values. The callback runs synchronously under the current key lease and
-    /// must bound its own accumulated result. It cannot perform async I/O.
+    /// the installed plaintext workspace charge. It must bound its own
+    /// accumulated result and cannot perform async I/O.
     pub fn visit(
         &self,
         namespace: &str,
@@ -1894,14 +2527,20 @@ impl TenantStore {
         self.check_access()?;
         let state = self.state.read();
         self.require_access(&state)?;
-        let prefix = namespace_prefix(
-            &self.tenant,
-            namespace,
-            state.keys.get(INDEX_KEY).context("index key missing")?,
-        );
+        let index = state.keys.get(INDEX_KEY).context("index key missing")?;
+        let mut prefix = [0u8; 64];
+        prefix[..32].copy_from_slice(&tenant_hash(&self.tenant));
+        prefix[32..].copy_from_slice(&keyed_hash(
+            index,
+            &[
+                b"kasumi.namespace.v1",
+                self.tenant.as_bytes(),
+                namespace.as_bytes(),
+            ],
+        ));
         #[cfg(any(test, feature = "test-utils"))]
-        if self.node.db.has_fixture_direct_database() {
-            let tx = self.node.db.begin_read()?;
+        if self.node.body().db.has_fixture_direct_database() {
+            let tx = self.node.body().db.begin_read()?;
             let table = tx.open_table(RECORDS)?;
             for entry in table.range(prefix.as_slice()..)? {
                 let (key, value) = entry?;
@@ -1915,13 +2554,20 @@ impl TenantStore {
                     4096,
                     max_value_bytes,
                 )?;
-                let record = self.decode_record(key.value(), value.value(), &state)?;
+                let plaintext = visit_record::AdmittedPlaintextRecord::prepare(
+                    self,
+                    key.value(),
+                    value.value(),
+                    &state,
+                )?;
+                let record =
+                    self.decode_record_fields(key.value(), plaintext.plaintext(), &state)?;
                 ensure!(
                     record.value.len() <= max_value_bytes,
                     "record value exceeds visit budget"
                 );
                 ensure!(record.namespace == namespace, "record namespace mismatch");
-                visitor(&record.key, &record.value)?;
+                visitor(record.key, record.value)?;
             }
             return self.require_access(&state);
         }
@@ -1936,50 +2582,63 @@ impl TenantStore {
             )? {
                 self.require_access(&state)?;
                 check_encrypted_record_budget(row.value(), namespace.len(), 4096, max_value_bytes)?;
-                let record = self.decode_record(row.key(), row.value(), &state)?;
+                let plaintext = visit_record::AdmittedPlaintextRecord::prepare(
+                    self,
+                    row.key(),
+                    row.value(),
+                    &state,
+                )?;
+                let record = self.decode_record_fields(row.key(), plaintext.plaintext(), &state)?;
                 ensure!(
                     record.value.len() <= max_value_bytes,
                     "record value exceeds visit budget"
                 );
                 ensure!(record.namespace == namespace, "record namespace mismatch");
-                visitor(&record.key, &record.value)?;
+                visitor(record.key, record.value)?;
                 cursor = Some(row.into_key());
             }
             self.require_access(&state)
         })
     }
 
-    pub fn scan(&self, namespace: &str) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
+    pub fn scan(&self, namespace: &str) -> Result<PlaintextScan> {
         let _access = AccessGuard(self);
         validate_record(namespace, &[], 0)?;
         self.check_access()?;
         let state = self.state.read();
         self.require_access(&state)?;
-        let prefix = namespace_prefix(
-            &self.tenant,
-            namespace,
-            state.keys.get(INDEX_KEY).context("index key missing")?,
-        );
+        let index = state.keys.get(INDEX_KEY).context("index key missing")?;
+        let mut prefix = [0u8; 64];
+        prefix[..32].copy_from_slice(&tenant_hash(&self.tenant));
+        prefix[32..].copy_from_slice(&keyed_hash(
+            index,
+            &[
+                b"kasumi.namespace.v1",
+                self.tenant.as_bytes(),
+                namespace.as_bytes(),
+            ],
+        ));
+        let provider = self.plaintext_memory_owner().clone();
         #[cfg(any(test, feature = "test-utils"))]
-        if self.node.db.has_fixture_direct_database() {
-            let tx = self.node.db.begin_read()?;
+        if self.node.body().db.has_fixture_direct_database() {
+            let tx = self.node.body().db.begin_read()?;
             let table = tx.open_table(RECORDS)?;
-            let mut records = Vec::new();
+            let mut records = PlaintextScan::new(provider);
             for entry in table.range(prefix.as_slice()..)? {
                 let (key, value) = entry?;
                 if !key.value().starts_with(&prefix) {
                     break;
                 }
                 self.require_access(&state)?;
-                let record = self.decode_record(key.value(), value.value(), &state)?;
-                ensure!(record.namespace == namespace, "record namespace mismatch");
-                records.push(record);
+                let record =
+                    PlaintextRecord::prepare(self, key.value(), value.value(), &state, namespace)?;
+                records.push(record)?;
             }
             return self.sorted_scan_records(&state, records);
         }
         let encrypted_limit = encrypted_record_limit(namespace.len(), 4096, MAX_RECORD, &state)?;
         let records = self.node.with_registered_read(|reader| {
-            let mut records = Vec::new();
+            let mut records = PlaintextScan::new(provider);
             let mut cursor: Option<AdmittedReadBytes> = None;
             while let Some(row) = reader.next_record(
                 &prefix,
@@ -1987,9 +2646,9 @@ impl TenantStore {
                 encrypted_limit,
             )? {
                 self.require_access(&state)?;
-                let record = self.decode_record(row.key(), row.value(), &state)?;
-                ensure!(record.namespace == namespace, "record namespace mismatch");
-                records.push(record);
+                let record =
+                    PlaintextRecord::prepare(self, row.key(), row.value(), &state, namespace)?;
+                records.push(record)?;
                 cursor = Some(row.into_key());
             }
             Ok(records)
@@ -2000,39 +2659,15 @@ impl TenantStore {
     fn sorted_scan_records(
         &self,
         state: &KeyState,
-        mut records: Vec<DecodedRecord>,
-    ) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
-        records.sort_by(|a, b| a.key.cmp(&b.key));
+        mut records: PlaintextScan,
+    ) -> Result<PlaintextScan> {
+        records.sort();
         self.require_access(state)?;
-        Ok(records
-            .into_iter()
-            .map(|mut record| {
-                (
-                    std::mem::take(&mut record.key),
-                    std::mem::take(&mut record.value),
-                )
-            })
-            .collect())
+        Ok(records)
     }
 
     pub fn write_batch(&self, operations: &[WriteOp]) -> Result<()> {
-        let _access = AccessGuard(self);
-        validate_batch(&[operations])?;
-        reject_unpaired_identity_ops(operations)?;
-        self.check_access()?;
-        let _mutation = self.mutations.lock();
-        let state = self.state.read();
-        self.require_access(&state)?;
-        let catalog = self.catalog.read();
-        let tx = self.node.db.begin_write()?;
-        write_domain(&tx, self, &state, &catalog, operations)?;
-        self.require_access(&state)?;
-        tx.commit()
-            .context("durable encrypted batch commit failed; outcome may be unknown")?;
-        // Expiry during fsync is an unknown-outcome write, never a false rollback claim.
-        self.require_access(&state).context(
-            "batch committed but key access was lost before acknowledgment; outcome unknown",
-        )
+        self.write_batch_with_source(operations, None)
     }
 
     pub async fn rotate_data_key(&self) -> Result<()> {
@@ -2117,25 +2752,40 @@ impl TenantStore {
             input,
             &record_aad(&self.tenant, disk_key),
         )?);
-        let mut input = plaintext.as_slice();
-        let mut record = DecodedRecord {
-            namespace: String::new(),
-            key: Vec::new(),
-            value: Vec::new(),
+        let record = self.decode_record_fields(disk_key, &plaintext, state)?;
+        Ok(DecodedRecord {
+            namespace: record.namespace.to_owned(),
+            key: record.key.to_vec(),
+            value: record.value.to_vec(),
+        })
+    }
+
+    // One authenticated record parser for ordinary owned reads and prepared
+    // loans. A borrowed field never outlives its zeroizing plaintext owner.
+    fn decode_record_fields<'plaintext>(
+        &self,
+        disk_key: &[u8],
+        plaintext: &'plaintext [u8],
+        state: &KeyState,
+    ) -> Result<DecodedRecordRef<'plaintext>> {
+        let mut input = plaintext;
+        let record = DecodedRecordRef {
+            namespace: std::str::from_utf8(take_bytes(&mut input)?)
+                .context("invalid record namespace")?,
+            key: take_bytes(&mut input)?,
+            value: take_bytes(&mut input)?,
         };
-        record.namespace = std::str::from_utf8(take_bytes(&mut input)?)
-            .context("invalid record namespace")?
-            .to_owned();
-        record.key = take_bytes(&mut input)?.to_vec();
-        record.value = take_bytes(&mut input)?.to_vec();
         ensure!(input.is_empty(), "trailing encrypted record data");
-        let expected = record_key(
+        let expected = inline_record_key(
             &self.tenant,
-            &record.namespace,
-            &record.key,
+            record.namespace,
+            record.key,
             state.keys.get(INDEX_KEY).context("index key missing")?,
         );
-        ensure!(expected == disk_key, "encrypted record identity mismatch");
+        ensure!(
+            expected.as_slice() == disk_key,
+            "encrypted record identity mismatch"
+        );
         Ok(record)
     }
 }
@@ -2329,15 +2979,15 @@ impl AdmittedRecordPut {
         let requested = u64::try_from(envelope_len)?;
         let admitted = disk_memory::allocation::<u8>(requested)?;
         #[cfg(any(test, feature = "test-utils"))]
-        let provider = if store.node.db.has_fixture_direct_database() {
+        let provider = if store.node.body().db.has_fixture_direct_database() {
             // A synthetic direct database has no persistent NodeDisk, but its
             // fixture scratch owner still installs mandatory resident credit.
             store.node.scratch_disk().memory().clone()
         } else {
-            store.node.persistent_disk().memory().clone()
+            store.node.memory().clone()
         };
         #[cfg(not(any(test, feature = "test-utils")))]
-        let provider = store.node.persistent_disk().memory().clone();
+        let provider = store.node.memory().clone();
         let charge = provider
             .reserve_installed(admitted)
             .context("encrypted record output admission denied")?;
@@ -2471,12 +3121,19 @@ fn inline_record_key(tenant: &str, namespace: &str, key: &[u8], index: &SecretKe
 }
 
 fn record_aad(tenant: &str, key: &[u8]) -> Vec<u8> {
-    let mut aad = b"kasumi.encrypted-record.v1".to_vec();
-    aad.extend((tenant.len() as u64).to_be_bytes());
-    aad.extend(tenant.as_bytes());
-    // The physical key is an HMAC commitment to the exact namespace and user key.
-    aad.extend(key);
+    let mut aad =
+        Vec::with_capacity(b"kasumi.encrypted-record.v1".len() + 8 + tenant.len() + key.len());
+    record_aad_into(&mut aad, tenant, key);
     aad
+}
+
+fn record_aad_into(aad: &mut Vec<u8>, tenant: &str, key: &[u8]) {
+    aad.clear();
+    aad.extend_from_slice(b"kasumi.encrypted-record.v1");
+    aad.extend_from_slice(&(tenant.len() as u64).to_be_bytes());
+    aad.extend_from_slice(tenant.as_bytes());
+    // The physical key commits to the exact namespace and user key.
+    aad.extend_from_slice(key);
 }
 
 fn validate_record(namespace: &str, key: &[u8], value_len: usize) -> Result<()> {
@@ -2510,6 +3167,20 @@ fn take_bytes<'a>(input: &mut &'a [u8]) -> Result<&'a [u8]> {
     Ok(result)
 }
 
+// The physical framing arithmetic is shared by the real reader and its quote.
+fn encrypted_record_length(
+    namespace_bytes: usize,
+    key_bytes: usize,
+    max_value_bytes: usize,
+    longest_key_id: usize,
+) -> Option<usize> {
+    max_value_bytes
+        .checked_add(namespace_bytes)
+        .and_then(|bytes| bytes.checked_add(key_bytes))
+        .and_then(|bytes| bytes.checked_add(longest_key_id))
+        .and_then(|bytes| bytes.checked_add(4 + 12 + 24 + 16))
+}
+
 fn encrypted_record_limit(
     namespace_bytes: usize,
     key_bytes: usize,
@@ -2517,12 +3188,9 @@ fn encrypted_record_limit(
     state: &KeyState,
 ) -> Result<usize> {
     let longest_key_id = state.keys.keys().map(String::len).max().unwrap_or(0);
-    let limit = max_value_bytes
-        .checked_add(namespace_bytes)
-        .and_then(|bytes| bytes.checked_add(key_bytes))
-        .and_then(|bytes| bytes.checked_add(longest_key_id))
-        .and_then(|bytes| bytes.checked_add(4 + 12 + 24 + 16))
-        .context("record read budget overflow")?;
+    let limit =
+        encrypted_record_length(namespace_bytes, key_bytes, max_value_bytes, longest_key_id)
+            .context("record read budget overflow")?;
     ensure!(
         limit <= MAX_BATCH,
         "encrypted record read budget exceeds storage limit"
@@ -2582,15 +3250,26 @@ fn encrypt(key: &SecretKey, plaintext: &[u8], aad: &[u8]) -> Result<Vec<u8>> {
 
 fn decrypt(key: &SecretKey, ciphertext: &[u8], aad: &[u8]) -> Result<Vec<u8>> {
     ensure!(ciphertext.len() >= 40, "truncated encrypted record");
+    let mut plaintext = Zeroizing::new(vec![0; ciphertext.len() - 40]);
+    decrypt_into(key, ciphertext, aad, &mut plaintext)?;
+    Ok(std::mem::take(&mut *plaintext))
+}
+
+// Prepared and allocating readers share authentication and nonce/tag handling.
+// The caller owns and clears output on failure; no unauthenticated bytes escape.
+fn decrypt_into(key: &SecretKey, ciphertext: &[u8], aad: &[u8], output: &mut [u8]) -> Result<()> {
+    ensure!(ciphertext.len() >= 40, "truncated encrypted record");
+    let length = ciphertext.len() - 40;
+    ensure!(output.len() == length, "decryption output length differs");
     let cipher = XChaCha20Poly1305::new_from_slice(key.as_bytes())
         .map_err(|_| anyhow::anyhow!("invalid encryption key"))?;
+    output.copy_from_slice(&ciphertext[24..24 + length]);
     cipher
-        .decrypt(
+        .decrypt_in_place_detached(
             XNonce::from_slice(&ciphertext[..24]),
-            Payload {
-                msg: &ciphertext[24..],
-                aad,
-            },
+            aad,
+            output,
+            chacha20poly1305::Tag::from_slice(&ciphertext[24 + length..]),
         )
         .map_err(|_| anyhow::anyhow!("encrypted record authentication failed"))
 }
@@ -2601,3 +3280,19 @@ mod catalog_budget;
 mod tests;
 #[cfg(test)]
 mod tls_fixture;
+
+#[cfg(any(test, feature = "test-utils"))]
+pub use storage_opening::{
+    NativeSlotBlockers, NativeSourceFixtureError, NativeSourceFundingFixture,
+};
+
+#[cfg(any(test, feature = "test-utils"))]
+pub use storage_opening::{
+    RegisteredSourceFundingFixture, SourceCompletionFault, SourceReadDiagnostic,
+};
+
+pub use storage_opening::{
+    PreparedRegisteredSource, RegisteredSourceCapacity, SourceCapacityClose, SourceCapacityFailure,
+    SourceCapacityReport, SourceCapacityRetirement, SourceHistoryAbort, SourceHistoryRefusal,
+    SourcePoolPhase,
+};

@@ -42,6 +42,59 @@ impl RetainedParent {
                 .take(),
         );
     }
+    pub(super) fn directory_close_errors(&mut self) -> [Option<(i32, &io::Error)>; 3] {
+        let walk = self
+            .walk
+            .get_mut()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let [current, next] = walk.close_errors();
+        [
+            self.close_outcome
+                .as_ref()
+                .map(|outcome| (outcome.descriptor, &outcome.error)),
+            current,
+            next,
+        ]
+    }
+    pub(super) fn take_directory_failure(&mut self) -> Option<io::Error> {
+        self.walk
+            .get_mut()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .failure
+            .take()
+    }
+    pub(super) fn has_directory_failure(&self) -> bool {
+        self.walk
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .failure
+            .is_some()
+    }
+    pub(super) fn retire_directory_backing(&mut self) {
+        assert!(
+            self.known_drained(),
+            "directory parent requires positive native drain"
+        );
+        let walk = self
+            .walk
+            .get_mut()
+            .unwrap_or_else(|poison| poison.into_inner());
+        assert!(
+            walk.failure.is_none(),
+            "parent original retirement precedes backing"
+        );
+        drop(std::mem::replace(&mut self.ancestors, Box::new([])));
+    }
+    #[cfg(test)]
+    pub(super) fn descriptor_for_test(&self) -> Option<i32> {
+        use std::os::fd::AsRawFd;
+        self.file.as_ref().map(AsRawFd::as_raw_fd)
+    }
+    #[cfg(test)]
+    pub(super) fn record_closed_descriptor_for_test(&mut self, descriptor: i32, error: io::Error) {
+        assert!(self.file.is_none() && self.close_outcome.is_none());
+        self.close_outcome = Some(CloseOutcome { descriptor, error });
+    }
     pub(super) fn known_drained(&self) -> bool {
         let Ok(walk) = self.walk.try_lock() else {
             return false;
@@ -291,9 +344,6 @@ impl RetainedParent {
         self.registered = true;
         Ok(())
     }
-    pub(super) fn take_descriptor(&mut self) -> Option<File> {
-        self.file.take()
-    }
     /// Move the scalar registration across the resources' scope boundary.
     /// Actual FD and ancestor allocation destruction precede returned credit.
     // Existing directory retirement is unchanged and remains separately unqualified.
@@ -367,6 +417,27 @@ impl ParentTransition {
         second: Option<(Identity, i8)>,
         growth_work: Option<DiskWork>,
     ) -> io::Result<Self> {
+        Self::preflight_inner(disk, state, first, second, growth_work, None)
+    }
+
+    pub(super) fn preflight_transaction(
+        disk: &NodeDisk,
+        state: &mut State,
+        first: (Identity, i8),
+        permit: &super::transaction::FileCreationPermit,
+    ) -> io::Result<Self> {
+        permit.check_parent(state, first.0)?;
+        Self::preflight_inner(disk, state, first, None, None, Some(permit))
+    }
+
+    fn preflight_inner(
+        disk: &NodeDisk,
+        state: &mut State,
+        first: (Identity, i8),
+        second: Option<(Identity, i8)>,
+        growth_work: Option<DiskWork>,
+        admitted: Option<&super::transaction::FileCreationPermit>,
+    ) -> io::Result<Self> {
         if state.phase == NodeDiskPhase::Failed || !disk.device.lock().admission_ready() {
             return Err(io::ErrorKind::Other.into());
         }
@@ -374,7 +445,14 @@ impl ParentTransition {
             .namespace_generation
             .checked_add(1)
             .ok_or(io::ErrorKind::StorageFull)?;
-        if let Some(work) = growth_work {
+        // Other namespace work cannot spend generation slots already promised
+        // to complete namespace batches or transaction-file ranges.
+        generation
+            .checked_add(super::batch::reserved_entries(state) as u64)
+            .ok_or(io::ErrorKind::StorageFull)?;
+        if let Some(permit) = admitted {
+            permit.check_parent(state, first.0)?;
+        } else if let Some(work) = growth_work {
             // Full parent allowances were promised by census. This checks the
             // unchanged node/work/floor policy before consuming those promises.
             disk.reserve(state, 0, work)?;
@@ -417,7 +495,10 @@ impl ParentTransition {
             if !before.settled {
                 return Err(io::ErrorKind::InvalidData.into());
             }
-            if delta < 0 && super::batch::reserved_children(state, before.binding) != 0 {
+            let reserved_children = super::batch::reserved_children(state, before.binding)
+                .checked_add(before.transaction_children)
+                .ok_or(io::ErrorKind::InvalidData)?;
+            if delta < 0 && reserved_children != 0 {
                 return Err(io::ErrorKind::WouldBlock.into());
             }
             let children = before
@@ -426,7 +507,7 @@ impl ParentTransition {
                 .ok_or(io::ErrorKind::InvalidData)?;
             if delta > 0
                 && (children
-                    .checked_add(super::batch::reserved_children(state, before.binding))
+                    .checked_add(reserved_children)
                     .is_none_or(|n| n > disk.config.directory_policy.max_entries)
                     || before.bytes > disk.config.directory_policy.extent_bytes)
             {
@@ -490,6 +571,8 @@ impl ParentTransition {
                 .expect("prepared parent");
             *entry = AccountedDirectory {
                 live_handles: entry.live_handles,
+                transaction_children: entry.transaction_children,
+                transaction_claimed: entry.transaction_claimed,
                 ..change.before
             };
         }
@@ -596,6 +679,8 @@ impl ParentTransition {
                 .expect("prepared parent");
             *current = AccountedDirectory {
                 live_handles: current.live_handles,
+                transaction_children: current.transaction_children,
+                transaction_claimed: current.transaction_claimed,
                 ..entry
             };
         }

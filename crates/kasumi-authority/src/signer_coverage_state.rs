@@ -89,16 +89,16 @@ impl Backend {
         let Some(Record::SignerRoster(frozen)) =
             read(&signer_roster::roster_key(publication.global_stage()))?
         else {
-            anyhow::bail!("coverage dispatch lacks its original frozen roster");
+            reject_bail!("coverage dispatch lacks its original frozen roster");
         };
-        ensure!(
+        reject_unless!(
             frozen.operation_id == publication.global_stage()
                 && frozen.roster == dispatch.frozen_roster
                 && frozen.revision < dispatch.revision
                 && dispatch.registration.revision <= frozen.revision,
             "coverage dispatch changed frozen registration or roster"
         );
-        ensure!(
+        reject_unless!(
             matches!(read(&signer_roster::verifier_key(publication.verifier()))?,
             Some(Record::Verifier(ref registration)) if *registration == dispatch.registration),
             "coverage dispatch registration is not the permanent physical origin"
@@ -124,9 +124,9 @@ impl Backend {
             publication.command().operation_id,
         ))?
         else {
-            anyhow::bail!("coverage acknowledgment lacks its original local effect permission");
+            reject_bail!("coverage acknowledgment lacks its original local effect permission");
         };
-        ensure!(
+        reject_unless!(
             permission.phase == AuthorityMaintenancePhase::Completed
                 && permission.progress_revision < before,
             "local effect permission did not precede coverage acknowledgment"
@@ -134,9 +134,9 @@ impl Backend {
         let Some(Record::CoveragePermission(marker)) =
             read(&permission_key(dispatch.command.operation_id))?
         else {
-            anyhow::bail!("coverage source permission has no durable phase record");
+            reject_bail!("coverage source permission has no durable phase record");
         };
-        ensure!(
+        reject_unless!(
             marker.dispatch_operation_id == dispatch.command.operation_id
                 && marker.permission_operation_id == permission.command.operation_id
                 && marker.permission_sha256 == permission.command_sha256
@@ -151,7 +151,7 @@ impl Backend {
                 SignerPublicationRequest::Issuer { directive, .. },
                 AuthorityMaintenanceAction::AuthorizeSignerTrust { directive: actual },
             ) => {
-                ensure!(
+                reject_unless!(
                     directive == actual,
                     "coverage substituted issuer publication permission"
                 );
@@ -160,12 +160,12 @@ impl Backend {
                 SignerPublicationRequest::Control { request },
                 AuthorityMaintenanceAction::AuthorizeControlSigner { directive },
             ) => {
-                ensure!(
+                reject_unless!(
                     request.directive == **directive,
                     "coverage substituted Control publication permission"
                 );
             }
-            _ => anyhow::bail!("coverage publication permission kind differs"),
+            _ => reject_bail!("coverage publication permission kind differs"),
         }
         Ok(permission)
     }
@@ -177,8 +177,8 @@ impl Backend {
         read: impl Fn(&str) -> Result<Option<Record>>,
     ) -> Result<()> {
         let permission = self.coverage_permission(dispatch, before, &read)?;
-        ensure!(
-            *publication.authorization()? == permission,
+        reject_unless!(
+            *publication.authorization().map_err(reject_conflict)? == permission,
             "coverage observation substituted the exact committed source permission"
         );
         if let (
@@ -191,7 +191,7 @@ impl Backend {
                 permission.progress_revision,
                 &read,
             )?;
-            ensure!(
+            reject_unless!(
                 reply.issuer.admission == admission
                     && reply.issuer.registration == registration
                     && reply.issuer.registration == dispatch.registration
@@ -324,6 +324,7 @@ impl Backend {
         &self,
         position: &AppliedEntryContext,
         prepared: PreparedCoverage,
+        publication_writes: &mut Vec<WriteOp>,
     ) -> Result<kasumi_types::Result<SignerCoverageStatus>> {
         let mut meta = self.meta()?;
         if let Err(error) = prepared
@@ -395,8 +396,10 @@ impl Backend {
                     admitted_principal: prepared.context.principal.clone(),
                     revision,
                 };
-                if let Err(error) = self.coverage_dependencies(&dispatch, |key| self.record(key)) {
-                    return Ok(Err(conflict(&error.to_string())));
+                if let Err(error) =
+                    prepared_outcome(self.coverage_dependencies(&dispatch, |key| self.record(key)))?
+                {
+                    return Ok(Err(error));
                 }
                 additions.push((
                     identity_key,
@@ -462,13 +465,13 @@ impl Backend {
                     return Ok(Err(conflict(&error.to_string())));
                 }
                 self.coverage_dependencies(&status.dispatch, |key| self.record(key))?;
-                if let Err(error) = self.coverage_observation_dependencies(
+                if let Err(error) = prepared_outcome(self.coverage_observation_dependencies(
                     &status.dispatch,
                     &publication,
                     revision,
                     |key| self.record(key),
-                ) {
-                    return Ok(Err(conflict(&error.to_string())));
+                ))? {
+                    return Ok(Err(error));
                 }
                 let ack = SignerCoverageAcknowledgment {
                     dispatch_operation_id: operation_id,
@@ -516,7 +519,7 @@ impl Backend {
         meta.revision = revision;
         meta.operational.revision = revision;
         writes.push(WriteOp::put(NS, META, serde_json::to_vec(&meta)?));
-        self.store.write_batch(&writes)?;
+        *publication_writes = writes;
         Ok(Ok(status))
     }
     pub(super) fn validate_coverage_snapshot(&self, snapshot: &Snapshot) -> Result<()> {

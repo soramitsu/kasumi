@@ -110,9 +110,12 @@ pub(crate) fn open_or_create_directory(
 pub(crate) fn initial_config(
     roots: BTreeMap<String, PathBuf>,
     directory_policy: kasumi_store::DirectoryPolicy,
+    file_allocation_policy: kasumi_store::FileAllocationPolicy,
 ) -> Result<NodeDiskConfig> {
     directory_policy.validate()?;
+    file_allocation_policy.validate()?;
     Ok(NodeDiskConfig {
+        native_storage: kasumi_store::NodeStorageConfig::new(1 << 30, 64),
         roots,
         max_bytes: 128 << 30,
         maintenance_reserve_bytes: 1 << 30,
@@ -120,6 +123,7 @@ pub(crate) fn initial_config(
         max_open_files: 4096,
         max_open_directories: 4096,
         directory_policy,
+        file_allocation_policy,
         max_persistent_files: 1_000_000,
         max_persistent_subdirectories: 1_000_000,
         census_work_per_step: 1_000_000,
@@ -145,10 +149,38 @@ impl crate::runtime::RuntimeConfig {
         {
             paths.push(directory);
         }
-        for archive in self.tenant_audit_archives.values() {
-            if let crate::audit_destination::AuditDestinationConfig::Filesystem { directory } =
-                archive
+        for placement in
+            self.tenant_audit_placements
+                .values()
+                .chain(self.target_recovery.iter().flat_map(|target| {
+                    target
+                        .tenants
+                        .values()
+                        .map(|template| &template.audit_placement)
+                }))
+        {
+            if let crate::audit_destination::TenantAuditPlacementConfig::External {
+                destination:
+                    crate::audit_destination::AuditDestinationConfig::Filesystem { directory },
+            } = placement
             {
+                if let Some(target) = &self.target_recovery {
+                    anyhow::ensure!(
+                        !directory.starts_with(&target.generation_root),
+                        "external tenant audit archive is inside the generation deletion root"
+                    );
+                }
+                if self.mode == crate::runtime::DeploymentMode::Standalone {
+                    let generations = self
+                        .database_path
+                        .parent()
+                        .ok_or_else(|| anyhow::anyhow!("standalone data directory missing"))?
+                        .join("generations");
+                    anyhow::ensure!(
+                        !directory.starts_with(&generations),
+                        "external tenant audit archive is inside the local generation deletion root"
+                    );
+                }
                 paths.push(directory);
             }
         }
@@ -188,6 +220,7 @@ pub(crate) fn fixture_config(root: &Path) -> NodeDiskConfig {
     let mut config = initial_config(
         BTreeMap::from([("fixture".into(), root.to_path_buf())]),
         kasumi_store::DirectoryPolicy::fixture(),
+        kasumi_store::FileAllocationPolicy::fixture(),
     )
     .unwrap();
     config.max_bytes = 256 << 30;
@@ -261,20 +294,30 @@ mod tests {
     #[test]
     fn persistent_config_is_mandatory_and_does_not_infer_database_parent() {
         let mut value = serde_json::to_value(
-            crate::runtime::example_config(kasumi_store::DirectoryPolicy::fixture()).unwrap(),
+            crate::runtime::example_config(
+                kasumi_store::DirectoryPolicy::fixture(),
+                kasumi_store::FileAllocationPolicy::fixture(),
+            )
+            .unwrap(),
         )
         .unwrap();
         value.as_object_mut().unwrap().remove("persistent_disk");
         assert!(serde_json::from_value::<crate::runtime::RuntimeConfig>(value).is_err());
-        let mut config =
-            crate::runtime::example_config(kasumi_store::DirectoryPolicy::fixture()).unwrap();
+        let mut config = crate::runtime::example_config(
+            kasumi_store::DirectoryPolicy::fixture(),
+            kasumi_store::FileAllocationPolicy::fixture(),
+        )
+        .unwrap();
         config.database_path = "/different/node.kv".into();
         assert!(config.validate_persistent_disk().is_err());
     }
     #[test]
     fn persistent_namespace_limits_are_required_without_legacy_fields() {
-        let config =
-            crate::runtime::example_config(kasumi_store::DirectoryPolicy::fixture()).unwrap();
+        let config = crate::runtime::example_config(
+            kasumi_store::DirectoryPolicy::fixture(),
+            kasumi_store::FileAllocationPolicy::fixture(),
+        )
+        .unwrap();
         let encoded = serde_json::to_value(&config).unwrap();
         let limits = [
             "max_persistent_files",
@@ -308,9 +351,29 @@ mod tests {
         assert!(serde_json::from_value::<crate::runtime::RuntimeConfig>(mixed).is_err());
     }
     #[test]
+    fn persistent_file_allowance_is_required_and_preserves_the_selected_value() {
+        let policy = kasumi_store::FileAllocationPolicy::new(12345).unwrap();
+        let config =
+            crate::runtime::example_config(kasumi_store::DirectoryPolicy::fixture(), policy)
+                .unwrap();
+        assert_eq!(config.persistent_disk.file_allocation_policy, policy);
+        let mut encoded = serde_json::to_value(&config).unwrap();
+        let decoded: crate::runtime::RuntimeConfig =
+            serde_json::from_value(encoded.clone()).unwrap();
+        assert_eq!(decoded.persistent_disk.file_allocation_policy, policy);
+        encoded["persistent_disk"]
+            .as_object_mut()
+            .unwrap()
+            .remove("file_allocation_policy");
+        assert!(serde_json::from_value::<crate::runtime::RuntimeConfig>(encoded).is_err());
+    }
+    #[test]
     fn persistent_roots_cannot_overlap_each_other_or_scratch() {
-        let mut config =
-            crate::runtime::example_config(kasumi_store::DirectoryPolicy::fixture()).unwrap();
+        let mut config = crate::runtime::example_config(
+            kasumi_store::DirectoryPolicy::fixture(),
+            kasumi_store::FileAllocationPolicy::fixture(),
+        )
+        .unwrap();
         config
             .persistent_disk
             .roots
@@ -322,8 +385,11 @@ mod tests {
     }
     #[test]
     fn auxiliary_filesystem_destinations_require_explicit_roots() {
-        let mut config =
-            crate::runtime::example_config(kasumi_store::DirectoryPolicy::fixture()).unwrap();
+        let mut config = crate::runtime::example_config(
+            kasumi_store::DirectoryPolicy::fixture(),
+            kasumi_store::FileAllocationPolicy::fixture(),
+        )
+        .unwrap();
         config.validate_persistent_disk().unwrap();
         config.backup_destinations.insert(
             "outside".into(),
@@ -342,22 +408,63 @@ mod tests {
         );
         assert!(config.validate_persistent_disk().is_err());
         config.backup_destinations.clear();
-        config.tenant_audit_archives.insert(
+        config.tenant_audit_placements.insert(
             "acme".into(),
-            crate::audit_destination::AuditDestinationConfig::Filesystem {
-                directory: "/uninstalled/archives".into(),
+            crate::audit_destination::TenantAuditPlacementConfig::External {
+                destination: crate::audit_destination::AuditDestinationConfig::Filesystem {
+                    directory: "/uninstalled/archives".into(),
+                },
             },
         );
         assert!(config.validate_persistent_disk().is_err());
-        config.tenant_audit_archives.clear();
+        config.tenant_audit_placements.insert(
+            "acme".into(),
+            crate::audit_destination::TenantAuditPlacementConfig::LocalReplicaOnly,
+        );
         config.signer_verifier.as_mut().unwrap().database_path = "/uninstalled/trust.kv".into();
         assert!(config.validate_persistent_disk().is_err());
     }
 
     #[test]
+    fn external_tenant_history_cannot_be_owned_by_local_generation_cleanup() {
+        let mut config = crate::runtime::example_config(
+            kasumi_store::DirectoryPolicy::fixture(),
+            kasumi_store::FileAllocationPolicy::fixture(),
+        )
+        .unwrap();
+        config.mode = crate::runtime::DeploymentMode::Standalone;
+        config.tenant_audit_placements.insert(
+            "acme".into(),
+            crate::audit_destination::TenantAuditPlacementConfig::External {
+                destination: crate::audit_destination::AuditDestinationConfig::Filesystem {
+                    directory: config
+                        .database_path
+                        .parent()
+                        .unwrap()
+                        .join("generations/target/history"),
+                },
+            },
+        );
+        let error = config.validate_persistent_disk().unwrap_err();
+        assert!(error.to_string().contains("local generation deletion root"));
+        config.tenant_audit_placements.insert(
+            "acme".into(),
+            crate::audit_destination::TenantAuditPlacementConfig::External {
+                destination: crate::audit_destination::AuditDestinationConfig::Filesystem {
+                    directory: "/var/lib/kasumi/archives/acme".into(),
+                },
+            },
+        );
+        config.validate_persistent_disk().unwrap();
+    }
+
+    #[test]
     fn parent_traversal_cannot_bypass_root_overlap_checks() {
-        let mut config =
-            crate::runtime::example_config(kasumi_store::DirectoryPolicy::fixture()).unwrap();
+        let mut config = crate::runtime::example_config(
+            kasumi_store::DirectoryPolicy::fixture(),
+            kasumi_store::FileAllocationPolicy::fixture(),
+        )
+        .unwrap();
         config
             .persistent_disk
             .roots

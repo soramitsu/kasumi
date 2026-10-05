@@ -15,6 +15,7 @@ fn installation() -> (tempfile::TempDir, NodeDiskConfig) {
     let root = directory.path().join("owned");
     crate::private_files::create_directory(&root).unwrap();
     let config = NodeDiskConfig {
+        native_storage: crate::test_utils::node_storage_config(),
         roots: BTreeMap::from([("data".into(), root)]),
         max_bytes: 16 << 20,
         maintenance_reserve_bytes: 1 << 20,
@@ -22,6 +23,8 @@ fn installation() -> (tempfile::TempDir, NodeDiskConfig) {
         max_open_files: 16,
         max_open_directories: 16,
         directory_policy: DirectoryPolicy::fixture(),
+        // Explicit strict policy keeps these failure-boundary fixtures exact.
+        file_allocation_policy: FileAllocationPolicy::new(0).unwrap(),
         max_persistent_files: 10_000,
         max_persistent_subdirectories: 10_000,
         census_work_per_step: 10_000,
@@ -315,7 +318,17 @@ fn concurrent_open_during_the_reopen_census_is_busy_and_never_half_counted() {
     });
     // Checkpoint 1 precedes the registry; checkpoint 2 is inside the census.
     cancel.pause_at.store(2, Ordering::Relaxed);
+    struct ReleaseCensus(Option<mpsc::Sender<()>>);
+    impl Drop for ReleaseCensus {
+        fn drop(&mut self) {
+            if let Some(release) = self.0.take() {
+                let _ = release.send(());
+            }
+        }
+    }
     std::thread::scope(|scope| {
+        // This guard unwinds before scope joins, even if an assertion fails.
+        let mut release = ReleaseCensus(Some(release));
         let reopening = scope.spawn(|| reopen(&config, &memory, &cancel));
         paused.recv_timeout(Duration::from_secs(5)).unwrap();
         for _ in 0..2 {
@@ -338,7 +351,7 @@ fn concurrent_open_during_the_reopen_census_is_busy_and_never_half_counted() {
                 .recv_timeout(Duration::from_millis(100))
                 .is_err()
         );
-        release.send(()).unwrap();
+        release.0.take().unwrap().send(()).unwrap();
         let reopened = reopening.join().unwrap().unwrap();
         assert!(Arc::ptr_eq(&reopened, &disk));
         let observed = observation.recv_timeout(Duration::from_secs(5)).unwrap();

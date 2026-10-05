@@ -4,8 +4,9 @@
 //! checksummed records. The largest record (a 40 MiB value with its maximum
 //! table and key) fits in one empty segment, so a value never chunks. A batch
 //! is its operation records followed by one `BatchCommit` record carrying the
-//! batch sequence, operation count, SHA-256 of the operation records, and a
-//! SHA-256 chain over every earlier commit. Operation records may span
+//! batch sequence, operation count, SHA-256 of the operation records, the
+//! complete immutable directory root, and a SHA-256 chain over every earlier
+//! commit including that root. Operation records may span
 //! segments, but a single record never does. Replay exposes a batch only
 //! after its commit record validates.
 //!
@@ -15,7 +16,8 @@
 //! validates.
 //!
 //! The writer synchronizes a batch's operation records before appending its
-//! commit record, then synchronizes the commit before acknowledgement. It also
+//! directory preparation record, then synchronizes that record before the
+//! commit write. The commit is synchronized before acknowledgement. It also
 //! synchronizes a segment before creating its successor, and the root intent
 //! for that successor records the sealed length and newest commit. A reopened
 //! writer finishes an outstanding intent first: its file, if present, must be
@@ -44,27 +46,42 @@ use sha2::{Digest, Sha256};
 use crate::core::{
     CoreError, MAX_BATCH_BYTES, MAX_KEY_BYTES, MAX_TABLE_BYTES, MAX_VALUE_BYTES, Operation,
 };
+use crate::directory::{DIRECTORY_ROOT_BYTES, DirectoryRoot};
 use crate::group::{GroupFile, SegmentGroupBackend};
+
+#[path = "segment_maintenance.rs"]
+mod maintenance;
+pub(crate) use maintenance::{
+    MAX_MAINTENANCE_OPERATIONS, MaintenanceOp, maintenance_operation_bytes,
+    maintenance_workspace_bytes,
+};
+
+#[path = "segment_locator.rs"]
+mod locator;
+pub(crate) use locator::{CACHED_VALUE_LOCATOR_BYTES, inspect_cached_value_identity};
 
 /// 64 MiB bounds reclaim copy steps while admitting a 40 MiB value whole.
 pub(crate) const SEGMENT_BYTES: u64 = 64 << 20;
-pub(crate) const SEGMENT_MAGIC: [u8; 16] = *b"KASUMI-KVSEG0001";
+pub(crate) const SEGMENT_MAGIC: [u8; 16] = *b"KASUMI-KVSEG0004";
 /// The single-file image replaced by this format. It has no reader.
 pub(crate) const LEGACY_MAGIC: [u8; 16] = *b"KASUMI-KV-000001";
-pub(crate) const FORMAT_VERSION: u32 = 1;
+pub(crate) const FORMAT_VERSION: u32 = 4;
 pub(crate) const SEGMENT_HEADER_BYTES: u64 = 64;
 pub(crate) const MAX_BATCH_OPERATIONS: usize = 65_536;
 pub(crate) const RECORD_HEADER_BYTES: usize = 36;
 const RECORD_MAGIC: [u8; 4] = *b"KVSR";
 const PUT_PREFIX_BYTES: usize = 16;
+const RELOCATE_PREFIX_BYTES: usize = PUT_PREFIX_BYTES + 8;
+const MAINTENANCE_BODY_BYTES: usize = 8;
 const DELETE_PREFIX_BYTES: usize = 4;
-const COMMIT_BODY_BYTES: usize = 72;
+const COMMIT_BODY_BYTES: usize = 72 + DIRECTORY_ROOT_BYTES;
+const DIRECTORY_RECORD_BYTES: usize = RECORD_HEADER_BYTES + DIRECTORY_ROOT_BYTES;
 pub(crate) const COMMIT_RECORD_BYTES: usize = RECORD_HEADER_BYTES + COMMIT_BODY_BYTES;
-const MAX_INLINE_BODY: usize = PUT_PREFIX_BYTES + MAX_TABLE_BYTES + MAX_KEY_BYTES;
+const MAX_INLINE_BODY: usize = RELOCATE_PREFIX_BYTES + MAX_TABLE_BYTES + MAX_KEY_BYTES;
 const MAX_RECORD_BYTES: u64 = (RECORD_HEADER_BYTES + MAX_INLINE_BODY + MAX_VALUE_BYTES) as u64;
 const IO_WINDOW: usize = 64 << 10;
 const SEARCH_WINDOW: usize = 1 << 20;
-const CHAIN_DOMAIN: &[u8] = b"KASUMI-KVSEG0001 batch chain";
+const CHAIN_DOMAIN: &[u8] = b"KASUMI-KVSEG0004 batch chain";
 
 const _: () = assert!(MAX_RECORD_BYTES <= SEGMENT_BYTES - SEGMENT_HEADER_BYTES);
 const _: () = assert!(SEARCH_WINDOW > RECORD_HEADER_BYTES);
@@ -123,9 +140,24 @@ pub(crate) fn crc32c(bytes: &[u8]) -> u32 {
 /// Reject the replaced contiguous image before any other decoding.
 pub(crate) fn reject_legacy(bytes: &[u8]) -> Result<(), CoreError> {
     if bytes.starts_with(&LEGACY_MAGIC) {
-        return Err(CoreError::Corrupt(
+        return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
             "unsupported KASUMI-KV-000001 single-file image",
-        ));
+        )));
+    }
+    if bytes.starts_with(b"KASUMI-KVSEG0001") {
+        return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+            "unsupported KASUMI-KVSEG0001 segmented image",
+        )));
+    }
+    if bytes.starts_with(b"KASUMI-KVSEG0002") {
+        return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+            "unsupported KASUMI-KVSEG0002 segmented image",
+        )));
+    }
+    if bytes.starts_with(b"KASUMI-KVSEG0003") {
+        return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+            "unsupported KASUMI-KVSEG0003 segmented image",
+        )));
     }
     Ok(())
 }
@@ -182,7 +214,9 @@ impl ValueLocation {
             || self.offset < SEGMENT_HEADER_BYTES + (RECORD_HEADER_BYTES + PUT_PREFIX_BYTES) as u64
             || end.is_none_or(|end| end > SEGMENT_BYTES)
         {
-            return Err(CoreError::Corrupt("value location is out of bounds"));
+            return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                "value location is out of bounds",
+            )));
         }
         Ok(())
     }
@@ -201,7 +235,7 @@ pub(crate) fn read_value(
     let mut value = Vec::new();
     value
         .try_reserve_exact(location.len as usize)
-        .map_err(|_| CoreError::CapacityDenied)?;
+        .map_err(|_| CoreError::new(crate::CoreErrorCause::CapacityDenied))?;
     value.resize(location.len as usize, 0);
     backend.read(
         GroupFile::segment(location.segment_id),
@@ -209,7 +243,9 @@ pub(crate) fn read_value(
         &mut value,
     )?;
     if crc32c(&value) != location.crc {
-        return Err(CoreError::Corrupt("value checksum differs"));
+        return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+            "value checksum differs",
+        )));
     }
     Ok(value)
 }
@@ -220,6 +256,7 @@ pub(crate) fn chain_digest(
     batch_seq: u64,
     op_count: u32,
     ops_sha256: &[u8; 32],
+    directory: &[u8; DIRECTORY_ROOT_BYTES],
 ) -> [u8; 32] {
     let mut chain = Sha256::new();
     chain.update(CHAIN_DOMAIN);
@@ -228,6 +265,7 @@ pub(crate) fn chain_digest(
     chain.update(batch_seq.to_le_bytes());
     chain.update(op_count.to_le_bytes());
     chain.update(ops_sha256);
+    chain.update(directory);
     chain.finalize().into()
 }
 
@@ -274,14 +312,14 @@ pub(crate) fn decode_segment_header(
         || bytes[20..24].iter().any(|&byte| byte != 0)
         || bytes[48..60].iter().any(|&byte| byte != 0)
     {
-        return Err(CoreError::Corrupt(
+        return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
             "segment header has an unsupported layout",
-        ));
+        )));
     }
     if bytes[24..40] != group_id[..] || le_u64(&bytes[40..48]) != segment_id {
-        return Err(CoreError::Corrupt(
+        return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
             "segment header names another group or segment",
-        ));
+        )));
     }
     Ok(HeaderState::Valid)
 }
@@ -294,7 +332,9 @@ pub(crate) fn read_segment_header(
     let file = GroupFile::segment(segment_id);
     let len = backend.len(file)?;
     if len > SEGMENT_BYTES {
-        return Err(CoreError::Corrupt("segment exceeds its size bound"));
+        return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+            "segment exceeds its size bound",
+        )));
     }
     let mut bytes = [0u8; SEGMENT_HEADER_BYTES as usize];
     let visible = len.min(SEGMENT_HEADER_BYTES) as usize;
@@ -308,6 +348,9 @@ enum RecordKind {
     Put,
     Delete,
     Commit,
+    Directory,
+    Relocate,
+    Maintenance,
 }
 
 impl RecordKind {
@@ -317,6 +360,9 @@ impl RecordKind {
             Self::Put => 2,
             Self::Delete => 3,
             Self::Commit => 4,
+            Self::Directory => 5,
+            Self::Relocate => 6,
+            Self::Maintenance => 7,
         }
     }
 
@@ -326,6 +372,9 @@ impl RecordKind {
             2 => Some(Self::Put),
             3 => Some(Self::Delete),
             4 => Some(Self::Commit),
+            5 => Some(Self::Directory),
+            6 => Some(Self::Relocate),
+            7 => Some(Self::Maintenance),
             _ => None,
         }
     }
@@ -339,6 +388,9 @@ impl RecordKind {
                 DELETE_PREFIX_BYTES + MAX_TABLE_BYTES + MAX_KEY_BYTES,
             ),
             Self::Commit => (COMMIT_BODY_BYTES, COMMIT_BODY_BYTES),
+            Self::Directory => (DIRECTORY_ROOT_BYTES, DIRECTORY_ROOT_BYTES),
+            Self::Relocate => (RELOCATE_PREFIX_BYTES + 1, MAX_INLINE_BODY + MAX_VALUE_BYTES),
+            Self::Maintenance => (MAINTENANCE_BODY_BYTES, MAINTENANCE_BODY_BYTES),
         }
     }
 }
@@ -394,8 +446,9 @@ fn decode_record_header(
     {
         return Ok(None);
     }
-    let kind = RecordKind::from_tag(bytes[4])
-        .ok_or(CoreError::Corrupt("segment record has an unknown kind"))?;
+    let kind = RecordKind::from_tag(bytes[4]).ok_or(CoreError::new(
+        crate::CoreErrorCause::Corrupt("segment record has an unknown kind"),
+    ))?;
     let batch_seq = le_u64(&bytes[8..16]);
     let base_seq = le_u64(&bytes[16..24]);
     let body_len = le_u32(&bytes[24..28]);
@@ -405,7 +458,9 @@ fn decode_record_header(
         || (body_len as usize) < min
         || body_len as usize > max
     {
-        return Err(CoreError::Corrupt("segment record header is invalid"));
+        return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+            "segment record header is invalid",
+        )));
     }
     Ok(Some(RecordHead {
         kind,
@@ -456,7 +511,11 @@ fn encode_op(operation: &Operation) -> EncodedOp<'_> {
             inline.extend_from_slice(&(table.len() as u16).to_le_bytes());
             inline.extend_from_slice(&(key.len() as u16).to_le_bytes());
         }
-        RecordKind::CreateTable | RecordKind::Commit => {}
+        RecordKind::CreateTable
+        | RecordKind::Commit
+        | RecordKind::Directory
+        | RecordKind::Relocate
+        | RecordKind::Maintenance => {}
     }
     inline.extend_from_slice(table);
     inline.extend_from_slice(key);
@@ -476,6 +535,7 @@ struct CommitBody {
     op_count: u32,
     ops_sha256: [u8; 32],
     chain_sha256: [u8; 32],
+    directory: [u8; DIRECTORY_ROOT_BYTES],
 }
 
 fn commit_record(
@@ -489,6 +549,7 @@ fn commit_record(
     body[..4].copy_from_slice(&commit.op_count.to_le_bytes());
     body[8..40].copy_from_slice(&commit.ops_sha256);
     body[40..72].copy_from_slice(&commit.chain_sha256);
+    body[72..].copy_from_slice(&commit.directory);
     let head = RecordHead {
         kind: RecordKind::Commit,
         batch_seq,
@@ -508,20 +569,92 @@ fn decode_commit_body(body: &[u8]) -> Result<CommitBody, CoreError> {
         || op_count == 0
         || op_count as usize > MAX_BATCH_OPERATIONS
     {
-        return Err(CoreError::Corrupt("batch commit record is invalid"));
+        return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+            "batch commit record is invalid",
+        )));
     }
     Ok(CommitBody {
         op_count,
         ops_sha256: body[8..40].try_into().expect("32 bytes"),
         chain_sha256: body[40..72].try_into().expect("32 bytes"),
+        directory: body[72..].try_into().expect("directory root bytes"),
     })
+}
+
+/// Validate the commit immediately preceding an installed directory anchor.
+/// This is a bounded read; opening does not rebuild a resident key directory.
+/// The caller separately validates reachable directory pages before serving.
+pub(crate) fn validate_directory_anchor(
+    backend: &dyn SegmentGroupBackend,
+    group_id: [u8; 16],
+    root: DirectoryRoot,
+    start: &ReplayStart,
+) -> Result<(), CoreError> {
+    let encoded = root.encode()?;
+    if root.group_id != group_id || root.generation != start.batch_seq {
+        return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+            "directory anchor names another batch or group",
+        )));
+    }
+    if start.batch_seq == 0 {
+        if *start != ReplayStart::GENESIS || root.page.is_some() {
+            return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                "genesis directory anchor is invalid",
+            )));
+        }
+        return Ok(());
+    }
+    let offset = start
+        .position
+        .offset
+        .checked_sub(COMMIT_RECORD_BYTES as u64)
+        .filter(|offset| *offset >= SEGMENT_HEADER_BYTES)
+        .ok_or(CoreError::new(crate::CoreErrorCause::Corrupt(
+            "directory anchor is outside a commit boundary",
+        )))?;
+    let at = LogPosition {
+        segment_id: start.position.segment_id,
+        offset,
+    };
+    if at.segment_id == 0
+        || read_segment_header(backend, &group_id, at.segment_id)? != HeaderState::Valid
+    {
+        return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+            "directory anchor segment header is invalid",
+        )));
+    }
+    let mut bytes = [0u8; COMMIT_RECORD_BYTES];
+    backend.read(GroupFile::segment(at.segment_id), offset, &mut bytes)?;
+    let header: &[u8; RECORD_HEADER_BYTES] = bytes[..RECORD_HEADER_BYTES]
+        .try_into()
+        .expect("header bytes");
+    let head = decode_record_header(header, &group_id, at)?
+        .filter(|head| head.kind == RecordKind::Commit && head.batch_seq == start.batch_seq)
+        .ok_or(CoreError::new(crate::CoreErrorCause::Corrupt(
+            "directory anchor does not follow its commit",
+        )))?;
+    let body = &bytes[RECORD_HEADER_BYTES..];
+    if head.body_crc != crc32c(body) {
+        return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+            "directory anchor commit checksum differs",
+        )));
+    }
+    let commit = decode_commit_body(body)?;
+    if commit.directory != encoded || commit.chain_sha256 != start.chain {
+        return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+            "directory anchor differs from committed root",
+        )));
+    }
+    Ok(())
 }
 
 /// Pre-effect bounds shared with replay: operation count, and the table, key
 /// and value bytes of one batch.
 pub(crate) fn validate_batch(operations: &[Operation]) -> Result<(), CoreError> {
     if operations.is_empty() || operations.len() > MAX_BATCH_OPERATIONS {
-        return Err(CoreError::InvalidInput("empty or oversized transaction"));
+        return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
+            "empty or oversized transaction",
+        )));
     }
     let mut bytes = 0usize;
     for operation in operations {
@@ -531,21 +664,35 @@ pub(crate) fn validate_batch(operations: &[Operation]) -> Result<(), CoreError> 
             Operation::Delete { table, key } => (table.len(), key.len(), 0),
         };
         if table == 0 || table > MAX_TABLE_BYTES {
-            return Err(CoreError::InvalidInput("table name is empty or too long"));
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
+                "table name is empty or too long",
+            )));
         }
         if key > MAX_KEY_BYTES || value > MAX_VALUE_BYTES {
-            return Err(CoreError::InvalidInput(
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
                 "key or value exceeds storage limit",
-            ));
+            )));
         }
         bytes = bytes
             .checked_add(table + key + value)
             .filter(|&bytes| bytes <= MAX_BATCH_BYTES)
-            .ok_or(CoreError::InvalidInput(
+            .ok_or(CoreError::new(crate::CoreErrorCause::InvalidInput(
                 "transaction exceeds 96 MiB physical limit",
-            ))?;
+            )))?;
     }
     Ok(())
+}
+
+/// Fixed transient reservation for prepare plus a possible abort replay.
+/// Reserve before preparing and retain until finish/abort completes. The owner
+/// separately retains the writer's 64 KiB staging capacity for its lifetime.
+/// Inputs remain caller-owned and are borrowed during encoding. Abort validates
+/// and drops one decoded record at a time under the exact prepared count, so
+/// neither value payload nor an all-operation replay vector is reserved here.
+pub(crate) fn prepared_batch_workspace_bytes(operations: &[Operation]) -> Result<u64, CoreError> {
+    validate_batch(operations)?;
+    let values = operations.len() as u64 * std::mem::size_of::<Option<ValueLocation>>() as u64;
+    Ok(root_replay_workspace_bytes() + values)
 }
 
 /// Durable segment allocation supplied by the root owner.
@@ -558,11 +705,38 @@ pub(crate) trait SegmentRoll {
     fn confirm(&mut self, segment_id: u64) -> Result<(), CoreError>;
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct PreparedIdentity {
+    group_id: [u8; 16],
+    batch_seq: u64,
+    start: ReplayStart,
+    end: LogPosition,
+    ops_sha256: [u8; 32],
+    operation_count: u32,
+}
+
+/// A private operation prefix, consumed exactly once by finish or abort.
+#[derive(Debug)]
+pub(crate) struct PreparedBatch {
+    identity: PreparedIdentity,
+    values: Vec<Option<ValueLocation>>,
+}
+
+impl PreparedBatch {
+    pub(crate) fn batch_seq(&self) -> u64 {
+        self.identity.batch_seq
+    }
+    pub(crate) fn values(&self) -> &[Option<ValueLocation>] {
+        &self.values
+    }
+}
+
 /// The durable result of one acknowledged batch.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct CommittedBatch {
     pub(crate) batch_seq: u64,
     pub(crate) chain: [u8; 32],
+    pub(crate) directory_root: DirectoryRoot,
     /// One entry per operation; `Some` exactly for puts.
     pub(crate) values: Vec<Option<ValueLocation>>,
     pub(crate) end: LogPosition,
@@ -585,6 +759,7 @@ pub(crate) struct SegmentWriter {
     next_batch_seq: u64,
     chain: [u8; 32],
     fenced: bool,
+    prepared: Option<PreparedIdentity>,
 }
 
 impl SegmentWriter {
@@ -602,6 +777,7 @@ impl SegmentWriter {
             next_batch_seq: 1,
             chain: [0; 32],
             fenced: false,
+            prepared: None,
         }
     }
 
@@ -628,6 +804,10 @@ impl SegmentWriter {
         self
     }
 
+    pub(crate) fn is_fenced(&self) -> bool {
+        self.fenced
+    }
+
     pub(crate) fn last_batch_seq(&self) -> u64 {
         self.last_batch_seq
     }
@@ -643,42 +823,68 @@ impl SegmentWriter {
         })
     }
 
-    /// Append and synchronize one atomic batch. A failure before the commit
-    /// record write leaves the batch uncommitted; a failure while writing or
-    /// synchronizing the commit record is `UnknownCommit`.
-    pub(crate) fn append_batch(
+    pub(crate) fn next_batch_sequence(&self) -> u64 {
+        self.next_batch_seq
+    }
+
+    /// Persist operation records and reserve their exact value locations. No
+    /// commit can become visible until `finish_batch` binds a synchronized
+    /// directory root. While a token is outstanding, a second prepare fails.
+    pub(crate) fn prepare_batch(
         &mut self,
         backend: &dyn SegmentGroupBackend,
         operations: &[Operation],
         roll: &mut dyn SegmentRoll,
-    ) -> Result<CommittedBatch, CoreError> {
-        if self.fenced {
-            return Err(CoreError::OwnerFailed);
+    ) -> Result<PreparedBatch, CoreError> {
+        if self.fenced || self.prepared.is_some() {
+            return Err(CoreError::new(crate::CoreErrorCause::OwnerFailed));
         }
-        // The last sequence is never written, so the one after a durable
-        // commit always exists.
         if self.next_batch_seq == u64::MAX {
-            return Err(CoreError::InvalidInput("batch sequence overflow"));
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
+                "batch sequence overflow",
+            )));
         }
         validate_batch(operations)?;
+        // A bounded logical length alone does not bound Vec capacity: a
+        // geometric extension near 64 KiB could retain almost 128 KiB. Reserve
+        // the exact admitted window before any durable operation effects.
+        if self.stage.capacity() < IO_WINDOW {
+            self.stage
+                .try_reserve_exact(IO_WINDOW - self.stage.len())
+                .map_err(|_| CoreError::new(crate::CoreErrorCause::CapacityDenied))?;
+        }
+        if self.stage.capacity() > IO_WINDOW {
+            self.stage = Vec::new();
+            return Err(CoreError::new(crate::CoreErrorCause::CapacityDenied));
+        }
         let mut values = Vec::new();
         values
             .try_reserve_exact(operations.len())
-            .map_err(|_| CoreError::CapacityDenied)?;
-        let result = self.write_batch(backend, operations, roll, values);
-        if result.is_err() {
-            self.fenced = true;
+            .map_err(|_| CoreError::new(crate::CoreErrorCause::CapacityDenied))?;
+        if values.capacity() != operations.len() {
+            return Err(CoreError::new(crate::CoreErrorCause::CapacityDenied));
+        }
+        let start = ReplayStart {
+            position: self.position().unwrap_or(LogPosition::GENESIS),
+            batch_seq: self.last_batch_seq,
+            chain: self.chain,
+        };
+        let result = self.write_operations(backend, operations, roll, values, start);
+        match &result {
+            Ok(prepared) => self.prepared = Some(prepared.identity),
+            Err(_) => self.fenced = true,
         }
         result
     }
 
-    fn write_batch(
+    fn write_operations(
         &mut self,
         backend: &dyn SegmentGroupBackend,
         operations: &[Operation],
         roll: &mut dyn SegmentRoll,
         mut values: Vec<Option<ValueLocation>>,
-    ) -> Result<CommittedBatch, CoreError> {
+        start: ReplayStart,
+    ) -> Result<PreparedBatch, CoreError> {
         let batch_seq = self.next_batch_seq;
         let base_seq = self.last_batch_seq;
         let mut ops = Sha256::new();
@@ -716,29 +922,101 @@ impl SegmentWriter {
         let active = self.active.expect("a batch has at least one record");
         self.flush(backend)?;
         backend.sync(GroupFile::segment(active))?;
-        let op_count = operations.len() as u32;
-        let ops_sha256: [u8; 32] = ops.finalize().into();
+        Ok(PreparedBatch {
+            identity: PreparedIdentity {
+                group_id: self.group_id,
+                batch_seq,
+                start,
+                end: self.position().expect("operations have an active segment"),
+                ops_sha256: ops.finalize().into(),
+                operation_count: operations.len() as u32,
+            },
+            values,
+        })
+    }
+
+    /// Bind and acknowledge one batch. The caller must synchronize every page
+    /// reachable from `directory_root` before calling this method. A durable
+    /// preparation record carries the exact root so replay can reconstruct a
+    /// torn commit rather than mistaking arbitrary root damage for a tear.
+    /// Failures before the commit write are known uncommitted; failures during
+    /// its write or synchronization are `UnknownCommit`. Either fences writer.
+    pub(crate) fn finish_batch(
+        &mut self,
+        backend: &dyn SegmentGroupBackend,
+        prepared: PreparedBatch,
+        directory_root: DirectoryRoot,
+        roll: &mut dyn SegmentRoll,
+    ) -> Result<CommittedBatch, CoreError> {
+        if self.fenced || self.prepared != Some(prepared.identity) {
+            return Err(CoreError::new(crate::CoreErrorCause::OwnerFailed));
+        }
+        let result = self.write_commit(backend, prepared, directory_root, roll);
+        if result.is_err() {
+            self.fenced = true;
+        } else {
+            self.prepared = None;
+        }
+        result
+    }
+
+    fn write_commit(
+        &mut self,
+        backend: &dyn SegmentGroupBackend,
+        prepared: PreparedBatch,
+        directory_root: DirectoryRoot,
+        roll: &mut dyn SegmentRoll,
+    ) -> Result<CommittedBatch, CoreError> {
+        let batch_seq = prepared.identity.batch_seq;
+        if directory_root.group_id != self.group_id || directory_root.generation != batch_seq {
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
+                "directory root does not name prepared batch",
+            )));
+        }
+        let directory = directory_root.encode()?;
+        self.ensure_room(backend, DIRECTORY_RECORD_BYTES as u64, roll)?;
+        let at = self.position().expect("room ensures an active segment");
+        let mut record = [0u8; DIRECTORY_RECORD_BYTES];
+        record[..RECORD_HEADER_BYTES].copy_from_slice(&record_header(
+            &self.group_id,
+            at,
+            &RecordHead {
+                kind: RecordKind::Directory,
+                batch_seq,
+                base_seq: self.last_batch_seq,
+                body_len: DIRECTORY_ROOT_BYTES as u32,
+                body_crc: crc32c(&directory),
+            },
+        ));
+        record[RECORD_HEADER_BYTES..].copy_from_slice(&directory);
+        let file = GroupFile::segment(at.segment_id);
+        backend.write(file, self.end, &record)?;
+        backend.sync(file)?;
+        self.end += DIRECTORY_RECORD_BYTES as u64;
+        self.stage_at = self.end;
+        let op_count = prepared.values.len() as u32;
         let chain = chain_digest(
             &self.group_id,
             &self.chain,
             batch_seq,
             op_count,
-            &ops_sha256,
+            &prepared.identity.ops_sha256,
+            &directory,
         );
         let body = CommitBody {
             op_count,
-            ops_sha256,
+            ops_sha256: prepared.identity.ops_sha256,
             chain_sha256: chain,
+            directory,
         };
         self.ensure_room(backend, COMMIT_RECORD_BYTES as u64, roll)?;
         let at = self.position().expect("room ensures an active segment");
-        let commit = commit_record(&self.group_id, at, batch_seq, base_seq, &body);
+        let commit = commit_record(&self.group_id, at, batch_seq, self.last_batch_seq, &body);
         let file = GroupFile::segment(at.segment_id);
-        // From here a failure may leave a durable commit record.
         backend
             .write(file, self.end, &commit)
-            .map_err(CoreError::UnknownCommit)?;
-        backend.sync(file).map_err(CoreError::UnknownCommit)?;
+            .map_err(CoreError::unknown_io)?;
+        backend.sync(file).map_err(CoreError::unknown_io)?;
         self.end += COMMIT_RECORD_BYTES as u64;
         self.stage_at = self.end;
         self.last_batch_seq = batch_seq;
@@ -747,12 +1025,64 @@ impl SegmentWriter {
         Ok(CommittedBatch {
             batch_seq,
             chain,
-            values,
+            directory_root,
+            values: prepared.values,
             end: LogPosition {
                 segment_id: at.segment_id,
                 offset: self.end,
             },
         })
+    }
+
+    /// Release a prepared batch after a known private construction failure,
+    /// such as directory capacity denial. Exact replay/discard safeguards
+    /// ensure an abort cannot remove committed data. Failed aborts fence.
+    pub(crate) fn abort_prepared(
+        &mut self,
+        backend: &dyn SegmentGroupBackend,
+        prepared: PreparedBatch,
+        bounds: &LogBounds,
+    ) -> Result<(), CoreError> {
+        if self.fenced || self.prepared != Some(prepared.identity) {
+            return Err(CoreError::new(crate::CoreErrorCause::OwnerFailed));
+        }
+        let result = (|| {
+            if bounds.last_segment_id != prepared.identity.end.segment_id
+                || bounds.pending_segment.is_some()
+                || backend.len(GroupFile::segment(prepared.identity.end.segment_id))?
+                    != prepared.identity.end.offset
+            {
+                return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
+                    "prepared batch tail differs before abort",
+                )));
+            }
+            let mut end = replay_with_policy(
+                backend,
+                self.group_id,
+                &prepared.identity.start,
+                bounds,
+                ReplayPolicy {
+                    max_operations: prepared.identity.operation_count as usize,
+                    retain_records: false,
+                    prepared: Some(prepared.identity),
+                },
+                |_| {
+                    Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                        "prepared batch abort encountered a commit",
+                    )))
+                },
+            )?;
+            end.discard_tail(backend)?;
+            end.next_batch_seq = end.next_batch_seq.max(prepared.batch_seq() + 1);
+            let capacity = self.capacity;
+            *self = Self::resume(self.group_id, &end);
+            self.capacity = capacity;
+            Ok(())
+        })();
+        if result.is_err() {
+            self.fenced = true;
+        }
+        result
     }
 
     fn ensure_room(
@@ -765,8 +1095,36 @@ impl SegmentWriter {
             return Ok(());
         }
         if len > self.capacity - SEGMENT_HEADER_BYTES {
-            return Err(CoreError::InvalidInput("record exceeds segment capacity"));
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
+                "record exceeds segment capacity",
+            )));
         }
+        self.roll_segment(backend, roll)
+    }
+
+    /// Seal the current segment and establish its successor without changing
+    /// the configured segment size. A prepared batch owns the current tail
+    /// exclusively and cannot be interrupted by an explicit roll.
+    pub(crate) fn force_roll(
+        &mut self,
+        backend: &dyn SegmentGroupBackend,
+        roll: &mut dyn SegmentRoll,
+    ) -> Result<(), CoreError> {
+        if self.fenced || self.prepared.is_some() {
+            return Err(CoreError::new(crate::CoreErrorCause::OwnerFailed));
+        }
+        let result = self.roll_segment(backend, roll);
+        if result.is_err() {
+            self.fenced = true;
+        }
+        result
+    }
+
+    fn roll_segment(
+        &mut self,
+        backend: &dyn SegmentGroupBackend,
+        roll: &mut dyn SegmentRoll,
+    ) -> Result<(), CoreError> {
         self.flush(backend)?;
         if let Some(active) = self.active {
             // Seal before a successor can exist, so only the newest segment
@@ -935,17 +1293,40 @@ pub(crate) enum ReplayedRecord {
         table: String,
         key: Vec<u8>,
     },
+    Relocate {
+        table: String,
+        key: Vec<u8>,
+        logical_batch_seq: u64,
+        value: ValueLocation,
+    },
+    DirectoryOnly,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ReplayedBatch {
+    pub(crate) end: LogPosition,
     pub(crate) batch_seq: u64,
     pub(crate) chain: [u8; 32],
+    pub(crate) directory_root: DirectoryRoot,
     pub(crate) records: Vec<ReplayedRecord>,
+}
+
+/// A validated committed root without a retained operation/key collection.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ReplayedRoot {
+    pub(crate) end: LogPosition,
+    pub(crate) batch_seq: u64,
+    pub(crate) chain: [u8; 32],
+    pub(crate) directory_root: DirectoryRoot,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ReplayEnd {
+    /// Exact commit boundary for `directory_root`, distinct from append resume
+    /// when a later uncommitted attempt rolled into a newer segment.
+    pub(crate) directory_end: Option<LogPosition>,
+    /// Newest directory root after the supplied start, or none if no batch followed it.
+    pub(crate) directory_root: Option<DirectoryRoot>,
     /// The newest committed batch and its chain.
     pub(crate) batch_seq: u64,
     pub(crate) chain: [u8; 32],
@@ -1000,9 +1381,9 @@ impl ReplayEnd {
                 backend.read(file, resume.offset, &mut head[..present])?;
             }
             if len != self.final_len || head != self.tail_head {
-                return Err(CoreError::InvalidInput(
+                return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
                     "segment tail differs from the replayed tail",
-                ));
+                )));
             }
             backend.set_len(file, resume.offset)?;
         }
@@ -1013,12 +1394,25 @@ impl ReplayEnd {
 
 struct PendingBatch {
     batch_seq: u64,
+    directory_root: Option<DirectoryRoot>,
     records: Vec<ReplayedRecord>,
+    op_count: usize,
     bytes: usize,
+    encoded_bytes: usize,
     ops: Sha256,
+    kind: Option<BatchKind>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BatchKind {
+    User,
+    Relocation,
+    DirectoryOnly,
 }
 
 struct Replay<'a> {
+    directory_end: Option<LogPosition>,
+    directory_root: Option<DirectoryRoot>,
     backend: &'a dyn SegmentGroupBackend,
     group_id: [u8; 16],
     batch_seq: u64,
@@ -1027,6 +1421,18 @@ struct Replay<'a> {
     pending: Option<PendingBatch>,
     // The batch whose records this segment holds after its last commit.
     segment_attempt: Option<u64>,
+    max_operations: usize,
+    retain_records: bool,
+    prepared: Option<PreparedIdentity>,
+}
+
+struct ReplayPolicy {
+    max_operations: usize,
+    retain_records: bool,
+    // A synchronized private prefix has a known exact image. It cannot be
+    // treated as an interrupted append or silently replaced with a different
+    // checksum-valid batch while deriving permission to discard it.
+    prepared: Option<PreparedIdentity>,
 }
 
 enum Scanned {
@@ -1049,17 +1455,111 @@ pub(crate) fn replay(
     group_id: [u8; 16],
     start: &ReplayStart,
     bounds: &LogBounds,
+    visit: impl FnMut(ReplayedBatch) -> Result<(), CoreError>,
+) -> Result<ReplayEnd, CoreError> {
+    replay_limited(
+        backend,
+        group_id,
+        start,
+        bounds,
+        MAX_BATCH_OPERATIONS,
+        true,
+        visit,
+    )
+}
+
+/// Reopen the authoritative directory without rebuilding an operation map.
+/// Every operation is decoded and checked, then its owned table/key backing
+/// is dropped. Record digests, logical versions, operation/byte bounds and
+/// torn-tail decisions are identical to full replay.
+pub(crate) fn replay_roots(
+    backend: &dyn SegmentGroupBackend,
+    group_id: [u8; 16],
+    start: &ReplayStart,
+    bounds: &LogBounds,
+    mut visit: impl FnMut(ReplayedRoot) -> Result<(), CoreError>,
+) -> Result<ReplayEnd, CoreError> {
+    replay_limited(
+        backend,
+        group_id,
+        start,
+        bounds,
+        MAX_BATCH_OPERATIONS,
+        false,
+        |batch| {
+            visit(ReplayedRoot {
+                end: batch.end,
+                batch_seq: batch.batch_seq,
+                chain: batch.chain,
+                directory_root: batch.directory_root,
+            })
+        },
+    )
+}
+
+/// Fixed transient charge for root-only replay, including one decoded key,
+/// inline/value read windows, torn-tail search and allocation/lease overhead.
+pub(crate) fn root_replay_workspace_bytes() -> u64 {
+    maintenance_workspace_bytes()
+}
+
+/// Every abort admits only its prepared operation count, regardless of
+/// the value lengths. The cap is checked before decoding another owned record;
+/// malformed private tails cannot turn a large value into unbounded key
+/// scratch. Normal reopen retains the public transaction bounds.
+fn replay_limited(
+    backend: &dyn SegmentGroupBackend,
+    group_id: [u8; 16],
+    start: &ReplayStart,
+    bounds: &LogBounds,
+    max_operations: usize,
+    retain_records: bool,
+    visit: impl FnMut(ReplayedBatch) -> Result<(), CoreError>,
+) -> Result<ReplayEnd, CoreError> {
+    replay_with_policy(
+        backend,
+        group_id,
+        start,
+        bounds,
+        ReplayPolicy {
+            max_operations,
+            retain_records,
+            prepared: None,
+        },
+        visit,
+    )
+}
+
+fn replay_with_policy(
+    backend: &dyn SegmentGroupBackend,
+    group_id: [u8; 16],
+    start: &ReplayStart,
+    bounds: &LogBounds,
+    policy: ReplayPolicy,
     mut visit: impl FnMut(ReplayedBatch) -> Result<(), CoreError>,
 ) -> Result<ReplayEnd, CoreError> {
+    if let Some(prepared) = policy.prepared
+        && (prepared.group_id != group_id
+            || prepared.start != *start
+            || prepared.end.segment_id != bounds.last_segment_id
+            || bounds.pending_segment.is_some()
+            || prepared.operation_count == 0
+            || prepared.operation_count as usize != policy.max_operations
+            || policy.retain_records)
+    {
+        return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
+            "prepared replay token differs",
+        )));
+    }
     let LogBounds {
         last_segment_id,
         pending_segment,
         sealed,
     } = *bounds;
     if pending_segment.is_some_and(|pending| last_segment_id.checked_add(1) != Some(pending)) {
-        return Err(CoreError::Corrupt(
+        return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
             "segment intent is not the next identifier",
-        ));
+        )));
     }
     if let Some(pending) = pending_segment {
         let file = GroupFile::segment(pending);
@@ -1069,6 +1569,8 @@ pub(crate) fn replay(
         check_pending_segment(backend, &group_id, pending)?;
     }
     let mut replay = Replay {
+        directory_end: None,
+        directory_root: None,
         backend,
         group_id,
         batch_seq: start.batch_seq,
@@ -1076,8 +1578,13 @@ pub(crate) fn replay(
         max_seen: start.batch_seq,
         pending: None,
         segment_attempt: None,
+        max_operations: policy.max_operations,
+        retain_records: policy.retain_records,
+        prepared: policy.prepared,
     };
     let mut end = ReplayEnd {
+        directory_end: None,
+        directory_root: None,
         batch_seq: start.batch_seq,
         chain: start.chain,
         next_batch_seq: 0,
@@ -1090,17 +1597,23 @@ pub(crate) fn replay(
     };
     if last_segment_id == 0 {
         if *start != ReplayStart::GENESIS {
-            return Err(CoreError::Corrupt("replay start names a missing segment"));
+            return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                "replay start names a missing segment",
+            )));
         }
     } else {
         let first = start.position.segment_id;
         if first == 0 || first > last_segment_id || start.position.offset < SEGMENT_HEADER_BYTES {
-            return Err(CoreError::Corrupt("replay start is outside the log"));
+            return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                "replay start is outside the log",
+            )));
         }
         for segment_id in first..=last_segment_id {
             let file = GroupFile::segment(segment_id);
             if !backend.exists(file)? {
-                return Err(CoreError::Corrupt("confirmed segment is missing"));
+                return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                    "confirmed segment is missing",
+                )));
             }
             let newest = segment_id == last_segment_id;
             // Sealed segments were synchronized before their successor's
@@ -1109,16 +1622,28 @@ pub(crate) fn replay(
                 backend.sync(file)?;
             }
             if read_segment_header(backend, &group_id, segment_id)? != HeaderState::Valid {
-                return Err(CoreError::Corrupt("confirmed segment header is damaged"));
+                return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                    "confirmed segment header is damaged",
+                )));
             }
             let len = backend.len(file)?;
+            if let Some(prepared) = policy.prepared
+                && newest
+                && len != prepared.end.offset
+            {
+                return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                    "prepared batch end differs",
+                )));
+            }
             let offset = if segment_id == first {
                 start.position.offset
             } else {
                 SEGMENT_HEADER_BYTES
             };
             if offset > len {
-                return Err(CoreError::Corrupt("replay start exceeds segment length"));
+                return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                    "replay start exceeds segment length",
+                )));
             }
             // A segment intent is published only after its predecessor was
             // synchronized, so an outstanding intent seals the newest segment.
@@ -1131,8 +1656,15 @@ pub(crate) fn replay(
                 match replay.record(&mut reader, segment_id, &mut visit)? {
                     Scanned::Record => {}
                     Scanned::Commit => resume = reader.pos(),
+                    Scanned::Damage if policy.prepared.is_some() => {
+                        return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                            "synchronized prepared prefix is damaged",
+                        )));
+                    }
                     Scanned::Damage if is_sealed => {
-                        return Err(CoreError::Corrupt("sealed segment record is damaged"));
+                        return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                            "sealed segment record is damaged",
+                        )));
                     }
                     Scanned::Damage => {
                         replay.check_torn_tail(file, segment_id, at, len)?;
@@ -1154,9 +1686,9 @@ pub(crate) fn replay(
                         commit_seq: replay.batch_seq,
                     })
             {
-                return Err(CoreError::Corrupt(
+                return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
                     "sealed segment differs from its root record",
-                ));
+                )));
             }
             if newest {
                 let resume = if is_sealed { len } else { resume };
@@ -1170,13 +1702,41 @@ pub(crate) fn replay(
             }
         }
     }
+    if let Some(prepared) = policy.prepared {
+        let pending =
+            replay
+                .pending
+                .as_ref()
+                .ok_or(CoreError::new(crate::CoreErrorCause::Corrupt(
+                    "prepared operation prefix is missing",
+                )))?;
+        if pending.batch_seq != prepared.batch_seq
+            || pending.op_count != prepared.operation_count as usize
+            || pending.directory_root.is_some()
+        {
+            return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                "prepared operation prefix differs",
+            )));
+        }
+        let observed: [u8; 32] = pending.ops.clone().finalize().into();
+        if observed != prepared.ops_sha256 {
+            return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                "prepared operation digest differs",
+            )));
+        }
+    }
+    end.directory_end = replay.directory_end;
+    end.directory_root = replay.directory_root;
     end.batch_seq = replay.batch_seq;
     end.chain = replay.chain;
     end.uncommitted_batch = replay.pending.as_ref().map(|pending| pending.batch_seq);
-    end.next_batch_seq = replay
-        .max_seen
-        .checked_add(1)
-        .ok_or(CoreError::Corrupt("batch sequence overflow"))?;
+    end.next_batch_seq =
+        replay
+            .max_seen
+            .checked_add(1)
+            .ok_or(CoreError::new(crate::CoreErrorCause::Corrupt(
+                "batch sequence overflow",
+            )))?;
     Ok(end)
 }
 
@@ -1196,7 +1756,9 @@ fn check_pending_segment(
     // Records are appended only after the root confirms the segment.
     let len = backend.len(file)?;
     if len > SEGMENT_HEADER_BYTES {
-        return Err(CoreError::Corrupt("unconfirmed segment holds records"));
+        return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+            "unconfirmed segment holds records",
+        )));
     }
     let mut bytes = [0u8; SEGMENT_HEADER_BYTES as usize];
     let bytes = &mut bytes[..len as usize];
@@ -1208,9 +1770,9 @@ fn check_pending_segment(
         .zip(header)
         .any(|(&byte, expected)| byte != 0 && byte != expected)
     {
-        return Err(CoreError::Corrupt(
+        return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
             "unconfirmed segment holds bytes other than its header",
-        ));
+        )));
     }
     Ok(true)
 }
@@ -1234,10 +1796,22 @@ impl Replay<'_> {
         let Some(head) = decode_record_header(&header, &self.group_id, at)? else {
             return Ok(Scanned::Damage);
         };
+        if let Some(prepared) = self.prepared {
+            if head.batch_seq != prepared.batch_seq {
+                return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                    "prepared operation batch differs",
+                )));
+            }
+            if matches!(head.kind, RecordKind::Commit | RecordKind::Directory) {
+                return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                    "prepared prefix contains a publication record",
+                )));
+            }
+        }
         if head.base_seq != self.batch_seq {
-            return Err(CoreError::Corrupt(
+            return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
                 "segment record does not follow the newest commit",
-            ));
+            )));
         }
         if u64::from(head.body_len) > reader.remaining() {
             return Ok(Scanned::Damage);
@@ -1248,7 +1822,15 @@ impl Replay<'_> {
             if crc32c(&body) != head.body_crc {
                 return Ok(Scanned::Damage);
             }
-            self.commit(head.batch_seq, &decode_commit_body(&body)?, visit)?;
+            self.commit(
+                head.batch_seq,
+                LogPosition {
+                    segment_id,
+                    offset: reader.pos(),
+                },
+                &decode_commit_body(&body)?,
+                visit,
+            )?;
             self.segment_attempt = None;
             return Ok(Scanned::Commit);
         }
@@ -1259,12 +1841,81 @@ impl Replay<'_> {
             .replace(head.batch_seq)
             .is_some_and(|attempt| attempt != head.batch_seq)
         {
-            return Err(CoreError::Corrupt(
+            return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
                 "segment interleaves two uncommitted batches",
-            ));
+            )));
         }
         self.max_seen = self.max_seen.max(head.batch_seq);
+        if head.kind == RecordKind::Directory {
+            let mut bytes = [0u8; DIRECTORY_ROOT_BYTES];
+            reader.read_exact(&mut bytes)?;
+            if crc32c(&bytes) != head.body_crc {
+                return Ok(Scanned::Damage);
+            }
+            let directory_root = DirectoryRoot::decode(&bytes)?;
+            if directory_root.group_id != self.group_id
+                || directory_root.generation != head.batch_seq
+            {
+                return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                    "directory root does not name its batch",
+                )));
+            }
+            let pending = self
+                .pending
+                .as_mut()
+                .filter(|pending| pending.batch_seq == head.batch_seq && pending.op_count != 0)
+                .ok_or(CoreError::new(crate::CoreErrorCause::Corrupt(
+                    "directory root has no matching batch",
+                )))?;
+            if pending.directory_root.replace(directory_root).is_some() {
+                return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                    "batch has two directory roots",
+                )));
+            }
+            return Ok(Scanned::Record);
+        }
+        let max_operations = self.max_operations;
+        let retain_records = self.retain_records;
         let pending = self.pending_for(head.batch_seq)?;
+        if pending.directory_root.is_some() {
+            return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                "operation follows prepared directory root",
+            )));
+        }
+        let kind = match head.kind {
+            RecordKind::Relocate => BatchKind::Relocation,
+            RecordKind::Maintenance => BatchKind::DirectoryOnly,
+            _ => BatchKind::User,
+        };
+        if pending.op_count >= max_operations {
+            return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                "batch exceeds replay operation bound",
+            )));
+        }
+        if pending.kind.is_some_and(|previous| previous != kind)
+            || (kind == BatchKind::DirectoryOnly && pending.op_count != 0)
+        {
+            return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                "maintenance batch mixes operations",
+            )));
+        }
+        if kind != BatchKind::User && pending.op_count >= MAX_MAINTENANCE_OPERATIONS {
+            return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                "maintenance batch exceeds operation bound",
+            )));
+        }
+        pending.encoded_bytes = pending
+            .encoded_bytes
+            .checked_add(RECORD_HEADER_BYTES + head.body_len as usize)
+            .ok_or(CoreError::new(crate::CoreErrorCause::Corrupt(
+                "batch encoded size overflows",
+            )))?;
+        if kind != BatchKind::User && pending.encoded_bytes > MAX_BATCH_BYTES {
+            return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                "maintenance batch exceeds encoded byte bound",
+            )));
+        }
+        pending.kind = Some(kind);
         pending.ops.update(header);
         let value_at = reader.pos();
         let body = read_body(reader, &head, &mut pending.ops)?;
@@ -1277,13 +1928,22 @@ impl Replay<'_> {
             ReplayedRecord::Put { table, key, value } => {
                 (table.len(), key.len(), value.len as usize)
             }
+            ReplayedRecord::Relocate {
+                table, key, value, ..
+            } => (table.len(), key.len(), value.len as usize),
             ReplayedRecord::Delete { table, key } => (table.len(), key.len(), 0),
+            ReplayedRecord::DirectoryOnly => (0, 0, 0),
         };
         pending.bytes += table + key + value;
-        if pending.records.len() >= MAX_BATCH_OPERATIONS || pending.bytes > MAX_BATCH_BYTES {
-            return Err(CoreError::Corrupt("batch exceeds its physical bounds"));
+        if pending.op_count >= MAX_BATCH_OPERATIONS || pending.bytes > MAX_BATCH_BYTES {
+            return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                "batch exceeds its physical bounds",
+            )));
         }
-        pending.records.push(record);
+        pending.op_count += 1;
+        if retain_records {
+            pending.records.push(record);
+        }
         Ok(Scanned::Record)
     }
 
@@ -1291,18 +1951,26 @@ impl Replay<'_> {
         match &self.pending {
             Some(pending) if pending.batch_seq == batch_seq => {}
             Some(pending) if pending.batch_seq > batch_seq => {
-                return Err(CoreError::Corrupt("batch sequence regressed"));
+                return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                    "batch sequence regressed",
+                )));
             }
             // A later sequence abandons trailing records that never committed.
             Some(_) | None => {
                 if batch_seq <= self.batch_seq {
-                    return Err(CoreError::Corrupt("batch sequence regressed"));
+                    return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                        "batch sequence regressed",
+                    )));
                 }
                 self.pending = Some(PendingBatch {
                     batch_seq,
+                    directory_root: None,
                     records: Vec::new(),
+                    op_count: 0,
                     bytes: 0,
+                    encoded_bytes: 0,
                     ops: Sha256::new(),
+                    kind: None,
                 });
             }
         }
@@ -1312,6 +1980,7 @@ impl Replay<'_> {
     fn commit(
         &mut self,
         batch_seq: u64,
+        end: LogPosition,
         body: &CommitBody,
         visit: &mut impl FnMut(ReplayedBatch) -> Result<(), CoreError>,
     ) -> Result<(), CoreError> {
@@ -1319,13 +1988,30 @@ impl Replay<'_> {
             .pending
             .take()
             .filter(|pending| pending.batch_seq == batch_seq)
-            .ok_or(CoreError::Corrupt("commit record has no matching batch"))?;
-        if pending.records.len() != body.op_count as usize {
-            return Err(CoreError::Corrupt("commit operation count differs"));
+            .ok_or(CoreError::new(crate::CoreErrorCause::Corrupt(
+                "commit record has no matching batch",
+            )))?;
+        if pending.op_count != body.op_count as usize {
+            return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                "commit operation count differs",
+            )));
         }
         let ops_sha256: [u8; 32] = pending.ops.finalize().into();
         if ops_sha256 != body.ops_sha256 {
-            return Err(CoreError::Corrupt("commit operation digest differs"));
+            return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                "commit operation digest differs",
+            )));
+        }
+        let directory_root =
+            pending
+                .directory_root
+                .ok_or(CoreError::new(crate::CoreErrorCause::Corrupt(
+                    "commit has no prepared directory root",
+                )))?;
+        if directory_root.encode()? != body.directory {
+            return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                "commit directory root differs",
+            )));
         }
         let chain = chain_digest(
             &self.group_id,
@@ -1333,15 +2019,22 @@ impl Replay<'_> {
             batch_seq,
             body.op_count,
             &ops_sha256,
+            &body.directory,
         );
         if chain != body.chain_sha256 {
-            return Err(CoreError::Corrupt("commit chain differs"));
+            return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                "commit chain differs",
+            )));
         }
         self.batch_seq = batch_seq;
         self.chain = chain;
+        self.directory_root = Some(directory_root);
+        self.directory_end = Some(end);
         visit(ReplayedBatch {
+            end,
             batch_seq,
             chain,
+            directory_root,
             records: pending.records,
         })
     }
@@ -1389,20 +2082,24 @@ impl Replay<'_> {
                     continue;
                 };
                 if head.base_seq != self.batch_seq {
-                    return Err(CoreError::Corrupt(
+                    return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
                         "damaged record precedes a record of a later commit",
-                    ));
+                    )));
                 }
                 if *attempt.get_or_insert(head.batch_seq) != head.batch_seq {
-                    return Err(CoreError::Corrupt(
+                    return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
                         "damaged record precedes records of another batch",
-                    ));
+                    )));
                 }
-                // A commit at `from` itself may be the interrupted write.
-                if head.kind == RecordKind::Commit && position.offset != from {
-                    return Err(CoreError::Corrupt(
-                        "record before a durable commit is damaged",
-                    ));
+                // Directory preparation follows synchronized operations;
+                // commit follows synchronized preparation. Either boundary
+                // at `from` itself may be the interrupted write.
+                if matches!(head.kind, RecordKind::Directory | RecordKind::Commit)
+                    && position.offset != from
+                {
+                    return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                        "record before a synchronized batch boundary is damaged",
+                    )));
                 }
             }
             if complete {
@@ -1466,6 +2163,11 @@ impl Replay<'_> {
         } else {
             None
         };
+        if at != from && bytes.get(4) == Some(&RecordKind::Directory.tag()) {
+            return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                "record before a synchronized batch boundary is damaged",
+            )));
+        }
         let is_commit = (present > 4 && bytes[4] == RecordKind::Commit.tag())
             || written.is_some_and(|written| {
                 present >= RECORD_HEADER_BYTES
@@ -1474,18 +2176,21 @@ impl Replay<'_> {
             });
         if is_commit {
             if at != from {
-                return Err(CoreError::Corrupt(
-                    "record before a durable commit is damaged",
-                ));
+                return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                    "record before a synchronized batch boundary is damaged",
+                )));
             }
-            let written =
-                written.ok_or(CoreError::Corrupt("commit record has no matching batch"))?;
+            let written = written.ok_or(CoreError::new(crate::CoreErrorCause::Corrupt(
+                "commit record has no matching batch",
+            )))?;
             if bytes
                 .iter()
                 .zip(written)
                 .any(|(&byte, written)| byte != 0 && byte != written)
             {
-                return Err(CoreError::Corrupt("written commit record is damaged"));
+                return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                    "written commit record is damaged",
+                )));
             }
             return Ok(());
         }
@@ -1505,9 +2210,9 @@ impl Replay<'_> {
             .enumerate()
             .any(|(index, &byte)| byte != 0 && !as_written(index, byte))
         {
-            return Err(CoreError::Corrupt(
+            return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
                 "damaged tail is not an interrupted write",
-            ));
+            )));
         }
         Ok(())
     }
@@ -1515,7 +2220,8 @@ impl Replay<'_> {
     /// The commit record the writer appends at `at` for the pending batch.
     fn pending_commit(&self, at: LogPosition) -> Option<[u8; COMMIT_RECORD_BYTES]> {
         let pending = self.pending.as_ref()?;
-        let op_count = pending.records.len() as u32;
+        let directory = pending.directory_root?.encode().ok()?;
+        let op_count = pending.op_count as u32;
         let ops_sha256: [u8; 32] = pending.ops.clone().finalize().into();
         let body = CommitBody {
             op_count,
@@ -1526,7 +2232,9 @@ impl Replay<'_> {
                 pending.batch_seq,
                 op_count,
                 &ops_sha256,
+                &directory,
             ),
+            directory,
         };
         Some(commit_record(
             &self.group_id,
@@ -1553,8 +2261,13 @@ fn read_body(
     body_crc.update(&inline);
     ops.update(&inline);
     // The value of a well-formed put begins after its declared table and key.
-    let value_start = if head.kind == RecordKind::Put {
-        (PUT_PREFIX_BYTES + usize::from(le_u16(&inline[..2])) + usize::from(le_u16(&inline[2..4])))
+    let value_start = if matches!(head.kind, RecordKind::Put | RecordKind::Relocate) {
+        let prefix = if head.kind == RecordKind::Put {
+            PUT_PREFIX_BYTES
+        } else {
+            RELOCATE_PREFIX_BYTES
+        };
+        (prefix + usize::from(le_u16(&inline[..2])) + usize::from(le_u16(&inline[2..4])))
             .min(inline_len)
     } else {
         inline_len
@@ -1585,13 +2298,20 @@ fn decode_operation(
     segment_id: u64,
     body_at: u64,
 ) -> Result<ReplayedRecord, CoreError> {
-    let invalid = CoreError::Corrupt("segment operation record is invalid");
+    let invalid = CoreError::new(crate::CoreErrorCause::Corrupt(
+        "segment operation record is invalid",
+    ));
     let text = |bytes: &[u8]| {
         if bytes.is_empty() || bytes.len() > MAX_TABLE_BYTES {
-            return Err(CoreError::Corrupt("segment operation record is invalid"));
+            return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                "segment operation record is invalid",
+            )));
         }
-        String::from_utf8(bytes.to_vec())
-            .map_err(|_| CoreError::Corrupt("segment table name is not UTF-8"))
+        String::from_utf8(bytes.to_vec()).map_err(|_| {
+            CoreError::new(crate::CoreErrorCause::Corrupt(
+                "segment table name is not UTF-8",
+            ))
+        })
     };
     match head.kind {
         RecordKind::CreateTable => Ok(ReplayedRecord::CreateTable {
@@ -1610,11 +2330,16 @@ fn decode_operation(
                 key: inline[key_at..].to_vec(),
             })
         }
-        RecordKind::Put => {
+        RecordKind::Put | RecordKind::Relocate => {
+            let prefix = if head.kind == RecordKind::Put {
+                PUT_PREFIX_BYTES
+            } else {
+                RELOCATE_PREFIX_BYTES
+            };
             let table_len = usize::from(le_u16(&inline[..2]));
             let key_len = usize::from(le_u16(&inline[2..4]));
             let value_len = le_u32(&inline[4..8]);
-            let key_at = PUT_PREFIX_BYTES + table_len;
+            let key_at = prefix + table_len;
             let value_at = key_at + key_len;
             if key_len > MAX_KEY_BYTES
                 || value_len as usize > MAX_VALUE_BYTES
@@ -1625,20 +2350,44 @@ fn decode_operation(
                 return Err(invalid);
             }
             if le_u32(&inline[8..12]) != value_crc {
-                return Err(CoreError::Corrupt("segment value checksum differs"));
+                return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                    "segment value checksum differs",
+                )));
             }
-            Ok(ReplayedRecord::Put {
-                table: text(&inline[PUT_PREFIX_BYTES..key_at])?,
-                key: inline[key_at..value_at].to_vec(),
-                value: ValueLocation {
-                    segment_id,
-                    offset: body_at + value_at as u64,
-                    len: value_len,
-                    crc: value_crc,
-                },
-            })
+            let value = ValueLocation {
+                segment_id,
+                offset: body_at + value_at as u64,
+                len: value_len,
+                crc: value_crc,
+            };
+            let table = text(&inline[prefix..key_at])?;
+            let key = inline[key_at..value_at].to_vec();
+            if head.kind == RecordKind::Relocate {
+                let logical_batch_seq = le_u64(&inline[PUT_PREFIX_BYTES..RELOCATE_PREFIX_BYTES]);
+                if logical_batch_seq == 0 || logical_batch_seq > head.base_seq {
+                    return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                        "relocation logical version is invalid",
+                    )));
+                }
+                Ok(ReplayedRecord::Relocate {
+                    table,
+                    key,
+                    logical_batch_seq,
+                    value,
+                })
+            } else {
+                Ok(ReplayedRecord::Put { table, key, value })
+            }
         }
-        RecordKind::Commit => Err(invalid),
+        RecordKind::Maintenance => {
+            if inline.iter().any(|&byte| byte != 0) {
+                return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                    "directory maintenance record is noncanonical",
+                )));
+            }
+            Ok(ReplayedRecord::DirectoryOnly)
+        }
+        RecordKind::Commit | RecordKind::Directory => Err(invalid),
     }
 }
 
@@ -1677,7 +2426,12 @@ pub(crate) mod test_support {
             operations: &[Operation],
         ) -> Result<CommittedBatch, CoreError> {
             let mut roll = RootRoll::new(&self.group, &mut self.root);
-            self.writer.append_batch(&self.group, operations, &mut roll)
+            let prepared = self
+                .writer
+                .prepare_batch(&self.group, operations, &mut roll)?;
+            let root = fixture_directory_root(prepared.batch_seq());
+            self.writer
+                .finish_batch(&self.group, prepared, root, &mut roll)
         }
 
         /// Discard the replayed tail and continue appending.
@@ -1688,6 +2442,18 @@ pub(crate) mod test_support {
                 root: reopened.root.clone(),
                 writer: SegmentWriter::resume(GROUP, &reopened.end).with_capacity(capacity),
             }
+        }
+    }
+
+    // Segment format tests supply a root fixture; directory/owner tests prove
+    // page synchronization and reachability before this boundary is invoked.
+    pub(crate) fn fixture_directory_root(generation: u64) -> DirectoryRoot {
+        DirectoryRoot {
+            group_id: GROUP,
+            generation,
+            page: None,
+            height: 0,
+            entries: 0,
         }
     }
 
@@ -1718,7 +2484,17 @@ pub(crate) mod test_support {
 
     pub(crate) fn corrupt_reason<T>(result: Result<T, CoreError>) -> &'static str {
         match result {
-            Err(CoreError::Corrupt(reason)) => reason,
+            Err(error)
+                if matches!(
+                    error.rejected_cause(),
+                    Some(crate::CoreErrorCause::Corrupt(_))
+                ) =>
+            {
+                let Some(crate::CoreErrorCause::Corrupt(reason)) = error.rejected_cause() else {
+                    unreachable!()
+                };
+                reason
+            }
             Err(other) => panic!("expected corruption, got {other:?}"),
             Ok(_) => panic!("expected corruption, got success"),
         }
@@ -1746,6 +2522,8 @@ mod tests {
                 ReplayedRecord::CreateTable { table } => (format!("+{table}"), Vec::new()),
                 ReplayedRecord::Put { table, key, .. } => (table.clone(), key.clone()),
                 ReplayedRecord::Delete { table, key } => (format!("-{table}"), key.clone()),
+                ReplayedRecord::Relocate { table, key, .. } => (format!("~{table}"), key.clone()),
+                ReplayedRecord::DirectoryOnly => (String::from("~directory"), Vec::new()),
             })
             .collect()
     }
@@ -1769,6 +2547,415 @@ mod tests {
         };
         let header = header_checksum(&GROUP, position, &bytes[at..at + 32]);
         bytes[at + 32..at + 36].copy_from_slice(&header.to_le_bytes());
+    }
+
+    fn nonempty_directory_root(generation: u64) -> DirectoryRoot {
+        DirectoryRoot {
+            group_id: GROUP,
+            generation,
+            page: Some(crate::directory::DirectoryPageRef {
+                arena_id: 7,
+                page_index: generation,
+                sha256: [generation as u8; 32],
+            }),
+            height: 1,
+            entries: 3,
+        }
+    }
+
+    #[test]
+    fn writer_staging_retains_only_the_fixed_admitted_window() {
+        let mut log = Log::new(SEGMENT_BYTES);
+        // Without exact reservation these three extensions grow the stage
+        // beyond 64 KiB despite keeping its length below 64 KiB throughout.
+        let ops: Vec<_> = (0..3)
+            .map(|index| put("t", &format!("k{index}"), vec![7; 20_000]))
+            .collect();
+        log.commit(&ops).unwrap();
+        assert_eq!(log.writer.stage.capacity(), IO_WINDOW);
+        assert!(log.writer.stage.is_empty());
+        log.commit(&[Operation::create_table("u")]).unwrap();
+        assert_eq!(log.writer.stage.capacity(), IO_WINDOW);
+    }
+
+    #[test]
+    fn prepared_workspace_covers_exact_locations_and_streams_maximum_keys() {
+        for count in [1, 3, 5, 17, 33, 65] {
+            let operations: Vec<_> = (0..count)
+                .map(|_| Operation::Delete {
+                    table: "t".repeat(MAX_TABLE_BYTES).into(),
+                    key: vec![7; MAX_KEY_BYTES],
+                })
+                .collect();
+            let bound = prepared_batch_workspace_bytes(&operations).unwrap();
+            let mut log = Log::new(SEGMENT_BYTES);
+            let prepared = log
+                .writer
+                .prepare_batch(
+                    &log.group,
+                    &operations,
+                    &mut RootRoll::new(&log.group, &mut log.root),
+                )
+                .unwrap();
+            assert_eq!(prepared.values.capacity(), count);
+            assert_eq!(prepared.identity.operation_count, count as u32);
+            assert!(
+                bound < 3 << 20,
+                "maximum key payload was charged as a replay collection"
+            );
+            log.writer
+                .abort_prepared(&log.group, prepared, &log.root.log_bounds())
+                .unwrap();
+            assert!(!log.writer.is_fenced());
+        }
+    }
+
+    #[test]
+    fn prepared_workspace_depends_on_location_count_not_borrowed_value_size() {
+        let small = [put("t", "k", Vec::new())];
+        let large = [put("t", "k", vec![9; 6 << 20])];
+        assert_eq!(
+            prepared_batch_workspace_bytes(&small).unwrap(),
+            prepared_batch_workspace_bytes(&large).unwrap()
+        );
+        assert!(prepared_batch_workspace_bytes(&large).unwrap() < 3 << 20);
+        let many: Vec<_> = (0..MAX_BATCH_OPERATIONS)
+            .map(|_| Operation::create_table("t"))
+            .collect();
+        let bound = prepared_batch_workspace_bytes(&many).unwrap();
+        let locations = MAX_BATCH_OPERATIONS * std::mem::size_of::<Option<ValueLocation>>();
+        assert!(bound >= locations as u64);
+        assert!(bound < 6 << 20);
+    }
+
+    #[test]
+    fn operation_prepare_is_private_until_full_directory_root_commits() {
+        let mut log = Log::new(SEGMENT_BYTES);
+        let prepared = log
+            .writer
+            .prepare_batch(
+                &log.group,
+                &[put("t", "key", b"value".to_vec())],
+                &mut RootRoll::new(&log.group, &mut log.root),
+            )
+            .unwrap();
+        assert_eq!(prepared.batch_seq(), 1);
+        assert_eq!(
+            read_value(&log.group, &prepared.values()[0].unwrap()).unwrap(),
+            b"value"
+        );
+        assert!(reopen(&log.group.crash()).unwrap().batches.is_empty());
+        assert!(
+            matches!(&(log.commit(&[Operation::create_table("later")])), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+        );
+        let root = nonempty_directory_root(1);
+        let committed = log
+            .writer
+            .finish_batch(
+                &log.group,
+                prepared,
+                root,
+                &mut RootRoll::new(&log.group, &mut log.root),
+            )
+            .unwrap();
+        let replayed = reopen(&log.group.crash()).unwrap();
+        assert_eq!(committed.directory_root, root);
+        assert_eq!(replayed.batches[0].directory_root, root);
+        assert_eq!(replayed.end.directory_root, Some(root));
+    }
+
+    #[test]
+    fn known_private_failure_can_abort_and_resume_without_reusing_batch_sequence() {
+        for capacity in [SMALL, SEGMENT_BYTES] {
+            let mut log = Log::new(capacity);
+            let first = log.commit(&[Operation::create_table("t")]).unwrap();
+            let ops: Vec<_> = (0..8)
+                .map(|index| put("t", &format!("k{index}"), vec![1; 300]))
+                .collect();
+            let prepared = log
+                .writer
+                .prepare_batch(
+                    &log.group,
+                    &ops,
+                    &mut RootRoll::new(&log.group, &mut log.root),
+                )
+                .unwrap();
+            let abandoned = prepared.batch_seq();
+            log.writer
+                .abort_prepared(&log.group, prepared, &log.root.log_bounds())
+                .unwrap();
+            let next = log
+                .commit(&[put("t", "new", b"survives".to_vec())])
+                .unwrap();
+            assert!(next.batch_seq > abandoned);
+            let replayed = reopen(&log.group.crash()).unwrap();
+            assert_eq!(
+                replayed
+                    .batches
+                    .iter()
+                    .map(|batch| batch.batch_seq)
+                    .collect::<Vec<_>>(),
+                [first.batch_seq, next.batch_seq]
+            );
+            assert_eq!(value_at(&log.group, &replayed.batches[1], 0), b"survives");
+        }
+    }
+
+    #[test]
+    fn stale_prepared_abort_never_truncates_a_changed_tail() {
+        for stale_bounds in [false, true] {
+            let mut log = Log::new(SEGMENT_BYTES);
+            let prepared = log
+                .writer
+                .prepare_batch(
+                    &log.group,
+                    &[Operation::create_table("t")],
+                    &mut RootRoll::new(&log.group, &mut log.root),
+                )
+                .unwrap();
+            let mut bounds = log.root.log_bounds();
+            if stale_bounds {
+                bounds.last_segment_id = 0;
+            } else {
+                let end = log.writer.position().unwrap();
+                log.group
+                    .write(GroupFile::segment(end.segment_id), end.offset, &[0xaa])
+                    .unwrap();
+            }
+            let len = log.group.len(GroupFile::segment(1)).unwrap();
+            assert!(
+                matches!(&(log.writer.abort_prepared(&log.group, prepared, &bounds)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput(_))))
+            );
+            assert_eq!(log.group.len(GroupFile::segment(1)).unwrap(), len);
+            assert!(
+                matches!(&(log.commit(&[Operation::create_table("u")])), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+            );
+        }
+    }
+
+    #[test]
+    fn directory_preparation_failures_are_known_uncommitted() {
+        for timing in [FaultTiming::BeforeEffect, FaultTiming::AfterEffect] {
+            for operation in [GroupOp::Write, GroupOp::Sync] {
+                let mut log = Log::new(SEGMENT_BYTES);
+                log.commit(&[Operation::create_table("t")]).unwrap();
+                log.group.fail(operation, 2, timing);
+                assert!(
+                    matches!(&(log.commit(&[put("t", "lost", vec![1])])), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::Io(_))))
+                );
+                let replayed = reopen(&log.group.crash()).unwrap();
+                assert_eq!(replayed.batches.len(), 1);
+                assert_eq!(replayed.end.uncommitted_batch, Some(2));
+            }
+        }
+    }
+
+    #[test]
+    fn directory_preparation_proves_prior_operations_were_synchronized() {
+        let mut log = Log::new(SEGMENT_BYTES);
+        log.commit(&[Operation::create_table("t")]).unwrap();
+        let prepared = log
+            .writer
+            .prepare_batch(
+                &log.group,
+                &[put("t", "key", b"value".to_vec())],
+                &mut RootRoll::new(&log.group, &mut log.root),
+            )
+            .unwrap();
+        let location = prepared.values()[0].unwrap();
+        let root = nonempty_directory_root(prepared.batch_seq());
+        // Root preparation is durable, but commit writing never starts.
+        log.group.fail(GroupOp::Write, 2, FaultTiming::BeforeEffect);
+        assert!(matches!(&(log.writer.finish_batch(
+                &log.group,
+                prepared,
+                root,
+                &mut RootRoll::new(&log.group, &mut log.root),
+            )), Err(native_error) if native_error.is_unknown_commit()));
+        let group = log.group.crash();
+        group.with_durable(GroupFile::segment(location.segment_id), |bytes| {
+            bytes[location.offset as usize] ^= 1;
+        });
+        assert_eq!(
+            corrupt_reason(reopen(&group)),
+            "record before a synchronized batch boundary is damaged"
+        );
+    }
+
+    #[test]
+    fn finish_rejects_wrong_incarnation_or_generation_before_commit() {
+        for wrong_group in [false, true] {
+            let mut log = Log::new(SEGMENT_BYTES);
+            let prepared = log
+                .writer
+                .prepare_batch(
+                    &log.group,
+                    &[Operation::create_table("t")],
+                    &mut RootRoll::new(&log.group, &mut log.root),
+                )
+                .unwrap();
+            let mut root = nonempty_directory_root(prepared.batch_seq());
+            if wrong_group {
+                root.group_id[0] ^= 1;
+            } else {
+                root.generation += 1;
+            }
+            assert!(matches!(&(log.writer.finish_batch(
+                    &log.group,
+                    prepared,
+                    root,
+                    &mut RootRoll::new(&log.group, &mut log.root),
+                )), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput(_)))));
+            assert!(reopen(&log.group.crash()).unwrap().batches.is_empty());
+            assert!(
+                matches!(&(log.commit(&[Operation::create_table("u")])), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+            );
+        }
+    }
+
+    #[test]
+    fn commit_root_is_bound_to_preparation_and_chain() {
+        let mut log = Log::new(SEGMENT_BYTES);
+        let prepared = log
+            .writer
+            .prepare_batch(
+                &log.group,
+                &[Operation::create_table("t")],
+                &mut RootRoll::new(&log.group, &mut log.root),
+            )
+            .unwrap();
+        let committed = log
+            .writer
+            .finish_batch(
+                &log.group,
+                prepared,
+                nonempty_directory_root(1),
+                &mut RootRoll::new(&log.group, &mut log.root),
+            )
+            .unwrap();
+        let commit_at = committed.end.offset as usize - COMMIT_RECORD_BYTES;
+        let directory_at = commit_at - DIRECTORY_RECORD_BYTES;
+        for change_preparation in [false, true] {
+            let group = log.group.crash();
+            group.with_durable(GroupFile::segment(1), |bytes| {
+                // Change a page digest byte while keeping canonical root and record CRCs.
+                bytes[commit_at + RECORD_HEADER_BYTES + 72 + 56] ^= 1;
+                reseal_record(bytes, commit_at);
+                if change_preparation {
+                    bytes[directory_at + RECORD_HEADER_BYTES + 56] ^= 1;
+                    reseal_record(bytes, directory_at);
+                }
+            });
+            assert_eq!(
+                corrupt_reason(reopen(&group)),
+                if change_preparation {
+                    "commit chain differs"
+                } else {
+                    "commit directory root differs"
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn replay_keeps_exact_committed_directory_boundary_before_a_later_roll() {
+        let mut log = Log::new(SMALL);
+        let committed = log.commit(&[Operation::create_table("t")]).unwrap();
+        let _prepared = log
+            .writer
+            .prepare_batch(
+                &log.group,
+                &[put("t", "big", vec![7; 900])],
+                &mut RootRoll::new(&log.group, &mut log.root),
+            )
+            .unwrap();
+        let replayed = reopen(&log.group.crash()).unwrap();
+        assert_eq!(replayed.end.directory_end, Some(committed.end));
+        assert_ne!(replayed.end.directory_end, replayed.end.resume);
+        assert_eq!(replayed.batches[0].end, committed.end);
+        validate_directory_anchor(
+            &log.group,
+            GROUP,
+            replayed.end.directory_root.unwrap(),
+            &ReplayStart {
+                position: replayed.end.directory_end.unwrap(),
+                batch_seq: replayed.end.batch_seq,
+                chain: replayed.end.chain,
+            },
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn directory_anchor_must_match_exact_preceding_commit() {
+        let mut log = Log::new(SEGMENT_BYTES);
+        let first = log.commit(&[Operation::create_table("t")]).unwrap();
+        let second = log.commit(&[put("t", "a", vec![1])]).unwrap();
+        let start = ReplayStart {
+            position: second.end,
+            batch_seq: second.batch_seq,
+            chain: second.chain,
+        };
+        validate_directory_anchor(&log.group, GROUP, second.directory_root, &start).unwrap();
+        let mut substituted = first.directory_root;
+        substituted.generation = second.batch_seq;
+        // Both fixture roots are empty: change the fully canonical root to a different tree.
+        substituted = DirectoryRoot {
+            generation: substituted.generation,
+            ..nonempty_directory_root(1)
+        };
+        assert_eq!(
+            corrupt_reason(validate_directory_anchor(
+                &log.group,
+                GROUP,
+                substituted,
+                &start
+            )),
+            "directory anchor differs from committed root"
+        );
+        let shifted = ReplayStart {
+            position: LogPosition {
+                offset: start.position.offset - 1,
+                ..start.position
+            },
+            ..start
+        };
+        assert!(
+            validate_directory_anchor(&log.group, GROUP, second.directory_root, &shifted).is_err()
+        );
+        let wrong_chain = ReplayStart {
+            chain: [9; 32],
+            ..start
+        };
+        assert_eq!(
+            corrupt_reason(validate_directory_anchor(
+                &log.group,
+                GROUP,
+                second.directory_root,
+                &wrong_chain
+            )),
+            "directory anchor differs from committed root"
+        );
+        validate_directory_anchor(
+            &log.group,
+            GROUP,
+            fixture_directory_root(0),
+            &ReplayStart::GENESIS,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn retired_segment_format_is_rejected_without_fallback() {
+        let mut bytes = segment_header(&GROUP, 1);
+        bytes[..16].copy_from_slice(b"KASUMI-KVSEG0001");
+        bytes[16..20].copy_from_slice(&1u32.to_le_bytes());
+        let crc = crc32c(&bytes[..60]);
+        bytes[60..].copy_from_slice(&crc.to_le_bytes());
+        assert_eq!(
+            corrupt_reason(decode_segment_header(&bytes, &GROUP, 1)),
+            "unsupported KASUMI-KVSEG0001 segmented image"
+        );
     }
 
     #[test]
@@ -1847,10 +3034,9 @@ mod tests {
                 b"k".to_vec(),
             )],
         ] {
-            assert!(matches!(
-                log.commit(&operations),
-                Err(CoreError::InvalidInput(_))
-            ));
+            assert!(
+                matches!(&(log.commit(&operations)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput(_))))
+            );
         }
         assert!(!log.group.exists(GroupFile::segment(1)).unwrap());
         assert_eq!(log.root.generation(), 0);
@@ -1885,8 +3071,8 @@ mod tests {
     impl SegmentRoll for FailingRoll<'_> {
         fn reserve(&mut self, sealed: Option<SealedSegment>) -> Result<u64, CoreError> {
             if self.reserves_left == 0 {
-                return Err(CoreError::Io(std::io::Error::other(
-                    "injected intent failure",
+                return Err(CoreError::new(crate::CoreErrorCause::Io(
+                    std::io::Error::other("injected intent failure"),
                 )));
             }
             self.reserves_left -= 1;
@@ -1925,13 +3111,15 @@ mod tests {
         };
         let error = log
             .writer
-            .append_batch(&log.group, &abandoned, &mut roll)
+            .prepare_batch(&log.group, &abandoned, &mut roll)
             .unwrap_err();
-        assert!(matches!(error, CoreError::Io(_)), "{error:?}");
-        assert!(matches!(
-            log.commit(&[Operation::create_table("u")]),
-            Err(CoreError::OwnerFailed)
-        ));
+        assert!(
+            matches!((error).rejected_cause(), Some(crate::CoreErrorCause::Io(_))),
+            "{error:?}"
+        );
+        assert!(
+            matches!(&(log.commit(&[Operation::create_table("u")])), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+        );
 
         let group = log.group.crash();
         let reopened = reopen(&group).unwrap();
@@ -1954,14 +3142,13 @@ mod tests {
     fn failed_commit_write_is_unknown_and_reopen_hides_the_batch() {
         let mut log = Log::new(SEGMENT_BYTES);
         log.commit(&[Operation::create_table("t")]).unwrap();
-        // One staged record flush, then the commit record write.
-        log.group.fail(GroupOp::Write, 2, FaultTiming::BeforeEffect);
+        // Operation flush, directory preparation, then the commit write.
+        log.group.fail(GroupOp::Write, 3, FaultTiming::BeforeEffect);
         let error = log.commit(&[put("t", "k", b"lost".to_vec())]).unwrap_err();
-        assert!(matches!(error, CoreError::UnknownCommit(_)), "{error:?}");
-        assert!(matches!(
-            log.commit(&[put("t", "k", b"v".to_vec())]),
-            Err(CoreError::OwnerFailed)
-        ));
+        assert!((error).is_unknown_commit(), "{error:?}");
+        assert!(
+            matches!(&(log.commit(&[put("t", "k", b"v".to_vec())])), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+        );
 
         let group = log.group.crash();
         let reopened = reopen(&group).unwrap();
@@ -1996,10 +3183,10 @@ mod tests {
         ] {
             let mut log = Log::new(SEGMENT_BYTES);
             log.commit(&[Operation::create_table("t")]).unwrap();
-            // The record sync precedes the commit sync.
-            log.group.fail(GroupOp::Sync, 2, timing);
+            // Operation and directory preparation syncs precede the commit sync.
+            log.group.fail(GroupOp::Sync, 3, timing);
             let error = log.commit(&[put("t", "k", b"maybe".to_vec())]).unwrap_err();
-            assert!(matches!(error, CoreError::UnknownCommit(_)), "{error:?}");
+            assert!((error).is_unknown_commit(), "{error:?}");
             let reopened = reopen(&log.group.crash()).unwrap();
             assert_eq!(
                 reopened.batches.len(),
@@ -2020,7 +3207,10 @@ mod tests {
         log.group.fail(GroupOp::Sync, 1, FaultTiming::AfterEffect);
         let error = log.commit(&[put("t", "k", b"never".to_vec())]).unwrap_err();
         // No commit record was attempted, so the batch cannot become visible.
-        assert!(matches!(error, CoreError::Io(_)), "{error:?}");
+        assert!(
+            matches!((error).rejected_cause(), Some(crate::CoreErrorCause::Io(_))),
+            "{error:?}"
+        );
         let reopened = reopen(&log.group.crash()).unwrap();
         assert_eq!(reopened.batches.len(), 1);
         assert_eq!(reopened.end.uncommitted_batch, Some(2));
@@ -2042,7 +3232,7 @@ mod tests {
             33,
             60,
             250,
-            full as usize - COMMIT_RECORD_BYTES - 1,
+            full as usize - COMMIT_RECORD_BYTES - DIRECTORY_RECORD_BYTES - 1,
         ] {
             let mut log = Log::new(SEGMENT_BYTES);
             log.commit(&[Operation::create_table("t")]).unwrap();
@@ -2087,12 +3277,11 @@ mod tests {
             let len = resumed.group.len(segment).unwrap();
             assert_eq!(len == end.final_len, keep == later_len);
             // Applying the stale end again is refused without effect.
-            assert!(matches!(
-                end.discard_tail(&resumed.group),
-                Err(CoreError::InvalidInput(
+            assert!(
+                matches!(&(end.discard_tail(&resumed.group)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput(
                     "segment tail differs from the replayed tail"
-                ))
-            ));
+                ))))
+            );
             assert_eq!(resumed.group.len(segment).unwrap(), len);
             let again = reopen(&resumed.group.crash()).unwrap();
             assert_eq!(again.batches.len(), 2, "{keep}");
@@ -2118,10 +3307,9 @@ mod tests {
             let resume = reopened.end.resume.unwrap().offset;
             let final_len = reopened.end.final_len as usize;
             group.fail(op, 1, timing);
-            assert!(matches!(
-                reopened.end.discard_tail(&group),
-                Err(CoreError::Io(_))
-            ));
+            assert!(
+                matches!(&(reopened.end.discard_tail(&group)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::Io(_))))
+            );
             assert_eq!(group.durable_len(segment), Some(final_len));
             // The retry sees either the replayed tail or a segment already
             // ending at the resume point, and completes.
@@ -2138,6 +3326,8 @@ mod tests {
     #[test]
     fn sequence_and_identifier_ceilings_never_overflow() {
         let resumed_at = |batch_seq: u64| ReplayEnd {
+            directory_end: None,
+            directory_root: None,
             batch_seq,
             chain: [0; 32],
             next_batch_seq: batch_seq + 1,
@@ -2160,10 +3350,9 @@ mod tests {
         let generation = log.root.generation();
         let len = log.group.len(GroupFile::segment(1)).unwrap();
         for _ in 0..2 {
-            assert!(matches!(
-                log.commit(&[put("t", "k", b"v".to_vec())]),
-                Err(CoreError::InvalidInput("batch sequence overflow"))
-            ));
+            assert!(
+                matches!(&(log.commit(&[put("t", "k", b"v".to_vec())])), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput("batch sequence overflow"))))
+            );
         }
         assert_eq!(log.root.generation(), generation);
         assert_eq!(log.group.len(GroupFile::segment(1)).unwrap(), len);
@@ -2177,10 +3366,9 @@ mod tests {
         assert_eq!(reopened.batches.len(), 1);
         assert_eq!(reopened.end.next_batch_seq, u64::MAX);
         let mut resumed = Log::resume(group, &reopened, SEGMENT_BYTES);
-        assert!(matches!(
-            resumed.commit(&[put("t", "k", b"v".to_vec())]),
-            Err(CoreError::InvalidInput("batch sequence overflow"))
-        ));
+        assert!(
+            matches!(&(resumed.commit(&[put("t", "k", b"v".to_vec())])), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput("batch sequence overflow"))))
+        );
         // A replay start at the last sequence leaves no room at all.
         let full = ReplayStart {
             position: last.end,
@@ -2216,7 +3404,7 @@ mod tests {
         let interrupted = || {
             let mut log = Log::new(SEGMENT_BYTES);
             log.commit(&[Operation::create_table("t")]).unwrap();
-            log.group.fail(GroupOp::Sync, 2, FaultTiming::BeforeEffect);
+            log.group.fail(GroupOp::Sync, 3, FaultTiming::BeforeEffect);
             log.commit(&[put("t", "k", b"v".to_vec())]).unwrap_err();
             log.group
         };
@@ -2258,6 +3446,7 @@ mod tests {
             op_count: 1,
             ops_sha256: [3; 32],
             chain_sha256: [4; 32],
+            directory: fixture_directory_root(2).encode().unwrap(),
         };
         let image = commit_record(&GROUP, first.end, 2, 1, &body);
         for tail in [&image[..60], &image[..RECORD_HEADER_BYTES + 1]] {
@@ -2277,14 +3466,16 @@ mod tests {
         let mut log = Log::new(SEGMENT_BYTES);
         log.commit(&[Operation::create_table("t")]).unwrap();
         // The commit record is written but its synchronization fails first.
-        log.group.fail(GroupOp::Sync, 2, FaultTiming::BeforeEffect);
+        log.group.fail(GroupOp::Sync, 3, FaultTiming::BeforeEffect);
         let error = log.commit(&[put("t", "k", b"maybe".to_vec())]).unwrap_err();
-        assert!(matches!(error, CoreError::UnknownCommit(_)), "{error:?}");
+        assert!((error).is_unknown_commit(), "{error:?}");
         assert_eq!(reopen(&log.group.crash()).unwrap().batches.len(), 1);
         // Synchronization at reopen fails as plain I/O and serves nothing.
         let same = log.group.clone();
         same.fail(GroupOp::Sync, 1, FaultTiming::BeforeEffect);
-        assert!(matches!(reopen(&same), Err(CoreError::Io(_))));
+        assert!(
+            matches!(&(reopen(&same)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::Io(_))))
+        );
         assert_eq!(reopen(&log.group.crash()).unwrap().batches.len(), 1);
 
         // The same process restarts, still reading the commit record.
@@ -2331,7 +3522,7 @@ mod tests {
             group.with_durable(GroupFile::segment(1), |bytes| bytes[at] ^= 0x10);
             assert_eq!(
                 corrupt_reason(reopen(&group)),
-                "record before a durable commit is damaged",
+                "record before a synchronized batch boundary is damaged",
                 "{at}"
             );
         }
@@ -2421,7 +3612,7 @@ mod tests {
                     .for_each(|byte| *byte ^= flip);
             });
             assert!(
-                matches!(reopen(&group), Err(CoreError::Corrupt(_))),
+                matches!(&(reopen(&group)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::Corrupt(_)))),
                 "{range:?}"
             );
             assert_eq!(group.durable_len(newest), written_len, "{range:?}");
@@ -2456,7 +3647,10 @@ mod tests {
                 // A torn record header's first bytes.
                 assert_eq!(result.unwrap().end.torn_at, Some(first.end.offset));
             } else {
-                assert!(matches!(result, Err(CoreError::Corrupt(_))), "{trace:?}");
+                assert!(
+                    matches!(&(result), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::Corrupt(_)))),
+                    "{trace:?}"
+                );
                 assert_eq!(group.durable_len(newest), len);
             }
         }
@@ -2744,9 +3938,9 @@ mod tests {
         let mut log = Log::new(SEGMENT_BYTES);
         log.commit(&[Operation::create_table("t")]).unwrap();
         let acked = log.commit(&[put("t", "acked", b"v".to_vec())]).unwrap();
-        log.group.fail(GroupOp::Write, 2, FaultTiming::BeforeEffect);
+        log.group.fail(GroupOp::Write, 3, FaultTiming::BeforeEffect);
         let error = log.commit(&[put("t", "next", vec![9; 50])]).unwrap_err();
-        assert!(matches!(error, CoreError::UnknownCommit(_)), "{error:?}");
+        assert!((error).is_unknown_commit(), "{error:?}");
         let segment = GroupFile::segment(1);
         let commit_at = acked.end.offset as usize - COMMIT_RECORD_BYTES;
         for at in [
@@ -2757,7 +3951,10 @@ mod tests {
             let group = log.group.crash();
             group.with_durable(segment, |bytes| bytes[at] ^= 1);
             let len = group.durable_len(segment);
-            assert!(matches!(reopen(&group), Err(CoreError::Corrupt(_))), "{at}");
+            assert!(
+                matches!(&(reopen(&group)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::Corrupt(_)))),
+                "{at}"
+            );
             // The owner never reaches `discard_tail`, so batch 2 survives.
             assert_eq!(group.durable_len(segment), len);
         }
@@ -2766,15 +3963,15 @@ mod tests {
         // records lie in the sealed one before it.
         let mut log = Log::new(SMALL);
         log.commit(&[Operation::create_table("t")]).unwrap();
-        let acked = log.commit(&[put("t", "a", vec![1; 700])]).unwrap();
+        let acked = log.commit(&[put("t", "a", vec![1; 480])]).unwrap();
         assert_eq!(acked.values[0].unwrap().segment_id, 1);
         assert_eq!(acked.end.segment_id, 2);
-        log.group.fail(GroupOp::Write, 2, FaultTiming::BeforeEffect);
+        log.group.fail(GroupOp::Write, 3, FaultTiming::BeforeEffect);
         log.commit(&[put("t", "b", vec![2; 50])]).unwrap_err();
         let newest = GroupFile::segment(2);
         let group = log.group.crash();
         group.with_durable(newest, |bytes| {
-            bytes[SEGMENT_HEADER_BYTES as usize + 9] ^= 1
+            bytes[acked.end.offset as usize - COMMIT_RECORD_BYTES + 9] ^= 1
         });
         let len = group.durable_len(newest);
         assert_eq!(
@@ -2794,13 +3991,12 @@ mod tests {
         log.group.insert_foreign(foreign, image.clone());
         let error = log.commit(&[put("t", "big", vec![1; 900])]).unwrap_err();
         assert!(
-            matches!(&error, CoreError::Io(io) if io.kind() == std::io::ErrorKind::AlreadyExists),
+            matches!(error.rejected_cause(), Some(crate::CoreErrorCause::Io(io)) if io.kind() == std::io::ErrorKind::AlreadyExists),
             "{error:?}"
         );
-        assert!(matches!(
-            log.commit(&[Operation::create_table("u")]),
-            Err(CoreError::OwnerFailed)
-        ));
+        assert!(
+            matches!(&(log.commit(&[Operation::create_table("u")])), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+        );
         assert_eq!(log.group.durable_image(foreign), Some(image.clone()));
         // The published intent names the file, so reopen fails closed too.
         let group = log.group.crash();
@@ -2862,6 +4058,7 @@ mod tests {
             op_count: 1,
             ops_sha256: [0; 32],
             chain_sha256: [0; 32],
+            directory: fixture_directory_root(2).encode().unwrap(),
         };
         let torn_with = |forged: [u8; COMMIT_RECORD_BYTES]| {
             let mut log = Log::new(SEGMENT_BYTES);
@@ -2902,7 +4099,7 @@ mod tests {
         let exact = commit_record(&GROUP, forged_at, 9, 1, &body);
         assert_eq!(
             corrupt_reason(torn_with(exact)),
-            "record before a durable commit is damaged"
+            "record before a synchronized batch boundary is damaged"
         );
     }
 
@@ -2911,7 +4108,7 @@ mod tests {
         for keep in [0, 40] {
             let mut log = Log::new(SMALL);
             log.commit(&[Operation::create_table("t")]).unwrap();
-            let acked = log.commit(&[put("t", "a", vec![1; 300])]).unwrap();
+            let acked = log.commit(&[put("t", "a", vec![1; 190])]).unwrap();
             assert_eq!(acked.end.segment_id, 1);
             // The next batch rolls into segment 2 and is torn there.
             log.group.fail(GroupOp::Sync, 3, FaultTiming::BeforeEffect);
@@ -2933,13 +4130,13 @@ mod tests {
         // An older sealed segment: a later record names the lost commit.
         let mut log = Log::new(SMALL);
         log.commit(&[Operation::create_table("t")]).unwrap();
-        let acked = log.commit(&[put("t", "a", vec![1; 300])]).unwrap();
-        // Two headers and two record flushes precede the commit write.
-        log.group.fail(GroupOp::Write, 5, FaultTiming::BeforeEffect);
+        let acked = log.commit(&[put("t", "a", vec![1; 190])]).unwrap();
+        // Two headers, two operation flushes and root preparation precede commit.
+        log.group.fail(GroupOp::Write, 6, FaultTiming::BeforeEffect);
         let error = log
-            .commit(&[put("t", "b", vec![2; 700]), put("t", "c", vec![3; 700])])
+            .commit(&[put("t", "b", vec![2; 700]), put("t", "c", vec![3; 500])])
             .unwrap_err();
-        assert!(matches!(error, CoreError::UnknownCommit(_)), "{error:?}");
+        assert!((error).is_unknown_commit(), "{error:?}");
         assert_eq!(log.root.last_segment_id(), 3);
         let group = log.group.crash();
         group.with_durable(GroupFile::segment(1), |bytes| {
@@ -2962,7 +4159,10 @@ mod tests {
         log.commit(&[Operation::create_table("t")]).unwrap();
         log.group.fail(GroupOp::Create, 1, FaultTiming::AfterEffect);
         let error = log.commit(&[put("t", "big", vec![1; 900])]).unwrap_err();
-        assert!(matches!(error, CoreError::Io(_)), "{error:?}");
+        assert!(
+            matches!((error).rejected_cause(), Some(crate::CoreErrorCause::Io(_))),
+            "{error:?}"
+        );
         let intent = GroupFile::segment(2);
         assert!(log.group.exists(intent).unwrap());
         assert!(!log.group.durable_exists(intent));
@@ -3000,11 +4200,13 @@ mod tests {
             let intent = GroupFile::segment(2);
             resumed.group.fail(GroupOp::SyncNames, 1, timing);
             let error = resumed.commit(&[put("t", "k", vec![5; 900])]).unwrap_err();
-            assert!(matches!(error, CoreError::Io(_)), "{timing:?} {error:?}");
-            assert!(matches!(
-                resumed.commit(&[put("t", "k", vec![5; 900])]),
-                Err(CoreError::OwnerFailed)
-            ));
+            assert!(
+                matches!((error).rejected_cause(), Some(crate::CoreErrorCause::Io(_))),
+                "{timing:?} {error:?}"
+            );
+            assert!(
+                matches!(&(resumed.commit(&[put("t", "k", vec![5; 900])])), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+            );
             // Nothing was written to the file and the root still holds only
             // the intent.
             assert_eq!(resumed.group.len(intent).unwrap(), 0);
@@ -3051,7 +4253,7 @@ mod tests {
             log.group.insert_foreign(intent, image.clone());
             let error = log.commit(&[put("t", "big", vec![1; 900])]).unwrap_err();
             assert!(
-                matches!(&error, CoreError::Io(io) if io.kind() == std::io::ErrorKind::AlreadyExists),
+                matches!(error.rejected_cause(), Some(crate::CoreErrorCause::Io(io)) if io.kind() == std::io::ErrorKind::AlreadyExists),
                 "{error:?}"
             );
             // Reopen under the published intent fails closed.
@@ -3097,3 +4299,7 @@ mod tests {
         }
     }
 }
+
+// Transaction-space planning is qualified separately before production activation.
+#[path = "segment_space.rs"]
+mod space;

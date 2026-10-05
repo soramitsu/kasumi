@@ -135,6 +135,11 @@ pub struct DirectoryIdentity {
     device: u64,
     inode: u64,
 }
+impl DirectoryIdentity {
+    pub(crate) fn from_verified((device, inode): (u64, u64)) -> Self {
+        Self { device, inode }
+    }
+}
 pub fn directory_identity(path: &Path) -> Result<DirectoryIdentity> {
     let directory = options().read(true).open(path)?;
     let metadata = directory.metadata()?;

@@ -56,7 +56,28 @@ fn leader_hint(status: &tonic::Status) {
 #[tokio::main]
 async fn main() -> Result<()> {
     let arguments = std::env::args().skip(1).collect::<Vec<_>>();
-    if arguments.as_slice() == ["example-config"] {
+    run(&arguments).await
+}
+
+async fn run(arguments: &[String]) -> Result<()> {
+    if let [flag, profile, command @ ..] = arguments
+        && flag == "--profile"
+    {
+        // Parse before loading the profile, so mistakes never connect.
+        let command = kasumi_server::data_cli::parse(command)?;
+        let db = kasumi_client::Kasumi::from_profile(profile).await?;
+        return kasumi_server::data_cli::execute(command, &db, &mut std::io::stdout().lock()).await;
+    }
+    if let [operation, path] = arguments
+        && operation == "schema-reference"
+    {
+        // Offline preparation uses the same typed canonical digest as activation
+        // and permanent status; no configuration or credentials are loaded.
+        let change: kasumi_types::SchemaChangeSet = serde_json::from_slice(&read_json(path)?)?;
+        println!("{}", serde_json::to_string(&change.reference()?)?);
+        return Ok(());
+    }
+    if arguments == ["example-config"] {
         println!(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
@@ -68,9 +89,10 @@ async fn main() -> Result<()> {
         );
         return Ok(());
     }
-    let [flag, path, operation, rest @ ..] = arguments.as_slice() else {
+    let [flag, path, operation, rest @ ..] = arguments else {
         bail!(
-            "usage: kasumictl --config <client.json> activate-schema|read-schema|read-policy-limits|schema-status|create-collection|replace-collection|set-policy|set-limits <operation.json>, or suspend|resume, or manage <command.json>, or authority-maintenance <request.json>"
+            "usage: kasumictl schema-reference <operation.json> | kasumictl --config <client.json> activate-schema|read-schema|read-policy-limits|schema-status|create-collection|replace-collection|set-policy|set-limits <operation.json>, or suspend|resume, or manage <command.json>, or authority-maintenance <request.json>\n\nData commands:\n{}",
+            kasumi_server::data_cli::USAGE
         );
     };
     ensure!(flag == "--config", "first argument must be --config");
@@ -111,7 +133,7 @@ async fn main() -> Result<()> {
                 serde_json::from_slice::<kasumi_types::ReadPolicyLimits>(bytes)?;
             }
             "schema-status" => {
-                serde_json::from_slice::<kasumi_types::SchemaActivationRef>(bytes)?;
+                serde_json::from_slice::<kasumi_types::ReadSchemaActivation>(bytes)?;
             }
             "create-collection" | "replace-collection" => {
                 serde_json::from_slice::<kasumi_types::CollectionDefinition>(bytes)?;
@@ -289,6 +311,167 @@ async fn main() -> Result<()> {
                 "administrative request failed ({}); result may be unknown; inspect current state before retrying",
                 status.code()
             )
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use kasumi_types::{ReadAssertion, ReadSchemaActivation, SchemaActivationRef};
+    use serde_json::json;
+
+    #[tokio::test]
+    async fn schema_reference_is_offline_and_rejects_malformed_effects() {
+        let directory = tempfile::tempdir().unwrap();
+        let operation = directory.path().join("activation.json");
+        let payload = json!({
+            "activation_id": "local-core-schema-1",
+            "expected_incarnation": "54b2e0dd-135a-439e-b053-38ba6cba2310",
+            "expected_schema_epoch": 1,
+            "read_set": [],
+            "changes": [{"kind":"create", "definition": {
+                "name":"records", "write_mode":"mutable", "retention_class":"operational",
+                "strict_read_audit":true, "schema":{"type":"object"}, "indexes":[]
+            }}]
+        });
+        std::fs::write(&operation, serde_json::to_vec(&payload).unwrap()).unwrap();
+        run(&["schema-reference".into(), operation.display().to_string()])
+            .await
+            .unwrap();
+        let original: kasumi_types::SchemaChangeSet =
+            serde_json::from_value(payload.clone()).unwrap();
+        let first = original.reference().unwrap();
+        assert_eq!(first.activation_id, "local-core-schema-1");
+        assert_eq!(first.request_digest.len(), 64);
+        let mut changed = payload.clone();
+        changed["changes"][0]["definition"]["strict_read_audit"] = json!(false);
+        let changed: kasumi_types::SchemaChangeSet = serde_json::from_value(changed).unwrap();
+        assert_ne!(
+            first.request_digest,
+            changed.reference().unwrap().request_digest
+        );
+        for invalid in [
+            json!({"activation_id":"local-core-schema-1"}),
+            json!({"reference":first}),
+            {
+                let mut extra = payload.clone();
+                extra["extra"] = json!(true);
+                extra
+            },
+        ] {
+            std::fs::write(&operation, serde_json::to_vec(&invalid).unwrap()).unwrap();
+            let error = run(&["schema-reference".into(), operation.display().to_string()])
+                .await
+                .unwrap_err();
+            assert!(error.downcast_ref::<serde_json::Error>().is_some());
+        }
+        assert!(run(&["schema-reference".into()]).await.is_err());
+        assert!(
+            run(&[
+                "schema-reference".into(),
+                operation.display().to_string(),
+                "extra".into()
+            ])
+            .await
+            .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn data_commands_are_parsed_before_the_profile_is_read() {
+        let error = run(&[
+            "--profile".into(),
+            "/nonexistent/profile.json".into(),
+            "fetch".into(),
+            "docs".into(),
+        ])
+        .await
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("unknown data command"),
+            "{error}"
+        );
+        let error = run(&[
+            "--profile".into(),
+            "/nonexistent/profile.json".into(),
+            "get".into(),
+            "docs".into(),
+            "a".into(),
+        ])
+        .await
+        .unwrap_err();
+        assert!(
+            error.downcast_ref::<kasumi_client::ClientError>().is_some(),
+            "a valid command reaches profile loading: {error:#}"
+        );
+    }
+
+    fn lookup() -> ReadSchemaActivation {
+        ReadSchemaActivation {
+            reference: SchemaActivationRef {
+                activation_id: "installation-schema-1".into(),
+                request_digest: "a".repeat(64),
+            },
+            read_set: vec![
+                ReadAssertion::Snapshot {
+                    incarnation: "54b2e0dd-135a-439e-b053-38ba6cba2310".into(),
+                    policy_epoch: 3,
+                    schema_epoch: 2,
+                },
+                ReadAssertion::Before {
+                    not_after_ms: 1_800_000_000_000,
+                },
+            ],
+        }
+    }
+
+    async fn status_with_missing_config(bytes: &[u8]) -> (anyhow::Error, String) {
+        let directory = tempfile::tempdir().unwrap();
+        let operation = directory.path().join("lookup.json");
+        let configuration = directory.path().join("missing-client.json");
+        std::fs::write(&operation, bytes).unwrap();
+        let error = run(&[
+            "--config".into(),
+            configuration.to_str().unwrap().into(),
+            "schema-status".into(),
+            operation.to_str().unwrap().into(),
+        ])
+        .await
+        .unwrap_err();
+        (error, configuration.display().to_string())
+    }
+
+    #[tokio::test]
+    async fn schema_status_accepts_current_fenced_lookup_before_loading_configuration() {
+        // Exercise the actual command path with the current SDK/server request.
+        // A nonexistent configuration prevents any connection or credential read.
+        let bytes = serde_json::to_vec_pretty(&lookup()).unwrap();
+        let (error, configuration) = status_with_missing_config(&bytes).await;
+        assert_eq!(error.to_string(), format!("opening {configuration}"));
+        assert_eq!(
+            error.downcast_ref::<std::io::Error>().unwrap().kind(),
+            std::io::ErrorKind::NotFound
+        );
+    }
+
+    #[tokio::test]
+    async fn schema_status_rejects_unfenced_or_malformed_lookup_before_configuration() {
+        let current = serde_json::to_value(lookup()).unwrap();
+        let reference = current["reference"].clone();
+        for invalid in [
+            reference.clone(),
+            json!({"reference": reference}),
+            json!({"reference": current["reference"], "read_set": null}),
+            json!({"reference": current["reference"], "read_set": [], "extra": true}),
+            json!({"reference": current["reference"], "read_set": [{"kind": "before"}]}),
+        ] {
+            let (error, _) =
+                status_with_missing_config(&serde_json::to_vec(&invalid).unwrap()).await;
+            assert!(
+                error.downcast_ref::<serde_json::Error>().is_some(),
+                "invalid lookup reached configuration loading: {error:#}"
+            );
         }
     }
 }

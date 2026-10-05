@@ -3,6 +3,8 @@
 use super::*;
 use kasumi_engine::{Database, LifecycleSigner};
 use kasumi_types::{LifecycleControlCommand, ReadLifecycleStatus};
+#[path = "rpc_control_topology.rs"]
+mod topology;
 #[derive(Clone)]
 pub struct NativeLifecycleControl {
     database: Arc<Database>,
@@ -17,8 +19,8 @@ impl NativeLifecycleControl {
     ) -> anyhow::Result<Self> {
         let state = database.engine().generation()?;
         anyhow::ensure!(
-            state.state.tenant == "__kasumi_control"
-                && state.state.incarnation == signer.root().control_incarnation.to_string(),
+            state.tenant() == "__kasumi_control"
+                && state.incarnation() == signer.root().control_incarnation.to_string(),
             "installed lifecycle database or signer resource differs"
         );
         drop(state);
@@ -59,6 +61,18 @@ impl NativeLifecycleControl {
 }
 #[tonic::async_trait]
 impl kasumi_lifecycle_control_server::KasumiLifecycleControl for NativeLifecycleControl {
+    async fn observe_topology(
+        &self,
+        request: Request<ControlJsonRequest>,
+    ) -> Result<Response<ControlJsonResponse>, Status> {
+        self.observe_topology_response(request).await
+    }
+    async fn release_topology(
+        &self,
+        request: Request<ControlJsonRequest>,
+    ) -> Result<Response<ControlJsonResponse>, Status> {
+        self.release_topology_response(request).await
+    }
     async fn execute(
         &self,
         request: Request<ControlJsonRequest>,

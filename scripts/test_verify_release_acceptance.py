@@ -35,17 +35,22 @@ class AcceptanceTests(unittest.TestCase):
     def lines(self, name, values):
         return self.file(name, b"".join(json.dumps(value).encode() + b"\n" for value in values))
 
-    def indexed_attempt(self, attempt_id, processes, status="failed"):
+    def indexed_attempt(self, attempt_id, processes, status="failed", dispatch_boundary=True):
         started = "2026-01-02T00:00:00+00:00"
         finished = "2026-01-02T00:00:10+00:00"
         output = self.root / (attempt_id + "-output")
+        attempt_index.create(self.root, "acceptance-unit-journal", "acceptance-unit-host",
+                             acceptance.REFERENCE)
         attempt_index.begin(self.root, attempt_id, "repeatable-assembly", output, started)
         output.mkdir()
-        evidence = self.value(attempt_id + "-output/launcher.json", {
+        outcome = {
             "schema": "kasumi-owned-repeatable-assembly-v1",
             "custody_root": str(output.resolve()),
             "attempt_id": attempt_id, "status": status,
-            "started_at": started, "finished_at": finished})
+            "started_at": started, "finished_at": finished}
+        if dispatch_boundary != "missing":
+            outcome["dispatch_started"] = dispatch_boundary
+        evidence = self.value(attempt_id + "-output/launcher.json", outcome)
         record = {"schema": acceptance.SCHEMA, "id": attempt_id, "status": status,
                   "evidence": evidence, "started_at": started,
                   "finished_at": finished, "domain_observation": None,
@@ -924,6 +929,27 @@ class AcceptanceTests(unittest.TestCase):
         (self.root / "attempts/index.jsonl").unlink()
         with self.assertRaises(FileNotFoundError):
             acceptance.verify_attempts(self.root, [{"id": "failed-1", "receipt": ref}], set())
+
+    def test_owned_dispatch_boundary_is_explicit_without_legacy_or_boolean_aliases(self):
+        original_root = self.root
+        for index, boundary in enumerate(("missing", None, 0, 1, "false", False, True)):
+            with self.subTest(boundary=boundary):
+                self.root = original_root / ("boundary-" + str(index))
+                self.root.mkdir()
+                process, receipt = self.process()
+                receipt.update(status="failed", exit_code=7, process_exit_code=7)
+                receipt["cleanup"]["process_returncode"] = 7
+                process["receipt"] = self.value("process.json", receipt)
+                _, ref = self.indexed_attempt("failed-1", [process], dispatch_boundary=boundary)
+                retained = [{"id": "failed-1", "receipt": ref}]
+                # Each wrong boundary is the original indexed outcome, with
+                # all file hashes and the terminal journal rebuilt around it.
+                if boundary is True:
+                    acceptance.verify_attempts(self.root, retained, set())
+                else:
+                    with self.assertRaisesRegex(ValueError, "dispatch boundary|claims child processes"):
+                        acceptance.verify_attempts(self.root, retained, set())
+        self.root = original_root
 
 
 if __name__ == "__main__":

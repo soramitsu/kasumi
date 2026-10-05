@@ -2,6 +2,29 @@
 use super::*;
 use crate::state::lease_retention::{LeaseHandle, PageAccess, PageSelection, SelectedSnapshot};
 
+// Keep selected payloads ahead of their admission owner on every preparation
+// error and cancellation, including before a blocking worker is spawned.
+struct SelectedPageInput {
+    handle: Arc<LeaseHandle>,
+    generation: Arc<crate::Generation>,
+    scan_ids: Vec<String>,
+    scan_has_more: bool,
+    selected_input_bytes: u64,
+    memory: kasumi_query::QueryMemory<Reservation>,
+}
+impl SelectedPageInput {
+    fn new(selected: SelectedSnapshot) -> Self {
+        Self {
+            handle: selected.handle,
+            generation: selected.generation,
+            scan_ids: selected.scan_ids,
+            scan_has_more: selected.scan_has_more,
+            selected_input_bytes: selected.selected_input_bytes,
+            memory: kasumi_query::QueryMemory::empty(selected.reservation),
+        }
+    }
+}
+
 impl Database {
     // Publication and selection share a mutex. Waiting for it, walking a changed
     // payload, and dropping retained roots run on owned blocking work, so they
@@ -157,16 +180,18 @@ impl Database {
         &self,
         context: &RequestContext,
         request: ReadSnapshotPage,
-    ) -> Result<SnapshotReadResponse> {
+    ) -> Result<AdmittedOutput<SnapshotReadResponse>> {
         let result = self.read_snapshot_page_inner(context, request).await;
-        self.audit_result(context, result).await
+        self.audit_result(context, result)
+            .await
+            .map(|output| output.response)
     }
 
     async fn read_snapshot_page_inner(
         &self,
         context: &RequestContext,
         request: ReadSnapshotPage,
-    ) -> Result<SnapshotReadResponse> {
+    ) -> Result<RegisteredOutput<SnapshotReadResponse>> {
         self.barrier().await?;
         let cancellation = QueryCancellation::default();
         let _cancel_on_drop = CancelOnDrop(cancellation.clone());
@@ -177,25 +202,35 @@ impl Database {
                 "snapshot concurrency limit reached",
             )
         })?;
-        let SelectedSnapshot {
-            handle,
-            generation,
-            reservation,
-            ..
-        } = self
-            .select_snapshot_page(
+        let mut input = SelectedPageInput::new(
+            self.select_snapshot_page(
                 context,
                 &request.lease_id,
                 PageSelection::Points(request.documents.clone()),
                 &cancellation,
             )
-            .await?;
+            .await?,
+        );
+        input.memory.reserve(input.selected_input_bytes)?;
+        let point_metadata_bytes = request.documents.iter().try_fold(1024u64, |bytes, key| {
+            bytes
+                .checked_add(key.collection.len() as u64)
+                .and_then(|bytes| bytes.checked_add(key.id.len() as u64))
+                .and_then(|bytes| bytes.checked_add(1024))
+                .ok_or_else(|| {
+                    Error::new(
+                        ErrorCode::ResourceExhausted,
+                        "snapshot point workspace overflow",
+                    )
+                })
+        })?;
+        input.memory.reserve(point_metadata_bytes)?;
         let collections = request
             .documents
             .iter()
             .map(|key| {
-                let strict = generation.state.policy.strict_read_audit
-                    || generation.state.collections[&key.collection]
+                let strict = input.generation.state.policy.strict_read_audit
+                    || input.generation.state.collections[&key.collection]
                         .definition
                         .strict_read_audit;
                 (key.collection.clone(), strict)
@@ -208,30 +243,31 @@ impl Database {
         };
         let work = SnapshotWork {
             generation: self
-                .hydrate_history(generation, &snapshot.documents, &[], &cancellation)
+                .hydrate_history(
+                    input.generation,
+                    &snapshot.documents,
+                    &[],
+                    &cancellation,
+                    &mut input.memory,
+                )
                 .await?,
             request: snapshot,
             cancellation: cancellation.clone(),
             _permit: permit,
-            reservation,
+            memory: input.memory,
             registration,
         };
         let worker = tokio::task::spawn_blocking(move || work.run());
-        let SnapshotOutput {
-            response,
-            mut reservation,
-            _registration,
-        } = tokio::select! {
+        let output = tokio::select! {
             result = tokio::time::timeout(Duration::from_secs(5), worker) => result
                 .map_err(|_| Error::new(ErrorCode::ResourceExhausted, "snapshot page deadline exceeded"))?
                 .map_err(|_| Error::new(ErrorCode::Unavailable, "snapshot page worker failed"))?,
             _ = cancelled(&cancellation) => return Err(cancelled_error()),
         };
-        let response = response?;
-        reservation.retain_workspace();
-        self.release_snapshot_page(context, &handle, &collections, &cancellation)
+        let output = output.into_admitted()?;
+        self.release_snapshot_page(context, &input.handle, &collections, &cancellation)
             .await?;
-        Ok(response)
+        Ok(output)
     }
 
     async fn release_snapshot_page(
@@ -275,16 +311,18 @@ impl Database {
         &self,
         context: &RequestContext,
         request: ScanSnapshotPage,
-    ) -> Result<SnapshotScanPage> {
+    ) -> Result<AdmittedOutput<SnapshotScanPage>> {
         let result = self.scan_snapshot_page_inner(context, request).await;
-        self.audit_result(context, result).await
+        self.audit_result(context, result)
+            .await
+            .map(|output| output.response)
     }
 
     async fn scan_snapshot_page_inner(
         &self,
         context: &RequestContext,
         request: ScanSnapshotPage,
-    ) -> Result<SnapshotScanPage> {
+    ) -> Result<RegisteredOutput<SnapshotScanPage>> {
         self.barrier().await?;
         let cancellation = QueryCancellation::default();
         let _cancel_on_drop = CancelOnDrop(cancellation.clone());
@@ -295,65 +333,93 @@ impl Database {
                 "snapshot concurrency limit reached",
             )
         })?;
-        let SelectedSnapshot {
-            handle,
-            generation,
-            scan_ids,
-            scan_has_more,
-            reservation,
-        } = self
-            .select_snapshot_page(
+        let mut input = SelectedPageInput::new(
+            self.select_snapshot_page(
                 context,
                 &request.lease_id,
                 PageSelection::Scan(request.clone()),
                 &cancellation,
             )
-            .await?;
-        let keys = scan_ids
+            .await?,
+        );
+        input.memory.reserve(input.selected_input_bytes)?;
+        // Admit the page worker's keys and request clone before creating them.
+        let key_bytes = input.scan_ids.iter().try_fold(1024u64, |bytes, id| {
+            bytes
+                .checked_add(request.collection.len() as u64)
+                .and_then(|bytes| bytes.checked_add(id.len() as u64))
+                .and_then(|bytes| bytes.checked_add(std::mem::size_of::<DocumentKey>() as u64))
+                .ok_or_else(|| {
+                    Error::new(
+                        ErrorCode::ResourceExhausted,
+                        "snapshot scan workspace overflow",
+                    )
+                })
+        })?;
+        let request_bytes = crate::accounting::encoded_len(&request)?
+            .checked_mul(3)
+            .and_then(|bytes| bytes.checked_add(std::mem::size_of::<ScanSnapshotPage>()))
+            .ok_or_else(|| {
+                Error::new(
+                    ErrorCode::ResourceExhausted,
+                    "snapshot scan workspace overflow",
+                )
+            })?;
+        input
+            .memory
+            .reserve(key_bytes.checked_add(request_bytes as u64).ok_or_else(|| {
+                Error::new(
+                    ErrorCode::ResourceExhausted,
+                    "snapshot scan workspace overflow",
+                )
+            })?)?;
+        let keys = input
+            .scan_ids
             .iter()
             .map(|id| DocumentKey {
                 collection: request.collection.clone(),
                 id: id.clone(),
             })
             .collect::<Vec<_>>();
-        let strict = generation.state.policy.strict_read_audit
-            || generation.state.collections[&request.collection]
+        let strict = input.generation.state.policy.strict_read_audit
+            || input.generation.state.collections[&request.collection]
                 .definition
                 .strict_read_audit;
         let work = ScanWork {
-            lease: handle.clone(),
+            lease: input.handle.clone(),
             generation: self
-                .hydrate_history(generation, &keys, &[], &cancellation)
+                .hydrate_history(
+                    input.generation,
+                    &keys,
+                    &[],
+                    &cancellation,
+                    &mut input.memory,
+                )
                 .await?,
-            ids: scan_ids,
-            has_more: scan_has_more,
+            ids: input.scan_ids,
+            has_more: input.scan_has_more,
             request: request.clone(),
             cancellation: cancellation.clone(),
             _permit: permit,
-            reservation,
+            memory: input.memory,
             registration,
         };
         let worker = tokio::task::spawn_blocking(move || work.run());
-        let ScanOutput {
-            response,
-            mut reservation,
-            _registration,
-        } = tokio::select! {
+        let output = tokio::select! {
             result = tokio::time::timeout(Duration::from_secs(5), worker) => result
                 .map_err(|_| Error::new(ErrorCode::ResourceExhausted, "snapshot scan deadline exceeded"))?
                 .map_err(|_| Error::new(ErrorCode::Unavailable, "snapshot scan worker failed"))?,
             _ = cancelled(&cancellation) => return Err(cancelled_error()),
         };
-        let response = response?;
-        reservation.retain_workspace();
+        let output = output.into_admitted()?;
         self.release_snapshot_page(
             context,
-            &handle,
+            &input.handle,
             &BTreeMap::from([(request.collection, strict)]),
             &cancellation,
         )
         .await?;
-        Ok(response)
+        Ok(output)
     }
 }
 
@@ -365,69 +431,139 @@ struct ScanWork {
     request: ScanSnapshotPage,
     cancellation: QueryCancellation,
     _permit: tokio::sync::OwnedSemaphorePermit,
-    reservation: Reservation,
+    memory: kasumi_query::QueryMemory<Reservation>,
     registration: Arc<WorkRegistration>,
 }
 struct ScanOutput {
     response: Result<SnapshotScanPage>,
-    reservation: Reservation,
+    memory: kasumi_query::QueryMemory<Reservation>,
     _registration: Arc<WorkRegistration>,
 }
+impl ScanOutput {
+    fn into_admitted(mut self) -> Result<RegisteredOutput<SnapshotScanPage>> {
+        self.response.as_ref().map_err(|error| error.clone())?;
+        self.memory.reserve(OUTPUT_CHARGE_BYTES)?;
+        let mut reservation = self.memory.into_workspace();
+        reservation.retain_workspace();
+        let charge = Arc::new(reservation);
+        Ok(RegisteredOutput {
+            response: AdmittedOutput::new(self.response.expect("checked scan response"), charge),
+            _registration: self._registration,
+        })
+    }
+}
 impl ScanWork {
-    fn run(self) -> ScanOutput {
+    fn run(mut self) -> ScanOutput {
         let response = self.evaluate();
         ScanOutput {
             response,
-            reservation: self.reservation,
+            memory: self.memory,
             _registration: self.registration,
         }
     }
-    fn evaluate(&self) -> Result<SnapshotScanPage> {
+    fn evaluate(&mut self) -> Result<SnapshotScanPage> {
         let state = &self.generation.state;
         let collection = &state.collections[&self.request.collection];
-        let mut response = SnapshotScanPage {
-            snapshot: self.lease.header.clone(),
-            collection: self.request.collection.clone(),
-            data_epoch: collection.data_epoch,
-            documents: vec![],
-            next_after_id: None,
-        };
-        // Reserve space for the continuation ID before cloning document bodies.
-        let mut bytes = crate::accounting::encoded_len(&response)?.saturating_add(256);
-        for id in &self.ids {
-            let document = collection.documents.get(id).ok_or_else(|| {
-                Error::new(ErrorCode::Corruption, "snapshot ID index has no document")
-            })?;
-            self.cancellation.check()?;
-            let additional = crate::accounting::encoded_len(document)?.saturating_add(1);
-            if response.documents.len() == self.request.limit
-                || bytes.saturating_add(additional) > state.limits.max_result_bytes
-            {
-                let last = response.documents.last().ok_or_else(|| {
+        let source = self.generation.document_source(&self.request.collection)?;
+        let request = &self.request;
+        let cancellation = &self.cancellation;
+        let ids = &self.ids;
+        let lease = &self.lease;
+        let has_more = self.has_more;
+        let baseline = self.memory.live_bytes();
+        self.memory.scope(|memory| {
+            cancellation.check()?;
+            // Keep the selected input charged while allocating a page. The header
+            // allowance is provisional; document bodies use the allocation-free
+            // heap walk shared by point pages and lease selection.
+            let metadata_bytes = crate::accounting::encoded_len(&lease.header)?
+                .checked_mul(3)
+                .and_then(|bytes| bytes.checked_add(request.collection.len()))
+                .and_then(|bytes| bytes.checked_add(1024))
+                .and_then(|bytes| {
+                    ids.len()
+                        .checked_mul(std::mem::size_of::<Document>())
+                        .and_then(|slots| bytes.checked_add(slots))
+                })
+                .ok_or_else(|| {
                     Error::new(
                         ErrorCode::ResourceExhausted,
-                        "snapshot scan document cannot fit one page",
+                        "snapshot scan workspace overflow",
                     )
                 })?;
-                response.next_after_id = Some(last.id.clone());
-                break;
+            memory.reserve(metadata_bytes as u64)?;
+            let mut response = SnapshotScanPage {
+                snapshot: lease.header.clone(),
+                collection: request.collection.clone(),
+                data_epoch: collection.data_epoch,
+                documents: Vec::with_capacity(ids.len()),
+                next_after_id: None,
+            };
+            // Reserve space for the continuation ID before cloning document bodies.
+            let mut bytes = crate::accounting::encoded_len(&response)?.saturating_add(256);
+            for id in ids {
+                let page_full = source
+                    .with_record(id, None, cancellation, |record| {
+                        let document = match record {
+                            Some(Record::Live(document)) => document,
+                            Some(Record::Archived(_)) => {
+                                return Err(Error::new(
+                                    ErrorCode::Unavailable,
+                                    "snapshot archived content requires bounded hydration",
+                                ));
+                            }
+                            None => {
+                                return Err(Error::new(
+                                    ErrorCode::Corruption,
+                                    "snapshot ID index has no document",
+                                ));
+                            }
+                        };
+                        let additional =
+                            crate::accounting::encoded_len(document)?.saturating_add(1);
+                        if response.documents.len() == request.limit
+                            || bytes.saturating_add(additional) > state.limits.max_result_bytes
+                        {
+                            let last = response.documents.last().ok_or_else(|| {
+                                Error::new(
+                                    ErrorCode::ResourceExhausted,
+                                    "snapshot scan document cannot fit one page",
+                                )
+                            })?;
+                            response.next_after_id = Some(last.id.clone());
+                            return Ok(true);
+                        }
+                        memory.reserve(crate::state::lease_retention::document_heap(
+                            document,
+                            usize::MAX,
+                        )? as u64)?;
+                        bytes = bytes.saturating_add(additional);
+                        response.documents.push(document.clone());
+                        Ok(false)
+                    })
+                    .map_err(ReadFailure::into_query_error)?;
+                if page_full {
+                    break;
+                }
             }
-            bytes = bytes.saturating_add(additional);
-            response.documents.push(document.as_ref().clone());
-        }
-        if self.has_more {
-            response.next_after_id = response
-                .documents
-                .last()
-                .map(|document| document.id.clone());
-        }
-        if crate::accounting::encoded_len(&response)? > state.limits.max_result_bytes {
-            return Err(Error::new(
-                ErrorCode::ResourceExhausted,
-                "snapshot scan response exceeds byte limit",
-            ));
-        }
-        self.cancellation.check()?;
-        Ok(response)
+            if has_more {
+                response.next_after_id = response
+                    .documents
+                    .last()
+                    .map(|document| document.id.clone());
+            }
+            if crate::accounting::encoded_len(&response)? > state.limits.max_result_bytes {
+                return Err(Error::new(
+                    ErrorCode::ResourceExhausted,
+                    "snapshot scan response exceeds byte limit",
+                ));
+            }
+            cancellation.check()?;
+            Ok((response, memory.live_bytes() - baseline))
+        })
     }
 }
+
+#[cfg(test)]
+#[path = "snapshot_page_workspace_tests.rs"]
+mod workspace_tests;

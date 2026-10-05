@@ -7,12 +7,22 @@ tenant engine owns authorization, revision assignment, and snapshot pagination.
 
 ## Structured queries
 
+The query language is specified in [docs/query-language.md](../../docs/query-language.md).
 Field paths are JSON Pointers. Declared indexes maintain ordered scalar postings
 and a separate presence set. Filters actually consult those postings; undeclared
 filter/sort/group/aggregate paths require `allow_scan: true`. A collection-wide
-`all` query walks the resident ID set and remains candidate-budget limited.
-Boolean predicates support at most 16 levels and 256 nodes. `in` accepts at most
-256 values. `contains` targets declared string/number arrays, with non-null elements.
+query walks the resident ID set and remains candidate-budget limited.
+
+Filters normalize to one test per operator, and a field's lower and upper bounds
+form a single range walked once in index order. Conjuncts run cheapest first:
+equality, membership and presence estimates come from posting sizes, ranges are
+counted up to a small budget, and scans and complements run last over the
+surviving candidates only. Against the complete collection an index posting is
+shared in O(1) rather than copied, and a small exclusion is removed from a
+shared copy. `ne` and `nin` are complements, so they match absent fields.
+Filters allow at most 16 levels and 256 conditions; `in`/`nin` at most 256
+values. `contains` targets declared string/number arrays, with non-null elements.
+A scanned value that is not a comparable scalar does not match.
 
 Scalars sort as absent, null, Boolean, number, then string. Declared scalar types
 do not coerce: `number` is an exact JSON number; `decimal` is an exact decimal
@@ -20,20 +30,33 @@ string. Numeric input is limited to 100 digits, 256 bytes, and exponent ±1000.
 Array values cannot be used as sort or group keys. Stable ID order breaks ties;
 text search defaults to descending BM25 score unless explicit field sorting is used.
 
-Projection returns an object keyed by the requested pointers, omitting absent
-values. For example, `projection: ["/profile/name"]` yields
-`{"/profile/name":"Ada"}`. An empty projection returns the complete body.
+`select` returns the selected members in their original nesting, omitting absent
+values: `select: ["/profile/name"]` yields `{"profile":{"name":"Ada"}}`. Paths
+cannot repeat or contain one another; a path through an array is absent. An
+empty selection returns the complete body. Each row is read once: one source
+loan computes its sort keys and copies its (selected) body.
 
-Aggregation operates over the complete filtered snapshot. Every entry is
-`{"group": {"/field": value}, "values": {"alias": value}}`. Missing group keys
-are omitted and therefore remain distinct from explicit null. `count` without a
-field counts rows; with a field, it counts non-null present values. `sum`, `min`,
-`max`, and `avg` require numeric values and skip absent/null inputs. Numeric outputs
-are exact decimal strings; count is a JSON integer. Empty sum is `"0"`; empty
-min/max/average are null. Average requires scale 0–1000 and uses integer arithmetic
-for one final half-even rounding. Group cardinality and serialized result bytes
-are explicitly bounded by tenant limits. The page limit does not silently truncate
-the snapshot before aggregation or pagination.
+Aggregate queries return only groups, never rows. Every entry is
+`{"group": {...}, "values": {"alias": value}}` with group keys in their original
+nesting; missing group keys are omitted and therefore remain distinct from
+explicit null. `count` of `*` counts rows (from the candidate set alone, without
+reading documents, when there is no grouping); `count` of a field counts
+non-null present values. `sum`, `min`, `max`, and `avg` require numeric values
+and skip absent/null inputs. Results keep the field's declared type: exact JSON
+numbers for `number` (and scanned) fields, decimal strings for `decimal`
+fields; count is a JSON integer. Empty sum is zero; empty min/max/average are
+null. Average requires scale 0–1000 and uses integer arithmetic for one final
+half-even rounding. Group cardinality and serialized result bytes are explicitly
+bounded by tenant limits.
+
+`execute_page` copies only the first page: at most `limit` rows and
+`max_result_bytes`. A row that cannot fit alone returns `RESOURCE_EXHAUSTED`;
+select fewer fields or increase the byte limit. Ordering reads sort keys, never
+whole bodies, and unsorted queries do not read the rows after the page at all.
+The caller receives those remaining rows in result order (the engine pins them
+for its cursor) and `copy_page` later copies each continuation page from them.
+`execute` is the complete form for embedded use: every row, bounded by
+`max_cursor_bytes`.
 
 ## Full text
 

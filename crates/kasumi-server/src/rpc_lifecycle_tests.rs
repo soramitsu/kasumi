@@ -240,11 +240,18 @@ async fn pinned_native_control_signs_actual_quorum_commitments_and_rejects_wrong
         max_state_bytes: 1 << 20,
     };
     let policy = Policy {
-        grants: vec![Grant {
-            principal: "operator".into(),
-            collection: None,
-            actions: BTreeSet::from([Action::Admin, Action::Read, Action::Write]),
-        }],
+        grants: vec![
+            Grant {
+                principal: "operator".into(),
+                collection: None,
+                actions: BTreeSet::from([Action::Admin, Action::Read, Action::Write]),
+            },
+            Grant {
+                principal: "router".into(),
+                collection: Some("topology".into()),
+                actions: BTreeSet::from([Action::Read]),
+            },
+        ],
         strict_read_audit: true,
     };
     let installation_command_id = Uuid::new_v4();
@@ -435,7 +442,7 @@ async fn pinned_native_control_signs_actual_quorum_commitments_and_rejects_wrong
             .unwrap();
     let encoding =
         jsonwebtoken::EncodingKey::from_ed_pem(jwtkey.serialize_pem().as_bytes()).unwrap();
-    let token = |resource: serde_json::Value, scope: &str| {
+    let token_for = |principal: &str, resource: serde_json::Value, scope: &str| {
         let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::EdDSA);
         header.kid = Some("control-auth".into());
         header.typ = Some("at+jwt".into());
@@ -444,8 +451,14 @@ async fn pinned_native_control_signs_actual_quorum_commitments_and_rejects_wrong
             .now_ms()
             .unwrap()
             / 1000;
-        jsonwebtoken::encode(&header,&json!({"sub":"operator","tenant":"__kasumi_control","kasumi_resource":resource,"scope":scope,"iss":"https://identity.example","aud":"https://control.example","exp":now+300}),&encoding).unwrap()
+        jsonwebtoken::encode(&header,&json!({"sub":principal,"tenant":"__kasumi_control","kasumi_resource":resource,"scope":scope,"iss":"https://identity.example","aud":"https://control.example","exp":now+300}),&encoding).unwrap()
     };
+    let token = |resource, scope| token_for("operator", resource, scope);
+    let routing = token_for(
+        "router",
+        json!({"kind":"control","incarnation":incarnation}),
+        "kasumi:read",
+    );
     let admin = token(
         json!({"kind":"control","incarnation":incarnation}),
         "kasumi:admin",
@@ -465,6 +478,153 @@ async fn pinned_native_control_signs_actual_quorum_commitments_and_rejects_wrong
     assert!(client.execute(&data, &install).await.is_err());
     assert!(client.execute(&readonly, &install).await.is_err());
     client.execute(&admin, &install).await.unwrap();
+    // Real mTLS and signed Control quorum reads. The native client binds the
+    // request, principal, exact bearer and its actual client certificate.
+    {
+        assert!(client.execute(&routing, &install).await.is_err());
+        assert!(
+            client
+                .observe_topology(&data, "operator", 5000)
+                .await
+                .is_err()
+        );
+        assert!(
+            client
+                .observe_topology(&admin, "operator", 5000)
+                .await
+                .is_err()
+        );
+        assert!(
+            client
+                .observe_topology(&routing, "another", 5000)
+                .await
+                .is_err()
+        );
+        let current = client
+            .observe_topology(&routing, "router", 5000)
+            .await
+            .unwrap();
+        let observation = current.observation().unwrap();
+        assert_eq!(observation.root, root);
+        assert_eq!(
+            observation.caller.certificate_sha256,
+            hex::encode(config.identity.certificate_pin())
+        );
+        assert_eq!(
+            observation.topology.topology,
+            match &bootstrap.genesis {
+                kasumi_engine::ReplicatedGenesis::Control(control) => control.topology.clone(),
+                _ => unreachable!(),
+            }
+        );
+        assert!(client.release_topology(&readonly, &current).await.is_err());
+        let released = client.release_topology(&routing, &current).await.unwrap();
+        assert_eq!(
+            released.observation().unwrap(),
+            current.observation().unwrap()
+        );
+        assert_eq!(
+            released.release().unwrap().not_after_ms,
+            current.observation().unwrap().not_after_ms
+        );
+        let mut alternate = config.clone();
+        alternate.identity = identities.remove(0);
+        let mut alternate_client = KasumiLifecycleClient::connect(
+            &alternate,
+            ControlTrust::install(root.clone()).unwrap(),
+        )
+        .await
+        .unwrap();
+        assert!(
+            alternate_client
+                .release_topology(&routing, &current)
+                .await
+                .is_err()
+        );
+        // Exercise server-side caller binding using the actual signed wire,
+        // independently of the native client's local admission checks.
+        let raw_channel = |config: KasumiClientConfig| async move {
+            kasumi_transport::grpc_channel(
+                &config.endpoint,
+                &config.identity,
+                &config.trusted_ca_pem,
+                config.server_certificate_pins,
+            )
+            .await
+            .unwrap()
+        };
+        let mut raw = proto::kasumi_lifecycle_control_client::KasumiLifecycleControlClient::new(
+            raw_channel(config.clone()).await,
+        );
+        let wire = |bytes: Vec<u8>, bearer: &str| {
+            let mut request = Request::new(ControlJsonRequest {
+                request_json: bytes,
+            });
+            request
+                .metadata_mut()
+                .insert("authorization", format!("Bearer {bearer}").parse().unwrap());
+            request
+        };
+        let read = ReadControlTopology {
+            request_id: Uuid::new_v4(),
+            control_incarnation: incarnation,
+            maximum_lifetime_ms: 5000,
+        };
+        let bytes = serde_json::to_vec(&read).unwrap();
+        let signed: SignedControlTopology = serde_json::from_slice(
+            &raw.observe_topology(wire(bytes.clone(), &routing))
+                .await
+                .unwrap()
+                .into_inner()
+                .response_json,
+        )
+        .unwrap();
+        let release = ReleaseControlTopology {
+            request_id: Uuid::new_v4(),
+            original: signed,
+        };
+        let release_bytes = serde_json::to_vec(&release).unwrap();
+        let mut alternate_raw =
+            proto::kasumi_lifecycle_control_client::KasumiLifecycleControlClient::new(
+                raw_channel(alternate).await,
+            );
+        assert_eq!(
+            alternate_raw
+                .release_topology(wire(release_bytes.clone(), &routing))
+                .await
+                .unwrap_err()
+                .code(),
+            tonic::Code::PermissionDenied
+        );
+        assert_eq!(
+            raw.release_topology(wire(release_bytes, &readonly))
+                .await
+                .unwrap_err()
+                .code(),
+            tonic::Code::PermissionDenied
+        );
+        let mut duplicate = wire(bytes.clone(), &routing);
+        duplicate.metadata_mut().append(
+            "authorization",
+            format!("Bearer {routing}").parse().unwrap(),
+        );
+        assert_eq!(
+            raw.observe_topology(duplicate).await.unwrap_err().code(),
+            tonic::Code::Unauthenticated
+        );
+        let handler =
+            NativeLifecycleControl::new(leader.clone(), signer.clone(), auth.clone()).unwrap();
+        assert_eq!(
+            proto::kasumi_lifecycle_control_server::KasumiLifecycleControl::observe_topology(
+                &handler,
+                wire(bytes, &routing)
+            )
+            .await
+            .unwrap_err()
+            .code(),
+            tonic::Code::Unauthenticated
+        );
+    }
     let epoch = leader.engine().generation().unwrap().state.policy_epoch;
     let source = Uuid::new_v4();
     // Shape-only approved checkpoint fixture: this tests the committed native

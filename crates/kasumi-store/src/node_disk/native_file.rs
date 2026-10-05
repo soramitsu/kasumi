@@ -100,6 +100,14 @@ impl Walk {
             && self.next_close.is_none()
     }
 
+    pub(super) fn close_errors(&self) -> [Option<(i32, &io::Error)>; 2] {
+        [&self.current_close, &self.next_close].map(|outcome| {
+            outcome
+                .as_ref()
+                .map(|outcome| (outcome.descriptor, &outcome.error))
+        })
+    }
+
     pub(super) fn uncertain_close(&self) -> Option<&CloseOutcome> {
         self.current_close.as_ref().or(self.next_close.as_ref())
     }

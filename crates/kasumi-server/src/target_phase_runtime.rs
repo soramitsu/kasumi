@@ -61,9 +61,11 @@ pub(crate) async fn observe_initial_dispatch_from_control(
     )?;
     let original = admission
         .run(async {
-            Ok(control
-                .observe_intent(request.command_id, admission.remaining_response()?)
-                .await?)
+            Ok::<_, anyhow::Error>(
+                control
+                    .observe_intent(request.command_id, admission.remaining_response()?)
+                    .await?,
+            )
         })
         .await?;
     let intent = &original.observation().intent;
@@ -90,15 +92,17 @@ pub(crate) async fn observe_initial_dispatch_from_control(
         KasumiRecoveryPool::new(connections, Arc::new(move || Ok(credential.clone())))?;
     let marked = admission
         .run(async {
-            Ok(recovery
-                .read_phase(
-                    &RecoveryPhaseRequest {
-                        operation_id: identity.operation_id,
-                        phase_id: identity.phase_id,
-                    },
-                    admission.remaining_response()?,
-                )
-                .await?)
+            Ok::<_, anyhow::Error>(
+                recovery
+                    .read_phase(
+                        &RecoveryPhaseRequest {
+                            operation_id: identity.operation_id,
+                            phase_id: identity.phase_id,
+                        },
+                        admission.remaining_response()?,
+                    )
+                    .await?,
+            )
         })
         .await?;
     identity.validate_marked_phase(
@@ -228,9 +232,11 @@ impl RuntimeTargetPhase {
         )?;
         let original = admission
             .run(async {
-                Ok(control
-                    .observe_intent(request.command_id, admission.remaining_response()?)
-                    .await?)
+                Ok::<_, anyhow::Error>(
+                    control
+                        .observe_intent(request.command_id, admission.remaining_response()?)
+                        .await?,
+                )
             })
             .await?;
         let intent = &original.observation().intent;
@@ -281,15 +287,17 @@ impl RuntimeTargetPhase {
             )?;
             let marked = admission
                 .run(async {
-                    Ok(recovery
-                        .read_phase(
-                            &RecoveryPhaseRequest {
-                                operation_id: identity.operation_id,
-                                phase_id: identity.phase_id,
-                            },
-                            admission.remaining_response()?,
-                        )
-                        .await?)
+                    Ok::<_, anyhow::Error>(
+                        recovery
+                            .read_phase(
+                                &RecoveryPhaseRequest {
+                                    operation_id: identity.operation_id,
+                                    phase_id: identity.phase_id,
+                                },
+                                admission.remaining_response()?,
+                            )
+                            .await?,
+                    )
                 })
                 .await?;
             identity.validate_marked_phase(
@@ -360,9 +368,11 @@ impl RuntimeTargetPhase {
         // target deadline and credential lifetime; this does not replay an effect.
         admission
             .run(async {
-                Ok(issuer_admin
-                    .execute_lifecycle(&accepted, Duration::from_secs(15))
-                    .await?)
+                Ok::<_, anyhow::Error>(
+                    issuer_admin
+                        .execute_lifecycle(&accepted, Duration::from_secs(15))
+                        .await?,
+                )
             })
             .await?;
         let boot = LifecycleBoot::new(trust.clone(), node)?;
@@ -371,12 +381,14 @@ impl RuntimeTargetPhase {
         let attempt = boot.begin(&original)?;
         let lease = admission
             .run(async {
-                Ok(issuer
-                    .acquire_lifecycle(
-                        &attempt,
-                        Duration::from_millis(authority.manifest.max_lease_ms.min(5000)),
-                    )
-                    .await?)
+                Ok::<_, anyhow::Error>(
+                    issuer
+                        .acquire_lifecycle(
+                            &attempt,
+                            Duration::from_millis(authority.manifest.max_lease_ms.min(5000)),
+                        )
+                        .await?,
+                )
             })
             .await?;
         let purpose = lease.signed().claims.application_purpose;
@@ -612,9 +624,11 @@ impl RuntimeTargetPhase {
         let proof = operation
             .run(async {
                 let mut issuer = self.authority_admin.lock().await;
-                Ok(issuer
-                    .verify_target_stop(reference, Duration::from_secs(5))
-                    .await?)
+                Ok::<_, anyhow::Error>(
+                    issuer
+                        .verify_target_stop(reference, Duration::from_secs(5))
+                        .await?,
+                )
             })
             .await?;
         operation.check()?;
@@ -670,12 +684,14 @@ pub(crate) async fn observe_initial_inspection_from_control(
     )?;
     let verified = admission
         .run(async {
-            Ok(control
-                .observe_intent(
-                    current.observation().intent.request.command_id,
-                    admission.remaining_response()?,
-                )
-                .await?)
+            Ok::<_, anyhow::Error>(
+                control
+                    .observe_intent(
+                        current.observation().intent.request.command_id,
+                        admission.remaining_response()?,
+                    )
+                    .await?,
+            )
         })
         .await?;
     ensure!(
@@ -709,15 +725,17 @@ pub(crate) async fn observe_initial_inspection_from_control(
     {
         let current = admission
             .run(async {
-                Ok(recovery
-                    .read_phase(
-                        &RecoveryPhaseRequest {
-                            operation_id: expected.operation_id,
-                            phase_id: expected.phase_id,
-                        },
-                        admission.remaining_response()?,
-                    )
-                    .await?)
+                Ok::<_, anyhow::Error>(
+                    recovery
+                        .read_phase(
+                            &RecoveryPhaseRequest {
+                                operation_id: expected.operation_id,
+                                phase_id: expected.phase_id,
+                            },
+                            admission.remaining_response()?,
+                        )
+                        .await?,
+                )
             })
             .await?;
         ensure!(

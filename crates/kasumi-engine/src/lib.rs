@@ -17,8 +17,21 @@ pub use retirement_proof::{
 };
 pub use retirement_source::InstalledRetirementSource;
 mod accounting;
+mod output;
+pub use output::AdmittedOutput;
+mod application_sources;
 mod audit_source;
 mod current_json;
+mod document_source;
+mod generation_metadata;
+pub use generation_metadata::{CollectionMetadata, LifecycleInstallationMetadata};
+// Unwired component prototype; runtime producers remain unchanged.
+#[cfg(test)]
+mod document_pool;
+// Unwired logical page codec; source/publication/cache integration remains separate.
+mod index_source;
+#[cfg(test)]
+mod primary_tree;
 pub use audit_source::authorize_audit_source;
 pub mod admission;
 mod audit_maintenance;
@@ -45,7 +58,9 @@ pub use target_signer::TargetSigner;
 mod backup_binding;
 mod bootstrap;
 pub mod control;
+mod materialization_row;
 mod mutation_receipt;
+mod namespace_installation;
 pub mod security_audit;
 mod service;
 mod snapshot_codec;
@@ -71,7 +86,11 @@ pub use security_audit::{
 pub use service::{
     CustodyResponseFence, Database, ResponseFence, RetiredCustody, RetirementResponseFence,
 };
-pub use state::{Generation, PreparedSnapshotRestore, TenantEngine};
+pub use state::{Generation, PreparedSnapshotRestore, TenantEngine, validate_genesis_inputs};
+mod snapshot_failure;
+pub use snapshot_failure::SnapshotFailure;
+#[cfg(test)]
+mod test_fixture_failure;
 
 /// Conservative resident charge for retaining one immutable document across
 /// asynchronous work. Uses the same allocation accounting as coherent leases;

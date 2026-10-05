@@ -91,12 +91,10 @@ impl Backend {
         &self,
         meta: &Meta,
         nodes: &BTreeSet<NodeIdentity>,
-    ) -> kasumi_types::Result<()> {
+    ) -> Result<()> {
         if frozen(meta) {
             for node in nodes {
-                self.require_enrolled(&node.verifier).map_err(|_| {
-                    conflict("target activation introduces a verifier outside the frozen roster")
-                })?;
+                self.require_enrolled(&node.verifier)?;
             }
         }
         Ok(())
@@ -106,18 +104,18 @@ impl Backend {
         meta: &Meta,
         command: &AuthorityMaintenanceCommand,
     ) -> Result<()> {
-        Self::check_new_verifier_admission(meta)?;
+        Self::check_new_verifier_admission(meta).map_err(reject)?;
         match &command.action {
             AuthorityMaintenanceAction::EnrollSignerVerifier { enrollment } => {
-                enrollment.validate()?;
-                ensure!(
+                enrollment.validate().map_err(reject_conflict)?;
+                reject_unless!(
                     self.record(&verifier_key(&enrollment.verifier))?.is_none(),
                     "physical verifier identity is permanently allocated"
                 );
                 self.store.visit(NS, MAX_RECORD_BYTES, |key, bytes| {
                     if key.starts_with(b"signer-verifier/") {
                         let Record::Verifier(existing) = serde_json::from_slice(bytes)? else { anyhow::bail!("verifier record type differs") };
-                        ensure!(existing.enrollment.endpoint != enrollment.endpoint
+                        reject_unless!(existing.enrollment.endpoint != enrollment.endpoint
                             && existing.enrollment.certificate_pins.is_disjoint(&enrollment.certificate_pins),
                             "administrative origin or certificate already identifies another physical verifier");
                     }
@@ -126,7 +124,7 @@ impl Backend {
             }
             AuthorityMaintenanceAction::AdmitControlVerifiers { admission } => {
                 self.validate_control_admission(admission)?;
-                ensure!(
+                reject_unless!(
                     self.record(&control_key(admission.root.control_incarnation))?
                         .is_none(),
                     "Control verifier admission already has a permanent identity"
@@ -135,13 +133,13 @@ impl Backend {
                     self.require_enrolled(&node.verifier)?;
                 }
             }
-            _ => anyhow::bail!("not a verifier enrollment transition"),
+            _ => reject_bail!("not a verifier enrollment transition"),
         }
         Ok(())
     }
     fn validate_control_admission(&self, admission: &ControlVerifierAdmission) -> Result<()> {
-        admission.validate()?;
-        ensure!(
+        admission.validate().map_err(reject_conflict)?;
+        reject_unless!(
             self.installation
                 .manifest
                 .lifecycle_controls
@@ -157,7 +155,7 @@ impl Backend {
         Ok(())
     }
     fn require_enrolled(&self, verifier: &TrustVerifierIdentity) -> Result<()> {
-        ensure!(
+        reject_unless!(
             matches!(self.record(&verifier_key(verifier))?, Some(Record::Verifier(record)) if record.enrollment.verifier == *verifier),
             "physical verifier lacks its exact permanent administrative enrollment"
         );
@@ -218,64 +216,75 @@ impl Backend {
         ));
         Ok(())
     }
-    pub(super) fn freeze_signer_roster(&self, meta: &Meta) -> Result<SignerVerifierRoster> {
+    pub(super) fn freeze_signer_roster(
+        &self,
+        meta: &Meta,
+    ) -> std::result::Result<SignerVerifierRoster, kasumi_store::ScratchOperationFailure> {
         let mut hash = Sha256::new();
         hash.update(b"kasumi.physical-verifier-roster.v1");
         let (mut enrollments, mut controls) = (0, 0);
-        for member in meta.operational.membership.members.values() {
-            self.require_enrolled(&member.verifier)?;
-        }
-        for (incarnation, public_key) in &self.installation.manifest.lifecycle_controls {
-            let Some(Record::ControlVerifier(record)) = self.record(&control_key(*incarnation))?
-            else {
-                anyhow::bail!("installed Control root lacks an exact physical replica admission")
-            };
-            ensure!(
-                record.admission.root.public_key == *public_key,
-                "Control roster root differs"
-            );
-        }
-        let maximum = self
-            .resource_budget_bytes
-            .checked_mul(8)
-            .and_then(|bytes| bytes.checked_add(64 << 20))
-            .context("roster staging disk budget overflow")?;
-        let records = kasumi_store::EncryptedTable::new(self.store.scratch_disk(), maximum)?;
-        self.store
-            .read_view()?
-            .visit(NS, MAX_RECORD_BYTES, |key, bytes| {
-                if key == META {
-                    return Ok(());
-                }
-                let record: Record = serde_json::from_slice(bytes)?;
-                Self::visit_verifier_references(&record, |verifier| {
-                    self.require_enrolled(verifier)
-                })?;
-                if matches!(record, Record::Verifier(_) | Record::ControlVerifier(_)) {
-                    records.insert(key, bytes)?;
-                }
-                Ok(())
-            })?;
-        records.visit(|key, bytes| {
-            Self::hash_roster_record(
-                key,
-                &serde_json::from_slice(bytes)?,
-                &mut hash,
-                &mut enrollments,
-                &mut controls,
-            )
+        let maximum = kasumi_store::ScratchOperationFailure::ordinary(|| {
+            for member in meta.operational.membership.members.values() {
+                self.require_enrolled(&member.verifier)?;
+            }
+            for (incarnation, public_key) in &self.installation.manifest.lifecycle_controls {
+                let Some(Record::ControlVerifier(record)) =
+                    self.record(&control_key(*incarnation))?
+                else {
+                    reject_bail!("installed Control root lacks an exact physical replica admission")
+                };
+                ensure!(
+                    record.admission.root.public_key == *public_key,
+                    "Control roster root differs"
+                );
+            }
+            self.resource_budget_bytes
+                .checked_mul(8)
+                .and_then(|bytes| bytes.checked_add(64 << 20))
+                .context("roster staging disk budget overflow")
         })?;
-        ensure!(
-            enrollments == meta.signer_verifiers && controls == meta.signer_controls,
-            "signer enrollment accounting differs"
-        );
-        let roster = SignerVerifierRoster {
-            enrollment_count: enrollments,
-            control_count: controls,
-            sha256: hex::encode(hash.finalize()),
-        };
-        roster.validate()?;
-        Ok(roster)
+        let records = kasumi_store::EncryptedTable::new(
+            self.store.scratch_disk(),
+            maximum,
+            self.store.scratch_disk().native_cache_config(),
+        )?;
+        kasumi_store::ScratchOperationFailure::ordinary(|| {
+            self.store
+                .read_view()?
+                .visit(NS, MAX_RECORD_BYTES, |key, bytes| {
+                    if key == META {
+                        return Ok(());
+                    }
+                    let record: Record = serde_json::from_slice(bytes)?;
+                    Self::visit_verifier_references(&record, |verifier| {
+                        self.require_enrolled(verifier)
+                    })?;
+                    if matches!(record, Record::Verifier(_) | Record::ControlVerifier(_)) {
+                        records.insert(key, bytes)?;
+                    }
+                    Ok(())
+                })?;
+            records.visit(|key, bytes| {
+                Self::hash_roster_record(
+                    key,
+                    &serde_json::from_slice(bytes)?,
+                    &mut hash,
+                    &mut enrollments,
+                    &mut controls,
+                )
+            })?;
+            ensure!(
+                enrollments == meta.signer_verifiers && controls == meta.signer_controls,
+                "signer enrollment accounting differs"
+            );
+            let roster = SignerVerifierRoster {
+                enrollment_count: enrollments,
+                control_count: controls,
+                sha256: hex::encode(hash.finalize()),
+            };
+            roster.validate()?;
+            Ok(roster)
+        })
     }
     fn visit_verifier_references(
         record: &Record,

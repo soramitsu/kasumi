@@ -1,7 +1,9 @@
 //! Canonical typed transport with bounded metadata, custody receipts/events and
 //! payload chunks. Final counts and one digest authenticate every record.
+use crate::ensure_result as ensure;
 use crate::storage::{SnapshotEnvelope, SnapshotKind};
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result};
+use kasumi_store::ScratchOperationFailure;
 use kasumi_store::{EncryptedSpool, SnapshotImage};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -112,7 +114,7 @@ impl SnapshotEnvelope {
         disk: &std::sync::Arc<kasumi_store::ScratchDisk>,
         reader: &mut dyn Read,
         limit: u64,
-    ) -> Result<Self> {
+    ) -> Result<Self, ScratchOperationFailure> {
         let mut magic = [0; 8];
         reader.read_exact(&mut magic)?;
         ensure!(&magic == MAGIC, "unsupported snapshot stream format");
@@ -163,7 +165,7 @@ impl SnapshotEnvelope {
                 METADATA if header.is_none() => MAX_METADATA,
                 COMMAND | AUDIT if custody.is_some() => crate::custody_tables::RECORD_BYTES,
                 DATA if header.is_some() && !short_record => CHUNK,
-                _ => anyhow::bail!("invalid snapshot record ordering"),
+                _ => return Err(anyhow::anyhow!("invalid snapshot record ordering").into()),
             };
             ensure!(
                 size > 0 && size <= cap as u64,

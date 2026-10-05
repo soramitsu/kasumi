@@ -5,10 +5,39 @@ use std::{io, sync::Arc};
 /// Reserve `bytes` plus the implementation's lease-allocation workspace before
 /// allocating that lease. Acquisition consumes no inflight operation slot.
 /// An installed owner is identified by this exact Arc, not equivalent policy.
-pub trait NodeDiskMemoryAdmission: Send + Sync {
+pub trait NodeDiskMemoryAdmission: kasumi_kv::SourceMemoryProvider + Send + Sync {
     /// Fixed custody admitted in this exact provider's initial bookkeeping.
     fn storage_census(&self) -> &crate::StorageCensus;
     fn reserve_installed(self: Arc<Self>, bytes: u64) -> io::Result<DiskMemoryLease>;
+    /// Required closed database constructor admission. It reserves ordinary
+    /// resident capacity and installs its concrete token before continuation.
+    fn install_native_constructor(
+        self: Arc<Self>,
+        install: &mut crate::NativeConstructorInstall<'_>,
+    ) -> io::Result<()>;
+    /// Closed registered-source metadata constructor. Unknown providers refuse;
+    /// there is no ordinary/TLS fallback or caller-supplied prepaid lease.
+    fn install_source_metadata(
+        self: Arc<Self>,
+        _install: &mut crate::SourceMetadataInstall<'_>,
+    ) -> io::Result<()> {
+        Err(io::ErrorKind::Unsupported.into())
+    }
+
+    /// Pure quote of this provider's actual opaque installed lease, including
+    /// its concrete token allocation. No capacity or authority is acquired.
+    /// Unknown providers refuse; callers must never guess their wrapper cost.
+    fn quote_installed(&self, _bytes: u64) -> io::Result<u64> {
+        Err(io::ErrorKind::Unsupported.into())
+    }
+    /// Pure, allocation-free quote for aggregate optional cache credit.
+    fn quote_cache_memory(&self, credit_bytes: u64) -> io::Result<kasumi_kv::CacheMemoryQuote>;
+    /// Uses ordinary optional-cache capacity, never scoped maintenance escrow.
+    /// Its original provider and reservation origin survive in-place growth.
+    fn reserve_cache_memory(
+        self: Arc<Self>,
+        credit_bytes: u64,
+    ) -> io::Result<kasumi_kv::CacheMemoryLease>;
 }
 
 /// Opaque installed resident lease with allocation-before-credit retirement.
@@ -17,37 +46,7 @@ pub trait NodeDiskMemoryAdmission: Send + Sync {
 /// constructing this lease. Dropping the lease retires that actual allocation
 /// before invoking the token's destructor, which can then return byte credit.
 /// No reference, raw Box, or alternate retirement path is exposed.
-pub struct DiskMemoryLease(Option<Box<dyn RetireLease>>);
-trait RetireLease: Send + Sync {
-    fn retire(self: Box<Self>);
-}
-impl<T: Send + Sync + 'static> RetireLease for T {
-    fn retire(self: Box<Self>) {
-        // Moving out of the named self parameter alone would leave its Box
-        // allocated until this function exits. Transfer it into an inner scope:
-        // that scope retires the allocation before the token destructor runs.
-        let reservation = {
-            let allocation = self;
-            *allocation
-        };
-        drop(reservation);
-    }
-}
-impl DiskMemoryLease {
-    /// Wrap the concrete, already-admitted reservation token directly. The
-    /// caller must fund `size_of::<T>()` and the existing allocator allowance
-    /// before this method allocates; this method never acquires admission.
-    pub fn new<T: Send + Sync + 'static>(reservation: T) -> Self {
-        Self(Some(Box::new(reservation)))
-    }
-}
-impl Drop for DiskMemoryLease {
-    fn drop(&mut self) {
-        if let Some(reservation) = self.0.take() {
-            reservation.retire();
-        }
-    }
-}
+pub use kasumi_kv::ResidentAllocation as DiskMemoryLease;
 // Existing owner/registry planning charges one opaque fat pointer inline. This
 // replacement must preserve that layout on every supported compilation target.
 const _: () = {

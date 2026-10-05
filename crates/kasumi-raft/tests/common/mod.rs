@@ -1,6 +1,19 @@
 #![allow(dead_code)]
 
-use anyhow::{Result, ensure};
+use anyhow::Result;
+
+macro_rules! ensure {
+    ($condition:expr, $($message:tt)+) => {
+        if !$condition {
+            return Err(anyhow::anyhow!($($message)+).into());
+        }
+    };
+}
+#[allow(
+    unused_imports,
+    reason = "The cluster target imports this macro; other independent integration targets share this module."
+)]
+pub(crate) use ensure;
 use kasumi_raft::{Config, SnapshotPolicy, StateMachineBackend};
 use kasumi_store::{NodeStore, test_utils::LocalKeyProvider};
 use std::{
@@ -35,7 +48,7 @@ impl kasumi_raft::PreparedStateMachineRestore for PreparedBackend<'_> {
     fn retirement(&self) -> Option<kasumi_raft::RetiredSnapshotState> {
         None
     }
-    fn application_replacements(&self) -> Vec<(&str, &kasumi_store::EncryptedTable)> {
+    fn application_replacements(&self) -> Vec<kasumi_store::NamespaceReplacement<'_>> {
         vec![]
     }
     fn application_writes(&self) -> &[kasumi_store::WriteOp] {
@@ -52,11 +65,18 @@ impl StateMachineBackend for Backend {
         self.data.lock().unwrap().clear();
         self.fail_apply.store(true, Ordering::Release);
     }
-    fn apply(
+    fn apply_with_publisher(
         &self,
         position: &kasumi_raft::AppliedEntryContext,
-        command: &[u8],
-    ) -> Result<kasumi_raft::AppliedResponse> {
+        input: kasumi_raft::AppliedInput<'_>,
+        publisher: &mut dyn kasumi_raft::ApplyPublisher,
+    ) -> std::result::Result<(), kasumi_store::ScratchOperationFailure> {
+        let kasumi_raft::AppliedInput::Command(command) = input else {
+            publisher
+                .commit(kasumi_raft::AppliedResponse::application(Vec::new()), &[])
+                .map_err(anyhow::Error::from)?;
+            return Ok(());
+        };
         let index = position.log_id.index;
         ensure!(
             !self.fail_apply.load(Ordering::Acquire),
@@ -68,13 +88,21 @@ impl StateMachineBackend for Backend {
                 .is_none_or(|(&previous, _)| previous < index),
             "reapplied command"
         );
-        data.insert(index, command.to_vec());
-        Ok(kasumi_raft::AppliedResponse::application(command.to_vec()))
-    }
-    fn apply_metadata(&self, _position: &kasumi_raft::AppliedEntryContext) -> anyhow::Result<()> {
+        let mut prepared = data.clone();
+        prepared.insert(index, command.to_vec());
+        publisher
+            .commit(
+                kasumi_raft::AppliedResponse::application(command.to_vec()),
+                &[],
+            )
+            .map_err(anyhow::Error::from)?;
+        *data = prepared;
         Ok(())
     }
-    fn capture_snapshot(&self) -> Result<kasumi_raft::CapturedSnapshot> {
+    fn capture_snapshot(
+        &self,
+    ) -> std::result::Result<kasumi_raft::CapturedSnapshot, kasumi_store::ScratchOperationFailure>
+    {
         ensure!(
             !self.fail_snapshot.load(Ordering::Acquire),
             "injected snapshot capture failure"
@@ -88,7 +116,10 @@ impl StateMachineBackend for Backend {
     fn validate_snapshot(
         &self,
         bytes: &mut dyn std::io::Read,
-    ) -> Result<Option<kasumi_raft::RetiredSnapshotState>> {
+    ) -> std::result::Result<
+        Option<kasumi_raft::RetiredSnapshotState>,
+        kasumi_store::ScratchOperationFailure,
+    > {
         serde_json::from_reader::<_, BTreeMap<u64, Vec<u8>>>(bytes)?;
         Ok(None)
     }
@@ -96,7 +127,10 @@ impl StateMachineBackend for Backend {
         &'a self,
         _context: &kasumi_raft::SnapshotRestoreContext,
         bytes: &mut dyn std::io::Read,
-    ) -> Result<Box<dyn kasumi_raft::PreparedStateMachineRestore + 'a>> {
+    ) -> std::result::Result<
+        Box<dyn kasumi_raft::PreparedStateMachineRestore + 'a>,
+        kasumi_store::ScratchOperationFailure,
+    > {
         let restored = serde_json::from_reader(bytes)?;
         Ok(Box::new(PreparedBackend {
             backend: self,
@@ -111,7 +145,7 @@ pub async fn store(
     fixture_scratch: Arc<kasumi_store::ScratchDisk>,
     node_id: u64,
     group: &str,
-) -> Result<Arc<kasumi_store::TenantStorageSet>> {
+) -> kasumi_raft::test_utils::FixtureResult<Arc<kasumi_store::TenantStorageSet>> {
     let node = if create {
         NodeStore::create_new_fixture(
             path,
@@ -164,5 +198,9 @@ pub fn config() -> Config {
 }
 
 pub fn snapshot_owner() -> Arc<kasumi_raft::SnapshotBufferOwner> {
-    kasumi_raft::SnapshotBufferOwner::new(kasumi_raft::SNAPSHOT_BUFFER_SLOTS, Arc::new(())).unwrap()
+    kasumi_raft::SnapshotBufferOwner::new(
+        kasumi_raft::SNAPSHOT_BUFFER_SLOTS,
+        kasumi_types::SharedBudgetCharge::new(()),
+    )
+    .unwrap()
 }

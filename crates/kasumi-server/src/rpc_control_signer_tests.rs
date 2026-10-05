@@ -145,6 +145,7 @@ pub(super) async fn exercise(f: Fixture<'_>) {
             directory: directory.join("scratch"),
             max_bytes: 64 << 30,
             min_free_bytes: 256 << 20,
+            native_cache_bytes: 8 << 20,
         },
         verifier: SignerVerifierConfig {
             max_background_workers: 64,
@@ -166,6 +167,10 @@ pub(super) async fn exercise(f: Fixture<'_>) {
         .await
         .unwrap();
     let admission = storage.facade(storage.policy()).unwrap();
+    let originals = initialization
+        .verifier
+        .node_start_inventory(&admission)
+        .unwrap();
     let scratch = storage.open_scratch(&initialization.scratch_disk).unwrap();
     let domains = BTreeMap::from([(domain.digest().unwrap(), domain.clone())]);
     let verifier = initialization
@@ -178,6 +183,7 @@ pub(super) async fn exercise(f: Fixture<'_>) {
                 .unwrap(),
             scratch.clone(),
             admission,
+            &originals,
         )
         .await
         .unwrap();
@@ -217,9 +223,19 @@ pub(super) async fn exercise(f: Fixture<'_>) {
         NativeAuthority::new(f.issuer.clone(), f.auth.clone()).service(),
     )
     .add_service(
-        NativeAdmin::new(DatabaseRegistry::default(), f.auth.clone())
-            .with_control_signer(runtime)
-            .service(),
+        NativeAdmin::new(
+            DatabaseRegistry::default(),
+            f.auth.clone(),
+            crate::administration::OriginalRecoveries::new(
+                f.audit.admission(),
+                crate::administration::OriginalRecoveryParticipants::one(
+                    crate::runtime::CONTROL_TENANT,
+                ),
+            )
+            .unwrap(),
+        )
+        .with_control_signer(runtime)
+        .service(),
     )
     .into_axum_router();
     let tls = kasumi_transport::server_config(
@@ -567,6 +583,10 @@ pub(super) async fn exercise(f: Fixture<'_>) {
     verifier.shutdown().await.unwrap();
     drop(verifier);
     let admission = storage.facade(storage.policy()).unwrap();
+    let reopened_originals = initialization
+        .verifier
+        .node_start_inventory(&admission)
+        .unwrap();
     let reopened = initialization
         .verifier
         .open(
@@ -577,6 +597,7 @@ pub(super) async fn exercise(f: Fixture<'_>) {
                 .unwrap(),
             scratch,
             admission,
+            &reopened_originals,
         )
         .await
         .unwrap();

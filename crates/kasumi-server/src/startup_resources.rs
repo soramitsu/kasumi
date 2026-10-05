@@ -8,8 +8,12 @@ use std::sync::Arc;
 #[derive(Default)]
 pub(crate) struct Resources {
     report: tokio::sync::Mutex<DrainReport>,
-    pub(crate) owned_nodes: Vec<Arc<kasumi_store::NodeStore>>,
-    pub(crate) borrowed_nodes: Vec<Arc<kasumi_store::NodeStore>>,
+    pub(crate) original_recoveries:
+        Option<crate::administration::original_serving_runtime::OriginalRecoveries>,
+    pub(crate) signer_original_recoveries:
+        Option<crate::administration::original_serving_runtime::OriginalRecoveries>,
+    pub(crate) owned_nodes: Vec<kasumi_store::NodeStore>,
+    pub(crate) borrowed_nodes: Vec<kasumi_store::NodeStore>,
     // Only governors freshly installed by this scope. A provisioning operation
     // borrowing a live node must never close that node's startup admission.
     pub(crate) owned_admissions: Vec<Arc<kasumi_engine::admission::NodeAdmission>>,
@@ -30,6 +34,27 @@ impl Resources {
     pub(crate) async fn close(&self) -> DrainResult {
         let mut report = self.report.lock().await;
         let mut retained = None;
+        if let Some(inventory) = &self.original_recoveries
+            && inventory.retained().await
+        {
+            let issue = report.record(
+                "original recovery inventory",
+                0,
+                anyhow::anyhow!("original recovery custody remains retained"),
+            );
+            retained = Some(kasumi_types::drain::DrainFailure::retained(issue));
+        }
+        if let Some(inventory) = &self.signer_original_recoveries {
+            inventory.seal();
+            if inventory.retained().await {
+                let issue = report.record(
+                    "signer original recovery inventory",
+                    0,
+                    anyhow::anyhow!("signer original recovery custody remains retained"),
+                );
+                retained = Some(kasumi_types::drain::DrainFailure::retained(issue));
+            }
+        }
         for authority in &self.authorities {
             if let Err(failure) = authority.shutdown().await {
                 report.merge(&failure);
@@ -96,9 +121,10 @@ impl Resources {
         }
         for (index, node) in self.borrowed_nodes.iter().enumerate() {
             if let Err(error) = node.drain_initializers().await {
-                // This API returns a failure only after all registered handles
-                // have actually joined. Preserve it without retrying forever.
-                report.record("node initializers", index, error);
+                // The first original and later unjoined handles remain in the
+                // same paid node body. This scalar observation grants no drain.
+                let issue = report.record("node initializers", index, error.observation().into());
+                retained = Some(kasumi_types::drain::DrainFailure::retained(issue));
             }
         }
         if retained.is_none() {

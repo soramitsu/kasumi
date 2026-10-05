@@ -62,10 +62,18 @@ impl DatabaseConstruction {
     pub(crate) async fn start_local(
         self,
         engine: Arc<TenantEngine>,
+        image: &kasumi_store::SnapshotImage,
         node_id: u64,
         name: String,
-    ) -> anyhow::Result<Arc<Database>> {
+    ) -> std::result::Result<Arc<Database>, crate::SnapshotFailure> {
         let buffers = self.admission().snapshot_buffer_owner()?;
+        let (sources, binding) = crate::application_sources::SourceRoots::new(
+            self.stores.clone(),
+            self.admission().clone(),
+            kasumi_raft::RaftLimits::default(),
+        )?;
+        sources.bind_lifecycle(&buffers, binding)?;
+        engine.install_application_sources(sources, image)?;
         let group =
             RaftGroup::local(node_id, name, self.stores.clone(), engine.clone(), buffers).await?;
         // No fallible operation or suspension follows the successful transfer
@@ -76,12 +84,20 @@ impl DatabaseConstruction {
     pub(crate) async fn start_replicated(
         self,
         engine: Arc<TenantEngine>,
+        image: &kasumi_store::SnapshotImage,
         node_id: u64,
         name: String,
         transport: Arc<dyn RaftTransport>,
         config: RaftGroupConfig,
-    ) -> anyhow::Result<Arc<Database>> {
+    ) -> std::result::Result<Arc<Database>, crate::SnapshotFailure> {
         let buffers = self.admission().snapshot_buffer_owner()?;
+        let (sources, binding) = crate::application_sources::SourceRoots::new(
+            self.stores.clone(),
+            self.admission().clone(),
+            config.limits.clone(),
+        )?;
+        sources.bind_lifecycle(&buffers, binding)?;
+        engine.install_application_sources(sources, image)?;
         let group = RaftGroup::open(
             node_id,
             name,
@@ -98,11 +114,19 @@ impl DatabaseConstruction {
     pub(crate) async fn start_target_prebound(
         self,
         engine: Arc<TenantEngine>,
+        image: &kasumi_store::SnapshotImage,
         transport: Arc<dyn RaftTransport>,
         config: RaftGroupConfig,
         expected: kasumi_raft::TargetFirstMembershipPrebind,
-    ) -> anyhow::Result<Arc<Database>> {
+    ) -> std::result::Result<Arc<Database>, crate::SnapshotFailure> {
         let buffers = self.admission().snapshot_buffer_owner()?;
+        let (sources, binding) = crate::application_sources::SourceRoots::new(
+            self.stores.clone(),
+            self.admission().clone(),
+            config.limits.clone(),
+        )?;
+        sources.bind_lifecycle(&buffers, binding)?;
+        engine.install_application_sources(sources, image)?;
         let group = RaftGroup::open_target_prebound(
             expected.node.node_id,
             expected.group.clone(),

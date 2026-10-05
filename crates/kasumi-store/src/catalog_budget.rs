@@ -13,7 +13,14 @@ async fn production_catalog_typed_owner_retains_installed_memory_until_drop() ->
     })?;
     let scratch_directory = crate::test_utils::private_tempdir()?;
     let scratch = crate::ScratchDisk::fixture(scratch_directory.path(), memory.clone());
-    let node = NodeStore::create_new(&path, crate::test_utils::NODE_STORE_ID, disk, scratch)?;
+    let node = NodeStore::create_new(
+        &path,
+        crate::test_utils::NODE_STORE_ID,
+        disk,
+        scratch,
+        crate::test_utils::node_storage_config(),
+    )
+    .unwrap_or_else(|original| std::panic::panic_any(original));
     let wrapped = WrappedKey {
         provider: "fixture".into(),
         key_ref: "catalog".into(),
@@ -50,13 +57,20 @@ async fn production_catalog_typed_owner_retains_installed_memory_until_drop() ->
 async fn production_catalog_typed_admission_denial_precedes_serde_allocation() -> Result<()> {
     let directory = crate::test_utils::private_tempdir()?;
     let path = directory.path().join("typed-catalog-denial.kv");
-    let memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let memory = TypedCatalogDenialMemory::new()?;
     let disk = crate::test_utils::retry_disk_registry(|| {
         crate::NodeDisk::fixture_for_path(&path, memory.clone())
     })?;
     let scratch_directory = crate::test_utils::private_tempdir()?;
     let scratch = crate::ScratchDisk::fixture(scratch_directory.path(), memory.clone());
-    let node = NodeStore::create_new(&path, crate::test_utils::NODE_STORE_ID, disk, scratch)?;
+    let node = NodeStore::create_new(
+        &path,
+        crate::test_utils::NODE_STORE_ID,
+        disk,
+        scratch,
+        crate::test_utils::node_storage_config(),
+    )
+    .unwrap_or_else(|original| std::panic::panic_any(original));
     let wrapped = WrappedKey {
         provider: "fixture".into(),
         key_ref: "catalog".into(),
@@ -77,26 +91,111 @@ async fn production_catalog_typed_admission_denial_precedes_serde_allocation() -
     };
     node.save_catalog("tenant", &catalog)?;
     drop(node.catalog("tenant")?);
-    let before = memory.snapshot();
-    // Leave the existing maximum raw-copy reservation and a small native-read
-    // margin. The typed budget for two keys is larger than that margin.
-    let raw = crate::disk_memory::allocation::<u8>(MAX_KEY_CATALOG_BYTES as u64)?;
-    let available = raw + (32 << 10);
-    let filler = (256 << 20)
-        - before.bookkeeping_bytes
-        - before.used_bytes
-        - available
-        - crate::test_utils::TestDiskMemory::required_reservation_bytes(0)?;
-    let held = memory.clone().reserve_installed(filler)?;
+    // Deny the actual typed owner grant, independently of the reader/report,
+    // snapshot, cache and raw-copy grants needed to reach this boundary.
+    let typed = AdmittedKeyCatalog::typed_budget_for_test(&catalog)?;
+    memory.deny_bytes.store(typed, Ordering::Release);
     let error = node
         .catalog("tenant")
         .err()
         .expect("typed admission must fail");
-    assert!(format!("{error:#}").contains("key catalog typed allocation admission denied"));
+    assert!(
+        format!("{error:#}").contains("key catalog typed allocation admission denied"),
+        "actual catalog error: {error:#?}"
+    );
+    assert_eq!(memory.denials.load(Ordering::Acquire), 1);
+    assert_eq!(memory.deny_bytes.swap(0, Ordering::AcqRel), typed);
     assert_eq!(memory.storage_census().snapshot().readers, 0);
-    drop(held);
     node.shutdown().await?;
     Ok(())
+}
+
+// Exact required-output refusal, rather than a free-headroom estimate that
+// depends on the number and size of earlier independently admitted owners.
+struct TypedCatalogDenialMemory {
+    census: crate::StorageCensus,
+    backing: Arc<crate::test_utils::TestDiskMemory>,
+    deny_bytes: std::sync::atomic::AtomicU64,
+    denials: AtomicUsize,
+    _fixture_backing: crate::DiskMemoryLease,
+}
+impl TypedCatalogDenialMemory {
+    fn new() -> Result<Arc<Self>> {
+        let backing = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+        let bytes = crate::disk_memory::add(
+            crate::StorageCensus::required_bytes(4096)?,
+            crate::disk_memory::arc::<Self>()?,
+        )?;
+        let fixture_backing = backing.clone().reserve_installed(bytes)?;
+        let owner = Arc::new(Self {
+            census: crate::StorageCensus::allocate(4096)?,
+            backing,
+            deny_bytes: std::sync::atomic::AtomicU64::new(0),
+            denials: AtomicUsize::new(0),
+            _fixture_backing: fixture_backing,
+        });
+        let provider: Arc<dyn crate::NodeDiskMemoryAdmission> = owner.clone();
+        owner.census.bind_provider(&provider)?;
+        Ok(owner)
+    }
+}
+impl kasumi_kv::SourceMemoryProvider for TypedCatalogDenialMemory {}
+impl crate::NodeDiskMemoryAdmission for TypedCatalogDenialMemory {
+    fn storage_census(&self) -> &crate::StorageCensus {
+        &self.census
+    }
+    fn reserve_installed(self: Arc<Self>, bytes: u64) -> std::io::Result<crate::DiskMemoryLease> {
+        if bytes != 0 && self.deny_bytes.load(Ordering::Acquire) == bytes {
+            self.denials.fetch_add(1, Ordering::AcqRel);
+            return Err(std::io::ErrorKind::OutOfMemory.into());
+        }
+        self.backing.clone().reserve_installed(bytes)
+    }
+    fn install_native_constructor(
+        self: Arc<Self>,
+        install: &mut crate::NativeConstructorInstall<'_>,
+    ) -> std::io::Result<()> {
+        let provider: Arc<dyn crate::NodeDiskMemoryAdmission> = self.clone();
+        let permit = install
+            .try_begin_bind(provider)
+            .map_err(|_| std::io::ErrorKind::InvalidInput)?;
+        let requested_bytes = permit.request_bytes();
+        if requested_bytes != 0 && self.deny_bytes.load(Ordering::Acquire) == requested_bytes {
+            self.denials.fetch_add(1, Ordering::AcqRel);
+            return Err(permit.refuse_capacity(std::io::ErrorKind::OutOfMemory.into()));
+        }
+        let bytes = crate::disk_memory::add(
+            requested_bytes,
+            crate::DiskMemoryLease::token_allocation_bytes::<crate::DiskMemoryLease>()?,
+        )?;
+        match self.backing.clone().reserve_installed(bytes) {
+            Ok(token) => {
+                permit.bind(token);
+                Ok(())
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::OutOfMemory => {
+                Err(permit.refuse_capacity(error))
+            }
+            Err(error) => Err(error),
+        }
+    }
+    fn quote_cache_memory(&self, bytes: u64) -> std::io::Result<kasumi_kv::CacheMemoryQuote> {
+        crate::test_utils::cache_memory::disk_quote(self, bytes)
+    }
+    fn reserve_cache_memory(
+        self: Arc<Self>,
+        bytes: u64,
+    ) -> std::io::Result<kasumi_kv::CacheMemoryLease> {
+        crate::test_utils::cache_memory::disk_reserve(self, bytes)
+    }
+}
+impl crate::test_utils::cache_memory::DiskProvider for TypedCatalogDenialMemory {
+    fn backing(&self) -> Arc<dyn crate::NodeDiskMemoryAdmission> {
+        self.backing.clone()
+    }
+    fn admit(&self, _: u64) -> std::io::Result<()> {
+        Ok(())
+    }
 }
 
 struct ObservedRefreshProvider {
@@ -136,7 +235,14 @@ async fn production_refresh_catalog_clone_denies_low_headroom_and_keeps_charge_u
     })?;
     let scratch_directory = crate::test_utils::private_tempdir()?;
     let scratch = crate::ScratchDisk::fixture(scratch_directory.path(), memory.clone());
-    let node = NodeStore::create_new(&path, crate::test_utils::NODE_STORE_ID, disk, scratch)?;
+    let node = NodeStore::create_new(
+        &path,
+        crate::test_utils::NODE_STORE_ID,
+        disk,
+        scratch,
+        crate::test_utils::node_storage_config(),
+    )
+    .unwrap_or_else(|original| std::panic::panic_any(original));
     let provider = Arc::new(ObservedRefreshProvider {
         inner: LocalKeyProvider::new([87; 32]),
         memory: memory.clone(),
@@ -201,7 +307,14 @@ async fn production_catalog_mutation_clones_deny_low_headroom_and_keep_one_resid
     })?;
     let scratch_directory = crate::test_utils::private_tempdir()?;
     let scratch = crate::ScratchDisk::fixture(scratch_directory.path(), memory.clone());
-    let node = NodeStore::create_new(&path, crate::test_utils::NODE_STORE_ID, disk, scratch)?;
+    let node = NodeStore::create_new(
+        &path,
+        crate::test_utils::NODE_STORE_ID,
+        disk,
+        scratch,
+        crate::test_utils::node_storage_config(),
+    )
+    .unwrap_or_else(|original| std::panic::panic_any(original));
     let store = TenantStore::initialize_catalog_fixture_with_clock(
         node.clone(),
         "tenant".into(),
@@ -268,7 +381,14 @@ async fn production_backup_catalog_clone_denies_low_headroom_and_lives_with_back
     })?;
     let scratch_directory = crate::test_utils::private_tempdir()?;
     let scratch = crate::ScratchDisk::fixture(scratch_directory.path(), memory.clone());
-    let node = NodeStore::create_new(&path, crate::test_utils::NODE_STORE_ID, disk, scratch)?;
+    let node = NodeStore::create_new(
+        &path,
+        crate::test_utils::NODE_STORE_ID,
+        disk,
+        scratch,
+        crate::test_utils::node_storage_config(),
+    )
+    .unwrap_or_else(|original| std::panic::panic_any(original));
     let store = TenantStore::initialize_catalog_fixture_with_clock(
         node.clone(),
         "tenant".into(),
@@ -462,7 +582,7 @@ async fn exact_catalog_boundary_leaves_room_for_worst_case_manifest_tenant_encod
     assert!(node.save_catalog(&tenant, &catalog).is_err());
     // Untrusted/old on-disk metadata is checked before parsing or contacting KMS.
     let oversized = serde_json::to_vec(&catalog).unwrap();
-    let tx = node.db.begin_write().unwrap();
+    let tx = node.body().db.begin_write().unwrap();
     tx.open_table(CATALOG)
         .unwrap()
         .insert(tenant_hash(&tenant).as_slice(), oversized.as_slice())

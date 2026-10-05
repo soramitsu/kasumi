@@ -115,6 +115,24 @@ async fn control_updates_require_operator_authority_cas_and_survive_reopen() {
     let operator = context("operator", CONTROL_TENANT);
     control.initialize(operator.clone()).await.unwrap();
     assert!(control.topology(&operator).await.unwrap().is_none());
+    assert_eq!(
+        ControlPlane::local_topology(&db).unwrap_err().to_string(),
+        "control topology unavailable"
+    );
+    let empty = ControlPlane::select_local(&db).unwrap();
+    assert!(empty.decode_topology().unwrap().is_none());
+    assert!(empty.topology_document().unwrap().is_none());
+    let missing = empty.require_installed_topology().unwrap_err();
+    let original = missing
+        .downcast_ref::<kasumi_engine::control::LocalTopologyFailure>()
+        .unwrap()
+        .validation_error()
+        .unwrap();
+    assert_eq!(original.code, ErrorCode::Corruption);
+    assert_eq!(original.message, "installed Control topology is missing");
+    assert_eq!(missing.to_string(), original.to_string());
+    drop(missing);
+    drop(empty);
     let topology = topology();
     let receipt = control
         .replace_topology(
@@ -125,9 +143,70 @@ async fn control_updates_require_operator_authority_cas_and_survive_reopen() {
         )
         .await
         .unwrap();
+    let captured = db.engine().generation().unwrap();
+    let revision = captured.revision();
+    let audits = captured.state.audits.len();
+    let local = ControlPlane::local_topology(&db).unwrap();
+    assert_eq!(local.version, receipt.revision);
+    assert_eq!(local.topology, topology);
+    assert_eq!(db.engine().generation().unwrap().revision(), revision);
+    assert_eq!(
+        db.engine().generation().unwrap().state.audits.len(),
+        audits,
+        "strict audit policy must not turn local observation into a read audit"
+    );
+    let selection = ControlPlane::select_local(&db).unwrap();
+    selection
+        .check_admission(&physical.storage.admission)
+        .unwrap();
+    let other_admission = kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap();
+    assert_eq!(
+        selection
+            .check_admission(&other_admission)
+            .unwrap_err()
+            .code,
+        ErrorCode::InvalidArgument
+    );
+    drop(other_admission);
+    assert_eq!(selection.revision(), revision);
+    assert_eq!(selection.topology_version(), Some(receipt.revision));
+    let shared = selection.topology_document().unwrap().unwrap();
+    assert_eq!(shared.version, receipt.revision);
+    assert_eq!(
+        selection.require_installed_topology().unwrap().topology,
+        topology
+    );
+    assert_eq!(
+        selection.decode_topology().unwrap().unwrap().topology,
+        topology
+    );
+    assert!(selection.enrollment_document("absent").unwrap().is_none());
+    assert_eq!(db.engine().generation().unwrap().revision(), revision);
+    assert_eq!(db.engine().generation().unwrap().state.audits.len(), audits);
+    let old = Arc::downgrade(&captured);
+    drop(captured);
     assert_eq!(
         control.topology(&operator).await.unwrap().unwrap().topology,
         topology
+    );
+    assert!(
+        old.upgrade().is_some(),
+        "one coherent selection retains its selected metadata"
+    );
+    assert_eq!(selection.revision(), revision);
+    assert_eq!(
+        selection.require_installed_topology().unwrap().version,
+        receipt.revision
+    );
+    drop(selection);
+    assert_eq!(
+        shared.version, receipt.revision,
+        "source output survives its selection"
+    );
+    drop(shared.clone());
+    assert!(
+        old.upgrade().is_none(),
+        "the audited read published a successor while local output retains only its typed copy"
     );
     assert_eq!(
         control
@@ -174,8 +253,29 @@ async fn control_updates_require_operator_authority_cas_and_survive_reopen() {
         .code,
         ErrorCode::Forbidden
     );
+    let closing = ControlPlane::select_local(&db).unwrap();
     db.raft_group().shutdown().await.unwrap();
+    assert!(closing.check_access().is_err());
+    assert!(closing.topology_document().is_err());
+    assert!(closing.enrollment_document("absent").is_err());
+    assert!(closing.decode_topology().is_err());
+    assert!(closing.require_installed_topology().is_err());
+    drop(closing);
+    assert!(ControlPlane::select_local(&db).is_err());
+    assert_eq!(
+        shared.version, receipt.revision,
+        "already released source survives closure"
+    );
+    assert!(
+        ControlPlane::local_topology(&db).is_err(),
+        "local access cannot survive the original Raft owner"
+    );
+    assert_eq!(
+        local.topology, topology,
+        "already returned DTO remains independently owned"
+    );
     audit.drain().await;
+    drop(shared);
     let reopened = open_fixture(
         kasumi_store::test_utils::open_existing_custody_fixture(
             store,
@@ -194,6 +294,21 @@ async fn control_updates_require_operator_authority_cas_and_survive_reopen() {
         control.topology(&operator).await.unwrap().unwrap().topology,
         topology
     );
+    let selected = ControlPlane::select_local(&reopened).unwrap();
+    let released = selected.topology_document().unwrap().unwrap();
+    reopened.stores().application().seal();
+    // A selected cache/source handle does not bypass current key access at a
+    // new handoff. Previously returned immutable data stays caller-owned.
+    assert!(selected.check_access().is_err());
+    assert!(selected.topology_document().is_err());
+    assert!(selected.enrollment_document("absent").is_err());
+    assert!(selected.decode_topology().is_err());
+    assert!(selected.require_installed_topology().is_err());
+    assert_eq!(released.version, receipt.revision);
+    drop(selected);
+    drop(released);
     reopened.shutdown().await.unwrap();
+    assert_eq!(local.version, receipt.revision);
+    drop(local);
     audit.shutdown().await.unwrap();
 }

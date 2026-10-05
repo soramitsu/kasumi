@@ -2,7 +2,7 @@
 //! destination confirms durable, identical ciphertext before a caller may prune.
 use crate::{
     AccessGuard, BackupDestination, DiskWork, NodeDisk, PROVIDER_TIMEOUT, S3BackupDestination,
-    StoragePurpose, TenantStore, WrappedKey, decrypt, encrypt,
+    StoragePurpose, TenantStore, WrappedKey, decrypt,
 };
 use anyhow::{Context, Result, ensure};
 use async_trait::async_trait;
@@ -21,6 +21,9 @@ use zeroize::Zeroizing;
 #[path = "audit_archive_owned.rs"]
 mod owned;
 pub use owned::AuditArchivePublicationObserver;
+mod ciphertext;
+mod generated;
+pub use ciphertext::AuditCiphertext;
 
 const MAGIC: &[u8; 8] = b"KASUMIA1";
 const HEADER_LIMIT: usize = 64 << 10;
@@ -123,7 +126,18 @@ struct Header {
 
 pub struct PreparedAuditSegment {
     pub reference: AuditArchiveReference,
-    pub ciphertext: Vec<u8>,
+    pub ciphertext: AuditCiphertext,
+    // Metadata allocations retire before this charge, independently of any
+    // shared ciphertext worker still holding the immutable payload.
+    _reference_charge: crate::DiskMemoryLease,
+}
+
+impl Drop for PreparedAuditSegment {
+    fn drop(&mut self) {
+        // Keeping this owner non-destructurable prevents its original metadata
+        // or ciphertext from moving away from the retained admission. Fields
+        // retire in declaration order after this method returns.
+    }
 }
 
 /// Bounded metadata from an object whose bytes match a selected immutable
@@ -269,62 +283,7 @@ impl TenantStore {
         &self,
         builder: AuditSegmentBuilder,
     ) -> Result<PreparedAuditSegment> {
-        let _access = AccessGuard(self);
-        self.check_access()?;
-        ensure!(
-            builder.record_count() > 0,
-            "cannot archive an empty audit range"
-        );
-        let state = self.state.read();
-        self.require_access(&state)?;
-        let catalog = self.catalog.read();
-        let header = Header {
-            format: 1,
-            object_id: Uuid::new_v4(),
-            tenant: self.tenant.clone(),
-            purpose: self.access.purpose().clone(),
-            stream_id: builder.stream_id,
-            first_sequence: builder.first_sequence,
-            next_sequence: builder.next_sequence,
-            record_count: builder.record_count(),
-            plaintext_bytes: builder.plaintext_bytes(),
-            plaintext_sha256: hex::encode(Sha256::digest(builder.payload.as_slice())),
-            previous: builder.previous,
-            wrapped_key: catalog
-                .keys
-                .get(&catalog.active)
-                .context("audit archive key missing")?
-                .clone(),
-        };
-        let encoded = serde_json::to_vec(&header)?;
-        ensure!(
-            encoded.len() <= HEADER_LIMIT,
-            "audit archive header exceeds limit"
-        );
-        let encrypted = encrypt(
-            state
-                .keys
-                .get(&catalog.active)
-                .context("audit archive key unavailable")?,
-            &builder.payload,
-            &encoded,
-        )?;
-        let mut ciphertext = Vec::with_capacity(12 + encoded.len() + encrypted.len());
-        ciphertext.extend(MAGIC);
-        ciphertext.extend(u32::try_from(encoded.len())?.to_be_bytes());
-        ciphertext.extend(&encoded);
-        ciphertext.extend(encrypted);
-        ensure!(
-            ciphertext.len() <= MAX_AUDIT_SEGMENT_BYTES,
-            "audit segment exceeds 8 MiB"
-        );
-        let reference = reference(&header, &ciphertext)?;
-        reference.validate()?;
-        self.require_access(&state)?;
-        Ok(PreparedAuditSegment {
-            reference,
-            ciphertext,
-        })
+        generated::encrypt(self, builder)
     }
 
     /// Authorize the exact historical wrapping key afresh; never substitute the
@@ -695,6 +654,31 @@ impl FilesystemAuditArchive {
         })
     }
 
+    /// Preserve the supplied cache's installed disk and directory custody.
+    /// A textual placement identity does not prove that its retained descriptor
+    /// still names the enrolled directory on this exact physical owner.
+    pub fn validate_cache_custody(&self, installed_disk: &Arc<NodeDisk>) -> Result<()> {
+        ensure!(
+            Arc::ptr_eq(&self.disk, installed_disk),
+            "audit cache belongs to a different installed disk"
+        );
+        self.directory.verified_identity()?;
+        Ok(())
+    }
+
+    /// Call before installing an explicit external filesystem destination.
+    /// Compare the actual enrolled directories, including equivalent path
+    /// spellings, and keep external history outside the cache deletion tree.
+    pub fn validate_external_destination(&self, destination: &Self) -> Result<()> {
+        let cache = self.directory.verified_identity()?;
+        let external = destination.directory.verified_identity()?;
+        ensure!(
+            cache != external && !destination.root.starts_with(&self.root),
+            "external audit destination aliases or belongs to the local replica cache"
+        );
+        Ok(())
+    }
+
     /// For an already-owned blocking snapshot/apply worker. One bounded object
     /// is read and checked without network I/O or a nested async runtime.
     pub fn read_blocking(&self, link: &AuditArchiveLink) -> Result<Vec<u8>> {
@@ -704,13 +688,7 @@ impl FilesystemAuditArchive {
     /// Successful return includes file and directory synchronization and an
     /// exact complete readback. This may be replayed after an uncertain result.
     pub fn publish_blocking(&self, segment: &PreparedAuditSegment) -> Result<()> {
-        segment.reference.validate()?;
-        ensure!(
-            segment.ciphertext.len() as u64 == segment.reference.ciphertext_bytes
-                && hex::encode(Sha256::digest(&segment.ciphertext))
-                    == segment.reference.object.ciphertext_sha256,
-            "invalid prepared audit segment"
-        );
+        ciphertext::validate_prepared(&segment.reference, segment.ciphertext.as_bytes())?;
         let _publication = self
             .publication
             .lock()
@@ -755,13 +733,16 @@ impl AuditArchiveDestination for FilesystemAuditArchive {
         filesystem_identity(&self.root)
     }
     async fn publish(&self, segment: &PreparedAuditSegment) -> Result<()> {
-        segment.reference.validate()?;
-        ensure!(
-            segment.ciphertext.len() as u64 == segment.reference.ciphertext_bytes
-                && hex::encode(Sha256::digest(&segment.ciphertext))
-                    == segment.reference.object.ciphertext_sha256,
-            "invalid prepared audit segment"
-        );
+        ciphertext::validate_prepared(&segment.reference, segment.ciphertext.as_bytes())?;
+        let path_charge = self
+            .disk
+            .memory()
+            .clone()
+            .reserve_installed(crate::disk_memory::allocation::<u8>(u64::try_from(
+                self.root.as_os_str().as_encoded_bytes().len(),
+            )?)?)
+            .context("audit publication path admission denied")?;
+        let segment = segment.share()?;
         let archive = Self {
             root: self.root.clone(),
             directory: self.directory.clone(),
@@ -771,17 +752,29 @@ impl AuditArchiveDestination for FilesystemAuditArchive {
             #[cfg(test)]
             publication_hook: self.publication_hook.clone(),
         };
-        let segment = PreparedAuditSegment {
-            reference: segment.reference.clone(),
-            ciphertext: segment.ciphertext.clone(),
+        let work = PublicationWork {
+            archive,
+            segment,
+            _path_charge: path_charge,
         };
-        tokio::task::spawn_blocking(move || archive.publish_blocking(&segment)).await?
+        tokio::task::spawn_blocking(move || work.run()).await?
     }
     async fn read(&self, link: &AuditArchiveLink) -> Result<Vec<u8>> {
         let root = self.root.clone();
         let disk = self.disk.clone();
         let link = link.clone();
         tokio::task::spawn_blocking(move || read_file(&root, &disk, &link)).await?
+    }
+}
+
+struct PublicationWork {
+    archive: FilesystemAuditArchive,
+    segment: PreparedAuditSegment,
+    _path_charge: crate::DiskMemoryLease,
+}
+impl PublicationWork {
+    fn run(self) -> Result<()> {
+        self.archive.publish_blocking(&self.segment)
     }
 }
 
@@ -802,18 +795,12 @@ impl AuditArchiveDestination for S3AuditArchive {
         self.destination.namespace_identity()
     }
     async fn publish(&self, segment: &PreparedAuditSegment) -> Result<()> {
-        segment.reference.validate()?;
-        ensure!(
-            segment.ciphertext.len() as u64 == segment.reference.ciphertext_bytes
-                && hex::encode(Sha256::digest(&segment.ciphertext))
-                    == segment.reference.object.ciphertext_sha256,
-            "invalid prepared audit segment"
-        );
+        ciphertext::validate_prepared(&segment.reference, segment.ciphertext.as_bytes())?;
         let publication = self
             .destination
             .put(
                 segment.reference.object.object_id,
-                crate::BackupUpload::received(segment.ciphertext.clone()),
+                crate::BackupUpload::from(segment.ciphertext.share()),
             )
             .await;
         // A lost PUT reply or an identical existing object is resolved by exact
@@ -1466,8 +1453,7 @@ mod tests {
         let mut builder = AuditSegmentBuilder::new(Uuid::new_v4(), 0, None).unwrap();
         builder.push(0, b"one").unwrap();
         let mut segment = store.encrypt_audit_segment(builder).unwrap();
-        let last = segment.ciphertext.len() - 1;
-        segment.ciphertext[last] ^= 1;
+        segment.ciphertext.fixture_flip_last_byte();
         // Even a caller that substitutes a matching public digest cannot forge
         // the AEAD tag and make altered plaintext escape.
         segment.reference.object.ciphertext_sha256 =
@@ -1668,13 +1654,16 @@ mod tests {
         let mut incorrect = first.reference.object.clone();
         incorrect.object_id = Uuid::new_v4();
         assert!(InspectedAuditDependency::from_link(&first.ciphertext, &incorrect).is_err());
-        let mut forged = first.ciphertext.clone();
-        *forged.last_mut().unwrap() ^= 1;
+        let mut forged_segment = store
+            .copy_audit_segment(first.reference.clone(), first.ciphertext.as_bytes())
+            .unwrap();
+        forged_segment.ciphertext.fixture_flip_last_byte();
+        let forged = &forged_segment.ciphertext;
         let mut forged_link = first.reference.object.clone();
-        forged_link.ciphertext_sha256 = hex::encode(Sha256::digest(&forged));
+        forged_link.ciphertext_sha256 = hex::encode(Sha256::digest(forged));
         // Even an attacker-controlled selected link only yields inspection;
         // altered ciphertext cannot cross the authenticated proof boundary.
-        let inspected = InspectedAuditDependency::from_link(&forged, &forged_link).unwrap();
+        let inspected = InspectedAuditDependency::from_link(forged, &forged_link).unwrap();
         assert!(inspected.verify(&verifier).await.is_err());
         store.shutdown().await.unwrap();
     }
@@ -1766,6 +1755,81 @@ mod tests {
                 .contains("request revoked")
         );
         store.shutdown().await.unwrap();
+    }
+
+    #[test]
+    fn external_placement_rejects_same_inode_alias_and_cache_descendant() {
+        let memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+        let directory = crate::test_utils::private_tempdir().unwrap();
+        let root = directory.path().join("cache");
+        let cache = FilesystemAuditArchive::open_fixture(&root, memory).unwrap();
+        let alias = PathBuf::from(format!("{}/./cache", directory.path().display()));
+        let disguised = FilesystemAuditArchive::open(&alias, cache.disk.clone()).unwrap();
+        assert_ne!(cache.identity(), disguised.identity());
+        assert_eq!(
+            cache.directory.verified_identity().unwrap(),
+            disguised.directory.verified_identity().unwrap()
+        );
+        assert!(cache.validate_external_destination(&cache).is_err());
+        assert!(cache.validate_external_destination(&disguised).is_err());
+
+        let nested = FilesystemAuditArchive::open(root.join("nested"), cache.disk.clone()).unwrap();
+        assert_ne!(
+            cache.directory.verified_identity().unwrap(),
+            nested.directory.verified_identity().unwrap()
+        );
+        assert!(cache.validate_external_destination(&nested).is_err());
+        let external = FilesystemAuditArchive::open(
+            directory.path().join("external-history"),
+            cache.disk.clone(),
+        )
+        .unwrap();
+        cache.validate_external_destination(&external).unwrap();
+        assert_eq!(cache.disk.snapshot().phase, crate::NodeDiskPhase::Open);
+    }
+
+    #[test]
+    fn supplied_cache_custody_requires_its_exact_installed_disk() {
+        let memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+        let first = crate::test_utils::private_tempdir().unwrap();
+        let second = crate::test_utils::private_tempdir().unwrap();
+        let cache =
+            FilesystemAuditArchive::open_fixture(first.path().join("cache"), memory.clone())
+                .unwrap();
+        let unrelated =
+            FilesystemAuditArchive::open_fixture(second.path().join("cache"), memory).unwrap();
+        cache.validate_cache_custody(&cache.disk).unwrap();
+        assert!(cache.validate_cache_custody(&unrelated.disk).is_err());
+        assert_eq!(cache.disk.snapshot().phase, crate::NodeDiskPhase::Open);
+        assert_eq!(unrelated.disk.snapshot().phase, crate::NodeDiskPhase::Open);
+    }
+
+    #[test]
+    fn supplied_cache_custody_rejects_directory_substitution() {
+        let memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+        let directory = crate::test_utils::private_tempdir().unwrap();
+        let root = directory.path().join("cache");
+        let cache = FilesystemAuditArchive::open_fixture(&root, memory).unwrap();
+        cache.validate_cache_custody(&cache.disk).unwrap();
+        std::fs::rename(&root, directory.path().join("original-cache")).unwrap();
+        crate::private_files::create_directory(&root).unwrap();
+        assert!(cache.validate_cache_custody(&cache.disk).is_err());
+        assert_eq!(cache.disk.snapshot().phase, crate::NodeDiskPhase::Failed);
+    }
+
+    #[test]
+    fn external_placement_rejects_destination_directory_substitution() {
+        let memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+        let directory = crate::test_utils::private_tempdir().unwrap();
+        let cache =
+            FilesystemAuditArchive::open_fixture(directory.path().join("cache"), memory).unwrap();
+        let root = directory.path().join("external-history");
+        let external = FilesystemAuditArchive::open(&root, cache.disk.clone()).unwrap();
+        cache.validate_external_destination(&external).unwrap();
+        std::fs::rename(&root, directory.path().join("original-history")).unwrap();
+        crate::private_files::create_directory(&root).unwrap();
+        assert!(cache.validate_external_destination(&external).is_err());
+        assert_eq!(cache.disk.snapshot().phase, crate::NodeDiskPhase::Failed);
     }
 
     #[test]

@@ -14,7 +14,7 @@ struct Uninstalled {
     _directory: tempfile::TempDir,
     _scratch_directory: tempfile::TempDir,
     memory: Arc<TestDiskMemory>,
-    node: Arc<NodeStore>,
+    node: NodeStore,
     app: Arc<TenantStore>,
     custody: Arc<TenantStore>,
     app_clock: Arc<ManualClock>,
@@ -26,7 +26,14 @@ async fn uninstalled() -> Result<Uninstalled> {
     let disk = retry_disk_registry(|| NodeDisk::fixture_for_path(&path, memory.clone()))?;
     let scratch_directory = private_tempdir()?;
     let scratch = ScratchDisk::fixture(scratch_directory.path(), memory.clone());
-    let node = NodeStore::create_new(&path, ID, disk, scratch)?;
+    let node = NodeStore::create_new(
+        &path,
+        ID,
+        disk,
+        scratch,
+        crate::test_utils::node_storage_config(),
+    )
+    .unwrap_or_else(|original| std::panic::panic_any(original));
     let app_clock = Arc::new(ManualClock::new());
     let app = TenantStore::initialize_catalog_fixture_with_clock(
         node.clone(),
@@ -109,12 +116,12 @@ async fn installed_missing_binding_uses_registered_writer_and_decodes_exact_reco
 #[tokio::test]
 async fn settled_binding_writer_waits_for_busy_opening_before_disposal() -> Result<()> {
     let pair = uninstalled().await?;
-    let writer = pair.node.db.queue_registered_binding_put(
+    let writer = pair.node.body().db.queue_registered_binding_put(
         plan(&pair)?,
         pair.app.clone(),
         pair.custody.clone(),
     )?;
-    let queued_behind = pair.node.db.queue_registered_binding_put(
+    let queued_behind = pair.node.body().db.queue_registered_binding_put(
         plan(&pair)?,
         pair.app.clone(),
         pair.custody.clone(),
@@ -191,16 +198,18 @@ async fn settled_binding_writer_waits_for_busy_opening_before_disposal() -> Resu
 #[tokio::test]
 async fn close_during_settled_binding_disposal_preserves_exact_child() -> Result<()> {
     let pair = uninstalled().await?;
-    let writer = pair.node.db.queue_registered_binding_put(
+    let writer = pair.node.body().db.queue_registered_binding_put(
         plan(&pair)?,
         pair.app.clone(),
         pair.custody.clone(),
     )?;
     let provider: Arc<dyn NodeDiskMemoryAdmission> = pair.memory.clone();
     let observer = RegisteredBindingPut::retained(provider.clone(), writer.id()).unwrap();
-    let opening =
-        RegisteredNodeOpening::retained(provider, pair.node.db.registered_opening_id().unwrap())
-            .unwrap();
+    let opening = RegisteredNodeOpening::retained(
+        provider,
+        pair.node.body().db.registered_opening_id().unwrap(),
+    )
+    .unwrap();
     let (start_tx, start_rx) = mpsc::channel::<()>();
     let (held_tx, held_rx) = mpsc::channel::<()>();
     let (release_tx, release_rx) = mpsc::channel::<()>();
@@ -260,7 +269,7 @@ async fn close_during_settled_binding_disposal_preserves_exact_child() -> Result
 #[tokio::test]
 async fn post_commit_access_failure_remains_on_exact_child_after_facade_drop() -> Result<()> {
     let pair = uninstalled().await?;
-    let writer = pair.node.db.queue_registered_binding_put(
+    let writer = pair.node.body().db.queue_registered_binding_put(
         plan(&pair)?,
         pair.app.clone(),
         pair.custody.clone(),
@@ -319,7 +328,7 @@ async fn post_commit_access_failure_remains_on_exact_child_after_facade_drop() -
 #[tokio::test]
 async fn native_commit_refusal_retains_original_terminal_and_never_replays() -> Result<()> {
     let pair = uninstalled().await?;
-    let writer = pair.node.db.queue_registered_binding_put(
+    let writer = pair.node.body().db.queue_registered_binding_put(
         plan(&pair)?,
         pair.app.clone(),
         pair.custody.clone(),
@@ -377,25 +386,34 @@ async fn native_commit_refusal_retains_original_terminal_and_never_replays() -> 
 async fn staged_binding_capacity_denial_settles_and_a_later_binding_put_commits() -> Result<()> {
     let pair = uninstalled().await?;
     let before = pair.memory.snapshot();
-    let writer = pair.node.db.queue_registered_binding_put(
+    let writer = pair.node.body().db.queue_registered_binding_put(
         plan(&pair)?,
         pair.app.clone(),
         pair.custody.clone(),
     )?;
-    // Leave room for the table type check but not for the staged envelope
-    // row, so the writer's first capacity denial lands while staging.
-    let queued = pair.memory.snapshot();
-    let headroom = 1 << 10;
-    let fill = pair.memory.clone().reserve_installed(
-        (256u64 << 20)
-            - queued.bookkeeping_bytes
-            - queued.used_bytes
-            - headroom
-            - TestDiskMemory::required_reservation_bytes(0)?,
-    )?;
-    assert_eq!(writer.run(), NodeWriterPhase::Finished);
+    // Fail only the actual row-staging chunk and its exact fallback, after
+    // the real native begin and required table verification have succeeded.
+    let denial = pair.memory.deny_binding_staging()?;
+    assert_eq!(writer.run(), NodeWriterPhase::Finished, "{}", {
+        let report = writer.report();
+        crate::test_utils::native_write_diagnostic(
+            report.phase(),
+            report.begin(),
+            report.body(),
+            report.outer(),
+            report.terminal(),
+        )
+    });
     {
         let report = writer.report();
+        assert!(matches!(
+            report.begin(),
+            TerminalObservation::Returned(Ok(()))
+        ));
+        assert!(matches!(
+            report.outer(),
+            TerminalObservation::Returned(Ok(()))
+        ));
         assert!(report.is_capacity_denied());
         assert!(!report.committed_and_disposed());
         assert!(matches!(
@@ -406,15 +424,29 @@ async fn staged_binding_capacity_denial_settles_and_a_later_binding_put_commits(
         let terminal = report.terminal().unwrap();
         assert_eq!(terminal.operation(), Some(WriteTerminalOperation::Abort));
         assert_eq!(terminal.settlement(), WriteTerminalSettlement::Settled);
+        assert!(matches!(
+            terminal.terminal(),
+            TerminalObservation::Returned(Ok(()))
+        ));
+        assert!(matches!(
+            terminal.disposal(),
+            TerminalObservation::Returned(Ok(()))
+        ));
         assert!(terminal.disposal_complete());
     }
     assert_eq!(writer.retire(), StorageCensusDisposition::Retired);
     assert_eq!(pair.memory.storage_census().snapshot().writers, 0);
-    drop(fill);
+    denial.assert_refused_chunk_and_fallback();
+    drop(denial);
     assert_eq!(pair.memory.snapshot().used_bytes, before.used_bytes);
+    assert_eq!(
+        pair.memory.snapshot().live_reservations,
+        before.live_reservations
+    );
+    assert!(pair.custody.get(BINDING_NS, BINDING_KEY)?.is_none());
 
     // The opening stayed open: the same binding now commits.
-    let writer = pair.node.db.queue_registered_binding_put(
+    let writer = pair.node.body().db.queue_registered_binding_put(
         plan(&pair)?,
         pair.app.clone(),
         pair.custody.clone(),

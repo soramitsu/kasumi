@@ -1,11 +1,13 @@
 use crate::Entry;
 use crate::command::sha256;
 use crate::control::{AppliedEntryContext, HEADERS, HeaderPayload, LogHeader, RetainedSeed, SEEDS};
-use crate::lifetime::{StorageHandle, StorageLease};
+use crate::ensure_result as ensure;
+use crate::lifetime::{StorageHandle, StorageLease, StoragePlaintext};
 use crate::{
     BasicNode, RaftLimits, SnapshotBuffer, SnapshotBufferOwner, StateMachineBackend, TypeConfig,
 };
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result};
+use kasumi_store::ScratchOperationFailure;
 use kasumi_store::{EncryptedSpool, SnapshotImage};
 use kasumi_store::{TenantStorageSet, TenantStore, WriteOp};
 use openraft::{
@@ -16,7 +18,7 @@ use openraft::{
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::io::{Read, Write};
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::HashMap,
     fmt::Debug,
     io,
     ops::RangeBounds,
@@ -25,6 +27,10 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
 };
+
+#[path = "storage/retained_logs.rs"]
+pub(crate) mod retained_logs;
+use retained_logs::{EntryBatches, RetainedSpan, read_header, retained_span};
 
 const LOG: &str = "raft.log";
 pub(crate) const CUSTODY_LOG: &str = "raft.custody-log";
@@ -76,12 +82,20 @@ fn load_canonical_snapshot_record<T: DeserializeOwned + Serialize>(
     let Some(bytes) = store.get_bounded(namespace, key, MAX_SNAPSHOT_COVERAGE_BYTES)? else {
         return Ok(None);
     };
-    let record: T = serde_json::from_slice(&bytes).context("invalid raft snapshot record")?;
+    decode_snapshot_record_admitted(&bytes, |_| Ok(())).map(Some)
+}
+
+pub(crate) fn decode_snapshot_record_admitted<T: DeserializeOwned + Serialize>(
+    bytes: &[u8],
+    before_encode: impl FnOnce(&T) -> Result<()>,
+) -> Result<T> {
+    let record: T = serde_json::from_slice(bytes).context("invalid raft snapshot record")?;
+    before_encode(&record)?;
     ensure!(
         serde_json::to_vec(&record)? == bytes,
         "noncanonical raft snapshot record"
     );
-    Ok(Some(record))
+    Ok(record)
 }
 
 /// Every production snapshot writer generates a random RFC UUID and writes its
@@ -120,9 +134,9 @@ pub struct LogStore {
     // mutation shares this gate, including read/modify/write deletion operations.
     io_gate: Arc<tokio::sync::Mutex<()>>,
     control_gate: Arc<Mutex<()>>,
-    // Only IDs are resident. Point/range reads decrypt the requested records,
-    // rather than scanning/decrypting the entire retained log on every apply.
-    index: Arc<Mutex<BTreeMap<u64, LogId<u64>>>>,
+    // Only the two retained endpoints are resident. Authenticated headers remain
+    // authoritative; requested IDs are loaded by exact index from disk.
+    retained: Arc<Mutex<Option<RetainedSpan>>>,
 }
 
 impl LogStore {
@@ -170,25 +184,16 @@ impl LogStore {
         let store = StorageHandle::new(domains.custody().store().clone(), lease.clone());
         let domains = StorageHandle::new(domains, lease);
         let captured = store.clone();
-        let index = tokio::task::spawn_blocking(move || -> Result<BTreeMap<u64, LogId<u64>>> {
+        let retained = tokio::task::spawn_blocking(move || -> Result<Option<RetainedSpan>> {
             let saved = load::<u64>(&captured, META, b"node_id")?
                 .context("persisted raft node identity is missing")?;
             ensure!(
                 saved == node_id,
                 "persisted raft node identity differs from configuration"
             );
-            // Detect malformed keys/entries before handing state to Raft.
-            let entries = read_headers(&captured)?;
-            for pair in entries.windows(2) {
-                ensure!(
-                    pair[1].log_id.index == pair[0].log_id.index + 1,
-                    "raft log contains a hole"
-                );
-            }
-            Ok(entries
-                .into_iter()
-                .map(|entry| (entry.log_id.index, entry.log_id))
-                .collect())
+            // HMAC order is unrelated to log order. Fold authenticated unique
+            // keys into a checked span without collecting or sorting headers.
+            retained_span(&captured)
         })
         .await??;
         Ok(Self {
@@ -196,20 +201,20 @@ impl LogStore {
             domains,
             io_gate: Arc::new(tokio::sync::Mutex::new(())),
             control_gate,
-            index: Arc::new(Mutex::new(index)),
+            retained: Arc::new(Mutex::new(retained)),
         })
     }
 
     async fn read<T: Send + 'static>(
         &self,
-        f: impl FnOnce(&TenantStore) -> Result<T> + Send + 'static,
+        f: impl FnOnce(&StorageHandle<TenantStore>) -> Result<T> + Send + 'static,
     ) -> Result<T, StorageError<u64>> {
         self.mutate(f).await
     }
 
     async fn mutate<T: Send + 'static>(
         &self,
-        f: impl FnOnce(&TenantStore) -> Result<T> + Send + 'static,
+        f: impl FnOnce(&StorageHandle<TenantStore>) -> Result<T> + Send + 'static,
     ) -> Result<T, StorageError<u64>> {
         let gate = self.io_gate.clone().lock_owned().await;
         let store = self.store.clone();
@@ -242,28 +247,26 @@ impl LogStore {
     }
 }
 
-fn read_headers(store: &TenantStore) -> Result<Vec<LogHeader>> {
-    let mut result = Vec::new();
-    for (key, value) in store.scan(HEADERS)? {
-        let key: [u8; 8] = key
-            .try_into()
-            .map_err(|_| anyhow::anyhow!("invalid raft index key"))?;
-        let header: LogHeader = crate::control::decode_canonical(&value)?;
-        header.validate()?;
-        ensure!(
-            header.log_id.index == u64::from_be_bytes(key),
-            "raft key/index mismatch"
-        );
-        result.push(header);
-    }
-    result.sort_by_key(|entry| entry.log_id.index);
-    Ok(result)
-}
-
 pub(crate) fn encode_entry(entry: &Entry<TypeConfig>) -> Result<Vec<u8>> {
     let mut bytes = LOG_FORMAT.to_vec();
     bytes.extend(postcard::to_allocvec(entry)?);
     Ok(bytes)
+}
+
+// Generated consensus metadata and admitted stored records have distinct
+// ownership. Borrow either encoding while retaining its original backing.
+enum EncodedLogEntry {
+    Generated(Vec<u8>),
+    Stored(StoragePlaintext),
+}
+impl std::ops::Deref for EncodedLogEntry {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        match self {
+            Self::Generated(bytes) => bytes,
+            Self::Stored(bytes) => bytes.as_bytes(),
+        }
+    }
 }
 
 fn decode_entry(bytes: &[u8]) -> Result<Entry<TypeConfig>> {
@@ -273,60 +276,171 @@ fn decode_entry(bytes: &[u8]) -> Result<Entry<TypeConfig>> {
     postcard::from_bytes(bytes).context("invalid binary raft log entry")
 }
 
+impl LogStore {
+    async fn read_entries(
+        &self,
+        bounds: (std::ops::Bound<u64>, std::ops::Bound<u64>),
+        mut batch: Option<retained_logs::ReadBatch>,
+    ) -> Result<Vec<Entry<TypeConfig>>, StorageError<u64>> {
+        let retained = self.retained.clone();
+        let domains = self.domains.clone();
+        self.read(move |store| {
+            let span = *retained
+                .lock()
+                .map_err(|_| anyhow::anyhow!("raft retained span lock poisoned"))?;
+            let Some(range) = span.and_then(|span| span.intersect(bounds)) else {
+                ensure!(batch.is_none(), "requested raft read prefix is unavailable");
+                return Ok(Vec::new());
+            };
+            if batch.is_some() {
+                ensure!(
+                    bounds.0 == std::ops::Bound::Included(*range.start()),
+                    "requested raft read prefix is unavailable"
+                );
+            }
+            // Exact reads retain the complete requested EntryVec. Limited reads
+            // retain one prefix, plus at most one authenticated encoded candidate
+            // before deciding whether its decoded entry belongs in this batch.
+            let mut entries = Vec::new();
+            for index in range {
+                if batch.as_ref().is_some_and(retained_logs::ReadBatch::full) {
+                    break;
+                }
+                let header = read_header(store, index)?;
+                if let Some(span) = span {
+                    span.check_endpoint(header.log_id)?;
+                }
+                let metadata = match &header.payload {
+                    HeaderPayload::Blank => Some(Entry {
+                        initialization: None,
+                        log_id: header.log_id,
+                        payload: EntryPayload::Blank,
+                    }),
+                    HeaderPayload::Membership(membership) => Some(Entry {
+                        initialization: header.initialization.clone(),
+                        log_id: header.log_id,
+                        payload: EntryPayload::Membership(membership.clone()),
+                    }),
+                    _ => None,
+                };
+                // Only the inspected ordinary Application producer receives a
+                // replay loan. No semantic/metadata/retirement fallback is certified.
+                if matches!(header.payload, HeaderPayload::Application { .. }) {
+                    let encoded = domains
+                        .application_get_retained(LOG, &index.to_be_bytes())?
+                        .context("missing application raft body")?;
+                    if let Some(batch) = &mut batch
+                        && !batch.admit(encoded.as_bytes().len())?
+                    {
+                        break;
+                    }
+                    let entry =
+                        crate::replay_input::decode_application_entry(&encoded, LOG_FORMAT)?;
+                    header.check_entry(&entry, encoded.as_bytes())?;
+                    entries.push(entry);
+                    continue;
+                }
+                let encoded = match &metadata {
+                    Some(entry) => EncodedLogEntry::Generated(encode_entry(entry)?),
+                    None if matches!(header.payload, HeaderPayload::Custody { .. }) => store
+                        .get(CUSTODY_LOG, &index.to_be_bytes())?
+                        .map(EncodedLogEntry::Stored)
+                        .context("missing closed custody raft body")?,
+                    None => domains
+                        .application_get(LOG, &index.to_be_bytes())?
+                        .map(EncodedLogEntry::Stored)
+                        .context("missing application raft body")?,
+                };
+                if let Some(batch) = &mut batch
+                    && !batch.admit(encoded.len())?
+                {
+                    break;
+                }
+                let entry = match metadata {
+                    Some(entry) => entry,
+                    None => decode_entry(&encoded)?,
+                };
+                header.check_entry(&entry, &encoded)?;
+                entries.push(entry);
+            }
+            Ok(entries)
+        })
+        .await
+    }
+}
+
 impl RaftLogReader<TypeConfig> for LogStore {
     async fn try_get_log_entries<RB: RangeBounds<u64> + Clone + Debug + OptionalSend>(
         &mut self,
         range: RB,
     ) -> Result<Vec<Entry<TypeConfig>>, StorageError<u64>> {
-        let index = self.index.clone();
-        let domains = self.domains.clone();
-        let bounds = (range.start_bound().cloned(), range.end_bound().cloned());
-        self.read(move |store| {
-            let ids = index
-                .lock()
-                .map_err(|_| anyhow::anyhow!("raft index lock poisoned"))?
-                .range(bounds)
-                .map(|(&index, &id)| (index, id))
-                .collect::<Vec<_>>();
-            ids.into_iter()
-                .map(|(index, id)| {
-                    let header: LogHeader = load(store, HEADERS, &index.to_be_bytes())?
-                        .context("missing cached raft header")?;
-                    ensure!(header.log_id == id, "raft cached log ID mismatch");
-                    let entry = match &header.payload {
-                        HeaderPayload::Blank => Entry {
-                            initialization: None,
-                            log_id: id,
-                            payload: EntryPayload::Blank,
-                        },
-                        HeaderPayload::Membership(membership) => Entry {
-                            initialization: header.initialization.clone(),
-                            log_id: id,
-                            payload: EntryPayload::Membership(membership.clone()),
-                        },
-                        HeaderPayload::Custody { .. } => {
-                            let encoded = store
-                                .get(CUSTODY_LOG, &index.to_be_bytes())?
-                                .context("missing closed custody raft body")?;
-                            let entry = decode_entry(&encoded)?;
-                            header.check_entry(&entry, &encoded)?;
-                            entry
-                        }
-                        _ => {
-                            let encoded = domains
-                                .application()?
-                                .get(LOG, &index.to_be_bytes())?
-                                .context("missing application raft body")?;
-                            let entry = decode_entry(&encoded)?;
-                            header.check_entry(&entry, &encoded)?;
-                            entry
-                        }
-                    };
-                    Ok(entry)
-                })
-                .collect()
-        })
+        self.read_entries(
+            (range.start_bound().cloned(), range.end_bound().cloned()),
+            None,
+        )
         .await
+    }
+
+    async fn limited_get_log_entries(
+        &mut self,
+        start: u64,
+        end: u64,
+    ) -> Result<Vec<Entry<TypeConfig>>, StorageError<u64>> {
+        if start >= end {
+            return Ok(Vec::new());
+        }
+        self.read_entries(
+            (
+                std::ops::Bound::Included(start),
+                std::ops::Bound::Excluded(end),
+            ),
+            Some(retained_logs::ReadBatch::default()),
+        )
+        .await
+    }
+}
+
+/// Opt-in observation of the actual vote write; no error text or storage name.
+/// Queue time includes the original I/O gate, blocking dispatch and control gate.
+#[cfg(any(test, feature = "test-utils"))]
+#[derive(Clone, Copy)]
+struct VoteSaveObservation {
+    started: std::time::Instant,
+    owner: usize,
+    term: u64,
+    leader: u64,
+}
+#[cfg(any(test, feature = "test-utils"))]
+impl VoteSaveObservation {
+    fn start(store: &TenantStore, vote: &Vote<u64>) -> Option<Self> {
+        if std::env::var_os("KASUMI_TEST_REPLICA_TRACE").as_deref()
+            != Some(std::ffi::OsStr::new("1"))
+        {
+            return None;
+        }
+        let trace = Self {
+            started: std::time::Instant::now(),
+            // Process-local correlation only, never a protocol/storage identity.
+            owner: store as *const TenantStore as usize,
+            term: vote.leader_id.term,
+            leader: vote.leader_id.node_id,
+        };
+        Self::emit(Some(trace), "submitted", None);
+        Some(trace)
+    }
+    fn emit(trace: Option<Self>, phase: &'static str, succeeded: Option<bool>) {
+        let Some(trace) = trace else {
+            return;
+        };
+        // Ignore diagnostic-output failure; persistence retains its exact result.
+        let _ = writeln!(
+            std::io::stderr().lock(),
+            "raft_vote_save phase={phase} owner={} term={} leader={} elapsed_ms={} succeeded={succeeded:?}",
+            trace.owner,
+            trace.term,
+            trace.leader,
+            trace.started.elapsed().as_millis(),
+        );
     }
 }
 
@@ -334,14 +448,13 @@ impl RaftLogStorage<TypeConfig> for LogStore {
     type LogReader = Self;
 
     async fn get_log_state(&mut self) -> Result<LogState<TypeConfig>, StorageError<u64>> {
-        let index = self.index.clone();
+        let retained = self.retained.clone();
         self.read(move |store| {
             let last_purged_log_id = load(store, META, b"purged")?;
-            let last_log_id = index
+            let last_log_id = retained
                 .lock()
-                .map_err(|_| anyhow::anyhow!("raft index lock poisoned"))?
-                .last_key_value()
-                .map(|(_, &id)| id)
+                .map_err(|_| anyhow::anyhow!("raft retained span lock poisoned"))?
+                .map(|span| span.last)
                 .or(last_purged_log_id);
             Ok(LogState {
                 last_purged_log_id,
@@ -357,8 +470,21 @@ impl RaftLogStorage<TypeConfig> for LogStore {
 
     async fn save_vote(&mut self, vote: &Vote<u64>) -> Result<(), StorageError<u64>> {
         let bytes = serde_json::to_vec(vote).map_err(err)?;
-        self.mutate(move |store| store.write_batch(&[put(META, b"vote", bytes)]))
-            .await
+        #[cfg(any(test, feature = "test-utils"))]
+        let trace = VoteSaveObservation::start(&self.store, vote);
+        let result = self
+            .mutate(move |store| {
+                #[cfg(any(test, feature = "test-utils"))]
+                VoteSaveObservation::emit(trace, "write_entered", None);
+                let result = store.write_batch(&[put(META, b"vote", bytes)]);
+                #[cfg(any(test, feature = "test-utils"))]
+                VoteSaveObservation::emit(trace, "write_returned", Some(result.is_ok()));
+                result
+            })
+            .await;
+        #[cfg(any(test, feature = "test-utils"))]
+        VoteSaveObservation::emit(trace, "wait_returned", Some(result.is_ok()));
+        result
     }
 
     async fn read_vote(&mut self) -> Result<Option<Vote<u64>>, StorageError<u64>> {
@@ -404,6 +530,11 @@ impl RaftLogStorage<TypeConfig> for LogStore {
         I::IntoIter: OptionalSend,
     {
         let entries = entries.into_iter().collect::<Vec<_>>();
+        for entry in &entries {
+            if let EntryPayload::Normal(crate::RaftCommand::Application(input)) = &entry.payload {
+                input.bind_input(entry.log_id).map_err(err)?;
+            }
+        }
         let bootstrap_sha256 =
             load::<String>(&self.store, META, b"application_bootstrap_sha256").map_err(err)?;
         let storage_binding_sha256 = self.domains.custody().binding().digest().map_err(err)?;
@@ -452,7 +583,7 @@ impl RaftLogStorage<TypeConfig> for LogStore {
             })
             .collect::<Result<Vec<_>>>()
             .map_err(err)?;
-        let index = self.index.clone();
+        let retained = self.retained.clone();
         let domains = self.domains.clone();
         let result = self
             .mutate(move |store| {
@@ -480,49 +611,23 @@ impl RaftLogStorage<TypeConfig> for LogStore {
                         retained.header.check_entry(entry, &encode_entry(entry)?)?;
                     }
                 }
-                let mut index = index
+                let mut retained = retained
                     .lock()
-                    .map_err(|_| anyhow::anyhow!("raft index lock poisoned"))?;
-                // Each prefix commits bodies and their headers/seeds together. The
-                // I/O callback observes only complete durable entries, never a sidecar.
-                let mut start = 0;
-                while start < writes.len() {
-                    let mut end = start;
-                    let mut bytes = 0usize;
-                    let mut count = 0usize;
+                    .map_err(|_| anyhow::anyhow!("raft retained span lock poisoned"))?;
+                let mut batches = EntryBatches::new(*retained, &entries)?;
+                // Commit the overlap/suffix forward, then a prepended prefix
+                // backward. Every durable chunk remains contiguous after crash,
+                // including physical logs repopulated below a snapshot.
+                while let Some(range) = batches.next_range(&writes)? {
                     let mut data = Vec::new();
                     let mut control = Vec::new();
-                    while end < writes.len() {
-                        let entry_ops = usize::from(writes[end].0.is_some()) + writes[end].1.len();
-                        let size = writes[end]
-                            .0
-                            .iter()
-                            .chain(writes[end].1.iter())
-                            .map(|op| match op {
-                                WriteOp::Put {
-                                    namespace,
-                                    key,
-                                    value,
-                                } => namespace.len() + key.len() + value.len(),
-                                WriteOp::Delete { namespace, key } => namespace.len() + key.len(),
-                            })
-                            .sum::<usize>();
-                        if end > start
-                            && (bytes + size > 48 * 1024 * 1024 || count + entry_ops > 65536)
-                        {
-                            break;
-                        }
-                        bytes += size;
-                        count += entry_ops;
-                        data.extend(writes[end].0.iter().cloned());
-                        control.extend(writes[end].1.iter().cloned());
-                        end += 1;
+                    for (application, custody) in &writes[range.clone()] {
+                        data.extend(application.iter().cloned());
+                        control.extend(custody.iter().cloned());
                     }
+                    let next = RetainedSpan::including(*retained, &entries[range])?;
                     domains.write_batch(&data, &control)?;
-                    for entry in &entries[start..end] {
-                        index.insert(entry.log_id.index, entry.log_id);
-                    }
-                    start = end;
+                    *retained = Some(next);
                 }
                 Ok(())
             })
@@ -538,19 +643,12 @@ impl RaftLogStorage<TypeConfig> for LogStore {
     }
 
     async fn truncate(&mut self, log_id: LogId<u64>) -> Result<(), StorageError<u64>> {
-        let index = self.index.clone();
+        let retained = self.retained.clone();
         let domains = self.domains.clone();
         self.mutate(move |store| {
-            let mut index = index
+            let mut retained = retained
                 .lock()
-                .map_err(|_| anyhow::anyhow!("raft index lock poisoned"))?;
-            // Remove a suffix from its end, so a crash during a multi-transaction
-            // truncation never leaves a hole in the remaining contiguous log.
-            let ids = index
-                .range(log_id.index..)
-                .rev()
-                .map(|(&index, _)| index)
-                .collect::<Vec<_>>();
+                .map_err(|_| anyhow::anyhow!("raft retained span lock poisoned"))?;
             if let Some(committed) =
                 load::<Option<LogId<u64>>>(store, META, b"committed")?.flatten()
             {
@@ -561,16 +659,34 @@ impl RaftLogStorage<TypeConfig> for LogStore {
             }
             let protected = crate::control::retired_boundary(domains.custody())?
                 .map(|boundary| boundary.position.log_id.index);
-            for ids in ids.chunks(16384) {
+            while let Some(span) = *retained {
+                if span.last.index < log_id.index {
+                    break;
+                }
+                let end = span.last.index;
+                let start = end
+                    .saturating_sub(16383)
+                    .max(log_id.index)
+                    .max(span.first.index);
+                // Observe the exact new endpoint before publishing any deletion.
+                let next = if start == span.first.index {
+                    None
+                } else {
+                    Some(RetainedSpan {
+                        first: span.first,
+                        last: read_header(store, start - 1)?.log_id,
+                    })
+                };
                 let writes = if domains.serving().is_some() {
-                    ids.iter()
+                    (start..=end)
+                        .rev()
                         .map(|index| delete(LOG, index.to_be_bytes().to_vec()))
                         .collect::<Vec<_>>()
                 } else {
                     Vec::new()
                 };
-                let control = ids
-                    .iter()
+                let control = (start..=end)
+                    .rev()
                     .flat_map(|index| {
                         [
                             delete(HEADERS, index.to_be_bytes().to_vec()),
@@ -578,15 +694,13 @@ impl RaftLogStorage<TypeConfig> for LogStore {
                         ]
                         .into_iter()
                         .chain(
-                            (Some(*index) != protected)
+                            (Some(index) != protected)
                                 .then(|| delete(SEEDS, index.to_be_bytes().to_vec())),
                         )
                     })
                     .collect::<Vec<_>>();
                 domains.write_batch(&writes, &control)?;
-                for id in ids {
-                    index.remove(id);
-                }
+                *retained = next;
             }
             Ok(())
         })
@@ -594,51 +708,58 @@ impl RaftLogStorage<TypeConfig> for LogStore {
     }
 
     async fn purge(&mut self, log_id: LogId<u64>) -> Result<(), StorageError<u64>> {
-        let index = self.index.clone();
+        let retained = self.retained.clone();
         let domains = self.domains.clone();
         self.mutate(move |store| {
-            let mut index = index
+            let mut retained = retained
                 .lock()
-                .map_err(|_| anyhow::anyhow!("raft index lock poisoned"))?;
+                .map_err(|_| anyhow::anyhow!("raft retained span lock poisoned"))?;
             let first = crate::control::first_applied_membership(domains.custody().store())?;
             crate::control::local_first_association_write(domains.custody(), first.as_ref(), None)?;
             crate::initialization_association::load_state(domains.custody(), first.as_ref())?;
             let retired = crate::control::retired_boundary(domains.custody())?.is_some();
-            let ids = index
-                .range(..=log_id.index)
-                .map(|(_, &id)| id)
-                .collect::<Vec<_>>();
-            // Move the purge cursor in the same transaction as every removed
-            // prefix. Covered snapshots were persisted before Raft calls purge.
-            for ids in ids.chunks(21845) {
-                let mut writes = ids
-                    .iter()
-                    .flat_map(|id| {
+            let mut last_removed = None;
+            // Each fixed-size prefix and its exact purge cursor commit together.
+            while let Some(span) = *retained {
+                if span.first.index > log_id.index {
+                    break;
+                }
+                let start = span.first.index;
+                let end = start
+                    .saturating_add(21844)
+                    .min(log_id.index)
+                    .min(span.last.index);
+                let purged = read_header(store, end)?.log_id;
+                span.check_endpoint(purged)?;
+                let next = if end == span.last.index {
+                    None
+                } else {
+                    Some(RetainedSpan {
+                        first: read_header(store, end + 1)?.log_id,
+                        last: span.last,
+                    })
+                };
+                let mut writes = (start..=end)
+                    .flat_map(|index| {
                         [
-                            delete(HEADERS, id.index.to_be_bytes().to_vec()),
-                            delete(CUSTODY_LOG, id.index.to_be_bytes().to_vec()),
+                            delete(HEADERS, index.to_be_bytes().to_vec()),
+                            delete(CUSTODY_LOG, index.to_be_bytes().to_vec()),
                         ]
                     })
                     .collect::<Vec<_>>();
-                writes.push(put(
-                    META,
-                    b"purged",
-                    serde_json::to_vec(ids.last().unwrap())?,
-                ));
+                writes.push(put(META, b"purged", serde_json::to_vec(&purged)?));
                 if retired {
                     store.write_batch(&writes)?;
                 } else {
-                    let bodies = ids
-                        .iter()
-                        .map(|id| delete(LOG, id.index.to_be_bytes().to_vec()))
+                    let bodies = (start..=end)
+                        .map(|index| delete(LOG, index.to_be_bytes().to_vec()))
                         .collect::<Vec<_>>();
                     domains.write_batch(&bodies, &writes)?;
                 }
-                for id in ids {
-                    index.remove(&id.index);
-                }
+                *retained = next;
+                last_removed = Some(purged);
             }
-            if ids.last().copied() != Some(log_id) {
+            if last_removed != Some(log_id) {
                 store.write_batch(&[put(META, b"purged", serde_json::to_vec(&log_id)?)])?;
             }
             Ok(())
@@ -667,12 +788,12 @@ pub(crate) struct SnapshotEnvelope {
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct SnapshotManifest {
-    version: u32,
-    sha256: String,
-    id: String,
-    bytes: u64,
-    chunks: u64,
+pub(crate) struct SnapshotManifest {
+    pub(crate) version: u32,
+    pub(crate) sha256: String,
+    pub(crate) id: String,
+    pub(crate) bytes: u64,
+    pub(crate) chunks: u64,
 }
 
 fn chunk_key(manifest: &SnapshotManifest, chunk: u64) -> Vec<u8> {
@@ -685,21 +806,26 @@ fn chunk_key(manifest: &SnapshotManifest, chunk: u64) -> Vec<u8> {
 fn load_manifest(store: &TenantStore, key: &[u8], limit: u64) -> Result<Option<SnapshotManifest>> {
     let manifest = load_canonical_snapshot_record::<SnapshotManifest>(store, SNAPSHOT, key)?;
     if let Some(manifest) = &manifest {
-        kasumi_types::validate_sha256(&manifest.sha256)?;
-        ensure!(
-            manifest.version == 1 && current_snapshot_id(&manifest.id),
-            "invalid snapshot manifest"
-        );
-        ensure!(
-            manifest.bytes <= limit,
-            "stored snapshot exceeds byte limit"
-        );
-        ensure!(
-            manifest.chunks == manifest.bytes.div_ceil(SNAPSHOT_CHUNK_BYTES as u64),
-            "invalid snapshot chunk count"
-        );
+        validate_snapshot_manifest(manifest, limit)?;
     }
     Ok(manifest)
+}
+
+pub(crate) fn validate_snapshot_manifest(manifest: &SnapshotManifest, limit: u64) -> Result<()> {
+    kasumi_types::validate_sha256(&manifest.sha256)?;
+    ensure!(
+        manifest.version == 1 && current_snapshot_id(&manifest.id),
+        "invalid snapshot manifest"
+    );
+    ensure!(
+        manifest.bytes <= limit,
+        "stored snapshot exceeds byte limit"
+    );
+    ensure!(
+        manifest.chunks == manifest.bytes.div_ceil(SNAPSHOT_CHUNK_BYTES as u64),
+        "invalid snapshot chunk count"
+    );
+    Ok(())
 }
 
 // Pending chunks and an obsolete manifest have durable cleanup cursors. A crash
@@ -740,18 +866,37 @@ pub(crate) fn encode_snapshot_coverage(coverage: &SnapshotCoverage) -> Result<Ve
 }
 
 pub(crate) fn load_snapshot_coverage(store: &TenantStore) -> Result<Option<SnapshotCoverage>> {
-    let coverage =
-        load_canonical_snapshot_record::<SnapshotCoverage>(store, META, b"snapshot_coverage")?;
-    if let Some(coverage) = &coverage {
-        ensure!(
-            current_snapshot_id(&coverage.manifest_id)
-                && current_snapshot_id(&coverage.meta.snapshot_id),
-            "invalid snapshot coverage identity"
-        );
-        kasumi_types::validate_sha256(&coverage.snapshot_sha256)?;
-        kasumi_types::validate_sha256(&coverage.backend_sha256)?;
-    }
-    Ok(coverage)
+    load_snapshot_coverage_at(&mut &*store)
+}
+
+pub(crate) fn load_snapshot_coverage_at(
+    reads: &mut impl crate::control::CustodyRead,
+) -> Result<Option<SnapshotCoverage>> {
+    reads.with_point(
+        META,
+        b"snapshot_coverage",
+        MAX_SNAPSHOT_COVERAGE_BYTES,
+        |bytes| {
+            let coverage = bytes
+                .map(|bytes| decode_snapshot_record_admitted::<SnapshotCoverage>(bytes, |_| Ok(())))
+                .transpose()?;
+            if let Some(coverage) = &coverage {
+                validate_snapshot_coverage_record(coverage)?;
+            }
+            Ok(coverage)
+        },
+    )
+}
+
+pub(crate) fn validate_snapshot_coverage_record(coverage: &SnapshotCoverage) -> Result<()> {
+    ensure!(
+        current_snapshot_id(&coverage.manifest_id)
+            && current_snapshot_id(&coverage.meta.snapshot_id),
+        "invalid snapshot coverage identity"
+    );
+    kasumi_types::validate_sha256(&coverage.snapshot_sha256)?;
+    kasumi_types::validate_sha256(&coverage.backend_sha256)?;
+    Ok(())
 }
 
 pub fn recovery_snapshot_bytes(domains: &TenantStorageSet) -> Result<u64> {
@@ -799,7 +944,7 @@ pub(crate) fn validate_target_history_snapshot(
     domains: &TenantStorageSet,
     first: &crate::control::FirstAppliedMembership,
     applied: &crate::control::AppliedCursor,
-) -> Result<()> {
+) -> Result<(), ScratchOperationFailure> {
     let custody = domains.custody().store();
     let limit = RaftLimits::default().max_snapshot_bytes;
     let coverage = load_snapshot_coverage(custody)?;
@@ -843,7 +988,7 @@ pub(crate) fn validate_target_history_snapshot(
             }
             Ok(())
         }
-        _ => anyhow::bail!("target snapshot manifest or control coverage absent"),
+        _ => Err(anyhow::anyhow!("target snapshot manifest or control coverage absent").into()),
     }
 }
 
@@ -934,7 +1079,11 @@ fn publish_snapshot(
     custody
         .writes
         .push(put(META, b"snapshot_coverage", coverage_bytes));
-    let replacements = custody.records.as_ref().map(|records| records.namespaces());
+    let replacements = custody.records.as_ref().map(|records| {
+        records.namespaces().map(|(namespace, table)| {
+            kasumi_store::NamespaceReplacement::from_table(namespace, table)
+        })
+    });
     let mut application = pending.application;
     if let Some(backend) = backend {
         application.extend_from_slice(backend.application_writes());
@@ -999,6 +1148,21 @@ impl Drop for StorageWorkFailure {
     }
 }
 
+// Returning the preadmitted diagnostic from a detached worker only clones its
+// two handles. In particular, it does not allocate another anyhow error box.
+enum ApplyWorkerError {
+    Retained(crate::apply_failure::RetainedApplyFailure),
+    Fenced,
+}
+impl std::fmt::Display for ApplyWorkerError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Retained(failure) => std::fmt::Display::fmt(failure, f),
+            Self::Fenced => f.write_str("state machine requires recovery"),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct StateMachine {
     domains: StorageHandle<TenantStorageSet>,
@@ -1017,7 +1181,7 @@ impl StateMachine {
         domains: Arc<TenantStorageSet>,
         backend: Arc<dyn StateMachineBackend>,
         snapshot_buffers: Arc<SnapshotBufferOwner>,
-    ) -> Result<Self> {
+    ) -> Result<Self, ScratchOperationFailure> {
         Self::open_with_limits(domains, backend, RaftLimits::default(), snapshot_buffers).await
     }
 
@@ -1026,7 +1190,7 @@ impl StateMachine {
         backend: Arc<dyn StateMachineBackend>,
         limits: RaftLimits,
         snapshot_buffers: Arc<SnapshotBufferOwner>,
-    ) -> Result<Self> {
+    ) -> Result<Self, ScratchOperationFailure> {
         Self::open_inner(domains, backend, limits, None, snapshot_buffers).await
     }
 
@@ -1036,7 +1200,7 @@ impl StateMachine {
         limits: RaftLimits,
         lease: Arc<StorageLease>,
         snapshot_buffers: Arc<SnapshotBufferOwner>,
-    ) -> Result<Self> {
+    ) -> Result<Self, ScratchOperationFailure> {
         Self::open_inner(domains, backend, limits, Some(lease), snapshot_buffers).await
     }
 
@@ -1046,7 +1210,7 @@ impl StateMachine {
         limits: RaftLimits,
         lease: Option<Arc<StorageLease>>,
         snapshot_buffers: Arc<SnapshotBufferOwner>,
-    ) -> Result<Self> {
+    ) -> Result<Self, ScratchOperationFailure> {
         let control_gate = control_gate(domains.custody())?;
         let store = StorageHandle::new(domains.application().clone(), lease.clone());
         let domains = StorageHandle::new(domains, lease.clone());
@@ -1055,49 +1219,58 @@ impl StateMachine {
         let captured = store.clone();
         let target = backend.clone();
         let limit = limits.max_snapshot_bytes;
-        let state = tokio::task::spawn_blocking(move || -> Result<AppliedState> {
-            captured_domains.check_access()?;
-            let first =
-                crate::control::first_applied_membership(captured_domains.custody().store())?;
-            crate::control::local_first_association_write(
-                captured_domains.custody(),
-                first.as_ref(),
-                None,
-            )?;
-            crate::initialization_association::load_state(
-                captured_domains.custody(),
-                first.as_ref(),
-            )?;
-            cleanup_snapshots(&captured, limit)?;
-            if let Some(snapshot) = load_snapshot(&captured, limit)? {
-                validate_snapshot_coverage(&captured_domains, &snapshot, limit)?;
-                ensure!(snapshot.version == 2, "unsupported raft snapshot version");
-                let context = crate::SnapshotRestoreContext {
-                    mode: crate::SnapshotRestoreMode::Reopen,
-                    backend_sha256: snapshot.backend.sha256().into(),
-                    meta: snapshot.meta.clone(),
-                };
-                let prepared = target.prepare_restore(&context, &mut snapshot.backend.reader())?;
-                crate::snapshot_custody::check_backend(
-                    &snapshot.meta,
-                    snapshot.retirement.as_ref(),
-                    prepared.retirement(),
-                )?;
-                captured_domains.write_batch_replacing(
-                    prepared.application_writes(),
-                    &[],
-                    &prepared.application_replacements(),
-                    &[],
-                )?;
-                prepared.publish()?;
-                Ok(AppliedState {
-                    log_id: snapshot.meta.last_log_id,
-                    membership: snapshot.meta.last_membership,
-                })
-            } else {
-                Ok(AppliedState::default())
-            }
-        })
+        let opening_buffers = snapshot_buffers.clone();
+        let state = tokio::task::spawn_blocking(
+            move || -> Result<AppliedState, ScratchOperationFailure> {
+                let scratch_guard = opening_buffers.scratch_failure_guard()?;
+                let result = (|| -> Result<_, ScratchOperationFailure> {
+                    captured_domains.check_access()?;
+                    let first = crate::control::first_applied_membership(
+                        captured_domains.custody().store(),
+                    )?;
+                    crate::control::local_first_association_write(
+                        captured_domains.custody(),
+                        first.as_ref(),
+                        None,
+                    )?;
+                    crate::initialization_association::load_state(
+                        captured_domains.custody(),
+                        first.as_ref(),
+                    )?;
+                    cleanup_snapshots(&captured, limit)?;
+                    if let Some(snapshot) = load_snapshot(&captured, limit)? {
+                        validate_snapshot_coverage(&captured_domains, &snapshot, limit)?;
+                        ensure!(snapshot.version == 2, "unsupported raft snapshot version");
+                        let context = crate::SnapshotRestoreContext {
+                            mode: crate::SnapshotRestoreMode::Reopen,
+                            backend_sha256: snapshot.backend.sha256().into(),
+                            meta: snapshot.meta.clone(),
+                        };
+                        let prepared =
+                            target.prepare_restore(&context, &mut snapshot.backend.reader())?;
+                        crate::snapshot_custody::check_backend(
+                            &snapshot.meta,
+                            snapshot.retirement.as_ref(),
+                            prepared.retirement(),
+                        )?;
+                        captured_domains.write_batch_replacing(
+                            prepared.application_writes(),
+                            &[],
+                            &prepared.application_replacements(),
+                            &[],
+                        )?;
+                        prepared.publish()?;
+                        Ok(AppliedState {
+                            log_id: snapshot.meta.last_log_id,
+                            membership: snapshot.meta.last_membership,
+                        })
+                    } else {
+                        Ok(AppliedState::default())
+                    }
+                })();
+                scratch_guard.capture_result(result)
+            },
+        )
         .await??;
         Ok(Self {
             domains,
@@ -1135,10 +1308,13 @@ struct LogicalSnapshot {
 }
 pub struct SnapshotBuilder {
     machine: StateMachine,
-    captured: Result<Arc<LogicalSnapshot>>,
+    captured: Result<Arc<LogicalSnapshot>, ScratchOperationFailure>,
 }
 
-fn load_snapshot(store: &TenantStore, limit: u64) -> Result<Option<SnapshotEnvelope>> {
+fn load_snapshot(
+    store: &TenantStore,
+    limit: u64,
+) -> Result<Option<SnapshotEnvelope>, ScratchOperationFailure> {
     load_manifest(store, b"current", limit)?
         .map(|manifest| {
             let mut spool = EncryptedSpool::new(store.scratch_disk(), limit)?;
@@ -1186,75 +1362,82 @@ impl RaftSnapshotBuilder<TypeConfig> for SnapshotBuilder {
         let applied = self.machine.state.clone();
         let control = self.machine.control_gate.clone();
         let failed = self.machine.failure_flag();
-        tokio::task::spawn_blocking(move || -> Result<Snapshot<TypeConfig>> {
-            let failure = StorageWorkFailure::new(failed.clone());
-            let _gate = gate;
-            ensure!(
-                !failed.load(Ordering::Acquire),
-                "state machine requires recovery"
-            );
-            domains.check_access()?;
-            if let Some(current) = load_snapshot(&store, limit)?
-                && current.meta.last_log_id.map(|id| id.index)
-                    >= captured.meta.last_log_id.map(|id| id.index)
-            {
-                validate_snapshot_coverage(&domains, &current, limit)?;
-                if current.meta.last_log_id.map(|id| id.index)
-                    == captured.meta.last_log_id.map(|id| id.index)
-                {
+        tokio::task::spawn_blocking(
+            move || -> Result<Snapshot<TypeConfig>, ScratchOperationFailure> {
+                let scratch_guard = snapshot_buffers.scratch_failure_guard()?;
+                let result = (|| -> Result<_, ScratchOperationFailure> {
+                    let failure = StorageWorkFailure::new(failed.clone());
+                    let _gate = gate;
                     ensure!(
-                        current.meta.last_log_id == captured.meta.last_log_id
-                            && current.meta.last_membership == captured.meta.last_membership,
-                        "snapshot log or membership identity differs at the same position"
+                        !failed.load(Ordering::Acquire),
+                        "state machine requires recovery"
                     );
-                    crate::snapshot_custody::check_same_retirement(
-                        current.retirement.as_ref(),
-                        captured.retirement.as_ref(),
-                    )?;
-                }
-                let snapshot = as_snapshot(&current, limit, &snapshot_buffers)?;
-                failure.complete();
-                return Ok(snapshot);
-            }
-            let logical = captured;
-            let captured = SnapshotEnvelope {
-                version: 2,
-                kind: SnapshotKind::Application,
-                meta: logical.meta.clone(),
-                backend: SnapshotImage::capture(store.scratch_disk(), limit, |writer| {
-                    logical.backend.write(writer)
-                })?,
-                retirement: logical.retirement.clone(),
-                first_membership: logical.first_membership.clone(),
-                initialization_association: logical.initialization_association.clone(),
-            };
-            let snapshot = as_snapshot(&captured, limit, &snapshot_buffers)?;
-            let mut pending =
-                stage_snapshot(&domains, &snapshot.snapshot.image()?, limit, &captured)?;
-            pending
-                .application
-                .extend(
-                    logical
-                        .backend
-                        .checkpoint_writes(&crate::SnapshotRestoreContext {
-                            mode: crate::SnapshotRestoreMode::Install,
-                            backend_sha256: captured.backend.sha256().into(),
-                            meta: captured.meta.clone(),
-                        })?,
-                );
-            let publication = applied
-                .lock()
-                .map_err(|_| anyhow::anyhow!("applied publication lock poisoned"))?;
-            let control_publication = control
-                .lock()
-                .map_err(|_| anyhow::anyhow!("control publication lock poisoned"))?;
-            publish_snapshot(&domains, pending, &captured, None)?;
-            drop(control_publication);
-            drop(publication);
-            cleanup_snapshots(&store, limit)?;
-            failure.complete();
-            Ok(snapshot)
-        })
+                    domains.check_access()?;
+                    if let Some(current) = load_snapshot(&store, limit)?
+                        && current.meta.last_log_id.map(|id| id.index)
+                            >= captured.meta.last_log_id.map(|id| id.index)
+                    {
+                        validate_snapshot_coverage(&domains, &current, limit)?;
+                        if current.meta.last_log_id.map(|id| id.index)
+                            == captured.meta.last_log_id.map(|id| id.index)
+                        {
+                            ensure!(
+                                current.meta.last_log_id == captured.meta.last_log_id
+                                    && current.meta.last_membership
+                                        == captured.meta.last_membership,
+                                "snapshot log or membership identity differs at the same position"
+                            );
+                            crate::snapshot_custody::check_same_retirement(
+                                current.retirement.as_ref(),
+                                captured.retirement.as_ref(),
+                            )?;
+                        }
+                        let snapshot = as_snapshot(&current, limit, &snapshot_buffers)?;
+                        failure.complete();
+                        return Ok(snapshot);
+                    }
+                    let logical = captured;
+                    let captured = SnapshotEnvelope {
+                        version: 2,
+                        kind: SnapshotKind::Application,
+                        meta: logical.meta.clone(),
+                        backend: {
+                            let mut spool = EncryptedSpool::new(store.scratch_disk(), limit)?;
+                            logical.backend.write(&mut spool)?;
+                            SnapshotImage::freeze(spool)?
+                        },
+                        retirement: logical.retirement.clone(),
+                        first_membership: logical.first_membership.clone(),
+                        initialization_association: logical.initialization_association.clone(),
+                    };
+                    let snapshot = as_snapshot(&captured, limit, &snapshot_buffers)?;
+                    let mut pending =
+                        stage_snapshot(&domains, &snapshot.snapshot.image()?, limit, &captured)?;
+                    pending
+                        .application
+                        .extend(logical.backend.checkpoint_writes(
+                            &crate::SnapshotRestoreContext {
+                                mode: crate::SnapshotRestoreMode::Install,
+                                backend_sha256: captured.backend.sha256().into(),
+                                meta: captured.meta.clone(),
+                            },
+                        )?);
+                    let publication = applied
+                        .lock()
+                        .map_err(|_| anyhow::anyhow!("applied publication lock poisoned"))?;
+                    let control_publication = control
+                        .lock()
+                        .map_err(|_| anyhow::anyhow!("control publication lock poisoned"))?;
+                    publish_snapshot(&domains, pending, &captured, None)?;
+                    drop(control_publication);
+                    drop(publication);
+                    cleanup_snapshots(&store, limit)?;
+                    failure.complete();
+                    Ok(snapshot)
+                })();
+                scratch_guard.capture_result(result)
+            },
+        )
         .await
         .map_err(|error| self.machine.storage_failure(error))?
         .map_err(|error| self.machine.storage_failure(error))
@@ -1288,80 +1471,136 @@ impl RaftStateMachine<TypeConfig> for StateMachine {
     {
         let entries = entries.into_iter().collect::<Vec<_>>();
         let machine = self.clone();
-        tokio::task::spawn_blocking(move || -> Result<Vec<Vec<u8>>> {
-            let failure = StorageWorkFailure::new(machine.failure_flag());
-            machine.domains.check_access()?;
-            ensure!(!machine.failed(), "state machine requires recovery");
-            let mut state = machine
-                .state
-                .lock()
-                .map_err(|_| anyhow::anyhow!("state machine lock poisoned"))?;
-            let mut responses = Vec::with_capacity(entries.len());
-            for entry in entries {
-                machine.domains.check_access()?;
-                let (command_sha256, retirement_seed) = match &entry.payload {
-                    EntryPayload::Normal(command) => (sha256(command.bytes()), command.seed()?),
-                    _ => (sha256(&encode_entry(&entry)?), None),
+        tokio::task::spawn_blocking(
+            move || -> std::result::Result<Vec<Vec<u8>>, ApplyWorkerError> {
+                // Recheck the terminal fence only after serialization. A queued
+                // worker must not create a second independent failure owner.
+                let (mut state, poisoned) = match machine.state.lock() {
+                    Ok(state) => (state, false),
+                    Err(poisoned) => (poisoned.into_inner(), true),
                 };
-                let mut position = AppliedEntryContext {
-                    log_id: entry.log_id,
-                    previous: state.log_id,
-                    membership: state.membership.clone(),
-                    command_sha256,
-                    retirement_seed,
-                };
-                let response = match entry.payload {
-                    EntryPayload::Blank => {
-                        if crate::control::retired_boundary(machine.domains.custody())?.is_none() {
-                            machine.backend.apply_metadata(&position)?;
-                        }
-                        crate::AppliedResponse::application(Vec::new())
-                    }
-                    EntryPayload::Membership(membership) => {
-                        state.membership = StoredMembership::new(Some(entry.log_id), membership);
-                        position.membership = state.membership.clone();
-                        if crate::control::retired_boundary(machine.domains.custody())?.is_none() {
-                            machine.backend.apply_metadata(&position)?;
-                        }
-                        crate::AppliedResponse::application(Vec::new())
-                    }
-                    EntryPayload::Normal(command) => {
-                        if let Some(closed) = command.custody_command()? {
-                            let _control = machine.control_gate.lock().map_err(|_| {
-                                anyhow::anyhow!("control publication lock poisoned")
-                            })?;
-                            let data = crate::control::apply_custody(
-                                machine.domains.custody(),
-                                &position,
-                                &closed,
-                            )?;
-                            state.log_id = Some(entry.log_id);
-                            responses.push(data);
-                            continue;
-                        }
-                        machine.backend.apply(&position, command.bytes())?
-                    }
-                };
-                // A crash before this marker leaves the committed seed available
-                // independently; it never falsely marks a projection as applied.
-                {
-                    let _control = machine
-                        .control_gate
-                        .lock()
-                        .map_err(|_| anyhow::anyhow!("control publication lock poisoned"))?;
-                    crate::control::persist_applied(
-                        &machine.domains,
-                        &position,
-                        response.retirement,
-                    )?;
+                if let Some(failure) = machine.snapshot_buffers.apply_failure() {
+                    return Err(ApplyWorkerError::Retained(failure));
                 }
-                // Backend has published its complete generation before advancing this cursor.
-                state.log_id = Some(entry.log_id);
-                responses.push(response.data);
-            }
-            failure.complete();
-            Ok(responses)
-        })
+                if machine.failed() {
+                    return Err(ApplyWorkerError::Fenced);
+                }
+                let failure = StorageWorkFailure::new(machine.failure_flag());
+                let outcome = (|| -> Result<std::result::Result<Vec<Vec<u8>>,crate::apply_failure::RetainedApplyFailure>> {
+                    ensure!(!poisoned, "state machine lock poisoned");
+                    machine.snapshot_buffers.check()?;
+                    machine.domains.check_access()?;
+                    let mut responses = Vec::with_capacity(entries.len());
+                    for entry in entries {
+                        machine.domains.check_access()?;
+                        let (command_sha256, retirement_seed) = match &entry.payload {
+                            EntryPayload::Normal(command) => {
+                                (sha256(command.bytes()), command.seed()?)
+                            }
+                            _ => (sha256(&encode_entry(&entry)?), None),
+                        };
+                        let membership = match &entry.payload {
+                            EntryPayload::Membership(membership) => {
+                                StoredMembership::new(Some(entry.log_id), membership.clone())
+                            }
+                            _ => state.membership.clone(),
+                        };
+                        let position = AppliedEntryContext {
+                            log_id: entry.log_id,
+                            previous: state.log_id,
+                            membership,
+                            command_sha256,
+                            retirement_seed,
+                        };
+                        let input = match &entry.payload {
+                            EntryPayload::Normal(command) => {
+                                if let Some(closed) = command.custody_command()? {
+                                    let _control = machine.control_gate.lock().map_err(|_| {
+                                        anyhow::anyhow!("control publication lock poisoned")
+                                    })?;
+                                    let data = crate::control::apply_custody(
+                                        machine.domains.custody(),
+                                        &position,
+                                        &closed,
+                                    )?;
+                                    state.log_id = Some(entry.log_id);
+                                    responses.push(data);
+                                    continue;
+                                }
+                                crate::AppliedInput::Command(command.bytes())
+                            }
+                            _ => crate::AppliedInput::Metadata,
+                        };
+                        let metadata = matches!(input, crate::AppliedInput::Metadata);
+                        let retired_metadata = metadata
+                            && crate::control::retired_boundary(machine.domains.custody())?
+                                .is_some();
+                        let mut sink = crate::apply_publication::EntryPublicationSink::new(
+                            &machine.domains,
+                            &position,
+                            Some(&machine.control_gate),
+                            metadata,
+                        );
+                        // Keep the publisher and its original failure outside the
+                        // catcher. A backend may panic after a failed callback.
+                        let input_retention = match &entry.payload {
+                            EntryPayload::Normal(crate::RaftCommand::Application(input)) =>
+                                input.input_loan(entry.log_id)?,
+                            _ => None,
+                        };
+                        let mut publication =
+                            crate::apply_publication::ApplyPublication::new_bound(
+                                &mut sink, machine.snapshot_buffers.apply_slot(),
+                            );
+                        publication.retain_input(input_retention.as_ref());
+                        let backend =
+                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                if retired_metadata {
+                                    crate::ApplyPublisher::commit(
+                                        &mut publication,
+                                        crate::AppliedResponse::application(Vec::new()),
+                                        &[],
+                                    ).map_err(anyhow::Error::from)?;
+                                    Ok(())
+                                } else {
+                                    machine.backend.apply_with_publisher(
+                                        &position,
+                                        input,
+                                        &mut publication,
+                                    )
+                                }
+                            }));
+                        let finished=match publication.finish_observed(backend,||{}) {
+                            Ok(finished)=>finished,
+                            Err(crate::apply_publication::FinishFailure::Single(error))=>return Err(error),
+                            Err(crate::apply_publication::FinishFailure::Retained(failure))=>return Ok(Err(failure)),
+                        };
+                        let crate::apply_publication::FinishedPublication{response,acknowledgment}=finished;
+                        // Backend preparation/guard has been released only after
+                        // successful joint publication. Failed metadata cannot
+                        // advance either this membership or its cursor.
+                        state.membership = position.membership;
+                        state.log_id = Some(entry.log_id);
+                        responses.push(response.data);
+                        crate::apply_publication::acknowledge_publication(acknowledgment);
+                    }
+                    Ok(Ok(responses))
+                })();
+                match outcome {
+                    Ok(Err(retained))=>{machine.failed.store(true,Ordering::Release);Err(ApplyWorkerError::Retained(retained))},
+                    Ok(Ok(responses)) => {
+                        failure.complete();
+                        Ok(responses)
+                    }
+                    Err(error) => {
+                        machine.failed.store(true, Ordering::Release);
+                        Err(ApplyWorkerError::Retained(
+                            machine.snapshot_buffers.retain_apply_failure(error),
+                        ))
+                    }
+                }
+            },
+        )
         .await
         .map_err(|error| self.storage_failure(error))?
         .map_err(|error| self.storage_failure(error))
@@ -1369,38 +1608,46 @@ impl RaftStateMachine<TypeConfig> for StateMachine {
 
     async fn get_snapshot_builder(&mut self) -> Self::SnapshotBuilder {
         let machine = self.clone();
-        let captured = tokio::task::spawn_blocking(move || -> Result<LogicalSnapshot> {
-            machine.domains.check_access()?;
-            let state = machine
-                .state
-                .lock()
-                .map_err(|_| anyhow::anyhow!("state machine lock poisoned"))?;
-            let meta = SnapshotMeta {
-                last_log_id: state.log_id,
-                last_membership: state.membership.clone(),
-                snapshot_id: uuid::Uuid::new_v4().to_string(),
-            };
-            let captured = machine.backend.capture_snapshot()?;
-            let retirement = crate::snapshot_custody::capture(
-                machine.domains.custody(),
-                &meta,
-                captured.retirement.clone(),
-            )?;
-            let first_membership =
-                crate::control::first_membership_for_snapshot(machine.domains.custody(), &meta)?;
-            Ok(LogicalSnapshot {
-                meta,
-                backend: captured,
-                retirement,
-                initialization_association: crate::initialization_association::load_state(
-                    machine.domains.custody(),
-                    first_membership.as_ref(),
-                )?,
-                first_membership,
-            })
-        })
+        let captured = tokio::task::spawn_blocking(
+            move || -> Result<LogicalSnapshot, ScratchOperationFailure> {
+                let scratch_guard = machine.snapshot_buffers.scratch_failure_guard()?;
+                let result = (|| -> Result<_, ScratchOperationFailure> {
+                    machine.domains.check_access()?;
+                    let state = machine
+                        .state
+                        .lock()
+                        .map_err(|_| anyhow::anyhow!("state machine lock poisoned"))?;
+                    let meta = SnapshotMeta {
+                        last_log_id: state.log_id,
+                        last_membership: state.membership.clone(),
+                        snapshot_id: uuid::Uuid::new_v4().to_string(),
+                    };
+                    let captured = machine.backend.capture_snapshot()?;
+                    let retirement = crate::snapshot_custody::capture(
+                        machine.domains.custody(),
+                        &meta,
+                        captured.retirement.clone(),
+                    )?;
+                    let first_membership = crate::control::first_membership_for_snapshot(
+                        machine.domains.custody(),
+                        &meta,
+                    )?;
+                    Ok(LogicalSnapshot {
+                        meta,
+                        backend: captured,
+                        retirement,
+                        initialization_association: crate::initialization_association::load_state(
+                            machine.domains.custody(),
+                            first_membership.as_ref(),
+                        )?,
+                        first_membership,
+                    })
+                })();
+                scratch_guard.capture_result(result)
+            },
+        )
         .await
-        .map_err(anyhow::Error::from)
+        .map_err(|original| ScratchOperationFailure::Operation(original.into()))
         .and_then(|result| result);
         SnapshotBuilder {
             machine: self.clone(),
@@ -1433,98 +1680,102 @@ impl RaftStateMachine<TypeConfig> for StateMachine {
         }
         let meta = meta.clone();
         let machine = self.clone();
-        tokio::task::spawn_blocking(move || -> Result<()> {
-            let failure = StorageWorkFailure::new(machine.failure_flag());
-            let _gate = gate;
-            ensure!(!machine.failed(), "state machine requires recovery");
-            // Parsing stages bounded records into encrypted scratch. Keep disk,
-            // crypto, validation and materialization off the async runtime.
-            let snapshot = snapshot.into_image()?;
-            let envelope = SnapshotEnvelope::decode(
-                snapshot.disk(),
-                &mut snapshot.reader(),
-                machine.limits.max_snapshot_bytes,
-            )?;
-            ensure!(
-                envelope.version == 2 && envelope.meta == meta,
-                "snapshot metadata mismatch"
-            );
-            let mut state = machine
-                .state
-                .lock()
-                .map_err(|_| anyhow::anyhow!("state machine lock poisoned"))?;
-            ensure!(
-                envelope.meta.last_log_id.map(|id| id.index) >= state.log_id.map(|id| id.index),
-                "snapshot would revert applied state"
-            );
-            if envelope.kind == SnapshotKind::Custody {
-                ensure!(
-                    envelope.backend.is_empty(),
-                    "custody snapshot contains application payload"
-                );
-                envelope
-                    .retirement
-                    .as_ref()
-                    .context("custody snapshot retirement absent")?
-                    .validate(&meta)?;
-                let _control = machine
-                    .control_gate
-                    .lock()
-                    .map_err(|_| anyhow::anyhow!("control publication lock poisoned"))?;
-                // A serving engine must stop releasing plaintext before the
-                // closed retirement boundary becomes visible. Recovery then
-                // opens the same group using custody storage only.
-                machine.failed.store(true, Ordering::Release);
-                machine.backend.close_application();
-                crate::custody_machine::publish(
-                    machine.domains.custody(),
-                    &envelope,
+        tokio::task::spawn_blocking(move || -> Result<(), ScratchOperationFailure> {
+            let scratch_guard = machine.snapshot_buffers.scratch_failure_guard()?;
+            let result = (|| -> Result<_, ScratchOperationFailure> {
+                let failure = StorageWorkFailure::new(machine.failure_flag());
+                let _gate = gate;
+                ensure!(!machine.failed(), "state machine requires recovery");
+                // Parsing stages bounded records into encrypted scratch. Keep disk,
+                // crypto, validation and materialization off the async runtime.
+                let snapshot = snapshot.into_image()?;
+                let envelope = SnapshotEnvelope::decode(
+                    snapshot.disk(),
+                    &mut snapshot.reader(),
                     machine.limits.max_snapshot_bytes,
                 )?;
+                ensure!(
+                    envelope.version == 2 && envelope.meta == meta,
+                    "snapshot metadata mismatch"
+                );
+                let mut state = machine
+                    .state
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("state machine lock poisoned"))?;
+                ensure!(
+                    envelope.meta.last_log_id.map(|id| id.index) >= state.log_id.map(|id| id.index),
+                    "snapshot would revert applied state"
+                );
+                if envelope.kind == SnapshotKind::Custody {
+                    ensure!(
+                        envelope.backend.is_empty(),
+                        "custody snapshot contains application payload"
+                    );
+                    envelope
+                        .retirement
+                        .as_ref()
+                        .context("custody snapshot retirement absent")?
+                        .validate(&meta)?;
+                    let _control = machine
+                        .control_gate
+                        .lock()
+                        .map_err(|_| anyhow::anyhow!("control publication lock poisoned"))?;
+                    // A serving engine must stop releasing plaintext before the
+                    // closed retirement boundary becomes visible. Recovery then
+                    // opens the same group using custody storage only.
+                    machine.failed.store(true, Ordering::Release);
+                    machine.backend.close_application();
+                    crate::custody_machine::publish(
+                        machine.domains.custody(),
+                        &envelope,
+                        machine.limits.max_snapshot_bytes,
+                    )?;
+                    state.log_id = envelope.meta.last_log_id;
+                    state.membership = envelope.meta.last_membership;
+                    failure.complete();
+                    return Ok(());
+                }
+                let context = crate::SnapshotRestoreContext {
+                    mode: crate::SnapshotRestoreMode::Install,
+                    backend_sha256: envelope.backend.sha256().into(),
+                    meta: envelope.meta.clone(),
+                };
+                let prepared = machine
+                    .backend
+                    .prepare_restore(&context, &mut envelope.backend.reader())?;
+                crate::snapshot_custody::check_backend(
+                    &meta,
+                    envelope.retirement.as_ref(),
+                    prepared.retirement(),
+                )?;
+                // Durably install encrypted chunks and their manifest, then atomically publish backend state.
+                // A crash between these steps recovers the new snapshot on restart.
+                let pending = stage_snapshot(
+                    &machine.domains,
+                    &snapshot,
+                    machine.limits.max_snapshot_bytes,
+                    &envelope,
+                )?;
+                {
+                    let _control = machine
+                        .control_gate
+                        .lock()
+                        .map_err(|_| anyhow::anyhow!("control publication lock poisoned"))?;
+                    publish_snapshot(
+                        &machine.domains,
+                        pending,
+                        &envelope,
+                        Some(prepared.as_ref()),
+                    )?;
+                }
+                cleanup_snapshots(&machine.store, machine.limits.max_snapshot_bytes)?;
+                prepared.publish()?;
                 state.log_id = envelope.meta.last_log_id;
                 state.membership = envelope.meta.last_membership;
                 failure.complete();
-                return Ok(());
-            }
-            let context = crate::SnapshotRestoreContext {
-                mode: crate::SnapshotRestoreMode::Install,
-                backend_sha256: envelope.backend.sha256().into(),
-                meta: envelope.meta.clone(),
-            };
-            let prepared = machine
-                .backend
-                .prepare_restore(&context, &mut envelope.backend.reader())?;
-            crate::snapshot_custody::check_backend(
-                &meta,
-                envelope.retirement.as_ref(),
-                prepared.retirement(),
-            )?;
-            // Durably install encrypted chunks and their manifest, then atomically publish backend state.
-            // A crash between these steps recovers the new snapshot on restart.
-            let pending = stage_snapshot(
-                &machine.domains,
-                &snapshot,
-                machine.limits.max_snapshot_bytes,
-                &envelope,
-            )?;
-            {
-                let _control = machine
-                    .control_gate
-                    .lock()
-                    .map_err(|_| anyhow::anyhow!("control publication lock poisoned"))?;
-                publish_snapshot(
-                    &machine.domains,
-                    pending,
-                    &envelope,
-                    Some(prepared.as_ref()),
-                )?;
-            }
-            cleanup_snapshots(&machine.store, machine.limits.max_snapshot_bytes)?;
-            prepared.publish()?;
-            state.log_id = envelope.meta.last_log_id;
-            state.membership = envelope.meta.last_membership;
-            failure.complete();
-            Ok(())
+                Ok(())
+            })();
+            scratch_guard.capture_result(result)
         })
         .await
         .map_err(|error| self.storage_failure(error))?
@@ -1538,16 +1789,20 @@ impl RaftStateMachine<TypeConfig> for StateMachine {
         let domains = self.domains.clone();
         let limit = self.limits.max_snapshot_bytes;
         let snapshot_buffers = self.snapshot_buffers.clone();
-        tokio::task::spawn_blocking(move || {
-            domains.check_access()?;
-            let result = load_snapshot(&store, limit)?
-                .map(|snapshot| {
-                    validate_snapshot_coverage(&domains, &snapshot, limit)?;
-                    as_snapshot(&snapshot, limit, &snapshot_buffers)
-                })
-                .transpose()?;
-            domains.check_access()?;
-            Ok::<_, anyhow::Error>(result)
+        tokio::task::spawn_blocking(move || -> Result<_, ScratchOperationFailure> {
+            let scratch_guard = snapshot_buffers.scratch_failure_guard()?;
+            let result = (|| -> Result<_, ScratchOperationFailure> {
+                domains.check_access()?;
+                let result = load_snapshot(&store, limit)?
+                    .map(|snapshot| {
+                        validate_snapshot_coverage(&domains, &snapshot, limit)?;
+                        as_snapshot(&snapshot, limit, &snapshot_buffers)
+                    })
+                    .transpose()?;
+                domains.check_access()?;
+                Ok::<_, ScratchOperationFailure>(result)
+            })();
+            scratch_guard.capture_result(result)
         })
         .await
         .map_err(err)?

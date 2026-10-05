@@ -69,7 +69,7 @@ impl OriginalServingFixture {
         ) {
             let settings = settings.transit_mut().unwrap();
             settings.endpoint = endpoint.clone();
-            settings.ca_certificate = Some(files.certificate.clone());
+            settings.ca_certificate = files.certificate.clone();
         }
         let application_file = config.tenants[0]
             .keys

@@ -521,7 +521,9 @@ impl Proposal {
         let _guard = stage!(
             "proposal_gate",
             self.operation
-                .run(async { Ok(self.database.proposal_gate.clone().lock_owned().await) })
+                .run(async {
+                    Ok::<_, anyhow::Error>(self.database.proposal_gate.clone().lock_owned().await)
+                })
                 .await
         );
         stage!(
@@ -540,7 +542,13 @@ impl Proposal {
         );
         let command = stage!("command", self.request.command(authorization));
         let encoded = stage!("encode", command.encode());
-        let bytes = stage!("group_write", self.database.group.write(encoded).await);
+        let bytes = stage!(
+            "group_write",
+            self.database
+                .group
+                .write(kasumi_raft::ApplicationProposal::generated(encoded))
+                .await
+        );
         let outcome = stage!(
             "decode",
             serde_json::from_slice::<Result<TargetOutcome>>(&bytes)

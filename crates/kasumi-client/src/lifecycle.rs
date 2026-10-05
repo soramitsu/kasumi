@@ -3,6 +3,10 @@ use kasumi_serving::{ControlTrust, VerifiedControlChange, VerifiedControlIntent}
 use kasumi_types::*;
 use tonic::transport::Channel;
 
+#[path = "control_topology.rs"]
+mod topology;
+pub use topology::{CurrentControlTopology, CurrentControlTopologyRelease};
+
 /// Explicit pinned mTLS plus installed control signer trust. Verified immutable
 /// commitments are not live phase grants; the independent issuer supplies those.
 #[derive(Clone)]
@@ -10,6 +14,7 @@ pub struct KasumiLifecycleClient {
     deadline: Option<tokio::time::Instant>,
     inner: proto::kasumi_lifecycle_control_client::KasumiLifecycleControlClient<Channel>,
     trust: ControlTrust,
+    certificate_sha256: String,
 }
 impl KasumiLifecycleClient {
     pub(crate) fn set_deadline(&mut self, deadline: tokio::time::Instant) {
@@ -41,6 +46,7 @@ impl KasumiLifecycleClient {
             .max_encoding_message_size(16 << 20)
             .max_decoding_message_size(16 << 20),
             trust,
+            certificate_sha256: hex::encode(config.identity.certificate_pin()),
         })
     }
     pub async fn execute(

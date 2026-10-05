@@ -76,8 +76,7 @@ impl HistoricalSourceSecurityDescriptor {
     }
 
     /// Construct from the exact opened Transit client and its snapshotted CA.
-    /// System roots have no pinned trust content and cannot be accepted as a
-    /// historical source in the first release.
+    /// Every Transit client uses pinned trust, including the writable primary.
     pub fn transit(provider: &TransitKeyProvider) -> Result<Self> {
         Ok(Self::Transit {
             key_ref: provider.key_ref.clone(),
@@ -86,9 +85,7 @@ impl HistoricalSourceSecurityDescriptor {
             mount: provider.mount.clone(),
             key_name: provider.key_name.clone(),
             derived: provider.derived,
-            ca_trust_sha256: provider
-                .pinned_ca_sha256
-                .context("historical Transit source requires a pinned CA certificate")?,
+            ca_trust_sha256: provider.pinned_ca_sha256,
         })
     }
 
@@ -122,7 +119,8 @@ pub struct TransitConfig {
     pub key_name: String,
     pub credential: std::sync::Arc<dyn kasumi_transport::credentials::CredentialSource>,
     pub namespace: Option<String>,
-    pub ca_pem: Option<Vec<u8>>,
+    /// Required pinned CA bundle. System trust is never a fallback.
+    pub ca_pem: Vec<u8>,
     /// Set only for Transit keys created with `derived=true`.
     pub derived: bool,
 }
@@ -146,7 +144,7 @@ pub struct TransitKeyProvider {
     key_ref: String,
     namespace: Option<String>,
     derived: bool,
-    pinned_ca_sha256: Option<[u8; 32]>,
+    pinned_ca_sha256: [u8; 32],
     credential: std::sync::Arc<dyn kasumi_transport::credentials::CredentialSource>,
 }
 
@@ -183,24 +181,21 @@ impl TransitKeyProvider {
             .min_tls_version(reqwest::tls::Version::TLS_1_3)
             .redirect(reqwest::redirect::Policy::none())
             .timeout(std::time::Duration::from_secs(5));
-        let pinned_ca_sha256 = if let Some(ca) = config.ca_pem {
-            ensure!(
-                !ca.is_empty() && ca.len() <= 1 << 20,
-                "Transit CA certificate outside first-release bounds"
-            );
-            let certificates = reqwest::Certificate::from_pem_bundle(&ca)?;
-            ensure!(
-                !certificates.is_empty(),
-                "Transit CA bundle contains no certificates"
-            );
-            builder = builder.tls_built_in_root_certs(false);
-            for certificate in certificates {
-                builder = builder.add_root_certificate(certificate);
-            }
-            Some(Sha256::digest(&ca).into())
-        } else {
-            None
-        };
+        let ca = config.ca_pem;
+        ensure!(
+            !ca.is_empty() && ca.len() <= 1 << 20,
+            "Transit CA certificate outside first-release bounds"
+        );
+        let certificates = reqwest::Certificate::from_pem_bundle(&ca)?;
+        ensure!(
+            !certificates.is_empty(),
+            "Transit CA bundle contains no certificates"
+        );
+        builder = builder.tls_built_in_root_certs(false);
+        for certificate in certificates {
+            builder = builder.add_root_certificate(certificate);
+        }
+        let pinned_ca_sha256 = Sha256::digest(&ca).into();
         let key_ref = format!(
             "{}|{}|{}|{}",
             endpoint,
@@ -794,7 +789,7 @@ mod tests {
             key_name: "tenant-key".into(),
             credential: Arc::new(|| Ok(Zeroizing::new("test-runtime-secret".into()))),
             namespace: Some("teams".into()),
-            ca_pem: Some(fixture.ca_pem.clone()),
+            ca_pem: fixture.ca_pem.clone(),
             derived: true,
         }
     }
@@ -878,8 +873,8 @@ mod tests {
         state.wrapping.set_minimum_version(2);
         store.refresh_lease().await.unwrap();
         assert_eq!(
-            store.get("docs", b"a").unwrap(),
-            Some(b"plaintext document".to_vec())
+            store.get("docs", b"a").unwrap().as_deref(),
+            Some(b"plaintext document".as_slice())
         );
         let generated = provider.generate_key("tenant").await.unwrap();
         let previous = state.requests.lock().len();
@@ -902,14 +897,22 @@ mod tests {
         let state = Service::new();
         let fixture = TlsFixture::spawn(router(state.clone())).await;
         let mut untrusted = config(&fixture);
-        untrusted.ca_pem = None;
+        untrusted.ca_pem.clear();
+        assert!(TransitKeyProvider::new(untrusted).is_err());
+        let mut wrong_trust = config(&fixture);
+        wrong_trust.ca_pem = rcgen::generate_simple_self_signed(vec!["localhost".into()])
+            .unwrap()
+            .cert
+            .pem()
+            .into_bytes();
         assert!(
-            TransitKeyProvider::new(untrusted)
+            TransitKeyProvider::new(wrong_trust)
                 .unwrap()
                 .generate_key("tenant")
                 .await
                 .is_err()
         );
+        assert!(state.requests.lock().is_empty());
         let provider = TransitKeyProvider::new(config(&fixture)).unwrap();
         for response in [2, 3, 4] {
             state.response_mode.store(response, Ordering::SeqCst);
@@ -975,7 +978,7 @@ mod tests {
                 key_name: "key".into(),
                 credential: Arc::new(|| Ok(Zeroizing::new("secret".into()))),
                 namespace: None,
-                ca_pem: None,
+                ca_pem: Vec::new(),
                 derived: false,
             };
             assert!(TransitKeyProvider::new(config).is_err());
@@ -1182,7 +1185,7 @@ mod historical_resolver_tests {
                 move || Ok(Zeroizing::new(token.clone()))
             }),
             namespace: Some("team".into()),
-            ca_pem: Some(ca.clone()),
+            ca_pem: ca.clone(),
             derived,
         };
         let original = HistoricalKeySource::transit(Arc::new(
@@ -1202,13 +1205,11 @@ mod historical_resolver_tests {
         ))
         .unwrap();
         let mut changed_trust = config("archive", "new-token", true);
-        changed_trust.ca_pem = Some(
-            rcgen::generate_simple_self_signed(vec!["localhost".into()])
-                .unwrap()
-                .cert
-                .pem()
-                .into_bytes(),
-        );
+        changed_trust.ca_pem = rcgen::generate_simple_self_signed(vec!["localhost".into()])
+            .unwrap()
+            .cert
+            .pem()
+            .into_bytes();
         let changed_trust =
             HistoricalKeySource::transit(Arc::new(TransitKeyProvider::new(changed_trust).unwrap()))
                 .unwrap();
@@ -1241,11 +1242,8 @@ mod historical_resolver_tests {
             .is_err()
         );
         let mut unpinned = config("archive", "token", true);
-        unpinned.ca_pem = None;
-        assert!(
-            HistoricalKeySource::transit(Arc::new(TransitKeyProvider::new(unpinned).unwrap()))
-                .is_err()
-        );
+        unpinned.ca_pem.clear();
+        assert!(TransitKeyProvider::new(unpinned).is_err());
     }
 }
 
@@ -1263,7 +1261,7 @@ mod historical_source_descriptor_tests {
             .into_bytes()
     }
 
-    fn config(ca: Option<Vec<u8>>, token: &str) -> TransitConfig {
+    fn config(ca: Vec<u8>, token: &str) -> TransitConfig {
         let token = token.to_owned();
         TransitConfig {
             endpoint: "https://EXAMPLE.com:443".into(),
@@ -1287,8 +1285,8 @@ mod historical_source_descriptor_tests {
     #[test]
     fn transit_descriptor_tracks_exact_resource_mode_and_pinned_trust() {
         let ca = ca_pem();
-        let (key_ref, original) = transit(config(Some(ca.clone()), "old-token"));
-        let mut rotated = config(Some(ca.clone()), "new-token");
+        let (key_ref, original) = transit(config(ca.clone(), "old-token"));
+        let mut rotated = config(ca.clone(), "new-token");
         rotated.endpoint = "https://example.com".into();
         assert_eq!(original, transit(rotated).1);
         assert_eq!(original.dispatch_identity(), ("transit", key_ref.as_str()));
@@ -1304,7 +1302,7 @@ mod historical_source_descriptor_tests {
         let expected: [u8; 32] = Sha256::digest(&ca).into();
         assert_eq!(ca_trust_sha256, &expected);
 
-        let mut changed = config(Some(ca.clone()), "new-token");
+        let mut changed = config(ca.clone(), "new-token");
         changed.derived = false;
         assert_eq!(key_ref, transit(changed).0);
         assert_ne!(
@@ -1328,7 +1326,7 @@ mod historical_source_descriptor_tests {
             transit(config_with_change(&ca, |c| c.endpoint = "https://other.example".into())).1
         );
         let replacement_ca = ca_pem();
-        let (same_key_ref, changed_trust) = transit(config(Some(replacement_ca), "new-token"));
+        let (same_key_ref, changed_trust) = transit(config(replacement_ca, "new-token"));
         assert_eq!(key_ref, same_key_ref);
         assert_ne!(original, changed_trust);
 
@@ -1346,27 +1344,25 @@ mod historical_source_descriptor_tests {
     }
 
     fn config_with_change(ca: &[u8], change: impl FnOnce(&mut TransitConfig)) -> TransitConfig {
-        let mut config = config(Some(ca.to_vec()), "new-token");
+        let mut config = config(ca.to_vec(), "new-token");
         change(&mut config);
         config
     }
 
     #[test]
-    fn unpinned_transit_source_cannot_get_historical_descriptor() {
-        let provider = TransitKeyProvider::new(config(None, "token")).unwrap();
-        assert!(HistoricalSourceSecurityDescriptor::transit(&provider).is_err());
-        assert!(TransitKeyProvider::new(config(Some(Vec::new()), "token")).is_err());
+    fn transit_constructor_rejects_empty_invalid_and_oversized_pinned_trust() {
+        assert!(TransitKeyProvider::new(config(Vec::new(), "token")).is_err());
         assert!(
-            TransitKeyProvider::new(config(Some(b"garbage but nonempty".to_vec()), "token"))
-                .is_err()
+            TransitKeyProvider::new(config(b"garbage but nonempty".to_vec(), "token")).is_err()
         );
         assert!(
             TransitKeyProvider::new(config(
-                Some(b"-----BEGIN CERTIFICATE-----\nAA==\n-----END CERTIFICATE-----\n".to_vec()),
+                b"-----BEGIN CERTIFICATE-----\nAA==\n-----END CERTIFICATE-----\n".to_vec(),
                 "token"
             ))
             .is_err()
         );
+        assert!(TransitKeyProvider::new(config(vec![b' '; (1 << 20) + 1], "token")).is_err());
     }
 
     #[test]
@@ -1434,7 +1430,7 @@ mod historical_source_set_tests {
             key_name: "archive".into(),
             credential: Arc::new(FileCredentialSource::new(token).unwrap()),
             namespace: Some("team".into()),
-            ca_pem: Some(ca.to_vec()),
+            ca_pem: ca.to_vec(),
             derived: true,
         }
     }
@@ -1796,8 +1792,7 @@ mod historical_source_set_tests {
         let token = root.path().join("token");
         std::fs::write(&token, "token").unwrap();
         let ca = ca_pem();
-        let changes: [ConfigChange; 3] =
-            [|_| {}, |c| c.derived = false, |c| c.ca_pem = Some(ca_pem())];
+        let changes: [ConfigChange; 3] = [|_| {}, |c| c.derived = false, |c| c.ca_pem = ca_pem()];
         for change in changes {
             let mut config = transit_config(&ca, &token);
             change(&mut config);

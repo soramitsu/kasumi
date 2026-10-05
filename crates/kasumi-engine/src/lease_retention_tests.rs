@@ -36,7 +36,7 @@ fn node() -> Arc<NodeAdmission> {
     )
     .unwrap()
 }
-struct CodecFixture {
+pub(crate) struct CodecFixture {
     engine: TenantEngine,
     disk: Arc<kasumi_store::ScratchDisk>,
     _directory: tempfile::TempDir,
@@ -114,7 +114,7 @@ fn fixture(
     }
 }
 fn install(engine: &TenantEngine, state: TenantState) {
-    let indexes = Arc::new(QueryIndexes::build(&state.collections).unwrap());
+    let indexes = Arc::new(crate::index_source::build(&state).unwrap());
     let snapshot_accounting = SnapshotAccounting::rebuild(&state).unwrap();
     engine.publish_generation(Some(Arc::new(Generation {
         terminals: engine.generation().unwrap().terminals.clone(),
@@ -124,6 +124,7 @@ fn install(engine: &TenantEngine, state: TenantState) {
         receipts: engine.generation().unwrap().receipts.clone(),
         backup_bindings: engine.generation().unwrap().backup_bindings.clone(),
         snapshot_accounting,
+        application_selection: std::sync::OnceLock::new(),
         _read_reservations: vec![],
     })));
 }
@@ -184,6 +185,111 @@ fn select(
             },
         )
         .unwrap()
+}
+
+/// Share the real selector's coherent page fixture with worker custody tests.
+/// The returned owner keeps its private scratch storage alive with the engine.
+pub(crate) fn scan_workspace_fixture(
+    node: &Arc<NodeAdmission>,
+) -> (CodecFixture, SelectedSnapshot, QueryCancellation) {
+    let engine = fixture(
+        kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 32),
+        1,
+        8192,
+        1 << 20,
+    );
+    let clock = Arc::new(Clock::default());
+    let lease = open(&engine, node, &clock);
+    let cancellation = QueryCancellation::default();
+    let selected = engine
+        .leases
+        .select(
+            &engine,
+            &lease.header.lease_id,
+            PageSelection::Scan(ScanSnapshotPage {
+                lease_id: lease.header.lease_id.clone(),
+                collection: "docs".into(),
+                after_id: None,
+                limit: 1,
+            }),
+            PageAccess {
+                context: &context(),
+                term: 1,
+                node,
+                cancellation: &cancellation,
+            },
+        )
+        .unwrap();
+    (engine, selected, cancellation)
+}
+
+#[test]
+fn selected_input_baseline_reuses_grown_charge_and_survives_lease_expiry() {
+    let engine = fixture(
+        kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 32),
+        1,
+        64 << 10,
+        1 << 20,
+    );
+    // Point selection can retain a source larger than a wire response. Force
+    // selection to grow beyond its initial response-based reservation floor.
+    let mut state = engine.generation().unwrap().state.clone();
+    state.limits.max_result_bytes = 1024;
+    install(&engine, state);
+    let node = node();
+    let clock = Arc::new(Clock::default());
+    let lease = open(&engine, &node, &clock);
+    let root_bytes = crate::test_utils::reserved_payload_bytes(&node);
+    let selected = select(&engine, &node, &lease, "d0000");
+    let selected_bytes = crate::test_utils::reserved_payload_bytes(&node) - root_bytes;
+    assert!(selected.selected_input_bytes > 64 << 10);
+    assert_eq!(selected.selected_input_bytes, selected_bytes);
+    let SelectedSnapshot {
+        handle,
+        generation,
+        selected_input_bytes,
+        reservation,
+        ..
+    } = selected;
+    let old = Arc::downgrade(&generation.state.collections["docs"].documents["d0000"]);
+    let mut memory = kasumi_query::QueryMemory::new(reservation, selected_input_bytes).unwrap();
+    assert_eq!(memory.live_bytes(), selected_input_bytes);
+    assert_eq!(
+        crate::test_utils::reserved_payload_bytes(&node),
+        root_bytes + selected_bytes
+    );
+    memory.reserve(4096).unwrap();
+    assert_eq!(
+        crate::test_utils::reserved_payload_bytes(&node),
+        root_bytes + selected_bytes + 4096
+    );
+
+    engine
+        .leases
+        .close(&context(), &lease.header.lease_id)
+        .unwrap();
+    assert!(!handle.live());
+    write(&engine, put("d0000", 64 << 10));
+    assert!(
+        old.upgrade().is_some(),
+        "selected input must survive lease expiry"
+    );
+    drop(generation);
+    assert!(old.upgrade().is_none());
+    drop(handle);
+    drop(lease);
+    assert_eq!(
+        crate::test_utils::reserved_payload_bytes(&node),
+        selected_bytes + 4096
+    );
+    let mut reservation = memory.into_workspace();
+    reservation.retain_workspace();
+    assert_eq!(
+        crate::test_utils::reserved_payload_bytes(&node),
+        selected_bytes + 4096
+    );
+    drop(reservation);
+    assert_eq!(crate::test_utils::reserved_payload_bytes(&node), 0);
 }
 
 #[test]

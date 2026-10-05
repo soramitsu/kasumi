@@ -6,6 +6,15 @@ use crate::{
     serving_runtime::{RuntimeLease, TenantServingConfig},
 };
 
+#[path = "approved_enrollment.rs"]
+mod approval;
+pub(super) use approval::ApprovedEnrollment;
+pub(super) fn approval_error(error: &anyhow::Error) -> Option<&kasumi_types::Error> {
+    error
+        .downcast_ref::<approval::Failure>()
+        .and_then(approval::Failure::validation_error)
+}
+
 #[derive(Clone)]
 pub(super) enum ProvisionSelection {
     Proposal(Proposal),
@@ -35,12 +44,9 @@ pub(super) fn capture_deadline() -> Result<kasumi_clock::ElapsedDeadline> {
     )
 }
 fn api_error(error: anyhow::Error) -> kasumi_types::Error {
-    error
-        .downcast_ref::<kasumi_types::Error>()
-        .cloned()
-        .unwrap_or_else(|| {
-            kasumi_types::Error::new(kasumi_types::ErrorCode::Unavailable, error.to_string())
-        })
+    administrative_error(&error).cloned().unwrap_or_else(|| {
+        kasumi_types::Error::new(kasumi_types::ErrorCode::Unavailable, error.to_string())
+    })
 }
 impl Administration {
     pub(super) fn enrollment_proposal(&self, tenant: &str) -> Result<Proposal> {
@@ -126,21 +132,21 @@ impl Administration {
     ) -> Result<()> {
         let generation = resident.database.engine().generation()?;
         ensure!(
-            generation.state.incarnation == proposal.route.incarnation
-                && generation.state.restored_from.is_none()
-                && generation.state.pending_restore.is_none()
-                && !generation.state.retired,
+            generation.incarnation() == proposal.route.incarnation
+                && generation.restored_from().is_none()
+                && generation.pending_restore().is_none()
+                && !generation.retired(),
             "enrollment requires its exact fresh resident generation"
         );
-        if !self
-            .committed_topology()?
+        if !ControlPlane::local_topology(&self.control)?
+            .topology
             .tenants
             .contains_key(&proposal.tenant)
         {
             ensure!(
-                serde_json::to_vec(&generation.state.policy)?
+                serde_json::to_vec(generation.policy())?
                     == serde_json::to_vec(&proposal.initial_policy)?
-                    && serde_json::to_vec(&generation.state.limits)?
+                    && serde_json::to_vec(generation.limits())?
                         == serde_json::to_vec(&proposal.initial_limits)?,
                 "resident bootstrap policy/limits differ from the approved proposal"
             );
@@ -151,39 +157,30 @@ impl Administration {
         );
         Ok(())
     }
-    pub(super) fn approved_enrollment(&self, tenant: &str) -> Result<Proposal> {
-        self.control.raft_group().check_access()?;
-        let generation = self.control.engine().generation()?;
-        let body = &generation
-            .state
-            .collections
-            .get("tenant_enrollments")
-            .and_then(|collection| collection.documents.get(tenant))
-            .context("tenant has no committed Control enrollment approval")?
-            .body;
-        let proposal: Proposal = serde_json::from_value(body.clone())?;
-        ensure!(
-            proposal.tenant == tenant,
-            "Control enrollment identity differs"
-        );
-        proposal.digest()?;
-        Ok(proposal)
+    pub(super) fn approved_enrollment(&self, tenant: &str) -> Result<ApprovedEnrollment> {
+        let selection = ControlPlane::select_local(&self.control)?;
+        selection.check_admission(&self.admission)?;
+        let document = selection
+            .enrollment_document(tenant)?
+            .context("tenant has no committed Control enrollment approval")?;
+        let mut work = approval::Work::new(&self.admission, document)?;
+        if let Err(error) = work.evaluate(&self.admission, Some(tenant)) {
+            return Err(work.fail(error));
+        }
+        // The original storage/serving error owns its own diagnostics. Work
+        // drops its partial data before its grant on this independent failure.
+        selection.check_access()?;
+        Ok(work.finish())
     }
     #[cfg(test)]
     pub(crate) fn exact_enrollment_approved_for_test(&self, tenant: &str) -> Result<Option<bool>> {
-        self.control.raft_group().check_access()?;
-        let generation = self.control.engine().generation()?;
-        let present = generation
-            .state
-            .collections
-            .get("tenant_enrollments")
-            .and_then(|collection| collection.documents.get(tenant))
-            .is_some();
+        let selection = ControlPlane::select_local(&self.control)?;
+        let present = selection.enrollment_document(tenant)?.is_some();
         if !present {
             return Ok(None);
         }
         Ok(Some(
-            self.approved_enrollment(tenant)?.digest()?
+            self.approved_enrollment(tenant)?.digest()
                 == self.enrollment_proposal(tenant)?.digest()?,
         ))
     }
@@ -201,56 +198,60 @@ impl Administration {
             "selected enrollment proposal changed"
         );
         ensure!(
-            !self.committed_topology()?.tenants.contains_key(tenant),
+            !ControlPlane::local_topology(&self.control)?
+                .topology
+                .tenants
+                .contains_key(tenant),
             "tenant already has a serving route"
         );
         let definition = ControlPlane::enrollment_definition();
-        let existing = self
-            .control
-            .engine()
-            .generation()?
-            .state
-            .collections
-            .get("tenant_enrollments")
-            .map(|collection| collection.definition.clone());
-        match existing {
-            Some(existing) => ensure!(
-                serde_json::to_vec(&existing)? == serde_json::to_vec(&definition)?,
-                "Control enrollment schema differs"
-            ),
-            None => {
-                if self
-                    .control
-                    .engine()
-                    .generation()?
-                    .state
-                    .lifecycle_control
-                    .is_some()
-                {
-                    return Err(kasumi_types::Error::new(
-                        kasumi_types::ErrorCode::Corruption,
-                        "installed Control enrollment schema is missing",
-                    )
-                    .into());
+        let create_schema = {
+            let selection = ControlPlane::select_local(&self.control)?;
+            let create = match selection.enrollment_schema() {
+                Some(existing) => {
+                    ensure!(
+                        serde_json::to_vec(existing)? == serde_json::to_vec(&definition)?,
+                        "Control enrollment schema differs"
+                    );
+                    false
                 }
-                self.control
-                    .administer(context.clone(), Operation::CreateCollection(definition))
-                    .await?;
-            }
+                None => {
+                    if selection.lifecycle_installation().is_some() {
+                        return Err(kasumi_types::Error::new(
+                            kasumi_types::ErrorCode::Corruption,
+                            "installed Control enrollment schema is missing",
+                        )
+                        .into());
+                    }
+                    true
+                }
+            };
+            selection.check_access()?;
+            create
+        };
+        if create_schema {
+            self.control
+                .administer(context.clone(), Operation::CreateCollection(definition))
+                .await?;
         }
-        let existing = self
-            .control
-            .engine()
-            .generation()?
-            .state
-            .collections
-            .get("tenant_enrollments")
-            .and_then(|collection| collection.documents.get(tenant))
-            .map(|document| document.body.clone());
-        if let Some(existing) = existing {
-            let approved: Proposal = serde_json::from_value(existing)?;
+        let approved = {
+            let selection = ControlPlane::select_local(&self.control)?;
+            selection.check_admission(&self.admission)?;
+            match selection.enrollment_document(tenant)? {
+                Some(existing) => {
+                    let mut work = approval::Work::new(&self.admission, existing)?;
+                    if let Err(error) = work.evaluate(&self.admission, None) {
+                        return Err(work.fail(error));
+                    }
+                    selection.check_access()?;
+                    Some(work.finish())
+                }
+                None => None,
+            }
+        };
+        if let Some(approved) = approved {
             ensure!(
-                approved.digest()? == proposal.digest()?,
+                approved.digest() == proposal.digest()?,
                 "tenant already has another immutable approval"
             );
         } else {
@@ -353,7 +354,7 @@ impl Administration {
             .await?;
         self.check_enrollment(&invocation)?;
         ensure!(
-            self.approved_enrollment(&proposal.tenant)?.digest()? == proposal.digest()?,
+            self.approved_enrollment(&proposal.tenant)?.digest() == proposal.digest()?,
             "approved enrollment differs from this replica"
         );
         let mut prepared = PreparedTenant {
@@ -539,7 +540,9 @@ impl Administration {
                         Some(&proposal.route.incarnation),
                     )?
                     .context("enrollment bootstrap missing")?;
-                let database = kasumi_engine::open_replicated(
+                let constructor_index = crate::administration::original_serving_runtime::OriginalRecoveries::configured_index(&self.config, name)?;
+                let mut constructor_seat = self.original_recoveries.claim(constructor_index).await;
+                let database = constructor_seat.run_snapshot(kasumi_engine::open_replicated(
                     replication.node_id,
                     stores.clone(),
                     &bootstrap,
@@ -547,7 +550,7 @@ impl Administration {
                     kasumi_raft::server_config(),
                     self.audit.clone(),
                 )
-                .await?;
+                ).await.map_err(crate::administration::original_serving_runtime::OriginalRecoveryObservation::foreign_error)?;
                 prepared.resources.databases.push(database.clone());
                 let resident = ManagedTenant {
                     store: stores.application().clone(),
@@ -608,7 +611,9 @@ impl Administration {
                 .push(stores.custody().store().clone());
             self.config
                 .install_tenant_audit_archive(stores.application(), None)?;
-            let opened = kasumi_engine::open_existing_replicated(
+            let constructor_index = crate::administration::original_serving_runtime::OriginalRecoveries::configured_index(&self.config, name)?;
+            let mut constructor_seat = self.original_recoveries.claim(constructor_index).await;
+            let opened = constructor_seat.run_snapshot(kasumi_engine::open_existing_replicated(
                 replication.node_id,
                 stores.clone(),
                 incarnation,
@@ -616,7 +621,7 @@ impl Administration {
                 kasumi_raft::server_config(),
                 self.audit.clone(),
             )
-            .await?;
+            ).await.map_err(crate::administration::original_serving_runtime::OriginalRecoveryObservation::foreign_error)?;
             prepared.resources.databases.push(opened.database.clone());
             for (alias, destination) in &self.destinations {
                 opened
@@ -642,7 +647,10 @@ impl Administration {
                 lease,
             };
             self.require_resident_proposal(&resident, &proposal)?;
-            self.node.drain_initializers().await?;
+            self.node
+                .drain_initializers()
+                .await
+                .map_err(|failure| failure.observation())?;
             let group = format!("{name}/{incarnation}");
             let store = stores.application().clone();
             network.register_group_with_bootstrap(
@@ -701,7 +709,7 @@ impl crate::startup_owner::Runtime for PreparedTenant {
         ensure!(
             self.manager
                 .approved_enrollment(&self.proposal.tenant)?
-                .digest()?
+                .digest()
                 == self.proposal.digest()?,
             "Control approval changed before handoff"
         );
@@ -824,3 +832,8 @@ mod tests;
 
 #[path = "standalone_tenant_preparation.rs"]
 mod standalone_preparation;
+
+#[cfg(test)]
+pub(super) fn measure_topology<T>(work: impl FnOnce() -> T) -> (T, usize, usize, bool, usize) {
+    approval::measure_topology(work)
+}

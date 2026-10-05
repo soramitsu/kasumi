@@ -191,7 +191,7 @@ impl ControlGenesis {
         let enrollment = ControlPlane::enrollment_definition();
         state.collections.insert(
             enrollment.name.clone(),
-            schema::prepare_collection(None, &enrollment, true)?,
+            schema::prepare_collection(state, None, &enrollment, true)?,
         );
         if let ControlLifecycleGenesis::Installed {
             command_id,

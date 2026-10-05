@@ -1,11 +1,32 @@
-//! An owned current Control quorum observation for administrative adapters.
+//! An owned current Control quorum observation with its retained permission.
 //! Its constructor reads the actual database. Serialized roots, membership lists
 //! and historical receipts cannot construct this authorization.
 use super::*;
 
+/// Closed request purposes retain their exact permission through every quorum
+/// release. Reading routes does not require or confer administrative authority.
+#[derive(Clone, Copy)]
+pub(super) enum ControlObservationAccess {
+    Administration,
+    TopologyRead,
+}
+impl ControlObservationAccess {
+    pub(super) fn authorize(self, database: &Database, context: &RequestContext) -> Result<()> {
+        match self {
+            Self::Administration => database.engine.authorize(context, None, Action::Admin),
+            Self::TopologyRead => {
+                database
+                    .engine
+                    .authorize(context, Some("topology"), Action::Read)
+            }
+        }
+    }
+}
+
 pub(super) struct ControlQuorumFence {
     database: Arc<Database>,
     context: RequestContext,
+    access: ControlObservationAccess,
     installation: LifecycleInstallation,
     policy_epoch: u64,
     term: u64,
@@ -62,9 +83,7 @@ impl ControlQuorumFence {
         self.cancellation.check()?;
         self.context.authorization.check_live()?;
         self.database.access()?;
-        self.database
-            .engine
-            .authorize(&self.context, None, Action::Admin)?;
+        self.access.authorize(&self.database, &self.context)?;
         let state = self.database.engine.generation()?;
         self.context
             .authorization
@@ -105,7 +124,12 @@ impl ControlQuorumFence {
             completed: false,
         };
         self.check()?;
-        if self.database.lifecycle_barrier(&self.context).await? != self.term {
+        if self
+            .database
+            .control_observation_barrier(&self.context, self.access)
+            .await?
+            != self.term
+        {
             return Err(changed(
                 "Control term changed before administrative release",
             ));
@@ -172,7 +196,9 @@ impl Database {
         partition: ControlAuthorityPartition,
     ) -> Result<Arc<ControlAdministrativeFence>> {
         partition.validate()?;
-        let quorum = self.authorize_control_quorum(context).await?;
+        let quorum = self
+            .authorize_control_quorum(context, ControlObservationAccess::Administration)
+            .await?;
         if quorum.installation.partitions.get(&partition.key()) != Some(&partition) {
             return Err(Error::new(
                 ErrorCode::Forbidden,
@@ -185,6 +211,7 @@ impl Database {
     pub(super) async fn authorize_control_quorum(
         self: &Arc<Self>,
         context: RequestContext,
+        access: ControlObservationAccess,
     ) -> Result<Arc<ControlQuorumFence>> {
         context.authorization.check_live()?;
         if context.authorization.expires_at_ms().is_none() {
@@ -201,7 +228,7 @@ impl Database {
                 "Control administrative concurrency limit",
             )
         })?;
-        let term = self.lifecycle_barrier(&context).await?;
+        let term = self.control_observation_barrier(&context, access).await?;
         let metrics = self.group.raft().metrics().borrow().clone();
         let state = self.engine.generation()?;
         let control = state
@@ -246,6 +273,7 @@ impl Database {
         let fence = Arc::new(ControlQuorumFence {
             database: self.clone(),
             context,
+            access,
             installation,
             policy_epoch,
             term,

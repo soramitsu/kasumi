@@ -120,6 +120,7 @@ impl AuditArchivePublicationObserver for Observer {
 }
 impl Operator {
     pub(super) fn prepare_archives(&self, journal: &mut Journal) -> Result<()> {
+        self.validate(journal)?;
         let directory = journal.target_directory.join(CACHE);
         let target = self
             .open_target_directory(journal, false)?
@@ -156,6 +157,7 @@ impl Operator {
         &self,
         journal: &Journal,
     ) -> Result<Arc<FilesystemAuditArchive>> {
+        self.validate(journal)?;
         let directory = journal.target_directory.join(CACHE);
         let identity = journal
             .archive_directory

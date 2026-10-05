@@ -3,14 +3,13 @@ use kasumi_store::{DiskWork, NodeDisk, NodeDiskConfig, NodeDiskFile, NodeStore, 
 use std::{
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
-    sync::Weak,
     task::Poll,
 };
 use tokio::sync::{Notify, oneshot};
 
 struct PhysicalOwner {
     worker: Option<tokio::task::JoinHandle<()>>,
-    node: Arc<NodeStore>,
+    node: NodeStore,
     entered: Arc<Notify>,
     closing: Arc<Notify>,
     panic_run: bool,
@@ -60,7 +59,8 @@ struct Fixture {
     _directory: tempfile::TempDir,
     path: PathBuf,
     lock: PathBuf,
-    weak: Weak<NodeStore>,
+    locator: kasumi_store::NodeStoreLocator,
+    retirement: kasumi_store::NodeRetirement,
     disk: Arc<NodeDisk>,
     disk_config: NodeDiskConfig,
     scratch: Arc<ScratchDisk>,
@@ -87,6 +87,8 @@ fn fixture(panic_run: bool, panic_close: bool) -> (Fixture, PhysicalOwner, Regis
         directory: directory.path().join("scratch"),
         max_bytes: 256 << 30,
         min_free_bytes: 0,
+
+        native_cache_bytes: 8 << 20,
     };
     let storage = crate::runtime_memory::RuntimeStorage::isolated_fixture(
         Default::default(),
@@ -102,6 +104,7 @@ fn fixture(panic_run: bool, panic_close: bool) -> (Fixture, PhysicalOwner, Regis
         kasumi_store::test_utils::NODE_STORE_ID,
         disk.clone(),
         scratch.clone(),
+        disk.native_storage_config(),
     )
     .unwrap();
     let held = node.clone();
@@ -113,7 +116,8 @@ fn fixture(panic_run: bool, panic_close: bool) -> (Fixture, PhysicalOwner, Regis
     let entered = Arc::new(Notify::new());
     let closing = Arc::new(Notify::new());
     let fixture = Fixture {
-        weak: Arc::downgrade(&node),
+        locator: node.locator(),
+        retirement: node.clone().retire(),
         disk: disk.clone(),
         disk_config: disk_config.clone(),
         scratch,
@@ -139,13 +143,17 @@ fn fixture(panic_run: bool, panic_close: bool) -> (Fixture, PhysicalOwner, Regis
 }
 impl Fixture {
     fn still_owned(&self) {
-        assert!(self.weak.upgrade().is_some());
+        assert!(matches!(
+            self.locator.try_borrow(),
+            kasumi_store::NodeStoreLookup::Active(_)
+        ));
         assert!(
             NodeStore::open_existing(
                 &self.path,
                 kasumi_store::test_utils::NODE_STORE_ID,
                 self.disk.clone(),
                 self.scratch.clone(),
+                self.disk.native_storage_config()
             )
             .is_err()
         );
@@ -154,8 +162,15 @@ impl Fixture {
     fn release(&mut self) {
         self.release.take().unwrap().send(()).unwrap();
     }
-    async fn reopened(&self) {
-        assert!(self.weak.upgrade().is_none());
+    async fn reopened(&mut self) {
+        assert_eq!(
+            self.retirement.retry(),
+            kasumi_store::StorageCensusDisposition::Retired
+        );
+        assert!(matches!(
+            self.locator.try_borrow(),
+            kasumi_store::NodeStoreLookup::Missing
+        ));
         // Reuse the exact installed owners. A fixture re-census while holding
         // this same installation lock would correctly reject that live file.
         let _lock = open_lock(&self.disk, &self.disk_config, &self.lock).unwrap();
@@ -164,6 +179,7 @@ impl Fixture {
             kasumi_store::test_utils::NODE_STORE_ID,
             self.disk.clone(),
             self.scratch.clone(),
+            self.disk.native_storage_config(),
         )
         .unwrap();
         node.shutdown().await.unwrap();
@@ -241,7 +257,9 @@ async fn serving_poll_and_drain_panics_keep_actual_owner_and_original_failures()
     assert_eq!(failure.completion(), DrainCompletion::Complete);
     assert_eq!(failure.issues().len(), 2);
     for (original, retained) in issues.iter().zip(failure.issues()) {
-        assert!(Arc::ptr_eq(original, retained));
+        assert!(kasumi_types::drain::DrainIssueRef::ptr_eq(
+            original, retained
+        ));
     }
     fixture.reopened().await;
 }
@@ -290,7 +308,7 @@ async fn aborted_serving_supervisor_keeps_inventory_for_joined_cleanup_only() {
         .await
         .unwrap()
         .unwrap_err();
-    assert!(Arc::ptr_eq(
+    assert!(kasumi_types::drain::DrainIssueRef::ptr_eq(
         &issue,
         &failure
             .downcast_ref::<kasumi_types::drain::DrainFailure>()
@@ -346,11 +364,14 @@ async fn unacknowledged_failure_fences_only_its_installation_and_drains_refused_
         .error()
         .downcast_ref::<kasumi_types::drain::DrainFailure>()
         .unwrap();
-    assert!(Arc::ptr_eq(&issue, &prior_failure.issues()[0]));
+    assert!(kasumi_types::drain::DrainIssueRef::ptr_eq(
+        &issue,
+        &prior_failure.issues()[0]
+    ));
     refused.reopened().await;
     assert!(check_admission(&registry, identity).is_err());
     let error = drain_registry(&registry).await.unwrap_err();
-    assert!(Arc::ptr_eq(
+    assert!(kasumi_types::drain::DrainIssueRef::ptr_eq(
         &issue,
         &error
             .downcast_ref::<kasumi_types::drain::DrainFailure>()
@@ -363,7 +384,7 @@ async fn unacknowledged_failure_fences_only_its_installation_and_drains_refused_
 #[tokio::test]
 async fn panicking_owner_destructor_retains_unavailable_census_without_respawn_churn() {
     struct DestructorPanic {
-        _node: Arc<NodeStore>,
+        _node: NodeStore,
         _lock: NodeDiskFile,
     }
     impl Owner for DestructorPanic {
@@ -391,6 +412,8 @@ async fn panicking_owner_destructor_retains_unavailable_census_without_respawn_c
         directory: directory.path().join("scratch"),
         max_bytes: 256 << 30,
         min_free_bytes: 0,
+
+        native_cache_bytes: 8 << 20,
     };
     let storage = crate::runtime_memory::RuntimeStorage::isolated_fixture(
         Default::default(),
@@ -406,6 +429,7 @@ async fn panicking_owner_destructor_retains_unavailable_census_without_respawn_c
         kasumi_store::test_utils::NODE_STORE_ID,
         disk.clone(),
         scratch.clone(),
+        disk.native_storage_config(),
     )
     .unwrap();
     let registry = Arc::new(Registry::default());
@@ -443,7 +467,10 @@ async fn panicking_owner_destructor_retains_unavailable_census_without_respawn_c
         assert!(job.handle.lock().unwrap().is_none());
         let state = job.state.lock().unwrap();
         assert_eq!(state.report.issues().len(), 2);
-        assert!(Arc::ptr_eq(&issues[1], &state.report.issues()[1]));
+        assert!(kasumi_types::drain::DrainIssueRef::ptr_eq(
+            &issues[1],
+            &state.report.issues()[1]
+        ));
     }
     // close actually drained the database before the destructor panicked, and
     // unwinding released its managed lock. The outer destructor census remains
@@ -452,8 +479,9 @@ async fn panicking_owner_destructor_retains_unavailable_census_without_respawn_c
     let node = NodeStore::open_existing(
         &path,
         kasumi_store::test_utils::NODE_STORE_ID,
-        disk,
+        disk.clone(),
         scratch,
+        disk.native_storage_config(),
     )
     .unwrap();
     node.shutdown().await.unwrap();

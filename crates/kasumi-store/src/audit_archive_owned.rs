@@ -119,7 +119,7 @@ impl FilesystemAuditArchive {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::private_files;
+    use crate::{NodeDiskMemoryAdmission as _, private_files};
     use std::sync::{
         Mutex,
         atomic::{AtomicU8, Ordering},
@@ -185,14 +185,28 @@ mod tests {
         let fixture_scratch =
             crate::ScratchDisk::fixture(scratch_directory.path(), fixture_memory.clone());
         let directory = crate::test_utils::private_tempdir().unwrap();
-        let store = TenantStore::initialize_catalog_fixture(
-            crate::NodeStore::create_new_fixture(
-                directory.path().join("node.kv"),
+        let node_path = directory.path().join("node.kv");
+        let node = {
+            let disk = crate::test_utils::retry_disk_registry(|| {
+                crate::NodeDisk::fixture_for_path(&node_path, fixture_memory.clone())
+            })
+            .unwrap();
+            crate::NodeStore::create_new(
+                &node_path,
                 crate::test_utils::NODE_STORE_ID,
-                fixture_memory.clone(),
+                disk,
                 fixture_scratch.clone(),
+                crate::test_utils::node_storage_config(),
             )
-            .unwrap(),
+            .unwrap_or_else(|original| std::panic::panic_any(original))
+        };
+        let opening_id = node
+            .registered_opening_id()
+            .expect("archive fixture uses the actual registered node constructor");
+        let opening = crate::RegisteredNodeOpening::retained(fixture_memory.clone(), opening_id)
+            .expect("same installed provider retains the actual node opening");
+        let store = TenantStore::initialize_catalog_fixture(
+            node,
             "tenant-a".into(),
             Arc::new(crate::test_utils::LocalKeyProvider::new([73; 32])),
         )
@@ -248,14 +262,23 @@ mod tests {
         assert_eq!(archive.disk.snapshot().phase, crate::NodeDiskPhase::Failed);
         assert!(archive.publish(&segment).await.is_err());
         let disk = archive.disk.clone();
+        assert!(Arc::ptr_eq(store.node.persistent_disk(), &disk));
         let before_close = disk.snapshot();
-        assert_eq!(before_close.open_files, 1);
+        let node_files = before_close.open_files;
+        assert!(node_files >= 2);
         let node_path = directory.path().join("node.kv");
-        let node_identity = private_files::file_identity(&node_path).unwrap();
-        let node_bytes = std::fs::read(&node_path).unwrap();
+        let node_identity = crate::NodeGroupIdentity::read(&node_path).unwrap();
+        let node_bytes = std::fs::read(node_path.join(kasumi_kv::ROOT_FILE_NAME)).unwrap();
         store.shutdown().await.unwrap();
-        {
+        let native_closes_before = crate::NodeDiskFile::native_close_attempts();
+        let original_close = {
             let failure = store.node.shutdown().await.unwrap_err();
+            let native_closes = crate::NodeDiskFile::native_close_attempts();
+            assert!(
+                native_closes > native_closes_before,
+                "actual native close entered"
+            );
+            let retained_credits = fixture_memory.snapshot();
             assert_eq!(
                 failure.completion(),
                 kasumi_types::drain::DrainCompletion::Retained
@@ -268,23 +291,137 @@ mod tests {
             );
             assert_eq!(failure.issues().len(), repeated.issues().len());
             for (original, repeated) in failure.issues().iter().zip(repeated.issues()) {
-                assert!(Arc::ptr_eq(original, repeated));
+                assert!(kasumi_types::drain::DrainIssueRef::ptr_eq(
+                    original, repeated
+                ));
             }
-            assert!(store.node.db.begin_read().is_err());
-            // The consuming close API cannot prove physical drain on a storage
-            // failure. Its sticky Retained report preserves the original issues;
-            // the installed FileOwner remains for explicit census recovery.
-            assert_eq!(disk.snapshot().open_files, 1);
+            assert!(store.node.body().db.begin_read().is_err());
+            // Failed close keeps every exact owner in the registered group.
+            // Its native drain and original logical errors precede any transfer
+            // into the NodeDisk custody slots counted by retained_file_attempts.
+            let (shutdown, backend, acknowledgement) = {
+                let report = opening.report();
+                let engine = report.engine();
+                assert_eq!(
+                    engine.settlement(),
+                    kasumi_kv::DatabaseOpenSettlement::DrainedWithFailure
+                );
+                assert_eq!(
+                    engine.native_disposition(),
+                    kasumi_kv::BackendNativeDisposition::Drained
+                );
+                let close = engine.database_close().unwrap();
+                assert_eq!(
+                    close.native_disposition(),
+                    kasumi_kv::BackendNativeDisposition::Drained
+                );
+                let kasumi_kv::TerminalObservation::Returned(Err(shutdown)) = close.shutdown()
+                else {
+                    panic!("original registered shutdown failure absent");
+                };
+                let kasumi_kv::TerminalObservation::Returned(Err(backend)) = close.backend() else {
+                    panic!("original registered backend failure absent");
+                };
+                let mut file_errors = Vec::new();
+                // This acknowledgement verifies every cached file AND the root
+                // is failed, sealed and positively drained, with no uncertain
+                // FD outcome. The callback borrows each actual original error.
+                let acknowledgement = report
+                    .acknowledge_failed_close(|error| {
+                        file_errors.push(std::ptr::from_ref(error) as usize);
+                    })
+                    .unwrap();
+                assert_eq!(file_errors.len(), usize::try_from(node_files).unwrap());
+                for _ in 0..2 {
+                    let mut index = 0;
+                    let repeated = report
+                        .acknowledge_failed_close(|error| {
+                            assert_eq!(std::ptr::from_ref(error) as usize, file_errors[index]);
+                            index += 1;
+                        })
+                        .unwrap();
+                    assert_eq!(index, file_errors.len());
+                    drop(repeated);
+                }
+                assert!(matches!(
+                    report.failed_recovery(),
+                    kasumi_kv::TerminalObservation::NotEntered
+                ));
+                (
+                    std::ptr::from_ref(shutdown) as usize,
+                    std::ptr::from_ref(backend) as usize,
+                    acknowledgement,
+                )
+            };
+            assert_eq!(
+                opening.close().unwrap(),
+                kasumi_kv::DatabaseOpenSettlement::DrainedWithFailure
+            );
+            assert!(
+                opening.resume_failed_recovery().is_err(),
+                "unacknowledged transfer cannot begin"
+            );
+            assert_eq!(crate::NodeDiskFile::native_close_attempts(), native_closes);
+            assert_eq!(fixture_memory.snapshot(), retained_credits);
+            assert_eq!(disk.snapshot().open_files, node_files);
             assert_eq!(
                 disk.snapshot().retained_file_attempts,
-                before_close.retained_file_attempts + 1
+                before_close.retained_file_attempts
             );
-        }
+            assert_eq!(
+                fixture_memory.storage_census().drain_owner(opening_id),
+                crate::StorageCensusDisposition::Retained
+            );
+            assert_eq!(fixture_memory.snapshot(), retained_credits);
+            assert_eq!(
+                opening.recover_failed_close(acknowledgement).unwrap(),
+                crate::FailedOpeningRecovery::AwaitingDiskCensus
+            );
+            assert_eq!(crate::NodeDiskFile::native_close_attempts(), native_closes);
+            {
+                let report = opening.report();
+                let engine = report.engine();
+                assert_eq!(
+                    engine.settlement(),
+                    kasumi_kv::DatabaseOpenSettlement::FailedDisposed
+                );
+                assert!(engine.disposal().complete());
+                let close = engine.database_close().unwrap();
+                let kasumi_kv::TerminalObservation::Returned(Err(error)) = close.shutdown() else {
+                    panic!("original shutdown failure lost during transfer");
+                };
+                assert_eq!(std::ptr::from_ref(error) as usize, shutdown);
+                let kasumi_kv::TerminalObservation::Returned(Err(error)) = close.backend() else {
+                    panic!("original backend failure lost during transfer");
+                };
+                assert_eq!(std::ptr::from_ref(error) as usize, backend);
+                assert!(matches!(
+                    report.failed_recovery(),
+                    kasumi_kv::TerminalObservation::Returned(Ok(()))
+                ));
+                assert!(
+                    report
+                        .acknowledge_failed_close(|_| panic!(
+                            "transferred file cannot be acknowledged again"
+                        ))
+                        .is_err()
+                );
+            }
+            assert_eq!(disk.snapshot().open_files, node_files);
+            assert_eq!(
+                disk.snapshot().retained_file_attempts,
+                before_close.retained_file_attempts + usize::try_from(node_files).unwrap()
+            );
+            (shutdown, backend)
+        };
         assert_eq!(
-            private_files::file_identity(&node_path).unwrap(),
+            crate::NodeGroupIdentity::read(&node_path).unwrap(),
             node_identity
         );
-        assert_eq!(std::fs::read(&node_path).unwrap(), node_bytes);
+        assert_eq!(
+            std::fs::read(node_path.join(kasumi_kv::ROOT_FILE_NAME)).unwrap(),
+            node_bytes
+        );
         assert_eq!(disk.snapshot().open_directories, 1);
         assert_eq!(disk.snapshot().charged_bytes, before_close.charged_bytes);
         assert_eq!(disk.snapshot().pending_bytes, before_close.pending_bytes);
@@ -300,17 +437,18 @@ mod tests {
         assert_eq!(disk.snapshot().pending_bytes, retained_pending);
         assert_eq!(disk.snapshot().retained_file_attempts, retained_attempts);
         // Preserve the original repeated-shutdown assertion before explicitly
-        // dropping the store facade; no store/backend owner may cross census.
+        // dropping the store facade. Native backing has already been disposed;
+        // the original registered report survives until accepted disk census.
         store.shutdown().await.unwrap();
         drop(store);
-        assert_eq!(disk.snapshot().open_files, 1);
+        assert_eq!(disk.snapshot().open_files, node_files);
         // The retained directory also remains a real operational owner.
         drop(archive);
         assert_eq!(disk.snapshot().open_directories, 0);
         let cancelled = crate::CensusCancellation::default();
         cancelled.cancel();
         assert!(disk.reconcile(&cancelled).is_err());
-        assert_eq!(disk.snapshot().open_files, 1);
+        assert_eq!(disk.snapshot().open_files, node_files);
         assert_eq!(disk.snapshot().retained_file_attempts, retained_attempts);
         assert_eq!(disk.snapshot().charged_bytes, retained_charge);
         assert_eq!(disk.snapshot().pending_bytes, retained_pending);
@@ -322,10 +460,39 @@ mod tests {
         assert_eq!(disk.snapshot().retained_file_attempts, 0);
         assert_eq!(disk.snapshot().phase, crate::NodeDiskPhase::Open);
         assert_eq!(
-            private_files::file_identity(&node_path).unwrap(),
+            fixture_memory.storage_census().drain_owner(opening_id),
+            crate::StorageCensusDisposition::Retained
+        );
+        {
+            let report = opening.report();
+            let engine = report.engine();
+            assert_eq!(
+                engine.settlement(),
+                kasumi_kv::DatabaseOpenSettlement::FailedDisposed
+            );
+            let close = engine.database_close().unwrap();
+            let kasumi_kv::TerminalObservation::Returned(Err(error)) = close.shutdown() else {
+                panic!("accepted disk census erased original shutdown failure");
+            };
+            assert_eq!(std::ptr::from_ref(error) as usize, original_close.0);
+            let kasumi_kv::TerminalObservation::Returned(Err(error)) = close.backend() else {
+                panic!("accepted disk census erased original backend failure");
+            };
+            assert_eq!(std::ptr::from_ref(error) as usize, original_close.1);
+        }
+        let before_retirement = fixture_memory.snapshot();
+        assert_eq!(opening.retire(), crate::StorageCensusDisposition::Retired);
+        let after_retirement = fixture_memory.snapshot();
+        assert!(after_retirement.used_bytes < before_retirement.used_bytes);
+        assert!(after_retirement.live_reservations < before_retirement.live_reservations);
+        assert_eq!(
+            crate::NodeGroupIdentity::read(&node_path).unwrap(),
             node_identity
         );
-        assert_eq!(std::fs::read(&node_path).unwrap(), node_bytes);
+        assert_eq!(
+            std::fs::read(node_path.join(kasumi_kv::ROOT_FILE_NAME)).unwrap(),
+            node_bytes
+        );
         let archive = FilesystemAuditArchive::open(&root, disk.clone())
             .unwrap()
             .with_publication_observer(observer.clone());
@@ -502,7 +669,7 @@ mod tests {
         let final_path = root.join(format!("{}.audit", segment.reference.object.object_id));
         let saved = directory.path().join("saved.audit");
         let observer = Arc::new(Recorded::default());
-        let (moved, foreign) = (saved.clone(), segment.ciphertext.clone());
+        let (moved, foreign) = (saved.clone(), segment.ciphertext.share());
         // Substitute identical bytes under the final name between publication
         // and readback; only an inode check can distinguish the foreign file.
         let archive = FilesystemAuditArchive::open_fixture(&root, memory.clone())

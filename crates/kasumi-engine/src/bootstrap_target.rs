@@ -99,7 +99,7 @@ pub async fn materialize_target_replica(
     input: TargetMaterializationInput,
     replica: TargetMaterializationConfig,
     security_audit: Arc<SecurityAudit>,
-) -> anyhow::Result<MaterializedTargetReplica> {
+) -> std::result::Result<MaterializedTargetReplica, crate::SnapshotFailure> {
     operation.check()?;
     let lease = operation.invocation().gate().current()?;
     input.validate(&lease.commitment().intent)?;
@@ -134,19 +134,22 @@ pub async fn resume_target_materialization(
     origin: TargetOrigin,
     replica: TargetMaterializationConfig,
     security_audit: Arc<SecurityAudit>,
-) -> anyhow::Result<MaterializedTargetReplica> {
+) -> std::result::Result<MaterializedTargetReplica, crate::SnapshotFailure> {
     operation.check()?;
     let lease = operation.invocation().gate().current()?;
     let current = &lease.commitment().intent;
     current.request.validate()?;
     origin.accepts_phase(current, LifecyclePhase::ResumeMaterialize)?;
-    anyhow::ensure!(
-        current.request.resume_origin.as_deref() == Some(&origin)
-            && current.request.phase_input_sha256 == origin.resume_digest()?
-            && lease.signed().claims.request.authority_manifest_sha256
-                == origin.authority_manifest_sha256,
-        "fresh materialization admission differs from the retained original origin"
-    );
+    crate::SnapshotFailure::ordinary(|| {
+        anyhow::ensure!(
+            current.request.resume_origin.as_deref() == Some(&origin)
+                && current.request.phase_input_sha256 == origin.resume_digest()?
+                && lease.signed().claims.request.authority_manifest_sha256
+                    == origin.authority_manifest_sha256,
+            "fresh materialization admission differs from the retained original origin"
+        );
+        Ok(())
+    })?;
     materialize_origin(
         operation,
         source,
@@ -168,20 +171,23 @@ async fn materialize_origin(
     phase: LifecyclePhase,
     replica: TargetMaterializationConfig,
     security_audit: Arc<SecurityAudit>,
-) -> anyhow::Result<MaterializedTargetReplica> {
+) -> std::result::Result<MaterializedTargetReplica, crate::SnapshotFailure> {
     security_audit.require_admission(&replica.admission)?;
     operation.check()?;
     let target = targets.application().clone();
     operation.invocation().check_target(&target, phase)?;
     let lease = operation.invocation().gate().current()?;
     let input = &origin.input;
-    anyhow::ensure!(
-        operation.timeout_ms <= source.timeout_ms
-            && source.destination_alias == input.destination_alias
-            && replica.incarnation == input.target_incarnation
-            && replica.node_id == lease.signed().claims.request.target_node.node_id,
-        "installed materialization route or original timeout differs"
-    );
+    crate::SnapshotFailure::ordinary(|| {
+        anyhow::ensure!(
+            operation.timeout_ms <= source.timeout_ms
+                && source.destination_alias == input.destination_alias
+                && replica.incarnation == input.target_incarnation
+                && replica.node_id == lease.signed().claims.request.target_node.node_id,
+            "installed materialization route or original timeout differs"
+        );
+        Ok(())
+    })?;
     let voters: BTreeMap<_, _> = input
         .voters
         .iter()
@@ -195,12 +201,15 @@ async fn materialize_origin(
             )
         })
         .collect();
-    anyhow::ensure!(
-        serde_json::to_vec(&replica.voters)? == serde_json::to_vec(&voters)?,
-        "installed target peer placement differs"
-    );
+    crate::SnapshotFailure::ordinary(|| {
+        anyhow::ensure!(
+            serde_json::to_vec(&replica.voters)? == serde_json::to_vec(&voters)?,
+            "installed target peer placement differs"
+        );
+        Ok(())
+    })?;
     let _gate = operation
-        .run(async { Ok(BOOTSTRAP_GATE.lock().await) })
+        .run(async { Ok::<_, crate::SnapshotFailure>(BOOTSTRAP_GATE.lock().await) })
         .await?;
     operation.check()?;
     // Complete graph verification runs even on an uncertain first publication;
@@ -221,10 +230,13 @@ async fn materialize_origin(
             .await
         })
         .await?;
-    anyhow::ensure!(
-        kasumi_types::staged_digest(&verified.source_purpose)?.0 == input.source_purpose_sha256,
-        "materialization source purpose differs from the authenticated backup root"
-    );
+    crate::SnapshotFailure::ordinary(|| {
+        anyhow::ensure!(
+            kasumi_types::staged_digest(&verified.source_purpose)?.0 == input.source_purpose_sha256,
+            "materialization source purpose differs from the authenticated backup root"
+        );
+        Ok(())
+    })?;
     let bootstrap = ReplicatedBootstrap {
         genesis: crate::ReplicatedGenesis::Application,
         incarnation: replica.incarnation.to_string(),
@@ -282,11 +294,14 @@ async fn materialize_origin(
         .await?;
     let installed = kasumi_raft::ControlLog::installed(targets.custody().clone())?
         .ok_or_else(|| anyhow::anyhow!("target consensus identity is missing"))?;
-    anyhow::ensure!(
-        installed.node_id() == replica.node_id
-            && installed.group() == format!("{}/{}", target.tenant(), bootstrap.incarnation),
-        "target consensus identity differs from its materialization"
-    );
+    crate::SnapshotFailure::ordinary(|| {
+        anyhow::ensure!(
+            installed.node_id() == replica.node_id
+                && installed.group() == format!("{}/{}", target.tenant(), bootstrap.incarnation),
+            "target consensus identity differs from its materialization"
+        );
+        Ok(())
+    })?;
     let proof = VerifiedTargetMaterialization {
         stores: targets.clone(),
         fact: TargetMaterializationFact {
@@ -351,7 +366,7 @@ fn persist_target(
             .application()
             .write_batch(&[WriteOp::put(NS, i.to_be_bytes(), chunk)])?;
     }
-    let manifest = Manifest {
+    let manifest = ApplicationBootstrapManifest {
         format: 2,
         bytes: bytes.len(),
         chunks,

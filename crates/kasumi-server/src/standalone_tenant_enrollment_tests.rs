@@ -84,6 +84,7 @@ async fn installation() -> Result<(
         incarnation: Uuid::new_v4(),
         initial_policy: config.tenants[0].initial_policy.clone(),
         initial_limits: config.tenants[0].initial_limits.clone(),
+        audit_placement: crate::audit_destination::TenantAuditPlacementConfig::LocalReplicaOnly,
     };
     stage_tenant_with_storage(&installed.configuration, request.clone(), storage.clone()).await?;
     Ok((root, installed, request, storage))
@@ -436,7 +437,7 @@ async fn explicitly_enrolled_standalone_tenant_requires_bound_profile_and_surviv
         .write_batch(&[kasumi_store::WriteOp::put(
             "node.enrollment",
             ledger_key.as_bytes(),
-            saved,
+            saved.as_ref(),
         )])?;
     maintenance.finish(Ok(())).await?;
     Ok(())

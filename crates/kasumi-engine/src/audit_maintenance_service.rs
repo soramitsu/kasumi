@@ -3,7 +3,7 @@ use super::*;
 // The actual blocking preparation retains every owner even if its async caller
 // disappears. The proposal keeps its separate lane through the Raft outcome.
 pub(super) struct Prepared {
-    bytes: Option<Vec<u8>>,
+    bytes: Option<kasumi_store::PlaintextValue>,
     _engine: Arc<TenantEngine>,
     _pool: Arc<crate::audit_maintenance::NodeAuditMaintenance>,
     _permit: tokio::sync::OwnedSemaphorePermit,
@@ -159,7 +159,10 @@ impl Database {
         };
         // Shutdown drains this task and the separately owned Raft materializer;
         // it never aborts a proposal just because an API request disappeared.
-        let bytes = self.group.write(bytes).await?;
+        let bytes = self
+            .group
+            .write(kasumi_raft::ApplicationProposal::stored(bytes))
+            .await?;
         let outcome: Result<()> = serde_json::from_slice(&bytes)?;
         outcome?;
         Ok(true)
@@ -224,7 +227,8 @@ mod tests {
             let node = storage
                 .create_new(&path, kasumi_store::test_utils::NODE_STORE_ID)
                 .unwrap();
-            let weak_node = Arc::downgrade(&node);
+            let weak_node = node.locator();
+            let mut weak_node_retirement = node.clone().retire();
             let admission = storage.admission.clone();
             let provider = Arc::new(LocalKeyProvider::new([51; 32]));
             let store = TenantStore::initialize_catalog_fixture(
@@ -277,17 +281,22 @@ mod tests {
             )
             .await
             .unwrap();
-            stores
-                .write_batch(
-                    &[],
-                    &kasumi_raft::initial_storage_identity(1, &format!("tenant/{incarnation}"))
-                        .unwrap(),
-                )
-                .unwrap();
+            let image = engine.logical_snapshot(store.scratch_disk()).unwrap();
+            crate::bootstrap::persist_fixture_bootstrap(
+                &stores,
+                &image,
+                1,
+                &format!("tenant/{incarnation}"),
+            )
+            .unwrap();
+            drop(engine);
+            let engine = Arc::new(TenantEngine::from_bootstrap(store.tenant(), &image).unwrap());
+            engine.install_storage_access(&store).unwrap();
+            engine.install_audit_maintenance(&admission).unwrap();
             let database =
                 crate::service::construction::DatabaseConstruction::new(stores, audit.clone())
                     .unwrap()
-                    .start_local(engine, 1, format!("tenant/{incarnation}"))
+                    .start_local(engine, &image, 1, format!("tenant/{incarnation}"))
                     .await
                     .unwrap();
             let weak_database = Arc::downgrade(&database);
@@ -338,7 +347,16 @@ mod tests {
             drop(store);
             drop(audit);
             drop(node);
-            assert!(weak_node.upgrade().is_none());
+            assert!({
+                assert_eq!(
+                    weak_node_retirement.retry(),
+                    kasumi_store::StorageCensusDisposition::Retired
+                );
+                matches!(
+                    weak_node.try_borrow(),
+                    kasumi_store::NodeStoreLookup::Missing
+                )
+            });
             // No delay or lock retry is allowed to hide a surviving file owner.
             let reopened = storage
                 .open_existing(&path, kasumi_store::test_utils::NODE_STORE_ID)
@@ -460,17 +478,22 @@ mod tests {
         )
         .await
         .unwrap();
-        stores
-            .write_batch(
-                &[],
-                &kasumi_raft::initial_storage_identity(1, &format!("tenant/{incarnation}"))
-                    .unwrap(),
-            )
-            .unwrap();
+        let image = engine.logical_snapshot(store.scratch_disk()).unwrap();
+        crate::bootstrap::persist_fixture_bootstrap(
+            &stores,
+            &image,
+            1,
+            &format!("tenant/{incarnation}"),
+        )
+        .unwrap();
+        drop(engine);
+        let engine = Arc::new(TenantEngine::from_bootstrap(store.tenant(), &image).unwrap());
+        engine.install_storage_access(&store).unwrap();
+        engine.install_audit_maintenance(&admission).unwrap();
         let database =
             crate::service::construction::DatabaseConstruction::new(stores, audit.clone())
                 .unwrap()
-                .start_local(engine.clone(), 1, format!("tenant/{incarnation}"))
+                .start_local(engine.clone(), &image, 1, format!("tenant/{incarnation}"))
                 .await
                 .unwrap();
         let group = database.raft_group().clone();
@@ -496,7 +519,9 @@ mod tests {
                 }),
             };
             let response = group
-                .write(serde_json::to_vec(&command).unwrap())
+                .write(kasumi_raft::ApplicationProposal::generated(
+                    serde_json::to_vec(&command).unwrap(),
+                ))
                 .await
                 .unwrap();
             serde_json::from_slice::<Result<WriteReceipt>>(&response)

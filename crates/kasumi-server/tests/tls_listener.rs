@@ -20,7 +20,7 @@ async fn native_grpc_channel_uses_pinned_tls13_and_http2_with_no_plaintext_fallb
         api::DatabaseRegistry,
         auth::{AuthConfig, Authenticator},
         rpc::{
-            NativeData,
+            native_data_service,
             proto::{CollectionsRequest, kasumi_data_client::KasumiDataClient},
         },
     };
@@ -39,7 +39,7 @@ async fn native_grpc_channel_uses_pinned_tls13_and_http2_with_no_plaintext_fallb
     })?;
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let endpoint = format!("https://{}", listener.local_addr()?);
-    let service = NativeData::new(DatabaseRegistry::default(), auth).service();
+    let service = native_data_service(DatabaseRegistry::default(), auth);
     let router = tonic::service::Routes::new(service).into_axum_router();
     let (stop, stopped) = watch::channel(false);
     let task = tokio::spawn(serve_tls(

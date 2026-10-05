@@ -16,6 +16,11 @@ The durable key-value format is implemented in the [`kasumi-kv`](crates/kasumi-k
 crate. Its [active goal](docs/native-kv-goal.md) tracks validation of the new
 engine for the first release.
 
+The [storage redesign goals](docs/disk-backed-cache-goals.md) target a large
+cache that keeps the whole working database in memory while it fits, then uses
+disk-backed reads above the configured bound. That redesign is not implemented
+or qualified; the resident-data limits described below still apply to current code.
+
 Kasumi uses its own APIs; it does not implement the Redis protocol. See the
 [standalone installation guide](docs/standalone.md) to run a local server.
 
@@ -61,13 +66,39 @@ source.
 
 Each successful batch publishes its matching document and index generation
 together. Cursors continue a historical snapshot for at most 60 seconds and are
-bound to identity, policy, incarnation, query, and leadership term. Ordinary
+bound to identity, policy, incarnation, query, and leadership term; only each
+returned page is copied. Seek paging walks a unique index with stateless
+cursors for results of any size. Ordinary
 mutation receipts retain their original tenant, incarnation, principal and command
 identity permanently in encrypted point-addressed storage under explicit byte
 budgets. Snapshots and restores preserve these receipts and their original scope.
 Staged transactions keep permanent terminal identities, publish all effects in
 one generation and support up to 100,000 mutations within explicit byte budgets.
 Read leases provide bounded coherent point and ID-ordered collection pages.
+
+## Using Kasumi
+
+```rust
+use kasumi_client::prelude::*;
+use serde_json::json;
+
+let db = Kasumi::from_profile("/var/lib/kasumi/profiles/default.json").await?;
+db.mutate(&MutationBatch::new().insert("invoices", "inv-1", json!({"status": "open", "amount": 42})))
+    .await?;
+let open = db
+    .query(
+        &QueryRequest::new("invoices")
+            .filter(Filter::new().eq("/status", "open").gte("/amount", 10))
+            .sort_desc("/amount")
+            .limit(20),
+    )
+    .await?;
+```
+
+The same query is the JSON
+`{"collection":"invoices","filter":{"/status":"open","/amount":{"gte":10}},"sort":["-/amount"],"limit":20}`
+over native gRPC and MCP. See the [query language](docs/query-language.md) and
+the [API guide](docs/api.md).
 
 ## Workspace
 

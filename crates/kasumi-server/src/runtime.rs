@@ -7,7 +7,7 @@ use crate::{
     auth::{AuthConfig, Authenticator},
     cluster::{ClusterNetwork, PeerConfig, PeerLimits},
     mcp::McpConfig,
-    rpc::{NativeAdmin, NativeData},
+    rpc::{NativeAdmin, native_data_service},
     tls::{self, ListenerLimits},
 };
 use anyhow::{Context, Result, ensure};
@@ -32,6 +32,7 @@ use tokio::{net::TcpListener, sync::watch, task::JoinSet};
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
+pub(crate) use crate::retired_source_failure::RetiredSourceFailure;
 pub use kasumi_engine::{
     SECURITY_TENANT, SecurityAudit, SecurityEvent, SecurityEventKind, SecurityOutcome,
     TransportAuditMetadata,
@@ -80,8 +81,7 @@ pub struct TransitSettings {
     pub token_file: String,
     #[serde(default)]
     pub namespace: Option<String>,
-    #[serde(default)]
-    pub ca_certificate: Option<PathBuf>,
+    pub ca_certificate: PathBuf,
     #[serde(default)]
     pub derived: bool,
 }
@@ -139,8 +139,9 @@ pub struct TenantConfig {
     pub initial_policy: Policy,
     #[serde(default)]
     pub initial_limits: Limits,
-    /// Fixed and identical across replicas; local creation generates its own UUID.
-    #[serde(default)]
+    /// Installed identities are explicit; only constructed LocalFixture state
+    /// may omit one. Serialized configuration cannot omit or null this field.
+    #[serde(deserialize_with = "required_installed_incarnation")]
     pub incarnation: Option<String>,
 }
 
@@ -158,8 +159,33 @@ pub struct ControlConfig {
     pub initial_policy: Policy,
     #[serde(default)]
     pub initial_limits: Limits,
-    #[serde(default)]
+    #[serde(deserialize_with = "required_installed_incarnation")]
     pub incarnation: Option<String>,
+}
+
+// Option remains solely for explicitly constructed fixture state. Installed
+// configuration always supplies a string, without Serde's missing/null Option
+// behavior or an automatically generated identity.
+fn required_installed_incarnation<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    String::deserialize(deserializer).map(Some)
+}
+
+fn validate_installed_incarnation(incarnation: Option<&str>, fixture: bool) -> Result<()> {
+    match incarnation {
+        Some(incarnation) => ensure!(
+            !Uuid::parse_str(incarnation)
+                .context("invalid installed incarnation")?
+                .is_nil(),
+            "installed incarnation cannot be nil"
+        ),
+        None => ensure!(fixture, "installed incarnation is required"),
+    }
+    Ok(())
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -235,9 +261,10 @@ pub struct ReplicationConfig {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RuntimeConfig {
-    /// Installed external archive overrides by tenant, including __kasumi_control.
-    /// An empty map selects each store's private durable filesystem cache.
-    pub tenant_audit_archives: BTreeMap<String, crate::audit_destination::AuditDestinationConfig>,
+    /// Required explicit placement for exactly Control and configured tenants.
+    #[serde(deserialize_with = "crate::audit_destination::deserialize_tenant_audit_placements")]
+    pub tenant_audit_placements:
+        BTreeMap<String, crate::audit_destination::TenantAuditPlacementConfig>,
     #[serde(deserialize_with = "kasumi_types::require_explicit_option")]
     pub target_recovery: Option<crate::target_runtime_config::TargetRecoveryConfig>,
     pub serving_authorities: BTreeMap<String, crate::serving_runtime::ServingAuthorityConfig>,
@@ -290,14 +317,6 @@ impl RuntimeConfig {
         self.admission.validate()?;
         self.scratch_disk.validate()?;
         self.validate_persistent_disk()?;
-        for (tenant, archive) in &self.tenant_audit_archives {
-            kasumi_types::validate_name(tenant)?;
-            ensure!(
-                tenant != SECURITY_TENANT && !tenant.starts_with("kasumi.custody/"),
-                "service security and custody use their own archive configuration"
-            );
-            archive.validate()?;
-        }
         if let Some(target) = &self.target_recovery {
             target.validate(self)?;
         }
@@ -366,6 +385,18 @@ impl RuntimeConfig {
         }
         validate_initial_policy(&self.control.initial_policy)?;
         configured_control_context(&self.control)?;
+        #[cfg(any(test, feature = "test-utils"))]
+        let fixture_control = self.mode == DeploymentMode::Standalone
+            && !self.tenants.is_empty()
+            && self.tenants.iter().all(|tenant| {
+                matches!(
+                    tenant.serving,
+                    crate::serving_runtime::TenantServingConfig::LocalFixture
+                )
+            });
+        #[cfg(not(any(test, feature = "test-utils")))]
+        let fixture_control = false;
+        validate_installed_incarnation(self.control.incarnation.as_deref(), fixture_control)?;
         if let Some(lifecycle) = &self.control.lifecycle {
             lifecycle.validate(self.mode, self.control.incarnation.as_deref())?;
             if let Some(recovery) = &lifecycle.recovery {
@@ -375,6 +406,14 @@ impl RuntimeConfig {
         let mut tenants = BTreeSet::new();
         let mut standalone_installation = None;
         for tenant in &self.tenants {
+            #[cfg(any(test, feature = "test-utils"))]
+            let fixture_tenant = matches!(
+                tenant.serving,
+                crate::serving_runtime::TenantServingConfig::LocalFixture
+            );
+            #[cfg(not(any(test, feature = "test-utils")))]
+            let fixture_tenant = false;
+            validate_installed_incarnation(tenant.incarnation.as_deref(), fixture_tenant)?;
             match &tenant.serving {
                 crate::serving_runtime::TenantServingConfig::Standalone { installation_id } => {
                     ensure!(
@@ -416,18 +455,19 @@ impl RuntimeConfig {
             );
             validate_initial_policy(&tenant.initial_policy)?;
             // Reuse the engine's actual policy/quota validation.
-            kasumi_engine::TenantEngine::new(
-                tenant.tenant.clone(),
-                uuid::Uuid::nil().to_string(),
-                tenant.initial_policy.clone(),
-                tenant.initial_limits.clone(),
+            kasumi_engine::validate_genesis_inputs(
+                &tenant.tenant,
+                &uuid::Uuid::nil().to_string(),
+                &tenant.initial_policy,
+                &tenant.initial_limits,
             )?;
         }
-        kasumi_engine::TenantEngine::new(
-            CONTROL_TENANT.into(),
-            uuid::Uuid::nil().to_string(),
-            self.control.initial_policy.clone(),
-            self.control.initial_limits.clone(),
+        self.validate_tenant_audit_placements()?;
+        kasumi_engine::validate_genesis_inputs(
+            CONTROL_TENANT,
+            &uuid::Uuid::nil().to_string(),
+            &self.control.initial_policy,
+            &self.control.initial_limits,
         )?;
         match self.mode {
             DeploymentMode::Standalone => {
@@ -604,9 +644,7 @@ impl TransitSettings {
         if let Some(namespace) = &self.namespace {
             ensure!(valid_transit_path(namespace), "invalid Transit namespace");
         }
-        if let Some(ca) = &self.ca_certificate {
-            absolute(ca)?;
-        }
+        absolute(&self.ca_certificate)?;
         Ok(format!(
             "{}|{}|{}|{}",
             url,
@@ -628,11 +666,8 @@ impl TransitSettings {
             credential: Arc::new(move || source(&path)),
             namespace: self.namespace.clone(),
             derived: self.derived,
-            ca_pem: self
-                .ca_certificate
-                .as_ref()
-                .map(|path| read_bounded(path, MAX_PEM_BYTES))
-                .transpose()?,
+            // TransitConfig requires the pinned bundle for every provider.
+            ca_pem: read_bounded(&self.ca_certificate, MAX_PEM_BYTES)?,
         })?))
     }
 }
@@ -1037,12 +1072,14 @@ pub struct NodeRuntime {
     stopping_audit_started: bool,
     stopping_audit_observed: bool,
     administration: Option<Arc<crate::administration::Administration>>,
+    original_recoveries:
+        Option<crate::administration::original_serving_runtime::OriginalRecoveries>,
     target_recovery: Option<Arc<crate::target_runtime::TargetRecoveryRuntime>>,
     shutdown_runtime: tokio::runtime::Handle,
     tls_reload: Option<crate::tls_reload::RuntimeTlsReload>,
     // Scope-owned cached stores observed during startup, including custody probes.
     startup_stores: Vec<Arc<TenantStore>>,
-    owned_nodes: Vec<Arc<NodeStore>>,
+    owned_nodes: Vec<NodeStore>,
     #[cfg(test)]
     audit_release_gate: Arc<tokio::sync::Mutex<Option<crate::rpc::AuditReleaseGate>>>,
     // The installation lock outlives every retained resource-bearing field.
@@ -1088,6 +1125,10 @@ impl NodeRuntime {
         crate::startup_owner::drain(crate::startup_owner::Kind::Data).await
     }
 
+    #[allow(
+        clippy::result_large_err,
+        reason = "the native constructor returns whole inline custody into the same preadmitted inventory before any foreign marker; boxing the error would allocate outside that boundary"
+    )]
     async fn open_owned(
         config: RuntimeConfig,
         credential: crate::serving_runtime::CredentialSource,
@@ -1099,6 +1140,9 @@ impl NodeRuntime {
         config.validate()?;
         let admission = storage.facade(&config.admission)?;
         pending.owned_admissions.push(admission.clone());
+        pending.original_recoveries = Some(crate::administration::original_serving_runtime::OriginalRecoveries::new(&admission, crate::administration::OriginalRecoveryParticipants::configured(&config))?);
+        pending.signer_original_recoveries = config.signer_verifier.as_ref()
+            .map(|verifier| verifier.node_start_inventory(&admission)).transpose()?;
         let persistent_disk = crate::persistent_disk::open(&config.persistent_disk, &storage)?;
         pending.standalone_owner = crate::standalone::claim(&config, &persistent_disk)?;
         let scratch_disk = storage.open_scratch(&config.scratch_disk)?;
@@ -1112,7 +1156,7 @@ impl NodeRuntime {
             }
             Some(
                 verifier
-                    .open(domains, credential.clone(), persistent_disk.clone(), scratch_disk.clone(), admission.clone())
+                    .open(domains, credential.clone(), persistent_disk.clone(), scratch_disk.clone(), admission.clone(), pending.signer_original_recoveries.as_ref().expect("same preinstalled signer original inventory"))
                     .await?,
             )
         } else {
@@ -1202,13 +1246,16 @@ impl NodeRuntime {
         } else {
             (None, None)
         };
-        let node = NodeStore::open_existing(
-            &config.database_path,
-            config.database_id,
-            persistent_disk.clone(),
-            scratch_disk.clone(),
-        )?;
+        let node = {
+            let mut constructor = pending.original_recoveries.as_ref()
+                .expect("same installed original startup inventory").claim(0).await;
+            constructor.begin_node().map_err(|observed| observed.foreign_error())?.run_node(|| NodeStore::open_existing(
+                &config.database_path, config.database_id,
+                persistent_disk.clone(), scratch_disk.clone(), persistent_disk.native_storage_config(),
+            )).map_err(|observed| observed.foreign_error())?
+        };
         pending.owned_nodes.push(node.clone());
+        node.prepare_cache_warming().await?;
         let security_store = TenantStore::open_existing(
             node.clone(),
             SECURITY_TENANT.into(),
@@ -1275,6 +1322,7 @@ impl NodeRuntime {
             } else {
                 None
             };
+            let mut constructor_seat = pending.original_recoveries.as_ref().expect("installed original inventory").claim(0).await;
             Self::open_database(
                 &config,
                 control_stores,
@@ -1284,7 +1332,8 @@ impl NodeRuntime {
                 expected_fingerprint.as_deref(),
                 cluster.as_ref(),
                 audit.clone(),
-                &mut pending,
+                &mut pending.databases,
+                &mut constructor_seat,
             )
             .await
         }
@@ -1321,6 +1370,7 @@ impl NodeRuntime {
             #[cfg(test)]
             audit_release_gate: Arc::new(tokio::sync::Mutex::new(None)),
             administration: None,
+            original_recoveries: pending.original_recoveries.take(),
             target_recovery: None,
             shutdown_runtime: tokio::runtime::Handle::current(),
             tls_reload: None,
@@ -1335,12 +1385,11 @@ impl NodeRuntime {
                 bootstrap: runtime.control.bootstrap.clone(),
                 lease: None,
             }];
-            for configured_tenant in &config.tenants {
+            for (tenant_index, configured_tenant) in config.tenants.iter().enumerate() {
                 if !selected_tenants.iter().any(|tenant| tenant.tenant == configured_tenant.tenant) {
-                    let state = runtime.control.database.engine().generation()?;
-                    if let Some(document) = state.state.collections.get("topology").and_then(|collection| collection.documents.get("current")) {
-                        let topology: kasumi_engine::control::ControlTopology = serde_json::from_value(document.body.clone())?;
-                        ensure!(!topology.tenants.contains_key(&configured_tenant.tenant), "routed tenant has no completed local catalog or enrollment");
+                    let selection = kasumi_engine::control::ControlPlane::select_local(&runtime.control.database)?;
+                    if let Some(current) = selection.decode_topology()? {
+                        ensure!(!current.topology.tenants.contains_key(&configured_tenant.tenant), "routed tenant has no completed local catalog or enrollment");
                     }
                     // Configuration may stage a tenant, but cannot make an
                     // absent installation eligible for provider or grant work.
@@ -1358,13 +1407,20 @@ impl NodeRuntime {
                 let tenant_node = match &active {
                     Some(active) => {
                         tenant.incarnation = Some(active.incarnation.to_string());
-                        NodeStore::open_existing(active.directory.join("node.kv"), active.database_id(&config, &tenant.tenant)?, persistent_disk.clone(), scratch_disk.clone())?
+                        let native_id = active.database_id(&config, &tenant.tenant)?;
+                        let mut constructor = runtime.original_recoveries.as_ref()
+                            .expect("same installed original startup inventory").claim(tenant_index + 1).await;
+                        constructor.begin_node().map_err(|observed| observed.foreign_error())?.run_node(|| NodeStore::open_existing(
+                            active.directory.join("node.kv"), native_id,
+                            persistent_disk.clone(), scratch_disk.clone(), persistent_disk.native_storage_config(),
+                        )).map_err(|observed| observed.foreign_error())?
                     }
                     None => node.clone(),
                 };
                 if active.is_some() {
                     pending.owned_nodes.push(tenant_node.clone());
                     runtime.owned_nodes.push(tenant_node.clone());
+                    tenant_node.prepare_cache_warming().await?;
                     #[cfg(test)]
                     crate::startup_preparation::checkpoint(config.database_id, "data-active-node");
                 }
@@ -1375,10 +1431,17 @@ impl NodeRuntime {
                     if let Some(control) = kasumi_raft::ControlLog::installed(custody_store.clone())? {
                         let incarnation = control.group().strip_prefix(&format!("{}/", tenant.tenant)).context("installed source group differs")?.to_owned();
                         if let Some(expected) = &tenant.incarnation { ensure!(*expected == incarnation, "configured source incarnation differs"); }
-                        let recovered = tokio::task::spawn_blocking(move || control.recover_retired()).await?;
+                        let mut recovery_seat = runtime.original_recoveries.as_ref().expect("installed original recovery inventory").claim(tenant_index + 1).await;
+                        let recovery_owner = runtime.control.database.clone();
+                        let recovery_custody = custody_store.clone();
+                        let recovered = recovery_seat.run_snapshot(async move {
+                            tokio::task::spawn_blocking(move || {
+                                recovery_owner.raft_group().recover_retired_custody(&recovery_custody)
+                            }).await?.map_err(kasumi_engine::SnapshotFailure::from)
+                        }).await;
                         if !matches!(recovered, Ok(false)) {
                             let source = if recovered.is_ok() {
-                                match open_retired_source(&config, custody_store.clone(), runtime.cluster.as_ref(), runtime.audit.clone(), admission.clone()).await {
+                                match recovery_seat.run_retired(open_retired_source(&config, custody_store.clone(), runtime.cluster.as_ref(), runtime.audit.clone(), admission.clone())).await {
                                     Ok(custody) => kasumi_engine::InstalledRetirementSource::RetiredCustody(custody),
                                     Err(_) => kasumi_engine::InstalledRetirementSource::RecoveringControl { tenant: tenant.tenant.clone(), source_incarnation: incarnation.clone() },
                                 }
@@ -1428,6 +1491,7 @@ impl NodeRuntime {
                 } else {
                     None
                 };
+                let mut constructor_seat = runtime.original_recoveries.as_ref().expect("same installed original inventory").claim(tenant_index + 1).await;
                 let opened = Self::open_database(
                     &config,
                     stores,
@@ -1437,12 +1501,13 @@ impl NodeRuntime {
                     expected_fingerprint.as_deref(),
                     runtime.cluster.as_ref(),
                     runtime.audit.clone(),
-                    &mut pending,
+                    &mut pending.databases,
+                    &mut constructor_seat,
                 )
                 .await?;
                 if let Some(active) = active {
                     let generation = opened.database.engine().generation()?;
-                    if generation.state.restored_from.as_ref() != Some(&active.checkpoint) || generation.state.pending_restore.is_some() {
+                    if generation.restored_from().as_ref() != Some(&active.checkpoint) || generation.pending_restore().is_some() {
                         anyhow::bail!("active standalone generation is incomplete or differs from its committed checkpoint");
                     }
                 }
@@ -1455,7 +1520,7 @@ impl NodeRuntime {
                 runtime.tenants.push(opened);
             }
             if config.target_recovery.is_some() {
-                runtime.target_recovery=Some(crate::target_runtime::TargetRecoveryRuntime::open(config.clone(),runtime.authority_trusts.clone(),credential.clone(),admission.clone(),runtime.audit.clone(),runtime.cluster.clone().context("target requires installed cluster")?,destinations.clone(),registry.clone()).await?);
+                runtime.target_recovery=Some(crate::target_runtime::TargetRecoveryRuntime::open(config.clone(),runtime.authority_trusts.clone(),credential.clone(),admission.clone(),runtime.audit.clone(),runtime.cluster.clone().context("target requires installed cluster")?,destinations.clone(),registry.clone(),runtime.original_recoveries.as_ref().expect("same installed original inventory")).await?);
             }
             let administration = crate::administration::Administration::new(
                 config.clone(),
@@ -1469,6 +1534,7 @@ impl NodeRuntime {
                 destinations,
                 admission.clone(),
                 credential.clone(),
+                runtime.original_recoveries.as_ref().expect("same installed original recovery inventory").clone(),
             )?;
             runtime.administration = Some(administration.clone());
             if let Some(network) = &runtime.cluster {
@@ -1479,10 +1545,10 @@ impl NodeRuntime {
             let mcp =
                 crate::mcp::router(config.mcp.protocol.clone(), registry.clone(), auth.clone())?;
             let native = tonic::service::Routes::new(
-                NativeData::new(registry.clone(), auth.clone()).service(),
+                native_data_service(registry.clone(), auth.clone()),
             )
             .into_axum_router();
-            let mut native_admin = NativeAdmin::new(registry.clone(), auth.clone()).with_management(administration.clone()).with_telemetry(runtime.telemetry.clone());
+            let mut native_admin = NativeAdmin::new(registry.clone(), auth.clone(), runtime.original_recoveries.take().expect("same prepaid RPC inventory")).with_management(administration.clone()).with_telemetry(runtime.telemetry.clone());
             if let Some(verifier) = &runtime.signer_verifier {
                 native_admin = native_admin.with_control_signer(crate::control_signer_runtime::ControlSignerRuntime::new(
                     config.replication.as_ref().context("remote signer requires installed replication")?.node_id,
@@ -1587,9 +1653,13 @@ impl NodeRuntime {
         expected_replicated_fingerprint: Option<&str>,
         cluster: Option<&Arc<ClusterNetwork>>,
         audit: Arc<SecurityAudit>,
-        pending: &mut crate::startup_resources::Resources,
+        pending_databases: &mut Vec<Arc<Database>>,
+        constructor_seat: &mut crate::administration::original_serving_runtime::OriginalRecoveryGuard<'_>,
     ) -> Result<OpenedTenant> {
-        async {
+        constructor_seat.run_snapshot(async {
+            macro_rules! ensure_result {
+                ($condition:expr, $message:expr) => { if !$condition { return Err(kasumi_engine::SnapshotFailure::from(anyhow::anyhow!($message))); } };
+            }
             let store = stores.application().clone();
             config.install_tenant_audit_archive(&store, None)?;
             let mut bootstrap = None;
@@ -1605,16 +1675,16 @@ impl NodeRuntime {
                     uuid::Uuid::parse_str(
                         installed_incarnation
                             .context("installed replicated incarnation is missing")?,
-                    )?,
+                    ).map_err(anyhow::Error::from)?,
                     network.clone(),
                     kasumi_raft::server_config(),
                     audit,
                 )
                 .await?;
-                pending.databases.push(opened.database.clone());
+                pending_databases.push(opened.database.clone());
                 let fingerprint = opened_replicated_bootstrap_fingerprint(store.tenant(), &opened)?;
                 if let Some(expected) = expected_replicated_fingerprint {
-                    ensure!(
+                    ensure_result!(
                         fingerprint == expected,
                         "installed bootstrap differs from its enrollment receipt"
                     );
@@ -1638,7 +1708,7 @@ impl NodeRuntime {
                     audit,
                     uuid::Uuid::parse_str(
                         installed_incarnation.context("installed local incarnation is missing")?,
-                    )?,
+                    ).map_err(anyhow::Error::from)?,
                 )
                 .await?
             } else {
@@ -1649,7 +1719,7 @@ impl NodeRuntime {
                             policy,
                             limits,
                             audit,
-                            uuid::Uuid::parse_str(incarnation)?,
+                            uuid::Uuid::parse_str(incarnation).map_err(anyhow::Error::from)?,
                         )
                         .await?
                     }
@@ -1657,17 +1727,16 @@ impl NodeRuntime {
                 }
             };
             if config.mode != DeploymentMode::Replicated {
-                pending.databases.push(database.clone());
+                pending_databases.push(database.clone());
                 #[cfg(test)]
                 crate::startup_preparation::checkpoint(config.database_id, "data-database");
             }
-            Ok(OpenedTenant {
+            Ok::<_, kasumi_engine::SnapshotFailure>(OpenedTenant {
                 database,
                 store,
                 bootstrap,
             })
-        }
-        .await
+        }).await.map_err(crate::administration::original_serving_runtime::OriginalRecoveryObservation::foreign_error)
     }
 
     pub fn registry(&self) -> &DatabaseRegistry {
@@ -1792,7 +1861,9 @@ impl NodeRuntime {
                 return Ok(false);
             }
             if let Some(manager) = &self.administration {
-                let topology = manager.committed_topology()?;
+                let topology =
+                    kasumi_engine::control::ControlPlane::local_topology(&self.control.database)?;
+                let topology = &topology.topology;
                 for tenant in &self.tenants {
                     // Configuration may contain staged tenants. Only a durable
                     // route authorizes starting its original group automatically.
@@ -1884,9 +1955,8 @@ impl NodeRuntime {
                             .database
                             .engine()
                             .generation()?
-                            .state
-                            .incarnation
-                            .clone(),
+                            .incarnation()
+                            .to_owned(),
                         mode: mode.clone(),
                         voters: voters.clone(),
                     },
@@ -1947,7 +2017,11 @@ impl NodeRuntime {
                         .context("installed Control topology is missing")?;
                     validate_configured_topology(&current.topology, &expected)?;
                     crate::lifecycle_runtime::require_applied(
-                        &self.control.database.engine().generation()?.state,
+                        self.control
+                            .database
+                            .engine()
+                            .generation()?
+                            .lifecycle_installation(),
                         self.config.control.lifecycle.as_ref(),
                     )?;
                     Ok::<_, anyhow::Error>(())
@@ -1973,13 +2047,14 @@ impl NodeRuntime {
                 // Genesis alone does not establish readiness. A follower must
                 // observe an actual leader and applied Raft state, then validate
                 // its own current Control state. This is not a quorum read.
-                let generation = self.control.database.engine().generation()?;
-                let current = ControlPlane::applied_topology(&generation.state)?;
+                let selection = ControlPlane::select_local(&self.control.database)?;
+                let current = selection.require_installed_topology()?;
                 validate_configured_topology(&current.topology, &expected)?;
                 crate::lifecycle_runtime::require_applied(
-                    &generation.state,
+                    selection.lifecycle_installation(),
                     self.config.control.lifecycle.as_ref(),
                 )?;
+                selection.check_access()?;
                 return Ok(true);
             }
             tokio::time::sleep(Duration::from_secs(1)).await;
@@ -1994,6 +2069,16 @@ impl NodeRuntime {
         self.telemetry
             .set_lifecycle(crate::observability::Lifecycle::Draining);
         let mut retained = None;
+        if let Some(inventory) = &self.original_recoveries
+            && inventory.retained().await
+        {
+            let issue = self.startup_drain.record(
+                "original recovery inventory",
+                0,
+                anyhow::anyhow!("original recovery custody remains retained"),
+            );
+            retained = Some(kasumi_types::drain::DrainFailure::retained(issue));
+        }
         for lease in &self.serving_leases {
             lease.close();
         }
@@ -2345,8 +2430,12 @@ pub(crate) fn control_context(policy: &Policy) -> Result<RequestContext> {
 }
 
 /// Credential-free operator example, also emitted by `kasumid example-config`.
-pub fn example_config(directory_policy: kasumi_store::DirectoryPolicy) -> Result<RuntimeConfig> {
+pub fn example_config(
+    directory_policy: kasumi_store::DirectoryPolicy,
+    file_allocation_policy: kasumi_store::FileAllocationPolicy,
+) -> Result<RuntimeConfig> {
     directory_policy.validate()?;
+    file_allocation_policy.validate()?;
     let tls = || TlsFiles {
         certificate: "/etc/kasumi/server.pem".into(),
         private_key: "/etc/kasumi/server-key.pem".into(),
@@ -2363,7 +2452,7 @@ pub fn example_config(directory_policy: kasumi_store::DirectoryPolicy) -> Result
             key_name: key.into(),
             token_file: format!("/etc/kasumi/credentials/{variable}"),
             namespace: None,
-            ca_certificate: None,
+            ca_certificate: "/etc/kasumi/openbao-ca.pem".into(),
             derived: false,
         })
     };
@@ -2385,13 +2474,24 @@ pub fn example_config(directory_policy: kasumi_store::DirectoryPolicy) -> Result
                 ("backups".into(), "/var/lib/kasumi/backups".into()),
             ]),
             directory_policy,
+            file_allocation_policy,
         )?,
         scratch_disk: kasumi_store::ScratchDiskConfig {
             directory: "/var/lib/kasumi/scratch".into(),
             max_bytes: 64 << 30,
             min_free_bytes: 256 << 20,
+            native_cache_bytes: 512 << 20,
         },
-        tenant_audit_archives: BTreeMap::new(),
+        tenant_audit_placements: BTreeMap::from([
+            (
+                CONTROL_TENANT.into(),
+                crate::audit_destination::TenantAuditPlacementConfig::LocalReplicaOnly,
+            ),
+            (
+                "acme".into(),
+                crate::audit_destination::TenantAuditPlacementConfig::LocalReplicaOnly,
+            ),
+        ]),
         signer_verifier: Some(crate::signer_runtime::SignerVerifierConfig {
             max_background_workers: 64,
             identity: kasumi_serving::TrustVerifierIdentity {
@@ -2443,6 +2543,8 @@ pub fn example_config(directory_policy: kasumi_store::DirectoryPolicy) -> Result
         format: 1,
         admission: kasumi_engine::admission::AdmissionConfig {
             max_inflight_bytes: Some(2 << 30),
+            cache_work_reserve_bytes: Some(64 << 20),
+            cache_work_reserve_slots: Some(64),
             ..Default::default()
         },
         backup_destinations: BTreeMap::new(),
@@ -2572,7 +2674,11 @@ impl AdminClientConfig {
 
 #[cfg(test)]
 fn fixture_config() -> RuntimeConfig {
-    let mut config = example_config(kasumi_store::DirectoryPolicy::fixture()).unwrap();
+    let mut config = example_config(
+        kasumi_store::DirectoryPolicy::fixture(),
+        kasumi_store::FileAllocationPolicy::fixture(),
+    )
+    .unwrap();
     // Keep the original fixture policy; the new-install generator's explicit
     // 2 GiB total is not a test workload budget increase.
     config.admission = kasumi_engine::admission::AdmissionConfig::default();
@@ -2596,13 +2702,31 @@ async fn create_fixture_node(
     storage: &crate::runtime_memory::RuntimeStorage,
 ) {
     let admission = storage.facade(&config.admission).unwrap();
-    let node = NodeStore::create_new(
-        &config.database_path,
-        config.database_id,
-        storage.open_persistent(&config.persistent_disk).unwrap(),
-        storage.open_scratch(&config.scratch_disk).unwrap(),
+    let originals = crate::administration::OriginalRecoveries::new(
+        &admission,
+        crate::administration::OriginalRecoveryParticipants::configured(config),
     )
     .unwrap();
+    let node = {
+        let native_path = &config.database_path;
+        let native_id = config.database_id;
+        let native_disk = storage.open_persistent(&config.persistent_disk).unwrap();
+        let native_scratch_disk = storage.open_scratch(&config.scratch_disk).unwrap();
+        let mut constructor = originals.claim(0).await;
+        constructor
+            .begin_node()
+            .unwrap_or_else(|_| panic!("initial fixture native admission"))
+            .run_node(|| {
+                NodeStore::create_new(
+                    native_path,
+                    native_id,
+                    native_disk.clone(),
+                    native_scratch_disk.clone(),
+                    native_disk.native_storage_config(),
+                )
+            })
+    }
+    .unwrap_or_else(|_| panic!("fixture native original remains in paid custody"));
     let credential: crate::serving_runtime::CredentialSource =
         Arc::new(|_| Ok(Zeroizing::new("test-runtime-token".into())));
     let provider = config
@@ -2623,10 +2747,17 @@ async fn create_fixture_node(
         .initialize(store.clone(), admission.clone())
         .unwrap();
     let provisioned = if config.mode == DeploymentMode::Replicated {
-        crate::data_node_enrollment::provision(config, node.clone(), audit.clone(), credential)
-            .await
+        crate::data_node_enrollment::provision(
+            config,
+            node.clone(),
+            audit.clone(),
+            credential,
+            &originals,
+        )
+        .await
     } else {
-        provision_local_fixture_domains(config, node.clone(), audit.clone(), credential).await
+        provision_local_fixture_domains(config, node.clone(), audit.clone(), credential, &originals)
+            .await
     };
     admission.drain_snapshot_startups().await.unwrap();
     audit.shutdown().await.unwrap();
@@ -2641,11 +2772,13 @@ async fn create_fixture_node(
 #[cfg(test)]
 async fn provision_local_fixture_domains(
     config: &RuntimeConfig,
-    node: Arc<NodeStore>,
+    node: NodeStore,
     audit: Arc<SecurityAudit>,
     credential: crate::serving_runtime::CredentialSource,
+    original_recoveries: &crate::administration::OriginalRecoveries,
 ) -> Result<()> {
     let mut pending = crate::startup_resources::Resources::default();
+    pending.original_recoveries = Some(original_recoveries.clone());
     pending.borrowed_nodes.push(node.clone());
     let mut control = None;
     let mut routes = BTreeMap::new();
@@ -2683,14 +2816,17 @@ async fn provision_local_fixture_domains(
             pending.stores.push(stores.custody().store().clone());
             // Replay requires the configured placement, as in production enrollment.
             config.install_tenant_audit_archive(stores.application(), None)?;
-            let opened = match incarnation {
+            let index = crate::administration::original_serving_runtime::OriginalRecoveries::configured_index(config, tenant)?;
+            let mut constructor_seat = pending.original_recoveries.as_ref().expect("installed fixture inventory").claim(index).await;
+            let opened = constructor_seat.run_snapshot(async {
+                let opened = match incarnation {
                 Some(incarnation) => {
                     kasumi_engine::open_local_with_incarnation(
                         stores.clone(),
                         policy.clone(),
                         limits.clone(),
                         audit.clone(),
-                        uuid::Uuid::parse_str(incarnation)?,
+                        uuid::Uuid::parse_str(incarnation).map_err(anyhow::Error::from)?,
                     )
                     .await
                 }
@@ -2703,8 +2839,10 @@ async fn provision_local_fixture_domains(
                     )
                     .await
                 }
-            };
-            let database = opened?;
+                };
+                opened
+            }).await;
+            let database = opened.map_err(crate::administration::original_serving_runtime::OriginalRecoveryObservation::foreign_error)?;
             pending.databases.push(database.clone());
             if tenant == CONTROL_TENANT {
                 control = Some(database);
@@ -2712,7 +2850,7 @@ async fn provision_local_fixture_domains(
                 routes.insert(
                     tenant.to_owned(),
                     kasumi_engine::control::TenantRoute {
-                        incarnation: database.engine().generation()?.state.incarnation.clone(),
+                        incarnation: database.engine().generation()?.incarnation().to_owned(),
                         mode: kasumi_engine::control::DeploymentMode::Local,
                         voters: BTreeSet::from([1]),
                     },
@@ -2783,10 +2921,23 @@ mod tests {
         let directory = kasumi_store::test_utils::private_tempdir()?;
         let physical =
             crate::runtime_storage_fixtures::physical(directory.path(), Default::default())?;
-        let node = physical.create_new(
-            directory.path().join("persistent/node.kv"),
-            kasumi_store::test_utils::NODE_STORE_ID,
+        let originals = crate::administration::OriginalRecoveries::new(
+            &physical.admission,
+            crate::administration::OriginalRecoveryParticipants::one("acme"),
         )?;
+        let node = {
+            let mut constructor = originals.claim(0).await;
+            constructor
+                .begin_node()
+                .map_err(|observed| observed.foreign_error())?
+                .run_node(|| {
+                    physical.create_new(
+                        directory.path().join("persistent/node.kv"),
+                        kasumi_store::test_utils::NODE_STORE_ID,
+                    )
+                })
+                .map_err(|observed| observed.foreign_error())?
+        };
         let stores = TenantStorageSet::initialize_catalogs_fixture(
             node.clone(),
             "acme".into(),
@@ -2794,7 +2945,10 @@ mod tests {
             Arc::new(LocalKeyProvider::new([35; 32])),
         )
         .await?;
-        let config = example_config(kasumi_store::DirectoryPolicy::fixture())?;
+        let config = example_config(
+            kasumi_store::DirectoryPolicy::fixture(),
+            kasumi_store::FileAllocationPolicy::fixture(),
+        )?;
         let tenant = &config.tenants[0];
         let bootstrap = config
             .bootstrap(
@@ -2862,15 +3016,23 @@ mod tests {
             expected
         );
         assert_eq!(
-            stores.application().get("engine.deployment", b"mode")?,
-            Some(binding)
+            stores
+                .application()
+                .get("engine.deployment", b"mode")?
+                .as_deref(),
+            Some(binding.as_slice())
         );
         assert_eq!(
-            stores.application().get("engine.bootstrap", b"manifest")?,
-            Some(manifest)
+            stores
+                .application()
+                .get("engine.bootstrap", b"manifest")?
+                .as_deref(),
+            Some(manifest.as_slice())
         );
         stores.shutdown().await?;
-        node.drain_initializers().await?;
+        node.drain_initializers()
+            .await
+            .map_err(|failure| failure.observation())?;
         node.shutdown().await?;
         Ok(())
     }
@@ -2891,10 +3053,23 @@ mod tests {
             let directory = kasumi_store::test_utils::private_tempdir()?;
             let physical =
                 crate::runtime_storage_fixtures::physical(directory.path(), Default::default())?;
-            let node = physical.create_new(
-                directory.path().join("persistent/node.kv"),
-                kasumi_store::test_utils::NODE_STORE_ID,
+            let originals = crate::administration::OriginalRecoveries::new(
+                &physical.admission,
+                crate::administration::OriginalRecoveryParticipants::one("acme"),
             )?;
+            let node = {
+                let mut constructor = originals.claim(0).await;
+                constructor
+                    .begin_node()
+                    .map_err(|observed| observed.foreign_error())?
+                    .run_node(|| {
+                        physical.create_new(
+                            directory.path().join("persistent/node.kv"),
+                            kasumi_store::test_utils::NODE_STORE_ID,
+                        )
+                    })
+                    .map_err(|observed| observed.foreign_error())?
+            };
             let stores = TenantStorageSet::initialize_catalogs_fixture(
                 node.clone(),
                 "acme".into(),
@@ -2943,8 +3118,11 @@ mod tests {
                 assert!(fingerprint.is_err());
             }
             assert_eq!(
-                stores.application().get("engine.bootstrap", b"manifest")?,
-                Some(manifest)
+                stores
+                    .application()
+                    .get("engine.bootstrap", b"manifest")?
+                    .as_deref(),
+                Some(manifest.as_slice())
             );
             stores.shutdown().await?;
             node.shutdown().await?;
@@ -2954,9 +3132,14 @@ mod tests {
 
     #[test]
     fn runtime_config_requires_explicit_admission() {
-        let mut encoded =
-            serde_json::to_value(example_config(kasumi_store::DirectoryPolicy::fixture()).unwrap())
-                .unwrap();
+        let mut encoded = serde_json::to_value(
+            example_config(
+                kasumi_store::DirectoryPolicy::fixture(),
+                kasumi_store::FileAllocationPolicy::fixture(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
         let decoded: RuntimeConfig = serde_json::from_value(encoded.clone()).unwrap();
         decoded.validate().unwrap();
         assert_eq!(serde_json::to_value(decoded).unwrap(), encoded);
@@ -2967,9 +3150,167 @@ mod tests {
         assert!(error.to_string().contains("missing field `admission`"));
     }
 
+    fn installed_config_for_decode_test(mode: DeploymentMode) -> RuntimeConfig {
+        let mut config = example_config(
+            kasumi_store::DirectoryPolicy::fixture(),
+            kasumi_store::FileAllocationPolicy::fixture(),
+        )
+        .unwrap();
+        config.mode = mode;
+        if mode == DeploymentMode::Standalone {
+            config.replication = None;
+            config.serving_authorities.clear();
+            config.signer_verifier = None;
+            for tenant in &mut config.tenants {
+                tenant.serving = crate::serving_runtime::TenantServingConfig::Standalone {
+                    installation_id: Uuid::from_u128(9),
+                };
+            }
+        }
+        config.validate().unwrap();
+        config
+    }
+
+    #[test]
+    fn runtime_config_load_requires_explicit_installed_incarnations() -> Result<()> {
+        let directory = kasumi_store::test_utils::private_tempdir()?;
+        let path = directory.path().join("kasumi.json");
+        for mode in [DeploymentMode::Standalone, DeploymentMode::Replicated] {
+            let config = installed_config_for_decode_test(mode);
+            let original = serde_json::to_value(&config)?;
+            std::fs::write(&path, serde_json::to_vec(&original)?)?;
+            let loaded = RuntimeConfig::load(&path)?;
+            assert_eq!(serde_json::to_value(&loaded)?, original);
+            for pointer in ["/control", "/tenants/0"] {
+                for (label, invalid, expected) in [
+                    ("missing", None, "missing field `incarnation`"),
+                    ("null", Some(serde_json::Value::Null), "expected a string"),
+                    ("empty", Some(serde_json::json!("")), "incarnation"),
+                    (
+                        "nil",
+                        Some(serde_json::json!(Uuid::nil().to_string())),
+                        "incarnation cannot be nil",
+                    ),
+                    (
+                        "malformed",
+                        Some(serde_json::json!("not-an-incarnation")),
+                        "invalid installed incarnation",
+                    ),
+                ] {
+                    let mut encoded = original.clone();
+                    let resource = encoded
+                        .pointer_mut(pointer)
+                        .unwrap()
+                        .as_object_mut()
+                        .unwrap();
+                    match invalid {
+                        Some(invalid) => {
+                            resource.insert("incarnation".into(), invalid);
+                        }
+                        None => {
+                            resource.remove("incarnation");
+                        }
+                    }
+                    std::fs::write(&path, serde_json::to_vec(&encoded)?)?;
+                    let error = RuntimeConfig::load(&path).unwrap_err();
+                    assert!(
+                        format!("{error:#}").contains(expected),
+                        "{mode:?} {pointer} {label}: {error:#}"
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn runtime_validation_requires_installed_incarnations_and_preserves_local_fixtures() {
+        for mode in [DeploymentMode::Standalone, DeploymentMode::Replicated] {
+            let original = installed_config_for_decode_test(mode);
+            let mut missing_control = original.clone();
+            missing_control.control.incarnation = None;
+            assert!(missing_control.validate().is_err());
+            let mut missing_tenant = original;
+            missing_tenant.tenants[0].incarnation = None;
+            assert!(missing_tenant.validate().is_err());
+        }
+        let fixture = fixture_config();
+        assert!(fixture.control.incarnation.is_none());
+        assert!(
+            fixture
+                .tenants
+                .iter()
+                .all(|tenant| tenant.incarnation.is_none())
+        );
+        fixture.validate().unwrap();
+        // Constructed fixture state is not an installed nullable wire format.
+        assert!(
+            serde_json::from_value::<RuntimeConfig>(serde_json::to_value(fixture).unwrap())
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn runtime_config_load_requires_pinned_transit_ca_for_every_key_domain() -> Result<()> {
+        let directory = kasumi_store::test_utils::private_tempdir()?;
+        let path = directory.path().join("kasumi.json");
+        let original =
+            serde_json::to_value(installed_config_for_decode_test(DeploymentMode::Replicated))?;
+        std::fs::write(&path, serde_json::to_vec(&original)?)?;
+        RuntimeConfig::load(&path)?;
+        for pointer in [
+            "/control/keys",
+            "/control/custody_keys",
+            "/security_audit/keys",
+            "/tenants/0/keys",
+            "/tenants/0/custody_keys",
+            "/signer_verifier/keys",
+        ] {
+            for (label, invalid, expected) in [
+                ("missing", None, "missing field `ca_certificate`"),
+                (
+                    "null",
+                    Some(serde_json::Value::Null),
+                    "expected path string",
+                ),
+                (
+                    "relative",
+                    Some(serde_json::json!("openbao-ca.pem")),
+                    "paths must be absolute",
+                ),
+            ] {
+                let mut encoded = original.clone();
+                let provider = encoded
+                    .pointer_mut(pointer)
+                    .unwrap()
+                    .as_object_mut()
+                    .unwrap();
+                match invalid {
+                    Some(invalid) => {
+                        provider.insert("ca_certificate".into(), invalid);
+                    }
+                    None => {
+                        provider.remove("ca_certificate");
+                    }
+                }
+                std::fs::write(&path, serde_json::to_vec(&encoded)?)?;
+                let error = RuntimeConfig::load(&path).unwrap_err();
+                assert!(
+                    format!("{error:#}").contains(expected),
+                    "{pointer} {label}: {error:#}"
+                );
+            }
+        }
+        Ok(())
+    }
+
     #[test]
     fn operator_example_is_valid_secret_free_and_rejects_inline_credentials() {
-        let config = example_config(kasumi_store::DirectoryPolicy::fixture()).unwrap();
+        let config = example_config(
+            kasumi_store::DirectoryPolicy::fixture(),
+            kasumi_store::FileAllocationPolicy::fixture(),
+        )
+        .unwrap();
         config.validate().unwrap();
         let mut value = serde_json::to_value(&config).unwrap();
         assert!(value["tenants"][0]["keys"].get("token").is_none());
@@ -3273,7 +3614,11 @@ mod tests {
     #[test]
     fn replicated_control_origin_identity_matches_genesis_for_root_url_forms() {
         for trailing_slash in [false, true] {
-            let mut config = example_config(kasumi_store::DirectoryPolicy::fixture()).unwrap();
+            let mut config = example_config(
+                kasumi_store::DirectoryPolicy::fixture(),
+                kasumi_store::FileAllocationPolicy::fixture(),
+            )
+            .unwrap();
             if trailing_slash {
                 for peer in &mut config.replication.as_mut().unwrap().peers {
                     peer.endpoint.push('/');
@@ -3439,7 +3784,7 @@ mod lifecycle_tests {
         };
 
         struct PausedRequest {
-            node: Arc<NodeStore>,
+            node: NodeStore,
             entered: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
             release: Arc<tokio::sync::Notify>,
         }
@@ -3454,7 +3799,10 @@ mod lifecycle_tests {
                 .unwrap();
             state.release.notified().await;
             // Keep the real node owner across the pending HTTP request.
-            assert!(Arc::strong_count(&state.node) > 0);
+            assert!(matches!(
+                state.node.locator().try_borrow(),
+                kasumi_store::NodeStoreLookup::Active(original) if kasumi_store::NodeStore::ptr_eq(&original, &state.node)
+            ));
             state.node.shutdown().await.unwrap();
             "finished"
         }
@@ -3470,7 +3818,8 @@ mod lifecycle_tests {
             let node = physical
                 .create_new(&path, kasumi_store::test_utils::NODE_STORE_ID)
                 .unwrap();
-            let weak = Arc::downgrade(&node);
+            let weak = node.locator();
+            let mut weak_retirement = node.clone().retire();
             let (files, pem) = certificate_files(directory.path());
             let socket = TcpListener::bind("127.0.0.1:0").await.unwrap();
             let endpoint = format!(
@@ -3542,7 +3891,7 @@ mod lifecycle_tests {
             assert!(poll_fn(|cx| Poll::Ready(draining.as_mut().poll(cx).is_pending())).await);
             assert!(*notices.borrow());
             assert!(
-                weak.upgrade().is_some(),
+                matches!(weak.try_borrow(), kasumi_store::NodeStoreLookup::Active(_)),
                 "the live request must still own the node"
             );
             release.notify_one();
@@ -3553,7 +3902,13 @@ mod lifecycle_tests {
             assert_eq!(response.await.unwrap(), "finished");
             drop(tasks);
             assert!(
-                weak.upgrade().is_none(),
+                {
+                    assert_eq!(
+                        weak_retirement.retry(),
+                        kasumi_store::StorageCensusDisposition::Retired
+                    );
+                    matches!(weak.try_borrow(), kasumi_store::NodeStoreLookup::Missing)
+                },
                 "listener or request retained the node after drain"
             );
             // No delay or lock retry after the same drain used by every serve exit.
@@ -4083,7 +4438,7 @@ mod lifecycle_tests {
         ) {
             let transit = transit.transit_mut().unwrap();
             transit.endpoint = transit_endpoint.clone();
-            transit.ca_certificate = Some(files.certificate.clone());
+            transit.ca_certificate = files.certificate.clone();
         }
         let context = RequestContext {
             authorization: kasumi_types::RequestAuthorization::service_identity(),
@@ -4126,7 +4481,7 @@ mod lifecycle_tests {
             let database = tokio::time::timeout(Duration::from_secs(15), async {
                 loop {
                     if let Ok(database) = registry.database(&context)
-                        && !database.engine().generation().unwrap().state.retired
+                        && !database.engine().generation().unwrap().retired()
                     {
                         break database;
                     }
@@ -4155,7 +4510,7 @@ mod lifecycle_tests {
                         .contains_key("beta")
                 );
             }
-            let control_limits = control.engine().generation().unwrap().state.limits.clone();
+            let control_limits = control.engine().generation().unwrap().limits().clone();
             control
                 .administer(operator.clone(), Operation::SetLimits(control_limits))
                 .await
@@ -4183,9 +4538,8 @@ mod lifecycle_tests {
                 .engine()
                 .generation()
                 .unwrap()
-                .state
-                .incarnation
-                .clone();
+                .incarnation()
+                .to_owned();
             if round == 0 {
                 incarnation = Some(current);
                 database
@@ -4222,7 +4576,12 @@ mod lifecycle_tests {
                 assert_eq!(incarnation, Some(current));
             }
             assert_eq!(
-                database.get(&context, "docs", "first").await.unwrap().body["exact"],
+                database
+                    .get(&context, "docs", "first")
+                    .await
+                    .unwrap()
+                    .expect("document exists")
+                    .body["exact"],
                 serde_json::json!(9007199254740993u64)
             );
             let attacker = RequestContext {
@@ -4287,7 +4646,12 @@ mod lifecycle_tests {
                     .await
                     .unwrap();
                 assert_eq!(
-                    database.get(&context, "docs", "first").await.unwrap().body["exact"],
+                    database
+                        .get(&context, "docs", "first")
+                        .await
+                        .unwrap()
+                        .expect("document exists")
+                        .body["exact"],
                     serde_json::json!(9007199254740993u64)
                 );
             }
@@ -4296,7 +4660,7 @@ mod lifecycle_tests {
                 let invocation = manager.prepare(context.clone(), M::Status {}).unwrap();
                 let fence = invocation.response_fence().unwrap();
                 let _encoded = serde_json::to_vec(&invocation.execute().await.unwrap()).unwrap();
-                let policy = database.engine().generation().unwrap().state.policy.clone();
+                let policy = database.engine().generation().unwrap().policy().clone();
                 let mut changed = policy.clone();
                 changed
                     .grants
@@ -4327,7 +4691,7 @@ mod lifecycle_tests {
                     .unwrap();
             }
             if round == 0 {
-                let mut policy = control.engine().generation().unwrap().state.policy.clone();
+                let mut policy = control.engine().generation().unwrap().policy().clone();
                 policy.grants.push(Grant {
                     principal: "rotated-startup-operator".into(),
                     collection: None,
@@ -4367,6 +4731,10 @@ mod lifecycle_tests {
             if round == 0 {
                 let staged =
                     staged_config(&config.tenants[0], "beta", uuid::Uuid::new_v4().to_string());
+                config.tenant_audit_placements.insert(
+                    staged.tenant.clone(),
+                    crate::audit_destination::TenantAuditPlacementConfig::LocalReplicaOnly,
+                );
                 config.tenants.push(staged);
             }
             config.tenants[0].initial_policy.grants.push(Grant {
@@ -4670,7 +5038,7 @@ mod lifecycle_tests {
             ) {
                 let settings = settings.transit_mut().unwrap();
                 settings.endpoint = kms_endpoint.clone();
-                settings.ca_certificate = Some(mock_files.certificate.clone());
+                settings.ca_certificate = mock_files.certificate.clone();
             }
             if node == 2 {
                 match bootstrap_fault {
@@ -4804,8 +5172,7 @@ mod lifecycle_tests {
                     .engine()
                     .generation()
                     .unwrap()
-                    .state
-                    .tenant,
+                    .tenant(),
                 CONTROL_TENANT
             );
             assert_eq!(runtime.data_listeners.len(), 3);
@@ -5192,7 +5559,7 @@ mod lifecycle_tests {
                 .map(|database| {
                     database.engine().generation().map(|generation| {
                         (
-                            generation.state.revision,
+                            generation.revision(),
                             generation.state.collections.contains_key("docs"),
                         )
                     })
@@ -5357,7 +5724,7 @@ mod lifecycle_tests {
                     .map(|database| {
                         database.engine().generation().map(|generation| {
                             (
-                                generation.state.revision,
+                                generation.revision(),
                                 generation.state.collections.get("docs").is_some_and(
                                     |collection| collection.documents.contains_key("a"),
                                 ),
@@ -5533,7 +5900,7 @@ mod lifecycle_tests {
                 loop {
                     for index in [0, 1, 3] {
                         if let Ok(db) = registries[index].database(&context)
-                            && let Ok(doc) = db.get(&context, "docs", "a").await
+                            && let Ok(Some(doc)) = db.get(&context, "docs", "a").await
                         {
                             return doc;
                         }
@@ -5582,7 +5949,7 @@ mod lifecycle_tests {
         tokio::time::timeout(Duration::from_secs(20), async {
             while !databases
                 .iter()
-                .all(|db| db.engine().generation().unwrap().state.suspended)
+                .all(|db| db.engine().generation().unwrap().suspended())
             {
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
@@ -5591,12 +5958,11 @@ mod lifecycle_tests {
         .unwrap();
         fixture_stage!("suspend replicated");
         let source_incarnation = Uuid::parse_str(
-            &databases[leader]
+            databases[leader]
                 .engine()
                 .generation()
                 .unwrap()
-                .state
-                .incarnation,
+                .incarnation(),
         )
         .unwrap();
         let source_context = context.clone();
@@ -5664,8 +6030,8 @@ mod lifecycle_tests {
                                     )
                                 });
                             (
-                                generation.state.revision,
-                                generation.state.suspended,
+                                generation.revision(),
+                                generation.suspended(),
                                 verification_audit,
                             )
                         })
@@ -5797,9 +6163,7 @@ mod lifecycle_tests {
                     .database(&context)
                     .ok()
                     .and_then(|database| database.engine().generation().ok())
-                    .is_some_and(|generation| {
-                        generation.state.incarnation == incarnation.to_string()
-                    })
+                    .is_some_and(|generation| generation.incarnation() == incarnation.to_string())
             }) {
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
@@ -5814,7 +6178,7 @@ mod lifecycle_tests {
                 let execution = generation
                     .state
                     .target_lifecycle
-                    .get(&generation.state.incarnation)
+                    .get(generation.incarnation())
                     .cloned()
                     .unwrap();
                 assert_eq!(
@@ -5846,7 +6210,7 @@ mod lifecycle_tests {
                 async move {
                     // Resolve an uncertain resume from quorum-committed state before
                     // issuing another administrative operation.
-                    if restored.engine().generation()?.state.suspended {
+                    if restored.engine().generation()?.suspended() {
                         restored
                             .administer(context, Operation::Suspend(false))
                             .await?;
@@ -5863,7 +6227,10 @@ mod lifecycle_tests {
             })
         })
         .await;
-        assert_eq!(document.body["durable"], serde_json::json!(true));
+        assert_eq!(
+            document.expect("restored document").body["durable"],
+            serde_json::json!(true)
+        );
         assert!(
             databases[leader]
                 .get(&source_context, "docs", "a")
@@ -5977,6 +6344,10 @@ mod lifecycle_tests {
                 "beta",
                 beta_incarnation.clone(),
             ));
+            config.tenant_audit_placements.insert(
+                "beta".into(),
+                crate::audit_destination::TenantAuditPlacementConfig::LocalReplicaOnly,
+            );
             let mut mismatched = staged_config(
                 &config.tenants[0],
                 "mismatched",
@@ -5986,6 +6357,10 @@ mod lifecycle_tests {
                 mismatched.initial_limits.max_documents -= 1;
             }
             config.tenants.push(mismatched);
+            config.tenant_audit_placements.insert(
+                "mismatched".into(),
+                crate::audit_destination::TenantAuditPlacementConfig::LocalReplicaOnly,
+            );
             let runtime = open_replicated_fixture_node(config, file_secret, storage.clone())
                 .await
                 .unwrap();
@@ -6028,7 +6403,7 @@ mod lifecycle_tests {
                     ready &= registry.database(&context).is_ok_and(|db| {
                         db.engine()
                             .generation()
-                            .is_ok_and(|g| g.state.incarnation == incarnation.to_string())
+                            .is_ok_and(|g| g.incarnation() == incarnation.to_string())
                     });
                 }
                 if ready {
@@ -6063,7 +6438,7 @@ mod lifecycle_tests {
             loop {
                 for registry in &second_registries {
                     let db = registry.database(&context).unwrap();
-                    if let Ok(doc) = db.get(&context, "docs", "a").await {
+                    if let Ok(Some(doc)) = db.get(&context, "docs", "a").await {
                         return doc;
                     }
                 }
@@ -6205,7 +6580,7 @@ mod lifecycle_tests {
         tokio::time::timeout(Duration::from_secs(20), async {
             loop {
                 for registry in &second_registries {
-                    if let Ok(document) = registry
+                    if let Ok(Some(document)) = registry
                         .database(&context)
                         .unwrap()
                         .get(&context, "docs", "a")
@@ -6248,127 +6623,181 @@ pub(crate) async fn open_retired_source(
     cluster: Option<&Arc<ClusterNetwork>>,
     audit: Arc<SecurityAudit>,
     admission: Arc<kasumi_engine::admission::NodeAdmission>,
-) -> Result<Arc<kasumi_engine::RetiredCustody>> {
+) -> std::result::Result<Arc<kasumi_engine::RetiredCustody>, RetiredSourceFailure> {
     // Every production caller runs inside an already retained startup or
     // reconciliation task. Keep this nested inventory outside the caught future;
     // never register a task in its parent's global startup registry.
     let mut pending = crate::startup_resources::Resources::default();
-    let outcome = crate::startup_preparation::capture("retired custody", async {
-        let snapshot_limit = if store.binding().tenant() == CONTROL_TENANT {
-            config.control.initial_limits.max_snapshot_bytes
-        } else {
-            config
-                .tenants
-                .iter()
-                .find(|tenant| tenant.tenant == store.binding().tenant())
-                .context("retired source lacks installed capacity settings")?
-                .initial_limits
-                .max_snapshot_bytes
-        };
-        let control = kasumi_raft::ControlLog::installed(store.clone())?
-            .context("installed custody consensus absent")?;
-        let group = control.group().to_owned();
-        let id = control.node_id();
-        let binding = store
-            .store()
-            .get("engine.deployment", b"mode")?
-            .context("custody deployment binding absent")?;
-        if let Some(replication) = &config.replication {
-            let (mode, bootstrap): (String, ReplicatedBootstrap) =
-                serde_json::from_slice(&binding)?;
-            bootstrap.validate()?;
-            ensure!(
-                mode == "replicated"
-                    && id == replication.node_id
-                    && group == format!("{}/{}", store.binding().tenant(), bootstrap.incarnation),
-                "custody deployment differs from installed replication"
-            );
-            let network = cluster.context("custody peer transport absent")?;
-            let fingerprint = retired_custody_bootstrap_fingerprint(&store, &binding)?;
-            let access = store.store().clone();
-            let custody = kasumi_engine::RetiredCustody::open_replicated(
-                store,
-                id,
-                group.clone(),
-                network.clone(),
-                kasumi_raft::RaftGroupConfig {
-                    raft: kasumi_raft::server_config(),
-                    limits: kasumi_raft::RaftLimits {
-                        max_snapshot_bytes: snapshot_limit,
-                    },
-                },
-                admission,
-                audit,
-            )
-            .await?;
-            pending.custodies.push(custody.clone());
-            #[cfg(test)]
-            {
-                crate::startup_preparation::checkpoint(config.database_id, "retired-custody-owner");
-                retired_source_tests::after_open(config.database_id, &custody).await?;
-            }
-            network.register_group_with_bootstrap(
-                group,
-                custody
-                    .raft_group()
-                    .context("closed custody group absent")?
-                    .raft()
-                    .clone(),
-                replication.peers.iter().map(|peer| peer.node_id).collect(),
-                fingerprint,
-                Arc::new(move || access.check_access()),
-            )?;
-            Ok(custody)
-        } else {
-            ensure!(
-                binding == b"local-v1" && id == 1,
-                "replicated custody cannot use local transport"
-            );
-            let router = Arc::new(kasumi_raft::InProcessRouter::default());
-            let custody = kasumi_engine::RetiredCustody::open_replicated(
-                store,
-                id,
-                group.clone(),
-                router.clone(),
-                kasumi_raft::RaftGroupConfig {
-                    raft: kasumi_raft::Config::default(),
-                    limits: kasumi_raft::RaftLimits {
-                        max_snapshot_bytes: snapshot_limit,
-                    },
-                },
-                admission,
-                audit,
-            )
-            .await?;
-            pending.custodies.push(custody.clone());
-            #[cfg(test)]
-            {
-                crate::startup_preparation::checkpoint(config.database_id, "retired-custody-owner");
-                retired_source_tests::after_open(config.database_id, &custody).await?;
-            }
-            router.register(
-                group,
-                id,
-                custody
-                    .raft_group()
-                    .context("closed custody group absent")?
-                    .raft()
-                    .clone(),
-            );
-            Ok(custody)
-        }
-    })
+    // Both allocations are quoted by the same preheld donor seat before any
+    // constructor effect: one custody-alias vector and the actual preparation future.
+    pending.custodies = Vec::with_capacity(1);
+    let outcome = crate::startup_preparation::capture(
+        "retired custody",
+        prepare_retired_source(config, store, cluster, audit, admission, &mut pending),
+    )
     .await;
     match outcome {
         Ok(custody) => Ok(custody),
-        Err(error) => {
-            // Returning an error permits callers to publish RecoveringControl.
-            // This must wait for Complete, including retained-child retries.
-            match crate::startup_owner::finish(&mut pending).await {
-                Ok(()) => Err(error),
-                Err(drain) => Err(error.context(drain)),
+        Err(original) => Err(RetiredSourceFailure::new(original, pending)),
+    }
+}
+
+/// Pure layout quotation: the function is never invoked. Lifetimes change no
+/// representation, and these static arguments select the actual future type.
+pub(crate) fn retired_source_preparation_bytes() -> std::io::Result<u64> {
+    fn quote<F, Fut>(_: F) -> std::io::Result<u64>
+    where
+        F: FnOnce(
+            &'static RuntimeConfig,
+            Arc<kasumi_store::CustodyStore>,
+            Option<&'static Arc<ClusterNetwork>>,
+            Arc<SecurityAudit>,
+            Arc<kasumi_engine::admission::NodeAdmission>,
+            &'static mut crate::startup_resources::Resources,
+        ) -> Fut,
+    {
+        u64::try_from(std::alloc::Layout::new::<Fut>().size())
+            .ok()
+            .and_then(|bytes| bytes.checked_add(64))
+            .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::OutOfMemory))
+    }
+    quote(prepare_retired_source)
+}
+pub(crate) fn retired_source_preparation_backing()
+-> anyhow::Result<kasumi_engine::admission::startup::StartupBacking> {
+    fn quote<F, Fut>(_: F) -> anyhow::Result<kasumi_engine::admission::startup::StartupBacking>
+    where
+        F: FnOnce(
+            &'static RuntimeConfig,
+            Arc<kasumi_store::CustodyStore>,
+            Option<&'static Arc<ClusterNetwork>>,
+            Arc<SecurityAudit>,
+            Arc<kasumi_engine::admission::NodeAdmission>,
+            &'static mut crate::startup_resources::Resources,
+        ) -> Fut,
+    {
+        kasumi_engine::admission::startup::StartupBacking::empty().boxed::<Fut>()
+    }
+    quote(prepare_retired_source)
+}
+async fn prepare_retired_source(
+    config: &RuntimeConfig,
+    store: Arc<kasumi_store::CustodyStore>,
+    cluster: Option<&Arc<ClusterNetwork>>,
+    audit: Arc<SecurityAudit>,
+    admission: Arc<kasumi_engine::admission::NodeAdmission>,
+    pending: &mut crate::startup_resources::Resources,
+) -> std::result::Result<Arc<kasumi_engine::RetiredCustody>, kasumi_engine::SnapshotFailure> {
+    macro_rules! ensure_result {
+        ($condition:expr, $message:expr) => {
+            if !$condition {
+                return Err(kasumi_engine::SnapshotFailure::from(anyhow::anyhow!(
+                    $message
+                )));
             }
+        };
+    }
+    let snapshot_limit = if store.binding().tenant() == CONTROL_TENANT {
+        config.control.initial_limits.max_snapshot_bytes
+    } else {
+        config
+            .tenants
+            .iter()
+            .find(|tenant| tenant.tenant == store.binding().tenant())
+            .context("retired source lacks installed capacity settings")?
+            .initial_limits
+            .max_snapshot_bytes
+    };
+    let control = kasumi_raft::ControlLog::installed(store.clone())?
+        .context("installed custody consensus absent")?;
+    let group = control.group().to_owned();
+    let id = control.node_id();
+    let binding = store
+        .store()
+        .get("engine.deployment", b"mode")?
+        .context("custody deployment binding absent")?;
+    if let Some(replication) = &config.replication {
+        let (mode, bootstrap): (String, ReplicatedBootstrap) = serde_json::from_slice(&binding)?;
+        bootstrap.validate()?;
+        ensure_result!(
+            mode == "replicated"
+                && id == replication.node_id
+                && group == format!("{}/{}", store.binding().tenant(), bootstrap.incarnation),
+            "custody deployment differs from installed replication"
+        );
+        let network = cluster.context("custody peer transport absent")?;
+        let fingerprint = retired_custody_bootstrap_fingerprint(&store, &binding)?;
+        let access = store.store().clone();
+        let custody = kasumi_engine::RetiredCustody::open_replicated(
+            store,
+            id,
+            group.clone(),
+            network.clone(),
+            kasumi_raft::RaftGroupConfig {
+                raft: kasumi_raft::server_config(),
+                limits: kasumi_raft::RaftLimits {
+                    max_snapshot_bytes: snapshot_limit,
+                },
+            },
+            admission,
+            audit,
+        )
+        .await?;
+        pending.custodies.push(custody.clone());
+        #[cfg(test)]
+        {
+            crate::startup_preparation::checkpoint(config.database_id, "retired-custody-owner");
+            retired_source_tests::after_open(config.database_id, &custody).await?;
         }
+        network.register_group_with_bootstrap(
+            group,
+            custody
+                .raft_group()
+                .context("closed custody group absent")?
+                .raft()
+                .clone(),
+            replication.peers.iter().map(|peer| peer.node_id).collect(),
+            fingerprint,
+            Arc::new(move || access.check_access()),
+        )?;
+        Ok::<_, kasumi_engine::SnapshotFailure>(custody)
+    } else {
+        ensure_result!(
+            binding == b"local-v1" && id == 1,
+            "replicated custody cannot use local transport"
+        );
+        let router = Arc::new(kasumi_raft::InProcessRouter::default());
+        let custody = kasumi_engine::RetiredCustody::open_replicated(
+            store,
+            id,
+            group.clone(),
+            router.clone(),
+            kasumi_raft::RaftGroupConfig {
+                raft: kasumi_raft::Config::default(),
+                limits: kasumi_raft::RaftLimits {
+                    max_snapshot_bytes: snapshot_limit,
+                },
+            },
+            admission,
+            audit,
+        )
+        .await?;
+        pending.custodies.push(custody.clone());
+        #[cfg(test)]
+        {
+            crate::startup_preparation::checkpoint(config.database_id, "retired-custody-owner");
+            retired_source_tests::after_open(config.database_id, &custody).await?;
+        }
+        router.register(
+            group,
+            id,
+            custody
+                .raft_group()
+                .context("closed custody group absent")?
+                .raft()
+                .clone(),
+        );
+        Ok::<_, kasumi_engine::SnapshotFailure>(custody)
     }
 }
 
@@ -6385,6 +6814,21 @@ mod audit_tests;
 mod observability_tests;
 
 impl crate::startup_owner::Runtime for NodeRuntime {
+    fn handoff(&mut self) -> Result<()> {
+        // Ticket::claim calls this synchronously while retaining the entire
+        // runtime. Failed/abandoned publication still drains dormant workers.
+        for node in &self.owned_nodes {
+            node.activate_cache_warming()?;
+        }
+        if let Some(verifier) = &self.signer_verifier {
+            verifier.activate_cache_warming()?;
+        }
+        if let Some(target) = &self.target_recovery {
+            target.activate_cache_warming()?;
+        }
+        Ok(())
+    }
+
     fn close(
         &mut self,
     ) -> std::pin::Pin<

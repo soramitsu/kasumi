@@ -95,8 +95,8 @@ async fn abandoned_facade_and_cancelled_owner_drain_keep_actual_panic_and_charge
     let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
     let disk = fixture_scratch.clone();
-    let charged = Arc::new(());
-    let owner = SnapshotBufferOwner::new(1, charged.clone())?;
+    let (charged, charge_retired) = crate::test_utils::observed_budget_charge();
+    let owner = SnapshotBufferOwner::new(1, charged)?;
     let weak = Arc::downgrade(&owner);
     let mut buffer = SnapshotBuffer::new(&disk, 1 << 20, &owner)?;
     let (control, release) = ChildControl::paused(&buffer, 2);
@@ -109,7 +109,7 @@ async fn abandoned_facade_and_cancelled_owner_drain_keep_actual_panic_and_charge
     drop(buffer);
     drop(owner);
     let owner = weak.upgrade().expect("custody survives every facade");
-    assert!(Arc::strong_count(&charged) > 1);
+    assert!(!charge_retired.load(std::sync::atomic::Ordering::Acquire));
     let mut first = Box::pin(owner.drain());
     std::future::poll_fn(|cx| {
         assert!(first.as_mut().poll(cx).is_pending());
@@ -130,11 +130,14 @@ async fn abandoned_facade_and_cancelled_owner_drain_keep_actual_panic_and_charge
             .is_panic()
     );
     let repeated = owner.drain().await.unwrap_err();
-    assert!(Arc::ptr_eq(&original, &repeated.issues()[0]));
+    assert!(kasumi_types::drain::DrainIssueRef::ptr_eq(
+        &original,
+        &repeated.issues()[0]
+    ));
     assert_eq!(disk.snapshot().live_files, 0);
     drop(owner);
     assert!(weak.upgrade().is_none());
-    assert_eq!(Arc::strong_count(&charged), 1);
+    assert!(charge_retired.load(std::sync::atomic::Ordering::Acquire));
     Ok(())
 }
 
@@ -172,10 +175,16 @@ async fn original_io_failure_survives_io_bridge_and_repeated_typed_drain() -> an
         73
     );
     let repeated = buffer.drain().await.unwrap_err();
-    assert!(Arc::ptr_eq(&original, &repeated.issues()[0]));
+    assert!(kasumi_types::drain::DrainIssueRef::ptr_eq(
+        &original,
+        &repeated.issues()[0]
+    ));
     assert!(SnapshotBuffer::new(&disk, 1 << 20, &owner).is_err());
     let global = owner.drain().await.unwrap_err();
-    assert!(Arc::ptr_eq(&original, &global.issues()[0]));
+    assert!(kasumi_types::drain::DrainIssueRef::ptr_eq(
+        &original,
+        &global.issues()[0]
+    ));
     Ok(())
 }
 
@@ -242,7 +251,7 @@ async fn pending_child_holds_its_fixed_slot_until_actual_join() -> anyhow::Resul
     let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
     let disk = fixture_scratch.clone();
-    let owner = SnapshotBufferOwner::new(1, Arc::new(()))?;
+    let owner = SnapshotBufferOwner::new(1, kasumi_types::SharedBudgetCharge::new(()))?;
     let mut buffer = SnapshotBuffer::new(&disk, 1 << 20, &owner)?;
     let (control, release) = ChildControl::paused(&buffer, 0);
     begin_write(&mut buffer).await;
@@ -263,12 +272,12 @@ async fn pending_child_holds_its_fixed_slot_until_actual_join() -> anyhow::Resul
 
 #[test]
 fn unused_owner_releases_its_reservation_without_a_drain() -> anyhow::Result<()> {
-    let charge = Arc::new(());
-    let owner = SnapshotBufferOwner::new(1, charge.clone())?;
+    let (charge, charge_retired) = crate::test_utils::observed_budget_charge();
+    let owner = SnapshotBufferOwner::new(1, charge)?;
     let weak = Arc::downgrade(&owner);
     drop(owner);
     assert!(weak.upgrade().is_none());
-    assert_eq!(Arc::strong_count(&charge), 1);
+    assert!(charge_retired.load(std::sync::atomic::Ordering::Acquire));
     Ok(())
 }
 
@@ -278,7 +287,7 @@ async fn failed_startup_keeps_original_error_while_actual_child_drains() -> anyh
     let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
     let disk = fixture_scratch.clone();
-    let owner = SnapshotBufferOwner::new(1, Arc::new(()))?;
+    let owner = SnapshotBufferOwner::new(1, kasumi_types::SharedBudgetCharge::new(()))?;
     let mut buffer = SnapshotBuffer::new(&disk, 1 << 20, &owner)?;
     let (control, release) = ChildControl::paused(&buffer, 1);
     begin_write(&mut buffer).await;
@@ -289,8 +298,11 @@ async fn failed_startup_keeps_original_error_while_actual_child_drains() -> anyh
     .await?;
     let (storage, lease) = crate::lifetime::StorageDrain::new();
     drop(lease);
+    let first_original = anyhow::Error::new(OriginalFailure(321));
+    let first_outer: &(dyn std::error::Error + Send + Sync + 'static) = first_original.as_ref();
+    let first_address = first_outer as *const _ as *const () as usize;
     let mut first = Box::pin(crate::failed_startup(
-        OriginalFailure(321).into(),
+        kasumi_store::ScratchOperationFailure::Operation(first_original),
         &owner,
         &storage,
     ));
@@ -302,14 +314,25 @@ async fn failed_startup_keeps_original_error_while_actual_child_drains() -> anyh
     drop(first);
     assert_eq!(disk.snapshot().live_files, 1);
     release.send(())?;
-    let error = crate::failed_startup(OriginalFailure(999).into(), &owner, &storage).await;
-    let failure = error.downcast_ref::<DrainFailure>().unwrap();
+    let second_original = anyhow::Error::new(OriginalFailure(999));
+    let second_outer: &(dyn std::error::Error + Send + Sync + 'static) = second_original.as_ref();
+    let second_address = second_outer as *const _ as *const () as usize;
+    assert_ne!(first_address, second_address);
+    let error = crate::failed_startup(
+        kasumi_store::ScratchOperationFailure::Operation(second_original),
+        &owner,
+        &storage,
+    )
+    .await;
+    let outer: &(dyn std::error::Error + Send + Sync + 'static) =
+        error.operation_error().unwrap().as_ref();
+    let failure = outer.downcast_ref::<DrainFailure>().unwrap();
     assert_eq!(failure.completion(), DrainCompletion::Complete);
-    assert_eq!(failure.issues().len(), 2);
+    assert_eq!(failure.issues().len(), 3);
     let original = failure
         .issues()
         .iter()
-        .find(|issue| issue.component() == "Raft startup")
+        .find(|issue| issue.component() == "Raft startup" && issue.instance() == first_address)
         .unwrap();
     assert_eq!(
         original
@@ -318,6 +341,23 @@ async fn failed_startup_keeps_original_error_while_actual_child_drains() -> anyh
             .unwrap()
             .0,
         321
+    );
+    let first_outer: &(dyn std::error::Error + Send + Sync + 'static) = original.error().as_ref();
+    assert_eq!(first_outer as *const _ as *const () as usize, first_address);
+    let independent = failure
+        .issues()
+        .iter()
+        .find(|issue| issue.component() == "Raft startup" && issue.instance() == second_address)
+        .unwrap();
+    let second_outer: &(dyn std::error::Error + Send + Sync + 'static) =
+        independent.error().as_ref();
+    assert_eq!(
+        second_outer as *const _ as *const () as usize,
+        second_address
+    );
+    assert_eq!(
+        second_outer.downcast_ref::<OriginalFailure>().unwrap().0,
+        999
     );
     let child = failure
         .issues()

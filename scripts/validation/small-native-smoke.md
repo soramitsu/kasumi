@@ -53,6 +53,18 @@ does not establish filesystem qualification. It retains the exact input bytes an
 hash and requires the generated installation to contain the same policy. Use
 only binaries built from the current required-policy API; historical checkpoints
 remain historical evidence and are not accepted through a compatibility path.
+Also provide `--file-allocation-policy` with exactly
+`maximum_extra_extent_bytes` (zero through `i64::MAX`). This required allowance
+bounds regular-file allocation above rounded EOF, remains charged for closed
+files, and must be qualified on the diagnostic filesystem. The runner retains
+its exact bytes and hash and checks the generated configuration against it.
+
+The runner writes and retains a private `tenant-audit-placements.json` before
+initialization. It explicitly selects local replica only for Control and
+`capacity-smoke`, passes the mandatory `--tenant-audit-placements` input, and
+requires the generated configuration to preserve the exact two-row map. The
+provenance record includes the file's digest and selected choices.
+
 The runner reserves three loopback ports before `kasumid init`, supplies them in
 the required strict `--network` file, retains that file in provenance, and
 checks the generated configuration and profiles. It does not rewrite endpoints
@@ -62,7 +74,7 @@ after immutable Control genesis.
 python3 /opt/kasumi-tools/small_native_smoke.py \
   --binaries "$RELEASE_BINARIES" \
   --build-evidence "$BUILD_EVIDENCE" \
-  --directory-policy /etc/kasumi/directory-policy.json \
+  --directory-policy /etc/kasumi/directory-policy.json --file-allocation-policy /etc/kasumi/file-allocation-policy.json \
   --source "$RELEASE_COMMIT" \
   --repository "$SOURCE_REPOSITORY" \
   --output "$NEW_EVIDENCE_DIRECTORY" \

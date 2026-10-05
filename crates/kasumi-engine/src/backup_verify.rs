@@ -13,6 +13,9 @@ use std::{
 };
 #[path = "backup_history_work.rs"]
 mod history_work;
+#[path = "backup_phase.rs"]
+mod phase;
+pub(crate) use phase::VerificationPhase;
 
 pub(crate) struct VerificationWork {
     _permit: tokio::sync::OwnedSemaphorePermit,
@@ -157,50 +160,63 @@ impl VerificationDeadline {
             .await
             .map_err(|_| anyhow::anyhow!("backup verification deadline expired"))
     }
-    pub async fn blocking<T, F>(
+    pub async fn blocking<T, E, F>(
         self,
         reservation: Arc<Reservation>,
         registration: Option<Arc<VerificationWork>>,
         work: F,
-    ) -> anyhow::Result<T>
+    ) -> std::result::Result<T, E>
     where
         T: Send + 'static,
-        F: FnOnce() -> anyhow::Result<T> + Send + 'static,
+        E: From<anyhow::Error> + Send + 'static,
+        F: FnOnce() -> std::result::Result<T, E> + Send + 'static,
     {
         struct Resources {
             _reservation: Arc<Reservation>,
             _registration: Option<Arc<VerificationWork>>,
         }
-        struct Output<T> {
-            value: anyhow::Result<T>,
+        struct Output<T, E> {
+            value: std::result::Result<T, E>,
             // Output/state drops before resources; resources drop their byte
             // charge before the work registration permits shutdown to drain.
             _resources: Resources,
         }
+        let phase = VerificationPhase::start("verification.blocking_wait", Some(self));
         let output = self
             .run(tokio::task::spawn_blocking(move || {
+                let phase = VerificationPhase::start("verification.blocking_worker", Some(self));
                 let resources = Resources {
                     _reservation: reservation,
                     _registration: registration,
                 };
                 let value = (|| {
-                    self.check()?;
+                    self.check().map_err(E::from)?;
                     if let Some(work) = &resources._registration {
-                        work.check()?;
+                        work.check()
+                            .map_err(|original| E::from(anyhow::Error::new(original)))?;
                     }
                     let result = work()?;
-                    self.check()?;
+                    self.check().map_err(E::from)?;
                     if let Some(work) = &resources._registration {
-                        work.check()?;
+                        work.check()
+                            .map_err(|original| E::from(anyhow::Error::new(original)))?;
                     }
                     Ok(result)
                 })();
+                if value.is_ok() {
+                    phase.complete();
+                }
                 Output {
                     value,
                     _resources: resources,
                 }
             }))
-            .await??;
+            .await
+            .map_err(E::from)?
+            .map_err(|original| E::from(anyhow::Error::new(original)))?;
+        if output.value.is_ok() {
+            phase.complete();
+        }
         output.value
     }
 }
@@ -387,158 +403,189 @@ pub(crate) async fn verify(
     admission: &Arc<NodeAdmission>,
     deadline: VerificationDeadline,
     capture: Option<ResidentCapture>,
-) -> anyhow::Result<VerifiedBackup> {
-    reader.check_access().await?;
-    // Bound the envelope before trusting its declared resident size.
-    let reservation = admission.reserve(
-        (MANIFEST_BYTES * 3 + (8 << 20)) as u64,
-        reader.cancellation(),
-    )?;
-    let envelope = reader
-        .object(backup_id, MANIFEST_BYTES, None, false)
-        .await?;
-    let manifest_ciphertext_sha256 = envelope.ciphertext_sha256.clone();
-    let source_purpose = envelope.source_purpose.clone();
-    let mut key_catalogs = KeyLineage::new();
-    key_catalogs.add(reader.session_key_catalog())?;
-    key_catalogs.add(&envelope.key_catalog_sha256)?;
-    let manifest: FullBackupManifest = serde_json::from_slice(&envelope.snapshot)?;
-    manifest.validate()?;
-    source_purpose.validate_application_identity(&manifest.tenant, &manifest.source_incarnation)?;
-    anyhow::ensure!(
-        manifest.tenant == reader.tenant() && manifest.revision == envelope.revision,
-        "full backup manifest identity differs"
-    );
-    drop(envelope);
-    drop(reservation);
-    if let Some(capture) = &capture {
-        let state = &capture.generation.state;
-        anyhow::ensure!(
-            capture.bytes == manifest.resident_bytes
-                && capture.sha256 == manifest.resident_sha256
-                && capture.source == source_purpose
-                && state.tenant == manifest.tenant
-                && state.incarnation == manifest.source_incarnation
-                && state.revision == manifest.revision,
-            "backup differs from exact captured generation"
-        );
-    }
-    let reservation = Arc::new(admission.reserve(
-        if capture.is_some() {
-            64 << 20
-        } else {
-            128 << 20
-        },
-        reader.cancellation(),
-    )?);
-    let ownership = reader.work_registration();
-    // Walk the authenticated reverse page chain into an encrypted fixed-slot
-    // spool. Reversing it needs one page of workspace, independent of backup size.
-    let page_budget = manifest
-        .page_count
-        .checked_mul((PAGE_BYTES + 8) as u64)
-        .ok_or_else(|| anyhow::anyhow!("backup page count overflow"))?;
-    let mut pages = kasumi_store::EncryptedSpool::new(reader.scratch_disk(), page_budget)?;
-    let mut reference = Some(manifest.last_page.clone());
-    for expected in (0..manifest.page_count).rev() {
+) -> std::result::Result<VerifiedBackup, kasumi_store::ScratchOperationFailure> {
+    let (
+        manifest,
+        manifest_ciphertext_sha256,
+        source_purpose,
+        mut key_catalogs,
+        reservation,
+        ownership,
+        spool,
+        phase,
+    ) = async {
+        let phase = VerificationPhase::start("verify.manifest", Some(deadline));
         reader.check_access().await?;
-        let edge = reference
-            .take()
-            .ok_or_else(|| anyhow::anyhow!("backup page chain incomplete"))?;
-        let contents = reader
-            .object(
-                edge.object_id,
-                PAGE_BYTES,
-                Some(&edge.ciphertext_sha256),
-                false,
-            )
+        // Bound the envelope before trusting its declared resident size.
+        let reservation = admission.reserve(
+            (MANIFEST_BYTES * 3 + (8 << 20)) as u64,
+            reader.cancellation(),
+        )?;
+        let envelope = reader
+            .object(backup_id, MANIFEST_BYTES, None, false)
             .await?;
+        let manifest_ciphertext_sha256 = envelope.ciphertext_sha256.clone();
+        let source_purpose = envelope.source_purpose.clone();
+        let mut key_catalogs = KeyLineage::new();
+        key_catalogs.add(reader.session_key_catalog())?;
+        key_catalogs.add(&envelope.key_catalog_sha256)?;
+        let manifest: FullBackupManifest = serde_json::from_slice(&envelope.snapshot)?;
+        manifest.validate()?;
+        source_purpose
+            .validate_application_identity(&manifest.tenant, &manifest.source_incarnation)?;
         anyhow::ensure!(
-            contents.revision == manifest.revision,
-            "backup page revision differs"
+            manifest.tenant == reader.tenant() && manifest.revision == envelope.revision,
+            "full backup manifest identity differs"
         );
-        let page: BackupPage = serde_json::from_slice(&contents.snapshot)?;
-        page.validate()?;
-        anyhow::ensure!(
-            page.index == expected
-                && (expected + 1 == manifest.page_count || page.chunks.len() == PAGE_CHUNKS),
-            "backup page order differs"
-        );
-        key_catalogs.add(&contents.key_catalog_sha256)?;
-        pages.write_all(&(contents.snapshot.len() as u64).to_be_bytes())?;
-        pages.write_all(&contents.snapshot)?;
-        pages.write_all(&vec![0; PAGE_BYTES - contents.snapshot.len()])?;
-        reference = page.previous;
-    }
-    anyhow::ensure!(
-        reference.is_none(),
-        "backup page chain has trailing ancestors"
-    );
-    let mut spool = if capture.is_some() {
-        None
-    } else {
-        Some(kasumi_store::EncryptedSpool::new(
-            reader.scratch_disk(),
-            manifest.resident_bytes,
-        )?)
-    };
-    let mut resident_bytes = 0u64;
-    let mut digest = Sha256::new();
-    let mut chunk_count = 0u64;
-    for index in (0..manifest.page_count).rev() {
-        pages.seek(SeekFrom::Start(index * (PAGE_BYTES + 8) as u64))?;
-        let mut length = [0; 8];
-        pages.read_exact(&mut length)?;
-        let size = u64::from_be_bytes(length);
-        anyhow::ensure!(size <= PAGE_BYTES as u64, "staged backup page corrupt");
-        let mut bytes = vec![0; size as usize];
-        pages.read_exact(&mut bytes)?;
-        let page: BackupPage = serde_json::from_slice(&bytes)?;
-        for chunk in &page.chunks {
+        drop(envelope);
+        drop(reservation);
+        if let Some(capture) = &capture {
+            let state = &capture.generation.state;
+            anyhow::ensure!(
+                capture.bytes == manifest.resident_bytes
+                    && capture.sha256 == manifest.resident_sha256
+                    && capture.source == source_purpose
+                    && state.tenant == manifest.tenant
+                    && state.incarnation == manifest.source_incarnation
+                    && state.revision == manifest.revision,
+                "backup differs from exact captured generation"
+            );
+        }
+        let reservation = Arc::new(admission.reserve(
+            if capture.is_some() {
+                64 << 20
+            } else {
+                128 << 20
+            },
+            reader.cancellation(),
+        )?);
+        let ownership = reader.work_registration();
+        phase.complete();
+        let phase = VerificationPhase::start("verify.page_chain", Some(deadline));
+        // Walk the authenticated reverse page chain into an encrypted fixed-slot
+        // spool. Reversing it needs one page of workspace, independent of backup size.
+        let page_budget = manifest
+            .page_count
+            .checked_mul((PAGE_BYTES + 8) as u64)
+            .ok_or_else(|| anyhow::anyhow!("backup page count overflow"))?;
+        let mut pages = kasumi_store::EncryptedSpool::new(reader.scratch_disk(), page_budget)?;
+        let mut reference = Some(manifest.last_page.clone());
+        for expected in (0..manifest.page_count).rev() {
             reader.check_access().await?;
+            let edge = reference
+                .take()
+                .ok_or_else(|| anyhow::anyhow!("backup page chain incomplete"))?;
             let contents = reader
                 .object(
-                    chunk.object_id,
-                    chunk.plaintext_bytes,
-                    Some(&chunk.ciphertext_sha256),
+                    edge.object_id,
+                    PAGE_BYTES,
+                    Some(&edge.ciphertext_sha256),
                     false,
                 )
                 .await?;
             anyhow::ensure!(
-                contents.revision == manifest.revision
-                    && contents.snapshot.len() == chunk.plaintext_bytes
-                    && hex::encode(Sha256::digest(&contents.snapshot)) == chunk.plaintext_sha256,
-                "full backup chunk plaintext differs"
+                contents.revision == manifest.revision,
+                "backup page revision differs"
             );
-            chunk_count = chunk_count
-                .checked_add(1)
-                .ok_or_else(|| anyhow::anyhow!("backup chunk count overflow"))?;
+            let page: BackupPage = serde_json::from_slice(&contents.snapshot)?;
+            page.validate()?;
             anyhow::ensure!(
-                chunk_count <= manifest.chunk_count
-                    && (chunk_count == manifest.chunk_count
-                        || chunk.plaintext_bytes == CHUNK_BYTES),
-                "backup chunk order or size differs"
+                page.index == expected
+                    && (expected + 1 == manifest.page_count || page.chunks.len() == PAGE_CHUNKS),
+                "backup page order differs"
             );
             key_catalogs.add(&contents.key_catalog_sha256)?;
-            digest.update(&contents.snapshot);
-            resident_bytes = resident_bytes
-                .checked_add(contents.snapshot.len() as u64)
-                .filter(|bytes| *bytes <= manifest.resident_bytes)
-                .ok_or_else(|| anyhow::anyhow!("backup resident byte count exceeded"))?;
-            if let Some(spool) = &mut spool {
-                spool.write_all(&contents.snapshot)?;
+            pages.write_all(&(contents.snapshot.len() as u64).to_be_bytes())?;
+            pages.write_all(&contents.snapshot)?;
+            pages.write_all(&vec![0; PAGE_BYTES - contents.snapshot.len()])?;
+            reference = page.previous;
+        }
+        anyhow::ensure!(
+            reference.is_none(),
+            "backup page chain has trailing ancestors"
+        );
+        phase.complete();
+        let phase = VerificationPhase::start("verify.resident_chunks", Some(deadline));
+        let mut spool = if capture.is_some() {
+            None
+        } else {
+            Some(kasumi_store::EncryptedSpool::new(
+                reader.scratch_disk(),
+                manifest.resident_bytes,
+            )?)
+        };
+        let mut resident_bytes = 0u64;
+        let mut digest = Sha256::new();
+        let mut chunk_count = 0u64;
+        for index in (0..manifest.page_count).rev() {
+            pages.seek(SeekFrom::Start(index * (PAGE_BYTES + 8) as u64))?;
+            let mut length = [0; 8];
+            pages.read_exact(&mut length)?;
+            let size = u64::from_be_bytes(length);
+            anyhow::ensure!(size <= PAGE_BYTES as u64, "staged backup page corrupt");
+            let mut bytes = vec![0; size as usize];
+            pages.read_exact(&mut bytes)?;
+            let page: BackupPage = serde_json::from_slice(&bytes)?;
+            for chunk in &page.chunks {
+                reader.check_access().await?;
+                let contents = reader
+                    .object(
+                        chunk.object_id,
+                        chunk.plaintext_bytes,
+                        Some(&chunk.ciphertext_sha256),
+                        false,
+                    )
+                    .await?;
+                anyhow::ensure!(
+                    contents.revision == manifest.revision
+                        && contents.snapshot.len() == chunk.plaintext_bytes
+                        && hex::encode(Sha256::digest(&contents.snapshot))
+                            == chunk.plaintext_sha256,
+                    "full backup chunk plaintext differs"
+                );
+                chunk_count = chunk_count
+                    .checked_add(1)
+                    .ok_or_else(|| anyhow::anyhow!("backup chunk count overflow"))?;
+                anyhow::ensure!(
+                    chunk_count <= manifest.chunk_count
+                        && (chunk_count == manifest.chunk_count
+                            || chunk.plaintext_bytes == CHUNK_BYTES),
+                    "backup chunk order or size differs"
+                );
+                key_catalogs.add(&contents.key_catalog_sha256)?;
+                digest.update(&contents.snapshot);
+                resident_bytes = resident_bytes
+                    .checked_add(contents.snapshot.len() as u64)
+                    .filter(|bytes| *bytes <= manifest.resident_bytes)
+                    .ok_or_else(|| anyhow::anyhow!("backup resident byte count exceeded"))?;
+                if let Some(spool) = &mut spool {
+                    spool.write_all(&contents.snapshot)?;
+                }
             }
         }
+        anyhow::ensure!(
+            chunk_count == manifest.chunk_count,
+            "backup chunk count differs"
+        );
+        anyhow::ensure!(
+            resident_bytes == manifest.resident_bytes
+                && hex::encode(digest.finalize()) == manifest.resident_sha256,
+            "full backup resident stream differs"
+        );
+        phase.complete();
+        let phase = VerificationPhase::start("verify.snapshot_wait", Some(deadline));
+        Ok::<_, anyhow::Error>((
+            manifest,
+            manifest_ciphertext_sha256,
+            source_purpose,
+            key_catalogs,
+            reservation,
+            ownership,
+            spool,
+            phase,
+        ))
     }
-    anyhow::ensure!(
-        chunk_count == manifest.chunk_count,
-        "backup chunk count differs"
-    );
-    anyhow::ensure!(
-        resident_bytes == manifest.resident_bytes
-            && hex::encode(digest.finalize()) == manifest.resident_sha256,
-        "full backup resident stream differs"
-    );
+    .await?;
     let semantic_work = ownership.clone();
     let semantic_reservation = reservation.clone();
     let semantic_admission = admission.clone();
@@ -547,116 +594,166 @@ pub(crate) async fn verify(
         .blocking(
             reservation.clone(),
             ownership.clone(),
-            move || match capture {
-                Some(capture) => Ok((VerifiedState::Captured(capture.generation), None)),
-                None => {
-                    let bytes =
-                        kasumi_store::SnapshotImage::freeze(spool.ok_or_else(|| {
-                            anyhow::anyhow!("historical backup staging missing")
-                        })?)?;
-                    let disk = bytes
-                        .len()
-                        .checked_mul(8)
-                        .and_then(|v| v.checked_add(64 << 20))
-                        .ok_or_else(|| anyhow::anyhow!("snapshot index disk budget overflow"))?;
-                    let mut check = || {
-                        deadline.check()?;
-                        if let Some(work) = &semantic_work {
-                            work.check()?;
-                        }
-                        if let Some(token) = &semantic_cancellation {
-                            token.check()?;
-                        }
-                        Ok(())
-                    };
-                    let layout =
-                        crate::snapshot_index::StagedSnapshot::inspect(&bytes, &mut check)?;
-                    // Retain the complete index/cache floor while admitting
-                    // the measured peak record work before any DTO decode.
-                    semantic_reservation
-                        .handoff_workspace(&semantic_admission, layout.index_workspace()?)?;
-                    let validated =
+            move || -> std::result::Result<_, kasumi_store::ScratchOperationFailure> {
+                match capture {
+                    Some(capture) => Ok((VerifiedState::Captured(capture.generation), None)),
+                    None => {
+                        let (bytes, disk, layout) =
+                            kasumi_store::ScratchOperationFailure::ordinary(|| {
+                                let phase = VerificationPhase::start(
+                                    "verify.snapshot_freeze",
+                                    Some(deadline),
+                                );
+                                let bytes =
+                                    kasumi_store::SnapshotImage::freeze(spool.ok_or_else(
+                                        || anyhow::anyhow!("historical backup staging missing"),
+                                    )?)?;
+                                phase.complete();
+                                let disk = bytes
+                                    .len()
+                                    .checked_mul(8)
+                                    .and_then(|v| v.checked_add(64 << 20))
+                                    .ok_or_else(|| {
+                                        anyhow::anyhow!("snapshot index disk budget overflow")
+                                    })?;
+                                let mut check = || -> anyhow::Result<()> {
+                                    deadline.check()?;
+                                    if let Some(work) = &semantic_work {
+                                        work.check()?;
+                                    }
+                                    if let Some(token) = &semantic_cancellation {
+                                        token.check()?;
+                                    }
+                                    Ok(())
+                                };
+                                let phase = VerificationPhase::start(
+                                    "verify.structural_inspection",
+                                    Some(deadline),
+                                );
+                                let layout = crate::snapshot_index::StagedSnapshot::inspect(
+                                    &bytes, &mut check,
+                                )?;
+                                phase::snapshot_layout(&layout);
+                                phase.complete();
+                                let phase = VerificationPhase::start(
+                                    "verify.semantic_admission",
+                                    Some(deadline),
+                                );
+                                // Retain the complete index/cache floor while admitting
+                                // the measured peak record work before any DTO decode.
+                                semantic_reservation.handoff_workspace(
+                                    &semantic_admission,
+                                    layout.index_workspace()?,
+                                )?;
+                                phase.complete();
+                                Ok((bytes, disk, layout))
+                            })?;
+                        let mut check = || -> anyhow::Result<()> {
+                            deadline.check()?;
+                            if let Some(work) = &semantic_work {
+                                work.check()?;
+                            }
+                            if let Some(token) = &semantic_cancellation {
+                                token.check()?;
+                            }
+                            Ok(())
+                        };
+                        let phase = VerificationPhase::start(
+                            "verify.application_validation",
+                            Some(deadline),
+                        );
+                        let validated =
                         crate::state::snapshot_validation::ValidatedApplicationSnapshot::validate(
                             bytes.clone(),
                             disk,
                             &mut check,
                         )?;
-                    anyhow::ensure!(
-                        validated.index().summary() == layout,
-                        "backup differs from admitted typed framing"
-                    );
-                    let state = VerifiedState::Indexed(Box::new(validated));
-                    Ok((state, Some(bytes)))
+                        kasumi_store::ScratchOperationFailure::ordinary(|| {
+                            anyhow::ensure!(
+                                validated.index().summary() == layout,
+                                "backup differs from admitted typed framing"
+                            );
+                            Ok(())
+                        })?;
+                        phase.complete();
+                        let state = VerifiedState::Indexed(Box::new(validated));
+                        Ok((state, Some(bytes)))
+                    }
                 }
             },
         )
         .await?;
-    let state = Arc::new(state);
-    reader.authorize_state(state.metadata()).await?;
-    anyhow::ensure!(
-        state.metadata().tenant == manifest.tenant
-            && state.metadata().incarnation == manifest.source_incarnation
-            && state.metadata().revision == manifest.revision,
-        "full backup state identity differs"
-    );
-    anyhow::ensure!(
-        state.metadata().lifecycle_control.is_none()
-            && state.metadata().recovery_control.is_empty(),
-        "Control state cannot be an application backup"
-    );
-    state.authorize_source(&source_purpose, &source_purpose)?;
-    for archive in state.records(11, None)? {
-        let crate::snapshot_codec::Record::Archive(_, archive) = archive? else {
-            unreachable!()
-        };
-
-        let archive = Arc::new(archive);
-        reader.check_access().await?;
-        let contents = reader
-            .object(
-                uuid::Uuid::parse_str(&archive.manifest_object_id)?,
-                MAX_ARCHIVE_MANIFEST_BYTES,
-                Some(&archive.manifest_ciphertext_sha256),
-                true,
-            )
-            .await?;
-        key_catalogs.add(&contents.key_catalog_sha256)?;
-        contents.source_purpose.validate_application_identity(
-            &state.metadata().tenant,
-            &archive.manifest.source_incarnation,
-        )?;
-        let history_purpose = contents.source_purpose.clone();
-        let stored: HistoryArchiveManifest = serde_json::from_slice(&contents.snapshot)?;
+    phase.complete();
+    async {
+        let phase = VerificationPhase::start("verify.state_authorization", Some(deadline));
+        let state = Arc::new(state);
+        reader.authorize_state(state.metadata()).await?;
         anyhow::ensure!(
-            stored == archive.manifest,
-            "full backup history manifest differs"
+            state.metadata().tenant == manifest.tenant
+                && state.metadata().incarnation == manifest.source_incarnation
+                && state.metadata().revision == manifest.revision,
+            "full backup state identity differs"
         );
-        drop(stored);
-        drop(contents);
-        for (index, chunk) in archive.manifest.chunks.iter().enumerate() {
-            anyhow::ensure!(
-                chunk.plaintext_bytes <= MAX_ARCHIVE_CHUNK_BYTES,
-                "external history body exceeds its installed record limit"
-            );
+        anyhow::ensure!(
+            state.metadata().lifecycle_control.is_none()
+                && state.metadata().recovery_control.is_empty(),
+            "Control state cannot be an application backup"
+        );
+        state.authorize_source(&source_purpose, &source_purpose)?;
+        phase.complete();
+        let phase = VerificationPhase::start("verify.history_dependencies", Some(deadline));
+        for archive in state.records(11, None)? {
+            let crate::snapshot_codec::Record::Archive(_, archive) = archive? else {
+                unreachable!()
+            };
+
+            let archive = Arc::new(archive);
+            reader.check_access().await?;
             let contents = reader
                 .object(
-                    uuid::Uuid::parse_str(&chunk.object_id)?,
-                    chunk.plaintext_bytes,
-                    Some(&chunk.ciphertext_sha256),
+                    uuid::Uuid::parse_str(&archive.manifest_object_id)?,
+                    MAX_ARCHIVE_MANIFEST_BYTES,
+                    Some(&archive.manifest_ciphertext_sha256),
                     true,
                 )
                 .await?;
             key_catalogs.add(&contents.key_catalog_sha256)?;
-            let semantic_state = state.clone();
-            let semantic_archive = archive.clone();
-            let semantic_purpose = history_purpose.clone();
-            let semantic_cancellation = reader.cancellation();
-            let semantic_work = ownership.clone();
-            let semantic_reservation = reservation.clone();
-            let semantic_admission = admission.clone();
-            let retained_workspace = state.verification_workspace()?;
-            deadline
-                .blocking(reservation.clone(), ownership.clone(), move || {
+            contents.source_purpose.validate_application_identity(
+                &state.metadata().tenant,
+                &archive.manifest.source_incarnation,
+            )?;
+            let history_purpose = contents.source_purpose.clone();
+            let stored: HistoryArchiveManifest = serde_json::from_slice(&contents.snapshot)?;
+            anyhow::ensure!(
+                stored == archive.manifest,
+                "full backup history manifest differs"
+            );
+            drop(stored);
+            drop(contents);
+            for (index, chunk) in archive.manifest.chunks.iter().enumerate() {
+                anyhow::ensure!(
+                    chunk.plaintext_bytes <= MAX_ARCHIVE_CHUNK_BYTES,
+                    "external history body exceeds its installed record limit"
+                );
+                let contents = reader
+                    .object(
+                        uuid::Uuid::parse_str(&chunk.object_id)?,
+                        chunk.plaintext_bytes,
+                        Some(&chunk.ciphertext_sha256),
+                        true,
+                    )
+                    .await?;
+                key_catalogs.add(&contents.key_catalog_sha256)?;
+                let semantic_state = state.clone();
+                let semantic_archive = archive.clone();
+                let semantic_purpose = history_purpose.clone();
+                let semantic_cancellation = reader.cancellation();
+                let semantic_work = ownership.clone();
+                let semantic_reservation = reservation.clone();
+                let semantic_admission = admission.clone();
+                let retained_workspace = state.verification_workspace()?;
+                deadline
+                .blocking(reservation.clone(), ownership.clone(), move || -> anyhow::Result<_> {
                     let mut check = || -> anyhow::Result<()> {
                         deadline.check()?;
                         if let Some(token) = &semantic_cancellation {
@@ -732,79 +829,92 @@ pub(crate) async fn verify(
                     )
                 })
                 .await?;
+            }
         }
-    }
-    let retention = &state.metadata().audit_retention;
-    let mut expected = retention
-        .archive_head
-        .as_ref()
-        .map(|head| head.object.clone());
-    let mut archive_bytes = 0u64;
-    let mut archive_records = 0u64;
-    while let Some(link) = expected {
-        reader.check_access().await?;
-        let segment = reader
-            .audit_dependency(&state, &source_purpose, &link)
-            .await?;
-        if archive_records == 0 {
-            anyhow::ensure!(
-                retention.archive_head.as_ref() == Some(&segment.reference),
-                "backup audit head differs"
-            );
-        }
-        expected = segment.reference.previous.clone();
-        archive_bytes = archive_bytes
-            .checked_add(segment.ciphertext.len() as u64)
-            .ok_or_else(|| anyhow::anyhow!("backup audit byte count overflow"))?;
-        archive_records = archive_records
-            .checked_add(1)
-            .ok_or_else(|| anyhow::anyhow!("backup audit segment count overflow"))?;
-        anyhow::ensure!(
-            archive_bytes <= retention.archive_bytes
-                && archive_records <= retention.archive_segments,
-            "backup audit accounting exceeded"
-        );
-        key_catalogs.add_audit(&segment.reference.key)?;
-        if let Some(target) = reader.audit_target() {
-            let placement = target.tenant_audit_archive()?;
-            deadline
-                .blocking(reservation.clone(), ownership.clone(), move || {
-                    // Keep the exact store/OS ownership and byte/work reservations
-                    // through filesystem completion even if its waiter disappears.
-                    target.check_access()?;
-                    placement.cache().publish_blocking(&segment)?;
-                    target.check_access()?;
-                    Ok(())
-                })
+        phase.complete();
+        let phase = VerificationPhase::start("verify.audit_dependencies", Some(deadline));
+        let retention = &state.metadata().audit_retention;
+        let mut expected = retention
+            .archive_head
+            .as_ref()
+            .map(|head| head.object.clone());
+        let mut archive_bytes = 0u64;
+        let mut archive_records = 0u64;
+        while let Some(link) = expected {
+            reader.check_access().await?;
+            let segment = reader
+                .audit_dependency(&state, &source_purpose, &link)
                 .await?;
+            if archive_records == 0 {
+                anyhow::ensure!(
+                    retention.archive_head.as_ref() == Some(&segment.reference),
+                    "backup audit head differs"
+                );
+            }
+            expected = segment.reference.previous.clone();
+            archive_bytes = archive_bytes
+                .checked_add(segment.ciphertext.len() as u64)
+                .ok_or_else(|| anyhow::anyhow!("backup audit byte count overflow"))?;
+            archive_records = archive_records
+                .checked_add(1)
+                .ok_or_else(|| anyhow::anyhow!("backup audit segment count overflow"))?;
+            anyhow::ensure!(
+                archive_bytes <= retention.archive_bytes
+                    && archive_records <= retention.archive_segments,
+                "backup audit accounting exceeded"
+            );
+            key_catalogs.add_audit(&segment.reference.key)?;
+            if let Some(target) = reader.audit_target() {
+                let placement = target.tenant_audit_archive()?;
+                deadline
+                    .blocking(
+                        reservation.clone(),
+                        ownership.clone(),
+                        move || -> anyhow::Result<_> {
+                            // Keep the exact store/OS ownership and byte/work reservations
+                            // through filesystem completion even if its waiter disappears.
+                            target.check_access()?;
+                            placement.cache().publish_blocking(&segment)?;
+                            target.check_access()?;
+                            Ok(())
+                        },
+                    )
+                    .await?;
+            }
+            reader.check_access().await?;
         }
+        anyhow::ensure!(
+            archive_bytes == retention.archive_bytes
+                && archive_records == retention.archive_segments,
+            "backup audit graph incomplete"
+        );
+        phase.complete();
+        let phase = VerificationPhase::start("verify.final_access", Some(deadline));
         reader.check_access().await?;
+        let checkpoint = FullBackupCheckpoint {
+            tenant: manifest.tenant,
+            source_incarnation: manifest.source_incarnation,
+            revision: manifest.revision,
+            resident_sha256: manifest.resident_sha256,
+            backup_id,
+            manifest_ciphertext_sha256,
+            key_lineage_digest: key_catalogs.finish(),
+        };
+        checkpoint.validate()?;
+        phase.complete();
+        Ok(VerifiedBackup {
+            source_purpose,
+            state: Arc::try_unwrap(state).map_err(|_| {
+                anyhow::anyhow!("backup semantic worker retained state after completion")
+            })?,
+            bytes,
+            checkpoint,
+            _reservation: reservation,
+            _registration: ownership,
+        })
     }
-    anyhow::ensure!(
-        archive_bytes == retention.archive_bytes && archive_records == retention.archive_segments,
-        "backup audit graph incomplete"
-    );
-    reader.check_access().await?;
-    let checkpoint = FullBackupCheckpoint {
-        tenant: manifest.tenant,
-        source_incarnation: manifest.source_incarnation,
-        revision: manifest.revision,
-        resident_sha256: manifest.resident_sha256,
-        backup_id,
-        manifest_ciphertext_sha256,
-        key_lineage_digest: key_catalogs.finish(),
-    };
-    checkpoint.validate()?;
-    Ok(VerifiedBackup {
-        source_purpose,
-        state: Arc::try_unwrap(state).map_err(|_| {
-            anyhow::anyhow!("backup semantic worker retained state after completion")
-        })?,
-        bytes,
-        checkpoint,
-        _reservation: reservation,
-        _registration: ownership,
-    })
+    .await
+    .map_err(Into::into)
 }
 
 #[cfg(test)]
@@ -825,11 +935,15 @@ mod tests {
         let deadline = VerificationDeadline::new(100).unwrap();
         let task = tokio::spawn(async move {
             deadline
-                .blocking(reservation, Some(registration), move || {
-                    let _ = started.send(());
-                    ready.recv()?;
-                    Ok(vec![0u8; 1 << 20])
-                })
+                .blocking(
+                    reservation,
+                    Some(registration),
+                    move || -> anyhow::Result<_> {
+                        let _ = started.send(());
+                        ready.recv()?;
+                        Ok(vec![0u8; 1 << 20])
+                    },
+                )
                 .await
         });
         entered.await.unwrap();

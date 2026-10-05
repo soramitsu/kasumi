@@ -82,21 +82,21 @@ impl Backend {
         admitted_at_ms: u64,
     ) -> Result<()> {
         match &command.action {
-            AuthorityAction::Activate { .. } => ensure!(
+            AuthorityAction::Activate { .. } => reject_unless!(
                 self.installation.manifest.lifecycle_controls.is_empty(),
                 "raw activation disabled by installed Control roots"
             ),
             AuthorityAction::ActivateCommitted { control, .. } => {
                 let receipt = self
                     .lifecycle_receipt(&control.reference)?
-                    .context("activation intent not accepted")?;
-                ensure!(
+                    .ok_or_else(|| reject_conflict("activation intent not accepted"))?;
+                reject_unless!(
                     self.lifecycle_receipt(&control.reference.epoch_stop())?
                         .is_none(),
                     "activation control epoch is stopped"
                 );
-                binding(command, admitted_at_ms, &receipt)?;
-                ensure!(
+                binding(command, admitted_at_ms, &receipt).map_err(reject_conflict)?;
+                reject_unless!(
                     control.completion.fact().origin.authority_manifest_sha256
                         == self.installation.manifest.digest()?,
                     "target completion issuer differs"
@@ -107,9 +107,9 @@ impl Backend {
                 let Some(Record::Preparation(prepared)) =
                     self.record(&key_preparation(&command.tenant, target.incarnation))?
                 else {
-                    anyhow::bail!("committed activation target preparation missing")
+                    reject_bail!("committed activation target preparation missing")
                 };
-                ensure!(
+                reject_unless!(
                     prepared.target == *target,
                     "committed activation target preparation differs"
                 );
@@ -118,15 +118,15 @@ impl Backend {
                 };
                 let source = self
                     .tenant_record(&command.tenant)?
-                    .context("activation source missing")?;
-                ensure!(
+                    .ok_or_else(|| reject_conflict("activation source missing"))?;
+                reject_unless!(
                     source.incarnation == signed.observation.intent.request.source_incarnation
                         && source.authority_epoch
                             == signed.observation.intent.request.source_authority_epoch,
                     "committed activation source epoch differs"
                 );
             }
-            _ => anyhow::bail!("not an activation command"),
+            _ => reject_bail!("not an activation command"),
         }
         Ok(())
     }

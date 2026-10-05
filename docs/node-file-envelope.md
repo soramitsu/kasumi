@@ -1,110 +1,142 @@
-# Canonical node file and existing-only recovery
+# Canonical node group and existing-only recovery
 
-Every production node file uses one 4096-byte outer envelope followed by the
-Kasumi key-value payload. Raw redb files and older formats have no decoder or migration.
-The exact envelope is:
+A production `NodeStore` path names one enrolled directory containing
+`root.kvroot` and the native segment, checkpoint and directory-arena files.
+Even when the configured path ends in `.kv`, it names this directory. Every
+file has a 4096-byte `KASUMI-NODE-SEG1` outer envelope; native KV bytes follow
+that envelope. Single-file node formats, raw redb files and older native KV
+formats have no migration or fallback reader.
+
+## Files and envelopes
+
+The root file is exactly 12,288 bytes: its envelope followed by two 4096-byte
+native root slots. Other files use sixteen lowercase hexadecimal digits for
+a nonzero identifier followed by `.kvseg`, `.kvckpt` or `.kvdir`, for example
+`0000000000000001.kvseg`. Other spellings and extra entries are rejected.
+File identifiers are allocated through native KV's durable intents; the
+physical owner also refuses an identifier at or below the highest identifier
+it has observed for that file kind.
 
 | Bytes | Meaning |
 | --- | --- |
-| 0..16 | ASCII `KASUMI-NODE-0002` |
-| 16..32 | Non-nil node store UUID, in UUID byte order |
-| 32 | Initialization state: 1 prepared, 2 ready |
-| 33..4064 | Required zero bytes |
-| 4064..4096 | SHA-256 of bytes 0..4064 |
+| 0..16 | ASCII `KASUMI-NODE-SEG1` |
+| 16..32 | Non-nil installed node store UUID, in UUID byte order |
+| 32 | Kind: 1 root, 2 segment, 3 checkpoint, 4 directory arena |
+| 33 | State: 1 Prepared, 2 Ready |
+| 34..40 | Required zero bytes |
+| 40..48 | File identifier as a little-endian `u64`; zero only for the root |
+| 48..80 | SHA-256 of bytes 0..48 |
+| 80..4096 | Required zero bytes |
 
-The magic and checksum discriminate the format and detect incomplete header
-publication. They are **not cryptographic authentication**. The caller must
-supply an expected UUID from its already owned installation/configuration or
-authenticated recovery journal. Reading a candidate header to choose its
-expected UUID defeats this contract. Existing tenant encryption, exact storage
-purpose, independent custody binding and bootstrap authentication remain required.
+The root uses Prepared during creation and Ready after initialization. A
+complete data-file envelope must be Ready and must match the kind and
+identifier in its filename. The envelope checksum detects damage and incomplete
+publication; it is **not cryptographic authentication**. Callers supply the
+expected UUID from their already owned installation, configuration or
+authenticated recovery journal. Reading a candidate envelope to choose its
+expected UUID does not establish this authority. Encryption, exact storage
+purpose, independent custody binding and authenticated bootstrap state remain
+separate requirements.
 
-`NodeStore::create_new(path, node_store_id, persistent_disk, scratch)` creates an exclusive new
-inode; its parent must already exist. The caller durably chooses the UUID and
-owns creation before calling it. `initialize_owned_empty(path, expected_file,
-node_store_id, persistent_disk, scratch)` instead requires the exact empty single-link inode that
-the caller already recorded in its installation or recovery journal. It checks
-that identity and emptiness under the same exclusive descriptor lock before any
-write. Neither operation adopts an existing populated or partial file.
+## Creation and strict reopen
 
-Creation persists a prepared envelope, initializes and durably commits the storage
-tables, then synchronizes the payload, ready envelope and parent directory before
-success. Cancellation or failure can leave a prepared file or an uncertain ready
-publication. The original creator retains cleanup responsibility and its exact
-physical identity. A retry never truncates, recreates or automatically resumes
-such a file. Once ready publication completed, later operations can use strict
-reopen. Uncertain publication must be resolved from the original owned identity;
-an error does not prove absence.
+The production constructors require the installed persistent `NodeDisk`,
+`ScratchDisk` and an explicit `NodeStorageConfig`. Persistent and scratch
+storage must use the same installed memory admission. The configuration chooses
+native cache bytes and the number of cached data descriptors within the
+installed owner's limits; `cached_files` must be between 1 and 4096. The root
+descriptor is retained separately from that data descriptor cache.
 
-`NodeStore::open_existing(path, expected_id, persistent_disk, scratch)` acquires an exclusive
-lock on the existing owner-only, regular, single-link descriptor. It checks the
-complete canonical ready header, expected UUID and supported length before any
-storage constructor runs. All storage I/O uses that exact descriptor through an offset
-backend; it does not reopen the pathname or release the lock between validation
-and recovery. The backend checks offset arithmetic against signed 64-bit file
-limits, preserves the outer header on resizing and rejects writes beyond the
-allocated payload. Closing the engine drains current descriptor operations and closes
-the actual descriptor even if an internal reader retains a backend owner.
+`NodeStore::create_new(path, node_store_id, persistent_disk, scratch, config)`
+creates an exclusive new directory and its root file below an existing enrolled
+parent. The caller durably chooses the non-nil UUID before creating the group
+and retains responsibility for partial or uncertain initialization.
 
-Unrelated raw redb files, different UUIDs, truncated/unsupported envelopes and
-incomplete initialization are rejected without changing their bytes. A recognized
-owned node payload may undergo normal Kasumi KV crash recovery before a later table,
-tenant or bootstrap check rejects logical contents. This permission is limited
-to the recognized installed store; a failed recovery never permits falling back to
-writable opening of an unrecognized file. The envelope adds fixed framing only;
-it does not establish persistent disk admission or hard RSS bounds.
+`NodeStore::initialize_owned_empty(path, expected_group, node_store_id,
+persistent_disk, scratch, config)` requires a journal-owned directory containing
+only an empty `root.kvroot`. `NodeGroupIdentity` binds both the exact directory
+and root inode; both are checked through the acquired owners before writing.
+A different directory, substituted root, extra entry or nonempty root is refused.
+`NodeGroupIdentity::read` provides a physical observation and grants no creation
+or cleanup authority.
 
-`NodeStore::claim_cleanup(path, expected_id, persistent_disk)` performs no engine open or mutation.
-It accepts only a complete canonical Prepared or Ready envelope under the same
-private single-link descriptor lock and returns `NodeFileCleanup`. This guard
-exposes the held `FileIdentity` and retains physical custody through the caller's
-exact unlink and parent synchronization. It grants no authority to stop/delete:
-permanent stop, issuer drain, gate closure and actual worker/storage ownership
-drain remain caller preconditions. Empty or torn headers require the separate
-original journal-bound inode protocol; they are never interpreted as a format
-fallback. A source regression checks both states, byte-exact rejection and the
-held inode lock even after its path moves.
+Creation admits root growth, writes and synchronizes the Prepared envelope and
+parent, initializes native KV, and commits the required node tables. Registered
+startup publishes Ready only after its matching table transaction reports a
+successful commit and complete disposal. It synchronizes the root and parent
+before returning success. A failure can leave Prepared state or an uncertain
+Ready publication. It never authorizes truncation, recreation or reinitializing
+a partial group. The original creator retains exact physical custody and cleanup
+responsibility.
 
-Standalone, general data and authority node files require a configured random
-durable `database_id` UUID. Both daemon entrypoints open that expected existing
-file; explicit `provision-node` commands perform first enrollment only. These
-commands do not by themselves establish complete HA catalog/bootstrap state.
-Standalone initialization and journal-owned generation recovery use their own
-explicit creation boundaries. HA target
-generations use the permanently journaled Control incarnation, tenant, target
-incarnation and physical verifier identity. These inputs exist even when an
-early Stop precedes materialization; the full original target origin remains a
-separate authenticated logical binding. Local restored generations use the
-original installation, local operation and target incarnation. Shared named
-`node_store_ids` helpers define versioned, length-framed SHA-256 derivations into
-UUIDv8 values. They exclude paths, mutable membership, TLS certificates and the
-candidate header. Target journal and signer-verifier files have distinct domains.
-Management has no generation-file format or alternate generation opener. Only
-explicit enrollment, the journal-owned target runner and the exclusive standalone
-coordinator may create their respective node files. Unsupported envelopes and
-removed generation descriptors are rejected; no migration or fallback adopts them.
+`NodeStore::open_existing(path, expected_id, persistent_disk, scratch, config)`
+requires an existing directory and an exact-length root with a complete Ready
+envelope matching the caller's UUID. The physical owner checks every directory
+entry, private single-link regular-file identity, canonical filename and
+envelope before handing the group to native KV. Installed directory ancestry
+and file bindings are checked against the retained `NodeDisk` census. Symlinks,
+hard links, foreign identities, unsupported fields, subdirectories and unknown
+entries are refused. The root remains exclusively owned while data descriptors
+are opened through the same installed namespace owner. After an eviction, a
+data-file acquisition must reach the same recorded inode and envelope state.
 
-The focused source tests are `node_file::tests::` (nine ordinary tests and one
-explicit subprocess helper). They cover byte-exact clean/unclean unrelated-file
-rejection, actual process-exit recovery, wrong UUIDs and inodes, partial headers,
-canonical fields/checksum, checked offset I/O, actual descriptor close, and path
-substitution between validation and engine handoff. These source tests have not yet
-been compiled or executed. The child exits only after an immediate durable
-transaction and its parent owns kill/wait cleanup with a finite deadline.
+Physical acquisition classifies the group without repairing its envelopes.
+Native KV then verifies its own root identity and format, replays committed
+records, and may perform recognized recovery work such as root mirroring,
+discarding an uncommitted tail or finishing recorded garbage disposal.
+Existing-table verification runs through the same registered opening. A later
+table, tenant or bootstrap rejection does not authorize opening a different
+format or recreating the group.
 
-Engine, Raft, native-runtime and benchmark fixtures now distinguish initial
-creation from known reopen explicitly. Shared fixture helpers carry a caller-known
-`create` boolean; they never infer creation permission from file absence. Their
-fixed fixture UUID is default-off `test-utils` material. Production constructors
-have no fixture/default identity. Caller source and these tests remain uncompiled
-until the coordinated combined gate includes the separately owned standalone,
-target and security-audit initialization changes.
+## Interrupted data creation and ownership
 
-Backend reads explicitly check the entire range against the held payload length,
-including an empty buffer whose offset is past EOF. Resizing holds exclusive
-descriptor ownership until the physical length transition finishes; it cannot
-shrink between another operation's admitted range check and actual I/O. Ordinary
-reads and writes still share descriptor ownership, while resize and close drain
-them. Two further source regressions exercise the empty-read boundary and pause
-an actual accepted write while a bounded scoped resize worker attempts to drain.
-These tests are source-only until the superseding frozen store gate executes.
+Creating a data file durably creates its empty name before its first native KV
+mutation writes and synchronizes the envelope. Reopen recognizes an interrupted
+envelope only when the file is at most 4096 bytes and every visible byte is zero
+or the corresponding byte of that file's exact expected Ready envelope. Its
+native payload length is zero. Reads do not complete it; the next write or
+nonzero resize completes and synchronizes the envelope before any payload byte.
+This recognition does not apply to a partial root envelope or to unsupported
+older formats. Zeros or malformed envelope bytes beyond the first 4096 bytes
+are rejected.
+
+Payload offsets exclude the outer envelope. Checked I/O adds its 4096 bytes,
+rejects arithmetic beyond signed 64-bit file limits, checks reads including
+empty reads against EOF, and refuses writes that leave a hole. Growth requires
+admission before its effect. Resize drains concurrent checked operations before
+shrinking. Descriptor eviction settles growth and closes the exact owner;
+a failed close retains that owner in its cache slot and fences the group.
+Group close seals admission and observes every retained descriptor. Only close
+that never entered can be retried; entered failures retain their original
+outcome and custody for the failed-owner protocol. Uncertain physical effects
+retain their charges and require drain and an accepted fresh disk census before
+strict reopen.
+
+## Independently authorized cleanup
+
+`NodeStore::claim_cleanup(path, expected_id, persistent_disk, config)` returns
+`NodeSegmentGroupCleanup` after verifying a recognized Prepared or Ready group
+and every entry. It does not open native KV or initialize or repair the group.
+The guard exposes the exact `NodeGroupIdentity`, directory identity and optional
+root identity while retaining physical ownership. Its `delete` removes verified
+data files, then the root, then the empty directory, with the required parent
+synchronization after each namespace effect. An empty directory left by an
+interrupted cleanup can be claimed without a root; its caller must still own
+the original cleanup authorization and directory identity.
+
+This guard grants no permission to stop or delete a generation. Permanent stop,
+issuer drain, admission closure and actual worker/storage drain remain caller
+preconditions. Failed deletion fences the group and disk and retains uncertain
+charges; after drain and a fresh census, cleanup can claim the remaining names.
+An empty or torn root from initial creation requires the original journal-owned
+cleanup protocol and is not treated as a supported envelope.
+
+The [production physical owner](../crates/kasumi-store/src/node_file/segment_group.rs)
+and [registered startup](../crates/kasumi-store/src/storage_opening/startup.rs)
+define these operations. The
+[segment-group regressions](../crates/kasumi-store/src/node_file/segment_group_tests.rs)
+cover exact envelopes and names, old-format and foreign-file rejection without
+mutation, journal-owned initialization, interrupted data creation, descriptor
+budgets, failed close/unlink custody and cleanup restart. These source references
+are not a claim that current repository or release gates have passed; verified
+status remains in the [release ledger](production-release.md).

@@ -52,21 +52,6 @@ fn fill_disk(disk: &Arc<NodeDisk>) -> crate::NodeDiskFile {
     filler
 }
 
-/// Hold all but `headroom` bytes of the installed memory budget.
-fn fill_memory(memory: &Arc<TestDiskMemory>, headroom: u64) -> DiskMemoryLease {
-    let snapshot = memory.snapshot();
-    memory
-        .clone()
-        .reserve_installed(
-            MEMORY_BYTES
-                - snapshot.bookkeeping_bytes
-                - snapshot.used_bytes
-                - headroom
-                - TestDiskMemory::required_reservation_bytes(0).unwrap(),
-        )
-        .unwrap()
-}
-
 struct Installed {
     directory: tempfile::TempDir,
     scratch_directory: tempfile::TempDir,
@@ -74,7 +59,7 @@ struct Installed {
     memory: Arc<TestDiskMemory>,
     disk: Arc<NodeDisk>,
     scratch: Arc<ScratchDisk>,
-    node: Arc<NodeStore>,
+    node: NodeStore,
 }
 impl Installed {
     fn new() -> Result<Self> {
@@ -84,7 +69,14 @@ impl Installed {
         let disk = quota_disk(&path, &memory);
         let scratch_directory = private_tempdir()?;
         let scratch = ScratchDisk::fixture(scratch_directory.path(), memory.clone());
-        let node = NodeStore::create_new(&path, ID, disk.clone(), scratch.clone())?;
+        let node = NodeStore::create_new(
+            &path,
+            ID,
+            disk.clone(),
+            scratch.clone(),
+            crate::test_utils::node_storage_config(),
+        )
+        .unwrap_or_else(|original| std::panic::panic_any(original));
         Ok(Self {
             directory,
             scratch_directory,
@@ -100,8 +92,14 @@ impl Installed {
     async fn restart(&mut self) -> Result<()> {
         self.node.shutdown().await?;
         assert_eq!(self.memory.storage_census().snapshot().databases, 0);
-        self.node =
-            NodeStore::open_existing(&self.path, ID, self.disk.clone(), self.scratch.clone())?;
+        self.node = NodeStore::open_existing(
+            &self.path,
+            ID,
+            self.disk.clone(),
+            self.scratch.clone(),
+            crate::test_utils::node_storage_config(),
+        )
+        .unwrap_or_else(|original| std::panic::panic_any(original));
         Ok(())
     }
 
@@ -125,7 +123,7 @@ fn custody_provider() -> Arc<dyn KeyProvider> {
     Arc::new(LocalKeyProvider::new([32; 32]))
 }
 
-async fn singleton(node: &Arc<NodeStore>) -> Result<Arc<TenantStore>> {
+async fn singleton(node: &NodeStore) -> Result<Arc<TenantStore>> {
     TenantStore::initialize_catalog_fixture_with_clock(
         node.clone(),
         "tenant".into(),
@@ -136,7 +134,7 @@ async fn singleton(node: &Arc<NodeStore>) -> Result<Arc<TenantStore>> {
 }
 
 async fn reopen(
-    node: &Arc<NodeStore>,
+    node: &NodeStore,
     tenant: String,
     provider: Arc<dyn KeyProvider>,
 ) -> Result<Arc<TenantStore>> {
@@ -149,7 +147,7 @@ async fn reopen(
     .await
 }
 
-async fn catalogs(node: &Arc<NodeStore>) -> Result<(Arc<TenantStore>, Arc<TenantStore>)> {
+async fn catalogs(node: &NodeStore) -> Result<(Arc<TenantStore>, Arc<TenantStore>)> {
     let app = TenantStore::initialize_catalog_fixture_with_clock(
         node.clone(),
         "tenant".into(),
@@ -193,7 +191,41 @@ fn expect_denied(
 ) -> StorageCapacityDenied {
     let denied = *error
         .downcast_ref::<StorageCapacityDenied>()
-        .unwrap_or_else(|| panic!("expected a typed capacity denial, got {error:#}"));
+        .unwrap_or_else(|| {
+            let detail = if let Some(failure) = error.downcast_ref::<NodeCatalogWriteFailure>() {
+                let report = failure.writer().report();
+                crate::test_utils::native_write_diagnostic(
+                    report.phase(),
+                    report.begin(),
+                    report.body(),
+                    report.outer(),
+                    report.terminal(),
+                )
+            } else if let Some(failure) = error.downcast_ref::<BindingInstallWriteFailure>() {
+                let report = failure.writer().report();
+                crate::test_utils::native_write_diagnostic(
+                    report.phase(),
+                    report.begin(),
+                    report.body(),
+                    report.outer(),
+                    report.terminal(),
+                )
+            } else if let Some(failure) = error.downcast_ref::<crate::TenantPointReadFailure>() {
+                let report = failure.reader().report();
+                format!(
+                    "phase={:?}, begin={}, tables={}, outer={}, read={}, output={}",
+                    report.phase(),
+                    crate::test_utils::observation_diagnostic(report.begin()),
+                    crate::test_utils::observation_diagnostic(report.tables()),
+                    crate::test_utils::observation_diagnostic(report.outer()),
+                    crate::test_utils::observation_diagnostic(report.read_failure()),
+                    crate::test_utils::observation_diagnostic(report.output_admission())
+                )
+            } else {
+                "unclassified original error".into()
+            };
+            panic!("expected a typed capacity denial, got {error:#}; {detail}");
+        });
     assert_eq!(denied.write(), write);
     assert_eq!(denied.stage(), stage);
     assert!(denied.payload_bytes() > 0);
@@ -253,7 +285,10 @@ async fn save_catalog_commit_denial_retires_its_child_and_retries_after_space_is
     fixture.restart().await?;
     let store = reopen(&fixture.node, "tenant".into(), app_provider()).await?;
     assert!(*store.catalog.read() == rotated);
-    assert_eq!(store.get("docs", b"key")?, Some(b"value".to_vec()));
+    assert_eq!(
+        store.get("docs", b"key")?.as_deref(),
+        Some(b"value".as_slice())
+    );
     store.shutdown().await?;
     fixture.node.shutdown().await?;
     assert_eq!(fixture.memory.storage_census().snapshot().databases, 0);
@@ -288,31 +323,26 @@ async fn singleton_initialization_commit_denial_leaves_catalog_absent_and_retrie
 async fn binding_install_staging_denial_settles_and_the_same_install_retries() -> Result<()> {
     let fixture = Installed::new()?;
     let (app, custody) = catalogs(&fixture.node).await?;
-    // Measure what install admits before its native writer stages: the exact
-    // encrypted plan and its queued census child.
-    let before = fixture.memory.snapshot().used_bytes;
-    let queued = fixture.node.db.queue_registered_binding_put(
-        binding_plan(&app, &custody, fixture.memory.clone())?,
-        app.clone(),
-        custody.clone(),
-    )?;
-    let admitted = fixture.memory.snapshot().used_bytes - before;
-    assert_eq!(queued.retire(), StorageCensusDisposition::Retired);
-    assert_eq!(fixture.memory.snapshot().used_bytes, before);
-
-    // Room for that input and the writer's begin, not for the staged row.
-    let fill = fill_memory(&fixture.memory, admitted + (1 << 10));
+    let before = fixture.memory.snapshot();
+    // Keep the complete install workflow, including its preceding binding
+    // point read. Only its actual row-staging allocation is refused.
+    let denial = fixture.memory.deny_binding_staging()?;
     let error = TenantStorageSet::install(app.clone(), custody.clone())
         .err()
-        .expect("staging on exhausted memory must be denied");
+        .expect("injected row-staging capacity must be denied");
     expect_denied(
         &error,
         CapacityDeniedWrite::DomainBinding,
         CapacityDenialStage::Staging,
     );
     assert_eq!(fixture.writers(), 0);
-    drop(fill);
-    assert_eq!(fixture.memory.snapshot().used_bytes, before);
+    denial.assert_refused_chunk_and_fallback();
+    drop(denial);
+    assert_eq!(fixture.memory.snapshot().used_bytes, before.used_bytes);
+    assert_eq!(
+        fixture.memory.snapshot().live_reservations,
+        before.live_reservations
+    );
     assert!(custody.get(BINDING_NS, BINDING_KEY)?.is_none());
 
     let stores = TenantStorageSet::install(app, custody)?;
@@ -407,12 +437,29 @@ fn create_mode_table_denial_releases_the_reservation_and_requeues() -> Result<()
     let path = directory.path().join("capacity-denial-tables.kv");
     let memory = TestDiskMemory::new(MEMORY_BYTES, 4096);
     let disk = quota_disk(&path, &memory);
-    let opening = RegisteredNodeOpening::prepare(&path, ID, disk.clone(), NodeOpeningMode::Create)?;
+    let opening = RegisteredNodeOpening::prepare(
+        &path,
+        ID,
+        disk.clone(),
+        NodeOpeningMode::Create,
+        crate::test_utils::node_storage_config(),
+    )
+    .unwrap_or_else(|original| std::panic::panic_any(original));
     assert_eq!(opening.open(), NodeOpeningPhase::Open);
 
     let filler = fill_disk(&disk);
     let denied = opening.queue_node_tables()?;
-    assert_eq!(denied.run(), NodeWriterPhase::Finished);
+    let phase = denied.run();
+    assert_eq!(phase, NodeWriterPhase::Finished, "{}", {
+        let report = denied.report();
+        crate::test_utils::native_write_diagnostic(
+            phase,
+            report.begin(),
+            report.body(),
+            report.outer(),
+            report.terminal(),
+        )
+    });
     assert!(denied.report().is_capacity_denied());
     // The denied request never proves Ready, before or after a requeue.
     assert_eq!(
@@ -451,7 +498,14 @@ fn create_mode_table_denial_releases_the_reservation_and_requeues() -> Result<()
     assert_eq!(opening.retire(), StorageCensusDisposition::Retired);
 
     // Restart: the retried tables and Ready header are durable.
-    let opening = RegisteredNodeOpening::prepare(&path, ID, disk, NodeOpeningMode::Existing)?;
+    let opening = RegisteredNodeOpening::prepare(
+        &path,
+        ID,
+        disk,
+        NodeOpeningMode::Existing,
+        crate::test_utils::node_storage_config(),
+    )
+    .unwrap_or_else(|original| std::panic::panic_any(original));
     assert_eq!(opening.open(), NodeOpeningPhase::Open);
     {
         let read = opening.begin_store_read()?;
@@ -469,7 +523,14 @@ fn owner_failure_during_table_creation_keeps_the_create_reservation() -> Result<
     let path = directory.path().join("capacity-denial-tables-fenced.kv");
     let memory = TestDiskMemory::new(MEMORY_BYTES, 4096);
     let disk = quota_disk(&path, &memory);
-    let opening = RegisteredNodeOpening::prepare(&path, ID, disk.clone(), NodeOpeningMode::Create)?;
+    let opening = RegisteredNodeOpening::prepare(
+        &path,
+        ID,
+        disk.clone(),
+        NodeOpeningMode::Create,
+        crate::test_utils::node_storage_config(),
+    )
+    .unwrap_or_else(|original| std::panic::panic_any(original));
     assert_eq!(opening.open(), NodeOpeningPhase::Open);
     let _filler = fill_disk(&disk);
     disk.fail();
@@ -516,7 +577,7 @@ async fn owner_failure_at_binding_commit_is_fenced_and_never_reported_as_capacit
     let fixture = Installed::new()?;
     let (app, custody) = catalogs(&fixture.node).await?;
     let _filler = fill_disk(&fixture.disk);
-    let writer = fixture.node.db.queue_registered_binding_put(
+    let writer = fixture.node.body().db.queue_registered_binding_put(
         binding_plan(&app, &custody, fixture.memory.clone())?,
         app.clone(),
         custody.clone(),

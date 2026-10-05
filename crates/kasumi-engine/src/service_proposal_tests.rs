@@ -1,3 +1,127 @@
+fn merge_patch_workspace_fixture() -> (TenantState, RequestContext) {
+    let context = RequestContext::trusted(
+        "patch-workspace",
+        "owner",
+        [Action::Read, Action::Write, Action::Admin],
+    );
+    let state = TenantEngine::new(
+        context.tenant.clone(),
+        "incarnation".into(),
+        Policy {
+            grants: vec![Grant {
+                principal: context.principal.clone(),
+                collection: None,
+                actions: context.scopes.clone(),
+            }],
+            strict_read_audit: false,
+        },
+        Limits::default(),
+    )
+    .unwrap()
+    .generation()
+    .unwrap()
+    .state
+    .clone();
+    (state, context)
+}
+
+#[test]
+fn merge_patch_proposal_workspace_covers_limits_raised_while_queued() {
+    let (mut state, context) = merge_patch_workspace_fixture();
+    state.limits.max_document_bytes = 4096;
+    state.limits.max_batch_bytes = 4096;
+    let patch = Operation::Mutate(MutationBatch::new().patch("docs", "a", json!({})));
+    assert_eq!(
+        merge_patch_proposal_workspace(&patch, &state, &state, &context).unwrap(),
+        3 << 20
+    );
+    let mut many = MutationBatch::new();
+    for index in 0..256 {
+        many = many.patch("docs", index.to_string(), json!({}));
+    }
+    assert_eq!(
+        merge_patch_proposal_workspace(&Operation::Mutate(many), &state, &state, &context).unwrap(),
+        3 * (8 << 20)
+    );
+    let put = Operation::Mutate(MutationBatch::new().upsert("docs", "a", json!({})));
+    assert_eq!(
+        merge_patch_proposal_workspace(&put, &state, &state, &context).unwrap(),
+        0
+    );
+}
+
+#[test]
+fn staged_merge_patch_workspace_matches_live_chunks_to_the_header_read() {
+    let (state, context) = merge_patch_workspace_fixture();
+    for patches in [false, true] {
+        let mut current = state.clone();
+        let chunk = StagedChunk {
+            read_set: vec![],
+            operations: (0..100)
+                .map(|index| {
+                    if patches {
+                        Mutation::patch("docs", index.to_string(), json!({}), Precondition::Any)
+                    } else {
+                        Mutation::put("docs", index.to_string(), json!({}), Precondition::Any)
+                    }
+                })
+                .collect(),
+        };
+        let manifest = StagedManifest::from_chunks(std::slice::from_ref(&chunk)).unwrap();
+        let stage = StagedTransaction {
+            scope: StagedTransactionScope {
+                tenant: context.tenant.clone(),
+                incarnation: current.incarnation.clone(),
+                principal: context.principal.clone(),
+            },
+            transaction_id: "stage".into(),
+            manifest_digest: staged_digest(&manifest).unwrap().0,
+            manifest,
+            chunks: BTreeMap::from([(0, Arc::new(chunk))]),
+            stored_chunk_bytes: 0,
+            uploaded_payload_bytes: 0,
+            uploaded_operations: 100,
+            uploaded_read_assertions: 0,
+            expires_at_ms: Some(u64::MAX),
+            ttl_ms: 60_000,
+            outcome: StagedOutcome::Uploading,
+        };
+        let reference = stage.status().transaction;
+        let key = crate::state::staging::identity(&context.principal, "stage").unwrap();
+        current.staged_transactions.insert(key.clone(), stage);
+        // read_staged_identity strips chunks from its admitted header view.
+        let mut header = current.clone();
+        header
+            .staged_transactions
+            .get_mut(&key)
+            .unwrap()
+            .chunks
+            .clear();
+        let operation = Operation::FinalizeStaged(reference);
+        assert_eq!(
+            merge_patch_proposal_workspace(&operation, &header, &current, &context).unwrap(),
+            if patches { 3 * (64 << 20) } else { 0 }
+        );
+        // Missing chunks could be uploaded before ordered finalization, so
+        // even a currently empty header must reserve the declared envelope.
+        assert_eq!(
+            merge_patch_proposal_workspace(&operation, &header, &header, &context).unwrap(),
+            3 * (64 << 20)
+        );
+        header.staged_transactions.get_mut(&key).unwrap().outcome = StagedOutcome::Finished {
+            outcome: Ok(WriteReceipt {
+                revision: 1,
+                versions: BTreeMap::new(),
+            }),
+        };
+        assert_eq!(
+            merge_patch_proposal_workspace(&operation, &header, &current, &context).unwrap(),
+            0,
+            "terminal replay copies no source documents"
+        );
+    }
+}
+
 #[tokio::test]
 async fn cancelled_submit_keeps_actual_proposal_until_original_identity_is_resolvable() {
     let fixture = CredentialFixture::new().await;
@@ -44,6 +168,7 @@ async fn cancelled_submit_keeps_actual_proposal_until_original_identity_is_resol
             .get(&fixture.context, "docs", "cancelled-owned-proposal")
             .await
             .unwrap()
+            .expect("document exists")
             .body,
         json!({"value":7})
     );
@@ -114,7 +239,7 @@ async fn cancelled_database_shutdown_joins_actual_proposal_panic_before_raft_shu
         repeated
             .issues()
             .iter()
-            .any(|issue| Arc::ptr_eq(actual, issue))
+            .any(|issue| kasumi_types::drain::DrainIssueRef::ptr_eq(actual, issue))
     );
     fixture.audit.shutdown().await.unwrap();
 }

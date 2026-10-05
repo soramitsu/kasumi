@@ -268,12 +268,16 @@ before the release can claim complete distributed signer rotation.
 
 The authority runtime and signer-verifier initialization request require an
 explicit `persistent_disk` object with the same installed roots and budgets used
-by the node runtime. The verifier database must lie beneath one of those private
+by the node runtime, including required `native_storage.byte_limit` and
+`native_storage.cached_files` ceilings for each native storage group. The
+verifier database must lie beneath one of those private
 roots. Roots must be disjoint from one another and from scratch, share one
 filesystem, and pass a bounded census before admission opens. Initializing a
 verifier never enrolls its database parent implicitly. These inputs also require
 an explicit `scratch_disk` object: `directory` (absolute private leaf beneath an
-existing parent), `max_bytes`, and `min_free_bytes`. Use the same installed
+existing parent), `max_bytes`, `min_free_bytes`, and `native_cache_bytes` (the
+explicit per-table page/value cache ceiling within the shared installed memory
+budget). Use the same installed
 runtime scratch configuration when initializing its separate verifier store.
 Runtime opening passes the shared node owner to both stores; it does not create
 an independent per-request or per-verifier allowance.

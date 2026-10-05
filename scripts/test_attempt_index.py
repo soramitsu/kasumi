@@ -588,7 +588,7 @@ class JournalIdentityTests(unittest.TestCase):
         self.assertEqual(bundle["mac-arm-installed"]["journal"], "mac-arm-journal")
         self.assertIsNotNone(bundle["linux-x86-functional"]["terminal"])
 
-        with self.assertRaisesRegex(ValueError, "duplicate native attempt journal id"):
+        with self.assertRaisesRegex(ValueError, "share custody"):
             index.replay_journals(anchors + anchors[:1])
         with self.assertRaisesRegex(ValueError, "no native attempt journal"):
             index.replay_journals([])
@@ -613,7 +613,7 @@ class JournalIdentityTests(unittest.TestCase):
         nested.mkdir()
         index.create(nested, "nested-journal", "nested", TARGET)
         with self.assertRaisesRegex(ValueError, "share custody"):
-            index.replay_journals([(nested, index.head(nested))] + anchors[:1])
+            index.replay_journals([(nested, index.head(nested))] + anchors[:1], complete=False)
 
     def test_killed_dispatcher_leaves_an_unfinished_admission_that_restart_can_terminate(self):
         root = self.host("linux-arm")

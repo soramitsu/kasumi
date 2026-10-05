@@ -4,6 +4,7 @@
 use super::*;
 use anyhow::{Context, ensure};
 use kasumi_store::{AuditSegmentBuilder, InspectedAuditDependency, PreparedAuditSegment};
+use zeroize::Zeroize;
 
 pub(crate) const PREFIX: &[u8] = b"KASUMI_AUDIT_PRUNE_V1\0";
 const MAX_REFERENCE: usize = 64 << 10;
@@ -12,6 +13,7 @@ const MAX_COMMAND: usize = PREFIX.len() + 4 + MAX_REFERENCE + MAX_AUDIT_SEGMENT_
 // replicated archive root; snapshot dependencies remain the committed chain.
 const PREPARATION: &str = "engine.audit.preparation";
 
+#[cfg(test)]
 pub(crate) fn encode(segment: &PreparedAuditSegment) -> anyhow::Result<Vec<u8>> {
     segment.reference.validate()?;
     ensure!(
@@ -28,8 +30,114 @@ pub(crate) fn encode(segment: &PreparedAuditSegment) -> anyhow::Result<Vec<u8>> 
     bytes.extend(PREFIX);
     bytes.extend(u32::try_from(reference.len())?.to_be_bytes());
     bytes.extend(reference);
-    bytes.extend(&segment.ciphertext);
+    bytes.extend_from_slice(segment.ciphertext.as_bytes());
     Ok(bytes)
+}
+
+fn write_pending(
+    store: &kasumi_store::TenantStore,
+    segment: &PreparedAuditSegment,
+) -> anyhow::Result<()> {
+    struct Count(usize);
+    impl std::io::Write for Count {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0 = self
+                .0
+                .checked_add(bytes.len())
+                .ok_or(std::io::ErrorKind::InvalidInput)?;
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    segment.reference.validate()?;
+    let mut count = Count(0);
+    serde_json::to_writer(&mut count, &segment.reference)?;
+    ensure!(
+        count.0 <= MAX_REFERENCE && segment.ciphertext.len() <= MAX_AUDIT_SEGMENT_BYTES,
+        "audit preparation exceeds limit"
+    );
+    let length = PREFIX
+        .len()
+        .checked_add(4)
+        .and_then(|n| n.checked_add(count.0))
+        .and_then(|n| n.checked_add(segment.ciphertext.len()))
+        .context("audit command size overflow")?;
+    // One encoded buffer and the necessary synchronous WriteOp copy, including
+    // namespace/key allocations, are admitted before any allocation occurs.
+    let allocation = kasumi_store::DiskMemoryLease::token_allocation_bytes::<u8>()?;
+    let workspace = u64::try_from(length)?
+        .checked_mul(2)
+        .and_then(|n| n.checked_add(PREPARATION.len() as u64 + b"pending".len() as u64))
+        .and_then(|n| {
+            allocation
+                .checked_mul(4)
+                .and_then(|extra| n.checked_add(extra))
+        })
+        .context("audit command workspace overflow")?;
+    let charge = store
+        .plaintext_memory_owner()
+        .clone()
+        .reserve_installed(workspace)?;
+    let mut bytes = zeroize::Zeroizing::new(Vec::new());
+    bytes.try_reserve_exact(length)?;
+    bytes.extend_from_slice(PREFIX);
+    bytes.extend_from_slice(&u32::try_from(count.0)?.to_be_bytes());
+    serde_json::to_writer(&mut *bytes, &segment.reference)?;
+    bytes.extend_from_slice(segment.ciphertext.as_bytes());
+    ensure!(bytes.len() == length, "audit command encoded size changed");
+    struct PendingOperation(kasumi_store::WriteOp);
+    impl Drop for PendingOperation {
+        fn drop(&mut self) {
+            let kasumi_store::WriteOp::Put {
+                namespace,
+                key,
+                value,
+            } = &mut self.0
+            else {
+                unreachable!("pending audit operation is a put");
+            };
+            namespace.zeroize();
+            key.zeroize();
+            value.zeroize();
+        }
+    }
+    let operation = PendingOperation(kasumi_store::WriteOp::put(
+        PREPARATION,
+        b"pending",
+        bytes.as_slice(),
+    ));
+    let kasumi_store::WriteOp::Put {
+        namespace,
+        key,
+        value,
+    } = &operation.0
+    else {
+        unreachable!("pending audit operation is a put");
+    };
+    let actual = [
+        bytes.capacity(),
+        namespace.capacity(),
+        key.capacity(),
+        value.capacity(),
+    ]
+    .into_iter()
+    .try_fold(0u64, |total, capacity| {
+        total
+            .checked_add(u64::try_from(capacity)?)
+            .and_then(|n| n.checked_add(allocation))
+            .context("audit command allocation size overflow")
+    })?;
+    ensure!(
+        actual <= workspace,
+        "audit command allocation exceeded admission"
+    );
+    let result = store.write_batch(std::slice::from_ref(&operation.0));
+    drop(operation);
+    drop(bytes);
+    drop(charge);
+    result
 }
 fn decode(bytes: &[u8]) -> anyhow::Result<(AuditArchiveReference, &[u8])> {
     ensure!(
@@ -166,7 +274,7 @@ impl TenantEngine {
     /// Fixture-only command producer, called from an owned blocking worker.
     /// Production keeps its node reservation through preparation and proposal.
     #[cfg(any(test, feature = "test-utils"))]
-    pub fn prepare_audit_prune(&self) -> anyhow::Result<Option<Vec<u8>>> {
+    pub fn prepare_audit_prune(&self) -> anyhow::Result<Option<kasumi_store::PlaintextValue>> {
         ensure!(
             self.snapshot_store
                 .get()
@@ -182,7 +290,9 @@ impl TenantEngine {
     /// Captures only shared immutable roots; at most one segment is serialized.
     /// The exact encrypted pending command survives publication uncertainty and
     /// restart. External publication must complete before Raft sees the command.
-    pub(crate) fn prepare_audit_prune_inner(&self) -> anyhow::Result<Option<Vec<u8>>> {
+    pub(crate) fn prepare_audit_prune_inner(
+        &self,
+    ) -> anyhow::Result<Option<kasumi_store::PlaintextValue>> {
         let generation = self.generation()?;
         let state = &generation.state;
         let retention = &state.audit_retention;
@@ -243,14 +353,15 @@ impl TenantEngine {
                 .is_some_and(|bytes| bytes <= budget.archive_bytes),
             "tenant audit archive capacity exhausted"
         );
-        let bytes = encode(&segment)?;
-        store.write_batch(&[kasumi_store::WriteOp::put(
-            PREPARATION,
-            b"pending",
-            bytes.as_slice(),
-        )])?;
+        write_pending(store, &segment)?;
         Self::publish_prepared_audit(state, store, &segment.reference, &segment.ciphertext)?;
-        Ok(Some(bytes))
+        // Transfer the canonical admitted stored owner into the proposal. The
+        // temporary encoded command and write copy have already retired.
+        Ok(Some(
+            store
+                .get_bounded(PREPARATION, b"pending", MAX_COMMAND)?
+                .context("audit preparation disappeared after commit")?,
+        ))
     }
 
     fn publish_prepared_audit(
@@ -268,12 +379,10 @@ impl TenantEngine {
             "tenant audit archive capacity exhausted"
         );
         verify_prefix(state, store, reference, ciphertext)?;
+        let segment = store.copy_audit_segment(reference.clone(), ciphertext)?;
         store
             .tenant_audit_archive()?
-            .publish_destination_blocking(&PreparedAuditSegment {
-                reference: reference.clone(),
-                ciphertext: ciphertext.to_vec(),
-            })?;
+            .publish_destination_blocking(&segment)?;
         store.check_access()
     }
 
@@ -281,7 +390,8 @@ impl TenantEngine {
         &self,
         position: &kasumi_raft::AppliedEntryContext,
         bytes: &[u8],
-    ) -> anyhow::Result<kasumi_raft::AppliedResponse> {
+        publisher: &mut dyn kasumi_raft::ApplyPublisher,
+    ) -> anyhow::Result<()> {
         let maintenance = self
             .audit_maintenance
             .lock()
@@ -308,11 +418,8 @@ impl TenantEngine {
             "audit prune has retirement custody seed"
         );
         let (reference, ciphertext) = decode(bytes)?;
-        let _guard = self
-            .apply_lock
-            .lock()
-            .map_err(|_| anyhow::anyhow!("tenant apply lock poisoned"))?;
-        let previous = self.generation()?;
+        let apply = ApplyOwner::lock(self, || anyhow::anyhow!("tenant apply lock poisoned"))?;
+        let previous = apply.current();
         let revision = self
             .revision_base
             .checked_add(position.log_id.index)
@@ -351,10 +458,8 @@ impl TenantEngine {
             // External publication was verified before this command was
             // proposed. Committed apply depends only on this replica's durable
             // copy, so a transient destination outage cannot poison Raft replay.
-            placement.cache().publish_blocking(&PreparedAuditSegment {
-                reference: reference.clone(),
-                ciphertext: ciphertext.to_vec(),
-            })?;
+            let segment = store.copy_audit_segment(reference.clone(), ciphertext)?;
+            placement.cache().publish_blocking(&segment)?;
             store.check_access()?;
             for _ in 0..reference.record_count {
                 next.audits
@@ -382,6 +487,7 @@ impl TenantEngine {
         };
         // Retirement freezes application state, including its authenticated
         // closure digest. A delayed maintenance command cannot mutate that image.
+        let response = kasumi_raft::AppliedResponse::application(serde_json::to_vec(&outcome)?);
         if !previous.state.retired {
             let accounting = previous.snapshot_accounting.updated(
                 &previous.state,
@@ -393,7 +499,7 @@ impl TenantEngine {
                 accounting.fits(&next)?,
                 "audit pruning metadata exceeds tenant capacity"
             );
-            self.publish_generation(Some(Arc::new(Generation {
+            let candidate = Arc::new(Generation {
                 terminals: previous.terminals.clone(),
                 target_resolutions: previous.target_resolutions.clone(),
                 state: next,
@@ -401,13 +507,19 @@ impl TenantEngine {
                 receipts: previous.receipts.clone(),
                 backup_bindings: previous.backup_bindings.clone(),
                 snapshot_accounting: accounting,
+                application_selection: std::sync::OnceLock::new(),
                 _read_reservations: vec![],
-            })));
+            });
+            self.publish_prepared_generation(
+                apply.accept(candidate, ChangedIds::new())?,
+                response,
+                Some(position),
+                publisher,
+            )
+        } else {
+            publisher.commit(response, &[])?;
+            Ok(())
         }
-        Ok(kasumi_raft::AppliedResponse {
-            data: serde_json::to_vec(&outcome)?,
-            retirement: None,
-        })
     }
 }
 
@@ -443,7 +555,11 @@ mod tests {
     /// A fresh fixture store with no tenant audit placement installed.
     async fn fixture_store() -> (tempfile::TempDir, Arc<TenantStore>) {
         let directory = kasumi_store::test_utils::private_tempdir().unwrap();
-        let memory = kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 32);
+        // The 40-slot fixture exhausted slots at 54,875,251 used bytes. Allow
+        // bounded overlap of installed node/archive owners, replacement tables,
+        // transactions and cache leases without raising the 64 MiB cap. This is
+        // fixture headroom, not a measured minimum or provider qualification.
+        let memory = kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 128);
         kasumi_store::private_files::create_directory(&directory.path().join("persistent"))
             .unwrap();
         let disk =
@@ -548,12 +664,14 @@ mod tests {
         }
         engine
     }
-    async fn prepare(engine: Arc<TenantEngine>) -> anyhow::Result<Option<Vec<u8>>> {
+    async fn prepare(
+        engine: Arc<TenantEngine>,
+    ) -> anyhow::Result<Option<kasumi_store::PlaintextValue>> {
         tokio::task::spawn_blocking(move || engine.prepare_audit_prune()).await?
     }
     async fn apply(
         engine: Arc<TenantEngine>,
-        command: Vec<u8>,
+        command: impl AsRef<[u8]> + Send + 'static,
         index: u64,
     ) -> anyhow::Result<Result<()>> {
         tokio::task::spawn_blocking(move || {
@@ -561,10 +679,12 @@ mod tests {
                 log_id: kasumi_raft::LogId::new(openraft::CommittedLeaderId::new(1, 1), index),
                 previous: None,
                 membership: Default::default(),
-                command_sha256: hex::encode(Sha256::digest(&command)),
+                command_sha256: hex::encode(Sha256::digest(command.as_ref())),
                 retirement_seed: None,
             };
-            let result = engine.apply_audit_prune(&position, &command)?;
+            let result = crate::test_utils::capture_application(|publisher| {
+                engine.apply_audit_prune(&position, command.as_ref(), publisher)
+            })?;
             Ok(serde_json::from_slice(&result.data)?)
         })
         .await?
@@ -594,12 +714,14 @@ mod tests {
                 store.shutdown().await.unwrap();
                 let disk = store.scratch_disk().clone();
                 let persistent = store.persistent_disk().clone();
+                let storage = persistent.native_storage_config();
                 drop(store);
                 let node = NodeStore::open_existing(
                     directory.path().join("persistent/node.kv"),
                     kasumi_store::test_utils::NODE_STORE_ID,
                     persistent,
                     disk,
+                    storage,
                 )
                 .unwrap();
                 store = TenantStore::open_existing_fixture(
@@ -645,6 +767,117 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn failed_prune_publication_keeps_selected_prefix_and_replays_staged_archive()
+    -> crate::test_fixture_failure::FixtureResult<()> {
+        let (_directory, engine, store, _archive) = fixture().await;
+        let command = prepare(engine.clone()).await?.unwrap();
+        let applying = engine.clone();
+        tokio::task::spawn_blocking(move || -> crate::test_fixture_failure::FixtureResult<()> {
+            let previous = applying.generation()?;
+            let position = kasumi_raft::AppliedEntryContext {
+                log_id: kasumi_raft::LogId::new(openraft::CommittedLeaderId::new(1, 1), 51),
+                previous: None,
+                membership: Default::default(),
+                command_sha256: hex::encode(Sha256::digest(&command)),
+                retirement_seed: None,
+            };
+            struct Refuse<'a> {
+                engine: &'a TenantEngine,
+                previous: &'a Arc<Generation>,
+                response: Option<kasumi_raft::AppliedResponse>,
+            }
+            impl kasumi_raft::ApplyPublisher for Refuse<'_> {
+                fn with_completion(
+                    &mut self,
+                    _: &kasumi_raft::CompletionIdentity,
+                    _: &mut dyn kasumi_raft::CompletionAction,
+                ) -> std::result::Result<(), kasumi_raft::CompletionCallError> {
+                    Err(kasumi_raft::CompletionCallError::Unsupported)
+                }
+
+                fn commit_with_selection<'call>(
+                    &mut self,
+                    _: kasumi_raft::AppliedResponse,
+                    _: &[kasumi_store::WriteOp],
+                    _: &mut dyn kasumi_raft::SelectionPreparer,
+                    _: kasumi_raft::PublicationChallenge<'call>,
+                ) -> std::result::Result<
+                    kasumi_raft::JointPublicationReceipt<'call>,
+                    kasumi_raft::PublishCallError,
+                > {
+                    panic!("response-only fixture must not publish a selected source")
+                }
+
+                fn commit(
+                    &mut self,
+                    response: kasumi_raft::AppliedResponse,
+                    writes: &[kasumi_store::WriteOp],
+                ) -> std::result::Result<(), kasumi_raft::PublishCallError> {
+                    assert!(writes.is_empty());
+                    assert!(Arc::ptr_eq(
+                        &self.engine.generation().unwrap(),
+                        self.previous
+                    ));
+                    assert!(self.response.replace(response).is_none());
+                    Err(kasumi_raft::PublishCallError::Failed)
+                }
+            }
+            let mut refused = Refuse {
+                engine: &applying,
+                previous: &previous,
+                response: None,
+            };
+            let failure = kasumi_raft::StateMachineBackend::apply_with_publisher(
+                applying.as_ref(),
+                &position,
+                kasumi_raft::AppliedInput::Command(&command),
+                &mut refused,
+            )
+            .unwrap_err();
+            assert_eq!(
+                failure
+                    .operation_error()
+                    .unwrap()
+                    .downcast_ref::<kasumi_raft::PublishCallError>(),
+                Some(&kasumi_raft::PublishCallError::Failed)
+            );
+            assert!(Arc::ptr_eq(&applying.generation()?, &previous));
+            let (reference, ciphertext) = decode(&command)?;
+            let staged = applying
+                .snapshot_store
+                .get()
+                .unwrap()
+                .tenant_audit_archive()?
+                .cache()
+                .read_blocking(&reference.object)?;
+            assert_eq!(staged, ciphertext);
+            let response = crate::test_utils::capture_application(|publisher| {
+                kasumi_raft::StateMachineBackend::apply_with_publisher(
+                    applying.as_ref(),
+                    &position,
+                    kasumi_raft::AppliedInput::Command(&command),
+                    publisher,
+                )
+            })?;
+            assert_eq!(response.data, refused.response.unwrap().data);
+            let outcome: Result<()> = serde_json::from_slice(&response.data)?;
+            outcome?;
+            let current = applying.generation()?;
+            assert_eq!(current.state.revision, 51);
+            assert_eq!(
+                current.state.audit_retention.archive_head.as_ref(),
+                Some(&reference)
+            );
+            assert_eq!(previous.state.revision, 50);
+            assert_eq!(previous.state.audit_retention.archive_segments, 0);
+            Ok(())
+        })
+        .await??;
+        store.shutdown().await?;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn uncertain_publication_keeps_hot_prefix_and_apply_never_recontacts_external_archive() {
         let (_directory, engine, store, archive) = fixture().await;
         let before = engine.generation().unwrap();
@@ -669,11 +902,12 @@ mod tests {
         archive.fail.store(false, Ordering::SeqCst);
         let command = prepare(engine.clone()).await.unwrap().unwrap();
         assert_eq!(command, pending);
-        archive.fail.store(true, Ordering::SeqCst);
-        apply(engine.clone(), command.clone(), 51)
-            .await
+        let repeated = store
+            .get_bounded(PREPARATION, b"pending", MAX_COMMAND)
             .unwrap()
             .unwrap();
+        archive.fail.store(true, Ordering::SeqCst);
+        apply(engine.clone(), command, 51).await.unwrap().unwrap();
         let current = engine.generation().unwrap();
         assert_eq!(
             current.state.audit_retention.archive_head.as_ref(),
@@ -706,7 +940,7 @@ mod tests {
                 .is_ok()
         );
         assert_eq!(
-            apply(engine.clone(), command, 52)
+            apply(engine.clone(), repeated, 52)
                 .await
                 .unwrap()
                 .unwrap_err()
@@ -733,6 +967,7 @@ mod tests {
         drop(engine);
         let disk = store.scratch_disk().clone();
         let persistent = store.persistent_disk().clone();
+        let storage = persistent.native_storage_config();
         drop(store);
 
         let node = NodeStore::open_existing(
@@ -740,6 +975,7 @@ mod tests {
             kasumi_store::test_utils::NODE_STORE_ID,
             persistent,
             disk,
+            storage,
         )
         .unwrap();
         let store = TenantStore::open_existing_fixture(
@@ -815,8 +1051,32 @@ mod tests {
         store
             .write_batch(&[kasumi_store::WriteOp::delete(PREPARATION, b"pending")])
             .unwrap();
-        let mut command = prepare(engine.clone()).await.unwrap().unwrap();
-        *command.last_mut().unwrap() ^= 1;
+        let command = prepare(engine.clone()).await.unwrap().unwrap();
+        struct CorruptCommand {
+            bytes: zeroize::Zeroizing<Vec<u8>>,
+            _charge: kasumi_store::DiskMemoryLease,
+        }
+        impl AsRef<[u8]> for CorruptCommand {
+            fn as_ref(&self) -> &[u8] {
+                &self.bytes
+            }
+        }
+        let admitted = command.len() as u64
+            + kasumi_store::DiskMemoryLease::token_allocation_bytes::<u8>().unwrap();
+        let charge = store
+            .plaintext_memory_owner()
+            .clone()
+            .reserve_installed(admitted)
+            .unwrap();
+        let mut bytes = zeroize::Zeroizing::new(Vec::new());
+        bytes.try_reserve_exact(command.len()).unwrap();
+        assert!(bytes.capacity() as u64 <= admitted);
+        bytes.extend_from_slice(command.as_bytes());
+        let mut command = CorruptCommand {
+            bytes,
+            _charge: charge,
+        };
+        *command.bytes.last_mut().unwrap() ^= 1;
         assert!(apply(engine.clone(), command, 51).await.is_err());
         assert_eq!(
             engine.generation().unwrap().state.audit_retention,

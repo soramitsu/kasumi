@@ -31,7 +31,7 @@ async fn open(
     path: &std::path::Path,
     limits: Limits,
     create: bool,
-) -> (Arc<Database>, Arc<SecurityAudit>, Arc<NodeStore>) {
+) -> (Arc<Database>, Arc<SecurityAudit>, NodeStore) {
     let node = (if create {
         physical
             .storage
@@ -156,12 +156,12 @@ async fn change_feed_is_atomic_ordered_resumable_and_detects_retention_gaps() {
         next,
         caught_up,
         ..
-    } = first
+    } = first.as_ref()
     else {
         panic!("unexpected retention gap")
     };
     assert_eq!(events.len(), 2);
-    assert!(!caught_up);
+    assert!(!*caught_up);
     assert!(
         events
             .iter()
@@ -172,6 +172,8 @@ async fn change_feed_is_atomic_ordered_resumable_and_detects_retention_gaps() {
         events[1].document.as_ref().unwrap().body["amount"].to_string(),
         "90071992547409931234567890.123456789"
     );
+    let next = next.clone();
+    drop(first);
     let next_page = db
         .read_change_feed(
             &context(),
@@ -189,13 +191,15 @@ async fn change_feed_is_atomic_ordered_resumable_and_detects_retention_gaps() {
         next: finished,
         caught_up,
         ..
-    } = next_page
+    } = next_page.as_ref()
     else {
         panic!("unexpected gap")
     };
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].sequence, 3);
-    assert!(caught_up);
+    assert!(*caught_up);
+    let finished = finished.clone();
+    drop(next_page);
     assert_eq!(
         db.engine().snapshot_bytes().unwrap() as u64,
         snapshot_accounted_bytes(
@@ -229,14 +233,15 @@ async fn change_feed_is_atomic_ordered_resumable_and_detects_retention_gaps() {
         )
         .await
         .unwrap();
-    let ChangeFeedPage::Events { events, .. } = resumed else {
+    let ChangeFeedPage::Events { events, .. } = resumed.as_ref() else {
         panic!("unexpected restart gap")
     };
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].sequence, 3);
+    drop(resumed);
     db.mutate(context(), batch("second", 3, 2)).await.unwrap();
     assert!(matches!(
-        db.read_change_feed(&context(), feed(ChangeFeedStart::After { cursor: next }, 2))
+        &*db.read_change_feed(&context(), feed(ChangeFeedStart::After { cursor: next }, 2))
             .await
             .unwrap(),
         ChangeFeedPage::RetentionGap {
@@ -252,7 +257,7 @@ async fn change_feed_is_atomic_ordered_resumable_and_detects_retention_gaps() {
         )
         .await
         .unwrap();
-    let ChangeFeedPage::Events { events, next, .. } = retained else {
+    let ChangeFeedPage::Events { events, next, .. } = retained.as_ref() else {
         panic!("unexpected retained gap")
     };
     assert_eq!(
@@ -262,6 +267,8 @@ async fn change_feed_is_atomic_ordered_resumable_and_detects_retention_gaps() {
             .collect::<Vec<_>>(),
         vec![4, 5]
     );
+    let next = next.clone();
+    drop(retained);
     let before = db.engine().generation().unwrap().state.document_count;
     assert_eq!(
         db.mutate(context(), batch("too-large", 10, 5))
@@ -360,7 +367,11 @@ async fn archived_prefixes_keep_logical_reads_unique_indexes_and_dedup_after_res
             .unwrap()
             .revision;
     }
-    let before = db.get(&context(), "docs", "r0599").await.unwrap();
+    let before = db
+        .get(&context(), "docs", "r0599")
+        .await
+        .unwrap()
+        .expect("document exists");
     let request = ArchiveHistory {
         archive_id: "period-one".into(),
         collection: "docs".into(),
@@ -388,7 +399,14 @@ async fn archived_prefixes_keep_logical_reads_unique_indexes_and_dedup_after_res
     assert_eq!(head, 601, "archival cannot emit logical deletes");
     let archive = state.state.history_archives["period-one"].clone();
     drop(state);
-    assert_eq!(db.get(&context(), "docs", "r0599").await.unwrap(), before);
+    assert_eq!(
+        db.get(&context(), "docs", "r0599")
+            .await
+            .unwrap()
+            .expect("document exists")
+            .as_ref(),
+        before.as_ref()
+    );
     assert_eq!(
         db.mutate(context(), batch("duplicate-archived-id", 599, 1))
             .await
@@ -430,7 +448,10 @@ async fn archived_prefixes_keep_logical_reads_unique_indexes_and_dedup_after_res
         )
         .await
         .unwrap();
-    assert_eq!(snapshot.documents[0].document.as_ref().unwrap(), &before);
+    assert_eq!(
+        snapshot.documents[0].document.as_ref().unwrap(),
+        before.as_ref()
+    );
     assert!(snapshot.documents[1].document.is_none());
     db.mutate(
         context(),
@@ -472,8 +493,8 @@ async fn archived_prefixes_keep_logical_reads_unique_indexes_and_dedup_after_res
     );
     let query: QueryRequest = serde_json::from_value(json!({
         "collection":"docs", "limit":10,
-        "filter":{"op":"compare","field":"/n","comparison":"gte","value":598},
-        "sort":[{"field":"/n","direction":"asc"}]
+        "filter":{"/n":{"gte":598}},
+        "sort":["/n"]
     }))
     .unwrap();
     let rows = db.query(&context(), query.clone()).await.unwrap();
@@ -516,8 +537,8 @@ async fn archived_prefixes_keep_logical_reads_unique_indexes_and_dedup_after_res
             .await
             .unwrap();
         read += page.documents.len();
-        match page.next_after_id {
-            Some(next) => after_id = Some(next),
+        match &page.next_after_id {
+            Some(next) => after_id = Some(next.clone()),
             None => break,
         }
     }
@@ -558,7 +579,14 @@ async fn archived_prefixes_keep_logical_reads_unique_indexes_and_dedup_after_res
     );
     db.install_archive_destination("cold".into(), destination.clone())
         .unwrap();
-    assert_eq!(db.get(&context(), "docs", "r0599").await.unwrap(), before);
+    assert_eq!(
+        db.get(&context(), "docs", "r0599")
+            .await
+            .unwrap()
+            .expect("document exists")
+            .as_ref(),
+        before.as_ref()
+    );
     assert_eq!(
         db.query(&context(), query.clone())
             .await
@@ -888,6 +916,7 @@ async fn chunked_full_backup_restores_cold_history_and_permanent_identity_withou
             .get(&context(), "docs", "r0011")
             .await
             .unwrap()
+            .expect("document exists")
             .body["payload"]
             .as_str()
             .unwrap()
@@ -1085,15 +1114,16 @@ async fn scoped_feed_advances_through_filtered_commit_tail_and_emits_only_real_d
         body: json!({"n": 99}),
     });
     let receipt = db.mutate(context(), write).await.unwrap();
+    let first = db
+        .read_change_feed(&context(), feed(ChangeFeedStart::Beginning, 1))
+        .await
+        .unwrap();
     let ChangeFeedPage::Events {
         events,
         next,
         caught_up,
         ..
-    } = db
-        .read_change_feed(&context(), feed(ChangeFeedStart::Beginning, 1))
-        .await
-        .unwrap()
+    } = first.as_ref()
     else {
         panic!("unexpected gap")
     };
@@ -1102,16 +1132,19 @@ async fn scoped_feed_advances_through_filtered_commit_tail_and_emits_only_real_d
     assert_eq!(events[0].commit_event_count, 2);
     assert_eq!(events[0].ordinal, 0);
     assert_eq!(next.after_sequence, 1);
-    assert!(!caught_up);
+    assert!(!*caught_up);
+    let next = next.clone();
+    drop(first);
+    let second = db
+        .read_change_feed(&context(), feed(ChangeFeedStart::After { cursor: next }, 1))
+        .await
+        .unwrap();
     let ChangeFeedPage::Events {
         events,
         next,
         caught_up,
         ..
-    } = db
-        .read_change_feed(&context(), feed(ChangeFeedStart::After { cursor: next }, 1))
-        .await
-        .unwrap()
+    } = second.as_ref()
     else {
         panic!("unexpected gap")
     };
@@ -1120,7 +1153,9 @@ async fn scoped_feed_advances_through_filtered_commit_tail_and_emits_only_real_d
         next.after_sequence, 2,
         "a scoped consumer can complete the atomic commit"
     );
-    assert!(caught_up);
+    assert!(*caught_up);
+    let next = next.clone();
+    drop(second);
     let deletion = db
         .mutate(
             context(),
@@ -1143,14 +1178,14 @@ async fn scoped_feed_advances_through_filtered_commit_tail_and_emits_only_real_d
         )
         .await
         .unwrap();
-    let ChangeFeedPage::Events { events, next, .. } = db
+    let page = db
         .read_change_feed(
             &context(),
             feed(ChangeFeedStart::After { cursor: next }, 10),
         )
         .await
-        .unwrap()
-    else {
+        .unwrap();
+    let ChangeFeedPage::Events { events, next, .. } = page.as_ref() else {
         panic!("unexpected gap")
     };
     assert_eq!(events.len(), 1);
@@ -1245,7 +1280,11 @@ async fn shutdown_cancels_pending_archive_upload_and_keeps_source_rows_on_restar
     drop(audit);
     let (db, audit, node) = open(&physical, &path, Limits::default(), false).await;
     assert_eq!(
-        db.get(&context(), "docs", "r0000").await.unwrap().version,
+        db.get(&context(), "docs", "r0000")
+            .await
+            .unwrap()
+            .expect("document exists")
+            .version,
         cutoff
     );
     assert!(

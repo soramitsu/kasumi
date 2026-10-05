@@ -1,6 +1,7 @@
 mod common;
 
-use anyhow::{Context, Result};
+use anyhow::Context;
+use kasumi_raft::test_utils::FixtureResult;
 use kasumi_raft::{RaftGroup, StateMachineBackend};
 use kasumi_store::{
     NodeStore, TenantStore,
@@ -25,22 +26,25 @@ impl StateMachineBackend for PausedSnapshot {
     fn close_application(&self) {
         self.inner.close_application();
     }
-    fn apply(
+    fn apply_with_publisher(
         &self,
         position: &kasumi_raft::AppliedEntryContext,
-        command: &[u8],
-    ) -> Result<kasumi_raft::AppliedResponse> {
-        self.inner.apply(position, command)
+        input: kasumi_raft::AppliedInput<'_>,
+        publisher: &mut dyn kasumi_raft::ApplyPublisher,
+    ) -> std::result::Result<(), kasumi_store::ScratchOperationFailure> {
+        self.inner.apply_with_publisher(position, input, publisher)
     }
-
-    fn apply_metadata(&self, _position: &kasumi_raft::AppliedEntryContext) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn capture_snapshot(&self) -> Result<kasumi_raft::CapturedSnapshot> {
+    fn capture_snapshot(
+        &self,
+    ) -> std::result::Result<kasumi_raft::CapturedSnapshot, kasumi_store::ScratchOperationFailure>
+    {
         if let Some(entered) = self.entered.lock().unwrap().take() {
             let _ = entered.send(());
-            self.release.lock().unwrap().recv_timeout(WAIT)?;
+            self.release
+                .lock()
+                .unwrap()
+                .recv_timeout(WAIT)
+                .map_err(anyhow::Error::from)?;
         }
         self.inner.capture_snapshot()
     }
@@ -48,7 +52,10 @@ impl StateMachineBackend for PausedSnapshot {
     fn validate_snapshot(
         &self,
         bytes: &mut dyn std::io::Read,
-    ) -> Result<Option<kasumi_raft::RetiredSnapshotState>> {
+    ) -> std::result::Result<
+        Option<kasumi_raft::RetiredSnapshotState>,
+        kasumi_store::ScratchOperationFailure,
+    > {
         self.inner.validate_snapshot(bytes)
     }
 
@@ -56,13 +63,17 @@ impl StateMachineBackend for PausedSnapshot {
         &'a self,
         context: &kasumi_raft::SnapshotRestoreContext,
         bytes: &mut dyn std::io::Read,
-    ) -> Result<Box<dyn kasumi_raft::PreparedStateMachineRestore + 'a>> {
+    ) -> std::result::Result<
+        Box<dyn kasumi_raft::PreparedStateMachineRestore + 'a>,
+        kasumi_store::ScratchOperationFailure,
+    > {
         self.inner.prepare_restore(context, bytes)
     }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn shutdown_drains_snapshot_worker_before_releasing_group_or_file_ownership() -> Result<()> {
+async fn shutdown_drains_snapshot_worker_before_releasing_group_or_file_ownership()
+-> FixtureResult<()> {
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
     let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
@@ -91,7 +102,7 @@ async fn shutdown_drains_snapshot_worker_before_releasing_group_or_file_ownershi
     let group = RaftGroup::local(
         1,
         "tenant-a".into(),
-        stores,
+        stores.clone(),
         Arc::new(PausedSnapshot {
             inner: common::Backend::default(),
             entered: Mutex::new(Some(entered)),
@@ -100,7 +111,11 @@ async fn shutdown_drains_snapshot_worker_before_releasing_group_or_file_ownershi
         common::snapshot_owner(),
     )
     .await?;
-    group.write(b"acknowledged".to_vec()).await?;
+    group
+        .write(kasumi_raft::ApplicationProposal::generated(
+            b"acknowledged".to_vec(),
+        ))
+        .await?;
     group.snapshot().await?;
     tokio::time::timeout(WAIT, ready).await??;
 
@@ -137,6 +152,8 @@ async fn shutdown_drains_snapshot_worker_before_releasing_group_or_file_ownershi
         .context("snapshot worker unexpectedly exited")?;
     tokio::time::timeout(WAIT, shutting_down).await??;
     drop(group);
+    kasumi_store::test_utils::shutdown_owned_stores_fixture(&stores).await?;
+    drop(stores);
     drop(store);
 
     // No sleep or retry: shutdown must have released every background owner.

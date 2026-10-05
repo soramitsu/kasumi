@@ -2,7 +2,7 @@ use super::*;
 use std::collections::BTreeMap;
 use uuid::Uuid;
 
-fn coordinator() -> TenantState {
+pub(crate) fn coordinator() -> TenantState {
     let template = super::tests::state();
     // Build every generation-bound native head for the actual Control identity.
     // Relabeling an application fixture leaves its receipt origin outside lineage.
@@ -729,7 +729,10 @@ fn application_backup_rejects_control_recovery_and_embedded_or_orphan_records() 
     )
     .err()
     .unwrap();
-    assert!(error.to_string().contains("Control state"));
+    assert!(
+        error.to_string().contains("Control state"),
+        "unexpected application backup validation error: {error:#}"
+    );
     let mut embedded = metadata(&state);
     embedded.recovery_control = state.recovery_control.clone();
     let mut bytes = Vec::new();
@@ -805,7 +808,7 @@ fn completion_history_stream_is_resident_and_counts_in_snapshot_admission_and_qu
         .insert(key.clone(), history.clone());
     let source = image(disk, &state);
     let summary = inspect(&mut source.reader()).unwrap();
-    let verified = visit(&mut source.reader(), |_, _| Ok(())).unwrap();
+    let verified = visit::<anyhow::Error>(&mut source.reader(), |_, _| Ok(())).unwrap();
     assert_eq!(summary, verified);
     assert_eq!(summary.kinds[23].records, 1);
     assert_eq!(summary.kinds[23].framed_bytes, framed_bytes);

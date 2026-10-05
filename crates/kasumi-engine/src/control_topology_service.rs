@@ -1,6 +1,6 @@
 //! Actual current Control routing reads. Serialized replies cannot construct
 //! this original invocation or its final quorum/authorization fence.
-use super::control_administration::ControlQuorumFence;
+use super::control_administration::{ControlObservationAccess, ControlQuorumFence};
 use super::*;
 use crate::control::ControlPlane;
 
@@ -88,7 +88,9 @@ impl Database {
                 )
             })?);
         context.authorization = context.authorization.with_expiry_limit(not_after_ms)?;
-        let fence = self.authorize_control_quorum(context.clone()).await?;
+        let fence = self
+            .authorize_control_quorum(context.clone(), ControlObservationAccess::TopologyRead)
+            .await?;
         if request.control_incarnation != fence.installation().root.control_incarnation
             || fence.voters().count() != 3
         {

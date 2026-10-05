@@ -22,6 +22,7 @@ kasumi-types.workspace = true
 kasumi-client.workspace = true
 kasumi-transport.workspace = true
 kasumi-engine.workspace = true
+kasumi-query.workspace = true
 kasumi-store.workspace = true
 kasumi-raft.workspace = true
 serde.workspace = true

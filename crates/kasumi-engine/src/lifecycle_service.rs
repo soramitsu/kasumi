@@ -249,9 +249,20 @@ impl Database {
             .map_err(unknown)
     }
     pub(super) async fn lifecycle_barrier(&self, context: &RequestContext) -> Result<u64> {
+        self.control_observation_barrier(
+            context,
+            super::control_administration::ControlObservationAccess::Administration,
+        )
+        .await
+    }
+    pub(super) async fn control_observation_barrier(
+        &self,
+        context: &RequestContext,
+        access: super::control_administration::ControlObservationAccess,
+    ) -> Result<u64> {
         context.authorization.check_live()?;
         self.access()?;
-        self.engine.authorize(context, None, Action::Admin)?;
+        access.authorize(self, context)?;
         let state = self.engine.generation()?;
         if state.state.tenant != "__kasumi_control" {
             return Err(Error::new(
@@ -274,7 +285,7 @@ impl Database {
             ));
         }
         context.authorization.check_live()?;
-        self.engine.authorize(context, None, Action::Admin)?;
+        access.authorize(self, context)?;
         Ok(metrics.current_term)
     }
     pub(super) fn lifecycle_now(&self) -> Result<u64> {

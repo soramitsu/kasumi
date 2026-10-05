@@ -59,7 +59,7 @@ async fn store(
 ) -> (
     Arc<TenantStore>,
     Arc<kasumi_engine::SecurityAudit>,
-    Arc<NodeStore>,
+    NodeStore,
 ) {
     let node = (if create {
         physical
@@ -97,7 +97,7 @@ async fn store(
 async fn shutdown_nodes(
     nodes: &mut BTreeMap<u64, Arc<Database>>,
     audits: &mut BTreeMap<u64, Arc<kasumi_engine::SecurityAudit>>,
-    node_owners: &mut BTreeMap<u64, Arc<NodeStore>>,
+    node_owners: &mut BTreeMap<u64, NodeStore>,
     router: &InProcessRouter,
     group: &str,
 ) {
@@ -224,7 +224,7 @@ async fn replicated_service_preserves_batches_receipts_and_cursor_fences_across_
         .query(&context(), query.clone())
         .await
         .unwrap();
-    query.cursor = first_page.cursor;
+    query.cursor = first_page.cursor.clone();
     assert!(query.cursor.is_some());
     let chunks: Vec<_> = (0..2)
         .map(|chunk| StagedChunk {
@@ -368,6 +368,7 @@ async fn replicated_service_preserves_batches_receipts_and_cursor_fences_across_
             .get(&context(), "documents", "b")
             .await
             .unwrap()
+            .expect("document exists")
             .body["exact"]
             .to_string(),
         "9007199254740993"
@@ -423,6 +424,7 @@ async fn replicated_service_preserves_batches_receipts_and_cursor_fences_across_
             .get(&context(), "documents", "staged0299")
             .await
             .unwrap()
+            .expect("document exists")
             .version,
         staged_receipt.revision
     );
@@ -435,6 +437,7 @@ async fn replicated_service_preserves_batches_receipts_and_cursor_fences_across_
             .get(&context(), "documents", "a")
             .await
             .unwrap()
+            .expect("document exists")
             .version,
         receipt.revision
     );
@@ -720,6 +723,7 @@ async fn replicated_restore_has_identical_genesis_and_requires_quorum_audit_befo
             .get(&context(), "documents", "a")
             .await
             .unwrap()
+            .expect("document exists")
             .version,
         receipt.revision
     );
@@ -773,6 +777,7 @@ async fn replicated_restore_has_identical_genesis_and_requires_quorum_audit_befo
             .get(&context(), "documents", "b")
             .await
             .unwrap()
+            .expect("document exists")
             .version,
         receipt.revision
     );

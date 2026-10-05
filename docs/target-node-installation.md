@@ -8,6 +8,24 @@ and drains its storage owners before success. Cancellation of the CLI waiter
 does not abandon that owned initializer. Existing or incomplete files are never
 adopted or reset. The configured parent directory must already exist.
 
+Every `target_recovery.tenants[tenant]` template requires its own
+`audit_placement`, using the tagged local replica only or nested external choice
+in the [tenant audit retention guide](tenant-audit-retention.md). The ordinary
+`tenant_audit_placements` map covers Control and exactly the application tenants
+in `RuntimeConfig.tenants`. A target-only tenant gets its choice from its template;
+adding it to the ordinary map is an unknown extra row and rejects. When a source
+and target share a tenant name, their choices remain independent. External
+filesystem archives must belong to installed persistent roots and stay outside
+the target generation deletion root.
+
+Journal initialization durably binds the complete template-name and placement
+roster before any target cache or external archive is opened. Startup requires
+the same roster, including before the first materialization. Changing a choice
+or adding/removing a template cannot rewrite that installed journal. Credential
+contents may refresh at their installed path without changing this configuration
+identity. Current journal metadata is format 5; superseded heads reject without a
+legacy decoder or migration.
+
 Normal target runtime startup uses existing-only node, tenant catalog and journal
 opens. An absent journal head fails even when the namespace is empty or a cached
 live owner exists. Explicit `TargetJournal::create_new` and

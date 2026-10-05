@@ -3,9 +3,10 @@
 These first-release additions extend the original 2026-09-05 acceptance baseline.
 The original manifests remain evidence for their recorded source; they do not
 certify the changed implementation. New collection definitions require
-`write_mode` and `retention_class`, batches require `read_set`, and persisted state requires the
-new schema and collection epochs. There is no old-state migration or implicit
-default for these fields.
+`write_mode` and `retention_class`, and persisted state requires the new schema
+and collection epochs. There is no old-state migration or implicit default for
+these fields. A batch's `read_set` is optional and defaults to no dependencies;
+its canonical encoding omits an empty set.
 
 ## Atomic read dependencies
 
@@ -21,8 +22,8 @@ The supported JSON assertion forms are:
 ```json
 [
   {"kind":"snapshot","incarnation":"tenant-incarnation","policy_epoch":4,"schema_epoch":2},
-  {"kind":"document","collection":"sessions","id":"s1","expected":{"kind":"version","version":31}},
-  {"kind":"document","collection":"receipts","id":"command-1","expected":{"kind":"absent"}},
+  {"kind":"document","collection":"sessions","id":"s1","expected":{"version":31}},
+  {"kind":"document","collection":"receipts","id":"command-1","expected":"absent"},
   {"kind":"collection","collection":"approvals","data_epoch":29},
   {"kind":"before","not_after_ms":1788652800000},
   {"kind":"not_before","not_before_ms":1788652700000}

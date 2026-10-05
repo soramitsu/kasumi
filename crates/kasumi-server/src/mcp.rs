@@ -1,18 +1,21 @@
 //! MCP 2026-07-28 over the official Rust SDK's stateless HTTP transport.
+#[cfg(test)]
+use crate::api::encode_json;
 use crate::{
-    api::{DatabaseRegistry, MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES, encode_json},
+    api::{DatabaseRegistry, MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES, response_owner},
     auth::Authenticator,
 };
 use axum::{
     Json, Router,
-    body::{Body, to_bytes},
+    body::Body,
     extract::{Request, State},
     http::{HeaderValue, StatusCode, header::CONTENT_LENGTH},
     middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::get,
 };
-use hyper::body::Body as _;
+use http_body_util::BodyExt;
+use hyper::body::{Body as _, Bytes};
 use kasumi_types::{
     Action, Error, ErrorCode, MutationBatch, QueryRequest, RequestContext, validate_name,
 };
@@ -127,6 +130,7 @@ fn normalized_origin(text: &str) -> anyhow::Result<String> {
 struct Verified {
     context: RequestContext,
     mutation_dispatched: Arc<AtomicBool>,
+    source_output: Arc<Mutex<Option<response_owner::ReplyOwner>>>,
     response_fence: Arc<Mutex<Option<kasumi_engine::ResponseFence<'static>>>>,
     // A tool reply that could not be charged. The HTTP boundary replaces the
     // SDK body with a fixed-size rejection carrying this error.
@@ -137,6 +141,7 @@ impl Verified {
         Self {
             context,
             mutation_dispatched: Arc::new(AtomicBool::new(false)),
+            source_output: Arc::new(Mutex::new(None)),
             response_fence: Arc::new(Mutex::new(None)),
             withheld: Arc::new(Mutex::new(None)),
         }
@@ -206,6 +211,44 @@ impl Verified {
             }
         })
     }
+    fn retain_output<T: Send + Sync + 'static>(
+        &self,
+        value: kasumi_engine::AdmittedOutput<T>,
+    ) -> kasumi_types::Result<Arc<kasumi_engine::AdmittedOutput<T>>> {
+        self.retain_response_bytes(
+            response_owner::owner_bytes::<kasumi_engine::AdmittedOutput<T>>()?,
+            "MCP source output owner exceeds response workspace",
+        )?;
+        let mut retained = self
+            .source_output
+            .lock()
+            .map_err(|_| Error::new(ErrorCode::Unavailable, "MCP source ownership unavailable"))?;
+        if retained.is_some() {
+            return Err(Error::new(
+                ErrorCode::Unavailable,
+                "MCP source output already retained",
+            ));
+        }
+        let value = Arc::new(value);
+        *retained = Some(response_owner::ReplyOwner::new(value.clone()));
+        Ok(value)
+    }
+    fn take_source_output(&self) -> kasumi_types::Result<Option<response_owner::ReplyOwner>> {
+        Ok(self
+            .source_output
+            .lock()
+            .map_err(|_| Error::new(ErrorCode::Unavailable, "MCP source ownership unavailable"))?
+            .take())
+    }
+    fn encode_output(&self, value: &impl Serialize) -> kasumi_types::Result<Vec<u8>> {
+        let mut retained = self.response_fence.lock().map_err(|_| {
+            Error::new(ErrorCode::Unavailable, "MCP response workspace unavailable")
+        })?;
+        let fence = retained.as_mut().ok_or_else(|| {
+            Error::new(ErrorCode::Unavailable, "MCP response workspace unavailable")
+        })?;
+        response_owner::encode_json(value, fence)
+    }
     fn withhold(&self, error: Error) {
         // A poisoned slot still withholds; the boundary reports it unavailable.
         if let Ok(mut withheld) = self.withheld.lock() {
@@ -272,8 +315,17 @@ async fn authenticate(State(state): State<HttpAuth>, mut request: Request, next:
                         .ok()
                         .and_then(|mut gate| gate.take())
                 });
-            let response = next.run(request).await;
-            let fence = match invocation.take_response_fence() {
+            let mut owned = MaterializedReply {
+                response: next.run(request).await,
+                bytes: Bytes::new(),
+                source: None,
+                fence: None,
+            };
+            owned.source = match invocation.take_source_output() {
+                Ok(source) => source,
+                Err(error) => return rejected(&state, invocation.release_error(error)),
+            };
+            owned.fence = match invocation.take_response_fence() {
                 Ok(fence) => fence,
                 Err(error) => return rejected(&state, invocation.release_error(error)),
             };
@@ -283,7 +335,8 @@ async fn authenticate(State(state): State<HttpAuth>, mut request: Request, next:
                     return rejected(&state, invocation.release_error(error));
                 }
             }
-            if response
+            if owned
+                .response
                 .extensions()
                 .get::<TerminalTransportFailure>()
                 .is_some()
@@ -296,7 +349,7 @@ async fn authenticate(State(state): State<HttpAuth>, mut request: Request, next:
                     )),
                 );
             }
-            if response.status() == StatusCode::FORBIDDEN {
+            if owned.response.status() == StatusCode::FORBIDDEN {
                 let _ = state
                     .auth
                     .audit_result::<()>(
@@ -308,8 +361,8 @@ async fn authenticate(State(state): State<HttpAuth>, mut request: Request, next:
             // The SDK body may suspend even with an exact size hint. Own every
             // byte before the final fence, retaining the handler's original
             // policy epoch and admitted workspace across SDK serialization.
-            let response = match materialize_response(response).await {
-                Ok(response) => response,
+            let owned = match owned.materialize().await {
+                Ok(owned) => owned,
                 Err(error) => return rejected(&state, invocation.release_error(error)),
             };
             #[cfg(test)]
@@ -318,7 +371,7 @@ async fn authenticate(State(state): State<HttpAuth>, mut request: Request, next:
             }
             // Discovery and protocol errors have no database fence, but still
             // reuse the original credential deadline and live family guard.
-            let release = match &fence {
+            let release = match &owned.fence {
                 Some(fence) => fence.check(),
                 None => context.authorization.check_live(),
             };
@@ -326,78 +379,145 @@ async fn authenticate(State(state): State<HttpAuth>, mut request: Request, next:
             if let Err(error) = release {
                 return rejected(&state, invocation.release_error(error));
             }
-            response
+            match owned.into_response() {
+                Ok(response) => response,
+                Err(error) => rejected(&state, invocation.release_error(error)),
+            }
         }
         Err(error) => rejected(&state, error),
     }
 }
 
-async fn materialize_response(response: Response) -> kasumi_types::Result<Response> {
-    // rmcp may fall back to SSE after an intermediate handler message. No
-    // streaming response is supported, including one with a declared length.
-    let streaming = response
-        .headers()
-        .get_all("content-type")
-        .iter()
-        .any(|value| {
-            value.to_str().map_or(true, |value| {
-                value.split(';').next().is_some_and(|media_type| {
-                    media_type.trim().eq_ignore_ascii_case("text/event-stream")
+// The SDK body and its materialized copy must drop before the source and fence,
+// including while the materialization future is cancelled or unwinds.
+struct MaterializedReply {
+    response: Response,
+    bytes: Bytes,
+    source: Option<response_owner::ReplyOwner>,
+    fence: Option<kasumi_engine::ResponseFence<'static>>,
+}
+struct McpCustody {
+    _source: Option<response_owner::ReplyOwner>,
+    _fence: kasumi_engine::ResponseFence<'static>,
+}
+fn materialization_bytes(length: usize) -> kasumi_types::Result<u64> {
+    response_owner::allocation_bytes(length)?
+        .checked_add(response_owner::owner_bytes::<McpCustody>()?)
+        .ok_or_else(|| {
+            Error::new(
+                ErrorCode::ResourceExhausted,
+                "MCP output allocation overflow",
+            )
+        })
+}
+impl MaterializedReply {
+    async fn materialize(mut self) -> kasumi_types::Result<Self> {
+        let response = &self.response;
+        // rmcp may fall back to SSE after an intermediate handler message. No
+        // streaming response is supported, including one with a declared length.
+        let streaming = response
+            .headers()
+            .get_all("content-type")
+            .iter()
+            .any(|value| {
+                value.to_str().map_or(true, |value| {
+                    value.split(';').next().is_some_and(|media_type| {
+                        media_type.trim().eq_ignore_ascii_case("text/event-stream")
+                    })
                 })
-            })
-        });
-    let length = response.body().size_hint().exact();
-    if streaming || length.is_none() {
-        return Err(Error::new(
-            ErrorCode::Unavailable,
-            "MCP requires a terminal response before release",
-        ));
+            });
+        let length = response.body().size_hint().exact();
+        if streaming || length.is_none() {
+            return Err(Error::new(
+                ErrorCode::Unavailable,
+                "MCP requires a terminal response before release",
+            ));
+        }
+        if length.is_some_and(|length| length > MAX_RESPONSE_BYTES as u64) {
+            return Err(Error::new(
+                ErrorCode::ResourceExhausted,
+                "MCP response exceeds byte limit",
+            ));
+        }
+        // An explicit wire length is part of the terminal response. Reject a
+        // conflicting or ambiguous value before the final credential check, since
+        // HTTP framing could otherwise truncate a fully materialized body.
+        let mut declared_lengths = response.headers().get_all(CONTENT_LENGTH).iter();
+        if let Some(declared) = declared_lengths.next()
+            && (declared_lengths.next().is_some()
+                || declared
+                    .to_str()
+                    .ok()
+                    .and_then(|value| value.parse::<u64>().ok())
+                    != length)
+        {
+            return Err(Error::new(
+                ErrorCode::Unavailable,
+                "MCP terminal response content length conflicts with body",
+            ));
+        }
+        let length = length.expect("checked terminal length") as usize;
+        if let Some(fence) = &mut self.fence {
+            fence.retain_response_bytes(materialization_bytes(length)?)?;
+        }
+        // A terminal body can still contain many frames. Copy into one pre-admitted
+        // exact-capacity buffer instead of collecting an unbounded frame directory.
+        let mut bytes = Vec::with_capacity(length);
+        let mut body = std::mem::replace(self.response.body_mut(), Body::empty());
+        while let Some(frame) = body.frame().await {
+            let frame = frame.map_err(|_| {
+                Error::new(
+                    ErrorCode::Unavailable,
+                    "MCP terminal response could not be materialized",
+                )
+            })?;
+            if let Ok(data) = frame.into_data() {
+                if data.len() > MAX_RESPONSE_BYTES - bytes.len() {
+                    return Err(Error::new(
+                        ErrorCode::ResourceExhausted,
+                        "MCP response exceeds byte limit",
+                    ));
+                }
+                if data.len() > length - bytes.len() {
+                    return Err(Error::new(
+                        ErrorCode::Unavailable,
+                        "MCP terminal response length changed during materialization",
+                    ));
+                }
+                bytes.extend_from_slice(&data);
+            }
+        }
+        if bytes.len() != length {
+            return Err(Error::new(
+                ErrorCode::Unavailable,
+                "MCP terminal response length changed during materialization",
+            ));
+        }
+        self.bytes = Bytes::from(bytes);
+        Ok(self)
     }
-    if length.is_some_and(|length| length > MAX_RESPONSE_BYTES as u64) {
-        return Err(Error::new(
-            ErrorCode::ResourceExhausted,
-            "MCP response exceeds byte limit",
-        ));
+    fn into_response(mut self) -> kasumi_types::Result<Response> {
+        let bytes = std::mem::take(&mut self.bytes);
+        let bytes = match self.fence.take() {
+            Some(fence) => {
+                let owner = response_owner::ReplyOwner::new(McpCustody {
+                    _source: self.source.take(),
+                    _fence: fence,
+                });
+                self.response.extensions_mut().insert(owner.clone());
+                response_owner::owned_bytes(bytes, owner)
+            }
+            None if self.source.is_some() => {
+                return Err(Error::new(
+                    ErrorCode::Unavailable,
+                    "MCP source output lost its response fence",
+                ));
+            }
+            None => bytes,
+        };
+        *self.response.body_mut() = Body::from(bytes);
+        Ok(self.response)
     }
-    // An explicit wire length is part of the terminal response. Reject a
-    // conflicting or ambiguous value before the final credential check, since
-    // HTTP framing could otherwise truncate a fully materialized body.
-    let mut declared_lengths = response.headers().get_all(CONTENT_LENGTH).iter();
-    if let Some(declared) = declared_lengths.next()
-        && (declared_lengths.next().is_some()
-            || declared
-                .to_str()
-                .ok()
-                .and_then(|value| value.parse::<u64>().ok())
-                != length)
-    {
-        return Err(Error::new(
-            ErrorCode::Unavailable,
-            "MCP terminal response content length conflicts with body",
-        ));
-    }
-    let (parts, body) = response.into_parts();
-    let bytes = to_bytes(body, MAX_RESPONSE_BYTES).await.map_err(|error| {
-        use std::error::Error as _;
-        let exceeded = error
-            .source()
-            .is_some_and(|source| source.is::<http_body_util::LengthLimitError>());
-        Error::new(
-            if exceeded {
-                ErrorCode::ResourceExhausted
-            } else {
-                ErrorCode::Unavailable
-            },
-            "MCP terminal response could not be materialized",
-        )
-    })?;
-    if length != Some(bytes.len() as u64) {
-        return Err(Error::new(
-            ErrorCode::Unavailable,
-            "MCP terminal response length changed during materialization",
-        ));
-    }
-    Ok(Response::from_parts(parts, Body::from(bytes)))
 }
 
 fn rejected(state: &HttpAuth, error: Error) -> Response {
@@ -429,14 +549,20 @@ pub fn router(
 ) -> anyhow::Result<Router> {
     config.validate()?;
     let metadata = auth.protected_resource_metadata(&config.public_url);
-    let resource = resource_url(&config.public_url)?;
-    let metadata_url = format!(
-        "{}/.well-known/oauth-protected-resource/mcp",
-        resource.origin().ascii_serialization()
-    );
+    let challenge = match &metadata {
+        Some(_) => {
+            let resource = resource_url(&config.public_url)?;
+            let metadata_url = format!(
+                "{}/.well-known/oauth-protected-resource/mcp",
+                resource.origin().ascii_serialization()
+            );
+            HeaderValue::from_str(&format!("Bearer resource_metadata=\"{metadata_url}\""))?
+        }
+        None => HeaderValue::from_static("Bearer"),
+    };
     let state = HttpAuth {
         auth,
-        challenge: HeaderValue::from_str(&format!("Bearer resource_metadata=\"{metadata_url}\""))?,
+        challenge,
         origins: config
             .allowed_origins
             .iter()
@@ -465,6 +591,9 @@ pub fn router(
     let protected = Router::new()
         .route_service("/mcp", service)
         .route_layer(middleware::from_fn_with_state(state, authenticate));
+    let Some(metadata) = metadata else {
+        return Ok(protected);
+    };
     let metadata_again = metadata.clone();
     Ok(protected
         .route(
@@ -508,12 +637,17 @@ struct ReceiptArguments {
 struct EmptyArguments {}
 
 fn arguments<T: serde::de::DeserializeOwned>(value: Value) -> kasumi_types::Result<T> {
-    serde_json::from_value(value)
-        .map_err(|_| Error::new(ErrorCode::InvalidArgument, "invalid tool arguments"))
+    // Agents correct their own arguments from this bounded parser reason.
+    serde_json::from_value(value).map_err(|error| {
+        Error::new(
+            ErrorCode::InvalidArgument,
+            format!("invalid tool arguments: {error}"),
+        )
+    })
 }
 fn output(invocation: &Verified, value: &impl Serialize) -> kasumi_types::Result<Value> {
     // Bound the structured data before constructing the final protocol envelope.
-    let bytes = encode_json(value)?;
+    let bytes = invocation.encode_output(value)?;
     // Small scalars take far more memory as a Value tree than as JSON text.
     // Charge the whole tree before decoding any of it.
     invocation.retain_response_bytes(
@@ -785,14 +919,18 @@ impl KasumiMcp {
                 let args: GetArguments = arguments(args)?;
                 validate_name(&args.collection)?;
                 validate_name(&args.id)?;
-                output(
-                    invocation,
-                    &db.get(&context, &args.collection, &args.id).await?,
-                )
+                match db.get(&context, &args.collection, &args.id).await? {
+                    Some(document) => {
+                        let result = invocation.retain_output(document)?;
+                        output(invocation, result.as_ref())
+                    }
+                    None => output(invocation, &Value::Null),
+                }
             }
             "kasumi_query" => {
                 let args: QueryRequest = arguments(args)?;
-                output(invocation, &db.query(&context, args).await?)
+                let result = invocation.retain_output(db.query(&context, args).await?)?;
+                output(invocation, result.as_ref())
             }
             "kasumi_mutate" => {
                 let args: MutationBatch = arguments(args)?;
@@ -833,7 +971,7 @@ impl ServerHandler for KasumiMcp {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_protocol_version(ProtocolVersion::V_2026_07_28)
             .with_server_info(Implementation::new("kasumi", env!("CARGO_PKG_VERSION")))
-            .with_instructions("Use collection discovery, exact JSON queries, and atomic idempotent mutations. Identity and tenant are determined by the access token. Administration uses the separate native admin service.")
+            .with_instructions("Call kasumi_collections first to learn schemas and indexed fields. Query with JSON Pointer filters such as {\"/status\":\"open\"}; write with atomic, idempotent kasumi_mutate batches. Identity and tenant come from the access token. Administration uses the separate native admin service.")
     }
     fn get_tool(&self, name: &str) -> Option<Tool> {
         tools().iter().find(|tool| tool.name == name).cloned()
@@ -963,25 +1101,54 @@ fn tools() -> &'static Vec<Tool> {
     static TOOLS: OnceLock<Vec<Tool>> = OnceLock::new();
     TOOLS.get_or_init(|| {
         let name = json!({"type":"string","minLength":1,"maxLength":256});
-        let pointer = json!({"type":"string","maxLength":1024,"description":"JSON Pointer; number fields use exact JSON numbers, decimal fields use decimal strings"});
+        let pointer = json!({"type":"string","pattern":"^/","maxLength":1024,"description":"JSON Pointer such as /amount or /customer/name. Number fields take exact JSON numbers; decimal fields take decimal strings"});
         let scalar = json!({"type":["string","number","boolean","null"]});
-        let predicate_ref = json!({"$ref":"#/$defs/predicate"});
-        let mut alternatives = vec![object(json!({"op":{"const":"all"}}), json!(["op"]))];
-        for op in ["eq","contains"] { alternatives.push(object(json!({"op":{"const":op},"field":pointer,"value":scalar}),json!(["op","field","value"]))); }
-        alternatives.push(object(json!({"op":{"const":"in"},"field":pointer,"values":{"type":"array","items":scalar,"maxItems":256}}),json!(["op","field","values"])));
-        alternatives.push(object(json!({"op":{"const":"compare"},"field":pointer,"comparison":{"enum":["lt","lte","gt","gte"]},"value":scalar}),json!(["op","field","comparison","value"])));
-        alternatives.push(object(json!({"op":{"const":"exists"},"field":pointer,"exists":{"type":"boolean"}}),json!(["op","field","exists"])));
-        for op in ["and","or"] { alternatives.push(object(json!({"op":{"const":op},"predicates":{"type":"array","items":predicate_ref,"maxItems":256}}),json!(["op","predicates"]))); }
-        alternatives.push(object(json!({"op":{"const":"not"},"predicate":predicate_ref}),json!(["op","predicate"])));
-        let sort = object(json!({"field":pointer,"direction":{"enum":["asc","desc"]}}),json!(["field","direction"]));
-        let aggregate = object(json!({"alias":name,"function":{"enum":["count","sum","min","max","avg"]},"field":pointer,"scale":{"type":"integer","minimum":0,"maximum":1000}}),json!(["alias","function"]));
-        let text = object(json!({"index":name,"query":{"type":"string","maxLength":4096},"mode":{"enum":["terms","phrase","prefix","fuzzy"]},"distance":{"type":"integer","minimum":0,"maximum":2,"default":1}}),json!(["index","query","mode"]));
-        let mut query = object(json!({"collection":name,"filter":predicate_ref,"sort":{"type":"array","items":sort,"maxItems":8},"projection":{"type":"array","items":pointer,"maxItems":64},"aggregates":{"type":"array","items":aggregate,"maxItems":16},"group_by":{"type":"array","items":pointer,"maxItems":8},"text":text,"limit":{"type":"integer","minimum":1,"maximum":1000,"default":100},"cursor":{"type":"string"},"allow_scan":{"type":"boolean","default":false}}),json!(["collection"]));
-        query["$defs"] = json!({"predicate":{"oneOf":alternatives}});
-        let precondition = json!({"oneOf":[object(json!({"kind":{"enum":["any","absent"]}}),json!(["kind"])),object(json!({"kind":{"const":"version"},"version":{"type":"integer","minimum":0}}),json!(["kind","version"]))]});
+        let values = json!({"type":"array","items":scalar,"maxItems":kasumi_types::MAX_FILTER_IN_VALUES});
+        let mut operators = object(
+            json!({"eq":scalar,"ne":scalar,"gt":scalar,"gte":scalar,"lt":scalar,"lte":scalar,
+                "in":values,"nin":values,"exists":{"type":"boolean"},"contains":scalar}),
+            json!([]),
+        );
+        operators["minProperties"] = json!(1);
+        let filter_ref = json!({"$ref":"#/$defs/filter"});
+        let filters = json!({"type":"array","minItems":1,"maxItems":256,"items":filter_ref});
+        let filter = json!({
+            "type":"object",
+            "description":"Every entry must match. Keys starting with / are fields: map one to a value for equality, or to operators (eq, ne, gt, gte, lt, lte, in, nin, exists, contains). and/or take lists of filters; not takes one filter. ne and nin also match absent fields. Example: {\"/status\":\"open\",\"/amount\":{\"gte\":10,\"lt\":100}}",
+            "patternProperties":{"^/":{"anyOf":[scalar,operators]}},
+            "properties":{"and":filters,"or":filters,"not":filter_ref},
+            "additionalProperties":false
+        });
+        let sort = json!({"type":"string","pattern":"^-?/","maxLength":1025,"description":"JSON Pointer, prefixed with - for descending order, e.g. -/amount"});
+        let count = json!({"type":"string","maxLength":1024,"description":"* counts matching documents; a JSON Pointer counts non-null values","anyOf":[{"const":"*"},{"pattern":"^/"}]});
+        let mut aggregates = vec![object(json!({"count":count}),json!(["count"]))];
+        for function in ["sum","min","max"] {
+            aggregates.push(object(json!({function:pointer}),json!([function])));
+        }
+        aggregates.push(object(json!({"avg":pointer,"scale":{"type":"integer","minimum":0,"maximum":1000}}),json!(["avg","scale"])));
+        let aggregate = json!({"type":"object","maxProperties":16,"propertyNames":name,"additionalProperties":{"oneOf":aggregates},
+            "description":"Named aggregates; the query then returns groups instead of rows. Example: {\"total\":{\"sum\":\"/amount\"},\"n\":{\"count\":\"*\"}}"});
+        let search = object(json!({"index":name,"query":{"type":"string","maxLength":4096},"mode":{"enum":["terms","phrase","prefix","fuzzy"],"default":"terms"},"distance":{"type":"integer","minimum":0,"maximum":2,"description":"fuzzy mode only; default 1"}}),json!(["index","query"]));
+        let mut query = object(json!({
+            "collection":name,
+            "filter":filter_ref,
+            "search":search,
+            "sort":{"type":"array","items":sort,"maxItems":8},
+            "select":{"type":"array","items":pointer,"maxItems":64,"description":"Return only these fields, keeping their nesting"},
+            "group_by":{"type":"array","items":pointer,"maxItems":8},
+            "aggregate":aggregate,
+            "limit":{"type":"integer","minimum":1,"maximum":1000,"default":100},
+            "cursor":{"type":"string","description":"From the previous page; resubmit the otherwise identical query"},
+            "paging":{"enum":["snapshot","seek"],"default":"snapshot","description":"snapshot: every page reads the first page's snapshot; cursors expire after about a minute and results are size-bounded. seek: walk a unique index without limits; the filter fixes its leading fields with equality (plus one range on the next field) and sort lists the rest"},
+            "allow_scan":{"type":"boolean","default":false,"description":"Permit fields without a declared index; scans are bounded and slower"}
+        }),json!(["collection"]));
+        query["$defs"] = json!({"filter":filter});
+        let precondition = json!({"oneOf":[{"enum":["any","absent"]},object(json!({"version":{"type":"integer","minimum":0}}),json!(["version"]))],
+            "description":"Expected current state: any (default), absent, or {\"version\":n}"});
         let put = object(json!({"op":{"const":"put"},"collection":name,"id":name,"body":{"type":"object"},"expected":precondition}),json!(["op","collection","id","body"]));
+        let patch = object(json!({"op":{"const":"patch"},"collection":name,"id":name,"patch":{"type":"object","description":"RFC 7396 JSON Merge Patch for an existing document: null removes a member, objects merge"},"expected":precondition}),json!(["op","collection","id","patch"]));
         let delete = object(json!({"op":{"const":"delete"},"collection":name,"id":name,"expected":precondition}),json!(["op","collection","id"]));
-        let read_expected = json!({"oneOf":[object(json!({"kind":{"const":"absent"}}),json!(["kind"])),object(json!({"kind":{"const":"version"},"version":{"type":"integer","minimum":0}}),json!(["kind","version"]))]});
+        let read_expected = json!({"oneOf":[{"const":"absent"},object(json!({"version":{"type":"integer","minimum":0}}),json!(["version"]))]});
         let read_assertion = json!({"oneOf":[
             object(json!({"kind":{"const":"before"},"not_after_ms":{"type":"integer","minimum":0}}),json!(["kind","not_after_ms"])),
             object(json!({"kind":{"const":"not_before"},"not_before_ms":{"type":"integer","minimum":0}}),json!(["kind","not_before_ms"])),
@@ -989,12 +1156,12 @@ fn tools() -> &'static Vec<Tool> {
             object(json!({"kind":{"const":"document"},"collection":name,"id":name,"expected":read_expected}),json!(["kind","collection","id","expected"])),
             object(json!({"kind":{"const":"collection"},"collection":name,"data_epoch":{"type":"integer","minimum":0}}),json!(["kind","collection","data_epoch"]))
         ]});
-        let mutate = object(json!({"idempotency_key":name,"read_set":{"type":"array","maxItems":512,"items":read_assertion},"operations":{"type":"array","minItems":1,"maxItems":256,"items":{"oneOf":[put,delete]}}}),json!(["idempotency_key","read_set","operations"]));
+        let mutate = object(json!({"idempotency_key":name,"read_set":{"type":"array","maxItems":512,"items":read_assertion},"operations":{"type":"array","minItems":1,"maxItems":256,"items":{"oneOf":[put,patch,delete]}}}),json!(["idempotency_key","operations"]));
         vec![
-            make_tool("kasumi_collections","Discover authorized collection schemas and declared indexes.",object(json!({}),json!([])),true),
-            make_tool("kasumi_get","Read one document by collection/id after a read barrier.",object(json!({"collection":name,"id":name}),json!(["collection","id"])),true),
-            make_tool("kasumi_query","Query an immutable snapshot. Use declared typed JSON Pointer fields; averages require a scale. Continue pages with the same query and returned cursor.",query,true),
-            make_tool("kasumi_mutate","Apply one atomic tenant batch with schema, CAS, uniqueness and quotas. Reuse the same idempotency key and identical batch after UNKNOWN_OUTCOME.",mutate,false),
+            make_tool("kasumi_collections","Discover authorized collections, their JSON schemas and declared indexes. Filter, sort and group on indexed fields.",object(json!({}),json!([])),true),
+            make_tool("kasumi_get","Read one document by collection and id after a read barrier. Returns null when the document does not exist.",object(json!({"collection":name,"id":name}),json!(["collection","id"])),true),
+            make_tool("kasumi_query","Query one collection. filter: {\"/status\":\"open\",\"/amount\":{\"gte\":10}}, combined with and/or/not. sort: [\"-/amount\"]. select returns only the listed fields. aggregate returns groups instead of rows, optionally with group_by. Fields need declared indexes unless allow_scan is true. For the next page, resubmit the identical query with the returned cursor.",query,true),
+            make_tool("kasumi_mutate","Apply one atomic, idempotent tenant batch with schema, CAS, uniqueness and quota checks. Use put with expected \"absent\" to create, patch to change some fields, and {\"version\":n} to update safely. After UNKNOWN_OUTCOME, retry the identical batch with the same idempotency key.",mutate,false),
             make_tool("kasumi_receipt","Resolve this principal's retained mutation receipt; null means no receipt is currently available.",object(json!({"idempotency_key":name}),json!(["idempotency_key"])),true),
         ]
     })
@@ -1062,6 +1229,18 @@ mod response_tests {
                 .unwrap()
                 .contains("90071992547409931234567890")
         );
+    }
+
+    #[test]
+    fn malformed_tool_arguments_explain_the_fix() {
+        let error = arguments::<QueryRequest>(json!({
+            "collection": "docs",
+            "filter": {"status": "open"}
+        }))
+        .unwrap_err();
+        assert_eq!(error.code, ErrorCode::InvalidArgument);
+        assert!(error.message.contains("`/status`"), "{}", error.message);
+        assert!(error.message.len() <= Error::MAX_MESSAGE_BYTES);
     }
 
     #[test]

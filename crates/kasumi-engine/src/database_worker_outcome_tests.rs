@@ -45,13 +45,13 @@ fn held_hook(
 struct Fixture {
     storage: crate::test_utils::FixtureStorage,
     path: PathBuf,
-    node: Arc<NodeStore>,
+    node: NodeStore,
     database: Arc<Database>,
     audit: Arc<SecurityAudit>,
     directory: tempfile::TempDir,
 }
 impl Fixture {
-    async fn new(name: &str) -> anyhow::Result<Self> {
+    async fn new(name: &str) -> crate::test_fixture_failure::FixtureResult<Self> {
         let directory = kasumi_store::test_utils::private_tempdir()?;
         let (persistent, scratch) = crate::test_utils::fixture_disk_configs(directory.path())?;
         let storage =
@@ -62,7 +62,7 @@ impl Fixture {
         directory: tempfile::TempDir,
         storage: crate::test_utils::FixtureStorage,
         name: &str,
-    ) -> anyhow::Result<Self> {
+    ) -> crate::test_fixture_failure::FixtureResult<Self> {
         let admission = storage.admission.clone();
         let path = directory.path().join("persistent/node.kv");
         let node = storage.create_new(&path, kasumi_store::test_utils::NODE_STORE_ID)?;
@@ -108,12 +108,19 @@ impl Fixture {
             Arc::new(LocalKeyProvider::new([73; 32])),
         )
         .await?;
-        stores.write_batch(
-            &[],
-            &kasumi_raft::initial_storage_identity(1, &format!("{name}/{incarnation}"))?,
+        let image = engine.logical_snapshot(store.scratch_disk())?;
+        crate::bootstrap::persist_fixture_bootstrap(
+            &stores,
+            &image,
+            1,
+            &format!("{name}/{incarnation}"),
         )?;
+        drop(engine);
+        let engine = Arc::new(TenantEngine::from_bootstrap(store.tenant(), &image)?);
+        engine.install_storage_access(&store)?;
+        engine.install_audit_maintenance(&admission)?;
         let database = construction::DatabaseConstruction::new(stores, audit.clone())?
-            .start_local(engine, 1, format!("{name}/{incarnation}"))
+            .start_local(engine, &image, 1, format!("{name}/{incarnation}"))
             .await?;
         database
             .group
@@ -139,7 +146,7 @@ impl Fixture {
         );
     }
 
-    async fn release(self) -> anyhow::Result<()> {
+    async fn release(self) -> crate::test_fixture_failure::FixtureResult<()> {
         self.audit.shutdown().await?;
         let name = self.database.store.tenant().to_owned();
         let weak = Arc::downgrade(&self.database);
@@ -178,7 +185,8 @@ async fn until(mut predicate: impl FnMut() -> bool) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn sealed_database_admission_preserves_raft_storage_until_shutdown() -> anyhow::Result<()> {
+async fn sealed_database_admission_preserves_raft_storage_until_shutdown()
+-> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new("tenant").await?;
     let database = &fixture.database;
     database.seal_admission();
@@ -194,15 +202,16 @@ async fn sealed_database_admission_preserves_raft_storage_until_shutdown() -> an
     assert_eq!(
         database
             .store()
-            .get("worker-test", b"after-admission-seal")?,
-        Some(b"durable".to_vec())
+            .get("worker-test", b"after-admission-seal")?
+            .as_deref(),
+        Some(b"durable".as_slice())
     );
 
     tokio::time::timeout(Duration::from_secs(10), database.shutdown()).await??;
     fixture.release().await
 }
 
-fn panic_issue(failure: &DrainFailure, component: &str) -> Arc<kasumi_types::drain::DrainIssue> {
+fn panic_issue(failure: &DrainFailure, component: &str) -> kasumi_types::drain::DrainIssueRef {
     let issue = failure
         .issues()
         .iter()
@@ -220,7 +229,7 @@ fn panic_issue(failure: &DrainFailure, component: &str) -> Arc<kasumi_types::dra
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn cancelled_database_drain_keeps_monitor_panic_before_pending_audit_child()
--> anyhow::Result<()> {
+-> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new("tenant").await?;
     let database = &fixture.database;
     let (hook, entered, mut release) = held_hook(false);
@@ -261,12 +270,12 @@ async fn cancelled_database_drain_keeps_monitor_panic_before_pending_audit_child
         .await?
         .unwrap_err();
     assert_eq!(failure.completion(), DrainCompletion::Complete);
-    assert!(Arc::ptr_eq(
+    assert!(kasumi_types::drain::DrainIssueRef::ptr_eq(
         &original,
         &panic_issue(&failure, "database retention check")
     ));
     let repeated = database.shutdown().await.unwrap_err();
-    assert!(Arc::ptr_eq(
+    assert!(kasumi_types::drain::DrainIssueRef::ptr_eq(
         &original,
         &panic_issue(&repeated, "database retention check")
     ));
@@ -275,7 +284,7 @@ async fn cancelled_database_drain_keeps_monitor_panic_before_pending_audit_child
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn aborted_database_monitor_retains_its_blocking_child_and_distinct_panic()
--> anyhow::Result<()> {
+-> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new("tenant").await?;
     let database = &fixture.database;
     let (hook, entered, mut release) = held_hook(true);
@@ -323,20 +332,21 @@ async fn aborted_database_monitor_retains_its_blocking_child_and_distinct_panic(
         failure
             .issues()
             .iter()
-            .any(|issue| Arc::ptr_eq(issue, &cancelled))
+            .any(|issue| kasumi_types::drain::DrainIssueRef::ptr_eq(issue, &cancelled))
     );
     let repeated = database.shutdown().await.unwrap_err();
     assert!(
         repeated
             .issues()
             .iter()
-            .any(|issue| Arc::ptr_eq(issue, &panic))
+            .any(|issue| kasumi_types::drain::DrainIssueRef::ptr_eq(issue, &panic))
     );
     fixture.release().await
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn database_audit_blocking_panic_is_terminal_and_retained() -> anyhow::Result<()> {
+async fn database_audit_blocking_panic_is_terminal_and_retained()
+-> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new("tenant").await?;
     let database = &fixture.database;
     *database.worker_test_hooks.audit.lock().unwrap() =
@@ -357,7 +367,7 @@ async fn database_audit_blocking_panic_is_terminal_and_retained() -> anyhow::Res
     assert_eq!(failure.completion(), DrainCompletion::Complete);
     let panic = panic_issue(&failure, "database audit preparation");
     let repeated = database.shutdown().await.unwrap_err();
-    assert!(Arc::ptr_eq(
+    assert!(kasumi_types::drain::DrainIssueRef::ptr_eq(
         &panic,
         &panic_issue(&repeated, "database audit preparation")
     ));
@@ -366,7 +376,7 @@ async fn database_audit_blocking_panic_is_terminal_and_retained() -> anyhow::Res
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn database_shutdown_cancels_undispatched_shared_permit_wait_before_other_tenant_drain()
--> anyhow::Result<()> {
+-> crate::test_fixture_failure::FixtureResult<()> {
     let blocked_directory = kasumi_store::test_utils::private_tempdir()?;
     let waiting_directory = kasumi_store::test_utils::private_tempdir()?;
     let (blocked_persistent, blocked_scratch) =
@@ -493,7 +503,7 @@ async fn database_shutdown_cancels_undispatched_shared_permit_wait_before_other_
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn cancelled_backup_producer_and_shutdown_waiter_keep_original_blocking_panic()
--> anyhow::Result<()> {
+-> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new("tenant").await?;
     let database = &fixture.database;
     database.backup_producers.prepare(database.admission())?;
@@ -536,7 +546,7 @@ async fn cancelled_backup_producer_and_shutdown_waiter_keep_original_blocking_pa
     assert_eq!(failure.completion(), DrainCompletion::Complete);
     let original = panic_issue(&failure, "background worker");
     let repeated = database.shutdown().await.unwrap_err();
-    assert!(Arc::ptr_eq(
+    assert!(kasumi_types::drain::DrainIssueRef::ptr_eq(
         &original,
         &panic_issue(&repeated, "background worker")
     ));
@@ -546,7 +556,7 @@ async fn cancelled_backup_producer_and_shutdown_waiter_keep_original_blocking_pa
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn admitted_full_backup_cancelled_caller_retains_exact_state_stream_producer_until_release()
--> anyhow::Result<()> {
+-> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new("tenant").await?;
     let database = &fixture.database;
     let destination = Arc::new(FilesystemBackupDestination::new(
@@ -573,7 +583,7 @@ async fn admitted_full_backup_cancelled_caller_retains_exact_state_stream_produc
         held.recv_timeout(Duration::from_secs(30))
             .expect("state stream test release");
     }));
-    let caller = tokio::spawn({
+    let mut caller = tokio::spawn({
         let database = Arc::clone(database);
         let destination = Arc::clone(&destination);
         let context = context.clone();
@@ -583,22 +593,83 @@ async fn admitted_full_backup_cancelled_caller_retains_exact_state_stream_produc
                 .await
         }
     });
-    tokio::time::timeout(Duration::from_secs(15), waiting).await??;
+    anyhow::Context::context(
+        tokio::time::timeout(Duration::from_secs(15), async {
+            tokio::select! {
+                result = waiting => result.map_err(anyhow::Error::from),
+                result = &mut caller => {
+                    let original = database.group.try_with_retained_apply_report(|report| {
+                        match report {
+                            kasumi_raft::RetainedApplyReport::Single(error) => format!("{error:#}"),
+                            kasumi_raft::RetainedApplyReport::Preparation { original, publication, response, violation } => {
+                                format!("preparation original: {original:#}; independent publication: {publication:?}; response bytes: {:?}; response retirement: {:?}; violation: {violation:?}",
+                                    response.map(|value| value.data.len()), response.map(|value| value.retirement.is_some()))
+                            },
+                            kasumi_raft::RetainedApplyReport::Ordinary(report) => {
+                                let mut text = format!("ordinary apply {} {:?}", report.ordinal, report.violation);
+                                if let Some(error) = report.single {
+                                    use std::fmt::Write as _;
+                                    let _ = write!(&mut text, "; prior single: {error:#}");
+                                }
+                                if report.wake_panic.is_some() {
+                                    text.push_str("; wake: original panic retained");
+                                }
+                                for (phase, observation) in [
+                                    ("sink", report.sink), ("action", report.action),
+                                    ("backend", report.backend), ("finish", report.finish),
+                                    ("cleanup", report.cleanup), ("drain", report.drain),
+                                ] {
+                                    use std::fmt::Write as _;
+                                    match observation {
+                                        kasumi_raft::ApplyObservationRef::Creation(original) => {
+                                            let _ = write!(&mut text, "; {phase}: original creation {original:#}");
+                                        }
+                                        kasumi_raft::ApplyObservationRef::AdmissionRefused(reason) => {
+                                            let _ = write!(&mut text, "; {phase}: admission refused {reason:?}");
+                                        }
+                                        kasumi_raft::ApplyObservationRef::Error(error) => {
+                                            let _ = write!(&mut text, "; {phase}: {error:#}");
+                                        }
+                                        kasumi_raft::ApplyObservationRef::Unwound(_) => {
+                                            let _ = write!(&mut text, "; {phase}: original panic retained");
+                                        }
+                                        kasumi_raft::ApplyObservationRef::Refused(reason) => {
+                                            let _ = write!(&mut text, "; {phase}: {reason:?}");
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                                text
+                            }
+                        }
+                    });
+                    Err(anyhow::anyhow!(
+                        "backup caller completed before the actual state-stream producer entered: {result:?}; retained original apply failure: {original:?}"
+                    ))
+                },
+            }
+        })
+        .await,
+        "waiting for actual backup state-stream producer entry",
+    )??;
     let pending = database
         .backup_session(&context, destination.as_ref(), session_id)
         .await?
         .expect("producer starts only after authenticated intent readback");
     assert_eq!(pending.intent().session_id, session_id);
     assert!(pending.outcome().is_none());
-    let worker = tokio::time::timeout(Duration::from_secs(5), async {
-        loop {
-            if let Some(worker) = database.backup_producers.test_worker_if_started(0) {
-                break worker;
+    let worker = anyhow::Context::context(
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if let Some(worker) = database.backup_producers.test_worker_if_started(0) {
+                    break worker;
+                }
+                tokio::task::yield_now().await;
             }
-            tokio::task::yield_now().await;
-        }
-    })
-    .await?;
+        })
+        .await,
+        "waiting for original backup producer registry slot",
+    )?;
     assert!(!worker.is_closed());
     caller.abort();
     assert!(caller.await.unwrap_err().is_cancelled());
@@ -619,7 +690,10 @@ async fn admitted_full_backup_cancelled_caller_retains_exact_state_stream_produc
     );
     fixture.assert_exclusive();
     release.release();
-    tokio::time::timeout(Duration::from_secs(30), database.shutdown()).await??;
+    anyhow::Context::context(
+        tokio::time::timeout(Duration::from_secs(30), database.shutdown()).await,
+        "draining database after actual backup producer release",
+    )??;
     assert!(worker.observed().is_some_and(|result| result.is_ok()));
     drop(worker);
     drop(destination);

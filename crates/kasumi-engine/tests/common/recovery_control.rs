@@ -2,6 +2,8 @@
 //! are explicit cryptographic fixtures; encrypted target execution is covered
 //! separately by the authority materialization tests.
 use super::*;
+#[path = "recovery_resolution_diagnostic.rs"]
+mod resolution_diagnostic;
 
 fn request(f: &Fixture) -> RecoveryStart {
     let intent = f.intent(
@@ -2296,9 +2298,13 @@ async fn resolve_phase_with_prior(
 ) -> kasumi_engine::VerifiedRecoveryStatus {
     let context = f.context("owner");
     let mut consumed_synthetic_attempt = consumed_prior;
+    let mut diagnostic = resolution_diagnostic::Progress::default();
     tokio::time::timeout(Duration::from_secs(10), async {
         loop {
+            diagnostic.enter(resolution_diagnostic::Stage::Leader);
             let db = f.leader().await;
+            diagnostic.selected(&db);
+            diagnostic.enter(resolution_diagnostic::Stage::PhaseRead);
             let observed = match db
                 .recovery_phase(context.clone(), operation, phase_id)
                 .await
@@ -2310,6 +2316,7 @@ async fn resolve_phase_with_prior(
                         ErrorCode::UnknownOutcome | ErrorCode::Unavailable
                     ) =>
                 {
+                    diagnostic.uncertain(error);
                     continue;
                 }
                 Err(error) => panic!("original recovery phase unavailable: {error:?}"),
@@ -2320,6 +2327,7 @@ async fn resolve_phase_with_prior(
             } else {
                 false
             };
+            diagnostic.observed(resolved);
             // These Control-only fixtures fabricate issuer, retirement, and
             // initial target acknowledgements. A retained marker alone never
             // grants permission to synthesize a response after ambiguity.
@@ -2354,6 +2362,7 @@ async fn resolve_phase_with_prior(
                         "consumed synthetic effect marker vanished from Control"
                     );
                     drop(observed);
+                    diagnostic.enter(resolution_diagnostic::Stage::SyntheticEffect);
                     let attempt = consume_fixture_effect(f, operation, phase_id, effect).await;
                     consumed_synthetic_attempt = Some((effect, attempt));
                     continue;
@@ -2378,8 +2387,10 @@ async fn resolve_phase_with_prior(
             }
             drop(observed);
             let result = if resolved {
+                diagnostic.enter(resolution_diagnostic::Stage::StatusRead);
                 db.recovery_status(context.clone(), operation).await
             } else {
+                diagnostic.enter(resolution_diagnostic::Stage::ResolveWrite);
                 db.resolve_recovery_dispatch(context.clone(), operation, phase_id, outcome.clone())
                     .await
             };
@@ -2389,13 +2400,16 @@ async fn resolve_phase_with_prior(
                     if matches!(
                         error.code,
                         ErrorCode::UnknownOutcome | ErrorCode::Unavailable
-                    ) => {}
+                    ) =>
+                {
+                    diagnostic.uncertain(error)
+                }
                 Err(error) => panic!("original recovery outcome rejected: {error:?}"),
             }
         }
     })
     .await
-    .expect("original recovery phase outcome did not resolve")
+    .unwrap_or_else(|elapsed| diagnostic.fail(f, operation, phase_id, &outcome, elapsed))
 }
 async fn commit_next_intent(f: &Fixture, db: &Arc<Database>, operation: Uuid) -> LifecycleIntent {
     let (phase_id, input) = prepare_next(f, db, operation).await;

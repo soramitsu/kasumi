@@ -116,7 +116,7 @@ impl Ticket {
 }
 
 pub(super) async fn open(
-    node: Arc<NodeStore>,
+    node: NodeStore,
     tenant: String,
     custody_provider: Arc<dyn KeyProvider>,
     application: Option<Application>,
@@ -126,8 +126,13 @@ pub(super) async fn open(
         access.validate_tenant(&tenant)?;
     }
     let (send, receive) = oneshot::channel();
-    let mut tasks = node.initializers.lock().await;
-    tasks.reap_finished().await?;
+    let mut tasks = node.body().initializers.lock().await;
+    if !tasks.reap_finished().await {
+        return Err(crate::InitializerDrainObservation {
+            opening_id: node.opening.id(),
+        }
+        .into());
+    }
     let owner = node.clone();
     tasks.handles.push(tokio::spawn(async move {
         let outcome = prepare(owner, tenant, custody_provider, application, &send).await;
@@ -171,7 +176,7 @@ async fn deliver(outcome: Result<Prepared>, send: oneshot::Sender<Ticket>) -> Re
 }
 
 async fn select(
-    node: Arc<NodeStore>,
+    node: NodeStore,
     tenant: String,
     provider: Arc<dyn KeyProvider>,
     access: StorageAccess,
@@ -240,7 +245,7 @@ async fn select(
 }
 
 async fn prepare(
-    node: Arc<NodeStore>,
+    node: NodeStore,
     tenant: String,
     custody_provider: Arc<dyn KeyProvider>,
     application_input: Option<Application>,
@@ -248,7 +253,7 @@ async fn prepare(
 ) -> Result<Prepared> {
     let custody_name = CustodyStore::catalog_name(&tenant);
     let (custody_gate, application_gate) = {
-        let mut registry = node.tenants.lock().await;
+        let mut registry = node.body().tenants.lock().await;
         let custody = registry.entry(custody_name.clone()).or_default().clone();
         let application = application_input
             .as_ref()

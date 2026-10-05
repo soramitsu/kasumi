@@ -3,6 +3,83 @@ use kasumi_store::FileKeyProvider;
 use std::future::Future;
 use uuid::Uuid;
 
+fn group_image(path: &Path) -> Result<BTreeMap<std::ffi::OsString, Vec<u8>>> {
+    std::fs::read_dir(path)?
+        .map(|entry| {
+            let entry = entry?;
+            ensure!(
+                entry.file_type()?.is_file(),
+                "fixture group has a foreign entry"
+            );
+            Ok((entry.file_name(), std::fs::read(entry.path())?))
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn runtime_verifier_rejects_legacy_file_and_symlink_before_worker_admission() {
+    let fixture = Fixture::new();
+    let persistent = fixture.persistent().unwrap();
+    let scratch = fixture.scratch().unwrap();
+    let admission = fixture.admission().unwrap();
+    let originals = fixture
+        .input
+        .verifier
+        .node_start_inventory(&admission)
+        .unwrap();
+    let before = admission.snapshot().reserved_bytes;
+    let path = &fixture.input.verifier.database_path;
+    private_files::create(path, b"obsolete single-file verifier").unwrap();
+    let domain = fixture.manifest.signing_domain(0).unwrap();
+    let result = fixture
+        .input
+        .verifier
+        .open(
+            BTreeMap::from([(domain.digest().unwrap(), domain.clone())]),
+            Arc::new(file_secret),
+            persistent.clone(),
+            scratch.clone(),
+            admission.clone(),
+            &originals,
+        )
+        .await;
+    assert!(result.is_err());
+    assert_eq!(
+        std::fs::read(path).unwrap(),
+        b"obsolete single-file verifier"
+    );
+    assert_eq!(admission.snapshot().reserved_bytes, before);
+    std::fs::remove_file(path).unwrap();
+    let actual = fixture._directory.path().join("uninstalled-group");
+    private_files::create_directory(&actual).unwrap();
+    std::os::unix::fs::symlink(&actual, path).unwrap();
+    let result = fixture
+        .input
+        .verifier
+        .open(
+            BTreeMap::from([(domain.digest().unwrap(), domain)]),
+            Arc::new(file_secret),
+            persistent.clone(),
+            scratch,
+            admission.clone(),
+            &originals,
+        )
+        .await;
+    assert!(result.is_err());
+    assert!(
+        std::fs::symlink_metadata(path)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    assert_eq!(admission.snapshot().reserved_bytes, before);
+    assert_eq!(
+        persistent.snapshot().phase,
+        kasumi_store::NodeDiskPhase::Open
+    );
+    std::fs::remove_file(path).unwrap();
+}
+
 #[tokio::test]
 async fn complete_domain_worker_budget_is_reserved_before_verifier_storage_open() {
     let fixture = Fixture::with_policy(kasumi_engine::admission::AdmissionConfig {
@@ -10,13 +87,18 @@ async fn complete_domain_worker_budget_is_reserved_before_verifier_storage_open(
         ..Default::default()
     });
     fixture.initialize().await.unwrap();
-    let before = std::fs::read(&fixture.input.verifier.database_path).unwrap();
+    let before = group_image(&fixture.input.verifier.database_path).unwrap();
     // Reuse the exact installed disk/core identity. A real resident reservation
     // leaves the original 1024-byte rejection boundary without spending the
     // only operation slot or substituting another governor.
     let persistent = fixture.persistent().unwrap();
     let scratch = fixture.scratch().unwrap();
     let admission = fixture.admission().unwrap();
+    let originals = fixture
+        .input
+        .verifier
+        .node_start_inventory(&admission)
+        .unwrap();
     let baseline = admission.snapshot().reserved_bytes;
     let cap = fixture.input.admission.max_inflight_bytes.unwrap();
     let held = admission
@@ -40,12 +122,13 @@ async fn complete_domain_worker_budget_is_reserved_before_verifier_storage_open(
                 persistent.clone(),
                 scratch.clone(),
                 admission.clone(),
+                &originals,
             )
             .await
             .is_err()
     );
     assert_eq!(
-        std::fs::read(&fixture.input.verifier.database_path).unwrap(),
+        group_image(&fixture.input.verifier.database_path).unwrap(),
         before
     );
     assert_eq!(cap - admission.snapshot().reserved_bytes, 1024);
@@ -61,6 +144,7 @@ async fn complete_domain_worker_budget_is_reserved_before_verifier_storage_open(
             persistent.clone(),
             scratch.clone(),
             admission.clone(),
+            &originals,
         )
         .await
         .unwrap();
@@ -207,6 +291,7 @@ impl Fixture {
             directory: directory.path().join("scratch"),
             max_bytes: 64 << 30,
             min_free_bytes: 256 << 20,
+            native_cache_bytes: 8 << 20,
         };
         let storage = crate::runtime_memory::RuntimeStorage::isolated_fixture(
             policy,
@@ -256,6 +341,8 @@ impl Fixture {
     }
     async fn open(&self) -> Result<Arc<InstalledSignerVerifier>> {
         let domain = self.manifest.signing_domain(0)?;
+        let admission = self.admission()?;
+        let originals = self.input.verifier.node_start_inventory(&admission)?;
         self.input
             .verifier
             .open(
@@ -263,7 +350,8 @@ impl Fixture {
                 Arc::new(file_secret),
                 self.persistent().unwrap(),
                 self.scratch()?,
-                self.admission()?,
+                admission,
+                &originals,
             )
             .await
     }
@@ -496,6 +584,10 @@ async fn completed_verifier_installation_requires_current_writer_bytes_without_r
 {
     let fixture = Fixture::new();
     fixture.initialize().await?;
+    let originals = fixture
+        .input
+        .verifier
+        .node_start_inventory(&fixture.admission()?)?;
     let (node, store) = fixture
         .input
         .verifier
@@ -504,14 +596,15 @@ async fn completed_verifier_installation_requires_current_writer_bytes_without_r
             false,
             fixture.persistent()?,
             fixture.scratch()?,
+            &originals,
         )
         .await?;
     let canonical = store
         .get_bounded(NS, b"installation", 256 << 10)?
         .expect("current writer must publish verifier installation");
     let installed: VerifierInstallation = serde_json::from_slice(&canonical)?;
-    assert!(serde_json::to_vec(&installed)?.as_slice() == canonical.as_slice());
-    let mut alternate = canonical.clone();
+    assert!(serde_json::to_vec(&installed)?.as_slice() == canonical.as_bytes());
+    let mut alternate = canonical.as_bytes().to_vec();
     alternate.push(b' ');
     assert!(serde_json::from_slice::<VerifierInstallation>(&alternate)? == installed);
     store.write_batch(&[WriteOp::put(NS, b"installation", alternate.as_slice())])?;
@@ -541,13 +634,17 @@ async fn completed_verifier_installation_requires_current_writer_bytes_without_r
             false,
             fixture.persistent()?,
             fixture.scratch()?,
+            &originals,
         )
         .await?;
     assert!(
-        store.get_bounded(NS, b"installation", 256 << 10)? == Some(alternate),
+        store
+            .get_bounded(NS, b"installation", 256 << 10)?
+            .as_deref()
+            == Some(alternate.as_slice()),
         "failed startup repaired the verifier installation"
     );
-    store.write_batch(&[WriteOp::put(NS, b"installation", canonical.as_slice())])?;
+    store.write_batch(&[WriteOp::put(NS, b"installation", canonical.as_bytes())])?;
     store.shutdown().await?;
     node.shutdown().await?;
     drop(store);
@@ -562,6 +659,11 @@ async fn completed_verifier_installation_requires_current_writer_bytes_without_r
 #[tokio::test]
 async fn partial_verifier_is_never_adopted_and_corrupt_complete_head_is_never_reseeded() {
     let f = Fixture::new();
+    let originals = f
+        .input
+        .verifier
+        .node_start_inventory(&f.admission().unwrap())
+        .unwrap();
     let (node, store) = f
         .input
         .verifier
@@ -570,6 +672,7 @@ async fn partial_verifier_is_never_adopted_and_corrupt_complete_head_is_never_re
             true,
             f.persistent().unwrap(),
             f.scratch().unwrap(),
+            &originals,
         )
         .await
         .unwrap();
@@ -578,7 +681,7 @@ async fn partial_verifier_is_never_adopted_and_corrupt_complete_head_is_never_re
             &f.input.verifier.identity,
             f.operational.certificate.clone(),
             Arc::new(ScopedSignerAdministrator::default()),
-            BackgroundWorkBudget::new(64, Arc::new(())).unwrap(),
+            BackgroundWorkBudget::new(64, kasumi_types::SharedBudgetCharge::new(())).unwrap(),
         )
         .unwrap();
     let digest = f.manifest.signing_domain(0).unwrap().digest().unwrap();
@@ -604,6 +707,7 @@ async fn partial_verifier_is_never_adopted_and_corrupt_complete_head_is_never_re
             false,
             f.persistent().unwrap(),
             f.scratch().unwrap(),
+            &originals,
         )
         .await
         .unwrap();
@@ -623,6 +727,11 @@ async fn partial_verifier_is_never_adopted_and_corrupt_complete_head_is_never_re
     // Independently completed installation: corruption must not reseed its head.
     let f = Fixture::new();
     f.initialize().await.unwrap();
+    let originals = f
+        .input
+        .verifier
+        .node_start_inventory(&f.admission().unwrap())
+        .unwrap();
     let (node, store) = f
         .input
         .verifier
@@ -631,6 +740,7 @@ async fn partial_verifier_is_never_adopted_and_corrupt_complete_head_is_never_re
             false,
             f.persistent().unwrap(),
             f.scratch().unwrap(),
+            &originals,
         )
         .await
         .unwrap();
@@ -657,6 +767,7 @@ async fn partial_verifier_is_never_adopted_and_corrupt_complete_head_is_never_re
             false,
             f.persistent().unwrap(),
             f.scratch().unwrap(),
+            &originals,
         )
         .await
         .unwrap();
@@ -689,6 +800,8 @@ async fn initialization_rejects_noninitial_and_mismatched_domains_without_publis
     f.input.initial_certificates.truncate(1);
     f.initialize().await.unwrap();
     let domain = f.manifest.signing_domain(0).unwrap();
+    let admission = f.admission().unwrap();
+    let originals = f.input.verifier.node_start_inventory(&admission).unwrap();
     assert!(
         f.input
             .verifier
@@ -697,13 +810,15 @@ async fn initialization_rejects_noninitial_and_mismatched_domains_without_publis
                 Arc::new(file_secret),
                 f.persistent().unwrap(),
                 f.scratch().unwrap(),
-                f.admission().unwrap(),
+                admission.clone(),
+                &originals,
             )
             .await
             .is_err()
     );
     let mut other_identity = f.input.verifier.clone();
     other_identity.identity.node_id = 2;
+    let other_originals = other_identity.node_start_inventory(&admission).unwrap();
     assert!(
         other_identity
             .open(
@@ -711,7 +826,8 @@ async fn initialization_rejects_noninitial_and_mismatched_domains_without_publis
                 Arc::new(file_secret),
                 f.persistent().unwrap(),
                 f.scratch().unwrap(),
-                f.admission().unwrap(),
+                admission,
+                &other_originals,
             )
             .await
             .is_err()
@@ -828,12 +944,20 @@ async fn panicked_verifier_initialization_drains_each_acquired_encrypted_owner()
                 .is_some(),
             "{phase}: {error:#}"
         );
-        let node = NodeStore::open_existing(
-            &fixture.input.verifier.database_path,
-            id,
-            fixture.persistent().unwrap(),
-            fixture.scratch()?,
-        )?;
+        let node = {
+            let native_path = &fixture.input.verifier.database_path;
+            let native_id = id;
+            let native_disk = fixture.persistent().unwrap();
+            let native_scratch_disk = fixture.scratch()?;
+            NodeStore::open_existing(
+                native_path,
+                native_id,
+                native_disk.clone(),
+                native_scratch_disk,
+                native_disk.native_storage_config(),
+            )
+        }
+        .expect("drained signer preparation fixture must reopen its installed native node");
         if phase != "verifier-storage-node" {
             let store = TenantStore::open_existing(
                 node.clone(),
@@ -859,15 +983,14 @@ async fn panicked_verifier_initialization_drains_each_acquired_encrypted_owner()
             store.shutdown().await?;
             drop(store);
         }
-        node.drain_initializers().await?;
+        node.drain_initializers()
+            .await
+            .map_err(|failure| failure.observation())?;
         node.shutdown().await?;
         drop(node);
-        let before = std::fs::read(&fixture.input.verifier.database_path)?;
+        let before = group_image(&fixture.input.verifier.database_path)?;
         assert!(fixture.initialize().await.is_err());
-        assert_eq!(
-            std::fs::read(&fixture.input.verifier.database_path)?,
-            before
-        );
+        assert_eq!(group_image(&fixture.input.verifier.database_path)?, before);
         if phase == "verifier-installation-complete" {
             let installed = fixture.open().await?;
             fixture.operational.open(&installed)?.check()?;
@@ -908,12 +1031,17 @@ async fn cancelled_verifier_initialization_retains_physical_owner_and_unclaimed_
         .await;
         tokio::time::timeout(std::time::Duration::from_secs(10), pause.entered()).await?;
         drop(initialize);
+        let native_scratch_disk = fixture.scratch()?;
         let reopen = || {
+            let native_path = &fixture.input.verifier.database_path;
+            let native_id = id;
+            let native_disk = fixture.persistent().unwrap();
             NodeStore::open_existing(
-                &fixture.input.verifier.database_path,
-                id,
-                fixture.persistent().unwrap(),
-                fixture.scratch()?,
+                native_path,
+                native_id,
+                native_disk.clone(),
+                native_scratch_disk.clone(),
+                native_disk.native_storage_config(),
             )
         };
         assert!(
@@ -944,8 +1072,11 @@ async fn cancelled_verifier_initialization_retains_physical_owner_and_unclaimed_
                 .is_some(),
             "original unclaimed panic must survive both cancellations: {error:#}"
         );
-        let node = reopen()?;
-        node.drain_initializers().await?;
+        let node = reopen()
+            .expect("drained cancelled signer preparation must reopen its installed native node");
+        node.drain_initializers()
+            .await
+            .map_err(|failure| failure.observation())?;
         node.shutdown().await?;
         drop(node);
         registry.drain().await?;

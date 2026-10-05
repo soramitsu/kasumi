@@ -1,6 +1,6 @@
 struct CredentialFixture {
     storage: crate::test_utils::FixtureStorage,
-    node: Arc<kasumi_store::NodeStore>,
+    node: kasumi_store::NodeStore,
     db: Arc<Database>,
     audit: Arc<SecurityAudit>,
     context: RequestContext,
@@ -8,6 +8,9 @@ struct CredentialFixture {
 }
 impl CredentialFixture {
     async fn new() -> Self {
+        Self::new_for_tenant("credential-expiry").await
+    }
+    async fn new_for_tenant(tenant: &str) -> Self {
         let directory = kasumi_store::test_utils::private_tempdir().unwrap();
         let (persistent_config, scratch_config) =
             crate::test_utils::fixture_disk_configs(directory.path()).unwrap();
@@ -40,7 +43,7 @@ impl CredentialFixture {
         .unwrap();
         let context = RequestContext {
             authorization: RequestAuthorization::service_identity(),
-            tenant: "credential-expiry".into(),
+            tenant: tenant.into(),
             principal: "owner".into(),
             scopes: BTreeSet::from([Action::Read, Action::Write, Action::Admin]),
             request_id: "expiry-test".into(),
@@ -112,6 +115,8 @@ impl CredentialFixture {
         let incarnation = uuid::Uuid::parse_str(&generation.state.incarnation).unwrap();
         let resource = if generation.state.retired {
             CredentialResource::Custody { incarnation }
+        } else if generation.tenant() == crate::control::CONTROL_TENANT {
+            CredentialResource::Control { incarnation }
         } else {
             CredentialResource::Database { incarnation }
         };
@@ -315,9 +320,9 @@ async fn expired_queued_and_canceled_credentials_accept_no_effect_or_identity() 
                 .db
                 .get(&fixture.context, "docs", id)
                 .await
-                .unwrap_err()
-                .code,
-            ErrorCode::NotFound
+                .unwrap()
+                .map(|document| document.version),
+            None
         );
         assert!(
             fixture
@@ -394,7 +399,8 @@ async fn committed_effect_with_expired_ack_is_resolved_by_fresh_credential() {
         .db
         .get(&fixture.context, "docs", "committed")
         .await
-        .unwrap();
+        .unwrap()
+        .expect("document exists");
     assert_eq!(document.version, receipt.revision);
     assert_eq!(
         fixture
@@ -524,8 +530,15 @@ async fn long_backup_verification_and_encoded_read_recheck_original_credential()
     let clock = Arc::new(CredentialClock(std::sync::atomic::AtomicU64::new(0)));
     let context = fixture.credential_with_validity(clock.clone(), LONG_BACKUP_CREDENTIAL_MS);
     let fence = fixture.db.response_fence(&context).unwrap();
-    let _encoded =
-        serde_json::to_vec(&fixture.db.get(&context, "docs", "read").await.unwrap()).unwrap();
+    let _encoded = serde_json::to_vec(
+        &fixture
+            .db
+            .get(&context, "docs", "read")
+            .await
+            .unwrap()
+            .expect("document exists"),
+    )
+    .unwrap();
     let result = {
         let mut verify = std::pin::pin!(fixture.db.verify_backup_checkpoint(
             context,
@@ -546,7 +559,10 @@ async fn long_backup_verification_and_encoded_read_recheck_original_credential()
         paused.release.notify_one();
         verify.await
     };
-    assert_eq!(result.unwrap_err().code, ErrorCode::Unauthorized);
+    assert_eq!(
+        result.unwrap_err().operation_error().unwrap().code,
+        ErrorCode::Unauthorized
+    );
     assert_eq!(fence.check().unwrap_err().code, ErrorCode::Unauthorized);
     drop(fence);
     // Creation can have already published immutable encrypted objects when its
@@ -572,7 +588,10 @@ async fn long_backup_verification_and_encoded_read_recheck_original_credential()
         paused.release.notify_one();
         create.await
     };
-    assert_eq!(result.unwrap_err().code, ErrorCode::UnknownOutcome);
+    assert_eq!(
+        result.unwrap_err().operation_error().unwrap().code,
+        ErrorCode::UnknownOutcome
+    );
     fixture.close().await;
 }
 

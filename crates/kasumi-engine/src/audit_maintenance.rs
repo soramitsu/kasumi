@@ -228,20 +228,79 @@ mod tests {
         drop(permit);
     }
 
+    fn legacy_slot_config() -> AdmissionConfig {
+        AdmissionConfig {
+            max_inflight_bytes: Some(512 << 20),
+            max_reservations: 8,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn eight_slots_cannot_install_audit_and_cache_work_protection() {
+        let config = legacy_slot_config();
+        let admission = NodeAdmission::with_fixed_memory(config.clone(), 2 << 30, 0).unwrap();
+        let baseline = admission.snapshot();
+        let cache_slots = config.cache_work_headroom(512 << 20).1;
+        // The real escrow consumes one slot; both free-work obligations remain
+        // additional to the actual constructor owners. The original eight-slot
+        // configuration is insufficient before any ordinary work is admitted.
+        assert!(
+            baseline.live_reservations + 1 + NodeAuditMaintenance::RESIDENT_SLOTS + cache_slots
+                > config.max_reservations
+        );
+        let error = match NodeAuditMaintenance::install(&admission) {
+            Ok(_) => panic!("invalid eight-slot fixture installed protection"),
+            Err(error) => error,
+        };
+        assert_eq!(error.code, ErrorCode::ResourceExhausted);
+        assert_eq!(error.message, "node maintenance headroom unavailable");
+        assert_eq!(admission.snapshot().reserved_bytes, baseline.reserved_bytes);
+        assert_eq!(
+            admission.snapshot().live_reservations,
+            baseline.live_reservations
+        );
+        // Failure retired the actual temporary escrow and published no partial
+        // ordinary protection: every formerly free slot is still usable.
+        let ordinary: Vec<_> = (baseline.live_reservations..config.max_reservations)
+            .map(|_| admission.reserve(0, None).unwrap())
+            .collect();
+        assert!(admission.reserve(0, None).is_err());
+        drop(ordinary);
+        assert_eq!(
+            admission.snapshot().live_reservations,
+            baseline.live_reservations
+        );
+    }
+
     #[test]
     fn operation_reservations_leave_four_slots_for_raft_resident_work() {
-        let admission = NodeAdmission::with_fixed_memory(
-            AdmissionConfig {
-                max_inflight_bytes: Some(512 << 20),
-                max_reservations: 8,
-                ..Default::default()
-            },
-            2 << 30,
-            0,
-        )
-        .unwrap();
+        let mut config = legacy_slot_config();
+        // Use the constructor's actual fixed-owner census, not a guessed number
+        // of admission facades. This inspection owner is fully retired before
+        // constructing the explicitly valid positive fixture.
+        let fixed_slots = {
+            let admission = NodeAdmission::with_fixed_memory(config.clone(), 2 << 30, 0).unwrap();
+            admission.snapshot().live_reservations
+        };
+        const WORK_SLOTS: usize = 1;
+        let mandatory = fixed_slots + 1 + NodeAuditMaintenance::RESIDENT_SLOTS;
+        loop {
+            let slots = mandatory + config.cache_work_headroom(512 << 20).1 + WORK_SLOTS;
+            if slots == config.max_reservations {
+                break;
+            }
+            config.max_reservations = slots;
+        }
+        let total_slots = config.max_reservations;
+        let admission = NodeAdmission::with_fixed_memory(config, 2 << 30, 0).unwrap();
+        assert_eq!(admission.snapshot().live_reservations, fixed_slots);
         let pool = NodeAuditMaintenance::install(&admission).unwrap();
-        let ordinary = admission.reserve(0, None).unwrap();
+        assert_eq!(admission.snapshot().live_reservations, fixed_slots + 1);
+        let ordinary: Vec<_> =
+            (0..total_slots - fixed_slots - 1 - NodeAuditMaintenance::RESIDENT_SLOTS)
+                .map(|_| admission.reserve(0, None).unwrap())
+                .collect();
         assert!(admission.reserve(0, None).is_err());
         let resident: Vec<_> = (0..NodeAuditMaintenance::RESIDENT_SLOTS)
             .map(|_| admission.reserve_resident(1).unwrap())
@@ -253,7 +312,7 @@ mod tests {
                 .map(|_| admission.memory().clone().reserve_installed(0).unwrap())
                 .collect::<Vec<_>>()
         };
-        assert_eq!(admission.snapshot().live_reservations, 8);
+        assert_eq!(admission.snapshot().live_reservations, total_slots);
         drop(native);
         drop(resident);
         drop(ordinary);

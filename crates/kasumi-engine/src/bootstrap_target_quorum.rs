@@ -4,6 +4,14 @@ use super::*;
 use crate::TargetOperation;
 use kasumi_types::{LifecyclePhase, TargetQuorumInput, TargetReplicaInput};
 
+macro_rules! snapshot_ensure {
+    ($condition:expr, $($message:tt)+) => {
+        if !($condition) {
+            return Err(anyhow::anyhow!($($message)+).into());
+        }
+    };
+}
+
 /// Initial startup consumes the original journal reservation exactly once.
 /// Established phases cannot serve as a fallback for an initial child.
 #[allow(
@@ -152,12 +160,12 @@ impl TargetReplica {
         operation: &TargetOperation,
         permit: crate::InitialInitializePermit,
         association: &kasumi_types::SignedTargetInitializationAssociation,
-    ) -> anyhow::Result<()> {
+    ) -> std::result::Result<(), crate::SnapshotFailure> {
         self.check(operation, LifecyclePhase::Initialize)?;
         let permit = permit.consume(self, operation)?;
         let group = self.database.raft_group();
         let id = group.raft().metrics().borrow().id;
-        anyhow::ensure!(
+        snapshot_ensure!(
             Some(&id) == self.bootstrap.voters.keys().next(),
             "only the designated target voter may initialize"
         );
@@ -168,12 +176,12 @@ impl TargetReplica {
             .commitment()
             .intent
             .clone();
-        anyhow::ensure!(
+        snapshot_ensure!(
             intent.request.phase_input_sha256 == self.input.digest()?,
             "target initialization input differs"
         );
         let initial = !operation
-            .run(async { Ok(group.raft().is_initialized().await?) })
+            .run(async { Ok::<_, anyhow::Error>(group.raft().is_initialized().await?) })
             .await?;
         if initial {
             // OpenRaft retains its own exact initialization intent. Caller
@@ -198,31 +206,32 @@ impl TargetReplica {
                 })?;
         }
         self.check(operation, LifecyclePhase::Initialize)?;
-        let metrics = operation
-            .run(async {
-                Ok(group
-                    .raft()
-                    .wait(Some(std::time::Duration::from_secs(60)))
-                    .metrics(
-                        |metrics| {
-                            metrics
-                                .membership_config
-                                .log_id()
-                                .as_ref()
-                                .is_some_and(|first| {
-                                    metrics
-                                        .last_applied
-                                        .as_ref()
-                                        .is_some_and(|applied| applied >= first)
-                                })
-                        },
-                        "original target membership locally applied",
+        let metrics =
+            operation
+                .run(async {
+                    Ok::<_, anyhow::Error>(
+                        group
+                            .raft()
+                            .wait(Some(std::time::Duration::from_secs(60)))
+                            .metrics(
+                                |metrics| {
+                                    metrics.membership_config.log_id().as_ref().is_some_and(
+                                        |first| {
+                                            metrics
+                                                .last_applied
+                                                .as_ref()
+                                                .is_some_and(|applied| applied >= first)
+                                        },
+                                    )
+                                },
+                                "original target membership locally applied",
+                            )
+                            .await?,
                     )
-                    .await?)
-            })
-            .await?;
+                })
+                .await?;
         let expected: BTreeSet<_> = self.bootstrap.voters.keys().copied().collect();
-        anyhow::ensure!(
+        snapshot_ensure!(
             metrics.membership_config.membership().get_joint_config() == &vec![expected]
                 && metrics.membership_config.membership().nodes().count()
                     == self.bootstrap.voters.len()
@@ -241,7 +250,7 @@ impl TargetReplica {
         permit.applied(self, operation)?;
         let retained = kasumi_raft::read_initialization_association(self.database.stores())?
             .ok_or_else(|| anyhow::anyhow!("first membership lacks atomic original cause"))?;
-        anyhow::ensure!(
+        snapshot_ensure!(
             retained.signed == *association,
             "applied first membership cause differs"
         );
@@ -301,7 +310,7 @@ pub async fn open_target_replica(
     transport: Arc<dyn RaftTransport>,
     security_audit: Arc<SecurityAudit>,
     startup: TargetReplicaStartup,
-) -> anyhow::Result<TargetReplica> {
+) -> std::result::Result<TargetReplica, crate::SnapshotFailure> {
     security_audit.require_admission(&config.admission)?;
     let construction = DatabaseConstruction::new(stores.clone(), security_audit.clone())?;
     operation.check()?;
@@ -309,36 +318,44 @@ pub async fn open_target_replica(
     let lease = invocation.gate().current()?;
     let intent = lease.commitment().intent.clone();
     let phase = intent.request.phase;
-    anyhow::ensure!(
-        matches!(
-            phase,
-            LifecyclePhase::Initialize
-                | LifecyclePhase::Complete
-                | LifecyclePhase::ResolveComplete
-                | LifecyclePhase::MaintainTarget
-                | LifecyclePhase::Activate
-                | LifecyclePhase::InspectInitialMembership
-                | LifecyclePhase::InspectTarget
-                | LifecyclePhase::InspectCompletionAttempt
-                | LifecyclePhase::InspectCompletionResolution
-        ) && config.node_id == lease.signed().claims.request.target_node.node_id,
-        "target group startup phase or node differs"
-    );
+    crate::SnapshotFailure::ordinary(|| {
+        anyhow::ensure!(
+            matches!(
+                phase,
+                LifecyclePhase::Initialize
+                    | LifecyclePhase::Complete
+                    | LifecyclePhase::ResolveComplete
+                    | LifecyclePhase::MaintainTarget
+                    | LifecyclePhase::Activate
+                    | LifecyclePhase::InspectInitialMembership
+                    | LifecyclePhase::InspectTarget
+                    | LifecyclePhase::InspectCompletionAttempt
+                    | LifecyclePhase::InspectCompletionResolution
+            ) && config.node_id == lease.signed().claims.request.target_node.node_id,
+            "target group startup phase or node differs"
+        );
+        Ok(())
+    })?;
     invocation.check_target(stores.application(), phase)?;
     match &startup {
         TargetReplicaStartup::Initial { membership, .. } => {
             membership.require_start_operation(operation, &input, config.node_id)?;
         }
-        TargetReplicaStartup::Established => anyhow::ensure!(
-            phase != LifecyclePhase::Initialize,
-            "initial target startup requires its one-use accepted Start"
-        ),
+        TargetReplicaStartup::Established => crate::SnapshotFailure::ordinary(|| {
+            anyhow::ensure!(
+                phase != LifecyclePhase::Initialize,
+                "initial target startup requires its one-use accepted Start"
+            );
+            Ok(())
+        })?,
     }
     // This worker owns the original operation through actual startup. A closed
     // receiver drops TargetReplica, whose owner joins its real Raft workers.
     let owned = operation.clone();
     let task = tokio::spawn(async move {
-        let _gate = owned.run(async { Ok(BOOTSTRAP_GATE.lock().await) }).await?;
+        let _gate = owned
+            .run(async { Ok::<_, crate::SnapshotFailure>(BOOTSTRAP_GATE.lock().await) })
+            .await?;
         owned.check()?;
         read_current_manifest(stores.application())?
             .ok_or_else(|| anyhow::anyhow!("published target bootstrap missing"))?;
@@ -373,58 +390,62 @@ pub async fn open_target_replica(
             ),
             TargetReplicaStartup::Established => None,
         };
-        let (engine, bootstrap) = owned
-            .run(
-                owned
-                    .deadline
-                    .blocking(workspace, Some(owned.work.clone()), move || {
-                        authority.check_target(material.application(), phase)?;
-                        let bytes = load(material.application())?
-                            .ok_or_else(|| anyhow::anyhow!("target image missing"))?;
-                        validate_bootstrap_control(&material, &bytes)?;
-                        let engine = Arc::new(TenantEngine::from_bootstrap(
-                            material.application().tenant(),
-                            &bytes,
-                        )?);
-                        let generation = engine.generation()?;
-                        let origin = generation
-                            .state
-                            .target_lifecycle
-                            .get(&generation.state.incarnation)
-                            .ok_or_else(|| anyhow::anyhow!("target image lacks native origin"))?
-                            .origin
-                            .clone();
-                        origin.accepts_phase(&intent, phase)?;
-                        match &requested_input {
-                            TargetReplicaInput::InitialMembershipStatus(input) => {
-                                input.validate(&origin, &intent)?;
-                            }
-                            TargetReplicaInput::Inspection(inspection) => {
-                                inspection.validate(&origin, &intent)?;
-                            }
-                            TargetReplicaInput::CompletionAttemptStatus(input) => {
-                                input.validate(&origin, &intent)?;
-                            }
-                            TargetReplicaInput::CompletionTerminalStatus(input) => {
-                                input.validate(&origin, &intent)?;
-                            }
-                            TargetReplicaInput::Completion(completion) => {
-                                completion.validate(&origin, &intent)?;
-                            }
-                            TargetReplicaInput::CompletionResolution(resolution) => {
-                                resolution.validate(&origin, &intent)?;
-                            }
-                            TargetReplicaInput::ResolutionBudget { input, .. } => {
-                                input.validate(&origin, &intent)?;
-                            }
-                            TargetReplicaInput::Quorum(_) => anyhow::ensure!(
+        let (engine, bootstrap, bytes) = owned
+            .run(owned.deadline.blocking(
+                workspace,
+                Some(owned.work.clone()),
+                move || -> std::result::Result<_, crate::SnapshotFailure> {
+                    authority.check_target(material.application(), phase)?;
+                    let bytes = load(material.application())?
+                        .ok_or_else(|| anyhow::anyhow!("target image missing"))?;
+                    validate_bootstrap_control(&material, &bytes)?;
+                    let engine = Arc::new(TenantEngine::from_bootstrap(
+                        material.application().tenant(),
+                        &bytes,
+                    )?);
+                    let generation = engine.generation()?;
+                    let origin = generation
+                        .state
+                        .target_lifecycle
+                        .get(&generation.state.incarnation)
+                        .ok_or_else(|| anyhow::anyhow!("target image lacks native origin"))?
+                        .origin
+                        .clone();
+                    origin.accepts_phase(&intent, phase)?;
+                    match &requested_input {
+                        TargetReplicaInput::InitialMembershipStatus(input) => {
+                            input.validate(&origin, &intent)?;
+                        }
+                        TargetReplicaInput::Inspection(inspection) => {
+                            inspection.validate(&origin, &intent)?;
+                        }
+                        TargetReplicaInput::CompletionAttemptStatus(input) => {
+                            input.validate(&origin, &intent)?;
+                        }
+                        TargetReplicaInput::CompletionTerminalStatus(input) => {
+                            input.validate(&origin, &intent)?;
+                        }
+                        TargetReplicaInput::Completion(completion) => {
+                            completion.validate(&origin, &intent)?;
+                        }
+                        TargetReplicaInput::CompletionResolution(resolution) => {
+                            resolution.validate(&origin, &intent)?;
+                        }
+                        TargetReplicaInput::ResolutionBudget { input, .. } => {
+                            input.validate(&origin, &intent)?;
+                        }
+                        TargetReplicaInput::Quorum(_) => crate::SnapshotFailure::ordinary(|| {
+                            anyhow::ensure!(
                                 matches!(
                                     phase,
                                     LifecyclePhase::Initialize | LifecyclePhase::Activate
                                 ),
                                 "target startup requires its exact typed phase input"
-                            ),
-                        }
+                            );
+                            Ok(())
+                        })?,
+                    }
+                    crate::SnapshotFailure::ordinary(|| {
                         anyhow::ensure!(
                             origin.digest()? == input_copy.origin_sha256
                                 && (matches!(
@@ -440,60 +461,71 @@ pub async fn open_target_replica(
                                 ) || input_copy.digest()? == intent.request.phase_input_sha256),
                             "target group phase input differs"
                         );
-                        let expected = kasumi_serving::verify_target_materializations(
-                            &origin,
-                            &input_copy.materialized,
-                        )?;
+                        Ok(())
+                    })?;
+                    let expected = kasumi_serving::verify_target_materializations(
+                        &origin,
+                        &input_copy.materialized,
+                    )?;
+                    crate::SnapshotFailure::ordinary(|| {
                         anyhow::ensure!(
                             expected == bytes.sha256(),
                             "target physical bootstrap differs from signed materializations"
                         );
-                        let bootstrap = decode_current_target_deployment(&material)?;
+                        Ok(())
+                    })?;
+                    let bootstrap = decode_current_target_deployment(&material)?;
+                    crate::SnapshotFailure::ordinary(|| {
                         anyhow::ensure!(
                             bootstrap.incarnation == generation.state.incarnation,
                             "target deployment is not exact replicated generation"
                         );
-                        let prior = material.custody().store().get_bounded(
+                        Ok(())
+                    })?;
+                    let prior = material.custody().store().get_bounded(
+                        "target.lifecycle",
+                        b"initialize",
+                        256 << 10,
+                    )?;
+                    if phase == LifecyclePhase::Initialize {
+                        let proposed = prepared_start.as_ref().ok_or_else(|| {
+                            anyhow::anyhow!("accepted Start custody intent absent")
+                        })?;
+                        let crate::target_initial_intent::PreparedBinding::Write(encoded) =
+                            crate::target_initial_intent::decide_prepared_binding(
+                                prior.as_deref(),
+                                proposed,
+                                &installed_root,
+                            )?
+                        else {
+                            return Err(anyhow::anyhow!(
+                                "accepted Start custody intent already consumed"
+                            )
+                            .into());
+                        };
+                        authority.check_target(material.application(), phase)?;
+                        material.custody().store().write_batch(&[WriteOp::put(
                             "target.lifecycle",
                             b"initialize",
-                            256 << 10,
+                            encoded,
+                        )])?;
+                    } else {
+                        crate::target_initial_intent::InitialTargetIntent::require_origin(
+                            &prior.ok_or_else(|| {
+                                anyhow::anyhow!("target initialization intent missing")
+                            })?,
+                            &origin,
+                            &input_copy,
+                            &installed_root,
                         )?;
-                        if phase == LifecyclePhase::Initialize {
-                            let proposed = prepared_start.as_ref().ok_or_else(|| {
-                                anyhow::anyhow!("accepted Start custody intent absent")
-                            })?;
-                            let crate::target_initial_intent::PreparedBinding::Write(encoded) =
-                                crate::target_initial_intent::decide_prepared_binding(
-                                    prior.as_deref(),
-                                    proposed,
-                                    &installed_root,
-                                )?
-                            else {
-                                anyhow::bail!("accepted Start custody intent already consumed")
-                            };
-                            authority.check_target(material.application(), phase)?;
-                            material.custody().store().write_batch(&[WriteOp::put(
-                                "target.lifecycle",
-                                b"initialize",
-                                encoded,
-                            )])?;
-                        } else {
-                            crate::target_initial_intent::InitialTargetIntent::require_origin(
-                                &prior.ok_or_else(|| {
-                                    anyhow::anyhow!("target initialization intent missing")
-                                })?,
-                                &origin,
-                                &input_copy,
-                                &installed_root,
-                            )?;
-                        }
-                        drop(generation);
-                        engine.install_storage_access(material.application())?;
-                        engine.verify_bootstrap_dependencies_checked(|| verification.check())?;
-                        authority.check_target(material.application(), phase)?;
-                        Ok((engine, bootstrap))
-                    }),
-            )
+                    }
+                    drop(generation);
+                    engine.install_storage_access(material.application())?;
+                    engine.verify_bootstrap_dependencies_checked(|| verification.check())?;
+                    authority.check_target(material.application(), phase)?;
+                    Ok((engine, bootstrap, bytes))
+                },
+            ))
             .await?;
         owned.check()?;
         // Do not cancel this future: if its caller disappears, ownership stays
@@ -513,7 +545,7 @@ pub async fn open_target_replica(
                 let expected = membership.persist_target_raft_prebind(&journal, &stores)?;
                 owned.check()?;
                 let database = construction
-                    .start_target_prebound(engine, transport, raft_config, expected.clone())
+                    .start_target_prebound(engine, &bytes, transport, raft_config, expected.clone())
                     .await?;
                 (database, Some(expected))
             }
@@ -521,6 +553,7 @@ pub async fn open_target_replica(
                 let database = construction
                     .start_replicated(
                         engine,
+                        &bytes,
                         config.node_id,
                         format!(
                             "{}/{}",
@@ -545,7 +578,7 @@ pub async fn open_target_replica(
             initial_start_owner,
         };
         owned.check()?;
-        Ok::<_, anyhow::Error>(owner)
+        Ok::<_, crate::SnapshotFailure>(owner)
     });
     operation.run(async { task.await? }).await
 }

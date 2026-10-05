@@ -180,7 +180,14 @@ impl CatalogPutRequest {
         state.phase = NodeWriterPhase::Terminal;
         #[cfg(test)]
         if state.fail_owner_before_terminal {
-            owner.state.lock().file.disk().fail();
+            owner
+                .state
+                .lock()
+                .file
+                .physical()
+                .expect("physical test fixture")
+                .disk()
+                .fail();
         }
         let transaction = state.transaction.as_mut().unwrap();
         if state.body.success() {
@@ -385,8 +392,8 @@ impl RegisteredNodeOpening {
         application: Arc<crate::TenantStore>,
         custody: Arc<crate::TenantStore>,
     ) -> io::Result<RegisteredCatalogPut> {
-        if !Arc::ptr_eq(&application.node, &custody.node)
-            || application.node.db.registered_opening_id() != Some(self.id())
+        if !crate::NodeStore::ptr_eq(&application.node, &custody.node)
+            || application.node.body().db.registered_opening_id() != Some(self.id())
             || custody.tenant() != crate::CustodyStore::catalog_name(application.tenant())
             || plan.entries()[0].hash() != &crate::tenant_hash(application.tenant())
             || plan.entries()[1].hash() != &crate::tenant_hash(custody.tenant())
@@ -412,7 +419,7 @@ impl RegisteredNodeOpening {
         {
             return Err(io::ErrorKind::InvalidInput.into());
         }
-        let provider = opening.file.disk().memory().clone();
+        let provider = owner.provider.clone();
         if plan
             .entries()
             .iter()

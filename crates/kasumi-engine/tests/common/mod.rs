@@ -2,6 +2,52 @@ use kasumi_engine::{SECURITY_TENANT, SecurityAudit};
 use kasumi_store::{NodeStore, TenantStore, test_utils::LocalKeyProvider};
 use std::sync::Arc;
 
+/// Query-only functional fixtures use an explicit ceiling independently of
+/// their encrypted disk admission. Runtime ownership tests use Reservation.
+#[allow(dead_code)]
+pub struct QueryWorkspaceFixture;
+impl kasumi_query::QueryWorkspace for QueryWorkspaceFixture {
+    fn ensure_peak(&mut self, bytes: u64) -> kasumi_types::Result<()> {
+        if bytes > 64 << 20 {
+            return Err(kasumi_types::Error::new(
+                kasumi_types::ErrorCode::ResourceExhausted,
+                "query fixture workspace limit",
+            ));
+        }
+        Ok(())
+    }
+}
+#[allow(dead_code)]
+pub fn query_memory() -> kasumi_query::QueryMemory<QueryWorkspaceFixture> {
+    kasumi_query::QueryMemory::empty(QueryWorkspaceFixture)
+}
+
+/// Opt in to fixed-field restore diagnostics across async and blocking workers.
+/// Dependency logging stays disabled regardless of any host RUST_LOG setting.
+#[allow(dead_code)]
+pub fn restore_phase_trace() {
+    if std::env::var_os("KASUMI_TEST_RESTORE_TRACE").as_deref() != Some(std::ffi::OsStr::new("1")) {
+        return;
+    }
+    static INITIALIZE: std::sync::Once = std::sync::Once::new();
+    INITIALIZE.call_once(|| {
+        use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+        tracing_subscriber::registry()
+            .with(tracing_subscriber::filter::filter_fn(|metadata| {
+                metadata.target() == "kasumi_engine::restore_phase"
+                    && *metadata.level() <= tracing::Level::DEBUG
+            }))
+            .with(
+                tracing_subscriber::fmt::layer()
+                    .with_ansi(false)
+                    .without_time()
+                    .with_writer(std::io::stderr),
+            )
+            .try_init()
+            .expect("restore phase diagnostics require the test's sole global subscriber");
+    });
+}
+
 /// Explicit physical fixture lifetime. The caller retains the persistent
 /// parent; this value retains the separate private scratch directory and the
 /// original owners through shutdown and reopen.
@@ -20,6 +66,7 @@ impl PhysicalFixture {
             directory: scratch_directory.path().to_owned(),
             max_bytes: 256 << 30,
             min_free_bytes: 0,
+            native_cache_bytes: 8 << 20,
         };
         let storage =
             kasumi_engine::test_utils::FixtureStorage::open(&persistent, &scratch, config).unwrap();
@@ -35,7 +82,7 @@ impl PhysicalFixture {
 /// The exact runtime facade is required before the service ledger can open.
 #[allow(dead_code)]
 pub async fn security_audit(
-    node: Arc<NodeStore>,
+    node: NodeStore,
     admission: Arc<kasumi_engine::admission::NodeAdmission>,
 ) -> Arc<SecurityAudit> {
     let store = TenantStore::initialize_catalog_fixture(
@@ -56,7 +103,7 @@ pub async fn security_audit(
 /// Reopen a previously initialized ledger under its exact physical memory core.
 #[allow(dead_code)]
 pub async fn existing_security_audit(
-    node: Arc<NodeStore>,
+    node: NodeStore,
     admission: Arc<kasumi_engine::admission::NodeAdmission>,
 ) -> Arc<SecurityAudit> {
     let store = TenantStore::open_existing_fixture(

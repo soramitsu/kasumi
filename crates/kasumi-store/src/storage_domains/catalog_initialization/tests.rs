@@ -5,18 +5,19 @@ use std::{future::Future, task::Poll};
 fn node(
     fixture_memory: Arc<dyn crate::NodeDiskMemoryAdmission>,
     fixture_scratch: std::sync::Arc<crate::ScratchDisk>,
-) -> Result<(tempfile::TempDir, Arc<NodeStore>)> {
+) -> Result<(tempfile::TempDir, NodeStore)> {
     let directory = crate::test_utils::private_tempdir()?;
     let node = NodeStore::create_new_fixture(
         directory.path().join("catalogs.kv"),
         crate::test_utils::NODE_STORE_ID,
         fixture_memory.clone(),
         fixture_scratch.clone(),
-    )?;
+    )
+    .expect("bounded node fixture setup succeeds");
     Ok((directory, node))
 }
 
-fn input(node: Arc<NodeStore>) -> Input {
+fn input(node: NodeStore) -> Input {
     Input {
         node,
         tenant: "new-tenant".into(),
@@ -26,15 +27,15 @@ fn input(node: Arc<NodeStore>) -> Input {
     }
 }
 
-async fn drain(node: &NodeStore) -> Result<()> {
-    tokio::time::timeout(Duration::from_secs(10), node.drain_initializers()).await??;
-    assert!(node.initializers.lock().await.handles.is_empty());
-    Ok(())
+async fn drain(node: &NodeStore) -> std::result::Result<(), crate::InitializerDrainFailure> {
+    tokio::time::timeout(Duration::from_secs(10), node.drain_initializers())
+        .await
+        .expect("actual original initializer settles within the same fixture deadline")
 }
 
 #[tokio::test]
-async fn cancelled_catalog_drain_preserves_a_joined_panic_while_another_owner_waits() -> Result<()>
-{
+async fn first_failed_catalog_join_keeps_original_and_remaining_handle_until_explicit_disposition()
+-> Result<()> {
     let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
     let scratch_directory = crate::test_utils::private_tempdir().unwrap();
     let fixture_scratch =
@@ -47,6 +48,7 @@ async fn cancelled_catalog_drain_preserves_a_joined_panic_while_another_owner_wa
         waiting.await.unwrap();
         Ok(())
     });
+    let pending_id = pending.id();
     let failed: tokio::task::JoinHandle<Result<()>> =
         tokio::spawn(async { panic!("catalog owner panic before cancelled drain") });
     tokio::time::timeout(Duration::from_secs(5), async {
@@ -55,34 +57,64 @@ async fn cancelled_catalog_drain_preserves_a_joined_panic_while_another_owner_wa
         }
     })
     .await?;
-    node.initializers
+    node.body()
+        .initializers
         .lock()
         .await
         .handles
         .extend([pending, failed]);
-    let mut draining = Box::pin(node.drain_initializers());
-    std::future::poll_fn(|context| {
-        assert!(draining.as_mut().poll(context).is_pending());
-        Poll::Ready(())
-    })
-    .await;
-    drop(draining);
-    {
-        let registry = node.initializers.lock().await;
-        assert_eq!(registry.handles.len(), 1);
-        assert!(
-            format!("{:#}", registry.failure.as_ref().unwrap())
-                .contains("catalog owner panic before cancelled drain")
-        );
-    }
-    release.send(()).unwrap();
-    let error = tokio::time::timeout(Duration::from_secs(5), node.drain_initializers())
+    let before = fixture_memory.snapshot();
+    let failure = tokio::time::timeout(Duration::from_secs(5), node.drain_initializers())
         .await?
         .unwrap_err();
-    assert!(format!("{error:#}").contains("catalog owner panic before cancelled drain"));
-    let registry = node.initializers.lock().await;
-    assert!(registry.handles.is_empty());
-    assert!(registry.failure.is_none());
+    let original = failure
+        .with_report(|report| {
+            let original = report.join_error().expect("the exact failed joined task");
+            assert!(original.is_panic());
+            assert!(
+                original
+                    .to_string()
+                    .contains("catalog owner panic before cancelled drain")
+            );
+            assert!(matches!(
+                report.handle_disposal(),
+                TerminalObservation::Returned(Ok(()))
+            ));
+            assert!(matches!(
+                report.original_disposal(),
+                TerminalObservation::NotEntered
+            ));
+            std::ptr::from_ref(original) as usize
+        })
+        .await;
+    {
+        let registry = node.body().initializers.lock().await;
+        assert_eq!(registry.handles.len(), 1);
+        assert_eq!(registry.handles[0].id(), pending_id);
+        assert!(!registry.handles[0].is_finished());
+    }
+    let repeated = node.drain_initializers().await.unwrap_err();
+    assert_eq!(repeated.opening_id(), failure.opening_id());
+    repeated
+        .with_report(|report| {
+            assert_eq!(
+                std::ptr::from_ref(report.join_error().unwrap()) as usize,
+                original
+            );
+        })
+        .await;
+    assert_eq!(fixture_memory.snapshot(), before);
+    assert!(failure.dispose_original().await);
+    drop(repeated);
+    drop(failure);
+    release.send(()).unwrap();
+    drain(&node)
+        .await
+        .map_err(|original| anyhow::Error::new(original.observation()))?;
+    assert!(node.body().initializers.lock().await.handles.is_empty());
+    assert!(node.body().initializers.lock().await.completion.is_none());
+    node.shutdown().await.unwrap();
+    assert!(node.retire().is_retired());
     Ok(())
 }
 
@@ -91,13 +123,20 @@ async fn assert_unpublished(node: &NodeStore) {
         "new-tenant".to_owned(),
         CustodyStore::catalog_name("new-tenant"),
     ] {
-        let gate = node.tenants.lock().await.get(&tenant).unwrap().clone();
+        let gate = node
+            .body()
+            .tenants
+            .lock()
+            .await
+            .get(&tenant)
+            .unwrap()
+            .clone();
         assert!(gate.lock().await.upgrade().is_none());
     }
 }
 
 fn contents(node: &NodeStore) -> Result<Vec<u8>> {
-    let tx = node.db.begin_read()?;
+    let tx = node.body().db.begin_read()?;
     let mut hash = Sha256::new();
     for (index, definition) in [CATALOG, RECORDS].into_iter().enumerate() {
         hash.update((index as u64).to_be_bytes());
@@ -176,7 +215,9 @@ async fn buffered_unclaimed_ticket_drains_only_unpublished_new_owners() -> Resul
         .await
         .is_err()
     );
-    drain(&node).await?;
+    drain(&node)
+        .await
+        .map_err(|original| anyhow::Error::new(original.observation()))?;
     assert_eq!(contents(&node)?, before);
     Ok(())
 }
@@ -205,12 +246,14 @@ async fn committed_pair_handoff_preserves_a_concurrent_borrower_through_initiali
     let stores = ticket.claim()?;
     let borrower = tokio::time::timeout(Duration::from_secs(10), opening).await??;
     assert!(Arc::ptr_eq(&borrower, stores.application()));
-    drain(&node).await?;
+    drain(&node)
+        .await
+        .map_err(|original| anyhow::Error::new(original.observation()))?;
     stores.check_access()?;
     borrower.write_batch(&[WriteOp::put("data", b"key", b"value".to_vec())])?;
     assert_eq!(
-        stores.application.get("data", b"key")?,
-        Some(b"value".to_vec())
+        stores.application.get("data", b"key")?.as_deref(),
+        Some(b"value".as_slice())
     );
     stores.shutdown().await.unwrap();
     drop(borrower);
@@ -224,8 +267,8 @@ async fn committed_pair_handoff_preserves_a_concurrent_borrower_through_initiali
     )
     .await?;
     assert_eq!(
-        reopened.application.get("data", b"key")?,
-        Some(b"value".to_vec())
+        reopened.application.get("data", b"key")?.as_deref(),
+        Some(b"value".as_slice())
     );
     reopened.shutdown().await.unwrap();
     Ok(())
@@ -259,9 +302,14 @@ async fn fresh_pair_rejects_shared_partial_and_orphan_domains_without_mutation()
                 .claim()
                 .is_err()
         );
-        drain(&node).await?;
+        drain(&node)
+            .await
+            .map_err(|original| anyhow::Error::new(original.observation()))?;
         assert_eq!(contents(&node)?, before);
-        assert_eq!(live.get("kept", b"key")?, Some(b"retained".to_vec()));
+        assert_eq!(
+            live.get("kept", b"key")?.as_deref(),
+            Some(b"retained".as_slice())
+        );
         live.shutdown().await.unwrap();
         drop(live);
         // The same partial disk catalog is rejected after its live owner drains.
@@ -272,11 +320,13 @@ async fn fresh_pair_rejects_shared_partial_and_orphan_domains_without_mutation()
                 .claim()
                 .is_err()
         );
-        drain(&node).await?;
+        drain(&node)
+            .await
+            .map_err(|original| anyhow::Error::new(original.observation()))?;
         assert_eq!(contents(&node)?, before);
     }
     let (_directory, node) = node(fixture_memory.clone(), fixture_scratch.clone())?;
-    let tx = node.db.begin_write()?;
+    let tx = node.body().db.begin_write()?;
     tx.open_table(RECORDS)?
         .insert(tenant_hash("new-tenant").as_slice(), b"unknown".as_slice())?;
     tx.commit()?;
@@ -288,7 +338,9 @@ async fn fresh_pair_rejects_shared_partial_and_orphan_domains_without_mutation()
             .claim()
             .is_err()
     );
-    drain(&node).await?;
+    drain(&node)
+        .await
+        .map_err(|original| anyhow::Error::new(original.observation()))?;
     assert_eq!(contents(&node)?, before);
     Ok(())
 }
@@ -351,8 +403,14 @@ async fn cancelled_receiver_keeps_preparation_registered_until_actual_provider_w
     let error = tokio::time::timeout(Duration::from_secs(10), draining)
         .await?
         .unwrap_err();
-    assert!(format!("{error:#}").contains("catalog initialization receiver closed"));
-    drain(&node).await?;
+    crate::test_utils::inspect_and_dispose_initializer(&error, |original| {
+        assert!(format!("{original:#}").contains("catalog initialization receiver closed"));
+    })
+    .await;
+    drop(error);
+    drain(&node)
+        .await
+        .map_err(|original| anyhow::Error::new(original.observation()))?;
     assert!(!provider.active.load(Ordering::Acquire));
     assert!(node.catalog("new-tenant")?.is_none());
     assert!(
@@ -387,7 +445,7 @@ impl KeyProvider for FailingProvider {
 
 /// Register the real preparation/delivery work, then stop after its channel send
 /// while the error ticket is still buffered. Only the test's notification is new.
-async fn buffered_failure(node: &Arc<NodeStore>) -> Result<oneshot::Receiver<Ticket>> {
+async fn buffered_failure(node: &NodeStore) -> Result<oneshot::Receiver<Ticket>> {
     let (send, receive) = oneshot::channel();
     let buffered = Arc::new(Notify::new());
     let sent = buffered.clone();
@@ -406,10 +464,11 @@ async fn buffered_failure(node: &Arc<NodeStore>) -> Result<oneshot::Receiver<Tic
         sent.notify_one();
         delivery.await
     });
-    node.initializers.lock().await.handles.push(task);
+    node.body().initializers.lock().await.handles.push(task);
     tokio::time::timeout(Duration::from_secs(5), buffered.notified()).await?;
     assert!(
         !node
+            .body()
             .initializers
             .lock()
             .await
@@ -440,11 +499,17 @@ async fn buffered_preparation_error_requires_claim_before_registry_forgets_it() 
         let result =
             tokio::time::timeout(Duration::from_secs(5), node.drain_initializers()).await?;
         if claim {
-            result?;
+            result.map_err(|original| anyhow::Error::new(original.observation()))?;
         } else {
-            assert!(result.unwrap_err().is::<PreparationFailure>());
+            let failure = result.unwrap_err();
+            crate::test_utils::inspect_and_dispose_initializer(&failure, |original| {
+                assert!(original.is::<PreparationFailure>());
+            })
+            .await;
         }
-        drain(&node).await?;
+        drain(&node)
+            .await
+            .map_err(|original| anyhow::Error::new(original.observation()))?;
         assert_unpublished(&node).await;
         assert!(node.catalog("new-tenant")?.is_none());
         assert!(
@@ -471,11 +536,17 @@ async fn cancelled_catalog_drain_preserves_unclaimed_preparation_error() -> Resu
         waiting.await?;
         Ok(())
     });
-    node.initializers.lock().await.handles.insert(0, pending);
+    node.body()
+        .initializers
+        .lock()
+        .await
+        .handles
+        .insert(0, pending);
     drop(receive);
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             if node
+                .body()
                 .initializers
                 .lock()
                 .await
@@ -490,30 +561,38 @@ async fn cancelled_catalog_drain_preserves_unclaimed_preparation_error() -> Resu
         }
     })
     .await?;
-    let mut draining = Box::pin(node.drain_initializers());
-    std::future::poll_fn(|context| {
-        assert!(draining.as_mut().poll(context).is_pending());
-        Poll::Ready(())
-    })
-    .await;
-    drop(draining);
-    {
-        let registry = node.initializers.lock().await;
-        assert_eq!(registry.handles.len(), 1);
-        assert!(
-            registry
-                .failure
-                .as_ref()
-                .unwrap()
-                .is::<PreparationFailure>()
-        );
-    }
-    release.send(()).unwrap();
+    let before = fixture_memory.snapshot();
     let error = tokio::time::timeout(Duration::from_secs(5), node.drain_initializers())
         .await?
         .unwrap_err();
-    assert!(error.is::<PreparationFailure>());
-    drain(&node).await?;
+    let address = error
+        .with_report(|report| {
+            let original = report.body_error().unwrap();
+            assert!(original.is::<PreparationFailure>());
+            std::ptr::from_ref(original) as usize
+        })
+        .await;
+    assert_eq!(node.body().initializers.lock().await.handles.len(), 1);
+    let repeated = node.drain_initializers().await.unwrap_err();
+    repeated
+        .with_report(|report| {
+            assert_eq!(
+                std::ptr::from_ref(report.body_error().unwrap()) as usize,
+                address
+            );
+        })
+        .await;
+    assert_eq!(fixture_memory.snapshot(), before);
+    crate::test_utils::inspect_and_dispose_initializer(&error, |original| {
+        assert!(original.is::<PreparationFailure>());
+    })
+    .await;
+    drop(repeated);
+    drop(error);
+    release.send(()).unwrap();
+    drain(&node)
+        .await
+        .map_err(|original| anyhow::Error::new(original.observation()))?;
     assert_unpublished(&node).await;
     Ok(())
 }
@@ -530,6 +609,7 @@ async fn admission_reaper_reports_unclaimed_preparation_failure_before_new_work(
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             if node
+                .body()
                 .initializers
                 .lock()
                 .await
@@ -547,9 +627,20 @@ async fn admission_reaper_reports_unclaimed_preparation_failure_before_new_work(
         .await
         .err()
         .expect("reaper must report retained failure");
-    assert!(error.is::<PreparationFailure>());
+    let observed = error
+        .downcast_ref::<crate::InitializerDrainObservation>()
+        .expect("nonowning reaper marker");
+    assert_eq!(observed.opening_id(), node.registered_opening_id().unwrap());
     assert_eq!(contents(&node)?, before);
-    drain(&node).await?;
+    let failure = node.drain_initializers().await.unwrap_err();
+    crate::test_utils::inspect_and_dispose_initializer(&failure, |original| {
+        assert!(original.is::<PreparationFailure>());
+    })
+    .await;
+    drop(failure);
+    drain(&node)
+        .await
+        .map_err(|original| anyhow::Error::new(original.observation()))?;
     let stores = TenantStorageSet::initialize_catalogs(
         node.clone(),
         "new-tenant".into(),
@@ -559,7 +650,9 @@ async fn admission_reaper_reports_unclaimed_preparation_failure_before_new_work(
     )
     .await?;
     stores.shutdown().await.unwrap();
-    drain(&node).await
+    drain(&node)
+        .await
+        .map_err(|original| anyhow::Error::new(original.observation()))
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -572,8 +665,15 @@ async fn production_pair_registers_one_writer_before_waiting_for_native_gate() -
     })?;
     let scratch_directory = crate::test_utils::private_tempdir()?;
     let scratch = crate::ScratchDisk::fixture(scratch_directory.path(), memory.clone());
-    let node = NodeStore::create_new(&path, crate::test_utils::NODE_STORE_ID, disk, scratch)?;
-    let held = node.db.begin_write()?;
+    let node = NodeStore::create_new(
+        &path,
+        crate::test_utils::NODE_STORE_ID,
+        disk,
+        scratch,
+        crate::test_utils::node_storage_config(),
+    )
+    .unwrap_or_else(|original| std::panic::panic_any(original));
+    let held = node.body().db.begin_write()?;
     let receive = begin(input(node.clone())).await?;
     let registered = tokio::time::timeout(Duration::from_secs(3), async {
         loop {
@@ -598,7 +698,9 @@ async fn production_pair_registers_one_writer_before_waiting_for_native_gate() -
     );
     stores.shutdown().await.unwrap();
     drop(stores);
-    drain(&node).await?;
+    drain(&node)
+        .await
+        .map_err(|original| anyhow::Error::new(original.observation()))?;
     node.shutdown().await.unwrap();
     assert_eq!(memory.storage_census().snapshot().writers, 0);
     Ok(())
@@ -615,9 +717,16 @@ async fn production_pair_rechecks_second_catalog_and_orphan_inside_one_transacti
         })?;
         let scratch_directory = crate::test_utils::private_tempdir()?;
         let scratch = crate::ScratchDisk::fixture(scratch_directory.path(), memory.clone());
-        let node = NodeStore::create_new(&path, crate::test_utils::NODE_STORE_ID, disk, scratch)?;
+        let node = NodeStore::create_new(
+            &path,
+            crate::test_utils::NODE_STORE_ID,
+            disk,
+            scratch,
+            crate::test_utils::node_storage_config(),
+        )
+        .unwrap_or_else(|original| std::panic::panic_any(original));
         let hash = tenant_hash(&CustodyStore::catalog_name("new-tenant"));
-        let held = node.db.begin_write()?;
+        let held = node.body().db.begin_write()?;
         if kind == "catalog" {
             held.open_table(CATALOG)?
                 .insert(hash.as_slice(), b"preserved catalog".as_slice())?;
@@ -649,9 +758,11 @@ async fn production_pair_rechecks_second_catalog_and_orphan_inside_one_transacti
         } else {
             "new catalog has orphan physical rows"
         }));
-        drain(&node).await?;
+        drain(&node)
+            .await
+            .map_err(|original| anyhow::Error::new(original.observation()))?;
         assert_eq!(contents(&node)?, before);
-        let read = node.db.begin_read()?;
+        let read = node.body().db.begin_read()?;
         assert!(
             read.open_table(CATALOG)?
                 .get(tenant_hash("new-tenant").as_slice())?
@@ -675,8 +786,15 @@ async fn cancelled_production_pair_waiter_drains_after_atomic_catalog_commit() -
     })?;
     let scratch_directory = crate::test_utils::private_tempdir()?;
     let scratch = crate::ScratchDisk::fixture(scratch_directory.path(), memory.clone());
-    let node = NodeStore::create_new(&path, crate::test_utils::NODE_STORE_ID, disk, scratch)?;
-    let held = node.db.begin_write()?;
+    let node = NodeStore::create_new(
+        &path,
+        crate::test_utils::NODE_STORE_ID,
+        disk,
+        scratch,
+        crate::test_utils::node_storage_config(),
+    )
+    .unwrap_or_else(|original| std::panic::panic_any(original));
+    let held = node.body().db.begin_write()?;
     let receive = begin(input(node.clone())).await?;
     tokio::time::timeout(Duration::from_secs(3), async {
         loop {
@@ -692,8 +810,14 @@ async fn cancelled_production_pair_waiter_drains_after_atomic_catalog_commit() -
     let error = tokio::time::timeout(Duration::from_secs(10), node.drain_initializers())
         .await?
         .unwrap_err();
-    assert!(format!("{error:#}").contains("catalog initialization receiver closed"));
-    drain(&node).await?;
+    crate::test_utils::inspect_and_dispose_initializer(&error, |original| {
+        assert!(format!("{original:#}").contains("catalog initialization receiver closed"));
+    })
+    .await;
+    drop(error);
+    drain(&node)
+        .await
+        .map_err(|original| anyhow::Error::new(original.observation()))?;
     assert!(node.catalog("new-tenant")?.is_some());
     assert!(
         node.catalog(&CustodyStore::catalog_name("new-tenant"))?

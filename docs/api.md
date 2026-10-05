@@ -46,9 +46,13 @@ owns initialization of its installation, Control topology, credentials and clien
 profiles; see [standalone operation](standalone.md).
 
 `TransitConfig` contains an HTTPS `endpoint`, `mount`, `key_name`, an explicit
-renewable `credential` source, optional `namespace` and `ca_pem`, and `derived`
+renewable `credential` source, a required nonempty `ca_pem` bundle, optional
+`namespace`, and `derived`
 matching the Transit key. Use a different key and authority for each application,
-custody and service domain. `FileCredentialSource` reads the installed private
+custody and service domain. Every primary and historical Transit provider uses
+only that pinned CA bundle; system certificate roots are disabled. Installed
+Transit configuration requires an absolute `ca_certificate` path.
+`FileCredentialSource` reads the installed private
 credential path for requests; a constructor-time token snapshot or environment
 fallback is not a credential source. The provider performs fresh decrypt probes
 for retained key dependencies. See [Transit compatibility and permissions](COMPATIBILITY.md).
@@ -61,8 +65,10 @@ function arguments cannot change an existing tenant's grants or deployment mode.
 Keep one live database per store and share its `Arc` among callers.
 
 The trusted embedding application authenticates the caller before constructing
-`RequestContext { authorization, principal, tenant, scopes, request_id }`. Its scopes are a
-`BTreeSet<Action>`; current tenant/collection grants must also allow the action.
+`RequestContext { authorization, principal, tenant, scopes, request_id }`, or
+`RequestContext::trusted(tenant, principal, scopes)` for an already authenticated
+service identity with a fresh request ID. Its scopes are a `BTreeSet<Action>`;
+current tenant/collection grants must also allow the action.
 Create a collection once with an admin-authorized context using
 `database.administer(context, Operation::CreateCollection(definition)).await`.
 The `CollectionDefinition` JSON for the examples below is:
@@ -82,26 +88,48 @@ JSON file used by `kasumictl create-collection`. With an authorized `context` an
 that existing collection:
 
 ```rust
-let batch: kasumi_types::MutationBatch = serde_json::from_str(r#"{
-  "idempotency_key": "invoice-creation-42",
-  "read_set": [],
-  "operations": [{
-    "op": "put", "collection": "docs", "id": "invoice-42",
-    "body": {"amount": 9007199254740993.123456789},
-    "expected": {"kind": "absent"}
-  }]
-}"#)?;
+use kasumi_types::{Filter, MutationBatch, QueryRequest};
+
+// Parse exact numbers from JSON text; an f64 would already have lost precision.
+let body: serde_json::Value = serde_json::from_str(r#"{"amount": 9007199254740993.123456789}"#)?;
+let batch = MutationBatch::with_key("invoice-creation-42").insert("docs", "invoice-42", body);
 let receipt = database.mutate(context.clone(), batch).await?;
-let document = database.get(&context, "docs", "invoice-42").await?;
+let document = database.get(&context, "docs", "invoice-42").await?; // Option<AdmittedOutput<Document>>
+let large = database
+    .query(&context, QueryRequest::new("docs").filter(Filter::new().gte("/amount", 10)))
+    .await?;
 let outcome = database.operation_receipt(&context, "invoice-creation-42").await?;
 ```
 
-`get_shared` returns an immutable `Arc<Document>` with the same authorization,
-consistency and audit checks, avoiding a JSON-body clone. Previously returned
-owned/shared plaintext cannot be recalled after revocation. Before closing,
-await `database.shutdown()`: it stops admission, drains Raft storage workers and
-pending query/proposal work, stops the key monitors, and releases owned keys and
-resident state. A canceled shutdown can be awaited again. To reopen the same
+The same batch as JSON is
+`{"idempotency_key":"invoice-creation-42","operations":[{"op":"put","collection":"docs","id":"invoice-42","body":{"amount":9007199254740993.123456789},"expected":"absent"}]}`.
+See the [query language](query-language.md) for every query and write form.
+
+`get` returns `None` for a missing document; a missing collection or denied
+access is an error. A present document is an `AdmittedOutput<Document>` containing
+an owned document and its retained memory charge. Borrow the document through `as_ref()` or dereference;
+there is no raw owned extraction. `get_shared` returns an optional immutable
+`kasumi_types::SharedDocument`, avoiding a JSON-body clone. Cloning this handle
+retains the same document and admission owner, including decoded archive
+custody for a cold read; it does not expose an `Arc<Document>`. Deliberately
+deep-cloning a borrowed `Document`, or serializing it into another allocation,
+creates caller-owned memory requiring separate accounting.
+
+Both methods use the same authorization, consistency, key-access and audit
+checks. Previously returned owned/shared plaintext cannot be recalled after
+revocation, and retaining a result does not renew authority. Completed point
+reads release their operation count and work registration before public
+handoff. A held result therefore does not keep shutdown waiting for that read,
+but its memory charge remains until the owned result or last shared clone drops.
+This point-ownership implementation and its SDK bridge pass the selected
+Engine, API, SDK, allocation and transport checks in the
+[evidence ledger](evidence/disk-backed-cache-20260930/README.md).
+These establish no performance result or complete retained-source memory bound.
+Hot-source and archive-decoder sizing still include provisional allowances.
+
+Before closing, await `database.shutdown()`: it stops admission, drains Raft
+storage workers and pending query/proposal work, stops the key monitors, and
+releases owned keys and resident state. A canceled shutdown can be awaited again. To reopen the same
 node file, shut down every database using it, then await the shared
 `audit.shutdown()`. Drop all database, tenant-store, audit and node-store handles
 before reopening. Previously returned document handles can remain alive.
@@ -112,17 +140,56 @@ also provides the separate control/security stores and shared admission limits.
 
 The authoritative wire schema is
 [`kasumi.proto`](../crates/kasumi-client/proto/kasumi.proto), package `kasumi.v1`.
-Generate clients with the normal Protobuf toolchain or use
-`kasumi_client::proto::kasumi_data_client::KasumiDataClient`.
-The independent `kasumi-client` crate also provides a typed `KasumiClient`
-wrapper for `query`, `read_snapshot`, `mutate`, staged transactions and read
-leases, constructed with
+Rust applications should start with the high-level `kasumi_client::Kasumi`
+handle. It reads the bearer file for every operation, applies a default deadline
+(30 seconds) and bounded response decoding, and returns ordinary owned values:
+
+```rust
+use kasumi_client::prelude::*;
+use serde_json::json;
+
+let db = Kasumi::from_profile("/var/lib/kasumi/profiles/default.json").await?;
+db.mutate(&MutationBatch::new().insert("invoices", "inv-1", json!({"status": "open", "amount": 42})))
+    .await?;
+let invoice: Option<Document> = db.get("invoices", "inv-1").await?;
+let page = db
+    .query(&QueryRequest::new("invoices").filter(Filter::new().eq("/status", "open")).limit(20))
+    .await?;
+let next = db.next_page(&page).await?; // None at the end
+match db.query(&QueryRequest::new("invoices").filter(Filter::new().eq("/note", "x"))).await {
+    Err(error) if error.code() == Some(ErrorCode::IndexRequired) => { /* declare an index */ }
+    other => { other?; }
+}
+```
+
+`insert`, `upsert`, `replace`, `patch` and `delete` write one document;
+`collections` lists schemas and indexes. `get_as::<T>` and
+`QueryPage::decode::<T>` deserialize bodies into application types. The same
+operations are available from a shell with `kasumictl --profile`; see the
+[command line](query-language.md#command-line). `ClientError::code()` returns Kasumi's own error code, which is more
+specific than the gRPC status. `mutate` resends the identical batch after
+`UNKNOWN_OUTCOME` or `UNAVAILABLE` until its deadline; the idempotency key makes
+that safe. All attempts within one mutation use the same credential snapshot
+to preserve the original principal. Credential renewal is observed by the next
+operation. `Kasumi` talks to one endpoint; replicated deployments with several
+members use the routing `KasumiClientPool`.
+
+Generate clients for other languages with the normal Protobuf toolchain, or use
+`kasumi_client::proto::kasumi_data_client::KasumiDataClient` directly.
+The low-level `KasumiClient` (also `Kasumi::client()`) exposes `get`, `query`,
+`read_snapshot`, `mutate`, staged transactions and read leases with explicit
+bearer tokens, decode limits and deadlines, constructed with
 `KasumiClient::connect(&KasumiClientConfig)`. The required configuration contains
 the HTTPS `endpoint`, `identity` (`kasumi_transport::TlsIdentity`),
 `trusted_ca_pem` and nonempty `server_certificate_pins`. There is no unchecked
 channel constructor. Every method takes the
 current bearer token explicitly. The client preserves structured native status
 errors and performs no implicit retries or redirects.
+
+For an already admitted decoded document,
+`AdmittedResponse<Document>::into_shared_document()` transfers the existing SDK
+owner into a `SharedDocument` without cloning the body.
+
 For an installed standalone credential, applications can load the exact private
 profile through `kasumi_client::ClientProfile`, without linking the server crate:
 
@@ -140,6 +207,9 @@ profile.require_database_binding(
 let client = kasumi_client::KasumiClient::connect(&profile.connection(false)?).await?;
 let bearer = profile.bearer()?; // Reread for each request after credential renewal.
 ```
+
+`Kasumi::from_profile` performs the same load without the binding checks; use
+the explicit form when an independently signed runtime pins the profile.
 
 The current profile has `format: 2` and requires `principal`, `tenant`,
 `family_id`, a database or Control `resource`, TLS identity and CA file paths,
@@ -167,8 +237,8 @@ alone does not grant document access.
 
 | RPC | Request | Result |
 | --- | --- | --- |
-| `Get` | `collection`, `id` | Document ID, version and exact UTF-8 `body_json` bytes |
-| `Query` | UTF-8 `query_json` bytes | Snapshot revision, rows, JSON aggregate bytes and optional cursor |
+| `Get` | `collection`, `id` | Optional document: ID, version and exact UTF-8 `body_json` bytes; absent when the document does not exist |
+| `Query` | UTF-8 `query_json` bytes ([query language](query-language.md)) | Snapshot revision, rows or aggregate groups as JSON bytes, and optional cursor |
 | `ReadSnapshot` | UTF-8 `request_json` bytes: document keys and queries | One coherent generation as UTF-8 `response_json`, including read assertions' source versions/epochs |
 | `ReadRestoreLineage` | Expected current incarnation and an existing collection | Opaque authenticated historical commitments under current collection Read permission |
 | `Mutate` | UTF-8 `batch_json` bytes, using the batch shape above | Revision and per-document versions |
@@ -192,8 +262,8 @@ leaders. Follow [routing and outcomes](administration.md#routing-and-outcomes).
 
 ## Conditional transactions and immutable collections
 
-`MutationBatch.read_set`, `CollectionDefinition.write_mode`, and
-`CollectionDefinition.retention_class` are required v1 fields. A conditional batch verifies all its read dependencies against one
+`CollectionDefinition.write_mode` and `CollectionDefinition.retention_class`
+are required v1 fields; `MutationBatch.read_set` is optional. A conditional batch verifies all its read dependencies against one
 pre-write state, then atomically applies writes across that tenant's collections.
 Reads from a separate earlier `get` or `query` are not automatically dependencies.
 Use `Database::read_snapshot` or native `ReadSnapshot` to capture coherent inputs,
@@ -233,10 +303,13 @@ for resource limits, expiry, cancellation and snapshot lease invalidation.
 
 ## MCP 2026-07-28
 
-Use the configured HTTPS `/mcp` endpoint and an OAuth access token for that
-protected resource. Protected-resource metadata is available at
-`/.well-known/oauth-protected-resource/mcp`; its configured authorization server
-issues the token. Kasumi does not pass the caller's token to Transit or peers.
+Use the configured HTTPS `/mcp` endpoint and its access token. With an installed
+external OAuth provider, protected-resource metadata is available at
+`/.well-known/oauth-protected-resource/mcp` and
+`/.well-known/oauth-protected-resource`; the configured authorization server
+issues the token. Local standalone installations use preconfigured local bearer
+tokens: both discovery URLs return 404, and authentication challenges contain
+only `Bearer`. Kasumi does not pass the caller's token to Transit or peers.
 
 The current endpoint is stateless. Each request supplies protocol and client
 metadata; legacy initialization/session flows are rejected. An authenticated
@@ -247,8 +320,8 @@ The five available tool definitions are:
 | Tool | Arguments |
 | --- | --- |
 | `kasumi_collections` | `{}` |
-| `kasumi_get` | `{"collection":"docs","id":"invoice-42"}` |
-| `kasumi_query` | The query object below |
+| `kasumi_get` | `{"collection":"docs","id":"invoice-42"}`; returns `null` when absent |
+| `kasumi_query` | A [query](query-language.md), e.g. `{"collection":"docs","filter":{"/amount":{"gte":10}}}` |
 | `kasumi_mutate` | The same mutation batch used by Rust/native |
 | `kasumi_receipt` | `{"idempotency_key":"invoice-creation-42"}` |
 
@@ -303,44 +376,41 @@ operation, not merely read access to a document.
 
 ## Queries, pages and retries
 
-Here is a query for a declared numeric `/amount` index:
+The [query language](query-language.md) is shared by every interface. A query
+for a declared numeric `/amount` index:
 
 ```json
 {
   "collection": "docs",
-  "filter": {"op": "compare", "field": "/amount", "comparison": "gte", "value": 10.25},
-  "sort": [{"field": "/amount", "direction": "asc"}],
-  "projection": ["/amount"],
+  "filter": {"/amount": {"gte": 10.25}},
+  "sort": ["/amount"],
+  "select": ["/amount"],
   "limit": 100
 }
 ```
 
-Index fields declare their scalar type. `number` uses exact JSON numbers;
-`decimal` uses decimal strings. There is no implicit coercion. Undeclared scans
-require explicit `allow_scan: true` and remain subject to candidate/work limits.
-Aggregates use `alias` and `function` (`count`, `sum`, `min`, `max`, `avg`).
-`sum`, `min`, `max` and `avg` require a numeric `field`; `avg` also requires an
-explicit `scale` from 0 to 1000 and rounds half-even. `count` returns a JSON
-integer; the other numeric results use decimal strings. An empty numeric group
-has sum `"0"` and min/max/avg `null`. Missing fields remain different from JSON null.
-
-Text queries select a declared text index, for example
-`"text":{"index":"description_ja","query":"東京","mode":"terms"}`.
-Other modes are `phrase`, `prefix` and `fuzzy`; fuzzy distance is bounded to two,
-with independent term-expansion/work caps. Declare Unicode, English or Japanese
-analysis in the collection's index definition through the administrative API.
+Filters map JSON Pointer fields to a value (equality) or to operators (`eq`,
+`ne`, `gt`, `gte`, `lt`, `lte`, `in`, `nin`, `exists`, `contains`), combined
+with `and`, `or` and `not`. Index fields declare their scalar type: `number`
+uses exact JSON numbers, `decimal` uses decimal strings, and nothing is coerced.
+Undeclared fields require explicit `allow_scan: true` and remain subject to
+candidate/work limits. Queries with `aggregate` return groups instead of rows.
+Text queries add `"search":{"index":"description_ja","query":"東京"}`.
 
 For another page, resubmit the identical query with its returned `cursor`.
-The cursor continues that historical snapshot for up to 60 seconds. Expiry,
-failover, changed policy or incarnation returns `CURSOR_EXPIRED`; current access
-is checked on every page and can instead deny access immediately.
+Every page reads the first page's snapshot for up to 60 seconds and stays
+within `limit` rows and `max_result_bytes`. Expiry, failover, changed policy or
+incarnation returns `CURSOR_EXPIRED`; current access is checked on every page
+and can instead deny access immediately. For results too large or too slow for
+one snapshot cursor, `"paging": "seek"` walks a unique index with stateless
+cursors; see [seek paging](query-language.md#seek-paging).
 
 After a lost response or `UNKNOWN_OUTCOME`, resolve the existing receipt or retry
 the **same principal, idempotency key and identical batch**. Do not generate a
-new key to discover whether the first write happened. Receipts are retained for
-24 hours by default and are included in snapshots/backups. An absent receipt
-alone does not prove that an uncertain write failed. CAS forms are
-`{"kind":"any"}`, `{"kind":"absent"}`, and
-`{"kind":"version","version":42}`.
+new key to discover whether the first write happened. Mutation receipts are
+retained permanently within explicit storage budgets and are included in
+snapshots/backups. An absent receipt
+alone does not prove that an uncertain write failed. CAS forms for `expected`
+are `"any"` (the default), `"absent"`, and `{"version":42}`.
 
 Closed control commitments and issuer epoch stops are documented in [control-lifecycle.md](control-lifecycle.md). These endpoints do not yet execute the physical target recovery runner.

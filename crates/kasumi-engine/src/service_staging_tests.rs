@@ -140,7 +140,8 @@ async fn queued_staged_finalize_checks_fresh_time_and_canceled_callers_keep_dura
                 .unwrap();
             let receipt = status.outcome.resolved().unwrap().unwrap();
             assert_eq!(
-                db.get(&context, "docs", id).await.unwrap().version,
+                db.get(&context, "docs", id).await.unwrap()
+            .expect("document exists").version,
                 receipt.revision
             );
             clock.0.store(base + 172_800_000, Ordering::SeqCst);
@@ -154,10 +155,7 @@ async fn queued_staged_finalize_checks_fresh_time_and_canceled_callers_keep_dura
             clock.0.store(base + 101, Ordering::SeqCst);
             drop(gate);
             assert_eq!(pending.await.unwrap_err().code, ErrorCode::Conflict);
-            assert_eq!(
-                db.get(&context, "docs", id).await.unwrap_err().code,
-                ErrorCode::NotFound
-            );
+            assert!(db.get(&context, "docs", id).await.unwrap().is_none());
             assert_eq!(
                 db.staged_transaction_status(&context, &reference)
                     .await

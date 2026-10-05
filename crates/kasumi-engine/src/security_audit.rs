@@ -370,6 +370,17 @@ impl SecurityAudit {
         self.writer.work.drain().await;
     }
 
+    /// Test-only census boundary for a fixture that admits no concurrent audit
+    /// requests. Reap the actual dispatched jobs before pausing maintenance;
+    /// their retained handle reservations otherwise survive a delivered reply.
+    /// The guard must be dropped before new audit requests or shutdown. This
+    /// neither seals admission nor replaces durable authentication/audit work.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub async fn quiescent_jobs_for_test(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.drain_jobs().await;
+        self.writer.maintenance.lock().await
+    }
+
     /// Close audit admission immediately. Explicit shutdown additionally drains
     /// any writes that already hold the store before stopping its key monitors.
     pub fn seal(&self) {
@@ -457,7 +468,8 @@ mod tests {
         let node = storage
             .create_new(&path, kasumi_store::test_utils::NODE_STORE_ID)
             .unwrap();
-        let weak_node = Arc::downgrade(&node);
+        let weak_node = node.locator();
+        let mut weak_node_retirement = node.clone().retire();
         let provider = Arc::new(LocalKeyProvider::new([89; 32]));
         let store = TenantStore::initialize_catalog_fixture(
             node.clone(),
@@ -508,7 +520,16 @@ mod tests {
         drop(audit);
         drop(store);
         drop(node);
-        assert!(weak_node.upgrade().is_none());
+        assert!({
+            assert_eq!(
+                weak_node_retirement.retry(),
+                kasumi_store::StorageCensusDisposition::Retired
+            );
+            matches!(
+                weak_node.try_borrow(),
+                kasumi_store::NodeStoreLookup::Missing
+            )
+        });
 
         let reopened = TenantStore::open_existing_fixture(
             storage
@@ -557,7 +578,8 @@ mod tests {
             let node = storage
                 .create_new(&path, kasumi_store::test_utils::NODE_STORE_ID)
                 .unwrap();
-            let weak_node = Arc::downgrade(&node);
+            let weak_node = node.locator();
+            let mut weak_node_retirement = node.clone().retire();
             let provider = Arc::new(LocalKeyProvider::new([83; 32]));
             let store = TenantStore::initialize_catalog_fixture(
                 node.clone(),
@@ -625,7 +647,16 @@ mod tests {
             drop(audit);
             drop(store);
             drop(node);
-            assert!(weak_node.upgrade().is_none());
+            assert!({
+                assert_eq!(
+                    weak_node_retirement.retry(),
+                    kasumi_store::StorageCensusDisposition::Retired
+                );
+                matches!(
+                    weak_node.try_borrow(),
+                    kasumi_store::NodeStoreLookup::Missing
+                )
+            });
 
             let reopened = TenantStore::open_existing_fixture(
                 storage
@@ -638,7 +669,7 @@ mod tests {
             .unwrap();
             let records = reopened.scan("security.audit").unwrap();
             assert_eq!(records.len(), 1);
-            let record: serde_json::Value = serde_json::from_slice(&records[0].1).unwrap();
+            let record: serde_json::Value = serde_json::from_slice(records[0].value()).unwrap();
             assert_eq!(record["event"]["kind"], "access_denied");
             assert_eq!(record["event"]["request_id"], "cancelled-denial");
             assert_eq!(
@@ -671,7 +702,8 @@ mod tests {
         let node = storage
             .create_new(&path, kasumi_store::test_utils::NODE_STORE_ID)
             .unwrap();
-        let weak_node = Arc::downgrade(&node);
+        let weak_node = node.locator();
+        let mut weak_node_retirement = node.clone().retire();
         let provider = Arc::new(LocalKeyProvider::new([85; 32]));
         let store = TenantStore::initialize_catalog_fixture(
             node.clone(),
@@ -731,7 +763,16 @@ mod tests {
         drop(third);
         drop(store);
         drop(node);
-        assert!(weak_node.upgrade().is_none());
+        assert!({
+            assert_eq!(
+                weak_node_retirement.retry(),
+                kasumi_store::StorageCensusDisposition::Retired
+            );
+            matches!(
+                weak_node.try_borrow(),
+                kasumi_store::NodeStoreLookup::Missing
+            )
+        });
 
         let reopened = TenantStore::open_existing_fixture(
             storage
@@ -746,7 +787,7 @@ mod tests {
         assert_eq!(records.len(), 3);
         let mut identities = std::collections::BTreeSet::new();
         for (sequence, (_, bytes)) in records.into_iter().enumerate() {
-            let record: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            let record: serde_json::Value = serde_json::from_slice(bytes).unwrap();
             assert_eq!(record["sequence"], sequence);
             identities.insert(record["event"]["request_id"].as_str().unwrap().to_owned());
         }
@@ -796,7 +837,7 @@ mod tests {
         let clock = Arc::new(ManualClock::new());
         let provider = Arc::new(LocalKeyProvider::new([84; 32]));
         let store = TenantStore::initialize_catalog_fixture_with_clock(
-            NodeStore::open_fixture_backend_on_disk(
+            NodeStore::create_fixture_backend_on_disk(
                 disk.clone(),
                 kasumi_store::test_utils::storage_admission(),
                 storage.persistent.clone(),
@@ -866,8 +907,8 @@ mod tests {
         reopened.record(subsequent).await.unwrap();
         let records = recovered.scan("security.audit").unwrap();
         assert_eq!(records.len(), 2);
-        let first: serde_json::Value = serde_json::from_slice(&records[0].1).unwrap();
-        let second: serde_json::Value = serde_json::from_slice(&records[1].1).unwrap();
+        let first: serde_json::Value = serde_json::from_slice(records[0].value()).unwrap();
+        let second: serde_json::Value = serde_json::from_slice(records[1].value()).unwrap();
         assert_eq!(first["sequence"], 0);
         assert_eq!(first["event"]["request_id"], "cancelled-denial");
         assert_eq!(second["sequence"], 1);
@@ -881,7 +922,7 @@ mod tests {
             drained
                 .issues()
                 .iter()
-                .any(|issue| Arc::ptr_eq(issue, &original))
+                .any(|issue| kasumi_types::drain::DrainIssueRef::ptr_eq(issue, &original))
         );
         assert_eq!(original.component(), "audit persistence");
         let repeated = audit.shutdown().await.unwrap_err();
@@ -893,7 +934,7 @@ mod tests {
             repeated
                 .issues()
                 .iter()
-                .any(|issue| Arc::ptr_eq(issue, &original))
+                .any(|issue| kasumi_types::drain::DrainIssueRef::ptr_eq(issue, &original))
         );
         reopened.shutdown().await.unwrap();
     }

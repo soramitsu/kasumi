@@ -105,6 +105,9 @@ class SmokeTests(unittest.TestCase):
                 policy = root / "directory-policy.json"
                 policy.write_bytes(b'{"extent_bytes":1048576,"max_entries":32768}\n')
                 runner.args.directory_policy = policy
+                allocation = root / "file-allocation-policy.json"
+                allocation.write_bytes(b'{"maximum_extra_extent_bytes":1048576}\n')
+                runner.args.file_allocation_policy = allocation
                 runner.args.build_evidence = report
                 runner.args.binaries = incoming
                 def source_command(name, command):
@@ -131,6 +134,8 @@ class SmokeTests(unittest.TestCase):
                         self.assertEqual(runner.record["build_overall_status"], "failed")
                         self.assertEqual((output / "provenance/directory-policy.json").read_bytes(), policy.read_bytes())
                         self.assertEqual(runner.record["directory_policy"]["sha256"], hashlib.sha256(policy.read_bytes()).hexdigest())
+                        self.assertEqual((output / "provenance/file-allocation-policy.json").read_bytes(), allocation.read_bytes())
+                        self.assertEqual(runner.record["file_allocation_policy"]["sha256"], hashlib.sha256(allocation.read_bytes()).hexdigest())
                         self.assertEqual((output / "provenance/build-evidence.json").read_bytes(), report.read_bytes())
                         for binary, path in runner.binaries.items():
                             self.assertEqual(path.parent, output / "binaries")
@@ -243,6 +248,76 @@ class SmokeTests(unittest.TestCase):
     def runner(self, root):
         return smoke.Runner(SimpleNamespace(output=root, stop_timeout=1, command_timeout=1,
                                             ready_timeout=1, execution_description="pure mocked tests"))
+
+    def test_init_retains_explicit_private_audit_map_and_rejects_obsolete_output(self):
+        for output_shape in ("exact", "missing", "empty", "legacy", "changed"):
+            with self.subTest(output_shape=output_shape), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                (root / "provenance").mkdir(mode=0o700)
+                runner = self.runner(root)
+                runner.binaries = {"kasumid": root / "mock-kasumid"}
+                runner.directory_policy_file = root / "directory-policy.json"
+                runner.file_allocation_policy_file = root / "file-allocation-policy.json"
+                runner.record["directory_policy"] = {"policy": {"extent_bytes": 1048576, "max_entries": 32768}}
+                runner.record["file_allocation_policy"] = {"policy": {"maximum_extra_extent_bytes": 0}}
+                installation = root / "installation"
+                network = {"mcp_listen": "127.0.0.1:19443", "mcp_public_url": "https://localhost:19443/mcp",
+                           "native_listen": "127.0.0.1:19444", "admin_listen": "127.0.0.1:19445"}
+                def init_command(name, command):
+                    self.assertEqual(name, "init")
+                    self.assertIn("--tenant-audit-placements", command)
+                    selected = command[command.index("--tenant-audit-placements") + 1]
+                    self.assertEqual(selected, root / "provenance/tenant-audit-placements.json")
+                    placements = smoke.read_json(selected)
+                    self.assertEqual(placements, {
+                        "__kasumi_control": {"kind": "local_replica_only"},
+                        "capacity-smoke": {"kind": "local_replica_only"}})
+                    self.assertEqual(selected.stat().st_mode & 0o777, 0o600)
+                    evidence = smoke.read_json(root / "evidence.json")["tenant_audit_placements"]
+                    self.assertEqual(evidence["placements"], placements)
+                    self.assertEqual(evidence["sha256"], smoke.sha256(selected))
+                    config = {"mode": "standalone", "serving_authorities": {}, "replication": None,
+                              "persistent_disk": {"directory_policy": runner.record["directory_policy"]["policy"],
+                                                  "file_allocation_policy": runner.record["file_allocation_policy"]["policy"]},
+                              "mcp": {"listen": network["mcp_listen"], "protocol": {"public_url": network["mcp_public_url"]}},
+                              "native": {"listen": network["native_listen"]}, "admin": {"listen": network["admin_listen"]},
+                              "tenant_audit_placements": placements}
+                    if output_shape == "missing":
+                        del config["tenant_audit_placements"]
+                    elif output_shape == "empty":
+                        config["tenant_audit_placements"] = {}
+                    elif output_shape == "legacy":
+                        config["tenant_audit_archives"] = {}
+                    elif output_shape == "changed":
+                        del config["tenant_audit_placements"]["__kasumi_control"]
+                    installation.mkdir(mode=0o700)
+                    smoke.write_json(installation / "kasumi.json", config)
+                with patch.object(runner, "command", side_effect=init_command) as dispatch:
+                    if output_shape == "exact":
+                        runner.initialize_installation(installation, network)
+                    else:
+                        with self.assertRaises(ValueError):
+                            runner.initialize_installation(installation, network)
+                    self.assertEqual(dispatch.call_count, 1)
+
+    def test_required_file_allocation_policy_is_exact_strict_and_accepts_explicit_zero(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "allocation.json"
+            for allowance in (0, 1048576):
+                raw = ('{ "maximum_extra_extent_bytes": ' + str(allowance) + ' }\n').encode()
+                path.write_bytes(raw)
+                copied, policy = smoke.load_file_allocation_policy(path)
+                self.assertEqual(copied, raw)
+                self.assertEqual(policy, {"maximum_extra_extent_bytes": allowance})
+            for invalid in [b'{}', b'{"maximum_extra_extent_bytes":true}',
+                            b'{"maximum_extra_extent_bytes":-1}',
+                            b'{"maximum_extra_extent_bytes":9223372036854775808}',
+                            b'{"maximum_extra_extent_bytes":1,"legacy_default":true}',
+                            b'{"maximum_extra_extent_bytes":1,"maximum_extra_extent_bytes":2}',
+                            b' ' * 4097]:
+                path.write_bytes(invalid)
+                with self.assertRaises((ValueError, AssertionError, RuntimeError)):
+                    smoke.load_file_allocation_policy(path)
 
     def test_timeout_retains_failure_logs_and_drains_only_the_owned_process_group(self):
         with tempfile.TemporaryDirectory() as directory:

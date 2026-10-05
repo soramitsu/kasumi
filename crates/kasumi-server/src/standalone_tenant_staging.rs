@@ -15,6 +15,7 @@ pub struct StageTenantRequest {
     pub incarnation: Uuid,
     pub initial_policy: Policy,
     pub initial_limits: kasumi_types::Limits,
+    pub audit_placement: TenantAuditPlacementConfig,
 }
 impl StageTenantRequest {
     fn validate(&self) -> Result<()> {
@@ -27,11 +28,12 @@ impl StageTenantRequest {
             !self.tenant.starts_with("kasumi.") && !self.tenant.starts_with("__kasumi_"),
             "reserved tenant cannot be staged"
         );
-        kasumi_engine::TenantEngine::new(
-            self.tenant.clone(),
-            self.incarnation.to_string(),
-            self.initial_policy.clone(),
-            self.initial_limits.clone(),
+        self.audit_placement.validate()?;
+        kasumi_engine::validate_genesis_inputs(
+            &self.tenant,
+            &self.incarnation.to_string(),
+            &self.initial_policy,
+            &self.initial_limits,
         )?;
         Ok(())
     }
@@ -122,6 +124,11 @@ impl Record {
             after.database_id == self.database_id
                 && after.database_path == owner.config.database_path,
             "staged configuration changes physical installation"
+        );
+        ensure!(
+            serde_json::to_vec(after.tenant_audit_placement(&self.request.tenant)?)?
+                == serde_json::to_vec(&self.request.audit_placement)?,
+            "staged tenant audit placement differs"
         );
         let tenant = after
             .tenants
@@ -377,6 +384,13 @@ async fn stage_owned(
                 initial_limits: request.initial_limits.clone(),
                 incarnation: Some(request.incarnation.to_string()),
             });
+            ensure!(
+                after
+                    .tenant_audit_placements
+                    .insert(request.tenant.clone(), request.audit_placement.clone())
+                    .is_none(),
+                "staged tenant already has an audit placement"
+            );
             after.validate()?;
             let after_json = serde_json::to_string_pretty(&after)?;
             ensure!(

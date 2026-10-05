@@ -121,7 +121,9 @@ fn apply(db: &FixtureEngine, timestamp_ms: u64, operation: Operation) -> Result<
 }
 fn engine(limits: Limits) -> FixtureEngine {
     let db = FixtureEngine::new(
-        kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 32),
+        // Receipt and terminal scratch tables overlap during publication and
+        // restore. Match the mutation/schema fixtures' slot allowance; keep bytes fixed.
+        kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 64),
         "tenant".into(),
         "incarnation".into(),
         policy(),
@@ -194,7 +196,7 @@ fn large_transaction_stays_invisible_then_publishes_one_generation_and_permanent
     assert_eq!(committed.state.staged_terminal_head.count, 1);
     let terminal_head = committed.state.staged_terminal_head.clone();
     let recovered = FixtureEngine::new(
-        kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 32),
+        kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 64),
         "tenant".into(),
         "incarnation".into(),
         policy(),
@@ -573,7 +575,7 @@ async fn open(
 ) -> (
     Arc<kasumi_engine::Database>,
     Arc<kasumi_engine::SecurityAudit>,
-    Arc<NodeStore>,
+    NodeStore,
 ) {
     let node = (if create {
         physical
@@ -911,7 +913,8 @@ async fn coherent_lease_pages_cover_large_dependencies_and_scans_with_live_write
         assert_eq!(page.read_assertions().len(), 151);
     }
     let mut after = None;
-    let mut scanned = vec![];
+    let mut scanned = 0;
+    let mut previous_id: Option<String> = None;
     loop {
         let page = db
             .scan_snapshot_page(
@@ -926,16 +929,35 @@ async fn coherent_lease_pages_cover_large_dependencies_and_scans_with_live_write
             .await
             .unwrap();
         assert_eq!(page.snapshot.revision, lease.revision);
-        scanned.extend(page.documents);
-        after = page.next_after_id;
+        if let Some(first) = page.documents.first() {
+            if let Some(previous) = &previous_id {
+                assert!(previous < &first.id);
+            }
+            if scanned == 0 {
+                assert_eq!(first.body["n"], 0);
+            }
+        }
+        assert!(
+            page.documents
+                .windows(2)
+                .all(|pair| pair[0].id < pair[1].id)
+        );
+        assert!(
+            !page
+                .documents
+                .iter()
+                .any(|document| document.id == "row9999")
+        );
+        scanned += page.documents.len();
+        if let Some(last) = page.documents.last() {
+            previous_id = Some(last.id.clone());
+        }
+        after = page.next_after_id.clone();
         if after.is_none() {
             break;
         }
     }
-    assert_eq!(scanned.len(), 1101);
-    assert!(scanned.windows(2).all(|pair| pair[0].id < pair[1].id));
-    assert_eq!(scanned[0].body["n"], 0);
-    assert!(!scanned.iter().any(|document| document.id == "row9999"));
+    assert_eq!(scanned, 1101);
     assert!(
         db.engine()
             .generation()

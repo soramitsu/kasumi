@@ -72,15 +72,13 @@ impl InstalledRetirementSource {
         &self,
         context: RequestContext,
         request: RetireSourceRequest,
-    ) -> Result<VerifiedRetirementReceipt> {
+    ) -> std::result::Result<VerifiedRetirementReceipt, crate::SnapshotFailure> {
         match self {
             Self::Serving(database) => database.retire_source(context, request).await,
-            Self::RetiredCustody(custody) => {
-                custody
-                    .verify_retirement_receipt(context, &request.reference()?)
-                    .await
-            }
-            Self::RecoveringControl { .. } => Err(Self::recovering()),
+            Self::RetiredCustody(custody) => Ok(custody
+                .verify_retirement_receipt(context, &request.reference()?)
+                .await?),
+            Self::RecoveringControl { .. } => Err(Self::recovering().into()),
         }
     }
     pub async fn abort_retirement(

@@ -16,7 +16,10 @@ impl VerifiedTargetInitialMembershipStatus {
     pub fn observation(&self) -> &TargetInitialMembershipStatusObservation {
         &self.observation
     }
-    pub async fn release(&self, operation: &TargetOperation) -> Result<()> {
+    pub async fn release(
+        &self,
+        operation: &TargetOperation,
+    ) -> std::result::Result<(), crate::SnapshotFailure> {
         self.release.check(operation).map_err(unknown)?;
         let fresh = self
             .database
@@ -38,11 +41,11 @@ impl VerifiedTargetInitialMembershipStatus {
             || fresh.applied_log_index < self.observation.applied_log_index
             || fresh.committed_log_index < self.observation.committed_log_index
         {
-            return Err(unknown(
-                "initial membership inspection changed before release",
-            ));
+            return Err(unknown("initial membership inspection changed before release").into());
         }
-        self.release.check(operation).map_err(unknown)
+        self.release
+            .check(operation)
+            .map_err(|error| unknown(error).into())
     }
 }
 impl Database {
@@ -88,7 +91,7 @@ impl Database {
         journal: &TargetJournal,
         control: &VerifiedControlIntent,
         input: &TargetInitialMembershipStatusInput,
-    ) -> Result<TargetInitialMembershipStatusObservation> {
+    ) -> std::result::Result<TargetInitialMembershipStatusObservation, crate::SnapshotFailure> {
         let intent = self.initial_inspection_context(operation, journal, control, input)?;
         let voters = input
             .quorum
@@ -119,11 +122,12 @@ impl Database {
         {
             return Err(unknown(
                 "initial inspection requires installed actual current quorum leader",
-            ));
+            )
+            .into());
         }
         let history = journal
             .resolve_initial_inspection_start_history(control, input, self.stores())
-            .map_err(unknown)?;
+            .map_err(history_unknown)?;
         let local = &history;
         let committed = kasumi_raft::read_initialization_association(self.stores())
             .map_err(unknown)?
@@ -138,9 +142,9 @@ impl Database {
         if association.association.control_root != control.observation().root
             || local.first_log_id().index != committed.position.index
         {
-            return Err(unknown(
-                "current quorum cause differs from original installed history",
-            ));
+            return Err(
+                unknown("current quorum cause differs from original installed history").into(),
+            );
         }
         let observation = TargetInitialMembershipStatusObservation {
             association,
@@ -164,7 +168,7 @@ impl Database {
         journal: Arc<TargetJournal>,
         control: VerifiedControlIntent,
         input: TargetInitialMembershipStatusInput,
-    ) -> Result<VerifiedTargetInitialMembershipStatus> {
+    ) -> std::result::Result<VerifiedTargetInitialMembershipStatus, crate::SnapshotFailure> {
         let reservation = self
             .admission()
             .reserve(4 << 20, Some(operation.token.clone()))?;
@@ -188,6 +192,12 @@ fn unknown(_: impl std::fmt::Display) -> Error {
         ErrorCode::UnknownOutcome,
         "initial membership inspection is not positively resolved",
     )
+}
+fn history_unknown(original: crate::SnapshotFailure) -> crate::SnapshotFailure {
+    match original {
+        crate::SnapshotFailure::Operation(original) => unknown(original).into(),
+        original => original,
+    }
 }
 fn denied(_: impl std::fmt::Display) -> Error {
     Error::new(

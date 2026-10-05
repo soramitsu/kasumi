@@ -1,9 +1,10 @@
 use anyhow::{Context, Result, ensure};
 use kasumi_raft::{
-    AppliedEntryContext, AppliedResponse, RetiredSnapshotState, StateMachineBackend,
+    AppliedEntryContext, AppliedInput, AppliedResponse, ApplyPublisher, RetiredSnapshotState,
+    StateMachineBackend,
 };
 use kasumi_serving::*;
-use kasumi_store::{TenantStore, WriteOp};
+use kasumi_store::{ScratchOperationFailure, TenantStore, WriteOp};
 use kasumi_types::{Error, ErrorCode, RequestContext};
 use serde::{Deserialize, Serialize};
 
@@ -12,6 +13,61 @@ use std::{
     sync::{Arc, Mutex},
 };
 use uuid::Uuid;
+
+// Only explicit semantic failures may become permanent typed rejections.
+// Storage, decoding and staging failures retain their original anyhow owner and
+// return before the publisher is called.
+#[derive(Debug)]
+struct PreparedRejection(Error);
+impl std::fmt::Display for PreparedRejection {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self.0, formatter)
+    }
+}
+impl std::error::Error for PreparedRejection {}
+fn reject(error: Error) -> anyhow::Error {
+    anyhow::Error::new(PreparedRejection(error))
+}
+fn reject_conflict(message: impl std::fmt::Display) -> anyhow::Error {
+    reject(conflict(&message.to_string()))
+}
+fn prepared_outcome<T>(result: Result<T>) -> Result<kasumi_types::Result<T>> {
+    match result {
+        Ok(value) => Ok(Ok(value)),
+        Err(error) => match error.downcast::<PreparedRejection>() {
+            Ok(rejection) => Ok(Err(rejection.0)),
+            Err(error) => Err(error),
+        },
+    }
+}
+type ScratchResult<T> = std::result::Result<T, ScratchOperationFailure>;
+
+// Only an ordinary semantic rejection becomes a durable rejection receipt.
+// Creation carries its original registered native owner through the apply seam.
+fn prepared_scratch_outcome<T>(result: ScratchResult<T>) -> ScratchResult<kasumi_types::Result<T>> {
+    match result {
+        Ok(value) => Ok(Ok(value)),
+        Err(ScratchOperationFailure::Operation(error)) => {
+            prepared_outcome(Err(error)).map_err(ScratchOperationFailure::Operation)
+        }
+        Err(original) => Err(original),
+    }
+}
+fn rejection_error<E: From<anyhow::Error>>(original: anyhow::Error) -> E {
+    E::from(original)
+}
+macro_rules! reject_unless {
+    ($condition:expr, $($message:tt)*) => {
+        if !$condition {
+            return Err(rejection_error(reject_conflict(format_args!($($message)*))));
+        }
+    };
+}
+macro_rules! reject_bail {
+    ($($message:tt)*) => {
+        return Err(rejection_error(reject_conflict(format_args!($($message)*))))
+    };
+}
 
 #[path = "lifecycle_state.rs"]
 pub(crate) mod lifecycle_state;
@@ -485,6 +541,7 @@ impl Backend {
         &self,
         position: &AppliedEntryContext,
         prepared: PreparedCommand,
+        publication_writes: &mut Vec<WriteOp>,
     ) -> Result<kasumi_types::Result<AuthorityReceipt>> {
         let mut meta = self.meta()?;
         let request = &prepared.command;
@@ -528,13 +585,13 @@ impl Backend {
         }
         let mut tenant = self.tenant_record(&request.tenant)?;
         let mut additions = BTreeMap::new();
-        let outcome = self.effect(
+        let outcome = prepared_outcome(self.effect(
             &mut meta,
             &mut tenant,
             &prepared,
             position.log_id.index,
             &mut additions,
-        );
+        ))?;
         let outcome = match outcome {
             Ok(value) => value,
             Err(error) => AuthorityOutcome::Rejected {
@@ -692,7 +749,7 @@ impl Backend {
         }
         meta.revision = position.log_id.index;
         writes.push(WriteOp::put(NS, META, serde_json::to_vec(&meta)?));
-        self.store.write_batch(&writes)?;
+        *publication_writes = writes;
         Ok(Ok(receipt))
     }
     fn effect(
@@ -702,20 +759,19 @@ impl Backend {
         prepared: &PreparedCommand,
         accepted_revision: u64,
         additions: &mut BTreeMap<String, Record>,
-    ) -> kasumi_types::Result<AuthorityOutcome> {
+    ) -> Result<AuthorityOutcome> {
         let request = &prepared.command;
         match &request.action {
             AuthorityAction::Enroll { incarnation, nodes } => {
-                Self::check_new_verifier_admission(meta)?;
+                Self::check_new_verifier_admission(meta).map_err(reject)?;
                 if self
-                    .record(&key_target_stop(&request.tenant, *incarnation))
-                    .map_err(unavailable)?
+                    .record(&key_target_stop(&request.tenant, *incarnation))?
                     .is_some()
                 {
-                    return Err(conflict("target incarnation is permanently stopped"));
+                    return Err(reject_conflict("target incarnation is permanently stopped"));
                 }
                 if tenant.is_some() {
-                    return Err(conflict("tenant already enrolled"));
+                    return Err(reject_conflict("tenant already enrolled"));
                 }
                 *tenant = Some(TenantRecord {
                     tenant: request.tenant.clone(),
@@ -737,12 +793,12 @@ impl Backend {
             } => {
                 let record = tenant
                     .as_mut()
-                    .ok_or_else(|| conflict("tenant is not enrolled"))?;
+                    .ok_or_else(|| reject_conflict("tenant is not enrolled"))?;
                 if record.incarnation != *incarnation
                     || record.authority_epoch != *authority_epoch
                     || record.fence.is_some()
                 {
-                    return Err(conflict(
+                    return Err(reject_conflict(
                         "source incarnation is not the active unfenced epoch",
                     ));
                 }
@@ -756,35 +812,32 @@ impl Backend {
                 source_epoch,
                 target,
             } => {
-                Self::check_new_verifier_admission(meta)?;
+                Self::check_new_verifier_admission(meta).map_err(reject)?;
                 let record = tenant
                     .as_ref()
-                    .ok_or_else(|| conflict("source is not enrolled"))?;
+                    .ok_or_else(|| reject_conflict("source is not enrolled"))?;
                 if record.incarnation != *source_incarnation
                     || record.authority_epoch != *source_epoch
                     || record.fence.is_some()
                 {
-                    return Err(conflict(
+                    return Err(reject_conflict(
                         "target preparation needs the active unfenced source epoch",
                     ));
                 }
                 if self
-                    .record(&key_target_stop(&request.tenant, target.incarnation))
-                    .map_err(unavailable)?
+                    .record(&key_target_stop(&request.tenant, target.incarnation))?
                     .is_some()
                 {
-                    return Err(conflict("target incarnation is permanently stopped"));
+                    return Err(reject_conflict("target incarnation is permanently stopped"));
                 }
                 if self
-                    .record(&key_preparation(&request.tenant, target.incarnation))
-                    .map_err(unavailable)?
+                    .record(&key_preparation(&request.tenant, target.incarnation))?
                     .is_some()
                     || self
-                        .record(&key_incarnation(&request.tenant, target.incarnation))
-                        .map_err(unavailable)?
+                        .record(&key_incarnation(&request.tenant, target.incarnation))?
                         .is_some()
                 {
-                    return Err(conflict(
+                    return Err(reject_conflict(
                         "target incarnation already has a permanent preparation identity",
                     ));
                 }
@@ -805,53 +858,50 @@ impl Backend {
                 ..
             } => {
                 self.check_target_verifier_admission(meta, &target.nodes)?;
-                self.validate_activation_control(&prepared.command, prepared.admitted_at_ms)
-                    .map_err(|_| conflict("committed activation authority differs or expired"))?;
+                self.validate_activation_control(&prepared.command, prepared.admitted_at_ms)?;
                 let record = tenant
                     .as_mut()
-                    .ok_or_else(|| conflict("tenant is not enrolled"))?;
-                let fence = record
-                    .fence
-                    .as_ref()
-                    .ok_or_else(|| conflict("source incarnation has no authoritative fence"))?;
+                    .ok_or_else(|| reject_conflict("tenant is not enrolled"))?;
+                let fence = record.fence.as_ref().ok_or_else(|| {
+                    reject_conflict("source incarnation has no authoritative fence")
+                })?;
                 if fence.command.command_id != *fence_id
-                    || fence.digest().map_err(unavailable)? != *fence_digest
+                    || fence.digest()? != *fence_digest
                     || prepared.drained_fence.as_ref() != Some(fence_digest)
                 {
-                    return Err(conflict("exact source fence lacks a live complete drain"));
+                    return Err(reject_conflict(
+                        "exact source fence lacks a live complete drain",
+                    ));
                 }
                 target
                     .validate(&request.tenant, record.incarnation)
-                    .map_err(|_| conflict("backup or target incarnation differs"))?;
+                    .map_err(|_| reject_conflict("backup or target incarnation differs"))?;
                 if self
-                    .record(&key_target_stop(&request.tenant, target.incarnation))
-                    .map_err(unavailable)?
+                    .record(&key_target_stop(&request.tenant, target.incarnation))?
                     .is_some()
                 {
-                    return Err(conflict("target incarnation is permanently stopped"));
+                    return Err(reject_conflict("target incarnation is permanently stopped"));
                 }
                 if self
-                    .record(&key_incarnation(&request.tenant, target.incarnation))
-                    .map_err(unavailable)?
+                    .record(&key_incarnation(&request.tenant, target.incarnation))?
                     .is_some()
                 {
-                    return Err(conflict(
+                    return Err(reject_conflict(
                         "an incarnation can never be reactivated after replacement",
                     ));
                 }
-                if let Some(preparation) = self
-                    .record(&key_preparation(&request.tenant, target.incarnation))
-                    .map_err(unavailable)?
+                if let Some(preparation) =
+                    self.record(&key_preparation(&request.tenant, target.incarnation))?
                     && !matches!(preparation, Record::Preparation(ref value) if value.target == *target && value.source_incarnation == record.incarnation && value.source_epoch == record.authority_epoch)
                 {
-                    return Err(conflict(
+                    return Err(reject_conflict(
                         "activation differs from permanent target preparation",
                     ));
                 }
                 record.authority_epoch = record
                     .authority_epoch
                     .checked_add(1)
-                    .ok_or_else(|| conflict("authority epoch exhausted"))?;
+                    .ok_or_else(|| reject_conflict("authority epoch exhausted"))?;
                 record.incarnation = target.incarnation;
                 record.nodes = target.nodes.clone();
                 record.recovery_checkpoint = Some(target.checkpoint.clone());
@@ -866,13 +916,12 @@ impl Backend {
                 source_epoch,
                 target,
             } => {
-                if let Some(Record::Incarnation(accepted)) = self
-                    .record(&key_incarnation(&request.tenant, target.incarnation))
-                    .map_err(unavailable)?
+                if let Some(Record::Incarnation(accepted)) =
+                    self.record(&key_incarnation(&request.tenant, target.incarnation))?
                 {
                     if !matches!(&accepted.receipt.outcome,AuthorityOutcome::Activated { target:actual,authority_epoch } if actual==target && *authority_epoch==source_epoch.saturating_add(1))
                     {
-                        return Err(conflict(
+                        return Err(reject_conflict(
                             "target has another permanent incarnation identity",
                         ));
                     }
@@ -880,31 +929,29 @@ impl Backend {
                         original: Box::new(accepted.receipt),
                     });
                 }
-                if let Some(record) = self
-                    .record(&key_target_stop(&request.tenant, target.incarnation))
-                    .map_err(unavailable)?
+                if let Some(record) =
+                    self.record(&key_target_stop(&request.tenant, target.incarnation))?
                 {
                     return match record {
                         Record::TargetStop(prior) if matches!(&prior.outcome,AuthorityOutcome::TargetStopped {source_incarnation:source,source_epoch:epoch,target:actual} if source==source_incarnation && epoch==source_epoch && actual==target) => {
                             Ok(prior.outcome)
                         }
-                        _ => Err(conflict("target stop permanent identity differs")),
+                        _ => Err(reject_conflict("target stop permanent identity differs")),
                     };
                 }
                 let source = tenant
                     .as_ref()
-                    .ok_or_else(|| conflict("source is not enrolled"))?;
+                    .ok_or_else(|| reject_conflict("source is not enrolled"))?;
                 if source.incarnation != *source_incarnation
                     || source.authority_epoch != *source_epoch
                 {
-                    return Err(conflict("target stop source epoch differs"));
+                    return Err(reject_conflict("target stop source epoch differs"));
                 }
-                if let Some(record) = self
-                    .record(&key_preparation(&request.tenant, target.incarnation))
-                    .map_err(unavailable)?
+                if let Some(record) =
+                    self.record(&key_preparation(&request.tenant, target.incarnation))?
                     && !matches!(record,Record::Preparation(ref p) if p.source_incarnation==*source_incarnation && p.source_epoch==*source_epoch && p.target==*target)
                 {
-                    return Err(conflict("target stop preparation differs"));
+                    return Err(reject_conflict("target stop preparation differs"));
                 }
                 Ok(AuthorityOutcome::TargetStopped {
                     source_incarnation: *source_incarnation,
@@ -913,24 +960,19 @@ impl Backend {
                 })
             }
             AuthorityAction::StopActivation { original } => {
-                let original_digest = original.digest().map_err(unavailable)?;
-                let outcome = match self
-                    .receipt(&request.tenant, original.command_id)
-                    .map_err(unavailable)?
-                {
+                let original_digest = original.digest()?;
+                let outcome = match self.receipt(&request.tenant, original.command_id)? {
                     Some(receipt) => {
                         if receipt.command_digest != original_digest {
-                            return Err(conflict("original permanent activation identity differs"));
+                            return Err(reject_conflict(
+                                "original permanent activation identity differs",
+                            ));
                         }
                         receipt
                     }
                     None => AuthorityReceipt {
                         authority_id: self.installation.manifest.authority_id,
-                        manifest_digest: self
-                            .installation
-                            .manifest
-                            .digest()
-                            .map_err(unavailable)?,
+                        manifest_digest: self.installation.manifest.digest()?,
                         partition: self.installation.partition,
                         command: *original.clone(),
                         command_digest: original_digest.clone(),
@@ -953,7 +995,7 @@ impl Backend {
                 meta.policy_epoch = meta
                     .policy_epoch
                     .checked_add(1)
-                    .ok_or_else(|| conflict("authority policy epoch exhausted"))?;
+                    .ok_or_else(|| reject_conflict("authority policy epoch exhausted"))?;
                 meta.administrators = administrators.clone();
                 Ok(AuthorityOutcome::AdministratorsReplaced {
                     policy_epoch: meta.policy_epoch,
@@ -963,46 +1005,78 @@ impl Backend {
     }
 }
 impl StateMachineBackend for Backend {
-    fn apply(&self, position: &AppliedEntryContext, bytes: &[u8]) -> Result<AppliedResponse> {
-        ensure!(
-            bytes.len() <= MAX_RECORD_BYTES,
-            "authority command byte limit exceeded"
-        );
+    fn apply_with_publisher(
+        &self,
+        position: &AppliedEntryContext,
+        input: AppliedInput<'_>,
+        publisher: &mut dyn ApplyPublisher,
+    ) -> ScratchResult<()> {
         let _lock = self
             .mutation
             .lock()
             .map_err(|_| anyhow::anyhow!("authority state poisoned"))?;
-        let prepared: PreparedOperation = serde_json::from_slice(bytes)?;
-        let bytes = match prepared {
-            PreparedOperation::Coverage(prepared) => {
-                serde_json::to_vec(&self.reduce_coverage(position, *prepared)?)?
+        // Both the response and every application write are prepared before the
+        // joint application/custody publication. An early typed rejection leaves
+        // this batch empty, including when a reducer built private partial work.
+        let mut writes = Vec::new();
+        let data = match input {
+            AppliedInput::Command(bytes) => {
+                let prepared = ScratchOperationFailure::ordinary(|| {
+                    ensure!(
+                        bytes.len() <= MAX_RECORD_BYTES,
+                        "authority command byte limit exceeded"
+                    );
+                    Ok(serde_json::from_slice::<PreparedOperation>(bytes)?)
+                })?;
+                match prepared {
+                    PreparedOperation::Coverage(prepared) => {
+                        ScratchOperationFailure::ordinary(|| {
+                            Ok(serde_json::to_vec(&self.reduce_coverage(
+                                position,
+                                *prepared,
+                                &mut writes,
+                            )?)?)
+                        })?
+                    }
+                    PreparedOperation::Maintenance(prepared) => {
+                        let outcome = self.reduce_maintenance(position, *prepared, &mut writes)?;
+                        ScratchOperationFailure::ordinary(|| Ok(serde_json::to_vec(&outcome)?))?
+                    }
+                    PreparedOperation::Administrative(prepared) => {
+                        ScratchOperationFailure::ordinary(|| {
+                            Ok(serde_json::to_vec(&self.reduce(
+                                position,
+                                *prepared,
+                                &mut writes,
+                            )?)?)
+                        })?
+                    }
+                    PreparedOperation::Lifecycle(prepared) => {
+                        ScratchOperationFailure::ordinary(|| {
+                            Ok(serde_json::to_vec(&self.reduce_lifecycle(
+                                position,
+                                *prepared,
+                                &mut writes,
+                            )?)?)
+                        })?
+                    }
+                }
             }
-            PreparedOperation::Maintenance(prepared) => {
-                serde_json::to_vec(&self.reduce_maintenance(position, *prepared)?)?
-            }
-            PreparedOperation::Administrative(prepared) => {
-                serde_json::to_vec(&self.reduce(position, *prepared)?)?
-            }
-            PreparedOperation::Lifecycle(prepared) => {
-                serde_json::to_vec(&self.reduce_lifecycle(position, *prepared)?)?
-            }
+            AppliedInput::Metadata => ScratchOperationFailure::ordinary(|| {
+                let mut meta = self.meta()?;
+                if position.log_id.index > meta.revision {
+                    meta.revision = position.log_id.index;
+                    writes.push(WriteOp::put(NS, META, serde_json::to_vec(&meta)?));
+                }
+                Ok(Vec::new())
+            })?,
         };
-        Ok(AppliedResponse::application(bytes))
-    }
-    fn apply_metadata(&self, position: &AppliedEntryContext) -> Result<()> {
-        let _lock = self
-            .mutation
-            .lock()
-            .map_err(|_| anyhow::anyhow!("authority state poisoned"))?;
-        let mut meta = self.meta()?;
-        if position.log_id.index > meta.revision {
-            meta.revision = position.log_id.index;
-            self.store
-                .write_batch(&[WriteOp::put(NS, META, serde_json::to_vec(&meta)?)])?;
-        }
+        publisher
+            .commit(AppliedResponse::application(data), &writes)
+            .map_err(anyhow::Error::from)?;
         Ok(())
     }
-    fn capture_snapshot(&self) -> Result<kasumi_raft::CapturedSnapshot> {
+    fn capture_snapshot(&self) -> ScratchResult<kasumi_raft::CapturedSnapshot> {
         let _lock = self
             .mutation
             .lock()
@@ -1016,7 +1090,7 @@ impl StateMachineBackend for Backend {
     fn validate_snapshot(
         &self,
         bytes: &mut dyn std::io::Read,
-    ) -> Result<Option<RetiredSnapshotState>> {
+    ) -> ScratchResult<Option<RetiredSnapshotState>> {
         self.decode_snapshot(bytes)?;
         Ok(None)
     }
@@ -1024,7 +1098,7 @@ impl StateMachineBackend for Backend {
         &'a self,
         _context: &kasumi_raft::SnapshotRestoreContext,
         bytes: &mut dyn std::io::Read,
-    ) -> Result<Box<dyn kasumi_raft::PreparedStateMachineRestore + 'a>> {
+    ) -> ScratchResult<Box<dyn kasumi_raft::PreparedStateMachineRestore + 'a>> {
         let guard = self
             .mutation
             .lock()
@@ -1051,7 +1125,7 @@ impl kasumi_raft::PreparedStateMachineRestore for PreparedAuthorityRestore<'_> {
     fn retirement(&self) -> Option<RetiredSnapshotState> {
         None
     }
-    fn application_replacements(&self) -> Vec<(&str, &kasumi_store::EncryptedTable)> {
+    fn application_replacements(&self) -> Vec<kasumi_store::NamespaceReplacement<'_>> {
         self.snapshot.records.replacements()
     }
     fn application_writes(&self) -> &[kasumi_store::WriteOp] {
@@ -1063,26 +1137,27 @@ impl kasumi_raft::PreparedStateMachineRestore for PreparedAuthorityRestore<'_> {
 }
 
 impl Backend {
-    fn decode_snapshot(&self, bytes: &mut dyn std::io::Read) -> Result<Snapshot> {
+    fn decode_snapshot(&self, bytes: &mut dyn std::io::Read) -> ScratchResult<Snapshot> {
         let snapshot =
             snapshot::read(self.store.scratch_disk(), bytes, self.resource_budget_bytes)?;
-        ensure!(
-            snapshot.meta.installation == self.installation
-                && snapshot.meta.policy_epoch > 0
-                && !snapshot.meta.administrators.is_empty()
-                && snapshot.meta.administrators.len() <= 64,
-            "authority snapshot installation or policy differs"
-        );
-        let (
-            mut tenants,
-            mut receipts,
-            mut state_bytes,
-            mut active_fences,
-            mut preparations,
-            mut incarnations,
-            mut target_stops,
-        ) = (0, 0, 0, 0, 0, 0, 0);
-        snapshot.records.visit(|key, record| {
+        ScratchOperationFailure::ordinary(|| {
+            ensure!(
+                snapshot.meta.installation == self.installation
+                    && snapshot.meta.policy_epoch > 0
+                    && !snapshot.meta.administrators.is_empty()
+                    && snapshot.meta.administrators.len() <= 64,
+                "authority snapshot installation or policy differs"
+            );
+            let (
+                mut tenants,
+                mut receipts,
+                mut state_bytes,
+                mut active_fences,
+                mut preparations,
+                mut incarnations,
+                mut target_stops,
+            ) = (0, 0, 0, 0, 0, 0, 0);
+            snapshot.records.visit(|key, record| {
             let bytes = serde_json::to_vec(record)?;
             ensure!(
                 bytes.len() <= MAX_RECORD_BYTES,
@@ -1292,41 +1367,43 @@ impl Backend {
             }
             Ok(())
         })?;
-        self.validate_activation_snapshot(&snapshot)?;
-        ensure!(
-            (
-                tenants,
-                receipts,
-                state_bytes,
-                active_fences,
-                preparations,
-                incarnations,
-                target_stops
-            ) == (
-                snapshot.meta.tenants,
-                snapshot.meta.receipts,
-                snapshot.meta.state_bytes,
-                snapshot.meta.active_fences,
-                snapshot.meta.preparations,
-                snapshot.meta.incarnations,
-                snapshot.meta.target_stops
-            ) && target_stops <= receipts
-                && preparations <= receipts
-                && incarnations >= tenants
-                && incarnations <= receipts
-                && tenants <= snapshot.meta.operational.capacity.max_tenants
-                && state_bytes.saturating_add(Self::completion_reserve(&snapshot.meta))
-                    <= snapshot.meta.operational.capacity.max_state_bytes
-                && snapshot.meta.operational.capacity.max_state_bytes <= self.resource_budget_bytes,
-            "authority snapshot accounting differs"
-        );
-        self.validate_lifecycle_snapshot(&snapshot)?;
-        self.validate_maintenance_snapshot(&snapshot)?;
-        self.validate_signing_snapshot(&snapshot)?;
-        self.validate_coverage_snapshot(&snapshot)?;
-        self.validate_coverage_history(&snapshot)?;
-        self.validate_roster_snapshot(&snapshot)?;
-        Ok(snapshot)
+            self.validate_activation_snapshot(&snapshot)?;
+            ensure!(
+                (
+                    tenants,
+                    receipts,
+                    state_bytes,
+                    active_fences,
+                    preparations,
+                    incarnations,
+                    target_stops
+                ) == (
+                    snapshot.meta.tenants,
+                    snapshot.meta.receipts,
+                    snapshot.meta.state_bytes,
+                    snapshot.meta.active_fences,
+                    snapshot.meta.preparations,
+                    snapshot.meta.incarnations,
+                    snapshot.meta.target_stops
+                ) && target_stops <= receipts
+                    && preparations <= receipts
+                    && incarnations >= tenants
+                    && incarnations <= receipts
+                    && tenants <= snapshot.meta.operational.capacity.max_tenants
+                    && state_bytes.saturating_add(Self::completion_reserve(&snapshot.meta))
+                        <= snapshot.meta.operational.capacity.max_state_bytes
+                    && snapshot.meta.operational.capacity.max_state_bytes
+                        <= self.resource_budget_bytes,
+                "authority snapshot accounting differs"
+            );
+            self.validate_lifecycle_snapshot(&snapshot)?;
+            self.validate_maintenance_snapshot(&snapshot)?;
+            self.validate_signing_snapshot(&snapshot)?;
+            self.validate_coverage_snapshot(&snapshot)?;
+            self.validate_coverage_history(&snapshot)?;
+            self.validate_roster_snapshot(&snapshot)?;
+            Ok(snapshot)
+        })
     }
 }
 
@@ -1355,3 +1432,7 @@ pub(crate) fn restore_test_context(bytes: &[u8]) -> kasumi_raft::SnapshotRestore
         },
     }
 }
+
+#[cfg(test)]
+#[path = "apply_publication_tests.rs"]
+mod apply_publication_tests;

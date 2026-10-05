@@ -2,7 +2,10 @@
 //! structural task/runtime back-reference. Original opaque panic payloads may
 //! themselves contain resources; retaining them does not prove resource release.
 use anyhow::{Context, Result, ensure};
-use kasumi_types::drain::{DrainFailure, DrainReport, DrainResult};
+use kasumi_types::{
+    SharedBudgetCharge,
+    drain::{DrainFailure, DrainReport, DrainResult},
+};
 use std::{
     collections::BTreeMap,
     future::Future,
@@ -26,9 +29,10 @@ pub const BACKGROUND_WORK_DOMAIN_BYTES: u64 =
 #[derive(Clone)]
 pub struct BackgroundWorkBudget {
     max_registered: usize,
-    // Only the node-memory reservation belongs here, never storage or a runtime.
-    _charge: Arc<dyn Send + Sync>,
     slots: Arc<Mutex<usize>>,
+    // Last: the actual slots control retires before its original budget.
+    // Only the node-memory reservation belongs here, never storage or a runtime.
+    _charge: SharedBudgetCharge,
 }
 struct Slot(BackgroundWorkBudget);
 impl Drop for Slot {
@@ -57,7 +61,7 @@ impl BackgroundWorkBudget {
     }
     /// The trusted installer reserves required_bytes across its complete domain
     /// set before opening owners, and shares that exact memory charge here.
-    pub fn new(max_registered: usize, charge: Arc<dyn Send + Sync>) -> Result<Self> {
+    pub fn new(max_registered: usize, charge: SharedBudgetCharge) -> Result<Self> {
         Self::required_bytes(max_registered, 1)?;
         Ok(Self {
             max_registered,

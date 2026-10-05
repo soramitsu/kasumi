@@ -29,8 +29,8 @@ impl SnapshotRecords {
             visitor(std::str::from_utf8(key)?, &serde_json::from_slice(value)?)
         })
     }
-    pub(super) fn replacements(&self) -> Vec<(&str, &EncryptedTable)> {
-        vec![(NS, &self.0)]
+    pub(super) fn replacements(&self) -> Vec<kasumi_store::NamespaceReplacement<'_>> {
+        vec![kasumi_store::NamespaceReplacement::from_table(NS, &self.0)]
     }
 }
 fn disk_budget(maximum: u64) -> Result<u64> {
@@ -39,136 +39,155 @@ fn disk_budget(maximum: u64) -> Result<u64> {
         .and_then(|n| n.checked_add(64 << 20))
         .context("authority staging budget overflow")
 }
-pub(super) fn write(view: &TenantReadView, maximum: u64, output: &mut dyn Write) -> Result<()> {
-    let meta: Meta = serde_json::from_slice(
-        &view
-            .get(NS, META, MAX_RECORD_BYTES)?
-            .context("authority metadata missing")?,
-    )?;
+pub(super) fn write(
+    view: &TenantReadView,
+    maximum: u64,
+    output: &mut dyn Write,
+) -> std::result::Result<(), kasumi_store::ScratchOperationFailure> {
+    let meta: Meta = kasumi_store::ScratchOperationFailure::ordinary(|| {
+        Ok(serde_json::from_slice(
+            &view
+                .get(NS, META, MAX_RECORD_BYTES)?
+                .context("authority metadata missing")?,
+        )?)
+    })?;
     let records = SnapshotRecords(EncryptedTable::new(
         view.scratch_disk(),
-        disk_budget(maximum)?,
+        disk_budget(maximum).map_err(kasumi_store::ScratchOperationFailure::Operation)?,
+        view.scratch_disk().native_cache_config(),
     )?);
-    view.visit(NS, MAX_RECORD_BYTES, |key, bytes| {
-        if key != META {
-            let record: Record = serde_json::from_slice(bytes)?;
-            records.0.insert(key, &serde_json::to_vec(&record)?)?;
-        }
+    kasumi_store::ScratchOperationFailure::ordinary(|| {
+        view.visit(NS, MAX_RECORD_BYTES, |key, bytes| {
+            if key != META {
+                let record: Record = serde_json::from_slice(bytes)?;
+                records.0.insert(key, &serde_json::to_vec(&record)?)?;
+            }
+            Ok(())
+        })?;
+        output.write_all(MAGIC)?;
+        let mut digest = Sha256::new();
+        digest.update(MAGIC);
+        let (mut count, mut total) = (0u64, 8u64);
+        let mut emit = |frame: Frame| -> Result<()> {
+            let bytes = serde_json::to_vec(&frame)?;
+            ensure!(
+                bytes.len() <= MAX_RECORD_BYTES + 8192,
+                "authority frame exceeds bound"
+            );
+            let length = (bytes.len() as u64).to_be_bytes();
+            output.write_all(&length)?;
+            output.write_all(&bytes)?;
+            digest.update(length);
+            digest.update(&bytes);
+            count = count
+                .checked_add(1)
+                .context("authority record count overflow")?;
+            total = total
+                .checked_add(8 + bytes.len() as u64)
+                .context("authority snapshot byte overflow")?;
+            Ok(())
+        };
+        emit(Frame::Meta(Box::new(meta)))?;
+        records
+            .visit(|key, record| emit(Frame::Entry(key.to_owned(), Box::new(record.clone()))))?;
+        output.write_all(&0u64.to_be_bytes())?;
+        output.write_all(&count.to_be_bytes())?;
+        output.write_all(&total.to_be_bytes())?;
+        output.write_all(&digest.finalize())?;
         Ok(())
-    })?;
-    output.write_all(MAGIC)?;
-    let mut digest = Sha256::new();
-    digest.update(MAGIC);
-    let (mut count, mut total) = (0u64, 8u64);
-    let mut emit = |frame: Frame| -> Result<()> {
-        let bytes = serde_json::to_vec(&frame)?;
-        ensure!(
-            bytes.len() <= MAX_RECORD_BYTES + 8192,
-            "authority frame exceeds bound"
-        );
-        let length = (bytes.len() as u64).to_be_bytes();
-        output.write_all(&length)?;
-        output.write_all(&bytes)?;
-        digest.update(length);
-        digest.update(&bytes);
-        count = count
-            .checked_add(1)
-            .context("authority record count overflow")?;
-        total = total
-            .checked_add(8 + bytes.len() as u64)
-            .context("authority snapshot byte overflow")?;
-        Ok(())
-    };
-    emit(Frame::Meta(Box::new(meta)))?;
-    records.visit(|key, record| emit(Frame::Entry(key.to_owned(), Box::new(record.clone()))))?;
-    output.write_all(&0u64.to_be_bytes())?;
-    output.write_all(&count.to_be_bytes())?;
-    output.write_all(&total.to_be_bytes())?;
-    output.write_all(&digest.finalize())?;
-    Ok(())
+    })
 }
 pub(super) fn read(
     scratch_disk: &Arc<kasumi_store::ScratchDisk>,
     input: &mut dyn Read,
     maximum: u64,
-) -> Result<Snapshot> {
+) -> std::result::Result<Snapshot, kasumi_store::ScratchOperationFailure> {
     let mut magic = [0; 8];
-    input.read_exact(&mut magic)?;
-    ensure!(&magic == MAGIC, "unsupported authority snapshot format");
+    kasumi_store::ScratchOperationFailure::ordinary(|| {
+        input.read_exact(&mut magic)?;
+        ensure!(&magic == MAGIC, "unsupported authority snapshot format");
+        Ok(())
+    })?;
     let mut digest = Sha256::new();
     digest.update(magic);
     let (mut count, mut total, mut record_bytes) = (0u64, 8u64, 0u64);
     let mut meta = None;
     let mut previous = None;
-    let records = SnapshotRecords(EncryptedTable::new(scratch_disk, disk_budget(maximum)?)?);
-    loop {
-        let mut length = [0; 8];
-        input.read_exact(&mut length)?;
-        let size = u64::from_be_bytes(length);
-        if size == 0 {
-            let mut footer = [0; 48];
-            input.read_exact(&mut footer)?;
-            ensure!(
-                count > 0
-                    && count == u64::from_be_bytes(footer[..8].try_into()?)
-                    && total == u64::from_be_bytes(footer[8..16].try_into()?)
-                    && digest.finalize().as_slice() == &footer[16..],
-                "authority snapshot final authentication differs"
-            );
-            ensure!(
-                input.read(&mut [0])? == 0,
-                "authority snapshot trailing data"
-            );
-            return Ok(Snapshot {
-                meta: meta.context("authority metadata absent")?,
-                records,
-            });
-        }
-        ensure!(
-            size <= (MAX_RECORD_BYTES + 8192) as u64,
-            "authority frame exceeds bound"
-        );
-        let mut bytes = vec![0; size as usize];
-        input.read_exact(&mut bytes)?;
-        let frame: Frame = serde_json::from_slice(&bytes)?;
-        ensure!(
-            serde_json::to_vec(&frame)? == bytes,
-            "authority frame is not canonical"
-        );
-        digest.update(length);
-        digest.update(&bytes);
-        total = total
-            .checked_add(8 + size)
-            .context("authority snapshot byte overflow")?;
-        count = count
-            .checked_add(1)
-            .context("authority record count overflow")?;
-        match frame {
-            Frame::Meta(value) => {
-                ensure!(meta.is_none() && count == 1, "authority metadata misplaced");
-                records.0.insert(META, &serde_json::to_vec(&value)?)?;
-                meta = Some(*value);
-            }
-            Frame::Entry(key, value) => {
+    let records = SnapshotRecords(EncryptedTable::new(
+        scratch_disk,
+        disk_budget(maximum).map_err(kasumi_store::ScratchOperationFailure::Operation)?,
+        scratch_disk.native_cache_config(),
+    )?);
+    kasumi_store::ScratchOperationFailure::ordinary(|| {
+        loop {
+            let mut length = [0; 8];
+            input.read_exact(&mut length)?;
+            let size = u64::from_be_bytes(length);
+            if size == 0 {
+                let mut footer = [0; 48];
+                input.read_exact(&mut footer)?;
                 ensure!(
-                    meta.is_some()
-                        && key.as_bytes() != META
-                        && previous.as_ref().is_none_or(|p: &String| p < &key),
-                    "authority record ordering differs"
+                    count > 0
+                        && count == u64::from_be_bytes(footer[..8].try_into()?)
+                        && total == u64::from_be_bytes(footer[8..16].try_into()?)
+                        && digest.finalize().as_slice() == &footer[16..],
+                    "authority snapshot final authentication differs"
                 );
-                let bytes = serde_json::to_vec(&value)?;
-                record_bytes = record_bytes
-                    .checked_add(bytes.len() as u64)
-                    .context("authority record byte overflow")?;
                 ensure!(
-                    bytes.len() <= MAX_RECORD_BYTES && record_bytes <= maximum,
-                    "authority staging quota exceeded"
+                    input.read(&mut [0])? == 0,
+                    "authority snapshot trailing data"
                 );
-                records.0.insert(key.as_bytes(), &bytes)?;
-                previous = Some(key);
+                return Ok(Snapshot {
+                    meta: meta.context("authority metadata absent")?,
+                    records,
+                });
+            }
+            ensure!(
+                size <= (MAX_RECORD_BYTES + 8192) as u64,
+                "authority frame exceeds bound"
+            );
+            let mut bytes = vec![0; size as usize];
+            input.read_exact(&mut bytes)?;
+            let frame: Frame = serde_json::from_slice(&bytes)?;
+            ensure!(
+                serde_json::to_vec(&frame)? == bytes,
+                "authority frame is not canonical"
+            );
+            digest.update(length);
+            digest.update(&bytes);
+            total = total
+                .checked_add(8 + size)
+                .context("authority snapshot byte overflow")?;
+            count = count
+                .checked_add(1)
+                .context("authority record count overflow")?;
+            match frame {
+                Frame::Meta(value) => {
+                    ensure!(meta.is_none() && count == 1, "authority metadata misplaced");
+                    records.0.insert(META, &serde_json::to_vec(&value)?)?;
+                    meta = Some(*value);
+                }
+                Frame::Entry(key, value) => {
+                    ensure!(
+                        meta.is_some()
+                            && key.as_bytes() != META
+                            && previous.as_ref().is_none_or(|p: &String| p < &key),
+                        "authority record ordering differs"
+                    );
+                    let bytes = serde_json::to_vec(&value)?;
+                    record_bytes = record_bytes
+                        .checked_add(bytes.len() as u64)
+                        .context("authority record byte overflow")?;
+                    ensure!(
+                        bytes.len() <= MAX_RECORD_BYTES && record_bytes <= maximum,
+                        "authority staging quota exceeded"
+                    );
+                    records.0.insert(key.as_bytes(), &bytes)?;
+                    previous = Some(key);
+                }
             }
         }
-    }
+    })
 }
 
 #[cfg(test)]

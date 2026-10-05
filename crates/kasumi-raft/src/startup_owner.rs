@@ -3,19 +3,46 @@
 //! task can be aborted while it owns those handles.
 use crate::{CustodyRaftGroup, RaftGroup, SnapshotBufferOwner};
 use anyhow::{Result, ensure};
+use kasumi_store::ScratchOperationFailure;
 use kasumi_types::drain::{DrainCompletion, DrainFailure, DrainResult};
 use std::{
     any::Any,
     future::Future,
     panic::{AssertUnwindSafe, catch_unwind},
     pin::Pin,
-    sync::Mutex,
+    sync::{Arc, Mutex},
     task::{Context, Poll},
 };
 
 pub(crate) const STARTUP_WORKSPACE: u64 = 64 << 10;
-type Opening = Pin<Box<dyn Future<Output = Result<StartedGroup>> + Send>>;
-type Cleaning = Pin<Box<dyn Future<Output = DrainResult> + Send>>;
+type Opening = Pin<Box<dyn Future<Output = Result<StartedGroup, ScratchOperationFailure>> + Send>>;
+
+enum OpeningFailure {
+    Recorded(DrainFailure),
+    Preparation {
+        original: ScratchOperationFailure,
+        diagnostic: DrainFailure,
+    },
+}
+impl OpeningFailure {
+    fn diagnostic(&self) -> &DrainFailure {
+        match self {
+            Self::Recorded(diagnostic) | Self::Preparation { diagnostic, .. } => diagnostic,
+        }
+    }
+    fn into_operation(self) -> ScratchOperationFailure {
+        match self {
+            Self::Recorded(diagnostic) => ScratchOperationFailure::Operation(diagnostic.into()),
+            Self::Preparation { original, .. } => original,
+        }
+    }
+}
+pub(crate) struct Cleaning {
+    future: Pin<Box<dyn Future<Output = DrainResult> + Send>>,
+    // Independent of the async generator: unwinding its poll must not drop
+    // the exact group before the outer startup owner retains this holder.
+    _group: Option<Arc<dyn Send + Sync>>,
+}
 
 /// Preserve the actual unwind payload, including non-string application values.
 /// The mutex makes the original Send-only payload safe to retain in a DrainIssue.
@@ -58,6 +85,34 @@ impl std::fmt::Display for StartupPollPanic {
 }
 impl std::error::Error for StartupPollPanic {}
 
+/// A synchronous final readiness callback can panic after Opening returned
+/// the actual group. Catch that unwind while the group stays on the claim
+/// stack, then move it into the existing retained cleanup before any await.
+pub(crate) struct ApplicationSourceHandoffPanic {
+    pub(crate) payload: Mutex<Box<dyn Any + Send>>,
+}
+impl std::fmt::Debug for ApplicationSourceHandoffPanic {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ApplicationSourceHandoffPanic")
+            .field(
+                "payload_type",
+                &self
+                    .payload
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .as_ref()
+                    .type_id(),
+            )
+            .finish_non_exhaustive()
+    }
+}
+impl std::fmt::Display for ApplicationSourceHandoffPanic {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("application source readiness panicked; original payload retained")
+    }
+}
+impl std::error::Error for ApplicationSourceHandoffPanic {}
+
 pub(crate) enum StartedGroup {
     Serving(RaftGroup),
     Custody(CustodyRaftGroup),
@@ -65,7 +120,7 @@ pub(crate) enum StartedGroup {
     Fixture(crate::startup_owner_tests::FixtureGroup),
 }
 impl StartedGroup {
-    async fn shutdown(self) -> DrainResult {
+    async fn shutdown(&mut self) -> DrainResult {
         match self {
             Self::Serving(group) => group.shutdown().await,
             Self::Custody(group) => group.shutdown().await,
@@ -74,10 +129,27 @@ impl StartedGroup {
         }
     }
 }
-async fn cleanup(group: Option<StartedGroup>) -> DrainResult {
-    match group {
-        Some(group) => group.shutdown().await,
-        None => Ok(()),
+type CleanupGroup = Arc<tokio::sync::Mutex<StartedGroup>>;
+async fn cleanup_group(group: CleanupGroup) -> DrainResult {
+    group.lock().await.shutdown().await
+}
+fn cleanup_workspace_bytes() -> usize {
+    fn future_bytes<F: Future>(_: fn(CleanupGroup) -> F) -> usize {
+        std::mem::size_of::<F>()
+    }
+    future_bytes(cleanup_group)
+        + std::mem::size_of::<tokio::sync::Mutex<StartedGroup>>()
+        + std::mem::size_of::<[usize; 2]>()
+        + std::mem::align_of::<tokio::sync::Mutex<StartedGroup>>()
+        - 1
+}
+fn cleanup(group: StartedGroup) -> Cleaning {
+    // Both heap backings, including overlap with the original Opening, were
+    // admitted by install before startup effects. Erasure adds no allocation.
+    let group = Arc::new(tokio::sync::Mutex::new(group));
+    Cleaning {
+        future: Box::pin(cleanup_group(group.clone())),
+        _group: Some(group),
     }
 }
 
@@ -105,7 +177,7 @@ impl StartupState {
     }
     pub(crate) fn install<F>(&mut self, future: F) -> Result<()>
     where
-        F: Future<Output = Result<StartedGroup>> + Send + 'static,
+        F: Future<Output = Result<StartedGroup, ScratchOperationFailure>> + Send + 'static,
     {
         ensure!(
             matches!(self, Self::Idle),
@@ -114,7 +186,7 @@ impl StartupState {
         // Replacement briefly owns both allocations: reserve their sum.
         ensure!(
             std::mem::size_of_val(&future)
-                .checked_add(std::mem::size_of_val(&cleanup(None)))
+                .checked_add(cleanup_workspace_bytes())
                 .is_some_and(|bytes| bytes as u64 <= STARTUP_WORKSPACE),
             "Raft startup future and cleanup exceed their reserved workspace"
         );
@@ -128,7 +200,10 @@ impl StartupState {
     {
         assert!(matches!(self, Self::Idle));
         assert!(std::mem::size_of_val(&future) as u64 <= STARTUP_WORKSPACE);
-        *self = Self::Cleaning(Box::pin(future));
+        *self = Self::Cleaning(Cleaning {
+            future: Box::pin(future),
+            _group: None,
+        });
     }
     fn retain(&mut self, failure: DrainFailure) {
         let future = match std::mem::take(self) {
@@ -155,45 +230,92 @@ impl StartupState {
         &mut self,
         owner: &SnapshotBufferOwner,
         cx: &mut Context<'_>,
-    ) -> Poll<std::result::Result<StartedGroup, DrainFailure>> {
+    ) -> Poll<std::result::Result<StartedGroup, OpeningFailure>> {
         let result = match self {
             Self::Opening(future) => catch_unwind(AssertUnwindSafe(|| future.as_mut().poll(cx))),
-            Self::Retained { failure, .. } => return Poll::Ready(Err(failure.clone())),
+            Self::Retained { failure, .. } => {
+                return Poll::Ready(Err(OpeningFailure::Recorded(failure.clone())));
+            }
             _ => unreachable!("opening future expected"),
         };
         match result {
-            Err(payload) => Poll::Ready(Err(self.panic(owner, payload, "Raft startup"))),
+            Err(payload) => Poll::Ready(Err(OpeningFailure::Recorded(self.panic(
+                owner,
+                payload,
+                "Raft startup",
+            )))),
             Ok(Poll::Pending) => Poll::Pending,
             Ok(Poll::Ready(Ok(group))) => Poll::Ready(Ok(group)),
             Ok(Poll::Ready(Err(error))) => {
-                let failure = owner.record_startup_error(error);
-                if failure.completion() == DrainCompletion::Retained {
-                    self.retain(failure.clone());
+                let failure = match error {
+                    ScratchOperationFailure::Operation(error) => {
+                        OpeningFailure::Recorded(owner.record_startup_error(error))
+                    }
+                    original @ (ScratchOperationFailure::Creation(_)
+                    | ScratchOperationFailure::AdmissionRefused(_)) => {
+                        let diagnostic = owner.record_startup_preparation(&original);
+                        OpeningFailure::Preparation {
+                            original,
+                            diagnostic,
+                        }
+                    }
+                };
+                let diagnostic = failure.diagnostic();
+                if diagnostic.completion() == DrainCompletion::Retained {
+                    self.retain(diagnostic.clone());
                 } else {
-                    *self = Self::Finished(Err(failure.clone()));
+                    *self = Self::Finished(Err(diagnostic.clone()));
                 }
                 Poll::Ready(Err(failure))
             }
         }
     }
-    pub(crate) async fn claim(&mut self, owner: &SnapshotBufferOwner) -> Result<StartedGroup> {
+    pub(crate) async fn claim(
+        &mut self,
+        owner: &SnapshotBufferOwner,
+    ) -> Result<StartedGroup, ScratchOperationFailure> {
         // Synchronous enrollment can be followed by a census before this
         // claimant is first polled. Never poll an already completed operation.
         if !matches!(self, Self::Opening(_) | Self::Retained { .. }) {
-            return Err(match self.drain(owner).await {
-                Err(failure) => failure,
-                Ok(()) => owner.record_startup_error(anyhow::anyhow!(
-                    "Raft startup result was reclaimed by shutdown"
-                )),
-            }
-            .into());
+            return Err(ScratchOperationFailure::Operation(
+                match self.drain(owner).await {
+                    Err(failure) => failure,
+                    Ok(()) => owner.record_startup_error(anyhow::anyhow!(
+                        "Raft startup result was reclaimed by shutdown"
+                    )),
+                }
+                .into(),
+            ));
         }
-        let group = std::future::poll_fn(|cx| self.poll_opening(owner, cx)).await?;
-        if let Err(error) = owner.check_startup() {
-            let failure = owner.record_startup_error(error.into());
-            *self = Self::Cleaning(Box::pin(cleanup(Some(group))));
+        let group = std::future::poll_fn(|cx| self.poll_opening(owner, cx))
+            .await
+            .map_err(OpeningFailure::into_operation)?;
+        // Full Opening includes replay and, for a local group, initialization
+        // and its linearizable barrier. Validate source reconstruction before
+        // transferring this actual group; a refusal enters retained cleanup
+        // synchronously, before any await can be canceled.
+        let ready = catch_unwind(AssertUnwindSafe(|| {
+            owner
+                .check_startup()
+                .map_err(anyhow::Error::from)
+                .and_then(|()| owner.finish_application_source_reconstruction())
+                // Node shutdown can close delivery while a synchronous source
+                // validator runs. Never transfer the resulting group afterward.
+                .and_then(|()| owner.check_startup().map_err(anyhow::Error::from))
+        }))
+        .unwrap_or_else(|payload| {
+            Err(ApplicationSourceHandoffPanic {
+                payload: Mutex::new(payload),
+            }
+            .into())
+        });
+        if let Err(error) = ready {
+            let failure = owner.record_startup_error(error);
+            *self = Self::Cleaning(cleanup(group));
             let cleanup = self.drain(owner).await;
-            return Err(cleanup.err().unwrap_or(failure).into());
+            return Err(ScratchOperationFailure::Operation(
+                cleanup.err().unwrap_or(failure).into(),
+            ));
         }
         *self = Self::Delivered;
         Ok(group)
@@ -204,16 +326,18 @@ impl StartupState {
                 match self {
                     Self::Idle | Self::Delivered => return Poll::Ready(Ok(())),
                     Self::Finished(result) => return Poll::Ready(result.clone()),
-                    Self::Retained { failure, .. } => return Poll::Ready(Err(failure.clone())),
+                    Self::Retained { failure, .. } => {
+                        return Poll::Ready(Err(failure.clone()));
+                    }
                     Self::Opening(_) => match self.poll_opening(owner, cx) {
                         Poll::Pending => return Poll::Pending,
-                        Poll::Ready(Ok(group)) => {
-                            *self = Self::Cleaning(Box::pin(cleanup(Some(group))))
+                        Poll::Ready(Ok(group)) => *self = Self::Cleaning(cleanup(group)),
+                        Poll::Ready(Err(failure)) => {
+                            return Poll::Ready(Err(failure.diagnostic().clone()));
                         }
-                        Poll::Ready(Err(failure)) => return Poll::Ready(Err(failure)),
                     },
                     Self::Cleaning(future) => {
-                        match catch_unwind(AssertUnwindSafe(|| future.as_mut().poll(cx))) {
+                        match catch_unwind(AssertUnwindSafe(|| future.future.as_mut().poll(cx))) {
                             Err(payload) => {
                                 return Poll::Ready(Err(self.panic(
                                     owner,
@@ -226,6 +350,8 @@ impl StartupState {
                                 if failure.completion() == DrainCompletion::Retained =>
                             {
                                 let failure = owner.record_startup_error(failure.into());
+                                // The same holder retains both the completed
+                                // future and the independently owned group.
                                 self.retain(failure.clone());
                                 return Poll::Ready(Err(failure));
                             }

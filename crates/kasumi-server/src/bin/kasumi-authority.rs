@@ -1,4 +1,5 @@
-use anyhow::{Context, Result, bail};
+use anyhow::Context;
+use kasumi_server::authority_runtime::EnrollmentFailure;
 use kasumi_server::authority_runtime::{AuthorityRuntime, AuthorityRuntimeConfig};
 #[tokio::main]
 async fn main() -> std::process::ExitCode {
@@ -29,7 +30,29 @@ async fn main() -> std::process::ExitCode {
         }
     }
 }
-async fn run(args: &[String]) -> Result<()> {
+enum CommandFailure {
+    Operation(anyhow::Error),
+    Enrollment(EnrollmentFailure),
+}
+impl From<anyhow::Error> for CommandFailure {
+    fn from(original: anyhow::Error) -> Self {
+        Self::Operation(original)
+    }
+}
+impl From<EnrollmentFailure> for CommandFailure {
+    fn from(original: EnrollmentFailure) -> Self {
+        Self::Enrollment(original)
+    }
+}
+impl std::fmt::Display for CommandFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Operation(original) => std::fmt::Display::fmt(original, f),
+            Self::Enrollment(original) => std::fmt::Display::fmt(original, f),
+        }
+    }
+}
+async fn run(args: &[String]) -> std::result::Result<(), CommandFailure> {
     match args {
         [command, path] if command == "check-config" => {
             AuthorityRuntimeConfig::load(path)?;
@@ -65,10 +88,10 @@ async fn run(args: &[String]) -> Result<()> {
             });
             let result = runtime.serve(shutdown).await;
             signal.abort();
-            result
+            result.map_err(CommandFailure::Operation)
         }
-        _ => bail!(
+        _ => Err(anyhow::anyhow!(
             "usage: kasumi-authority check-config <config.json> | provision-node <config.json> | serve <config.json>"
-        ),
+        ).into()),
     }
 }

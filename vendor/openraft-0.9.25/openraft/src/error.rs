@@ -131,11 +131,7 @@ where
 
 /// Fatal is unrecoverable and shuts down raft at once.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[cfg_attr(
-    feature = "serde",
-    derive(serde::Deserialize, serde::Serialize),
-    serde(bound = "")
-)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize), serde(bound = ""))]
 #[allow(clippy::large_enum_variant)]
 pub enum Fatal<NID>
 where
@@ -288,6 +284,57 @@ impl<NID: NodeId, J: Debug> ShutdownTaskError<NID, J> {
     }
 }
 
+/// The exact resource family whose actor handoff did not complete.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShutdownRetainedKind {
+    /// Responses or an unknown delivery marker await normal core consumption.
+    AppliedResponses,
+    /// A received snapshot awaits safe acceptance by the actor.
+    IncomingSnapshot,
+}
+trait RetainedOwner: Debug + crate::OptionalSend + crate::OptionalSync {}
+impl<T: Debug + crate::OptionalSend + crate::OptionalSync> RetainedOwner for T {}
+
+/// The exact handoff owner, including any remaining objects and unknown-delivery marker.
+/// A value already moved into a callback or engine remains subject to that actual
+/// call and its unwind; this owner does not claim to retain the moved value.
+/// Dropping this diagnostic is not a successful drain.
+#[derive(Clone)]
+pub struct ShutdownRetainedOwner {
+    kind: ShutdownRetainedKind,
+    owner: Arc<dyn RetainedOwner>,
+}
+impl Debug for ShutdownRetainedOwner {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ShutdownRetainedOwner")
+            .field("kind", &self.kind)
+            .field("owner", &self.owner)
+            .finish()
+    }
+}
+impl ShutdownRetainedOwner {
+    pub(crate) fn applied<T: Debug + crate::OptionalSend + crate::OptionalSync + 'static>(owner: Arc<T>) -> Self {
+        Self {
+            kind: ShutdownRetainedKind::AppliedResponses,
+            owner,
+        }
+    }
+    pub(crate) fn snapshot<T: Debug + crate::OptionalSend + crate::OptionalSync + 'static>(owner: Arc<T>) -> Self {
+        Self {
+            kind: ShutdownRetainedKind::IncomingSnapshot,
+            owner,
+        }
+    }
+    /// The actual family retained, independently of task errors.
+    pub fn kind(&self) -> ShutdownRetainedKind {
+        self.kind
+    }
+    /// Whether repeated diagnostics retain the same original owner allocation.
+    pub fn same_owner(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.owner, &other.owner)
+    }
+}
+
 /// Failures observed after the retained core, ticker, storage and replication tasks join.
 ///
 /// The original runtime errors are shared with their task owners, not converted
@@ -296,7 +343,7 @@ impl<NID: NodeId, J: Debug> ShutdownTaskError<NID, J> {
 /// cancelled while joining another task. Network/storage implementations may
 /// own further resource families requiring their own custody.
 #[derive(Debug, thiserror::Error)]
-#[error("raft shutdown failed (core: {core:?}, core join: {core_join_error:?}, ticker join: {ticker:?}, state machine: {state_machine:?}, snapshot builder: {snapshot_builder:?}, replications: {replications:?}, auxiliary: {auxiliary:?}, incoming snapshot: {incoming_snapshot:?})")]
+#[error("raft shutdown failed (core: {core:?}, core join: {core_join_error:?}, ticker join: {ticker:?}, state machine: {state_machine:?}, snapshot builder: {snapshot_builder:?}, replications: {replications:?}, auxiliary: {auxiliary:?}, incoming snapshot: {incoming_snapshot:?}, unconsumed apply: {unconsumed_apply:?}, pending snapshot: {pending_snapshot:?})")]
 pub struct ShutdownError<NID: NodeId, J: Debug> {
     pub(crate) core: Option<Fatal<NID>>,
     pub(crate) core_join_error: Option<Arc<J>>,
@@ -306,6 +353,8 @@ pub struct ShutdownError<NID: NodeId, J: Debug> {
     pub(crate) replications: Vec<ReplicationShutdownError<NID, J>>,
     pub(crate) auxiliary: Vec<AuxiliaryShutdownError<NID, J>>,
     pub(crate) incoming_snapshot: Option<IncomingSnapshotShutdownError<NID>>,
+    pub(crate) unconsumed_apply: Option<ShutdownRetainedOwner>,
+    pub(crate) pending_snapshot: Option<ShutdownRetainedOwner>,
 }
 
 impl<NID: NodeId, J: Debug> Clone for ShutdownError<NID, J> {
@@ -319,6 +368,8 @@ impl<NID: NodeId, J: Debug> Clone for ShutdownError<NID, J> {
             replications: self.replications.clone(),
             auxiliary: self.auxiliary.clone(),
             incoming_snapshot: self.incoming_snapshot.clone(),
+            unconsumed_apply: self.unconsumed_apply.clone(),
+            pending_snapshot: self.pending_snapshot.clone(),
         }
     }
 }
@@ -357,6 +408,16 @@ impl<NID: NodeId, J: Debug> ShutdownError<NID, J> {
         self.snapshot_builder.as_ref()
     }
 
+    /// Original opaque responses whose normal core consumption did not complete.
+    pub fn unconsumed_apply(&self) -> Option<&ShutdownRetainedOwner> {
+        self.unconsumed_apply.as_ref()
+    }
+
+    /// Actual received snapshot still waiting for safe actor acceptance.
+    pub fn pending_snapshot(&self) -> Option<&ShutdownRetainedOwner> {
+        self.pending_snapshot.as_ref()
+    }
+
     /// Original receive/close errors of the incoming snapshot still held by this owner.
     pub fn incoming_snapshot(&self) -> Option<&IncomingSnapshotShutdownError<NID>> {
         self.incoming_snapshot.as_ref()
@@ -383,11 +444,7 @@ pub enum InstallSnapshotError {
 
 /// An error related to a is_leader request.
 #[derive(Debug, Clone, thiserror::Error, derive_more::TryInto)]
-#[cfg_attr(
-    feature = "serde",
-    derive(serde::Deserialize, serde::Serialize),
-    serde(bound = "")
-)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize), serde(bound = ""))]
 pub enum CheckIsLeaderError<NID, N>
 where
     NID: NodeId,
@@ -419,11 +476,7 @@ where
 
 /// An error related to a client write request.
 #[derive(Debug, Clone, thiserror::Error, derive_more::TryInto, PartialEq, Eq)]
-#[cfg_attr(
-    feature = "serde",
-    derive(serde::Deserialize, serde::Serialize),
-    serde(bound = "")
-)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize), serde(bound = ""))]
 pub enum ClientWriteError<NID, N>
 where
     NID: NodeId,
@@ -456,11 +509,7 @@ where
 
 /// The set of errors which may take place when requesting to propose a config change.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[cfg_attr(
-    feature = "serde",
-    derive(serde::Deserialize, serde::Serialize),
-    serde(bound = "")
-)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize), serde(bound = ""))]
 pub enum ChangeMembershipError<NID: NodeId> {
     #[error(transparent)]
     InProgress(#[from] InProgress<NID>),
@@ -474,11 +523,7 @@ pub enum ChangeMembershipError<NID: NodeId> {
 
 /// The set of errors which may take place when initializing a pristine Raft node.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error, derive_more::TryInto)]
-#[cfg_attr(
-    feature = "serde",
-    derive(serde::Deserialize, serde::Serialize),
-    serde(bound = "")
-)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize), serde(bound = ""))]
 pub enum InitializeError<NID, N>
 where
     NID: NodeId,
@@ -616,11 +661,7 @@ where
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[cfg_attr(
-    feature = "serde",
-    derive(serde::Deserialize, serde::Serialize),
-    serde(bound = "")
-)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize), serde(bound = ""))]
 #[error("seen a higher vote: {higher} GT mine: {sender_vote}")]
 pub(crate) struct HigherVote<NID: NodeId> {
     pub(crate) higher: Vote<NID>,
@@ -804,11 +845,7 @@ impl PayloadTooLarge {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[cfg_attr(
-    feature = "serde",
-    derive(serde::Deserialize, serde::Serialize),
-    serde(bound = "")
-)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize), serde(bound = ""))]
 #[error("timeout after {timeout:?} when {action} {id}->{target}")]
 pub struct Timeout<NID: NodeId> {
     pub action: RPCTypes,
@@ -818,11 +855,7 @@ pub struct Timeout<NID: NodeId> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[cfg_attr(
-    feature = "serde",
-    derive(serde::Deserialize, serde::Serialize),
-    serde(bound = "")
-)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize), serde(bound = ""))]
 #[error("store has no log at: {index:?}, last purged: {last_purged_log_id:?}")]
 pub struct LackEntry<NID: NodeId> {
     pub index: Option<u64>,
@@ -830,11 +863,7 @@ pub struct LackEntry<NID: NodeId> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[cfg_attr(
-    feature = "serde",
-    derive(serde::Deserialize, serde::Serialize),
-    serde(bound = "")
-)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize), serde(bound = ""))]
 #[error("has to forward request to: {leader_id:?}, {leader_node:?}")]
 pub struct ForwardToLeader<NID, N>
 where
@@ -874,11 +903,7 @@ pub struct SnapshotMismatch {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[cfg_attr(
-    feature = "serde",
-    derive(serde::Deserialize, serde::Serialize),
-    serde(bound = "")
-)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize), serde(bound = ""))]
 #[error("not enough for a quorum, cluster: {cluster}, got: {got:?}")]
 pub struct QuorumNotEnough<NID: NodeId> {
     pub cluster: String,
@@ -886,11 +911,7 @@ pub struct QuorumNotEnough<NID: NodeId> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[cfg_attr(
-    feature = "serde",
-    derive(serde::Deserialize, serde::Serialize),
-    serde(bound = "")
-)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize), serde(bound = ""))]
 #[error("the cluster is already undergoing a configuration change at log {membership_log_id:?}, last committed membership log id: {committed:?}")]
 pub struct InProgress<NID: NodeId> {
     pub committed: Option<LogId<NID>>,
@@ -898,22 +919,14 @@ pub struct InProgress<NID: NodeId> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[cfg_attr(
-    feature = "serde",
-    derive(serde::Deserialize, serde::Serialize),
-    serde(bound = "")
-)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize), serde(bound = ""))]
 #[error("Learner {node_id} not found: add it as learner before adding it as a voter")]
 pub struct LearnerNotFound<NID: NodeId> {
     pub node_id: NID,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[cfg_attr(
-    feature = "serde",
-    derive(serde::Deserialize, serde::Serialize),
-    serde(bound = "")
-)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize), serde(bound = ""))]
 #[error("not allowed to initialize due to current raft state: last_log_id: {last_log_id:?} vote: {vote}")]
 pub struct NotAllowed<NID: NodeId> {
     pub last_log_id: Option<LogId<NID>>,
@@ -921,11 +934,7 @@ pub struct NotAllowed<NID: NodeId> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[cfg_attr(
-    feature = "serde",
-    derive(serde::Deserialize, serde::Serialize),
-    serde(bound = "")
-)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize), serde(bound = ""))]
 #[error("node {node_id} has to be a member. membership:{membership:?}")]
 pub struct NotInMembers<NID, N>
 where
@@ -953,11 +962,7 @@ pub enum Infallible {}
 pub enum NoForward {}
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[cfg_attr(
-    feature = "serde",
-    derive(serde::Deserialize, serde::Serialize),
-    serde(bound = "")
-)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize), serde(bound = ""))]
 pub(crate) enum RejectVoteRequest<NID: NodeId> {
     #[error("reject vote request by a greater vote: {0}")]
     ByVote(Vote<NID>),
@@ -983,9 +988,7 @@ pub(crate) enum RejectAppendEntries<NID: NodeId> {
     #[error("reject AppendEntries by a greater vote: {0}")]
     ByVote(Vote<NID>),
 
-    #[error(
-        "reject AppendEntries because of conflicting log-id: {local:?}; expect to be: {expect:?}"
-    )]
+    #[error("reject AppendEntries because of conflicting log-id: {local:?}; expect to be: {expect:?}")]
     ByConflictingLogId {
         expect: LogId<NID>,
         local: Option<LogId<NID>>,
@@ -1009,10 +1012,7 @@ impl<NID: NodeId> From<Result<(), RejectAppendEntries<NID>>> for AppendEntriesRe
             Ok(_) => AppendEntriesResponse::Success,
             Err(e) => match e {
                 RejectAppendEntries::ByVote(v) => AppendEntriesResponse::HigherVote(v),
-                RejectAppendEntries::ByConflictingLogId {
-                    expect: _,
-                    local: _,
-                } => AppendEntriesResponse::Conflict,
+                RejectAppendEntries::ByConflictingLogId { expect: _, local: _ } => AppendEntriesResponse::Conflict,
             },
         }
     }
@@ -1027,16 +1027,10 @@ mod tests {
     #[test]
     fn test_append_too_large() -> anyhow::Result<()> {
         let a = PayloadTooLarge::new_entries_hint(5);
-        assert_eq!(
-            "RPC(AppendEntries) payload too large: hint:(entries:5)",
-            a.to_string()
-        );
+        assert_eq!("RPC(AppendEntries) payload too large: hint:(entries:5)", a.to_string());
 
         let a = PayloadTooLarge::new_bytes_hint(5);
-        assert_eq!(
-            "RPC(InstallSnapshot) payload too large: hint:(bytes:5)",
-            a.to_string()
-        );
+        assert_eq!("RPC(InstallSnapshot) payload too large: hint:(bytes:5)", a.to_string());
 
         let a = PayloadTooLarge::new_entries_hint(5).with_source_error(&AnyError::error("test"));
         assert_eq!(

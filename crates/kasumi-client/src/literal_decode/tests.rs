@@ -37,18 +37,16 @@ fn body() -> Value {
     })
 }
 fn query_request() -> QueryRequest {
-    QueryRequest {
-        collection: "docs".into(),
-        filter: Predicate::All,
-        sort: vec![],
-        projection: vec![],
-        aggregates: vec![],
-        group_by: vec![],
-        text: None,
-        limit: 10,
+    QueryRequest::new("docs").allow_scan().limit(10)
+}
+fn aggregate_wire(body: &Value) -> Vec<u8> {
+    proto::QueryResponse {
+        revision: 4,
+        rows: vec![],
+        aggregates_json: vec![serde_json::to_vec(body).unwrap()],
         cursor: None,
-        allow_scan: true,
     }
+    .encode_to_vec()
 }
 fn query_wire(body: &Value, count: usize) -> Vec<u8> {
     proto::QueryResponse {
@@ -63,121 +61,13 @@ fn query_wire(body: &Value, count: usize) -> Vec<u8> {
                 score: None,
             })
             .collect(),
-        aggregates_json: vec![serde_json::to_vec(body).unwrap()],
+        aggregates_json: vec![],
         cursor: Some("opaque-original".into()),
     }
     .encode_to_vec()
 }
 fn raw<T: serde::Serialize>(value: &T) -> Vec<u8> {
     serde_json::to_vec(value).unwrap()
-}
-fn seek_fixture() -> (OrderedSeekRequest, Value) {
-    let request = OrderedSeekRequest {
-        collection: "docs".into(),
-        index: "ordered".into(),
-        prefix: vec![json!("partition")],
-        lower: None,
-        upper: None,
-        direction: kasumi_types::Direction::Asc,
-        limit: 1,
-        continuation: None,
-    };
-    let call = read_options().admit().unwrap();
-    let prepared = prepare_ordered_seek(&request, &call).unwrap();
-    let Kind::OrderedSeek { digest, .. } = &prepared.kind else {
-        unreachable!()
-    };
-    let cursor = json!({"revision":4,"tenant":"tenant-a","incarnation":"00000000-0000-0000-0000-000000000001",
-        "collection_epoch":3,"policy_epoch":2,"schema_epoch":1,"index_sha256":"a".repeat(64),
-        "request_sha256":digest,"after_key":["partition","id-a"]});
-    let mut response = cursor.clone();
-    response.as_object_mut().unwrap().remove("after_key");
-    response["observed_revision"] = json!(4);
-    response["index_entries_visited"] = json!(2);
-    response["rows"] = json!([{"id":"id-a","version":3,"score":null,"body":body()}]);
-    response["continuation"] = cursor;
-    (request, response)
-}
-#[test]
-fn ordered_seek_literal_values_exact_source_and_audit_only_revision_continuation() {
-    let (mut request, mut wire) = seek_fixture();
-    let options = read_options();
-    let call = options.admit().unwrap();
-    let prepared = prepare_ordered_seek(&request, &call).unwrap();
-    let response: OrderedSeekResponse = decode(&raw(&wire), &prepared, &call).unwrap();
-    assert_eq!(response.rows[0].body, body());
-    request.continuation = response.continuation;
-    wire["observed_revision"] = json!(9); // read auditing changed no source rows
-    wire["continuation"] = Value::Null;
-    wire["index_entries_visited"] = json!(1);
-    wire["rows"][0]["id"] = json!("id-b");
-    let next = prepare_ordered_seek(&request, &call).unwrap();
-    let response: OrderedSeekResponse = decode(&raw(&wire), &next, &call).unwrap();
-    assert_eq!((response.revision, response.observed_revision), (4, 9));
-    for field in [
-        "tenant",
-        "incarnation",
-        "collection_epoch",
-        "policy_epoch",
-        "schema_epoch",
-        "index_sha256",
-        "request_sha256",
-        "revision",
-    ] {
-        let mut changed = wire.clone();
-        changed[field] = if changed[field].is_string() {
-            json!("different")
-        } else {
-            json!(99)
-        };
-        assert!(
-            decode::<OrderedSeekResponse>(&raw(&changed), &next, &call).is_err(),
-            "{field}"
-        );
-    }
-    request.prefix = vec![json!("another-employee")];
-    assert!(matches!(
-        prepare_ordered_seek(&request, &call),
-        Err(ClientError::DecodeRejected {
-            code: tonic::Code::InvalidArgument,
-            reason: "ordered seek continuation request differs",
-        })
-    ));
-}
-#[test]
-fn ordered_seek_rejects_spoofed_metadata_duplicate_fields_and_over_budget_rows() {
-    let (request, wire) = seek_fixture();
-    let call = read_options().admit().unwrap();
-    let prepared = prepare_ordered_seek(&request, &call).unwrap();
-    for value in [
-        json!(4.0),
-        json!("4"),
-        json!({"$serde_json::private::Number":"4"}),
-        json!(-1),
-    ] {
-        let mut changed = wire.clone();
-        changed["revision"] = value;
-        assert!(decode::<OrderedSeekResponse>(&raw(&changed), &prepared, &call).is_err());
-    }
-    for changed in [
-        String::from_utf8(raw(&wire))
-            .unwrap()
-            .replacen("{", "{\"revision\":4,", 1),
-        String::from_utf8(raw(&wire))
-            .unwrap()
-            .replacen("{", "{\"unexpected\":null,", 1),
-    ] {
-        assert!(decode::<OrderedSeekResponse>(changed.as_bytes(), &prepared, &call).is_err());
-    }
-    let mut changed = wire.clone();
-    changed["rows"]
-        .as_array_mut()
-        .unwrap()
-        .push(wire["rows"][0].clone());
-    assert!(decode::<OrderedSeekResponse>(&raw(&changed), &prepared, &call).is_err());
-    let mut changed = wire;
-    changed["continuation"]["after_key"] = json!(["different", "id-a"]);
-    assert!(decode::<OrderedSeekResponse>(&raw(&changed), &prepared, &call).is_err());
 }
 #[test]
 fn ordinary_query_preserves_literal_keys_numbers_and_original_page_revision() {
@@ -188,8 +78,14 @@ fn ordinary_query_preserves_literal_keys_numbers_and_original_page_revision() {
     let bytes = query_wire(&expected, 2);
     let response = wire::query(&bytes, &request, Some(4), &call).unwrap();
     assert_eq!(response.rows[0].body, expected);
-    assert_eq!(response.aggregates, vec![expected]);
+    assert!(response.aggregates.is_empty());
     assert!(wire::query(&bytes, &request, Some(3), &call).is_err());
+    // Aggregate queries carry only groups; mixed or paged replies are rejected.
+    let totals = QueryRequest::new("docs").aggregate("n", Aggregation::count());
+    let groups = wire::query(&aggregate_wire(&expected), &totals, Some(4), &call).unwrap();
+    assert_eq!(groups.aggregates, vec![expected.clone()]);
+    assert!(wire::query(&bytes, &totals, Some(4), &call).is_err());
+    assert!(wire::query(&aggregate_wire(&expected), &request, Some(4), &call).is_err());
     let prepared = prepare_query_page(&request, "opaque-original", 4, &call).unwrap();
     let response: QueryResponse = decode(&bytes, &prepared, &call).unwrap();
     assert_eq!(response.revision, 4);
@@ -218,7 +114,7 @@ fn query_budget_is_aggregate_across_rows_and_ignored_wire_is_rejected() {
     options.limits.max_decoded_bytes = 9000;
     assert!(wire::query(&bytes, &query_request(), None, &options.admit().unwrap()).is_err());
     let mut options = read_options();
-    options.limits.max_json_bytes = raw(&expected).len() * 2;
+    options.limits.max_json_bytes = raw(&expected).len() * 2 - 1;
     assert!(wire::query(&bytes, &query_request(), None, &options.admit().unwrap()).is_err());
     let mut wire = query_wire(&expected, 1);
     wire.extend([40, 0]);
@@ -240,11 +136,7 @@ fn numeric_lexeme_and_request_clone_work_are_admitted_before_construction() {
     let large = "340282366920938463463374607431768211456"
         .parse::<serde_json::Number>()
         .unwrap();
-    let mut request = query_request();
-    request.filter = Predicate::Eq {
-        field: "/x".into(),
-        value: Value::Number(large),
-    };
+    let request = query_request().filter(Filter::new().eq("/x", Value::Number(large)));
     assert!(prepare_query(&request, None, &call).is_err());
     assert!(wire::query(&query_wire(&body(), 1), &query_request(), None, &call).is_err());
     drop(call);
@@ -305,11 +197,11 @@ fn change_feed_schema_and_audit_construct_values_from_literal_spans() {
             commit_event_count: 1,
             collection: "docs".into(),
             id: "a".into(),
-            document: Some(Arc::new(Document {
+            document: Some(Document {
                 id: "a".into(),
                 version: 4,
                 body: expected.clone(),
-            })),
+            }),
         }],
         next: ChangeFeedCursor {
             tenant: "tenant".into(),
@@ -496,6 +388,13 @@ async fn canonical_intent_helpers_preserve_body_predicates_schema_and_exact_dige
     let bytes = raw(&batch);
     let decoded = decode_mutation_json(&bytes, &options).await.unwrap();
     assert_eq!(*decoded, batch);
+    let patched = MutationBatch::with_key("patch").patch("docs", "a", expected.clone());
+    let decoded_patch = decode_mutation_json(&raw(&patched), &options)
+        .await
+        .unwrap();
+    assert_eq!(*decoded_patch, patched);
+    assert_eq!(raw(&*decoded_patch), raw(&patched));
+    drop(decoded_patch);
     assert_eq!(decoded.digest().unwrap(), batch.digest().unwrap());
     let clone = decoded.clone();
     drop(decoded);
@@ -511,11 +410,9 @@ async fn canonical_intent_helpers_preserve_body_predicates_schema_and_exact_dige
     assert_eq!(raw(&*decoded_chunk), raw(&chunk));
     drop(decoded_chunk);
     let mut query = query_request();
-    query.filter = Predicate::And {
-        predicates: vec![Predicate::Eq {
-            field: "/x".into(),
-            value: expected.clone(),
-        }],
+    query.filter = Filter {
+        and: vec![Filter::new().eq("/x", expected.clone())],
+        ..Filter::default()
     };
     let decoded = decode_query_json(&raw(&query), &options).await.unwrap();
     assert_eq!(*decoded, query);
@@ -855,4 +752,72 @@ async fn cancelled_canonical_input_retains_reservation_until_worker_exit() {
     .await
     .unwrap();
     assert_eq!(resources.usage().accounted_bytes, 0);
+}
+
+#[tokio::test]
+async fn literal_query_decoder_accepts_exactly_what_typed_decoding_accepts() {
+    let options = read_options();
+    for text in [
+        r#"{"collection":"docs"}"#,
+        r#"{"collection":"docs","filter":{},"sort":[],"select":[],"allow_scan":false}"#,
+        r#"{"collection":"docs","filter":{"/status":"open","/amount":{"gte":10.25,"lt":1e400}},"sort":["-/amount","/id"],"select":["/amount","/customer/name"],"limit":20}"#,
+        r#"{"collection":"docs","filter":{"or":[{"/a":null},{"/b":{"in":[1,"x",true]}}],"not":{"/tags":{"contains":"t"}},"and":[{"/c":{"exists":false}}]}}"#,
+        r#"{"collection":"docs","filter":{"/x":{"eq":{"$serde_json::private::Number":"7"}}}}"#,
+        r#"{"collection":"docs","search":{"index":"body","query":"東京"},"group_by":["/s"],"aggregate":{"n":{"count":"*"},"m":{"avg":"/v","scale":2}}}"#,
+        r#"{"collection":"docs","limit":null,"cursor":null}"#,
+        r#"{"collection":"docs","filter":{"/s":"x"},"sort":["-/at"],"paging":"seek","cursor":"7b7d"}"#,
+        r#"{"collection":"docs","paging":"snapshot"}"#,
+    ] {
+        let typed: QueryRequest = serde_json::from_str(text).unwrap();
+        let literal = decode_query_json(text.as_bytes(), &options).await.unwrap();
+        assert_eq!(*literal, typed, "{text}");
+        assert_eq!(raw(&*literal), raw(&typed), "{text}");
+    }
+    for text in [
+        r#"{"collection":"docs","filter":{"status":"open"}}"#,
+        r#"{"collection":"docs","filter":{"/a":1,"/a":2}}"#,
+        r#"{"collection":"docs","filter":{"/a":{"gtt":1}}}"#,
+        r#"{"collection":"docs","filter":{"/a":[1]}}"#,
+        r#"{"collection":"docs","filter":{"/a":{}}}"#,
+        r#"{"collection":"docs","filter":{"or":[]}}"#,
+        r#"{"collection":"docs","aggregate":{"n":{"count":"*"},"n":{"count":"*"}}}"#,
+        r#"{"collection":"docs","projection":["/a"]}"#,
+        r#"{"collection":"docs","sort":["amount"]}"#,
+        r#"{"collection":"docs","paging":"keyset"}"#,
+    ] {
+        assert!(
+            serde_json::from_str::<QueryRequest>(text).is_err(),
+            "{text}"
+        );
+        assert!(
+            decode_query_json(text.as_bytes(), &options).await.is_err(),
+            "{text}"
+        );
+    }
+}
+
+#[test]
+fn query_page_encoding_matches_the_typed_request_with_its_cursor() {
+    for query in [
+        query_request(),
+        QueryRequest::new("docs")
+            .filter(Filter::new().eq("/s", "x").gte("/n", 1))
+            .search(TextSearch::new("body", "q").fuzzy(2))
+            .sort_desc("/n")
+            .select(["/n"])
+            .limit(5),
+        QueryRequest::new("docs")
+            .group_by(["/s"])
+            .aggregate("n", Aggregation::count()),
+        QueryRequest::new("docs")
+            .filter(Filter::new().eq("/s", "x"))
+            .sort_asc("/n")
+            .limit(5)
+            .paging(Paging::Seek),
+    ] {
+        let mut typed = query.clone();
+        typed.cursor = Some("next".into());
+        assert_eq!(raw(&BorrowedQuery::new(&query, Some("next"))), raw(&typed));
+        assert_eq!(raw(&BorrowedQuery::new(&query, None)), raw(&query));
+    }
 }

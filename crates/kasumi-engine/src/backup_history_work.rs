@@ -200,7 +200,7 @@ mod tests {
         let (release_body, body_release) = std::sync::mpsc::channel();
         let (release_worker, worker_release) = std::sync::mpsc::channel();
         let deadline = VerificationDeadline::new(10_000).unwrap();
-        let task = tokio::spawn(async move {
+        let task: tokio::task::JoinHandle<anyhow::Result<()>> = tokio::spawn(async move {
             deadline
                 .blocking(reservation, Some(registration), move || {
                     verify_body(

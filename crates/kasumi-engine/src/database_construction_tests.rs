@@ -9,7 +9,7 @@ use kasumi_types::{Limits, Policy};
 use std::path::Path;
 
 struct Fixture {
-    node: Arc<NodeStore>,
+    node: NodeStore,
     stores: Arc<TenantStorageSet>,
     audit: Arc<SecurityAudit>,
     admission: Arc<NodeAdmission>,
@@ -43,7 +43,9 @@ impl Fixture {
         let persistent = retry_disk_registry(|| {
             NodeDisk::open_fixture(disk, memory.clone(), &CensusCancellation::default())
         })?;
-        let node = NodeStore::create_new(path, NODE_STORE_ID, persistent, scratch)?;
+        let storage = persistent.native_storage_config();
+        let node = NodeStore::create_new(path, NODE_STORE_ID, persistent, scratch, storage)
+            .unwrap_or_else(|original| std::panic::panic_any(original));
         let audit_store = TenantStore::initialize_catalog_fixture(
             node.clone(),
             crate::SECURITY_TENANT.into(),
@@ -90,6 +92,8 @@ async fn foreign_equal_policy_core_is_rejected_before_bootstrap_or_raft_startup(
         directory: root.join("scratch"),
         max_bytes: 64 << 20,
         min_free_bytes: 0,
+
+        native_cache_bytes: 8 << 20,
     };
     let left_scratch = scratch_config(left_directory.path());
     let right_scratch = scratch_config(right_directory.path());
@@ -113,6 +117,12 @@ async fn foreign_equal_policy_core_is_rejected_before_bootstrap_or_raft_startup(
     let left = Fixture::new(&left_path, &left_disk, &left_scratch, config.clone()).await?;
     let right = Fixture::new(&right_path, &right_disk, &right_scratch, config).await?;
     assert!(!left.admission.shares_memory(&right.admission));
+    // Empty audit maintenance still reads its encrypted pending record on a
+    // blocking worker. Exclude that independent work from this exact census.
+    let left_quiescent = left.audit.quiescent_jobs_for_test().await;
+    let right_quiescent = right.audit.quiescent_jobs_for_test().await;
+    assert!(!left.node.cache_worker_status().started);
+    assert!(!right.node.cache_worker_status().started);
     let before_left = left.admission.snapshot();
     let before_right = right.admission.snapshot();
     let disk_before = right.node.persistent_disk().snapshot();
@@ -151,6 +161,8 @@ async fn foreign_equal_policy_core_is_rejected_before_bootstrap_or_raft_startup(
     let exact = DatabaseConstruction::new(right.stores.clone(), right.audit.clone())?;
     assert!(Arc::ptr_eq(exact.admission(), &right.admission));
     drop(exact);
+    drop(right_quiescent);
+    drop(left_quiescent);
     left.close().await?;
     right.close().await?;
     Ok(())

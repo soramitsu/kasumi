@@ -26,6 +26,7 @@ openraft = { version = "=0.9.25", features = ["serde", "storage-v2"] }
 postcard = { version = "1", default-features = false, features = ["alloc"] }
 
 [dev-dependencies]
+kasumi-kv.workspace = true
 tempfile.workspace = true
 kasumi-store = { workspace = true, features = ["test-utils"] }
 kasumi-serving = { workspace = true, features = ["test-utils"] }

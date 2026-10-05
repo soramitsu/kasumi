@@ -11,7 +11,7 @@ import subprocess
 import tarfile
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import release_gate
 
@@ -516,7 +516,34 @@ class ReleaseGateTests(unittest.TestCase):
                                                        stderr=subprocess.STDOUT)
             self.assertEqual(result["exit_code"], 124)
             self.assertTrue(result["timed_out"])
-            self.assertTrue(result["cleanup"]["drained"])
+            self.assertTrue(result["cleanup"]["drained"], result["cleanup"])
+
+    def test_signal_permission_race_requires_reaped_leader_and_empty_group(self):
+        zombie = [{"pid": 123, "ppid": 1, "group": 123, "state": "Z"}]
+        for reaped, remaining in ((True, []), (True, zombie), (False, [])):
+            with self.subTest(reaped=reaped, remaining=remaining):
+                process = Mock(pid=123, returncode=None)
+                polls = 0
+                inventories = 0
+
+                def poll():
+                    nonlocal polls
+                    polls += 1
+                    if polls > 1 and reaped:
+                        process.returncode = 0
+                    return process.returncode
+
+                def members(_group):
+                    nonlocal inventories
+                    inventories += 1
+                    return zombie if inventories <= 2 else remaining
+
+                process.poll.side_effect = poll
+                with patch("gate_process.group_members", side_effect=members), \
+                        patch("gate_process.os.killpg", side_effect=PermissionError(1, "Operation not permitted")):
+                    result = release_gate.gate_process.drain(process, grace_seconds=0)
+                self.assertEqual(result["drained"], reaped and remaining == [])
+                self.assertEqual(bool(result["errors"]), not result["drained"])
 
 
 if __name__ == "__main__":

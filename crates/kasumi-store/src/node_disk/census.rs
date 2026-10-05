@@ -1,6 +1,6 @@
 use super::{
     AccountedDirectory, AccountedFile, AccountedInode, CensusCancellation, Identity,
-    NamespaceBinding, NodeDiskConfig, extent,
+    NamespaceBinding, NodeDiskConfig, file_extent,
 };
 use anyhow::{Context, Result, ensure};
 use std::{
@@ -550,7 +550,8 @@ impl<'a> CensusSession<'a> {
                     Identity::of(&verified) == Identity::of(&metadata),
                     "census inode changed"
                 );
-                let (bytes, pending) = extent(&verified, self.unit)?;
+                let (bytes, pending) =
+                    file_extent(&verified, self.unit, self.config.file_allocation_policy)?;
                 self.scan
                     .accounted
                     .try_reserve(1)
@@ -689,6 +690,8 @@ fn enroll_directory(
                     len: metadata.len(),
                     children: 0,
                     live_handles: 0,
+                    transaction_children: 0,
+                    transaction_claimed: false,
                 })
             )
             .is_none(),

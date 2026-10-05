@@ -18,6 +18,47 @@ const NS: &str = "live.signer.installation";
 pub(crate) mod authorization;
 use authorization::{CurrentSignerInvocation, ScopedSignerAdministrator};
 
+// This bound is the concrete UUID/u64 encoding size, not an operation quota.
+const VERIFIER_PARTICIPANT_PREFIX: &str = "kasumi.trust.";
+const VERIFIER_PARTICIPANT_BYTES: usize = VERIFIER_PARTICIPANT_PREFIX.len()
+    + uuid::fmt::Hyphenated::LENGTH
+    + 1
+    + (u64::MAX.ilog10() as usize + 1);
+struct VerifierParticipantName {
+    bytes: [u8; VERIFIER_PARTICIPANT_BYTES],
+    len: usize,
+}
+impl VerifierParticipantName {
+    fn new(identity: &TrustVerifierIdentity) -> Self {
+        use std::fmt::Write;
+        let mut name = Self {
+            bytes: [0; VERIFIER_PARTICIPANT_BYTES],
+            len: 0,
+        };
+        write!(
+            name,
+            "{VERIFIER_PARTICIPANT_PREFIX}{}.{}",
+            identity.installation_id, identity.node_id
+        )
+        .expect("concrete UUID/u64 verifier participant bound");
+        name
+    }
+    fn as_str(&self) -> &str {
+        std::str::from_utf8(&self.bytes[..self.len]).expect("canonical ASCII verifier participant")
+    }
+}
+impl std::fmt::Write for VerifierParticipantName {
+    fn write_str(&mut self, value: &str) -> std::fmt::Result {
+        let end = self.len.checked_add(value.len()).ok_or(std::fmt::Error)?;
+        self.bytes
+            .get_mut(self.len..end)
+            .ok_or(std::fmt::Error)?
+            .copy_from_slice(value.as_bytes());
+        self.len = end;
+        Ok(())
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SignerVerifierConfig {
@@ -37,13 +78,28 @@ impl SignerVerifierConfig {
         self.keys.validate()?;
         Ok(())
     }
+    pub(crate) fn node_start_inventory(
+        &self,
+        admission: &Arc<kasumi_engine::admission::NodeAdmission>,
+    ) -> Result<crate::administration::OriginalRecoveries> {
+        let participant = VerifierParticipantName::new(&self.identity);
+        crate::administration::OriginalRecoveries::new(
+            admission,
+            crate::administration::OriginalRecoveryParticipants::one(participant.as_str()),
+        )
+    }
+    #[allow(
+        clippy::result_large_err,
+        reason = "the same prepaid signer inventory receives the whole inline native original"
+    )]
     async fn store(
         &self,
         credential: CredentialSource,
         initialize: bool,
         persistent_disk: Arc<kasumi_store::NodeDisk>,
         scratch_disk: Arc<kasumi_store::ScratchDisk>,
-    ) -> Result<(Arc<NodeStore>, Arc<TenantStore>)> {
+        original_recoveries: &crate::administration::OriginalRecoveries,
+    ) -> Result<(NodeStore, Arc<TenantStore>)> {
         self.validate()?;
         private_files::check_directory(
             self.database_path
@@ -55,25 +111,40 @@ impl SignerVerifierConfig {
         // owner. Keep acquired scopes outside the caught future until cleanup
         // has actually joined every initializer and worker.
         let mut pending = crate::startup_resources::Resources::default();
+        pending.original_recoveries = Some(original_recoveries.clone());
         let prepared = crate::startup_preparation::capture("signer verifier storage", async {
             let provider = self.keys.provider(credential)?;
             let access = StorageAccess::live_signer_trust(self.identity.clone())?;
-            let node = if initialize {
-                NodeStore::create_new(
-                    &self.database_path,
-                    database_id,
-                    persistent_disk.clone(),
-                    scratch_disk.clone(),
-                )?
-            } else {
-                NodeStore::open_existing(
-                    &self.database_path,
-                    database_id,
-                    persistent_disk.clone(),
-                    scratch_disk.clone(),
-                )?
+            let node = {
+                let mut constructor = original_recoveries.claim(0).await;
+                constructor
+                    .begin_node()
+                    .map_err(|observed| observed.foreign_error())?
+                    .run_node(|| {
+                        if initialize {
+                            NodeStore::create_new(
+                                &self.database_path,
+                                database_id,
+                                persistent_disk.clone(),
+                                scratch_disk.clone(),
+                                persistent_disk.native_storage_config(),
+                            )
+                        } else {
+                            NodeStore::open_existing(
+                                &self.database_path,
+                                database_id,
+                                persistent_disk.clone(),
+                                scratch_disk.clone(),
+                                persistent_disk.native_storage_config(),
+                            )
+                        }
+                    })
+                    .map_err(|observed| observed.foreign_error())?
             };
             pending.owned_nodes.push(node.clone());
+            if !initialize {
+                node.prepare_cache_warming().await?;
+            }
             #[cfg(test)]
             crate::startup_preparation::checkpoint(database_id, "verifier-storage-node");
             let store = if initialize {
@@ -91,7 +162,9 @@ impl SignerVerifierConfig {
             pending.stores.push(store.clone());
             #[cfg(test)]
             crate::startup_preparation::checkpoint(database_id, "verifier-storage-catalog");
-            node.drain_initializers().await?;
+            node.drain_initializers()
+                .await
+                .map_err(|failure| failure.observation())?;
             Ok((node, store))
         })
         .await;
@@ -115,19 +188,32 @@ impl SignerVerifierConfig {
         persistent_disk: Arc<kasumi_store::NodeDisk>,
         scratch_disk: Arc<kasumi_store::ScratchDisk>,
         admission: Arc<kasumi_engine::admission::NodeAdmission>,
+        original_recoveries: &crate::administration::OriginalRecoveries,
     ) -> Result<Arc<InstalledSignerVerifier>> {
-        ensure!(
-            self.database_path.is_file(),
-            "signer verifier must be explicitly initialized before runtime startup"
-        );
+        // This is only a no-symlink/private-kind precheck. The subsequent
+        // managed group acquisition verifies the enrolled directory/root and
+        // exact signer-verifier incarnation before reading native data.
+        private_files::check_directory(&self.database_path).context(
+            "signer verifier group must be explicitly initialized before runtime startup",
+        )?;
         self.validate()?;
         let bytes =
-            BackgroundWorkBudget::required_bytes(self.max_background_workers, domains.len())?;
+            BackgroundWorkBudget::required_bytes(self.max_background_workers, domains.len())?
+                .checked_add(kasumi_types::SharedBudgetCharge::required_bytes::<
+                    kasumi_engine::admission::Reservation,
+                >()?)
+                .context("verifier budget control quote overflow")?;
         let mut reserved = admission.reserve(bytes, None)?;
         reserved.retain(bytes);
-        let charge: Arc<dyn Send + Sync> = Arc::new(reserved);
+        let charge = kasumi_types::SharedBudgetCharge::new(reserved);
         let (node, store) = self
-            .store(credential, false, persistent_disk, scratch_disk)
+            .store(
+                credential,
+                false,
+                persistent_disk,
+                scratch_disk,
+                original_recoveries,
+            )
             .await?;
         let administrator = Arc::new(ScopedSignerAdministrator::default());
         let result = (|| -> Result<(TrustVerifierIdentity, BTreeMap<String, Arc<LiveSignerTrust>>)> {
@@ -161,6 +247,7 @@ impl SignerVerifierConfig {
             Ok(verified) => verified,
             Err(error) => {
                 let mut pending = crate::startup_resources::Resources::default();
+                pending.original_recoveries = Some(original_recoveries.clone());
                 pending.owned_nodes.push(node);
                 pending.stores.push(store);
                 return Err(match crate::startup_owner::finish(&mut pending).await {
@@ -175,20 +262,28 @@ impl SignerVerifierConfig {
             installed_identity,
             owners,
             administrator,
+            original_recoveries: original_recoveries.clone(),
             drain_report: Default::default(),
         }))
     }
 }
 pub(crate) struct InstalledSignerVerifier {
-    node: Arc<NodeStore>,
+    node: NodeStore,
     store: Arc<TenantStore>,
     // Captured from the checked encrypted installation record, never config.
     installed_identity: TrustVerifierIdentity,
     owners: BTreeMap<String, Arc<LiveSignerTrust>>,
     administrator: Arc<ScopedSignerAdministrator>,
+    original_recoveries: crate::administration::OriginalRecoveries,
     drain_report: std::sync::Mutex<kasumi_types::drain::DrainReport>,
 }
 impl InstalledSignerVerifier {
+    /// The parent runtime's acknowledged handoff activates this already
+    /// retained worker; installation and abandoned opens remain dormant.
+    pub(crate) fn activate_cache_warming(&self) -> Result<()> {
+        self.node.activate_cache_warming()
+    }
+
     /// Only the live verifier on this exact installed disk may supply the
     /// replicated physical owner to destination opening.
     pub(crate) fn identity_for(
@@ -293,6 +388,19 @@ impl InstalledSignerVerifier {
             owner.close();
         }
         let mut retained = None;
+        self.original_recoveries.seal();
+        if self.original_recoveries.retained().await {
+            let issue = self
+                .drain_report
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .record(
+                    "signer native startup inventory",
+                    0,
+                    anyhow::anyhow!("original native startup remains retained"),
+                );
+            retained = Some(kasumi_types::drain::DrainFailure::retained(issue));
+        }
         for owner in self.owners.values() {
             if let Err(error) = owner.drain_background_work().await {
                 self.drain_report
@@ -487,13 +595,18 @@ impl InitializeSignerVerifier {
         let admission = storage.facade(&self.admission)?;
         let mut pending = crate::startup_resources::Resources::default();
         pending.owned_admissions.push(admission.clone());
+        pending.original_recoveries = Some(self.verifier.node_start_inventory(&admission)?);
         let bytes = BackgroundWorkBudget::required_bytes(
             self.verifier.max_background_workers,
             self.initial_certificates.len(),
-        )?;
+        )?
+        .checked_add(kasumi_types::SharedBudgetCharge::required_bytes::<
+            kasumi_engine::admission::Reservation,
+        >()?)
+        .context("verifier budget control quote overflow")?;
         let mut reserved = admission.reserve(bytes, None)?;
         reserved.retain(bytes);
-        let charge: Arc<dyn Send + Sync> = Arc::new(reserved);
+        let charge = kasumi_types::SharedBudgetCharge::new(reserved);
         ensure!(
             !self.initial_certificates.is_empty() && self.initial_certificates.len() <= 1024,
             "verifier requires a bounded explicit domain set"
@@ -536,6 +649,10 @@ impl InitializeSignerVerifier {
                     true,
                     crate::persistent_disk::open(&self.persistent_disk, &storage)?,
                     storage.open_scratch(&self.scratch_disk)?,
+                    pending
+                        .original_recoveries
+                        .as_ref()
+                        .expect("same installed verifier startup inventory"),
                 )
                 .await?;
             pending.owned_nodes.push(node);

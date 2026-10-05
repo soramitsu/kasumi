@@ -34,7 +34,6 @@ use crate::core::raft_msg::ResultSender;
 use crate::core::raft_msg::VoteTx;
 use crate::core::sm;
 use crate::core::sm::handle;
-use crate::core::sm::CommandSeq;
 use crate::core::ServerState;
 use crate::display_ext::DisplayInstantExt;
 use crate::display_ext::DisplayOption;
@@ -86,7 +85,6 @@ use crate::replication::ReplicationHandle;
 use crate::replication::ReplicationSessionId;
 use crate::runtime::RaftRuntime;
 use crate::storage::LogFlushed;
-use crate::storage::RaftLogReaderExt;
 use crate::storage::RaftLogStorage;
 use crate::storage::RaftStateMachine;
 use crate::type_config::alias::InstantOf;
@@ -109,8 +107,8 @@ use crate::Vote;
 /// A temp struct to hold the data for a node that is being applied.
 #[derive(Debug)]
 pub(crate) struct ApplyingEntry<NID: NodeId, N: Node> {
-    log_id: LogId<NID>,
-    membership: Option<Membership<NID, N>>,
+    pub(crate) log_id: LogId<NID>,
+    pub(crate) membership: Option<Membership<NID, N>>,
 }
 
 impl<NID: NodeId, N: Node> ApplyingEntry<NID, N> {
@@ -179,6 +177,7 @@ where
 
     /// A controlling handle to the [`RaftStateMachine`] worker.
     pub(crate) sm_handle: handle::Handle<C>,
+    pub(crate) pending_snapshot: Arc<sm::pending_snapshot::PendingSnapshot<C>>,
 
     pub(crate) engine: Engine<C>,
 
@@ -193,8 +192,7 @@ where
     /// At most one replacement intent and one current inflight per target.
     /// Capacity pressure must never postpone already committed application work.
     #[allow(clippy::type_complexity)]
-    pub(crate) pending_replication:
-        Option<Vec<(C::NodeId, ProgressEntry<C::NodeId>, Inflight<C::NodeId>)>>,
+    pub(crate) pending_replication: Option<Vec<(C::NodeId, ProgressEntry<C::NodeId>, Inflight<C::NodeId>)>>,
 
     pub(crate) leader_data: Option<LeaderData<C>>,
 
@@ -230,7 +228,7 @@ where
     /// The main loop of the Raft protocol.
     pub(crate) async fn main(
         mut self,
-        rx_shutdown: <C::AsyncRuntime as AsyncRuntime>::OneshotReceiver<()>,
+        rx_shutdown: <C::AsyncRuntime as AsyncRuntime>::OneshotReceiver<crate::core::ShutdownMode>,
     ) -> Result<Infallible, Fatal<C::NodeId>> {
         let span = tracing::span!(parent: &self.span, Level::DEBUG, "main");
         let res = self.do_main(rx_shutdown).instrument(span).await;
@@ -264,7 +262,7 @@ where
     #[tracing::instrument(level="trace", skip_all, fields(id=display(&self.id), cluster=%self.config.cluster_name))]
     async fn do_main(
         &mut self,
-        rx_shutdown: <C::AsyncRuntime as AsyncRuntime>::OneshotReceiver<()>,
+        rx_shutdown: <C::AsyncRuntime as AsyncRuntime>::OneshotReceiver<crate::core::ShutdownMode>,
     ) -> Result<Infallible, Fatal<C::NodeId>> {
         tracing::debug!("raft node is initializing");
 
@@ -325,10 +323,7 @@ where
             return;
         }
 
-        let owner = match self
-            .auxiliary_tasks
-            .reserve(AuxiliaryTaskKind::LeadershipRead)
-        {
+        let owner = match self.auxiliary_tasks.reserve(AuxiliaryTaskKind::LeadershipRead) {
             Ok(owner) => owner,
             Err(capacity) => {
                 let _ = tx.send(Err(capacity.into()));
@@ -341,9 +336,7 @@ where
 
         let voter_progresses = {
             let l = &self.engine.leader.as_ref().unwrap();
-            l.progress
-                .iter()
-                .filter(|(id, _v)| l.progress.is_voter(id) == Some(true))
+            l.progress.iter().filter(|(id, _v)| l.progress.is_voter(id) == Some(true))
         };
 
         for (target, progress) in voter_progresses {
@@ -370,8 +363,7 @@ where
                 let my_id = my_id.clone();
                 let target = target.clone();
                 async move {
-                    let outer_res =
-                        C::AsyncRuntime::timeout(ttl, client.append_entries(rpc, option)).await;
+                    let outer_res = C::AsyncRuntime::timeout(ttl, client.append_entries(rpc, option)).await;
                     match outer_res {
                         Ok(append_res) => match append_res {
                             Ok(x) => Ok((target.clone(), x)),
@@ -391,10 +383,7 @@ where
                 }
             };
 
-            let fu = fu.instrument(tracing::debug_span!(
-                "spawn_is_leader",
-                target = target.to_string()
-            ));
+            let fu = fu.instrument(tracing::debug_span!("spawn_is_leader", target = target.to_string()));
             pending.push(fu);
         }
 
@@ -453,11 +442,8 @@ where
             .into()));
             Ok(())
         };
-        let task = C::AsyncRuntime::spawn(
-            waiting_fu.instrument(tracing::debug_span!("leadership_read_collector")),
-        );
-        *owner.task.try_lock().expect("unpublished auxiliary cell") =
-            Some(sm::tasks::Task::Running(task));
+        let task = C::AsyncRuntime::spawn(waiting_fu.instrument(tracing::debug_span!("leadership_read_collector")));
+        *owner.task.try_lock().expect("unpublished auxiliary cell") = Some(sm::tasks::Task::Running(task));
     }
 
     /// Submit change-membership by writing a Membership log entry.
@@ -484,12 +470,7 @@ where
         retain: bool,
         tx: ResponderOf<C>,
     ) {
-        let res = self
-            .engine
-            .state
-            .membership_state
-            .change_handler()
-            .apply(changes, retain);
+        let res = self.engine.state.membership_state.change_handler().apply(changes, retain);
         let new_membership = match res {
             Ok(x) => x,
             Err(e) => {
@@ -498,10 +479,7 @@ where
             }
         };
 
-        let peers = new_membership
-            .nodes()
-            .filter(|(id, _)| *id != &self.id)
-            .count();
+        let peers = new_membership.nodes().filter(|(id, _)| *id != &self.id).count();
         // A joint proposal needs a later uniform generation. Reserve headroom
         // before appending any new membership, while active streams keep working.
         let generations = if new_membership.get_joint_config().len() > 1 {
@@ -509,10 +487,7 @@ where
         } else {
             1
         };
-        if let Err(capacity) = self
-            .replication_tasks
-            .available(peers.saturating_mul(generations))
-        {
+        if let Err(capacity) = self.replication_tasks.available(peers.saturating_mul(generations)) {
             tx.send(Err(capacity.into()));
             return;
         }
@@ -532,8 +507,7 @@ where
     pub fn write_entry(&mut self, entry: C::Entry, resp_tx: Option<ResponderOf<C>>) -> bool {
         tracing::debug!(payload = display(&entry), "write_entry");
 
-        let (mut lh, tx) = if let Some((lh, tx)) = self.engine.get_leader_handler_or_reject(resp_tx)
-        {
+        let (mut lh, tx) = if let Some((lh, tx)) = self.engine.get_leader_handler_or_reject(resp_tx) {
             (lh, tx)
         } else {
             return false;
@@ -563,11 +537,7 @@ where
         let mut lh = if let Some((lh, _)) = self.engine.get_leader_handler_or_reject(None) {
             lh
         } else {
-            tracing::debug!(
-                now = debug(C::now()),
-                "{} failed to send heartbeat",
-                emitter
-            );
+            tracing::debug!(now = debug(C::now()), "{} failed to send heartbeat", emitter);
             return false;
         };
 
@@ -586,9 +556,9 @@ where
                     .map(|(id, p)| {
                         (
                             id.clone(),
-                            <ProgressEntry<<C as RaftTypeConfig>::NodeId> as Borrow<
-                                Option<LogId<C::NodeId>>,
-                            >>::borrow(p)
+                            <ProgressEntry<<C as RaftTypeConfig>::NodeId> as Borrow<Option<LogId<C::NodeId>>>>::borrow(
+                                p,
+                            )
                             .clone(),
                         )
                     })
@@ -759,12 +729,7 @@ where
     pub(crate) fn get_leader_node(&self, leader_id: Option<C::NodeId>) -> Option<C::Node> {
         let leader_id = leader_id?;
 
-        self.engine
-            .state
-            .membership_state
-            .effective()
-            .get_node(&leader_id)
-            .cloned()
+        self.engine.state.membership_state.effective().get_node(&leader_id).cloned()
     }
 
     /// A temp wrapper to make non-blocking `append_to_log` a blocking.
@@ -796,66 +761,47 @@ where
     #[tracing::instrument(level = "debug", skip_all)]
     pub(crate) async fn apply_to_state_machine(
         &mut self,
-        seq: CommandSeq,
+        seq: sm::CommandSeq,
         since: u64,
-        upto_index: u64,
+        upto: LogId<C::NodeId>,
     ) -> Result<(), StorageError<C::NodeId>> {
-        tracing::debug!(upto_index = display(upto_index), "{}", func_name!());
-
-        let end = upto_index + 1;
-
-        debug_assert!(
-            since <= end,
-            "last_applied index {} should <= committed index {}",
-            since,
-            end
-        );
-
-        if since == end {
+        if since > upto.index {
             return Ok(());
         }
-
-        let entries = self.log_store.get_log_entries(since..end).await?;
-        tracing::debug!(
-            entries = display(DisplaySlice::<_>(entries.as_slice())),
-            "about to apply"
-        );
-
-        let last_applied = entries[entries.len() - 1].get_log_id().clone();
-
-        let cmd = sm::Command::apply(entries).with_seq(seq);
-        self.sm_handle
-            .send(cmd)
-            .map_err(|e| StorageIOError::apply(last_applied, AnyError::error(e)))?;
-
+        // Consecutive commits coalesce in one fixed scalar handoff. Its reader
+        // retains at most one batch until normal core response consumption.
+        let cmd = sm::Command::apply(since, upto.clone()).with_seq(seq);
+        self.sm_handle.send(cmd).map_err(|e| StorageIOError::apply(upto, AnyError::error(e)))?;
         Ok(())
     }
 
-    /// When received results of applying log entries to the state machine, send back responses to
-    /// the callers that proposed the entries.
-    #[tracing::instrument(level = "debug", skip_all)]
-    pub(crate) fn handle_apply_result(&mut self, res: ApplyResult<C>) {
-        tracing::debug!(last_applied = display(res.last_applied), "{}", func_name!());
-
-        let mut results = res.apply_results.into_iter();
-        let mut applying_entries = res.applying_entries.into_iter();
-
-        for log_index in res.since..res.end {
-            let ent = applying_entries.next().unwrap();
-            let apply_res = results.next().unwrap();
+    fn consume_apply_batch(&mut self, batch: &sm::apply_batch::ApplyBatch<C>) -> Result<(), StorageError<C::NodeId>> {
+        let (since, end, _) = batch.progress()?;
+        for log_index in since..end {
+            let (entry, response) = batch.next()?;
             let tx = self.client_resp_channels.remove(&log_index);
-
-            Self::send_response(ent, apply_res, tx);
+            Self::send_response(entry, response, tx);
+            // A responder or response destructor panic never reaches this
+            // transition; remaining originals stay in the shared batch owner.
+            batch.delivered();
         }
+        batch.finish()
+    }
+
+    fn resume_pending_snapshot(&mut self) {
+        let Some(incoming) =
+            self.pending_snapshot.take_ready(self.engine.state.committed(), self.engine.state.io_applied())
+        else {
+            return;
+        };
+        let sm::pending_snapshot::IncomingSnapshot { vote, snapshot, tx } = incoming;
+        self.engine.handle_install_full_snapshot(vote, snapshot, tx);
+        self.pending_snapshot.accepted();
     }
 
     /// Send result of applying a log entry to its client.
     #[tracing::instrument(level = "debug", skip_all)]
-    pub(super) fn send_response(
-        entry: ApplyingEntry<C::NodeId, C::Node>,
-        resp: C::R,
-        tx: Option<ResponderOf<C>>,
-    ) {
+    pub(super) fn send_response(entry: ApplyingEntry<C::NodeId, C::Node>, resp: C::R, tx: Option<ResponderOf<C>>) {
         tracing::debug!(entry = debug(&entry), "send_response");
 
         let tx = match tx {
@@ -884,18 +830,9 @@ where
     ) -> ReplicationHandle<C> {
         // The whole replacement batch was preflighted before retiring active
         // streams. RaftCore is the only producer of these fixed owner cells.
-        let owner = self
-            .replication_tasks
-            .reserve(target.clone())
-            .expect("preflighted replication batch");
+        let owner = self.replication_tasks.reserve(target.clone()).expect("preflighted replication batch");
         // Safe unwrap(): target must be in membership
-        let target_node = self
-            .engine
-            .state
-            .membership_state
-            .effective()
-            .get_node(&target)
-            .unwrap();
+        let target_node = self.engine.state.membership_state.effective().get_node(&target).unwrap();
 
         let membership_log_id = self.engine.state.membership_state.effective().log_id();
         let network = self.network.new_client(target.clone(), target_node).await;
@@ -952,46 +889,26 @@ where
         self.replication_capacity = None;
         self.remove_all_replication();
         for (target, matching, req) in pending {
-            let handle = self
-                .spawn_replication_stream(target.clone(), matching)
-                .await;
+            let handle = self.spawn_replication_stream(target.clone(), matching).await;
             self.replications.insert(target.clone(), handle);
             self.send_replication(target, req)?;
         }
         Ok(())
     }
 
-    fn send_replication(
-        &self,
-        target: C::NodeId,
-        req: Inflight<C::NodeId>,
-    ) -> Result<(), StorageError<C::NodeId>> {
-        let node = self
-            .replications
-            .get(&target)
-            .expect("replication to target node exists");
+    fn send_replication(&self, target: C::NodeId, req: Inflight<C::NodeId>) -> Result<(), StorageError<C::NodeId>> {
+        let node = self.replications.get(&target).expect("replication to target node exists");
         match req {
             Inflight::None => {
                 let _ = node.tx_repl.send(Replicate::Heartbeat);
             }
             Inflight::Logs { id, log_id_range } => {
-                let _ = node.tx_repl.send(Replicate::logs(
-                    RequestId::new_append_entries(id),
-                    log_id_range,
-                ));
+                let _ = node.tx_repl.send(Replicate::logs(RequestId::new_append_entries(id), log_id_range));
             }
             Inflight::Snapshot { id, last_log_id } => {
                 node.tx_repl
-                    .send(Replicate::snapshot(
-                        RequestId::new_snapshot(id),
-                        last_log_id,
-                    ))
-                    .map_err(|_e| {
-                        StorageIOError::read_snapshot(
-                            None,
-                            AnyError::error("replication channel closed"),
-                        )
-                    })?;
+                    .send(Replicate::snapshot(RequestId::new_snapshot(id), last_log_id))
+                    .map_err(|_e| StorageIOError::read_snapshot(None, AnyError::error("replication channel closed")))?;
             }
         }
         Ok(())
@@ -1003,6 +920,11 @@ where
     /// next RaftMsg.
     #[tracing::instrument(level = "debug", skip_all)]
     pub(crate) async fn run_engine_commands(&mut self) -> Result<(), StorageError<C::NodeId>> {
+        self.run_engine_commands_inner(true).await
+    }
+
+    async fn run_engine_commands_inner(&mut self, replicate: bool) -> Result<(), StorageError<C::NodeId>> {
+        self.resume_pending_snapshot();
         if tracing::enabled!(Level::DEBUG) {
             tracing::debug!("queued commands: start...");
             for c in self.engine.output.iter_commands() {
@@ -1013,6 +935,20 @@ where
 
         while let Some(cmd) = self.engine.output.pop_command() {
             tracing::debug!("run command: {:?}", cmd);
+
+            if !replicate
+                && matches!(
+                    &cmd,
+                    Command::SendVote { .. }
+                        | Command::Replicate { .. }
+                        | Command::ReplicateCommitted { .. }
+                        | Command::RebuildReplicationStreams { .. }
+                )
+            {
+                // The admission cut freezes protocol state. These original
+                // intents own no application response or storage publication.
+                continue;
+            }
 
             let res = self.run_command(cmd).await?;
 
@@ -1026,11 +962,75 @@ where
                     }
                 }
 
-                return self.resume_replication().await;
+                return if replicate {
+                    self.resume_replication().await
+                } else {
+                    Ok(())
+                };
             }
         }
 
-        self.resume_replication().await
+        if replicate {
+            self.resume_replication().await
+        } else {
+            Ok(())
+        }
+    }
+
+    /// A fixed admission cut followed by the actual worker's terminal boundary.
+    /// Only existing storage/SM commands and their replies advance during this
+    /// loop; elections and replication replies cannot admit another commit.
+    async fn drain_committed_work(&mut self) -> Result<Infallible, Fatal<C::NodeId>> {
+        self.rx_api.close();
+        self.pending_snapshot.seal();
+        // Unprocessed actor requests have no accepted consensus effect. Close
+        // their original response channels and dispose their original payloads.
+        // An already offered snapshot remains in the separately sealed owner.
+        while let Ok(request) = self.rx_api.try_recv() {
+            drop(request);
+        }
+        let mut worker_sealed = false;
+        loop {
+            self.run_engine_commands_inner(false).await?;
+            if !worker_sealed && self.engine.output.commands.is_empty() && self.pending_snapshot.retained().is_none() {
+                // This lock also orders weak snapshot-reader senders and the
+                // coalesced range; no metric or sequence maximum proves drain.
+                // A dropped receiver already has a finishing/failed worker.
+                // Observe its original retained outcome below; do not replace
+                // that storage error or panic with a synthetic send failure.
+                let _ = self.sm_handle.seal();
+                worker_sealed = true;
+            }
+            self.flush_metrics();
+            select! {
+                biased;
+                outcome = self.auxiliary_tasks.changed() => {
+                    if let Err(error) = outcome {
+                        return Err(sm::tasks::fatal::<C>(&error));
+                    }
+                }
+                outcome = self.replication_tasks.changed() => {
+                    if let Err(error) = outcome {
+                        return Err(sm::tasks::fatal::<C>(&error));
+                    }
+                }
+                outcome = self.sm_handle.stopped() => {
+                    return Err(match outcome {
+                        Ok(()) => Fatal::Stopped,
+                        Err(error) => sm::tasks::fatal::<C>(&error),
+                    });
+                }
+                notification = self.rx_notify.recv() => {
+                    match notification {
+                        Some(notification @ (Notify::StateMachine { .. } | Notify::IncomingSnapshotFailed { .. })) => {
+                            self.handle_notify(notification)?;
+                        }
+                        Some(Notify::Tick { .. } | Notify::VoteResponse { .. } | Notify::HigherVote { .. } | Notify::Network { .. }) => {}
+                        None => return Err(Fatal::Stopped),
+                    }
+                }
+            }
+        }
     }
 
     /// Run an event handling loop
@@ -1039,7 +1039,7 @@ where
     #[tracing::instrument(level="debug", skip_all, fields(id=display(&self.id)))]
     async fn runtime_loop(
         &mut self,
-        mut rx_shutdown: <C::AsyncRuntime as AsyncRuntime>::OneshotReceiver<()>,
+        mut rx_shutdown: <C::AsyncRuntime as AsyncRuntime>::OneshotReceiver<crate::core::ShutdownMode>,
     ) -> Result<Infallible, Fatal<C::NodeId>> {
         // Ratio control the ratio of number of RaftMsg to process to number of Notify to process.
         let mut balancer = Balancer::new(10_000);
@@ -1059,9 +1059,12 @@ where
                 // See: https://docs.rs/tokio/latest/tokio/macro.select.html#fairness
                 biased;
 
-                _ = &mut rx_shutdown => {
+                mode = &mut rx_shutdown => {
                     tracing::info!("recv from rx_shutdown");
-                    return Err(Fatal::Stopped);
+                    return match mode {
+                        Ok(crate::core::ShutdownMode::Graceful) => self.drain_committed_work().await,
+                        Ok(crate::core::ShutdownMode::Immediate) | Err(_) => Err(Fatal::Stopped),
+                    };
                 }
 
                 outcome = self.auxiliary_tasks.changed() => {
@@ -1156,10 +1159,7 @@ where
             self.run_engine_commands().await?;
         }
 
-        tracing::debug!(
-            "at_most({}) reached, there are more queued RaftMsg to process",
-            at_most
-        );
+        tracing::debug!("at_most({}) reached, there are more queued RaftMsg to process", at_most);
 
         Ok(at_most)
     }
@@ -1194,10 +1194,7 @@ where
             self.run_engine_commands().await?;
         }
 
-        tracing::debug!(
-            "at_most({}) reached, there are more queued Notify to process",
-            at_most
-        );
+        tracing::debug!("at_most({}) reached, there are more queued Notify to process", at_most);
 
         Ok(at_most)
     }
@@ -1222,14 +1219,7 @@ where
             }
             let req = vote_req.clone();
             let vote = vote_req.vote.clone();
-            let target_node = self
-                .engine
-                .state
-                .membership_state
-                .effective()
-                .get_node(&target)
-                .unwrap()
-                .clone();
+            let target_node = self.engine.state.membership_state.effective().get_node(&target).unwrap().clone();
             let mut client = self.network.new_client(target.clone(), &target_node).await;
             let tx = self.tx_notify.clone();
             let ttl = Duration::from_millis(self.config.election_timeout_min);
@@ -1273,8 +1263,7 @@ where
             }
             .instrument(tracing::debug_span!("vote_round_collector")),
         );
-        *owner.task.try_lock().expect("unpublished auxiliary cell") =
-            Some(sm::tasks::Task::Running(task));
+        *owner.task.try_lock().expect("unpublished auxiliary cell") = Some(sm::tasks::Task::Running(task));
     }
 
     #[tracing::instrument(level = "debug", skip_all)]
@@ -1289,16 +1278,10 @@ where
     }
 
     #[tracing::instrument(level = "debug", skip_all)]
-    pub(super) fn handle_append_entries_request(
-        &mut self,
-        req: AppendEntriesRequest<C>,
-        tx: AppendEntriesTx<C>,
-    ) {
+    pub(super) fn handle_append_entries_request(&mut self, req: AppendEntriesRequest<C>, tx: AppendEntriesTx<C>) {
         tracing::debug!(req = display(req.summary()), func = func_name!());
 
-        let is_ok =
-            self.engine
-                .handle_append_entries(&req.vote, req.prev_log_id, req.entries, Some(tx));
+        let is_ok = self.engine.handle_append_entries(&req.vote, req.prev_log_id, req.entries, Some(tx));
 
         if is_ok {
             self.engine.handle_commit_entries(req.leader_commit);
@@ -1328,8 +1311,8 @@ where
             RaftMsg::BeginReceivingSnapshot { tx } => {
                 self.engine.handle_begin_receiving_snapshot(tx);
             }
-            RaftMsg::InstallFullSnapshot { vote, snapshot, tx } => {
-                self.engine.handle_install_full_snapshot(vote, snapshot, tx);
+            RaftMsg::InstallFullSnapshot => {
+                self.pending_snapshot.activate();
             }
             RaftMsg::CheckIsLeaderRequest { tx } => {
                 if let Some(capacity) = self.replication_capacity.clone() {
@@ -1346,19 +1329,11 @@ where
                 }
             }
             RaftMsg::Initialize { entry, tx } => {
-                tracing::info!(
-                    entry = debug(&entry),
-                    "received RaftMsg::Initialize: {}",
-                    func_name!()
-                );
+                tracing::info!(entry = debug(&entry), "received RaftMsg::Initialize: {}", func_name!());
 
                 self.handle_initialize(entry, tx);
             }
-            RaftMsg::ChangeMembership {
-                changes,
-                retain,
-                tx,
-            } => {
+            RaftMsg::ChangeMembership { changes, retain, tx } => {
                 tracing::info!(
                     members = debug(&changes),
                     retain = debug(&retain),
@@ -1372,11 +1347,7 @@ where
                 req(&self.engine.state);
             }
             RaftMsg::ExternalCommand { cmd } => {
-                tracing::info!(
-                    cmd = debug(&cmd),
-                    "received RaftMsg::ExternalCommand: {}",
-                    func_name!()
-                );
+                tracing::info!(cmd = debug(&cmd), "received RaftMsg::ExternalCommand: {}", func_name!());
 
                 match cmd {
                     ExternalCommand::Elect => {
@@ -1384,15 +1355,8 @@ where
                             // A Leader can not win a campaign it starts: its own heartbeats keep
                             // refreshing the voters' leader lease, and a lease that has not expired
                             // rejects the vote request. Leave the established leadership alone.
-                            tracing::info!(
-                                "ExternalCommand: already a Leader, ignore election trigger"
-                            );
-                        } else if self
-                            .engine
-                            .state
-                            .membership_state
-                            .effective()
-                            .is_voter(&self.id)
+                            tracing::info!("ExternalCommand: already a Leader, ignore election trigger");
+                        } else if self.engine.state.membership_state.effective().is_voter(&self.id)
                             && self.election_custody_available()
                         {
                             self.engine.elect();
@@ -1409,10 +1373,7 @@ where
                         let cmd = sm::Command::get_snapshot(tx);
                         let res = self.sm_handle.send(cmd);
                         if let Err(e) = res {
-                            tracing::error!(
-                                error = display(e),
-                                "error sending GetSnapshot to sm worker"
-                            );
+                            tracing::error!(error = display(e), "error sending GetSnapshot to sm worker");
                         }
                     }
                     ExternalCommand::PurgeLog { upto } => {
@@ -1488,8 +1449,7 @@ where
 
                         // Install next heartbeat
                         if let Some(l) = &mut self.leader_data {
-                            l.next_heartbeat =
-                                C::now() + Duration::from_millis(self.config.heartbeat_interval);
+                            l.next_heartbeat = C::now() + Duration::from_millis(self.config.heartbeat_interval);
                         }
                     }
                 }
@@ -1512,15 +1472,7 @@ where
                 //       applied.
                 //       ---
                 //       A better way is to make leader step down a command that waits for the log to be applied.
-                if self.engine.state.io_applied()
-                    >= self
-                        .engine
-                        .state
-                        .membership_state
-                        .effective()
-                        .log_id()
-                        .as_ref()
-                {
+                if self.engine.state.io_applied() >= self.engine.state.membership_state.effective().log_id().as_ref() {
                     self.engine.leader_step_down();
                 }
             }
@@ -1536,9 +1488,7 @@ where
                     } => {
                         // If vote or membership changes, ignore the message.
                         // There is chance delayed message reports a wrong state.
-                        if self
-                            .does_replication_session_match(&session_id, "UpdateReplicationMatched")
-                        {
+                        if self.does_replication_session_match(&session_id, "UpdateReplicationMatched") {
                             self.handle_replication_progress(target, id, result);
                         }
                     }
@@ -1585,7 +1535,9 @@ where
                         );
                     }
                 }
-                self.command_state.finished_sm_seq = seq;
+                if !matches!(&res, sm::Response::Apply { final_batch: false, .. }) {
+                    self.command_state.finished_sm_seq = self.command_state.finished_sm_seq.max(seq);
+                }
 
                 match res {
                     sm::Response::BuildSnapshot(meta) => {
@@ -1617,13 +1569,13 @@ where
                             st.update_snapshot(meta.last_log_id);
                         }
                     }
-                    sm::Response::Apply(res) => {
-                        self.engine
-                            .state
-                            .io_state_mut()
-                            .update_applied(Some(res.last_applied.clone()));
-
-                        self.handle_apply_result(res);
+                    sm::Response::Apply { batch, consumed, .. } => {
+                        let (_, _, last_applied) = batch.progress()?;
+                        self.engine.state.io_state_mut().update_applied(Some(last_applied));
+                        self.consume_apply_batch(&batch)?;
+                        // Only normal consumption acknowledges the producer. A
+                        // dropped notification, failed handler or panic cannot.
+                        let _ = consumed.send(());
                     }
                 }
             }
@@ -1633,21 +1585,9 @@ where
 
     #[tracing::instrument(level = "debug", skip_all)]
     fn election_custody_available(&self) -> bool {
-        let peers = self
-            .engine
-            .state
-            .membership_state
-            .effective()
-            .nodes()
-            .filter(|(id, _)| *id != &self.id)
-            .count();
-        self.replication_tasks
-            .available(peers.saturating_mul(2))
-            .is_ok()
-            && self
-                .auxiliary_tasks
-                .available(AuxiliaryTaskKind::VoteRound)
-                .is_ok()
+        let peers = self.engine.state.membership_state.effective().nodes().filter(|(id, _)| *id != &self.id).count();
+        self.replication_tasks.available(peers.saturating_mul(2)).is_ok()
+            && self.auxiliary_tasks.available(AuxiliaryTaskKind::VoteRound).is_ok()
     }
 
     fn handle_tick_election(&mut self) {
@@ -1665,13 +1605,7 @@ where
             return;
         }
 
-        if !self
-            .engine
-            .state
-            .membership_state
-            .effective()
-            .is_voter(&self.id)
-        {
+        if !self.engine.state.membership_state.effective().is_voter(&self.id) {
             tracing::debug!("this node is not a voter");
             return;
         }
@@ -1681,19 +1615,9 @@ where
             return;
         }
 
-        if self
-            .engine
-            .state
-            .membership_state
-            .effective()
-            .voter_ids()
-            .count()
-            == 1
-        {
+        if self.engine.state.membership_state.effective().voter_ids().count() == 1 {
             if self.engine.candidate_ref().is_some() {
-                tracing::debug!(
-                    "skip election, single voter already has an active election in progress"
-                );
+                tracing::debug!("skip election, single voter already has an active election in progress");
                 return;
             }
             tracing::debug!("this is the only voter, do election at once");
@@ -1761,9 +1685,7 @@ where
 
         // A leader may have stepped down.
         if self.engine.leader.is_some() {
-            self.engine
-                .replication_handler()
-                .update_progress(target, request_id, result);
+            self.engine.replication_handler().update_progress(target, request_id, result);
         }
     }
 
@@ -1806,17 +1728,11 @@ where
             return false;
         }
 
-        if &session_id.membership_log_id != self.engine.state.membership_state.effective().log_id()
-        {
+        if &session_id.membership_log_id != self.engine.state.membership_state.effective().log_id() {
             tracing::warn!(
                 "membership_log_id changed: msg sent by: {}; curr: {}; ignore when ({})",
                 session_id.membership_log_id.summary(),
-                self.engine
-                    .state
-                    .membership_state
-                    .effective()
-                    .log_id()
-                    .summary(),
+                self.engine.state.membership_state.effective().log_id().summary(),
                 msg
             );
             return false;
@@ -1832,10 +1748,7 @@ where
     LS: RaftLogStorage<C>,
     SM: RaftStateMachine<C>,
 {
-    async fn run_command(
-        &mut self,
-        cmd: Command<C>,
-    ) -> Result<Option<Command<C>>, StorageError<C::NodeId>> {
+    async fn run_command(&mut self, cmd: Command<C>) -> Result<Option<Command<C>>, StorageError<C::NodeId>> {
         let condition = cmd.condition();
         tracing::debug!("condition: {:?}", condition);
 
@@ -1882,14 +1795,12 @@ where
                 let last_log_id = entries.last().unwrap().get_log_id().clone();
                 tracing::debug!("AppendInputEntries: {}", DisplaySlice::<_>(&entries),);
 
-                self.append_to_log(entries, vote, last_log_id.clone())
-                    .await?;
+                self.append_to_log(entries, vote, last_log_id.clone()).await?;
 
                 // The leader may have changed.
                 // But reporting to a different leader is not a problem.
                 if let Ok(mut lh) = self.engine.leader_handler() {
-                    lh.replication_handler()
-                        .update_local_progress(Some(last_log_id));
+                    lh.replication_handler().update_local_progress(Some(last_log_id));
                 }
             }
             Command::SaveVote { vote } => {
@@ -1941,15 +1852,12 @@ where
                 ref upto,
             } => {
                 self.log_store.save_committed(Some(upto.clone())).await?;
-                self.apply_to_state_machine(seq, already_committed.next_index(), upto.index)
-                    .await?;
+                self.apply_to_state_machine(seq, already_committed.next_index(), upto.clone()).await?;
             }
             Command::Replicate { req, target } => {
                 if let Some(pending) = self.pending_replication.as_mut() {
-                    let (_, _, current) = pending
-                        .iter_mut()
-                        .find(|(id, _, _)| id == &target)
-                        .expect("pending replication target exists");
+                    let (_, _, current) =
+                        pending.iter_mut().find(|(id, _, _)| id == &target).expect("pending replication target exists");
                     // Heartbeats must not replace an admitted log/snapshot inflight.
                     if !matches!(req, Inflight::None) {
                         *current = req;
@@ -1962,19 +1870,13 @@ where
                 // Coalesce the latest session's network intent in fixed per-target
                 // slots. Storage, application and protocol commands keep running.
                 // Active streams stay intact until the replacement batch fits.
-                self.pending_replication = Some(
-                    targets
-                        .into_iter()
-                        .map(|(target, progress)| (target, progress, Inflight::None))
-                        .collect(),
-                );
+                self.pending_replication =
+                    Some(targets.into_iter().map(|(target, progress)| (target, progress, Inflight::None)).collect());
             }
             Command::StateMachine { command } => {
                 // Just forward a state machine command to the worker.
                 self.sm_handle.send(command).map_err(|_e| {
-                    StorageIOError::write_state_machine(AnyError::error(
-                        "can not send to sm::Worker".to_string(),
-                    ))
+                    StorageIOError::write_state_machine(AnyError::error("can not send to sm::Worker".to_string()))
                 })?;
             }
             Command::Respond { resp: send, .. } => {

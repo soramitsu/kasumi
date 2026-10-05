@@ -277,6 +277,7 @@ fn native_entry_geometry_preserves_original_million_entry_and_handle_policy() {
         sync::Weak,
     };
     let config = NodeDiskConfig {
+        native_storage: crate::test_utils::node_storage_config(),
         roots: BTreeMap::from([("data".into(), PathBuf::from("/var/lib/kasumi/data"))]),
         max_bytes: 64 << 30,
         maintenance_reserve_bytes: 8 << 30,
@@ -284,6 +285,7 @@ fn native_entry_geometry_preserves_original_million_entry_and_handle_policy() {
         max_open_files: 4096,
         max_open_directories: 4096,
         directory_policy: DirectoryPolicy::new(1 << 20, 32768).unwrap(),
+        file_allocation_policy: super::super::FileAllocationPolicy::fixture(),
         max_persistent_files: 1_000_000,
         max_persistent_subdirectories: 1_000_000,
         census_work_per_step: 1_000_000,

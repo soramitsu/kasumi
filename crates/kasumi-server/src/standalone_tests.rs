@@ -15,10 +15,16 @@ fn context(tenant: &str) -> RequestContext {
     }
 }
 
-#[tokio::test]
-async fn selected_network_is_in_config_profiles_and_original_control_topology() -> Result<()> {
+#[test]
+fn selected_network_is_in_config_profiles_and_original_control_topology() -> Result<()> {
+    ownership_tests::run_large_fixture(
+        "selected network and explicit external placement fixture",
+        selected_network_is_in_config_profiles_and_original_control_topology_impl,
+    )
+}
+async fn selected_network_is_in_config_profiles_and_original_control_topology_impl() -> Result<()> {
     let root = kasumi_store::test_utils::private_tempdir()?;
-    let directory = root.path().join("selected-network");
+    let directory = std::fs::canonicalize(root.path())?.join("selected-network");
     let storage =
         crate::runtime_storage_fixtures::standalone_storage(&directory, Default::default())?;
     let network = StandaloneNetwork {
@@ -27,15 +33,30 @@ async fn selected_network_is_in_config_profiles_and_original_control_topology() 
         native_listen: "127.0.0.1:19444".parse()?,
         admin_listen: "127.0.0.1:19445".parse()?,
     };
+    let mut placements = local_audit_placements("selected");
+    placements.insert(
+        "selected".into(),
+        TenantAuditPlacementConfig::External {
+            destination: crate::audit_destination::AuditDestinationConfig::Filesystem {
+                directory: directory.join("backups/selected-audit"),
+            },
+        },
+    );
     let installation = initialize_with_storage(
         &directory,
         "selected",
         kasumi_store::DirectoryPolicy::fixture(),
+        kasumi_store::FileAllocationPolicy::fixture(),
         network.clone(),
+        placements.clone(),
         storage.clone(),
     )
     .await?;
     let config = RuntimeConfig::load(&installation.configuration)?;
+    assert_eq!(
+        serde_json::to_value(&config.tenant_audit_placements)?,
+        serde_json::to_value(placements)?
+    );
     assert_eq!(config.mcp.listen, network.mcp_listen);
     assert_eq!(config.mcp.protocol.public_url, network.mcp_public_url);
     assert_eq!(config.native.listen, network.native_listen);
@@ -91,7 +112,9 @@ async fn initialized_standalone_serves_native_mcp_and_durable_credential_lifecyc
             &root.path().join("kasumi"),
             "tenant-a",
             kasumi_store::DirectoryPolicy::fixture(),
+            kasumi_store::FileAllocationPolicy::fixture(),
             StandaloneNetwork::fixture(),
+            local_audit_placements("tenant-a"),
             storage.clone()
         )
         .await
@@ -206,20 +229,24 @@ async fn initialized_standalone_serves_native_mcp_and_durable_credential_lifecyc
         )
         .build()
         .unwrap();
-    let metadata_url = format!(
-        "https://localhost:{}/.well-known/oauth-protected-resource/mcp",
-        addresses[0].port()
-    );
-    let metadata = http.get(metadata_url).send().await.unwrap();
-    assert!(metadata.status().is_success());
-    assert!(
-        metadata
-            .json::<serde_json::Value>()
-            .await
-            .unwrap()
-            .get("authorization_servers")
-            .is_none()
-    );
+    for path in [
+        "/.well-known/oauth-protected-resource/mcp",
+        "/.well-known/oauth-protected-resource",
+    ] {
+        let metadata_url = format!("https://localhost:{}{path}", addresses[0].port());
+        let metadata = http.get(metadata_url).send().await.unwrap();
+        assert_eq!(metadata.status(), reqwest::StatusCode::NOT_FOUND);
+    }
+    for authorization in [None, Some("Bearer malformed-token")] {
+        let request = http.post(&tenant.mcp_endpoint);
+        let request = match authorization {
+            Some(authorization) => request.header(reqwest::header::AUTHORIZATION, authorization),
+            None => request,
+        };
+        let denied = request.send().await.unwrap();
+        assert_eq!(denied.status(), reqwest::StatusCode::UNAUTHORIZED);
+        assert_eq!(denied.headers()["www-authenticate"], "Bearer");
+    }
     let mcp = http.post(&tenant.mcp_endpoint).bearer_auth(bearer.as_str()).header("accept", "application/json, text/event-stream").header("mcp-protocol-version", "2026-07-28").header("mcp-method", "tools/call").header("mcp-name", "kasumi_get")
         .json(&serde_json::json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientInfo":{"name":"standalone-tests","version":"1"},"io.modelcontextprotocol/clientCapabilities":{}},"name":"kasumi_get","arguments":{"collection":"docs","id":"first"}}}))
         .send().await.unwrap();
@@ -797,4 +824,119 @@ async fn respelled_installed_markers_and_signers_fail_stopped_owner_acquisition_
         2
     );
     drain_operations().await
+}
+
+#[test]
+fn incomplete_initial_audit_placements_reject_before_creating_installation() -> Result<()> {
+    ownership_tests::run_large_fixture(
+        "missing initial audit placement fixture",
+        missing_initial_audit_placements_impl,
+    )
+}
+async fn missing_initial_audit_placements_impl() -> Result<()> {
+    let root = kasumi_store::test_utils::private_tempdir()?;
+    let directory = root.path().join("missing-placement");
+    let selected = local_audit_placements("documents");
+    let mut missing_control = selected.clone();
+    missing_control.remove(crate::runtime::CONTROL_TENANT);
+    let mut missing_application = selected.clone();
+    missing_application.remove("documents");
+    let mut extra = selected.clone();
+    extra.insert("other".into(), TenantAuditPlacementConfig::LocalReplicaOnly);
+    let mut invalid_destination = selected;
+    invalid_destination.insert(
+        "documents".into(),
+        TenantAuditPlacementConfig::External {
+            destination: crate::audit_destination::AuditDestinationConfig::Filesystem {
+                directory: "relative/archive".into(),
+            },
+        },
+    );
+    for placements in [
+        BTreeMap::new(),
+        missing_control,
+        missing_application,
+        extra,
+        invalid_destination,
+    ] {
+        assert!(
+            initialize(
+                &directory,
+                "documents",
+                kasumi_store::DirectoryPolicy::fixture(),
+                kasumi_store::FileAllocationPolicy::fixture(),
+                StandaloneNetwork::fixture(),
+                placements
+            )
+            .await
+            .is_err()
+        );
+        assert!(!directory.exists());
+    }
+    Ok(())
+}
+
+#[test]
+fn external_initial_audit_paths_reject_before_creating_installation_or_keys() -> Result<()> {
+    ownership_tests::run_large_fixture(
+        "external initial audit path preflight fixture",
+        external_initial_audit_paths_impl,
+    )
+}
+async fn external_initial_audit_paths_impl() -> Result<()> {
+    let root = kasumi_store::test_utils::private_tempdir()?;
+    let parent = std::fs::canonicalize(root.path())?;
+    let directory = parent.join("unpublished-installation");
+    let storage =
+        crate::runtime_storage_fixtures::standalone_storage(&directory, Default::default())?;
+    for tenant in [crate::runtime::CONTROL_TENANT, "documents"] {
+        for (archive, reason) in [
+            (
+                parent.join("uninstalled-audit"),
+                "outside the explicitly installed roots",
+            ),
+            (
+                directory.join("scratch/audit"),
+                "outside the explicitly installed roots",
+            ),
+            (
+                directory.join("data/generations"),
+                "inside the local generation deletion root",
+            ),
+            (
+                directory.join("data/generations/retained/audit"),
+                "inside the local generation deletion root",
+            ),
+            (
+                directory.join("data/../operator/audit"),
+                "without parent traversal",
+            ),
+        ] {
+            let mut placements = local_audit_placements("documents");
+            placements.insert(
+                tenant.into(),
+                TenantAuditPlacementConfig::External {
+                    destination: crate::audit_destination::AuditDestinationConfig::Filesystem {
+                        directory: archive.clone(),
+                    },
+                },
+            );
+            let error = initialize_with_storage(
+                &directory,
+                "documents",
+                kasumi_store::DirectoryPolicy::fixture(),
+                kasumi_store::FileAllocationPolicy::fixture(),
+                StandaloneNetwork::fixture(),
+                placements,
+                storage.clone(),
+            )
+            .await
+            .unwrap_err();
+            assert!(format!("{error:#}").contains(reason), "{error:#}");
+            assert!(!directory.exists());
+            assert!(!archive.exists());
+            assert_eq!(std::fs::read_dir(&parent)?.count(), 0);
+        }
+    }
+    Ok(())
 }

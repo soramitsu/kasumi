@@ -292,17 +292,17 @@ impl TenantEngine {
         &self,
         position: &kasumi_raft::AppliedEntryContext,
         bytes: &[u8],
-    ) -> anyhow::Result<kasumi_raft::AppliedResponse> {
+        publisher: &mut dyn kasumi_raft::ApplyPublisher,
+    ) -> anyhow::Result<()> {
         anyhow::ensure!(
             bytes.len() <= MAX_COMMAND_BYTES && position.retirement_seed.is_none(),
             "invalid recovery command work or custody seed"
         );
         let command: RecoveryCommand = super::decode_canonical_json(&bytes[PREFIX.len()..])?;
-        let _guard = self
-            .apply_lock
-            .lock()
-            .map_err(|_| conflict("recovery apply ownership unavailable"))?;
-        let previous = self.generation()?;
+        let apply_owner = ApplyOwner::lock(self, || {
+            conflict("recovery apply ownership unavailable").into()
+        })?;
+        let previous = apply_owner.current();
         let revision = self
             .revision_base
             .checked_add(position.log_id.index)
@@ -396,16 +396,22 @@ impl TenantEngine {
                 "recovery retained state or audit capacity unavailable",
             ));
         }
-        let indexes = if outcome.is_ok() && !changed.is_empty() {
-            Arc::new(previous.indexes.update(
-                &previous.state.collections,
-                &next.collections,
+        let changed = if outcome.is_ok() {
+            changed
+        } else {
+            ChangedIds::new()
+        };
+        let indexes = if !changed.is_empty() {
+            Arc::new(crate::index_source::update(
+                &previous.indexes,
+                &previous.state,
+                &next,
                 &changed,
             )?)
         } else {
             previous.indexes.clone()
         };
-        self.publish_generation(Some(Arc::new(Generation {
+        let candidate = Arc::new(Generation {
             terminals: previous.terminals.clone(),
             target_resolutions: previous.target_resolutions.clone(),
             state: next,
@@ -413,11 +419,16 @@ impl TenantEngine {
             receipts: previous.receipts.clone(),
             backup_bindings: previous.backup_bindings.clone(),
             snapshot_accounting: accounting,
+            application_selection: std::sync::OnceLock::new(),
             _read_reservations: vec![],
-        })));
-        Ok(kasumi_raft::AppliedResponse::application(
-            serde_json::to_vec(&outcome)?,
-        ))
+        });
+        let response = kasumi_raft::AppliedResponse::application(serde_json::to_vec(&outcome)?);
+        self.publish_prepared_generation(
+            apply_owner.accept(candidate, changed)?,
+            response,
+            Some(position),
+            publisher,
+        )
     }
 }
 pub(crate) fn apply(state: &mut TenantState, command: &RecoveryCommand) -> Result<RecoveryRecord> {
@@ -2816,6 +2827,131 @@ pub(crate) fn validate_successor(previous: &TenantState, incoming: &TenantState)
         validate_effect_attempt_deadlines(operation, retained)?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod publication_tests {
+    use super::*;
+
+    #[test]
+    fn rejected_recovery_waits_for_publication_and_retries_exact_response()
+    -> crate::test_fixture_failure::FixtureResult<()> {
+        let engine = TenantEngine::new(
+            "tenant".into(),
+            Uuid::new_v4().to_string(),
+            Policy {
+                grants: vec![Grant {
+                    principal: "administrator".into(),
+                    collection: None,
+                    actions: BTreeSet::from([Action::Admin]),
+                }],
+                strict_read_audit: false,
+            },
+            Limits::default(),
+        )?;
+        let previous = engine.generation()?;
+        let command = RecoveryCommand {
+            authorization: RecoveryAuthorization {
+                context: RequestContext {
+                    authorization: RequestAuthorization::service_identity(),
+                    tenant: "tenant".into(),
+                    principal: "operator".into(),
+                    scopes: BTreeSet::new(),
+                    request_id: "rejected-recovery".into(),
+                },
+                policy_epoch: previous.state.policy_epoch,
+                admitted_at_ms: 1,
+                expires_at_ms: 2,
+            },
+            mutation: RecoveryMutation::Stop {
+                operation_id: Uuid::new_v4(),
+                command_id: Uuid::new_v4(),
+            },
+        }
+        .encode()?;
+        let position = kasumi_raft::AppliedEntryContext {
+            log_id: kasumi_raft::LogId::new(openraft::CommittedLeaderId::new(1, 1), 1),
+            previous: None,
+            membership: Default::default(),
+            command_sha256: hex::encode(Sha256::digest(&command)),
+            retirement_seed: None,
+        };
+        struct Refuse<'a> {
+            engine: &'a TenantEngine,
+            previous: &'a Arc<Generation>,
+            response: Option<kasumi_raft::AppliedResponse>,
+        }
+        impl kasumi_raft::ApplyPublisher for Refuse<'_> {
+            fn with_completion(
+                &mut self,
+                _: &kasumi_raft::CompletionIdentity,
+                _: &mut dyn kasumi_raft::CompletionAction,
+            ) -> std::result::Result<(), kasumi_raft::CompletionCallError> {
+                Err(kasumi_raft::CompletionCallError::Unsupported)
+            }
+
+            fn commit_with_selection<'call>(
+                &mut self,
+                _: kasumi_raft::AppliedResponse,
+                _: &[kasumi_store::WriteOp],
+                _: &mut dyn kasumi_raft::SelectionPreparer,
+                _: kasumi_raft::PublicationChallenge<'call>,
+            ) -> std::result::Result<
+                kasumi_raft::JointPublicationReceipt<'call>,
+                kasumi_raft::PublishCallError,
+            > {
+                panic!("response-only fixture must not publish a selected source")
+            }
+
+            fn commit(
+                &mut self,
+                response: kasumi_raft::AppliedResponse,
+                writes: &[kasumi_store::WriteOp],
+            ) -> std::result::Result<(), kasumi_raft::PublishCallError> {
+                assert!(writes.is_empty());
+                assert!(Arc::ptr_eq(
+                    &self.engine.generation().unwrap(),
+                    self.previous
+                ));
+                assert!(self.response.replace(response).is_none());
+                Err(kasumi_raft::PublishCallError::Failed)
+            }
+        }
+        let mut refused = Refuse {
+            engine: &engine,
+            previous: &previous,
+            response: None,
+        };
+        let failure = kasumi_raft::StateMachineBackend::apply_with_publisher(
+            &engine,
+            &position,
+            kasumi_raft::AppliedInput::Command(&command),
+            &mut refused,
+        )
+        .unwrap_err();
+        assert_eq!(
+            failure
+                .operation_error()
+                .unwrap()
+                .downcast_ref::<kasumi_raft::PublishCallError>(),
+            Some(&kasumi_raft::PublishCallError::Failed)
+        );
+        assert!(Arc::ptr_eq(&engine.generation()?, &previous));
+        let response = crate::test_utils::capture_application(|publisher| {
+            kasumi_raft::StateMachineBackend::apply_with_publisher(
+                &engine,
+                &position,
+                kasumi_raft::AppliedInput::Command(&command),
+                publisher,
+            )
+        })?;
+        assert_eq!(response.data, refused.response.unwrap().data);
+        let outcome: Result<RecoveryRecord> = serde_json::from_slice(&response.data)?;
+        assert_eq!(outcome.unwrap_err().code, ErrorCode::Forbidden);
+        assert_eq!(engine.generation()?.state.revision, 1);
+        assert_eq!(previous.state.revision, 0);
+        Ok(())
+    }
 }
 
 #[cfg(test)]

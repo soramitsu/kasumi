@@ -3,12 +3,13 @@
 use super::*;
 use crate::control::tests::{fixture, group, id, ordinary, retirement_entry};
 use crate::control::{self, AppliedCursor, AppliedEntryContext, ControlLog, RetainedSeed, SEEDS};
+use crate::test_utils::FixtureResult;
 use crate::{RetiredSnapshotState, StateMachineBackend};
 use openraft::storage::RaftLogStorageExt;
 
 async fn accepted_snapshot(
     fixture_scratch: Arc<kasumi_store::ScratchDisk>,
-) -> Result<SnapshotEnvelope> {
+) -> FixtureResult<SnapshotEnvelope> {
     let (domains, _, _, mut log) =
         fixture(FaultBackend::new(), true, fixture_scratch.clone()).await?;
     let entry = retirement_entry()?;
@@ -60,13 +61,24 @@ impl StateMachineBackend for ClosedBackend {
     fn close_application(&self) {
         *self.0.lock().unwrap() = None;
     }
-    fn apply(&self, _: &AppliedEntryContext, _: &[u8]) -> Result<crate::AppliedResponse> {
-        anyhow::bail!("metadata test cannot apply payload")
-    }
-    fn apply_metadata(&self, _position: &crate::AppliedEntryContext) -> anyhow::Result<()> {
+    fn apply_with_publisher(
+        &self,
+        _: &crate::AppliedEntryContext,
+        input: crate::AppliedInput<'_>,
+        publisher: &mut dyn crate::ApplyPublisher,
+    ) -> std::result::Result<(), kasumi_store::ScratchOperationFailure> {
+        ensure!(
+            matches!(input, crate::AppliedInput::Metadata),
+            "metadata test cannot apply payload"
+        );
+        publisher
+            .commit(crate::AppliedResponse::application(Vec::new()), &[])
+            .map_err(anyhow::Error::from)?;
         Ok(())
     }
-    fn capture_snapshot(&self) -> Result<crate::CapturedSnapshot> {
+    fn capture_snapshot(
+        &self,
+    ) -> std::result::Result<crate::CapturedSnapshot, kasumi_store::ScratchOperationFailure> {
         let retirement = self.0.lock().unwrap().clone();
         Ok(crate::CapturedSnapshot::new(
             retirement.clone(),
@@ -79,7 +91,8 @@ impl StateMachineBackend for ClosedBackend {
     fn validate_snapshot(
         &self,
         bytes: &mut dyn std::io::Read,
-    ) -> Result<Option<RetiredSnapshotState>> {
+    ) -> std::result::Result<Option<RetiredSnapshotState>, kasumi_store::ScratchOperationFailure>
+    {
         let mut captured = Vec::new();
         bytes.read_to_end(&mut captured)?;
         if captured == b"not-retired" {
@@ -91,7 +104,10 @@ impl StateMachineBackend for ClosedBackend {
         &'a self,
         _context: &crate::SnapshotRestoreContext,
         bytes: &mut dyn std::io::Read,
-    ) -> Result<Box<dyn crate::PreparedStateMachineRestore + 'a>> {
+    ) -> std::result::Result<
+        Box<dyn crate::PreparedStateMachineRestore + 'a>,
+        kasumi_store::ScratchOperationFailure,
+    > {
         let retirement = self.validate_snapshot(bytes)?;
         Ok(Box::new(PreparedFixtureRestore {
             retirement: retirement.clone(),
@@ -104,8 +120,8 @@ impl StateMachineBackend for ClosedBackend {
 }
 
 #[tokio::test]
-async fn same_position_reencoding_preserves_custody_and_reuses_verified_current_image() -> Result<()>
-{
+async fn same_position_reencoding_preserves_custody_and_reuses_verified_current_image()
+-> FixtureResult<()> {
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
     let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
@@ -160,7 +176,8 @@ async fn same_position_reencoding_preserves_custody_and_reuses_verified_current_
 }
 
 #[tokio::test]
-async fn same_position_cannot_substitute_matching_backend_and_custody_policy() -> Result<()> {
+async fn same_position_cannot_substitute_matching_backend_and_custody_policy() -> FixtureResult<()>
+{
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
     let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
@@ -235,7 +252,7 @@ async fn same_position_cannot_substitute_matching_backend_and_custody_policy() -
 
 #[tokio::test]
 async fn retired_snapshot_installs_without_original_log_and_recovers_with_only_custody_key()
--> Result<()> {
+-> FixtureResult<()> {
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
     let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
@@ -290,7 +307,8 @@ async fn retired_snapshot_installs_without_original_log_and_recovers_with_only_c
             crash,
             kasumi_store::test_utils::storage_admission(),
             fixture_scratch.clone(),
-        )?,
+        )
+        .expect("explicit synthetic snapshot fixture must open its admitted native node"),
         "tenant".into(),
         custody_provider,
     )
@@ -304,7 +322,7 @@ async fn retired_snapshot_installs_without_original_log_and_recovers_with_only_c
 
 #[tokio::test]
 async fn snapshot_rejects_missing_substituted_stale_and_payload_custody_before_publication()
--> Result<()> {
+-> FixtureResult<()> {
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
     let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
@@ -377,7 +395,7 @@ async fn snapshot_rejects_missing_substituted_stale_and_payload_custody_before_p
 
 #[tokio::test]
 async fn accepted_snapshot_supersedes_uncommitted_candidate_and_survives_late_truncation()
--> Result<()> {
+-> FixtureResult<()> {
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
     let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
@@ -422,7 +440,7 @@ async fn accepted_snapshot_supersedes_uncommitted_candidate_and_survives_late_tr
 
 #[tokio::test]
 async fn nonretired_snapshot_discards_stale_candidate_coverage_without_retirement_projection()
--> Result<()> {
+-> FixtureResult<()> {
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
     let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
@@ -459,7 +477,7 @@ async fn nonretired_snapshot_discards_stale_candidate_coverage_without_retiremen
 
 #[tokio::test]
 async fn retired_snapshot_power_loss_never_tears_image_seed_boundary_or_applied_cursor()
--> Result<()> {
+-> FixtureResult<()> {
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
     let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
@@ -518,7 +536,7 @@ async fn retired_snapshot_power_loss_never_tears_image_seed_boundary_or_applied_
 }
 
 #[tokio::test]
-async fn equal_index_different_term_log_and_snapshot_coverage_is_rejected() -> Result<()> {
+async fn equal_index_different_term_log_and_snapshot_coverage_is_rejected() -> FixtureResult<()> {
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
     let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
@@ -543,7 +561,7 @@ async fn equal_index_different_term_log_and_snapshot_coverage_is_rejected() -> R
 }
 
 #[tokio::test]
-async fn old_snapshot_capture_cannot_regress_newer_accepted_cursor() -> Result<()> {
+async fn old_snapshot_capture_cannot_regress_newer_accepted_cursor() -> FixtureResult<()> {
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
     let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
@@ -577,7 +595,8 @@ async fn old_snapshot_capture_cannot_regress_newer_accepted_cursor() -> Result<(
 }
 
 #[tokio::test]
-async fn published_retirement_projection_substitution_fails_closed_after_reopen() -> Result<()> {
+async fn published_retirement_projection_substitution_fails_closed_after_reopen()
+-> FixtureResult<()> {
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
     let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
@@ -633,126 +652,106 @@ async fn published_retirement_projection_substitution_fails_closed_after_reopen(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn retirement_projection_writer_and_reader_share_the_two_megabyte_boundary() -> Result<()> {
+async fn retirement_projection_writer_and_reader_share_the_two_megabyte_boundary()
+-> FixtureResult<()> {
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
     let scratch_directory = kasumi_store::test_utils::private_tempdir()?;
     let scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
-    let mut snapshot = accepted_snapshot(scratch.clone()).await?;
-    let (domains, _, _, _) = fixture(FaultBackend::new(), true, scratch).await?;
-    let membership = |address: String| {
-        StoredMembership::new(
-            None,
-            openraft::Membership::from(std::collections::BTreeMap::from([(
-                1u64,
-                BasicNode::new(address),
-            )])),
-        )
+    let (source, _, _, mut log) = fixture(FaultBackend::new(), true, scratch.clone()).await?;
+    let first = Entry {
+        initialization: None,
+        log_id: id(0),
+        payload: EntryPayload::Membership(openraft::Membership::new(
+            vec![std::collections::BTreeSet::from([1])],
+            std::collections::BTreeMap::from([(1, BasicNode::new("local"))]),
+        )),
     };
-    snapshot.meta.last_membership = membership(String::new());
-    let base_projection = serde_json::to_vec(&serde_json::json!({
-        "meta": &snapshot.meta,
-        "snapshot_sha256": "0".repeat(64),
-        "retirement": snapshot.retirement.as_ref().context("retirement absent")?,
-    }))?;
-    let address_len = crate::snapshot_custody::MAX_PROJECTION_BYTES
-        .checked_sub(base_projection.len())
-        .context("base projection exceeds record budget")?;
-    snapshot.meta.last_membership = membership("x".repeat(address_len));
-    let encoded = snapshot.encode(64 << 20)?.read_bounded(64 << 20)?;
-    let header_len = usize::try_from(u64::from_be_bytes(encoded[9..17].try_into()?))?;
-    assert!(
-        header_len <= 2 << 20,
-        "transport must admit boundary projection"
-    );
-    persist_snapshot(&domains, &encoded, 64 << 20, &snapshot)?;
+    log.blocking_append([first.clone(), retirement_entry()?])
+        .await?;
+    log.save_committed(Some(id(1))).await?;
+    crate::custody_machine::tests::apply_membership(&source, &first, None)?;
+    assert!(ControlLog::open(source.custody().clone(), 1, group())?.recover_retired()?);
+    let mut snapshot = crate::custody_machine::capture(source.custody())?;
+    snapshot.kind = SnapshotKind::Application;
+    snapshot.backend = kasumi_store::SnapshotImage::from_bytes(
+        &scratch,
+        &serde_json::to_vec(
+            &snapshot
+                .retirement
+                .as_ref()
+                .context("retirement absent")?
+                .state,
+        )?,
+    )?;
+    let disk = FaultBackend::new();
+    let (domains, _, _, _) = fixture(disk.clone(), true, scratch).await?;
+    let encoded = snapshot.encode(64 << 20)?;
+    persist_snapshot(
+        &domains,
+        &encoded.read_bounded(64 << 20)?,
+        64 << 20,
+        &snapshot,
+    )?;
+    validate_snapshot_coverage(&domains, &snapshot, 64 << 20)?;
     let manifest = domains
         .application()
-        .get("raft.snapshot", b"current")?
+        .get(SNAPSHOT, b"current")?
         .context("current manifest absent")?;
     let projection = domains
         .custody()
         .store()
         .get(META, b"snapshot_retirement")?
         .context("projection absent")?;
-    assert_eq!(
-        projection.len(),
-        crate::snapshot_custody::MAX_PROJECTION_BYTES
-    );
+
+    // The projection and transport header each have a 2 MiB bound, but their
+    // fields differ. Exercise the projection's private writer/reader directly
+    // instead of requiring a maximum projection to fit a transport header.
+    let oversized = crate::snapshot_custody::projection_tests::verify_boundary(
+        domains.custody().store(),
+        &snapshot,
+    )?;
     validate_snapshot_coverage(&domains, &snapshot, 64 << 20)?;
-
-    let reordered = serde_json::to_vec(&serde_json::from_slice::<serde_json::Value>(&projection)?)?;
-    assert_eq!(reordered.len(), projection.len());
-    assert_ne!(reordered, projection);
-    domains.custody().store().write_batch(&[WriteOp::put(
-        META,
-        b"snapshot_retirement",
-        reordered,
-    )])?;
-    let error = validate_snapshot_coverage(&domains, &snapshot, 64 << 20).unwrap_err();
-    assert!(
-        error
-            .to_string()
-            .contains("noncanonical snapshot retirement projection")
-    );
-
-    let mut alias: serde_json::Value = serde_json::from_slice(&projection)?;
-    alias["meta"]["snapshot_id"] = serde_json::Value::String(
-        uuid::Uuid::parse_str(&snapshot.meta.snapshot_id)?
-            .simple()
-            .to_string(),
-    );
-    domains.custody().store().write_batch(&[WriteOp::put(
-        META,
-        b"snapshot_retirement",
-        serde_json::to_vec(&alias)?,
-    )])?;
-    let error = validate_snapshot_coverage(&domains, &snapshot, 64 << 20).unwrap_err();
-    assert!(
-        error
-            .to_string()
-            .contains("invalid snapshot retirement projection identity")
-    );
-    domains.custody().store().write_batch(&[WriteOp::put(
-        META,
-        b"snapshot_retirement",
-        projection.clone(),
-    )])?;
-    validate_snapshot_coverage(&domains, &snapshot, 64 << 20)?;
-
-    let mut snapshot_keys_before = Vec::new();
+    let mut snapshot_rows_before = Vec::new();
     domains
         .application()
         .read_view()?
-        .visit(SNAPSHOT, SNAPSHOT_CHUNK_BYTES, |key, _| {
-            snapshot_keys_before.push(key.to_vec());
+        .visit(SNAPSHOT, SNAPSHOT_CHUNK_BYTES, |key, bytes| {
+            snapshot_rows_before.push((key.to_vec(), bytes.to_vec()));
             Ok(())
         })?;
     assert!(domains.application().get(SNAPSHOT, b"pending")?.is_none());
-    let mut oversized = snapshot.clone();
-    oversized.meta.last_membership = membership("x".repeat(address_len + 1));
-    let oversized_bytes = oversized.encode(64 << 20)?.read_bounded(64 << 20)?;
-    let error = persist_snapshot(&domains, &oversized_bytes, 64 << 20, &oversized)
+    let operations_before = disk.operations();
+    // Directly isolate stage_snapshot's metadata preflight using the already
+    // valid baseline image. The synthetic oversized metadata is not encoded or
+    // presented as a valid incoming transport; refusal must precede any image
+    // cleanup, pending manifest, or chunk effect, regardless of its image bytes.
+    let error = stage_snapshot(&domains, &encoded, 64 << 20, &oversized)
         .err()
-        .context("oversized projection was published")?;
+        .context("oversized projection reached staging")?;
     assert!(
         error
             .to_string()
             .contains("snapshot retirement projection exceeds byte limit")
     );
     assert_eq!(
-        domains.application().get("raft.snapshot", b"current")?,
+        disk.operations(),
+        operations_before,
+        "preflight entered backend I/O"
+    );
+    assert_eq!(
+        domains.application().get(SNAPSHOT, b"current")?,
         Some(manifest)
     );
     assert!(domains.application().get(SNAPSHOT, b"pending")?.is_none());
-    let mut snapshot_keys_after = Vec::new();
+    let mut snapshot_rows_after = Vec::new();
     domains
         .application()
         .read_view()?
-        .visit(SNAPSHOT, SNAPSHOT_CHUNK_BYTES, |key, _| {
-            snapshot_keys_after.push(key.to_vec());
+        .visit(SNAPSHOT, SNAPSHOT_CHUNK_BYTES, |key, bytes| {
+            snapshot_rows_after.push((key.to_vec(), bytes.to_vec()));
             Ok(())
         })?;
-    assert_eq!(snapshot_keys_after, snapshot_keys_before);
+    assert_eq!(snapshot_rows_after, snapshot_rows_before);
     assert_eq!(
         domains
             .custody()

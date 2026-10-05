@@ -89,7 +89,11 @@ async fn encoded_response_is_fenced_by_policy_changes_and_actual_key_denial() {
         .unwrap();
 
     let fence = database.response_fence(&context).unwrap();
-    let document = database.get(&context, "docs", "one").await.unwrap();
+    let document = database
+        .get(&context, "docs", "one")
+        .await
+        .unwrap()
+        .expect("document exists");
     let encoded = serde_json::to_vec(&document).unwrap();
     // A strict audit is nested work. The prepared response retains its bytes,
     // but must not occupy the only execution slot needed to persist its audit.
@@ -130,8 +134,14 @@ async fn encoded_response_is_fenced_by_policy_changes_and_actual_key_denial() {
         .await
         .unwrap();
     let fence = database.response_fence(&context).unwrap();
-    let _encoded =
-        serde_json::to_vec(&database.get(&context, "docs", "one").await.unwrap()).unwrap();
+    let _encoded = serde_json::to_vec(
+        &database
+            .get(&context, "docs", "one")
+            .await
+            .unwrap()
+            .expect("document exists"),
+    )
+    .unwrap();
     keys.revoke();
     assert!(store.refresh_lease().await.is_err());
     assert_eq!(fence.check().unwrap_err().code, ErrorCode::Sealed);

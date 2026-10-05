@@ -8,6 +8,8 @@
 //! This allows multiple components within the application that require interaction with `RaftCore`
 //! to efficiently share access.
 
+#[cfg(all(test, not(feature = "singlethreaded")))]
+mod bounded_apply_test;
 #[cfg(test)]
 mod declare_raft_types_test;
 mod external_request;
@@ -22,9 +24,9 @@ mod runtime_config_handle;
 mod shutdown_test;
 pub mod trigger;
 
-use std::collections::BTreeMap;
 use crate::entry::{RaftEntry, RaftPayload};
 use crate::Membership;
+use std::collections::BTreeMap;
 use std::error::Error;
 
 pub(crate) use self::external_request::BoxCoreFn;
@@ -220,14 +222,8 @@ struct IncomingSnapshotGuard<'a, C: RaftTypeConfig> {
 }
 impl<C: RaftTypeConfig> Drop for IncomingSnapshotGuard<'_, C> {
     fn drop(&mut self) {
-        if let Some(failure) = self
-            .streaming
-            .as_mut()
-            .and_then(|stream| stream.take_failure_notification())
-        {
-            let _ = self
-                .notifications
-                .send(crate::core::notify::Notify::IncomingSnapshotFailed { error: failure });
+        if let Some(failure) = self.streaming.as_mut().and_then(|stream| stream.take_failure_notification()) {
+            let _ = self.notifications.send(crate::core::notify::Notify::IncomingSnapshotFailed { error: failure });
         }
     }
 }
@@ -312,6 +308,8 @@ where
             helper.get_initial_state().await?
         };
 
+        let apply_reader = log_store.get_log_reader().await;
+        let pending_snapshot = crate::core::sm::pending_snapshot::PendingSnapshot::new();
         // The initial storage await can fail or be cancelled. Publish no runtime
         // children until it completes; from here to the returned owner there are
         // no await points that could abandon a spawned child.
@@ -324,8 +322,12 @@ where
         let membership_observer = state.membership_state.observer.clone();
         let engine = Engine::new(state, eng_config);
 
-        let (sm_handle, state_machine_tasks) =
-            worker::Worker::spawn(state_machine, tx_notify.clone());
+        let (sm_handle, state_machine_tasks) = worker::Worker::spawn(
+            state_machine,
+            apply_reader,
+            config.max_payload_entries,
+            tx_notify.clone(),
+        );
 
         let core: RaftCore<C, N, LS, SM> = RaftCore {
             id: id.clone(),
@@ -334,6 +336,7 @@ where
             network,
             log_store,
             sm_handle,
+            pending_snapshot: pending_snapshot.clone(),
 
             engine,
 
@@ -362,10 +365,7 @@ where
             _p: Default::default(),
         };
 
-        let core_handle = C::AsyncRuntime::spawn(
-            core.main(rx_shutdown)
-                .instrument(trace_span!("spawn").or_current()),
-        );
+        let core_handle = C::AsyncRuntime::spawn(core.main(rx_shutdown).instrument(trace_span!("spawn").or_current()));
 
         let inner = RaftInner {
             id,
@@ -385,11 +385,11 @@ where
             core_state: Mutex::new(CoreState::Running(core_handle)),
 
             snapshot: Mutex::new(None),
+            snapshot_install: Arc::new(Mutex::new(())),
+            pending_snapshot,
         };
 
-        Ok(Self {
-            inner: Arc::new(inner),
-        })
+        Ok(Self { inner: Arc::new(inner) })
     }
 
     /// Install the one synchronous observer for this group's membership changes.
@@ -430,10 +430,7 @@ where
         self.runtime_config().tick(enabled)
     }
 
-    #[deprecated(
-        since = "0.8.4",
-        note = "use `Raft::runtime_config().heartbeat()` instead"
-    )]
+    #[deprecated(since = "0.8.4", note = "use `Raft::runtime_config().heartbeat()` instead")]
     pub fn enable_heartbeat(&self, enabled: bool) {
         self.runtime_config().heartbeat(enabled)
     }
@@ -490,9 +487,7 @@ where
         tracing::debug!(rpc = display(rpc.summary()), "Raft::append_entries");
 
         let (tx, rx) = C::AsyncRuntime::oneshot();
-        self.inner
-            .call_core(RaftMsg::AppendEntries { rpc, tx }, rx)
-            .await
+        self.inner.call_core(RaftMsg::AppendEntries { rpc, tx }, rx).await
     }
 
     /// Submit a VoteRequest (RequestVote in the spec) RPC to this Raft node.
@@ -500,16 +495,11 @@ where
     /// These RPCs are sent by cluster peers which are in candidate state attempting to gather votes
     /// (§5.2).
     #[tracing::instrument(level = "debug", skip(self, rpc))]
-    pub async fn vote(
-        &self,
-        rpc: VoteRequest<C::NodeId>,
-    ) -> Result<VoteResponse<C::NodeId>, RaftError<C::NodeId>> {
+    pub async fn vote(&self, rpc: VoteRequest<C::NodeId>) -> Result<VoteResponse<C::NodeId>, RaftError<C::NodeId>> {
         tracing::info!(rpc = display(rpc.summary()), "Raft::vote()");
 
         let (tx, rx) = C::AsyncRuntime::oneshot();
-        self.inner
-            .call_core(RaftMsg::RequestVote { rpc, tx }, rx)
-            .await
+        self.inner.call_core(RaftMsg::RequestVote { rpc, tx }, rx).await
     }
 
     /// Get the latest snapshot from the state machine.
@@ -522,23 +512,16 @@ where
 
         let (tx, rx) = C::AsyncRuntime::oneshot();
         let cmd = ExternalCommand::GetSnapshot { tx };
-        self.inner
-            .call_core(RaftMsg::ExternalCommand { cmd }, rx)
-            .await
+        self.inner.call_core(RaftMsg::ExternalCommand { cmd }, rx).await
     }
 
     /// Get a snapshot data for receiving snapshot from the leader.
     #[tracing::instrument(level = "debug", skip_all)]
-    pub async fn begin_receiving_snapshot(
-        &self,
-    ) -> Result<Box<SnapshotDataOf<C>>, RaftError<C::NodeId, Infallible>> {
+    pub async fn begin_receiving_snapshot(&self) -> Result<Box<SnapshotDataOf<C>>, RaftError<C::NodeId, Infallible>> {
         tracing::info!("Raft::begin_receiving_snapshot()");
 
         let (tx, rx) = C::oneshot();
-        let resp = self
-            .inner
-            .call_core(RaftMsg::BeginReceivingSnapshot { tx }, rx)
-            .await?;
+        let resp = self.inner.call_core(RaftMsg::BeginReceivingSnapshot { tx }, rx).await?;
         Ok(resp)
     }
 
@@ -555,11 +538,33 @@ where
     ) -> Result<SnapshotResponse<C::NodeId>, Fatal<C::NodeId>> {
         tracing::info!("Raft::install_full_snapshot()");
 
+        // Serialize before publishing a handoff into the actor. Cancellation
+        // before this admission still belongs to the caller; after offer(), the
+        // actual source and permit remain in the Raft-owned cell.
+        let waiting = self.inner.snapshot_install.clone().lock_owned();
+        tokio::pin!(waiting);
+        let mut metrics = self.inner.rx_metrics.clone();
+        let permit = loop {
+            let running = metrics.borrow().running_state.clone();
+            running?;
+            tokio::select! {
+                permit = &mut waiting => break permit,
+                changed = metrics.changed() => {
+                    if changed.is_err() { return Err(Fatal::Stopped); }
+                }
+            }
+        };
         let (tx, rx) = C::AsyncRuntime::oneshot();
-        let res = self
-            .inner
-            .call_core(RaftMsg::InstallFullSnapshot { vote, snapshot, tx }, rx)
-            .await;
+        if let Err(unadmitted) = self.inner.pending_snapshot.offer(
+            crate::core::sm::pending_snapshot::IncomingSnapshot { vote, snapshot, tx },
+            permit,
+        ) {
+            // The actor never acquired this owner. Its original data is still
+            // disposed in this caller; an earlier accepted offer stays retained.
+            drop(unadmitted);
+            return Err(Fatal::Stopped);
+        }
+        let res = self.inner.call_core(RaftMsg::InstallFullSnapshot, rx).await;
         match res {
             Ok(x) => Ok(x),
             Err(e) => {
@@ -587,23 +592,15 @@ where
     pub async fn install_snapshot(
         &self,
         req: InstallSnapshotRequest<C>,
-    ) -> Result<
-        InstallSnapshotResponse<C::NodeId>,
-        RaftError<C::NodeId, crate::error::InstallSnapshotError>,
-    >
+    ) -> Result<InstallSnapshotResponse<C::NodeId>, RaftError<C::NodeId, crate::error::InstallSnapshotError>>
     where
-        C::SnapshotData:
-            tokio::io::AsyncRead + tokio::io::AsyncWrite + tokio::io::AsyncSeek + Unpin,
+        C::SnapshotData: tokio::io::AsyncRead + tokio::io::AsyncWrite + tokio::io::AsyncSeek + Unpin,
     {
         tracing::debug!(req = display(&req), "Raft::install_snapshot()");
 
         let req_vote = req.vote.clone();
-        let my_vote = self
-            .with_raft_state(|state| state.vote_ref().clone())
-            .await?;
-        let resp = InstallSnapshotResponse {
-            vote: my_vote.clone(),
-        };
+        let my_vote = self.with_raft_state(|state| state.vote_ref().clone()).await?;
+        let resp = InstallSnapshotResponse { vote: my_vote.clone() };
 
         // Check vote.
         // It is not mandatory because it is just a read operation
@@ -653,14 +650,9 @@ where
     /// the read will not be stale.
     #[deprecated(since = "0.9.0", note = "use `Raft::ensure_linearizable()` instead")]
     #[tracing::instrument(level = "debug", skip(self))]
-    pub async fn is_leader(
-        &self,
-    ) -> Result<(), RaftError<C::NodeId, CheckIsLeaderError<C::NodeId, C::Node>>> {
+    pub async fn is_leader(&self) -> Result<(), RaftError<C::NodeId, CheckIsLeaderError<C::NodeId, C::Node>>> {
         let (tx, rx) = C::AsyncRuntime::oneshot();
-        let _ = self
-            .inner
-            .call_core(RaftMsg::CheckIsLeaderRequest { tx }, rx)
-            .await?;
+        let _ = self.inner.call_core(RaftMsg::CheckIsLeaderRequest { tx }, rx).await?;
         Ok(())
     }
 
@@ -690,10 +682,7 @@ where
     #[tracing::instrument(level = "debug", skip(self))]
     pub async fn ensure_linearizable(
         &self,
-    ) -> Result<
-        Option<LogId<C::NodeId>>,
-        RaftError<C::NodeId, CheckIsLeaderError<C::NodeId, C::Node>>,
-    > {
+    ) -> Result<Option<LogId<C::NodeId>>, RaftError<C::NodeId, CheckIsLeaderError<C::NodeId, C::Node>>> {
         let (read_log_id, applied) = self.get_read_log_id().await?;
 
         if read_log_id.index() > applied.index() {
@@ -747,10 +736,7 @@ where
         RaftError<C::NodeId, CheckIsLeaderError<C::NodeId, C::Node>>,
     > {
         let (tx, rx) = C::AsyncRuntime::oneshot();
-        let (read_log_id, applied) = self
-            .inner
-            .call_core(RaftMsg::CheckIsLeaderRequest { tx }, rx)
-            .await?;
+        let (read_log_id, applied) = self.inner.call_core(RaftMsg::CheckIsLeaderRequest { tx }, rx).await?;
         Ok((read_log_id, applied))
     }
 
@@ -796,15 +782,10 @@ where
     ///
     /// It is same as [`Raft::client_write`] but does not wait for the response.
     #[tracing::instrument(level = "debug", skip(self, app_data))]
-    pub async fn client_write_ff(
-        &self,
-        app_data: C::D,
-    ) -> Result<ResponderReceiverOf<C>, Fatal<C::NodeId>> {
+    pub async fn client_write_ff(&self, app_data: C::D) -> Result<ResponderReceiverOf<C>, Fatal<C::NodeId>> {
         let (app_data, tx, rx) = ResponderOf::<C>::from_app_data(app_data);
 
-        self.inner
-            .send_msg(RaftMsg::ClientWriteRequest { app_data, tx })
-            .await?;
+        self.inner.send_msg(RaftMsg::ClientWriteRequest { app_data, tx }).await?;
 
         Ok(rx)
     }
@@ -879,12 +860,7 @@ where
             return Err(());
         }
 
-        if metrics
-            .membership_config
-            .membership()
-            .get_node(&node_id)
-            .is_none()
-        {
+        if metrics.membership_config.membership().get_node(&node_id).is_none() {
             // This learner has been removed.
             return Ok(None);
         }
@@ -976,9 +952,7 @@ where
     /// destroyed right away and not called at all.
     pub fn external_request<F>(&self, req: F)
     where
-        F: FnOnce(&RaftState<C::NodeId, C::Node, <C::AsyncRuntime as AsyncRuntime>::Instant>)
-            + OptionalSend
-            + 'static,
+        F: FnOnce(&RaftState<C::NodeId, C::Node, <C::AsyncRuntime as AsyncRuntime>::Instant>) + OptionalSend + 'static,
     {
         let req: BoxCoreFn<C> = Box::new(req);
         let _ignore_error = self.inner.tx_api.send(RaftMsg::ExternalCoreRequest { req });
@@ -1040,17 +1014,30 @@ where
     /// owner for another caller. Failure does not skip later joins, and retry
     /// preserves the same errors. Application/network/storage implementations may
     /// own additional resources; this is not an all-resources census.
-    pub async fn shutdown(
+    pub async fn shutdown(&self) -> Result<(), ShutdownError<C::NodeId, <C::AsyncRuntime as AsyncRuntime>::JoinError>> {
+        self.shutdown_with_mode(crate::core::ShutdownMode::Immediate).await
+    }
+
+    /// Close actor ingress, finish already committed application and received
+    /// snapshot handoffs, then join the same retained runtime owners as shutdown.
+    /// No new protocol notifications advance the committed horizon during drain.
+    /// Cancelling this waiter leaves the drain policy in the running core. The
+    /// first shutdown signal, immediate or graceful, owns the policy on retry.
+    pub async fn shutdown_gracefully(
         &self,
+    ) -> Result<(), ShutdownError<C::NodeId, <C::AsyncRuntime as AsyncRuntime>::JoinError>> {
+        self.shutdown_with_mode(crate::core::ShutdownMode::Graceful).await
+    }
+
+    async fn shutdown_with_mode(
+        &self,
+        mode: crate::core::ShutdownMode,
     ) -> Result<(), ShutdownError<C::NodeId, <C::AsyncRuntime as AsyncRuntime>::JoinError>> {
         if let Some(tx) = self.inner.tx_shutdown.lock().await.take() {
             // A failure to send means the RaftCore is already shutdown. Continue to check the task
             // return value.
-            let send_res = tx.send(());
-            tracing::info!(
-                "sending shutdown signal to RaftCore, sending res: {:?}",
-                send_res
-            );
+            let failed = tx.send(mode).is_err();
+            tracing::info!(failed, "sending shutdown signal to RaftCore");
         }
         self.inner.tick_handle.stop();
         let outcome = self.inner.join_core_task().await;
@@ -1060,6 +1047,8 @@ where
         };
         let ticker = self.inner.tick_handle.shutdown().await.err();
         let (state_machine, snapshot_builder) = self.inner.state_machine_tasks.shutdown().await;
+        let unconsumed_apply = self.inner.state_machine_tasks.apply_batch.retained();
+        let pending_snapshot = self.inner.pending_snapshot.retained();
         let replications = self.inner.replication_tasks.shutdown().await;
         let auxiliary = self.inner.auxiliary_tasks.shutdown().await;
         let incoming_snapshot = {
@@ -1084,6 +1073,8 @@ where
             || !replications.is_empty()
             || !auxiliary.is_empty()
             || incoming_snapshot.is_some()
+            || unconsumed_apply.is_some()
+            || pending_snapshot.is_some()
         {
             Err(ShutdownError {
                 core,
@@ -1094,6 +1085,8 @@ where
                 replications,
                 auxiliary,
                 incoming_snapshot,
+                unconsumed_apply,
+                pending_snapshot,
             })
         } else {
             Ok(())

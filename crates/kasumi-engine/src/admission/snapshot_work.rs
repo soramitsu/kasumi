@@ -104,6 +104,60 @@ pub trait SnapshotOperation: Send + 'static {
     );
 }
 
+/// Trusted existing-grant adapter. The plan owns the exact live Operation
+/// reservation returned here, and allocate must only move inert fields: no
+/// callback, I/O, source acquisition, fallible allocation, or panic. Rejection
+/// returns the plan unchanged so selected sources can be explicitly cleaned up.
+/// Claimed output must keep the grant whenever its payload depends on it.
+#[cfg(test)]
+pub(crate) trait ExistingGrantOperation: SnapshotOperation {
+    fn existing_grant(plan: &Self::Plan) -> &Reservation;
+}
+
+/// Original preparation outcomes. Plan validation/quotes are trusted, inert
+/// owner checks; even their original diagnostics are retained rather than
+/// flattened into a wire error. No arbitrary panic/diagnostic size is inferred.
+#[cfg(test)]
+pub(crate) enum SnapshotPreparationFailure {
+    Admission(Error),
+    Plan(anyhow::Error),
+    Panic(Box<dyn Any + Send>),
+}
+#[cfg(test)]
+impl From<Error> for SnapshotPreparationFailure {
+    fn from(error: Error) -> Self {
+        Self::Admission(error)
+    }
+}
+#[cfg(test)]
+impl SnapshotPreparationFailure {
+    pub(crate) fn error(&self) -> Option<&Error> {
+        match self {
+            Self::Admission(error) => Some(error),
+            _ => None,
+        }
+    }
+}
+/// Before publication, the caller still owns cleanup of this exact plan.
+/// Dropping a rejection is not evidence that a selected source was drained.
+#[cfg(test)]
+pub(crate) struct SnapshotWorkRejected<P> {
+    plan: P,
+    failure: SnapshotPreparationFailure,
+}
+#[cfg(test)]
+impl<P> SnapshotWorkRejected<P> {
+    pub(crate) fn failure(&self) -> &SnapshotPreparationFailure {
+        &self.failure
+    }
+    pub(crate) fn error(&self) -> Option<&Error> {
+        self.failure.error()
+    }
+    pub(crate) fn into_parts(self) -> (P, SnapshotPreparationFailure) {
+        (self.plan, self.failure)
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SnapshotPanicPhase {
     Allocate,
@@ -128,6 +182,10 @@ struct Resource<O: SnapshotOperation> {
     cleanup_complete: bool,
 }
 struct Control {
+    // Only an adopted existing grant transfers cancellation authority with its
+    // output. Separately admitted snapshot operations keep their old behavior.
+    transfer_cancellation_on_claim: bool,
+    cancellation_transferred: bool,
     started: bool,
     joined: bool,
     closing: bool,
@@ -573,11 +631,13 @@ impl<O: SnapshotOperation> ErasedWork for Owner<O> {
     }
     fn close(&self) {
         let _defer = self.wake.defer();
-        self.control
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .closing = true;
-        self.cancellation.cancel();
+        let mut control = self.control.lock().unwrap_or_else(|p| p.into_inner());
+        control.closing = true;
+        if !control.cancellation_transferred {
+            // Serialize with claim: a pre-claim close wins and forbids transfer;
+            // a stale report cannot cancel an already delivered adopted grant.
+            self.cancellation.cancel();
+        }
     }
     fn poll_finish(&self, cx: &mut Context<'_>, discard: bool) -> Poll<()> {
         let _defer = self.wake.defer();
@@ -633,14 +693,19 @@ impl<O: SnapshotOperation> ErasedWork for Owner<O> {
     }
 }
 
-/// Caller delivery capability. Dropping it cancels delivery, never the actual
-/// handle or result retained in MemoryCore's fixed strong census.
+/// Caller delivery capability. Dropping it cancels pending delivery, never the
+/// actual handle or result retained in MemoryCore's fixed strong census. A
+/// successful adopted-grant claim transfers cancellation authority to output;
+/// separately admitted work retains its original cancellation behavior.
 pub struct SnapshotWork<O: SnapshotOperation> {
     owner: OwnedOwner<O>,
 }
 impl<O: SnapshotOperation> Drop for SnapshotWork<O> {
     fn drop(&mut self) {
-        self.owner.cancellation.cancel();
+        let control = self.owner.control.lock().unwrap_or_else(|p| p.into_inner());
+        if !control.cancellation_transferred {
+            self.owner.cancellation.cancel();
+        }
     }
 }
 impl<O: SnapshotOperation> SnapshotWork<O> {
@@ -676,7 +741,7 @@ impl<O: SnapshotOperation> SnapshotWork<O> {
         // a callback panic after output.take would destroy an undelivered value
         // without its required poll_discard. Concurrent callbacks can contend
         // for these std mutexes, but this section cannot call back into them.
-        let control = self.owner.control.lock().unwrap_or_else(|p| p.into_inner());
+        let mut control = self.owner.control.lock().unwrap_or_else(|p| p.into_inner());
         if control.closing
             || !control.joined
             || control.panic.is_some()
@@ -695,6 +760,11 @@ impl<O: SnapshotOperation> SnapshotWork<O> {
         let Some(output) = resource.output.take() else {
             return Err(report);
         };
+        // No callback or fallible action intervenes after the actual take. A
+        // failed/reentrant-lost claim never reaches this authority transfer.
+        if control.transfer_cancellation_on_claim {
+            control.cancellation_transferred = true;
+        }
         let retired = {
             let mut census = self
                 .owner
@@ -870,6 +940,8 @@ impl NodeAdmission {
         let owner = OwnedOwner(Some(Arc::new(Owner {
             id: ticket.id,
             control: Mutex::new(Control {
+                transfer_cancellation_on_claim: false,
+                cancellation_transferred: false,
                 started: false,
                 joined: false,
                 closing: false,
@@ -908,6 +980,165 @@ impl NodeAdmission {
         Ok(SnapshotWork { owner })
     }
 }
+#[cfg(test)]
+impl NodeAdmission {
+    /// Retain actual work using its existing operation grant and token. Fixed
+    /// worker metadata gets ONE additional ledger slot, but no operation count.
+    /// Its OrdinaryOperation origin preserves protected bytes and slots even
+    /// though this metadata charge is Resident. There is no new governor/token.
+    ///
+    /// All checks and metadata admission precede the trusted infallible move.
+    /// Pre-install refusal returns the exact plan and its original admission
+    /// error; the caller must positively clean up any selected source/pin.
+    pub(crate) fn prepare_snapshot_work_from_existing<O: ExistingGrantOperation>(
+        self: &Arc<Self>,
+        plan: O::Plan,
+    ) -> std::result::Result<SnapshotWork<O>, SnapshotWorkRejected<O::Plan>> {
+        // This closure only borrows Plan. In particular, a real RSS-probe
+        // panic may unwind a local census ticket/metadata charge without losing
+        // the selected source, original query grant or WorkRegistration.
+        let prepared = catch_unwind(AssertUnwindSafe(
+            || -> std::result::Result<_, SnapshotPreparationFailure> {
+                O::validate_memory(&plan, self.memory())
+                    .map_err(SnapshotPreparationFailure::Plan)?;
+                let grant = O::existing_grant(&plan);
+                if !Arc::ptr_eq(&grant.core, &self.core) {
+                    return Err(Error::new(
+                        ErrorCode::Conflict,
+                        "snapshot operation grant owner differs",
+                    )
+                    .into());
+                }
+                let cancellation = {
+                    let state = self
+                        .core
+                        .data
+                        .state
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner());
+                    let charge = state.charge(grant.slot, grant.id).ok_or_else(|| {
+                        Error::new(ErrorCode::Unavailable, "snapshot operation grant absent")
+                    })?;
+                    if charge.kind != super::ChargeKind::Operation
+                        || charge.origin != super::ChargeOrigin::OrdinaryOperation
+                    {
+                        return Err(Error::new(
+                            ErrorCode::Conflict,
+                            "snapshot operation grant is not active",
+                        )
+                        .into());
+                    }
+                    let token = charge.cancellation.as_ref().ok_or_else(|| {
+                        Error::new(
+                            ErrorCode::Conflict,
+                            "snapshot operation grant has no cancellation",
+                        )
+                    })?;
+                    token.check()?;
+                    token.clone()
+                };
+                let bytes =
+                    Owner::<O>::required_bytes(&plan).map_err(SnapshotPreparationFailure::Plan)?;
+                let ticket = {
+                    let mut census = self
+                        .core
+                        .snapshot_work
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner());
+                    let slot = census
+                        .slots
+                        .iter()
+                        .position(|slot| !slot.reserved)
+                        .ok_or_else(|| {
+                            Error::new(ErrorCode::ResourceExhausted, "snapshot work census is full")
+                        })?;
+                    let generation = census.next;
+                    census.next = generation.checked_add(1).ok_or_else(|| {
+                        Error::new(ErrorCode::Unavailable, "snapshot work identity exhausted")
+                    })?;
+                    census.slots[slot].reserved = true;
+                    census.slots[slot].generation = generation;
+                    CensusTicket {
+                        core: self.core.clone(),
+                        id: SnapshotWorkId { slot, generation },
+                        published: false,
+                    }
+                };
+                let charge = self
+                    .core
+                    .reserve_kind_raw(
+                        bytes,
+                        Some(cancellation.clone()),
+                        super::ChargeKind::Resident,
+                        super::ChargeOrigin::OrdinaryOperation,
+                    )
+                    .map_err(|error| match error {
+                        super::ReserveKindError::Exhausted => Error::new(
+                            ErrorCode::ResourceExhausted,
+                            "snapshot work metadata budget exhausted",
+                        ),
+                        super::ReserveKindError::IdentifierExhausted
+                        | super::ReserveKindError::Missing => Error::new(
+                            ErrorCode::Unavailable,
+                            "snapshot work metadata identity unavailable",
+                        ),
+                    })?;
+                cancellation.check()?;
+                Ok((ticket, charge, cancellation))
+            },
+        ));
+        let (mut ticket, charge, cancellation) = match prepared {
+            Ok(Ok(prepared)) => prepared,
+            Ok(Err(failure)) => return Err(SnapshotWorkRejected { plan, failure }),
+            Err(payload) => {
+                return Err(SnapshotWorkRejected {
+                    plan,
+                    failure: SnapshotPreparationFailure::Panic(payload),
+                });
+            }
+        };
+        // ExistingGrantOperation's concrete allocate must only move fields.
+        // The original operation grant remains inside operation/output; the
+        // additional metadata charge belongs only to WorkWake.
+        let operation = O::allocate(plan, cancellation.clone());
+        let owner = OwnedOwner(Some(Arc::new(Owner {
+            id: ticket.id,
+            control: Mutex::new(Control {
+                transfer_cancellation_on_claim: true,
+                cancellation_transferred: false,
+                started: false,
+                joined: false,
+                closing: false,
+                child: None,
+                join_error: None,
+                panic: None,
+            }),
+            resource: Mutex::new(Resource {
+                operation: Some(operation),
+                output: None,
+                discarded: None,
+                failure: None,
+                panic: None,
+                cleanup_complete: false,
+            }),
+            serial: tokio::sync::Mutex::new(()),
+            cancellation,
+            core: self.core.clone(),
+            wake: OwnedWake::new(charge),
+        })));
+        {
+            let mut census = self
+                .core
+                .snapshot_work
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            census.slots[ticket.id.slot].owner = Some(owner.erased());
+            ticket.published = true;
+        }
+        Ok(SnapshotWork { owner })
+    }
+}
+
 impl MemoryCore {
     pub fn snapshot_work_capacity(&self) -> usize {
         self.data.config.max_inflight_operations

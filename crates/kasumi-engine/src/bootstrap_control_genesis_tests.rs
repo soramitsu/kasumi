@@ -76,7 +76,8 @@ fn replicated_genesis_requires_explicit_tag_payload_and_lifecycle_kind() -> anyh
 }
 
 #[test]
-fn control_genesis_is_deterministic_bounded_and_part_of_bootstrap_identity() -> anyhow::Result<()> {
+fn control_genesis_is_deterministic_bounded_and_part_of_bootstrap_identity()
+-> crate::test_fixture_failure::FixtureResult<()> {
     let original = installed();
     original.validate()?;
     let scratch = crate::codec_fixture::ScratchScope::new(
@@ -164,10 +165,7 @@ fn applied_control_requires_exact_schema_and_document_without_resetting_current_
     Ok(())
 }
 
-async fn stores(
-    node: Arc<NodeStore>,
-    access: StorageAccess,
-) -> anyhow::Result<Arc<TenantStorageSet>> {
+async fn stores(node: NodeStore, access: StorageAccess) -> anyhow::Result<Arc<TenantStorageSet>> {
     TenantStorageSet::initialize_catalogs(
         node,
         CONTROL_TENANT.into(),
@@ -178,7 +176,7 @@ async fn stores(
     .await
 }
 async fn audit(
-    node: Arc<NodeStore>,
+    node: NodeStore,
     admission: Arc<crate::admission::NodeAdmission>,
 ) -> anyhow::Result<Arc<SecurityAudit>> {
     let store = TenantStore::initialize_catalog(
@@ -217,7 +215,7 @@ fn retained(stores: &TenantStorageSet) -> anyhow::Result<String> {
 
 #[tokio::test]
 async fn control_genesis_rejects_wrong_storage_purpose_before_deployment_publication()
--> anyhow::Result<()> {
+-> crate::test_fixture_failure::FixtureResult<()> {
     let directory = kasumi_store::test_utils::private_tempdir()?;
     let (persistent, scratch) = crate::test_utils::fixture_disk_configs(directory.path())?;
     // The original fixed 2 GiB source resolves Default to a 256 MiB total.
@@ -265,7 +263,9 @@ async fn control_genesis_rejects_wrong_storage_purpose_before_deployment_publica
     );
     assert_eq!(retained(&pair)?, before);
     pair.shutdown().await?;
-    node.drain_initializers().await?;
+    node.drain_initializers()
+        .await
+        .map_err(|failure| failure.observation())?;
     first_audit.shutdown().await?;
     drop(first_audit);
     drop(pair);
@@ -297,14 +297,16 @@ async fn control_genesis_rejects_wrong_storage_purpose_before_deployment_publica
     );
     assert_eq!(retained(&pair)?, before);
     pair.shutdown().await?;
-    node.drain_initializers().await?;
+    node.drain_initializers()
+        .await
+        .map_err(|failure| failure.observation())?;
     second_audit.shutdown().await?;
     Ok(())
 }
 
 #[tokio::test]
 async fn strict_control_reopen_rejects_partial_genesis_without_catalog_or_raft_mutation()
--> anyhow::Result<()> {
+-> crate::test_fixture_failure::FixtureResult<()> {
     let directory = kasumi_store::test_utils::private_tempdir()?;
     let (persistent, scratch) = crate::test_utils::fixture_disk_configs(directory.path())?;
     // The original fixed 2 GiB source resolves Default to a 256 MiB total.
@@ -348,7 +350,7 @@ async fn strict_control_reopen_rejects_partial_genesis_without_catalog_or_raft_m
     let error = open_existing_replicated(
         1,
         pair.clone(),
-        uuid::Uuid::parse_str(&installed.incarnation)?,
+        uuid::Uuid::parse_str(&installed.incarnation).map_err(anyhow::Error::from)?,
         Arc::new(kasumi_raft::InProcessRouter::default()),
         Config::default(),
         audit.clone(),
@@ -363,7 +365,9 @@ async fn strict_control_reopen_rejects_partial_genesis_without_catalog_or_raft_m
     assert_eq!(installed_after.node_id(), 1);
     assert_eq!(installed_after.group(), expected_group);
     pair.shutdown().await?;
-    node.drain_initializers().await?;
+    node.drain_initializers()
+        .await
+        .map_err(|failure| failure.observation())?;
     audit.shutdown().await?;
     Ok(())
 }

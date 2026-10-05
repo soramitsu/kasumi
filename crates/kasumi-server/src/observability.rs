@@ -180,17 +180,6 @@ pub(crate) struct GroupObservation {
     pub audit_maintenance: Option<kasumi_engine::AuditMaintenanceStatus>,
     pub capacity: Option<CapacityObservation>,
 }
-impl GroupObservation {
-    fn ready(&self) -> bool {
-        self.routed
-            && self.store_available
-            && self.quorum == Some(true)
-            && (!self.authority_required
-                || self
-                    .authority_remaining_seconds
-                    .is_some_and(|remaining| remaining > 0.0))
-    }
-}
 pub(crate) struct LocalObservation {
     pub admission: AdmissionSnapshot,
     pub persistent_disk: kasumi_store::NodeDiskSnapshot,
@@ -536,7 +525,6 @@ impl Service {
         let ready = lifecycle == Lifecycle::Serving
             && observed.coverage.ready()
             && observed.coverage_token.is_some()
-            && observed.groups.iter().all(GroupObservation::ready)
             && persistent_ready(&observed.persistent_disk)
             && observed.admission.sample_usable
             && !observed.admission.pressured
@@ -751,6 +739,10 @@ impl Observation {
         gauge!(
             "scratch_disk_min_free_bytes",
             self.scratch_disk.min_free_bytes
+        );
+        gauge!(
+            "scratch_disk_native_cache_bytes",
+            self.scratch_disk.native_cache_bytes
         );
         gauge!(
             "scratch_disk_charged_bytes",

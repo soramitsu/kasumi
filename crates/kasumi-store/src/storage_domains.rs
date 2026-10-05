@@ -7,6 +7,51 @@ mod binding_install_plan;
 mod catalog_initialization;
 pub(crate) use binding_install_plan::{AdmittedBindingBytes, AdmittedBindingPut};
 mod existing_catalogs;
+mod prepared_point_read;
+mod prepared_read_view;
+pub use prepared_point_read::{
+    PreparedTenantPointBounds, PreparedTenantPointReads, PreparedTenantPointWorkspace,
+};
+pub use prepared_point_read::{
+    PreparedTenantSourcePointLoan, PreparedTenantSourcePointReads, PreparedTenantSourceReadView,
+    SourceHistoryDisposition,
+};
+mod read_memory_quote;
+pub use prepared_read_view::PreparedTenantStorageReadView;
+pub use read_memory_quote::{PairedReadMemoryQuote, PointReadMemoryQuote};
+
+/// The paired native commit returned successfully. Its final access check alone
+/// prevented acknowledgment; the original fixed Store error owns no native work.
+/// No constructor or generic error conversion can mint this disposition.
+pub struct CommittedAccessDenied {
+    original: anyhow::Error,
+}
+impl CommittedAccessDenied {
+    pub fn into_error(self) -> anyhow::Error {
+        self.original
+    }
+}
+
+/// Actual paired publication outcome. Access denial remains a failed operation
+/// to callers and never authorizes a response or use of sealed domain handles.
+pub enum DomainPublicationOutcome {
+    Acknowledged,
+    CommittedAccessDenied(CommittedAccessDenied),
+}
+impl DomainPublicationOutcome {
+    pub fn into_result(self) -> Result<()> {
+        match self {
+            Self::Acknowledged => Ok(()),
+            Self::CommittedAccessDenied(denied) => Err(denied.into_error()),
+        }
+    }
+}
+
+enum PublicationMode<'a> {
+    Initialize,
+    Ordinary,
+    Capture(&'a mut crate::PreparedRegisteredSource),
+}
 
 const BINDING_NS: &str = "kasumi.storage-domains";
 const BINDING_KEY: &[u8] = b"binding";
@@ -263,7 +308,7 @@ impl CustodyStore {
     /// Opens an already installed control domain. Missing binding fails closed;
     /// creating the application/control relationship requires both live stores.
     pub async fn open(
-        node: Arc<NodeStore>,
+        node: NodeStore,
         application_tenant: String,
         provider: Arc<dyn KeyProvider>,
     ) -> Result<Arc<Self>> {
@@ -288,8 +333,8 @@ impl CustodyStore {
         let state = self.store.state.read();
         self.store.require_access(&state)?;
         #[cfg(any(test, feature = "test-utils"))]
-        if self.store.node.db.has_fixture_direct_database() {
-            let tx = self.store.node.db.begin_read()?;
+        if self.store.node.body().db.has_fixture_direct_database() {
+            let tx = self.store.node.body().db.begin_read()?;
             return self.store.deployment_at_fixture(&tx, &state);
         }
         self.store
@@ -319,11 +364,101 @@ pub struct TenantStorageReadView {
 }
 
 impl TenantStorageReadView {
+    /// Require the exact installed domain objects selected by a prospective
+    /// producer; equal tenant names, UUIDs or admission providers are insufficient.
+    pub fn require_domains(
+        &self,
+        application: &Arc<TenantStore>,
+        custody: &Arc<TenantStore>,
+    ) -> Result<()> {
+        ensure!(
+            Arc::ptr_eq(&self.application, application) && Arc::ptr_eq(&self.custody, custody),
+            "selected view belongs to another storage pair"
+        );
+        Ok(())
+    }
+
+    /// Require the actual installed persistent and scratch admission owners for
+    /// both encrypted domains. No caller-supplied names/UUIDs attest a provider.
+    pub fn require_memory(&self, expected: &Arc<dyn NodeDiskMemoryAdmission>) -> Result<()> {
+        for store in [&self.application, &self.custody] {
+            ensure!(
+                Arc::ptr_eq(expected, store.node.memory())
+                    && Arc::ptr_eq(expected, store.scratch_disk().memory()),
+                "selected view and workspace memory owners differ"
+            );
+        }
+        Ok(())
+    }
+
+    /// Plaintext-only quote bound to the actual selected application catalog.
+    pub fn application_get_workspace_bytes(
+        &self,
+        namespace_bytes: usize,
+        key_bytes: usize,
+        max_value_bytes: usize,
+    ) -> std::io::Result<u64> {
+        crate::plaintext_get_workspace_bytes(
+            self.application.tenant().len(),
+            namespace_bytes,
+            key_bytes,
+            max_value_bytes,
+        )
+    }
+
+    /// Plaintext-only quote includes the actual custody catalog tenant prefix.
+    pub fn custody_get_workspace_bytes(
+        &self,
+        namespace_bytes: usize,
+        key_bytes: usize,
+        max_value_bytes: usize,
+    ) -> std::io::Result<u64> {
+        crate::plaintext_get_workspace_bytes(
+            self.custody.tenant().len(),
+            namespace_bytes,
+            key_bytes,
+            max_value_bytes,
+        )
+    }
+
     pub fn close(mut self) -> Result<()> {
         self.transaction
             .take()
             .expect("live paired view transaction")
             .close(&self.application.node)
+    }
+
+    /// Fork one native selected snapshot for both original encrypted domains.
+    /// Independent child close/failure state never renews key authorization.
+    pub fn fork(&self) -> Result<Self> {
+        let _app_access = AccessGuard(&self.application);
+        let _custody_access = AccessGuard(&self.custody);
+        self.application.check_access()?;
+        self.custody.check_access()?;
+        let transaction = self
+            .transaction
+            .as_ref()
+            .expect("live paired view transaction")
+            .fork(&self.application.node)?;
+        if let Err(error) = self
+            .application
+            .check_access()
+            .and_then(|_| self.custody.check_access())
+        {
+            return match transaction {
+                read_view::ViewTransaction::Registered(reader) => self
+                    .application
+                    .node
+                    .settle_registered_read(reader, Err(error)),
+                #[cfg(any(test, feature = "test-utils"))]
+                read_view::ViewTransaction::Fixture(_) => Err(error),
+            };
+        }
+        Ok(Self {
+            application: self.application.clone(),
+            custody: self.custody.clone(),
+            transaction: Some(transaction),
+        })
     }
 
     pub fn registered_reader_id(&self) -> Option<StorageOwnerId> {
@@ -363,12 +498,68 @@ impl TenantStorageReadView {
         }
     }
 
+    /// Visit custody on this exact paired root with caller-owned plaintext
+    /// admission before each decode. The byte quote covers the actual encrypted
+    /// extent; it is neither authenticated content nor a source-capacity proof.
+    /// Native output ownership remains on this reader. Both domains are checked
+    /// around admission and every callback, including empty scans.
+    pub fn custody_visit_with_workspace<W>(
+        &self,
+        namespace: &str,
+        max_value_bytes: usize,
+        workspace: &mut W,
+        mut prepare: impl FnMut(&mut W, u64) -> Result<()>,
+        mut visitor: impl FnMut(&mut W, &[u8], &[u8]) -> Result<()>,
+    ) -> Result<()> {
+        let _app_access = AccessGuard(&self.application);
+        let _custody_access = AccessGuard(&self.custody);
+        self.application.check_access()?;
+        self.custody.check_access()?;
+        read_view::visit_at(
+            &self.custody,
+            self.transaction
+                .as_ref()
+                .expect("live paired view transaction"),
+            namespace,
+            max_value_bytes,
+            workspace,
+            |workspace, envelope| {
+                self.application.check_access()?;
+                self.custody.check_access()?;
+                // An extent bounds allocation only. Decryption and record
+                // identity/partition validation remain in the shared iterator.
+                let mut ciphertext = envelope;
+                take_bytes(&mut ciphertext)?;
+                ensure!(ciphertext.len() >= 40, "truncated encrypted record");
+                let bound = max_value_bytes.min(ciphertext.len() - 40);
+                let bytes = crate::plaintext_get_workspace_bytes(
+                    self.custody.tenant().len(),
+                    namespace.len(),
+                    4096,
+                    bound,
+                )?;
+                prepare(workspace, bytes)?;
+                self.application.check_access()?;
+                self.custody.check_access()
+            },
+            |workspace, key, value| {
+                self.application.check_access()?;
+                self.custody.check_access()?;
+                visitor(workspace, key, value)?;
+                self.application.check_access()?;
+                self.custody.check_access()
+            },
+        )?;
+        self.application.check_access()?;
+        self.custody.check_access()
+    }
+
     pub fn application_get(
         &self,
         namespace: &str,
         key: &[u8],
         max_value_bytes: usize,
-    ) -> Result<Option<Vec<u8>>> {
+    ) -> Result<Option<PlaintextValue>> {
         read_view::get_at(
             &self.application,
             self.transaction
@@ -385,7 +576,7 @@ impl TenantStorageReadView {
         namespace: &str,
         key: &[u8],
         max_value_bytes: usize,
-    ) -> Result<Option<Vec<u8>>> {
+    ) -> Result<Option<PlaintextValue>> {
         read_view::get_at(
             &self.custody,
             self.transaction
@@ -440,8 +631,8 @@ impl TenantStorageSet {
         application.require_access(&app_state)?;
         custody.require_access(&custody_state)?;
         #[cfg(any(test, feature = "test-utils"))]
-        if application.node.db.has_fixture_direct_database() {
-            let tx = application.node.db.begin_read()?;
+        if application.node.body().db.has_fixture_direct_database() {
+            let tx = application.node.body().db.begin_read()?;
             let app = application.deployment_at_fixture(&tx, &app_state)?;
             let peer = custody.deployment_at_fixture(&tx, &custody_state)?;
             return Self::matching_deployment_bindings(
@@ -506,7 +697,7 @@ impl TenantStorageSet {
     /// Open both existing catalogs and their authenticated immutable binding.
     /// Missing catalogs or binding are errors; this path never installs either.
     pub async fn open_existing(
-        node: Arc<NodeStore>,
+        node: NodeStore,
         tenant: String,
         application_provider: Arc<dyn KeyProvider>,
         custody_provider: Arc<dyn KeyProvider>,
@@ -529,7 +720,7 @@ impl TenantStorageSet {
 
     #[cfg(any(test, feature = "test-utils"))]
     pub async fn open_existing_fixture(
-        node: Arc<NodeStore>,
+        node: NodeStore,
         tenant: String,
         application_provider: Arc<dyn KeyProvider>,
         custody_provider: Arc<dyn KeyProvider>,
@@ -540,7 +731,7 @@ impl TenantStorageSet {
 
     #[cfg(any(test, feature = "test-utils"))]
     pub async fn initialize_catalogs_fixture(
-        node: Arc<NodeStore>,
+        node: NodeStore,
         tenant: String,
         application_provider: Arc<dyn KeyProvider>,
         custody_provider: Arc<dyn KeyProvider>,
@@ -558,7 +749,7 @@ impl TenantStorageSet {
     ) -> Result<Arc<Self>> {
         validate_application_tenant(&application.tenant)?;
         ensure!(
-            Arc::ptr_eq(&application.node, &custody.node),
+            NodeStore::ptr_eq(&application.node, &custody.node),
             "storage domains use different nodes"
         );
         ensure!(
@@ -592,14 +783,14 @@ impl TenantStorageSet {
                 None
             } else {
                 #[cfg(any(test, feature = "test-utils"))]
-                let fixture_direct = application.node.db.has_fixture_direct_database();
+                let fixture_direct = application.node.body().db.has_fixture_direct_database();
                 #[cfg(not(any(test, feature = "test-utils")))]
                 let fixture_direct = false;
                 if fixture_direct {
                     #[cfg(any(test, feature = "test-utils"))]
                     {
                         let bytes = serde_json::to_vec(&binding)?;
-                        let tx = application.node.db.begin_write()?;
+                        let tx = application.node.body().db.begin_write()?;
                         write_domain(
                             &tx,
                             &custody,
@@ -616,7 +807,7 @@ impl TenantStorageSet {
                     }
                     None
                 } else {
-                    let provider = application.node.persistent_disk().memory().clone();
+                    let provider = application.node.memory().clone();
                     let admitted = AdmittedBindingBytes::prepare(&binding, provider)?;
                     let plan = admitted.encrypt(&custody, &custody_state, &custody_catalog)?;
                     application.require_access(&app_state)?;
@@ -627,9 +818,9 @@ impl TenantStorageSet {
             (binding, pending)
         };
         if let Some(plan) = pending {
-            let provider = application.node.persistent_disk().memory().clone();
+            let provider = application.node.memory().clone();
             let payload_bytes = u64::try_from(plan.envelope().len())?;
-            let writer = application.node.db.queue_registered_binding_put(
+            let writer = application.node.body().db.queue_registered_binding_put(
                 plan,
                 application.clone(),
                 custody.clone(),
@@ -746,7 +937,14 @@ impl TenantStorageSet {
                 "initial state cannot replace its domain binding"
             );
         }
-        self.publish(application_ops, custody_ops, &[], &[], true)
+        self.publish(
+            application_ops,
+            custody_ops,
+            &[],
+            &[],
+            PublicationMode::Initialize,
+        )?
+        .into_result()
     }
 
     /// Stream verified application and custody tables while publishing their
@@ -755,15 +953,53 @@ impl TenantStorageSet {
         &self,
         application_ops: &[WriteOp],
         custody_ops: &[WriteOp],
-        application_replacements: &[(&str, &EncryptedTable)],
-        custody_replacements: &[(&str, &EncryptedTable)],
+        application_replacements: &[NamespaceReplacement<'_>],
+        custody_replacements: &[NamespaceReplacement<'_>],
     ) -> Result<()> {
+        self.write_batch_replacing_outcome(
+            application_ops,
+            custody_ops,
+            application_replacements,
+            custody_replacements,
+        )?
+        .into_result()
+    }
+
+    /// Preserve the exact post-commit access-denied disposition for the owning
+    /// publication coordinator. All precommit and commit errors remain opaque.
+    pub fn write_batch_replacing_outcome(
+        &self,
+        application_ops: &[WriteOp],
+        custody_ops: &[WriteOp],
+        application_replacements: &[NamespaceReplacement<'_>],
+        custody_replacements: &[NamespaceReplacement<'_>],
+    ) -> Result<DomainPublicationOutcome> {
         self.publish(
             application_ops,
             custody_ops,
             application_replacements,
             custody_replacements,
-            false,
+            PublicationMode::Ordinary,
+        )
+    }
+
+    /// Publish the exact paired domains and capture a preowned native source
+    /// while its original native writer token is still held. Its registered owner
+    /// remains with the caller across every original commit/capture outcome.
+    pub fn write_batch_replacing_capturing_source(
+        &self,
+        application_ops: &[WriteOp],
+        custody_ops: &[WriteOp],
+        application_replacements: &[NamespaceReplacement<'_>],
+        custody_replacements: &[NamespaceReplacement<'_>],
+        source: &mut crate::PreparedRegisteredSource,
+    ) -> Result<DomainPublicationOutcome> {
+        self.publish(
+            application_ops,
+            custody_ops,
+            application_replacements,
+            custody_replacements,
+            PublicationMode::Capture(source),
         )
     }
 
@@ -771,10 +1007,15 @@ impl TenantStorageSet {
         &self,
         application_ops: &[WriteOp],
         custody_ops: &[WriteOp],
-        application_replacements: &[(&str, &EncryptedTable)],
-        custody_replacements: &[(&str, &EncryptedTable)],
-        initialize: bool,
-    ) -> Result<()> {
+        application_replacements: &[NamespaceReplacement<'_>],
+        custody_replacements: &[NamespaceReplacement<'_>],
+        mode: PublicationMode<'_>,
+    ) -> Result<DomainPublicationOutcome> {
+        let initialize = matches!(&mode, PublicationMode::Initialize);
+        let mut source = match mode {
+            PublicationMode::Capture(source) => Some(source),
+            PublicationMode::Initialize | PublicationMode::Ordinary => None,
+        };
         validate_batch(&[application_ops, custody_ops])?;
         validate_paired_initial_identity(application_ops, custody_ops)?;
         crate::read_view::validate_replacements(application_replacements, application_ops)?;
@@ -786,6 +1027,10 @@ impl TenantStorageSet {
         self.check_access()?;
         let _app_mutation = application.mutations.lock();
         let _custody_mutation = custody.mutations.lock();
+        if let Some(source) = source.as_deref() {
+            source.require_prepared_store(application)?;
+            source.require_prepared_store(custody)?;
+        }
         {
             let app_state = application.state.read();
             let custody_state = custody.state.read();
@@ -799,38 +1044,50 @@ impl TenantStorageSet {
             );
             validate_distinct_keys(&app_state, &custody_state)?;
         }
-        let tx = application.node.db.begin_write()?;
-        check_paired_initial_identity_state(
-            &tx,
-            application,
-            custody,
-            application_ops,
-            custody_ops,
-        )?;
-        if initialize {
-            require_pristine_domain(&tx, application, None)?;
-            let binding = serde_json::to_vec(&self.custody.binding)?;
-            require_pristine_domain(&tx, custody, Some(&binding))?;
-        }
-        crate::read_view::replace_domain(&tx, application, application_replacements)?;
-        {
-            let state = application.state.read();
-            application.require_access(&state)?;
-            let catalog = application.catalog.read();
-            write_domain(&tx, application, &state, &catalog, application_ops)?;
-        }
-        crate::read_view::replace_domain(&tx, custody, custody_replacements)?;
-        {
-            let state = custody.state.read();
-            custody.require_access(&state)?;
-            let catalog = custody.catalog.read();
-            write_domain(&tx, custody, &state, &catalog, custody_ops)?;
-        }
-        self.check_access()?;
-        tx.commit()
-            .context("durable domain transaction failed; outcome may be unknown")?;
-        self.check_access().context(
-            "domain transaction committed; access expired before acknowledgment; outcome unknown",
+        application.node.with_registered_write(
+            &mut source,
+            |tx, source| {
+                if let Some(source) = source.as_deref() {
+                    source.require_prepared_store(application)?;
+                    source.require_prepared_store(custody)?;
+                }
+                check_paired_initial_identity_state(
+                    tx, application, custody, application_ops, custody_ops,
+                )?;
+                if initialize {
+                    require_pristine_domain(tx, application, None)?;
+                    let binding = serde_json::to_vec(&self.custody.binding)?;
+                    require_pristine_domain(tx, custody, Some(&binding))?;
+                }
+                crate::read_view::replace_domain(tx, application, application_replacements)?;
+                {
+                    let state = application.state.read();
+                    application.require_access(&state)?;
+                    let catalog = application.catalog.read();
+                    write_domain(tx, application, &state, &catalog, application_ops)?;
+                }
+                crate::read_view::replace_domain(tx, custody, custody_replacements)?;
+                {
+                    let state = custody.state.read();
+                    custody.require_access(&state)?;
+                    let catalog = custody.catalog.read();
+                    write_domain(tx, custody, &state, &catalog, custody_ops)?;
+                }
+                self.check_access()
+            },
+            |source| {
+                if let Some(source) = source.as_deref_mut() {
+                    source.capture_published_store(application)?;
+                }
+                match self.check_access().context(
+                    "domain transaction committed; access expired before acknowledgment; outcome unknown",
+                ) {
+                    Ok(()) => Ok(DomainPublicationOutcome::Acknowledged),
+                    Err(original) => Ok(DomainPublicationOutcome::CommittedAccessDenied(
+                        CommittedAccessDenied { original },
+                    )),
+                }
+            },
         )
     }
 }

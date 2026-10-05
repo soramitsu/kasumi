@@ -4,7 +4,7 @@ Build the production binary without fixture features, then initialize an absolut
 
 ```sh
 cargo +1.97.1 build --release -p kasumi-server --bin kasumid
-target/release/kasumid init --mode standalone /var/lib/kasumi --directory-policy /etc/kasumi/directory-policy.json --network /etc/kasumi/standalone-network.json --tenant default
+target/release/kasumid init --mode standalone /var/lib/kasumi --directory-policy /etc/kasumi/directory-policy.json --file-allocation-policy /etc/kasumi/file-allocation-policy.json --network /etc/kasumi/standalone-network.json --tenant-audit-placements /etc/kasumi/tenant-audit-placements.json --tenant default
 target/release/kasumid serve /var/lib/kasumi/kasumi.json
 ```
 
@@ -12,15 +12,35 @@ Initialization creates private directories and files, an exclusive installation 
 
 Supply an explicit private `--network` JSON file before installation, for example `{"mcp_listen":"127.0.0.1:9443","mcp_public_url":"https://localhost:9443/mcp","native_listen":"127.0.0.1:9444","admin_listen":"127.0.0.1:9445"}`. The four fields are required, unknown fields are rejected, and the listener ports must be nonzero and distinct. Standalone TLS identities currently cover `localhost` and `127.0.0.1`, so the MCP public URL must be `https://localhost:<mcp-listen-port>/mcp`. The selected endpoint and certificate pin are committed together in original Control topology, configuration, and generated profiles. Changing the endpoint later requires an authorized topology update; editing only the configuration is insufficient.
 
+Supply a required owner-only `--tenant-audit-placements` JSON file with exactly
+one entry for `__kasumi_control` and one for the selected application tenant.
+This example explicitly chooses local replica only for both groups:
+
+```json
+{
+  "__kasumi_control": {"kind": "local_replica_only"},
+  "default": {"kind": "local_replica_only"}
+}
+```
+
+Each entry may instead select `{"kind":"external","destination":{...}}` with
+an installed filesystem or S3 destination. The groups choose independently; see
+[tenant audit retention](tenant-audit-retention.md) for destination details.
+The file must be a regular file with owner-only permissions, at most 64 KiB.
+Missing entries, duplicate rows, unknown fields and obsolete shapes are rejected
+before creating installation files. Initialization records the supplied choices
+in `tenant_audit_placements`; later staged tenants must provide their own explicit
+`audit_placement` in the [staging request](standalone-tenant-enrollment.md).
+
 Established standalone runtime and operator opens require the existing application/custody catalogs, authenticated bootstrap and exact configured incarnation. Missing bootstrap or Control topology is an error, never permission to create a new genesis from configuration defaults. The completion marker binds the immutable Control incarnation; unsupported marker formats are rejected explicitly.
 
 The required non-nil `database_id` identifies the main physical node file. Init
 persists this random UUID in private `data/initialization.json` before creating
 the inode. The final `data/installation.json` must match that intent and the
-configured ID. An existing node must have a complete canonical node-file
-envelope with the expected ID before the storage engine may recover it. Raw,
-partial, missing or differently identified files are rejected. Restored local
-generations derive their separate file IDs from the retained installation,
+configured ID. An existing node must have a canonical storage group with a
+complete root envelope and the expected incarnation before the storage engine
+may recover it. Raw, partial, missing or differently identified groups are
+rejected. Restored local generations derive their separate group IDs from the retained installation,
 recovery operation and target incarnation; active runtime and stopped operator
 opens use the same derivation. The UUID envelope does not replace encrypted
 tenant catalog authentication or permanent recovery fencing.
@@ -42,10 +62,28 @@ configuration never derives a persistent root from a database path. Install ever
 root explicitly before opening it and use the same root map and budgets when
 initializing auxiliary stores. Unsupported or missing configuration is rejected.
 
+`persistent_disk.native_storage` is also required. The generated profile sets
+`byte_limit: 1073741824` (1 GiB) and `cached_files: 64`. These are per-group
+ceilings for the native page/value cache and cached file descriptors; retained
+versions and cache metadata count toward the byte limit. Every group shares
+the installed memory provider, so these ceilings do not grant separate physical
+memory allowances. A store may request a smaller share. Choose installation
+budgets together with request, query and maintenance headroom; the generated
+values have not yet completed capacity/performance qualification. Writes remain
+durable even when all reads can be served from memory. Full residency through
+foreground writes and bounded startup warming are still being integrated; see
+the [active storage goals](disk-backed-cache-goals.md).
+
 The generated configuration includes a required `scratch_disk` object with an
 absolute private `directory` at `scratch`, `max_bytes` of 68719476736
-(64 GiB), and `min_free_bytes` of 268435456 (256 MiB). Configure these values for
-the installation's workload and disk. The parent directory must exist. All
+(64 GiB), `min_free_bytes` of 268435456 (256 MiB), and `native_cache_bytes` of
+536870912 (512 MiB). The cache ceiling applies to each scratch table's pages and
+values, including metadata and retained versions. Fitting contents remain in
+memory; larger tables read misses from encrypted disk. Every table also uses the
+same installed memory provider, so concurrent tables cannot exceed the shared
+memory budget. Setting `native_cache_bytes` to zero explicitly disables cache
+retention. Configure these values for the installation's workload, memory and
+disk. The parent directory must exist. All
 snapshot transfer, backup verification, restore staging and temporary point
 indexes share this one owner, including auxiliary trust stores and replacement
 generations. Images and background workers retain their charges until they
@@ -71,7 +109,7 @@ runtime, and reread the separate bearer file for each request. See the
 rejected; issue current credentials and profiles before changing a consumer to
 this format. This does not alter an installed tenant or its stored documents.
 
-MCP accepts preconfigured local bearer tokens over TLS. Supply `Authorization: Bearer <token from profiles/default.token>` and the current MCP protocol headers. Its protected-resource metadata does not advertise an OAuth authorization server. An actual external OAuth deployment uses the separate `auth.source.kind = "external_oauth"` configuration variant.
+MCP accepts preconfigured local bearer tokens over TLS. Supply `Authorization: Bearer <token from profiles/default.token>` and the current MCP protocol headers. Both OAuth protected-resource discovery URLs return 404, and authentication challenges contain only `Bearer`. Discovery metadata and `resource_metadata` challenges are advertised when an external OAuth provider is installed through `auth.source.kind = "external_oauth"`.
 
 Local credentials expire after one hour. Keep each client credential file renewed:
 
@@ -202,3 +240,13 @@ limit continues to bound census work and separately retained regular-file count;
 it is not a combined file/directory admission cap.
 
 The required `--directory-policy` file contains exactly `extent_bytes` and `max_entries`, both positive integers. The generated persistent disk configuration retains these explicit values; there is no production default. `extent_bytes` is a per-directory allocated-byte ceiling reserved before managed file namespace effects. `max_entries` limits positive membership changes; deletion retains cleanup access. Supply values qualified for the installed filesystem and supported namespace operations. Numeric validation alone does not establish that qualification. This target proposal has not yet established a supported filesystem growth bound, so production namespace admission remains a release blocker.
+
+The required `--file-allocation-policy` file contains exactly
+`maximum_extra_extent_bytes`, an integer from zero through `i64::MAX`. There is
+no production default. Kasumi reserves the filesystem-unit-rounded allowance
+for each regular file in addition to its rounded logical length, including
+empty and closed files. Census reconstructs this standing promise; deletion
+releases it after verified retirement. Supply a bound qualified for allocation
+above EOF across the supported filesystem operations. Zero explicitly asserts
+that no extra allocation occurs. The allowance consumes disk budget, not cache
+memory, and does not change the permitted logical EOF.

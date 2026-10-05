@@ -18,37 +18,51 @@ impl std::error::Error for OriginalStartupFailure {}
 struct Backend;
 impl kasumi_raft::StateMachineBackend for Backend {
     fn close_application(&self) {}
-    fn apply(
+    fn apply_with_publisher(
         &self,
         _: &kasumi_raft::AppliedEntryContext,
-        bytes: &[u8],
-    ) -> anyhow::Result<kasumi_raft::AppliedResponse> {
-        Ok(kasumi_raft::AppliedResponse::application(bytes.to_vec()))
-    }
-    fn apply_metadata(&self, _position: &kasumi_raft::AppliedEntryContext) -> anyhow::Result<()> {
+        input: kasumi_raft::AppliedInput<'_>,
+        publisher: &mut dyn kasumi_raft::ApplyPublisher,
+    ) -> std::result::Result<(), kasumi_store::ScratchOperationFailure> {
+        let bytes = match input {
+            kasumi_raft::AppliedInput::Command(bytes) => bytes.to_vec(),
+            kasumi_raft::AppliedInput::Metadata => Vec::new(),
+        };
+        publisher
+            .commit(kasumi_raft::AppliedResponse::application(bytes), &[])
+            .map_err(anyhow::Error::from)?;
         Ok(())
     }
-    fn capture_snapshot(&self) -> anyhow::Result<kasumi_raft::CapturedSnapshot> {
+    fn capture_snapshot(
+        &self,
+    ) -> std::result::Result<kasumi_raft::CapturedSnapshot, kasumi_store::ScratchOperationFailure>
+    {
         Ok(kasumi_raft::CapturedSnapshot::new(None, |_| Ok(())))
     }
     fn validate_snapshot(
         &self,
         _: &mut dyn std::io::Read,
-    ) -> anyhow::Result<Option<kasumi_raft::RetiredSnapshotState>> {
+    ) -> std::result::Result<
+        Option<kasumi_raft::RetiredSnapshotState>,
+        kasumi_store::ScratchOperationFailure,
+    > {
         Ok(None)
     }
     fn prepare_restore<'a>(
         &'a self,
         _: &kasumi_raft::SnapshotRestoreContext,
         _: &mut dyn std::io::Read,
-    ) -> anyhow::Result<Box<dyn kasumi_raft::PreparedStateMachineRestore + 'a>> {
-        anyhow::bail!("empty startup fixture has no snapshot")
+    ) -> std::result::Result<
+        Box<dyn kasumi_raft::PreparedStateMachineRestore + 'a>,
+        kasumi_store::ScratchOperationFailure,
+    > {
+        Err(anyhow::anyhow!("empty startup fixture has no snapshot").into())
     }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cancelled_local_startup_and_node_census_keep_actual_group_and_charges_until_join()
--> anyhow::Result<()> {
+-> crate::test_fixture_failure::FixtureResult<()> {
     let directory = kasumi_store::test_utils::private_tempdir()?;
     let (persistent_config, scratch_config) =
         crate::test_utils::fixture_disk_configs(directory.path())?;
@@ -191,7 +205,7 @@ async fn cancelled_local_startup_and_node_census_keep_actual_group_and_charges_u
             repeated
                 .issues()
                 .iter()
-                .any(|issue| Arc::ptr_eq(issue, &original))
+                .any(|issue| kasumi_types::drain::DrainIssueRef::ptr_eq(issue, &original))
         );
         assert_eq!(
             admission.snapshot().reserved_bytes,
