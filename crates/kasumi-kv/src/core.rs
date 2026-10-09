@@ -473,8 +473,6 @@ struct State {
     close_entered: bool,
     close_report: Option<CoreCloseReport>,
     closed: bool,
-    maintenance_active: bool,
-    maintenance_position: Option<CommittedPosition>,
 }
 impl State {
     fn disk(&mut self) -> Result<&mut DiskState, CoreError> {
@@ -933,38 +931,89 @@ impl Core {
             state.disk()?.request_warm_retry()
         })
     }
-    /// Finish one compaction cycle. Individual steps use bounded workspace;
-    /// explicit full compaction may still take time proportional to the dataset.
-    pub fn compact(&self) -> Result<(), CoreError> {
+    /// Advance the persisted compaction cycle by one bounded step: at most
+    /// `budget.units` read-side items and `budget.mutations` durable
+    /// publications. Capacity pressure and other local refusals return
+    /// `Ok` with `deferred` set and back off by step count; I/O, corruption,
+    /// unknown outcomes and owner failure fence and return `Err`.
+    pub fn run_maintenance(
+        &self,
+        budget: crate::MaintenanceBudget,
+    ) -> Result<crate::MaintenanceProgress, CoreError> {
         self.shared.run(CoreError::unknown_commit, |state| {
             self.shared.check_open(state)?;
-            while !state.disk()?.compact_step(64)?.complete {}
-            state.maintenance_active = false;
-            state.maintenance_position = state.disk()?.committed_position()?;
+            state.disk()?.maintenance_step(budget)
+        })
+    }
+    /// The inline step every `Database::begin_write` runs before its
+    /// snapshot, with the policy's inline budget. Local deferrals never fail
+    /// the write; fatal maintenance errors do.
+    pub(crate) fn maintain_before_write(&self) -> Result<(), CoreError> {
+        self.shared.run(CoreError::unknown_commit, |state| {
+            self.shared.check_open(state)?;
+            let disk = state.disk()?;
+            let budget = disk.inline_maintenance_budget();
+            if budget.units != 0 {
+                disk.maintenance_step(budget)?;
+            }
             Ok(())
         })
     }
-    /// Advance at most one maintenance work unit once append growth reaches a
-    /// MiB. Work uses the same durable publication and snapshot ownership rules.
-    pub(crate) fn prepare_write(&self) -> Result<(), CoreError> {
+    /// Test driver: finish the active cycle, or request one and finish it,
+    /// through the public step under a hard cap. Returns accumulated
+    /// progress; a request that cannot begin returns with nothing done.
+    #[cfg(test)]
+    pub(crate) fn complete_cycle_for_test(&self) -> Result<crate::MaintenanceProgress, CoreError> {
+        use crate::StorageCompactionPhase::Idle;
+        let start = self.maintenance_status()?;
+        self.request_compaction()?;
+        let mut total = crate::MaintenanceProgress::default();
+        for _ in 0..1_000_000 {
+            let progress = self.run_maintenance(crate::MaintenanceBudget {
+                units: 64,
+                mutations: 1,
+            })?;
+            assert_eq!(progress.deferred, None, "{progress:?}");
+            total.units += progress.units;
+            total.mutations += progress.mutations;
+            total.relocated_bytes += progress.relocated_bytes;
+            total.reclaimed_files += progress.reclaimed_files;
+            total.reclaimed_bytes += progress.reclaimed_bytes;
+            total.phase = progress.phase;
+            let now = self.maintenance_status()?;
+            if now.phase == Idle
+                && (start.phase != Idle || now.cycle > start.cycle || progress.idle)
+            {
+                return Ok(total);
+            }
+        }
+        panic!("bounded maintenance cycle did not finish");
+    }
+    #[cfg(test)]
+    pub(crate) fn seal_files_for_test(&self) -> Result<(), CoreError> {
         self.shared.run(CoreError::unknown_commit, |state| {
             self.shared.check_open(state)?;
-            let now = state.disk()?.committed_position()?;
-            let grew = match (state.maintenance_position, now) {
-                (Some(old), Some(now)) if old.segment_id == now.segment_id => {
-                    now.offset.saturating_sub(old.offset) >= 1 << 20
-                }
-                (None, None) => false,
-                (None, Some(now)) => now.segment_id > 1 || now.offset >= 1 << 20,
-                _ => true,
-            };
-            if grew || state.maintenance_active {
-                state.maintenance_active = !state.disk()?.compact_step(1)?.complete;
-                if !state.maintenance_active {
-                    state.maintenance_position = state.disk()?.committed_position()?;
-                }
-            }
-            Ok(())
+            state.disk()?.seal_files_for_test()
+        })
+    }
+    pub fn maintenance_status(&self) -> Result<crate::StorageMaintenanceStatus, CoreError> {
+        self.shared.run(CoreError::panicked, |state| {
+            self.shared.check_open(state)?;
+            state.disk()?.maintenance_status()
+        })
+    }
+    pub fn configure_maintenance(&self, policy: crate::MaintenancePolicy) -> Result<(), CoreError> {
+        self.shared.run(CoreError::panicked, |state| {
+            self.shared.check_open(state)?;
+            state.disk()?.configure_maintenance(policy)
+        })
+    }
+    /// Begin a cycle at the next step even below the policy thresholds,
+    /// unless nothing older than the newest files exists yet.
+    pub fn request_compaction(&self) -> Result<(), CoreError> {
+        self.shared.run(CoreError::panicked, |state| {
+            self.shared.check_open(state)?;
+            state.disk()?.request_compaction()
         })
     }
     fn check_snapshot(&self, snapshot: &ReadSnapshot) -> Result<(), CoreError> {

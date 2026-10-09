@@ -805,13 +805,6 @@ pub(crate) fn assemble<B: SegmentGroupBackend + 'static>(
         return Err(NativeOpenFailure::Cleanup(CoreOpenCleanup { custody }));
     }
     let promotion = catch_unwind(AssertUnwindSafe(|| -> Result<(), CoreError> {
-        let position = custody
-            .admitted
-            .core
-            .disk
-            .completed()
-            .expect("completed disk opening")
-            .committed_position()?;
         let authority = custody
             .admitted
             .core
@@ -825,8 +818,6 @@ pub(crate) fn assemble<B: SegmentGroupBackend + 'static>(
                 close_entered: false,
                 close_report: None,
                 closed: false,
-                maintenance_active: false,
-                maintenance_position: position,
             },
             authority.grant(),
         ));

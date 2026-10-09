@@ -40,6 +40,18 @@ impl DirectoryCursor {
         })
     }
 
+    /// Own a validated key restored from a persisted lower bound.
+    pub(crate) fn from_key(
+        key: DirectoryKey<'_>,
+        admission: &Arc<dyn StorageAdmission>,
+    ) -> Result<Self, CoreError> {
+        key.validate()?;
+        let mut encoded = [0u8; MAX_ENCODED_KEY];
+        let len = key.encoded_len();
+        key.encode(&mut encoded[..len]);
+        Self::new(&encoded[..len], admission)
+    }
+
     pub(crate) fn key(&self) -> DirectoryKey<'_> {
         decode_key(&self.key)
             .expect("cursor owns a validated key")
@@ -140,6 +152,10 @@ impl DirectoryPackPlan {
             self.left.reference,
             self.right.as_ref().map(|right| right.reference),
         )
+    }
+    /// The continuation this plan admitted for after its publication.
+    pub(crate) fn next(&self) -> Option<&DirectoryCursor> {
+        self.next.as_ref()
     }
     pub(crate) fn into_next(self) -> Option<DirectoryCursor> {
         self.next

@@ -277,12 +277,9 @@ impl Superblock {
                 "compaction has no file older than the newest",
             )));
         }
-        let cycle = record
-            .cycle
-            .checked_add(1)
-            .ok_or(CoreError::new(crate::CoreErrorCause::InvalidInput(
-                "compaction cycle overflow",
-            )))?;
+        let cycle = record.cycle.checked_add(1).ok_or(CoreError::new(
+            crate::CoreErrorCause::InvalidInput("compaction cycle overflow"),
+        ))?;
         let mut next = self.successor()?;
         next.compaction = CompactionRecord {
             cycle,
@@ -346,9 +343,7 @@ impl Superblock {
         let allowed = match self.compaction.phase {
             CompactionPhase::Evacuating => level == 0,
             CompactionPhase::Packing => usize::from(level) < MAX_HEIGHT,
-            CompactionPhase::Idle | CompactionPhase::Reclaiming => {
-                level == 0 && cursor.is_none()
-            }
+            CompactionPhase::Idle | CompactionPhase::Reclaiming => level == 0 && cursor.is_none(),
         };
         if !allowed || cursor.violation().is_some() {
             return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
@@ -373,8 +368,7 @@ impl Superblock {
             phase => {
                 record.cycle == 0
                     || self.directory.is_none()
-                    || (record.cutoff_segment != 0
-                        && record.cutoff_segment >= self.last_segment_id)
+                    || (record.cutoff_segment != 0 && record.cutoff_segment >= self.last_segment_id)
                     || (record.cutoff_arena != 0 && record.cutoff_arena >= self.last_directory_id)
                     || (record.cutoff_segment, record.cutoff_arena) == (0, 0)
                     || match phase {
@@ -518,9 +512,7 @@ mod tests {
     use crate::group::InMemoryGroup;
     use crate::root::{DirectoryCommit, RootSelection};
     use crate::segment::test_support::{GROUP, corrupt_reason};
-    use crate::segment::{
-        LogPosition, ReplayStart, SEGMENT_HEADER_BYTES, SealedSegment, crc32c,
-    };
+    use crate::segment::{LogPosition, ReplayStart, SEGMENT_HEADER_BYTES, SealedSegment, crc32c};
 
     fn advance(group: &InMemoryGroup, root: &mut Superblock, next: Superblock) {
         publish_root(group, root, &next).unwrap();
@@ -672,7 +664,10 @@ mod tests {
     }
 
     /// Re-encode `root` with `record` substituted, checksum-valid.
-    fn image_with(root: &Superblock, record: CompactionRecord) -> [u8; crate::root::ROOT_SLOT_BYTES] {
+    fn image_with(
+        root: &Superblock,
+        record: CompactionRecord,
+    ) -> [u8; crate::root::ROOT_SLOT_BYTES] {
         let mut bytes = root.encode().unwrap();
         encode_compaction(&record, &mut bytes[COMPACTION_AT..COMPACTION_END]);
         reseal(&mut bytes);
@@ -709,9 +704,24 @@ mod tests {
             record(CompactionPhase::Idle, 1, (0, 0), CompactionCursor::NONE),
             record(CompactionPhase::Idle, 0, (0, 0), cursor("accounts", None)),
             // Active phases need real, older cutoffs.
-            record(CompactionPhase::Evacuating, 0, (0, 0), CompactionCursor::NONE),
-            record(CompactionPhase::Evacuating, 0, (3, 2), CompactionCursor::NONE),
-            record(CompactionPhase::Evacuating, 0, (2, 3), CompactionCursor::NONE),
+            record(
+                CompactionPhase::Evacuating,
+                0,
+                (0, 0),
+                CompactionCursor::NONE,
+            ),
+            record(
+                CompactionPhase::Evacuating,
+                0,
+                (3, 2),
+                CompactionCursor::NONE,
+            ),
+            record(
+                CompactionPhase::Evacuating,
+                0,
+                (2, 3),
+                CompactionCursor::NONE,
+            ),
             CompactionRecord::with_fields_for_test(
                 0,
                 CompactionPhase::Evacuating,
@@ -721,9 +731,24 @@ mod tests {
                 CompactionCursor::NONE,
             ),
             // Evacuation is level zero; Reclaiming has no progress.
-            record(CompactionPhase::Evacuating, 1, (2, 2), CompactionCursor::NONE),
-            record(CompactionPhase::Reclaiming, 0, (2, 2), cursor("accounts", None)),
-            record(CompactionPhase::Reclaiming, 1, (2, 2), CompactionCursor::NONE),
+            record(
+                CompactionPhase::Evacuating,
+                1,
+                (2, 2),
+                CompactionCursor::NONE,
+            ),
+            record(
+                CompactionPhase::Reclaiming,
+                0,
+                (2, 2),
+                cursor("accounts", None),
+            ),
+            record(
+                CompactionPhase::Reclaiming,
+                1,
+                (2, 2),
+                CompactionCursor::NONE,
+            ),
             record(
                 CompactionPhase::Packing,
                 MAX_HEIGHT as u8,
@@ -755,8 +780,12 @@ mod tests {
         }
         // A cycle without a committed directory.
         let mut bare = Superblock::genesis(GROUP).initialized().unwrap();
-        bare.compaction =
-            record(CompactionPhase::Evacuating, 0, (0, 0), CompactionCursor::NONE);
+        bare.compaction = record(
+            CompactionPhase::Evacuating,
+            0,
+            (0, 0),
+            CompactionCursor::NONE,
+        );
         assert!(bare.encode().is_err());
         // Table plus row beyond the fixed capacity.
         let mut image = evacuating.encode().unwrap();

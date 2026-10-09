@@ -1,6 +1,8 @@
-// Include beneath disk_state::tests::compact so the bounded compaction
+// Include beneath disk_state::tests::disk_compact so the bounded compaction
 // helpers and the storage-read counter are available. This regression is
 // intentionally separate from the preceding density evidence checkpoint.
+// Compaction itself never runs a residency pass; the automatic warm-up
+// (the node worker's `warm_if_needed`) reconciles after maintenance installs.
 
 use super::*;
 use crate::directory::DirectoryPageRef;
@@ -72,15 +74,23 @@ fn obsolete_compaction_pages_cannot_displace_a_fitting_current_and_pinned_tree()
     };
     state.configure_cache(config).unwrap();
 
-    let rotation = state.compact_step(2).unwrap();
-    assert_eq!(rotation.maintenance_commits, 0);
-    let first = state.compact_step(1).unwrap();
-    assert_eq!(first.maintenance_commits, 1);
+    seal_files(&mut state);
+    state.request_compaction().unwrap();
+    step(&mut state, ONE);
+    assert_eq!(state.compact.stats.maintenance_commits, 0);
+    step(&mut state, ONE);
+    assert_eq!(state.compact.stats.maintenance_commits, 1);
     let intermediate = state.selected.page.unwrap();
     // Merely copy this physical reference: pinning its root would make the
     // intermediate page part of the required live working set.
     assert_ne!(intermediate.arena_id, old_pages[0].arena_id);
     assert_eq!(compact_all(&mut state).1, 0);
+    // The automatic warm-up the node worker drives after installs.
+    for _ in 0..1024 {
+        if state.warm_if_needed(17).unwrap().complete {
+            break;
+        }
+    }
     let current = state.snapshot().unwrap();
     let current_pages = residency_pages(&state, current.root());
     assert_eq!(current_pages.len(), 3);

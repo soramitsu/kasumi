@@ -176,6 +176,12 @@ impl Superblock {
         }
     }
 
+    /// The same structural guard, for choosing which proven candidates the
+    /// current root lets a sealed cohort retire. It never replaces a proof.
+    pub(crate) fn file_is_retirable(&self, file: GroupFile) -> bool {
+        self.directory_file_is_retirable(file)
+    }
+
     pub(super) fn directory_invariant_violation(&self) -> Option<&'static str> {
         if self.next_directory_id == 0
             || self.next_directory_id == u64::MAX

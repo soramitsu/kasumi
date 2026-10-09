@@ -51,10 +51,10 @@ use directory::{DIRECTORY_AT, DIRECTORY_END, decode_directory, encode_directory}
 
 #[path = "root_compaction.rs"]
 mod compaction;
-pub(crate) use compaction::{CompactionCursor, CompactionPhase, CompactionRecord};
 use compaction::{
     COMPACTION_AT, COMPACTION_END, compaction_successor, decode_compaction, encode_compaction,
 };
+pub(crate) use compaction::{CompactionCursor, CompactionPhase, CompactionRecord};
 
 pub const ROOT_SLOT_BYTES: usize = 4096;
 pub(crate) const ROOT_MAGIC: [u8; 16] = *b"KASUMI-KVROOT004";
@@ -88,7 +88,7 @@ impl RootSlot {
         }
     }
 
-    fn for_generation(generation: u64) -> Self {
+    pub(crate) fn for_generation(generation: u64) -> Self {
         if generation.is_multiple_of(2) {
             Self::A
         } else {
@@ -214,6 +214,11 @@ impl Superblock {
 
     pub(crate) fn last_segment_id(&self) -> u64 {
         self.last_segment_id
+    }
+
+    /// The next identifier each kind would allocate (segment, directory).
+    pub(crate) fn next_file_ids(&self) -> (u64, u64) {
+        (self.next_segment_id, self.next_directory_id)
     }
 
     pub(crate) fn checkpoint(&self) -> Option<CheckpointRef> {
@@ -757,7 +762,10 @@ enum SlotImage {
 
 fn decode_slot(bytes: &[u8; ROOT_SLOT_BYTES]) -> Result<SlotImage, CoreError> {
     reject_legacy(bytes)?;
-    if RETIRED_ROOT_MAGICS.iter().any(|magic| bytes[..16] == *magic) {
+    if RETIRED_ROOT_MAGICS
+        .iter()
+        .any(|magic| bytes[..16] == *magic)
+    {
         return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
             "retired root format is unsupported",
         )));
@@ -1926,7 +1934,11 @@ mod tests {
 
     #[test]
     fn retired_root_slots_are_rejected_even_beside_current_root() {
-        for magic in [b"KASUMI-KVROOT001", b"KASUMI-KVROOT002", b"KASUMI-KVROOT003"] {
+        for magic in [
+            b"KASUMI-KVROOT001",
+            b"KASUMI-KVROOT002",
+            b"KASUMI-KVROOT003",
+        ] {
             for slot in [RootSlot::A, RootSlot::B] {
                 let (group, root) = published(2);
                 let mut bytes = root.encode().unwrap();

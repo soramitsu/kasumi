@@ -1,12 +1,22 @@
-//! Incremental evacuation, directory packing, then reachability GC.
+//! The persisted compaction cycle: Idle -> Evacuating -> Reclaiming ->
+//! Packing -> Idle, one machine per group.
 //!
-//! Rotate both appenders before scanning. A foreground write can then insert
-//! behind the cursor without reintroducing an old physical location. Each step
-//! reads the current root under the state owner's exclusive lock. Old snapshots
-//! retain their immutable roots and are protected by the reclamation registry.
+//! Beginning a cycle is one root publication that freezes the cutoffs below
+//! the newest confirmed segment and arena; nothing is rolled or created.
+//! Evacuation rewrites every leaf that still names a value at or below the
+//! segment cutoff or lives in an arena at or below the arena cutoff, with its
+//! path. A leaf in a newer arena was written with its whole path after it, so
+//! it and its ancestors are fresh; such a leaf without old values is skipped
+//! without a commit. Progress is a logical cursor carried by the next install.
+//! Reclaiming runs certified cohorts (`disk_reclaim.rs`), then one bounded
+//! density pass packs sparse pages (`disk_density.rs`). Each phase change is
+//! its own publication; reopen resumes from the record and never restarts a
+//! completed phase, so values are never re-copied by a reopen.
 
+use super::maintenance::{Census, MaintenanceBudget, MaintenanceProgress, Measurement, can_mutate};
 use super::*;
-use crate::directory::{DirectoryLeaf, MAX_DIRECTORY_LEAF_RECORDS};
+use crate::directory::{DirectoryCursor, DirectoryLeaf, MAX_DIRECTORY_LEAF_RECORDS};
+use crate::root::{CompactionCursor, CompactionPhase, CompactionRecord};
 use crate::segment::{MaintenanceOp, maintenance_operation_bytes};
 
 #[path = "disk_density.rs"]
@@ -24,189 +34,333 @@ struct Cutoff {
     arena: u64,
 }
 
+/// Volatile mirror of the durable record's progress plus the Idle census.
 #[derive(Default)]
 pub(super) struct Compaction {
-    cutoff: Option<Cutoff>,
-    segment_rotated: bool,
-    arena_rotated: bool,
-    after: Option<DirectoryRecord>,
-    scan_complete: bool,
+    /// The last record evacuation visited (an exclusive continuation).
+    evac_after: Option<DirectoryRecord>,
+    /// The persisted inclusive lower bound restored by reopen.
+    evac_resume: Option<DirectoryCursor>,
     density: Density,
-    completed_generation: Option<u64>,
+    pub(super) requested: bool,
+    census: Option<Census>,
+    pub(super) measurement: Option<Measurement>,
+    /// Statistics of the most recent step, for diagnostics and tests.
+    pub(super) stats: CompactionProgress,
 }
 
-#[derive(Default, Debug)]
+/// Internal statistics of one maintenance step; not a public contract.
+#[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct CompactionProgress {
-    /// A roll, one bounded leaf batch (possibly a verified skip), or reclamation
-    /// work. A batch targets one MiB of encoded records; one oversized value may
-    /// still require up to MAX_VALUE_BYTES in this synchronous call.
-    pub(crate) work: usize,
     pub(crate) entries: usize,
     pub(crate) copied_bytes: u64,
     pub(crate) maintenance_commits: usize,
     pub(crate) skipped_leaves: usize,
-    pub(crate) evacuated: bool,
     pub(crate) density_pairs: usize,
     pub(crate) density_commits: usize,
-    pub(crate) density_passes: usize,
-    pub(crate) density_restarts: usize,
-    pub(crate) density_complete: bool,
-    pub(crate) cache_work: usize,
-    pub(crate) cache_entries_pruned: usize,
-    pub(crate) cache_restarts: usize,
-    pub(crate) residency_complete: bool,
-    pub(crate) fully_resident: bool,
+    pub(crate) density_truncated_levels: usize,
+    pub(crate) census_probes: usize,
     pub(crate) directory_pages_read: u64,
     pub(crate) directory_pages_written: u64,
     pub(crate) directory_syncs: u64,
-    pub(crate) reclaimed: usize,
-    pub(crate) complete: bool,
+}
+
+impl Compaction {
+    /// Rebuild progress from the record selected at open, admitting the
+    /// cursor key buffer. Census and measurement start empty.
+    pub(super) fn resume(
+        record: &CompactionRecord,
+        admission: &Arc<dyn StorageAdmission>,
+    ) -> Result<Self, CoreError> {
+        let mut compaction = Self::default();
+        let cursor = record
+            .cursor()
+            .key()
+            .map(|key| DirectoryCursor::from_key(key, admission))
+            .transpose()?;
+        match record.phase() {
+            CompactionPhase::Evacuating => compaction.evac_resume = cursor,
+            CompactionPhase::Packing => {
+                compaction.density = Density::resume(record.level(), cursor)
+            }
+            CompactionPhase::Idle | CompactionPhase::Reclaiming => {}
+        }
+        Ok(compaction)
+    }
+
+    /// The in-phase progress an install successor carries.
+    pub(super) fn install_cursor(
+        &self,
+        phase: CompactionPhase,
+    ) -> Result<Option<(u8, CompactionCursor)>, CoreError> {
+        Ok(match phase {
+            CompactionPhase::Evacuating => Some((
+                0,
+                match (&self.evac_after, &self.evac_resume) {
+                    (Some(after), _) => CompactionCursor::lower_bound(after.key())?,
+                    (None, Some(resume)) => CompactionCursor::lower_bound(resume.key())?,
+                    (None, None) => CompactionCursor::NONE,
+                },
+            )),
+            CompactionPhase::Packing => Some(self.density.persisted()?),
+            CompactionPhase::Idle | CompactionPhase::Reclaiming => None,
+        })
+    }
 }
 
 impl DiskState {
-    pub(crate) fn compact_step(
+    /// Run phase items until the unit budget is spent or nothing is due.
+    pub(super) fn compact_steps(
         &mut self,
-        work_limit: usize,
-    ) -> Result<CompactionProgress, CoreError> {
-        let result = self.run(|state| {
-            let before = state.arena.stats()?;
-            let mut progress = state.compact_inner(work_limit)?;
-            let after = state.arena.stats()?;
-            progress.directory_pages_read = after.pages_read.saturating_sub(before.pages_read);
-            progress.directory_pages_written =
-                after.pages_written.saturating_sub(before.pages_written);
-            progress.directory_syncs = after.syncs.saturating_sub(before.syncs);
-            Ok(progress)
-        });
-        if self.owner.failed.load(Ordering::Acquire) {
-            self.compact = Compaction::default();
-        }
-        result
-    }
-
-    fn compact_inner(&mut self, work_limit: usize) -> Result<CompactionProgress, CoreError> {
-        let mut progress = CompactionProgress::default();
-        if work_limit == 0 {
-            return Ok(progress);
-        }
-        if let Some(generation) = self.compact.completed_generation {
-            if generation == self.selected.generation {
-                progress.evacuated = true;
-                progress.density_complete = true;
-                if !self.compact_residency(&mut progress, work_limit)? {
-                    return Ok(progress);
-                }
-                let reclaimed = self.reclaim_step(work_limit - progress.work)?;
-                progress.work += reclaimed.work;
-                progress.reclaimed = reclaimed.reclaimed;
-                progress.complete = reclaimed.complete;
-                return Ok(progress);
-            }
-            self.compact = Compaction::default();
-        }
-        if self.compact.cutoff.is_none() {
-            self.compact.cutoff = Some(Cutoff {
-                segment: self.owner.bounds()?.last_segment_id,
-                arena: self.owner.lock()?.last_directory_id(),
-            });
-            if self.selected.entries == 0 {
-                self.compact.scan_complete = true;
-            }
-        }
-        while progress.work < work_limit && !self.compact.scan_complete {
-            if !self.compact.segment_rotated {
-                self.writer
-                    .force_roll(self.owner.backend.as_ref(), &mut Roll(self.owner.clone()))?;
-                self.compact.segment_rotated = true;
-                progress.work += 1;
-                continue;
-            }
-            if !self.compact.arena_rotated {
-                self.arena.force_roll()?;
-                self.compact.arena_rotated = true;
-                progress.work += 1;
-                continue;
-            }
-            let (lower, exclusive) = self
-                .compact
-                .after
-                .as_ref()
-                .map_or((DirectoryKey::table("\0"), false), |record| {
-                    (record.key(), true)
-                });
-            // Maintenance reads never admit cold source pages to the cache.
-            let next = DirectoryReader::new(self.arena.as_ref(), self.owner.admission.clone())
-                .leaf_after(self.selected, lower, exclusive)?;
-            progress.work += 1;
-            let Some(leaf) = next else {
-                self.compact.scan_complete = true;
-                self.compact.after = None;
-                break;
+        budget: MaintenanceBudget,
+        progress: &mut MaintenanceProgress,
+    ) -> Result<(), CoreError> {
+        self.compact.stats = CompactionProgress::default();
+        let before = self.arena.stats()?;
+        while progress.units < budget.units {
+            let record = *self.owner.lock()?.compaction();
+            let advanced = match record.phase() {
+                CompactionPhase::Idle => self.idle_step(&record, budget, progress)?,
+                CompactionPhase::Evacuating => self.evacuate_step(&record, budget, progress)?,
+                CompactionPhase::Reclaiming => self.reclaiming_step(&record, budget, progress)?,
+                CompactionPhase::Packing => self.pack_step(budget, progress)?,
             };
-            let cutoff = self.compact.cutoff.expect("started compaction");
-            let mut plan = LeafWork::new(&leaf, cutoff, &self.owner.admission)?;
-            if plan.needs_rewrite {
-                self.maintain_leaf(&leaf, &mut plan)?;
-                progress.maintenance_commits += 1;
-            } else {
-                progress.skipped_leaves += 1;
-            }
-            progress.copied_bytes += plan.copied_bytes;
-            progress.entries += plan.visited;
-            self.compact.after = Some(plan.cursor);
-        }
-        progress.evacuated = self.compact.scan_complete;
-        if self.compact.scan_complete
-            && self.density_step(&mut progress, work_limit)?
-            && progress.work < work_limit
-            && self.compact_residency(&mut progress, work_limit)?
-            && progress.work < work_limit
-        {
-            let reclaimed = self.reclaim_step(work_limit - progress.work)?;
-            progress.work += reclaimed.work;
-            progress.reclaimed += reclaimed.reclaimed;
-            if reclaimed.complete {
-                self.compact.completed_generation = Some(self.selected.generation);
-                progress.complete = true;
+            if !advanced {
+                break;
             }
         }
-        Ok(progress)
+        let after = self.arena.stats()?;
+        let stats = &mut self.compact.stats;
+        stats.directory_pages_read = after.pages_read.saturating_sub(before.pages_read);
+        stats.directory_pages_written = after.pages_written.saturating_sub(before.pages_written);
+        stats.directory_syncs = after.syncs.saturating_sub(before.syncs);
+        Ok(())
     }
 
-    fn compact_residency(
+    /// Publish one phase transition of the durable record.
+    pub(super) fn publish_phase(
+        &self,
+        transition: impl FnOnce(&Superblock) -> Result<Superblock, CoreError>,
+    ) -> Result<(), CoreError> {
+        let mut root = self.owner.lock()?;
+        let next = transition(&root)?;
+        self.owner.publish(&mut root, next)
+    }
+
+    fn idle_step(
         &mut self,
-        progress: &mut CompactionProgress,
-        work_limit: usize,
+        record: &CompactionRecord,
+        budget: MaintenanceBudget,
+        progress: &mut MaintenanceProgress,
     ) -> Result<bool, CoreError> {
-        let warm = self.warm_inner(work_limit - progress.work, false)?;
-        progress.work += warm.work;
-        progress.cache_work += warm.work;
-        progress.cache_entries_pruned += warm.pruned;
-        progress.cache_restarts += warm.restarts;
-        progress.residency_complete = warm.complete;
-        progress.fully_resident = warm.fully_resident;
-        // Synchronous Core::compact drains steps without a timed scheduler.
-        // Preserve the refused item but return retryable pressure instead of
-        // spinning through the same provider denial under the owner lock.
-        if warm.provider_limited {
-            return Err(CoreError::new(crate::CoreErrorCause::CapacityDenied));
+        let policy = self.maintenance.policy;
+        let due = self.compact.requested
+            || self.compact.measurement.is_some_and(|measurement| {
+                measurement.bytes() >= policy.trigger_bytes(record.baseline_bytes())
+                    || measurement.files() >= policy.trigger_files(record.baseline_files())
+            });
+        if due {
+            if !can_mutate(budget, progress) {
+                return Ok(false);
+            }
+            let mut root = self.owner.lock()?;
+            let writer_at_newest = self
+                .writer
+                .position()
+                .is_none_or(|position| position.segment_id == root.last_segment_id());
+            if root.directory().is_none()
+                || root.compaction_cutoffs() == (0, 0)
+                || !writer_at_newest
+            {
+                // Nothing older than the files new writes land in: a cycle
+                // could not free anything yet.
+                drop(root);
+                self.compact.requested = false;
+                progress.idle = true;
+                return Ok(false);
+            }
+            let next = root.begin_compaction()?;
+            self.owner.publish(&mut root, next)?;
+            drop(root);
+            self.compact.requested = false;
+            self.compact.evac_after = None;
+            self.compact.evac_resume = None;
+            progress.units += 1;
+            progress.mutations += 1;
+            progress.phase_changed = true;
+            return Ok(true);
         }
-        Ok(warm.complete)
+        let stale = {
+            let root = self.owner.lock()?;
+            let ids = (root.last_segment_id(), root.last_directory_id());
+            let stale = self.compact.measurement.is_none_or(|measurement| {
+                (measurement.last_segment_id, measurement.last_directory_id) != ids
+            });
+            if stale && self.compact.census.is_none() {
+                self.compact.census = Some(Census::start(self.reclaim.floor, &root));
+            }
+            stale
+        };
+        let Some(census) = self.compact.census.as_mut() else {
+            debug_assert!(!stale);
+            progress.idle = true;
+            return Ok(false);
+        };
+        let (used, measured) =
+            census.step(self.owner.backend.as_ref(), budget.units - progress.units)?;
+        progress.units += used;
+        self.compact.stats.census_probes += used;
+        if let Some(measurement) = measured {
+            self.compact.measurement = Some(measurement);
+            self.compact.census = None;
+        }
+        Ok(used != 0 || measured.is_some())
+    }
+
+    fn evacuate_step(
+        &mut self,
+        record: &CompactionRecord,
+        budget: MaintenanceBudget,
+        progress: &mut MaintenanceProgress,
+    ) -> Result<bool, CoreError> {
+        let cutoff = Cutoff {
+            segment: record.cutoff_segment(),
+            arena: record.cutoff_arena(),
+        };
+        // Maintenance reads never admit cold source pages to the cache.
+        let leaf = {
+            let reader = DirectoryReader::new(self.arena.as_ref(), self.owner.admission.clone());
+            match (&self.compact.evac_after, &self.compact.evac_resume) {
+                (Some(after), _) => reader.leaf_after(self.selected, after.key(), true)?,
+                (None, Some(resume)) => reader.leaf_after(self.selected, resume.key(), false)?,
+                (None, None) => {
+                    reader.leaf_after(self.selected, DirectoryKey::table("\0"), false)?
+                }
+            }
+        };
+        progress.units += 1;
+        let Some(leaf) = leaf else {
+            if !can_mutate(budget, progress) {
+                return Ok(false);
+            }
+            self.publish_phase(Superblock::advance_to_reclaiming)?;
+            self.compact.evac_after = None;
+            self.compact.evac_resume = None;
+            progress.mutations += 1;
+            progress.phase_changed = true;
+            return Ok(true);
+        };
+        let mut plan = LeafWork::new(&leaf, cutoff, &self.owner.admission)?;
+        if plan.needs_rewrite {
+            if !can_mutate(budget, progress) {
+                return Ok(false);
+            }
+            let cursor = CompactionCursor::lower_bound(plan.cursor.key())?;
+            self.maintain_leaf(&leaf, &mut plan, cursor)?;
+            progress.mutations += 1;
+            progress.relocated_bytes += plan.copied_bytes;
+            self.maintenance.relocated_bytes = self
+                .maintenance
+                .relocated_bytes
+                .saturating_add(plan.copied_bytes);
+            self.compact.stats.maintenance_commits += 1;
+            self.compact.stats.copied_bytes += plan.copied_bytes;
+        } else {
+            self.compact.stats.skipped_leaves += 1;
+        }
+        self.compact.stats.entries += plan.visited;
+        let LeafWork { cursor, .. } = plan;
+        self.compact.evac_resume = None;
+        self.compact.evac_after = Some(cursor);
+        Ok(true)
+    }
+
+    /// Finish Packing: the next cycle is scheduled from the persisted
+    /// baseline and a fresh census.
+    pub(super) fn finish_cycle(
+        &mut self,
+        budget: MaintenanceBudget,
+        progress: &mut MaintenanceProgress,
+    ) -> Result<bool, CoreError> {
+        if !can_mutate(budget, progress) {
+            return Ok(false);
+        }
+        self.publish_phase(Superblock::finish_compaction)?;
+        self.compact.density = Density::default();
+        self.compact.measurement = None;
+        self.compact.census = None;
+        self.compact.requested = false;
+        self.maintenance.cycles_completed = self.maintenance.cycles_completed.saturating_add(1);
+        progress.units += 1;
+        progress.mutations += 1;
+        progress.phase_changed = true;
+        Ok(true)
+    }
+
+    /// Enter Packing at level zero after Reclaiming published its baseline.
+    pub(super) fn start_packing(&mut self) {
+        self.compact.density = Density::default();
     }
 
     fn maintain_leaf(
         &mut self,
         leaf: &DirectoryLeaf,
         plan: &mut LeafWork<'_>,
+        cursor: CompactionCursor,
     ) -> Result<(), CoreError> {
-        catch_unwind(AssertUnwindSafe(|| self.maintain_inner(leaf, plan)))
+        catch_unwind(AssertUnwindSafe(|| self.maintain_inner(leaf, plan, cursor)))
             .unwrap_or_else(|panic| Err(CoreError::unknown_commit(CorePanic::new(panic))))
+    }
+
+    /// Reserve the batch's complete space plan like `commit_inner`. A refusal
+    /// stops before any effect; the caller settles the returned plan.
+    pub(super) fn reserve_maintenance_space(
+        &self,
+        operations: &[MaintenanceOp<'_>],
+        edits: usize,
+    ) -> Result<crate::group::TransactionSpacePlan, CoreError> {
+        let plan = {
+            let root = self.owner.lock()?;
+            if root.pending_segment().is_some() || root.pending_directory().is_some() {
+                return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
+                    "transaction allocation intent outstanding",
+                )));
+            }
+            let first_segment = root.last_segment_id().checked_add(1).ok_or(CoreError::new(
+                crate::CoreErrorCause::InvalidInput("segment identifier overflow"),
+            ))?;
+            let first_directory = root
+                .last_directory_id()
+                .checked_add(1)
+                .ok_or(CoreError::new(crate::CoreErrorCause::InvalidInput(
+                    "directory identifier overflow",
+                )))?;
+            let (segment, new_segments) = self
+                .writer
+                .maintenance_transaction_space(first_segment, operations)?;
+            let (directory, new_directories) = self.arena.transaction_space(
+                first_directory,
+                self.selected.transaction_page_bound(edits)?,
+            )?;
+            crate::group::TransactionSpacePlan {
+                group_id: self.owner.group_id,
+                root_generation: root.generation(),
+                batch_seq: self.writer.next_batch_sequence(),
+                segment,
+                directory,
+                new_segments,
+                new_directories,
+            }
+        };
+        reserve_transaction(self.owner.backend.as_ref(), &plan)?;
+        Ok(plan)
     }
 
     fn maintain_inner(
         &mut self,
         leaf: &DirectoryLeaf,
         plan: &mut LeafWork<'_>,
+        cursor: CompactionCursor,
     ) -> Result<(), CoreError> {
         // Hold abort/read workspace before any private effects. The leaf, key
         // cursor and descriptor vectors already own independent admissions.
@@ -217,12 +371,24 @@ impl DiskState {
             .map(NativeResidentLease::new)?;
         let mut directory_workspace =
             DirectoryWriteWorkspace::for_leaf_rewrite(self.owner.admission.clone())?;
+        let witness = self.selection_witness();
+        // A leaf rewrite replaces fixed-size locations: one edit's path.
+        let space = self.reserve_maintenance_space(&plan.operations, 1)?;
         let mut roll = Roll(self.owner.clone());
-        let prepared = self.writer.prepare_maintenance(
+        let prepared = match self.writer.prepare_maintenance(
             self.owner.backend.as_ref(),
             &plan.operations,
             &mut roll,
-        )?;
+        ) {
+            Ok(prepared) => prepared,
+            Err(original) if !self.writer.is_fenced() => {
+                self.owner
+                    .backend
+                    .cancel_transaction(space.group_id, space.batch_seq)?;
+                return Err(original);
+            }
+            Err(original) => return Err(original),
+        };
         self.owner.check()?;
         if prepared.values().len() != plan.operations.len() {
             return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
@@ -249,6 +415,9 @@ impl DiskState {
         let root = match result {
             Ok(root) => root,
             Err(error) if error.is_capacity_denied() => {
+                self.owner
+                    .backend
+                    .finish_transaction(space.group_id, space.batch_seq)?;
                 self.writer.abort_prepared(
                     self.owner.backend.as_ref(),
                     prepared,
@@ -261,7 +430,7 @@ impl DiskState {
                 return Err(error);
             }
         };
-        self.finish_maintenance(prepared, root, workspace)?;
+        self.finish_maintenance(witness, prepared, root, workspace, &space, (0, cursor))?;
         let retained = (|| {
             for (operation, &index) in plan.operations.iter().zip(&plan.indices) {
                 let MaintenanceOp::Relocate {
@@ -288,11 +457,16 @@ impl DiskState {
         Ok(())
     }
 
-    fn finish_maintenance(
+    /// Commit a prepared maintenance batch and install it through the
+    /// selection funnel with its in-phase cursor, then settle its space.
+    pub(super) fn finish_maintenance(
         &mut self,
+        witness: SelectionWitness,
         prepared: segment::PreparedBatch,
         root: DirectoryRoot,
         workspace: NativeResidentLease,
+        space: &crate::group::TransactionSpacePlan,
+        cursor: (u8, CompactionCursor),
     ) -> Result<(), CoreError> {
         self.observe_warm_publication_start()?;
         let committed = self.writer.finish_batch(
@@ -309,12 +483,15 @@ impl DiskState {
                 chain: committed.chain,
             },
         };
-        drop(committed);
         drop(workspace);
-        self.owner
-            .install(commit)
+        // The log commit is durable; every later failure is indeterminate.
+        self.install_selected(witness, commit, &committed.values, Some(cursor))
             .map_err(|error| error.into_unknown_commit())?;
-        self.selected = root;
+        drop(committed);
+        self.owner
+            .backend
+            .finish_transaction(space.group_id, space.batch_seq)
+            .map_err(CoreError::unknown_io)?;
         self.warmup = Warmup::default();
         // Physical page packing/alias retirement can make a previously
         // oversized resident union fit without a logical row-size change.
@@ -322,7 +499,7 @@ impl DiskState {
         Ok(())
     }
 
-    fn warm_maintenance_pages(&self, root: DirectoryRoot) -> Result<(), CoreError> {
+    pub(super) fn warm_maintenance_pages(&self, root: DirectoryRoot) -> Result<(), CoreError> {
         let warming = self.pages.maintenance_view();
         match DirectoryReader::new(&warming, self.owner.admission.clone())
             .warm_generation(root, root.generation)

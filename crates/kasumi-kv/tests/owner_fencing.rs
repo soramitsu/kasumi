@@ -11,7 +11,8 @@ mod cache_test;
 use kasumi_kv::group::{FileKind, GroupFile, InMemoryGroup, SegmentGroupBackend};
 use kasumi_kv::{
     AdmissionError, BackendCloseOutcome, BackendNativeDisposition, CacheConfig, Core, CoreError,
-    CorePanic, Operation, OwnerFailed, ROOT_SLOT_BYTES, ResidentLease, RootSlot, StorageAdmission,
+    CorePanic, MaintenanceBudget, Operation, OwnerFailed, ROOT_SLOT_BYTES, ResidentLease, RootSlot,
+    StorageAdmission, StorageCompactionPhase,
 };
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
@@ -313,8 +314,19 @@ fn baseline(admission: &Arc<FencingAdmission>) -> (Core, PanicBackend) {
     (core, backend)
 }
 
-fn churned(admission: &Arc<FencingAdmission>) -> (Core, PanicBackend) {
+/// The churned rows written after a reopen: the original pages are in an
+/// older arena, so a maintenance cycle rewrites and reclaims them.
+fn aged(admission: &Arc<FencingAdmission>) -> (Core, PanicBackend) {
     let (core, backend) = baseline(admission);
+    close_drains(&core);
+    let backend = backend.crash();
+    let core = Core::open_with_backend(
+        backend.clone(),
+        admission.clone(),
+        GROUP,
+        CacheConfig::default(),
+    )
+    .unwrap();
     for value in [b"one".as_slice(), b"two", b"three"] {
         core.commit(&[Operation::put("items", b"scratch", value)])
             .unwrap();
@@ -322,6 +334,26 @@ fn churned(admission: &Arc<FencingAdmission>) -> (Core, PanicBackend) {
     core.commit(&[Operation::delete("items", b"scratch")])
         .unwrap();
     (core, backend)
+}
+
+const STEP: MaintenanceBudget = MaintenanceBudget {
+    units: 64,
+    mutations: 1,
+};
+
+/// Request and finish one maintenance cycle through the public step.
+fn maintain(core: &Core) -> Result<(), CoreError> {
+    let start = core.maintenance_status()?.cycle;
+    core.request_compaction()?;
+    for _ in 0..100_000 {
+        let progress = core.run_maintenance(STEP)?;
+        assert_eq!(progress.deferred, None);
+        let status = core.maintenance_status()?;
+        if status.phase == StorageCompactionPhase::Idle && status.cycle > start {
+            return Ok(());
+        }
+    }
+    panic!("bounded maintenance cycle did not finish");
 }
 
 fn read(core: &Core, key: &[u8]) -> Option<Vec<u8>> {
@@ -368,7 +400,10 @@ fn assert_sticky(core: &Core, admission: &FencingAdmission, backend: &PanicBacke
         matches!(&(core.committed_position()), Err(native_error) if matches!(native_error.rejected_cause(), Some(kasumi_kv::CoreErrorCause::OwnerFailed)))
     );
     assert!(
-        matches!(&(core.compact()), Err(native_error) if matches!(native_error.rejected_cause(), Some(kasumi_kv::CoreErrorCause::OwnerFailed)))
+        matches!(&(core.run_maintenance(STEP)), Err(native_error) if matches!(native_error.rejected_cause(), Some(kasumi_kv::CoreErrorCause::OwnerFailed)))
+    );
+    assert!(
+        matches!(&(core.request_compaction()), Err(native_error) if matches!(native_error.rejected_cause(), Some(kasumi_kv::CoreErrorCause::OwnerFailed)))
     );
     assert!(
         matches!(&(core.commit(&[Operation::put("items", b"key", b"retry")])), Err(native_error) if matches!(native_error.rejected_cause(), Some(kasumi_kv::CoreErrorCause::OwnerFailed)))
@@ -605,34 +640,40 @@ fn panic_at_every_commit_effect_fences_once_and_reopens_a_whole_generation() {
 }
 
 #[test]
-fn panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value() {
+fn panic_at_every_maintenance_effect_fences_once_and_reopens_every_live_value() {
     let counting_admission = FencingAdmission::new();
-    let (counting, counting_backend) = churned(&counting_admission);
+    let (counting, counting_backend) = aged(&counting_admission);
     counting_backend.panic_at(usize::MAX, PanicPoint::Before);
-    counting.compact().unwrap();
+    maintain(&counting).unwrap();
     let effect_count = counting_backend.effects();
     assert!(
         effect_count > 6,
-        "expected segment relocation, directory and retirement effects"
+        "expected phase, directory, retirement and unlink effects"
     );
 
     for ordinal in 1..=effect_count {
         for point in [PanicPoint::Before, PanicPoint::After] {
             let admission = FencingAdmission::new();
-            let (core, backend) = churned(&admission);
+            let (core, backend) = aged(&admission);
+            let calls = admission.owner_failed_calls();
             backend.panic_at(ordinal, point);
-            let error = core.compact().unwrap_err();
+            let error = maintain(&core).unwrap_err();
             assert_eq!(
                 error.panic().and_then(payload),
                 Some("injected effect panic"),
-                "effect {ordinal}: compaction unwind must be retained: {error:?}"
+                "effect {ordinal}: maintenance unwind must be retained: {error:?}"
             );
-            assert_eq!(admission.owner_failed_calls(), 1, "effect {ordinal}");
+            assert_eq!(
+                admission.owner_failed_calls(),
+                calls + 1,
+                "effect {ordinal}"
+            );
             assert_sticky(&core, &admission, &backend);
             close_drains(&core);
 
+            let restarted = backend.crash();
             let reopened = Core::open_with_backend(
-                backend.crash(),
+                restarted.clone(),
                 FencingAdmission::new(),
                 GROUP,
                 CacheConfig::default(),
@@ -641,6 +682,27 @@ fn panic_at_every_compaction_effect_fences_once_and_reopens_every_live_value() {
             assert_eq!(read(&reopened, b"key"), Some(OLD.to_vec()));
             assert_eq!(read(&reopened, b"other"), Some(b"stable".to_vec()));
             assert_eq!(read(&reopened, b"scratch"), None);
+            // Resumed maintenance reaches Idle and the old arena is gone.
+            if reopened.maintenance_status().unwrap().phase != StorageCompactionPhase::Idle {
+                for _ in 0..100_000 {
+                    reopened.run_maintenance(STEP).unwrap();
+                    if reopened.maintenance_status().unwrap().phase == StorageCompactionPhase::Idle
+                    {
+                        break;
+                    }
+                }
+            } else {
+                maintain(&reopened).unwrap();
+            }
+            assert_eq!(
+                reopened.maintenance_status().unwrap().garbage_files,
+                0,
+                "effect {ordinal}"
+            );
+            assert!(
+                !restarted.group.exists(GroupFile::directory(1)).unwrap(),
+                "effect {ordinal}: the old arena survived"
+            );
         }
     }
 }

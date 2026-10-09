@@ -1,20 +1,20 @@
 use super::*;
 use crate::directory::DirectoryCursor;
 
+/// Finish the single density pass after a foreground change: it never
+/// restarts, never repeats evacuation, and reaches Idle.
 fn finish_density_after_foreground_change(state: &mut DiskState) {
-    let mut restarts = 0;
     for _ in 0..20_000 {
-        let progress = state.compact_step(1).unwrap();
-        assert!(progress.work <= 1);
-        assert!(progress.evacuated);
-        assert_eq!(progress.entries, 0, "density retried value evacuation");
-        assert_eq!(progress.copied_bytes, 0);
-        restarts += progress.density_restarts;
-        if progress.complete {
-            assert!(progress.density_complete);
-            assert_eq!(restarts, 1);
+        let progress = step(state, ONE);
+        assert!(progress.units <= 1);
+        assert_eq!(progress.relocated_bytes, 0, "density retried value evacuation");
+        assert_eq!(state.compact.stats.entries, 0);
+        assert_eq!(state.compact.stats.copied_bytes, 0);
+        if phase(state) == CompactionPhase::Idle {
+            assert!(progress.phase_changed);
             return;
         }
+        assert_eq!(phase(state), CompactionPhase::Packing);
     }
     panic!("density did not finish after the foreground change");
 }
@@ -51,11 +51,21 @@ fn deleting_the_exact_pending_density_row_reselects_its_successor() {
             .key()
             .row
             .map(|key| (next.key().table.to_owned(), key.to_vec()));
-        let progress = state.compact_step(1).unwrap();
-        assert_eq!(progress.density_pairs, 1);
-        assert_eq!(progress.density_commits, usize::from(needs_pack));
-        assert!(!progress.density_complete);
-        assert_eq!(progress.copied_bytes, 0);
+        step(&mut state, ONE);
+        let stats = state.compact.stats;
+        assert_eq!(stats.density_pairs, 1);
+        assert_eq!(stats.density_commits, usize::from(needs_pack));
+        assert_eq!(phase(&state), CompactionPhase::Packing);
+        assert_eq!(stats.copied_bytes, 0);
+        // The install persisted exactly this continuation as its lower bound.
+        if needs_pack {
+            let persisted = record(&state);
+            assert_eq!(persisted.level(), 0);
+            assert_eq!(
+                *persisted.cursor(),
+                crate::root::CompactionCursor::lower_bound(next.key()).unwrap()
+            );
+        }
         if row.is_some() {
             pending = row;
             break;
@@ -120,9 +130,9 @@ fn foreground_root_collapse_reselects_density_without_repeating_evacuation() {
     );
     let original = populate_sparse_directory(&mut state, 48);
     evacuate_all(&mut state);
-    let first = state.compact_step(1).unwrap();
-    assert_eq!(first.density_commits, 1);
-    assert!(!first.density_complete);
+    step(&mut state, ONE);
+    assert_eq!(state.compact.stats.density_commits, 1);
+    assert_eq!(phase(&state), CompactionPhase::Packing);
     let before_collapse = state.snapshot().unwrap();
     assert!(before_collapse.root().height >= 3);
     let surviving_version = location(&state, before_collapse.root(), &long_key(0)).0;

@@ -4,9 +4,10 @@ mod cache_test;
 
 use kasumi_kv::group::InMemoryGroup;
 use kasumi_kv::{
-    AdmissionError, BackendCloseOutcome, BackendNativeDisposition, CacheConfig, Core, Database,
-    GroupFile, Operation, OwnerFailed, ROOT_SLOT_BYTES, ResidentLease, RootSlot,
-    SegmentGroupBackend, StorageAdmission, StorageError, TableDefinition, TransactionError,
+    AdmissionError, BackendCloseOutcome, BackendNativeDisposition, CacheConfig, Core, CoreError,
+    Database, GroupFile, MaintenanceBudget, MaintenancePolicy, Operation, OwnerFailed,
+    ROOT_SLOT_BYTES, ResidentLease, RootSlot, SegmentGroupBackend, StorageAdmission,
+    StorageCompactionPhase, StorageError, TableDefinition, TransactionError,
 };
 use std::ffi::OsStr;
 use std::io;
@@ -397,20 +398,6 @@ fn replacement() -> [Operation; 3] {
     ]
 }
 
-fn churned() -> (Core, CrashBackend) {
-    let (core, backend) = baseline();
-    core.commit(&replacement()).unwrap();
-    core.commit(&[
-        Operation::put("items", b"a", b"last-a"),
-        Operation::put("items", b"c", b"last-c"),
-        Operation::put("items", b"temporary", b"scratch"),
-    ])
-    .unwrap();
-    core.commit(&[Operation::delete("items", b"temporary")])
-        .unwrap();
-    (core, backend)
-}
-
 fn read(core: &Core, key: &[u8]) -> Option<Vec<u8>> {
     let view = core.snapshot().unwrap();
     core.get_admitted(&view, "items", key, 16)
@@ -668,27 +655,113 @@ fn batch_workspace_denial_leaves_all_published_versions_unchanged() {
     assert_eq!(read(&reopened, b"b0139"), Some(b"new-b".to_vec()));
 }
 
-#[test]
-fn every_failed_compaction_effect_reopens_all_live_values() {
-    verify_failed_compaction_effects(0);
+/// Rows whose pages predate a reopen: the original arena is older than the
+/// one the churn after reopen writes, so a cycle rewrites and reclaims it.
+fn aged() -> (Core, CrashBackend) {
+    let (core, backend) = baseline();
+    let mut rows = Vec::new();
+    for index in 0..400u16 {
+        rows.push(Operation::put(
+            "items",
+            format!("k{index:04}").into_bytes(),
+            vec![index as u8; 12],
+        ));
+    }
+    core.commit(&rows).unwrap();
+    let closed = core.close();
+    closed.into_result().unwrap();
+    let backend = backend.crash();
+    let core = Core::open_with_backend(backend.clone(), admission(), GROUP, CacheConfig::default())
+        .unwrap();
+    core.commit(&replacement()).unwrap();
+    core.commit(&[
+        Operation::put("items", b"a", b"last-a"),
+        Operation::put("items", b"c", b"last-c"),
+        Operation::put("items", b"temporary", b"scratch"),
+    ])
+    .unwrap();
+    core.commit(&[Operation::delete("items", b"temporary")])
+        .unwrap();
+    (core, backend)
+}
+
+const STEP: MaintenanceBudget = MaintenanceBudget {
+    units: 64,
+    mutations: 1,
+};
+
+/// Request and finish one maintenance cycle through the public step.
+fn maintain(core: &Core) -> Result<(), CoreError> {
+    let start = core.maintenance_status()?.cycle;
+    core.request_compaction()?;
+    for _ in 0..100_000 {
+        let progress = core.run_maintenance(STEP)?;
+        assert_eq!(progress.deferred, None);
+        let status = core.maintenance_status()?;
+        if status.phase == StorageCompactionPhase::Idle && status.cycle > start {
+            return Ok(());
+        }
+    }
+    panic!("bounded maintenance cycle did not finish");
+}
+
+/// Finish a resumed cycle, or run a new one, after reopen.
+fn finish_after_reopen(core: &Core) {
+    if core.maintenance_status().unwrap().phase == StorageCompactionPhase::Idle {
+        maintain(core).unwrap();
+        return;
+    }
+    for _ in 0..100_000 {
+        core.run_maintenance(STEP).unwrap();
+        if core.maintenance_status().unwrap().phase == StorageCompactionPhase::Idle {
+            return;
+        }
+    }
+    panic!("resumed maintenance cycle did not finish");
+}
+
+fn assert_aged_values(core: &Core, ordinal: usize) {
+    assert_eq!(read(core, b"a"), Some(b"last-a".to_vec()), "{ordinal}");
+    assert_eq!(read(core, b"b"), None, "{ordinal}");
+    assert_eq!(read(core, b"c"), Some(b"last-c".to_vec()), "{ordinal}");
+    assert_eq!(read(core, b"temporary"), None, "{ordinal}");
+    for index in [0u16, 1, 199, 399] {
+        assert_eq!(
+            read(core, format!("k{index:04}").as_bytes()),
+            Some(vec![index as u8; 12]),
+            "{ordinal}"
+        );
+    }
 }
 
 #[test]
-fn cached_compaction_relocation_is_safe_at_every_failed_effect() {
-    verify_failed_compaction_effects(64 << 10);
+fn every_failed_maintenance_effect_reopens_all_live_values() {
+    verify_failed_maintenance_effects(0);
 }
 
-fn verify_failed_compaction_effects(cache_bytes: u64) {
-    let (counting_core, counting_backend) = churned();
+#[test]
+fn cached_maintenance_is_safe_at_every_failed_effect() {
+    verify_failed_maintenance_effects(64 << 10);
+}
+
+fn verify_failed_maintenance_effects(cache_bytes: u64) {
+    let (counting_core, counting_backend) = aged();
     prime_cache(&counting_core, cache_bytes);
-    let before_position = counting_core.committed_position().unwrap();
     counting_backend.inject(usize::MAX, FailureMode::Before);
-    counting_core.compact().unwrap();
-    assert_ne!(counting_core.committed_position().unwrap(), before_position);
+    maintain(&counting_core).unwrap();
     let effect_count = counting_backend.effects();
     assert!(
         effect_count > 10,
-        "expected segment, directory, root and unlink effects"
+        "expected phase, directory, root, unlink and forget effects"
+    );
+    assert!(
+        !counting_backend
+            .0
+            .lock()
+            .unwrap()
+            .group
+            .exists(GroupFile::directory(1))
+            .unwrap()
     );
 
     for ordinal in 1..=effect_count {
@@ -697,10 +770,106 @@ fn verify_failed_compaction_effects(cache_bytes: u64) {
             FailureMode::After,
             FailureMode::TornDurable,
         ] {
-            let (core, backend) = churned();
+            let (core, backend) = aged();
             prime_cache(&core, cache_bytes);
             backend.inject(ordinal, mode);
-            assert!(core.compact().is_err());
+            assert!(maintain(&core).is_err());
+            assert!(core.is_fenced());
+            let restarted = backend.crash();
+            let reopened = Core::open_with_backend(
+                restarted.clone(),
+                admission(),
+                GROUP,
+                CacheConfig::default(),
+            )
+            .unwrap_or_else(|error| panic!("reopen after effect {ordinal} failed: {error}"));
+            assert_aged_values(&reopened, ordinal);
+            // Recorded garbage was re-proved at reopen; resumed maintenance
+            // reaches Idle with the old arena gone and nothing recorded.
+            finish_after_reopen(&reopened);
+            assert_aged_values(&reopened, ordinal);
+            let status = reopened.maintenance_status().unwrap();
+            assert_eq!(status.garbage_files, 0, "{ordinal}");
+            assert!(
+                !restarted
+                    .0
+                    .lock()
+                    .unwrap()
+                    .group
+                    .exists(GroupFile::directory(1))
+                    .unwrap(),
+                "effect {ordinal}: the old arena survived"
+            );
+        }
+    }
+}
+
+const MAINTAINED_ITEMS: TableDefinition<&[u8], &[u8]> = TableDefinition::new("items");
+
+/// Database writes whose inline maintenance runs a requested cycle. Each
+/// acknowledged write must survive any later failed effect.
+fn inline_writes(database: &Database, writes: &mut Vec<(Vec<u8>, Vec<u8>)>) -> Result<(), String> {
+    for index in 0..24u16 {
+        let key = format!("w{index:03}").into_bytes();
+        let value = vec![index as u8; 12];
+        let writer = database.begin_write().map_err(|error| error.to_string())?;
+        {
+            let mut table = writer
+                .open_table(MAINTAINED_ITEMS)
+                .map_err(|error| error.to_string())?;
+            table
+                .insert(key.as_slice(), value.as_slice())
+                .map_err(|error| error.to_string())?;
+        }
+        writer.commit().map_err(|error| error.to_string())?;
+        writes.push((key, value));
+    }
+    Ok(())
+}
+
+fn aged_database() -> (Database, CrashBackend) {
+    let (core, backend) = aged();
+    core.close().into_result().unwrap();
+    let backend = backend.crash();
+    let database = Database::builder(admission(), GROUP, CacheConfig::default())
+        .open_with_backend(backend.clone())
+        .unwrap();
+    database
+        .configure_maintenance(MaintenancePolicy {
+            inline_units: 8,
+            inline_mutations: 1,
+            ..MaintenancePolicy::default()
+        })
+        .unwrap();
+    database.request_compaction().unwrap();
+    (database, backend)
+}
+
+#[test]
+fn every_failed_inline_maintenance_effect_under_interleaved_writes_reopens() {
+    let (database, counting) = aged_database();
+    counting.inject(usize::MAX, FailureMode::Before);
+    let mut writes = Vec::new();
+    inline_writes(&database, &mut writes).unwrap();
+    let status = database.maintenance_status().unwrap();
+    assert!(status.cycle >= 1, "{status:?}");
+    let effect_count = counting.effects();
+    assert!(effect_count > 24 * 4);
+
+    for ordinal in 1..=effect_count {
+        for mode in [
+            FailureMode::Before,
+            FailureMode::After,
+            FailureMode::TornDurable,
+        ] {
+            let (database, backend) = aged_database();
+            backend.inject(ordinal, mode);
+            let mut acknowledged = Vec::new();
+            assert!(
+                inline_writes(&database, &mut acknowledged).is_err(),
+                "effect {ordinal} was not reached"
+            );
+            drop(database);
             let reopened = Core::open_with_backend(
                 backend.crash(),
                 admission(),
@@ -708,11 +877,72 @@ fn verify_failed_compaction_effects(cache_bytes: u64) {
                 CacheConfig::default(),
             )
             .unwrap_or_else(|error| panic!("reopen after effect {ordinal} failed: {error}"));
-            assert_eq!(read(&reopened, b"a"), Some(b"last-a".to_vec()));
-            assert_eq!(read(&reopened, b"b"), None);
-            assert_eq!(read(&reopened, b"c"), Some(b"last-c".to_vec()));
-            assert_eq!(read(&reopened, b"temporary"), None);
+            assert_aged_values(&reopened, ordinal);
+            for (key, value) in &acknowledged {
+                assert_eq!(read(&reopened, key).as_ref(), Some(value), "{ordinal}");
+            }
+            finish_after_reopen(&reopened);
+            assert_eq!(reopened.maintenance_status().unwrap().garbage_files, 0);
         }
+    }
+}
+
+/// CRC-32C (Castagnoli), as the root slot checksum uses.
+fn crc32c(bytes: &[u8]) -> u32 {
+    let mut crc = !0u32;
+    for &byte in bytes {
+        crc ^= u32::from(byte);
+        for _ in 0..8 {
+            crc = if crc & 1 != 0 {
+                (crc >> 1) ^ 0x82f6_3b78
+            } else {
+                crc >> 1
+            };
+        }
+    }
+    !crc
+}
+
+#[test]
+fn root_format_003_is_rejected_on_open() {
+    let group = InMemoryGroup::new();
+    let core = Core::create_with_backend(group.clone(), admission(), GROUP, CacheConfig::default())
+        .unwrap();
+    core.commit(&[Operation::create_table("items")]).unwrap();
+    core.close().into_result().unwrap();
+    let crashed = group.crash();
+    // Checksum-valid slots that carry the retired magic.
+    for slot in [RootSlot::A, RootSlot::B] {
+        crashed.with_durable_root(slot, |bytes| {
+            assert_eq!(&bytes[..16], b"KASUMI-KVROOT004");
+            bytes[..16].copy_from_slice(b"KASUMI-KVROOT003");
+            let checksum = crc32c(&bytes[..ROOT_SLOT_BYTES - 4]);
+            bytes[ROOT_SLOT_BYTES - 4..].copy_from_slice(&checksum.to_le_bytes());
+        });
+    }
+    let failure = match Core::open_with_backend(
+        crashed.clone(),
+        admission(),
+        GROUP,
+        CacheConfig::default(),
+    ) {
+        Ok(_) => panic!("a KASUMI-KVROOT003 store opened"),
+        Err(failure) => failure,
+    };
+    assert!(
+        matches!(
+            failure.original_error().and_then(CoreError::rejected_cause),
+            Some(kasumi_kv::CoreErrorCause::Corrupt(
+                "retired root format is unsupported"
+            ))
+        ),
+        "{failure}"
+    );
+    // Nothing was rewritten: both slots still carry the retired image.
+    for slot in [RootSlot::A, RootSlot::B] {
+        let mut bytes = [0; ROOT_SLOT_BYTES];
+        crashed.read_root(slot, &mut bytes).unwrap();
+        assert_eq!(&bytes[..16], b"KASUMI-KVROOT003");
     }
 }
 

@@ -164,9 +164,32 @@ impl DirectoryArenaBackend {
         })
     }
 
+    /// Test geometry: a smaller per-arena page limit makes rolls frequent.
+    #[cfg(test)]
+    pub(crate) fn with_max_pages_for_test(mut self, pages: u64) -> Self {
+        assert!(pages != 0 && pages <= MAX_PAGES);
+        self.max_pages = pages;
+        self
+    }
+
+    /// The arena the next page append writes to, if this writer has one.
+    /// After reopen a writer has none until its first append rolls a fresh one.
+    pub(crate) fn active_arena_id(&self) -> Result<Option<u64>, CoreError> {
+        check_owner(&self.admission)?;
+        let writer = self
+            .writer
+            .lock()
+            .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?;
+        if writer.poisoned {
+            return Err(CoreError::new(crate::CoreErrorCause::OwnerFailed));
+        }
+        Ok(writer.active.as_ref().map(|active| active.id))
+    }
+
     /// Durably allocate a fresh arena even when the current one has room.
-    /// Compaction uses this boundary before copying pages, so every later
-    /// append has an identity beyond its recorded evacuation cutoff.
+    /// Production compaction freezes its cutoffs below the active arena and
+    /// never rolls; this is a test entry point into the production roll.
+    #[cfg(test)]
     pub(crate) fn force_roll(&self) -> Result<(), CoreError> {
         check_owner(&self.admission)?;
         let mut writer = self

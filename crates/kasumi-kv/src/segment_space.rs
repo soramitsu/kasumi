@@ -1,5 +1,8 @@
-//! Allocation-free planning of the actual ordinary transaction record layout.
-//! The plan is not a quota claim or a native publication/rollback witness.
+//! Allocation-free planning of the actual transaction record layout, for
+//! ordinary batches and for maintenance batches. Both share one record-length
+//! walk that mirrors the writer's `ensure_room` rolls exactly. The plan is not
+//! a quota claim or a native publication/rollback witness.
+use super::maintenance::{MaintenanceOp, maintenance_operation_bytes, validate_maintenance};
 use super::*;
 use crate::group::{ExistingFileSpace, FileSpaceRange};
 
@@ -37,6 +40,29 @@ impl SegmentWriter {
         first_fresh: u64,
         operations: &[Operation],
     ) -> Result<(Option<ExistingFileSpace>, FileSpaceRange), CoreError> {
+        self.check_settled_tail()?;
+        validate_batch(operations)?;
+        self.plan_records(first_fresh, operations.iter().map(operation_length))
+    }
+
+    /// The same plan for one bounded maintenance batch: relocation records or
+    /// the directory-only marker, then the directory and commit records.
+    pub(crate) fn maintenance_transaction_space(
+        &self,
+        first_fresh: u64,
+        operations: &[MaintenanceOp<'_>],
+    ) -> Result<(Option<ExistingFileSpace>, FileSpaceRange), CoreError> {
+        self.check_settled_tail()?;
+        validate_maintenance(operations, self.last_batch_seq, self.capacity)?;
+        self.plan_records(
+            first_fresh,
+            operations.iter().map(|&operation| {
+                u64::try_from(maintenance_operation_bytes(operation)?).map_err(|_| overflow())
+            }),
+        )
+    }
+
+    fn check_settled_tail(&self) -> Result<(), CoreError> {
         if self.fenced || self.prepared.is_some() {
             return Err(CoreError::new(crate::CoreErrorCause::OwnerFailed));
         }
@@ -50,7 +76,14 @@ impl SegmentWriter {
                 "batch sequence overflow",
             )));
         }
-        validate_batch(operations)?;
+        Ok(())
+    }
+
+    fn plan_records(
+        &self,
+        first_fresh: u64,
+        lengths: impl Iterator<Item = Result<u64, CoreError>>,
+    ) -> Result<(Option<ExistingFileSpace>, FileSpaceRange), CoreError> {
         if first_fresh == 0
             || first_fresh == u64::MAX
             || self.capacity <= SEGMENT_HEADER_BYTES
@@ -110,8 +143,8 @@ impl SegmentWriter {
             end = end.checked_add(length).ok_or_else(overflow)?;
             Ok(())
         };
-        for operation in operations {
-            add_record(operation_length(operation)?)?;
+        for length in lengths {
+            add_record(length?)?;
         }
         add_record(DIRECTORY_RECORD_BYTES as u64)?;
         add_record(COMMIT_RECORD_BYTES as u64)?;

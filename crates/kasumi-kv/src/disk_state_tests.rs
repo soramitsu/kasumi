@@ -285,6 +285,133 @@ fn value(state: &mut DiskState, root: &SnapshotPin, key: &[u8]) -> Option<Vec<u8
         .map(|value| value.as_bytes().to_vec())
 }
 
+/// Replace the arena writer as a reopen would (its next append rolls a fresh
+/// arena), optionally with a small test page limit.
+fn replace_arena(state: &mut DiskState, max_pages: Option<u64>) {
+    let mut opening = crate::arena::ArenaOpening::default();
+    opening
+        .build(
+            state.owner.backend.clone(),
+            state.owner.clone(),
+            state.owner.admission.clone(),
+            GROUP,
+        )
+        .unwrap();
+    let arena = opening.take_completed().unwrap();
+    let arena = match max_pages {
+        Some(pages) => arena.with_max_pages_for_test(pages),
+        None => arena,
+    };
+    state.arena = NativeOwnedArc::new(arena);
+    state.pages = CachedDirectoryBackend::with_shared_cache(
+        state.arena.clone(),
+        state.owner.admission.clone(),
+        GROUP,
+        state.cache.clone(),
+    );
+}
+
+/// Make every existing file older than the active ones, so the next cycle's
+/// frozen cutoffs cover all data written so far.
+fn seal_files(state: &mut DiskState) {
+    state.arena.force_roll().unwrap();
+    state
+        .writer
+        .force_roll(state.owner.backend.as_ref(), &mut Roll(state.owner.clone()))
+        .unwrap();
+}
+
+fn record(state: &DiskState) -> crate::root::CompactionRecord {
+    *state.owner.lock().unwrap().compaction()
+}
+
+fn phase(state: &DiskState) -> crate::root::CompactionPhase {
+    record(state).phase()
+}
+
+const STEP: MaintenanceBudget = MaintenanceBudget {
+    units: 3,
+    mutations: 1,
+};
+
+/// Totals of a driven cycle, from public progress and internal step stats.
+#[derive(Debug, Default)]
+struct CycleTotals {
+    steps: usize,
+    relocated: u64,
+    reclaimed_files: u64,
+    reclaimed_bytes: u64,
+    entries: usize,
+    maintenance_commits: usize,
+    density_commits: usize,
+    density_pairs: usize,
+    directory_pages_written: u64,
+}
+
+impl CycleTotals {
+    fn add(&mut self, progress: &MaintenanceProgress, stats: &compaction::CompactionProgress) {
+        self.steps += 1;
+        self.relocated += progress.relocated_bytes;
+        self.reclaimed_files += progress.reclaimed_files;
+        self.reclaimed_bytes += progress.reclaimed_bytes;
+        self.entries += stats.entries;
+        self.maintenance_commits += stats.maintenance_commits;
+        self.density_commits += stats.density_commits;
+        self.density_pairs += stats.density_pairs;
+        self.directory_pages_written += stats.directory_pages_written;
+    }
+}
+
+/// One step that must neither defer nor exceed its budget.
+fn step(state: &mut DiskState, budget: MaintenanceBudget) -> MaintenanceProgress {
+    let progress = state.maintenance_step(budget).unwrap();
+    assert_eq!(progress.deferred, None, "{progress:?}");
+    assert!(progress.units <= budget.units, "{progress:?}");
+    assert!(progress.mutations <= budget.mutations, "{progress:?}");
+    progress
+}
+
+/// Finish the active cycle, or request and finish a new one, under a hard
+/// step cap and without any deferral. The request also clears a backoff.
+fn drive_cycle(state: &mut DiskState, budget: MaintenanceBudget) -> CycleTotals {
+    let start = record(state);
+    state.request_compaction().unwrap();
+    let mut totals = CycleTotals::default();
+    for _ in 0..200_000 {
+        let progress = step(state, budget);
+        totals.add(&progress, &state.compact.stats);
+        let now = record(state);
+        if now.phase() == crate::root::CompactionPhase::Idle {
+            if start.phase() != crate::root::CompactionPhase::Idle || now.cycle() > start.cycle() {
+                return totals;
+            }
+            assert!(!progress.idle, "requested cycle did not begin");
+        }
+    }
+    panic!("bounded compaction did not finish");
+}
+
+/// Request a cycle and step until it leaves `phase`.
+fn drive_through(
+    state: &mut DiskState,
+    phase_to_leave: crate::root::CompactionPhase,
+    budget: MaintenanceBudget,
+) -> CycleTotals {
+    state.request_compaction().unwrap();
+    let mut totals = CycleTotals::default();
+    let mut entered = phase(state) == phase_to_leave;
+    for _ in 0..200_000 {
+        let progress = step(state, budget);
+        totals.add(&progress, &state.compact.stats);
+        let now = phase(state);
+        entered |= now == phase_to_leave;
+        if entered && now != phase_to_leave {
+            return totals;
+        }
+    }
+    panic!("bounded phase did not finish");
+}
+
 fn warm_all(state: &mut DiskState) -> CacheWarmup {
     for _ in 0..1024 {
         let status = state.warm(17).unwrap();
@@ -711,7 +838,10 @@ fn recovery_uses_last_commit_position_before_a_later_abandoned_segment() {
 }
 
 #[path = "disk_reclaim_tests.rs"]
-mod reclaim;
+mod disk_reclaim;
 
 #[path = "disk_compact_tests.rs"]
-mod compact;
+mod disk_compact;
+
+#[path = "disk_maintenance_tests.rs"]
+mod disk_maintenance;

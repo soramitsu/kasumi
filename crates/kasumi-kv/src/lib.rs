@@ -51,6 +51,10 @@ pub use core::{
     NativeDisposalReport, NativeOpenFailure, NativeOwnedDisposal, Operation, OwnerFailed,
     PreparedPointRead, ReadSnapshot, ResidentLease, StorageAdmission,
 };
+pub use disk_state::{
+    MaintenanceBudget, MaintenanceDeferral, MaintenancePolicy, MaintenanceProgress,
+    MaintenanceStep, StorageCompactionPhase, StorageMaintenanceStatus,
+};
 pub use group::{
     ExistingFileSpace, FileKind, FileSpaceRange, GroupFile, ROOT_FILE_NAME, SegmentGroupBackend,
     TransactionReserveError, TransactionSpacePlan,

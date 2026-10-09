@@ -1,23 +1,15 @@
 use super::*;
 use crate::directory::DirectoryWalker;
+use crate::root::CompactionPhase;
 
-mod density_edges {
+mod disk_density {
     include!("disk_density_tests.rs");
 }
 
-fn compact_all(state: &mut DiskState) -> (usize, u64) {
-    let mut reclaimed = 0;
-    let mut copied = 0;
-    for _ in 0..20_000 {
-        let progress = state.compact_step(3).unwrap();
-        assert!(progress.work <= 3);
-        reclaimed += progress.reclaimed;
-        copied += progress.copied_bytes;
-        if progress.complete {
-            return (reclaimed, copied);
-        }
-    }
-    panic!("compaction did not finish");
+/// One cycle over everything written so far: (reclaimed files, copied bytes).
+fn compact_all(state: &mut DiskState) -> (u64, u64) {
+    let totals = drive_cycle(state, STEP);
+    (totals.reclaimed_files, totals.relocated)
 }
 
 fn location(state: &DiskState, root: DirectoryRoot, key: &[u8]) -> (u64, ValueLocation) {
@@ -74,18 +66,74 @@ fn populate_sparse_directory(state: &mut DiskState, count: u16) -> SnapshotPin {
         .map(|index| Operation::delete("accounts", long_key(index)))
         .collect();
     state.commit(&deletes).unwrap();
+    seal_files(state);
     original
 }
 
+const ONE: MaintenanceBudget = MaintenanceBudget {
+    units: 1,
+    mutations: 1,
+};
+
+/// Evacuate and reclaim with one-unit steps; stop exactly at the step that
+/// enters Packing, before any density plan.
 fn evacuate_all(state: &mut DiskState) {
-    for _ in 0..20000 {
-        let progress = state.compact_step(1).unwrap();
-        assert_eq!(progress.density_commits, 0);
-        if progress.evacuated {
-            return;
-        }
-    }
-    panic!("evacuation did not finish");
+    let totals = drive_through(state, CompactionPhase::Evacuating, ONE);
+    assert_eq!(totals.density_commits, 0);
+    drive_through(state, CompactionPhase::Reclaiming, ONE);
+    assert_eq!(phase(state), CompactionPhase::Packing);
+    assert_eq!(state.compact.stats.density_pairs, 0);
+}
+
+#[test]
+fn rotation_free_begin_publishes_one_root_and_creates_no_file() {
+    let group = InMemoryGroup::new();
+    let reads = Reads::new(group.clone());
+    let admission = Admission::new(8 << 20);
+    let mut state = create(reads.clone(), admission, LARGE_CACHE);
+    state
+        .commit(&[
+            Operation::create_table("accounts"),
+            Operation::put("accounts", b"a", b"old"),
+        ])
+        .unwrap();
+    // Everything is in the newest segment and arena: nothing to begin.
+    state.request_compaction().unwrap();
+    let progress = step(&mut state, ONE);
+    assert!(progress.idle);
+    assert_eq!(phase(&state), CompactionPhase::Idle);
+    assert!(!state.maintenance_status().unwrap().requested);
+    seal_files(&mut state);
+    let root = state.owner.lock().unwrap().clone();
+    let effects = reads.effects.load(Ordering::Acquire);
+    state.request_compaction().unwrap();
+    let progress = step(&mut state, ONE);
+    assert!(progress.phase_changed);
+    assert_eq!(progress.mutations, 1);
+    assert_eq!(progress.phase, StorageCompactionPhase::Evacuating);
+    let begun = state.owner.lock().unwrap().clone();
+    assert_eq!(begun.generation(), root.generation() + 1);
+    assert_eq!(begun.next_file_ids(), root.next_file_ids());
+    assert_eq!(begun.directory(), root.directory());
+    assert_eq!(
+        (
+            begun.compaction().cutoff_segment(),
+            begun.compaction().cutoff_arena()
+        ),
+        root.compaction_cutoffs()
+    );
+    // Exactly one mirrored root publication: two slot writes, two syncs, and
+    // the selection read before it. No file was created or written.
+    assert_eq!(reads.effects.load(Ordering::Acquire), effects + 4);
+    drop(state);
+    let reopened = DiskState::open(
+        Arc::new(group.crash()),
+        Admission::new(8 << 20),
+        GROUP,
+        LARGE_CACHE,
+    )
+    .unwrap();
+    assert_eq!(phase(&reopened), CompactionPhase::Evacuating);
 }
 
 #[test]
@@ -98,19 +146,14 @@ fn density_packs_sparse_internal_levels_and_preserves_pinned_versions() {
     assert!(sparse.root().height >= 3);
     let sparse_pages = reachable_pages(&state, sparse.root());
     let version = location(&state, sparse.root(), &long_key(0)).0;
-    let mut commits = 0;
-    let mut complete = false;
-    for _ in 0..20000 {
-        let progress = state.compact_step(2).unwrap();
-        commits += progress.density_commits;
-        if progress.complete {
-            assert!(progress.density_complete);
-            complete = true;
-            break;
-        }
-    }
-    assert!(complete);
-    assert!(commits > 0);
+    let totals = drive_cycle(
+        &mut state,
+        MaintenanceBudget {
+            units: 2,
+            mutations: 1,
+        },
+    );
+    assert!(totals.density_commits > 0);
     let current = state.snapshot().unwrap();
     let packed_pages = reachable_pages(&state, current.root());
     assert!(packed_pages < sparse_pages);
@@ -135,6 +178,13 @@ fn density_packs_sparse_internal_levels_and_preserves_pinned_versions() {
     drop(sparse);
     drop(current);
     compact_all(&mut state);
+    let final_root = if state.selected == final_root {
+        final_root
+    } else {
+        // The second cycle may pack once more; it never changes contents.
+        assert_eq!(state.selected.entries, final_root.entries);
+        state.selected
+    };
     drop(state);
     assert_eq!(admission.used.load(Ordering::Acquire), 0);
     let mut reopened = DiskState::open(
@@ -157,60 +207,50 @@ fn density_packs_sparse_internal_levels_and_preserves_pinned_versions() {
 }
 
 #[test]
-fn foreground_changes_restart_only_density_before_a_clean_completion() {
+fn density_single_pass_completes_under_continuous_foreground_writes() {
     let admission = Admission::new(12 << 20);
     let mut state = create(
         Arc::new(InMemoryGroup::new()),
         admission.clone(),
         LARGE_CACHE,
     );
-    let original = populate_sparse_directory(&mut state, 24);
+    let original = populate_sparse_directory(&mut state, 48);
     evacuate_all(&mut state);
-    let first = state.compact_step(1).unwrap();
-    assert_eq!(first.density_commits, 1);
-    assert!(!first.density_complete);
-    state
-        .commit(&[
-            Operation::put("accounts", long_key(0), b"changed"),
-            Operation::delete("accounts", long_key(2)),
-            Operation::put("accounts", long_key(1), b"inserted"),
-        ])
-        .unwrap();
-    let modified = state.snapshot().unwrap();
-    let version = location(&state, modified.root(), &long_key(0)).0;
-    let mut restarts = 0;
-    let mut complete = false;
-    for _ in 0..20000 {
-        let progress = state.compact_step(1).unwrap();
-        assert!(progress.evacuated);
-        assert_eq!(progress.copied_bytes, 0, "density retried value evacuation");
-        restarts += progress.density_restarts;
-        if progress.complete {
-            assert!(progress.density_complete);
-            complete = true;
-            break;
-        }
+    // Every density item alternates with a foreground commit that keeps
+    // changing the packed range; the pass never restarts and still ends.
+    let mut packing_steps = 0;
+    let mut commits = 0u16;
+    while phase(&state) == CompactionPhase::Packing {
+        let progress = step(&mut state, ONE);
+        assert_eq!(progress.relocated_bytes, 0, "density retried evacuation");
+        assert_eq!(state.compact.stats.copied_bytes, 0);
+        packing_steps += 1;
+        assert!(packing_steps < 2_000, "density pass did not finish");
+        let key = long_key(1 + 2 * (commits % 24));
+        state
+            .commit(&[Operation::put("accounts", key, b"inserted")])
+            .unwrap();
+        commits += 1;
     }
-    assert!(complete);
-    assert_eq!(restarts, 1);
+    assert_eq!(phase(&state), CompactionPhase::Idle);
+    assert!(commits > 0);
     let current = state.snapshot().unwrap();
-    for pin in [&modified, &current] {
-        assert_eq!(value(&mut state, pin, &long_key(0)).unwrap(), b"changed");
-        assert_eq!(value(&mut state, pin, &long_key(1)).unwrap(), b"inserted");
-        assert_eq!(value(&mut state, pin, &long_key(2)), None);
+    for index in 0..48u16 {
+        let key = long_key(index);
+        let expected = if index % 2 == 0 {
+            Some(index.to_be_bytes().to_vec())
+        } else if (index - 1) / 2 < commits.min(24) {
+            Some(b"inserted".to_vec())
+        } else {
+            None
+        };
+        assert_eq!(value(&mut state, &current, &key), expected, "{index}");
+        assert_eq!(
+            value(&mut state, &original, &key).unwrap(),
+            index.to_be_bytes()
+        );
     }
-    assert_eq!(
-        value(&mut state, &original, &long_key(0)).unwrap(),
-        0u16.to_be_bytes()
-    );
-    assert_eq!(
-        value(&mut state, &original, &long_key(2)).unwrap(),
-        2u16.to_be_bytes()
-    );
-    assert_eq!(location(&state, current.root(), &long_key(0)).0, version);
-    drop(original);
-    drop(modified);
-    drop(current);
+    drop((original, current));
     drop(state);
     assert_eq!(admission.used.load(Ordering::Acquire), 0);
 }
@@ -237,10 +277,11 @@ fn density_publication_effect_failures_reopen_at_an_unchanged_logical_snapshot()
                     .map(|index| (index, location(&state, state.selected, &long_key(index))))
                     .collect();
                 group.fail(operation, nth, timing);
-                let result = state.compact_step(1);
+                let result = state.maintenance_step(ONE);
                 match &result {
                     Ok(progress) => {
-                        assert_eq!(progress.density_commits, 1);
+                        assert_eq!(progress.deferred, None);
+                        assert_eq!(state.compact.stats.density_commits, 1);
                         exhausted = true;
                     }
                     Err(_) => {
@@ -262,10 +303,11 @@ fn density_publication_effect_failures_reopen_at_an_unchanged_logical_snapshot()
                 .unwrap_or_else(|error| {
                     panic!("{operation:?} {timing:?} {nth}: {error:?}; density {result:?}")
                 });
+                assert_eq!(phase(&reopened), CompactionPhase::Packing);
                 let current = reopened.snapshot().unwrap();
-                for (index, physical) in expected {
-                    let key = long_key(index);
-                    assert_eq!(location(&reopened, current.root(), &key), physical);
+                for (index, physical) in &expected {
+                    let key = long_key(*index);
+                    assert_eq!(location(&reopened, current.root(), &key), *physical);
                     assert_eq!(
                         value(&mut reopened, &current, &key).unwrap(),
                         index.to_be_bytes()
@@ -273,6 +315,8 @@ fn density_publication_effect_failures_reopen_at_an_unchanged_logical_snapshot()
                     assert_eq!(value(&mut reopened, &current, &long_key(index + 1)), None);
                 }
                 drop(current);
+                // The resumed pass finishes from the persisted cursor.
+                drive_cycle(&mut reopened, STEP);
                 drop(reopened);
                 assert_eq!(admission.used.load(Ordering::Acquire), 0);
                 if exhausted {
@@ -303,7 +347,8 @@ fn density_admission_denial_keeps_the_cursor_retryable_and_releases_workspace() 
     drop(populate_sparse_directory(&mut baseline, 12));
     evacuate_all(&mut baseline);
     let calls = admission.calls.load(Ordering::Acquire);
-    assert_eq!(baseline.compact_step(1).unwrap().density_commits, 1);
+    step(&mut baseline, ONE);
+    assert_eq!(baseline.compact.stats.density_commits, 1);
     let requests = admission.calls.load(Ordering::Acquire) - calls;
     assert!(requests > 0);
     drop(baseline);
@@ -322,14 +367,19 @@ fn density_admission_denial_keeps_the_cursor_retryable_and_releases_workspace() 
         let generation = state.selected.generation;
         let physical = location(&state, state.selected, &long_key(0));
         admission.deny_nth(nth);
-        match state.compact_step(1) {
-            Err(error) if error.is_capacity_denied() => {
+        let progress = state.maintenance_step(ONE).unwrap();
+        match progress.deferred {
+            Some(MaintenanceDeferral::Capacity) => {
                 denials += 1;
                 assert!(!state.is_fenced(), "reservation {nth}");
                 assert_eq!(state.selected.generation, generation, "reservation {nth}");
+                assert_eq!(
+                    state.maintenance_status().unwrap().last_deferral,
+                    Some(MaintenanceDeferral::Capacity)
+                );
             }
-            Ok(progress) => assert_eq!(progress.density_commits, 1),
-            Err(error) => panic!("reservation {nth}: {error}"),
+            None => assert_eq!(state.compact.stats.density_commits, 1),
+            Some(other) => panic!("reservation {nth}: {other:?}"),
         }
         assert_eq!(
             admission.refused_calls.load(Ordering::Acquire),
@@ -385,18 +435,15 @@ fn density_with_long_keys_and_large_disk_values_fits_fixed_native_workspace() {
         .collect();
     state.commit(&deletes).unwrap();
     drop(deletes);
-    let mut density_commits = 0;
-    let mut complete = false;
-    for _ in 0..20000 {
-        let progress = state.compact_step(2).unwrap();
-        density_commits += progress.density_commits;
-        if progress.complete {
-            complete = true;
-            break;
-        }
-    }
-    assert!(complete);
-    assert!(density_commits > 0);
+    seal_files(&mut state);
+    let totals = drive_cycle(
+        &mut state,
+        MaintenanceBudget {
+            units: 2,
+            mutations: 1,
+        },
+    );
+    assert!(totals.density_commits > 0);
     let current = state.snapshot().unwrap();
     for (pin, index) in [(&old, 1u16), (&current, 10)] {
         let output = state
@@ -435,6 +482,7 @@ fn compaction_preserves_versions_pins_and_fitting_hot_values_through_reclamation
     let (version, old_location) = location(&state, old.root(), b"a");
     let output = state.get(&old, "accounts", b"a", 99).unwrap().unwrap();
     let old_arena = old.root().page.unwrap().arena_id;
+    seal_files(&mut state);
     assert_eq!(compact_all(&mut state).1, 6);
     let current = state.snapshot().unwrap();
     let (new_version, new_location) = location(&state, current.root(), b"a");
@@ -447,6 +495,9 @@ fn compaction_preserves_versions_pins_and_fitting_hot_values_through_reclamation
             .exists(GroupFile::segment(old_location.segment_id))
             .unwrap()
     );
+    let status = state.maintenance_status().unwrap();
+    assert!(status.snapshot_retained_files >= 2);
+    assert!(status.snapshot_retained_bytes > 0);
     let before = reads.count();
     for root in [&old, &current] {
         assert_eq!(value(&mut state, root, b"a").unwrap(), b"one");
@@ -503,6 +554,7 @@ fn relocated_snapshot_aliases_keep_one_fitting_payload_resident() {
         .get(&old, "accounts", b"shared", size)
         .unwrap()
         .unwrap();
+    seal_files(&mut state);
     assert_eq!(compact_all(&mut state).1, size as u64);
     let current = state.snapshot().unwrap();
     let before = reads.count();
@@ -564,9 +616,14 @@ fn foreground_changes_around_compaction_cursor_never_reintroduce_old_files() {
     }
     state.commit(&ops).unwrap();
     let old = state.snapshot().unwrap();
-    let cutoff_segment = state.owner.bounds().unwrap().last_segment_id;
-    let cutoff_arena = state.owner.lock().unwrap().last_directory_id();
-    let first = state.compact_step(3).unwrap();
+    seal_files(&mut state);
+    state.request_compaction().unwrap();
+    step(&mut state, ONE);
+    let cutoff_segment = record(&state).cutoff_segment();
+    let cutoff_arena = record(&state).cutoff_arena();
+    assert!(cutoff_segment > 0 && cutoff_arena > 0);
+    step(&mut state, ONE);
+    let first = state.compact.stats;
     assert!(first.entries > 2 && first.entries < 500);
     assert_eq!(first.maintenance_commits, 1);
     state
@@ -622,6 +679,76 @@ fn foreground_changes_around_compaction_cursor_never_reintroduce_old_files() {
 }
 
 #[test]
+fn evacuation_completes_under_inserts_ahead_of_cursor() {
+    let admission = Admission::new(8 << 20);
+    let mut state = create(
+        Arc::new(InMemoryGroup::new()),
+        admission.clone(),
+        LARGE_CACHE,
+    );
+    let mut ops = vec![Operation::create_table("accounts")];
+    for key in 0..1200u32 {
+        ops.push(Operation::put(
+            "accounts",
+            (2 * key).to_be_bytes(),
+            key.to_be_bytes(),
+        ));
+    }
+    state.commit(&ops).unwrap();
+    seal_files(&mut state);
+    state.request_compaction().unwrap();
+    // Each evacuation item is followed by inserts both behind and ahead of
+    // the cursor; evacuation still visits each old leaf once and finishes.
+    let mut inserted = 0u32;
+    while phase(&state) != CompactionPhase::Reclaiming {
+        step(&mut state, ONE);
+        state
+            .commit(&[
+                Operation::put("accounts", (2 * inserted + 1).to_be_bytes(), b"behind"),
+                Operation::put(
+                    "accounts",
+                    (2 * (1199 - inserted / 2) + 1).to_be_bytes(),
+                    b"ahead",
+                ),
+            ])
+            .unwrap();
+        inserted += 1;
+        assert!(inserted < 1_000, "evacuation did not finish under inserts");
+    }
+    let cutoff = record(&state);
+    let current = state.snapshot().unwrap();
+    let mut walker = DirectoryWalker::new(current.root(), admission.clone()).unwrap();
+    loop {
+        let progress = walker
+            .step(
+                state.arena.as_ref(),
+                64,
+                |page| {
+                    assert!(page.arena_id > cutoff.cutoff_arena());
+                    Ok(())
+                },
+                |value| {
+                    assert!(value.segment_id > cutoff.cutoff_segment());
+                    Ok(())
+                },
+            )
+            .unwrap();
+        if progress.complete {
+            break;
+        }
+    }
+    for key in [0u32, 600, 1199] {
+        assert_eq!(
+            value(&mut state, &current, &(2 * key).to_be_bytes()).unwrap(),
+            key.to_be_bytes()
+        );
+    }
+    drop(walker);
+    drop(current);
+    drive_cycle(&mut state, STEP);
+}
+
+#[test]
 fn relocation_and_unknown_publication_recover_a_value_larger_than_native_workspace() {
     let group = InMemoryGroup::new();
     let admission = Admission::new(64 << 20);
@@ -634,13 +761,16 @@ fn relocation_and_unknown_publication_recover_a_value_larger_than_native_workspa
         ])
         .unwrap();
     let original = location(&state, state.selected, b"large");
+    seal_files(&mut state);
     admission.limit.store(3 << 20, Ordering::Release);
     admission
         .peak
         .store(admission.used.load(Ordering::Acquire), Ordering::Release);
-    assert_eq!(state.compact_step(2).unwrap().entries, 0);
+    state.request_compaction().unwrap();
+    assert!(step(&mut state, ONE).phase_changed);
+    assert_eq!(state.compact.stats.entries, 0);
     group.fail(GroupOp::RootWrite, 1, FaultTiming::BeforeEffect);
-    let result = state.compact_step(1);
+    let result = state.maintenance_step(ONE);
     assert!(
         matches!(&(result), Err(native_error) if native_error.is_unknown_commit()),
         "{result:?}"
@@ -697,11 +827,18 @@ fn compaction_effect_failures_reopen_without_changing_logical_values() {
                         Operation::put("accounts", b"c", b"third"),
                     ])
                     .unwrap();
+                seal_files(&mut state);
                 let version = location(&state, state.selected, b"a").0;
                 group.fail(op, nth, timing);
+                state.request_compaction().unwrap();
                 let result: Result<(), CoreError> = (|| {
                     for _ in 0..1000 {
-                        if state.compact_step(4)?.complete {
+                        let progress = state.maintenance_step(MaintenanceBudget {
+                            units: 4,
+                            mutations: 1,
+                        })?;
+                        assert_eq!(progress.deferred, None);
+                        if phase(&state) == CompactionPhase::Idle && progress.phase_changed {
                             return Ok(());
                         }
                     }
@@ -722,6 +859,14 @@ fn compaction_effect_failures_reopen_without_changing_logical_values() {
                 for (key, expected) in [(b"b", b"second".as_slice()), (b"c", b"third".as_slice())] {
                     assert_eq!(value(&mut reopened, &root, key).unwrap(), expected);
                     assert_eq!(location(&reopened, root.root(), key).0, version);
+                }
+                drop(root);
+                // Resumed maintenance reaches Idle and the old files are gone.
+                if phase(&reopened) != CompactionPhase::Idle {
+                    drive_cycle(&mut reopened, STEP);
+                }
+                if result.is_ok() || phase(&reopened) == CompactionPhase::Idle {
+                    assert!(reopened.owner.lock().unwrap().garbage().is_empty());
                 }
                 if result.is_ok() {
                     break;
@@ -748,19 +893,21 @@ fn compaction_admission_denial_is_retryable_without_skipping_a_key() {
                 Operation::put("accounts", b"a", b"bytes"),
             ])
             .unwrap();
-        state.compact_step(2).unwrap();
+        seal_files(&mut state);
+        state.request_compaction().unwrap();
+        step(&mut state, ONE);
         let generation = state.selected.generation;
         admission.deny_nth(nth);
-        let result = state.compact_step(1);
-        let copied = match result {
-            Err(error) if error.is_capacity_denied() => {
+        let progress = state.maintenance_step(ONE).unwrap();
+        let copied = match progress.deferred {
+            Some(MaintenanceDeferral::Capacity) => {
                 denials += 1;
                 assert!(!state.is_fenced(), "reservation {nth}");
                 assert_eq!(state.selected.generation, generation, "reservation {nth}");
                 0
             }
-            Ok(progress) => progress.copied_bytes,
-            Err(error) => panic!("reservation {nth}: {error}"),
+            None => progress.relocated_bytes,
+            Some(other) => panic!("reservation {nth}: {other:?}"),
         };
         // A denial beyond this operation must not arm a later unrelated step.
         admission.deny_at.store(usize::MAX, Ordering::Release);
@@ -799,6 +946,7 @@ fn evacuation_batches_write_one_path_per_leaf_and_density_packs_the_result() {
     }
     state.commit(&operations).unwrap();
     drop(operations);
+    seal_files(&mut state);
     let old = state.snapshot().unwrap();
     let root = old.root();
     assert!(root.height >= 2);
@@ -820,60 +968,36 @@ fn evacuation_batches_write_one_path_per_leaf_and_density_packs_the_result() {
     drop(after);
     let old_pages = reachable_pages(&state, root);
     let before = state.arena.stats().unwrap();
-    let mut commits = 0;
-    let mut pages = 0;
-    let mut entries = 0;
-    let mut copied = 0;
-    let mut complete = false;
-    for _ in 0..10000 {
-        let progress = state.compact_step(1).unwrap();
-        assert!(progress.work <= 1);
-        commits += progress.maintenance_commits;
-        pages += progress.directory_pages_written;
-        entries += progress.entries;
-        copied += progress.copied_bytes;
-        assert_eq!(progress.density_commits, 0);
-        if progress.evacuated {
-            complete = true;
-            break;
-        }
-    }
-    assert!(complete, "bounded evacuation did not finish");
+    let totals = drive_through(&mut state, CompactionPhase::Evacuating, ONE);
     let after = state.arena.stats().unwrap();
     eprintln!(
         "evacuation_leaf_batch rows=1200 height={} leaves={} commits={} directory_pages_written={} prior_per_record_path_pages={} copied_value_bytes={}",
         root.height,
         leaves,
-        commits,
-        pages,
+        totals.maintenance_commits,
+        totals.directory_pages_written,
         1201 * u64::from(root.height),
-        copied,
+        totals.relocated,
     );
-    assert_eq!(commits, leaves);
-    assert_eq!(pages, leaves as u64 * u64::from(root.height));
-    assert_eq!(pages, after.pages_written - before.pages_written);
+    assert_eq!(totals.maintenance_commits, leaves);
+    assert_eq!(
+        totals.directory_pages_written,
+        leaves as u64 * u64::from(root.height)
+    );
+    assert_eq!(
+        totals.directory_pages_written,
+        after.pages_written - before.pages_written
+    );
     assert!(
-        commits < 1200 / 50,
+        totals.maintenance_commits < 1200 / 50,
         "one publication per row survived batching"
     );
-    assert_eq!(entries, 1201);
-    assert_eq!(copied, 1200 * 4);
+    assert_eq!(totals.entries, 1201);
+    assert_eq!(totals.relocated, 1200 * 4);
     let before_density = state.arena.stats().unwrap();
-    let mut density_commits = 0;
-    let mut density_complete = false;
-    for _ in 0..20000 {
-        let progress = state.compact_step(3).unwrap();
-        assert!(progress.evacuated);
-        assert_eq!(progress.copied_bytes, 0);
-        density_commits += progress.density_commits;
-        if progress.complete {
-            assert!(progress.density_complete);
-            density_complete = true;
-            break;
-        }
-    }
-    assert!(density_complete);
-    assert!(density_commits > 0);
+    let rest = drive_cycle(&mut state, STEP);
+    assert_eq!(rest.relocated, 0);
+    assert!(rest.density_commits > 0);
     let after_density = state.arena.stats().unwrap();
     let packed_pages = reachable_pages(&state, state.selected);
     assert!(packed_pages < old_pages);
@@ -881,7 +1005,7 @@ fn evacuation_batches_write_one_path_per_leaf_and_density_packs_the_result() {
         "density rows=1200 old_live_pages={} new_live_pages={} commits={} directory_pages_written={}",
         old_pages,
         packed_pages,
-        density_commits,
+        rest.density_commits,
         after_density.pages_written - before_density.pages_written,
     );
     let current = state.snapshot().unwrap();
@@ -919,11 +1043,13 @@ fn value_byte_target_splits_one_leaf_and_foreground_changes_keep_the_cursor_soun
         ])
         .unwrap();
     let old = state.snapshot().unwrap();
-    state.compact_step(2).unwrap();
-    let first = state.compact_step(1).unwrap();
-    assert_eq!(first.copied_bytes, size as u64);
-    assert_eq!(first.entries, 2); // table marker and first row
-    assert_eq!(first.maintenance_commits, 1);
+    seal_files(&mut state);
+    state.request_compaction().unwrap();
+    step(&mut state, ONE);
+    let first = step(&mut state, ONE);
+    assert_eq!(first.relocated_bytes, size as u64);
+    assert_eq!(state.compact.stats.entries, 2); // table marker and first row
+    assert_eq!(state.compact.stats.maintenance_commits, 1);
     state
         .commit(&[
             Operation::put("accounts", b"a", b"new-a"),
@@ -958,17 +1084,21 @@ fn a_fresh_leaf_with_no_old_locations_is_skipped_without_a_commit() {
             Operation::put("accounts", b"a", b"old"),
         ])
         .unwrap();
-    state.compact_step(2).unwrap();
+    seal_files(&mut state);
+    state.request_compaction().unwrap();
+    step(&mut state, ONE);
     state
         .commit(&[Operation::put("accounts", b"a", b"new")])
         .unwrap();
     let root = state.selected;
-    let progress = state.compact_step(1).unwrap();
-    assert_eq!(progress.skipped_leaves, 1);
-    assert_eq!(progress.entries, 2);
-    assert_eq!(progress.maintenance_commits, 0);
-    assert_eq!(progress.copied_bytes, 0);
-    assert_eq!(progress.directory_pages_written, 0);
+    let progress = step(&mut state, ONE);
+    let stats = state.compact.stats;
+    assert_eq!(stats.skipped_leaves, 1);
+    assert_eq!(stats.entries, 2);
+    assert_eq!(stats.maintenance_commits, 0);
+    assert_eq!(stats.copied_bytes, 0);
+    assert_eq!(stats.directory_pages_written, 0);
+    assert_eq!(progress.mutations, 0);
     assert_eq!(state.selected, root);
     compact_all(&mut state);
     let pin = state.snapshot().unwrap();
@@ -987,12 +1117,15 @@ fn table_only_leaf_uses_one_directory_marker_and_preserves_birth_versions() {
         ])
         .unwrap();
     let old = state.snapshot().unwrap();
-    state.compact_step(2).unwrap();
-    let progress = state.compact_step(1).unwrap();
-    assert_eq!(progress.entries, 2);
-    assert_eq!(progress.maintenance_commits, 1);
-    assert_eq!(progress.directory_pages_written, 1);
-    assert_eq!(progress.copied_bytes, 0);
+    seal_files(&mut state);
+    state.request_compaction().unwrap();
+    step(&mut state, ONE);
+    step(&mut state, ONE);
+    let stats = state.compact.stats;
+    assert_eq!(stats.entries, 2);
+    assert_eq!(stats.maintenance_commits, 1);
+    assert_eq!(stats.directory_pages_written, 1);
+    assert_eq!(stats.copied_bytes, 0);
     let current = state.snapshot().unwrap();
     let reader = DirectoryReader::new(state.arena.as_ref(), admission);
     for table in ["accounts", "empty"] {
@@ -1027,6 +1160,7 @@ fn regular_large_write_and_leaf_relocation_fit_fixed_native_workspace() {
         ])
         .unwrap();
     let original = location(&state, state.selected, b"large");
+    seal_files(&mut state);
     assert_eq!(compact_all(&mut state).1, 6 << 20);
     let relocated = location(&state, state.selected, b"large");
     assert_eq!(original.0, relocated.0);
@@ -1042,6 +1176,11 @@ fn regular_large_write_and_leaf_relocation_fit_fixed_native_workspace() {
     drop(reopened);
     assert_eq!(admission.used.load(Ordering::Acquire), 0);
 }
+
 mod residency_edges {
     include!("disk_residency_tests.rs");
+}
+
+mod persisted_cycle {
+    include!("disk_compact_cycle_tests.rs");
 }

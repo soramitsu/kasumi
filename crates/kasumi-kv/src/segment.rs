@@ -1104,7 +1104,10 @@ impl SegmentWriter {
 
     /// Seal the current segment and establish its successor without changing
     /// the configured segment size. A prepared batch owns the current tail
-    /// exclusively and cannot be interrupted by an explicit roll.
+    /// exclusively and cannot be interrupted by an explicit roll. Production
+    /// compaction never rolls; this is a test entry point into the
+    /// production roll path.
+    #[cfg(test)]
     pub(crate) fn force_roll(
         &mut self,
         backend: &dyn SegmentGroupBackend,
