@@ -18,12 +18,15 @@ use std::{
 type Panic = Box<dyn Any + Send>;
 
 #[cfg(test)]
+type MetadataBusyObserver = Option<Box<dyn FnMut(StorageOwnerId)>>;
+
+#[cfg(test)]
 thread_local! {
     // Scheduling observation only, after the real parent count is claimed and
     // its metadata guard is released, before ordinary provider admission.
     static CHILD_PRECLAIM_OBSERVER: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
         const { std::cell::RefCell::new(None) };
-    static METADATA_BUSY_OBSERVER: std::cell::RefCell<Option<Box<dyn FnMut(StorageOwnerId)>>> =
+    static METADATA_BUSY_OBSERVER: std::cell::RefCell<MetadataBusyObserver> =
         std::cell::RefCell::new(None);
 }
 

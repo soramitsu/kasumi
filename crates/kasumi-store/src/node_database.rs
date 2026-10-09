@@ -305,6 +305,7 @@ impl NodeDatabase {
         opening.queue_read()
     }
 
+    #[cfg(test)]
     pub(crate) fn queue_registered_write(&self) -> std::io::Result<crate::RegisteredNodeWrite> {
         self.queue_registered_write_until(std::time::Instant::now() + crate::NATIVE_WRITE_TIMEOUT)
     }
