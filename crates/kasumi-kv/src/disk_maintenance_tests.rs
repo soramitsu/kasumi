@@ -454,7 +454,7 @@ fn randomized_model_interleavings_preserve_reachability() {
                     let mut operations = Vec::new();
                     for _ in 0..1 + splitmix(&mut rng) % 6 {
                         let key = (splitmix(&mut rng) % 300) as u32;
-                        if splitmix(&mut rng) % 4 == 0 {
+                        if splitmix(&mut rng).is_multiple_of(4) {
                             model.remove(&key);
                             operations.push(Operation::delete("accounts", key.to_be_bytes()));
                         } else {
@@ -471,7 +471,7 @@ fn randomized_model_interleavings_preserve_reachability() {
                         units: 1 + (splitmix(&mut rng) % 64) as usize,
                         mutations: (splitmix(&mut rng) % 3) as usize,
                     };
-                    if splitmix(&mut rng) % 8 == 0 {
+                    if splitmix(&mut rng).is_multiple_of(8) {
                         state.request_compaction().unwrap();
                     }
                     let progress = state.maintenance_step(budget).unwrap();

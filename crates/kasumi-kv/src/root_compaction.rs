@@ -931,7 +931,7 @@ mod tests {
                     .min(crate::core::MAX_KEY_BYTES);
                     let fill = (splitmix(&mut seed) % 3) as u8;
                     let mut row = vec![fill; len];
-                    if len != 0 && splitmix(&mut seed) % 2 == 0 {
+                    if len != 0 && splitmix(&mut seed).is_multiple_of(2) {
                         row[len - 1] = (splitmix(&mut seed) % 256) as u8;
                     }
                     Some(row)
