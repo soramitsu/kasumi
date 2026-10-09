@@ -298,13 +298,15 @@ fn completed_cycle_baseline_prevents_new_cycle_after_reopen() {
     while state.maintenance_status().unwrap().cycles_completed == 0 {
         let progress = step(&mut state, budget);
         if progress.idle {
+            let value = vec![steps as u8];
             state
                 .commit(&[Operation::put(
                     "accounts",
                     7u32.to_be_bytes(),
-                    [steps as u8],
+                    value.clone(),
                 )])
                 .unwrap();
+            model.insert(7, value);
         }
         steps += 1;
         assert!(steps < 50_000);
@@ -359,6 +361,7 @@ fn completed_cycle_baseline_prevents_new_cycle_after_reopen() {
                 vec![1; 512],
             )])
             .unwrap();
+        model.insert(5000 + grown, vec![1; 512]);
         step(&mut reopened, budget);
         grown += 1;
         assert!(grown < 20_000);
@@ -374,27 +377,60 @@ fn splitmix(state: &mut u64) -> u64 {
     z ^ (z >> 31)
 }
 
-/// Every file reachable from `root` exists in `group`.
-fn assert_reachable_files_exist(state: &DiskState, group: &InMemoryGroup, root: DirectoryRoot) {
-    let mut walker = DirectoryWalker::new(root, state.owner.admission.clone()).unwrap();
-    loop {
-        let progress = walker
-            .step(
-                state.arena.as_ref(),
-                256,
-                |page| {
-                    assert!(group.exists(GroupFile::directory(page.arena_id)).unwrap());
-                    Ok(())
-                },
-                |value| {
-                    assert!(group.exists(GroupFile::segment(value.segment_id)).unwrap());
-                    Ok(())
-                },
-            )
-            .unwrap();
-        if progress.complete {
-            return;
+/// Files reachable from each root walked so far. A root and its pages are
+/// immutable, so a root's reachable set never changes once walked.
+#[derive(Default)]
+struct Reachable(Vec<(DirectoryRoot, Vec<GroupFile>)>);
+
+impl Reachable {
+    /// Every file reachable from `root` exists in `group`. The first visit
+    /// walks the root (each page read is verified); later visits recheck the
+    /// existence of the same files.
+    fn assert_present(&mut self, state: &DiskState, group: &InMemoryGroup, root: DirectoryRoot) {
+        let index = match self.0.iter().position(|(walked, _)| *walked == root) {
+            Some(index) => index,
+            None => {
+                let files = std::cell::RefCell::new(std::collections::BTreeSet::new());
+                let mut walker = DirectoryWalker::new(root, state.owner.admission.clone()).unwrap();
+                loop {
+                    let progress = walker
+                        .step(
+                            state.arena.as_ref(),
+                            256,
+                            |page| {
+                                files
+                                    .borrow_mut()
+                                    .insert(GroupFile::directory(page.arena_id));
+                                Ok(())
+                            },
+                            |value| {
+                                files
+                                    .borrow_mut()
+                                    .insert(GroupFile::segment(value.segment_id));
+                                Ok(())
+                            },
+                        )
+                        .unwrap();
+                    if progress.complete {
+                        break;
+                    }
+                }
+                self.0
+                    .push((root, files.into_inner().into_iter().collect()));
+                self.0.len() - 1
+            }
+        };
+        for file in &self.0[index].1 {
+            assert!(
+                group.exists(*file).unwrap(),
+                "{file:?} of {root:?} is missing"
+            );
         }
+    }
+
+    /// Forget roots that are neither current nor pinned any more.
+    fn retain(&mut self, live: &[DirectoryRoot]) {
+        self.0.retain(|(root, _)| live.contains(root));
     }
 }
 
@@ -411,6 +447,7 @@ fn randomized_model_interleavings_preserve_reachability() {
             .commit(&[Operation::create_table("accounts")])
             .unwrap();
         let mut pins: Vec<(SnapshotPin, BTreeMap<u32, Vec<u8>>)> = Vec::new();
+        let mut reachable = Reachable::default();
         for iteration in 0..700 {
             match splitmix(&mut rng) % 100 {
                 0..=44 => {
@@ -476,10 +513,14 @@ fn randomized_model_interleavings_preserve_reachability() {
             }
             // Oracle: the current root, every live pin and the replay anchor
             // reach only present files, and every pin still reads its model.
-            assert_reachable_files_exist(&state, &group, state.selected);
+            reachable.assert_present(&state, &group, state.selected);
             for (pin, _) in &pins {
-                assert_reachable_files_exist(&state, &group, pin.root());
+                reachable.assert_present(&state, &group, pin.root());
             }
+            let live: Vec<_> = std::iter::once(state.selected)
+                .chain(pins.iter().map(|(pin, _)| pin.root()))
+                .collect();
+            reachable.retain(&live);
             if let Some(commit) = state.owner.lock().unwrap().directory() {
                 assert!(
                     group

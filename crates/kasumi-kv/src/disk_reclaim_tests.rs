@@ -444,6 +444,61 @@ fn uncertified_install_or_unstamped_pin_invalidates_cohort_and_unlinks_nothing()
 }
 
 #[test]
+fn cohort_nonce_exhaustion_defers_without_starting_a_cohort() {
+    let (group, admission, mut state) = begin();
+    replace_twice(&mut state);
+    drive_through(&mut state, CompactionPhase::Evacuating, STEP);
+    assert_eq!(phase(&state), CompactionPhase::Reclaiming);
+    let files = present(&group);
+    state.reclaim.exhaust_nonces_for_test();
+    let mut deferred = None;
+    for _ in 0..1000 {
+        let progress = state.maintenance_step(ONE).unwrap();
+        assert_eq!(progress.mutations, 0);
+        if progress.deferred.is_some() {
+            deferred = progress.deferred;
+            break;
+        }
+    }
+    // Fails closed: no cohort starts, nothing is recorded or unlinked, and
+    // the owner stays usable.
+    assert_eq!(
+        deferred,
+        Some(MaintenanceDeferral::Rejected(
+            "reclamation nonce is exhausted"
+        ))
+    );
+    assert!(!state.is_fenced());
+    assert!(state.reclaim.cohort_stage_for_test().is_none());
+    assert_eq!(phase(&state), CompactionPhase::Reclaiming);
+    assert!(state.owner.lock().unwrap().garbage().is_empty());
+    assert_eq!(present(&group), files);
+    let backed_off = state.maintenance_step(ONE).unwrap();
+    assert_eq!((backed_off.units, backed_off.mutations), (0, 0));
+    state
+        .commit(&[Operation::put("accounts", b"after", b"rejection")])
+        .unwrap();
+    drop(state);
+    // Nonces are volatile; a reopened owner resumes Reclaiming and frees the
+    // old files.
+    let restarted = group.crash();
+    let mut reopened =
+        DiskState::open(Arc::new(restarted.clone()), admission, GROUP, LARGE_CACHE).unwrap();
+    assert_eq!(phase(&reopened), CompactionPhase::Reclaiming);
+    drive_cycle(&mut reopened, STEP);
+    for file in [
+        GroupFile::directory(1),
+        GroupFile::directory(2),
+        GroupFile::segment(1),
+    ] {
+        assert!(!restarted.exists(file).unwrap(), "{file:?}");
+    }
+    let pin = reopened.snapshot().unwrap();
+    assert_eq!(value(&mut reopened, &pin, b"k").unwrap(), b"current");
+    assert_eq!(value(&mut reopened, &pin, b"after").unwrap(), b"rejection");
+}
+
+#[test]
 fn restart_rejects_checksum_valid_garbage_that_contains_reachable_child_pages() {
     let group = InMemoryGroup::new();
     let admission = Admission::new(8 << 20);

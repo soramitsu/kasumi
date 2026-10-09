@@ -109,6 +109,10 @@ impl Reclamation {
     pub(super) fn cohort_stage_for_test(&self) -> Option<CohortStage> {
         self.cycle.as_ref()?.cohort.as_ref().map(Cohort::stage)
     }
+    /// Fault hook: the next cohort would need a nonce past `u64::MAX`.
+    pub(super) fn exhaust_nonces_for_test(&mut self) {
+        self.next_nonce = u64::MAX;
+    }
     /// Fault hook: as if an install bypassed the selection funnel.
     pub(super) fn break_chain_for_test(&mut self) {
         self.active_cohort()
