@@ -76,7 +76,7 @@ const LEASE_OWNER_ALLOWANCE: usize = 64;
 const LEASE_ALLOWANCE: usize = LEASE_OWNER_ALLOWANCE + ALLOCATION_ALLOWANCE;
 // A 16 KiB page holds at least three maximum-size entries. This depth
 // exceeds the addressable page population even at minimum branching.
-const MAX_HEIGHT: usize = 48;
+pub(crate) const MAX_HEIGHT: usize = 48;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct DirectoryPageRef {
