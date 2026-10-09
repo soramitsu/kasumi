@@ -4630,3 +4630,249 @@ fn installed_read_admission_waits_for_exact_parent_metadata_without_false_unavai
         "admission returned while its exact metadata was unavailable"
     );
 }
+
+const MAINTAINED: kasumi_kv::TableDefinition<&[u8], &[u8]> =
+    kasumi_kv::TableDefinition::new("maintained");
+const MAINTENANCE_STEP: kasumi_kv::MaintenanceBudget = kasumi_kv::MaintenanceBudget {
+    units: 64,
+    mutations: 1,
+};
+
+fn maintained_write(opening: &RegisteredNodeOpening, keys: std::ops::Range<u16>, tag: u8) {
+    let state = opening.registration.owner().state.lock();
+    let transaction = state.engine.database().unwrap().begin_write().unwrap();
+    {
+        let mut table = transaction.open_table(MAINTAINED).unwrap();
+        for key in keys {
+            table
+                .insert(key.to_be_bytes().as_slice(), vec![tag; 200].as_slice())
+                .unwrap();
+        }
+    }
+    transaction.commit().unwrap();
+}
+
+/// One value per commit; eight of them fill more than one 64 MiB segment.
+fn maintained_big(opening: &RegisteredNodeOpening, key: u16, tag: u8, bytes: usize) {
+    let state = opening.registration.owner().state.lock();
+    let transaction = state.engine.database().unwrap().begin_write().unwrap();
+    {
+        let mut table = transaction.open_table(MAINTAINED).unwrap();
+        table
+            .insert(key.to_be_bytes().as_slice(), vec![tag; bytes].as_slice())
+            .unwrap();
+    }
+    transaction.commit().unwrap();
+}
+
+fn maintained_read(opening: &RegisteredNodeOpening, key: u16) -> Option<Vec<u8>> {
+    let state = opening.registration.owner().state.lock();
+    let transaction = state.engine.database().unwrap().begin_read().unwrap();
+    let table = transaction.open_table(MAINTAINED).unwrap();
+    table
+        .get(key.to_be_bytes().as_slice())
+        .unwrap()
+        .map(|value| value.value().to_vec())
+}
+
+#[test]
+fn registered_opening_maintenance_respects_phase_and_stop() {
+    let directory = private_tempdir().unwrap();
+    let path = directory.path().join("maintenance-phase.kasumi");
+    let memory = TestDiskMemory::new(256 << 20, 4096);
+    let disk = disk(&path, &memory);
+    let opening = RegisteredNodeOpening::prepare(
+        &path,
+        ID,
+        disk,
+        NodeOpeningMode::Create,
+        crate::test_utils::node_storage_config(),
+    )
+    .unwrap();
+    // Before the engine is open there is no database to maintain or observe.
+    assert!(matches!(
+        opening.run_maintenance(MAINTENANCE_STEP),
+        Err(kasumi_kv::StorageError::DatabaseClosed)
+    ));
+    assert!(matches!(
+        opening.maintenance_status(),
+        Err(kasumi_kv::StorageError::DatabaseClosed)
+    ));
+    assert!(matches!(
+        opening.request_compaction(),
+        Err(kasumi_kv::StorageError::DatabaseClosed)
+    ));
+    assert_eq!(opening.open(), NodeOpeningPhase::Open);
+    let status = opening.maintenance_status().unwrap();
+    assert_eq!(status.phase, kasumi_kv::StorageCompactionPhase::Idle);
+    assert_eq!(status.cycle, 0);
+    // Idle steps measure the group; nothing is due on a fresh store.
+    let mut idle = false;
+    for _ in 0..64 {
+        match opening.run_maintenance(MAINTENANCE_STEP).unwrap() {
+            kasumi_kv::MaintenanceStep::Ran(progress) => {
+                assert_eq!(progress.deferred, None);
+                if progress.idle {
+                    idle = true;
+                    break;
+                }
+            }
+            kasumi_kv::MaintenanceStep::Busy => panic!("no writer holds the gate"),
+        }
+    }
+    assert!(idle);
+    assert!(opening.maintenance_status().unwrap().measured);
+    // A writer holding the database gate makes the step report Busy.
+    let writer = {
+        let state = opening.registration.owner().state.lock();
+        state
+            .engine
+            .database()
+            .unwrap()
+            .transaction_admission()
+            .begin_write()
+            .unwrap()
+    };
+    assert_eq!(
+        opening.run_maintenance(MAINTENANCE_STEP).unwrap(),
+        kasumi_kv::MaintenanceStep::Busy
+    );
+    writer.abort().unwrap();
+    assert!(matches!(
+        opening.run_maintenance(MAINTENANCE_STEP).unwrap(),
+        kasumi_kv::MaintenanceStep::Ran(_)
+    ));
+    // Stopping the opening closes every maintenance entry point.
+    assert_eq!(opening.close().unwrap(), DatabaseOpenSettlement::Closed);
+    assert!(matches!(
+        opening.run_maintenance(MAINTENANCE_STEP),
+        Err(kasumi_kv::StorageError::DatabaseClosed)
+    ));
+    assert!(matches!(
+        opening.maintenance_status(),
+        Err(kasumi_kv::StorageError::DatabaseClosed)
+    ));
+    assert!(matches!(
+        opening.request_compaction(),
+        Err(kasumi_kv::StorageError::DatabaseClosed)
+    ));
+    assert_eq!(opening.retire(), StorageCensusDisposition::Retired);
+}
+
+#[test]
+fn real_node_segment_group_maintenance_stays_within_transaction_plan() {
+    // The installed NodeSegmentGroup enforces every maintenance batch's file
+    // creation, growth and writes against its reserved transaction plan. A
+    // complete cycle over data from an earlier opening must neither fence
+    // nor lose a value.
+    let directory = private_tempdir().unwrap();
+    let path = directory.path().join("maintenance-plan.kasumi");
+    let memory = TestDiskMemory::new(256 << 20, 4096);
+    let disk = disk(&path, &memory);
+    let opening = RegisteredNodeOpening::prepare(
+        &path,
+        ID,
+        disk.clone(),
+        NodeOpeningMode::Create,
+        crate::test_utils::node_storage_config(),
+    )
+    .unwrap();
+    assert_eq!(opening.open(), NodeOpeningPhase::Open);
+    for batch in 0..6u16 {
+        maintained_write(&opening, batch * 100..(batch + 1) * 100, batch as u8);
+    }
+    // Overwrite a third of the rows so some old values are dead.
+    maintained_write(&opening, 0..200, 0xee);
+    // Large values roll the first 64 MiB segment. Most of the first
+    // segment's large values are then overwritten; one stays live there.
+    const BIG: usize = 8 << 20;
+    for key in 0..9u16 {
+        maintained_big(&opening, 1000 + key, key as u8, BIG);
+    }
+    for key in 0..6u16 {
+        maintained_big(&opening, 1000 + key, 0xd0, 16);
+    }
+    assert!(path.join("0000000000000002.kvseg").exists());
+    assert_eq!(opening.close().unwrap(), DatabaseOpenSettlement::Closed);
+    assert_eq!(opening.retire(), StorageCensusDisposition::Retired);
+
+    let existing = RegisteredNodeOpening::prepare(
+        &path,
+        ID,
+        disk,
+        NodeOpeningMode::Existing,
+        crate::test_utils::node_storage_config(),
+    )
+    .unwrap();
+    assert_eq!(existing.open(), NodeOpeningPhase::Open);
+    // The first write of this lifetime rolls a fresh arena; everything the
+    // earlier opening wrote is now older than the newest files.
+    maintained_write(&existing, 600..610, 0x5a);
+    existing.request_compaction().unwrap();
+    let mut phases = vec![kasumi_kv::StorageCompactionPhase::Idle];
+    let mut finished = false;
+    for _ in 0..100_000 {
+        let kasumi_kv::MaintenanceStep::Ran(progress) =
+            existing.run_maintenance(MAINTENANCE_STEP).unwrap()
+        else {
+            panic!("no writer holds the gate");
+        };
+        assert_eq!(progress.deferred, None, "{progress:?}");
+        if phases.last() != Some(&progress.phase) {
+            phases.push(progress.phase);
+        }
+        if phases.len() > 1 && progress.phase == kasumi_kv::StorageCompactionPhase::Idle {
+            finished = true;
+            break;
+        }
+    }
+    assert!(finished, "{phases:?}");
+    assert_eq!(
+        phases,
+        [
+            kasumi_kv::StorageCompactionPhase::Idle,
+            kasumi_kv::StorageCompactionPhase::Evacuating,
+            kasumi_kv::StorageCompactionPhase::Reclaiming,
+            kasumi_kv::StorageCompactionPhase::Packing,
+            kasumi_kv::StorageCompactionPhase::Idle,
+        ]
+    );
+    let status = existing.maintenance_status().unwrap();
+    assert_eq!(status.cycle, 1);
+    // The live large value and rows in the first segment were relocated.
+    assert!(status.relocated_bytes_total >= BIG as u64, "{status:?}");
+    assert!(status.reclaimed_files_total >= 2, "{status:?}");
+    assert_eq!(status.garbage_files, 0);
+    assert_eq!(status.reclaim_invalidations_total, 0);
+    assert!(!path.join("0000000000000001.kvseg").exists());
+    assert!(!path.join("0000000000000001.kvdir").exists());
+    for key in 0..9u16 {
+        let expected = if key < 6 {
+            vec![0xd0; 16]
+        } else {
+            vec![key as u8; BIG]
+        };
+        assert_eq!(
+            maintained_read(&existing, 1000 + key),
+            Some(expected),
+            "{key}"
+        );
+    }
+    for key in 0..610u16 {
+        let expected = match key {
+            0..200 => 0xee,
+            600.. => 0x5a,
+            _ => (key / 100) as u8,
+        };
+        assert_eq!(
+            maintained_read(&existing, key),
+            Some(vec![expected; 200]),
+            "{key}"
+        );
+    }
+    // The owner is not fenced: later writes and a clean close still work.
+    maintained_write(&existing, 610..611, 0x77);
+    assert_eq!(maintained_read(&existing, 610), Some(vec![0x77; 200]));
+    assert_eq!(existing.close().unwrap(), DatabaseOpenSettlement::Closed);
+    assert_eq!(existing.retire(), StorageCensusDisposition::Retired);
+}

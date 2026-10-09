@@ -542,3 +542,211 @@ async fn automatic_warmer_retains_original_native_failure_through_shutdown() {
     assert_eq!(first.to_string(), second.to_string());
     assert_eq!(fixture.probe.closes.load(Ordering::Acquire), 1);
 }
+
+/// One row on pages written after this opening. The first write of a lifetime
+/// rolls a fresh arena, so the cold fixture's pages become older than every
+/// file a requested cycle writes.
+fn write_row(node: &NodeStore, key: u8) {
+    let transaction = node.body().db.begin_write().unwrap();
+    {
+        let mut table = transaction.open_table(ROWS).unwrap();
+        table.insert(&[key][..], &[key; 512][..]).unwrap();
+    }
+    transaction.commit().unwrap();
+}
+
+fn assert_rows(node: &NodeStore, keys: impl Iterator<Item = u8>) {
+    let transaction = node.body().db.begin_read().unwrap();
+    let table = transaction.open_table(ROWS).unwrap();
+    for key in keys {
+        assert_eq!(table.get(&[key][..]).unwrap().unwrap().value(), &[key; 512]);
+    }
+}
+
+/// Wait for the storage cycle, failing on a failed worker or a timeout.
+async fn wait_storage(
+    fixture: &Fixture,
+    condition: impl Fn(&kasumi_kv::StorageMaintenanceStatus) -> bool,
+) -> kasumi_kv::StorageMaintenanceStatus {
+    tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            let storage = fixture.node.storage_maintenance_status().unwrap();
+            if condition(&storage) {
+                return storage;
+            }
+            let worker = fixture.node.cache_worker_status();
+            assert!(!worker.failed, "cache worker failed: {worker:?}");
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| {
+        panic!(
+            "storage maintenance did not reach the expected state: {:?}; worker={:?}",
+            fixture.node.storage_maintenance_status(),
+            fixture.node.cache_worker_status(),
+        )
+    })
+}
+
+fn completed_first_cycle(storage: &kasumi_kv::StorageMaintenanceStatus) -> bool {
+    storage.cycle == 1 && storage.phase == kasumi_kv::StorageCompactionPhase::Idle
+}
+
+#[tokio::test]
+async fn worker_drives_storage_maintenance_and_reports_progress() {
+    let fixture = Fixture::cold().await;
+    write_row(&fixture.node, 100);
+    let before = fixture.node.storage_maintenance_status().unwrap();
+    assert_eq!(
+        (before.cycle, before.phase),
+        (0, kasumi_kv::StorageCompactionPhase::Idle)
+    );
+    assert!(fixture.probe.group.exists(GroupFile::directory(1)).unwrap());
+    fixture.node.request_storage_compaction().unwrap();
+    fixture.node.prepare_cache_warming().await.unwrap();
+    fixture.node.activate_cache_warming().unwrap();
+    let storage = wait_storage(&fixture, completed_first_cycle).await;
+    // The worker alone drove the cycle: the pre-reopen arena was evacuated,
+    // proved unreachable and unlinked, and nothing is left recorded.
+    assert!(storage.reclaimed_files_total >= 1, "{storage:?}");
+    assert_eq!(storage.garbage_files, 0);
+    assert_eq!(storage.reclaim_invalidations_total, 0);
+    assert_eq!(
+        storage.capacity_deferrals_total + storage.rejected_deferrals_total,
+        0
+    );
+    assert!(!fixture.probe.group.exists(GroupFile::directory(1)).unwrap());
+    let worker = fixture.node.cache_worker_status();
+    assert!(!worker.failed);
+    assert!(
+        worker.maintenance_steps > 0 && worker.maintenance_units > 0,
+        "{worker:?}"
+    );
+    assert!(matches!(
+        worker.last_maintenance,
+        Some(kasumi_kv::MaintenanceStep::Ran(_))
+    ));
+    assert_rows(&fixture.node, (0..20).chain([100]));
+    // Once the cycle is done, nothing is due and the worker reports idle steps.
+    let idle = fixture
+        .wait(|s| {
+            matches!(
+                s.last_maintenance,
+                Some(kasumi_kv::MaintenanceStep::Ran(progress)) if progress.idle
+            )
+        })
+        .await;
+    assert!(!idle.failed);
+    assert_eq!(fixture.node.storage_maintenance_status().unwrap().cycle, 1);
+    fixture.node.shutdown().await.unwrap();
+    assert_eq!(fixture.probe.closes.load(Ordering::Acquire), 1);
+}
+
+#[tokio::test]
+async fn worker_backs_off_on_busy_and_deferral() {
+    let fixture = Fixture::cold().await;
+    write_row(&fixture.node, 100);
+    // A held writer makes every maintenance step report Busy without waiting
+    // on the write gate; the worker keeps iterating and does not fail.
+    let writer = fixture.node.body().db.begin_write().unwrap();
+    fixture.node.prepare_cache_warming().await.unwrap();
+    fixture.node.activate_cache_warming().unwrap();
+    let busy = fixture.wait(|s| s.maintenance_busy >= 3).await;
+    assert!(!busy.failed);
+    assert_eq!(
+        busy.last_maintenance,
+        Some(kasumi_kv::MaintenanceStep::Busy)
+    );
+    let ran = busy.maintenance_steps;
+    writer.abort().unwrap();
+    fixture.wait(|s| s.maintenance_steps > ran).await;
+
+    // Shared memory pressure refuses the requested cycle's workspace: a
+    // capacity deferral, never a worker or database failure.
+    let pressure = fixture.exhaust_memory();
+    fixture.node.request_storage_compaction().unwrap();
+    let deferred = wait_storage(&fixture, |storage| storage.capacity_deferrals_total > 0).await;
+    assert_eq!(
+        deferred.last_deferral,
+        Some(kasumi_kv::MaintenanceDeferral::Capacity)
+    );
+    let worker = fixture.node.cache_worker_status();
+    assert!(!worker.failed, "{worker:?}");
+    assert!(matches!(
+        worker.last_maintenance,
+        Some(kasumi_kv::MaintenanceStep::Ran(progress)) if progress.deferred.is_some()
+    ));
+    drop(pressure);
+    // An explicit request also clears the step backoff; the cycle resumes
+    // from its kept cursors and completes.
+    fixture.node.request_storage_compaction().unwrap();
+    let storage = wait_storage(&fixture, completed_first_cycle).await;
+    assert!(storage.reclaimed_files_total >= 1, "{storage:?}");
+    assert_rows(&fixture.node, (0..20).chain([100]));
+    fixture.node.shutdown().await.unwrap();
+    assert_eq!(fixture.probe.closes.load(Ordering::Acquire), 1);
+}
+
+#[tokio::test]
+async fn stop_and_drain_unaffected_by_maintenance() {
+    let fixture = Fixture::cold().await;
+    write_row(&fixture.node, 100);
+    fixture.node.request_storage_compaction().unwrap();
+    fixture.node.prepare_cache_warming().await.unwrap();
+    fixture.node.activate_cache_warming().unwrap();
+    fixture.wait(|s| s.maintenance_steps >= 1).await;
+    // Shutdown drains the worker mid-cycle; no maintenance step outlives it.
+    tokio::time::timeout(Duration::from_secs(10), fixture.node.shutdown())
+        .await
+        .unwrap()
+        .unwrap();
+    let status = fixture.node.cache_worker_status();
+    assert!(status.stopped && !status.failed, "{status:?}");
+    assert_eq!(fixture.probe.closes.load(Ordering::Acquire), 1);
+    assert!(fixture.node.storage_maintenance_status().is_err());
+    let steps = status.maintenance_steps + status.maintenance_busy;
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    let later = fixture.node.cache_worker_status();
+    assert_eq!(later.maintenance_steps + later.maintenance_busy, steps);
+    fixture.node.shutdown().await.unwrap();
+    assert_eq!(fixture.probe.closes.load(Ordering::Acquire), 1);
+
+    // The persisted cycle resumes after reopen and finishes from its record.
+    let reopened = NodeStore::open_with_backend(
+        fixture.probe.group.crash(),
+        Arc::new(MemoryAdmission {
+            memory: fixture.memory.clone(),
+            failed: AtomicBool::new(false),
+            release_on_denial: Mutex::new(None),
+        }),
+        fixture.node.scratch_disk().clone(),
+    )
+    .unwrap_or_else(|_| panic!("reopen after a drained maintenance worker failed"));
+    let resumed = reopened.storage_maintenance_status().unwrap();
+    assert!(resumed.cycle <= 1, "{resumed:?}");
+    reopened.request_storage_compaction().unwrap();
+    let mut cycle_done = false;
+    for _ in 0..100_000 {
+        let step = reopened
+            .body()
+            .db
+            .run_maintenance(kasumi_kv::MaintenanceBudget {
+                units: 64,
+                mutations: 1,
+            })
+            .unwrap();
+        let kasumi_kv::MaintenanceStep::Ran(progress) = step else {
+            panic!("no writer holds the gate");
+        };
+        assert_eq!(progress.deferred, None);
+        let storage = reopened.storage_maintenance_status().unwrap();
+        if storage.cycle >= 1 && storage.phase == kasumi_kv::StorageCompactionPhase::Idle {
+            cycle_done = true;
+            break;
+        }
+    }
+    assert!(cycle_done);
+    assert_rows(&reopened, (0..20).chain([100]));
+    reopened.shutdown().await.unwrap();
+}

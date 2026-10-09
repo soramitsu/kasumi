@@ -266,6 +266,32 @@ impl NodeDatabase {
         }
     }
 
+    pub(crate) fn run_maintenance(
+        &self,
+        budget: kasumi_kv::MaintenanceBudget,
+    ) -> Result<kasumi_kv::MaintenanceStep, kasumi_kv::StorageError> {
+        match self.accepted().map_err(|error| error.0)? {
+            Accepted::Direct(database) => database.run_maintenance(budget),
+            Accepted::Registered(opening) => opening.run_maintenance(budget),
+        }
+    }
+
+    pub(crate) fn maintenance_status(
+        &self,
+    ) -> Result<kasumi_kv::StorageMaintenanceStatus, kasumi_kv::StorageError> {
+        match self.accepted().map_err(|error| error.0)? {
+            Accepted::Direct(database) => database.maintenance_status(),
+            Accepted::Registered(opening) => opening.maintenance_status(),
+        }
+    }
+
+    pub(crate) fn request_compaction(&self) -> Result<(), kasumi_kv::StorageError> {
+        match self.accepted().map_err(|error| error.0)? {
+            Accepted::Direct(database) => database.request_compaction(),
+            Accepted::Registered(opening) => opening.request_compaction(),
+        }
+    }
+
     /// A fixed read has a census child before its transaction begins. No raw
     /// transaction can escape through this installed-node path.
     pub(crate) fn queue_registered_read(&self) -> std::io::Result<RegisteredNodeRead> {

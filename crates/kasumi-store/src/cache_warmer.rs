@@ -7,7 +7,7 @@ use crate::{NodeStore, NodeStoreLocator, NodeStoreLookup, disk_memory};
 use anyhow::{Result, ensure};
 #[cfg(test)]
 use kasumi_kv::CacheWarmupState;
-use kasumi_kv::{CacheWarmup, CacheWarmupStatus};
+use kasumi_kv::{CacheWarmup, CacheWarmupStatus, MaintenanceBudget, MaintenanceStep};
 use kasumi_serving::{BackgroundWork, BackgroundWorkBudget};
 use kasumi_types::drain::{DrainCompletion, DrainReport, DrainResult};
 use parking_lot::Mutex;
@@ -16,11 +16,21 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 const STEP_WORK: usize = 1;
+/// The storage maintenance share of one worker iteration: bounded read units
+/// and at most one durable publication, run after the warm step.
+const MAINTENANCE_BUDGET: MaintenanceBudget = MaintenanceBudget {
+    units: 512,
+    mutations: 1,
+};
 const RUNNING_DELAY: Duration = Duration::from_millis(1);
+/// A writer held the database write gate; retry soon without waiting on it.
+const BUSY_DELAY: Duration = Duration::from_millis(10);
 const IDLE_DELAY: Duration = Duration::from_millis(250);
 
 /// Lifecycle observations from the node's automatic worker. A completed native
 /// pass can still be capacity-limited; `progress.complete` is not residency.
+/// Each iteration also runs one bounded storage maintenance step; a fatal
+/// maintenance error fails the worker like a fatal warm error.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CacheWorkerStatus {
     pub started: bool,
@@ -31,6 +41,33 @@ pub struct CacheWorkerStatus {
     pub work: u64,
     pub progress: Option<CacheWarmup>,
     pub native: Option<CacheWarmupStatus>,
+    /// Maintenance steps that ran (not `Busy`).
+    pub maintenance_steps: u64,
+    /// Read units those steps spent.
+    pub maintenance_units: u64,
+    /// Steps skipped because a writer held the database write gate.
+    pub maintenance_busy: u64,
+    pub last_maintenance: Option<MaintenanceStep>,
+}
+
+/// The pause before the next iteration: run again soon while warming or
+/// maintenance made undeferred progress, briefly while a writer held the
+/// gate, and otherwise idle.
+fn next_delay(status: &CacheWorkerStatus) -> Duration {
+    let blocked = status.native.is_some_and(|n| n.provider_limited);
+    let warming = !blocked && status.progress.is_some_and(|p| p.work != 0 && !p.complete);
+    let maintaining = matches!(
+        status.last_maintenance,
+        Some(MaintenanceStep::Ran(progress))
+            if !progress.idle && progress.deferred.is_none() && progress.units != 0
+    );
+    if warming || maintaining {
+        RUNNING_DELAY
+    } else if status.last_maintenance == Some(MaintenanceStep::Busy) {
+        BUSY_DELAY
+    } else {
+        IDLE_DELAY
+    }
 }
 
 #[derive(Default)]
@@ -277,11 +314,39 @@ impl Worker {
                             }
                             Err(error) => return Err(error.into()),
                         };
+                        {
+                            let mut status = observer.status.lock();
+                            status.steps = status.steps.saturating_add(1);
+                            status.work = status.work.saturating_add(progress.work as u64);
+                            status.progress = Some(progress);
+                            status.native = Some(native);
+                        }
+                        // Local maintenance deferrals arrive as progress; an
+                        // error here is fatal and the database is fenced.
+                        let maintenance =
+                            match work_node.body().db.run_maintenance(MAINTENANCE_BUDGET) {
+                                Ok(step) => step,
+                                Err(kasumi_kv::StorageError::DatabaseClosed)
+                                    if work_node.body().db.is_stopped() =>
+                                {
+                                    return Ok(());
+                                }
+                                Err(error) => return Err(error.into()),
+                            };
                         let mut status = observer.status.lock();
-                        status.steps = status.steps.saturating_add(1);
-                        status.work = status.work.saturating_add(progress.work as u64);
-                        status.progress = Some(progress);
-                        status.native = Some(native);
+                        match maintenance {
+                            MaintenanceStep::Busy => {
+                                status.maintenance_busy = status.maintenance_busy.saturating_add(1);
+                            }
+                            MaintenanceStep::Ran(progress) => {
+                                status.maintenance_steps =
+                                    status.maintenance_steps.saturating_add(1);
+                                status.maintenance_units = status
+                                    .maintenance_units
+                                    .saturating_add(progress.units as u64);
+                            }
+                        }
+                        status.last_maintenance = Some(maintenance);
                         Ok(())
                     },
                     &self.budget,
@@ -297,13 +362,7 @@ impl Worker {
             // join has been observed and reported. Retain failures for shutdown.
             self.child.lock().take();
             drop(child);
-            let status = *self.status.lock();
-            let blocked = status.native.is_some_and(|n| n.provider_limited);
-            let delay = if !blocked && status.progress.is_some_and(|p| p.work != 0 && !p.complete) {
-                RUNNING_DELAY
-            } else {
-                IDLE_DELAY
-            };
+            let delay = next_delay(&self.status.lock());
             tokio::select! {
                 _ = wake.notified() => {},
                 _ = tokio::time::sleep(delay) => {},

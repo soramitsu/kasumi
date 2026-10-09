@@ -34,6 +34,10 @@ pub use backup_sessions::{
 };
 pub use cache_warmer::CacheWorkerStatus;
 use catalog_read_budget::AdmittedKeyCatalog;
+pub use kasumi_kv::{
+    MaintenanceBudget, MaintenanceDeferral, MaintenanceProgress, MaintenanceStep,
+    StorageCompactionPhase, StorageMaintenanceStatus,
+};
 pub use key_access_denied::KeyAccessDenied;
 #[cfg(test)]
 mod allocation_tests;
@@ -1577,6 +1581,20 @@ impl NodeStore {
         self.body().db.request_cache_warm_retry()
     }
 
+    /// Retained-file measurement and persisted compaction-cycle state of this
+    /// node's database. File figures come from the last completed census.
+    pub fn storage_maintenance_status(
+        &self,
+    ) -> Result<StorageMaintenanceStatus, kasumi_kv::StorageError> {
+        self.body().db.maintenance_status()
+    }
+
+    /// Ask the node's database to begin a compaction cycle at its next
+    /// maintenance step regardless of the growth thresholds.
+    pub fn request_storage_compaction(&self) -> Result<(), kasumi_kv::StorageError> {
+        self.body().db.request_compaction()
+    }
+
     /// Exact installed census owner for this node's database and close report.
     /// A retained close can be inspected through `RegisteredNodeOpening::retained`
     /// on the same installed memory provider and this ID.
@@ -1942,6 +1960,13 @@ impl Drop for AccessGuard<'_> {
 impl TenantStore {
     pub fn persistent_disk(&self) -> &Arc<NodeDisk> {
         self.node.persistent_disk()
+    }
+
+    /// The tenant database's retained files and compaction cycle.
+    pub fn storage_maintenance_status(
+        &self,
+    ) -> Result<StorageMaintenanceStatus, kasumi_kv::StorageError> {
+        self.node.storage_maintenance_status()
     }
 
     pub fn scratch_disk(&self) -> &Arc<ScratchDisk> {
@@ -2398,11 +2423,24 @@ impl TenantStore {
                 })
                 .transpose()?
         } else {
-            self.get_bounded_registered(&disk_key, namespace, key, max_value_bytes, &state, deadline)?
+            self.get_bounded_registered(
+                &disk_key,
+                namespace,
+                key,
+                max_value_bytes,
+                &state,
+                deadline,
+            )?
         };
         #[cfg(not(any(test, feature = "test-utils")))]
-        let result =
-            self.get_bounded_registered(&disk_key, namespace, key, max_value_bytes, &state, deadline)?;
+        let result = self.get_bounded_registered(
+            &disk_key,
+            namespace,
+            key,
+            max_value_bytes,
+            &state,
+            deadline,
+        )?;
         self.require_access(&state)?;
         Ok(result)
     }
