@@ -741,7 +741,10 @@ fn every_failed_maintenance_effect_reopens_all_live_values() {
 
 #[test]
 fn cached_maintenance_is_safe_at_every_failed_effect() {
-    verify_failed_maintenance_effects(64 << 10);
+    // The aged fixture's 400 rows span several directory leaves; the cache is
+    // sized to keep that whole working set resident, which prime_cache
+    // asserts before any fault is injected.
+    verify_failed_maintenance_effects(1 << 20);
 }
 
 fn verify_failed_maintenance_effects(cache_bytes: u64) {
@@ -804,7 +807,19 @@ fn verify_failed_maintenance_effects(cache_bytes: u64) {
     }
 }
 
-const MAINTAINED_ITEMS: TableDefinition<&[u8], &[u8]> = TableDefinition::new("items");
+/// A facade table beside the untyped Core table "items": the facade refuses
+/// to open a table that has no recorded type.
+const MAINTAINED_ITEMS: TableDefinition<&[u8], &[u8]> = TableDefinition::new("maintained");
+
+fn read_maintained(core: &Core, key: &[u8]) -> Option<Vec<u8>> {
+    let view = core.snapshot().unwrap();
+    if !view.table_exists(MAINTAINED_ITEMS.name()).unwrap() {
+        return None;
+    }
+    core.get_admitted(&view, MAINTAINED_ITEMS.name(), key, 16)
+        .unwrap()
+        .map(|value| value.as_bytes().to_vec())
+}
 
 /// Database writes whose inline maintenance runs a requested cycle. Each
 /// acknowledged write must survive any later failed effect.
@@ -879,7 +894,11 @@ fn every_failed_inline_maintenance_effect_under_interleaved_writes_reopens() {
             .unwrap_or_else(|error| panic!("reopen after effect {ordinal} failed: {error}"));
             assert_aged_values(&reopened, ordinal);
             for (key, value) in &acknowledged {
-                assert_eq!(read(&reopened, key).as_ref(), Some(value), "{ordinal}");
+                assert_eq!(
+                    read_maintained(&reopened, key).as_ref(),
+                    Some(value),
+                    "{ordinal}"
+                );
             }
             finish_after_reopen(&reopened);
             assert_eq!(reopened.maintenance_status().unwrap().garbage_files, 0);
@@ -938,10 +957,12 @@ fn root_format_003_is_rejected_on_open() {
         ),
         "{failure}"
     );
-    // Nothing was rewritten: both slots still carry the retired image.
+    // Nothing was rewritten: both durable slots still carry the retired
+    // image. The refused open closed its handle, so read a restart image.
+    let after = crashed.crash();
     for slot in [RootSlot::A, RootSlot::B] {
         let mut bytes = [0; ROOT_SLOT_BYTES];
-        crashed.read_root(slot, &mut bytes).unwrap();
+        after.read_root(slot, &mut bytes).unwrap();
         assert_eq!(&bytes[..16], b"KASUMI-KVROOT003");
     }
 }
