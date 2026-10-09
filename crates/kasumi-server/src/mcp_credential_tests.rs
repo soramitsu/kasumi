@@ -91,7 +91,10 @@ async fn mutation_gate_entered(
         Some(Err(error)) => format!("request task failed: {error}"),
         None => "original request remains unresolved after native cleanup bound".to_string(),
     };
-    let receipt = fixture.database.operation_receipt(&Fixture::context(), operation_id).await;
+    let receipt = fixture
+        .database
+        .operation_receipt(&Fixture::context(), operation_id)
+        .await;
     panic!("{phase}; {terminal}; original receipt={receipt:?}");
 }
 
