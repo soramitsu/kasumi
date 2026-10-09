@@ -70,6 +70,13 @@ plus the live values under saturated writes; pinned files survive until the
 next cycle; on a full disk evacuation defers (it uses foreground admission, not
 the NodeDisk maintenance reserve) and only an operator response frees space;
 reclamation needs one cohort walk to finish within one process lifetime.
+Evacuation, as before this change, scans the current tree up to its end and
+has no frozen key endpoint: a workload that keeps inserting more fresh leaves
+above the cursor between steps than a step's units can skip postpones
+`Reclaiming`. Ordinary appends and the node worker's 512-unit steps keep up;
+a volatile endpoint (the largest key when the phase begins or resumes) would
+bound the scan soundly, because a leaf wholly above it was written after the
+cycle began, and is the natural follow-up.
 
 ## Historical per-record checkpoint
 
