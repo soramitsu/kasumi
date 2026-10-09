@@ -4778,6 +4778,11 @@ fn real_node_segment_group_maintenance_stays_within_transaction_plan() {
     )
     .unwrap();
     assert_eq!(opening.open(), NodeOpeningPhase::Open);
+    // Complete node initialization so the group can be reopened.
+    let tables = opening.queue_node_tables().unwrap();
+    assert_eq!(tables.run(), NodeWriterPhase::Finished);
+    opening.publish_ready_after_tables(&tables).unwrap();
+    assert_eq!(tables.retire(), StorageCensusDisposition::Retired);
     for batch in 0..6u16 {
         maintained_write(&opening, batch * 100..(batch + 1) * 100, batch as u8);
     }
@@ -4805,6 +4810,9 @@ fn real_node_segment_group_maintenance_stays_within_transaction_plan() {
     )
     .unwrap();
     assert_eq!(existing.open(), NodeOpeningPhase::Open);
+    let verification = existing.verify_existing_tables().unwrap();
+    assert_eq!(verification.finish(), NodeReadPhase::Finished);
+    assert_eq!(verification.retire(), StorageCensusDisposition::Retired);
     // The first write of this lifetime rolls a fresh arena; everything the
     // earlier opening wrote is now older than the newest files.
     maintained_write(&existing, 600..610, 0x5a);
