@@ -615,9 +615,10 @@ release gates remain **HOLD** under G02 and G03.
 
 The active Cargo manifests and lockfile, Rust source, dependency review inputs,
 and vendor trees contain no redb dependency. The store and Raft use
-`kasumi-kv`. Current root, segment, and directory formats are
+`kasumi-kv`. Root, segment, and directory formats at that audit were
 `KASUMI-KVROOT003`, `KASUMI-KVSEG0004`, and `KASUMI-KVDIR0002`; production
-files carry the `KASUMI-NODE-SEG1` envelope. The native README and node group
+files carry the `KASUMI-NODE-SEG1` envelope. The root format has since become
+`KASUMI-KVROOT004` (see the 2026-10-09 entry below). The native README and node group
 document now describe those actual formats and their strict rejection rules.
 
 Current source implements immutable ordered directories, durable atomic
@@ -638,6 +639,30 @@ not yet provide, and its current envelope cannot cover snapshot restore.
 Its test-only construction boundary must not be presented as installed
 production capacity. The broader G02/G03 and production qualification gates
 remain open; this goal remains active while current-source verification runs.
+
+## 2026-10-09 persisted storage maintenance
+
+Production stores on `7b64d07a` never reclaimed `.kvdir` directory arenas or
+`.kvseg` log segments: the only retirement path was reached through one
+maintenance unit per `begin_write`, density and reclamation restarted on every
+root generation change, and every reopen restarted a cycle that copied every
+live value again. One OVH volume filled at about 130-700 MB/h, and about 6 GB/h
+while clients crash-looped.
+
+The root format is now `KASUMI-KVROOT004`. Each group persists one maintenance
+cycle (`Idle -> Evacuating -> Reclaiming -> Packing -> Idle`) with frozen file
+cutoffs, a baseline and an in-phase cursor; reclamation runs as certified
+cohorts that survive foreground commits; every maintenance batch reserves its
+transaction space; local maintenance refusals are deferrals that never fail a
+write; `begin_write` and the node worker drive it; and health and Prometheus
+report per-group storage. `KASUMI-KVROOT003` and older roots are rejected with
+no migration, so existing installations must be recreated from verified
+logical backups. Design and limits are in the
+[compaction follow-up](disk-compaction-followup.md) and
+[reclamation follow-up](disk-reclamation-followup.md); the run ledger is in
+[evidence/kvdir-reclamation-20261009](evidence/kvdir-reclamation-20261009/README.md).
+This closes the reclamation-progress gap in the native engine; capacity and
+sustained-workload qualification remain open.
 
 ### Completion audit of the current implementation
 

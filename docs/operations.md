@@ -208,6 +208,33 @@ response was lost. A missing receipt after its retention window does not prove
 the operation never committed. External backup/rotation effects also require
 artifact/status inspection after a timeout.
 
+### Storage format upgrade to `KASUMI-KVROOT004`
+
+Builds with the persisted storage maintenance cycle write `KASUMI-KVROOT004`
+group roots and refuse to open every group written by an earlier build
+(`KASUMI-KVROOT003` or older) with `corrupt committed storage: retired root
+format is unsupported`. There is no in-place migration or old-format reader.
+This applies to every `node.kv` group: tenant, Control, signer and journal
+stores. Before upgrading, create and verify a full logical backup of every
+tenant with the old build, keep the source installation and keyrings
+untouched, then install fresh storage with the new build and restore the
+verified backups into it ([standalone recovery](standalone.md#local-data-recovery),
+[administration](administration.md)). Rehearse the restore before relying on
+it. Never edit root slots or delete `.kvdir` or `.kvseg` files by hand: old
+directory pages stay referenced by the current copy-on-write tree and pinned
+snapshots, and segments by the replay anchor.
+
+The new build reclaims storage on its own. Each group's persisted cycle moves
+live values and leaves out of old files and unlinks files no root or snapshot
+references, driven by every write and by the node worker. Retained size
+oscillates between the last cycle's baseline `B` and about `max(2B, B + 256
+MiB)` by default; keep at least `B` of free space, because evacuation needs
+room to copy before anything is freed and defers (without failing writes) on a
+full disk. Watch `kasumi_local_group_storage_*` and the health `storage`
+object ([observability](observability.md)); a growing
+`maintenance_deferrals_total{class="capacity"}` with a phase stuck in
+`evacuating` means the disk needs headroom.
+
 For ciphertext/integrity errors, stop using the affected store and preserve it.
 Restore an authenticated logical backup into a new incarnation or replace the
 replica from healthy quorum state. Do not bypass authentication, discard

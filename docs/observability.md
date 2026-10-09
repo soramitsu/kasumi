@@ -245,6 +245,45 @@ workers. Filesystem pending bytes include promises by persistent and scratch
 owners on the same filesystem in this process; their installed extent limits
 remain separate.
 
+Each available group's health entry includes a `storage` object describing its
+`node.kv` group files and persisted maintenance cycle, or `null` when the
+store is unavailable. `measured` reports whether a census of the retained
+segment (`.kvseg`) and directory arena (`.kvdir`) files completed in the
+current process lifetime; `segment_files`, `segment_bytes`, `arena_files` and
+`arena_bytes` are that census's result (`null` before it completes) and can lag
+files created since. `garbage_files` counts files recorded for unlink.
+`compaction_phase` is `idle`, `evacuating`, `reclaiming` or `packing`, with
+`compaction_cycle`, the baseline measured when the last cycle finished
+reclaiming (`compaction_baseline_bytes`/`_files`) and the thresholds that begin
+the next one (`compaction_trigger_bytes`/`_files`). `snapshot_retained_files`
+and `snapshot_retained_bytes` are old files the last completed reclamation kept
+only for pinned snapshots. The `_total` fields count reclaimed files and bytes,
+relocated value bytes, invalidated reclamation cohorts and capacity or rejected
+maintenance deferrals since the store opened; `last_deferral` is `capacity` or
+`rejected` while maintenance is backing off.
+
+Prometheus exposes the same per tenant, labeled `{tenant="..."}`:
+`kasumi_local_group_storage_measured`, `kasumi_local_group_storage_segment_files`,
+`kasumi_local_group_storage_segment_bytes`, `kasumi_local_group_storage_arena_files`
+and `kasumi_local_group_storage_arena_bytes` (the last four only once measured),
+`kasumi_local_group_storage_garbage_files`,
+`kasumi_local_group_storage_compaction_phase{phase="..."}` (1 for the current
+phase, 0 for the other three), `kasumi_local_group_storage_compaction_cycle`,
+`kasumi_local_group_storage_compaction_baseline_bytes`,
+`kasumi_local_group_storage_compaction_trigger_bytes`,
+`kasumi_local_group_storage_snapshot_retained_bytes`, and the counters
+`kasumi_local_group_storage_reclaimed_files_total`,
+`kasumi_local_group_storage_reclaimed_bytes_total`,
+`kasumi_local_group_storage_relocated_bytes_total`,
+`kasumi_local_group_storage_reclaim_invalidations_total` and
+`kasumi_local_group_storage_maintenance_deferrals_total{class="capacity"|"rejected"}`.
+Counters restart from zero when the store reopens. Retained bytes normally
+oscillate between the baseline and the trigger; growth past the trigger while
+the phase stays `evacuating` and capacity deferrals rise means the volume lacks
+the headroom a cycle needs to copy before it can free files. These are
+node-local file observations; the `kasumi_persistent_disk_*` gauges still
+report the node-wide charged extents.
+
 Each available tenant's protected capacity observation includes exact retained
 `schema_activation_bytes` and `retirement_bytes` and their configurable byte
 budgets. Prometheus exposes the same fields as

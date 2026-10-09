@@ -250,14 +250,46 @@ One operation appends at most `2 + 4(h - 1) + 1` pages at tree height `h`.
 
 Density retains an admitted inclusive logical cursor, reselecting from the current
 root each step. Merged output stays eligible for its next neighbor; two-output
-or unchanged pairs advance to the right minimum. Expected generation advances
-after the phase's own commits. A foreground generation change dirties an unfinished
-pass; at its end, only density restarts, retaining completed evacuation and frozen
-cutoffs. Only a pass without intervening foreground publication sets density
-completion and proceeds to GC. A foreground change during subsequent GC restarts
-density before reclamation resumes; a change after the entire compaction completed
-starts a new compaction cycle. Continuous writes may prevent a clean pass, so
-this does not promise density or reclamation completion under continuous writes.
+or unchanged pairs advance to the right minimum. Since `KASUMI-KVROOT004` the
+pass runs once per persisted cycle, in the `Packing` phase after reclamation: it
+never restarts for foreground publications, persists its level and cursor on
+every install, and caps each level at its starting entry count plus 64 plans.
+Ranges a foreground write leaves sparse are packed by the next cycle. (The
+earlier rule restarted a dirty pass and required a clean pass before GC, which
+continuous writes prevented.)
+
+### Persisted maintenance cycle (`KASUMI-KVROOT004`)
+
+Each group's root persists one maintenance machine, `Idle -> Evacuating ->
+Reclaiming -> Packing -> Idle`, with its cycle number, frozen file cutoffs, the
+retained-size baseline measured when the last cycle finished reclaiming, and an
+in-phase logical cursor. Each phase change is one mirrored root publication; a
+cursor rides on the next directory install, maintenance or foreground. Reopen
+resumes the recorded phase and cursor, so it never restarts evacuation or
+re-copies relocated values, and a store whose last cycle completed begins no new
+cycle until bounded census steps measure growth past
+`max(B * growth_percent / 100, B + slack)` in bytes or files (defaults 200 %,
+256 MiB, 16 files) or `request_compaction` asks for one. Beginning freezes the
+cutoffs one below the newest confirmed segment and arena and creates no file.
+
+Reclamation runs only in `Reclaiming`, as sequential cohorts certified across
+foreground publications by a cohort nonce, pin stamps and the selection funnel
+(`DiskState::install_selected`, the only post-open writer of the selected root);
+the [reclamation follow-up](disk-reclamation-followup.md) has the proof. Every
+leaf rewrite and pack reserves its complete transaction space plan before
+effects, like a foreground commit. `Database::begin_write` runs one inline step
+(32 units, one publication) and the node worker runs larger steps; capacity
+and other local refusals become deferrals with a step-count backoff and never
+fail a write, while I/O, corruption and unknown outcomes fence.
+
+Limits: a cycle copies every live value and every old leaf with its path;
+retained size oscillates between `B` and about `max(2B, B + slack)` plus the
+cycle transient, with `B` up to about `(1 + 2h)` times the live directory plus
+live values under saturated writes; pinned files survive until the next cycle;
+on a full disk evacuation defers and nothing is freed until it completes, so
+operators keep about `B` of headroom; and a crash-looping store progresses only
+if each process lifetime completes a cohort walk, which the node worker
+provides for managed stores.
 The [35-file density source pin](evidence/disk-backed-cache-20260930/density-selected.sha256)
 passes 365 native library tests in 222.74 seconds, 22 focused density tests in
 187.95 seconds, 30 native integration tests, strict native all-target Clippy and
@@ -411,11 +443,11 @@ one `MAX_VALUE_BYTES` value (currently 40 MiB) despite its 1 MiB encoded-record
 target and fixed-window buffers. Leaf batching removes repeated per-row path
 copies, and the subsequent density phase packs sparse neighboring leaf/internal
 pages. Repeated path replacement can still leave orphan pages in partially live
-arenas. Reclamation currently follows evacuation and a clean density pass;
-periodic GC scheduling and progress during continual root publication remain
-open and the proposed continuation proof is unimplemented. The exact-root
-reachability proof must not be weakened to claim that progress. The current
-primitive does not guarantee dense files or complete disk-space recovery.
+arenas until the next cycle evacuates them. Reclamation now runs in the
+persisted `Reclaiming` phase with the certified continuation proof above, so
+it progresses during continual root publication without weakening the
+exact-root retirement checks. It frees whole unreferenced files only; it does
+not compact partially live files in place.
 
 Compaction reports confirmed directory-page read/write and arena-sync deltas
 alongside copied value bytes, entry counts, commits, fresh-leaf skips, evacuation
@@ -424,9 +456,12 @@ counters exclude cache hits and arena-header payloads; syncs include arena-heade
 and roll syncs but exclude mirrored-root and namespace syncs. Successful callbacks
 are counted even if a later owner/digest check fails. Failed callbacks can have
 unknown partial effects, so these counters are not device-byte measurements or
-complete maintenance I/O. Standalone intent recovery is excluded. Full production
-compaction, live Core integration and close/cancellation behavior remain open.
-A no-op replacement for `compact` or `prepare_write` would not preserve the feature.
+complete maintenance I/O. Standalone intent recovery is excluded. These step
+statistics are internal; the public `StorageMaintenanceStatus` reports the
+phase, measurement, baseline, triggers, reclaimed, relocated and pin-retained
+totals, invalidations and deferrals. `Core::compact` and `Core::prepare_write`
+were replaced by `run_maintenance`, the inline step in `begin_write` and the
+node worker.
 
 ## Memory ownership
 

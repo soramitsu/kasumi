@@ -1,20 +1,82 @@
 # Bounded reclamation across foreground publications
 
-Status: **proposed and unimplemented**. Updated 2026-09-30.
-This is the next reclamation design for the internal disk state, not evidence
-that production compaction is ready. Directory density has its separate
-[follow-up plan](disk-compaction-followup.md); the broader
-[storage design](disk-backed-storage-design.md) and
-[cache goals](disk-backed-cache-goals.md) remain open.
+Status: **implemented** (2026-10-09) as the Reclaiming phase of the persisted
+maintenance cycle described in the [compaction follow-up](disk-compaction-followup.md).
+Production qualification of the broader [storage design](disk-backed-storage-design.md)
+and [cache goals](disk-backed-cache-goals.md) remains open. The sections after
+the implementation summary keep the design rationale.
 
-## Current restart condition
+## Implementation summary
 
-`Reclamation` in `disk_reclaim.rs` resets on every superblock generation change.
-`ReclaimScan::matches` in `reclaim.rs` also requires the original generation and
-exact `DirectoryCommit`. This is safe, but repeated foreground commits, or even
-allocation publications preserving the selected directory, can prevent a bounded
-scan from finishing. Existing current-reader churn coverage does not demonstrate
-progress under intervening writes.
+Production stores on `7b64d07a` never retired a `.kvdir` or `.kvseg` file: the
+only retirement path ran after a clean density pass, reclamation reset on every
+root generation change, and one maintenance unit ran per `begin_write`, which
+the following commit always invalidated. Compaction progress was in memory, so
+every reopen restarted a cycle that copied every live value and leaf again.
+
+The replacement:
+
+- **Scheduling.** Reclamation runs only in the persisted `Reclaiming` phase,
+  after evacuation has moved every live value and leaf above the cycle's frozen
+  cutoffs. A cycle measures retained files first, then walks candidate
+  identifiers from the reclaim floor (the lowest present identifier found at
+  open) to the exclusive limits `L = (min(cutoff_segment + 1, replay-start
+  segment), cutoff_arena + 1)`, in sequential cohorts of at most 128 present
+  files. Completion publishes `Reclaiming -> Packing` with the new baseline
+  (census minus reclaimed). Nothing resets on a generation change; after a
+  reopen in `Reclaiming` a fresh cycle starts and the files already unlinked
+  stay unlinked.
+- **Cohort nonce.** Each cohort takes a fresh owner-local nonce
+  (`checked_add`; exhaustion fails closed with a rejected deferral) and
+  registers it with the pin registry together with the selected root. Every
+  pin installed at exactly that root, ordinary or protected, is stamped with
+  the nonce under the registry lock; clones share the slot and a history
+  transfer keeps the stamp.
+- **Certified chain.** The cohort records `{r0, latest, broken}`. Every
+  directory installation goes through `DiskState::install_selected`, the only
+  post-open writer of the selected root. It installs through
+  `RootOwner::install(source, commit, cursor)`, which refuses an install whose
+  predecessor is not the selected root, then advances the chain (a predecessor
+  other than `latest` breaks it) and the registry's stamped root.
+- **Witness.** `install_selected` consumes a non-`Clone` `SelectionWitness`
+  minted from the selected root before the batch was built. While a cohort is
+  active it also checks that every new value location is in a segment at or
+  above `L.segment` and that the active arena is at or above `L.arena`;
+  a failed check breaks the chain before installation and never fails the
+  write.
+- **Seal and drain.** After walking `R0` and every captured pinned root, the
+  cohort is sealed under the owner lock only if the chain is unbroken, its
+  latest commit is the current directory, its root is the selected root, and
+  every live pin is at the current root, at a captured root or stamped with the
+  nonce (`validate_cohort_coverage`, allocation-free). Only then does
+  `reclaim.rs` mint `ReachabilityProof` values bound to the current commit and
+  generation; `retire_directory_files` and its structural guards are
+  unchanged. Each unlink re-checks the seal, then `RootOwner::forget` publishes
+  the forget (a failure fences). An invalidated cohort ends its coverage and is
+  counted; recorded garbage is re-proved by a `RecordedGarbage` cohort and
+  never dropped without an unlink.
+- **Errors.** Capacity and other local refusals end the coverage of a cohort
+  that has not recorded garbage, keep every cursor and back off; they never
+  fail the caller. I/O, corruption and unknown outcomes fence.
+
+Nonce, chain, witness and backoff are volatile. Reopen keeps the bounded
+re-proof of recorded garbage before any unlink. Status counters report
+reclaimed files and bytes, pin-retained files and bytes of the last completed
+cycle, and cohort invalidations.
+
+Limits: reclamation frees files only during `Reclaiming`, so whole dead files
+created between cycles wait for the next one; files reachable only from pinned
+snapshots survive until the first cycle after the pins are released; a cohort
+walk has to finish within one process lifetime for a crash-looping store to
+make progress, which the node worker provides for managed stores.
+
+## Former restart condition
+
+`Reclamation` in `disk_reclaim.rs` reset on every superblock generation change.
+`ReclaimScan::matches` in `reclaim.rs` also required the original generation and
+exact `DirectoryCommit`. This was safe, but repeated foreground commits, or even
+allocation publications preserving the selected directory, prevented a bounded
+scan from finishing.
 
 The current `SnapshotPins::validate_coverage` accepts captured roots and the
 scanned current root. Merely substituting the newest current root would miss
