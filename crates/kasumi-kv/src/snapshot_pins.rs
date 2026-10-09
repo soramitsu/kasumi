@@ -6,6 +6,14 @@
 //! must be checked before applying a plan. The enclosing owner serializes root
 //! publication, new-pin acquisition and reclamation. Coverage checks tolerate
 //! retired pins and new pins of the already-scanned current root.
+//!
+//! A reclamation cohort may outlive several certified root installations. It
+//! registers its nonce and the root it certifies; every pin installed at that
+//! exact root is stamped with the nonce under the registry lock, and each
+//! certified installation advances the registered root. Cohort coverage then
+//! accepts a pinned slot only at the current root, at a captured (walked)
+//! root, or when it carries the cohort's stamp. Clones share the slot and a
+//! history transfer keeps its stamp. Stamps and nonces are volatile.
 //! This module never closes the group or notifies admission of owner failure.
 
 #[cfg(test)]
@@ -44,6 +52,9 @@ struct Slot {
     root: DirectoryRoot,
     token: u64,
     class: PinClass,
+    /// Nonce of the cohort that certified `root` when this pin was installed;
+    /// zero when no active cohort covered that root.
+    coverage: u64,
 }
 #[derive(Clone, Copy)]
 enum Entry {
@@ -75,6 +86,17 @@ struct RegistryState {
     slots: Box<[Entry]>,
     epoch: u64,
     serial: u64,
+    /// The active reclamation cohort and the root it currently certifies.
+    coverage: Option<(u64, DirectoryRoot)>,
+}
+
+impl RegistryState {
+    /// The stamp for a pin installed at `root` under this lock.
+    fn stamp(&self, root: DirectoryRoot) -> u64 {
+        self.coverage
+            .filter(|(_, certified)| *certified == root)
+            .map_or(0, |(nonce, _)| nonce)
+    }
 }
 
 // Every strong alias uses this destructor; no Weak or raw Arc escapes. The
@@ -278,10 +300,12 @@ impl SnapshotPins {
             .identity
             .set(PinIdentity { slot, token, root })
             .expect("new pin");
+        let coverage = state.stamp(root);
         state.slots[slot] = Entry::Pinned(Slot {
             root,
             token,
             class: PinClass::Ordinary,
+            coverage,
         });
         state.epoch = token;
         drop(state);
@@ -389,6 +413,110 @@ impl SnapshotPins {
             .all(|slot| slot.root == current || capture.roots.contains(&slot.root));
         drop(state);
         self.inner.check()?;
+        if covered {
+            Ok(())
+        } else {
+            Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
+                "snapshot capture does not cover active roots",
+            )))
+        }
+    }
+
+    /// Register cohort `nonce` as certifying `root`. Nonce zero is the
+    /// unstamped marker, and only one cohort is active at a time.
+    pub(crate) fn begin_coverage(&self, nonce: u64, root: DirectoryRoot) -> Result<(), CoreError> {
+        self.inner.check()?;
+        if nonce == 0 || root.group_id != self.inner.group_id {
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
+                "cohort coverage nonce or root is invalid",
+            )));
+        }
+        let mut state = self.inner.lock()?;
+        if state.coverage.is_some() {
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
+                "cohort coverage is already active",
+            )));
+        }
+        state.coverage = Some((nonce, root));
+        drop(state);
+        self.inner.check()
+    }
+
+    /// Move the active cohort's certification to a newly installed root.
+    pub(crate) fn advance_coverage(
+        &self,
+        nonce: u64,
+        root: DirectoryRoot,
+    ) -> Result<(), CoreError> {
+        self.inner.check()?;
+        if root.group_id != self.inner.group_id {
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
+                "cohort coverage nonce or root is invalid",
+            )));
+        }
+        let mut state = self.inner.lock()?;
+        if state.coverage.map(|(active, _)| active) != Some(nonce) {
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
+                "cohort coverage nonce differs",
+            )));
+        }
+        state.coverage = Some((nonce, root));
+        drop(state);
+        self.inner.check()
+    }
+
+    /// Stop stamping for `nonce`. Ending an inactive cohort is a no-op;
+    /// ending another cohort's coverage is refused unchanged.
+    pub(crate) fn end_coverage(&self, nonce: u64) -> Result<(), CoreError> {
+        let mut state = self.inner.lock()?;
+        match state.coverage {
+            None => {}
+            Some((active, _)) if active == nonce => state.coverage = None,
+            Some(_) => {
+                return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
+                    "cohort coverage nonce differs",
+                )));
+            }
+        }
+        drop(state);
+        self.inner.check()
+    }
+
+    /// Verify, without allocating, that every live pin is at `current`, at a
+    /// captured root the cohort walked, or stamped by the still-active
+    /// cohort. The caller holds the owner lock that serializes installation,
+    /// acquisition and reclamation and has verified the certified chain.
+    pub(crate) fn validate_cohort_coverage(
+        &self,
+        capture: &SnapshotRoots,
+        nonce: u64,
+        current: DirectoryRoot,
+    ) -> Result<(), CoreError> {
+        self.inner.check()?;
+        if !RetiredArc::ptr_eq(&self.inner, &capture.registry) {
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
+                "snapshot capture belongs to another owner",
+            )));
+        }
+        if current.group_id != self.inner.group_id {
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
+                "current snapshot root belongs to another group",
+            )));
+        }
+        current.validate()?;
+        let state = self.inner.lock()?;
+        let active = nonce != 0 && state.coverage.map(|(active, _)| active) == Some(nonce);
+        let covered = active
+            && state.slots.iter().filter_map(Entry::pinned).all(|slot| {
+                slot.root == current || capture.roots.contains(&slot.root) || slot.coverage == nonce
+            });
+        drop(state);
+        self.inner.check()?;
+        if !active {
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
+                "cohort coverage is not active",
+            )));
+        }
         if covered {
             Ok(())
         } else {
@@ -1124,5 +1252,165 @@ mod tests {
         let state = dropping.inner.state.lock().unwrap();
         assert_eq!(state.epoch, u64::MAX);
         assert!(state.slots.iter().all(Entry::is_empty));
+    }
+
+    fn stamps(pins: &SnapshotPins) -> Vec<(u64, u64)> {
+        let state = pins.inner.state.lock().unwrap();
+        let mut stamps: Vec<_> = state
+            .slots
+            .iter()
+            .filter_map(Entry::pinned)
+            .map(|slot| (slot.root.generation, slot.coverage))
+            .collect();
+        stamps.sort_unstable();
+        stamps
+    }
+
+    #[test]
+    fn coverage_nonce_stamps_only_pins_of_the_registered_root() {
+        let (_, pins) = setup(8);
+        let rights = pins.reserve_source_rights().unwrap();
+        let before = pins.acquire(root(2)).unwrap();
+        assert!(
+            matches!(&(pins.begin_coverage(0, root(2))), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput(_))))
+        );
+        pins.begin_coverage(9, root(2)).unwrap();
+        assert!(
+            matches!(&(pins.begin_coverage(10, root(2))), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput("cohort coverage is already active"))))
+        );
+        let other = pins.acquire(root(1)).unwrap();
+        let stamped = pins.acquire(root(2)).unwrap();
+        let mut prepared = pins.prepare_protected(&rights).unwrap();
+        let protected = pins.install_protected(&mut prepared, root(2)).unwrap();
+        assert_eq!(stamps(&pins), [(1, 0), (2, 0), (2, 9), (2, 9)]);
+        assert!(
+            matches!(&(pins.advance_coverage(8, root(3))), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput("cohort coverage nonce differs"))))
+        );
+        pins.advance_coverage(9, root(3)).unwrap();
+        let later = pins.acquire(root(3)).unwrap();
+        let unstamped_old = pins.acquire(root(2)).unwrap();
+        assert!(
+            matches!(&(pins.end_coverage(8)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput(_))))
+        );
+        pins.end_coverage(9).unwrap();
+        pins.end_coverage(9).unwrap();
+        let after = pins.acquire(root(3)).unwrap();
+        assert_eq!(
+            stamps(&pins),
+            [(1, 0), (2, 0), (2, 0), (2, 9), (2, 9), (3, 0), (3, 9)]
+        );
+        drop((
+            before,
+            other,
+            stamped,
+            protected,
+            later,
+            unstamped_old,
+            after,
+            prepared,
+        ));
+    }
+
+    #[test]
+    fn cohort_coverage_accepts_captured_current_and_stamped_and_rejects_unstamped_historical() {
+        let (_, pins) = setup(6);
+        let captured = pins.acquire(root(1)).unwrap();
+        let capture = pins.capture().unwrap();
+        assert!(
+            matches!(&(pins.validate_cohort_coverage(&capture, 5, root(2))), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput("cohort coverage is not active"))))
+        );
+        pins.begin_coverage(5, root(2)).unwrap();
+        let stamped = pins.acquire(root(2)).unwrap();
+        pins.advance_coverage(5, root(3)).unwrap();
+        let current = pins.acquire(root(3)).unwrap();
+        pins.validate_cohort_coverage(&capture, 5, root(3)).unwrap();
+        // Ordinary coverage does not know the stamp and rejects the
+        // intermediate root that the cohort never walked.
+        assert!(pins.validate_coverage(&capture, root(3)).is_err());
+        // A pin at a historical root it never certified is not covered.
+        let unstamped = pins.acquire(root(2)).unwrap();
+        assert!(
+            matches!(&(pins.validate_cohort_coverage(&capture, 5, root(3))), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput("snapshot capture does not cover active roots"))))
+        );
+        drop(unstamped);
+        pins.validate_cohort_coverage(&capture, 5, root(3)).unwrap();
+        // Another nonce is neither active nor the stamp.
+        assert!(pins.validate_cohort_coverage(&capture, 6, root(3)).is_err());
+        let (_, foreign) = setup(1);
+        assert!(
+            matches!(&(foreign.validate_cohort_coverage(&capture, 5, root(3))), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput("snapshot capture belongs to another owner"))))
+        );
+        pins.end_coverage(5).unwrap();
+        assert!(pins.validate_cohort_coverage(&capture, 5, root(3)).is_err());
+        drop((captured, stamped, current));
+    }
+
+    #[test]
+    fn stamp_survives_clone_and_history_commit() {
+        let (_, pins) = setup(6);
+        let rights = pins.reserve_source_rights().unwrap();
+        let capture = pins.capture().unwrap();
+        pins.begin_coverage(3, root(1)).unwrap();
+        let mut prepared = pins.prepare_protected(&rights).unwrap();
+        let protected = pins.install_protected(&mut prepared, root(1)).unwrap();
+        let clone = protected.clone();
+        pins.advance_coverage(3, root(2)).unwrap();
+        drop(protected);
+        pins.validate_cohort_coverage(&capture, 3, root(2)).unwrap();
+        let mut history = pins.reserve_history(&clone).unwrap();
+        pins.commit_history(&mut history).unwrap();
+        drop(history);
+        pins.validate_cohort_coverage(&capture, 3, root(2)).unwrap();
+        let state = pins.inner.state.lock().unwrap();
+        assert!(state.slots.iter().filter_map(Entry::pinned).any(|slot| {
+            slot.root == root(1) && slot.class == PinClass::Ordinary && slot.coverage == 3
+        }));
+        drop(state);
+        drop((clone, prepared));
+    }
+
+    #[test]
+    fn nonce_exhaustion_fails_closed() {
+        let (_, pins) = setup(2);
+        // Zero is the unstamped marker and can never name a cohort.
+        assert!(
+            matches!(&(pins.begin_coverage(0, root(1))), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput("cohort coverage nonce or root is invalid"))))
+        );
+        let capture = pins.capture().unwrap();
+        assert!(pins.validate_cohort_coverage(&capture, 0, root(1)).is_err());
+        // The last nonce is still distinct; nothing wraps to the marker.
+        pins.begin_coverage(u64::MAX, root(1)).unwrap();
+        let pin = pins.acquire(root(1)).unwrap();
+        pins.validate_cohort_coverage(&capture, u64::MAX, root(2))
+            .unwrap();
+        pins.end_coverage(u64::MAX).unwrap();
+        // An ended cohort's stamp no longer covers anything.
+        assert!(
+            pins.validate_cohort_coverage(&capture, u64::MAX, root(2))
+                .is_err()
+        );
+        drop(pin);
+    }
+
+    #[test]
+    fn validate_cohort_coverage_allocates_nothing() {
+        let (admission, pins) = setup(3);
+        let historical = pins.acquire(root(1)).unwrap();
+        let capture = pins.capture().unwrap();
+        pins.begin_coverage(4, root(2)).unwrap();
+        let stamped = pins.acquire(root(2)).unwrap();
+        pins.advance_coverage(4, root(3)).unwrap();
+        let current = pins.acquire(root(3)).unwrap();
+        let reserves = admission.reserves.load(Ordering::Acquire);
+        let used = admission.used.load(Ordering::Acquire);
+        let counter = allocation_tests::AllocationCount::start();
+        for _ in 0..100 {
+            pins.validate_cohort_coverage(&capture, 4, root(3)).unwrap();
+        }
+        assert_eq!(counter.count(), 0);
+        drop(counter);
+        assert_eq!(admission.reserves.load(Ordering::Acquire), reserves);
+        assert_eq!(admission.used.load(Ordering::Acquire), used);
+        drop((historical, stamped, current));
     }
 }
