@@ -495,7 +495,9 @@ impl CustodyBackend for KasumiBackend {
                 max_string_bytes: 1 << 20,
                 max_number_bytes: 128,
                 max_rows: READ_GROUP,
-                max_decoded_bytes: 12 << 20,
+                // Four full hex chunks charge 24 MiB before metadata in the
+                // SDK token preflight (eight bytes per decoded string byte).
+                max_decoded_bytes: 32 << 20,
             },
             deadline,
             expected_incarnation: self.expected_incarnation,

@@ -414,6 +414,98 @@ async fn committed_effect_with_expired_ack_is_resolved_by_fresh_credential() {
 }
 
 #[tokio::test]
+async fn unavailable_credential_store_before_and_after_effect_preserves_operation_identity() {
+    struct Guard {
+        engine: std::sync::Weak<TenantEngine>,
+        before: std::sync::atomic::AtomicBool,
+    }
+    impl kasumi_types::CredentialLiveness for Guard {
+        fn check(&self) -> Result<()> {
+            let committed = self
+                .engine
+                .upgrade()
+                .and_then(|engine| engine.generation().ok())
+                .is_some_and(|generation| {
+                    generation.state.collections["docs"]
+                        .documents
+                        .contains_key("committed")
+                });
+            if self.before.load(Ordering::SeqCst) || committed {
+                Err(Error::new(
+                    ErrorCode::Unavailable,
+                    "credential family status unavailable",
+                ))
+            } else {
+                Ok(())
+            }
+        }
+    }
+    for before in [true, false] {
+        let fixture = CredentialFixture::new().await;
+        let guard = Arc::new(Guard {
+            engine: Arc::downgrade(&fixture.db.engine),
+            before: std::sync::atomic::AtomicBool::new(false),
+        });
+        let observation = kasumi_clock::EpochClock::system()
+            .unwrap()
+            .observe()
+            .unwrap();
+        let incarnation =
+            uuid::Uuid::parse_str(&fixture.db.engine.generation().unwrap().state.incarnation)
+                .unwrap();
+        let context = RequestContext {
+            authorization: RequestAuthorization::from_verified_credential_with_liveness(
+                observation.utc_ms() + 60_000,
+                &observation,
+                CredentialResource::Database { incarnation },
+                guard.clone(),
+            )
+            .unwrap(),
+            ..fixture.context.clone()
+        };
+        guard.before.store(before, Ordering::SeqCst);
+        let error = fixture
+            .db
+            .mutate(context, credential_batch("committed"))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.code,
+            if before {
+                ErrorCode::Unavailable
+            } else {
+                ErrorCode::UnknownOutcome
+            }
+        );
+        let receipt = fixture
+            .db
+            .operation_receipt(&fixture.context, "committed")
+            .await
+            .unwrap();
+        let document = fixture
+            .db
+            .get(&fixture.context, "docs", "committed")
+            .await
+            .unwrap();
+        if before {
+            assert!(receipt.is_none() && document.is_none());
+        } else {
+            let receipt = receipt.unwrap().outcome.unwrap();
+            assert_eq!(document.unwrap().version, receipt.revision);
+            assert_eq!(
+                fixture
+                    .db
+                    .mutate(fixture.context.clone(), credential_batch("committed"))
+                    .await
+                    .unwrap(),
+                receipt
+            );
+        }
+        fixture.close().await;
+    }
+}
+
+#[tokio::test]
 async fn serialized_authorization_never_becomes_fresh_service_or_credential_authority() {
     let fixture = CredentialFixture::new().await;
     let clock = Arc::new(CredentialClock(std::sync::atomic::AtomicU64::new(0)));

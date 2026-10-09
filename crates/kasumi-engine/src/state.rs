@@ -16,6 +16,9 @@ use ordered_command::PreparedOrderedCommand;
 mod custody_snapshot;
 #[path = "mutation_apply.rs"]
 mod mutation_apply;
+#[path = "mutation_capacity.rs"]
+mod mutation_capacity;
+pub(crate) use mutation_capacity::admit_mutation_capacity;
 #[cfg(test)]
 #[path = "primary_projection.rs"]
 pub(crate) mod primary_projection;
@@ -2541,7 +2544,9 @@ fn apply_operation(
                     "new limits are below retained state",
                 ));
             }
+            let epoch = next_policy_epoch(state.policy_epoch)?;
             state.limits = limits.clone();
+            state.policy_epoch = epoch;
             crate::change_feed_state::trim(&mut state.change_feed, &limits.history)?;
             Ok((Ok(receipt()), false))
         }

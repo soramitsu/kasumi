@@ -239,7 +239,13 @@ impl std::error::Error for NodeScopedReadRetirement {
 
 impl NodeStore {
     pub(crate) fn begin_registered_read(&self) -> Result<RegisteredNodeRead> {
-        let reader = self.body().db.queue_registered_read()?;
+        self.begin_registered_read_until(std::time::Instant::now() + NATIVE_READ_TIMEOUT)
+    }
+    fn begin_registered_read_until(
+        &self,
+        deadline: std::time::Instant,
+    ) -> Result<RegisteredNodeRead> {
+        let reader = self.body().db.queue_registered_read_until(deadline)?;
         if reader.begin() != NodeReadPhase::Active {
             return Err(NodeScopedReadFailure::new(reader, "begin", None).into());
         }
@@ -266,6 +272,15 @@ impl NodeStore {
         reader: RegisteredNodeRead,
         result: Result<T>,
     ) -> Result<T> {
+        self.cancel_queued_registered_read_until(reader, result, None)
+    }
+
+    pub(crate) fn cancel_queued_registered_read_until<T>(
+        &self,
+        reader: RegisteredNodeRead,
+        result: Result<T>,
+        deadline: Option<std::time::Instant>,
+    ) -> Result<T> {
         if reader.finish() != NodeReadPhase::Cancelled || reader.report().has_failures() {
             return Err(
                 NodeScopedReadFailure::new(reader, "cancel queued view", result.err()).into(),
@@ -274,7 +289,18 @@ impl NodeStore {
         let id = reader.id();
         // This never acknowledges observations added after the clean check.
         // A racing unknown failure therefore keeps the census child retained.
-        let disposition = reader.retire_acknowledged();
+        let provider = reader.provider();
+        let progress = reader.retire_acknowledged_progress();
+        let disposition = match deadline {
+            Some(deadline) => provider.storage_census().complete_owner_until(
+                id,
+                progress,
+                deadline,
+                crate::storage_census::StorageCompletionGoal::ReaderRetirement,
+                || {},
+            ),
+            None => progress.disposition(),
+        };
         if disposition != StorageCensusDisposition::Retired {
             return Err(NodeScopedReadRetirement {
                 provider: self.persistent_disk().memory().clone(),
@@ -302,10 +328,11 @@ impl NodeStore {
         &self,
         body: impl FnOnce(&RegisteredNodeRead) -> Result<T>,
     ) -> Result<T> {
-        let reader = self.begin_registered_read()?;
+        let deadline = std::time::Instant::now() + NATIVE_READ_TIMEOUT;
+        let reader = self.begin_registered_read_until(deadline)?;
         let result = std::panic::catch_unwind(AssertUnwindSafe(|| body(&reader)));
         match result {
-            Ok(result) => self.settle_registered_read(reader, result),
+            Ok(result) => self.settle_registered_read_until(reader, result, Some(deadline)),
             Err(payload) => {
                 // Transfer the original payload into the exact census child.
                 // Re-unwinding it would consume that original and let a later
@@ -322,6 +349,15 @@ impl NodeStore {
         reader: RegisteredNodeRead,
         result: Result<T>,
     ) -> Result<T> {
+        self.settle_registered_read_until(reader, result, None)
+    }
+
+    pub(crate) fn settle_registered_read_until<T>(
+        &self,
+        reader: RegisteredNodeRead,
+        result: Result<T>,
+        deadline: Option<std::time::Instant>,
+    ) -> Result<T> {
         let phase = reader.finish();
         if phase != NodeReadPhase::Finished || reader.report().has_failures() {
             return Err(NodeScopedReadFailure::new(
@@ -337,7 +373,10 @@ impl NodeStore {
         }
         let id = reader.id();
         let provider = reader.provider();
-        let disposition = reader.retire();
+        let disposition = match deadline {
+            Some(deadline) => reader.retire_until(deadline),
+            None => reader.retire(),
+        };
         if disposition != StorageCensusDisposition::Retired {
             return Err(NodeScopedReadRetirement {
                 provider,

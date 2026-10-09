@@ -380,12 +380,18 @@ pub(crate) fn encode_json(value: &impl Serialize) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
-/// A successfully submitted mutation must not look like a rejected CAS when a
-/// later policy change withholds its response. Its retained receipt is the
-/// resolution path once the principal has access again.
+/// Once a mutation enters an admitted operation boundary, response fencing
+/// cannot prove that its effect was rejected. Preserve uncertainty conservatively;
+/// when the operation commits, its retained receipt resolves the original identity.
 pub(crate) fn mutation_release<T>(result: Result<T>) -> Result<T> {
     result.map_err(|error| {
-        if matches!(error.code, ErrorCode::Conflict | ErrorCode::Unauthorized) {
+        if matches!(
+            error.code,
+            ErrorCode::Conflict
+                | ErrorCode::Unauthorized
+                | ErrorCode::Unavailable
+                | ErrorCode::Corruption
+        ) {
             Error::new(
                 ErrorCode::UnknownOutcome,
                 "write response release was fenced; resolve or retry the same idempotency key",
@@ -447,6 +453,7 @@ mod tests {
     include!("api_resource_lineage_tests.rs");
     include!("api_staging_tests.rs");
     include!("api_guarded_staging_tests.rs");
+    include!("api_private_evidence_tests.rs");
     include!("api_history_tests.rs");
     include!("api_schema_tests.rs");
     include!("api_backup_checkpoint_tests.rs");

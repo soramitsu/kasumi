@@ -86,14 +86,10 @@ impl StorageCensus {
         if P::KIND != StorageOwnerKind::Database || !Arc::ptr_eq(provider, &parent.provider) {
             return Err(io::ErrorKind::InvalidInput.into());
         }
-        {
+        let mut child = Some({
             let metadata = self.source_lock(parent.id.index)?;
-            if metadata.generation != parent.id.generation
-                || !matches!(metadata.cell, Cell::Active { .. })
-            {
-                return Err(io::ErrorKind::InvalidInput.into());
-            }
-        }
+            self.preclaim_child_locked(parent.id, &metadata)?
+        });
         for (index, slot) in self.slots.iter().enumerate() {
             let mut metadata = match self.source_lock(index) {
                 Ok(metadata) => metadata,
@@ -115,7 +111,6 @@ impl StorageCensus {
                 return Err(io::ErrorKind::InvalidData.into());
             }
             let generation = self.source_generation()?;
-            self.source_add_child(parent.id)?;
             let id = StorageOwnerId { index, generation };
             state.generation = generation;
             state.preparation = Some(MetadataPreparation::new());
@@ -123,7 +118,8 @@ impl StorageCensus {
             state.acknowledged = false;
             metadata.generation = generation;
             metadata.kind = StorageOwnerKind::SourcePool;
-            metadata.parent = Some(parent.id);
+            metadata.parent = Some(child.take().expect("unpublished source control").publish());
+            metadata.children_sealed = false;
             metadata.cell = Cell::SourceControl { servicing: false };
             return Ok(SourceControlClaim {
                 census: self as *const Self as usize,

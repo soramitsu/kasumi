@@ -192,6 +192,30 @@ async fn original_scope_code_and_mutation_release_remain_exact() {
         .unwrap_err();
     assert_eq!(code(&status), ErrorCode::UnknownOutcome);
     assert!(inventory.with_rpc_original(0, |_| ()).is_none());
+    for failure in [ErrorCode::Unavailable, ErrorCode::Corruption] {
+        // An admitted admin mutation is conservatively uncertain; this flag
+        // describes operation kind, not proof that its effect committed.
+        for mutation in [false, true] {
+            let status = admin
+                .snapshot_call(&context(), mutation, async {
+                    Err::<(), _>(SnapshotFailure::Operation(Error::new(
+                        failure,
+                        "credential family status unavailable",
+                    )))
+                })
+                .await
+                .unwrap_err();
+            assert_eq!(
+                code(&status),
+                if mutation {
+                    ErrorCode::UnknownOutcome
+                } else {
+                    failure
+                }
+            );
+            assert!(inventory.with_rpc_original(0, |_| ()).is_none());
+        }
+    }
 }
 
 struct RpcPanicOriginal {

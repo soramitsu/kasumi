@@ -113,6 +113,7 @@ impl NodeStore {
         body: impl FnOnce(&kasumi_kv::WriteTransaction, &mut W) -> Result<()>,
         post_commit: impl FnOnce(&mut W) -> Result<T>,
     ) -> Result<T> {
+        let deadline = std::time::Instant::now() + NATIVE_WRITE_TIMEOUT;
         // The explicit synthetic branch is selected from the actual node type,
         // never from an installed refusal or a missing admission provider.
         #[cfg(any(test, feature = "test-utils"))]
@@ -124,7 +125,7 @@ impl NodeStore {
             drop(committed);
             return output;
         }
-        let writer = self.body().db.queue_registered_write()?;
+        let writer = self.body().db.queue_registered_write_until(deadline)?;
         let provider = writer.provider();
         let id = writer.id();
         let output = writer.run(workspace, body, post_commit);
@@ -135,22 +136,20 @@ impl NodeStore {
             }
             .into());
         }
-        let mut disposition = writer.retire_for_handoff();
+        let progress = writer.retire_for_handoff();
         let census = provider.storage_census();
-        // A clean completion can race census metadata before its actual payload
-        // and lease destructors. Keep the original output through exact-owner
-        // retries; terminal failures can never authorize its handoff.
-        for _ in 0..64 {
-            if census.write_retirement_completed(id) || census.retirement_is_terminal(id) {
-                break;
-            }
-            #[cfg(test)]
-            if let Some(hook) = WRITE_HANDOFF_RETRY_HOOK.with(|hook| hook.borrow_mut().take()) {
-                hook();
-            }
-            std::thread::yield_now();
-            disposition = census.drain_owner(id);
-        }
+        let disposition = census.complete_owner_until(
+            id,
+            progress,
+            deadline,
+            crate::storage_census::StorageCompletionGoal::WriteOutputHandoff,
+            || {
+                #[cfg(test)]
+                if let Some(hook) = WRITE_HANDOFF_RETRY_HOOK.with(|hook| hook.borrow_mut().take()) {
+                    hook();
+                }
+            },
+        );
         if census.retirement_is_terminal(id) || !census.hand_off_write_output(id) {
             census.dispose_write_output(id, output);
             census.release_disposed_write_output(id);

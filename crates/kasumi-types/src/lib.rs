@@ -52,6 +52,8 @@ mod backup;
 pub use backup::*;
 mod atomic;
 pub use atomic::*;
+mod mutation_capacity;
+pub use mutation_capacity::*;
 mod history;
 pub use history::*;
 mod shared_document;

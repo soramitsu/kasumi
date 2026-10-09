@@ -3,6 +3,7 @@ use crate::standalone::ClientProfile;
 use kasumi_client::{ClientError, KasumiAdminClient};
 use kasumi_store::private_files;
 use kasumi_types::*;
+use std::sync::atomic::{AtomicU64, Ordering};
 use uuid::Uuid;
 
 fn denied(error: ClientError) {
@@ -53,28 +54,51 @@ async fn entered(gate: &crate::rpc::AuditReleaseGate) {
         .unwrap();
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum NativeAuditScope {
+    History,
+    Authorization,
+}
+struct ManualCredentialClock {
+    base_ms: u64,
+    elapsed_ms: AtomicU64,
+}
+impl kasumi_clock::LeaseClock for ManualCredentialClock {
+    fn now(&self) -> Duration {
+        Duration::from_millis(self.elapsed_ms.load(Ordering::SeqCst))
+    }
+}
+impl kasumi_clock::WallClock for ManualCredentialClock {
+    fn now_ms(&self) -> anyhow::Result<u64> {
+        Ok(self.base_ms + self.elapsed_ms.load(Ordering::SeqCst))
+    }
+}
 #[test]
-fn audit_native_tls_fixed_history_and_original_authorization_release() {
-    // This aggregate fixture retains TLS, native clients, archived audit pages,
-    // and authorization-release futures. Isolate its frame from libtest's stack.
+fn audit_native_tls_fixed_history_and_cancellation() {
+    run_native_audit_fixture(NativeAuditScope::History);
+}
+#[test]
+fn audit_native_tls_original_authorization_release() {
+    run_native_audit_fixture(NativeAuditScope::Authorization);
+}
+fn run_native_audit_fixture(scope: NativeAuditScope) {
+    // Both scopes retain native TLS and runtime ownership. Their independent
+    // fixtures avoid replaying archived-history work to diagnose auth release.
     std::thread::Builder::new()
-        .name("audit native TLS aggregate fixture".into())
+        .name("audit native TLS fixture".into())
         .stack_size(16 << 20)
-        .spawn(|| {
+        .spawn(move || {
             tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
                 .unwrap()
-                .block_on(Box::pin(
-                    audit_native_tls_fixed_history_and_original_authorization_release_impl(),
-                ));
+                .block_on(Box::pin(native_audit_fixture(scope)));
         })
         .unwrap()
         .join()
         .unwrap();
 }
-
-async fn audit_native_tls_fixed_history_and_original_authorization_release_impl() {
+async fn native_audit_fixture(scope: NativeAuditScope) {
     let directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let (installation, storage) = crate::runtime_storage_fixtures::initialize_standalone(
         &directory.path().join("kasumi"),
@@ -110,22 +134,290 @@ async fn audit_native_tls_fixed_history_and_original_authorization_release_impl(
     .unwrap();
     crate::standalone::configure_test_topology(&config, storage.clone()).await;
     drop(listeners);
-    let runtime = NodeRuntime::open_using_storage(
-        config.clone(),
-        crate::runtime::file_secret,
-        storage.clone(),
-    )
-    .await
-    .unwrap();
+    let clock = Arc::new(ManualCredentialClock {
+        base_ms: kasumi_clock::EpochClock::system()
+            .unwrap()
+            .now_ms()
+            .unwrap()
+            / 1000
+            * 1000,
+        elapsed_ms: AtomicU64::new(0),
+    });
+    let runtime = if scope == NativeAuditScope::Authorization {
+        let epoch = Arc::new(kasumi_clock::EpochClock::new(clock.clone(), clock.clone()).unwrap());
+        NodeRuntime::open_using_storage_with_auth_clock(
+            config.clone(),
+            crate::runtime::file_secret,
+            storage.clone(),
+            epoch,
+        )
+        .await
+        .unwrap()
+    } else {
+        NodeRuntime::open_using_storage(
+            config.clone(),
+            crate::runtime::file_secret,
+            storage.clone(),
+        )
+        .await
+        .unwrap()
+    };
     let audit = runtime.audit.clone();
     let database = runtime.control.database.clone();
     let release = runtime.audit_release_gate.clone();
+    let telemetry = runtime.telemetry.clone();
     let (stop, shutdown) = watch::channel(false);
-    let serving = tokio::spawn(runtime.serve(shutdown));
+    let mut serving = tokio::spawn(runtime.serve(shutdown));
+    // Opening binds the sockets; serving still has to initialize the native
+    // control topology and tenants before TLS listeners can accept a request.
+    // Bound that startup phase separately, then use one unchanged native connect.
+    let startup_deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    while telemetry.lifecycle() != crate::observability::Lifecycle::Serving {
+        tokio::select! {
+            result = &mut serving => panic!("native audit serving ended during startup: {result:?}"),
+            _ = tokio::time::sleep_until(startup_deadline) => {
+                let lifecycle = telemetry.lifecycle();
+                stop.send(true).unwrap();
+                let stopped = serving.await;
+                panic!("native audit startup deadline at {lifecycle:?}; shutdown: {stopped:?}");
+            }
+            _ = tokio::time::sleep(Duration::from_millis(10)) => {}
+        }
+    }
     let mut admin = KasumiAdminClient::connect(&control.connection(true).unwrap())
         .await
         .unwrap();
     let operator = control.bearer().unwrap();
+    if scope == NativeAuditScope::History {
+        append(&audit, 40).await;
+        let decode_resources = kasumi_client::ClientResources::new(512 << 20, 4).unwrap();
+        let decode_options = || kasumi_client::JsonReadOptions {
+            resources: decode_resources.clone(),
+            limits: kasumi_client::ClientDecodeLimits {
+                max_request_bytes: 64 << 10,
+                max_wire_bytes: 2 << 20,
+                max_json_bytes: 1 << 20,
+                max_decoded_bytes: 64 << 20,
+                max_rows: 1024,
+                ..Default::default()
+            },
+            deadline: tokio::time::Instant::now() + std::time::Duration::from_secs(30),
+        };
+        let first = admin
+            .export_security_audit(
+                &operator,
+                &SecurityAuditExportRequest {
+                    cursor: None,
+                    limit: 2,
+                },
+                &decode_options(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(first.next_sequence, 2);
+        let end = first.through_sequence;
+        let stream = first.stream_id;
+        append(&audit, 750).await;
+        let status = admin.security_audit_status(&operator).await.unwrap();
+        assert!(status.position.pruned_before > end);
+        assert!(status.archive_segments > 1);
+        let mut cursor = first.cursor();
+        let mut sequences = first
+            .records
+            .iter()
+            .map(|record| record.sequence)
+            .collect::<Vec<_>>();
+        while let Some(next) = cursor {
+            let page = admin
+                .export_security_audit(
+                    &operator,
+                    &SecurityAuditExportRequest {
+                        cursor: Some(next),
+                        limit: 1024,
+                    },
+                    &decode_options(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(page.stream_id, stream);
+            assert_eq!(page.through_sequence, end);
+            assert!(serde_json::to_vec(&*page).unwrap().len() <= MAX_SECURITY_AUDIT_PAGE_BYTES);
+            sequences.extend(page.records.iter().map(|record| record.sequence));
+            cursor = page.cursor();
+        }
+        assert_eq!(sequences, (0..end).collect::<Vec<_>>());
+        let archives = admin
+            .security_audit_archives(
+                &operator,
+                &SecurityAuditArchivePageRequest {
+                    cursor: None,
+                    limit: 1,
+                },
+            )
+            .await
+            .unwrap();
+        let pinned_archive_count = archives.through_index;
+        let reference = archives.archives[0].clone();
+        let mut changed_snapshot = archives.cursor().unwrap();
+        changed_snapshot.snapshot_head.as_mut().unwrap().object_id = Uuid::new_v4();
+        changed_snapshot.validate().unwrap();
+        let error = admin
+            .security_audit_archives(
+                &operator,
+                &SecurityAuditArchivePageRequest {
+                    cursor: Some(changed_snapshot),
+                    limit: 1,
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, ClientError::Transport(status) if status.code() == tonic::Code::InvalidArgument)
+        );
+        let mut changed_boundary = archives.cursor().unwrap();
+        changed_boundary.previous.as_mut().unwrap().object_id = Uuid::new_v4();
+        changed_boundary.validate().unwrap();
+        let error = admin
+            .security_audit_archives(
+                &operator,
+                &SecurityAuditArchivePageRequest {
+                    cursor: Some(changed_boundary),
+                    limit: 1,
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, ClientError::Transport(status) if status.code() == tonic::Code::InvalidArgument)
+        );
+        append(&audit, 350).await;
+        let next = admin
+            .security_audit_archives(
+                &operator,
+                &SecurityAuditArchivePageRequest {
+                    cursor: archives.cursor(),
+                    limit: 256,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(next.through_index, pinned_archive_count);
+        assert_eq!(next.next_index, pinned_archive_count);
+        let verified = admin
+            .verify_security_audit_archive(
+                &operator,
+                &SecurityAuditVerifyRequest {
+                    stream_id: stream,
+                    index: 0,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(verified.observation().archive, reference);
+        assert!(
+            admin
+                .verify_security_audit_archive(
+                    &operator,
+                    &SecurityAuditVerifyRequest {
+                        stream_id: Uuid::new_v4(),
+                        index: 0
+                    }
+                )
+                .await
+                .is_err()
+        );
+
+        // CLI saves an exact initial cursor before dispatch and publishes a private
+        // bounded page. Repeating a published path or changing its inputs is rejected.
+        let request = installation
+            .control_profile
+            .with_file_name("audit-request.json");
+        let output = installation
+            .control_profile
+            .with_file_name("audit-page.json");
+        private_files::create(&request, br#"{"cursor":null,"limit":8}"#).unwrap();
+        let arguments = vec![
+            "audit".into(),
+            "export".into(),
+            installation.control_profile.display().to_string(),
+            request.display().to_string(),
+            output.display().to_string(),
+        ];
+        assert!(crate::standalone_cli::command(&arguments).await.unwrap());
+        let page: SecurityAuditPage = serde_json::from_slice(
+            &private_files::read(&output, MAX_SECURITY_AUDIT_PAGE_BYTES).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(page.records.len(), 8);
+        let original_attempt = private_files::read(
+            &output.with_extension("audit-attempt.json"),
+            MAX_SECURITY_AUDIT_PAGE_BYTES,
+        )
+        .unwrap();
+        assert!(crate::standalone_cli::command(&arguments).await.is_err());
+        assert_eq!(
+            private_files::read(
+                &output.with_extension("audit-attempt.json"),
+                MAX_SECURITY_AUDIT_PAGE_BYTES
+            )
+            .unwrap(),
+            original_attempt
+        );
+
+        // Cancel after the server encoded a page. The CLI retains the exact cursor,
+        // so fresh authentication on retry cannot advance the historical boundary.
+        let retry_input = installation
+            .control_profile
+            .with_file_name("audit-retry-request.json");
+        let retry_output = installation
+            .control_profile
+            .with_file_name("audit-retry-page.json");
+        let retry_request = SecurityAuditExportRequest {
+            cursor: Some(SecurityAuditCursor {
+                stream_id: stream,
+                next_sequence: 0,
+                through_sequence: page.through_sequence,
+                snapshot_segments: page.snapshot_segments,
+                snapshot_head: page.snapshot_head.clone(),
+                snapshot_tail_sha256: page.snapshot_tail_sha256.clone(),
+                previous_record_sha256: None,
+            }),
+            limit: 8,
+        };
+        private_files::create(&retry_input, &serde_json::to_vec(&retry_request).unwrap()).unwrap();
+        let retry_arguments = vec![
+            "audit".into(),
+            "export".into(),
+            installation.control_profile.display().to_string(),
+            retry_input.display().to_string(),
+            retry_output.display().to_string(),
+        ];
+        let cancellation_gate = gate(&release).await;
+        let arguments = retry_arguments.clone();
+        let cancelled =
+            tokio::spawn(async move { crate::standalone_cli::command(&arguments).await });
+        entered(&cancellation_gate).await;
+        cancelled.abort();
+        assert!(cancelled.await.unwrap_err().is_cancelled());
+        cancellation_gate.release.notify_one();
+        assert!(!retry_output.exists());
+        append(&audit, 50).await;
+        assert!(
+            crate::standalone_cli::command(&retry_arguments)
+                .await
+                .unwrap()
+        );
+        let retried: SecurityAuditPage = serde_json::from_slice(
+            &private_files::read(&retry_output, MAX_SECURITY_AUDIT_PAGE_BYTES).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(retried.through_sequence, page.through_sequence);
+        assert_eq!(retried.stream_id, stream);
+
+        stop.send(true).unwrap();
+        serving.await.unwrap().unwrap();
+        return;
+    }
     // Tenant administrators and Control read-only or ungranted principals cannot
     // use this service route, even with valid TLS and exact resource credentials.
     denied(
@@ -159,230 +451,6 @@ async fn audit_native_tls_fixed_history_and_original_authorization_release_impl(
                 .unwrap_err(),
         );
     }
-    append(&audit, 40).await;
-    let decode_resources = kasumi_client::ClientResources::new(512 << 20, 4).unwrap();
-    let decode_options = || kasumi_client::JsonReadOptions {
-        resources: decode_resources.clone(),
-        limits: kasumi_client::ClientDecodeLimits {
-            max_request_bytes: 64 << 10,
-            max_wire_bytes: 2 << 20,
-            max_json_bytes: 1 << 20,
-            max_decoded_bytes: 64 << 20,
-            max_rows: 1024,
-            ..Default::default()
-        },
-        deadline: tokio::time::Instant::now() + std::time::Duration::from_secs(30),
-    };
-    let first = admin
-        .export_security_audit(
-            &operator,
-            &SecurityAuditExportRequest {
-                cursor: None,
-                limit: 2,
-            },
-            &decode_options(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(first.next_sequence, 2);
-    let end = first.through_sequence;
-    let stream = first.stream_id;
-    append(&audit, 750).await;
-    let status = admin.security_audit_status(&operator).await.unwrap();
-    assert!(status.position.pruned_before > end);
-    assert!(status.archive_segments > 1);
-    let mut cursor = first.cursor();
-    let mut sequences = first
-        .records
-        .iter()
-        .map(|record| record.sequence)
-        .collect::<Vec<_>>();
-    while let Some(next) = cursor {
-        let page = admin
-            .export_security_audit(
-                &operator,
-                &SecurityAuditExportRequest {
-                    cursor: Some(next),
-                    limit: 1024,
-                },
-                &decode_options(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(page.stream_id, stream);
-        assert_eq!(page.through_sequence, end);
-        assert!(serde_json::to_vec(&*page).unwrap().len() <= MAX_SECURITY_AUDIT_PAGE_BYTES);
-        sequences.extend(page.records.iter().map(|record| record.sequence));
-        cursor = page.cursor();
-    }
-    assert_eq!(sequences, (0..end).collect::<Vec<_>>());
-    let archives = admin
-        .security_audit_archives(
-            &operator,
-            &SecurityAuditArchivePageRequest {
-                cursor: None,
-                limit: 1,
-            },
-        )
-        .await
-        .unwrap();
-    let pinned_archive_count = archives.through_index;
-    let reference = archives.archives[0].clone();
-    let mut changed_snapshot = archives.cursor().unwrap();
-    changed_snapshot.snapshot_head.as_mut().unwrap().object_id = Uuid::new_v4();
-    changed_snapshot.validate().unwrap();
-    let error = admin
-        .security_audit_archives(
-            &operator,
-            &SecurityAuditArchivePageRequest {
-                cursor: Some(changed_snapshot),
-                limit: 1,
-            },
-        )
-        .await
-        .unwrap_err();
-    assert!(
-        matches!(error, ClientError::Transport(status) if status.code() == tonic::Code::InvalidArgument)
-    );
-    let mut changed_boundary = archives.cursor().unwrap();
-    changed_boundary.previous.as_mut().unwrap().object_id = Uuid::new_v4();
-    changed_boundary.validate().unwrap();
-    let error = admin
-        .security_audit_archives(
-            &operator,
-            &SecurityAuditArchivePageRequest {
-                cursor: Some(changed_boundary),
-                limit: 1,
-            },
-        )
-        .await
-        .unwrap_err();
-    assert!(
-        matches!(error, ClientError::Transport(status) if status.code() == tonic::Code::InvalidArgument)
-    );
-    append(&audit, 350).await;
-    let next = admin
-        .security_audit_archives(
-            &operator,
-            &SecurityAuditArchivePageRequest {
-                cursor: archives.cursor(),
-                limit: 256,
-            },
-        )
-        .await
-        .unwrap();
-    assert_eq!(next.through_index, pinned_archive_count);
-    assert_eq!(next.next_index, pinned_archive_count);
-    let verified = admin
-        .verify_security_audit_archive(
-            &operator,
-            &SecurityAuditVerifyRequest {
-                stream_id: stream,
-                index: 0,
-            },
-        )
-        .await
-        .unwrap();
-    assert_eq!(verified.observation().archive, reference);
-    assert!(
-        admin
-            .verify_security_audit_archive(
-                &operator,
-                &SecurityAuditVerifyRequest {
-                    stream_id: Uuid::new_v4(),
-                    index: 0
-                }
-            )
-            .await
-            .is_err()
-    );
-
-    // CLI saves an exact initial cursor before dispatch and publishes a private
-    // bounded page. Repeating a published path or changing its inputs is rejected.
-    let request = installation
-        .control_profile
-        .with_file_name("audit-request.json");
-    let output = installation
-        .control_profile
-        .with_file_name("audit-page.json");
-    private_files::create(&request, br#"{"cursor":null,"limit":8}"#).unwrap();
-    let arguments = vec![
-        "audit".into(),
-        "export".into(),
-        installation.control_profile.display().to_string(),
-        request.display().to_string(),
-        output.display().to_string(),
-    ];
-    assert!(crate::standalone_cli::command(&arguments).await.unwrap());
-    let page: SecurityAuditPage = serde_json::from_slice(
-        &private_files::read(&output, MAX_SECURITY_AUDIT_PAGE_BYTES).unwrap(),
-    )
-    .unwrap();
-    assert_eq!(page.records.len(), 8);
-    let original_attempt = private_files::read(
-        &output.with_extension("audit-attempt.json"),
-        MAX_SECURITY_AUDIT_PAGE_BYTES,
-    )
-    .unwrap();
-    assert!(crate::standalone_cli::command(&arguments).await.is_err());
-    assert_eq!(
-        private_files::read(
-            &output.with_extension("audit-attempt.json"),
-            MAX_SECURITY_AUDIT_PAGE_BYTES
-        )
-        .unwrap(),
-        original_attempt
-    );
-
-    // Cancel after the server encoded a page. The CLI retains the exact cursor,
-    // so fresh authentication on retry cannot advance the historical boundary.
-    let retry_input = installation
-        .control_profile
-        .with_file_name("audit-retry-request.json");
-    let retry_output = installation
-        .control_profile
-        .with_file_name("audit-retry-page.json");
-    let retry_request = SecurityAuditExportRequest {
-        cursor: Some(SecurityAuditCursor {
-            stream_id: stream,
-            next_sequence: 0,
-            through_sequence: page.through_sequence,
-            snapshot_segments: page.snapshot_segments,
-            snapshot_head: page.snapshot_head.clone(),
-            snapshot_tail_sha256: page.snapshot_tail_sha256.clone(),
-            previous_record_sha256: None,
-        }),
-        limit: 8,
-    };
-    private_files::create(&retry_input, &serde_json::to_vec(&retry_request).unwrap()).unwrap();
-    let retry_arguments = vec![
-        "audit".into(),
-        "export".into(),
-        installation.control_profile.display().to_string(),
-        retry_input.display().to_string(),
-        retry_output.display().to_string(),
-    ];
-    let cancellation_gate = gate(&release).await;
-    let arguments = retry_arguments.clone();
-    let cancelled = tokio::spawn(async move { crate::standalone_cli::command(&arguments).await });
-    entered(&cancellation_gate).await;
-    cancelled.abort();
-    assert!(cancelled.await.unwrap_err().is_cancelled());
-    cancellation_gate.release.notify_one();
-    assert!(!retry_output.exists());
-    append(&audit, 50).await;
-    assert!(
-        crate::standalone_cli::command(&retry_arguments)
-            .await
-            .unwrap()
-    );
-    let retried: SecurityAuditPage = serde_json::from_slice(
-        &private_files::read(&retry_output, MAX_SECURITY_AUDIT_PAGE_BYTES).unwrap(),
-    )
-    .unwrap();
-    assert_eq!(retried.through_sequence, page.through_sequence);
-    assert_eq!(retried.stream_id, stream);
-
     let create = |seconds| CreateCredential {
         family_id: Uuid::new_v4(),
         principal: "administrator".into(),
@@ -421,7 +489,9 @@ async fn audit_native_tls_fixed_history_and_original_authorization_release_impl(
     let token = short.token.clone();
     let request = tokio::spawn(async move { request_client.security_audit_status(&token).await });
     entered(&expiry_gate).await;
-    tokio::time::sleep(Duration::from_millis(1500)).await;
+    // Advance the same native issuer/verifier clock only after the actual
+    // signed request reaches its output gate. Keep the original four seconds.
+    clock.elapsed_ms.store(1500, Ordering::SeqCst);
     let renewed = admin
         .renew_credential(
             &short.token,
@@ -433,16 +503,16 @@ async fn audit_native_tls_fixed_history_and_original_authorization_release_impl(
         .await
         .unwrap();
     assert!(renewed.expires_at_ms > short.expires_at_ms);
-    let now = kasumi_clock::EpochClock::system()
-        .unwrap()
-        .now_ms()
-        .unwrap();
-    tokio::time::sleep(Duration::from_millis(
-        short.expires_at_ms.saturating_sub(now) + 50,
-    ))
-    .await;
+    let beyond_original = short.expires_at_ms - clock.base_ms + 50;
+    assert!(clock.base_ms + beyond_original < renewed.expires_at_ms);
+    clock.elapsed_ms.store(beyond_original, Ordering::SeqCst);
     expiry_gate.release.notify_one();
-    denied(request.await.unwrap().unwrap_err());
+    let ClientError::Transport(expired) = request.await.unwrap().unwrap_err() else {
+        panic!("expected the retained original credential expiry denial")
+    };
+    assert_eq!(expired.code(), tonic::Code::Unauthenticated);
+    let detail: serde_json::Value = serde_json::from_slice(expired.details()).unwrap();
+    assert_eq!(detail["code"], "UNAUTHORIZED");
     admin.security_audit_status(&renewed.token).await.unwrap();
 
     let mut replacement_specification = create(3600);
@@ -485,7 +555,7 @@ async fn audit_native_tls_fixed_history_and_original_authorization_release_impl(
         panic!("expected a fenced native response")
     };
     // Local credential liveness also depends on the now-sealed revocation table.
-    assert_eq!(error.code(), tonic::Code::Unauthenticated);
+    assert_eq!(error.code(), tonic::Code::Unavailable);
     stop.send(true).unwrap();
     // Shutdown still drains every owner and reports the injected audit closure.
     assert!(serving.await.unwrap().is_err());

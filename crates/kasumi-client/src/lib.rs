@@ -333,6 +333,53 @@ impl KasumiClient {
             .await?;
         Ok(())
     }
+    /// Read-only full-batch shape admission using existing Data grants. The
+    /// application must carry its returned epoch assertion into actual dispatch.
+    pub async fn admit_mutation_capacity(
+        &mut self,
+        bearer: &str,
+        expected_tenant: &str,
+        request: &kasumi_types::AdmitMutationCapacity,
+    ) -> Result<kasumi_types::MutationCapacityAdmission, ClientError> {
+        // Bound protobuf decoding before allocating a peer-controlled JSON reply.
+        let mut client = self.inner.clone().max_decoding_message_size(8192);
+        let response = client
+            .admit_mutation_capacity(self.authorized(
+                bearer,
+                proto::MutationCapacityRequest {
+                    request_json: encode(request)?,
+                },
+            )?)
+            .await?
+            .into_inner();
+        if response.response_json.len() > 4096 {
+            return Err(ClientError::InvalidResponse(
+                "mutation admission reply exceeds bound",
+            ));
+        }
+        let admitted: kasumi_types::MutationCapacityAdmission =
+            serde_json::from_slice(&response.response_json)?;
+        if admitted.tenant != expected_tenant
+            || admitted.incarnation != request.expected_incarnation
+            || admitted.policy_epoch == 0
+            || admitted.schema_epoch == 0
+            || admitted.batch_digest
+                != request
+                    .batch
+                    .digest()
+                    .map_err(|_| ClientError::InvalidResponse("mutation admission input digest"))?
+            || !request
+                .batch
+                .read_set
+                .contains(&admitted.snapshot_assertion())
+        {
+            return Err(ClientError::InvalidResponse(
+                "mutation admission differs from exact input and epochs",
+            ));
+        }
+        Ok(admitted)
+    }
+
     pub async fn mutate(
         &mut self,
         bearer: &str,

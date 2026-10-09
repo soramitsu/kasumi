@@ -17,6 +17,18 @@ impl StorageCensus {
         if !hold.belongs_to_pool(claim.pool) {
             return Err(io::ErrorKind::InvalidInput.into());
         }
+        // Observe the old claim first, then release it before parent admission.
+        // The ordered old/replacement guards below revalidate the original, so
+        // a concurrent transition rolls back this unpublished count safely.
+        let parent = {
+            let old = self.source_lock(claim.id.index)?;
+            self.require_claim(claim, &old)?;
+            old.parent.ok_or(io::ErrorKind::InvalidData)?
+        };
+        let mut child = Some({
+            let parent_metadata = self.source_lock(parent.index)?;
+            self.preclaim_child_locked(parent, &parent_metadata)?
+        });
         for replacement_index in 0..self.slots.len() {
             if replacement_index == claim.id.index {
                 continue;
@@ -67,9 +79,10 @@ impl StorageCensus {
             if !matches!(replacement.cell, Cell::Vacant) {
                 continue;
             }
-            let parent = old.parent.ok_or(io::ErrorKind::InvalidData)?;
+            if old.parent != Some(parent) {
+                return Err(io::ErrorKind::InvalidData.into());
+            }
             let generation = self.source_generation()?;
-            self.source_add_child(parent)?;
             let record = ExchangeRecord {
                 old: claim.id,
                 replacement: StorageOwnerId {
@@ -81,7 +94,13 @@ impl StorageCensus {
             };
             replacement.generation = generation;
             replacement.kind = StorageOwnerKind::Reader;
-            replacement.parent = Some(parent);
+            replacement.parent = Some(
+                child
+                    .take()
+                    .expect("unpublished source replacement")
+                    .publish(),
+            );
+            replacement.children_sealed = false;
             replacement.cell = Cell::SourceReserved;
             replacement.source = Some(SourceSlot {
                 pool: claim.pool,

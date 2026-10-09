@@ -105,15 +105,20 @@ impl PreparedTenantStorageReadView {
     }
 
     pub fn cancel(mut self) -> Result<()> {
-        self.cancel_inner()
+        let deadline = std::time::Instant::now() + crate::NATIVE_READ_TIMEOUT;
+        self.cancel_inner_until(Some(deadline))
     }
 
     fn cancel_inner(&mut self) -> Result<()> {
+        self.cancel_inner_until(None)
+    }
+
+    fn cancel_inner_until(&mut self, deadline: Option<std::time::Instant>) -> Result<()> {
         match self.queued.take() {
             Some(Queued::Registered(reader)) => self
                 .application
                 .node
-                .cancel_queued_registered_read(reader, Ok(())),
+                .cancel_queued_registered_read_until(reader, Ok(()), deadline),
             #[cfg(any(test, feature = "test-utils"))]
             Some(Queued::Fixture) => Ok(()),
             None => Ok(()),

@@ -2,7 +2,7 @@
 
 Status: **active; all seven implementation goals remain open**. Established
 2026-09-30 from the user's proposal and clarification; current status consolidated
-2026-10-05. These goals extend G02 and its query, snapshot and resource-admission
+2026-10-08. These goals extend G02 and its query, snapshot and resource-admission
 requirements.
 
 ## Central requirement
@@ -15,6 +15,17 @@ old or infrequently accessed while the complete resident set fits. Disk-backed
 serving begins when the resident set exceeds the bound; frequency and recency
 then determine what remains hot. This is a capacity-driven transition, not a
 small demand cache that routinely leaves fitting data cold.
+
+The production default must provide a large shared residency budget that scales
+with configured host/container capacity. Separate that capacity from bounded
+operation workspace. A 512 MiB temporary-workspace ceiling and small per-store
+settings must not silently restrict an otherwise fitting large cache. The
+aggregate default/workspace correction and the joined 222-case Engine/KV
+selection pass, including actual cache backing, generation registration,
+last-database-owner retirement and bounded known-union refill. Complete
+full-residency activation still requires the full allocation census, every
+index kind and a native residency witness that remains current after cleanup.
+Explicitly configured small bounds and their rejection tests remain valid.
 
 Disk remains authoritative in both modes. Writes must persist atomically
 before publishing their new versions or acknowledging success. Keeping all
@@ -39,602 +50,353 @@ segmented-log direction before implementing the physical change. Preserve the
 first-release rule: replace obsolete APIs/formats directly and reject old
 formats, with no migration, fallback reader or dual writer.
 
+## First-release canonical design
+
+The user reaffirmed on 2026-10-08: remove old code and keep the strongest design.
+The release must expose one canonical disk-backed storage and query path.
+Delete superseded resident document/index/feed implementations, obsolete APIs,
+compatibility readers/writers and permanent feature-switch alternatives when
+the replacement is integrated. Preserve supported behavior, security and
+operational guarantees through the canonical implementation. Intermediate
+coexistence is only a development step, never a released fallback.
+
+Prefer removing a structural memory limit over extending an obsolete resident
+representation. In particular, full-copy feed growth and per-commit retention
+of an entire publication bank are not the final history design. Use bounded
+same-snapshot disk access and exact owned backing; let the shared cache retain
+all eligible data whenever it fits. Failed-source archives and test evidence
+remain development history and are not executable compatibility paths.
+
+Deletion is part of acceptance, rather than post-release cleanup. The final
+source must satisfy these cutover checks:
+
+| Area | Canonical implementation | Code to remove at cutover |
+|---|---|---|
+| Documents and indexes | Atomic durable roots with snapshot-aware reads and the shared cache. | All-document serving maps, resident-only index dispatch and fallback feature switches. |
+| Public queries and cursors | One owning result/page API with current authorization, expiry and cancellation checks. | Resident query/cursor dispatch, duplicate staging APIs and adapters that copy into unaccounted outputs. |
+| Change feed and snapshots | Same-snapshot disk records, bounded pages and streaming import/export. | Resident commit history, full-copy feed growth and per-commit ownership of entire publication banks. |
+| Storage formats and configuration | One first-release format and one shared residency policy. | Old readers/writers, migration branches and settings that select obsolete implementations. |
+
+Verify each removal with the affected public callers and original behavioral
+tests. Keep negative format-rejection tests. A temporary selected API is an
+integration step; it is not a second supported serving path. Full residency
+must cover the canonical data, including feed and retained snapshot pages,
+without rebuilding the deleted resident structures during preload.
+
 ## Current production status
 
-**C01–C07 remain open.** The native key directory is disk-backed, but production
-still uses resident document maps and structured/text indexes. Application changes are being
-implemented and tested in isolated integration cohorts; they have not been
-promoted to the live checkout. No combination of component passes closes
-a production goal.
+**All C01–C07 and M01–M07 remain open.** Work is integrated in an isolated,
+source-pinned cohort; production still serves resident documents and indexes.
+The live checkout has not received the storage redesign. Passing a component
+is a prerequisite, not an activated production feature.
 
-The [2026-10-04 production-checkout checkpoint](evidence/release-resume-20261004/README.md)
-passes the rebuilt native library **563/563**, including **8** actual staging
-allocation/refund regressions. Its fallible node ownership repair is active in
-the native table path; it does not fund complete application successor work
-before Raft acceptance, activate disk document/index serving or prove full-fit
-residency. Required installed incarnation and Transit trust cutovers and the
-G11 preflight-failure repair have separate scoped passes. Later shared
-plaintext/Raft changes are preserved and require their own source-bound
-validation. C01–C07 and M01–M07 remain open.
+The current implementation checkpoint is `473cdba` in the persistent recovery
+workspace. The following results are component evidence; the final joined
+release still needs all acceptance gates below.
 
-The later [2026-10-04 explicit audit-placement checkpoint](evidence/audit-placement-cutover-20261004/README.md)
-requires caller-selected Control/application policy and independent target
-policy. Immutable target/local journal bindings retain the original supplied
-cache and its physical owner; external failure cannot choose local storage.
-Target/local journals use format 5 and local physical markers format 2, directly
-rejecting superseded inputs. Standalone init, CLI and staging publish explicit
-choices without missing-row repair.
+| Component | Verified progress | Remaining activation work |
+|---|---|---|
+| Native publication | Disk-backed atomic image/stream regressions and 13 physical-claim tests pass. The six native stream-extension cases pass after exact fixture alias retirement (actual811), including stale/foreign quotes, nonzero growth and refusal. | Thread the original writer through every real producer and qualify mixed prepared prefixes, cleanup and final publication. |
+| Paired encrypted writes | Five paired stream cases pass at `b505918` (actual807), including growing the original claim, sealing, expiry and original error/panic custody. Earlier prepaid and identity/rotation checks remain preserved. | Use this writer for actual private primary/index/feed output and final Staged/Archive effects; complete retained-owner retirement. |
+| Selected Archive source | The closed journal and scoped consumers are joined. `32f41af` connects the actual Archive command, independent header/audit/outcome and structured/unique index preservation. Replays retain one body and the original source/bank. `ee9e5e5` adds the source-measured archive decode capacity; normal check actual831 still reaches the two obsolete feed callers. | Qualify the actual SDK route once Engine compiles; finish finite original paired native publication and delete the superseded history reducer. |
+| Feed preparation and cleanup | Attempt-specific progress and strict framing replace the scope-only journal. Abort checks exact attempt/commit ownership; empty appends cannot erase a later commit. All eight pure codec/plan/cursor/prefix tests pass (actual822). `473cdba` joins the private predecessor feed census, positive reader retirement, and finite mutually exclusive abort/trim liabilities. | Bind the actual exclusive prepared sequence range and same-source private Head/pin, reserve complete cleanup before Ready, and qualify physical mixed-prefix abort/trim/publication. |
+| Selected Staged source | `473cdba` integrates the fixed received bitmap, selected/private chunk source, immutable terminal/chunk publication, semantic predecessor adapters, and streaming snapshot callers. | Finish actual family/provider/owned-route activation and same-bank physical custody. Qualify atomic Finalize, replay, snapshot and refusal through the SDK. Joined source is not yet compilation-qualified. |
+| Schema ownership | Canonical reference resolution and the complete HIR-to-NFA compiler are joined. All 229 default and 121 minimal owning automata tests pass (actual815, actual817), including native allocation/peak/live parity, funding refusals, errors and aliases. Canonical literal extraction/optimization is joined at `e905722`; syntax default/no-Unicode pass 167/162 tests and automata default/minimal pass 229/121 (actual823–826). Native Aho/Teddy and shared prefilter selection are joined: actual833 passes 155 Aho tests; actual836–837 pass three owning cases and all 232 default automata tests. Actual832 preserves the missing 256-byte allocation failure, repaired by an inline fixed alphabet rather than a larger allowance. Actual843 passes 239 tests including OnePass. Actual844 exposed four needless allocations in scalar DFA cache sizing; a shared fixed encoding constant removes them. Actual849 at `b8163fa` passes all 245 default automata tests, including original native determinization state/traversal. | Finish the enclosing native strategy/engines/runtime caches and the actual compiled-or-error Schema Create/Replace artifact before acceptance. No restricted language substitute. |
+| Ordered context | Canonical retained and assigned rows carry full log/predecessor, membership, command and retirement-seed binding, with the unchanged primary fingerprint. All eight prefix tests and six startup tests pass at `c75d0d8` (actual829–830). Only the current retained membership is moved within the original scan grant. Actual835/838 each pass eight cases for whole-request binding and the canonical staged terminal identity. `118a8da` adds distinct actual startup provenance; all seven cases pass in actual839. At `b8163fa`, actual847/848 pass eight append and seven startup cases, including borrowed canonical membership. | Bind these stamps to the actual exclusive cohort prefix; seal each graph before issuing its successor, revoke canceled members, and release ranges only after positive cleanup. |
+| Replica capacity | Exact live receiver provenance and canonical fixture preparation pass 47 owning OpenRaft cases in each profile (actual799, actual802). Response-prefix and typed constructor component evidence remains preserved. | Complete all-family predecessor preparation, lexical writer authority and exact response/decoder/native/schema retirement through truncation, snapshots and startup. |
+| Canonical Engine producers | Lifecycle, Retirement, Recovery, Archive and source-census components are joined. The original-bank writer/funding path, shared committed-read loans and lexical write authority are joined. Actual820 at `20c9af4` reaches exactly the two old generic-feed callers after the 57-leaf authority cutover and repairs. `8e084bf` adds original-bank immutable private descendants. `01db285` separates semantic preparation, writer sealing and final graph readiness; normal check actual828 still reaches only those two callers. `e9133c0` admits independent descendant reader buffers sharing one immutable native pin, as required by staged finalization. `473cdba` joins the actual sealed private graph, prefix registry, exact full-context General provenance, atomic source bridge, frozen supplemental effects and semantic-source adapters. Normal Engine qualification is in progress (actual850). | Finish family/provider/owned callers and complete Schema origin, settle every installed failure, recover private attempts after crash, delete the obsolete reducer, then pass original Engine/SDK semantic and allocation suites. |
 
-Separate development checks pass **295** Python, **49** server, **16** earlier
-Store audit, **18** fresh Store ownership, **21** Engine journal, **6** snapshot
-and **12** capacity/error-retirement cases. Strict all-feature/all-target
-Store/Engine/server Clippy and scoped formatting pass. The bounded test observer
-now records all actual grants; its sample capacity changes no production budget.
-The selected-source fixture releases its inspected original clean write refusal
-before final drain. Original failures and shared-source custody remain archived.
-This C05/C06 prerequisite cut does not activate disk document/index serving,
-fund complete preacceptance publication, prove full-fit residency or qualify
-Control-only topology or production stack limits. C01–C07, M01–M07 and G01–G14
-remain open; no source revision is release-qualified.
+Failed evidence remains preserved. In particular, actual742 records an invalid
+native geometry fixture; the repair tests the actual format maximum and rejects
+its successor without increasing a production limit. Actual748 preserves a
+paired replay fixture's wrong record namespace. Actual750 records an interrupted
+rotation test that tried to reacquire its own held writer; actual751 retains
+rotation-before-commit coverage in parked mode and adds real concurrent rotation
+coverage for serialized mode. No passing component closes a C/M gate.
 
-| Component | Verified progress | Remaining production dependency |
-| --- | --- | --- |
-| Native lookup/publication | The v3 cohort passes all 605 native tests, including actual 100,000-row / >96 MiB images. The contraction correction passes all 191 NodeDisk tests and the original large byte-bound Store image. Retained reclamation passes the complete 158-case selection. The serialized image owner now passes the unchanged 65,539-operation encrypted Store release workload through commit, capture, replay and disposal: 1/1 in 1,279.25s, runner exit 0 with 2,654/2,654 unchanged pins. The earlier pre-effect StorageFull failure remains recorded. | Preserve the fixed-root promise, generic parked writer bound and original operation-count assertions through final integration. Finish production preacceptance ownership and sustained reclamation; this component pass does not activate disk serving. |
-| Documents and writes | Protected current/old sources, accepted primary edits, mandatory structured catalogs and an actual indexed Edit commit/selected receipt have scoped passes. Primary command staging and fixed point backing are allocated before candidate construction. | Complete candidate/journal/index/verification ownership before local Raft acceptance, all ingress/recovery paths, full index graph proof and activation. |
-| Query and text | Query 124, the strengthened Query4 checks, both actual document/order allocator observations, Session reuse and boxed role receivers have scoped passes. The corrected original raw metadata witness passes receiver5/5 in release/default stack. Both corrected original sparse scenarios now pass 2/2 in 7,146.96s with caches disabled, unchanged budgets/rows and2,960/2,960 unchanged pins; runner exit 0. Earlier receiver4/5 and sparse0/2 failures remain preserved. | Finish complete native writer/finalizer/tokenizer/parser admission, repeated disk merges and one atomic all-role publisher. Qualify the reviewed combined posting/position/term-info/FST and source-custody owners. Complete entry/record growth, analyzers/Japanese work, fast-field/store/meta finalization and canonical parsing. The long sparse runtime is an unresolved performance limit, and these component passes do not activate serving. |
-| Cache and refill | Large-cache sampling/churn, same-Core reclamation and collection protection have focused passes. All 58 latest refill/worker/child checks pass, now including the finite selected-lease Session phase and mutation races. Three closed Generation-handle and six actual control/weak-tail accounting tests pass. Structured traversal verifies a zero-new-read second pass. | Finish native text parsing and semantic readiness, the funded census of all retained public generations, all-role completion, automatic service startup/shutdown and final accounting/workload qualification. PrimaryAndStructured cannot claim whole-database residency. |
-| Operations and consensus | The unchanged expiry/reopen/shutdown service scenario now passes on corrected v6. Its journal checks pass 5/5 and accepted-producer checks 19/19; OpenRaft passes 254 standard and 263 generic-snapshot library tests. Snapshot install/reopen, source-retirement and audit cancellation retain their recorded scoped evidence. | Engine-wide admission before acceptance, remaining operational cases, final feature/platform/release checks on one promoted source. |
+The next reviewable integration gates are concrete and remain open:
 
-The new point pressure fixture initially used an API that preserves ordinary
-headroom to request the entire ledger remainder. Its narrow reservation-origin
-correction keeps the same byte total and assertions; it now passes together with
-all five encrypted statistics-spool checks. Exact original failures and subsequent
-corrections remain in the
+- Compile the joined canonical Engine path with no removed feed API restored.
+  Complete actual ordinary, Staged, metadata and Schema producers; route both
+  borrowed and owned commands through their preaccepted artifacts.
+- Prove lifecycle closure: positively retire census readers before refreshing a
+  private pin, settle failed-before-seal owners, revoke canceled suffixes in
+  reverse order, and recover unselected attempts from durable storage on reopen.
+- Bound the prefix registry itself. Selected retirement must prune or reseed
+  ancestor controls and banks; a growing immutable chain cannot become a new
+  memory-resident history directory.
+- Pass the original Engine/SDK tests and physical failure-injection cases before
+  the final full-residency/cache-pressure and release qualification workloads.
+
+The completion order follows the actual dependencies:
+
+1. Finish canonical Schema, Staged and Archive producers and migrate their live
+   callers so Engine compiles without either removed generic feed function.
+   Archive must carry its closed journal through independent header/audit/outcome
+   construction and original paired writes. Staged transactions must preserve
+   complete validation, permanent outcomes and atomic publication. Full schema
+   compiler artifacts must be owned before acceptance. Delete each superseded
+   resident reducer when its complete replacement is connected.
+   Include every membership/no-op/custody row in the private sequence. Retained
+   append rows and startup reconstruction must use their actual borrowed native
+   scope, never a fabricated ordinary request or applied context. Startup must
+   also discover and clean unselected private attempts from disk: an in-process
+   registry and the old global pending pointer cannot recover them after a crash.
+   The earlier two compiler diagnostics concealed a complete producer/provider
+   replacement. The larger integration at `473cdba` now requires ordinary
+   compilation and original behavior/failure tests.
+   `prepare_command_ordered` still serves the borrowed ordinary route, an owned
+   fallback and local fixture helpers. General selected Schema/Create/Replace
+   publication is still missing: selected preconditions and the restricted first
+   collection constructor do not provide it. Migrate these routes and their
+   original behavioral fixtures together, then delete the resident reducer and
+   its remaining recovery/staged mutation helpers. A runtime rejection for a
+   supported family, a test-only copy of the obsolete reducer or restored
+   generic feed functions cannot substitute for that cutover.
+2. Run the original Engine semantic/allocation and SDK suites on that joined
+   source. This unlocks qualification of already integrated Recovery, Lifecycle,
+   Retirement, Archive and scoped consumers. Preserve original limits, failure
+   ownership, authorization and permanent-outcome assertions; repair failures.
+3. Finish and activate the complete preaccept/startup prefix planner for every
+   supported family. Cover every accepted predecessor, partial preparation,
+   overwrite, snapshot and durable truncation outcome. Publish or retire exact
+   original response/decoder/native/schema owners. A known Pending cleanup may
+   retry only after positive settlement; unknown outcomes retain their owners.
+   Run unchanged audit capacity/refusal/same-instance retry cases.
+4. Complete public read/cursor/transport cutover and delete all superseded
+   resident dispatch, format and configuration paths. Then run all five cache
+   workloads, the complete allocation census and repository/release checks on
+   one final source before promotion. A fitting database must return to full
+   residency after finite startup, shrink or budget-growth refill.
+
+Original stage normalization is joined at `148d233`/`102690d`: selected work
+uses the same fixed First bank; ordinary preparation acquires one original
+complete bank. Its native subloans cannot obtain another aggregate grant. The
+physical writer must own the complete operation reservation before actor
+acceptance, including graph/index/feed writes and cleanup. A producer with a
+known complete shape can prepare it once. For generated Field/text output, the
+same original bank and native stream claim may extend prospectively during
+genuine preaccept construction, before each corresponding effect. This is one
+ledger slot, physical claim and stream throughout, not one grant per batch.
+Seal the complete producer and its final ceiling before Ready. The actual
+preparation receiver supplies that authority; ordered apply cannot relabel
+itself preaccept or grow a sealed bank. Five original normalization tests await
+the Engine compilation gate.
+
+The producer cutover and prefix planner are one dependency chain, not independent
+release steps. Complete these joins before deleting the remaining reducer:
+
+1. Bind the command, original receiver and exact selected predecessor to a live
+   preaccept scope. Borrow the standing owner without running providers or disk
+   work under its mutex, and include every retained-but-unapplied predecessor.
+2. Prepare the semantic journal and native output under the same original bank.
+   Freeze the immutable semantic candidate while the genuine preparation loan
+   remains live, then build its private physical graph. The native writer may
+   grow during this construction; semantic candidate availability is not actor
+   Ready. Require the complete graph/effects proof and sealed original writer
+   before that final transfer. Extend the original native claim before new effects when geometry is learned
+   from actual output. A refusal must precede the effect; interruption retains
+   the original owner and diagnostics.
+3. Seal and retain the completed command owner before Ready. Ordered apply
+   consumes that owner after verifying its exact log position, bytes and
+   predecessor; it does not reconstruct it or acquire a replacement allowance.
+4. Test partial preparation, capacity refusal, duplicate/replayed commands,
+   conflicting prefixes, snapshot replacement and durable truncation. Only real
+   actor settlement or publication can authorize cancellation or retirement.
+   Then migrate the original semantic fixtures and delete obsolete code.
+
+The preaccept receiver provenance and native physical claim growth are joined
+prerequisites. The remaining prepared-prefix work has these concrete gates:
+
+- Preserve every membership/no-op transition in the real ordered prefix. Prepared
+  application stamps must match the actual full applied context, including the
+  membership log identity and retirement seed. The canonical row producer is
+  qualified; closed cohort issuance and cancellation are still required.
+- Separate read provenance from publication authority. A prepared successor
+  reads the exact retained predecessor, including its private primary mappings,
+  Staged records and feed head. It never manufactures a committed receipt or
+  borrows an accepted apply guard. Authorization and storage expiry apply to
+  these in-memory overlays as well as disk reads.
+- Keep unaccepted attempts outside the committed epoch chain. Stage their
+  counted objects in the existing attempt/inventory namespaces; publish the
+  attempt, preceding tail, epoch totals, selector and application effects in
+  one final atomic Entry. Do not change committed epoch counters while preparing.
+  The authenticated startup reconstruction already replaces all derived primary
+  namespaces before serving, so a second crash-recovery format is unnecessary.
+- Borrow changed catalog mappings from sealed original effects, with the same
+  source for point lookup and enumeration. Reuse the existing referenced catalog
+  for membership changes; do not rewrite every collection for each document edit.
+- Isolate feed progress by its original attempt and protect every retained
+  sequence range. Conflicting prefixes may reuse a range only after actual
+  truncation and positive retirement; private preparation cannot trim committed
+  history or delete a retained predecessor's output.
+- Abort excluded descendants before ancestors, retain grants through actual
+  cleanup, and preserve failed/unknown outcomes. Test partial publication and
+  restart against the real stored checkpoint and committed replay tail.
+
+These are required production joins, not completed features. The final source
+must remove the old accepted-only staging entrance and remaining resident
+reducer after their canonical replacements and behavior tests pass.
+
+The detailed component chronology, including failed and interrupted runs,
+is preserved in the [evidence ledger](evidence/disk-backed-cache-20260930/README.md)
+and [prior goal record](evidence/disk-backed-cache-20260930/goals-before-canonical-cutover-refinement-20261008.md).
+The large unchanged 65,539-operation encrypted Store test passes in the existing
+release lane (actual787, 1,734.58 seconds). This establishes correctness for that
+case; its staging throughput remains unqualified. Native snapshot preparation
+parks its writer during acceptance so vote persistence can progress; the
+original vote/deadline tests pass (actual757).
+
+The family cutover must be completed explicitly before planner activation:
+
+| Family | Current concrete progress | Required before activation |
+|---|---|---|
+| Target and Recovery | Canonical reducers consume keyed original constructors; local verification/error geometry is integrated. | Run original semantic/allocation tests, selected coordinator reads and complete predecessor-prefix funding. |
+| Create collection, mutation and scalar commands | General mutation/scalar producers exist; collection creation has only the restricted funded-genesis constructor. | Build the general selected Create/Replace producer with the full schema artifact and index rebuild; replace fresh accepted-apply grants with original preaccepted constructors. |
+| Retirement | Canonical semantic, metadata and independent response ownership are integrated. | Pass permanent-outcome and native lifetime tests, then activate consume-once preaccept hooks. |
+| Schema | Selected preconditions compile; all 26 fused/literal compiler and seven native allocation cases pass. | Retain the complete supported compiler artifact before acceptance, including native graph/runtime/source owners; consume it in order and complete all index rebuilds. |
+| Lifecycle | Canonical producer is integrated; all 39 Serving cases pass. | Run Engine permanent success/rejection, native ownership and end-to-end tests, then activate original preaccept hooks. |
+| Staged transactions and history archives | Archive validation/projection uses one prepaid snapshot and one live body; primary/feed consumers lend rows. Paired original-bank stream and identity/rotation regressions pass seven and ten cases. | Connect the bounded journal and original native transaction subclaims, every retained chunk/reference and terminal outcome, then delete resident paths. |
+| Metadata, audit pruning and startup | Native reconstruction callback exists. | Original metadata constructors; seed actual restored state, cover every committed/uncommitted prefix member and forward through owned backend. |
+
+For schema changes, compilation belongs to the original preaccept owner on every
+replica and during startup reconstruction. Retain the actual schema source,
+compiled graph or deterministic diagnostic, options/registry and native provider
+under the exact `(roots, LogId, command digest, change ordinal)` identity. Consume
+the artifact once at its original ordered semantic point. Authorization, replay,
+read assertions, epochs, duplicate definitions and existing-document validation
+keep their established order; precompilation must not decide their outcomes.
+The full language and runtime must be supported before activation. Compilation
+at accepted application time, leaked borrowed lifetimes, guessed wire multipliers
+and post-allocation accounting do not satisfy this gate.
+
+The planner must cover mixed accepted batches, repeated probes, term overwrites,
+snapshot replacement and cleanup refusal. Classifying all families is not a
+capacity proof. Do not activate a subset with unsupported families counted as
+zero or recover by granting new node capacity after acceptance. The detailed
+[activation audit](evidence/disk-backed-cache-20260930/actual683-preaccept-activation-audit.txt)
+records the actual missing consumers and acceptance tests.
+
+The complete-prefix planner is the common activation gate. It must reserve the
+complete successor overlap on each replica before local acceptance and bind the
+constructor to the exact LogId, command digest, family, source roots and governor.
+Cover every intermediate predecessor, including earlier accepted schema changes,
+same-sized substitutions, repeated probes, overwrite and snapshot retirement,
+saturation, and partial preparation failure. Apply consumes each original owner
+once and never obtains a replacement grant.
+
+Startup must use the actual restored checkpoint as that planner's baseline.
+Authenticate complete committed replay coverage before selecting the matching
+primary root; never bootstrap from a later durable selector. Seed the restored
+state directly while its original restore owner holds the gate, then fund the
+complete accepted and uncommitted tail before replay. Forward the same preparation
+through the owned backend. Reconstruction remains a closed, crash-restartable
+pre-serving operation. Test fresh startup, snapshot restart, repeated reopen,
+interrupted construction and missing coverage with the original limits.
+
+Canonical producers must preserve all original deterministic successes and
+rejections, permanent outcomes, audit and snapshot quotas. Every temporary
+metadata copy and native growth must be funded before it occurs. Independently
+own the final header: no chain of previous generations or complete historical
+construction banks may escape into publication. Archive-inclusive counts come
+from the authenticated selected census, including metadata-only commands.
+Lifecycle completion must reserve the existing maximum audit event, including
+snapshot framing and decimal counter growth.
+
+Shared Authority trust retains its original installation owner. Its allocator
+and failure-path tests remain required, along with complete local error frames,
+provider failures, native backtraces, transport headers, extensions, bodies and
+final shared aliases. A message-size bound alone does not cover those owners.
+Public source and output work must retain exact snapshot, authorization, expiry,
+audit, cancellation and cleanup semantics.
+
+Preserve the original audit physical bound of 64 MiB and 128 slots, alongside
+its separately configured aggregate limits. A same-instance retry after a proven
+pre-effect refusal must succeed under those unchanged caps. Restart/replay,
+arbitrary increases, relaxed deadlines or skipped assertions are not substitutes.
+Memory and performance gates remain separate: bounded scans still need measured
+latency and an efficient selected unique-index lookup. Maximum supported Staged
+streams must not introduce quadratic copying of large assertion keys or mutation
+payloads. Fund the concrete directory node layout, including links and allocator
+overhead, before allocation; exercise descending and mixed-order streams at the
+unchanged supported limits. The greater-than-65,536-operation encrypted Store
+case must complete its original publication/readback assertions. Sampled progress
+or an interrupted performance baseline is diagnostic evidence, never that pass.
+
+The recovered baseline remains independently committed as
+`7d250197e34008c8f84d0e63aaeec6b402371c5b`. Keep source and checkpoints in persistent
+storage, preserve failures, and promote only a fully qualified joined source.
+The earlier detailed narrative is retained in the
+[pre-refinement goal record](evidence/disk-backed-cache-20260930/actual688-goals-before-refinement.md)
+and [progress ledger](disk-backed-cache-progress-20261003.md). No goal closes
+because a component compiles, its source is reviewed, or its plan is reorganized.
+
+## Integration state and next observable gates
+
+| Area | Current state | Next required result |
+|---|---|---|
+| Native storage and shared capacity | Disk directory, snapshot lookup, page caching and the large aggregate budget have scoped passing evidence. ARM hashing passes nine original digest/corruption tests. | Preserve the original cases on the joined source, then prove the complete native/document/index allocation union and bounded above-capacity behavior. |
+| Publication and shutdown | Multi-collection publication, generation accounting, idempotent read sealing and admitted-producer drain order are applied in the isolated source. Nonblocking sealing and actual SDK shutdown/retry now pass; the wider SDK36 remains unqualified. | Complete the unchanged SDK suite, including refusal, replay, counter-corruption, held readers and cleanup. Diagnose any failures without enlarging limits or weakening assertions. |
+| Structured indexes and cursors | Cursor, scalar/composite, array and Decimal changes are applied. Five focused declaration/funding cases and the authenticated retirement-set test pass. First/sparse count admission, sealed counters and primary-page namespace repairs are applied; all seven SDK reruns still exceed original write deadlines. | Diagnose late apply failures and staging cost, then pass original SDK publication, retained-snapshot pagination and uniqueness checks without changing their deadlines. |
+| Text and schema | Shared prepared Japanese dictionary passes the original 32 MiB Session allocator case. Other text/schema construction and selected evaluation still need complete funded paths. | Pass original analyzer/schema profiles and general application schema compilation/runtime, then expose full supported query behavior through canonical selected reads. |
+| Feed and snapshots | Bounded disk feed records, shared query/feed cleanup, streaming export/import and the genuine restore producer are being joined. The actual Raft restore-worker bridge passes ten constructor/cancellation/retirement tests. | Compile the complete canonical producer join, then pass original Engine history, retention, backup/restore, cancellation and failure-custody cases; remove resident history and reconstruction. |
+| Public callers and transport | Owning pages/errors and response adapters exist as integration work. | Cut over every supported caller with funded body/header/extension backing, current authorization and expiry, strict audit, and final-alias retirement. Delete superseded APIs and dispatch. |
+| Full residency and release | Native below-bound and shrink/growth witnesses pass on earlier sources. The indexed multi-collection witness currently fails during publication, before its residency assertions. | Complete finite preload/refill for every index and public generation, then all five workloads and repository gates on one final source. |
+
+A reviewed or compiled component is not an activated feature. Exact commands,
+source hashes, past passes, failures and recoverable archives are recorded in the
+[progress ledger](disk-backed-cache-progress-20261003.md) and
 [evidence ledger](evidence/disk-backed-cache-20260930/README.md).
 
-Production residency blockers remain visible in
-[`CollectionState`](../crates/kasumi-types/src/lib.rs),
-[`GenerationDocumentSource`](../crates/kasumi-engine/src/document_source.rs) and
-[`QueryIndexes`](../crates/kasumi-query/src/lib.rs). Native
-[`Core`](../crates/kasumi-kv/src/core.rs) already opens `DiskState`; its old
-resident per-key map is no longer pending implementation.
+The next integration gate includes canonical bootstrap imports using the original
+node governor, original-owner snapshot validation and relocation, independent
+metadata ownership, and disk-backed pagination. Metadata copies must not keep
+an unbounded chain of prior generations alive. Shared metadata aliases retain
+their own allocation credit until final destruction. Test fixtures must exercise
+the real durable publisher and canonical imports, preserving their existing
+limits, deadlines and behavior checks; deleted resident helpers must not return.
 
-Generated policy currently assigns a 1 GiB persistent per-group cache ceiling and
-512 MiB per scratch table under aggregate admission. These are explicit large
-settings, **not validated deployment defaults** or independently available budgets.
-Historical measurements and earlier intermediate failures are preserved in the
-[2026-10-03 qualification history](disk-backed-cache-progress-20261003.md).
+Keep memory and performance acceptance separate. The current uniqueness check
+streams primary rows with bounded memory but scales with database size and the
+number of changed rows. Replace it with the paid selected unique-index lookup
+and measure the final fitting and pressure workloads. Feed/audit retention must
+also use bounded disk access and maintenance; a growing full-copy tree or one
+entire publication bank retained per commit does not meet the design.
 
-## Current implementation sequence
+The detailed source-ownership, acceptance, retirement and constructor gates
+remain binding in the [preserved detailed gates](disk-backed-cache-progress-20261003.md#detailed-ownership-and-integration-gates-preserved-during-goal-refinement--2026-10-06).
 
-The active execution goal is to finish the implementation and its final evidence,
-not merely write this plan. The following milestones divide the remaining code
-into reviewable production changes. They do not replace or weaken C01–C07.
-
-### Production milestones
+## Production milestones
 
 | Milestone and C goals | Production outcome still needed | Executable exit gate |
 |---|---|---|
-| **M01: Repair current failures** — C05, C06, C07 | Corrected receiver5 and both original sparse scenarios pass in release/default stack. Corrected fresh Registry passes AP 1836, Query 124, focused 81 in all four profiles and native referencing 141, with every source pin unchanged. Preserve their earlier failures, ENOSPC trace and exact corrections through final integration. The unchanged large Store image, protected setup8, target reopen18, encrypted2,500-counter workload and focused close/reentry checks also have scoped passes. | Each original scenario reaches its intended assertion on the final integrated source. Keep source-derived fixture units and concrete owner capacity boundaries; retain invalid configurations as negative cases. Final operational selection passes, including exact reopen. Do not change caps, deadlines, row counts or ownership assertions to mask failures; do not accept unknown outcomes or prematurely release old roots. |
+| **M01: Repair and preserve qualification** — C05, C06, C07 | Preserve the original startup/catalog 223-case pass and separately qualified bounded memo, numeric, encrypted Store, sparse, reopen and lifecycle results. Qualify the repaired panic-custody owner through integrated callers; finish genuine Japanese Session and schema compiler/runtime joins. Earlier failures and baseline failing profiles stay visible. | Every affected original scenario reaches its intended assertion on the final source. Keep original limits and negative configurations. Passing reruns do not diagnose unexplained physical enrollment failures, and component passes do not establish production readiness. |
 | **M02: Reusable encrypted reads** — C01, C05, C06; supports C02 | Route earlier control planning, selected capture and installed terminal scans through their actual operation-owned point backing. Finish constructor/retirement custody and the exact read-owner handoff. | Real encrypted reads reuse bounded backing without mandatory per-record reservations; snapshot, table, provider, authentication and current expiry checks remain exact. Two distinct cleanup failures retain both originals. Verify the large capture path separately from fixture setup. This does not yet prove postcommit capacity. |
-| **M03: Protected publication capacity** — C01, C05, C06 | Activate real current/next source rights and reusable workspace; fund escaped historical sources before return. Bind complete successor capacity to local leader/follower acceptance, recovered accepted suffixes, membership/catalog changes and snapshot installation. | After accepted admission, saturating ordinary capacity cannot introduce a new mandatory source/planner/capture refusal. Several writes progress while old snapshots stay readable and charged. Refusal happens before local acceptance; canceled waiters cannot release accepted capacity. Recovery and all ingress paths use the same owned guarantee. |
-| **M04: Authoritative disk documents** — C03, C04, C05, C06 | Install and retain the actual committed baseline and bound query metadata in the production apply lane; preserve the prior and accepted candidate through publication, capture failure and exact recovery resolution. Wire primary construction, edits, deletes and recovery into actual ordered publication. Switch document queries to exact durable roots and activate full-fit document caching. Remove the resident all-document serving alternative. | The real service performs point reads, scans, CAS, batches, idempotent replay, retained-version reads and restart with documents larger in total than RAM. Fitting new/updated/rarely read documents stay resident after warm-up. Document publication and all associated metadata are atomic. Coordinate the cutover with M05 so existing index features remain available. |
+| **M03: Protected publication capacity** — C01, C05, C06 | Activate real current/next source rights and reusable workspace; fund escaped historical sources before return. Replace production legacy generation references and plain validator references with actual payload and Weak-tail funding owners. Bind complete successor capacity to local leader/follower acceptance, recovered accepted suffixes, membership/catalog changes and snapshot installation. | After accepted admission, saturating ordinary capacity cannot introduce a new mandatory source/planner/capture refusal. Several writes progress while old snapshots stay readable and charged. Copied metadata-bank retirement cannot certify shared payload retirement or authorize the next apply. Refusal happens before local acceptance; canceled waiters cannot release accepted capacity. Recovery and all ingress paths use the same owned guarantee. |
+| **M04: Authoritative disk documents** — C03, C04, C05, C06 | Preserve the isolated normal Engine compilation of the actual primary tree and projection modules and genuine fixture-only gates. Install and retain the actual committed baseline and bound query metadata in the production apply lane; preserve the prior and accepted candidate through publication, capture failure and exact recovery resolution. Wire primary construction, edits, deletes and recovery into actual ordered publication. Switch document queries to exact durable roots and activate full-fit document caching. Remove the resident all-document serving alternative. | Normal compilation and real factory/standing-owner callers pass before claiming production integration. The real service performs point reads, scans, CAS, batches, idempotent replay, retained-version reads and restart with documents larger in total than RAM. Fitting new/updated/rarely read documents stay resident after warm-up. Document publication and all associated metadata are atomic. Coordinate the cutover with M05 so existing index features remain available. |
 | **M05: Disk indexes and growing metadata** — C01, C03, C04, C05, C06 | Persist structured/unique/text indexes and bound their build/edit/query work. Replace remaining data-sized resident history, archive references and active staging. Preserve the implemented scalar retained-log endpoints and streaming header fold; qualify their exact immutable-source proof through append, truncate and snapshot transitions. Finish bounds for protocol-owned term metadata, requested entry batches and opaque response bytes; retain the exact active window needed for consensus. Keep already-disk-backed receipts/terminal rows on their canonical paths. | All supported filters, ordering, projections, aggregates, pagination and text analyzers/ranking agree below and above the bound. Documents and index roots commit together; schema/uniqueness behavior is preserved. Startup, log/header traversal and builders do not materialize a full data-sized map/vector. |
-| **M06: Complete residency and accounting** — C01, C03, C05, C07 | Integrate one total budget across native and decoded caches, query/output work, protected sources, retained versions and bounded collection reservations. Expose finite preload/refill completion and budget-change behavior. Develop this alongside M04/M05. | A complete fitting dataset has zero serving document/index/directory fetches and no capacity eviction after warm-up, including after writes. Growth through the bound evicts gradually; cold scans preserve the hot set; deletion/budget growth refills everything that fits. Actual live and weak/pinned tails stay charged until release. RSS/swap are measured separately from cache accounting. |
+| **M06: Complete residency and accounting** — C01, C03, C05, C07 | Integrate one total budget across native and decoded caches, query/output work, protected sources, retained versions and bounded collection reservations. Bind every genuinely published public/leased/registered generation to the census. Activate the finite production refill worker and complete selected text warming. Let one large collection or native role use available aggregate capacity; installed per-database limits cannot strand a fitting dataset cold. Expose finite preload/refill completion and budget-change behavior. Develop this alongside M04/M05. | A complete fitting dataset has zero serving document/index/directory fetches and no capacity eviction after warm-up, including after writes. Growth through the bound evicts gradually; cold scans preserve the hot set; deletion/budget growth refills everything that fits. Actual live and weak/pinned tails stay charged until release. RSS/swap are measured separately from cache accounting. |
 | **M07: Final operational qualification** — all C01–C07 | Run the final canonical implementation through standalone/replicated operation, restart, snapshots, backup/restore, archive/audit, maintenance, security and shutdown. Validate deployment defaults and document measured limits. | The five existing workload classes pass on final source, together with repository/release gates. Preserve the completed 100,000-row recovery and 4,200-command permanent-custody snapshot/reopen results; rerun affected checks on final source. Demonstrate bounded maintenance progress and actual physical reclamation; reject older formats. Publish measured cache/RSS/swap/latency results without a universal hit-rate or disk-size claim. |
 
-Security, durability, snapshot correctness and memory ownership apply during
-every milestone. M01 can expose dependencies on M02/M03; carry a specifically
-identified failure into the relevant repair instead of repeatedly rerunning it
-or declaring the whole milestone blocked. A component test or test-only path
-cannot close a production milestone. Mark a milestone complete only when its
-code is active in the supported production paths and its acceptance gate passes.
-
-### Current integration checkpoint
-
-The current work is closing the following concrete prerequisites. None is a
-production completion claim; all C01–C07 and M01–M07 remain open.
-
-| Prerequisite | Latest result | Next exit condition |
-| --- | --- | --- |
-| Native publication | The integrated writer passes 10 native and two encrypted Store cases. The unchanged 65,539-operation release test now passes 1/1 in 1,279.25s on its immutable source snapshot; runner exit 0, 2,654/2,654 matching pins. | Preserve this result on the final joined source and fund the actual writer before every acceptance path. Keep the original operation count and assertions. |
-| Sparse text | Corrected raw metadata receiver5/5 passes2.27s. Both source-derived corrected sparse scenarios pass 2/2 in 7,146.96s on release/default stack, caches disabled and original workload limits. Runner 7,859.70s exit 0;2,960/2,960 source/configuration pins unchanged. Earlier boxed receiver4/5 and sparse0/2 failures are recoverable and preserved. | Preserve logical-group versus physical/live counter semantics, callback failure identity and positive retirement on the final joined source. Finish native parser/tokenizer/finalizer ownership and qualify spill performance separately; the long correctness run does not establish acceptable latency. |
-| Schema frontend | Corrected URI/meta Registry qualification is terminal: AP1836/1836, Query 124/124, focused 81/81 in each of four profiles and native referencing 141/141; runner exit 0 with 2,172/2,172 unchanged pins. Its earlier compile, ENOSPC, concrete capacity-boundary and native-inventory failures remain preserved. The separate 30-image reviewed schema successor joins large properties, annotation/format, prepared references and legacy collectors; runtime is pending. | Qualify the joined owners and exact new inventory, then finish actual default-meta compiler/runtime, user compiler branches, retained cache owners and the production frontend. Fixed platform/thread backing must remain funded for its real lifetime. These scoped passes do not activate the frontend. |
-| Reopen and typed responses | Target passes all 18 machine/resolution checks, including exact-prefix reopen, using the canonical separate temporary importer scope. The durable node retains its original 64 MiB / 32-slot provider, 8 MiB table limits and exact-prefix assertions. Engine response 10/10, Types 1/1 and Raft constructor/response 7/7 each pass. Earlier slot exhaustion and the physical lease trace remain recorded. | Qualify the reviewed actual Custody bank, both admission providers, authenticated pending-tail recovery and pre-write response consumers. Finish its enrolled source drain and actor terminal paths, then complete aggregate production admission. A fixture’s separate importer scope does not prove the whole process budget. |
-| Native task retirement | Seven actual native task checks pass. Original upstream abort, panic, task-ID and join-set suites pass 8/7/17/19 respectively; the final join-set harness enables its required `test-util` feature without changing upstream source. The canonical caller-owned drain, production caller migration, strict vendor inventory and forward merge are reviewed but unexecuted. | Qualify independent original Waker registration/cancellation, admitted notification/cleanup joins, actual inline controls and diagnostic tails. Verify the actual selected control features. Native data completion must remain distinct from notification metadata retirement. A connected Custody source must positively retire the actual A data owner and retain separately charged B notification, Frame, caller and diagnostic tails; a completed join or callback cannot certify their physical deallocation. |
-| Atomic baseline and metadata | All eight actual protected baseline/effects/coupled-capture/metadata checks pass on 2,654 unchanged pins. The fixture now prepares the exact response tail for every protected command and retains its actual capacity owner through the operation. Target passes 18/18 and response-bank checks pass 10/10. Earlier publish-only and missing-tail failures remain recorded. | Integrate the complete accepted primary, structured, unique and text producer into one atomic publication. Replace ordinary empty publication effects with that verified all-role producer. Pending text evidence remains a refusal; test fixture admission does not close production ingress. |
-
-After these prerequisites, finish all-role atomic publication, production disk
-queries and the service's finite full-residency refill. Then qualify the five
-workload classes on one promoted source. This is the critical path; additional
-component passes must answer a specific unresolved exit condition.
-
-Earlier source-scoped prerequisites and failure traces are preserved in the
-[qualification history](disk-backed-cache-progress-20261003.md#source-scoped-prerequisite-history-preserved-during-goal-refinement--2026-10-05).
-Their original ownership and capacity obligations remain binding in M02/M03.
-The current checkpoint above identifies what has passed and what still needs an
-exit result; historical component totals do not replace production acceptance.
-
-The next atomic publication dependency is an actual full Rebuild text producer.
-Its distinct accepted Rebuild input must independently close physical statistics,
-live-term membership, every declared role, the mandatory Manifest and final
-source census. The reviewed successor is still unverified until runtime and
-native/metadata admission pass. It cannot mint a selected root or replace the
-production empty-write publisher by itself.
-
-The next connected deliverables are:
-
-1. **Finish M02/M03 ownership:** integrate the passing native update/counter and
-   retired text construction scopes; finish the sparse text-edit stack repair
-   and preserve the passing serialized image admission. Complete the schema frontend,
-   candidate shared tails and one concrete response buffer
-   for every accepted/unapplied entry, including constructor recovery.
-2. **Finish M04/M05 atomic serving:** join the actual accepted primary and every
-   structured, unique and text role to one durable receipt and selected reader;
-   activate fresh/snapshot/history reads together and remove resident alternatives.
-3. **Finish M06 complete residency:** connect the finite Session to service
-   startup, mutations, shrink, budget growth and joined shutdown. Count all live,
-   pinned and weak tails. Whole-database completion includes every index role.
-4. **Finish M01/M07 final qualification:** pass the original operational failures,
-   then the five workload classes and repository/release gates on one promoted
-   source. Publish measured cache, storage-read, RSS, swap and latency evidence.
-
-Original cleanup/close, command, compiler and text-refill requirements remain
-binding in the [preserved checkpoint history](disk-backed-cache-progress-20261003.md#checkpoint-history-consolidated-after-decoder16-qualification--2026-10-04).
-Exact source hashes, failure identities, test inventories and recoverable archives
-are recorded in the [evidence ledger](evidence/disk-backed-cache-20260930/README.md).
-Component passes do not close C01–C07 or activate the production cutover.
-
-### Next executable exits
-
-Keep the active goal at the complete redesign scope. The next work is ordered
-by these finite exits; finish a failed prerequisite before enlarging its source
-cohort or repeating unrelated checks.
-
-| Order | Concrete work | Exit evidence |
-| --- | --- | --- |
-| 1 | Preserve the now-qualified sparse and schema repairs, their original failures and the warm build lane; carry their exact owners into the integrated source. | Recoverable unchanged-source checkpoint; boxed receiver 5/5; both original sparse semantics and failure-custody scenarios pass with their original limits and default stack. The fresh Registry owner passes its actual capacity cuts and all four existing feature profiles. |
-| 2 | Qualify actual native text document/order, postings, fieldnorm, finalizer output and recorder backing; qualify canonical caller-owned source draining and the connected Custody source. | Exact original native suites and installed Engine/replica consumers pass. The original retained error/panic owner and actual backing survive refusal. Separate data retirement from physical control/notification/Frame/diagnostic retirement. No component may claim full native writer or whole-source closure until every remaining allocation is owned. |
-| 3 | Finish schema compilation and accepted primary/structured/unique/text ownership, then join one durable all-role publisher. | Complete compiler/default-meta/runtime allocation inventory and one exact accepted journal/semantic graph/selected generation. Ordinary production publication uses that inventory; an empty effect list or test-only producer cannot close the gate. |
-| 4 | Switch every production document, query, snapshot, history and lease path to that exact durable generation; connect finite preload/refill to the service. | Every supported caller uses canonical selected access, with authorization/expiry on hits and misses. No resident-map serving path remains. Startup, mutation, shrink, budget growth and shutdown finish finite owned work. |
-| 5 | Qualify and promote one complete source. | The five workload classes, final operational/security/restart coverage and repository/release gates pass on the exact promoted source. Fitting data stays fully resident with zero serving storage fetches; oversized data remains within admitted memory. |
-
-Space recovery is an operational prerequisite, not an accounting result for
-Kasumi. Removing obsolete single-link loose build objects preserves incremental
-backing, linked outputs, frozen sources and all failure evidence. These isolated
-cohorts remain unpromoted until the integrated production gates pass.
-
-### Gates for the integrated source
-
-Use one final integration cohort and preserve every already-qualified owner
-when combining successors. Older native and newer decoder/response cohorts
-have different source histories; source equality and recorded forward ancestry
-must establish each merge. Every final Cargo invocation uses the build identity
-guard in the existing warm target. A passing component on another cohort is a
-prerequisite, not the final source's acceptance evidence.
-
-| Gate | Current state | Concrete result required |
-| --- | --- | --- |
-| Original failure repair — M01 | Store, corrected receiver5 and both corrected original sparse scenarios pass. Corrected URI/meta passes AP 1836, Query 124, focused 81×4 and native referencing 141. All recorded source/configuration pins match. | Preserve these exact semantics, failure identities and limits through final integration; run affected checks on that source. Keep the sparse performance issue visible and retain every earlier terminal failure. |
-| Ownership before acceptance — M02/M03 | The 147-image native source joins ordinary Snapshot B disposal, last-caller/held-Weak metadata and the preinstallation race correction with posting/position/term-info/FST and canonical/Custody ownership. Exact source, mode and 15-package vendor checks pass. Two narrow Raft compile repairs make the normal Engine/Authority/Raft library check pass; ownership-test compilation then hits ENOSPC, so runtime qualification remains open. The 137-image schema pattern successor is source-reviewed with full frontend ownership still open. | Own the complete native writer/FST/tokenizer/parser, schema frontend, candidate/index journal and every typed response before leader, follower or recovered entry acceptance. Qualify original task installation, DATA/B disposal and the separate Frame/caller/diagnostic/Weak census. Accepted work must not encounter a new mandatory capacity refusal. |
-| One atomic publication — M04/M05 | Production still has an empty application-write publisher and resident document/index serving. Its apply lane retains a selected receipt but lacks the actual closed committed baseline and bound query metadata needed by the primary factory. The frozen effects/CompletionLoan bridge remains gated and unqualified. | The real accepted primary and every structured, unique and text role produce one canonical durable receipt and exact selected generation. Connect fresh, snapshot, point, query, pagination and history reads to it, then remove resident serving alternatives. |
-| Full fitting residency — M06 | Scoped refill/control checks pass. Complete public-generation census, text readiness and automatic service integration remain open. | Finish finite preload/refill for documents and every index/directory role, including retained versions. Below the aggregate bound, rare reads stay hot and serving reads issue no storage fetches. Writes, growth, shrink and budget changes preserve this rule without stranded collection capacity. |
-| Final qualification and promotion — M07 | No production completion or promotion is claimed. | The five workload classes and repository/release checks pass on one integrated source, including standalone/replicated operation, security/expiry, recovery, backup, audit/history, maintenance and joined shutdown. Promote that qualified source and record cache accounting, RSS, swap and latency separately. |
-
-These gates refine M01–M07 without narrowing the complete feature-preserving
-redesign. A diagnostic probe, byte-only response owner, parser-only meta input,
-prepared facade or test-only selected publisher cannot satisfy a later gate.
-
-The complete ownership gate includes native leaf/density/cache/reclamation work,
-the original fixed-u64 update, protected point backing and statistics spool,
-the final schema validator, and retained historical sources. Publication must
-preserve text ranking, schema and uniqueness semantics. Refill must run on
-startup, mutations, released pressure, budget changes and joined shutdown;
-storage-byte warming or PrimaryAndStructured completion cannot declare full
-residency. These obligations remain binding throughout the ordered gates.
-
-The remaining schema work now has a finite source inventory with 17 concrete
-production joins. It distinguishes fixed platform/thread backing from schema-sized
-compiler work. Finish the original default-meta pattern constructors and their
-lazy matcher caches, actual meta validation and owned diagnostics, the supported
-user compiler branches and per-validation scratch. Then replace both ordinary
-production meta/build calls and the raw validator/weak cache with their retained
-owners. Prepared references and BTree annotation collectors have reviewed source
-and integrity evidence; runtime is pending. Their supported partial graphs cannot
-stand in for this complete production frontend.
-
-Native FST backing is now joined in a reviewed, unqualified successor. Its shared
-prefix bound is conservative and must be used consistently by estimator and
-consumer; it does not prove fitting cache residency. Qualify its actual
-registry, stack, transitions, original errors and published dependency selection.
-Complete entry/record growth, analyzers, fast-field/store/meta finalization and
-canonical parsing before claiming the whole writer or enabling text publication.
-
-The 30-image schema helper preserves the existing suites and adds the reviewed
-reference/legacy cases: AP 1,852, Query 124, focused 97 in each of four profiles
-and native referencing 143. The newer 137-image pattern successor needs a new
-source-derived inventory and qualification helper; do not run the old selection
-as evidence for its additional cases. Both successors remain unqualified. Preserve
-the passing URI/meta checkpoint before applying them.
-
-The actual external Tantivy harness now resolves its genuine development
-dependencies and preserves all 144 original production identities, the reviewed
-same-version FST path transition and the original feature union. Its 241-package
-lock is qualified as a dependency selection; no native runtime result is implied.
-The separate FST, Columnar and SSTable native selections still need exact harness
-resolution and runtime qualification. The fast-field source has passed independent
-whole-image/mode, 941 saved/original dependency and 99 published-member checks;
-its 15 actual backing layouts remain an unqualified component.
-
-Runtime qualification currently needs sustained build space. The last ownership
-test compile exhausted disk and even evidence-log flushing failed. The source
-guard was reaped, and an independent post-run check confirms all 3,032 pins remain
-unchanged. Preserve that interrupted result and the passing normal library check;
-do not count it as a test pass or retry a large build while free space is unstable.
-
-### Recorded integration history
-
-Earlier source-specific checkpoints and their original failures are preserved in
-[the qualification history](disk-backed-cache-progress-20261003.md#additional-integration-history-preserved-on-2026-10-04).
-The current checkpoint above and the evidence ledger determine current status;
-historical passes do not activate a production path. Open obligations below
-remain binding until their stated gates pass.
-
-### Immediate integration gates
-
-These are ordered prerequisites, not completion claims. Keep source-pinned
-component results separate from service activation.
-
-The source-retirement and archive-cancellation repairs have scoped passing
-evidence. Preserve their deterministic checks in final qualification: hold the
-actual opening lock while closing captured/historical sources; retry only that
-known contention; retain genuine finish failures; require immediate bootstrap
-close after snapshot installation; validate exact Archived resource inventories;
-and derive child generation ceilings from the actual validated parent page.
-Actual create/replace/schema rebuilds have isolated component passes; the
-archived-schema test must assert the existing sealed-definition rejection.
-Referenced collection catalogs, metadata-only generations and deferred query
-opening pass the isolated integration selection. Same-attempt index resource
-release and the per-Database source-work census pass their focused checks.
-Finite refill now passes full-fit/cancellation/source-failure and pressure cases.
-The pressure correction retains the exact typed DocumentSource retention
-diagnostic. An entered refusal becomes Pressure only when the original owned
-resource ledger identifies actual capacity refusal. A retained refill pause
-keeps the original source, peak grant and diagnostic in its registered owner;
-resume must restore that exact owned reader. The older retire-and-retry path
-requires positive cleanup before replacement. Public ResourceExhausted codes,
-native failures and callback failures alone are never capacity provenance.
-Released headroom then permits primary/structured refill; the actual retained
-Session's refusal/checkpoint races now pass. Actual installed-reader cohort authorization is a separate service
-activation gate; fixture sources alone do not establish that right. The
-next graph gates are the complete structured/unique/text catalog producer,
-independent whole-graph verification, one atomic final publisher, and
-query/lifecycle activation against its captured source.
-
-1. **Requalify the coherent snapshot protocol and backend bridge on final source.**
-   The integrated protocol already compiles and has scoped passing evidence.
-   Preserve original source/cleanup errors and final-owner funding; recheck
-   affected constructor allocations, current-root slices, foreign/stale
-   identities and cancellation after the document/index cutover.
-2. **Complete the protected encrypted-publication capacity guarantee.** Retain
-   all segment, directory, proof, cache, source and diagnostic backing before
-   Ready. Include conflicting-log deletion, one atomic final image and obsolete
-   snapshot cleanup. Ordinary votes must preserve both resource and counter
-   headroom while the allowance is parked.
-3. **Finish operational qualification of canonical snapshot installation.**
-   Actual encrypted installation and reopen now have a scoped passing check.
-   Deny ordinary grants after Ready; verify install/reopen, higher votes,
-   canceled waiters, partial failure and joined shutdown on this exact source.
-4. **Remove the native atomic-image size bottleneck.** Preserve the canonical 65,536-operation / 96 MiB ordinary atomic-batch
-   validity checks. The earlier frozen producer shared that ceiling; the isolated image producer/consumer has the recorded native and encrypted Store component passes. Larger snapshots need an admitted
-   private candidate format and replay protocol whose one final durable root
-   activates the whole image; intermediate chunks must stay invisible. Qualify
-   crash/reopen, conflicting logs, retained sources and cleanup through that
-   format. Current worst-height physical reservation is also conservative:
-   12,600 operations promise about 18.65 GiB of native directory pages. The
-   16-key batching improvement reduces actual writes, not that promise. Refine
-   geometry only with a proven bound on intervening writer topology. These are
-   open operational requirements, not acceptable permanent data-size caps.
-   The constant-space image inventory now passes 100,000-row and >96 MiB
-   component tests while preserving ordinary batch refusal. The canonical
-   version5 segment writer/replay now passes large-image, torn-tail, injected
-   failure and corruption tests; private chunks share one sequence and only
-   the final ImageCommit can publish the image. The native Core consumer passes actual directory mutation, one final
-   publication, preserved votes/old readers and mandatory grants denied after
-   preparation as part of the full 596-test native suite. Actual native crash
-   injection now passes its focused old-or-complete recovery gate. The wired canonical encrypted Store image spool passes the unchanged 65,539-operation release case; qualification on the final production join remains open. The real large operation fixture must also fit proven scratch
-   and physical-publication reservations; final service activation remains open. The canonical follow-through
-   uses one final writer acquisition from the actual current root, private
-   bounded chunks under one sequence, one final commit and exact source capture.
-   Include all framing in physical quotes and validate streamed logical digests
-   without whole-value replay buffers. Old roots remain visible until final
-   publication; every crash/reopen must select the old or complete new image.
-5. **Finish and promote coherent document/index serving.**
-   Activate M04/M05 together with full-fit decoded caching; verify all supported
-   queries and retained snapshots through durable roots with empty resident
-   document maps. The isolated primary adapter alone is insufficient.
-   Complete the following dependency chain on one source cohort:
-   - **Accepted graph construction:** actual Create/Replace/Schema Rebuild,
-     a separately authorized fresh baseline/restore, and sparse Edit. Preserve
-     exact scalar, array, missing/null, uniqueness and shared-field semantics.
-     Bounded heap storage must work on the normal test and production stacks.
-   - **Complete index catalog:** every declared structured, unique and text
-     role has an actual producer and an independent semantic/physical proof.
-     An encrypted text directory alone is insufficient: segment construction,
-     row mapping, global ranking statistics, query scratch and analyzer lifetime
-     all need accounting and parity evidence.
-   - **Mandatory manifest join:** finish primary construction first; bind its
-     exact end to the index span and mandatory catalog; write the successor
-     Manifest at the reserved ordinal. Reject the old primary-only format.
-     On one final captured source, account every allocated ordinal as Complete
-     or Released, prove exact owning edges and retired physical absence, and
-     authenticate shared old subtrees through their prior selected role paths.
-     No optional catalog, fixture descriptor or Action reinterpretation may
-     manufacture the complete publication capability.
-   - **Protected query preparation:** register the original work owner before
-     any fallible provider allocation; admit all encrypted point backing before
-     starting work; borrow the selected captured source without forking it.
-     Preparation, cancellation and retirement must retain their original errors.
-   - **Service and cache activation:** connect the complete publisher and reader
-     together, then remove resident serving maps. Finite preload/refill must
-     retain all fitting documents and index pages and expose completion;
-     shrink, released pressure and budget growth must trigger another pass.
-6. **Finish residency and release evidence.** Run M06/M07 after the integrated
-   cutover, including fitting datasets with rare reads, growth through the bound,
-   scan resistance, refill, all operations and measured whole-process memory.
-
-### M06 cache integration gates
-
-- Route the actual selected primary metadata, pages and live/archive records
-  through the aggregate cache. A completed finite warm pass must produce zero
-  serving fetches for all fitting eligible entries; recheck authorization and
-  key access on every hit.
-- Carry explicit read intent through the real query bridge. Historical/range
-  scans must not train demand frequency or evict hot entries under pressure.
-  Passing a warm-cursor scan test alone does not prove query scan resistance.
-- Remove every retired source membership even if other sources resize the
-  cache directory concurrently. Destroy payloads and return provider credit
-  outside cache locks. Pinned output tails remain charged until actual release.
-- Register concrete query/warm work with the Database lifecycle. Failed reader
-  acquisition must retain the exact entered child, and cleanup must operate on
-  the original failure owner. No absent handle or dropped facade proves close.
-- Production query/refill readers must borrow the actual protected captured
-  source using separately pre-admitted point backing. An Active-only ordinary
-  reader fixture cannot prove this capability; do not share the publication
-  scratch opportunistically or bypass the installed cohort check.
-- Wire budget growth, shrink and source-retirement wakes to finite refill.
-  Preserve collection reservations within the same aggregate total. Validate
-  allocation overlap during directory growth and restore all fitting entries
-  after temporary pressure clears.
-- Change the effective shared limit under the actual MemoryCore ledger lock.
-  Lowering the limit must leave existing grants charged, deny unfit new growth
-  and retire eligible cache entries under pressure; it cannot refund live memory
-  by relabeling it. Increasing the limit must publish a real relief event after
-  the ledger change. Reconcile collection preferences against that same limit.
-  Fixed slot/work inventories require separately admitted backing to grow.
-- Drive finite warm passes from accepted generation publication and real
-  aggregate headroom relief. Capture capacity before the actual refusal and
-  retain the same attempt's source, cursor and peak grant while waiting, so an
-  external release racing waiter creation is observed and its own cleanup
-  cannot create a retry loop. Census availability has a separate real event.
-  Complete and Pressure wait for a relevant change; timer polling and synthetic
-  publication signals do not satisfy this gate. A changed accepted generation
-  requires positive old-work retirement and a pass over the exact successor.
-- Fund analyzer dictionaries and their initialization peak before loading or
-  fingerprinting embedded pages. Every tokenizer clone must retain its original
-  runtime credit. A shared slot must cover any surviving weak/control backing,
-  avoid an owning cycle through MemoryCore, and retain initialization failures
-  in the original work census. Query token planning and index production must
-  use the same admitted runtime and profile before text serving is activated.
-- Share unchanged pages/payloads across sources only with the actual accepted
-  producer's unchanged-graph proof. Equal descriptors in a newly captured source
-  cannot hide a missing/corrupt current graph. Add all index roles to the same
-  residency proof before enabling service disk serving.
-
-### M03 admission boundaries that must be active together
-
-The capacity guarantee applies before **each replica accepts its local durable
-obligation**. A follower may receive an entry already committed by the leader;
-refusing that RPC before local acceptance must remain retryable. Admission in
-`StateMachine::apply` is too late, and a fallible `LogStore::append` alone does
-not cover recovery or snapshot installation.
-
-The actor must admit before mutating its accepted log or membership. A capacity
-error from the later storage callback would fence an already accepted operation;
-it is not a clean refusal. The guarantee must cover each supported backend,
-including the Authority state machine that does not own Engine SourceRoots.
-Use explicit backend capabilities, with no assumption that every group is an
-Engine database. A byte/shape envelope alone is neither a capacity reservation
-nor proof of the actor's actual predecessor.
-
-- Leader proposals and internal joint/uniform membership steps need an owned
-  ticket tied to the actual actor predecessor and successor shape before entry
-  acceptance. A caller-side sample of membership is insufficient.
-- Incoming append RPCs must acquire and transfer the same concrete capacity
-  before invoking OpenRaft. Existing HTTP503/transport-unreachable backoff can
-  express preacceptance refusal; it must not report a false conflict or success.
-  Worker custody must outlive canceled HTTP/client waiters, and raw Raft handles
-  must not provide an unguarded supported route.
-- Startup must install required snapshot and accepted-suffix capacity before
-  `StateMachine::open` can restore/apply it, including uncommitted membership
-  entries that might later become committed. Waiting until `Raft::new` is too
-  late for the earlier restoration path.
-- Snapshot ingress must stage and admit its actual successor before the final
-  chunk can trigger installation. Catalog/key-shape growth must likewise own
-  its overlap before the relevant producer changes the readable shape.
-
-These boundaries must be promoted together. The isolated cohort now has actual
-constructor/receiver funding, source preparation, ordinary actor/provider
-acceptance, and tracked Application/Custody snapshot bodies. Focused local
-startup and covered-handoff checks pass. The actual snapshot
-install/reopen scenario now passes with canonical target receiver ingress.
-Covered actor installation and cleanup also pass denial of new mandatory
-installed grants after Ready; the Engine governor, physical promises, and all
-other ingress paths remain separate qualification requirements. The mandatory vendor snapshot corridor, concrete storage ABI and shared native
-producer are now composed in isolation. The unconditional unbound refusal has
-been replaced by actual preparation, exact store/context checks and a bound
-native Ready witness. Conflict, final image, source capture and cleanup must
-pass the actual install/reopen and failure selections together before promotion.
-
-Local preacceptance is the boundary for each replica, not an all-member quorum
-requirement. A lagging replica can refuse new local obligations until it has
-capacity while the existing Raft quorum continues. Once a replica accepts the
-obligation, later apply must use its owned capacity; cancellation of a client or
-RPC waiter must not release it. Recovery must cover accepted uncommitted entries
-as well as committed ones, because a later heartbeat may commit the former
-without another append.
-
-Promotion must install the real current/next source cohort and reusable encrypted
-workspace during database construction, before initial restore or replay. Source
-preparation must consume those owned assignments.
-The first public escape of a Generation or snapshot must fund its historical
-ownership before returning it; aliases share that same funded source. Internal
-apply/validation borrowers keep their exact predecessor without a new public
-acquisition. Return a publication assignment only after actual retirement or
-completed history transfer. Prove several real encrypted publications while an
-old snapshot stays readable and ordinary bytes/slots are saturated. This slice
-is a prerequisite for the complete ingress guarantee above, not its substitute.
-
-The cohort owns the actual current/next metadata cells, proof backing and prepared
-point buffers, as well as native readers and report/census rights. Funding only
-a pin or recording a byte quote cannot authorize a publication. Before a current
-source first escapes, admit the concrete replacement lane that its historical
-retention would otherwise consume. Share funded ownership across aliases and
-return it only after actual retirement. A clean capacity refusal must cancel only
-provisional history work and leave the current source readable and retryable;
-unknown cleanup retains both the original failure and the actual owner. Accepted
-suffixes retain their obligations across canceled request waiters.
-
-### M03 promotion gates
-
-The isolated cohort contains the ordinary actor provider, explicit Engine,
-Authority and Custody roles, fixed startup ownership and the canonical native
-snapshot corridor. The current production-status section and evidence ledger
-record its exact passing and failing selections. Historical component passes do
-not establish successful service installation or promotion.
-
-Use these finite, ordered exit gates for the current M03 integration:
-
-| Gate | Required result before promotion |
-| --- | --- |
-| Ordinary actor acceptance | Real leader/follower/init/membership paths acquire capacity for the assigned IDs before mutation. Rerun all three original startup scenarios and explicit refusal/retry tests without changing their limits. |
-| Shutdown and refusal | Enrollment serializes with sealing; callbacks run outside owner locks. After a known refusal that never entered publication, return slot capacity only after transferring the original diagnostic to a separately funded owner. Unknown append/flush/cleanup outcomes retain their actual owners. |
-| Exact snapshot preparation | Retain the actual backend, replacement tables, final writes and canonical gate across preparation and publication. Do not accept a replacement backend at publication. Preserve per-schema maxima even when the aggregate byte bound does not grow. |
-| Snapshot actor progress | An owned, Send restore object crosses the worker/actor boundary. Higher-term votes remain durable while snapshot selection is held; defer conflicting work without blocking the actor on its own preparation gate. Include the actual pre-install conflicting-log deletion in the same prepared authority and certificate; moving it after installation creates an unsafe crash window. Cancellation retains the prepared body until positive retirement. |
-| Native publication allowance | Admit one node-bound allowance before Ready for all conflicting-log deletion chunks and final namespace replacement. It must coexist with durable votes, cover actual old/new row inventory plus encryption/native workspace, and transfer already funded rights into each current-root transaction without fresh ordinary admission. Inventory actual deduplicated encrypted operations, including old-row deletion; retain exact store/node and key identity. Conflict chunks may commit independently, but final application/custody namespace replacement remains one atomic native publication even when staging is streamed. Capture its exact selected native source using already funded backing while that final commit still owns the writer; keep the returned source through backend publication after releasing the writer. Do not recapture a newer root after votes or cleanup commits. Inventory post-publication cleanup as well, or transfer it to an actual separately admitted maintenance owner before acknowledgement; a crash-safe marker alone is not an owner. Preserve native sequence/file-ID headroom while ordinary votes progress. Holding today's WriteTransaction across the handoff fails this gate because it monopolizes the shared writer. Deny ordinary memory/physical grants after Ready and verify completion, partial-write failure/reopen and exact retirement. |
-| Complete overlap accounting | Fund the actual gate/registry through final retirement and account prepared backend, candidate, writes and diagnostics at their overlapping lifetimes. Passing source-slot tests alone does not cover these allocations. |
-| Integrated promotion | Compile and test the composed production constructors, all ingress paths, recovery and shutdown; then apply the verified source to the live checkout and rerun affected operational cases. Component-only or isolated-copy evidence cannot close this gate. |
-
-All M03 entry points must connect the following owners without obtaining a
-replacement mandatory grant after acceptance; qualify them together on the
-source that will be promoted:
-
-1. **Constructor adoption:** all three Engine construction paths consume the
-   actual constructor envelope, returned point backing and returned workspace.
-   Fresh bootstrap, durable bootstrap, snapshot restore and the accepted suffix
-   must supply their real seed before restoration or replay starts.
-2. **Protected prior-control planning:** the same reusable source assignment
-   covers prior cursor, initialization and retirement rows as well as the
-   successor selection. Charge actual decoded DTOs, serialization and retained
-   prepared writes at their overlapping lifetimes. A selected-source quote
-   alone does not cover this earlier control work.
-3. **Actor and snapshot custody:** the actual actor predecessor and assigned
-   entry IDs select an owned Ready token or a retryable Pending result before
-   accepted-log or membership mutation. Snapshots use their actual prepared
-   selection. No pending operation may block the actor from delivering the
-   apply acknowledgement needed to free its capacity.
-
-Complete these gates before claiming source-cohort production activation.
-Snapshot preparation owns the canonical control gate used by maintenance and
-bootstrap writers across worker, actor and install handoff. Cancellation must
-explicitly close the actual staged resources, queued source reader and point
-workspace; Drop cannot certify retirement. Keep the restore obligation counted
-through actual reservation destruction. A cleanup panic retains its original
-payload in funded custody. Published source ownership transfers to the current
-Generation; an unknown publication cannot become a clean cancellation.
-
-For a closed application snapshot, revoke plaintext access at its existing
-boundary. The final custody-only publication must then use an explicit authority
-for that exact staged custody inventory. A paired publication that rechecks an
-already sealed application fails after acceptance; a blanket key-check bypass
-or delayed revocation is not an acceptable repair. Cover both successful close
-and custody revocation before final publication.
-
-The snapshot progress gate also covers indirect worker reads (replication and
-external GetSnapshot). A prepared body must not queue its own cancel/install
-behind a read blocked on its held gate. Pending source capacity needs a concrete
-wake path, including with periodic ticks disabled. Native write workspace and
-physical precommit promises for conflict truncation and snapshot publication
-must be obtained before acceptance; a source-byte quote or a bounded batch
-count does not supply those guarantees.
-
-Single-domain and cohort checks validate reusable components; they do not
-alone meet these gates. Capacity growth must perform provider callbacks without
-holding its lane/cleanup mutexes, and an accepted capacity token must keep a
-real drain obligation until both append and flush have successfully returned.
-The actor slot and its concrete provider allocation need independent constructor
-funding, released only after both allocations actually retire. An unknown or failed flush must
-retain the actual token and original failure in an owner visible to shutdown;
-cancellation or dropping a wrapper cannot stand in for completed retirement.
-Even a capacity request that fits existing byte maxima must preserve its
-per-schema high-water shapes for later combined operations. Preacceptance sizing
-must not advance the exact published replay seed. Source-specific refusal
-checks do not prove that native write scratch, physical promises, application
-candidates and responses are already funded; retain those as separate
-preacceptance obligations. M04 disk document serving, M05 disk indexes and M06 total
-residency/accounting remain required after the ownership integration.
-
-The **M05 retained-log qualification** is separate from the M03 actor boundary.
-The production per-entry map and full header collection are already removed;
-only scalar retained endpoints remain resident. Validate full entries against
-the exact captured immutable source at startup. Append publication
-and capture must exclude intervening writers through the actual native writer
-owner; that prerequisite now passes its focused checks. Thereafter bounded
-protocol lookup may read authenticated scalar IDs from that validated source.
-Truncate, overwrite and snapshot transitions must preserve or replace this proof
-explicitly. The current protocol ID representation may remain during the M03
-integration checkpoint, with M05 explicitly open. It is not a supported fallback
-or a completed bounded-memory design. Do not make the remaining retained-log qualification
-a prerequisite for testing the actor's actual preacceptance capacity boundary.
-
-### Document, index and cache cutover gates
-
-The next work advances three coordinated lanes. Their shared durable collection
-identity must bind the primary root, structured/unique roots, text generation,
-counts and semantic byte totals to the exact accepted source. No lane is a
-separate serving mode, and none may activate with a resident-map fallback.
-
-| Gate | Concrete exit condition |
-| --- | --- |
-| Trusted mutation inventory | Actual reducers produce the accepted journal for ordinary writes, staged finalization, archive placement and collection/schema changes. It covers inserts, replacements, deletes, archival and multi-ID/multi-collection batches. A caller-supplied changed-ID set or whole-map diff cannot grant publication authority. |
-| General primary editing | Bounded insertion, split, deletion, empty-root and collapse operations feed one private evolving tree. Intermediate staged pages have explicit retirement ownership; large edit inventories use admitted ordered storage. Publish only the final roots through both ordinary `CompletionLoan::publish_source` and other accepted publication paths. |
-| Exact index ownership | Close the actual accepted producer's ordinal interval. Mark every new live object once through its exact owning edge; reject unmarked, duplicated or foreign objects. Released tombstones stay unowned. Shared old subtrees retain their original ownership and require exact selected-source graph proof. Branch separator references are borrowed and must equal their child's minimum. The collection Manifest requires the complete index catalog. |
-| Every index kind | Structured presence/postings, unique tuples and text storage use durable roots and bounded builders/readers. Query access is lending and fallible. All index roots commit with document roots, and all existing query and analyzer behavior passes on the exact selected source. |
-| Runtime state and operations | Remove all-document live/archive maps from production reducers, validation, counts, leases and serving. Preserve semantic snapshot records; restore builds fresh local pages and never exports local page IDs. Cover genesis, bootstrap, replay, snapshots, rejection and idempotent replay before removing test-only activation gates. |
-| Full-fit decoded residency | Add actual cache membership, exact version identity, pressure eviction, reservations and finite warm/refill progress to the charged document pool. Fund retained query owners and their per-database registry; retain original read/cleanup failures through canceled waiters. After warm-up, every fitting record and index page remains hot, including rarely read data. |
-| Coherent activation | One source-pinned service run uses empty resident document maps, durable indexes and the total cache budget below and above the bound. It passes security, pagination, atomicity, restart and snapshot tests before live promotion. |
-
-Logical index order cannot use native HMAC key order. Preserve exact decimal,
-string and tuple ordering, including legal keys longer than a primary document
-ID or one page, with admitted external key backing and bounded comparison work.
-Text indexes must retain the term, frequency, position and document statistics
-needed for existing analyzers and ranking without a resident all-ID directory.
-
-The canonical native atomic-image extension is a shared prerequisite for final
-root inventories that exceed one existing atomic batch. Implement private
-candidate publication once and use it for both large snapshots and large
-application/index publications. Keep intermediate chunks invisible and retain
-all original source and physical ownership until the one final root is durable.
+Security, durability, version consistency and original memory ownership apply
+through every milestone. A milestone closes only when its code is active in
+supported production paths and its acceptance gate passes. Test-only paths,
+copied accounting, source reviews and component totals cannot substitute for
+those gates.
 
 ## Unresolved qualification obligations
 
 These remain release gates even when related component reruns pass:
 
-- **Physical enrollment:** exact same-inode/EOF allocated-block mismatches occurred
-  during large encrypted publication and expiry/reopen. Unchanged reruns pass, but
-  the cause and a qualified recovery are not established. Preserve original
-  custody and strict closed-owner enrollment checks; do not infer a repair from
-  a later pass.
+- **Physical enrollment:** the narrow rejection of prepaid allocation contraction
+  above unchanged EOF is repaired and scoped-qualified by NodeDisk191 and the
+  original encrypted byte-image and expiry/reopen scenarios. The current
+  predicate and regression bodies remain literal to that qualified source.
+  The OS trigger remains unverified. Later opaque `InvalidData`, native-root
+  checks and concurrent completion timeouts are separate open obligations;
+  correlate the first existing effect, fixture identity and failing predicate
+  before teardown. Preserve strict identity/EOF/custody checks and original
+  evidence; a passing rerun alone does not explain these newer failures.
 - **Admission before acceptance:** selected-source cells were requested too late
   in serving expiry/backup, archive publication and backup cancellation. Fund their
   actual successor, capture and diagnostic owners before the local obligation.
@@ -723,8 +485,16 @@ evidence from the actual final implementation at the stated scope.
   bounded storage access; bounding document bodies alone does not close C01.
 - Bound request/decode/write buffers, in-flight cache misses, query workspace,
   pinned outputs and maintenance separately within the installed total.
+  The global simultaneous workspace bound must include temporary native
+  storage and rehash backing; classifying only operation reservations misses
+  current temporary allocations charged as resident. Keep explicit total-cap
+  settings exact while deriving a large deployment-scaled default.
   A cache limit alone is not a bound on process RSS or operating-system page
   cache. Measure those separately and document the process memory envelope.
+  Prove the materialized allocation union used for full fit: sampled RSS plus
+  all reserved credit currently overlaps live owned backing, while reservations
+  may also cover future peak work. Neither blindly adding nor subtracting those
+  measurements establishes the required union.
 - Use pressure eviction only when needed to admit work within the bound. Do
   not flush the entire cache at the threshold. An entry that cannot fit may be
   served through admitted bounded work without cache insertion; reject work
@@ -774,6 +544,19 @@ Use focused checks during implementation and the final gates in
 [acceptance checklist](release-checklist.md) for qualification. Changes to
 durability, authorization, recovery and ownership require failure/restart
 coverage; passing cache unit tests alone cannot close this goal.
+
+Run these required gates on the final joined source, using the existing warm
+Cargo lane. Record each result with the source manifest and raw output:
+
+```sh
+cargo test --workspace --all-features --all-targets --locked
+cargo clippy --workspace --all-features --all-targets --locked --no-deps -- -D warnings
+cargo fmt --all --check
+python3 -m unittest discover -s scripts -p 'test_*.py'
+```
+
+These repository gates supplement the five production workloads and operational
+release checks; they do not substitute for them.
 
 ## Execution order and scope
 

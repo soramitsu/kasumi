@@ -101,15 +101,6 @@ impl StorageCensus {
         }
         Ok(())
     }
-    fn source_add_child(&self, parent: StorageOwnerId) -> io::Result<()> {
-        self.slots[parent.index]
-            .children
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
-                value.checked_add(1)
-            })
-            .map_err(|_| io::ErrorKind::Other)?;
-        Ok(())
-    }
     fn require_source_parent(
         &self,
         parent: StorageOwnerId,
@@ -176,6 +167,10 @@ impl StorageCensus {
             return Err(io::ErrorKind::InvalidInput.into());
         }
         self.require_source_parent(parent, pool)?;
+        let mut child = Some({
+            let metadata = self.source_lock(parent.index)?;
+            self.preclaim_child_locked(parent, &metadata)?
+        });
         // The actual pool state serializes its two claims. A duplicate exact
         // logical right is still rejected, including a retained old cell.
         for index in 0..self.slots.len() {
@@ -198,11 +193,11 @@ impl StorageCensus {
                 continue;
             }
             let generation = self.source_generation()?;
-            self.source_add_child(parent)?;
             let id = StorageOwnerId { index, generation };
             metadata.generation = generation;
             metadata.kind = StorageOwnerKind::Reader;
-            metadata.parent = Some(parent);
+            metadata.parent = Some(child.take().expect("unpublished source child").publish());
+            metadata.children_sealed = false;
             metadata.cell = Cell::SourceReserved;
             metadata.source = Some(SourceSlot {
                 pool,

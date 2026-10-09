@@ -66,6 +66,8 @@ struct Claims {
     tenant: String,
     scope: String,
     exp: u64,
+    #[serde(default)]
+    nbf: Option<u64>,
     kasumi_resource: kasumi_types::CredentialResource,
     #[serde(default)]
     token_use: Option<String>,
@@ -449,13 +451,23 @@ impl Authenticator {
         let key = DecodingKey::from_jwk(jwk).map_err(|_| unauthorized())?;
         let mut validation = Validation::new(header.alg);
         validation.leeway = 0;
-        validation.validate_nbf = true;
+        // JWT verifies signed claims and identity. The process-wide trusted
+        // epoch observation is the sole time authority, including after wall
+        // clock rollback; elapsed authorization retains the original expiry.
+        validation.validate_exp = false;
+        validation.validate_nbf = false;
         validation.set_issuer(&[&self.config.issuer]);
         validation.set_audience(&[&self.config.audience]);
         validation.set_required_spec_claims(&["exp", "iss", "aud", "sub"]);
         let claims = decode::<Claims>(token, &key, &validation)
             .map_err(|_| unauthorized())?
             .claims;
+        if let Some(not_before) = claims.nbf {
+            let not_before_ms = not_before.checked_mul(1000).ok_or_else(unauthorized)?;
+            if observation.utc_ms() < not_before_ms {
+                return Err(unauthorized());
+            }
+        }
         if claims
             .token_use
             .as_deref()
@@ -487,16 +499,13 @@ impl Authenticator {
                     return Err(unauthorized());
                 }
                 let family = claims.kasumi_family.ok_or_else(unauthorized)?;
-                let guard = self
-                    .local_credentials()?
-                    .guard(
-                        family,
-                        &claims.sub,
-                        &claims.tenant,
-                        &claims.scope,
-                        &claims.kasumi_resource,
-                    )
-                    .map_err(|_| unauthorized())?;
+                let guard = self.local_credentials()?.guard(
+                    family,
+                    &claims.sub,
+                    &claims.tenant,
+                    &claims.scope,
+                    &claims.kasumi_resource,
+                )?;
                 RequestAuthorization::from_verified_credential_with_liveness(
                     expires_at,
                     &observation,
@@ -772,6 +781,80 @@ mod tests {
         elapsed.0.store(1, Ordering::SeqCst);
         assert!(delayed_clone.authorization.check_live().is_err());
     }
+    #[tokio::test]
+    async fn signed_claim_times_use_only_trusted_native_epoch_with_exact_boundaries() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        // Exercise trusted UTC on both sides of system time; real UTC must
+        // never replace the native epoch or decide its four-second proof.
+        for base_seconds in [1_000_000, 4_000_000_000] {
+            let elapsed = Arc::new(ManualElapsed(AtomicU64::new(0)));
+            let wall = Arc::new(ManualWall(AtomicU64::new(base_seconds * 1000)));
+            let clock = Arc::new(EpochClock::new(elapsed.clone(), wall.clone()).unwrap());
+            let (auth, key) = fixture_with_clock(clock).await;
+            let mut value = claims();
+            value["nbf"] = serde_json::json!(base_seconds);
+            value["exp"] = serde_json::json!(base_seconds + 4);
+            let token = bearer(&key, &value, "at+jwt");
+            let original = auth.authenticate(&token).await.unwrap();
+            assert_eq!(
+                original.authorization.expires_at_ms(),
+                Some((base_seconds + 4) * 1000)
+            );
+            // A missing optional nbf preserves the existing claim contract.
+            let mut no_nbf = value.clone();
+            no_nbf.as_object_mut().unwrap().remove("nbf");
+            auth.authenticate(&bearer(&key, &no_nbf, "at+jwt"))
+                .await
+                .unwrap();
+            for (name, changed) in [
+                ("nbf", serde_json::json!(base_seconds + 1)),
+                ("nbf", serde_json::json!(u64::MAX)),
+                ("nbf", serde_json::json!("1000000")),
+                ("nbf", serde_json::json!(-1)),
+                ("nbf", serde_json::json!(1.5)),
+                ("exp", serde_json::json!(u64::MAX)),
+                ("exp", serde_json::json!(base_seconds)),
+                ("exp", serde_json::json!("1000004")),
+            ] {
+                let mut invalid = value.clone();
+                invalid[name] = changed;
+                assert_eq!(
+                    auth.authenticate(&bearer(&key, &invalid, "at+jwt"))
+                        .await
+                        .unwrap_err()
+                        .code,
+                    ErrorCode::Unauthorized,
+                    "{name}={}",
+                    invalid[name]
+                );
+            }
+            // Exact nbf equality passes, the millisecond before it does not.
+            let mut future = value.clone();
+            future["nbf"] = serde_json::json!(base_seconds + 1);
+            let future = bearer(&key, &future, "at+jwt");
+            elapsed.0.store(999, Ordering::SeqCst);
+            wall.0.store(1, Ordering::SeqCst);
+            assert_eq!(
+                auth.authenticate(&future).await.unwrap_err().code,
+                ErrorCode::Unauthorized
+            );
+            elapsed.0.store(1000, Ordering::SeqCst);
+            auth.authenticate(&future).await.unwrap();
+            elapsed.0.store(3999, Ordering::SeqCst);
+            original.authorization.check_live().unwrap();
+            auth.authenticate(&token).await.unwrap();
+            elapsed.0.store(4000, Ordering::SeqCst);
+            assert_eq!(
+                original.authorization.check_live().unwrap_err().code,
+                ErrorCode::Unauthorized
+            );
+            assert_eq!(
+                auth.authenticate(&token).await.unwrap_err().code,
+                ErrorCode::Unauthorized
+            );
+        }
+    }
+
     struct ExpiringAudit {
         clock: Arc<ManualElapsed>,
         events: std::sync::Mutex<Vec<RequestAuditKind>>,

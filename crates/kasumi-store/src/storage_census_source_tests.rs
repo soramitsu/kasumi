@@ -550,3 +550,103 @@ fn source_census_recorded_release_survives_async_drain_and_slot_reuse() {
     assert_eq!(pool.retire(), StorageCensusDisposition::Retired);
     assert_eq!(parent.retire(), StorageCensusDisposition::Retired);
 }
+
+#[test]
+fn sealed_parent_rejects_source_control_and_right_without_provider_or_hold_transfer() {
+    let memory = Memory::new(4);
+    let parent = memory.parent();
+    let id = parent.id();
+    let pool = memory.pool(&parent);
+    let bank = memory.bank(pool.id());
+    let mut hold = Some(bank.hold());
+    memory.census.seal_child_admission(id).unwrap();
+    let calls = memory.calls.load(Ordering::Acquire);
+    let control = memory
+        .census
+        .claim_source_control(&memory.provider(), &parent)
+        .err()
+        .unwrap();
+    assert_eq!(control.kind(), io::ErrorKind::BrokenPipe);
+    let right = memory
+        .census
+        .claim_source_right(&memory.provider(), id, pool.id(), 0, &mut hold)
+        .err()
+        .unwrap();
+    assert_eq!(right.kind(), io::ErrorKind::BrokenPipe);
+    assert!(hold.is_some(), "refused admission retains original hold");
+    assert_eq!(memory.calls.load(Ordering::Acquire), calls);
+    assert_eq!(children(&memory, id), 1, "only original pool remains");
+    assert!(!memory.census.children_retired(id));
+    drop(hold);
+    bank.begin_seal().unwrap();
+    let mut standing = [None, None];
+    assert!(bank.take_sealed_lanes(&mut standing).unwrap());
+    drop(standing);
+    drop(bank);
+    assert_eq!(pool.retire(), StorageCensusDisposition::Retired);
+    assert!(memory.census.children_retired(id));
+    assert_eq!(parent.retire(), StorageCensusDisposition::Retired);
+}
+
+#[test]
+fn sealed_parent_denies_source_exchange_before_any_hold_or_original_transition() {
+    let memory = Memory::new(5);
+    let parent = memory.parent();
+    let id = parent.id();
+    let pool = memory.pool(&parent);
+    let bank = memory.bank(pool.id());
+    let mut first = Some(bank.hold());
+    let mut claim = memory
+        .census
+        .claim_source_right(&memory.provider(), id, pool.id(), 0, &mut first)
+        .unwrap();
+    // This is a genuine reserved source right. Admission must reject a sealed
+    // parent before any attempted activation/exchange or hold consumption.
+    let mut replacement = Some(bank.hold());
+    let account = bank.checkout(0).unwrap();
+    let witness = account.witness();
+    account.allow_retirement().unwrap();
+    drop(account);
+    assert!(witness.same_bank(replacement.as_ref().unwrap()));
+    let child_count = children(&memory, id);
+    let snapshot = memory.census.snapshot();
+    memory.census.seal_child_admission(id).unwrap();
+    let calls = memory.calls.load(Ordering::Acquire);
+    let failure = memory
+        .census
+        .begin_source_exchange(&memory.provider(), &claim, &mut replacement)
+        .err()
+        .unwrap();
+    assert_eq!(failure.kind(), io::ErrorKind::BrokenPipe);
+    assert!(witness.same_bank(replacement.as_ref().unwrap()));
+    assert_eq!(children(&memory, id), child_count);
+    assert_eq!(
+        memory.census.snapshot().source_reserved,
+        snapshot.source_reserved
+    );
+    assert_eq!(memory.calls.load(Ordering::Acquire), calls);
+    {
+        let old = memory.census.slots[claim.id().index]
+            .metadata
+            .lock()
+            .unwrap();
+        assert_eq!(old.generation, claim.id().generation);
+        let slot = &memory.census.slots[claim.id().index];
+        assert!(!super::source::exchange_blocks(slot, &old));
+        assert_eq!(slot.source_completion.load(Ordering::Acquire), NONE);
+    }
+    drop(replacement);
+    drop(witness);
+    assert_eq!(
+        memory.census.release_source_right(&mut claim),
+        StorageCensusDisposition::Retired
+    );
+    bank.begin_seal().unwrap();
+    let mut standing = [None, None];
+    assert!(bank.take_sealed_lanes(&mut standing).unwrap());
+    drop(standing);
+    drop(bank);
+    assert_eq!(pool.retire(), StorageCensusDisposition::Retired);
+    assert!(memory.census.children_retired(id));
+    assert_eq!(parent.retire(), StorageCensusDisposition::Retired);
+}

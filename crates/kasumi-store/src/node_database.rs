@@ -126,14 +126,39 @@ impl NodeDatabase {
         }
     }
 
+    fn admit_opening_until(
+        &self,
+        deadline: std::time::Instant,
+    ) -> std::io::Result<RegisteredNodeOpening> {
+        let (provider, id) = {
+            let state = self.state.lock();
+            if self.stopped.load(Ordering::Acquire) {
+                return Err(std::io::ErrorKind::BrokenPipe.into());
+            }
+            let locator = state
+                .registered
+                .as_ref()
+                .ok_or(std::io::ErrorKind::InvalidInput)?;
+            (locator.provider.clone(), locator.id)
+        };
+        // Do not hold NodeDatabase state while waiting for census metadata.
+        let opening = RegisteredNodeOpening::admit_retained_until(provider, id, deadline)?;
+        if self.stopped.load(Ordering::Acquire) {
+            return Err(std::io::ErrorKind::BrokenPipe.into());
+        }
+        Ok(opening)
+    }
+
     fn accepted(&self) -> Result<Accepted, TransactionError> {
         let state = self.state.lock();
         if self.stopped.load(Ordering::Acquire) {
             return Err(kasumi_kv::StorageError::DatabaseClosed.into());
         }
-        if let Some(opening) = &state.registered {
+        if state.registered.is_some() {
+            drop(state);
             return Ok(Accepted::Registered(
-                opening.opening().map_err(kasumi_kv::StorageError::from)?,
+                self.admit_opening_until(std::time::Instant::now() + crate::NATIVE_READ_TIMEOUT)
+                    .map_err(kasumi_kv::StorageError::from)?,
             ));
         }
         state
@@ -244,47 +269,30 @@ impl NodeDatabase {
     /// A fixed read has a census child before its transaction begins. No raw
     /// transaction can escape through this installed-node path.
     pub(crate) fn queue_registered_read(&self) -> std::io::Result<RegisteredNodeRead> {
-        let opening = {
-            let state = self.state.lock();
-            if self.stopped.load(Ordering::Acquire) {
-                return Err(std::io::ErrorKind::BrokenPipe.into());
-            }
-            state
-                .registered
-                .as_ref()
-                .ok_or(std::io::ErrorKind::InvalidInput)?
-                .opening()?
-        };
+        self.queue_registered_read_until(std::time::Instant::now() + crate::NATIVE_READ_TIMEOUT)
+    }
+    pub(crate) fn queue_registered_read_until(
+        &self,
+        deadline: std::time::Instant,
+    ) -> std::io::Result<RegisteredNodeRead> {
+        let opening = self.admit_opening_until(deadline)?;
         opening.queue_read()
     }
 
     pub(crate) fn queue_registered_write(&self) -> std::io::Result<crate::RegisteredNodeWrite> {
-        let opening = {
-            let state = self.state.lock();
-            if self.stopped.load(Ordering::Acquire) {
-                return Err(std::io::ErrorKind::BrokenPipe.into());
-            }
-            state
-                .registered
-                .as_ref()
-                .ok_or(std::io::ErrorKind::InvalidInput)?
-                .opening()?
-        };
+        self.queue_registered_write_until(std::time::Instant::now() + crate::NATIVE_WRITE_TIMEOUT)
+    }
+    pub(crate) fn queue_registered_write_until(
+        &self,
+        deadline: std::time::Instant,
+    ) -> std::io::Result<crate::RegisteredNodeWrite> {
+        let opening = self.admit_opening_until(deadline)?;
         opening.queue_write()
     }
 
     pub(crate) fn queue_source_capacity(&self) -> std::io::Result<crate::RegisteredSourceCapacity> {
-        let opening = {
-            let state = self.state.lock();
-            if self.stopped.load(Ordering::Acquire) {
-                return Err(std::io::ErrorKind::BrokenPipe.into());
-            }
-            state
-                .registered
-                .as_ref()
-                .ok_or(std::io::ErrorKind::InvalidInput)?
-                .opening()?
-        };
+        let opening =
+            self.admit_opening_until(std::time::Instant::now() + crate::NATIVE_WRITE_TIMEOUT)?;
         opening.queue_source_capacity()
     }
 
@@ -292,15 +300,8 @@ impl NodeDatabase {
         &self,
         reader: &RegisteredNodeRead,
     ) -> std::io::Result<()> {
-        let state = self.state.lock();
-        if self.stopped.load(Ordering::Acquire) {
-            return Err(std::io::ErrorKind::BrokenPipe.into());
-        }
-        let opening = state
-            .registered
-            .as_ref()
-            .ok_or(std::io::ErrorKind::InvalidInput)?
-            .opening()?;
+        let opening =
+            self.admit_opening_until(std::time::Instant::now() + crate::NATIVE_READ_TIMEOUT)?;
         if !reader.belongs_to(&opening) {
             return Err(std::io::ErrorKind::InvalidInput.into());
         }
@@ -311,17 +312,8 @@ impl NodeDatabase {
         &self,
         parent: &RegisteredNodeRead,
     ) -> std::io::Result<RegisteredNodeRead> {
-        let opening = {
-            let state = self.state.lock();
-            if self.stopped.load(Ordering::Acquire) {
-                return Err(std::io::ErrorKind::BrokenPipe.into());
-            }
-            state
-                .registered
-                .as_ref()
-                .ok_or(std::io::ErrorKind::InvalidInput)?
-                .opening()?
-        };
+        let opening =
+            self.admit_opening_until(std::time::Instant::now() + crate::NATIVE_READ_TIMEOUT)?;
         if !parent.belongs_to(&opening) {
             return Err(std::io::ErrorKind::InvalidInput.into());
         }
@@ -334,17 +326,8 @@ impl NodeDatabase {
         &self,
         plan: AdmittedCatalogPut,
     ) -> std::io::Result<RegisteredCatalogPut> {
-        let opening = {
-            let state = self.state.lock();
-            if self.stopped.load(Ordering::Acquire) {
-                return Err(std::io::ErrorKind::BrokenPipe.into());
-            }
-            state
-                .registered
-                .as_ref()
-                .ok_or(std::io::ErrorKind::InvalidInput)?
-                .opening()?
-        };
+        let opening =
+            self.admit_opening_until(std::time::Instant::now() + crate::NATIVE_WRITE_TIMEOUT)?;
         opening.queue_catalog_put(plan)
     }
 
@@ -355,17 +338,8 @@ impl NodeDatabase {
         application: Arc<TenantStore>,
         custody: Arc<TenantStore>,
     ) -> std::io::Result<RegisteredCatalogPut> {
-        let opening = {
-            let state = self.state.lock();
-            if self.stopped.load(Ordering::Acquire) {
-                return Err(std::io::ErrorKind::BrokenPipe.into());
-            }
-            state
-                .registered
-                .as_ref()
-                .ok_or(std::io::ErrorKind::InvalidInput)?
-                .opening()?
-        };
+        let opening =
+            self.admit_opening_until(std::time::Instant::now() + crate::NATIVE_WRITE_TIMEOUT)?;
         opening.queue_catalog_pair_put(plan, application, custody)
     }
 
@@ -375,17 +349,8 @@ impl NodeDatabase {
         application: Arc<TenantStore>,
         custody: Arc<TenantStore>,
     ) -> std::io::Result<RegisteredBindingPut> {
-        let opening = {
-            let state = self.state.lock();
-            if self.stopped.load(Ordering::Acquire) {
-                return Err(std::io::ErrorKind::BrokenPipe.into());
-            }
-            state
-                .registered
-                .as_ref()
-                .ok_or(std::io::ErrorKind::InvalidInput)?
-                .opening()?
-        };
+        let opening =
+            self.admit_opening_until(std::time::Instant::now() + crate::NATIVE_WRITE_TIMEOUT)?;
         opening.queue_binding_put(plan, application, custody)
     }
 
@@ -445,8 +410,21 @@ impl NodeDatabase {
             match settlement {
                 Ok(Ok(kasumi_kv::DatabaseOpenSettlement::Disposed)) => {
                     if opening.report().engine().disposal().complete() {
-                        // Actual native disposal is independent from this node
-                        // facade/control/path. The original census fee remains.
+                        if !opening.children_retired() {
+                            // Native engine disposal alone does not retire a
+                            // child's retained original outcome or paid lease.
+                            // This remains retryable after exact child cleanup.
+                            let issue = state.busy.record(
+                                self.component,
+                                0,
+                                anyhow::anyhow!(
+                                    "registered node opening has unretired admitted children"
+                                ),
+                            );
+                            return Err(DrainFailure::retained(issue));
+                        }
+                        // The node facade/control/path keeps its original fee;
+                        // every admitted child has actually retired.
                         return state.terminal.complete();
                     }
                     let issue = state.terminal.record(
@@ -536,8 +514,9 @@ impl NodeDatabase {
         Err(failure)
     }
 
-    /// Inspect actual native disposal while keeping the composite node's body,
-    /// locator and original census fee live. Lookup failure is never a receipt.
+    /// Inspect native disposal and sealed child retirement while keeping the
+    /// composite node's body, locator and original census fee live. Missing or
+    /// contended observations never establish completion.
     pub(crate) fn native_resources_disposed(&self) -> bool {
         let state = self.state.lock();
         if let Some(locator) = &state.registered {
@@ -546,7 +525,8 @@ impl NodeDatabase {
             };
             let report = opening.report();
             return report.engine().settlement() == kasumi_kv::DatabaseOpenSettlement::Disposed
-                && report.engine().disposal().complete();
+                && report.engine().disposal().complete()
+                && opening.children_retired();
         }
         state.database.as_ref().is_some_and(|database| {
             let report = database.report();

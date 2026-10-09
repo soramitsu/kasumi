@@ -511,3 +511,222 @@ fn post_drive_metadata_contention_keeps_completion_in_fixed_slot_without_waiting
     );
     assert_eq!(drops.load(Ordering::Acquire), 1);
 }
+
+#[test]
+fn explicit_retirement_does_not_retry_real_retained_payloads() {
+    struct HeldPayload(Arc<AtomicUsize>, Arc<AtomicBool>);
+    impl StoragePayload for HeldPayload {
+        const KIND: StorageOwnerKind = StorageOwnerKind::Reader;
+        fn drive(&self) -> bool {
+            self.0.fetch_add(1, Ordering::AcqRel);
+            self.1.load(Ordering::Acquire)
+        }
+    }
+    let memory = fixture_memory(1);
+    let calls = Arc::new(AtomicUsize::new(0));
+    let ready = Arc::new(AtomicBool::new(false));
+    let owner = memory
+        .storage_census()
+        .register(memory.clone(), 0, || {
+            HeldPayload(calls.clone(), ready.clone())
+        })
+        .unwrap();
+    let id = owner.id();
+    let progress = owner.retire_progress();
+    assert_eq!(progress, StorageRetirementProgress::Retained);
+    let result = memory.storage_census().complete_owner_until(
+        id,
+        progress,
+        std::time::Instant::now() + crate::NATIVE_READ_TIMEOUT,
+        StorageCompletionGoal::ReaderRetirement,
+        || panic!("real retained is not transient"),
+    );
+    assert_eq!(result, StorageCensusDisposition::Retained);
+    assert_eq!(calls.load(Ordering::Acquire), 1);
+    assert_eq!(memory.storage_census().snapshot().readers, 1);
+    ready.store(true, Ordering::Release);
+    assert_eq!(
+        memory.storage_census().drain_owner(id),
+        StorageCensusDisposition::Retired
+    );
+    assert_eq!(memory.snapshot().live_reservations, 0);
+}
+
+#[test]
+fn explicit_retirement_distinguishes_poisoned_metadata_from_contention() {
+    let memory = fixture_memory(1);
+    let owner = memory
+        .storage_census()
+        .register(memory.clone(), 0, || ReadyChild)
+        .unwrap();
+    let id = owner.id();
+    let _ = catch_unwind(AssertUnwindSafe(|| {
+        let _guard = memory.storage_census().slots[id.index]
+            .metadata
+            .lock()
+            .unwrap();
+        panic!("poison exact retained metadata");
+    }));
+    let progress = owner.retire_progress();
+    assert_eq!(progress, StorageRetirementProgress::Retained);
+    assert_eq!(
+        memory.storage_census().complete_owner_until(
+            id,
+            progress,
+            std::time::Instant::now() + crate::NATIVE_READ_TIMEOUT,
+            StorageCompletionGoal::ReaderRetirement,
+            || panic!("poison cannot be waited away")
+        ),
+        StorageCensusDisposition::Retained
+    );
+    assert_eq!(memory.snapshot().live_reservations, 1);
+}
+
+#[test]
+fn explicit_retirement_expiry_does_not_start_another_progress_pass() {
+    let memory = fixture_memory(1);
+    let owner = memory
+        .storage_census()
+        .register(memory.clone(), 0, || ReadyChild)
+        .unwrap();
+    let id = owner.id();
+    let progress = memory
+        .storage_census()
+        .with_owner_metadata_held_for_test(id, || owner.retire_progress());
+    assert_eq!(progress, StorageRetirementProgress::MetadataBusy);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(1);
+    let result = memory.storage_census().complete_owner_until(
+        id,
+        progress,
+        deadline,
+        StorageCompletionGoal::ReaderRetirement,
+        || {
+            while std::time::Instant::now() < deadline {
+                std::thread::yield_now();
+            }
+        },
+    );
+    assert_eq!(result, StorageCensusDisposition::Retained);
+    assert_eq!(memory.storage_census().snapshot().readers, 1);
+    assert_eq!(
+        memory.storage_census().drain_owner(id),
+        StorageCensusDisposition::Retired
+    );
+    assert_eq!(memory.snapshot().live_reservations, 0);
+}
+
+#[test]
+fn explicit_retirement_of_exact_generation_never_drives_reused_slot() {
+    let memory = fixture_memory(1);
+    let owner = memory
+        .storage_census()
+        .register(memory.clone(), 0, || ReadyChild)
+        .unwrap();
+    let id = owner.id();
+    assert_eq!(owner.retire(), StorageCensusDisposition::Retired);
+    let successor = memory
+        .storage_census()
+        .register(memory.clone(), 0, || ReadyChild)
+        .unwrap();
+    assert_ne!(id, successor.id());
+    let progress = memory.storage_census().retirement_progress(id);
+    assert_eq!(progress, StorageRetirementProgress::Stale);
+    assert_eq!(
+        memory.storage_census().complete_owner_until(
+            id,
+            progress,
+            std::time::Instant::now() + crate::NATIVE_READ_TIMEOUT,
+            StorageCompletionGoal::ReaderRetirement,
+            || panic!("already retired")
+        ),
+        StorageCensusDisposition::Retired
+    );
+    assert_eq!(memory.storage_census().snapshot().readers, 1);
+    assert_eq!(successor.retire(), StorageCensusDisposition::Retired);
+    assert_eq!(memory.snapshot().live_reservations, 0);
+}
+
+#[test]
+fn explicit_admission_lookup_preserves_deadline_and_exact_owner_identity() {
+    let memory = fixture_memory(1);
+    let owner = memory
+        .storage_census()
+        .register(memory.clone(), 0, || ReadyChild)
+        .unwrap();
+    let id = owner.id();
+    let blocked = memory
+        .storage_census()
+        .with_owner_metadata_held_for_test(id, || {
+            memory
+                .storage_census()
+                .admit_retained_until::<ReadyChild>(
+                    memory.clone(),
+                    id,
+                    std::time::Instant::now() + std::time::Duration::from_millis(20),
+                )
+                .err()
+                .unwrap()
+                .kind()
+        });
+    assert_eq!(blocked, io::ErrorKind::TimedOut);
+    assert_eq!(memory.storage_census().snapshot().readers, 1);
+    let wrong_kind = memory
+        .storage_census()
+        .admit_retained_until::<ReadyDatabase>(
+            memory.clone(),
+            id,
+            std::time::Instant::now() + crate::NATIVE_READ_TIMEOUT,
+        )
+        .err()
+        .unwrap();
+    assert_eq!(wrong_kind.kind(), io::ErrorKind::InvalidInput);
+    assert_eq!(owner.retire(), StorageCensusDisposition::Retired);
+    let successor = memory
+        .storage_census()
+        .register(memory.clone(), 0, || ReadyChild)
+        .unwrap();
+    let stale = memory
+        .storage_census()
+        .admit_retained_until::<ReadyChild>(
+            memory.clone(),
+            id,
+            std::time::Instant::now() + crate::NATIVE_READ_TIMEOUT,
+        )
+        .err()
+        .unwrap();
+    assert_eq!(stale.kind(), io::ErrorKind::BrokenPipe);
+    assert_eq!(memory.storage_census().snapshot().readers, 1);
+    assert_eq!(successor.retire(), StorageCensusDisposition::Retired);
+    assert_eq!(memory.snapshot().live_reservations, 0);
+}
+
+#[test]
+fn explicit_admission_lookup_fences_poison_without_waiting_or_reopening() {
+    let memory = fixture_memory(1);
+    let owner = memory
+        .storage_census()
+        .register(memory.clone(), 0, || ReadyChild)
+        .unwrap();
+    let id = owner.id();
+    let _ = catch_unwind(AssertUnwindSafe(|| {
+        let _guard = memory.storage_census().slots[id.index]
+            .metadata
+            .lock()
+            .unwrap();
+        panic!("poison exact admission metadata");
+    }));
+    let failure = memory
+        .storage_census()
+        .admit_retained_until::<ReadyChild>(
+            memory.clone(),
+            id,
+            std::time::Instant::now() + crate::NATIVE_READ_TIMEOUT,
+        )
+        .err()
+        .unwrap();
+    assert_eq!(failure.kind(), io::ErrorKind::InvalidData);
+    assert!(memory.storage_census().fenced.load(Ordering::Acquire));
+    assert_eq!(memory.snapshot().live_reservations, 1);
+    drop(owner);
+    assert_eq!(memory.snapshot().live_reservations, 1);
+}

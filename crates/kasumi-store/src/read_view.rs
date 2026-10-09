@@ -109,8 +109,11 @@ impl ViewTransaction {
     }
 
     pub(crate) fn close(self, node: &NodeStore) -> Result<()> {
+        let deadline = std::time::Instant::now() + crate::NATIVE_READ_TIMEOUT;
         match self {
-            Self::Registered(reader) => node.settle_registered_read(reader, Ok(())),
+            Self::Registered(reader) => {
+                node.settle_registered_read_until(reader, Ok(()), Some(deadline))
+            }
             #[cfg(any(test, feature = "test-utils"))]
             Self::Fixture(_) => Ok(()),
         }

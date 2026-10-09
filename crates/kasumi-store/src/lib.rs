@@ -186,6 +186,11 @@ pub use retained_plaintext_value::RetainedPlaintextValue;
 const CATALOG: TableDefinition<&[u8], &[u8]> = TableDefinition::new("wrapped_keys_v1");
 const RECORDS: TableDefinition<&[u8], &[u8]> = TableDefinition::new("encrypted_records_v1");
 pub const MAX_KEY_LEASE: Duration = Duration::from_secs(60);
+/// Native synchronous read policy, shared with the engine's worker budget.
+/// A blocking worker may start after its outer async wait has already begun.
+pub const NATIVE_READ_TIMEOUT: Duration = Duration::from_secs(5);
+/// Native write policy. Cancellation never erases retained custody or receipts.
+pub const NATIVE_WRITE_TIMEOUT: Duration = Duration::from_secs(10);
 const PROVIDER_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Fixed, non-sensitive classes of the most recent key-access lease failure.
@@ -1664,7 +1669,8 @@ impl NodeStore {
                 .map(|catalog| catalog.map(AdmittedKeyCatalog::unadmitted));
         }
 
-        let reader = self.body().db.queue_registered_read()?;
+        let deadline = std::time::Instant::now() + crate::NATIVE_READ_TIMEOUT;
+        let reader = self.body().db.queue_registered_read_until(deadline)?;
         if reader.begin() != NodeReadPhase::Active {
             return Err(NodeCatalogReadFailure {
                 reader,
@@ -1703,7 +1709,7 @@ impl NodeStore {
             .into());
         }
         let id = reader.id();
-        let disposition = reader.retire();
+        let disposition = reader.retire_until(deadline);
         if disposition != StorageCensusDisposition::Retired {
             return Err(NodeCatalogReadRetirement {
                 provider: self.memory().clone(),
@@ -2273,6 +2279,13 @@ impl TenantStore {
                     LeaseFailure::ProviderError
                 });
                 self.seal();
+                // Only an actual outer application error is statically free
+                // of native custody. Preserve it for fresh-admission retry;
+                // never downcast through an opaque provider/context owner.
+                let outer: &(dyn std::error::Error + Send + Sync + 'static) = error.as_ref();
+                if outer.is::<kasumi_types::Error>() {
+                    return Err(error);
+                }
                 return Err(error.context("key-access probe failed"));
             }
             Err(_) => {
@@ -2351,6 +2364,7 @@ impl TenantStore {
         key: &[u8],
         max_value_bytes: usize,
     ) -> Result<Option<T>> {
+        let deadline = std::time::Instant::now() + NATIVE_READ_TIMEOUT;
         ensure!(
             max_value_bytes <= MAX_RECORD,
             "record read budget exceeds storage limit"
@@ -2384,11 +2398,11 @@ impl TenantStore {
                 })
                 .transpose()?
         } else {
-            self.get_bounded_registered(&disk_key, namespace, key, max_value_bytes, &state)?
+            self.get_bounded_registered(&disk_key, namespace, key, max_value_bytes, &state, deadline)?
         };
         #[cfg(not(any(test, feature = "test-utils")))]
         let result =
-            self.get_bounded_registered(&disk_key, namespace, key, max_value_bytes, &state)?;
+            self.get_bounded_registered(&disk_key, namespace, key, max_value_bytes, &state, deadline)?;
         self.require_access(&state)?;
         Ok(result)
     }
@@ -2400,6 +2414,7 @@ impl TenantStore {
         key: &[u8],
         max_value_bytes: usize,
         state: &KeyState,
+        deadline: std::time::Instant,
     ) -> Result<Option<T>> {
         // A valid envelope contains a retained key ID, three length fields,
         // a nonce and an authentication tag. Bound the *owned ciphertext copy*
@@ -2407,7 +2422,7 @@ impl TenantStore {
         let encrypted_limit =
             encrypted_record_limit(namespace.len(), key.len(), max_value_bytes, state)?;
 
-        let reader = self.node.body().db.queue_registered_read()?;
+        let reader = self.node.body().db.queue_registered_read_until(deadline)?;
         if reader.begin() != NodeReadPhase::Active {
             return Err(TenantPointReadFailure {
                 reader,
@@ -2475,7 +2490,7 @@ impl TenantStore {
             .into());
         }
         let id = reader.id();
-        let disposition = reader.retire();
+        let disposition = reader.retire_until(deadline);
         if disposition != StorageCensusDisposition::Retired {
             return Err(TenantPointReadRetirement {
                 provider: self.node.memory().clone(),

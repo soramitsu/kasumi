@@ -30,6 +30,7 @@ impl ViewTransaction {
         result: Result<T>,
         retirement: std::thread::Result<()>,
     ) -> Result<T> {
+        let deadline = std::time::Instant::now() + crate::NATIVE_READ_TIMEOUT;
         match self {
             Self::Registered(reader) => {
                 if let Err(payload) = retirement {
@@ -38,7 +39,7 @@ impl ViewTransaction {
                     // before finish can retire anything or expose the original.
                     reader.preserve_body_panic(payload);
                 }
-                node.settle_registered_read(reader, result)
+                node.settle_registered_read_until(reader, result, Some(deadline))
             }
             #[cfg(any(test, feature = "test-utils"))]
             Self::Fixture(_) => match retirement {

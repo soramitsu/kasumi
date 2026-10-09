@@ -786,9 +786,21 @@ pub(crate) fn credential_path(value: &str) -> Result<()> {
     Ok(())
 }
 pub(crate) fn file_secret(path: &str) -> Result<Zeroizing<String>> {
-    kasumi_transport::credentials::token(&kasumi_transport::credentials::FileCredentialSource::new(
-        path,
-    )?)
+    // This concrete reader owns only file bytes and ordinary I/O/validation
+    // errors. Keep its retryable failure typed before entering key/storage
+    // recovery; arbitrary CredentialSource callbacks are not normalized here.
+    let read = || {
+        kasumi_transport::credentials::token(
+            &kasumi_transport::credentials::FileCredentialSource::new(path)?,
+        )
+    };
+    read().map_err(|_| {
+        kasumi_types::Error::new(
+            kasumi_types::ErrorCode::Unavailable,
+            "installed credential is unavailable",
+        )
+        .into()
+    })
 }
 pub(crate) fn read_bounded(path: &Path, limit: usize) -> Result<Vec<u8>> {
     let file = std::fs::File::open(path).with_context(|| format!("opening {}", path.display()))?;
@@ -1114,7 +1126,31 @@ impl NodeRuntime {
         storage.require_policy(&config.admission)?;
         crate::startup_owner::open(
             crate::startup_owner::Kind::Data,
-            Self::open_owned(config, Arc::new(credential), storage),
+            Self::open_owned(
+                config,
+                Arc::new(credential),
+                storage,
+                #[cfg(test)]
+                None,
+            ),
+        )
+        .await
+    }
+
+    /// Supply one fixture-owned native clock to credential issuance and every
+    /// authenticated elapsed proof. Production construction always uses the
+    /// process-wide system clock; no global override or wall-time sleeps apply.
+    #[cfg(test)]
+    pub(crate) async fn open_using_storage_with_auth_clock(
+        config: RuntimeConfig,
+        credential: impl Fn(&str) -> Result<Zeroizing<String>> + Send + Sync + 'static,
+        storage: crate::runtime_memory::RuntimeStorage,
+        clock: Arc<kasumi_clock::EpochClock>,
+    ) -> Result<Self> {
+        storage.require_policy(&config.admission)?;
+        crate::startup_owner::open(
+            crate::startup_owner::Kind::Data,
+            Self::open_owned(config, Arc::new(credential), storage, Some(clock)),
         )
         .await
     }
@@ -1133,6 +1169,7 @@ impl NodeRuntime {
         config: RuntimeConfig,
         credential: crate::serving_runtime::CredentialSource,
         storage: crate::runtime_memory::RuntimeStorage,
+        #[cfg(test)] auth_clock: Option<Arc<kasumi_clock::EpochClock>>,
     ) -> Result<Self> {
         let mut pending = crate::startup_resources::Resources::default();
         let mut retained_runtime: Option<Self> = None;
@@ -1182,6 +1219,12 @@ impl NodeRuntime {
             .as_ref()
             .map(|settings| settings.signer())
             .transpose()?;
+        #[cfg(test)]
+        let auth = match &auth_clock {
+            Some(clock) => Authenticator::with_test_clock(config.auth.clone(), clock.clone()),
+            None => Authenticator::new(config.auth.clone()),
+        }?;
+        #[cfg(not(test))]
         let auth = Authenticator::new(config.auth.clone())?;
         let registry = DatabaseRegistry::default();
         registry.set_approved_nodes(
@@ -1294,6 +1337,26 @@ impl NodeRuntime {
         pending.audits.push(audit.clone());
         auth.install_audit(audit.clone())?;
         if let crate::auth::AuthKeySource::Local { signer_file } = &config.auth.source {
+            #[cfg(test)]
+            {
+                let credentials = match &auth_clock {
+                    Some(clock) => crate::local_auth::LocalCredentials::with_test_clock(
+                        audit.store().clone(),
+                        signer_file.clone(),
+                        config.auth.issuer.clone(),
+                        config.auth.audience.clone(),
+                        clock.clone(),
+                    ),
+                    None => crate::local_auth::LocalCredentials::open(
+                        audit.store().clone(),
+                        signer_file.clone(),
+                        config.auth.issuer.clone(),
+                        config.auth.audience.clone(),
+                    ),
+                }?;
+                auth.install_local_credentials(credentials)?;
+            }
+            #[cfg(not(test))]
             auth.install_local_credentials(crate::local_auth::LocalCredentials::open(
                 audit.store().clone(),
                 signer_file.clone(),

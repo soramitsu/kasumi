@@ -379,7 +379,7 @@ impl StorageCensus {
         &self,
         provider: &Arc<dyn NodeDiskMemoryAdmission>,
         bytes: u64,
-        parent: Option<StorageOwnerId>,
+        mut parent: Option<ChildAdmission<'_>>,
         purpose: Option<NativeStartupChildPurpose>,
         report_bytes: u64,
         abandon_delivery: Option<fn(&dyn ErasedPayload)>,
@@ -405,14 +405,7 @@ impl StorageCensus {
                     && state.payload.is_none()
             );
             let generation = owner_generation()?;
-            if let Some(parent) = parent {
-                self.slots[parent.index]
-                    .children
-                    .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
-                        count.checked_add(1)
-                    })
-                    .map_err(|_| io::ErrorKind::Other)?;
-            }
+            let parent = parent.take().map(ChildAdmission::publish);
             *state = NativeConstructorState::new();
             state.generation = generation;
             state.payload_type = Some(TypeId::of::<T>());
@@ -425,6 +418,7 @@ impl StorageCensus {
             metadata.generation = generation;
             metadata.kind = T::KIND;
             metadata.parent = parent;
+            metadata.children_sealed = false;
             assert!(metadata.lease.is_none() && metadata.source.is_none());
             assert_eq!(slot.children.load(Ordering::Acquire), 0);
             slot.pending.store(NONE, Ordering::Release);
@@ -497,15 +491,16 @@ impl StorageCensus {
             {
                 return Err(io::ErrorKind::WouldBlock.into());
             }
+            let child = self.preclaim_child_locked(parent.id, &parent_metadata)?;
+            drop(parent_metadata);
             let id = self.preclaim_native_bound::<T>(
                 &provider,
                 Self::registration_request_bytes::<T>(0)?,
-                Some(parent.id),
+                Some(child),
                 Some(T::PURPOSE),
                 T::report_bytes()?,
                 Some(abandon_child_delivery::<T>),
             )?;
-            drop(parent_metadata);
             Ok(id)
         };
         let id = preclaim().map_err(NativeConstructorFailure::Preclaim)?;

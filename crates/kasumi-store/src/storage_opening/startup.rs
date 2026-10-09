@@ -288,6 +288,7 @@ impl RegisteredNodeStartup {
         }
         if self.existing {
             self.phase = NodeStartupPhase::ExistingVerification;
+            let deadline = std::time::Instant::now() + crate::NATIVE_READ_TIMEOUT;
             let verification = match self.opening.queue_startup_verification() {
                 Ok(verification) => verification,
                 Err(error) => {
@@ -325,7 +326,7 @@ impl RegisteredNodeStartup {
                 return self.phase;
             }
             let reader = self.verification.take().expect("stored verification");
-            self.child_disposition = Some(reader.retire());
+            self.child_disposition = Some(reader.retire_until(deadline));
             match self.child_disposition.expect("recorded reader retirement") {
                 StorageCensusDisposition::Retired => {}
                 StorageCensusDisposition::Retained => {

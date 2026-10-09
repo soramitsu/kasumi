@@ -176,6 +176,7 @@ impl PreparedRegisteredSource {
     /// Consuming cancellation for an Engine lane. A native-clean but pending
     /// census cell retains its exact provider/id diagnostic for positive retry.
     pub fn cancel_settled(self) -> anyhow::Result<()> {
+        let deadline = std::time::Instant::now() + crate::NATIVE_READ_TIMEOUT;
         let phase = self.reader.finish();
         if phase != NodeReadPhase::Finished || self.reader.report().has_failures() {
             return Err(crate::NodeScopedReadFailure::new(
@@ -187,7 +188,7 @@ impl PreparedRegisteredSource {
         }
         let id = self.reader.id();
         let provider = self.reader.provider();
-        let disposition = self.reader.retire();
+        let disposition = self.reader.retire_until(deadline);
         if disposition != StorageCensusDisposition::Retired {
             return Err(crate::NodeScopedReadRetirement::after_source_close(
                 provider,

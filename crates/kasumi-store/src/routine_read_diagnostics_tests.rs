@@ -120,6 +120,7 @@ async fn routine_read_two_original_aliases_outlive_native_and_database_retiremen
     );
     assert_eq!(fixture.memory.storage_census().snapshot().readers, 0);
     fixture.node.shutdown().await.unwrap();
+    assert!(fixture.node.retire().is_retired());
     assert_eq!(fixture.memory.storage_census().snapshot().databases, 0);
     assert_eq!(bounded_address(&failure), original_address);
     assert_eq!(bounded_address(&close), original_address);
@@ -456,6 +457,7 @@ async fn routine_early_capacity_keeps_original_after_real_native_and_database_re
             }
         }
         fixture.node.shutdown().await.unwrap();
+        assert!(fixture.node.retire().is_retired());
         assert_eq!(fixture.memory.storage_census().snapshot().databases, 0);
         assert_eq!(early_error_address(&failure, stage != 0), address);
     }

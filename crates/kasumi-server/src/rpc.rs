@@ -187,6 +187,33 @@ impl NativeData {
 
 #[tonic::async_trait]
 impl kasumi_data_server::KasumiData for NativeData {
+    async fn admit_mutation_capacity(
+        &self,
+        request: Request<MutationCapacityRequest>,
+    ) -> Result<Response<MutationCapacityResponse>, Status> {
+        let context = verified(&self.auth, &request).await?;
+        let request = decode_json(&request.into_inner().request_json).map_err(status)?;
+        let database = routed(&self.registry, &self.auth, &context).await?;
+        let fence = self
+            .auth
+            .audit_result(&context, database.owned_response_fence(&context))
+            .await
+            .map_err(status)?;
+        let result = database
+            .admit_mutation_capacity(&context, request)
+            .await
+            .map_err(|error| self.registry.status(&context, error))?;
+        response_owner::PendingReply::new(result, fence)
+            .convert(|result, fence| {
+                Ok(MutationCapacityResponse {
+                    response_json: response_owner::encode_json(result, fence)?,
+                })
+            })
+            .map_err(status)?
+            .release(&self.auth, &context)
+            .await
+    }
+
     async fn read_change_feed(
         &self,
         request: Request<ReadChangeFeedRequest>,

@@ -1930,6 +1930,7 @@ dependencies = [
  "kasumi-client",
  "kasumi-clock",
  "kasumi-engine",
+ "kasumi-private-evidence",
  "kasumi-query",
  "kasumi-raft",
  "kasumi-serving",

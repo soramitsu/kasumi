@@ -32,6 +32,9 @@ http-body = "1"
 tower-service = "0.3"
 
 [build-dependencies]
+# Cargo resolves host features separately under resolver v2. Keep the canonical
+# Iroha bytes fork on its required std feature for prost-build and tonic-prost-build.
+bytes = { version = "1", features = ["std"] }
 tonic-prost-build = "0.14"
 prost-build = "0.14"
 protoc-bin-vendored = "3"

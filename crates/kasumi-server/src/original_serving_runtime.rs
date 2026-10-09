@@ -1597,7 +1597,9 @@ impl Administration {
                 custody_provider.clone(),
             )
             .await
-            .context(RecoverStage::CustodyOpen)?;
+            .map_err(|original| {
+                OriginalRecoveryFailure::snapshot_at(original.into(), RecoverStage::CustodyOpen)
+            })?;
             if kasumi_raft::ControlLog::installed(custody.clone())
                 .context(RecoverStage::CustodyOpen)?
                 .is_some()
@@ -1662,7 +1664,9 @@ impl Administration {
             access,
         )
         .await
-        .context(RecoverStage::StorageOpen)?;
+        .map_err(|original| {
+            OriginalRecoveryFailure::snapshot_at(original.into(), RecoverStage::StorageOpen)
+        })?;
         seat.stores = Some(stores.clone());
         let mut group = Some(format!("{tenant}/{incarnation}"));
         let opened = async {
@@ -1906,6 +1910,42 @@ impl Administration {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recovery_stage_preserves_only_outer_typed_retry_and_retains_cleanup() {
+        let unavailable = || {
+            anyhow::Error::new(kasumi_types::Error::new(
+                kasumi_types::ErrorCode::Unavailable,
+                "installed credential is unavailable",
+            ))
+        };
+        let failure = OriginalRecoveryFailure::snapshot_at(
+            unavailable().into(),
+            RecoverStage::StorageOpen,
+        );
+        assert_eq!(failure.source_stage(), Some(&RecoverStage::StorageOpen));
+        let mut seat = RecoverySeat {
+            failure: Some(failure),
+            ..Default::default()
+        };
+        assert!(seat.native_free_failure());
+        seat.stores_observation.entry = CleanupEntry::Entered;
+        assert!(!seat.native_free_failure());
+        seat.stores_observation.entry = CleanupEntry::Returned;
+        seat.stores_observation.future_disposal = CleanupEntry::Entered;
+        assert!(!seat.native_free_failure());
+        seat.stores_observation.future_disposal = CleanupEntry::Returned;
+        let mut report = DrainReport::default();
+        let failure = report.record("fixture cleanup", 0, anyhow::anyhow!("cleanup failed"));
+        seat.failure.as_mut().unwrap().stores_cleanup = Some(DrainFailure::retained(failure));
+        assert!(!seat.native_free_failure());
+        seat.failure = Some(OriginalRecoveryFailure::snapshot_at(
+            unavailable().context("opaque provider context").into(),
+            RecoverStage::StorageOpen,
+        ));
+        assert!(!seat.native_free_failure());
+        assert!(seat.failure.as_ref().unwrap().original().source_error().is_some());
+    }
 
     #[test]
     fn recover_stage_is_the_only_logged_class_of_a_failed_attempt() {

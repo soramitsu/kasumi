@@ -23,6 +23,63 @@ const EVENTS: &str = "local-credential-events";
 const MAX_SIGNERS: usize = 1 << 20;
 const MAX_RECORD: usize = 16 << 10;
 
+#[derive(Debug)]
+struct InvalidFamilyRecord;
+impl std::fmt::Display for InvalidFamilyRecord {
+    fn fmt(&self, output: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        output.write_str("invalid permanent credential family record")
+    }
+}
+impl std::error::Error for InvalidFamilyRecord {}
+
+/// Fixed classes only: never format the storage error, row, family, or key.
+fn family_status_error(error: &anyhow::Error, key_lease_class: Option<&'static str>) -> Error {
+    if error
+        .downcast_ref::<Error>()
+        .is_some_and(|error| error.code == ErrorCode::NotFound)
+    {
+        return Error::new(ErrorCode::Unauthorized, "credential family is missing");
+    }
+    let (class, code, stage, retirement) = if error.is::<InvalidFamilyRecord>() {
+        ("invalid_family_record", ErrorCode::Corruption, None, None)
+    } else if let Some(failure) = error.downcast_ref::<kasumi_store::TenantPointReadFailure>() {
+        (
+            "point_read_failed",
+            ErrorCode::Unavailable,
+            Some(failure.stage()),
+            None,
+        )
+    } else if let Some(failure) = error.downcast_ref::<kasumi_store::TenantPointReadRetirement>() {
+        (
+            "point_read_retirement_pending",
+            ErrorCode::Unavailable,
+            None,
+            Some(failure.disposition()),
+        )
+    } else if error.is::<kasumi_store::KeyAccessDenied>() {
+        ("key_access_unavailable", ErrorCode::Unavailable, None, None)
+    } else if error.is::<std::io::Error>() {
+        ("storage_io_unavailable", ErrorCode::Unavailable, None, None)
+    } else {
+        ("storage_unavailable", ErrorCode::Unavailable, None, None)
+    };
+    let io_kind = error
+        .downcast_ref::<std::io::Error>()
+        .map(std::io::Error::kind);
+    tracing::warn!(
+        failure_class = class,
+        read_stage = stage,
+        retirement = ?retirement,
+        io_error_kind = ?io_kind,
+        key_lease_failure_class = key_lease_class,
+        "native credential family status unavailable"
+    );
+    Error::new(
+        code,
+        format!("credential family status unavailable: {class}"),
+    )
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Signers {
@@ -190,7 +247,11 @@ impl LocalCredentials {
             .store
             .get_bounded(FAMILIES, family.as_bytes(), MAX_RECORD)?
             .ok_or_else(|| Error::new(ErrorCode::NotFound, "credential family not found"))?;
-        Self::family(&bytes)
+        Self::family(&bytes).context(InvalidFamilyRecord)
+    }
+    fn authorization_status(&self, family: Uuid) -> kasumi_types::Result<CredentialStatus> {
+        self.status(family)
+            .map_err(|error| family_status_error(&error, self.store.key_lease_failure_class()))
     }
     /// Permanent credential rows are admitted only as the current writer's exact
     /// bytes. An equivalent or default-omitting spelling fails closed.
@@ -400,17 +461,20 @@ impl LocalCredentials {
         tenant: &str,
         scope: &str,
         resource: &kasumi_types::CredentialResource,
-    ) -> Result<Arc<dyn CredentialLiveness>> {
-        let status = self.status(family)?;
+    ) -> kasumi_types::Result<Arc<dyn CredentialLiveness>> {
+        let status = self.authorization_status(family)?;
         let specification = &status.specification;
-        ensure!(
-            status.revoked_at_ms.is_none()
-                && specification.principal == principal
-                && specification.tenant == tenant
-                && &specification.resource == resource
-                && scopes(&specification.scopes) == scope,
-            "credential family claims mismatch or revoked"
-        );
+        if !(status.revoked_at_ms.is_none()
+            && specification.principal == principal
+            && specification.tenant == tenant
+            && &specification.resource == resource
+            && scopes(&specification.scopes) == scope)
+        {
+            return Err(Error::new(
+                ErrorCode::Unauthorized,
+                "credential family claims mismatch or revoked",
+            ));
+        }
         Ok(Arc::new(FamilyGuard {
             credentials: self.clone(),
             family,
@@ -423,11 +487,11 @@ struct FamilyGuard {
 }
 impl CredentialLiveness for FamilyGuard {
     fn check(&self) -> kasumi_types::Result<()> {
-        match self.credentials.status(self.family) {
-            Ok(status) if status.revoked_at_ms.is_none() => Ok(()),
+        match self.credentials.authorization_status(self.family)? {
+            status if status.revoked_at_ms.is_none() => Ok(()),
             _ => Err(kasumi_types::Error::new(
                 kasumi_types::ErrorCode::Unauthorized,
-                "credential family revoked or unavailable",
+                "credential family revoked",
             )),
         }
     }
@@ -471,6 +535,31 @@ mod tests {
         async fn record(&self, _: RequestAuditEvent) -> kasumi_types::Result<()> {
             Ok(())
         }
+    }
+    #[test]
+    fn family_status_taxonomy_never_exposes_underlying_record_or_provider_errors() {
+        let private = "secret-provider-or-record-content";
+        let unavailable = family_status_error(&anyhow::anyhow!(private), Some("provider_timeout"));
+        assert_eq!(unavailable.code, ErrorCode::Unavailable);
+        assert!(!unavailable.message.contains(private));
+        let io_failure =
+            anyhow::Error::new(std::io::Error::new(std::io::ErrorKind::WouldBlock, private));
+        let classified_io = family_status_error(&io_failure, None);
+        assert_eq!(classified_io.code, ErrorCode::Unavailable);
+        assert_eq!(
+            classified_io.message,
+            "credential family status unavailable: storage_io_unavailable"
+        );
+        assert!(!classified_io.message.contains(private));
+        let invalid = anyhow::anyhow!(private).context(InvalidFamilyRecord);
+        let corrupt = family_status_error(&invalid, None);
+        assert_eq!(corrupt.code, ErrorCode::Corruption);
+        assert!(!corrupt.message.contains(private));
+        let missing = anyhow::Error::new(Error::new(ErrorCode::NotFound, private));
+        assert_eq!(
+            family_status_error(&missing, None).code,
+            ErrorCode::Unauthorized
+        );
     }
     #[tokio::test]
     async fn local_issuer_renewal_preserves_deadlines_and_revocation_fences_existing_requests() {
@@ -585,6 +674,26 @@ mod tests {
             .unwrap();
         context.authorization.check_live().unwrap();
         assert_eq!(context.authorization.expires_at_ms(), captured_deadline);
+        // A real sealed credential store is an availability failure at BOTH
+        // initial authentication and an already issued live invocation. It
+        // cannot masquerade as revoked credentials or authorize a request.
+        store.seal();
+        assert_eq!(
+            context.authorization.check_live().unwrap_err().code,
+            ErrorCode::Unavailable
+        );
+        assert_eq!(
+            auth.authenticate(&format!("Bearer {}", renewed.token))
+                .await
+                .unwrap_err()
+                .code,
+            ErrorCode::Unavailable
+        );
+        // Explicit native key-lease recovery restores only storage access;
+        // the original credential deadline and subsequent revocation remain.
+        store.refresh_lease().await.unwrap();
+        context.authorization.check_live().unwrap();
+        assert_eq!(context.authorization.expires_at_ms(), captured_deadline);
         assert!(
             !context
                 .authorization
@@ -596,12 +705,20 @@ mod tests {
         );
         let revoked = manager.revoke(issued.family_id, "administrator").unwrap();
         assert!(revoked.revoked_at_ms.is_some());
-        assert!(context.authorization.check_live().is_err());
-        assert!(new_context.authorization.check_live().is_err());
-        assert!(
+        assert_eq!(
+            context.authorization.check_live().unwrap_err().code,
+            ErrorCode::Unauthorized
+        );
+        assert_eq!(
+            new_context.authorization.check_live().unwrap_err().code,
+            ErrorCode::Unauthorized
+        );
+        assert_eq!(
             auth.authenticate(&format!("Bearer {}", renewed.token))
                 .await
-                .is_err()
+                .unwrap_err()
+                .code,
+            ErrorCode::Unauthorized
         );
         assert!(
             manager

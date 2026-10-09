@@ -11,6 +11,7 @@ pub(crate) enum FixtureFailure {
     Selection(kasumi_raft::SelectionFailure<crate::application_sources::Workspace>),
     SourceCapacity(kasumi_store::SourceCapacityFailure),
     NodeStartup(kasumi_store::NodeStoreStartFailure),
+    InitializerDrainObservation(kasumi_store::InitializerDrainObservation),
     Operation(anyhow::Error),
 }
 
@@ -25,6 +26,7 @@ impl FixtureFailure {
             Self::Selection(_)
             | Self::SourceCapacity(_)
             | Self::NodeStartup(_)
+            | Self::InitializerDrainObservation(_)
             | Self::Operation(_) => None,
         }
     }
@@ -39,6 +41,7 @@ impl std::fmt::Display for FixtureFailure {
             Self::Selection(original) => original.fmt(f),
             Self::SourceCapacity(original) => original.fmt(f),
             Self::NodeStartup(original) => original.fmt(f),
+            Self::InitializerDrainObservation(original) => original.fmt(f),
             Self::Operation(original) => original.fmt(f),
         }
     }
@@ -46,6 +49,12 @@ impl std::fmt::Display for FixtureFailure {
 impl From<kasumi_store::NodeStoreStartFailure> for FixtureFailure {
     fn from(original: kasumi_store::NodeStoreStartFailure) -> Self {
         Self::NodeStartup(original)
+    }
+}
+
+impl From<kasumi_store::InitializerDrainObservation> for FixtureFailure {
+    fn from(original: kasumi_store::InitializerDrainObservation) -> Self {
+        Self::InitializerDrainObservation(original)
     }
 }
 

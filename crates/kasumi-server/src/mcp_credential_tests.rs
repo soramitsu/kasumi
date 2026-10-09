@@ -60,6 +60,41 @@ impl ReleaseGate {
     }
 }
 
+// Gate admission retains its original ten-second bound. The already dispatched
+// request is observed concurrently so its real early failure cannot disappear
+// behind the gate timeout. A timeout opens this test-only gate and uses only the
+// native write cleanup bound to collect the original task and exact receipt.
+async fn mutation_gate_entered(
+    fixture: &Fixture,
+    gate: &ReleaseGate,
+    running: &mut tokio::task::JoinHandle<Result<axum::response::Response, Infallible>>,
+    operation_id: &str,
+) {
+    let admission = tokio::time::sleep(Duration::from_secs(10));
+    tokio::pin!(admission);
+    let (phase, result) = tokio::select! {
+        biased;
+        _ = gate.entered.notified() => return,
+        result = &mut *running => ("request ended before release gate", Some(result)),
+        _ = &mut admission => {
+            gate.release();
+            let result = tokio::time::timeout(kasumi_store::NATIVE_WRITE_TIMEOUT, &mut *running).await;
+            ("release gate admission deadline elapsed", result.ok())
+        }
+    };
+    let terminal = match result {
+        Some(Ok(Ok(response))) => {
+            let (status, body) = decoded(response).await;
+            format!("status={status} body={body}")
+        }
+        Some(Ok(Err(impossible))) => match impossible {},
+        Some(Err(error)) => format!("request task failed: {error}"),
+        None => "original request remains unresolved after native cleanup bound".to_string(),
+    };
+    let receipt = fixture.database.operation_receipt(&Fixture::context(), operation_id).await;
+    panic!("{phase}; {terminal}; original receipt={receipt:?}");
+}
+
 /// Holds a tool call after its result tree is charged and before its encoded
 /// SDK body is charged, so a test can take the remaining admission headroom.
 #[derive(Clone)]
@@ -655,8 +690,8 @@ async fn dispatched_mutation_response_wait_reports_unknown_outcome_after_revocat
         }),
     );
     pending_request.extensions_mut().insert(gate.clone());
-    let running = tokio::spawn(fixture.router().oneshot(pending_request));
-    gate.entered().await;
+    let mut running = tokio::spawn(fixture.router().oneshot(pending_request));
+    mutation_gate_entered(&fixture, &gate, &mut running, "original-mcp-mutation").await;
     let receipt = fixture
         .database
         .operation_receipt(&Fixture::context(), "original-mcp-mutation")
@@ -742,8 +777,8 @@ async fn dispatched_mutation_response_keeps_original_deadline_after_family_renew
         json!({"name":"kasumi_mutate", "arguments":arguments.clone()}),
     );
     pending_request.extensions_mut().insert(gate.clone());
-    let running = tokio::spawn(fixture.router().oneshot(pending_request));
-    gate.entered().await;
+    let mut running = tokio::spawn(fixture.router().oneshot(pending_request));
+    mutation_gate_entered(&fixture, &gate, &mut running, "renewed-mcp-mutation").await;
     let original = fixture
         .database
         .operation_receipt(&Fixture::context(), "renewed-mcp-mutation")

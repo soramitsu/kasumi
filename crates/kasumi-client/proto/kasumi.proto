@@ -21,6 +21,7 @@ service KasumiData {
   rpc ScanSnapshotPage(ScanSnapshotPageRequest) returns (SnapshotScanPageResponse);
   rpc CloseSnapshotLease(SnapshotLeaseReference) returns (CloseSnapshotLeaseResponse);
   rpc Mutate(MutateRequest) returns (WriteReceipt);
+  rpc AdmitMutationCapacity(MutationCapacityRequest) returns (MutationCapacityResponse);
   rpc Collections(CollectionsRequest) returns (CollectionsResponse);
   rpc Receipt(ReceiptRequest) returns (ReceiptResponse);
 }
@@ -43,6 +44,8 @@ service KasumiAuthority {
   rpc Execute(AuthorityJsonRequest) returns (AuthorityJsonResponse);
   rpc Receipt(AuthorityReceiptRequest) returns (AuthorityJsonResponse);
 }
+message MutationCapacityRequest { bytes request_json = 1; }
+message MutationCapacityResponse { bytes response_json = 1; }
 message AuthorityJsonRequest { bytes request_json = 1; }
 message AuthorityJsonResponse { bytes response_json = 1; }
 message AuthorityReceiptRequest { string tenant = 1; string command_id = 2; }

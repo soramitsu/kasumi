@@ -266,6 +266,189 @@ fn active_reader_finish_waits_for_opening_lock_before_reporting_completion() {
 }
 
 #[test]
+fn finished_reader_retirement_waits_for_short_exact_census_contention() {
+    let directory = private_tempdir().unwrap();
+    let path = directory.path().join("reader-retirement-contention.kv");
+    let memory = TestDiskMemory::new(256 << 20, 4096);
+    let disk = disk(&path, &memory);
+    let mut startup = RegisteredNodeStartup::prepare(
+        &path,
+        ID,
+        disk,
+        NodeOpeningMode::Create,
+        crate::test_utils::node_storage_config(),
+    )
+    .unwrap();
+    assert_eq!(startup.advance(), NodeStartupPhase::Ready);
+    let opening = startup.into_opening().ok().unwrap();
+    let reader = opening.queue_read().unwrap();
+    let id = reader.id();
+    assert_eq!(reader.begin(), NodeReadPhase::Active);
+    assert!(reader.catalog_bytes([7; 32], 64).unwrap().is_none());
+    assert_eq!(reader.finish(), NodeReadPhase::Finished);
+
+    let (start, started) = std::sync::mpsc::sync_channel(0);
+    let (complete, completed) = std::sync::mpsc::sync_channel(1);
+    let worker = std::thread::spawn(move || {
+        started.recv().unwrap();
+        complete
+            .send(reader.retire_until(std::time::Instant::now() + crate::NATIVE_READ_TIMEOUT))
+            .unwrap();
+    });
+    // Hold the actual reader generation's census metadata, not a replacement
+    // payload or simulated busy flag. The native transaction is already closed.
+    let early = memory
+        .storage_census()
+        .with_owner_metadata_held_for_test(id, || {
+            start.send(()).unwrap();
+            completed.recv_timeout(Duration::from_millis(20))
+        });
+    let disposition = match early {
+        Ok(disposition) => disposition,
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            completed.recv_timeout(Duration::from_secs(5)).unwrap()
+        }
+        Err(error) => panic!("retirement worker disconnected: {error}"),
+    };
+    worker.join().unwrap();
+    // Always settle the original generation before reporting a regression.
+    let settled = memory.storage_census().drain_owner(id);
+    assert!(matches!(
+        settled,
+        StorageCensusDisposition::Retired | StorageCensusDisposition::Stale
+    ));
+    assert_eq!(memory.storage_census().snapshot().readers, 0);
+    assert_eq!(opening.close().unwrap(), DatabaseOpenSettlement::Closed);
+    assert_eq!(opening.retire(), StorageCensusDisposition::Retired);
+    assert_eq!(
+        disposition,
+        StorageCensusDisposition::Retired,
+        "clean native completion must survive short census metadata contention"
+    );
+}
+
+#[test]
+fn finished_reader_retirement_survives_release_at_last_busy_observation() {
+    let directory = private_tempdir().unwrap();
+    let path = directory.path().join("reader-retirement-exact-boundary.kv");
+    let memory = TestDiskMemory::new(256 << 20, 4096);
+    let disk = disk(&path, &memory);
+    let mut startup = RegisteredNodeStartup::prepare(
+        &path,
+        ID,
+        disk,
+        NodeOpeningMode::Create,
+        crate::test_utils::node_storage_config(),
+    )
+    .unwrap();
+    assert_eq!(startup.advance(), NodeStartupPhase::Ready);
+    let opening = startup.into_opening().ok().unwrap();
+    let reader = opening.queue_read().unwrap();
+    let id = reader.id();
+    assert_eq!(reader.begin(), NodeReadPhase::Active);
+    assert!(reader.catalog_bytes([7; 32], 64).unwrap().is_none());
+    assert_eq!(reader.finish(), NodeReadPhase::Finished);
+
+    let (start, started) = std::sync::mpsc::sync_channel(0);
+    let (release, release_requested) = std::sync::mpsc::sync_channel(0);
+    let (released, release_observed) = std::sync::mpsc::sync_channel(0);
+    let worker = std::thread::spawn(move || {
+        started.recv().unwrap();
+        let mut busy = 0;
+        crate::storage_census::with_metadata_busy_observer_for_test(
+            move |actual_id| {
+                assert_eq!(actual_id, id);
+                busy += 1;
+                if busy == 65 {
+                    // Initial retirement plus all64 scheduler-count retries
+                    // have now observed the actual held metadata lock.
+                    release.send(()).unwrap();
+                    release_observed
+                        .recv_timeout(Duration::from_secs(5))
+                        .unwrap();
+                }
+            },
+            || reader.retire_until(std::time::Instant::now() + crate::NATIVE_READ_TIMEOUT),
+        )
+    });
+    memory
+        .storage_census()
+        .with_owner_metadata_held_for_test(id, || {
+            start.send(()).unwrap();
+            release_requested
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap();
+        });
+    // Acknowledge only after the exact metadata guard has actually dropped.
+    released.send(()).unwrap();
+    let disposition = worker.join().unwrap();
+    let settled = memory.storage_census().drain_owner(id);
+    assert!(matches!(
+        settled,
+        StorageCensusDisposition::Retired | StorageCensusDisposition::Stale
+    ));
+    assert_eq!(memory.storage_census().snapshot().readers, 0);
+    assert!(RegisteredNodeRead::retained(memory.clone(), id).is_none());
+    assert_eq!(opening.close().unwrap(), DatabaseOpenSettlement::Closed);
+    assert_eq!(opening.retire(), StorageCensusDisposition::Retired);
+    assert_eq!(
+        disposition,
+        StorageCensusDisposition::Retired,
+        "an exhausted scheduler count must not reject a now-uncontended clean native read"
+    );
+}
+
+#[test]
+fn finished_reader_retirement_deadline_retains_exact_native_generation() {
+    let directory = private_tempdir().unwrap();
+    let path = directory.path().join("reader-retirement-deadline.kv");
+    let memory = TestDiskMemory::new(256 << 20, 4096);
+    let disk = disk(&path, &memory);
+    let mut startup = RegisteredNodeStartup::prepare(
+        &path,
+        ID,
+        disk,
+        NodeOpeningMode::Create,
+        crate::test_utils::node_storage_config(),
+    )
+    .unwrap();
+    assert_eq!(startup.advance(), NodeStartupPhase::Ready);
+    let opening = startup.into_opening().ok().unwrap();
+    let reader = opening.queue_read().unwrap();
+    let id = reader.id();
+    assert_eq!(reader.begin(), NodeReadPhase::Active);
+    assert!(reader.catalog_bytes([7; 32], 64).unwrap().is_none());
+    assert_eq!(reader.finish(), NodeReadPhase::Finished);
+    let (start, started) = std::sync::mpsc::sync_channel(0);
+    let (complete, completed) = std::sync::mpsc::sync_channel(0);
+    let worker = std::thread::spawn(move || {
+        started.recv().unwrap();
+        complete
+            .send(reader.retire_until(Instant::now() + Duration::from_millis(20)))
+            .unwrap();
+    });
+    memory
+        .storage_census()
+        .with_owner_metadata_held_for_test(id, || {
+            start.send(()).unwrap();
+            assert_eq!(
+                completed.recv_timeout(Duration::from_secs(2)).unwrap(),
+                StorageCensusDisposition::Retained
+            );
+        });
+    worker.join().unwrap();
+    assert_eq!(memory.storage_census().snapshot().readers, 1);
+    assert_eq!(
+        memory.storage_census().drain_owner(id),
+        StorageCensusDisposition::Retired
+    );
+    assert_eq!(memory.storage_census().snapshot().readers, 0);
+    assert!(RegisteredNodeRead::retained(memory.clone(), id).is_none());
+    assert_eq!(opening.close().unwrap(), DatabaseOpenSettlement::Closed);
+    assert_eq!(opening.retire(), StorageCensusDisposition::Retired);
+}
+
+#[test]
 fn inspected_reader_failure_retires_directly_after_successful_close() {
     let directory = private_tempdir().unwrap();
     let path = directory.path().join("reader-failures.kasumi");
@@ -4379,4 +4562,71 @@ fn actual_direct_opening_failed_delivery_keeps_prebound_identity_and_original_re
     );
     assert!(!path.join(kasumi_kv::ROOT_FILE_NAME).exists());
     drop(observer);
+}
+
+#[test]
+fn installed_read_admission_waits_for_exact_parent_metadata_without_false_unavailability() {
+    let directory = private_tempdir().unwrap();
+    let path = directory.path().join("read-parent-admission.kv");
+    let memory = TestDiskMemory::new(256 << 20, 4096);
+    let disk = disk(&path, &memory);
+    let mut startup = RegisteredNodeStartup::prepare(
+        &path,
+        ID,
+        disk,
+        NodeOpeningMode::Create,
+        crate::test_utils::node_storage_config(),
+    )
+    .unwrap();
+    assert_eq!(startup.advance(), NodeStartupPhase::Ready);
+    let opening = startup.into_opening().ok().unwrap();
+    let parent_id = opening.id();
+    let database = Arc::new(crate::node_database::NodeDatabase::new_registered_locator(
+        memory.clone(),
+        parent_id,
+        "parent admission metadata fixture",
+    ));
+    let (start, started) = std::sync::mpsc::sync_channel(0);
+    let (complete, completed) = std::sync::mpsc::sync_channel(1);
+    let worker_database = database.clone();
+    let worker = std::thread::spawn(move || {
+        started.recv().unwrap();
+        complete
+            .send(worker_database.queue_registered_read())
+            .unwrap();
+    });
+    let early = memory
+        .storage_census()
+        .with_owner_metadata_held_for_test(parent_id, || {
+            start.send(()).unwrap();
+            completed.recv_timeout(Duration::from_millis(20))
+        });
+    let (escaped_early, result) = match early {
+        Ok(result) => (true, result),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => (
+            false,
+            completed.recv_timeout(Duration::from_secs(5)).unwrap(),
+        ),
+        Err(error) => panic!("admission worker disconnected: {error}"),
+    };
+    worker.join().unwrap();
+    let error_kind = result.as_ref().err().map(std::io::Error::kind);
+    if let Ok(reader) = result {
+        assert_eq!(reader.begin(), NodeReadPhase::Active);
+        assert!(reader.catalog_bytes([7; 32], 64).unwrap().is_none());
+        assert_eq!(reader.finish(), NodeReadPhase::Finished);
+        assert_eq!(reader.retire(), StorageCensusDisposition::Retired);
+    }
+    assert_eq!(memory.storage_census().snapshot().readers, 0);
+    database.close().unwrap();
+    assert_eq!(opening.retire(), StorageCensusDisposition::Retired);
+    assert_eq!(memory.storage_census().snapshot().databases, 0);
+    assert_eq!(
+        error_kind, None,
+        "a census observation must not become a storage failure"
+    );
+    assert!(
+        !escaped_early,
+        "admission returned while its exact metadata was unavailable"
+    );
 }

@@ -536,11 +536,8 @@ impl Drop for ReadFacadeLease {
         } else {
             None
         };
-        if let Some((settled, provider, id)) = retry {
-            let disposition = registration.retire();
-            if settled {
-                let _ = settle_finished_reader_retirement(&provider, id, disposition);
-            }
+        if retry.is_some() {
+            let _ = registration.retire();
         }
     }
 }
@@ -551,35 +548,12 @@ pub struct RegisteredNodeRead {
     lease: ReadFacadeLease,
 }
 
-// A finished, failure-free reader has no remaining transaction work. After its
-// facade drops, a concurrent registration can still briefly own the census
-// slot metadata, so give that exact slot a bounded chance to retire.
-fn settle_finished_reader_retirement(
-    provider: &Arc<dyn NodeDiskMemoryAdmission>,
-    id: StorageOwnerId,
-    mut disposition: StorageCensusDisposition,
-) -> StorageCensusDisposition {
-    for _ in 0..64 {
-        match disposition {
-            StorageCensusDisposition::Retired | StorageCensusDisposition::Stale => {
-                // This facade held the exact generation until retirement
-                // began. Stale here means another drainer retired it first.
-                return StorageCensusDisposition::Retired;
-            }
-            StorageCensusDisposition::Retained => {
-                std::thread::yield_now();
-                disposition = provider.storage_census().drain_owner(id);
-            }
-        }
-    }
-    disposition
-}
-
 impl RegisteredNodeOpening {
-    /// Drive only released routine readers registered under this opening.
-    /// Called before close takes the opening state lock, so a prior last-facade
-    /// drop that observed transient lock contention can finish its transaction.
-    pub(crate) fn drain_released_routine_readers(
+    /// Revisit this opening's released clean and routine readers without waiting.
+    /// Admission and close call this before taking the opening state lock. A
+    /// detached clean reader may still own its census cell after transient
+    /// metadata contention; unknown observations and source owners stay retained.
+    pub(crate) fn drain_released_readers(
         provider: &Arc<dyn NodeDiskMemoryAdmission>,
         opening_id: StorageOwnerId,
     ) {
@@ -595,11 +569,22 @@ impl RegisteredNodeOpening {
                 continue;
             };
             let request = registration.owner();
-            if request.database.id() != opening_id {
+            if request.database.id() != opening_id || request.facades.load(Ordering::Acquire) != 0 {
                 continue;
             }
             let settled = if let Some(mut state) = request.state.try_lock() {
-                if !request.auto_retire_routine_failure.load(Ordering::Acquire)
+                if request.facades.load(Ordering::Acquire) != 0 || state.source.is_some() {
+                    false
+                } else if matches!(
+                    state.phase,
+                    NodeReadPhase::Finished | NodeReadPhase::Cancelled
+                ) && !state.has_failures()
+                {
+                    // No acknowledgement is needed for an actually clean
+                    // terminal reader. Disposal still checks exact generation,
+                    // live owners, children and original native outcomes.
+                    true
+                } else if !request.auto_retire_routine_failure.load(Ordering::Acquire)
                     || state.routine_failure().is_none()
                 {
                     false
@@ -618,8 +603,7 @@ impl RegisteredNodeOpening {
                 false
             };
             if settled {
-                let disposition = registration.retire();
-                let _ = settle_finished_reader_retirement(provider, id, disposition);
+                let _ = registration.retire();
             }
         }
         census.drain_disposed_children(opening_id);
@@ -641,6 +625,7 @@ impl RegisteredNodeOpening {
         if owner.stopped.load(Ordering::Acquire) {
             return Err(io::ErrorKind::BrokenPipe.into());
         }
+        Self::drain_released_readers(&owner.provider, self.registration.id());
         let opening = owner.state.lock();
         if opening.phase != NodeOpeningPhase::Open
             || (!matches!(opening.mode, NodeOpeningMode::Existing)
@@ -950,6 +935,11 @@ impl RegisteredNodeRead {
     /// A recovered facade may have added an unknown failure since permission;
     /// its reset outcomes_released flag must still prevent census retirement.
     pub(crate) fn retire_acknowledged(self) -> StorageCensusDisposition {
+        self.retire_acknowledged_progress().disposition()
+    }
+    pub(crate) fn retire_acknowledged_progress(
+        self,
+    ) -> crate::storage_census::StorageRetirementProgress {
         let Self {
             registration,
             mut lease,
@@ -959,7 +949,7 @@ impl RegisteredNodeRead {
         debug_assert_ne!(previous, 0);
         drop(facade);
         drop(lease);
-        registration.retire()
+        registration.retire_progress()
     }
     pub fn begin(&self) -> NodeReadPhase {
         self.begin_queued(false)
@@ -1225,6 +1215,14 @@ impl RegisteredNodeRead {
         }
     }
     pub fn retire(self) -> StorageCensusDisposition {
+        self.retire_inner(None)
+    }
+    /// Complete this clean reader under the caller's already-established budget.
+    /// Failures and outstanding report/source owners are never waited away.
+    pub(crate) fn retire_until(self, deadline: std::time::Instant) -> StorageCensusDisposition {
+        self.retire_inner(Some(deadline))
+    }
+    fn retire_inner(self, deadline: Option<std::time::Instant>) -> StorageCensusDisposition {
         let request = self.registration.owner();
         let mut clean_finished = false;
         if let Some(mut state) = request.state.try_lock() {
@@ -1247,10 +1245,18 @@ impl RegisteredNodeRead {
             lease,
         } = self;
         drop(lease);
-        let disposition = registration.retire();
-        match retry {
-            Some((provider, id)) => settle_finished_reader_retirement(&provider, id, disposition),
-            None => disposition,
+        let progress = registration.retire_progress();
+        match (retry, deadline) {
+            (Some((provider, id)), Some(deadline)) => {
+                provider.storage_census().complete_owner_until(
+                    id,
+                    progress,
+                    deadline,
+                    crate::storage_census::StorageCompletionGoal::ReaderRetirement,
+                    || {},
+                )
+            }
+            _ => progress.disposition(),
         }
     }
 }
@@ -1314,23 +1320,6 @@ impl NodeReadReport<'_> {
 mod retirement_tests {
     use super::*;
     use crate::test_utils::{NODE_STORE_ID, TestDiskMemory, private_tempdir, retry_disk_registry};
-
-    struct TemporarilyBusyReader {
-        drives: Arc<AtomicUsize>,
-        drops: Arc<AtomicUsize>,
-    }
-    impl StoragePayload for TemporarilyBusyReader {
-        const KIND: StorageOwnerKind = StorageOwnerKind::Reader;
-
-        fn drive(&self) -> bool {
-            self.drives.fetch_add(1, Ordering::AcqRel) != 0
-        }
-    }
-    impl Drop for TemporarilyBusyReader {
-        fn drop(&mut self) {
-            self.drops.fetch_add(1, Ordering::AcqRel);
-        }
-    }
 
     #[test]
     fn routine_permission_never_acknowledges_recovered_unknown_after_its_state_transition() {
@@ -1416,32 +1405,6 @@ mod retirement_tests {
         );
         assert_eq!(opening.close().unwrap(), DatabaseOpenSettlement::Closed);
         assert_eq!(opening.retire(), StorageCensusDisposition::Retired);
-    }
-
-    #[test]
-    fn finished_reader_retries_a_transient_busy_census_owner() {
-        let memory = TestDiskMemory::new(1 << 20, 1);
-        let provider: Arc<dyn NodeDiskMemoryAdmission> = memory.clone();
-        let drives = Arc::new(AtomicUsize::new(0));
-        let drops = Arc::new(AtomicUsize::new(0));
-        let registration = memory
-            .storage_census()
-            .register(provider.clone(), 0, || TemporarilyBusyReader {
-                drives: drives.clone(),
-                drops: drops.clone(),
-            })
-            .unwrap();
-        let id = registration.id();
-        let first = registration.retire();
-        assert_eq!(first, StorageCensusDisposition::Retained);
-        assert_eq!(memory.storage_census().snapshot().readers, 1);
-        assert_eq!(
-            settle_finished_reader_retirement(&provider, id, first),
-            StorageCensusDisposition::Retired
-        );
-        assert_eq!(drives.load(Ordering::Acquire), 2);
-        assert_eq!(drops.load(Ordering::Acquire), 1);
-        assert_eq!(memory.storage_census().snapshot().readers, 0);
     }
 
     #[test]
@@ -1949,3 +1912,7 @@ mod retirement_tests {
 #[cfg(test)]
 #[path = "read_fork_tests.rs"]
 mod fork_tests;
+
+#[cfg(test)]
+#[path = "released_reader_progress_tests.rs"]
+mod released_reader_progress_tests;

@@ -1,4 +1,66 @@
 #[tokio::test]
+async fn native_data_capacity_admits_whole_security_batch_without_publishing_it() {
+    let fixture = Fixture::new().await;
+    let data = fixture.data();
+    let token = fixture.token("person", "tenant-a", "kasumi:read kasumi:write");
+    let read_only = fixture.token("person", "tenant-a", "kasumi:read");
+    let generation = fixture.db.engine().generation().unwrap();
+    let mut request = kasumi_types::AdmitMutationCapacity {
+        expected_incarnation: generation.state.incarnation.clone(),
+        batch: MutationBatch::with_key("future-security-batch")
+            .read_set([kasumi_types::ReadAssertion::Snapshot {
+                incarnation: generation.state.incarnation.clone(),
+                policy_epoch: generation.state.policy_epoch,
+                schema_epoch: generation.state.schema_epoch,
+            }])
+            .insert("docs", "prepared", json!({"phase":"prepared"})),
+    };
+    let wire = |request: &kasumi_types::AdmitMutationCapacity| proto::MutationCapacityRequest {
+        request_json: serde_json::to_vec(request).unwrap(),
+    };
+    assert_eq!(
+        data.admit_mutation_capacity(native(wire(&request), &read_only))
+            .await
+            .unwrap_err()
+            .code(),
+        Code::PermissionDenied
+    );
+    let response = data
+        .admit_mutation_capacity(native(wire(&request), &token))
+        .await
+        .unwrap()
+        .into_inner();
+    let admitted: kasumi_types::MutationCapacityAdmission =
+        serde_json::from_slice(&response.response_json).unwrap();
+    assert_eq!(admitted.batch_digest, request.batch.digest().unwrap());
+    assert_eq!(admitted.snapshot_assertion(), request.batch.read_set[0]);
+    assert!(
+        !fixture.db.engine().generation().unwrap().state.collections["docs"]
+            .documents
+            .contains_key("prepared")
+    );
+    for index in 0..256 {
+        request.batch =
+            request
+                .batch
+                .insert("docs", format!("device-{index}"), json!({"retired":true}));
+    }
+    assert_eq!(
+        data.admit_mutation_capacity(native(wire(&request), &token))
+            .await
+            .unwrap_err()
+            .code(),
+        Code::ResourceExhausted
+    );
+    assert!(
+        !fixture.db.engine().generation().unwrap().state.collections["docs"]
+            .documents
+            .contains_key("prepared")
+    );
+    fixture.close().await;
+}
+
+#[tokio::test]
 async fn native_policy_limits_readback_is_admin_scoped_and_exact() {
     let fixture = Fixture::new().await;
     let admin = NativeAdmin::new(

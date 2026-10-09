@@ -435,6 +435,14 @@ impl StoragePayload for DatabaseOwner {
             return false;
         }
         self.stopped.store(true, Ordering::Release);
+        if self
+            .provider
+            .storage_census()
+            .seal_child_admission(self.census_id)
+            .is_err()
+        {
+            return false;
+        }
         reads::drain_source_owners(&self.provider, self.census_id);
         RegisteredNodeOpening::drain_released_clean_writers(&self.provider, self.census_id);
         let Some(mut state) = self.state.try_lock() else {
@@ -492,6 +500,17 @@ impl RegisteredNodeOpening {
     ) -> Option<Self> {
         let registration = provider.storage_census().retained(provider.clone(), id)?;
         Some(Self { registration })
+    }
+    pub(crate) fn admit_retained_until(
+        provider: Arc<dyn NodeDiskMemoryAdmission>,
+        id: StorageOwnerId,
+        deadline: std::time::Instant,
+    ) -> io::Result<Self> {
+        let registration =
+            provider
+                .storage_census()
+                .admit_retained_until(provider.clone(), id, deadline)?;
+        Ok(Self { registration })
     }
     pub fn prepare(
         path: &Path,
@@ -817,9 +836,16 @@ impl RegisteredNodeOpening {
     pub fn close(&self) -> io::Result<DatabaseOpenSettlement> {
         let owner = self.registration.owner();
         owner.stopped.store(true, Ordering::Release);
-        // A recoverable read error may have lost its last facade while this
-        // opening lock was busy. Revisit only this opening's released routine
-        // readers before asking the native database to close its transactions.
+        // Seal at the same census boundary that preclaims child ownership.
+        // A caller which checked Open before this close cannot publish a late
+        // child after shutdown has proved all admitted children retired.
+        owner
+            .provider
+            .storage_census()
+            .seal_child_admission(self.registration.id())?;
+        // Released clean or routine readers may retain census metadata after
+        // their last facade disappeared. Revisit only this opening's exact
+        // owners before asking the native database to close its transactions.
         let provider = {
             let Some(_state) = owner.state.try_lock() else {
                 return Err(io::ErrorKind::WouldBlock.into());
@@ -827,7 +853,7 @@ impl RegisteredNodeOpening {
             owner.provider.clone()
         };
         reads::drain_source_owners(&provider, self.registration.id());
-        Self::drain_released_routine_readers(&provider, self.registration.id());
+        Self::drain_released_readers(&provider, self.registration.id());
         Self::drain_released_clean_writers(&provider, self.registration.id());
         let Some(mut state) = owner.state.try_lock() else {
             return Err(io::ErrorKind::WouldBlock.into());
@@ -836,10 +862,10 @@ impl RegisteredNodeOpening {
         drop(state);
         if settlement == DatabaseOpenSettlement::WaitingForTransactions {
             // A last error facade can drop while close held the opening lock,
-            // after the pre-close pass. Give only this opening's routine readers
+            // after the pre-close pass. Give only this opening's released readers
             // a post-close pass and retry the existing busy close once.
             reads::drain_source_owners(&provider, self.registration.id());
-            Self::drain_released_routine_readers(&provider, self.registration.id());
+            Self::drain_released_readers(&provider, self.registration.id());
             Self::drain_released_clean_writers(&provider, self.registration.id());
             let Some(mut state) = owner.state.try_lock() else {
                 return Err(io::ErrorKind::WouldBlock.into());
@@ -863,6 +889,15 @@ impl RegisteredNodeOpening {
             settlement
         })
     }
+    /// Positive completion for this opening's sealed child admission boundary.
+    /// The opening itself may remain owned by live NodeStore facades.
+    pub(crate) fn children_retired(&self) -> bool {
+        self.registration
+            .provider()
+            .storage_census()
+            .children_retired(self.registration.id())
+    }
+
     // Stop future dispatch through this exact installed opening.
     pub(crate) fn seal_store_transactions(&self) {
         self.registration

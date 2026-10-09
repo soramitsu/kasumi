@@ -242,6 +242,7 @@ alone does not grant document access.
 | `ReadSnapshot` | UTF-8 `request_json` bytes: document keys and queries | One coherent generation as UTF-8 `response_json`, including read assertions' source versions/epochs |
 | `ReadRestoreLineage` | Expected current incarnation and an existing collection | Opaque authenticated historical commitments under current collection Read permission |
 | `Mutate` | UTF-8 `batch_json` bytes, using the batch shape above | Revision and per-document versions |
+| `AdmitMutationCapacity` | UTF-8 `request_json`: exact `expected_incarnation` and complete future `batch` with current Snapshot assertion | Exact input digest and current tenant, incarnation, revision, policy and schema epochs |
 | `Collections` | Empty message | Authorized collection definitions as JSON bytes |
 | `Receipt` | `idempotency_key` | Committed receipt, rejected database error, or no retained outcome |
 | `BeginStagedTransaction` | `BeginStagedTransaction` as UTF-8 JSON | Reserved permanent identity and upload budget |
@@ -253,6 +254,9 @@ alone does not grant document access.
 | `ReadSnapshotPage` | `ReadSnapshotPage` as UTF-8 JSON | Named documents/absence in `SnapshotReadResponse` |
 | `ScanSnapshotPage` | `ScanSnapshotPage` as UTF-8 JSON | ID-ordered documents, collection epoch and `next_after_id` |
 | `CloseSnapshotLease` | `lease_id` | Empty response |
+
+`AdmitMutationCapacity` uses the Data listener and the caller's existing per-collection read/write grants. It checks the complete future Put/Delete batch against the hard 256-operation and 512-read bounds, current tenant operation/batch/document limits, installed schema, and immutable history rules. It executes no proposed write and reserves no future tenant storage. Applications call it for both the complete effect/phase batch and retained-intent batch before publishing a security intent or barrier, then retain the original business read assertions and returned Snapshot epoch assertion for atomic dispatch. Only an unknown applying version may be conservatively sized as `u64::MAX` and later replaced with its real native revision; that substitution belongs to the application owner. Limits changes advance the policy epoch and invalidate prior capacity admissions. Patch expansion requires retained source custody, so this admission endpoint requires complete resulting originals.
+
 
 Do not convert these JSON byte fields through Protobuf's double-valued
 `Struct`. Native errors carry the Kasumi error code in structured status details.

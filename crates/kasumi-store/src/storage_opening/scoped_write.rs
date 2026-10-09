@@ -242,10 +242,16 @@ impl RegisteredNodeWrite {
     pub fn retire(self) -> StorageCensusDisposition {
         self.retire_inner(true)
     }
-    pub(crate) fn retire_for_handoff(self) -> StorageCensusDisposition {
-        self.retire_inner(false)
+    pub(crate) fn retire_for_handoff(self) -> crate::storage_census::StorageRetirementProgress {
+        self.retire_progress(false)
     }
     fn retire_inner(self, release_output: bool) -> StorageCensusDisposition {
+        self.retire_progress(release_output).disposition()
+    }
+    fn retire_progress(
+        self,
+        release_output: bool,
+    ) -> crate::storage_census::StorageRetirementProgress {
         let owner = self.registration.owner();
         let mut cancelled_without_output = false;
         if let Some(mut state) = owner.state.try_lock() {
@@ -265,7 +271,7 @@ impl RegisteredNodeWrite {
                 census.release_unentered_write_output(self.id());
             }
         }
-        self.registration.retire()
+        self.registration.retire_progress()
     }
 }
 

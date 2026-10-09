@@ -60,6 +60,8 @@ mod restore_lineage_service;
 #[path = "retirement_service.rs"]
 mod retirement_service;
 pub use retirement_service::RetirementResponseFence;
+#[path = "mutation_capacity_service.rs"]
+mod mutation_capacity_service;
 #[path = "mutation_receipt_reads.rs"]
 mod mutation_receipt_reads;
 #[path = "policy_limits_service.rs"]
@@ -2167,7 +2169,7 @@ impl Database {
             command,
             max_bytes,
         )?;
-        let response = proposal.wait(Duration::from_secs(10)).await?;
+        let response = proposal.wait(kasumi_store::NATIVE_WRITE_TIMEOUT).await?;
         let result = &response.bytes;
         if restore_completion {
             let outcome = serde_json::from_slice::<Result<WriteReceipt>>(result).map_err(|_| {
@@ -2351,7 +2353,7 @@ impl Database {
             .await?;
         let worker = tokio::task::spawn_blocking(move || work.run());
         let mut output = tokio::select! {
-            result = tokio::time::timeout(Duration::from_secs(5), worker) => result
+            result = tokio::time::timeout(kasumi_store::NATIVE_READ_TIMEOUT, worker) => result
                 .map_err(|_| Error::new(ErrorCode::ResourceExhausted, "snapshot deadline exceeded"))?
                 .map_err(|_| Error::new(ErrorCode::Unavailable, "snapshot worker failed"))?,
             _ = cancelled(&cancellation) => return Err(cancelled_error()),
@@ -2793,7 +2795,7 @@ impl Database {
             }
             let worker = tokio::task::spawn_blocking(move || work.run());
             let output = tokio::select! {
-                result = tokio::time::timeout(Duration::from_secs(5), worker) => result
+                result = tokio::time::timeout(kasumi_store::NATIVE_READ_TIMEOUT, worker) => result
                     .map_err(|_| Error::new(ErrorCode::ResourceExhausted, "query deadline exceeded"))?
                     .map_err(|_| Error::new(ErrorCode::Unavailable, "query worker failed"))?,
                 _ = cancelled(&cancellation) => return Err(cancelled_error()),
@@ -3025,10 +3027,13 @@ fn snapshot_workspace(limits: &Limits, request: &ReadSnapshotRequest) -> Result<
 }
 
 fn credential_acknowledgement(error: Error) -> Error {
-    if error.code == ErrorCode::Unauthorized {
+    if matches!(
+        error.code,
+        ErrorCode::Unauthorized | ErrorCode::Unavailable | ErrorCode::Corruption
+    ) {
         Error::new(
             ErrorCode::UnknownOutcome,
-            "credential expired after effect admission; use a fresh credential to resolve the original operation identity",
+            "credential liveness could not be confirmed after effect admission; resolve the original operation identity once credential verification is available",
         )
     } else {
         error

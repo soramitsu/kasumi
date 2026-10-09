@@ -110,6 +110,17 @@ fn apply(engine: &CodecFixture, revision: u64, operation: Operation) -> Result<W
         .unwrap()
 }
 
+#[test]
+fn limits_change_invalidates_prior_data_capacity_epoch() {
+    let engine = engine(fixture_memory(), 2 << 20);
+    let before = engine.generation().unwrap();
+    let limits = before.state.limits.clone();
+    apply(&engine, 2, Operation::SetLimits(limits)).unwrap();
+    let after = engine.generation().unwrap();
+    assert_eq!(after.state.policy_epoch, before.state.policy_epoch + 1);
+    assert_eq!(after.state.schema_epoch, before.state.schema_epoch);
+}
+
 fn patch_expansion_fixture() -> (CodecFixture, usize) {
     let engine = engine(fixture_memory(), 2 << 20);
     for (revision, id) in [(2, "a"), (3, "b")] {

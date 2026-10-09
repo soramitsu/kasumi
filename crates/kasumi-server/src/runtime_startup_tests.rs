@@ -514,6 +514,7 @@ async fn node_cache_workers_wait_for_runtime_handoff_impl() -> Result<()> {
                 config.clone(),
                 Arc::new(crate::runtime::file_secret),
                 storage.clone(),
+                None,
             ),
         )
         .await

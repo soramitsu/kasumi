@@ -17,6 +17,34 @@ use std::{
 };
 type Panic = Box<dyn Any + Send>;
 
+#[cfg(test)]
+thread_local! {
+    // Scheduling observation only, after the real parent count is claimed and
+    // its metadata guard is released, before ordinary provider admission.
+    static CHILD_PRECLAIM_OBSERVER: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+    static METADATA_BUSY_OBSERVER: std::cell::RefCell<Option<Box<dyn FnMut(StorageOwnerId)>>> =
+        std::cell::RefCell::new(None);
+}
+
+#[cfg(test)]
+pub(crate) fn with_metadata_busy_observer_for_test<R>(
+    observer: impl FnMut(StorageOwnerId) + 'static,
+    work: impl FnOnce() -> R,
+) -> R {
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            METADATA_BUSY_OBSERVER.with(|slot| *slot.borrow_mut() = None);
+        }
+    }
+    METADATA_BUSY_OBSERVER.with(|slot| {
+        assert!(slot.borrow_mut().replace(Box::new(observer)).is_none());
+    });
+    let _reset = Reset;
+    work()
+}
+
 #[path = "storage_census_source.rs"]
 mod source;
 pub(crate) use source::{SourceCellClaim, SourceCensusExchange};
@@ -53,6 +81,32 @@ pub enum StorageCensusDisposition {
     Retained,
     Retired,
     Stale,
+}
+/// Internal progress of one exact generation. Generic drain remains nonblocking;
+/// only explicit synchronous completion may wait for the two transient states.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum StorageRetirementProgress {
+    MetadataBusy,
+    InProgress,
+    Retained,
+    Retired,
+    Stale,
+}
+impl StorageRetirementProgress {
+    pub(crate) fn disposition(self) -> StorageCensusDisposition {
+        match self {
+            Self::Retired => StorageCensusDisposition::Retired,
+            Self::Stale => StorageCensusDisposition::Stale,
+            Self::MetadataBusy | Self::InProgress | Self::Retained => {
+                StorageCensusDisposition::Retained
+            }
+        }
+    }
+}
+#[derive(Clone, Copy)]
+pub(crate) enum StorageCompletionGoal {
+    ReaderRetirement,
+    WriteOutputHandoff,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StorageCensusPanicPhase {
@@ -136,6 +190,9 @@ struct Metadata {
     kind: StorageOwnerKind,
     // Survives payload disposal so a parent retry can find this exact child.
     parent: Option<StorageOwnerId>,
+    // Monotonic for this exact database generation. Every child count is
+    // preclaimed under this same metadata mutex before provider/slot work.
+    children_sealed: bool,
     cell: Cell,
     lease: Option<DiskMemoryLease>,
     source: Option<SourceSlot>,
@@ -230,6 +287,7 @@ impl StorageCensus {
                 generation: 0,
                 kind: StorageOwnerKind::Database,
                 parent: None,
+                children_sealed: false,
                 cell: Cell::Vacant,
                 lease: None,
                 source: None,
@@ -624,9 +682,89 @@ impl StorageCensus {
         {
             return Err(io::ErrorKind::InvalidInput.into());
         }
+        let child = self.preclaim_child_locked(parent.id, &metadata)?;
         drop(metadata);
-        self.register_inner(provider, backing_bytes, Some(parent.id), output, construct)
+        #[cfg(test)]
+        CHILD_PRECLAIM_OBSERVER.with(|observer| {
+            let observe = observer.borrow_mut().take();
+            if let Some(observe) = observe {
+                observe();
+            }
+        });
+        self.register_inner(provider, backing_bytes, Some(child), output, construct)
     }
+    /// Claim one exact parent's child obligation while its metadata guard is
+    /// held. This is allocation-free; no parent mutex crosses provider calls,
+    /// child-slot scans, construction or cleanup callbacks.
+    fn preclaim_child_locked<'a>(
+        &'a self,
+        parent: StorageOwnerId,
+        metadata: &Metadata,
+    ) -> io::Result<ChildAdmission<'a>> {
+        if self.fenced.load(Ordering::Acquire)
+            || metadata.generation != parent.generation
+            || metadata.kind != StorageOwnerKind::Database
+            || !matches!(metadata.cell, Cell::Active { .. })
+            || metadata.children_sealed
+        {
+            return Err(io::ErrorKind::BrokenPipe.into());
+        }
+        self.slots[parent.index]
+            .children
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                count.checked_add(1)
+            })
+            .map_err(|_| io::ErrorKind::Other)?;
+        Ok(ChildAdmission {
+            census: self,
+            parent,
+            published: false,
+        })
+    }
+
+    /// Seal new child claims for this exact installed database. In-flight
+    /// claims already contribute to its count, even before a child cell exists.
+    pub(crate) fn seal_child_admission(&self, id: StorageOwnerId) -> io::Result<()> {
+        let slot = self
+            .slots
+            .get(id.index)
+            .ok_or(io::ErrorKind::InvalidInput)?;
+        let mut metadata = match slot.metadata.try_lock() {
+            Ok(metadata) => metadata,
+            Err(std::sync::TryLockError::WouldBlock) => {
+                return Err(io::ErrorKind::WouldBlock.into());
+            }
+            Err(std::sync::TryLockError::Poisoned(_)) => {
+                self.fenced.store(true, Ordering::Release);
+                return Err(io::ErrorKind::InvalidData.into());
+            }
+        };
+        if metadata.generation != id.generation
+            || metadata.kind != StorageOwnerKind::Database
+            || !matches!(metadata.cell, Cell::Active { .. })
+        {
+            return Err(io::ErrorKind::BrokenPipe.into());
+        }
+        metadata.children_sealed = true;
+        Ok(())
+    }
+
+    /// A positive child-settlement witness requires the same sealed generation.
+    /// Busy, missing or reused slots can never establish whole-node completion.
+    pub(crate) fn children_retired(&self, id: StorageOwnerId) -> bool {
+        let Some(slot) = self.slots.get(id.index) else {
+            return false;
+        };
+        let Ok(metadata) = slot.metadata.try_lock() else {
+            return false;
+        };
+        metadata.generation == id.generation
+            && metadata.kind == StorageOwnerKind::Database
+            && matches!(metadata.cell, Cell::Active { .. })
+            && metadata.children_sealed
+            && slot.children.load(Ordering::Acquire) == 0
+    }
+
     pub(crate) fn registration_request_bytes<T: StoragePayload>(backing: u64) -> io::Result<u64> {
         disk_memory::add(disk_memory::arc::<T>()?, backing)
     }
@@ -634,7 +772,7 @@ impl StorageCensus {
         &self,
         provider: Arc<dyn NodeDiskMemoryAdmission>,
         backing_bytes: u64,
-        parent: Option<StorageOwnerId>,
+        mut parent: Option<ChildAdmission<'_>>,
         output: bool,
         construct: impl FnOnce() -> T,
     ) -> io::Result<StorageRegistration<T>> {
@@ -661,17 +799,10 @@ impl StorageCensus {
             assert_eq!(slot.children.load(Ordering::Acquire), 0);
             let generation = owner_generation()?;
             let id = StorageOwnerId { index, generation };
-            if let Some(parent) = parent {
-                self.slots[parent.index]
-                    .children
-                    .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
-                        value.checked_add(1)
-                    })
-                    .map_err(|_| io::ErrorKind::Other)?;
-            }
             metadata.generation = generation;
             metadata.kind = T::KIND;
-            metadata.parent = parent;
+            metadata.parent = parent.take().map(ChildAdmission::publish);
+            metadata.children_sealed = false;
             slot.output_generation.store(generation, Ordering::Release);
             slot.output_state.store(
                 if output { OUTPUT_PENDING } else { NONE },
@@ -714,6 +845,58 @@ impl StorageCensus {
         match self.try_retained(provider, id) {
             TypedOwnerLookup::Active(owner) => Some(owner),
             TypedOwnerLookup::Busy | TypedOwnerLookup::Missing => None,
+        }
+    }
+
+    /// Pre-effect admission to an existing exact owner may wait only for its
+    /// metadata lock. Missing/retiring owners, poison and provider mismatch are
+    /// definitive failures; no resource is reopened or storage work replayed.
+    pub(crate) fn admit_retained_until<T: StoragePayload>(
+        &self,
+        provider: Arc<dyn NodeDiskMemoryAdmission>,
+        id: StorageOwnerId,
+        deadline: std::time::Instant,
+    ) -> io::Result<StorageRegistration<T>> {
+        self.require_provider(&provider)?;
+        let slot = self
+            .slots
+            .get(id.index)
+            .ok_or(io::ErrorKind::InvalidInput)?;
+        loop {
+            if self.fenced.load(Ordering::Acquire) {
+                return Err(io::ErrorKind::BrokenPipe.into());
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err(io::ErrorKind::TimedOut.into());
+            }
+            let metadata = match slot.metadata.try_lock() {
+                Ok(metadata) => metadata,
+                Err(std::sync::TryLockError::Poisoned(_)) => {
+                    self.fenced.store(true, Ordering::Release);
+                    return Err(io::ErrorKind::InvalidData.into());
+                }
+                Err(std::sync::TryLockError::WouldBlock) => {
+                    std::thread::park_timeout(
+                        deadline
+                            .saturating_duration_since(std::time::Instant::now())
+                            .min(std::time::Duration::from_millis(1)),
+                    );
+                    continue;
+                }
+            };
+            if metadata.generation != id.generation {
+                return Err(io::ErrorKind::BrokenPipe.into());
+            }
+            let Cell::Active { owner, .. } = &metadata.cell else {
+                return Err(io::ErrorKind::BrokenPipe.into());
+            };
+            let erased: Arc<dyn Any + Send + Sync> = owner.clone();
+            let owner = Arc::downcast::<T>(erased).map_err(|_| io::ErrorKind::InvalidInput)?;
+            return Ok(StorageRegistration {
+                provider,
+                id,
+                owner,
+            });
         }
     }
 
@@ -790,8 +973,70 @@ impl StorageCensus {
     }
 
     pub fn drain_owner(&self, id: StorageOwnerId) -> StorageCensusDisposition {
+        self.retirement_progress(id).disposition()
+    }
+
+    /// Wait only for observed metadata contention or an in-flight native callback.
+    /// The caller supplies one scope deadline; this never resets it or holds a
+    /// reader/opening/census lock while parked. Real retained outcomes return now.
+    pub(crate) fn complete_owner_until(
+        &self,
+        id: StorageOwnerId,
+        mut progress: StorageRetirementProgress,
+        deadline: std::time::Instant,
+        goal: StorageCompletionGoal,
+        mut before_wait: impl FnMut(),
+    ) -> StorageCensusDisposition {
+        loop {
+            if self.retirement_is_terminal(id) {
+                return StorageCensusDisposition::Retained;
+            }
+            match goal {
+                StorageCompletionGoal::WriteOutputHandoff
+                    if self.write_retirement_completed(id) =>
+                {
+                    return StorageCensusDisposition::Retired;
+                }
+                StorageCompletionGoal::ReaderRetirement
+                    if matches!(
+                        progress,
+                        StorageRetirementProgress::Retired | StorageRetirementProgress::Stale
+                    ) =>
+                {
+                    // The caller held this exact generation until its release;
+                    // stale proves another drainer completed it, never a new owner.
+                    return StorageCensusDisposition::Retired;
+                }
+                _ => {}
+            }
+            if !matches!(
+                progress,
+                StorageRetirementProgress::MetadataBusy | StorageRetirementProgress::InProgress
+            ) {
+                return StorageCensusDisposition::Retained;
+            }
+            let now = std::time::Instant::now();
+            if now >= deadline {
+                return StorageCensusDisposition::Retained;
+            }
+            before_wait();
+            std::thread::park_timeout(
+                deadline
+                    .saturating_duration_since(std::time::Instant::now())
+                    .min(std::time::Duration::from_millis(1)),
+            );
+            if std::time::Instant::now() >= deadline {
+                // Waiting may oversleep. Never start another native callback
+                // once the original scope budget is exhausted.
+                return StorageCensusDisposition::Retained;
+            }
+            progress = self.retirement_progress(id);
+        }
+    }
+
+    pub(crate) fn retirement_progress(&self, id: StorageOwnerId) -> StorageRetirementProgress {
         let Some(slot) = self.slots.get(id.index) else {
-            return StorageCensusDisposition::Stale;
+            return StorageRetirementProgress::Stale;
         };
         if slot.children.load(Ordering::Acquire) != 0 {
             // An already disposed child has no typed payload to recover. A
@@ -801,56 +1046,72 @@ impl StorageCensus {
         }
         // At most drive, payload disposal and lease retirement run in one pass.
         for _ in 0..4 {
-            let Ok(mut metadata) = slot.metadata.try_lock() else {
-                return StorageCensusDisposition::Retained;
+            let mut metadata = match slot.metadata.try_lock() {
+                Ok(metadata) => metadata,
+                Err(std::sync::TryLockError::WouldBlock) => {
+                    #[cfg(test)]
+                    METADATA_BUSY_OBSERVER.with(|slot| {
+                        if let Some(observer) = slot.borrow_mut().as_mut() {
+                            observer(id);
+                        }
+                    });
+                    return StorageRetirementProgress::MetadataBusy;
+                }
+                Err(std::sync::TryLockError::Poisoned(_)) => {
+                    return StorageRetirementProgress::Retained;
+                }
             };
             if metadata.generation != id.generation || matches!(metadata.cell, Cell::Vacant) {
-                return StorageCensusDisposition::Stale;
+                return StorageRetirementProgress::Stale;
             }
             if slot.native_constructor_generation.load(Ordering::Acquire) == id.generation
                 && slot
                     .native_constructor_delivery_pending
                     .load(Ordering::Acquire)
             {
-                return StorageCensusDisposition::Retained;
+                return StorageRetirementProgress::Retained;
             }
             let pending = slot.pending.load(Ordering::Acquire);
             if source::exchange_blocks(slot, &metadata) {
-                return StorageCensusDisposition::Retained;
+                return StorageRetirementProgress::Retained;
             }
             if self.fenced.load(Ordering::Acquire)
                 || pending == PANICKED
                 || pending == UNEXPECTED_SHARED
                 || slot.output_state.load(Ordering::Acquire) == OUTPUT_PANICKED
             {
-                return StorageCensusDisposition::Retained;
+                return StorageRetirementProgress::Retained;
             }
             match &mut metadata.cell {
                 Cell::SourceControl { .. } => {
                     drop(metadata);
-                    return self.drain_source_control(id);
+                    return match self.drain_source_control(id) {
+                        StorageCensusDisposition::Retired => StorageRetirementProgress::Retired,
+                        StorageCensusDisposition::Stale => StorageRetirementProgress::Stale,
+                        StorageCensusDisposition::Retained => StorageRetirementProgress::Retained,
+                    };
                 }
                 Cell::Active { owner, servicing } => {
                     if *servicing {
                         if pending == NONE {
-                            return StorageCensusDisposition::Retained;
+                            return StorageRetirementProgress::InProgress;
                         }
                         slot.pending.store(NONE, Ordering::Release);
                         *servicing = false;
                         if pending == DRIVE_BUSY {
-                            return StorageCensusDisposition::Retained;
+                            return StorageRetirementProgress::Retained;
                         }
                         assert_eq!(pending, DRIVE_SETTLED);
                         // Payload disposal can drop its last parent Arc. Keep
                         // the parent cell until even that child's census lease
                         // and slot have gone Vacant.
                         if slot.children.load(Ordering::Acquire) != 0 {
-                            return StorageCensusDisposition::Retained;
+                            return StorageRetirementProgress::Retained;
                         }
                         // With no Weak/raw Arc escape, a count of one cannot
                         // race a new facade clone: there is no other facade.
                         if Arc::strong_count(owner) != 1 {
-                            return StorageCensusDisposition::Retained;
+                            return StorageRetirementProgress::Retained;
                         }
                         let Cell::Active { owner, .. } =
                             std::mem::replace(&mut metadata.cell, Cell::Disposing)
@@ -898,7 +1159,7 @@ impl StorageCensus {
                 }
                 Cell::Disposing => {
                     if pending != PAYLOAD_DISPOSED {
-                        return StorageCensusDisposition::Retained;
+                        return StorageRetirementProgress::InProgress;
                     }
                     slot.pending.store(NONE, Ordering::Release);
                     metadata.cell = Cell::RetiringLease;
@@ -933,17 +1194,23 @@ impl StorageCensus {
                 }
                 Cell::RetiringLease => {
                     if pending != LEASE_RETIRED {
-                        return StorageCensusDisposition::Retained;
+                        return StorageRetirementProgress::InProgress;
                     }
                     if matches!(
                         slot.output_state.load(Ordering::Acquire),
                         OUTPUT_PENDING | OUTPUT_ENTERED | OUTPUT_DISPOSED
                     ) {
-                        return StorageCensusDisposition::Retained;
+                        return StorageRetirementProgress::Retained;
                     }
                     if metadata.source.is_some() {
                         drop(metadata);
-                        return self.finish_source_payload(id);
+                        return match self.finish_source_payload(id) {
+                            StorageCensusDisposition::Retired => StorageRetirementProgress::Retired,
+                            StorageCensusDisposition::Stale => StorageRetirementProgress::Stale,
+                            StorageCensusDisposition::Retained => {
+                                StorageRetirementProgress::Retained
+                            }
+                        };
                     }
                     slot.pending.store(NONE, Ordering::Release);
                     metadata.cell = Cell::Vacant;
@@ -957,19 +1224,23 @@ impl StorageCensus {
                         slot.native_constructor_retired_generation
                             .fetch_max(id.generation, Ordering::Release);
                     }
-                    return StorageCensusDisposition::Retired;
+                    return StorageRetirementProgress::Retired;
                 }
                 Cell::RetiringSourceHold => {
                     drop(metadata);
-                    return self.finish_source_hold(id);
+                    return match self.finish_source_hold(id) {
+                        StorageCensusDisposition::Retired => StorageRetirementProgress::Retired,
+                        StorageCensusDisposition::Stale => StorageRetirementProgress::Stale,
+                        StorageCensusDisposition::Retained => StorageRetirementProgress::Retained,
+                    };
                 }
-                Cell::SourceReserved => return StorageCensusDisposition::Retained,
+                Cell::SourceReserved => return StorageRetirementProgress::Retained,
                 Cell::Constructing | Cell::Retained | Cell::Vacant => {
-                    return StorageCensusDisposition::Retained;
+                    return StorageRetirementProgress::Retained;
                 }
             }
         }
-        StorageCensusDisposition::Retained
+        StorageRetirementProgress::InProgress
     }
     /// One nonblocking fixed pass. Busy observations or resources never require
     /// a user facade to be reconstructed and cannot force a metadata wait.
@@ -1014,6 +1285,33 @@ impl StorageCensusObservation<'_> {
     }
 }
 
+/// An unpublished child obligation keeps the exact parent generation alive.
+/// Publishing transfers the existing count to the child cell. A failure before
+/// publication rolls back only this preclaim; it never acknowledges a child.
+struct ChildAdmission<'a> {
+    census: &'a StorageCensus,
+    parent: StorageOwnerId,
+    published: bool,
+}
+impl ChildAdmission<'_> {
+    fn publish(mut self) -> StorageOwnerId {
+        self.published = true;
+        self.parent
+    }
+}
+impl Drop for ChildAdmission<'_> {
+    fn drop(&mut self) {
+        if !self.published {
+            // Parent disposal requires zero children, so this generation cannot
+            // be retired/reused before its preclaimed obligation is released.
+            let previous = self.census.slots[self.parent.index]
+                .children
+                .fetch_sub(1, Ordering::AcqRel);
+            assert_ne!(previous, 0, "unpublished claim owns exact parent count");
+        }
+    }
+}
+
 /// Private actual-owner facade. Drop never removes the independent census cell.
 /// A queued worker may disappear without destroying its actual accepted request.
 pub(crate) enum TypedOwnerLookup<T> {
@@ -1055,13 +1353,16 @@ impl<T> StorageRegistration<T> {
         self.owner.clone()
     }
     pub(crate) fn retire(self) -> StorageCensusDisposition {
+        self.retire_progress().disposition()
+    }
+    pub(crate) fn retire_progress(self) -> StorageRetirementProgress {
         let Self {
             provider,
             id,
             owner,
         } = self;
         drop(owner);
-        provider.storage_census().drain_owner(id)
+        provider.storage_census().retirement_progress(id)
     }
 }
 
@@ -1076,3 +1377,7 @@ mod write_output_tests;
 #[cfg(test)]
 #[path = "storage_census_source_tests.rs"]
 mod source_tests;
+
+#[cfg(test)]
+#[path = "storage_census_child_admission_tests.rs"]
+mod child_admission_tests;

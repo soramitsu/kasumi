@@ -14,7 +14,7 @@ struct OriginalServingFixture {
     config: RuntimeConfig,
     storage: crate::runtime_memory::RuntimeStorage,
     public_dir: PathBuf,
-    available: Arc<std::sync::atomic::AtomicBool>,
+    application_credential: PathBuf,
     runtime: NodeRuntime,
     mock_stop: watch::Sender<bool>,
     mock: tokio::task::JoinHandle<Result<()>>,
@@ -55,7 +55,9 @@ impl OriginalServingFixture {
         config.admin.listen = admin;
         config.mcp.protocol =
             McpConfig::new(format!("https://localhost:{}/mcp", mcp.port())).unwrap();
-        for settings in [
+        let credentials = dir.join("credentials");
+        kasumi_store::private_files::create_directory(&credentials).unwrap();
+        for (index, settings) in [
             &mut config.control.keys,
             &mut config.control.custody_keys,
             &mut config.security_audit.keys,
@@ -66,31 +68,29 @@ impl OriginalServingFixture {
                 .tenants
                 .iter_mut()
                 .flat_map(|tenant| [&mut tenant.keys, &mut tenant.custody_keys]),
-        ) {
+        )
+        .enumerate()
+        {
             let settings = settings.transit_mut().unwrap();
             settings.endpoint = endpoint.clone();
             settings.ca_certificate = files.certificate.clone();
+            let path = credentials.join(format!("{index}.token"));
+            kasumi_store::private_files::create(&path, b"test-runtime-token").unwrap();
+            settings.token_file = path.to_str().unwrap().to_owned();
         }
-        let application_file = config.tenants[0]
-            .keys
-            .transit_mut()
-            .unwrap()
-            .token_file
-            .clone();
-        let available = Arc::new(std::sync::atomic::AtomicBool::new(true));
-        let credential_available = available.clone();
+        let application_credential = PathBuf::from(
+            config.tenants[0]
+                .keys
+                .transit_mut()
+                .unwrap()
+                .token_file
+                .clone(),
+        );
         let storage = crate::runtime_storage_fixtures::configure(&mut config).unwrap();
         create_fixture_node(&config, &storage).await;
         let runtime = NodeRuntime::open_using_storage(
             config.clone(),
-            move |path| {
-                anyhow::ensure!(
-                    path != application_file
-                        || credential_available.load(std::sync::atomic::Ordering::Acquire),
-                    "application credential temporarily unavailable"
-                );
-                Ok(Zeroizing::new("test-runtime-token".into()))
-            },
+            file_secret,
             storage.clone(),
         )
         .await
@@ -99,7 +99,7 @@ impl OriginalServingFixture {
             config,
             storage,
             public_dir,
-            available,
+            application_credential,
             runtime,
             mock_stop,
             mock,
@@ -176,7 +176,7 @@ async fn original_tenant_reopens_after_key_outage_without_reviving_retained_hand
         config,
         storage,
         public_dir,
-        available,
+        application_credential,
         runtime,
         mock_stop,
         mock,
@@ -198,12 +198,12 @@ async fn original_tenant_reopens_after_key_outage_without_reviving_retained_hand
         .await
         .unwrap();
     let expected = retained.engine().generation().unwrap().state.revision;
-    available.store(false, std::sync::atomic::Ordering::Release);
+    std::fs::remove_file(&application_credential).unwrap();
     retained_store.seal();
     manager.reconcile().await.unwrap();
     assert!(retained.check_serving().is_err());
     assert!(registry.database(&context).is_err());
-    available.store(true, std::sync::atomic::Ordering::Release);
+    kasumi_store::private_files::replace(&application_credential, b"test-runtime-token").unwrap();
     let fresh = wait_fresh(&registry, &context, &retained).await;
     assert_eq!(
         fresh.engine().generation().unwrap().state.revision,
@@ -235,7 +235,7 @@ async fn original_tenant_reopens_after_key_outage_without_reviving_retained_hand
     drop((reload, retained, retained_store, fresh, registry, manager));
     let mut reopened = NodeRuntime::open_using_storage(
         config,
-        |_| Ok(Zeroizing::new("test-runtime-token".into())),
+        file_secret,
         storage.clone(),
     )
     .await
@@ -257,13 +257,12 @@ enum OriginalClosure {
 }
 
 async fn original_tenant_reopens_after(closure: OriginalClosure) {
-    use std::sync::atomic::Ordering;
     let _gate = LIFECYCLE_GATE.lock().await;
     let dir = kasumi_store::test_utils::private_tempdir().unwrap();
     let OriginalServingFixture {
         config,
         storage,
-        available,
+        application_credential,
         runtime,
         mock_stop,
         mock,
@@ -289,7 +288,7 @@ async fn original_tenant_reopens_after(closure: OriginalClosure) {
         )
     };
     // Fresh admission cannot open storage until the closure has been drained.
-    available.store(false, Ordering::Release);
+    std::fs::remove_file(&application_credential).unwrap();
     let (causes, component): (&[&str], &str) = match closure {
         OriginalClosure::SealDuringProposal => {
             // Hold the actual Raft core so one admitted write stays in flight
@@ -388,7 +387,7 @@ async fn original_tenant_reopens_after(closure: OriginalClosure) {
         registry.database(&other).err().unwrap().code,
         kasumi_types::ErrorCode::Forbidden
     );
-    available.store(true, Ordering::Release);
+    kasumi_store::private_files::replace(&application_credential, b"test-runtime-token").unwrap();
     let fresh = wait_fresh(&registry, &context, &retained).await;
     assert_eq!(
         fresh.engine().generation().unwrap().state.revision,
@@ -426,7 +425,7 @@ async fn original_tenant_reopens_after(closure: OriginalClosure) {
     drop((retained, retained_store, fresh, registry, manager));
     let mut reopened = NodeRuntime::open_using_storage(
         config,
-        |_| Ok(Zeroizing::new("test-runtime-token".into())),
+        file_secret,
         storage.clone(),
     )
     .await
@@ -459,4 +458,36 @@ async fn original_tenant_reopens_after_failed_proposal_child() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn original_tenant_reopens_after_raft_core_fatal() {
     original_tenant_reopens_after(OriginalClosure::RaftCoreFatal).await;
+}
+
+#[test]
+#[cfg(unix)]
+fn installed_credential_failure_is_typed_private_and_fresh() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = kasumi_store::test_utils::private_tempdir().unwrap();
+    let path = dir.path().join("private-credential.token");
+    let name = path.to_str().unwrap();
+    let unavailable = || {
+        let error = file_secret(name).unwrap_err();
+        let outer: &(dyn std::error::Error + Send + Sync + 'static) = error.as_ref();
+        assert!(outer.is::<kasumi_types::Error>());
+        let typed = error.downcast_ref::<kasumi_types::Error>().unwrap();
+        assert_eq!(typed.code, kasumi_types::ErrorCode::Unavailable);
+        assert_eq!(typed.message, "installed credential is unavailable");
+        assert!(!error.to_string().contains(name));
+    };
+    unavailable();
+    kasumi_store::private_files::create(&path, b"first-token\n").unwrap();
+    assert_eq!(&*file_secret(name).unwrap(), "first-token");
+    for bytes in [b"broken\nheader".as_slice(), b"\xff".as_slice()] {
+        kasumi_store::private_files::replace(&path, bytes).unwrap();
+        unavailable();
+    }
+    kasumi_store::private_files::replace(&path, b"second-token").unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+    unavailable();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    assert_eq!(&*file_secret(name).unwrap(), "second-token");
+    std::fs::remove_file(&path).unwrap();
+    unavailable();
 }
