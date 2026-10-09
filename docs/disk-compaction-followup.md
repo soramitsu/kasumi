@@ -10,17 +10,19 @@ qualify that foundation for production workloads or close the
 [cache goals](disk-backed-cache-goals.md). Sections below the cycle summary that
 describe density restarts, forced rotation and the 1 MiB trigger are historical.
 
-## Persisted cycle (`KASUMI-KVROOT004`)
+## Persisted cycle (`KASUMI-KVROOT005`)
 
 - **Persisted phases.** The root carries `CompactionRecord` (cycle, phase,
-  density level, frozen cutoffs, baseline and an in-phase cursor of at most
-  1,536 bytes: the full table name plus a row-key prefix, an inclusive lower
-  bound). Each phase change is one mirrored root publication, so a torn write
+  density level, frozen cutoffs, baseline, the Evacuating worklist root and
+  an in-phase cursor of at most
+  1,536 bytes: an exact worklist ordinal during Evacuating, or a full
+  table name plus row-key prefix as an inclusive lower bound during Packing). Each phase change is one mirrored root publication, so a torn write
   selects the old or new record and an unknown outcome fences until reopen.
-  In-phase progress rides on root installs that already happen (maintenance
-  and foreground); a lost cursor only repeats verified reads. Allocation,
+  Evacuation progress is published with each maintenance batch, including
+  a root-only publication for skips; foreground installs preserve that exact
+  ordinal. Packing publishes its cursor and remaining per-level work budget with every step, including skips and level changes; foreground installs preserve them. Allocation,
   retirement, forget and replay publications carry the record unchanged, and
-  `is_successor` refuses any other change. Format `KASUMI-KVROOT003` is
+  `is_successor` refuses any other change. Formats `KASUMI-KVROOT003` and `KASUMI-KVROOT004` are
   rejected with no reader or migration.
 - **Rotation-free cutoff.** Beginning a cycle freezes `(last_segment_id - 1,
   last_directory_id - 1)` from the same root under the owner lock and creates
@@ -28,15 +30,19 @@ describe density restarts, forced rotation and the 1 MiB trigger are historical.
   newer one, and pages in an arena at or above the newest confirmed one (a
   reopened writer always rolls a fresh arena), so both are above the cutoffs.
   `force_roll` survives only as a test entry point into the production roll.
-- **Evacuation.** The leaf loop and fresh-leaf skip are unchanged; the cursor
-  is restored after reopen, so a reopen never re-copies relocated values. The
-  phase ends with `Evacuating -> Reclaiming` when no leaf remains.
+- **Evacuation.** Rank/select over the immutable cycle-start directory
+  selects an original key and its current leaf. Each successful batch
+  durably advances its exact worklist ordinal; foreground inserts cannot
+  extend the worklist. The phase ends with `Evacuating -> Reclaiming`
+  when the worklist is exhausted or no current key remains.
 - **Reclamation.** See the [reclamation follow-up](disk-reclamation-followup.md).
   Completion publishes `Reclaiming -> Packing` with the new baseline: the
   census at the start of reclamation minus the reclaimed files and bytes.
 - **Single density pass.** Packing resumes from the persisted level and cursor,
-  never restarts for foreground changes, and caps each level at the selected
+  never restarts for foreground changes, and durably caps each level at the selected
   entry count at its start plus 64 plans (a capped level counts as truncated).
+  Reopen may revisit a truncated key prefix but consumes the same remaining
+  budget, so repeated restarts cannot keep Packing alive indefinitely.
   The next cycle packs ranges that foreground writes left sparse. Reaching the
   root height publishes `Packing -> Idle`.
 - **Trigger.** While Idle, bounded census steps (one `exists` and `len` probe
@@ -70,13 +76,28 @@ plus the live values under saturated writes; pinned files survive until the
 next cycle; on a full disk evacuation defers (it uses foreground admission, not
 the NodeDisk maintenance reserve) and only an operator response frees space;
 reclamation needs one cohort walk to finish within one process lifetime.
-Evacuation, as before this change, scans the current tree up to its end and
-has no frozen key endpoint: a workload that keeps inserting more fresh leaves
-above the cursor between steps than a step's units can skip postpones
-`Reclaiming`. Ordinary appends and the node worker's 512-unit steps keep up;
-a volatile endpoint (the largest key when the phase begins or resumes) would
-bound the scan soundly, because a leaf wholly above it was written after the
-cycle began, and is the natural follow-up.
+The ROOT005 successor freezes the cycle-start authenticated directory root as
+an immutable worklist. Evacuation uses an exact persisted ordinal into that
+root, with rank/select through authenticated subtree counts. It selects each
+original key's current leaf and relocates only current old references; it never
+restores deleted or replaced values. Every successful batch consumes at least
+one original key. Neither tail appends nor insertions within the original key
+range extend the worklist. Long common-prefix keys are never truncated into an
+evacuation position. Skip-only progress has its own bounded root publication,
+so reopen after every successful step preserves progress.
+
+The worklist root remains byte-identical across every Evacuating publication.
+Starting a cycle requires an empty garbage list; all directory/segment retirement
+is refused during Evacuating, including decoded garbage. The durable transition
+to Reclaiming clears the worklist before ordinary complete reachability proofs
+can retire its now-unreferenced pages. ROOT004 and all earlier root formats are
+rejected directly. The root slot remains 4096 bytes; the worklist uses the
+existing canonical 96-byte directory-root encoding and the evacuation cursor
+uses a closed ordinal tag, separate from Packing's lower-bound key cursor.
+
+This source successor has focused local evidence; final-source full acceptance,
+independent review, canonical landing and Linux release qualification remain
+open. No existing installation is migrated or rewritten by this change.
 
 ## Historical per-record checkpoint
 
@@ -118,8 +139,8 @@ new arenas was insufficient; the new phase redistributes or merges their records
    table birth sequences and row sequences. The validated leaf and each ancestor
    are copied once per batch, followed by page sync, exact-root commit and root
    publication. An already fresh leaf without old value locations is skipped
-   without a maintenance commit. The cursor advances only after publication or
-   a verified skip; admission denial leaves the key eligible for retry.
+   without a data commit, but its exact ordinal still needs a mirrored root
+   publication. Admission denial leaves the same worklist position retryable.
 4. **Pack bounded neighboring ranges — implemented internally.** An admitted
    adjacent-page plan feeds one atomic replacement of both paths, including
    pairs across parent boundaries. Leaves and then internal levels are packed

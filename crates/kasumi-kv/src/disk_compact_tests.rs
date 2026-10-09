@@ -1075,7 +1075,7 @@ fn value_byte_target_splits_one_leaf_and_foreground_changes_keep_the_cursor_soun
 }
 
 #[test]
-fn a_fresh_leaf_with_no_old_locations_is_skipped_without_a_commit() {
+fn a_fresh_leaf_without_old_locations_persists_progress_without_a_data_commit() {
     let admission = Admission::new(8 << 20);
     let mut state = create(Arc::new(InMemoryGroup::new()), admission, LARGE_CACHE);
     state
@@ -1091,6 +1091,7 @@ fn a_fresh_leaf_with_no_old_locations_is_skipped_without_a_commit() {
         .commit(&[Operation::put("accounts", b"a", b"new")])
         .unwrap();
     let root = state.selected;
+    let generation = state.owner.lock().unwrap().generation();
     let progress = step(&mut state, ONE);
     let stats = state.compact.stats;
     assert_eq!(stats.skipped_leaves, 1);
@@ -1098,8 +1099,12 @@ fn a_fresh_leaf_with_no_old_locations_is_skipped_without_a_commit() {
     assert_eq!(stats.maintenance_commits, 0);
     assert_eq!(stats.copied_bytes, 0);
     assert_eq!(stats.directory_pages_written, 0);
-    assert_eq!(progress.mutations, 0);
+    assert_eq!(progress.mutations, 1);
     assert_eq!(state.selected, root);
+    let durable = state.owner.lock().unwrap();
+    assert_eq!(durable.generation(), generation + 1);
+    assert_eq!(durable.compaction().cursor().ordinal(), Some(2));
+    drop(durable);
     compact_all(&mut state);
     let pin = state.snapshot().unwrap();
     assert_eq!(value(&mut state, &pin, b"a").unwrap(), b"new");

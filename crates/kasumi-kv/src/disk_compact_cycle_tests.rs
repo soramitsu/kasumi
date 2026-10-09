@@ -30,7 +30,105 @@ fn reopen(group: &InMemoryGroup, admission: &Arc<Admission>) -> (InMemoryGroup, 
 }
 
 #[test]
-fn evacuation_cursor_rides_installs_and_resumes_after_reopen_without_recopy() {
+fn frozen_worklist_ordinals_finish_across_long_key_churn_and_every_step_reopen() {
+    // Includes skip-only evacuation after replacing every original row. Each
+    // successful step must persist progress even without a later data commit.
+    for replace_originals in [false, true] {
+        let admission = Admission::new(32 << 20);
+        let mut group = InMemoryGroup::new();
+        let mut state = create(Arc::new(group.clone()), admission.clone(), LARGE_CACHE);
+        let table = "t".repeat(crate::core::MAX_TABLE_BYTES);
+        let key = |number: u16| {
+            let mut bytes = vec![b'k'; crate::core::MAX_KEY_BYTES];
+            bytes[crate::core::MAX_KEY_BYTES - 2..].copy_from_slice(&number.to_be_bytes());
+            bytes
+        };
+        let mut expected = std::collections::BTreeMap::new();
+        let mut operations = vec![Operation::create_table(table.as_str())];
+        for number in 0..24u16 {
+            let bytes = key(number * 2);
+            let value = vec![number as u8; 32];
+            operations.push(Operation::put(
+                table.as_str(),
+                bytes.as_slice(),
+                value.as_slice(),
+            ));
+            expected.insert(bytes, value);
+        }
+        state.commit(&operations).unwrap();
+        seal_files(&mut state);
+        state.request_compaction().unwrap();
+        assert!(step(&mut state, ONE).phase_changed);
+        let source = record(&state).evacuation_source().unwrap();
+        assert_eq!(source.entries, 25);
+        if replace_originals {
+            let updates: Vec<_> = expected
+                .keys()
+                .map(|key| Operation::put(table.as_str(), key.as_slice(), b"new"))
+                .collect();
+            state.commit(&updates).unwrap();
+            expected
+                .values_mut()
+                .for_each(|value| *value = b"new".to_vec());
+        }
+        let mut previous = 0;
+        for turn in 0..=source.entries {
+            // Insert within the original range and append more long keys than
+            // a one-unit current-tree scan can consume. The worklist is fixed.
+            let mut changes = Vec::new();
+            for number in [
+                turn as u16 * 2 + 1,
+                1000 + turn as u16 * 4,
+                1001 + turn as u16 * 4,
+                1002 + turn as u16 * 4,
+                1003 + turn as u16 * 4,
+            ] {
+                let bytes = key(number);
+                changes.push(Operation::put(table.as_str(), bytes.as_slice(), b"fresh"));
+                expected.insert(bytes, b"fresh".to_vec());
+            }
+            if turn.is_multiple_of(3) {
+                let deleted = key(46 - (turn as u16 % 12) * 2);
+                changes.push(Operation::delete(table.as_str(), deleted.as_slice()));
+                expected.remove(&deleted);
+            }
+            state.commit(&changes).unwrap();
+            step(&mut state, ONE);
+            let persisted = record(&state);
+            if persisted.phase() == CompactionPhase::Evacuating {
+                let next = persisted.cursor().ordinal().unwrap();
+                assert!(next > previous && next <= source.entries);
+                assert_eq!(persisted.evacuation_source(), Some(source));
+                previous = next;
+            }
+            // No intervening foreground publication can hide volatile-only
+            // progress. All keys share a prefix much longer than 1536 bytes.
+            drop(state);
+            (group, state) = reopen(&group, &admission);
+            assert_eq!(record(&state), persisted);
+            if phase(&state) != CompactionPhase::Evacuating {
+                break;
+            }
+        }
+        assert_eq!(phase(&state), CompactionPhase::Reclaiming);
+        assert_eq!(record(&state).evacuation_source(), None);
+        drive_cycle(&mut state, STEP);
+        let pin = state.snapshot().unwrap();
+        for (key, expected) in expected {
+            assert_eq!(
+                state
+                    .get(&pin, &table, &key, 32)
+                    .unwrap()
+                    .unwrap()
+                    .as_bytes(),
+                expected
+            );
+        }
+    }
+}
+
+#[test]
+fn evacuation_cursor_survives_foreground_installs_and_reopen_without_recopy() {
     let admission = Admission::new(16 << 20);
     let mut group = InMemoryGroup::new();
     let mut state = create(Arc::new(group.clone()), admission.clone(), LARGE_CACHE);
@@ -49,8 +147,8 @@ fn evacuation_cursor_rides_installs_and_resumes_after_reopen_without_recopy() {
         if phase(&state) != CompactionPhase::Evacuating {
             break;
         }
-        // A foreground install carries the in-memory cursor even when the
-        // last maintenance item was a skip without a commit.
+        // Foreground installs must preserve the exact durable ordinal,
+        // including the progress of a preceding skip-only publication.
         state
             .commit(&[Operation::put(
                 "accounts",
@@ -92,8 +190,233 @@ fn evacuation_cursor_rides_installs_and_resumes_after_reopen_without_recopy() {
     }
 }
 
+#[test]
+fn skip_only_cursor_publication_faults_reopen_at_old_or_new_ordinal() {
+    let admission = Admission::new(8 << 20);
+    for (op, nth, timing, torn) in [
+        (GroupOp::RootWrite, 1, FaultTiming::BeforeEffect, false),
+        (GroupOp::RootWrite, 1, FaultTiming::AfterEffect, false),
+        (GroupOp::RootWrite, 2, FaultTiming::BeforeEffect, false),
+        (GroupOp::RootWrite, 2, FaultTiming::AfterEffect, false),
+        (GroupOp::RootSync, 1, FaultTiming::BeforeEffect, false),
+        (GroupOp::RootSync, 1, FaultTiming::AfterEffect, false),
+        (GroupOp::RootSync, 2, FaultTiming::BeforeEffect, false),
+        (GroupOp::RootSync, 2, FaultTiming::AfterEffect, false),
+        (GroupOp::RootSync, 1, FaultTiming::BeforeEffect, true),
+    ] {
+        let case = format!("{op:?}/{nth}/{timing:?} torn={torn}");
+        let group = InMemoryGroup::new();
+        let mut state = create(Arc::new(group.clone()), admission.clone(), LARGE_CACHE);
+        rows(&mut state, 20, 32);
+        seal_files(&mut state);
+        state.request_compaction().unwrap();
+        assert!(step(&mut state, ONE).phase_changed);
+        let source = record(&state).evacuation_source().unwrap();
+        assert_eq!(source.entries, 21);
+        let updates: Vec<_> = (0..20u32)
+            .map(|key| Operation::put("accounts", key.to_be_bytes(), b"fresh"))
+            .collect();
+        state.commit(&updates).unwrap();
+        assert_eq!(record(&state).cursor().ordinal(), Some(0));
+        let selected = state.selected;
+        let generation = state.owner.lock().unwrap().generation();
+        group.fail(op, nth, timing);
+        let result = state.maintenance_step(ONE);
+        assert!(result.is_err(), "{case}: {result:?}");
+        assert!(state.is_fenced(), "{case}");
+        drop(state);
+        let restarted = if torn {
+            group.crash_torn_root(crate::root::RootSlot::for_generation(generation + 1), 100)
+        } else {
+            group.crash()
+        };
+        let mut reopened =
+            DiskState::open(Arc::new(restarted), admission.clone(), GROUP, LARGE_CACHE)
+                .unwrap_or_else(|error| panic!("{case}: {error:?}"));
+        let durable = record(&reopened);
+        assert_eq!(durable.phase(), CompactionPhase::Evacuating, "{case}");
+        assert_eq!(durable.evacuation_source(), Some(source), "{case}");
+        assert_eq!(reopened.selected, selected, "{case}");
+        let ordinal = durable.cursor().ordinal().unwrap();
+        assert!(
+            ordinal == 0 || ordinal == source.entries,
+            "{case}: {ordinal}"
+        );
+        if torn {
+            assert_eq!(ordinal, 0, "{case}");
+        }
+        // A successful retry publishes the skip, or observes the already
+        // published ordinal. Neither outcome rewrites or restores old values.
+        for _ in 0..2 {
+            if phase(&reopened) != CompactionPhase::Evacuating {
+                break;
+            }
+            let progress = step(&mut reopened, ONE);
+            assert_eq!(progress.relocated_bytes, 0, "{case}");
+            assert_eq!(reopened.compact.stats.maintenance_commits, 0, "{case}");
+        }
+        assert_eq!(phase(&reopened), CompactionPhase::Reclaiming, "{case}");
+        drive_cycle(&mut reopened, STEP);
+        let pin = reopened.snapshot().unwrap();
+        for key in 0..20u32 {
+            assert_eq!(
+                value(&mut reopened, &pin, &key.to_be_bytes()).unwrap(),
+                b"fresh",
+                "{case}"
+            );
+        }
+    }
+}
+
+#[test]
+fn packing_finishes_across_every_step_reopen_with_long_shared_prefixes() {
+    let admission = Admission::new(32 << 20);
+    let mut group = InMemoryGroup::new();
+    let mut state = create(Arc::new(group.clone()), admission.clone(), LARGE_CACHE);
+    let table = "t".repeat(crate::core::MAX_TABLE_BYTES);
+    let key = |number: u16| {
+        let mut key = vec![b'k'; crate::core::MAX_KEY_BYTES];
+        key[crate::core::MAX_KEY_BYTES - 2..].copy_from_slice(&number.to_be_bytes());
+        key
+    };
+    let mut operations = vec![Operation::create_table(table.as_str())];
+    for number in 0..24u16 {
+        operations.push(Operation::put(table.as_str(), key(number), b"old"));
+    }
+    state.commit(&operations).unwrap();
+    seal_files(&mut state);
+    state.request_compaction().unwrap();
+    for _ in 0..2000 {
+        if phase(&state) == CompactionPhase::Packing {
+            break;
+        }
+        step(&mut state, ONE);
+    }
+    assert_eq!(phase(&state), CompactionPhase::Packing);
+    let cap = (state.selected.entries + 64) * u64::from(state.selected.height) + 1;
+    let mut saw_skip = false;
+    let mut updated = [false; 24];
+    for turn in 0..cap {
+        // A foreground commit must preserve all of the durable work budget.
+        let before = record(&state);
+        state
+            .commit(&[Operation::put(
+                table.as_str(),
+                key((turn % 24) as u16),
+                b"new",
+            )])
+            .unwrap();
+        updated[(turn % 24) as usize] = true;
+        assert_eq!(record(&state), before);
+        let progress = step(&mut state, ONE);
+        assert_eq!(progress.mutations, 1);
+        saw_skip |= state.compact.stats.maintenance_commits == 0 && !progress.phase_changed;
+        let persisted = record(&state);
+        if persisted.phase() == CompactionPhase::Packing {
+            assert!(persisted.level() >= before.level());
+            if persisted.level() == before.level() && before.packing_remaining() != 0 {
+                assert!(persisted.packing_remaining() < before.packing_remaining());
+            }
+        }
+        drop(state);
+        (group, state) = reopen(&group, &admission);
+        assert_eq!(record(&state), persisted);
+        if phase(&state) == CompactionPhase::Idle {
+            break;
+        }
+    }
+    assert_eq!(phase(&state), CompactionPhase::Idle);
+    assert!(saw_skip, "fixture must exercise durable skip-only progress");
+    let pin = state.snapshot().unwrap();
+    for number in 0..24u16 {
+        let value = state.get(&pin, &table, &key(number), 3).unwrap().unwrap();
+        assert_eq!(
+            value.as_bytes(),
+            if updated[number as usize] {
+                b"new"
+            } else {
+                b"old"
+            }
+        );
+    }
+}
+
+#[test]
+fn packing_skip_publication_faults_reopen_at_old_or_new_checkpoint() {
+    for (op, nth, timing, torn) in [
+        (GroupOp::RootWrite, 1, FaultTiming::BeforeEffect, false),
+        (GroupOp::RootWrite, 1, FaultTiming::AfterEffect, false),
+        (GroupOp::RootWrite, 2, FaultTiming::BeforeEffect, false),
+        (GroupOp::RootWrite, 2, FaultTiming::AfterEffect, false),
+        (GroupOp::RootSync, 1, FaultTiming::BeforeEffect, false),
+        (GroupOp::RootSync, 1, FaultTiming::AfterEffect, false),
+        (GroupOp::RootSync, 2, FaultTiming::BeforeEffect, false),
+        (GroupOp::RootSync, 2, FaultTiming::AfterEffect, false),
+        (GroupOp::RootSync, 1, FaultTiming::BeforeEffect, true),
+    ] {
+        let case = format!("{op:?}/{nth}/{timing:?} torn={torn}");
+        let admission = Admission::new(8 << 20);
+        let group = InMemoryGroup::new();
+        let mut state = create(Arc::new(group.clone()), admission.clone(), LARGE_CACHE);
+        rows(&mut state, 20, 32);
+        seal_files(&mut state);
+        state.request_compaction().unwrap();
+        for _ in 0..2000 {
+            if phase(&state) == CompactionPhase::Packing {
+                break;
+            }
+            step(&mut state, ONE);
+        }
+        assert_eq!(phase(&state), CompactionPhase::Packing);
+        assert_eq!(state.selected.height, 1);
+        let before = record(&state);
+        let selected = state.selected;
+        let generation = state.owner.lock().unwrap().generation();
+        group.fail(op, nth, timing);
+        assert!(state.maintenance_step(ONE).is_err(), "{case}");
+        assert!(state.is_fenced(), "{case}");
+        drop(state);
+        let restarted = if torn {
+            group.crash_torn_root(crate::root::RootSlot::for_generation(generation + 1), 100)
+        } else {
+            group.crash()
+        };
+        let mut state =
+            DiskState::open(Arc::new(restarted), admission, GROUP, LARGE_CACHE).unwrap();
+        assert_eq!(state.selected, selected, "{case}");
+        let after = record(&state);
+        assert_eq!(after.phase(), CompactionPhase::Packing, "{case}");
+        assert!(
+            after == before
+                || (after.level() == 1
+                    && after.packing_remaining() == 0
+                    && after.cursor().is_none()),
+            "{case}"
+        );
+        if torn {
+            assert_eq!(after, before, "{case}");
+        }
+        drive_cycle(&mut state, STEP);
+        let pin = state.snapshot().unwrap();
+        for key in 0..20u32 {
+            assert_eq!(
+                state
+                    .get(&pin, "accounts", &key.to_be_bytes(), 32)
+                    .unwrap()
+                    .unwrap()
+                    .as_bytes(),
+                vec![key as u8; 32],
+                "{case}"
+            );
+        }
+    }
+}
+
 /// The step index (1-based, `ONE` budget) at which `target` is entered.
-fn transition_step(target: CompactionPhase, fixture: &dyn Fn() -> (InMemoryGroup, DiskState)) -> usize {
+fn transition_step(
+    target: CompactionPhase,
+    fixture: &dyn Fn() -> (InMemoryGroup, DiskState),
+) -> usize {
     let (_, mut state) = fixture();
     state.request_compaction().unwrap();
     for index in 1..=20_000 {
@@ -251,13 +574,15 @@ impl PlanChecked {
         }
         state.effects += 1;
         let Some(plan) = state.plan else {
-            state
-                .violations
-                .push(format!("{file:?} grew to {end} outside a reserved transaction"));
+            state.violations.push(format!(
+                "{file:?} grew to {end} outside a reserved transaction"
+            ));
             return;
         };
         let Some(index) = Self::index(file) else {
-            state.violations.push(format!("{file:?} is not a planned kind"));
+            state
+                .violations
+                .push(format!("{file:?} is not a planned kind"));
             return;
         };
         if let Some(existing) = Self::existing(&plan, file) {
@@ -415,7 +740,11 @@ fn maintenance_batch_space_plan_bounds_actual_writes() {
         .unwrap();
     for index in 0..40u16 {
         state
-            .commit(&[Operation::put(table.as_str(), key(index), vec![index as u8; 700])])
+            .commit(&[Operation::put(
+                table.as_str(),
+                key(index),
+                vec![index as u8; 700],
+            )])
             .unwrap();
     }
     let deletes: Vec<_> = (0..40u16)

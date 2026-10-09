@@ -1,13 +1,14 @@
-//! The persisted compaction cycle carried by every `KASUMI-KVROOT004` slot.
+//! The persisted compaction cycle carried by every `KASUMI-KVROOT005` slot.
 //!
 //! One maintenance machine per group moves through
 //! `Idle -> Evacuating -> Reclaiming -> Packing -> Idle`. A phase changes only
 //! through its own root publication, so a torn write selects either the old
 //! or the new record and an unknown outcome is decided by reopen. Progress
-//! inside a phase is a logical cursor (an inclusive lower bound) that rides on
-//! directory installs which already publish a root; losing the newest cursor
-//! only repeats verified reads. Allocation, retirement, forget and replay
-//! publications clone the record unchanged.
+//! inside Evacuating is an exact ordinal in the immutable cycle-start worklist,
+//! published with each relocation or skip. Packing keeps a logical lower-bound
+//! cursor and remaining per-level work budget, published on every step. A
+//! truncated cursor can repeat reads after reopen, but never reset the budget. Allocation,
+//! retirement, forget and replay publications clone the record unchanged.
 //!
 //! The cutoffs are frozen when a cycle begins: every segment and arena with an
 //! identifier at or below them predates the cycle, while every value or page
@@ -18,14 +19,15 @@
 use super::directory::DIRECTORY_END;
 use super::{CHECKSUM_AT, CoreError, Superblock};
 use crate::core::MAX_TABLE_BYTES;
-use crate::directory::{DirectoryKey, MAX_HEIGHT};
+use crate::directory::{DIRECTORY_ROOT_BYTES, DirectoryKey, DirectoryRoot, MAX_HEIGHT};
 use crate::segment::{le_u16, le_u64};
 
 pub(super) const COMPACTION_AT: usize = DIRECTORY_END;
 const RECORD_HEADER_BYTES: usize = 64;
 /// Fixed cursor capacity: a complete table name plus a row-key prefix.
 pub(crate) const MAX_CURSOR_BYTES: usize = 1536;
-pub(super) const COMPACTION_END: usize = COMPACTION_AT + RECORD_HEADER_BYTES + MAX_CURSOR_BYTES;
+const SOURCE_AT: usize = RECORD_HEADER_BYTES + MAX_CURSOR_BYTES;
+pub(super) const COMPACTION_END: usize = COMPACTION_AT + SOURCE_AT + DIRECTORY_ROOT_BYTES;
 
 const _: () = assert!(COMPACTION_END <= CHECKSUM_AT);
 // A complete table name always fits beside at least part of a row prefix.
@@ -35,6 +37,7 @@ const _: () = assert!(MAX_HEIGHT <= u8::MAX as usize);
 const CURSOR_NONE: u8 = 0;
 const CURSOR_TABLE: u8 = 1;
 const CURSOR_ROW: u8 = 2;
+const CURSOR_ORDINAL: u8 = 3;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum CompactionPhase {
@@ -65,10 +68,10 @@ impl CompactionPhase {
     }
 }
 
-/// An inclusive logical lower bound. A row key longer than the remaining
-/// capacity is truncated; under directory-key order a prefix sorts no later
-/// than the key, and truncation preserves order, so resuming from it only
-/// re-reads entries that were already verified.
+/// An exact evacuation ordinal or a Packing inclusive logical lower bound.
+/// Only Packing truncates a row key longer than the remaining capacity; under
+/// directory-key order that prefix sorts no later than the key, so resuming
+/// from it only re-reads entries that were already verified.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) struct CompactionCursor {
     kind: u8,
@@ -109,11 +112,26 @@ impl CompactionCursor {
         Ok(cursor)
     }
 
+    pub(crate) fn at_ordinal(ordinal: u64) -> Self {
+        let mut cursor = Self::NONE;
+        cursor.kind = CURSOR_ORDINAL;
+        cursor.bytes[..8].copy_from_slice(&ordinal.to_le_bytes());
+        cursor
+    }
+
+    pub(crate) fn ordinal(&self) -> Option<u64> {
+        match self.kind {
+            CURSOR_NONE => Some(0),
+            CURSOR_ORDINAL => Some(le_u64(&self.bytes[..8])),
+            _ => None,
+        }
+    }
+
     pub(crate) fn is_none(&self) -> bool {
         self.kind == CURSOR_NONE
     }
 
-    /// The decoded lower bound; `None` for an absent cursor.
+    /// The decoded Packing lower bound; absent and ordinal cursors yield `None`.
     pub(crate) fn key(&self) -> Option<DirectoryKey<'_>> {
         let table_len = usize::from(self.table_len);
         let table = std::str::from_utf8(&self.bytes[..table_len]).ok()?;
@@ -130,9 +148,13 @@ impl CompactionCursor {
     fn violation(&self) -> Option<&'static str> {
         let table_len = usize::from(self.table_len);
         let row_len = usize::from(self.row_len);
-        let used = table_len + row_len;
+        let used = if self.kind == CURSOR_ORDINAL {
+            8
+        } else {
+            table_len + row_len
+        };
         let shape = match self.kind {
-            CURSOR_NONE => table_len == 0 && row_len == 0,
+            CURSOR_NONE | CURSOR_ORDINAL => table_len == 0 && row_len == 0,
             CURSOR_TABLE => {
                 row_len == 0
                     && (1..=MAX_TABLE_BYTES).contains(&table_len)
@@ -174,6 +196,10 @@ pub(crate) struct CompactionRecord {
     baseline_bytes: u64,
     baseline_files: u64,
     cursor: CompactionCursor,
+    /// Remaining bounded work at this Packing level, or zero before its first step.
+    packing_remaining: u64,
+    /// Immutable cycle-start worklist, retained only while Evacuating.
+    evacuation_source: Option<DirectoryRoot>,
 }
 
 impl std::fmt::Debug for CompactionRecord {
@@ -186,6 +212,8 @@ impl std::fmt::Debug for CompactionRecord {
             .field("cutoff_arena", &self.cutoff_arena)
             .field("baseline_bytes", &self.baseline_bytes)
             .field("baseline_files", &self.baseline_files)
+            .field("packing_remaining", &self.packing_remaining)
+            .field("evacuation_source", &self.evacuation_source)
             .field("cursor", &self.cursor)
             .finish()
     }
@@ -201,6 +229,8 @@ impl CompactionRecord {
         baseline_bytes: 0,
         baseline_files: 0,
         cursor: CompactionCursor::NONE,
+        packing_remaining: 0,
+        evacuation_source: None,
     };
 
     pub(crate) fn cycle(&self) -> u64 {
@@ -228,6 +258,14 @@ impl CompactionRecord {
         &self.cursor
     }
 
+    pub(crate) fn packing_remaining(&self) -> u64 {
+        self.packing_remaining
+    }
+
+    pub(crate) fn evacuation_source(&self) -> Option<DirectoryRoot> {
+        self.evacuation_source
+    }
+
     /// The same cycle, phase, cutoffs and baseline; only progress differs.
     fn same_progress_frame(&self, other: &Self) -> bool {
         self.cycle == other.cycle
@@ -236,10 +274,11 @@ impl CompactionRecord {
             && self.cutoff_arena == other.cutoff_arena
             && self.baseline_bytes == other.baseline_bytes
             && self.baseline_files == other.baseline_files
+            && self.evacuation_source == other.evacuation_source
     }
 
     fn progress_free(&self) -> bool {
-        self.level == 0 && self.cursor.is_none()
+        self.level == 0 && self.cursor.is_none() && self.packing_remaining == 0
     }
 }
 
@@ -266,6 +305,11 @@ impl Superblock {
                 "compaction cycle is already active",
             )));
         }
+        if !self.garbage.is_empty() {
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
+                "compaction worklist requires drained garbage",
+            )));
+        }
         if self.directory.is_none() {
             return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
                 "compaction needs a committed directory",
@@ -290,6 +334,8 @@ impl Superblock {
             baseline_bytes: record.baseline_bytes,
             baseline_files: record.baseline_files,
             cursor: CompactionCursor::NONE,
+            packing_remaining: 0,
+            evacuation_source: self.directory.map(|commit| commit.root),
         };
         Ok(next)
     }
@@ -330,6 +376,8 @@ impl Superblock {
         next.compaction.phase = to;
         next.compaction.level = 0;
         next.compaction.cursor = CompactionCursor::NONE;
+        next.compaction.packing_remaining = 0;
+        next.compaction.evacuation_source = None;
         Ok(next)
     }
 
@@ -339,20 +387,68 @@ impl Superblock {
         mut self,
         level: u8,
         cursor: CompactionCursor,
+        packing_remaining: u64,
     ) -> Result<Self, CoreError> {
         let allowed = match self.compaction.phase {
-            CompactionPhase::Evacuating => level == 0,
-            CompactionPhase::Packing => usize::from(level) < MAX_HEIGHT,
+            CompactionPhase::Evacuating => {
+                level == 0
+                    && cursor.ordinal().is_some_and(|position| {
+                        self.compaction
+                            .evacuation_source
+                            .is_some_and(|source| position <= source.entries)
+                            && self
+                                .compaction
+                                .cursor
+                                .ordinal()
+                                .is_some_and(|old| position >= old)
+                    })
+            }
+            CompactionPhase::Packing => {
+                usize::from(level) <= MAX_HEIGHT && cursor.kind != CURSOR_ORDINAL
+            }
             CompactionPhase::Idle | CompactionPhase::Reclaiming => level == 0 && cursor.is_none(),
         };
-        if !allowed || cursor.violation().is_some() {
+        if !allowed
+            || cursor.violation().is_some()
+            || (self.compaction.phase != CompactionPhase::Packing && packing_remaining != 0)
+        {
             return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
                 "compaction cursor does not fit the phase",
             )));
         }
         self.compaction.level = level;
         self.compaction.cursor = cursor;
+        self.compaction.packing_remaining = packing_remaining;
         Ok(self)
+    }
+
+    /// Persist skip-only progress so a crash after every successful step
+    /// cannot replay an inclusive or truncated key forever.
+    pub(crate) fn advance_evacuation_cursor(
+        &self,
+        cursor: CompactionCursor,
+    ) -> Result<Self, CoreError> {
+        if self.compaction.phase != CompactionPhase::Evacuating {
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
+                "evacuation is not active",
+            )));
+        }
+        self.successor()?.with_compaction_cursor(0, cursor, 0)
+    }
+
+    pub(crate) fn advance_packing_cursor(
+        &self,
+        level: u8,
+        cursor: CompactionCursor,
+        remaining: u64,
+    ) -> Result<Self, CoreError> {
+        if self.compaction.phase != CompactionPhase::Packing {
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
+                "packing is not active",
+            )));
+        }
+        self.successor()?
+            .with_compaction_cursor(level, cursor, remaining)
     }
 
     /// Shared by encode (refusal) and decode (corruption).
@@ -360,6 +456,30 @@ impl Superblock {
         let record = &self.compaction;
         if let Some(reason) = record.cursor.violation() {
             return Some(reason);
+        }
+        let source_valid = match (record.phase, record.evacuation_source) {
+            (CompactionPhase::Evacuating, Some(source)) => {
+                source.validate().is_ok()
+                    && source.group_id == self.group_id
+                    && self
+                        .directory
+                        .is_some_and(|current| source.generation <= current.root.generation)
+                    && source
+                        .page
+                        .is_none_or(|page| page.arena_id <= self.last_directory_id)
+                    && record
+                        .cursor
+                        .ordinal()
+                        .is_some_and(|position| position <= source.entries)
+                    && self.garbage.is_empty()
+            }
+            (CompactionPhase::Evacuating, None) => false,
+            (_, source) => source.is_none(),
+        };
+        if !source_valid
+            || (record.phase != CompactionPhase::Packing && record.packing_remaining != 0)
+        {
+            return Some("root compaction evacuation source is invalid");
         }
         let invalid = match record.phase {
             CompactionPhase::Idle => {
@@ -374,7 +494,10 @@ impl Superblock {
                     || match phase {
                         CompactionPhase::Evacuating => record.level != 0,
                         CompactionPhase::Reclaiming => !record.progress_free(),
-                        CompactionPhase::Packing => usize::from(record.level) >= MAX_HEIGHT,
+                        CompactionPhase::Packing => {
+                            usize::from(record.level) > MAX_HEIGHT
+                                || record.cursor.kind == CURSOR_ORDINAL
+                        }
                         CompactionPhase::Idle => unreachable!("matched above"),
                     }
             }
@@ -388,8 +511,23 @@ impl Superblock {
 pub(super) fn compaction_successor(previous: &Superblock, next: &Superblock) -> bool {
     let old = &previous.compaction;
     let new = &next.compaction;
-    if old == new || old.same_progress_frame(new) {
+    if old == new {
         return true;
+    }
+    if old.same_progress_frame(new) {
+        if old.phase == CompactionPhase::Packing {
+            return new.level >= old.level
+                && (new.level != old.level
+                    || old.packing_remaining == 0
+                    || (new.packing_remaining != 0
+                        && new.packing_remaining <= old.packing_remaining));
+        }
+        return old.phase != CompactionPhase::Evacuating
+            || old
+                .cursor
+                .ordinal()
+                .zip(new.cursor.ordinal())
+                .is_some_and(|(before, after)| after >= before);
     }
     match (old.phase, new.phase) {
         (CompactionPhase::Idle, CompactionPhase::Evacuating) => {
@@ -400,6 +538,8 @@ pub(super) fn compaction_successor(previous: &Superblock, next: &Superblock) -> 
                 && new.baseline_bytes == old.baseline_bytes
                 && new.baseline_files == old.baseline_files
                 && new.progress_free()
+                && new.evacuation_source == previous.directory.map(|commit| commit.root)
+                && previous.garbage.is_empty()
         }
         (CompactionPhase::Evacuating, CompactionPhase::Reclaiming) => {
             old.cycle == new.cycle
@@ -408,6 +548,7 @@ pub(super) fn compaction_successor(previous: &Superblock, next: &Superblock) -> 
                 && old.baseline_bytes == new.baseline_bytes
                 && old.baseline_files == new.baseline_files
                 && new.progress_free()
+                && new.evacuation_source.is_none()
         }
         (CompactionPhase::Reclaiming, CompactionPhase::Packing) => {
             old.cycle == new.cycle
@@ -437,7 +578,11 @@ pub(super) fn encode_compaction(record: &CompactionRecord, bytes: &mut [u8]) {
     bytes[40..48].copy_from_slice(&record.baseline_files.to_le_bytes());
     bytes[48..50].copy_from_slice(&record.cursor.table_len.to_le_bytes());
     bytes[50..52].copy_from_slice(&record.cursor.row_len.to_le_bytes());
-    bytes[RECORD_HEADER_BYTES..].copy_from_slice(&record.cursor.bytes);
+    bytes[52..60].copy_from_slice(&record.packing_remaining.to_le_bytes());
+    bytes[RECORD_HEADER_BYTES..SOURCE_AT].copy_from_slice(&record.cursor.bytes);
+    if let Some(source) = record.evacuation_source {
+        bytes[SOURCE_AT..].copy_from_slice(&source.encode().expect("validated evacuation source"));
+    }
 }
 
 /// Layout only; the root invariants are checked with the decoded superblock.
@@ -445,9 +590,9 @@ pub(super) fn decode_compaction(bytes: &[u8]) -> Result<CompactionRecord, CoreEr
     let layout = CoreError::new(crate::CoreErrorCause::Corrupt(
         "root compaction has an unsupported layout",
     ));
-    if bytes.len() != RECORD_HEADER_BYTES + MAX_CURSOR_BYTES
+    if bytes.len() != SOURCE_AT + DIRECTORY_ROOT_BYTES
         || bytes[11..16].iter().any(|&byte| byte != 0)
-        || bytes[52..RECORD_HEADER_BYTES].iter().any(|&byte| byte != 0)
+        || bytes[60..RECORD_HEADER_BYTES].iter().any(|&byte| byte != 0)
     {
         return Err(layout);
     }
@@ -473,9 +618,17 @@ pub(super) fn decode_compaction(bytes: &[u8]) -> Result<CompactionRecord, CoreEr
             kind: bytes[10],
             table_len,
             row_len,
-            bytes: bytes[RECORD_HEADER_BYTES..]
+            bytes: bytes[RECORD_HEADER_BYTES..SOURCE_AT]
                 .try_into()
                 .expect("fixed cursor bytes"),
+        },
+        packing_remaining: le_u64(&bytes[52..60]),
+        evacuation_source: if bytes[SOURCE_AT..].iter().all(|byte| *byte == 0) {
+            None
+        } else {
+            Some(DirectoryRoot::decode(
+                bytes[SOURCE_AT..].try_into().expect("fixed source bytes"),
+            )?)
         },
     })
 }
@@ -500,6 +653,8 @@ impl CompactionRecord {
             baseline_bytes: baseline.0,
             baseline_files: baseline.1,
             cursor,
+            packing_remaining: 0,
+            evacuation_source: None,
         }
     }
 }
@@ -620,11 +775,15 @@ mod tests {
             (2, 2)
         );
         round_trip(&evacuating);
-        for cursor in cursors {
+        for cursor in [
+            CompactionCursor::NONE,
+            CompactionCursor::at_ordinal(1),
+            CompactionCursor::at_ordinal(9),
+        ] {
             let next = evacuating
                 .install_directory(commit(6, 3, 3))
                 .unwrap()
-                .with_compaction_cursor(0, cursor)
+                .with_compaction_cursor(0, cursor, 0)
                 .unwrap();
             round_trip(&next);
             assert_eq!(next.compaction().cursor(), &cursor);
@@ -640,7 +799,7 @@ mod tests {
                 let next = packing
                     .install_directory(commit(6, 3, 3))
                     .unwrap()
-                    .with_compaction_cursor(level, cursor)
+                    .with_compaction_cursor(level, cursor, 0)
                     .unwrap();
                 round_trip(&next);
                 assert_eq!(next.compaction().level(), level);
@@ -697,7 +856,7 @@ mod tests {
         lengths_without_kind.table_len = 1;
         lengths_without_kind.bytes[0] = b'a';
         let mut unknown_kind = cursor("accounts", None);
-        unknown_kind.kind = 3;
+        unknown_kind.kind = 4;
         let cases = [
             // Idle carries no cutoff, level or cursor.
             record(CompactionPhase::Idle, 0, (1, 0), CompactionCursor::NONE),
@@ -751,7 +910,7 @@ mod tests {
             ),
             record(
                 CompactionPhase::Packing,
-                MAX_HEIGHT as u8,
+                (MAX_HEIGHT + 1) as u8,
                 (2, 2),
                 CompactionCursor::NONE,
             ),
@@ -764,7 +923,10 @@ mod tests {
             record(CompactionPhase::Evacuating, 0, (2, 2), lengths_without_kind),
             record(CompactionPhase::Evacuating, 0, (2, 2), unknown_kind),
         ];
-        for (index, case) in cases.into_iter().enumerate() {
+        for (index, mut case) in cases.into_iter().enumerate() {
+            if case.phase == CompactionPhase::Evacuating {
+                case.evacuation_source = evacuating.compaction.evacuation_source;
+            }
             let mut refused = evacuating.clone();
             refused.compaction = case;
             assert!(
@@ -808,8 +970,8 @@ mod tests {
         );
         // Reserved record bytes and the region after the record.
         for offset in (at + 11..at + 16)
-            .chain(at + 52..at + RECORD_HEADER_BYTES)
-            .chain([COMPACTION_END, COMPACTION_END + 50, CHECKSUM_AT - 1])
+            .chain(at + 60..at + RECORD_HEADER_BYTES)
+            .chain([COMPACTION_END, COMPACTION_END + 5, CHECKSUM_AT - 1])
         {
             let mut image = evacuating.encode().unwrap();
             image[offset] = 1;
@@ -843,6 +1005,7 @@ mod tests {
         let mut forged = Vec::new();
         let mut skipped = root.successor().unwrap();
         skipped.compaction.phase = CompactionPhase::Packing;
+        skipped.compaction.evacuation_source = None;
         forged.push(skipped);
         let mut regressed = root.successor().unwrap();
         regressed.compaction = CompactionRecord::GENESIS;
@@ -880,7 +1043,7 @@ mod tests {
         let next = root
             .install_directory(commit(6, 3, 3))
             .unwrap()
-            .with_compaction_cursor(0, cursor("accounts", Some(b"m")))
+            .with_compaction_cursor(0, CompactionCursor::at_ordinal(3), 0)
             .unwrap();
         advance(&group, &mut root, next);
         let next = root.advance_to_reclaiming().unwrap();
@@ -902,6 +1065,105 @@ mod tests {
         z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
         z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
         z ^ (z >> 31)
+    }
+
+    #[test]
+    fn frozen_worklist_identity_ordinal_and_retention_are_phase_bound() {
+        let (group, mut root) = published();
+        let old_file = crate::group::GroupFile {
+            kind: crate::group::FileKind::Directory,
+            id: 1,
+        };
+        assert!(root.file_is_retirable(old_file));
+        let mut pending = root.clone();
+        pending.garbage.push(old_file);
+        assert!(pending.begin_compaction().is_err());
+        let next = root.begin_compaction().unwrap();
+        advance(&group, &mut root, next);
+        assert_eq!(
+            root.compaction.evacuation_source,
+            root.directory.map(|commit| commit.root)
+        );
+        assert!(!root.file_is_retirable(old_file));
+        let next = root
+            .advance_evacuation_cursor(CompactionCursor::at_ordinal(3))
+            .unwrap();
+        advance(&group, &mut root, next);
+        assert!(
+            root.advance_evacuation_cursor(CompactionCursor::at_ordinal(2))
+                .is_err()
+        );
+        assert!(
+            root.advance_evacuation_cursor(CompactionCursor::at_ordinal(10))
+                .is_err()
+        );
+        assert!(
+            root.advance_evacuation_cursor(cursor("accounts", Some(b"key")))
+                .is_err()
+        );
+        let mut forged = root.successor().unwrap();
+        forged.compaction.cursor = CompactionCursor::at_ordinal(2);
+        assert!(publish_root(&group, &root, &forged).is_err());
+        let mut substituted = root.successor().unwrap();
+        substituted
+            .compaction
+            .evacuation_source
+            .as_mut()
+            .unwrap()
+            .page
+            .as_mut()
+            .unwrap()
+            .sha256[0] ^= 1;
+        assert!(publish_root(&group, &root, &substituted).is_err());
+        for mutation in 0..6 {
+            let mut bad = root.compaction;
+            match mutation {
+                0 => bad.evacuation_source = None,
+                1 => bad.evacuation_source.as_mut().unwrap().group_id[0] ^= 1,
+                2 => bad.evacuation_source.as_mut().unwrap().generation += 1,
+                3 => bad.cursor = CompactionCursor::at_ordinal(10),
+                4 => bad.cursor.bytes[8] = 1,
+                _ => bad.phase = CompactionPhase::Packing,
+            }
+            assert!(decode_slot(&image_with(&root, bad)).is_err());
+        }
+        let next = root.advance_to_reclaiming().unwrap();
+        advance(&group, &mut root, next);
+        assert_eq!(root.compaction.evacuation_source, None);
+        assert!(root.file_is_retirable(old_file));
+        round_trip(&root);
+    }
+
+    #[test]
+    fn packing_work_budget_round_trips_and_cannot_reset_within_a_level() {
+        let (_, root) = published();
+        let packing = root
+            .begin_compaction()
+            .unwrap()
+            .advance_to_reclaiming()
+            .unwrap()
+            .advance_to_packing(100, 2)
+            .unwrap();
+        let first = packing
+            .advance_packing_cursor(0, cursor("accounts", Some(b"k")), 72)
+            .unwrap();
+        round_trip(&first);
+        assert_eq!(first.compaction().packing_remaining(), 72);
+        assert!(compaction_successor(&packing, &first));
+        let next = first
+            .advance_packing_cursor(0, cursor("accounts", Some(b"k")), 71)
+            .unwrap();
+        assert!(compaction_successor(&first, &next));
+        assert!(!compaction_successor(&next, &first));
+        let reset = next
+            .advance_packing_cursor(0, CompactionCursor::NONE, 0)
+            .unwrap();
+        assert!(!compaction_successor(&next, &reset));
+        let level = next
+            .advance_packing_cursor(1, CompactionCursor::NONE, 0)
+            .unwrap();
+        assert!(compaction_successor(&next, &level));
+        round_trip(&level);
     }
 
     #[test]

@@ -13,12 +13,13 @@ segment and `0000000000000001.kvdir` for a directory arena. The group contract
 also recognizes checkpoint files; the current Core rejects roots carrying a
 checkpoint reference from the retired storage path.
 
-The current root magic is `KASUMI-KVROOT004`, the segment magic is
+The current root magic is `KASUMI-KVROOT005`, the segment magic is
 `KASUMI-KVSEG0004`, and directory pages use `KASUMI-KVDIR0002` inside
-`KASUMI-KVARENA01` arenas. A `KASUMI-KVROOT004` slot carries the persisted
-compaction record (cycle, phase, frozen file cutoffs, baseline and an in-phase
-cursor) at bytes 2384..3984; the remainder before the checksum must be zero.
-Slots of the retired root formats 001, 002 and 003 are refused before their
+`KASUMI-KVARENA01` arenas. A `KASUMI-KVROOT005` slot carries the persisted
+compaction record (cycle, phase, frozen file cutoffs, baseline, immutable
+evacuation worklist, in-phase position and remaining Packing work budget) at bytes 2384..4080; the
+remainder before the checksum must be zero. Slots of the retired root formats
+001, 002, 003 and 004 are refused before their
 checksum is examined. There is no reader or migration for them: a group written
 by an earlier build does not open and must be recreated from a verified logical
 backup. Segment and arena files each have a 64 MiB bound.
@@ -153,15 +154,21 @@ Each group runs one persisted maintenance cycle,
   below the newest confirmed segment and arena; it rolls and creates nothing.
 - **Evacuating.** Every leaf that names a value at or below the segment cutoff,
   or lives in an arena at or below the arena cutoff, is rewritten once with its
-  path in one bounded maintenance batch. A fresh leaf without old values is
-  skipped. The logical cursor rides on the next root install.
+  path in one bounded maintenance batch. The cycle-start directory is an
+  immutable worklist; rank/select over authenticated subtree counts gives an
+  exact ordinal that each batch publishes durably. A fresh leaf without old
+  values needs only a root publication. Appends and in-range inserts cannot
+  extend the worklist, and reopen preserves progress for arbitrary long keys.
+  Directory retirement is refused until the phase transition clears this root.
 - **Reclaiming.** Sequential certified cohorts of at most 128 candidates prove
   file unreachability across the current root and every live pin, then retire,
   unlink and forget the unreferenced files. Foreground commits never restart or
   invalidate a cohort: every install goes through one selection funnel that
   advances the cohort's certified chain and stamps new pins.
 - **Packing.** One bounded density pass packs sparse pages level by level, with
-  each level capped at its starting entry count plus 64 plans.
+  each level capped at its starting entry count plus 64 plans. Every step
+  persists its cursor and remaining budget, including skips and level changes.
+  Reopen may revisit a truncated key prefix but cannot reset the finite budget.
 
 Each phase change is its own root publication; a reopen resumes from the record
 and never re-copies values a previous lifetime already relocated. Every

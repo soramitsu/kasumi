@@ -155,6 +155,11 @@ impl Superblock {
     /// deliberately not inferred from these counters: reopen must re-prove
     /// that decoded garbage is unreachable before it can unlink any file.
     pub(super) fn directory_file_is_retirable(&self, file: GroupFile) -> bool {
+        // The durable worklist is an internal retained root. No retirement
+        // authority may unlink its pages before the phase transition drops it.
+        if self.compaction.phase() == super::CompactionPhase::Evacuating {
+            return false;
+        }
         let Some(commit) = self.directory else {
             return false;
         };

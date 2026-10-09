@@ -128,7 +128,7 @@ impl RootOwner {
         &self,
         source: DirectoryRoot,
         commit: DirectoryCommit,
-        cursor: Option<(u8, CompactionCursor)>,
+        cursor: Option<(u8, CompactionCursor, u64)>,
     ) -> Result<Option<DirectoryCommit>, CoreError> {
         let mut root = self.lock()?;
         let previous = root.directory();
@@ -138,8 +138,8 @@ impl RootOwner {
             )));
         }
         let mut next = root.install_directory(commit)?;
-        if let Some((level, cursor)) = cursor {
-            next = next.with_compaction_cursor(level, cursor)?;
+        if let Some((level, cursor, remaining)) = cursor {
+            next = next.with_compaction_cursor(level, cursor, remaining)?;
         }
         self.publish(&mut root, next)?;
         Ok(previous)
@@ -350,7 +350,7 @@ impl DiskState {
 
     /// The only post-open writer of `self.selected`. In one owner-lock hold
     /// of this state it checks the witness, installs `commit` with the
-    /// in-phase compaction cursor (`cursor`, or the current progress), selects
+    /// in-phase compaction checkpoint (preserving it for foreground writes), selects
     /// it, and advances an active reclamation cohort's certified chain and
     /// stamped pin root. While a cohort is active, a new value below its
     /// segment limit or an active arena below its arena limit invalidates the
@@ -360,7 +360,7 @@ impl DiskState {
         witness: SelectionWitness,
         commit: DirectoryCommit,
         new_values: &[Option<ValueLocation>],
-        cursor: Option<(u8, CompactionCursor)>,
+        cursor: Option<(u8, CompactionCursor, u64)>,
     ) -> Result<(), CoreError> {
         if witness.source != self.selected {
             return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
@@ -380,13 +380,6 @@ impl DiskState {
                 self.invalidate_for_install()?;
             }
         }
-        let cursor = match cursor {
-            Some(cursor) => Some(cursor),
-            None => {
-                let phase = self.owner.lock()?.compaction().phase();
-                self.compact.install_cursor(phase)?
-            }
-        };
         let previous = self.owner.install(witness.source, commit, cursor)?;
         self.selected = commit.root;
         self.observe_install(previous, commit)

@@ -923,47 +923,54 @@ fn crc32c(bytes: &[u8]) -> u32 {
 }
 
 #[test]
-fn root_format_003_is_rejected_on_open() {
-    let group = InMemoryGroup::new();
-    let core = Core::create_with_backend(group.clone(), admission(), GROUP, CacheConfig::default())
-        .unwrap();
-    core.commit(&[Operation::create_table("items")]).unwrap();
-    core.close().into_result().unwrap();
-    let crashed = group.crash();
-    // Checksum-valid slots that carry the retired magic.
-    for slot in [RootSlot::A, RootSlot::B] {
-        crashed.with_durable_root(slot, |bytes| {
-            assert_eq!(&bytes[..16], b"KASUMI-KVROOT004");
-            bytes[..16].copy_from_slice(b"KASUMI-KVROOT003");
-            let checksum = crc32c(&bytes[..ROOT_SLOT_BYTES - 4]);
-            bytes[ROOT_SLOT_BYTES - 4..].copy_from_slice(&checksum.to_le_bytes());
-        });
-    }
-    let failure = match Core::open_with_backend(
-        crashed.clone(),
-        admission(),
-        GROUP,
-        CacheConfig::default(),
-    ) {
-        Ok(_) => panic!("a KASUMI-KVROOT003 store opened"),
-        Err(failure) => failure,
-    };
-    assert!(
-        matches!(
-            failure.original_error().and_then(CoreError::rejected_cause),
-            Some(kasumi_kv::CoreErrorCause::Corrupt(
-                "retired root format is unsupported"
-            ))
-        ),
-        "{failure}"
-    );
-    // Nothing was rewritten: both durable slots still carry the retired
-    // image. The refused open closed its handle, so read a restart image.
-    let after = crashed.crash();
-    for slot in [RootSlot::A, RootSlot::B] {
-        let mut bytes = [0; ROOT_SLOT_BYTES];
-        after.read_root(slot, &mut bytes).unwrap();
-        assert_eq!(&bytes[..16], b"KASUMI-KVROOT003");
+fn retired_root_formats_are_rejected_on_open_without_rewriting() {
+    for magic in [b"KASUMI-KVROOT003", b"KASUMI-KVROOT004"] {
+        let group = InMemoryGroup::new();
+        let core =
+            Core::create_with_backend(group.clone(), admission(), GROUP, CacheConfig::default())
+                .unwrap();
+        core.commit(&[Operation::create_table("items")]).unwrap();
+        core.close().into_result().unwrap();
+        let crashed = group.crash();
+        // Checksum-valid slots that carry the retired magic.
+        let mut originals = Vec::new();
+        for slot in [RootSlot::A, RootSlot::B] {
+            crashed.with_durable_root(slot, |bytes| {
+                assert_eq!(&bytes[..16], b"KASUMI-KVROOT005");
+                bytes[..16].copy_from_slice(magic);
+                let checksum = crc32c(&bytes[..ROOT_SLOT_BYTES - 4]);
+                bytes[ROOT_SLOT_BYTES - 4..].copy_from_slice(&checksum.to_le_bytes());
+                let mut original = [0; ROOT_SLOT_BYTES];
+                original.copy_from_slice(bytes);
+                originals.push((slot, original));
+            });
+        }
+        let failure = match Core::open_with_backend(
+            crashed.clone(),
+            admission(),
+            GROUP,
+            CacheConfig::default(),
+        ) {
+            Ok(_) => panic!("a retired root store opened"),
+            Err(failure) => failure,
+        };
+        assert!(
+            matches!(
+                failure.original_error().and_then(CoreError::rejected_cause),
+                Some(kasumi_kv::CoreErrorCause::Corrupt(
+                    "retired root format is unsupported"
+                ))
+            ),
+            "{failure}"
+        );
+        // Nothing was rewritten: both durable slots still carry the retired
+        // image. The refused open closed its handle, so read a restart image.
+        let after = crashed.crash();
+        for (slot, original) in originals {
+            let mut bytes = [0; ROOT_SLOT_BYTES];
+            after.read_root(slot, &mut bytes).unwrap();
+            assert_eq!(bytes, original);
+        }
     }
 }
 

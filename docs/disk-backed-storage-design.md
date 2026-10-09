@@ -220,8 +220,9 @@ ID alone cannot authorize a snapshot from another owner. This slot limit and
 the associated metadata accounting are internal settings, not a completed
 deployment configuration contract.
 
-The internal maintenance path in `disk_compact.rs` now rotates the segment and
-directory-arena appenders, then evacuates the selected tree in leaf batches. This
+The internal maintenance path in `disk_compact.rs` freezes the segment and
+directory-arena cutoffs and the cycle-start directory without rolling a file,
+then evacuates current leaves selected through that immutable worklist. This
 replaces the historical one-record-per-commit primitive. Each admitted, validated
 leaf plan holds one page and a bounded ancestor path, with at most 512 records.
 Keys borrow the leaf buffer; the retained continuation key and bounded descriptor
@@ -232,10 +233,11 @@ before any relocation writes, then old values stream through 64 KiB windows.
 
 Each batch copies its leaf and ancestor path once, preserving row logical batch
 sequences, table birth sequences and untouched values. An already fresh leaf
-without old value locations needs no maintenance commit. The cursor reads the
-current selected root between steps, allowing foreground writes to interleave;
-writes behind the cursor already use the rotated appenders. It advances only
-after publication or a verified skip. Old snapshot pins protect their original
+without old value locations needs no data commit, but still publishes its exact
+worklist ordinal in the root. Rank/select uses the frozen authenticated subtree
+counts to select the next original key and its current leaf. Foreground writes
+use fresh locations; their inserts cannot extend the original worklist, and
+reopen cannot lose skip-only progress. Old snapshot pins protect their original
 physical roots and values. No all-key resident map is built.
 
 The subsequent internal density phase in `disk_density.rs` packs adjacent pages
@@ -250,27 +252,36 @@ One operation appends at most `2 + 4(h - 1) + 1` pages at tree height `h`.
 
 Density retains an admitted inclusive logical cursor, reselecting from the current
 root each step. Merged output stays eligible for its next neighbor; two-output
-or unchanged pairs advance to the right minimum. Since `KASUMI-KVROOT004` the
-pass runs once per persisted cycle, in the `Packing` phase after reclamation: it
-never restarts for foreground publications, persists its level and cursor on
-every install, and caps each level at its starting entry count plus 64 plans.
+or unchanged pairs advance to the right minimum. The pass runs once per
+persisted cycle, in the `Packing` phase after reclamation: it
+never restarts for foreground publications, persists its level, cursor and
+remaining work budget on every step (including skips), and caps each level at
+its starting entry count plus 64 plans. Reopen may revisit a truncated cursor
+prefix but cannot reset this budget.
 Ranges a foreground write leaves sparse are packed by the next cycle. (The
 earlier rule restarted a dirty pass and required a clean pass before GC, which
 continuous writes prevented.)
 
-### Persisted maintenance cycle (`KASUMI-KVROOT004`)
+### Persisted maintenance cycle (`KASUMI-KVROOT005`)
 
 Each group's root persists one maintenance machine, `Idle -> Evacuating ->
 Reclaiming -> Packing -> Idle`, with its cycle number, frozen file cutoffs, the
-retained-size baseline measured when the last cycle finished reclaiming, and an
-in-phase logical cursor. Each phase change is one mirrored root publication; a
-cursor rides on the next directory install, maintenance or foreground. Reopen
-resumes the recorded phase and cursor, so it never restarts evacuation or
+retained-size baseline measured when the last cycle finished reclaiming, the
+immutable Evacuating worklist root and an in-phase cursor. Evacuating persists
+an exact ordinal with each batch, including skips; foreground installs
+preserve it. Packing publishes its bounded key cursor and remaining per-level
+work budget on every step; foreground installs preserve both.
+Each phase change is one mirrored root publication. Reopen resumes the
+recorded phase and position, so it never restarts evacuation or
 re-copies relocated values, and a store whose last cycle completed begins no new
 cycle until bounded census steps measure growth past
 `max(B * growth_percent / 100, B + slack)` in bytes or files (defaults 200 %,
 256 MiB, 16 files) or `request_compaction` asks for one. Beginning freezes the
 cutoffs one below the newest confirmed segment and arena and creates no file.
+Beginning requires an empty garbage list. Every directory retirement path
+refuses work while Evacuating; the durable transition to Reclaiming clears
+the frozen worklist before its pages become eligible for certified retirement.
+ROOT004 and earlier root formats are rejected without migration.
 
 Reclamation runs only in `Reclaiming`, as sequential cohorts certified across
 foreground publications by a cohort nonce, pin stamps and the selection funnel

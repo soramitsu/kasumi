@@ -27,6 +27,8 @@ use sha2::{Digest, Sha256};
 
 #[path = "directory_leaf.rs"]
 mod leaf;
+#[path = "directory_ordinal.rs"]
+mod ordinal;
 #[path = "directory_pack.rs"]
 mod pack;
 #[path = "directory_update.rs"]

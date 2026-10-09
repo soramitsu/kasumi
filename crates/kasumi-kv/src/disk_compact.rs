@@ -7,7 +7,8 @@
 //! segment cutoff or lives in an arena at or below the arena cutoff, with its
 //! path. A leaf in a newer arena was written with its whole path after it, so
 //! it and its ancestors are fresh; such a leaf without old values is skipped
-//! without a commit. Progress is a logical cursor carried by the next install.
+//! without a data commit. Exact worklist ordinal progress is persisted even
+//! for a skip, so restart cannot repeat a long-key prefix indefinitely.
 //! Reclaiming runs certified cohorts (`disk_reclaim.rs`), then one bounded
 //! density pass packs sparse pages (`disk_density.rs`). Each phase change is
 //! its own publication; reopen resumes from the record and never restarts a
@@ -37,10 +38,6 @@ struct Cutoff {
 /// Volatile mirror of the durable record's progress plus the Idle census.
 #[derive(Default)]
 pub(super) struct Compaction {
-    /// The last record evacuation visited (an exclusive continuation).
-    evac_after: Option<DirectoryRecord>,
-    /// The persisted inclusive lower bound restored by reopen.
-    evac_resume: Option<DirectoryCursor>,
     density: Density,
     pub(super) requested: bool,
     census: Option<Census>,
@@ -66,8 +63,8 @@ pub(crate) struct CompactionProgress {
 }
 
 impl Compaction {
-    /// Rebuild progress from the record selected at open, admitting the
-    /// cursor key buffer. Census and measurement start empty.
+    /// Rebuild Packing progress from the selected record. Evacuation reads
+    /// its exact durable ordinal directly. Census and measurement start empty.
     pub(super) fn resume(
         record: &CompactionRecord,
         admission: &Arc<dyn StorageAdmission>,
@@ -79,32 +76,14 @@ impl Compaction {
             .map(|key| DirectoryCursor::from_key(key, admission))
             .transpose()?;
         match record.phase() {
-            CompactionPhase::Evacuating => compaction.evac_resume = cursor,
+            CompactionPhase::Evacuating => {}
             CompactionPhase::Packing => {
-                compaction.density = Density::resume(record.level(), cursor)
+                compaction.density =
+                    Density::resume(record.level(), cursor, record.packing_remaining())
             }
             CompactionPhase::Idle | CompactionPhase::Reclaiming => {}
         }
         Ok(compaction)
-    }
-
-    /// The in-phase progress an install successor carries.
-    pub(super) fn install_cursor(
-        &self,
-        phase: CompactionPhase,
-    ) -> Result<Option<(u8, CompactionCursor)>, CoreError> {
-        Ok(match phase {
-            CompactionPhase::Evacuating => Some((
-                0,
-                match (&self.evac_after, &self.evac_resume) {
-                    (Some(after), _) => CompactionCursor::lower_bound(after.key())?,
-                    (None, Some(resume)) => CompactionCursor::lower_bound(resume.key())?,
-                    (None, None) => CompactionCursor::NONE,
-                },
-            )),
-            CompactionPhase::Packing => Some(self.density.persisted()?),
-            CompactionPhase::Idle | CompactionPhase::Reclaiming => None,
-        })
     }
 }
 
@@ -183,8 +162,6 @@ impl DiskState {
             self.owner.publish(&mut root, next)?;
             drop(root);
             self.compact.requested = false;
-            self.compact.evac_after = None;
-            self.compact.evac_resume = None;
             progress.units += 1;
             progress.mutations += 1;
             progress.phase_changed = true;
@@ -227,15 +204,30 @@ impl DiskState {
             segment: record.cutoff_segment(),
             arena: record.cutoff_arena(),
         };
-        // Maintenance reads never admit cold source pages to the cache.
+        if !can_mutate(budget, progress) {
+            return Ok(false);
+        }
+        // Exact ordinal progress over the immutable worklist. Fresh inserts
+        // never add work; removed keys are passed without restoring old data.
+        // Its pages cannot retire until the durable Reclaiming transition.
+        let source =
+            record
+                .evacuation_source()
+                .ok_or(CoreError::new(crate::CoreErrorCause::Corrupt(
+                    "evacuation worklist is absent",
+                )))?;
+        let position =
+            record
+                .cursor()
+                .ordinal()
+                .ok_or(CoreError::new(crate::CoreErrorCause::Corrupt(
+                    "evacuation ordinal is absent",
+                )))?;
         let leaf = {
             let reader = DirectoryReader::new(self.arena.as_ref(), self.owner.admission.clone());
-            match (&self.compact.evac_after, &self.compact.evac_resume) {
-                (Some(after), _) => reader.leaf_after(self.selected, after.key(), true)?,
-                (None, Some(resume)) => reader.leaf_after(self.selected, resume.key(), false)?,
-                (None, None) => {
-                    reader.leaf_after(self.selected, DirectoryKey::table("\0"), false)?
-                }
+            match reader.at_ordinal(source, position)? {
+                Some(original) => reader.leaf_after(self.selected, original.key(), false)?,
+                None => None,
             }
         };
         progress.units += 1;
@@ -244,18 +236,23 @@ impl DiskState {
                 return Ok(false);
             }
             self.publish_phase(Superblock::advance_to_reclaiming)?;
-            self.compact.evac_after = None;
-            self.compact.evac_resume = None;
             progress.mutations += 1;
             progress.phase_changed = true;
             return Ok(true);
         };
         let mut plan = LeafWork::new(&leaf, cutoff, &self.owner.admission)?;
+        let next = DirectoryReader::new(self.arena.as_ref(), self.owner.admission.clone())
+            .ordinal_after(source, plan.cursor.key())?;
+        if next <= position || next > source.entries {
+            return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                "evacuation worklist did not advance",
+            )));
+        }
+        let cursor = CompactionCursor::at_ordinal(next);
         if plan.needs_rewrite {
             if !can_mutate(budget, progress) {
                 return Ok(false);
             }
-            let cursor = CompactionCursor::lower_bound(plan.cursor.key())?;
             self.maintain_leaf(&leaf, &mut plan, cursor)?;
             progress.mutations += 1;
             progress.relocated_bytes += plan.copied_bytes;
@@ -266,12 +263,11 @@ impl DiskState {
             self.compact.stats.maintenance_commits += 1;
             self.compact.stats.copied_bytes += plan.copied_bytes;
         } else {
+            self.publish_phase(|root| root.advance_evacuation_cursor(cursor))?;
+            progress.mutations += 1;
             self.compact.stats.skipped_leaves += 1;
         }
         self.compact.stats.entries += plan.visited;
-        let LeafWork { cursor, .. } = plan;
-        self.compact.evac_resume = None;
-        self.compact.evac_after = Some(cursor);
         Ok(true)
     }
 
@@ -430,7 +426,7 @@ impl DiskState {
                 return Err(error);
             }
         };
-        self.finish_maintenance(witness, prepared, root, workspace, &space, (0, cursor))?;
+        self.finish_maintenance(witness, prepared, root, workspace, &space, (0, cursor, 0))?;
         let retained = (|| {
             for (operation, &index) in plan.operations.iter().zip(&plan.indices) {
                 let MaintenanceOp::Relocate {
@@ -466,7 +462,7 @@ impl DiskState {
         root: DirectoryRoot,
         workspace: NativeResidentLease,
         space: &crate::group::TransactionSpacePlan,
-        cursor: (u8, CompactionCursor),
+        cursor: (u8, CompactionCursor, u64),
     ) -> Result<(), CoreError> {
         self.observe_warm_publication_start()?;
         let committed = self.writer.finish_batch(

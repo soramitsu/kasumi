@@ -31,10 +31,11 @@
 //! replay meets a missing segment. The last identifier of each kind is never
 //! allocated, so arithmetic on a decoded root never overflows.
 //!
-//! `KASUMI-KVROOT004` adds the persisted compaction cycle (`root_compaction.rs`)
-//! at bytes 2384..3984; the remainder up to the checksum must be zero. Slots of
-//! the retired formats 001, 002 and 003 are refused before their checksum is
-//! examined: there is no reader or migration for them.
+//! `KASUMI-KVROOT005` persists the compaction cycle, immutable evacuation
+//! worklist and exact ordinal (`root_compaction.rs`) at bytes 2384..4080; the
+//! remainder up to the checksum must be zero. Slots of the retired formats
+//! 001, 002, 003 and 004 are refused before their checksum is examined: there
+//! is no reader or migration for them.
 
 use crate::checkpoint::{CheckpointRef, CheckpointSummary};
 use crate::core::CoreError;
@@ -57,12 +58,13 @@ use compaction::{
 pub(crate) use compaction::{CompactionCursor, CompactionPhase, CompactionRecord};
 
 pub const ROOT_SLOT_BYTES: usize = 4096;
-pub(crate) const ROOT_MAGIC: [u8; 16] = *b"KASUMI-KVROOT004";
+pub(crate) const ROOT_MAGIC: [u8; 16] = *b"KASUMI-KVROOT005";
 /// Root magics of formats this build never reads or migrates.
-const RETIRED_ROOT_MAGICS: [[u8; 16]; 3] = [
+const RETIRED_ROOT_MAGICS: [[u8; 16]; 4] = [
     *b"KASUMI-KVROOT001",
     *b"KASUMI-KVROOT002",
     *b"KASUMI-KVROOT003",
+    *b"KASUMI-KVROOT004",
 ];
 pub(crate) const MAX_GARBAGE: usize = 128;
 const CHECKPOINT_AT: usize = 72;
@@ -1938,6 +1940,7 @@ mod tests {
             b"KASUMI-KVROOT001",
             b"KASUMI-KVROOT002",
             b"KASUMI-KVROOT003",
+            b"KASUMI-KVROOT004",
         ] {
             for slot in [RootSlot::A, RootSlot::B] {
                 let (group, root) = published(2);
