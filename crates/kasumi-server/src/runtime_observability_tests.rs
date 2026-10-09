@@ -473,6 +473,33 @@ async fn protected_observability_tls_reports_actual_state_and_fences_release_imp
     assert_eq!(tenant_group["retention"]["archive_backlog_bytes"], 0);
     assert_eq!(tenant_group["audit_maintenance"]["failures"], 0);
     assert_eq!(tenant_group["audit_maintenance"]["committed_segments"], 0);
+    // The tenant store's retained files and persisted compaction cycle.
+    let storage = &tenant_group["storage"];
+    let expected = application.storage_maintenance_status().unwrap();
+    assert!(storage["measured"].is_boolean(), "{storage}");
+    assert_eq!(storage["compaction_cycle"], expected.cycle);
+    assert_eq!(storage["compaction_phase"], expected.phase.as_str());
+    assert_eq!(
+        storage["compaction_baseline_bytes"],
+        expected.baseline_bytes
+    );
+    assert_eq!(storage["compaction_trigger_bytes"], expected.trigger_bytes);
+    assert_eq!(storage["garbage_files"], 0);
+    assert_eq!(storage["reclaim_invalidations_total"], 0);
+    assert_eq!(storage["rejected_deferrals_total"], 0);
+    if storage["measured"] == true {
+        assert!(storage["segment_files"].as_u64().unwrap() >= 1, "{storage}");
+        assert!(storage["arena_bytes"].as_u64().is_some(), "{storage}");
+    } else {
+        assert!(storage["segment_files"].is_null(), "{storage}");
+    }
+    assert!(
+        value["groups"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|group| group["storage"]["compaction_phase"].is_string())
+    );
     assert!(
         value["groups"]
             .as_array()
@@ -510,6 +537,36 @@ async fn protected_observability_tls_reports_actual_state_and_fences_release_imp
     assert!(text.contains(
         "kasumi_local_group_audit_maintenance_committed_segments_total{tenant=\"tenant-a\"} 0\n"
     ));
+    for line in [
+        "kasumi_local_group_storage_measured{tenant=\"tenant-a\"} ",
+        "kasumi_local_group_storage_garbage_files{tenant=\"tenant-a\"} 0\n",
+        "kasumi_local_group_storage_compaction_cycle{tenant=\"tenant-a\"} ",
+        "kasumi_local_group_storage_compaction_baseline_bytes{tenant=\"tenant-a\"} ",
+        "kasumi_local_group_storage_compaction_trigger_bytes{tenant=\"tenant-a\"} ",
+        "kasumi_local_group_storage_snapshot_retained_bytes{tenant=\"tenant-a\"} ",
+        "kasumi_local_group_storage_reclaimed_files_total{tenant=\"tenant-a\"} ",
+        "kasumi_local_group_storage_reclaimed_bytes_total{tenant=\"tenant-a\"} ",
+        "kasumi_local_group_storage_relocated_bytes_total{tenant=\"tenant-a\"} ",
+        "kasumi_local_group_storage_reclaim_invalidations_total{tenant=\"tenant-a\"} 0\n",
+        "kasumi_local_group_storage_maintenance_deferrals_total{tenant=\"tenant-a\",class=\"capacity\"} ",
+        "kasumi_local_group_storage_maintenance_deferrals_total{tenant=\"tenant-a\",class=\"rejected\"} 0\n",
+        "# TYPE kasumi_local_group_storage_reclaimed_files_total counter\n",
+    ] {
+        assert!(text.contains(line), "missing {line:?}");
+    }
+    // Exactly one compaction phase is current.
+    let current_phases = ["idle", "evacuating", "reclaiming", "packing"]
+        .iter()
+        .filter(|phase| {
+            text.contains(&format!(
+                "kasumi_local_group_storage_compaction_phase{{tenant=\"tenant-a\",phase=\"{phase}\"}} 1\n"
+            ))
+        })
+        .count();
+    assert_eq!(current_phases, 1);
+    // The node-wide persistent disk gauges are unchanged.
+    assert!(text.contains("kasumi_persistent_disk_charged_bytes "));
+    assert!(text.contains("kasumi_persistent_disk_files "));
     assert!(
         !text.contains("authority_remaining_seconds")
             && !text.contains("backup_sessions_completed")
