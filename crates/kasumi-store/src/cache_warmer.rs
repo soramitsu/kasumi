@@ -48,11 +48,15 @@ pub struct CacheWorkerStatus {
     /// Steps skipped because a writer held the database write gate.
     pub maintenance_busy: u64,
     pub last_maintenance: Option<MaintenanceStep>,
+    /// The last step that ran was not idle: a census, a due cycle or an
+    /// active phase still has work.
+    pub maintenance_pending: bool,
 }
 
 /// The pause before the next iteration: run again soon while warming or
-/// maintenance made undeferred progress, briefly while a writer held the
-/// gate, and otherwise idle.
+/// maintenance made undeferred progress, briefly while a writer held the gate
+/// and maintenance still has work, and otherwise idle. A writer holding the
+/// gate while nothing is pending does not shorten the idle pause.
 fn next_delay(status: &CacheWorkerStatus) -> Duration {
     let blocked = status.native.is_some_and(|n| n.provider_limited);
     let warming = !blocked && status.progress.is_some_and(|p| p.work != 0 && !p.complete);
@@ -63,7 +67,7 @@ fn next_delay(status: &CacheWorkerStatus) -> Duration {
     );
     if warming || maintaining {
         RUNNING_DELAY
-    } else if status.last_maintenance == Some(MaintenanceStep::Busy) {
+    } else if status.last_maintenance == Some(MaintenanceStep::Busy) && status.maintenance_pending {
         BUSY_DELAY
     } else {
         IDLE_DELAY
@@ -344,6 +348,7 @@ impl Worker {
                                 status.maintenance_units = status
                                     .maintenance_units
                                     .saturating_add(progress.units as u64);
+                                status.maintenance_pending = !progress.idle;
                             }
                         }
                         status.last_maintenance = Some(maintenance);

@@ -750,3 +750,42 @@ async fn stop_and_drain_unaffected_by_maintenance() {
     assert_rows(&reopened, (0..20).chain([100]));
     reopened.shutdown().await.unwrap();
 }
+
+#[test]
+fn worker_delay_follows_warm_and_maintenance_outcomes() {
+    let ran = |idle: bool, units: usize, deferred: Option<kasumi_kv::MaintenanceDeferral>| {
+        Some(kasumi_kv::MaintenanceStep::Ran(
+            kasumi_kv::MaintenanceProgress {
+                units,
+                idle,
+                deferred,
+                ..Default::default()
+            },
+        ))
+    };
+    let status = |last_maintenance, maintenance_pending| CacheWorkerStatus {
+        last_maintenance,
+        maintenance_pending,
+        ..Default::default()
+    };
+    // Undeferred maintenance progress keeps the worker running.
+    assert_eq!(
+        next_delay(&status(ran(false, 7, None), true)),
+        RUNNING_DELAY
+    );
+    // Nothing due, a deferral backoff, or a step that spent nothing: idle.
+    assert_eq!(next_delay(&status(ran(true, 3, None), false)), IDLE_DELAY);
+    assert_eq!(
+        next_delay(&status(
+            ran(false, 0, Some(kasumi_kv::MaintenanceDeferral::Capacity)),
+            true
+        )),
+        IDLE_DELAY
+    );
+    assert_eq!(next_delay(&status(ran(false, 0, None), true)), IDLE_DELAY);
+    // A held write gate retries soon only while maintenance has work.
+    let busy = Some(kasumi_kv::MaintenanceStep::Busy);
+    assert_eq!(next_delay(&status(busy, true)), BUSY_DELAY);
+    assert_eq!(next_delay(&status(busy, false)), IDLE_DELAY);
+    assert_eq!(next_delay(&status(None, false)), IDLE_DELAY);
+}
