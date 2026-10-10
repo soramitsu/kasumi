@@ -208,21 +208,16 @@ response was lost. A missing receipt after its retention window does not prove
 the operation never committed. External backup/rotation effects also require
 artifact/status inspection after a timeout.
 
-### Storage format upgrade to `KASUMI-KVROOT004`
+### First-release storage format `KASUMI-KVROOT005`
 
-Builds with the persisted storage maintenance cycle write `KASUMI-KVROOT004`
-group roots and refuse to open every group written by an earlier build
-(`KASUMI-KVROOT003` or older) with `corrupt committed storage: retired root
-format is unsupported`. There is no in-place migration or old-format reader.
-This applies to every `node.kv` group: tenant, Control, signer and journal
-stores. Before upgrading, create and verify a full logical backup of every
-tenant with the old build, keep the source installation and keyrings
-untouched, then install fresh storage with the new build and restore the
-verified backups into it ([standalone recovery](standalone.md#local-data-recovery),
-[administration](administration.md)). Rehearse the restore before relying on
-it. Never edit root slots or delete `.kvdir` or `.kvseg` files by hand: old
-directory pages stay referenced by the current copy-on-write tree and pinned
-snapshots, and segments by the replay anchor.
+The first release writes `KASUMI-KVROOT005` group roots. Development formats
+`KASUMI-KVROOT001` through `KASUMI-KVROOT004` are rejected; no compatibility
+reader or migration is included. This applies to tenant, Control, signer and
+journal groups. Create fresh storage with the release build. Never edit root
+slots or delete `.kvdir` or `.kvseg` files by hand: directory pages remain
+referenced by the selected tree and pinned snapshots, and segments by the
+replay anchor. ROOT005 persists an exact frozen evacuation worklist and a
+finite Packing budget, so writes and reopen cannot restart completed work.
 
 The new build reclaims storage on its own. Each group's persisted cycle moves
 live values and leaves out of old files and unlinks files no root or snapshot

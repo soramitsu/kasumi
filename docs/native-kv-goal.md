@@ -788,3 +788,19 @@ The large atomic-image results in the disk-backed cache history belong to an
 unpromoted cohort. Production document/index serving and accepted source
 capacity likewise remain unfinished. Neither these historical component
 results nor a passing workspace suite establishes criterion 5.
+
+## 2026-10-10 — ROOT005 finite maintenance progress
+
+The reclamation lane supersedes ROOT004 with the closed ROOT005 format. Its
+immutable cycle-start worklist and exact evacuation ordinal prevent inserts,
+deletions or shared long key prefixes from extending a cycle. Packing persists
+both its cursor and remaining per-level budget on every step, including skips.
+Foreground installs preserve this record, and interrupted publications reopen
+to either complete root slot. Older development formats are rejected.
+
+At lane commit `8fbc74ae`, the release KV library passed all 644 tests; the
+allocation/cache, crash-recovery, owner-fencing and rollback integration gate
+passed all 33 cases. Runs 42 and 43 pinned identical consumed source content
+(`c1a40f012d1347d7bbe09bd42cb19d2488db90715b4f7808c7ef215f014d0a2b`).
+These are reclamation-lane results. The deliberate port into the recovery
+workspace's original preaccepted owners requires its own source-pinned gates.

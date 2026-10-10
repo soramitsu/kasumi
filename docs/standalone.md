@@ -151,13 +151,9 @@ The `operator` directory contains plaintext wrapping keys, signing keys, and the
 
 # Local data recovery
 
-An installation created by a build before the `KASUMI-KVROOT004` storage
-format does not open with the current build: every `node.kv` group fails with
-`retired root format is unsupported`, and there is no migration. Take and
-verify full backups with the old build first, keep that installation and its
-keyrings, create a fresh installation with the current build, and restore the
-verified backups into it as described below. See
-[operations](operations.md#storage-format-upgrade-to-kasumi-kvroot004).
+The first release uses `KASUMI-KVROOT005`; development roots through ROOT004
+are unsupported. Create fresh storage with this build. See the
+[first-release format](operations.md#first-release-storage-format-kasumi-kvroot005).
 
 The generated installation installs the filesystem backup destination `local` beneath `backups`. Create and verify a full backup using the native administrative backup API and retain the exact returned `FullBackupCheckpoint`. Retain the source application wrapping keyring separately. Verification requires every encrypted dependency; a root object alone is not a complete backup.
 
