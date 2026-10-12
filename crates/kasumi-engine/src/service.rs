@@ -242,8 +242,45 @@ fn encode_proposal_input(command: &Command, max_bytes: usize) -> anyhow::Result<
 impl ProposalWork {
     async fn run(
         &mut self,
+        input: proposal_input::ProposalCommand,
+        max_bytes: usize,
+    ) -> anyhow::Result<Vec<u8>> {
+        let operation_class = match &input.command.operation {
+            Operation::Audit(_) => "read_audit",
+            Operation::MaintenanceAudit(_) => "maintenance_audit",
+            Operation::Mutate(_) => "mutation",
+            _ => "other",
+        };
+        let mut stage = "ordered_admission";
+        let result = self.run_staged(input, max_bytes, &mut stage).await;
+        if let Err(error) = &result {
+            // Only fixed stages and closed error enums are observable. Never
+            // format the error chain, request, credential, or document bytes.
+            let io_error_kind = error.chain().find_map(|source| {
+                source
+                    .downcast_ref::<std::io::Error>()
+                    .map(std::io::Error::kind)
+            });
+            let database_error_code = error
+                .chain()
+                .find_map(|source| source.downcast_ref::<Error>().map(|error| error.code));
+            tracing::warn!(
+                event = "proposal_work_failed",
+                operation_class,
+                failure_stage = stage,
+                ?io_error_kind,
+                ?database_error_code,
+                "admitted proposal failed; exact failure remains retained"
+            );
+        }
+        result
+    }
+
+    async fn run_staged(
+        &mut self,
         mut input: proposal_input::ProposalCommand,
         max_bytes: usize,
+        stage: &mut &'static str,
     ) -> anyhow::Result<Vec<u8>> {
         // This owner keeps the original payload before its optional topology
         // grant through every await, return and unwind. Raft receives a new Vec.
@@ -261,12 +298,14 @@ impl ProposalWork {
         {
             return Ok(serde_json::to_vec(&Err::<WriteReceipt, _>(error))?);
         }
+        *stage = "source_generation";
         if self.source_engine.generation()?.state.retired {
             return Ok(serde_json::to_vec(&Err::<WriteReceipt, _>(Error::new(
                 ErrorCode::Sealed,
                 "application commands are frozen after retirement",
             )))?);
         }
+        *stage = "schema_admission";
         if let Operation::ActivateSchema(request) = &command.operation {
             let engine = &self.source_engine;
             let admitted = (|| -> Result<()> {
@@ -280,6 +319,7 @@ impl ProposalWork {
                 return Ok(serde_json::to_vec(&Err::<WriteReceipt, _>(error))?);
             }
         }
+        *stage = "retirement_preflight";
         if let Operation::RetireSource(prepared) = &mut command.operation {
             let engine = &self.source_engine;
             let generation = engine.generation()?;
@@ -336,6 +376,7 @@ impl ProposalWork {
                 }
             }
         }
+        *stage = "command_clock";
         command.timestamp_ms = self.clock.now_ms()?;
         if let Err(error) = command.context.authorization.check_live().and_then(|()| {
             command
@@ -345,6 +386,7 @@ impl ProposalWork {
         }) {
             return Ok(serde_json::to_vec(&Err::<WriteReceipt, _>(error))?);
         }
+        *stage = "command_encoding";
         let bytes = encode_proposal_input(command, max_bytes)?;
         anyhow::ensure!(
             bytes.len() <= max_bytes,
@@ -353,6 +395,7 @@ impl ProposalWork {
         let response = if matches!(&command.operation, Operation::RetireSource(prepared) if prepared.observation.is_some())
         {
             let engine = &self.source_engine;
+            *stage = "retirement_seed";
             let seed = kasumi_raft::RetirementLogSeed::prepare(
                 command,
                 engine.retirement_replay_state(command)?,
@@ -360,16 +403,19 @@ impl ProposalWork {
             if let Err(error) = seed.reserve_success_capacity() {
                 return Ok(serde_json::to_vec(&Err::<WriteReceipt, _>(error))?);
             }
+            *stage = "consensus_write";
             self.group.write_retirement(bytes, seed).await
         } else {
             let provider: Arc<dyn kasumi_store::NodeDiskMemoryAdmission> =
                 self.admission.memory().clone();
+            *stage = "input_recipe";
             let mut input = kasumi_raft::ApplicationInputInstall::new(bytes, provider);
             if let Operation::Mutate(batch) = &command.operation {
                 input.prepare_mutation_change_tree(batch).map_err(|error| {
                     anyhow::anyhow!("mutation change-tree recipe refused: {error:?}")
                 })?;
             }
+            *stage = "input_binding";
             self.admission
                 .memory()
                 .bind_application_input(&self._reservation, &mut input)
@@ -379,6 +425,7 @@ impl ProposalWork {
             let input = input
                 .finish()
                 .unwrap_or_else(|_| unreachable!("original input installed once"));
+            *stage = "consensus_write";
             self.group
                 .write(kasumi_raft::ApplicationProposal::admitted_input(input))
                 .await
