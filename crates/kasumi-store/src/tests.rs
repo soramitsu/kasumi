@@ -1708,6 +1708,7 @@ async fn separate_node_stores_and_pinned_reads_share_one_scratch_budget() {
             directory: directory.path().join("scratch"),
             max_bytes: 192 << 10,
             min_free_bytes: 0,
+            file_allocation_policy: crate::FileAllocationPolicy::new(0).unwrap(),
             native_cache_bytes: 8 << 20,
         },
         fixture_memory.clone(),

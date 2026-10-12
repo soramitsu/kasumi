@@ -88,6 +88,7 @@ fn fixture(panic_run: bool, panic_close: bool) -> (Fixture, PhysicalOwner, Regis
         max_bytes: 256 << 30,
         min_free_bytes: 0,
 
+        file_allocation_policy: kasumi_store::FileAllocationPolicy::new(0).unwrap(),
         native_cache_bytes: 8 << 20,
     };
     let storage = crate::runtime_memory::RuntimeStorage::isolated_fixture(
@@ -413,6 +414,7 @@ async fn panicking_owner_destructor_retains_unavailable_census_without_respawn_c
         max_bytes: 256 << 30,
         min_free_bytes: 0,
 
+        file_allocation_policy: kasumi_store::FileAllocationPolicy::new(0).unwrap(),
         native_cache_bytes: 8 << 20,
     };
     let storage = crate::runtime_memory::RuntimeStorage::isolated_fixture(

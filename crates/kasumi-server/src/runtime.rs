@@ -2576,6 +2576,7 @@ pub fn example_config(
             directory: "/var/lib/kasumi/scratch".into(),
             max_bytes: 64 << 30,
             min_free_bytes: 256 << 20,
+            file_allocation_policy,
             native_cache_bytes: 512 << 20,
         },
         tenant_audit_placements: BTreeMap::from([

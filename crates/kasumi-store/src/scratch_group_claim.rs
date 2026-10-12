@@ -90,11 +90,16 @@ fn range_bytes(disk: &ScratchDisk, range: FileSpaceRange) -> Result<u64, Reserve
                 .ok_or(ReserveFailure::Capacity)?,
         )
         .ok_or(ReserveFailure::Capacity)?;
+    let standing = disk
+        .transaction_file_ceiling(0)?
+        .checked_mul(range.count)
+        .ok_or(ReserveFailure::Capacity)?;
+    let aggregate = aggregate.checked_add(standing).ok_or(ReserveFailure::Capacity)?;
     let full = disk
-        .transaction_rounded(EncryptedSpool::transaction_ciphertext_len(range.full_len)?)
+        .transaction_file_ceiling(EncryptedSpool::transaction_ciphertext_len(range.full_len)?)
         .map_err(|_| ReserveFailure::Capacity)?;
     let last = disk
-        .transaction_rounded(EncryptedSpool::transaction_ciphertext_len(range.last_len)?)
+        .transaction_file_ceiling(EncryptedSpool::transaction_ciphertext_len(range.last_len)?)
         .map_err(|_| ReserveFailure::Capacity)?;
     let maxima = full
         .checked_mul(range.count - 1)
@@ -131,7 +136,7 @@ impl State {
         let mut bytes = {
             let root = self.root.as_mut().unwrap().spool.spool().unwrap();
             self.disk
-                .transaction_rounded(EncryptedSpool::transaction_ciphertext_len(root_end)?)
+                .transaction_file_ceiling(EncryptedSpool::transaction_ciphertext_len(root_end)?)
                 .map_err(|_| ReserveFailure::Capacity)?
                 .saturating_sub(root.transaction_charged_bytes())
         };
@@ -147,7 +152,7 @@ impl State {
                 .ok_or(ReserveFailure::Capacity)?;
             bytes = bytes
                 .checked_add(
-                    disk.transaction_rounded(EncryptedSpool::transaction_ciphertext_len(
+                    disk.transaction_file_ceiling(EncryptedSpool::transaction_ciphertext_len(
                         existing.maximum_len,
                     )?)
                     .map_err(|_| ReserveFailure::Capacity)?

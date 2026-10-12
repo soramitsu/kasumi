@@ -50,6 +50,7 @@ fn duplicate_owners_and_excess_rss_are_rejected_before_disk_installation() {
         max_bytes: 256 << 30,
         min_free_bytes: 0,
 
+        file_allocation_policy: kasumi_store::FileAllocationPolicy::new(0).unwrap(),
         native_cache_bytes: 8 << 20,
     };
     let error = budget(
@@ -100,6 +101,7 @@ async fn shared_physical_owner_keeps_facade_shutdown_and_replacement_independent
         max_bytes: 256 << 30,
         min_free_bytes: 0,
 
+        file_allocation_policy: kasumi_store::FileAllocationPolicy::new(0).unwrap(),
         native_cache_bytes: 8 << 20,
     };
     let cluster = ClusterStorage::prepare(

@@ -155,6 +155,7 @@ impl ClusterStorage {
                     // Preserve the original two separate ScratchDisk::fixture quotas.
                     max_bytes: 256 << 30,
                     min_free_bytes: 0,
+                    file_allocation_policy: scratch_template.file_allocation_policy,
                     native_cache_bytes: scratch_template.native_cache_bytes,
                 })
             })

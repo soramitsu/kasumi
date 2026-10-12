@@ -14,7 +14,16 @@ fn fixture() -> (
 ) {
     let directory = private_tempdir().unwrap();
     let memory = TestDiskMemory::new(256 << 20, 4096);
-    let disk = ScratchDisk::isolated_fixture(directory.path(), 16 << 20, memory.clone());
+    let config = crate::ScratchDiskConfig {
+        directory: directory.path().to_owned(),
+        max_bytes: 16 << 20,
+        min_free_bytes: 0,
+        file_allocation_policy: crate::FileAllocationPolicy::new(4096).unwrap(),
+        native_cache_bytes: 0,
+    };
+    let disk = crate::test_utils::retry_disk_registry(|| {
+        ScratchDisk::open_fixture(&config, memory.clone())
+    }).unwrap();
     let owner = Owner::new(&disk, 8 << 20).unwrap();
     let backend = Backend(owner.clone());
     // Actual native creation publishes the initial selected root. The claim

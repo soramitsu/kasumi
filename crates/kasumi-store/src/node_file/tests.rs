@@ -696,6 +696,7 @@ fn crash_child() {
                     directory: path.parent().unwrap().join("crash-child-scratch"),
                     max_bytes: 8 << 20,
                     min_free_bytes: 0,
+                    file_allocation_policy: crate::FileAllocationPolicy::new(0).unwrap(),
                     native_cache_bytes: 8 << 20,
                 },
                 fixture_memory.clone(),

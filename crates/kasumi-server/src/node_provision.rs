@@ -117,6 +117,7 @@ mod tests {
             directory: directory.path().join("scratch"),
             max_bytes: 64 << 20,
             min_free_bytes: 0,
+            file_allocation_policy: kasumi_store::FileAllocationPolicy::new(0).unwrap(),
             native_cache_bytes: 8 << 20,
         };
         let persistent = crate::persistent_disk::fixture_config(&directory.path().join("data"));

@@ -85,6 +85,9 @@ impl ScratchDisk {
     pub(crate) fn transaction_rounded(&self, ciphertext_len: u64) -> io::Result<u64> {
         self.rounded(ciphertext_len)
     }
+    pub(crate) fn transaction_file_ceiling(&self, ciphertext_len: u64) -> io::Result<u64> {
+        self.file_ceiling(ciphertext_len)
+    }
     pub(crate) fn transaction_allocation_unit(&self) -> u64 {
         self.allocation_unit
     }
@@ -108,8 +111,9 @@ impl TransactionSpace {
         ciphertext_len: u64,
     ) -> io::Result<()> {
         self.check(&charge.disk)?;
-        let bytes = self.disk.rounded(ciphertext_len)?;
+        let bytes = self.disk.file_ceiling(ciphertext_len)?;
         if bytes <= charge.bytes {
+            charge.reserved_len = charge.reserved_len.max(ciphertext_len);
             return Ok(());
         }
         let delta = bytes - charge.bytes;
@@ -121,6 +125,7 @@ impl TransactionSpace {
         // owner changes from this unassigned promise to the exact file Charge.
         self.bytes = remaining;
         charge.bytes = bytes;
+        charge.reserved_len = charge.reserved_len.max(ciphertext_len);
         Ok(())
     }
     fn consume_file(&mut self, disk: &Arc<ScratchDisk>) -> io::Result<()> {
@@ -198,6 +203,8 @@ pub(crate) struct FileAttempt {
     counted: bool,
     unlinked: bool,
     identity: Option<(u64, u64)>,
+    bytes: u64,
+    allocated: u64,
     #[cfg(test)]
     after_open_error: Option<io::Error>,
 }
@@ -217,6 +224,8 @@ impl FileAttempt {
             counted: false,
             unlinked: false,
             identity: None,
+            bytes: 0,
+            allocated: 0,
             #[cfg(test)]
             after_open_error: None,
         }
@@ -227,6 +236,11 @@ impl FileAttempt {
             return Err(io::ErrorKind::InvalidInput.into());
         }
         check_directory(&self.disk.directory.metadata()?).map_err(io::Error::other)?;
+        // Transfer the complete standing allowance before inode birth. A
+        // failed acquired attempt retains it, and finish moves it into Charge.
+        let allowance = self.disk.file_ceiling(0)?;
+        space.bytes = space.bytes.checked_sub(allowance).ok_or(io::ErrorKind::InvalidData)?;
+        self.bytes = allowance;
         // The NUL-terminated name and descriptor owner are already retained.
         let descriptor = unsafe {
             libc::openat(
@@ -237,6 +251,8 @@ impl FileAttempt {
             )
         };
         if descriptor < 0 {
+            // No descriptor was created; restore the untouched promise.
+            space.bytes += std::mem::take(&mut self.bytes);
             return Err(io::Error::last_os_error());
         }
         // SAFETY: successful openat returned a new owned descriptor. Publish it
@@ -269,10 +285,17 @@ impl FileAttempt {
             || metadata.mode() & 0o077 != 0
             || metadata.uid() != unsafe { libc::geteuid() }
             || metadata.len() != 0
-            || metadata.blocks() != 0
         {
             return Err(io::ErrorKind::InvalidData.into());
         }
+        let allocated = metadata.blocks().checked_mul(512).ok_or(io::ErrorKind::InvalidData)?;
+        if allocated > self.bytes {
+            return Err(io::ErrorKind::InvalidData.into());
+        }
+        let mut pending = self.disk.device.lock();
+        let next = pending.checked_sub(allocated).ok_or(io::ErrorKind::InvalidData)?;
+        pending.set_pending(next)?;
+        self.allocated = allocated;
         self.identity = Some((metadata.dev(), metadata.ino()));
         Ok(())
     }
@@ -292,8 +315,9 @@ impl FileAttempt {
             Charge {
                 disk: self.disk.clone(),
                 identity,
-                bytes: 0,
-                allocated: 0,
+                bytes: std::mem::take(&mut self.bytes),
+                allocated: std::mem::take(&mut self.allocated),
+                reserved_len: 0,
                 release_on_drop: true,
             },
         )
