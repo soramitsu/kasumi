@@ -33,6 +33,10 @@ impl std::fmt::Debug for ErrorClass {
 
 fn creation(stage: &'static str, failure: &kasumi_store::ScratchCreationFailure) {
     failure.with_diagnostic(|report| {
+        let Some(report) = report else {
+            eprintln!("Kasumi retained creation: stage={stage} report=busy");
+            return;
+        };
         let admission = report.admission_error().map(std::io::Error::kind);
         let opening = report.opening_error().map(|error| (
             error.disposition(), error.io_error().map(std::io::Error::kind), error.is_capacity_denied(),
