@@ -235,7 +235,10 @@ async fn recover_owned(
     let mut locks = Vec::new();
     let mut families = BTreeMap::new();
     let mut bearer_paths = BTreeSet::new();
-    let mut protected = BTreeSet::from([configuration.to_owned(), manifest_path.to_owned()]);
+    let mut protected = BTreeSet::from([
+        std::fs::canonicalize(configuration)?,
+        std::fs::canonicalize(manifest_path)?,
+    ]);
     for entry in intent.profiles {
         let (profile, hash) = ClientProfile::load_with_sha256(&entry.profile)?;
         ensure!(
@@ -267,12 +270,14 @@ async fn recover_owned(
                 && bearer_paths.insert(profile.bearer_file.clone()),
             "duplicate or noncanonical recovery bearer path"
         );
-        protected.extend([
-            entry.profile.clone(),
-            profile.identity.certificate.clone(),
-            profile.identity.private_key.clone(),
-            profile.server_ca.clone(),
-        ]);
+        for immutable in [
+            &entry.profile,
+            &profile.identity.certificate,
+            &profile.identity.private_key,
+            &profile.server_ca,
+        ] {
+            protected.insert(std::fs::canonicalize(immutable)?);
+        }
         locks.push(private_files::ExclusiveLock::acquire(
             &profile.bearer_file.with_extension("watch.lock"),
         )?);

@@ -187,6 +187,31 @@ fn refuses_active_owner_mismatched_specification_and_revoked_family_before_publi
         );
         owner.finish(Ok(())).await?;
         drop(owner);
+        // A profile can spell an immutable TLS path through a parent-directory
+        // alias. Its canonical bearer must never overwrite that same file.
+        let key_path = std::fs::canonicalize(&tenant.identity.private_key)?;
+        let key_original = std::fs::read(&key_path)?;
+        let alias_directory = key_path.parent().unwrap().join("recovery-alias");
+        private_files::create_directory(&alias_directory)?;
+        let mut aliased = tenant.clone();
+        aliased.identity.private_key = alias_directory
+            .join("..")
+            .join(key_path.file_name().unwrap());
+        aliased.bearer_file = key_path.clone();
+        let aliased_profile = serde_json::to_vec(&aliased)?;
+        private_files::replace(&paths[1], &aliased_profile)?;
+        // Do not let the other profile's canonical spelling of the shared TLS
+        // key mask the alias defect in this target's protection.
+        write_manifest(&manifest_path, &paths[1..])?;
+        let error =
+            recover_with_storage(&installation.configuration, &manifest_path, storage.clone())
+                .await
+                .unwrap_err();
+        assert!(format!("{error:#}").contains("recovery bearer overlaps an immutable input"));
+        assert_eq!(std::fs::read(&key_path)?, key_original);
+        assert_eq!(std::fs::read(&paths[1])?, aliased_profile);
+        assert_eq!(std::fs::read(&control.bearer_file)?, token_original);
+
         let mut mismatched = tenant.clone();
         mismatched.principal = "different-principal".into();
         private_files::replace(&paths[1], &serde_json::to_vec(&mismatched)?)?;
