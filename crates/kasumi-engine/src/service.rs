@@ -2489,15 +2489,46 @@ impl Database {
         }
         let output = output.into_admitted()?;
         let response = &output.response;
-        for (collection, strict) in &release_collections {
-            self.release(
-                context,
-                collection,
-                response.revision,
-                *strict,
-                response.policy_epoch,
-            )
-            .await?;
+        // One durable command carries the strict release events for a normal
+        // multi-collection snapshot. Keep the existing bounded audit command
+        // size for larger requests; never omit an event or relax a release fence.
+        let mut strict_collections = release_collections
+            .iter()
+            .filter_map(|(collection, strict)| strict.then_some(collection));
+        loop {
+            let events = strict_collections
+                .by_ref()
+                .take(MAX_SCHEMA_CHANGESET_COLLECTIONS)
+                .map(|collection| {
+                    Ok(AuditEvent {
+                        event_id: uuid::Uuid::new_v4().to_string(),
+                        principal: context.principal.clone(),
+                        action: "read".into(),
+                        request_id: context.request_id.clone(),
+                        timestamp_ms: now_ms()?,
+                        data_revision: Some(response.revision),
+                        outcome: "authorized_release".into(),
+                        collection: Some(collection.clone()),
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?;
+            if events.is_empty() {
+                break;
+            }
+            admitted_release_future(self.admission(), || {
+                self.submit(context.clone(), Operation::AuditBatch(events))
+            })
+            .await
+            .map_err(|error| {
+                if matches!(error.code, ErrorCode::Forbidden | ErrorCode::Sealed) {
+                    error
+                } else {
+                    Error::new(
+                        ErrorCode::AuditUnavailable,
+                        "required read audit could not be confirmed durable",
+                    )
+                }
+            })?;
         }
         // Recheck every collection after the last asynchronous audit. A policy
         // change during an earlier release must not leak the assembled result.
@@ -3099,6 +3130,7 @@ mod tests {
     include!("service_staging_tests.rs");
     include!("service_staged_stop_tests.rs");
     include!("service_schema_tests.rs");
+    include!("service_snapshot_audit_tests.rs");
     include!("service_credential_tests.rs");
     include!("service_proposal_tests.rs");
     include!("service_topology_input_tests.rs");
