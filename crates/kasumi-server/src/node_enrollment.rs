@@ -19,6 +19,9 @@ pub(crate) fn required(config: &crate::runtime::RuntimeConfig) -> bool {
 mod tenants;
 pub(crate) use tenants::{Origin, Proposal, Stage, dispatch_tenant, tenant_record, update_tenant};
 
+#[path = "node_enrollment_retained.rs"]
+mod retained;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum Kind {
@@ -162,12 +165,12 @@ pub(crate) fn require_complete(
         hex::encode(Sha256::digest(&bytes)) == head.input_sha256,
         "node enrollment input digest differs"
     );
-    let input = Input::decode(&bytes)?;
+    let input = retained::RetainedInput::decode(&bytes)?;
     ensure!(
         input.identity() == (kind, database_id),
         "node enrollment input identity differs"
     );
-    require_genesis_tenants(store, &input, &head.input_sha256)?;
+    input.require_genesis(store, &head.input_sha256)?;
     Ok(())
 }
 
@@ -184,20 +187,25 @@ fn require_genesis_tenants(store: &TenantStore, input: &Input, digest: &str) -> 
                 .iter()
                 .map(|tenant| (tenant.tenant.as_str(), tenant.incarnation.as_ref())),
         ) {
-            let record = tenant_record(store, tenant)?
-                .context("genesis tenant or Control enrollment is missing")?;
-            ensure!(
-                record.stage == Stage::Prepared
-                    && matches!(&record.origin, Origin::Genesis { input_sha256 } if input_sha256 == digest),
-                "genesis tenant or Control enrollment differs"
-            );
-            if let Some(incarnation) = incarnation {
-                ensure!(
-                    record.incarnation == Uuid::parse_str(incarnation)?,
-                    "genesis incarnation differs"
-                );
-            }
+            require_genesis_record(store, tenant,
+                incarnation.map(|value| Uuid::parse_str(value)).transpose()?, digest)?;
         }
+    }
+    Ok(())
+}
+
+fn require_genesis_record(
+    store: &TenantStore, tenant: &str, incarnation: Option<Uuid>, digest: &str,
+) -> Result<()> {
+    let record = tenant_record(store, tenant)?
+        .context("genesis tenant or Control enrollment is missing")?;
+    ensure!(
+        record.stage == Stage::Prepared
+            && matches!(&record.origin, Origin::Genesis { input_sha256 } if input_sha256 == digest),
+        "genesis tenant or Control enrollment differs"
+    );
+    if let Some(incarnation) = incarnation {
+        ensure!(record.incarnation == incarnation, "genesis incarnation differs");
     }
     Ok(())
 }

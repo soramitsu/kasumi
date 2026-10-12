@@ -333,17 +333,17 @@ async fn noncanonical_enrollment_records_fail_closed_across_restart_without_rewr
         ));
     }
     // The input is digest-bound. Rebind a current-writer head to each alternate
-    // input so that only the exact-byte admission can refuse it. An omitted
-    // default may be refused as noncanonical or as an invalid input.
+    // input. Completed history remains bound to its original genesis digest,
+    // independently of today's operational configuration schema.
     let omitted = std::str::from_utf8(&current_input)?
         .replacen(",\"startup_principal\":null", "", 1)
         .into_bytes();
     assert_ne!(omitted, current_input);
     let [spaced, reordered] = respelled(&current_input)?;
     for (alternate, refused) in [
-        (spaced, "noncanonical node enrollment input"),
-        (reordered, "noncanonical node enrollment input"),
-        (omitted, "node enrollment input"),
+        (spaced, "genesis tenant or Control enrollment differs"),
+        (reordered, "genesis tenant or Control enrollment differs"),
+        (omitted, "genesis tenant or Control enrollment differs"),
     ] {
         let mut rebound = decode_head(&head)?;
         rebound.input_sha256 = hex::encode(Sha256::digest(&alternate));
@@ -364,7 +364,7 @@ async fn noncanonical_enrollment_records_fail_closed_across_restart_without_rewr
         let error = require_complete(&store, id, Kind::Data).unwrap_err();
         assert!(format!("{error:#}").contains(refused), "{error:#}");
         assert!(Enrollment::begin(&store, &input).is_err());
-        if refused.contains("tenant") {
+        if refused == "noncanonical tenant enrollment record" {
             assert!(tenant_record(&store, &tenant).is_err());
         }
         assert_eq!(records(&store)?, before);
@@ -380,6 +380,146 @@ async fn noncanonical_enrollment_records_fail_closed_across_restart_without_rewr
         require_complete(&store, id, Kind::Data)?;
         assert_eq!(records(&store)?, completed);
     }
+    store.shutdown().await.unwrap();
+    Ok(())
+}
+
+// Fixture construction only: establish one historical input and its original
+// digest references before exercising the read-only completed-enrollment path.
+fn establish_historical_input(store: &TenantStore, input: Vec<u8>) -> Result<()> {
+    let mut head = decode_head(&store.get(NS, b"head")?.unwrap())?;
+    ensure!(head.complete, "historical fixture must already be complete");
+    let digest = hex::encode(Sha256::digest(&input));
+    let mut changes = vec![WriteOp::put(NS, b"input", input)];
+    store.visit(NS, MAX_INPUT, |key, bytes| {
+        if key.starts_with(b"tenant/") {
+            let mut record: tenants::TenantRecord = serde_json::from_slice(bytes)?;
+            if let Origin::Genesis { input_sha256 } = &mut record.origin {
+                ensure!(*input_sha256 == head.input_sha256, "fixture origin mismatch");
+                *input_sha256 = digest.clone();
+                changes.push(WriteOp::put(NS, key, serde_json::to_vec(&record)?));
+            }
+        }
+        Ok(())
+    })?;
+    head.input_sha256 = digest;
+    changes.push(WriteOp::put(NS, b"head", serde_json::to_vec(&head)?));
+    store.write_batch(&changes)
+}
+
+#[tokio::test]
+async fn completed_enrollment_reopens_original_input_without_current_scratch_policy() -> Result<()> {
+    let (_directory, node, store, input) = fixture().await?;
+    let (_, id) = input.identity();
+    let enrollment = Enrollment::begin(&store, &input)?;
+    record_genesis(&enrollment, &store, &input)?;
+    enrollment.complete(&store)?;
+    let current = store.get(NS, b"input")?.unwrap();
+    let current_text = std::str::from_utf8(&current)?;
+    let scratch_start = current_text.find("\"scratch_disk\":").unwrap();
+    let value: serde_json::Value = serde_json::from_slice(&current)?;
+    let field = format!("\"file_allocation_policy\":{},",
+        value["configuration"]["scratch_disk"]["file_allocation_policy"]);
+    let mut historical = current_text[..scratch_start].to_owned();
+    historical.push_str(&current_text[scratch_start..].replacen(&field, "", 1));
+    assert_eq!(historical.len() + field.len(), current.len());
+    // Historical admission never supplies a default for a live configuration.
+    assert!(Input::decode(historical.as_bytes()).is_err());
+    let historical_value: serde_json::Value = serde_json::from_str(&historical)?;
+    assert!(serde_json::from_value::<crate::runtime::RuntimeConfig>(
+        historical_value["configuration"].clone()).is_err());
+    establish_historical_input(&store, historical.into_bytes())?;
+    let original = records(&store)?;
+    require_complete(&store, id, Kind::Data)?;
+    assert_eq!(records(&store)?, original);
+    store.shutdown().await.unwrap();
+    drop(store);
+    let reopened = reopen(&node).await?;
+    require_complete(&reopened, id, Kind::Data)?;
+    assert_eq!(records(&reopened)?, original);
+    reopened.shutdown().await.unwrap();
+    Ok(())
+}
+
+#[test]
+fn retained_enrollment_requires_unambiguous_complete_immutable_identities() -> Result<()> {
+    let database_id = Uuid::new_v4();
+    let incarnation = Uuid::new_v4();
+    let original = serde_json::json!({
+        "kind": "data", "configuration": {
+            "database_id": database_id, "mode": "standalone",
+            "control": {"incarnation": incarnation},
+            "tenants": [{"tenant": "retail", "incarnation": incarnation}],
+            "removed_operational_policy": {"arbitrary": [null, true, 1.25, 18446744073709551615_u64]},
+        }
+    });
+    let encoded = serde_json::to_vec(&original)?;
+    assert_eq!(retained::RetainedInput::decode(&encoded)?.identity(), (Kind::Data, database_id));
+    for field in ["database_id", "mode", "control", "tenants"] {
+        let mut malformed = original.clone();
+        malformed["configuration"].as_object_mut().unwrap().remove(field);
+        assert!(retained::RetainedInput::decode(&serde_json::to_vec(&malformed)?).is_err(), "{field}");
+    }
+    for value in [serde_json::Value::Null, serde_json::json!(Uuid::nil()), serde_json::json!("invalid")] {
+        let mut malformed = original.clone();
+        malformed["configuration"]["tenants"][0]["incarnation"] = value.clone();
+        assert!(retained::RetainedInput::decode(&serde_json::to_vec(&malformed)?).is_err());
+        malformed = original.clone();
+        malformed["configuration"]["control"]["incarnation"] = value;
+        assert!(retained::RetainedInput::decode(&serde_json::to_vec(&malformed)?).is_err());
+    }
+    let mut malformed = original.clone();
+    malformed["configuration"]["tenants"][0].as_object_mut().unwrap().remove("incarnation");
+    assert!(retained::RetainedInput::decode(&serde_json::to_vec(&malformed)?).is_err());
+    let mut duplicate = original.clone();
+    duplicate["configuration"]["tenants"].as_array_mut().unwrap()
+        .push(original["configuration"]["tenants"][0].clone());
+    assert!(retained::RetainedInput::decode(&serde_json::to_vec(&duplicate)?).is_err());
+    let text = std::str::from_utf8(&encoded)?;
+    for duplicate in [
+        text.replacen("\"kind\":\"data\"", "\"kind\":\"data\",\"kind\":\"data\"", 1),
+        text.replacen("\"removed_operational_policy\":", "\"removed_operational_policy\":{},\"removed_operational_policy\":", 1),
+        text.replacen("\"arbitrary\":", "\"arbitrary\":0,\"arbitrary\":", 1),
+    ] {
+        assert_ne!(duplicate, text);
+        assert!(retained::RetainedInput::decode(duplicate.as_bytes()).is_err());
+    }
+    let authority = serde_json::json!({"kind": "authority", "configuration": {"database_id": database_id}});
+    assert_eq!(retained::RetainedInput::decode(&serde_json::to_vec(&authority)?)?.identity(), (Kind::Authority, database_id));
+    Ok(())
+}
+
+#[tokio::test]
+async fn retained_enrollment_rejects_tampering_and_substituted_identity_without_rewriting() -> Result<()> {
+    let (_directory, _node, store, input) = fixture().await?;
+    let (_, id) = input.identity();
+    let enrollment = Enrollment::begin(&store, &input)?;
+    record_genesis(&enrollment, &store, &input)?;
+    enrollment.complete(&store)?;
+    let original = records(&store)?;
+    let bytes = store.get(NS, b"input")?.unwrap();
+    let original_input: serde_json::Value = serde_json::from_slice(&bytes)?;
+    for change in [0, 1, 2] {
+        let mut substituted = original_input.clone();
+        if change == 0 {
+            substituted["configuration"]["scratch_disk"]["max_bytes"] = 1.into();
+            store.write_batch(&[WriteOp::put(NS, b"input", serde_json::to_vec(&substituted)?)])?;
+        } else {
+            if change == 1 {
+                substituted["configuration"]["tenants"][0]["incarnation"] = Uuid::new_v4().to_string().into();
+            } else {
+                substituted["configuration"]["database_id"] = Uuid::new_v4().to_string().into();
+            }
+            establish_historical_input(&store, serde_json::to_vec(&substituted)?)?;
+        }
+        let before = records(&store)?;
+        assert!(require_complete(&store, id, Kind::Data).is_err());
+        assert_eq!(records(&store)?, before);
+        let restore: Vec<_> = original.iter().map(|(key, value)| WriteOp::put(NS, key, value)).collect();
+        store.write_batch(&restore)?;
+        require_complete(&store, id, Kind::Data)?;
+    }
+    assert_eq!(records(&store)?, original);
     store.shutdown().await.unwrap();
     Ok(())
 }
