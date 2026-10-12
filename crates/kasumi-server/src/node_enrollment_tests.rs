@@ -515,7 +515,7 @@ async fn retained_enrollment_rejects_tampering_and_substituted_identity_without_
         let before = records(&store)?;
         assert!(require_complete(&store, id, Kind::Data).is_err());
         assert_eq!(records(&store)?, before);
-        let restore: Vec<_> = original.iter().map(|(key, value)| WriteOp::put(NS, key, value)).collect();
+        let restore: Vec<_> = original.iter().map(|(key, value)| WriteOp::put(NS, key.as_slice(), value.as_slice())).collect();
         store.write_batch(&restore)?;
         require_complete(&store, id, Kind::Data)?;
     }
