@@ -46,6 +46,7 @@ pub(crate) fn guard(state: &TenantState, operation: &Operation) -> Result<()> {
             | Operation::FinalizeStaged(_)
             | Operation::StopStaged(_)
             | Operation::Audit(_)
+            | Operation::AuditBatch(_)
             | Operation::MaintenanceAudit(_)
     ) {
         return Err(Error::new(
@@ -56,7 +57,10 @@ pub(crate) fn guard(state: &TenantState, operation: &Operation) -> Result<()> {
     if control.pending_change.is_some()
         && !matches!(
             operation,
-            Operation::LifecycleControl(_) | Operation::Audit(_) | Operation::MaintenanceAudit(_)
+            Operation::LifecycleControl(_)
+                | Operation::Audit(_)
+                | Operation::AuditBatch(_)
+                | Operation::MaintenanceAudit(_)
         )
     {
         return Err(conflict(
@@ -66,7 +70,10 @@ pub(crate) fn guard(state: &TenantState, operation: &Operation) -> Result<()> {
     if control.retired
         && !matches!(
             operation,
-            Operation::LifecycleControl(_) | Operation::Audit(_) | Operation::MaintenanceAudit(_)
+            Operation::LifecycleControl(_)
+                | Operation::Audit(_)
+                | Operation::AuditBatch(_)
+                | Operation::MaintenanceAudit(_)
         )
     {
         return Err(Error::new(

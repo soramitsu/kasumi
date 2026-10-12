@@ -1325,7 +1325,10 @@ async fn complete_schema_inventory_is_authorized_audited_and_never_truncated() {
     assert!(empty.collections.is_empty());
     // Empty inventory is still a strict administrative read with a durable
     // release event; absence of collections must not suppress that write.
-    assert!(db.engine().generation().unwrap().state.revision > empty.revision);
+    assert_eq!(
+        db.engine().generation().unwrap().state.revision,
+        empty.revision + 1
+    );
 
     let names: Vec<_> = (0..MAX_SCHEMA_CHANGESET_COLLECTIONS)
         .map(|n| format!("collection_{n}"))
@@ -1340,6 +1343,23 @@ async fn complete_schema_inventory_is_authorized_audited_and_never_truncated() {
         .unwrap();
     assert_eq!(complete.collections.len(), MAX_SCHEMA_CHANGESET_COLLECTIONS);
     assert!(complete.collections.values().all(Option::is_some));
+    let after = db.engine().generation().unwrap();
+    assert_eq!(after.state.revision, complete.revision + 1);
+    let released: Vec<_> = after
+        .state
+        .audits
+        .iter()
+        .filter(|event| {
+            event.action == "schema_read" && event.data_revision == Some(complete.revision)
+        })
+        .collect();
+    assert_eq!(released.len(), names.len());
+    for (event, name) in released.iter().zip(complete.collections.keys()) {
+        assert_eq!(event.collection.as_deref(), Some(name.as_str()));
+        assert_eq!(event.principal, "owner");
+        assert_eq!(event.outcome, "authorized_release");
+    }
+    drop(after);
     let mut scoped_policy = policy();
     scoped_policy.grants.push(Grant {
         principal: "scoped".into(),

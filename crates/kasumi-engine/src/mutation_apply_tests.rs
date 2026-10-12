@@ -110,6 +110,136 @@ fn apply(engine: &CodecFixture, revision: u64, operation: Operation) -> Result<W
         .unwrap()
 }
 
+fn schema_audit(id: &str, collection: &str) -> AuditEvent {
+    AuditEvent {
+        event_id: id.into(),
+        principal: "owner".into(),
+        action: "schema_read".into(),
+        request_id: "request".into(),
+        timestamp_ms: 1,
+        data_revision: Some(1),
+        outcome: "authorized_release".into(),
+        collection: Some(collection.into()),
+    }
+}
+
+#[test]
+fn read_audit_batch_preserves_exact_records_in_one_revision() {
+    let engine = engine(fixture_memory(), 2 << 20);
+    let events = vec![
+        schema_audit("first", "docs"),
+        schema_audit("second", "missing"),
+    ];
+    let before = engine.generation().unwrap();
+    let next_sequence = before.state.audit_retention.next_sequence;
+    let audit_count = before.state.audits.len();
+    drop(before);
+    assert_eq!(
+        apply(&engine, 2, Operation::AuditBatch(events.clone()))
+            .unwrap()
+            .revision,
+        2
+    );
+    let after = engine.generation().unwrap();
+    assert_eq!(after.state.audit_retention.next_sequence, next_sequence + 2);
+    assert_eq!(
+        after
+            .state
+            .audits
+            .iter()
+            .skip(audit_count)
+            .cloned()
+            .collect::<Vec<_>>(),
+        events
+    );
+}
+
+#[test]
+fn read_audit_batch_failure_never_publishes_a_partial_release() {
+    let engine = engine(fixture_memory(), 2 << 20);
+    let mut invalid = schema_audit("invalid", "docs");
+    invalid.principal = "another".into();
+    let oversized = schema_audit(&"x".repeat(MAX_AUDIT_EVENT_BYTES + 1), "docs");
+    let budget_overflow = (0..3)
+        .map(|n| schema_audit(&format!("{n}{}", "x".repeat(60_000)), "docs"))
+        .collect();
+    let cases = [
+        (vec![], ErrorCode::InvalidArgument),
+        (
+            vec![schema_audit("event", "docs"); MAX_SCHEMA_CHANGESET_COLLECTIONS + 1],
+            ErrorCode::InvalidArgument,
+        ),
+        (
+            vec![schema_audit("valid", "docs"), invalid],
+            ErrorCode::InvalidArgument,
+        ),
+        (
+            vec![schema_audit("valid", "docs"), oversized],
+            ErrorCode::QuotaExceeded,
+        ),
+        (budget_overflow, ErrorCode::AuditUnavailable),
+    ];
+    for (index, (events, expected)) in cases.into_iter().enumerate() {
+        let before = engine.generation().unwrap();
+        assert_eq!(
+            apply(&engine, index as u64 + 2, Operation::AuditBatch(events))
+                .unwrap_err()
+                .code,
+            expected
+        );
+        let after = engine.generation().unwrap();
+        assert_eq!(after.state.audits, before.state.audits);
+        assert_eq!(
+            after.state.audit_retention.next_sequence,
+            before.state.audit_retention.next_sequence
+        );
+        assert_eq!(
+            after.state.audit_retention.hot_bytes,
+            before.state.audit_retention.hot_bytes
+        );
+    }
+}
+
+#[test]
+fn read_audit_batch_authorizes_every_collection_before_appending() {
+    let engine = engine(fixture_memory(), 2 << 20);
+    apply(
+        &engine,
+        2,
+        Operation::SetPolicy(Policy {
+            grants: vec![
+                Grant {
+                    principal: "owner".into(),
+                    collection: Some("docs".into()),
+                    actions: BTreeSet::from([Action::Admin]),
+                },
+                Grant {
+                    principal: "administrator".into(),
+                    collection: None,
+                    actions: BTreeSet::from([Action::Admin]),
+                },
+            ],
+            strict_read_audit: false,
+        }),
+    )
+    .unwrap();
+    let before = engine.generation().unwrap();
+    let events = vec![
+        schema_audit("allowed", "docs"),
+        schema_audit("denied", "other"),
+    ];
+    assert_eq!(
+        apply(&engine, 3, Operation::AuditBatch(events))
+            .unwrap_err()
+            .code,
+        ErrorCode::Forbidden
+    );
+    assert_eq!(
+        engine.generation().unwrap().state.audits,
+        before.state.audits
+    );
+}
+
 #[test]
 fn limits_change_invalidates_prior_data_capacity_epoch() {
     let engine = engine(fixture_memory(), 2 << 20);

@@ -746,6 +746,8 @@ pub enum Operation {
     RetireSource(PreparedRetirement),
     AbortRetirement(RetireSourceRequest),
     Audit(AuditEvent),
+    /// One durable release containing bounded, individually authorized records.
+    AuditBatch(Vec<AuditEvent>),
     MaintenanceAudit(AuditEvent),
 }
 

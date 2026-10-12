@@ -1587,11 +1587,13 @@ impl TenantEngine {
             Operation::Suspend(_) => "suspend",
             Operation::RetireSource(_) => "retire",
             Operation::AbortRetirement(_) => "retire_stop",
-            Operation::Audit(_) | Operation::MaintenanceAudit(_) => "audit",
+            Operation::Audit(_) | Operation::AuditBatch(_) | Operation::MaintenanceAudit(_) => {
+                "audit"
+            }
         };
         if !matches!(
             command.operation,
-            Operation::Audit(_) | Operation::MaintenanceAudit(_)
+            Operation::Audit(_) | Operation::AuditBatch(_) | Operation::MaintenanceAudit(_)
         ) {
             let event_id = format!("{}:{revision}", next.incarnation);
             append_audit(
@@ -1740,7 +1742,7 @@ impl TenantEngine {
         rejected.revision = revision;
         let ordinary = !matches!(
             command.operation,
-            Operation::Audit(_) | Operation::MaintenanceAudit(_)
+            Operation::Audit(_) | Operation::AuditBatch(_) | Operation::MaintenanceAudit(_)
         );
         if ordinary {
             schema::reject_budget(&previous.state, &next, &mut rejected, command, &error)
@@ -2570,35 +2572,23 @@ fn apply_operation(
             retirement::abort(state, &command.context, request, revision)
         }
         Operation::Audit(event) => {
-            let action = match event.action.as_str() {
-                "read" | "discovery" | "change_feed" | "archive_receipt" | "restore_lineage" => {
-                    Action::Read
-                }
-                "receipt" => Action::Write,
-                "schema_activation_status" | "schema_read" | "policy_limits_read" => Action::Admin,
-                _ => {
-                    return Err(Error::new(
-                        ErrorCode::InvalidArgument,
-                        "invalid read audit action",
-                    ));
-                }
-            };
-            if event.collection.is_none() {
-                authorize_discovery_state(state, &command.context, action)?;
-            } else {
-                authorize_state(state, &command.context, event.collection.as_deref(), action)?;
-            }
-            if event.principal != command.context.principal
-                || event.request_id != command.context.request_id
-                || event.outcome != "authorized_release"
-                || event.data_revision.is_none_or(|r| r > revision)
-            {
-                return Err(Error::new(
-                    ErrorCode::InvalidArgument,
-                    "invalid read audit event",
-                ));
-            }
+            validate_read_audit(state, command, event, revision)?;
             append_audit(state, event.clone())?;
+            Ok((Ok(receipt()), false))
+        }
+        Operation::AuditBatch(events) => {
+            validate_audit_batch_len(events)?;
+            let mut sequence = state.audit_retention.next_sequence;
+            let mut hot_bytes = state.audit_retention.hot_bytes;
+            for event in events {
+                validate_read_audit(state, command, event, revision)?;
+                (sequence, hot_bytes) = audit_append_totals(sequence, hot_bytes, event)?;
+            }
+            // All fallible validation precedes mutation: a rejected batch cannot
+            // publish a prefix, and needs no additional TenantState clone.
+            state.audits.extend(events.iter().cloned());
+            state.audit_retention.next_sequence = sequence;
+            state.audit_retention.hot_bytes = hot_bytes;
             Ok((Ok(receipt()), false))
         }
         Operation::MaintenanceAudit(event) => {
@@ -3147,25 +3137,79 @@ fn validate_metadata_budget(
     Ok(())
 }
 
-/// Appends a hot event with its permanent stream position and exact encoded budget.
-pub(crate) fn append_audit(state: &mut TenantState, event: AuditEvent) -> Result<()> {
-    let bytes = encoded_len(&event)?;
+pub(crate) fn validate_audit_batch_len(events: &[AuditEvent]) -> Result<()> {
+    if events.is_empty() || events.len() > MAX_SCHEMA_CHANGESET_COLLECTIONS {
+        return Err(Error::new(
+            ErrorCode::InvalidArgument,
+            "read audit batch outside event bound",
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn read_audit_action(event: &AuditEvent) -> Result<Action> {
+    match event.action.as_str() {
+        "read" | "discovery" | "change_feed" | "archive_receipt" | "restore_lineage" => {
+            Ok(Action::Read)
+        }
+        "receipt" => Ok(Action::Write),
+        "schema_activation_status" | "schema_read" | "policy_limits_read" => Ok(Action::Admin),
+        _ => Err(Error::new(
+            ErrorCode::InvalidArgument,
+            "invalid read audit action",
+        )),
+    }
+}
+
+fn validate_read_audit(
+    state: &TenantState,
+    command: &Command,
+    event: &AuditEvent,
+    revision: u64,
+) -> Result<()> {
+    let action = read_audit_action(event)?;
+    if event.collection.is_none() {
+        authorize_discovery_state(state, &command.context, action)?;
+    } else {
+        authorize_state(state, &command.context, event.collection.as_deref(), action)?;
+    }
+    if event.principal != command.context.principal
+        || event.request_id != command.context.request_id
+        || event.outcome != "authorized_release"
+        || event.data_revision.is_none_or(|r| r > revision)
+    {
+        return Err(Error::new(
+            ErrorCode::InvalidArgument,
+            "invalid read audit event",
+        ));
+    }
+    Ok(())
+}
+
+fn audit_append_totals(sequence: u64, hot_bytes: u64, event: &AuditEvent) -> Result<(u64, u64)> {
+    let bytes = encoded_len(event)?;
     if bytes > MAX_AUDIT_EVENT_BYTES {
         return Err(Error::new(
             ErrorCode::QuotaExceeded,
             "audit event exceeds record budget",
         ));
     }
-    let next = state
-        .audit_retention
-        .next_sequence
+    let next = sequence
         .checked_add(1)
         .ok_or_else(|| Error::new(ErrorCode::Corruption, "audit sequence exhausted"))?;
-    let hot = state
-        .audit_retention
-        .hot_bytes
+    let hot = hot_bytes
         .checked_add(bytes as u64)
         .ok_or_else(|| Error::new(ErrorCode::Corruption, "audit byte count overflow"))?;
+    Ok((next, hot))
+}
+
+/// Appends a hot event with its permanent stream position and exact encoded budget.
+pub(crate) fn append_audit(state: &mut TenantState, event: AuditEvent) -> Result<()> {
+    let (next, hot) = audit_append_totals(
+        state.audit_retention.next_sequence,
+        state.audit_retention.hot_bytes,
+        &event,
+    )?;
     state.audits.push_back(event);
     state.audit_retention.next_sequence = next;
     state.audit_retention.hot_bytes = hot;

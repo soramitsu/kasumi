@@ -246,7 +246,7 @@ impl ProposalWork {
         max_bytes: usize,
     ) -> anyhow::Result<Vec<u8>> {
         let operation_class = match &input.command.operation {
-            Operation::Audit(_) => "read_audit",
+            Operation::Audit(_) | Operation::AuditBatch(_) => "read_audit",
             Operation::MaintenanceAudit(_) => "maintenance_audit",
             Operation::Mutate(_) => "mutation",
             _ => "other",
@@ -1887,6 +1887,7 @@ impl Database {
             operation,
             Operation::Mutate(_)
                 | Operation::Audit(_)
+                | Operation::AuditBatch(_)
                 | Operation::MaintenanceAudit(_)
                 | Operation::BeginStaged(_)
                 | Operation::AppendStaged(_)
@@ -2043,18 +2044,24 @@ impl Database {
                 }
             }
             Operation::Audit(event) => {
-                let action = match event.action.as_str() {
-                    "receipt" => Action::Write,
-                    "schema_activation_status" | "schema_read" | "policy_limits_read" => {
-                        Action::Admin
-                    }
-                    _ => Action::Read,
-                };
+                let action = crate::state::read_audit_action(event)?;
                 if event.collection.is_none() {
                     self.engine.authorize_discovery(&context, action, None)?;
                 } else {
                     self.engine
                         .authorize(&context, event.collection.as_deref(), action)?;
+                }
+            }
+            Operation::AuditBatch(events) => {
+                crate::state::validate_audit_batch_len(events)?;
+                for event in events {
+                    let action = crate::state::read_audit_action(event)?;
+                    if event.collection.is_none() {
+                        self.engine.authorize_discovery(&context, action, None)?;
+                    } else {
+                        self.engine
+                            .authorize(&context, event.collection.as_deref(), action)?;
+                    }
                 }
             }
             Operation::CreateCollection(c) | Operation::ReplaceCollection(c) => self

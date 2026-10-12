@@ -189,29 +189,59 @@ impl Database {
         }
         drop(generation);
         reservation.retain_workspace();
-        if collections.is_empty() {
-            self.release_event(
-                context,
-                None,
-                snapshot.revision,
-                true,
-                snapshot.policy_epoch,
-                "schema_read",
-            )
-            .await?;
-        }
-        for collection in &collections {
-            self.release_event(
-                context,
-                Some(collection),
-                snapshot.revision,
-                true,
-                snapshot.policy_epoch,
-                "schema_read",
-            )
-            .await?;
-        }
+        let release_collections: Vec<_> = if collections.is_empty() {
+            vec![None]
+        } else {
+            collections.iter().map(|name| Some(name.as_str())).collect()
+        };
+        let events = release_collections
+            .iter()
+            .map(|collection| {
+                Ok(AuditEvent {
+                    event_id: uuid::Uuid::new_v4().to_string(),
+                    principal: context.principal.clone(),
+                    action: "schema_read".into(),
+                    request_id: context.request_id.clone(),
+                    timestamp_ms: now_ms()?,
+                    data_revision: Some(snapshot.revision),
+                    outcome: "authorized_release".into(),
+                    collection: collection.map(Into::into),
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        admitted_release_future(self.admission(), || {
+            self.submit(context.clone(), Operation::AuditBatch(events))
+        })
+        .await
+        .map_err(|error| {
+            if matches!(error.code, ErrorCode::Forbidden | ErrorCode::Sealed) {
+                error
+            } else {
+                Error::new(
+                    ErrorCode::AuditUnavailable,
+                    "required read audit could not be confirmed durable",
+                )
+            }
+        })?;
         self.access()?;
+        // Every collection is checked after the single durable publication.
+        // A policy change while the batch was queued cannot release this snapshot.
+        for collection in release_collections {
+            if collection.is_none() {
+                self.engine.authorize_discovery(
+                    context,
+                    Action::Admin,
+                    Some(snapshot.policy_epoch),
+                )?;
+            } else {
+                self.engine.authorize_release(
+                    context,
+                    collection,
+                    Action::Admin,
+                    snapshot.policy_epoch,
+                )?;
+            }
+        }
         Ok(snapshot)
     }
 
