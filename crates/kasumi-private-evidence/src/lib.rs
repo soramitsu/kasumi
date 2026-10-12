@@ -33,7 +33,7 @@ pub const MAX_CHUNKS: usize = MAX_COMPONENT_BYTES.div_ceil(CHUNK_BYTES);
 pub const REQUIRED_MAX_DOCUMENT_BYTES: usize = 896 << 10;
 pub const REQUIRED_MAX_BATCH_BYTES: usize = 896 << 10;
 const FORMAT: &str = "kasumi.private_evidence.v1";
-const READ_GROUP: usize = 4;
+const READ_GROUP: usize = 8;
 const ID_FRAME: &[u8] = b"kasumi.private-evidence.id.v1\0";
 
 #[derive(Debug, Error)]
@@ -495,8 +495,8 @@ impl CustodyBackend for KasumiBackend {
                 max_string_bytes: 1 << 20,
                 max_number_bytes: 128,
                 max_rows: READ_GROUP,
-                // Four full hex chunks charge 24 MiB before metadata in the
-                // SDK token preflight (eight bytes per decoded string byte).
+                // Bulk reads carry at most one full hex chunk of payload plus
+                // the metadata of at most eight independently checked rows.
                 max_decoded_bytes: 32 << 20,
             },
             deadline,
@@ -604,37 +604,97 @@ impl<B: CustodyBackend> PrivateEvidenceCustody<B> {
         identity: &EvidenceIdentity,
         timeout: Duration,
     ) -> Result<Option<RetainedEvidence>> {
-        self.require_identity(identity)?;
+        Ok(self
+            .read_many(std::slice::from_ref(identity), timeout)
+            .await?
+            .remove(0))
+    }
+
+    /// Restore up to eight independent components in input order. Every call reads
+    /// fresh manifests and chunks; no authority or evidence survives in a cache.
+    /// Small components share snapshots, while each chunk group contains at most
+    /// `CHUNK_BYTES` of declared payload and eight rows. This bounds the hex-expanded
+    /// response even for backends with a single-chunk decode budget. Manifest sizes
+    /// are only batching hints: every returned byte, identity and digest is checked.
+    pub async fn read_many(
+        &mut self,
+        identities: &[EvidenceIdentity],
+        timeout: Duration,
+    ) -> Result<Vec<Option<RetainedEvidence>>> {
+        if identities.is_empty() || identities.len() > 8 || timeout.is_zero() {
+            return Err(CustodyError::Invalid("component read bound"));
+        }
+        for (index, identity) in identities.iter().enumerate() {
+            self.require_identity(identity)?;
+            if identities[..index].contains(identity) {
+                return Err(CustodyError::Invalid("duplicate component identity"));
+            }
+        }
         let deadline = Instant::now()
             .checked_add(timeout)
             .ok_or(CustodyError::Invalid("timeout"))?;
-        let collection = self.manifest_collection.clone();
-        let Some(document) = self
-            .one(&collection, identity.manifest_id(), deadline)
-            .await?
-        else {
-            return Ok(None);
-        };
-        let manifest: EvidenceManifest =
-            serde_json::from_value(document.body).map_err(|_| CustodyError::Inconsistent)?;
-        if manifest.schema != FORMAT
-            || manifest.identity != *identity
-            || manifest.payload_bytes == 0
-            || manifest.payload_bytes > self.max_component_bytes
-            || manifest.chunks == 0
-            || manifest.chunks > MAX_CHUNKS
-            || manifest.chunks != manifest.payload_bytes.div_ceil(CHUNK_BYTES)
-            || !exact_digest(&manifest.payload_sha256)
-        {
-            return Err(CustodyError::Inconsistent);
+        let mut manifests = Vec::with_capacity(identities.len());
+        for group in identities.chunks(READ_GROUP) {
+            let ids: Vec<_> = group.iter().map(EvidenceIdentity::manifest_id).collect();
+            let rows = self
+                .backend
+                .read_records(&self.manifest_collection, &ids, Self::remaining(deadline)?)
+                .await?;
+            if rows.len() != ids.len() {
+                return Err(CustodyError::Inconsistent);
+            }
+            for ((identity, id), document) in group.iter().zip(ids).zip(rows) {
+                let Some(document) = document else {
+                    manifests.push(None);
+                    continue;
+                };
+                if document.id != id || document.version == 0 {
+                    return Err(CustodyError::Inconsistent);
+                }
+                let manifest: EvidenceManifest = serde_json::from_value(document.body)
+                    .map_err(|_| CustodyError::Inconsistent)?;
+                if manifest.schema != FORMAT
+                    || manifest.identity != *identity
+                    || manifest.payload_bytes == 0
+                    || manifest.payload_bytes > self.max_component_bytes
+                    || manifest.chunks == 0
+                    || manifest.chunks > MAX_CHUNKS
+                    || manifest.chunks != manifest.payload_bytes.div_ceil(CHUNK_BYTES)
+                    || !exact_digest(&manifest.payload_sha256)
+                {
+                    return Err(CustodyError::Inconsistent);
+                }
+                manifests.push(Some(manifest));
+            }
         }
-        // Do not allocate the claimed full length before any chunk exists.
-        let mut payload = Vec::new();
-        for start in (0..manifest.chunks).step_by(READ_GROUP) {
-            let end = (start + READ_GROUP).min(manifest.chunks);
-            let ids = (start..end)
-                .map(|index| identity.chunk_id(index))
-                .collect::<Vec<_>>();
+        // Descriptors are bounded by eight components and MAX_CHUNKS. Do not
+        // allocate any claimed payload until its authenticated chunk arrives.
+        let mut pending = Vec::new();
+        for (component, manifest) in manifests.iter().enumerate() {
+            if let Some(manifest) = manifest {
+                for index in 0..manifest.chunks {
+                    let bytes = (manifest.payload_bytes - index * CHUNK_BYTES).min(CHUNK_BYTES);
+                    pending.push((component, index, bytes));
+                }
+            }
+        }
+        let mut payloads: Vec<Vec<u8>> = (0..identities.len()).map(|_| Vec::new()).collect();
+        let mut start = 0;
+        while start < pending.len() {
+            let mut end = start;
+            let mut declared_bytes = 0;
+            while end < pending.len()
+                && end - start < READ_GROUP
+                && declared_bytes + pending[end].2 <= CHUNK_BYTES
+            {
+                declared_bytes += pending[end].2;
+                end += 1;
+            }
+            let group = &pending[start..end];
+            let ids: Vec<_> = group
+                .iter()
+                .map(|(component, index, _)| identities[*component].chunk_id(*index))
+                .collect();
             let rows = self
                 .backend
                 .read_records(&self.chunk_collection, &ids, Self::remaining(deadline)?)
@@ -642,27 +702,31 @@ impl<B: CustodyBackend> PrivateEvidenceCustody<B> {
             if rows.len() != ids.len() {
                 return Err(CustodyError::Inconsistent);
             }
-            for (index, (document, id)) in (start..end).zip(rows.into_iter().zip(ids)) {
-                let Some(document) = document else {
-                    return Err(CustodyError::Inconsistent);
-                };
+            for (((component, index, expected_bytes), id), document) in
+                group.iter().zip(ids).zip(rows)
+            {
+                let document = document.ok_or(CustodyError::Inconsistent)?;
                 if document.id != id || document.version == 0 {
                     return Err(CustodyError::Inconsistent);
                 }
+                let manifest = manifests[*component]
+                    .as_ref()
+                    .ok_or(CustodyError::Inconsistent)?;
                 let chunk: EvidenceChunk = serde_json::from_value(document.body)
                     .map_err(|_| CustodyError::Inconsistent)?;
                 if chunk.schema != FORMAT
-                    || chunk.identity != *identity
+                    || chunk.identity != identities[*component]
                     || chunk.payload_sha256 != manifest.payload_sha256
-                    || chunk.index != index
+                    || chunk.index != *index
                     || chunk.chunks != manifest.chunks
                     || !exact_digest(&chunk.data_sha256)
                 {
                     return Err(CustodyError::Inconsistent);
                 }
                 let bytes = exact_hex(&chunk.data_hex, CHUNK_BYTES)?;
-                if sha256_hex(&bytes) != chunk.data_sha256
-                    || (index + 1 < manifest.chunks && bytes.len() != CHUNK_BYTES)
+                let payload = &mut payloads[*component];
+                if bytes.len() != *expected_bytes
+                    || sha256_hex(&bytes) != chunk.data_sha256
                     || payload
                         .len()
                         .checked_add(bytes.len())
@@ -675,17 +739,29 @@ impl<B: CustodyBackend> PrivateEvidenceCustody<B> {
                 })?;
                 payload.extend(bytes);
             }
+            start = end;
         }
-        if payload.len() != manifest.payload_bytes
-            || sha256_hex(&payload) != manifest.payload_sha256
-        {
-            return Err(CustodyError::Inconsistent);
-        }
-        Ok(Some(RetainedEvidence {
-            identity: identity.clone(),
-            sha256: manifest.payload_sha256,
-            bytes: payload,
-        }))
+        Self::remaining(deadline)?;
+        manifests
+            .into_iter()
+            .zip(payloads)
+            .zip(identities)
+            .map(|((manifest, bytes), identity)| {
+                let Some(manifest) = manifest else {
+                    return Ok(None);
+                };
+                if bytes.len() != manifest.payload_bytes
+                    || sha256_hex(&bytes) != manifest.payload_sha256
+                {
+                    return Err(CustodyError::Inconsistent);
+                }
+                Ok(Some(RetainedEvidence {
+                    identity: identity.clone(),
+                    sha256: manifest.payload_sha256,
+                    bytes,
+                }))
+            })
+            .collect()
     }
 
     async fn put_exact(
@@ -871,6 +947,8 @@ mod tests {
         scope: Option<MutationReceiptScope>,
         dispatch: Dispatch,
         mutation_calls: usize,
+        read_calls: Vec<(String, Vec<String>)>,
+        reverse_reads: bool,
     }
 
     #[async_trait]
@@ -963,10 +1041,15 @@ mod tests {
             ids: &[String],
             _: Duration,
         ) -> anyhow::Result<Vec<Option<Document>>> {
-            Ok(ids
+            self.read_calls.push((collection.into(), ids.to_vec()));
+            let mut rows: Vec<_> = ids
                 .iter()
                 .map(|id| self.records.get(&(collection.into(), id.clone())).cloned())
-                .collect())
+                .collect();
+            if self.reverse_reads {
+                rows.reverse();
+            }
+            Ok(rows)
         }
     }
 
@@ -997,6 +1080,152 @@ mod tests {
             2 * CHUNK_BYTES + 1,
         )
         .unwrap()
+    }
+
+    async fn bundle(
+        custody: &mut PrivateEvidenceCustody<MemoryBackend>,
+        sizes: &[usize],
+    ) -> Vec<EvidenceIdentity> {
+        let mut ids = Vec::new();
+        for (index, size) in sizes.iter().enumerate() {
+            let id = EvidenceIdentity::new(
+                identity().scope,
+                "ab".repeat(32),
+                format!("component-{index}"),
+            )
+            .unwrap();
+            custody
+                .append(&id, &vec![index as u8; *size], Duration::from_secs(5))
+                .await
+                .unwrap();
+            ids.push(id);
+        }
+        custody.backend.read_calls.clear();
+        ids
+    }
+
+    #[tokio::test]
+    async fn bulk_small_bundle_uses_two_reads_and_preserves_input_order() {
+        let mut custody = custody();
+        let mut ids = bundle(&mut custody, &[12, 23, 34, 45, 56, 67]).await;
+        ids.reverse();
+        let rows = custody
+            .read_many(&ids, Duration::from_secs(5))
+            .await
+            .unwrap();
+        assert_eq!(custody.backend.read_calls.len(), 2);
+        for (row, id) in rows.into_iter().zip(&ids) {
+            let row = row.unwrap();
+            assert_eq!(&row.identity, id);
+            assert_eq!(row.sha256, sha256_hex(&row.bytes));
+        }
+        // Each subsequent request reads fresh bytes and detects a tampered chunk.
+        custody
+            .backend
+            .records
+            .get_mut(&("evidence_chunks".into(), ids[0].chunk_id(0)))
+            .unwrap()
+            .body["data_hex"] = "00".into();
+        assert!(matches!(
+            custody.read_many(&ids, Duration::from_secs(5)).await,
+            Err(CustodyError::Inconsistent)
+        ));
+    }
+
+    #[tokio::test]
+    async fn bulk_read_bounds_combined_chunk_payloads_to_one_full_chunk() {
+        let mut custody = custody();
+        let ids = bundle(&mut custody, &[CHUNK_BYTES + 17, CHUNK_BYTES, 31, 41]).await;
+        let rows = custody
+            .read_many(&ids, Duration::from_secs(5))
+            .await
+            .unwrap();
+        assert_eq!(
+            rows.iter()
+                .map(|row| row.as_ref().unwrap().bytes.len())
+                .collect::<Vec<_>>(),
+            [CHUNK_BYTES + 17, CHUNK_BYTES, 31, 41]
+        );
+        for (collection, group) in &custody.backend.read_calls {
+            assert!(group.len() <= READ_GROUP);
+            if collection == "evidence_chunks" {
+                let bytes: usize = group
+                    .iter()
+                    .map(|id| {
+                        custody.backend.records[&(collection.clone(), id.clone())].body["data_hex"]
+                            .as_str()
+                            .unwrap()
+                            .len()
+                            / 2
+                    })
+                    .sum();
+                assert!(bytes <= CHUNK_BYTES);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn bulk_read_rejects_reordered_rows_wrong_scope_and_incomplete_components() {
+        let mut custody = custody();
+        let ids = bundle(&mut custody, &[12, 23]).await;
+        custody.backend.reverse_reads = true;
+        assert!(matches!(
+            custody.read_many(&ids, Duration::from_secs(5)).await,
+            Err(CustodyError::Inconsistent)
+        ));
+        custody.backend.reverse_reads = false;
+        let mut wrong_scope = ids.clone();
+        wrong_scope[0] = EvidenceIdentity::new(
+            MutationReceiptScope {
+                principal: "other".into(),
+                ..ids[0].scope.clone()
+            },
+            ids[0].subject_sha256.clone(),
+            ids[0].purpose.clone(),
+        )
+        .unwrap();
+        let reads = custody.backend.read_calls.len();
+        assert!(matches!(
+            custody
+                .read_many(&wrong_scope, Duration::from_secs(5))
+                .await,
+            Err(CustodyError::Conflict)
+        ));
+        assert_eq!(reads, custody.backend.read_calls.len());
+        custody
+            .backend
+            .records
+            .remove(&("evidence_chunks".into(), ids[1].chunk_id(0)));
+        assert!(matches!(
+            custody.read_many(&ids, Duration::from_secs(5)).await,
+            Err(CustodyError::Inconsistent)
+        ));
+        custody
+            .backend
+            .records
+            .remove(&("evidence_manifests".into(), ids[1].manifest_id()));
+        let rows = custody
+            .read_many(&ids, Duration::from_secs(5))
+            .await
+            .unwrap();
+        assert!(rows[0].is_some());
+        assert!(rows[1].is_none());
+    }
+
+    #[tokio::test]
+    async fn bulk_read_admits_all_identities_before_io() {
+        let mut custody = custody();
+        let id = identity();
+        for ids in [vec![], vec![id.clone(), id.clone()], vec![id.clone(); 9]] {
+            assert!(
+                custody
+                    .read_many(&ids, Duration::from_secs(5))
+                    .await
+                    .is_err()
+            );
+        }
+        assert!(custody.read_many(&[id], Duration::ZERO).await.is_err());
+        assert!(custody.backend.read_calls.is_empty());
     }
 
     #[tokio::test]
