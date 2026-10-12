@@ -2419,6 +2419,22 @@ impl NodeDiskFile {
     /// between its retained reservation and the actual durable EOF's standing
     /// physical allowance. Valid with live readers: no physical byte is removed.
     pub fn settle_growth(&self, actual_len: u64) -> io::Result<()> {
+        let mut stage = "entry";
+        self.settle_growth_staged(actual_len, &mut stage).inspect_err(|error| {
+            use std::io::Write;
+            let _ = writeln!(
+                std::io::stderr().lock(),
+                "Kasumi file settlement failed: stage={stage} io={:?}",
+                error.kind(),
+            );
+        })
+    }
+
+    fn settle_growth_staged(
+        &self,
+        actual_len: u64,
+        stage: &mut &'static str,
+    ) -> io::Result<()> {
         self.ensure_open()?;
         let mut budget = self.0.lock_budget()?;
         let file = budget.file.as_ref().ok_or(io::ErrorKind::BrokenPipe)?;
@@ -2426,13 +2442,18 @@ impl NodeDiskFile {
         if state.phase == NodeDiskPhase::Failed || !self.0.disk.device.lock().admission_ready() {
             return Err(io::ErrorKind::Other.into());
         }
+        *stage = "enrollment";
         self.0.check_enrollment(&mut state, &budget)?;
         // Serialize the owner seal through physical verification and sync. A
         // previously failed owner must not initiate another backend operation.
         let outcome = (|| -> io::Result<std::fs::Metadata> {
+            *stage = "identity_before_sync";
             self.0.verify(file)?;
+            *stage = "sync";
             file.sync_all()?;
+            *stage = "identity_after_sync";
             self.0.verify(file)?;
+            *stage = "metadata";
             file.metadata()
         })();
         let metadata = outcome.map_err(|error| {
@@ -2444,6 +2465,7 @@ impl NodeDiskFile {
                 .blocks()
                 .checked_mul(512)
                 .ok_or(io::ErrorKind::InvalidData)?;
+            *stage = "materialization";
             self.0.observe_materialization(
                 &mut state,
                 &mut budget,
@@ -2451,9 +2473,18 @@ impl NodeDiskFile {
                 allocated,
                 false,
             )?;
+            *stage = "length";
             if metadata.len() != actual_len || actual_len > budget.reserved_len {
+                use std::io::Write;
+                let _ = writeln!(
+                    std::io::stderr().lock(),
+                    "Kasumi file settlement length mismatch: observed={} expected={actual_len} reserved={}",
+                    metadata.len(),
+                    budget.reserved_len,
+                );
                 return Err(io::ErrorKind::InvalidData.into());
             }
+            *stage = "extent";
             file_extent(
                 &metadata,
                 self.0.disk.unit,
@@ -2464,6 +2495,7 @@ impl NodeDiskFile {
             self.0.disk.fail_locked(&mut state);
             self.0.record_error(error)
         })?;
+        *stage = "accounting";
         let mut promises = self.0.disk.device.lock();
         let next = promises
             .checked_sub(budget.pending)
@@ -2486,6 +2518,7 @@ impl NodeDiskFile {
             promises.fail_owner();
             return Err(io::ErrorKind::Other.into());
         }
+        *stage = "promise_publication";
         promises
             .set_pending(next)
             .inspect_err(|_| state.phase = NodeDiskPhase::Failed)?;

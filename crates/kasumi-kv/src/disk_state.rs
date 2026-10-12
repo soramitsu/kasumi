@@ -397,6 +397,25 @@ impl DiskState {
     }
 
     fn commit_inner(&mut self, operations: &[Operation]) -> Result<(), CoreError> {
+        let mut stage = "admission";
+        self.commit_staged(operations, &mut stage).inspect_err(|error| {
+            // Fixed stages and error kinds only. Borrow the original; diagnostics
+            // cannot change its disposition, ownership or failure behavior.
+            use std::io::Write;
+            let _ = writeln!(
+                std::io::stderr().lock(),
+                "Kasumi native commit failed: stage={stage} disposition={:?} io={:?}",
+                error.disposition(),
+                error.io_error().map(std::io::Error::kind),
+            );
+        })
+    }
+
+    fn commit_staged(
+        &mut self,
+        operations: &[Operation],
+        stage: &mut &'static str,
+    ) -> Result<(), CoreError> {
         // Preflight table existence against the selected tree and earlier
         // creates in this batch. No growing all-table overlay is retained.
         if operations.is_empty() || operations.len() > MAX_BATCH_OPERATIONS {
@@ -436,8 +455,10 @@ impl DiskState {
             DirectoryWriteWorkspace::for_edits(self.owner.admission.clone())?;
         // All proof buffers and snapshot coverage are acquired before any
         // private disk effect. Marking never changes cache membership/policy.
+        *stage = "cache_publication_prepare";
         self.observe_warm_publication_start()?;
         let mut publication = self.prepare_cache_publication()?;
+        *stage = "directory_preflight";
         let preflight = self.pages.maintenance_private_view();
         // Keep only a borrowed witness for a consecutive table run. Bulk
         // writes should not rescan every earlier operation for each row.
@@ -465,6 +486,7 @@ impl DiskState {
         // Plan against the serialized selected writer before the first private
         // log/root effect. The installed backend atomically owns every physical
         // extent, name and descriptor promise until explicit settlement.
+        *stage = "transaction_plan";
         let plan = {
             let root = self.owner.lock()?;
             if root.pending_segment().is_some() || root.pending_directory().is_some() {
@@ -497,6 +519,7 @@ impl DiskState {
                 new_directories,
             }
         };
+        *stage = "transaction_reserve";
         self.owner
             .backend
             .reserve_transaction(&plan)
@@ -508,6 +531,7 @@ impl DiskState {
                     CoreError::new(crate::CoreErrorCause::Io(original))
                 }
             })?;
+        *stage = "log_prepare";
         let mut roll = Roll(self.owner.clone());
         let prepared =
             match self
@@ -526,6 +550,7 @@ impl DiskState {
                 Err(original) => return Err(original),
             };
         self.owner.check()?;
+        *stage = "directory_mutation";
         let generation = prepared.batch_seq();
         let mut shrank = false;
         let result = (|| {
@@ -642,6 +667,7 @@ impl DiskState {
                 return Err(error);
             }
         };
+        *stage = "log_finish";
         let committed =
             self.writer
                 .finish_batch(self.owner.backend.as_ref(), prepared, root, &mut roll)?;
@@ -658,10 +684,12 @@ impl DiskState {
         };
         // The log commit is durable. Any subsequent failure is indeterminate
         // to this caller and fences; reopen decides from that exact commit.
+        *stage = "root_publication";
         self.owner.install(commit).map_err(|error| match error {
             _ if error.is_unknown_commit() => error,
             _ => error.into_unknown_commit(),
         })?;
+        *stage = "transaction_settle";
         self.owner
             .backend
             .finish_transaction(plan.group_id, plan.batch_seq)
@@ -671,6 +699,7 @@ impl DiskState {
         // Publication is durable before pruning or filling. Remove obsolete
         // identities first so old-plus-new overlap cannot displace fitting
         // current/pinned data. Disabled retention needs neither proof nor fill.
+        *stage = "cache_publication";
         if let Some(mut publication) = publication {
             self.reconcile_publication(&mut publication)
                 .and_then(|()| {

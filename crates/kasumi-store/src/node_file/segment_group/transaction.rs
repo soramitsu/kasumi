@@ -95,6 +95,21 @@ impl NodeSegmentGroup {
         })
     }
     fn reserve_transaction_inner(&self, plan: &TransactionSpacePlan) -> io::Result<()> {
+        let mut stage = "entry";
+        self.reserve_transaction_staged(plan, &mut stage).inspect_err(|error| {
+            use std::io::Write;
+            let _ = writeln!(
+                std::io::stderr().lock(),
+                "Kasumi transaction reserve failed: stage={stage} io={:?}",
+                error.kind(),
+            );
+        })
+    }
+    fn reserve_transaction_staged(
+        &self,
+        plan: &TransactionSpacePlan,
+        stage: &mut &'static str,
+    ) -> io::Result<()> {
         self.require_healthy()?;
         plan.validate()?;
         let mut guard = self.state.write();
@@ -125,6 +140,7 @@ impl NodeSegmentGroup {
             .reserve_installed(validation_bytes)?;
         let mut a = [0; ROOT_SLOT_BYTES];
         let mut b = [0; ROOT_SLOT_BYTES];
+        *stage = "protected_roots";
         let root = resources.root()?;
         self.effect(root.read_exact_at(&mut a, root_offset(RootSlot::A)))?;
         self.effect(root.read_exact_at(&mut b, root_offset(RootSlot::B)))?;
@@ -148,6 +164,7 @@ impl NodeSegmentGroup {
                 return Err(io::ErrorKind::InvalidInput.into());
             }
         }
+        *stage = "range_quote";
         let mut bytes = self
             .disk
             .transaction_range_bytes(&plan.new_segments, HEADER_BYTES as u64)?;
@@ -158,12 +175,14 @@ impl NodeSegmentGroup {
             )
             .ok_or(io::ErrorKind::StorageFull)?;
         for existing in plan.segment.into_iter().chain(plan.directory) {
+            *stage = "tail_locate";
             let position = resources
                 .position(existing.file)
                 .ok_or(io::ErrorKind::InvalidInput)?;
             if resources.entries[position].envelope != Envelope::Complete {
                 return Err(io::ErrorKind::InvalidData.into());
             }
+            *stage = "tail_open";
             let index = self.cached(resources, slots, position)?;
             let handle = slots[index]
                 .handle
@@ -172,20 +191,33 @@ impl NodeSegmentGroup {
             let initial = physical(existing.initial_len, 0)?;
             // A prior ordinary operation may have synchronized without releasing
             // its unused growth. Settle it before quoting this transaction.
+            *stage = match existing.file.kind {
+                GroupFileKind::Segment => "segment_tail_settle",
+                GroupFileKind::Directory => "directory_tail_settle",
+                GroupFileKind::Checkpoint => "checkpoint_tail_settle",
+            };
             self.effect(handle.settle_growth(initial))?;
             slots[index].dirty.store(false, Ordering::Release);
+            *stage = match existing.file.kind {
+                GroupFileKind::Segment => "segment_tail_growth_quote",
+                GroupFileKind::Directory => "directory_tail_growth_quote",
+                GroupFileKind::Checkpoint => "checkpoint_tail_growth_quote",
+            };
             bytes = bytes
                 .checked_add(
                     handle.transaction_growth_quote(initial, physical(existing.maximum_len, 0)?)?,
                 )
                 .ok_or(io::ErrorKind::StorageFull)?;
         }
+        *stage = "entry_reservation";
         let additional = usize::try_from(files).map_err(|_| io::ErrorKind::OutOfMemory)?;
         self.reserve_entries(resources, additional)?;
         let peak = u32::try_from(slots.len()).map_err(|_| io::ErrorKind::InvalidInput)?;
         let live = u32::try_from(slots.iter().filter(|slot| slot.handle.is_some()).count())
             .map_err(|_| io::ErrorKind::InvalidInput)?;
+        *stage = "parent_verify";
         let parent = self.effect(resources.directory()?.verified_identity())?;
+        *stage = "disk_space_reservation";
         let space = self
             .disk
             .reserve_transaction_space(parent, bytes, files, peak, live)?;
