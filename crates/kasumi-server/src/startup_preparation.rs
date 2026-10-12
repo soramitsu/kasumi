@@ -2,6 +2,49 @@
 //! the caught future. This is not recovery from process abort or a drain panic.
 use std::{any::Any, fmt, future::Future, panic::AssertUnwindSafe, sync::Mutex, task::Poll};
 
+/// Record the original before cleanup can wait on retained native ownership.
+/// Public logs contain only fixed stages/classes; details stay in private tmp.
+pub(crate) fn record_failure(stage: &'static str, class: &'static str, error: &dyn fmt::Debug) {
+    let path = std::env::temp_dir().join(format!(
+        "kasumi-startup-{}-{}.log",
+        std::process::id(),
+        uuid::Uuid::new_v4()
+    ));
+    let written = write_private_failure(&path, error).is_ok();
+    tracing::error!(
+        event = "startup_preparation_failed",
+        stage,
+        class,
+        diagnostic_written = written,
+        diagnostic_path = %path.display(),
+        "startup preparation failed; original retained before cleanup"
+    );
+}
+
+fn write_private_failure(path: &std::path::Path, error: &dyn fmt::Debug) -> std::io::Result<()> {
+    use std::{io::Write, os::unix::fs::OpenOptionsExt};
+    struct BoundedFile(std::fs::File, usize);
+    impl Write for BoundedFile {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            let count = bytes.len().min(self.1);
+            self.0.write_all(&bytes[..count])?;
+            self.1 -= count;
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            self.0.flush()
+        }
+    }
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)?;
+    let mut output = BoundedFile(file, 64 << 10);
+    writeln!(output, "{error:#?}")?;
+    output.0.sync_all()
+}
+
 /// Retain the original payload while redacting this error's display. The
 /// process panic hook still runs before capture and is not changed here.
 pub(crate) struct PreparationPanic {
@@ -55,6 +98,25 @@ mod tests {
         sync::{Arc, OnceLock},
     };
     use tokio::sync::Notify;
+
+    #[test]
+    fn startup_failure_detail_is_private_bounded_and_never_overwritten() {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("failure.log");
+        let detail = "private detail".repeat(10_000);
+        write_private_failure(&path, &detail).unwrap();
+        let metadata = std::fs::metadata(&path).unwrap();
+        assert_eq!(metadata.permissions().mode() & 0o777, 0o600);
+        assert_eq!(metadata.len(), 64 << 10);
+        let before = std::fs::read(&path).unwrap();
+        assert!(write_private_failure(&path, &"replacement").is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        let link = directory.path().join("link.log");
+        std::os::unix::fs::symlink(&path, &link).unwrap();
+        assert!(write_private_failure(&link, &"replacement").is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+    }
 
     fn faults() -> &'static Mutex<BTreeSet<(uuid::Uuid, &'static str)>> {
         static FAULTS: OnceLock<Mutex<BTreeSet<(uuid::Uuid, &'static str)>>> = OnceLock::new();

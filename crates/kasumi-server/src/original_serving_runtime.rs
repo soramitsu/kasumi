@@ -1183,7 +1183,6 @@ impl<'inventory> OriginalRecoveryGuard<'inventory> {
             }
         }
     }
-    #[cfg(test)]
     pub(crate) fn with_failure<R>(
         &self,
         inspect: impl FnOnce(&OriginalRecoveryFailure) -> R,

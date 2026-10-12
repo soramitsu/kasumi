@@ -1672,6 +1672,11 @@ impl NodeRuntime {
                 Ok(runtime)
             }
             Err(mut error) => {
+                crate::startup_preparation::record_failure(
+                    "data_runtime_prepare",
+                    "returned_error",
+                    &error,
+                );
                 #[cfg(test)]
                 crate::startup_preparation::failure_checkpoint(config.database_id).await;
                 if let Some(runtime) = retained_runtime.as_mut()
@@ -1719,87 +1724,115 @@ impl NodeRuntime {
         pending_databases: &mut Vec<Arc<Database>>,
         constructor_seat: &mut crate::administration::original_serving_runtime::OriginalRecoveryGuard<'_>,
     ) -> Result<OpenedTenant> {
-        constructor_seat.run_snapshot(async {
-            macro_rules! ensure_result {
-                ($condition:expr, $message:expr) => { if !$condition { return Err(kasumi_engine::SnapshotFailure::from(anyhow::anyhow!($message))); } };
-            }
-            let store = stores.application().clone();
-            config.install_tenant_audit_archive(&store, None)?;
-            let mut bootstrap = None;
-            let database = if config.mode == DeploymentMode::Replicated {
-                let replication = config
-                    .replication
-                    .as_ref()
-                    .context("replication configuration missing")?;
-                let network = cluster.context("cluster transport missing")?;
-                let opened = kasumi_engine::open_existing_replicated(
-                    replication.node_id,
-                    stores.clone(),
-                    uuid::Uuid::parse_str(
-                        installed_incarnation
-                            .context("installed replicated incarnation is missing")?,
-                    ).map_err(anyhow::Error::from)?,
-                    network.clone(),
-                    kasumi_raft::server_config(),
-                    audit,
-                )
-                .await?;
-                pending_databases.push(opened.database.clone());
-                let fingerprint = opened_replicated_bootstrap_fingerprint(store.tenant(), &opened)?;
-                if let Some(expected) = expected_replicated_fingerprint {
-                    ensure_result!(
-                        fingerprint == expected,
-                        "installed bootstrap differs from its enrollment receipt"
-                    );
+        let result = constructor_seat
+            .run_snapshot(async {
+                macro_rules! ensure_result {
+                    ($condition:expr, $message:expr) => {
+                        if !$condition {
+                            return Err(kasumi_engine::SnapshotFailure::from(anyhow::anyhow!(
+                                $message
+                            )));
+                        }
+                    };
                 }
-                #[cfg(test)]
-                crate::startup_preparation::checkpoint(config.database_id, "data-database");
-                let group = format!("{}/{}", store.tenant(), opened.bootstrap.incarnation);
-                let bootstrap_store = store.clone();
-                network.register_group_with_bootstrap(
-                    group,
-                    opened.database.raft_group().raft().clone(),
-                    replication.peers.iter().map(|peer| peer.node_id).collect(),
-                    fingerprint,
-                    Arc::new(move || bootstrap_store.check_access()),
-                )?;
-                bootstrap = Some(opened.bootstrap);
-                opened.database
-            } else if crate::standalone::requires_provisioned(config) {
-                kasumi_engine::open_existing_local(
-                    stores,
-                    audit,
-                    uuid::Uuid::parse_str(
-                        installed_incarnation.context("installed local incarnation is missing")?,
-                    ).map_err(anyhow::Error::from)?,
-                )
-                .await?
-            } else {
-                match installed_incarnation {
-                    Some(incarnation) => {
-                        kasumi_engine::open_local_with_incarnation(
-                            stores,
-                            policy,
-                            limits,
-                            audit,
-                            uuid::Uuid::parse_str(incarnation).map_err(anyhow::Error::from)?,
+                let store = stores.application().clone();
+                config.install_tenant_audit_archive(&store, None)?;
+                let mut bootstrap = None;
+                let database = if config.mode == DeploymentMode::Replicated {
+                    let replication = config
+                        .replication
+                        .as_ref()
+                        .context("replication configuration missing")?;
+                    let network = cluster.context("cluster transport missing")?;
+                    let opened = kasumi_engine::open_existing_replicated(
+                        replication.node_id,
+                        stores.clone(),
+                        uuid::Uuid::parse_str(
+                            installed_incarnation
+                                .context("installed replicated incarnation is missing")?,
                         )
-                        .await?
+                        .map_err(anyhow::Error::from)?,
+                        network.clone(),
+                        kasumi_raft::server_config(),
+                        audit,
+                    )
+                    .await?;
+                    pending_databases.push(opened.database.clone());
+                    let fingerprint =
+                        opened_replicated_bootstrap_fingerprint(store.tenant(), &opened)?;
+                    if let Some(expected) = expected_replicated_fingerprint {
+                        ensure_result!(
+                            fingerprint == expected,
+                            "installed bootstrap differs from its enrollment receipt"
+                        );
                     }
-                    None => kasumi_engine::open_local(stores, policy, limits, audit).await?,
+                    #[cfg(test)]
+                    crate::startup_preparation::checkpoint(config.database_id, "data-database");
+                    let group = format!("{}/{}", store.tenant(), opened.bootstrap.incarnation);
+                    let bootstrap_store = store.clone();
+                    network.register_group_with_bootstrap(
+                        group,
+                        opened.database.raft_group().raft().clone(),
+                        replication.peers.iter().map(|peer| peer.node_id).collect(),
+                        fingerprint,
+                        Arc::new(move || bootstrap_store.check_access()),
+                    )?;
+                    bootstrap = Some(opened.bootstrap);
+                    opened.database
+                } else if crate::standalone::requires_provisioned(config) {
+                    kasumi_engine::open_existing_local(
+                        stores,
+                        audit,
+                        uuid::Uuid::parse_str(
+                            installed_incarnation
+                                .context("installed local incarnation is missing")?,
+                        )
+                        .map_err(anyhow::Error::from)?,
+                    )
+                    .await?
+                } else {
+                    match installed_incarnation {
+                        Some(incarnation) => {
+                            kasumi_engine::open_local_with_incarnation(
+                                stores,
+                                policy,
+                                limits,
+                                audit,
+                                uuid::Uuid::parse_str(incarnation).map_err(anyhow::Error::from)?,
+                            )
+                            .await?
+                        }
+                        None => kasumi_engine::open_local(stores, policy, limits, audit).await?,
+                    }
+                };
+                if config.mode != DeploymentMode::Replicated {
+                    pending_databases.push(database.clone());
+                    #[cfg(test)]
+                    crate::startup_preparation::checkpoint(config.database_id, "data-database");
                 }
-            };
-            if config.mode != DeploymentMode::Replicated {
-                pending_databases.push(database.clone());
-                #[cfg(test)]
-                crate::startup_preparation::checkpoint(config.database_id, "data-database");
-            }
-            Ok::<_, kasumi_engine::SnapshotFailure>(OpenedTenant {
-                database,
-                store,
-                bootstrap,
+                Ok::<_, kasumi_engine::SnapshotFailure>(OpenedTenant {
+                    database,
+                    store,
+                    bootstrap,
+                })
             })
-        }).await.map_err(crate::administration::original_serving_runtime::OriginalRecoveryObservation::foreign_error)
+            .await;
+        if let Err(observed) = &result {
+            constructor_seat.with_failure(|failure| {
+                let class = match failure.original() {
+                    kasumi_engine::SnapshotFailure::AdmissionRefused(_) => "admission_refused",
+                    kasumi_engine::SnapshotFailure::Creation(_) => "native_creation",
+                    kasumi_engine::SnapshotFailure::Operation(_) => "operation",
+                    kasumi_engine::SnapshotFailure::Source(_) => "source",
+                };
+                crate::startup_preparation::record_failure(
+                    observed.stage,
+                    class,
+                    failure.original(),
+                );
+            });
+        }
+        result.map_err(crate::administration::original_serving_runtime::OriginalRecoveryObservation::foreign_error)
     }
 
     pub fn registry(&self) -> &DatabaseRegistry {
