@@ -86,6 +86,18 @@ pub async fn command(arguments: &[String]) -> Result<bool> {
             };
             println!("{}", serde_json::to_string_pretty(&status)?);
         }
+        [command, configuration, manifest] if command == "recover-existing-credentials" => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(
+                    &crate::standalone::recover_existing_credentials(
+                        Path::new(configuration),
+                        Path::new(manifest)
+                    )
+                    .await?
+                )?
+            );
+        }
         [command, configuration, output] if command == "recover-administrator" => {
             println!(
                 "{}",
@@ -367,6 +379,10 @@ async fn renew(profile: &ClientProfile) -> Result<u64> {
     ensure!(
         issued.family_id == profile.family_id,
         "renewed credential family differs"
+    );
+    ensure!(
+        issued.expires_at_ms > kasumi_clock::EpochClock::system()?.now_ms()?,
+        "renewal journal issuance has expired; stopped-installation credential recovery is required"
     );
     private_files::replace(&profile.bearer_file, issued.token.as_bytes())?;
     std::fs::remove_file(&journal)?;

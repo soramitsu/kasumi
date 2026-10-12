@@ -1,6 +1,9 @@
 //! Secure, exclusive first-release standalone installation and operator tools.
 #[path = "standalone_tenant_staging.rs"]
 mod tenant_staging;
+#[path = "standalone_credential_recovery.rs"]
+mod credential_recovery;
+pub use credential_recovery::{CredentialRecoveryReport, recover_existing_credentials};
 use crate::{
     audit_destination::TenantAuditPlacementConfig,
     auth::{AuthConfig, AuthKeySource},
