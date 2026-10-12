@@ -951,7 +951,19 @@ impl SegmentWriter {
         if self.fenced || self.prepared != Some(prepared.identity) {
             return Err(CoreError::new(crate::CoreErrorCause::OwnerFailed));
         }
-        let result = self.write_commit(backend, prepared, directory_root, roll);
+        let mut stage = "directory_encode";
+        let result = self
+            .write_commit(backend, prepared, directory_root, roll, &mut stage)
+            .inspect_err(|error| {
+                use std::io::Write;
+                let _ = writeln!(
+                    std::io::stderr().lock(),
+                    "Kasumi log finish failed: stage={stage} group={:02x?} disposition={:?} io={:?}",
+                    self.group_id,
+                    error.disposition(),
+                    error.io_error().map(std::io::Error::kind),
+                );
+            });
         if result.is_err() {
             self.fenced = true;
         } else {
@@ -966,6 +978,7 @@ impl SegmentWriter {
         prepared: PreparedBatch,
         directory_root: DirectoryRoot,
         roll: &mut dyn SegmentRoll,
+        stage: &mut &'static str,
     ) -> Result<CommittedBatch, CoreError> {
         let batch_seq = prepared.identity.batch_seq;
         if directory_root.group_id != self.group_id || directory_root.generation != batch_seq {
@@ -974,6 +987,7 @@ impl SegmentWriter {
             )));
         }
         let directory = directory_root.encode()?;
+        *stage = "directory_room";
         self.ensure_room(backend, DIRECTORY_RECORD_BYTES as u64, roll)?;
         let at = self.position().expect("room ensures an active segment");
         let mut record = [0u8; DIRECTORY_RECORD_BYTES];
@@ -990,7 +1004,9 @@ impl SegmentWriter {
         ));
         record[RECORD_HEADER_BYTES..].copy_from_slice(&directory);
         let file = GroupFile::segment(at.segment_id);
+        *stage = "directory_write";
         backend.write(file, self.end, &record)?;
+        *stage = "directory_sync";
         backend.sync(file)?;
         self.end += DIRECTORY_RECORD_BYTES as u64;
         self.stage_at = self.end;
@@ -1009,13 +1025,16 @@ impl SegmentWriter {
             chain_sha256: chain,
             directory,
         };
+        *stage = "commit_room";
         self.ensure_room(backend, COMMIT_RECORD_BYTES as u64, roll)?;
         let at = self.position().expect("room ensures an active segment");
         let commit = commit_record(&self.group_id, at, batch_seq, self.last_batch_seq, &body);
         let file = GroupFile::segment(at.segment_id);
+        *stage = "commit_write";
         backend
             .write(file, self.end, &commit)
             .map_err(CoreError::unknown_io)?;
+        *stage = "commit_sync";
         backend.sync(file).map_err(CoreError::unknown_io)?;
         self.end += COMMIT_RECORD_BYTES as u64;
         self.stage_at = self.end;

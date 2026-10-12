@@ -357,6 +357,26 @@ impl NodeSegmentGroup {
         at: u64,
         bytes: &[u8],
     ) -> io::Result<bool> {
+        let mut stage = "entry";
+        self.write_transaction_file_staged(file, at, bytes, &mut stage)
+            .inspect_err(|error| {
+                use std::io::Write;
+                let _ = writeln!(
+                    std::io::stderr().lock(),
+                    "Kasumi transaction write failed: stage={stage} kind={:?} offset={at} length={} io={:?}",
+                    file.kind,
+                    bytes.len(),
+                    error.kind(),
+                );
+            })
+    }
+    fn write_transaction_file_staged(
+        &self,
+        file: GroupFile,
+        at: u64,
+        bytes: &[u8],
+        stage: &mut &'static str,
+    ) -> io::Result<bool> {
         self.require_healthy()?;
         let mut guard = self.state.write();
         let (resources, slots) = guard.open_mut()?;
@@ -364,23 +384,30 @@ impl NodeSegmentGroup {
             return Ok(false);
         }
         let position = resources.position(file).ok_or(io::ErrorKind::NotFound)?;
+        *stage = "cached_open";
         let index = self.cached(resources, slots, position)?;
         let handle = slots[index]
             .handle
             .as_ref()
             .expect("cached transaction file");
+        *stage = "observed_length";
         let current = self.effect(handle.observed_len())?;
         let logical = current.saturating_sub(HEADER_BYTES as u64);
+        *stage = "append_offset";
         if at > logical {
             self.fence();
             return Err(io::ErrorKind::InvalidData.into());
         }
+        *stage = "envelope";
         self.complete_envelope(resources, slots, position, index)?;
         let slot = &slots[index];
         let handle = slot.handle.as_ref().expect("cached transaction file");
+        *stage = "current_length";
         let current = self.effect(handle.observed_len())?;
+        *stage = "growth";
         self.grow_in_transaction(resources, handle, file, current, physical(at, bytes.len())?)?;
         slot.dirty.store(true, Ordering::Release);
+        *stage = "write";
         self.effect(handle.write_all_at(bytes, physical(at, 0)?))?;
         Ok(true)
     }

@@ -19,9 +19,8 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-// Failure-only fixture evidence from an already observed metadata record.
+// Failure-only evidence from an already observed metadata record.
 // Never stat, reopen, reconcile or print a path/name/namespace digest here.
-#[cfg(feature = "test-utils")]
 #[cold]
 #[inline(never)]
 pub(in crate::node_disk) fn report_enrollment_mismatch(
@@ -850,7 +849,6 @@ fn execute_prepared(
             .and_then(AccountedInode::file)
             != Some(&enrolled)
         {
-            #[cfg(feature = "test-utils")]
             report_enrollment_mismatch(
                 "exclusive-open",
                 identity,
