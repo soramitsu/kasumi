@@ -40,8 +40,8 @@ pub(crate) enum Input {
     },
 }
 impl Input {
-    /// The retained input is digest-bound and must also be the current writer's
-    /// exact bytes; an equivalent spelling never completes or reopens enrollment.
+    /// Enrollment completion requires the current writer's exact input bytes.
+    /// Completed records reopen through the digest-bound retained identity reader.
     fn decode(bytes: &[u8]) -> Result<Self> {
         decode_exact(bytes, MAX_INPUT, "node enrollment input")
     }
