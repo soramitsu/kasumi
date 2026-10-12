@@ -106,6 +106,7 @@ mod startup_owner_tests;
 pub mod startup_test_utils;
 mod storage;
 mod timing;
+mod write_diagnostics;
 mod write_errors;
 
 use anyhow::{Context, Result};
@@ -902,14 +903,30 @@ impl RaftGroup {
     /// Success means quorum persistence followed by local atomic application.
     /// Timeout/cancellation does not imply rollback: retry with an application idempotency key.
     pub async fn write(&self, command: ApplicationProposal) -> Result<Vec<u8>> {
-        self.check_proposal()?;
-        let command = command.admit(self.store.application(), &self.proposal_storage_lease)?;
+        self.check_proposal()
+            .inspect_err(|error| self.report_write_failure("check_proposal", error))?;
+        let command = command
+            .admit(self.store.application(), &self.proposal_storage_lease)
+            .inspect_err(|error| self.report_write_failure("application_admit", error))?;
         let response = self
             .raft
             .client_write(RaftCommand::Application(command))
-            .await?;
-        self.check_access().context(PostCommitAccessLost)?;
+            .await
+            .map_err(anyhow::Error::from)
+            .inspect_err(|error| self.report_write_failure("raft_client_write", error))?;
+        self.check_access()
+            .context(PostCommitAccessLost)
+            .inspect_err(|error| self.report_write_failure("postcommit_access", error))?;
         Ok(response.data)
+    }
+
+    fn report_write_failure(&self, stage: &'static str, error: &anyhow::Error) {
+        write_diagnostics::report(
+            stage,
+            error,
+            self.access_failure_class(),
+            self.snapshot_buffers.apply_failure().as_ref(),
+        );
     }
 
     /// Submit the one original membership entry with its signed accepted cause.
