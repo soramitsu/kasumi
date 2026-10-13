@@ -67,6 +67,7 @@ htmlcov/
 /*.log
 
 # Local scratch and editor files
+/output/
 /tmp/
 .DS_Store
 ._*
