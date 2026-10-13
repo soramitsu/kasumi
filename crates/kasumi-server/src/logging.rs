@@ -71,8 +71,12 @@ pub(crate) fn original_engine_open_failed(tenant: &str, original: &kasumi_engine
 fn snapshot_failure_class(original: &kasumi_engine::SnapshotFailure) -> &'static str {
     use kasumi_engine::SnapshotFailure;
     match original {
-        SnapshotFailure::AdmissionRefused(kasumi_store::ScratchAdmissionRefusal::Busy) => "scratch_busy",
-        SnapshotFailure::AdmissionRefused(kasumi_store::ScratchAdmissionRefusal::Sealed) => "scratch_sealed",
+        SnapshotFailure::AdmissionRefused(kasumi_store::ScratchAdmissionRefusal::Busy) => {
+            "scratch_busy"
+        }
+        SnapshotFailure::AdmissionRefused(kasumi_store::ScratchAdmissionRefusal::Sealed) => {
+            "scratch_sealed"
+        }
         SnapshotFailure::Creation(_) => "scratch_creation",
         SnapshotFailure::Operation(error) => database_failure_class(error.code),
         SnapshotFailure::Source(error) => {
@@ -94,7 +98,11 @@ fn snapshot_failure_class(original: &kasumi_engine::SnapshotFailure) -> &'static
                 };
             }
             if let Some(error) = error.downcast_ref::<tokio::task::JoinError>() {
-                return if error.is_panic() { "task_panicked" } else { "task_cancelled" };
+                return if error.is_panic() {
+                    "task_panicked"
+                } else {
+                    "task_cancelled"
+                };
             }
             "source_unclassified"
         }
@@ -169,10 +177,16 @@ mod tests {
             tracing::debug!(token = "private-debug", "debug details");
             tls_reload_failed();
             tracing::warn!(target: "kasumi_engine", event = "engine_warning", "fixed");
-            original_engine_open_failed("fixture-tenant", &kasumi_engine::SnapshotFailure::Source(
-                anyhow::Error::new(std::io::Error::new(std::io::ErrorKind::StorageFull, "private-storage-chain"))
+            original_engine_open_failed(
+                "fixture-tenant",
+                &kasumi_engine::SnapshotFailure::Source(
+                    anyhow::Error::new(std::io::Error::new(
+                        std::io::ErrorKind::StorageFull,
+                        "private-storage-chain",
+                    ))
                     .context("private-provider-url"),
-            ));
+                ),
+            );
         });
         let lines = bytes.0.lock().unwrap().clone();
         let values = lines
@@ -194,15 +208,25 @@ mod tests {
     #[test]
     fn engine_open_classifies_typed_causes_without_formatting_originals() {
         use kasumi_engine::SnapshotFailure;
-        assert_eq!(snapshot_failure_class(&SnapshotFailure::from(
-            kasumi_types::Error::new(kasumi_types::ErrorCode::Corruption, "private-record"),
-        )), "corruption");
-        assert_eq!(snapshot_failure_class(&SnapshotFailure::AdmissionRefused(
-            kasumi_store::ScratchAdmissionRefusal::Busy,
-        )), "scratch_busy");
-        assert_eq!(snapshot_failure_class(&SnapshotFailure::AdmissionRefused(
-            kasumi_store::ScratchAdmissionRefusal::Sealed,
-        )), "scratch_sealed");
+        assert_eq!(
+            snapshot_failure_class(&SnapshotFailure::from(kasumi_types::Error::new(
+                kasumi_types::ErrorCode::Corruption,
+                "private-record"
+            ),)),
+            "corruption"
+        );
+        assert_eq!(
+            snapshot_failure_class(&SnapshotFailure::AdmissionRefused(
+                kasumi_store::ScratchAdmissionRefusal::Busy,
+            )),
+            "scratch_busy"
+        );
+        assert_eq!(
+            snapshot_failure_class(&SnapshotFailure::AdmissionRefused(
+                kasumi_store::ScratchAdmissionRefusal::Sealed,
+            )),
+            "scratch_sealed"
+        );
         #[derive(Debug)]
         struct Opaque;
         impl std::fmt::Display for Opaque {
@@ -211,6 +235,9 @@ mod tests {
             }
         }
         impl std::error::Error for Opaque {}
-        assert_eq!(snapshot_failure_class(&SnapshotFailure::Source(anyhow::Error::new(Opaque))), "source_unclassified");
+        assert_eq!(
+            snapshot_failure_class(&SnapshotFailure::Source(anyhow::Error::new(Opaque))),
+            "source_unclassified"
+        );
     }
 }

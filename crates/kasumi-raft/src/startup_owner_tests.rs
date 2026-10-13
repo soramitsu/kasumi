@@ -694,7 +694,10 @@ async fn panicked_core_closes_group_access_and_drains_complete_for_reopen() -> F
     let failure = group.shutdown().await.unwrap_err();
     assert_eq!(failure.completion(), DrainCompletion::Complete);
     assert_eq!(
-        failure.issues().iter().find_map(|issue| crate::raft_failure_class(issue.error())),
+        failure
+            .issues()
+            .iter()
+            .find_map(|issue| crate::raft_failure_class(issue.error())),
         Some("panicked"),
     );
     assert!(

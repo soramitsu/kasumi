@@ -45,13 +45,32 @@ mod tests {
     fn projects_only_fixed_fatal_classes_through_opaque_context() {
         for (fatal, expected) in [
             (Fatal::<u64>::Panicked, "panicked"),
-            (Fatal::TaskCapacity(TaskCapacity { limit: 3, needed: 1 }), "task_capacity"),
+            (
+                Fatal::TaskCapacity(TaskCapacity {
+                    limit: 3,
+                    needed: 1,
+                }),
+                "task_capacity",
+            ),
             (Fatal::Cancelled, "cancelled"),
             (Fatal::Stopped, "stopped"),
-            (Fatal::StorageError(StorageError::from_io_error(
-                ErrorSubject::Store, ErrorVerb::Read,
-                std::io::Error::other("private document and /private/storage/path"),
-            )), "storage_io"),
+            (
+                Fatal::StorageError(StorageError::from_io_error(
+                    ErrorSubject::Store,
+                    ErrorVerb::Read,
+                    std::io::Error::other("private document and /private/storage/path"),
+                )),
+                "storage_io",
+            ),
+            (
+                Fatal::StorageError(StorageError::Defensive {
+                    source: openraft::DefensiveError::new(
+                        ErrorSubject::Store,
+                        openraft::Violation::LogsEmpty,
+                    ),
+                }),
+                "storage_defensive",
+            ),
         ] {
             let error = anyhow::Error::new(fatal).context("private provider URL and bearer");
             assert_eq!(raft_failure_class(&error), Some(expected));
@@ -70,6 +89,9 @@ mod tests {
         }
         impl std::error::Error for Opaque {}
         assert_eq!(raft_failure_class(&anyhow::Error::new(Opaque)), None);
-        assert_eq!(raft_failure_class(&anyhow::anyhow!("panicked storage_io private")), None);
+        assert_eq!(
+            raft_failure_class(&anyhow::anyhow!("panicked storage_io private")),
+            None
+        );
     }
 }
