@@ -83,6 +83,48 @@ integration step; it is not a second supported serving path. Full residency
 must cover the canonical data, including feed and retained snapshot pages,
 without rebuilding the deleted resident structures during preload.
 
+## Current continuation checkpoint — 2026-10-13
+
+The active recovery workspace is at `1566d605240db67dadea0b7600eeead2af5b9f0f`.
+Canonical Entry publication uses its original preaccepted native writer for
+graph and frozen Engine rows. Definition-only publication wrappers and 962
+lines of unreachable text-edit dispatch are removed. Actual1746 passes the
+original General capacity refusal, retirement and same-node retry gate.
+Actual1752 identified persistent backend entry-array and shared-validation loans
+retaining the committed row's command funding. Those allocations now use the
+installed provider's resident backing before acceptance. Actual1763/1764 pass
+nine native stream and six paired stream gates; actual1765 passes the original
+KV extension retirement gate. Engine command cleanup remains to be verified.
+
+The native snapshot text corpus, shared Import/General storage, genuine Schema
+producer, full twelve-tree proof and selected readers are joined as the 130-file
+cohort at `a8ca570`. Its manifest SHA-256 is
+`da5990576161caf6cf37904933f32f67fbf6a559fbe1e22bff7b6445c84483b6`.
+Mutation storage/preflight preserves physical history and unchanged projections;
+exact physical group-statistic proof is joined. Actual1766 passes the Engine
+library check on `db2a95f`, resolving all eleven errors from actual1759. Original
+imported-generation retirement and the same-source selected text query owner are
+joined; their owning runtime tests remain required. The snapshot fixture now
+persists its real predecessor through native append/flush before applying it.
+The observed producer fixture is receiving the same durable-boundary correction.
+
+Actual1760/1761/1762 pass shared query compiler and typed-plan tests (1/1/2),
+including exact physical score bits with dead rows. Selected native parsing and
+scoring and genuine Native Edit remain in development; canonical compaction and
+selected serving are not activated. Allocation-free ordered intersection seek
+is joined, with its native trace/allocation test still to run. Actual1754 passes
+six text component gates, actual1756 passes seven Raft control/output gates,
+and actual1757 passes nine receipt gates. Actual1753's remaining Edit assertion
+has a reviewed successor observing the actual retained raw failure; rerun due.
+
+Immediate goals are to qualify command retirement, Restore/Schema/readers and
+the genuine native-framing quota gate, then finish Native Edit, selected native
+queries, bounded canonical compaction and Staged/Archive/Recovery text
+integration. External behavioral fixtures, obsolete serving-path deletion,
+default-stack and original capacity gates, and final release checks remain
+required. All C01–C07 and M01–M07 remain open; the live checkout has not received
+the storage redesign.
+
 ## Current production status
 
 **All C01–C07 and M01–M07 remain open.** Work is integrated in an isolated,
@@ -90,9 +132,9 @@ source-pinned cohort; production still serves resident documents and indexes.
 The live checkout has not received the storage redesign. Passing a component
 is a prerequisite, not an activated production feature.
 
-The current implementation checkpoint is `473cdba` in the persistent recovery
-workspace. The following results are component evidence; the final joined
-release still needs all acceptance gates below.
+The following table retains earlier component evidence from the `473cdba`
+checkpoint and its prerequisites. The current continuation is recorded above;
+the final joined release still needs all acceptance gates below.
 
 | Component | Verified progress | Remaining activation work |
 |---|---|---|

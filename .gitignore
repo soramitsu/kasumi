@@ -53,6 +53,7 @@ node_modules/
 # Local tool caches and environment state
 .cache/
 .direnv/
+.playwright-cli/
 
 # Coverage and profiling output
 .coverage

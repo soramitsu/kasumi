@@ -73,6 +73,8 @@ pub use apply_publication::{
 mod control;
 mod entry;
 pub use entry::Entry;
+mod failure_class;
+pub use failure_class::raft_failure_class;
 #[cfg(test)]
 mod custody_capacity_tests;
 mod custody_command;

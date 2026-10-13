@@ -1696,6 +1696,7 @@ impl Administration {
                     )
                     .await
                     .map_err(|original| {
+                        crate::logging::original_engine_open_failed(tenant, &original);
                         OriginalRecoveryFailure::snapshot_at(original, RecoverStage::EngineOpen)
                     })?;
                     seat.database = Some(opened.database.clone());
@@ -1738,6 +1739,7 @@ impl Administration {
                     )
                     .await
                     .map_err(|original| {
+                        crate::logging::original_engine_open_failed(tenant, &original);
                         OriginalRecoveryFailure::snapshot_at(original, RecoverStage::EngineOpen)
                     })?;
                     seat.database = Some(database.clone());
@@ -1834,10 +1836,16 @@ impl Administration {
 
     fn record_drain_issues(&self, tenant: &str, incarnation: &str, failure: &DrainFailure) {
         let names = component_names(failure);
+        let raft_failure_class = failure
+            .issues()
+            .iter()
+            .find_map(|issue| kasumi_raft::raft_failure_class(issue.error()))
+            .unwrap_or("none");
         tracing::warn!(
             tenant,
             event = "original_tenant_drain_completed_with_issues",
             components = joined(&names),
+            raft_failure_class,
             "closed original tenant drained with recorded issues"
         );
         if let Ok(mut pending) = self.pending_admission.write()
