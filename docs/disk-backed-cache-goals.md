@@ -85,45 +85,94 @@ without rebuilding the deleted resident structures during preload.
 
 ## Current continuation checkpoint — 2026-10-13
 
-The active recovery workspace is at `1566d605240db67dadea0b7600eeead2af5b9f0f`.
-Canonical Entry publication uses its original preaccepted native writer for
-graph and frozen Engine rows. Definition-only publication wrappers and 962
-lines of unreachable text-edit dispatch are removed. Actual1746 passes the
-original General capacity refusal, retirement and same-node retry gate.
-Actual1752 identified persistent backend entry-array and shared-validation loans
-retaining the committed row's command funding. Those allocations now use the
-installed provider's resident backing before acceptance. Actual1763/1764 pass
-nine native stream and six paired stream gates; actual1765 passes the original
-KV extension retirement gate. Engine command cleanup remains to be verified.
+The active recovery workspace is at `1495c766b3dd354bb19a0d709ccc561c7c152018`.
+Fifty-two reviewed packets are joined in exact preimage order. The join ledger
+is `joined-reviewed-queue-20261013.json` in the recovery directory; it records each
+packet manifest and resulting commit. All changes remain in the isolated release
+worktree. The live checkout has not received the storage redesign.
 
-The native snapshot text corpus, shared Import/General storage, genuine Schema
-producer, full twelve-tree proof and selected readers are joined as the 130-file
-cohort at `a8ca570`. Its manifest SHA-256 is
-`da5990576161caf6cf37904933f32f67fbf6a559fbe1e22bff7b6445c84483b6`.
-Mutation storage/preflight preserves physical history and unchanged projections;
-exact physical group-statistic proof is joined. Actual1766 passes the Engine
-library check on `db2a95f`, resolving all eleven errors from actual1759. Original
-imported-generation retirement and the same-source selected text query owner are
-joined; their owning runtime tests remain required. The snapshot fixture now
-persists its real predecessor through native append/flush before applying it.
-The observed producer fixture is receiving the same durable-boundary correction.
+The joined changes complete the source implementation for native text Edit,
+Recovery/Archive preflight, canonical compaction and its independent final proof.
+Compaction authenticates selected native files, preserves global row identities,
+uses actual logical-group ordering, and retires complete replaced groups. Tests
+cover a removed middle row, deletion-only and Archive rewrites, empty output,
+physical batches, and original returned/raw failure custody. Original funding
+refusals are distinguished from entered raw failures; positive disposal remains
+required before refund. Compilation and owning runtime results are still due.
 
-Actual1760/1761/1762 pass shared query compiler and typed-plan tests (1/1/2),
-including exact physical score bits with dead rows. Selected native parsing and
-scoring and genuine Native Edit remain in development; canonical compaction and
-selected serving are not activated. Allocation-free ordered intersection seek
-is joined, with its native trace/allocation test still to run. Actual1754 passes
-six text component gates, actual1756 passes seven Raft control/output gates,
-and actual1757 passes nine receipt gates. Actual1753's remaining Edit assertion
-has a reviewed successor observing the actual retained raw failure; rerun due.
+Paid selected query parsing, tokenization, fuzzy DFA construction, compilation,
+BM25/boolean kernels and native sparse term/phrase leaves are also joined. The
+phrase matcher reuses the native zero-slop algorithm and pre-pays its actual
+position buffers. Exact-bit/cost, every-growth failure and raw-custody tests are
+prepared. Execution against actual selected disk files, authentic registered
+runtime acquisition, live-row lookup and selected text result collection are now
+joined. Their owning runtime gates remain pending. The obsolete resident
+TextSnapshot, public dispatch, writer and unused edit builder are now deleted.
+Text requests require the selected disk source; empty Genesis construction is
+restricted to declarations without an unfunded resident index injection.
 
-Immediate goals are to qualify command retirement, Restore/Schema/readers and
-the genuine native-framing quota gate, then finish Native Edit, selected native
-queries, bounded canonical compaction and Staged/Archive/Recovery text
-integration. External behavioral fixtures, obsolete serving-path deletion,
-default-stack and original capacity gates, and final release checks remain
-required. All C01–C07 and M01–M07 remain open; the live checkout has not received
-the storage redesign.
+The five snapshot-budget, three staged behavior, four staged snapshot and 28
+contract/schema cases now use genuine durable fixtures. Lifecycle and server
+lineage rejection inspect the actual importer and preserve original diagnostics.
+Four external schema cases retain explicit ignored gates and now have pinned
+complete inputs from BOI commit `a9ddc48d06b3e864764c394cdff38a64754fac13`.
+Their input manifest is `273d96ce6b4acb59bfc23f2c26641f84865fe776eb61abc6c50b144cbfc8b391`;
+BOI/auth/KYC/governance collection counts are 14/10/13/17. They require explicit
+pin-bound execution. The 100,001-record schema-history case retains its original
+64 MiB bank and 128 MiB wire ceiling; admission failures must be fixed in the
+storage design rather than hidden by larger test limits.
+
+Actual1763/1764 pass nine native and six paired backend-resident stream gates;
+actual1765 passes original KV extension retirement. Actual1766 passes Engine
+library checking on the earlier source. Actual1767 failed on two now-corrected
+JSON macro expressions. Actual1768 and actual1769 both ended without terminal
+compiler/test evidence. The latter's exact handle and all original processes
+are absent; its incomplete log and interruption record are retained. Neither run
+qualifies command retirement or the queued matrix. Locked offline Cargo metadata
+resolves all 516 packages after the 25-packet join without changing tracked source.
+Actual1770 failed before tests with five Rust 2018 DFA import/borrow errors.
+The narrow repaired successor preserves the algorithm and funding. Actual1771
+checked that DFA, Tantivy and Kasumi Query, then failed with fourteen Engine
+library errors on the 30-packet source. Narrow visibility, module, original
+error conversion and borrow repairs are now joined in the workspace.
+Neither run supplies owning runtime or release qualification.
+
+Four baseline tests now use actual native full-Rebuild hooks for refusal,
+refund-callback reentry and complete attempt-object cancellation. The dead
+text-merge observer and result adapters are removed. Runtime results remain due.
+Joined successors remove unused merge and component receivers while mapping
+their meaningful lifecycle obligations to real NativeTextWork gates.
+
+Native scorer execution now reaches the selected query result path. The source,
+runtime, live lookup, exact-bit, cancellation, raw-custody and end-to-end result
+tests are joined. Actual1772 compiled Query tests and passed 18 of 21; three
+exact-payload assertions exposed a boxed-diagnostic test-inspector gap. The
+narrow inspector repair is joined, with every pointer/custody assertion retained.
+Actual1773 was rejected before tests because excluded Tantivy requires its
+standalone harness; the remaining selections did not run. Engine compilation,
+owning runtime checks and production promotion remain outstanding.
+Actual1774 ended with four Engine library integration errors; the narrow
+include-comment and original-payload borrow repairs are now joined. Actual1775
+finished production library checking but failed in unit/integration test code.
+Its35 unit-test errors have source-reviewed repairs joined without weakening ownership assertions; the focused library compile is running.
+Actual1776 failed before tests on two residual references to the deleted resident
+text field; the focused matrix did not run. The actual allocation
+matrix and escaped registry/Japanese analyzer gates now use native Work owners,
+with original payloads, credit identity, reuse counts and observation limits.
+Actual1777 passes all21 Query owning compiler/token/validation tests. Actual1778
+failed before vendor tests on one non-Send intersection trace fixture; its
+reviewed repair preserves exact trace, score and zero-allocation assertions.
+The latest join also reuses authenticated query metadata and original physical
+statistics, opens postings only for their actual group, installs real query
+controls in the behavioral text fixture, and preserves the original entry Box
+behind a closed ownership boundary. New optimization and lifecycle runtime
+gates remain pending; the imported/general corpus type boundary is separate work.
+
+Immediate goals are to resolve joined compile failures, run owning command,
+query, compaction, snapshot and recovery gates, and finish migration of the
+remaining Session-only lifecycle tests before removing that obsolete adapter. Default-stack and original-capacity gates,
+the five cache workloads, restart/failure coverage, and final repository and
+operational release checks remain required. All C01–C07 and M01–M07 remain open.
 
 ## Current production status
 
