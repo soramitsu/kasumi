@@ -15,6 +15,18 @@ use tempfile::TempDir;
 const GROUP: &str = "tenant-a";
 const WAIT: Duration = Duration::from_secs(10);
 
+fn cluster_config() -> kasumi_raft::Config {
+    kasumi_raft::Config {
+        snapshot_policy: kasumi_raft::SnapshotPolicy::Never,
+        max_in_snapshot_log_to_keep: 0,
+        purge_batch_size: 1,
+        replication_lag_threshold: 10,
+        // These replicas use the server's encrypted, fsynced storage. Keep its
+        // RPC/election policy while tests choose when compaction is exercised.
+        ..kasumi_raft::server_config()
+    }
+}
+
 struct Node {
     group: RaftGroup,
     backend: Arc<common::Backend>,
@@ -72,7 +84,7 @@ impl Cluster {
             backend.clone(),
             self.router.clone(),
             kasumi_raft::RaftGroupConfig {
-                raft: common::config(),
+                raft: cluster_config(),
                 limits: kasumi_raft::RaftLimits::default(),
             },
             common::snapshot_owner(),
@@ -110,16 +122,9 @@ impl Cluster {
                     // by the barrier. Release it before waiting on the core.
                     let is_leader =
                         node.group.raft().metrics().borrow().state == ServerState::Leader;
-                    if is_leader
-                        && matches!(
-                            tokio::time::timeout(
-                                Duration::from_millis(250),
-                                node.group.linearizable_barrier()
-                            )
-                            .await,
-                            Ok(Ok(_))
-                        )
-                    {
+                    // Its own quorum deadline is bounded by this election
+                    // search; do not cancel a round at its RPC deadline.
+                    if is_leader && node.group.linearizable_barrier().await.is_ok() {
                         return id;
                     }
                 }
@@ -609,10 +614,7 @@ async fn oversized_replication_backlog_shrinks_and_catches_up_without_changing_m
         let config = kasumi_raft::Config {
             replication_lag_threshold: 10_000,
             max_payload_entries: 64,
-            heartbeat_interval: 200,
-            election_timeout_min: 600,
-            election_timeout_max: 1_000,
-            ..common::config()
+            ..cluster_config()
         };
         let group = RaftGroup::open(
             id,
@@ -657,6 +659,12 @@ async fn oversized_replication_backlog_shrinks_and_catches_up_without_changing_m
             .await?;
     }
     groups[0].linearizable_barrier().await?;
+    // Keep this transport-size regression in one term while accumulating its
+    // backlog. Election and higher-term recovery are covered by the partition
+    // and snapshot tests above; an isolated campaign would replace the stream
+    // whose adaptive retry this test needs to observe.
+    let initial_term = groups[0].current_term();
+    groups[2].raft().runtime_config().elect(false);
     router.isolate(GROUP, 3, true);
     for id in 0..24 {
         groups[0]
@@ -666,6 +674,7 @@ async fn oversized_replication_backlog_shrinks_and_catches_up_without_changing_m
             .await?;
     }
     let target = groups[0].linearizable_barrier().await?.unwrap();
+    assert_eq!(groups[2].current_term(), initial_term);
     router.isolate(GROUP, 3, false);
     for group in &groups {
         group
@@ -686,6 +695,13 @@ async fn oversized_replication_backlog_shrinks_and_catches_up_without_changing_m
         "test must exercise oversized append retry"
     );
     assert_eq!(backends[0].values(), backends[2].values());
+    groups[2].raft().runtime_config().elect(true);
+    assert!(
+        groups[0]
+            .linearizable_barrier()
+            .await?
+            .is_some_and(|id| id >= target)
+    );
     for (index, group) in groups.iter().enumerate() {
         assert_eq!(
             group

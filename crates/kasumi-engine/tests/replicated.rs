@@ -2,7 +2,7 @@ use kasumi_engine::test_utils::{open_fixture, open_fixture_replicated};
 mod common;
 
 use kasumi_engine::{Database, ReplicaPlacement, ReplicatedBootstrap, initialize_replicated};
-use kasumi_raft::{Config, InProcessRouter};
+use kasumi_raft::{InProcessRouter, server_config};
 use kasumi_store::{NodeStore, TenantStore, test_utils::LocalKeyProvider};
 use kasumi_types::*;
 use serde_json::json;
@@ -127,18 +127,13 @@ async fn leader(nodes: &BTreeMap<u64, Arc<Database>>, exclude: Option<u64>) -> u
                 // barrier, which may need the Raft worker to publish metrics.
                 let current_leader = db.raft_group().raft().metrics().borrow().current_leader;
                 if current_leader == Some(id) {
-                    match tokio::time::timeout(
-                        Duration::from_millis(200),
-                        db.raft_group().linearizable_barrier(),
-                    )
-                    .await
-                    {
-                        Ok(Ok(_)) => return id,
-                        Ok(Err(error)) => {
-                            last_barriers.insert(id, format!("{error:#}"));
-                        }
+                    // Keep the barrier's own deadline inside the overall
+                    // election bound; a 200 ms probe would cancel before one
+                    // production heartbeat round can complete.
+                    match db.raft_group().linearizable_barrier().await {
+                        Ok(_) => return id,
                         Err(error) => {
-                            last_barriers.insert(id, error.to_string());
+                            last_barriers.insert(id, format!("{error:#}"));
                         }
                     }
                 }
@@ -206,12 +201,8 @@ async fn replicated_service_preserves_batches_receipts_and_cursor_fences_across_
             .unwrap(),
             &bootstrap,
             router.clone(),
-            Config {
-                election_timeout_min: 200,
-                election_timeout_max: 400,
-                heartbeat_interval: 50,
-                ..Config::default()
-            },
+            // These replicas use real durable storage, as the server does.
+            server_config(),
             audit,
         )
         .await
@@ -422,7 +413,7 @@ async fn replicated_service_preserves_batches_receipts_and_cursor_fences_across_
             .unwrap(),
             &bootstrap,
             router.clone(),
-            Config::default(),
+            server_config(),
             audit,
         )
         .await
@@ -512,7 +503,7 @@ async fn deployment_modes_and_live_store_ownership_cannot_be_overridden() {
             .unwrap(),
             &bootstrap,
             Arc::new(InProcessRouter::default()),
-            Config::default(),
+            server_config(),
             audit.clone(),
         )
         .await
@@ -678,7 +669,7 @@ async fn replicated_restore_has_identical_genesis_and_requires_quorum_audit_befo
                 node_id: id,
                 incarnation,
                 voters: initial.voters.clone(),
-                raft: Config::default(),
+                raft: server_config(),
                 admission: audit.admission().clone(),
             },
             router.clone(),
@@ -771,7 +762,7 @@ async fn replicated_restore_has_identical_genesis_and_requires_quorum_audit_befo
             .unwrap(),
             &restored_bootstrap,
             router.clone(),
-            Config::default(),
+            server_config(),
             audit,
         )
         .await
