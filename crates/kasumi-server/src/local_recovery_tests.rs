@@ -1842,3 +1842,201 @@ async fn respelled_local_recovery_journal_is_refused_with_its_generation_untouch
     );
     drain_operations().await.unwrap();
 }
+
+#[test]
+fn storage_root_upgrade_covers_the_active_local_generation() {
+    std::thread::Builder::new()
+        .name("local generation storage root upgrade fixture".into())
+        .stack_size(16 << 20)
+        .spawn(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(Box::pin(
+                    storage_root_upgrade_covers_the_active_local_generation_impl(),
+                ));
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+async fn storage_root_upgrade_covers_the_active_local_generation_impl() {
+    let _serial = crate::standalone::ownership_tests::drain_serial()
+        .lock()
+        .await;
+    let root = kasumi_store::test_utils::private_tempdir().unwrap();
+    let (configuration, request, _, storage) = backup(root.path()).await;
+    start_with_storage(&configuration, request.clone(), storage.clone())
+        .await
+        .unwrap();
+    let completed = resume_with_storage(&configuration, request.operation_id, storage.clone())
+        .await
+        .unwrap();
+    assert_eq!(completed.phase, LocalRecoveryPhase::Finished);
+    let config = RuntimeConfig::load(&configuration).unwrap();
+    let generation = directory(&config, request.target_incarnation).unwrap();
+    let roots = [
+        config.database_path.join(kasumi_store::ROOT_FILE_NAME),
+        generation
+            .join("node.kv")
+            .join(kasumi_store::ROOT_FILE_NAME),
+    ];
+    let fresh = roots
+        .iter()
+        .map(|path| std::fs::read(path).unwrap())
+        .collect::<Vec<_>>();
+    // Both groups as a master-era build left them.
+    for (path, image) in roots.iter().zip(&fresh) {
+        crate::standalone::put_root_image(path, &crate::standalone::spelled_root003(image));
+    }
+    let master = roots
+        .iter()
+        .map(|path| std::fs::read(path).unwrap())
+        .collect::<Vec<_>>();
+    // The generation envelope is checked against the identity its binding
+    // marker derives; another operation in the marker refuses every root
+    // before anything is written.
+    let marker = generation.join("binding.json");
+    let binding = std::fs::read(&marker).unwrap();
+    let operation = request.operation_id.to_string();
+    let other = Uuid::new_v4().to_string();
+    let tampered = String::from_utf8(binding.clone())
+        .unwrap()
+        .replace(&operation, &other);
+    assert_ne!(tampered.as_bytes(), binding.as_slice());
+    assert_eq!(tampered.len(), binding.len());
+    crate::standalone::put_root_image(&marker, tampered.as_bytes());
+    let save = root.path().join("root-upgrade-save");
+    let error = crate::standalone::upgrade_storage_root_with_storage(
+        &configuration,
+        &save,
+        storage.clone(),
+    )
+    .await
+    .unwrap_err();
+    let message = format!("{error:#}");
+    assert!(
+        message.contains("envelope is invalid")
+            && message.contains(&request.target_incarnation.to_string()),
+        "{message}"
+    );
+    assert!(!save.exists());
+    for (path, image) in roots.iter().zip(&master) {
+        assert_eq!(&std::fs::read(path).unwrap(), image);
+    }
+    crate::standalone::put_root_image(&marker, &binding);
+
+    let summary = crate::standalone::upgrade_storage_root_with_storage(
+        &configuration,
+        &save,
+        storage.clone(),
+    )
+    .await
+    .unwrap();
+    let upgraded = summary["roots"].as_array().unwrap();
+    assert_eq!(upgraded.len(), 2, "{summary:#}");
+    for ((summary, path), name) in upgraded.iter().zip(&roots).zip([
+        "node.kv.root.kvroot".to_owned(),
+        format!(
+            "generations.{}.node.kv.root.kvroot",
+            request.target_incarnation
+        ),
+    ]) {
+        assert_eq!(summary["path"], serde_json::json!(path));
+        assert_eq!(summary["outcome"], "upgraded");
+        assert_eq!(summary["slots_changed"], serde_json::json!(["B", "A"]));
+        assert_eq!(
+            summary["saved_copy"],
+            serde_json::json!({"path": save.join(name), "state": "written"})
+        );
+    }
+    for ((path, image), original) in roots.iter().zip(&fresh).zip(&master) {
+        assert_eq!(&std::fs::read(path).unwrap(), image);
+        let name = upgraded
+            .iter()
+            .find(|summary| summary["path"] == serde_json::json!(path))
+            .unwrap()["saved_copy"]["path"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert_eq!(&std::fs::read(name).unwrap(), original);
+    }
+    let again = crate::standalone::upgrade_storage_root_with_storage(
+        &configuration,
+        &save,
+        storage.clone(),
+    )
+    .await
+    .unwrap();
+    assert!(
+        again["roots"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|root| root["outcome"] == "already ROOT005"),
+        "{again:#}"
+    );
+
+    // The restored generation serves its document again.
+    let profile = ClientProfile::load(completed.client_profile.as_ref().unwrap()).unwrap();
+    let runtime = NodeRuntime::open_using_storage(
+        config.clone(),
+        crate::runtime::file_secret,
+        storage.clone(),
+    )
+    .await
+    .unwrap();
+    let registry = runtime.registry().clone();
+    let (stop, shutdown) = tokio::sync::watch::channel(false);
+    let serving = tokio::spawn(runtime.serve(shutdown));
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        while registry.database(&context()).is_err() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    let mut client = kasumi_client::KasumiClient::connect(&profile.connection(false).unwrap())
+        .await
+        .unwrap();
+    let read = ReadSnapshotRequest {
+        documents: vec![DocumentKey {
+            collection: "docs".into(),
+            id: "first".into(),
+        }],
+        queries: vec![],
+        time_bounds: None,
+    };
+    let result = client
+        .read_snapshot(
+            &profile.bearer().unwrap(),
+            &read,
+            &kasumi_client::SnapshotReadOptions {
+                resources: kasumi_client::ClientResources::new(16 << 20, 8).unwrap(),
+                limits: kasumi_client::ClientDecodeLimits {
+                    max_request_bytes: 64 << 10,
+                    max_wire_bytes: 64 << 10,
+                    max_json_bytes: 64 << 10,
+                    max_decoded_bytes: 2 << 20,
+                    ..Default::default()
+                },
+                deadline: tokio::time::Instant::now() + std::time::Duration::from_secs(4),
+                expected_incarnation: request.target_incarnation,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(result.incarnation, request.target_incarnation.to_string());
+    assert_eq!(
+        result.documents[0].document.as_ref().unwrap().body,
+        serde_json::json!({"value":"retained encrypted backup"})
+    );
+    stop.send_replace(true);
+    serving.await.unwrap().unwrap();
+    drop(client);
+    drop(registry);
+    NodeRuntime::drain_startups().await.unwrap();
+    drain_operations().await.unwrap();
+}

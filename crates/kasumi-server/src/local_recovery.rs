@@ -908,6 +908,36 @@ fn check_binding(
     );
     Ok(file)
 }
+/// The node identity of the group in local generation `directory`, from its
+/// physical binding marker alone. The one-time storage root upgrade checks
+/// generation root envelopes against it without opening any encrypted store.
+pub(crate) fn generation_node_id(
+    config: &RuntimeConfig,
+    disk: &Arc<kasumi_store::NodeDisk>,
+    directory: &Path,
+    installation: Uuid,
+    incarnation: Uuid,
+) -> Result<Uuid> {
+    let file = crate::standalone::open_installed_file(
+        &config.persistent_disk,
+        disk,
+        &directory.join("binding.json"),
+    )?;
+    let binding: PhysicalBinding =
+        decode(&crate::standalone::read_installed_file(&file, MAX_RECORD)?)?;
+    ensure!(
+        binding.format == 2
+            && binding.installation == installation
+            && binding.incarnation == incarnation
+            && binding.coordinator == config.database_path,
+        "local generation physical binding differs"
+    );
+    kasumi_store::node_store_ids::local_generation(
+        binding.installation,
+        binding.operation,
+        binding.incarnation,
+    )
+}
 fn local_node_id(journal: &Journal) -> Result<Uuid> {
     kasumi_store::node_store_ids::local_generation(
         journal.installation_id,

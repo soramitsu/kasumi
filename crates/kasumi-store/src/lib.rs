@@ -79,6 +79,10 @@ pub use fixture_node::{NodeFixtureInputs, NodeFixtureStartFailure};
 mod node_disk;
 mod node_file;
 pub use node_file::segment_group::NodeSegmentGroupCleanup;
+pub use node_file::segment_group::root_upgrade::{
+    ROOT_FILE_NAME, RootEnvelopeState, RootSlot, RootSlotUpgrade, RootUpgradePlan,
+    STORAGE_ROOT_FILE_BYTES, StorageRootUpgrade,
+};
 pub mod node_store_ids;
 mod plaintext_scan;
 mod point_read_backing;

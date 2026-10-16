@@ -34,8 +34,9 @@
 //! `KASUMI-KVROOT005` persists the compaction cycle, immutable evacuation
 //! worklist and exact ordinal (`root_compaction.rs`) at bytes 2384..4080; the
 //! remainder up to the checksum must be zero. Slots of the retired formats
-//! 001, 002, 003 and 004 are refused before their checksum is examined: there
-//! is no reader or migration for them.
+//! 001, 002, 003 and 004 are refused before their checksum is examined: reopen
+//! has no reader for them. Only the one-time offline upgrade in
+//! `root_upgrade.rs` rewrites ROOT003 slots, outside any open group.
 
 use crate::checkpoint::{CheckpointRef, CheckpointSummary};
 use crate::core::CoreError;
@@ -56,6 +57,11 @@ use compaction::{
     COMPACTION_AT, COMPACTION_END, compaction_successor, decode_compaction, encode_compaction,
 };
 pub(crate) use compaction::{CompactionCursor, CompactionPhase, CompactionRecord};
+
+// One-time offline ROOT003 upgrade; reopen never calls it.
+#[path = "root_upgrade.rs"]
+mod upgrade;
+pub use upgrade::{RootSlotUpgrade, RootUpgradePlan};
 
 pub const ROOT_SLOT_BYTES: usize = 4096;
 pub(crate) const ROOT_MAGIC: [u8; 16] = *b"KASUMI-KVROOT005";

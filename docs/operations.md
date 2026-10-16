@@ -211,13 +211,72 @@ artifact/status inspection after a timeout.
 ### First-release storage format `KASUMI-KVROOT005`
 
 The first release writes `KASUMI-KVROOT005` group roots. Development formats
-`KASUMI-KVROOT001` through `KASUMI-KVROOT004` are rejected; no compatibility
-reader or migration is included. This applies to tenant, Control, signer and
-journal groups. Create fresh storage with the release build. Never edit root
-slots or delete `.kvdir` or `.kvseg` files by hand: directory pages remain
-referenced by the selected tree and pinned snapshots, and segments by the
-replay anchor. ROOT005 persists an exact frozen evacuation worklist and a
-finite Packing budget, so writes and reopen cannot restart completed work.
+`KASUMI-KVROOT001` through `KASUMI-KVROOT004` are rejected at startup; the
+runtime has no compatibility reader. This applies to tenant, Control, signer
+and journal groups. Create fresh storage with the release build; the only
+exception is the one-time upgrade below. Never edit root slots or delete
+`.kvdir` or `.kvseg` files by hand: directory pages remain referenced by the
+selected tree and pinned snapshots, and segments by the replay anchor. ROOT005
+persists an exact frozen evacuation worklist and a finite Packing budget, so
+writes and reopen cannot restart completed work.
+
+#### One-time upgrade of the `KASUMI-KVROOT003` installation
+
+```sh
+kasumid maintenance upgrade-storage-root /var/lib/kasumi/kasumi.json /secure/root-upgrade-save
+```
+
+This first-release command upgrades, in place and keeping its data, the BPNG
+standalone installation that a `KASUMI-KVROOT003` build wrote, so that it can
+run reclamation. Delete the command (and `kasumi_kv::RootUpgradePlan` and
+`kasumi_store::StorageRootUpgrade`) once that installation is upgraded; no
+other installation needs it. ROOT005 differs from ROOT003 only in the root
+magic and in the compaction record at bytes 2384..4080, which ROOT003 had to
+keep zero and which decodes as the empty (genesis) record. Segments
+(`KASUMI-KVSEG0004`), arenas (`KASUMI-KVARENA01`), directory pages
+(`KASUMI-KVDIR0002`) and file envelopes (`KASUMI-NODE-SEG1`) are unchanged.
+
+The installation must be stopped; run the command as the user that owns it.
+Do not start the release build on the ROOT003 roots first: it refuses them,
+and its failed startup keeps retrying its cleanup instead of exiting. The
+command takes the installation the way the other offline operators do
+(exclusive persistent-disk ownership and the installation lock) and opens no
+encrypted store. It then:
+
+1. validates every group root, `data/node.kv/root.kvroot` and the root of each
+   local generation `data/generations/<uuid>/node.kv/root.kvroot` (a standalone
+   installation keeps Control, audit, credentials and tenants in these
+   groups): the envelope and its node identity, the ROOT003 rules (format
+   version 4, a zero compaction region), the canonical ROOT005 encoding of
+   each valid slot, and that the strict ROOT005 reader will select exactly the
+   root a ROOT003 reader selects now, with the genesis compaction record. Any
+   failure refuses the whole run before anything is written;
+2. saves each root that needs work to `SAVE_DIR` (absolute, created owner-only
+   if missing, outside every storage root of the installation), owner-only and
+   synchronized, and refuses if `SAVE_DIR` already holds a different copy;
+3. rewrites, on the same inode, the magic byte and checksum of each valid
+   ROOT003 slot; a torn slot only gets the new magic and stays invalid. The
+   slot the selection does not read is written first, each write is
+   synchronized, and the file is read back and verified.
+
+It prints a JSON summary with one entry per root: `path`, `outcome`
+(`upgraded`, `resumed`, `already ROOT005`, or `unpublished` for a generation
+root whose creation never wrote an envelope), the treatment of each slot,
+`slots_changed`, the selected `generation`, slot and mirror state,
+`sha256_before`, `sha256_after`, and the saved copy (`written`, `matches` or
+`stale`). If the command is interrupted, rerun it with the same arguments; it
+completes the remaining slot writes from the slots themselves and checks them
+against the saved copy. A rerun with nothing left to do reports
+`already ROOT005` and writes nothing. Keep the output and `SAVE_DIR`.
+
+Then start the release build and watch the health `storage` object: against
+the empty baseline the first cycle is due at once, and it moves live values
+out of old files and unlinks them. Until the release build first starts,
+`SAVE_DIR` can restore the previous build: copy each saved file back over its
+root in place (`dd if=SAVED of=ROOT conv=notrunc,fsync`, keeping the inode)
+and start the ROOT003 build, which otherwise refuses the upgraded roots. Once
+the release build has run, its maintenance rewrites roots and unlinks files,
+so the saved copies no longer describe the data and must not be restored.
 
 The new build reclaims storage on its own. Each group's persisted cycle moves
 live values and leaves out of old files and unlinks files no root or snapshot

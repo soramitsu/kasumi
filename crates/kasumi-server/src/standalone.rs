@@ -297,6 +297,15 @@ pub struct InitializedInstallation {
 mod operator;
 pub(crate) use operator::OperatorState;
 
+#[path = "standalone_storage_root_upgrade.rs"]
+mod storage_root_upgrade;
+pub use storage_root_upgrade::upgrade_storage_root;
+#[cfg(test)]
+pub(crate) use storage_root_upgrade::{
+    tests::{put as put_root_image, spelled_root003},
+    upgrade_storage_root_with_storage,
+};
+
 /// Join local initialization, recovery and key-maintenance operations after
 /// admission has stopped. Completed replies contain no storage owners.
 pub async fn drain_operations() -> Result<()> {

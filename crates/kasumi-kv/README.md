@@ -20,9 +20,12 @@ compaction record (cycle, phase, frozen file cutoffs, baseline, immutable
 evacuation worklist, in-phase position and remaining Packing work budget) at bytes 2384..4080; the
 remainder before the checksum must be zero. Slots of the retired root formats
 001, 002, 003 and 004 are refused before their
-checksum is examined. There is no reader or migration for them: a group written
+checksum is examined. The runtime has no reader for them: a group written
 by an earlier build does not open and must be recreated from a verified logical
-backup. Segment and arena files each have a 64 MiB bound.
+backup. The one exception is `RootUpgradePlan` (`src/root_upgrade.rs`), a
+one-time offline in-place upgrade of `KASUMI-KVROOT003` slots for the BPNG
+installation, driven by `kasumid maintenance upgrade-storage-root` and deleted
+with it. Segment and arena files each have a 64 MiB bound.
 Segments have a 64-byte header; arenas have a 4 KiB header followed by immutable
 16 KiB directory pages. Page references include their SHA-256 digest. Directory
 leaves hold table markers and ordered keys with value locations, lengths,
