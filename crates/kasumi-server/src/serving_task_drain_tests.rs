@@ -1,4 +1,5 @@
-use super::ServingTasks;
+use super::{NodeRuntime, NodeServing, RuntimeConfig, ServingTasks};
+use crate::serving_owner::Owner;
 use kasumi_types::drain::DrainCompletion;
 use std::{future::Future, sync::Arc, task::Poll, time::Duration};
 
@@ -206,6 +207,281 @@ async fn standalone_startup_without_cluster_listener_can_complete() {
         Some(37)
     );
     tasks.shutdown().await.unwrap();
+}
+
+async fn management_shutdown_runtime(directory: &std::path::Path) -> NodeRuntime {
+    // Preserve initialize_standalone's ordinary memory budget, but give the
+    // installed Control and tenant exactly one snapshot-startup slot each.
+    let mut policy = kasumi_engine::admission::AdmissionConfig::default();
+    let former_total = policy.resolved_fixture_total_bytes().unwrap();
+    policy.max_inflight_bytes = Some(
+        former_total
+            .checked_add(4 * kasumi_types::AuditRetentionBudget::MAINTENANCE_BYTES)
+            .unwrap(),
+    );
+    policy.max_snapshot_startups = 2;
+    let storage = crate::runtime_storage_fixtures::standalone_storage(directory, policy).unwrap();
+    let installation = crate::standalone::initialize_with_storage(
+        directory,
+        "tenant-a",
+        kasumi_store::DirectoryPolicy::fixture(),
+        kasumi_store::FileAllocationPolicy::fixture(),
+        crate::standalone::StandaloneNetwork::fixture(),
+        crate::standalone::local_audit_placements("tenant-a"),
+        storage.clone(),
+    )
+    .await
+    .unwrap();
+    let mut config = RuntimeConfig::load(&installation.configuration).unwrap();
+    assert_eq!(config.admission.max_snapshot_startups, 2);
+    let listeners = (0..3)
+        .map(|_| std::net::TcpListener::bind("127.0.0.1:0").unwrap())
+        .collect::<Vec<_>>();
+    config.mcp.listen = listeners[0].local_addr().unwrap();
+    config.native.listen = listeners[1].local_addr().unwrap();
+    config.admin.listen = listeners[2].local_addr().unwrap();
+    config.mcp.protocol = crate::mcp::McpConfig::new(format!(
+        "https://localhost:{}/mcp",
+        config.mcp.listen.port()
+    ))
+    .unwrap();
+    crate::standalone::configure_test_topology(&config, storage.clone()).await;
+    drop(listeners);
+    NodeRuntime::open_using_storage(config, super::file_secret, storage)
+        .await
+        .unwrap()
+}
+
+fn run_management_shutdown_fixture(test: fn() -> std::pin::Pin<Box<dyn Future<Output = ()>>>) {
+    // Installed initialization and runtime ownership exceed libtest's default
+    // stack. Construct their futures on the fixture thread, as the other real
+    // standalone serving tests do, and keep the scheduling current-thread.
+    std::thread::Builder::new()
+        .name("management shutdown fixture".into())
+        .stack_size(16 << 20)
+        .spawn(move || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(test());
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+#[test]
+fn serving_shutdown_closes_management_before_joining_queued_reconciliation() {
+    run_management_shutdown_fixture(|| {
+        Box::pin(serving_shutdown_closes_management_before_joining_queued_reconciliation_impl())
+    });
+}
+
+async fn serving_shutdown_closes_management_before_joining_queued_reconciliation_impl() {
+    let directory = kasumi_store::test_utils::private_tempdir().unwrap();
+    let runtime = management_shutdown_runtime(&directory.path().join("kasumi")).await;
+    let management = runtime.administration.as_ref().unwrap().clone();
+    let tenant = runtime.tenants[0].store.tenant().to_owned();
+    let incarnation = runtime.tenants[0]
+        .database
+        .engine()
+        .generation()
+        .unwrap()
+        .incarnation()
+        .to_owned();
+    let original = management.test_generation(&tenant, &incarnation);
+    assert!(
+        management
+            .pending_admission(&tenant, &incarnation)
+            .is_none()
+    );
+    let active = management.test_hold_management().await.unwrap();
+
+    // Queue the actual reconciliation future before shutdown, rather than
+    // relying on whether a newly spawned task has reached its admission await.
+    let queued_management = management.clone();
+    let mut queued = Box::pin(async move { queued_management.reconcile().await });
+    std::future::poll_fn(|cx| {
+        assert!(queued.as_mut().poll(cx).is_pending());
+        Poll::Ready(())
+    })
+    .await;
+    let mut tasks = ServingTasks::new();
+    let (release, waiting) = tokio::sync::oneshot::channel();
+    let admitted = tasks.maintenance.spawn(async move {
+        waiting.await?;
+        drop(active);
+        Ok(())
+    });
+    let (observed, outcome) = tokio::sync::oneshot::channel();
+    let queued_task = tasks.maintenance.spawn(async move {
+        observed.send(queued.await).unwrap();
+        Ok(())
+    });
+    let mut owner = NodeServing {
+        tasks,
+        report: Default::default(),
+        runtime,
+    };
+
+    let mut first = owner.close();
+    std::future::poll_fn(|cx| {
+        assert!(first.as_mut().poll(cx).is_pending());
+        Poll::Ready(())
+    })
+    .await;
+    drop(first);
+
+    // This must reject synchronously while the original guard remains held.
+    // Keep the observation until after cleanup so the regression's failure
+    // does not abandon the admitted operation or its queued successor.
+    let mut late = Box::pin(management.test_hold_management());
+    let admission_closed = std::future::poll_fn(|cx| {
+        Poll::Ready(matches!(
+            late.as_mut().poll(cx),
+            Poll::Ready(Err(error)) if error.code == kasumi_types::ErrorCode::Unavailable
+        ))
+    })
+    .await;
+    drop(late);
+    assert_eq!(owner.tasks.maintenance.len(), 2);
+    assert!(!admitted.is_finished());
+    assert!(!queued_task.is_finished());
+    assert!(!owner.runtime.closed);
+    original.check_serving().unwrap();
+    assert!(Arc::ptr_eq(
+        &original,
+        &management.test_generation(&tenant, &incarnation)
+    ));
+
+    let mut resumed = owner.close();
+    std::future::poll_fn(|cx| {
+        assert!(resumed.as_mut().poll(cx).is_pending());
+        Poll::Ready(())
+    })
+    .await;
+    release.send(()).unwrap();
+    let closed = tokio::time::timeout(Duration::from_secs(60), resumed)
+        .await
+        .expect("serving shutdown must join both retained management tasks");
+    let queued = outcome.await.unwrap();
+    assert!(
+        admission_closed,
+        "serving shutdown left management admission open"
+    );
+    assert!(matches!(
+        queued,
+        Err(error) if error.downcast_ref::<kasumi_types::Error>()
+            .is_some_and(|error| error.code == kasumi_types::ErrorCode::Unavailable)
+    ));
+    closed.unwrap();
+    assert!(admitted.is_finished());
+    assert!(queued_task.is_finished());
+    assert!(owner.tasks.maintenance.is_empty());
+    assert!(owner.runtime.closed);
+    assert!(Arc::ptr_eq(
+        &original,
+        &management.test_generation(&tenant, &incarnation)
+    ));
+    assert!(
+        management
+            .pending_admission(&tenant, &incarnation)
+            .is_none()
+    );
+    // The installed runtime transfers its recovery inventory to the admin
+    // listener at open. The positive close above includes Administration's
+    // census of that exact inventory; the runtime's Option is already empty.
+}
+
+#[test]
+fn sealed_tenant_recovery_reuses_drained_snapshot_startup_slot() {
+    run_management_shutdown_fixture(|| {
+        Box::pin(sealed_tenant_recovery_reuses_drained_snapshot_startup_slot_impl())
+    });
+}
+
+async fn sealed_tenant_recovery_reuses_drained_snapshot_startup_slot_impl() {
+    let directory = kasumi_store::test_utils::private_tempdir().unwrap();
+    let runtime = management_shutdown_runtime(&directory.path().join("kasumi")).await;
+    let management = runtime.administration.as_ref().unwrap().clone();
+    let store = runtime.tenants[0].store.clone();
+    let original = runtime.tenants[0].database.clone();
+    let incarnation = original
+        .engine()
+        .generation()
+        .unwrap()
+        .incarnation()
+        .to_owned();
+    let (stop, shutdown) = tokio::sync::watch::channel(false);
+    let serving = tokio::spawn(runtime.serve(shutdown));
+
+    async fn coverage(management: &crate::administration::Administration, healthy_groups: usize) {
+        tokio::time::timeout(Duration::from_secs(60), async {
+            loop {
+                let epoch = management.readiness_epoch().unwrap();
+                let snapshot = management
+                    .readiness
+                    .snapshot(epoch, tokio::time::Instant::now());
+                if snapshot.status.complete
+                    && snapshot.status.fresh
+                    && snapshot.status.healthy_groups == healthy_groups
+                {
+                    assert_eq!(snapshot.status.expected_groups, Some(2));
+                    assert_eq!(snapshot.status.examined_groups, 2);
+                    assert_eq!(snapshot.details.len(), 2);
+                    assert_eq!(
+                        snapshot
+                            .details
+                            .iter()
+                            .filter(|sample| sample.quorum)
+                            .count(),
+                        healthy_groups
+                    );
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .expect("readiness must finish observing both installed groups");
+    }
+
+    coverage(&management, 2).await;
+    let active = management.test_hold_management().await.unwrap();
+    store.seal();
+    coverage(&management, 1).await;
+    // Recovery must run while serving admission is still open. Closing the
+    // management gate first would hide exhaustion by rejecting this attempt.
+    // The old Database facade intentionally remains alive after its drain.
+    drop(active);
+    tokio::time::timeout(Duration::from_secs(60), management.reconcile())
+        .await
+        .expect("sealed tenant reconciliation must finish")
+        .unwrap();
+    assert!(
+        management.test_has_generation(store.tenant(), &incarnation),
+        "recovery must reuse the drained tenant's startup slot while its old facade remains alive"
+    );
+    let replacement = management.test_generation(store.tenant(), &incarnation);
+    assert!(!Arc::ptr_eq(&original, &replacement));
+    assert!(original.check_serving().is_err());
+    replacement.check_serving().unwrap();
+    assert!(
+        management
+            .pending_admission(store.tenant(), &incarnation)
+            .is_none()
+    );
+    coverage(&management, 2).await;
+    stop.send(true).unwrap();
+    tokio::time::timeout(Duration::from_secs(60), serving)
+        .await
+        .expect("serving supervisor must join after recovering with both startup slots occupied")
+        .unwrap()
+        .unwrap();
+    // Both old and replacement facades outlive the complete serving drain.
+    drop(original);
+    drop(replacement);
 }
 
 #[tokio::test]

@@ -239,6 +239,9 @@ pub struct SnapshotBufferOwner {
     cells: Mutex<Box<[Option<Arc<Cell>>]>>,
     closed: AtomicBool,
     startup_closing: AtomicBool,
+    // Published only after a delivered group's positive final drain removes
+    // the global custody root. A released group fence alone is insufficient.
+    delivered_group_released: AtomicBool,
     application_sources: OnceLock<ApplicationSourceBinding>,
     // Set false before binding is visible; only a completed final drain with
     // positive source retirement sets it true. Release predicates never invoke
@@ -306,6 +309,7 @@ impl SnapshotBufferOwner {
             cells: Mutex::new((0..max_buffers).map(|_| None).collect()),
             closed: AtomicBool::new(false),
             startup_closing: AtomicBool::new(false),
+            delivered_group_released: AtomicBool::new(false),
             application_sources: OnceLock::new(),
             application_sources_drained: AtomicBool::new(true),
             failed: Arc::new(AtomicBool::new(false)),
@@ -665,7 +669,43 @@ impl SnapshotBufferOwner {
                 .lock()
                 .unwrap_or_else(|p| p.into_inner())
                 .remove(&self.id);
+            if matches!(*startup, crate::startup_owner::StartupState::Delivered) {
+                self.delivered_group_released.store(true, Ordering::Release);
+            }
         }
+    }
+
+    /// Whether a startup inventory may replace its Weak entry while closed
+    /// group facades still retain this owner. This observes only a successfully
+    /// delivered, fully drained owner with no original failures. It neither
+    /// drains work nor releases diagnostics or this owner's resident charge.
+    /// Contended observations conservatively keep the inventory entry occupied.
+    pub fn startup_slot_reusable(&self) -> bool {
+        if !self.delivered_group_released.load(Ordering::Acquire)
+            || !self.closed.load(Ordering::Acquire)
+            || self.failed.load(Ordering::Acquire)
+            || self.apply_failure.failure().is_some()
+            || self.apply_failure.completion().failed()
+            || !self.application_sources_drained.load(Ordering::Acquire)
+            || !self.completion_released()
+            || self.scratch_failures.retirement_blocked()
+            || self.apply_failure.has_live_ownership()
+        {
+            return false;
+        }
+        let Ok(_drain) = self.drain_gate.try_lock() else {
+            return false;
+        };
+        let Ok(cells) = self.cells.try_lock() else {
+            return false;
+        };
+        if cells.iter().any(Option::is_some) {
+            return false;
+        }
+        let Ok(report) = self.report.try_lock() else {
+            return false;
+        };
+        report.issues().is_empty()
     }
 
     pub(crate) fn apply_failure(&self) -> Option<crate::apply_failure::RetainedApplyFailure> {

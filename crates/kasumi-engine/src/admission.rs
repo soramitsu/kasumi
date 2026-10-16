@@ -1134,7 +1134,14 @@ impl NodeAdmission {
         anyhow::ensure!(!startups.closed, "snapshot startup admission is closed");
         let owners = startups.owners.as_mut().expect("open facade inventory");
         for slot in owners.iter_mut() {
-            if slot.as_ref().is_some_and(|owner| owner.strong_count() == 0) {
+            if slot.as_ref().is_some_and(|owner| {
+                owner
+                    .upgrade()
+                    .is_none_or(|owner| owner.startup_slot_reusable())
+            }) {
+                // A closed delivered group can outlive its startup seat. Its
+                // own charge stays with its aliases; failed owners still need
+                // the exact startup census and cannot be replaced here.
                 *slot = None;
             }
         }

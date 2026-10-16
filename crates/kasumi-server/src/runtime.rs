@@ -1030,6 +1030,12 @@ impl crate::serving_owner::Owner for NodeServing {
         Box<dyn std::future::Future<Output = kasumi_types::drain::DrainResult> + Send + '_>,
     > {
         Box::pin(async move {
+            // A queued reconciliation must not start rebuilding a tenant while
+            // shutdown joins maintenance. Already admitted recovery still owns
+            // its management guard and is joined to its terminal outcome.
+            if let Some(manager) = &self.runtime.administration {
+                manager.close_management_admission();
+            }
             self.runtime
                 .telemetry
                 .set_lifecycle(crate::observability::Lifecycle::Draining);

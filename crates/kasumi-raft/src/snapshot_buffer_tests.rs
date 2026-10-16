@@ -417,3 +417,150 @@ async fn cancelled_close_retains_the_actual_flush_child() -> anyhow::Result<()> 
     assert_eq!(disk.snapshot().live_files, 0);
     Ok(())
 }
+
+#[tokio::test]
+async fn startup_slot_reuse_requires_positive_delivered_shutdown_and_keeps_alias_charge() {
+    let (charge, charge_retired) = crate::test_utils::observed_budget_charge();
+    let owner = SnapshotBufferOwner::new(1, charge).unwrap();
+    assert!(
+        !owner.startup_slot_reusable(),
+        "idle startup is still admitted"
+    );
+    let ownership = Arc::new(AtomicBool::new(true));
+    owner
+        .bind_fixture_group_ownership(ownership.clone(), Arc::new(()))
+        .unwrap();
+    let (release, ready) = tokio::sync::oneshot::channel();
+    let mut opening = Box::pin(owner.start::<_, anyhow::Error>(async move {
+        ready.await?;
+        Ok(crate::startup_owner_tests::source_custody_fixture_group(
+            tokio::spawn(async {}),
+        ))
+    }));
+    std::future::poll_fn(|cx| {
+        assert!(opening.as_mut().poll(cx).is_pending());
+        Poll::Ready(())
+    })
+    .await;
+    assert!(
+        !owner.startup_slot_reusable(),
+        "pending startup owns its seat"
+    );
+    release.send(()).unwrap();
+    let group = opening.await.unwrap();
+    assert!(
+        !owner.startup_slot_reusable(),
+        "delivered runtime is still live"
+    );
+    owner.drain_buffers().await.unwrap();
+    assert!(
+        !owner.startup_slot_reusable(),
+        "buffer closure is not group join"
+    );
+    match group {
+        crate::startup_owner::StartedGroup::Fixture(mut group) => {
+            group.shutdown().await.unwrap();
+        }
+        _ => unreachable!(),
+    }
+    owner.drain_application_sources().await.unwrap();
+    assert!(
+        !owner.startup_slot_reusable(),
+        "group ownership is not released"
+    );
+    {
+        let _startup = owner.startup.try_lock().unwrap();
+        owner.release_group_ownership();
+        assert!(!ownership.load(Ordering::Acquire));
+        assert!(retained().lock().unwrap().contains_key(&owner.id));
+        assert!(
+            !owner.startup_slot_reusable(),
+            "global custody is not released"
+        );
+    }
+    owner.release_group_ownership();
+    assert!(!retained().lock().unwrap().contains_key(&owner.id));
+    assert!(owner.startup_slot_reusable());
+    {
+        let _startup = owner.startup.try_lock().unwrap();
+        assert!(
+            owner.startup_slot_reusable(),
+            "released query never contends startup"
+        );
+    }
+    {
+        let _drain = owner.drain_gate.try_lock().unwrap();
+        assert!(!owner.startup_slot_reusable());
+    }
+    {
+        let _cells = owner.cells.try_lock().unwrap();
+        assert!(!owner.startup_slot_reusable());
+    }
+    {
+        let _report = owner.report.try_lock().unwrap();
+        assert!(!owner.startup_slot_reusable());
+    }
+    let alias = owner.clone();
+    drop(owner);
+    assert!(alias.startup_slot_reusable());
+    assert!(!charge_retired.load(Ordering::Acquire));
+    drop(alias);
+    assert!(charge_retired.load(Ordering::Acquire));
+}
+
+#[tokio::test]
+async fn startup_slot_reuse_preserves_complete_and_retained_original_failure_reports() {
+    use kasumi_types::drain::DrainIssueRef;
+    for completion in [DrainCompletion::Complete, DrainCompletion::Retained] {
+        let owner = SnapshotBufferOwner::new(1, SharedBudgetCharge::new(())).unwrap();
+        let ownership = Arc::new(AtomicBool::new(true));
+        owner
+            .bind_fixture_group_ownership(ownership, Arc::new(()))
+            .unwrap();
+        let group = owner
+            .start::<_, anyhow::Error>(async {
+                Ok(crate::startup_owner_tests::source_custody_fixture_group(
+                    tokio::spawn(async {}),
+                ))
+            })
+            .await
+            .unwrap();
+        match group {
+            crate::startup_owner::StartedGroup::Fixture(mut group) => {
+                group.shutdown().await.unwrap();
+            }
+            _ => unreachable!(),
+        }
+        owner.drain_buffers().await.unwrap();
+        owner.drain_application_sources().await.unwrap();
+        owner.release_group_ownership();
+        assert!(owner.startup_slot_reusable());
+        let mut report = DrainReport::default();
+        let original = report.record("original startup failure", 0, OriginalFailure(229).into());
+        let failure = match completion {
+            DrainCompletion::Complete => report.complete().unwrap_err(),
+            DrainCompletion::Retained => DrainFailure::retained(original.clone()),
+        };
+        // A completed owner can still carry a previously returned original.
+        // Neither the exact report nor its failure disposition is disposable.
+        let recorded = owner.record_startup_error(failure.into());
+        assert_eq!(recorded.completion(), completion);
+        for _ in 0..2 {
+            assert!(!owner.startup_slot_reusable());
+            let stored = owner.report.lock().unwrap();
+            assert!(
+                stored
+                    .issues()
+                    .iter()
+                    .any(|issue| DrainIssueRef::ptr_eq(issue, &original))
+            );
+            let outer = stored
+                .issues()
+                .iter()
+                .find_map(|issue| issue.error().downcast_ref::<DrainFailure>())
+                .expect("original typed startup outcome remains stored");
+            assert_eq!(outer.completion(), completion);
+            assert!(DrainIssueRef::ptr_eq(&outer.issues()[0], &original));
+        }
+    }
+}

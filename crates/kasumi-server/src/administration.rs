@@ -1462,6 +1462,12 @@ impl Administration {
         Ok(())
     }
 
+    /// Fence queued management before the serving owner joins maintenance.
+    /// The active guard remains valid so admitted recovery can finish normally.
+    pub(crate) fn close_management_admission(&self) {
+        self.gate.close();
+    }
+
     pub(crate) async fn reconcile(&self) -> Result<()> {
         let _guard = self.gate.enter().await?;
         if self.close_retired_generations().await.is_err() {
