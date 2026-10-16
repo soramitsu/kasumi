@@ -167,6 +167,9 @@ pub(crate) struct SourceRoots {
     // Every application proposer holds the database proposal gate through its
     // consensus write, so at most one admitted publication is outstanding.
     publication: Mutex<Option<PublicationGrant>>,
+    // Native KV capacity for the next committed apply, admitted alongside the
+    // grant by an unscoped proposer and spent by the applying thread.
+    escrow: Mutex<Option<Arc<crate::admission::ApplyEscrow>>>,
     completion: OnceLock<completion::CompletionRef>,
     cohort: OnceLock<SourceCohort>,
     construction_failure: OnceLock<RecordedFailure>,
@@ -574,6 +577,7 @@ impl SourceRoots {
                     waiter: None,
                 }),
                 publication: Mutex::new(None),
+                escrow: Mutex::new(None),
                 completion: OnceLock::new(),
                 cohort: OnceLock::new(),
                 construction_failure: OnceLock::new(),
@@ -650,10 +654,19 @@ impl SourceRoots {
     /// The caller holds the database proposal gate through its consensus write.
     /// The workspace covers every ordinary advancing plan for the selected
     /// bootstrap and membership shape. Scoped grants never fund unscoped work.
+    /// An unscoped proposer also admits the native escrow its apply spends;
+    /// scoped native leases already draw on the maintenance escrow.
     pub(crate) fn admit_publication(&self) -> Result<()> {
         let scoped =
             crate::audit_maintenance::NodeAuditMaintenance::current_for(self.admission.memory())
                 .is_some();
+        self.admit_source_grant(scoped)?;
+        if !scoped {
+            self.admit_apply_escrow()?;
+        }
+        Ok(())
+    }
+    fn admit_source_grant(&self, scoped: bool) -> Result<()> {
         let replaced = {
             let mut slot = self.publication.lock().unwrap_or_else(|p| p.into_inner());
             if slot.as_ref().is_some_and(|grant| scoped || !grant.scoped) {
@@ -728,13 +741,61 @@ impl SourceRoots {
             None
         }
     }
+    fn admit_apply_escrow(&self) -> Result<()> {
+        if self
+            .escrow
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .is_some()
+        {
+            return Ok(());
+        }
+        ensure!(
+            !self
+                .gate
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .preparations_closed,
+            "application source preparation sealed"
+        );
+        let escrow = crate::admission::ApplyEscrow::admit(self.admission.memory())?;
+        let unused = self
+            .escrow
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .replace(escrow);
+        drop(unused);
+        // A drain that sealed preparations meanwhile releases what it missed.
+        if self
+            .gate
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .preparations_closed
+        {
+            self.release_publication();
+        }
+        Ok(())
+    }
+    /// The committed entry applying on this thread draws its native leases
+    /// from the escrow admitted before its proposal. Entries without one
+    /// (startup replay, metadata, replicated followers) admit them as before.
+    pub(crate) fn enter_committed_apply(&self) -> Option<crate::admission::ApplyScope> {
+        let escrow = self
+            .escrow
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take()?;
+        Some(escrow.enter())
+    }
     fn release_publication(&self) {
         let grant = self
             .publication
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .take();
+        let escrow = self.escrow.lock().unwrap_or_else(|p| p.into_inner()).take();
         drop(grant);
+        drop(escrow);
     }
 }
 impl SourceRootsRef {

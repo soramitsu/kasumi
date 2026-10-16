@@ -508,6 +508,8 @@ pub(crate) enum CompletionFault {
     Error(anyhow::Error),
     Panic(Box<dyn std::any::Any + Send>),
     Pause(Arc<super::tests::completion_tests::CompletionPause>),
+    // Fixture work on the applying thread; the actual corridor then continues.
+    Window(Box<dyn FnOnce() + Send>),
 }
 #[cfg(test)]
 impl State {
@@ -517,6 +519,7 @@ impl State {
                 CompletionFault::Error(error) => return Err(error),
                 CompletionFault::Panic(payload) => std::panic::resume_unwind(payload),
                 CompletionFault::Pause(gate) => return gate.wait(self.snapshot()),
+                CompletionFault::Window(work) => work(),
             }
         }
         Ok(())

@@ -21,7 +21,12 @@ struct Input {
 }
 impl OrdinaryFixture {
     async fn new() -> crate::test_fixture_failure::FixtureResult<Self> {
-        let fixture = Fixture::new().await?;
+        Self::with_memory(None).await
+    }
+    async fn with_memory(
+        memory: Option<Arc<dyn crate::admission::MemorySource>>,
+    ) -> crate::test_fixture_failure::FixtureResult<Self> {
+        let fixture = Fixture::with_memory(1, None, memory).await?;
         crate::test_utils::install_fixture_audit_placement(fixture.stores.application())?;
         let engine = Arc::new(TenantEngine::from_bootstrap(
             "selected-sources",
@@ -1464,3 +1469,6 @@ async fn ordinary_completion_capture_wake_unwind_retires_the_actual_counted_hand
     }
     Ok(())
 }
+
+#[path = "application_source_committed_admission_tests.rs"]
+mod committed_admission_tests;

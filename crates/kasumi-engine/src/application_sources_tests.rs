@@ -33,6 +33,15 @@ impl Fixture {
         node_id: u64,
         bootstrap: Option<&SnapshotImage>,
     ) -> crate::test_fixture_failure::FixtureResult<Self> {
+        Self::with_memory(node_id, bootstrap, None).await
+    }
+    /// `memory` replaces the fixed zero-RSS sample with an explicit source
+    /// sampled every 10 ms against a 1 GiB high-water mark.
+    async fn with_memory(
+        node_id: u64,
+        bootstrap: Option<&SnapshotImage>,
+        memory: Option<Arc<dyn crate::admission::MemorySource>>,
+    ) -> crate::test_fixture_failure::FixtureResult<Self> {
         let directory = kasumi_store::test_utils::private_tempdir()?;
         let (mut persistent, mut scratch) =
             crate::test_utils::fixture_disk_configs(directory.path())?;
@@ -47,7 +56,19 @@ impl Fixture {
             &scratch,
         )?;
         let budget = config.max_inflight_bytes.unwrap();
-        let admission = NodeAdmission::with_fixed_memory(config, 2 << 30, 0)?;
+        let admission = match memory {
+            None => NodeAdmission::with_fixed_memory(config, 2 << 30, 0)?,
+            Some(memory) => NodeAdmission::create(
+                AdmissionConfig {
+                    sample_interval_ms: 10,
+                    max_sample_age_ms: 10,
+                    ..config
+                },
+                1 << 30,
+                memory,
+                Arc::new(kasumi_clock::SystemLeaseClock),
+            )?,
+        };
         let storage =
             crate::test_utils::FixtureStorage::with_admission(&persistent, &scratch, admission)?;
         let node = storage.create_new(

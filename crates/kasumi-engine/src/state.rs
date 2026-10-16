@@ -306,6 +306,12 @@ impl kasumi_raft::StateMachineBackend for TenantEngine {
         input: kasumi_raft::AppliedInput<'_>,
         publisher: &mut dyn kasumi_raft::ApplyPublisher,
     ) -> std::result::Result<(), kasumi_store::ScratchOperationFailure> {
+        // Native leases of this committed apply, taken synchronously on this
+        // thread, spend capacity admitted before its proposal.
+        let _native = self
+            .application_sources
+            .get()
+            .and_then(|sources| sources.enter_committed_apply());
         let bytes = match input {
             kasumi_raft::AppliedInput::Metadata => {
                 return self

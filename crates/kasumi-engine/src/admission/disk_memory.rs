@@ -226,6 +226,13 @@ impl kasumi_store::NodeDiskMemoryAdmission for MemoryCore {
         if let Some(pool) = crate::audit_maintenance::NodeAuditMaintenance::current_for(&self) {
             return pool.reserve_native(bytes);
         }
+        // A committed apply spends native capacity its proposer admitted
+        // before consensus; only an excess beyond it is admitted here.
+        if let Some(lease) =
+            super::ApplyEscrow::current_for(&self).and_then(|escrow| escrow.reserve(bytes))
+        {
+            return Ok(lease);
+        }
         // Admission covers the opaque box before allocating it. The actual
         // Reservation keeps the shared core alive until its actual box is destroyed
         // and only then releases the resident byte/slot credit.

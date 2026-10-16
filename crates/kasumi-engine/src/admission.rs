@@ -142,6 +142,8 @@ impl AdmissionConfig {
     }
 }
 
+mod apply_escrow;
+pub(crate) use apply_escrow::{ApplyEscrow, ApplyScope};
 mod disk_memory;
 pub(crate) use disk_memory::ProposalBudget;
 mod installed;

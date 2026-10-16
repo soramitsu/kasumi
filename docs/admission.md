@@ -109,6 +109,27 @@ Entries without a local gated proposer (startup replay, covered reconstruction,
 metadata or membership entries and replicated followers) still reserve while
 applying.
 
+An unscoped proposer also admits an 8 MiB native escrow under the rule its
+committed entry's native KV leases would otherwise meet after commit: a free
+ledger slot, the byte cap and the RSS high-water mark, but not the installed
+protection, which native Resident traffic shares by design. While that entry
+applies, every installed native lease taken on the applying thread (the
+command's own registered reads such as mutation receipt lookups, the Entry sink
+planner's reader and point workspace, the queued source reader, the publication
+write and the selected capture) is drawn from the escrow instead of being
+admitted. Unspent bytes return when the apply ends; leases that outlive
+it, such as the selected reader, keep exactly their own bytes and one ledger
+slot charged until the last is released. Concurrent native traffic or RSS
+pressure after the proposal can therefore refuse new requests, but not the
+committed apply. An apply whose native peak exceeds the escrow admits the excess
+as before, and audit-maintenance applies keep using the maintenance escrow.
+Two native bounds are counts, not memory, and stay admitted while applying:
+storage census slots (capacity `max_reservations`; every owner registered
+outside an escrow also holds its own ledger charge, so they run out only after
+ledger slots) and the 256 snapshot pins of a node database (one per live
+selected Generation, which includes every in-flight request's Generation and
+every snapshot lease, and one per transient planner or capture reader).
+
 Queries have a five-second deadline and four workers per tenant, in addition to
 the shared governor. Cooperative checkpoints cover candidate traversal, scans,
 array membership, sorting comparisons, grouping, projection, term expansion, and
