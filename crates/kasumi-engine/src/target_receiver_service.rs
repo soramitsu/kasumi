@@ -542,6 +542,10 @@ impl Proposal {
         );
         let command = stage!("command", self.request.command(authorization));
         let encoded = stage!("encode", command.encode());
+        // Nothing is proposed unless the committed publication's capacity is.
+        if let Err(error) = self.database.engine.admit_publication() {
+            return Ok(Err(error));
+        }
         let bytes = stage!(
             "group_write",
             self.database

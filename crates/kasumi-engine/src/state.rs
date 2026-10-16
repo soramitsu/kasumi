@@ -573,6 +573,26 @@ impl TenantEngine {
             kasumi_raft::ApplicationSourceCustody::seal_consumers(sources.as_ref());
         }
     }
+    /// Admit the next committed publication's Engine capacity before a local
+    /// proposal; its Entry sink then acquires nothing after commitment. Callers
+    /// hold the database proposal gate through their consensus write. A refusal
+    /// proposes nothing, so it is a definite rejection of that request.
+    pub(crate) fn admit_publication(&self) -> Result<()> {
+        let Some(sources) = self.application_sources.get() else {
+            return Ok(());
+        };
+        sources.admit_publication().map_err(|error| {
+            error
+                .chain()
+                .find_map(|cause| cause.downcast_ref::<Error>().cloned())
+                .unwrap_or_else(|| {
+                    Error::new(
+                        ErrorCode::Unavailable,
+                        "application publication admission unavailable",
+                    )
+                })
+        })
+    }
     /// Preparation, response encoding, and immutable row staging precede the
     /// durable callback. The current Generation changes only after it succeeds.
     fn publish_prepared_generation(

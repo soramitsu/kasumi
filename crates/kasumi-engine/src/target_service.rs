@@ -212,12 +212,15 @@ impl TargetProposal {
             authorization: authorization.clone(),
             input: self.input.clone(),
         };
+        let encoded = prepared.encode()?;
+        // Nothing is proposed unless the committed publication's capacity is.
+        if let Err(error) = self.database.engine.admit_publication() {
+            return Ok(Err(error));
+        }
         let bytes = self
             .database
             .group
-            .write(kasumi_raft::ApplicationProposal::generated(
-                prepared.encode()?,
-            ))
+            .write(kasumi_raft::ApplicationProposal::generated(encoded))
             .await?;
         match serde_json::from_slice::<Result<TargetOutcome>>(&bytes)? {
             Ok(TargetOutcome::Prepared(_)) => {}
@@ -241,14 +244,17 @@ impl TargetProposal {
             )?,
             input: self.input.clone(),
         };
+        let encoded = command.encode()?;
+        // The prepared phase is already durable; recover it if this refuses.
+        if let Err(error) = self.database.engine.admit_publication() {
+            return Ok(Err(unknown(error)));
+        }
         // Ownership of the serialized gate, original work and byte reservation
         // survives caller cancellation until actual consensus processing ends.
         let bytes = self
             .database
             .group
-            .write(kasumi_raft::ApplicationProposal::generated(
-                command.encode()?,
-            ))
+            .write(kasumi_raft::ApplicationProposal::generated(encoded))
             .await?;
         let result = match serde_json::from_slice::<Result<TargetOutcome>>(&bytes)? {
             Ok(TargetOutcome::Completed(fact)) => Ok(*fact),

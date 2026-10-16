@@ -234,12 +234,15 @@ impl ActivationProposal {
             authorization,
             activation: Box::new(self.activation.clone()),
         };
+        let encoded = command.encode()?;
+        // Nothing is proposed unless the committed publication's capacity is.
+        if let Err(error) = self.database.engine.admit_publication() {
+            return Ok(Err(error));
+        }
         let bytes = self
             .database
             .group
-            .write(kasumi_raft::ApplicationProposal::generated(
-                command.encode()?,
-            ))
+            .write(kasumi_raft::ApplicationProposal::generated(encoded))
             .await?;
         let result = match serde_json::from_slice::<Result<TargetOutcome>>(&bytes)? {
             Ok(TargetOutcome::Activated(fact)) => Ok(*fact),

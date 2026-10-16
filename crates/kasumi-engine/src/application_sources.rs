@@ -146,6 +146,17 @@ struct Gate {
     latest: CellWeak,
     waiter: Option<Waker>,
 }
+/// Engine capacity for exactly one committed ordinary publication, admitted by
+/// a local proposer before consensus submission under the rules its Entry sink
+/// would otherwise apply after commitment. A refusal there could only fail the
+/// committed entry and close the tenant; a refusal here proposes nothing.
+struct PublicationGrant {
+    envelope: kasumi_raft::PreparedOrdinarySourceEnvelope,
+    // Admitted under audit-maintenance scope; never funds unscoped work.
+    scoped: bool,
+    cell: Reservation,
+    workspace: Reservation,
+}
 /// One database-local inventory. It owns no Engine, Generation, startup owner,
 /// worker or reaper. The existing Raft startup custody anchors this registry.
 pub(crate) struct SourceRoots {
@@ -153,6 +164,9 @@ pub(crate) struct SourceRoots {
     admission: Arc<NodeAdmission>,
     limits: RaftLimits,
     gate: Mutex<Gate>,
+    // Every application proposer holds the database proposal gate through its
+    // consensus write, so at most one admitted publication is outstanding.
+    publication: Mutex<Option<PublicationGrant>>,
     completion: OnceLock<completion::CompletionRef>,
     cohort: OnceLock<SourceCohort>,
     construction_failure: OnceLock<RecordedFailure>,
@@ -559,6 +573,7 @@ impl SourceRoots {
                     latest: CellWeak::new(),
                     waiter: None,
                 }),
+                publication: Mutex::new(None),
                 completion: OnceLock::new(),
                 cohort: OnceLock::new(),
                 construction_failure: OnceLock::new(),
@@ -627,6 +642,99 @@ impl SourceRoots {
             cursor = Some(cell.id);
             self.retire(&cell, false);
         }
+    }
+}
+impl SourceRoots {
+    /// Admit the next committed publication's Cell and planned workspace before
+    /// a local proposal, with the same reservations its Entry sink would make.
+    /// The caller holds the database proposal gate through its consensus write.
+    /// The workspace covers every ordinary advancing plan for the selected
+    /// bootstrap and membership shape. Scoped grants never fund unscoped work.
+    pub(crate) fn admit_publication(&self) -> Result<()> {
+        let scoped =
+            crate::audit_maintenance::NodeAuditMaintenance::current_for(self.admission.memory())
+                .is_some();
+        let replaced = {
+            let mut slot = self.publication.lock().unwrap_or_else(|p| p.into_inner());
+            if slot.as_ref().is_some_and(|grant| scoped || !grant.scoped) {
+                return Ok(());
+            }
+            slot.take()
+        };
+        drop(replaced);
+        let latest = {
+            let gate = self.gate.lock().unwrap_or_else(|p| p.into_inner());
+            ensure!(
+                !gate.preparations_closed,
+                "application source preparation sealed"
+            );
+            gate.latest.upgrade()
+        }
+        .context("application selected position absent")?;
+        let position = latest
+            .position
+            .get()
+            .context("application selected position absent")?;
+        let unapplied = kasumi_raft::StoredMembership::default();
+        let membership = match position.applied() {
+            None => &unapplied,
+            Some(kasumi_raft::SelectedAppliedRef::Entry { membership, .. }) => membership,
+            Some(kasumi_raft::SelectedAppliedRef::Snapshot { meta, .. }) => &meta.last_membership,
+        };
+        let envelope = kasumi_raft::PreparedOrdinarySourceEnvelope::for_membership(
+            &self.stores,
+            position.bootstrap(),
+            membership,
+        )?;
+        drop(latest);
+        let grant = PublicationGrant {
+            cell: self.admission.reserve_application_source(cell_bytes()?)?,
+            workspace: self
+                .admission
+                .reserve_application_source(envelope.peak_bytes())?,
+            envelope,
+            scoped,
+        };
+        let unused = self
+            .publication
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .replace(grant);
+        drop(unused);
+        // A drain that sealed preparations meanwhile releases what it missed.
+        if self
+            .gate
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .preparations_closed
+        {
+            self.release_publication();
+        }
+        Ok(())
+    }
+    /// The actual producer plan must fit the admitted ordinary shape. Covered
+    /// replay, snapshot reconstruction or a changed membership leaves the grant
+    /// for the next proposal and acquires this publication's own capacity.
+    fn take_publication(&self, plan: &PreparedSelectionPlan) -> Option<PublicationGrant> {
+        let scoped =
+            crate::audit_maintenance::NodeAuditMaintenance::current_for(self.admission.memory())
+                .is_some();
+        let mut slot = self.publication.lock().unwrap_or_else(|p| p.into_inner());
+        if slot.as_ref().is_some_and(|grant| {
+            (scoped || !grant.scoped) && grant.envelope.require_plan(plan).is_ok()
+        }) {
+            slot.take()
+        } else {
+            None
+        }
+    }
+    fn release_publication(&self) {
+        let grant = self
+            .publication
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take();
+        drop(grant);
     }
 }
 impl SourceRootsRef {
@@ -804,6 +912,30 @@ impl SourceRootsRef {
             let workspace = cohort.workspace(self, &credit);
             cohort_loan = Some(loan);
             (credit, Some(workspace), true)
+        } else if let Some((plan, grant)) = plan
+            .filter(|_| canonical)
+            .and_then(|plan| self.take_publication(plan).map(|grant| (plan, grant)))
+        {
+            // This committed publication spends the capacity its proposer
+            // admitted before consensus; nothing is acquired after commitment.
+            let PublicationGrant {
+                cell,
+                mut workspace,
+                ..
+            } = grant;
+            let peak = plan.peak_bytes();
+            // Return the admitted shape's excess above this plan's exact quote.
+            workspace.retain(peak);
+            (
+                SourceCredit::new(cell),
+                Some(Workspace {
+                    core: self.admission.memory().clone(),
+                    baseline: 0,
+                    planned_peak: Some(peak),
+                    funding: WorkspaceFunding::Ordinary(workspace),
+                }),
+                false,
+            )
         } else {
             let baseline = cell_bytes()?;
             let reservation = self.admission.reserve_application_source(baseline)?;
@@ -1367,6 +1499,8 @@ impl kasumi_raft::ApplicationSourceCustody for SourceRoots {
             gate.waiter.replace(waiter)
         };
         drop(previous);
+        // No later publication can spend an outstanding proposal's grant.
+        self.release_publication();
         let mut cursor = None;
         let mut pending = false;
         let mut report = DrainReport::default();

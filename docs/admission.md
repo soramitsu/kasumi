@@ -97,6 +97,18 @@ write keeps its reservation in the actual proposal task even if its caller times
 out or disconnects; its uncertain outcome must still be resolved by receipt. A
 replica that cannot materialize committed state must stop serving and recover.
 
+Each local application proposer, including a strict read audit, also admits its
+committed entry's Engine selection capacity before proposing: the next Cell and
+a planned decode workspace sized by the ordinary source envelope, under the same
+retained-source rules (cache-work reserve plus installed protection) that apply
+would otherwise use. The database proposal gate keeps at most one such grant
+outstanding, and the Entry sink spends it instead of reserving after commit.
+Concurrent reads can therefore reject a request with `ResourceExhausted` or
+`AuditUnavailable`, but cannot fail a committed entry and close the tenant.
+Entries without a local gated proposer (startup replay, covered reconstruction,
+metadata or membership entries and replicated followers) still reserve while
+applying.
+
 Queries have a five-second deadline and four workers per tenant, in addition to
 the shared governor. Cooperative checkpoints cover candidate traversal, scans,
 array membership, sorting comparisons, grouping, projection, term expansion, and
@@ -151,7 +163,9 @@ Evidence is in `kasumi-engine` admission unit/integration tests and
 `kasumi-query` cancellation tests: real RSS, hysteresis, slow/failed probes,
 suspend without monitor progress, release after suspend, retained cursor charges,
 detached worker charge/permit lifetime, cancellation during query evaluation, and
-real Raft application while new client admission is blocked.
+real Raft application while new client admission is blocked, and committed
+strict read audits that apply after concurrent readers exhaust ordinary capacity
+(`kasumi-engine/tests/strict_read_apply_capacity.rs`).
 
 Explicit embedded/local deployments use the authenticated durable
 `engine.deployment = local-v1` binding to capture locally committed generations

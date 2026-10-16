@@ -392,6 +392,12 @@ impl ProposalWork {
             bytes.len() <= max_bytes,
             "command exceeds proposal byte budget"
         );
+        *stage = "publication_admission";
+        if let Err(error) = self.source_engine.admit_publication() {
+            // Nothing was proposed. The committed entry's own source capacity is
+            // admitted here, so local pressure can only reject this request.
+            return Ok(serde_json::to_vec(&Err::<WriteReceipt, _>(error))?);
+        }
         let response = if matches!(&command.operation, Operation::RetireSource(prepared) if prepared.observation.is_some())
         {
             let engine = &self.source_engine;

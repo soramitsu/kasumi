@@ -159,6 +159,11 @@ impl Database {
                 }
                 let _scope = pool.enter_scope();
                 let bytes = engine.prepare_audit_prune_inner()?;
+                // The prune's committed publication spends capacity admitted
+                // under this same maintenance scope, never after commitment.
+                if bytes.is_some() {
+                    engine.admit_publication()?;
+                }
                 Ok::<_, anyhow::Error>(Prepared {
                     bytes,
                     _engine: engine,

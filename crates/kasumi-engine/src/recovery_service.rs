@@ -1028,12 +1028,15 @@ impl RecoveryProposal {
                 "queued original recovery credential expired",
             )));
         }
+        let encoded = self.command.encode()?;
+        // Nothing is proposed unless the committed publication's capacity is.
+        if let Err(error) = self.database.engine.admit_publication() {
+            return Ok(Err(error));
+        }
         let bytes = self
             .database
             .group
-            .write(kasumi_raft::ApplicationProposal::generated(
-                self.command.encode()?,
-            ))
+            .write(kasumi_raft::ApplicationProposal::generated(encoded))
             .await?;
         Ok(serde_json::from_slice(&bytes)?)
     }
