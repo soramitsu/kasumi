@@ -200,10 +200,12 @@ impl SnapshotPins {
             self.inner.failed.store(true, Ordering::Release);
             return Err(CoreError::new(crate::CoreErrorCause::OwnerFailed));
         }
+        let coverage = state.stamp(root);
         state.slots[index] = Entry::Pinned(Slot {
             root,
             token,
             class: PinClass::Protected(prepared.lane),
+            coverage,
         });
         state.epoch = token;
         prepared.pending = false;

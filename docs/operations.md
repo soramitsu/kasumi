@@ -208,6 +208,28 @@ response was lost. A missing receipt after its retention window does not prove
 the operation never committed. External backup/rotation effects also require
 artifact/status inspection after a timeout.
 
+### First-release storage format `KASUMI-KVROOT005`
+
+The first release writes `KASUMI-KVROOT005` group roots. Development formats
+`KASUMI-KVROOT001` through `KASUMI-KVROOT004` are rejected; no compatibility
+reader or migration is included. This applies to tenant, Control, signer and
+journal groups. Create fresh storage with the release build. Never edit root
+slots or delete `.kvdir` or `.kvseg` files by hand: directory pages remain
+referenced by the selected tree and pinned snapshots, and segments by the
+replay anchor. ROOT005 persists an exact frozen evacuation worklist and a
+finite Packing budget, so writes and reopen cannot restart completed work.
+
+The new build reclaims storage on its own. Each group's persisted cycle moves
+live values and leaves out of old files and unlinks files no root or snapshot
+references, driven by every write and by the node worker. Retained size
+oscillates between the last cycle's baseline `B` and about `max(2B, B + 256
+MiB)` by default; keep at least `B` of free space, because evacuation needs
+room to copy before anything is freed and defers (without failing writes) on a
+full disk. Watch `kasumi_local_group_storage_*` and the health `storage`
+object ([observability](observability.md)); a growing
+`maintenance_deferrals_total{class="capacity"}` with a phase stuck in
+`evacuating` means the disk needs headroom.
+
 For ciphertext/integrity errors, stop using the affected store and preserve it.
 Restore an authenticated logical backup into a new incarnation or replace the
 replica from healthy quorum state. Do not bypass authentication, discard

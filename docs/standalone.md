@@ -165,6 +165,10 @@ The `operator` directory contains plaintext wrapping keys, signing keys, and the
 
 # Local data recovery
 
+The first release uses `KASUMI-KVROOT005`; development roots through ROOT004
+are unsupported. Create fresh storage with this build. See the
+[first-release format](operations.md#first-release-storage-format-kasumi-kvroot005).
+
 The generated installation installs the filesystem backup destination `local` beneath `backups`. Create and verify a full backup using the native administrative backup API and retain the exact returned `FullBackupCheckpoint`. Retain the source application wrapping keyring separately. Verification requires every encrypted dependency; a root object alone is not a complete backup.
 
 Stop the installed server before restoring. Prepare a JSON request containing a fresh `operation_id`, `tenant`, `expected_active_incarnation`, a fresh `target_incarnation`, the exact verified `checkpoint`, the exact source `source_purpose`, `source_keys`, `source_principal`, installed `destination`, and `phase_timeout_ms` (1–600000). For standalone backups, `source_purpose` contains `kind: "Standalone"`, the original `installation_id`, `tenant`, and `incarnation`. `source_keys` uses the same file-keyring configuration shape as the source tenant's `keys`. `source_principal` must have administrator authority in the backed-up policy.

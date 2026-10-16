@@ -1,99 +1,122 @@
-//! A bounded bottom-up packing pass over the current selected directory.
+//! One bounded bottom-up packing pass over the selected directory.
 //!
-//! Continuations are logical keys, never paths retained across publications.
-//! Foreground changes may make an already visited range sparse again, so only
-//! a pass without an intervening foreground publication establishes completion.
-//! A retry preserves completed value evacuation and its frozen file cutoffs.
+//! Continuations are logical keys, never paths retained across publications,
+//! and every step persists the current level and continuation as a lower
+//! bound. Foreground changes may leave an already visited range sparse again;
+//! the pass does not restart for them, and the next cycle packs it. Each level
+//! durably caps its remaining work at the selected entry count at its start
+//! plus 64 plans, so a
+//! continuously changing tree or repeated reopen cannot keep one level alive. Value evacuation
+//! and its frozen file cutoffs are never repeated here.
 
 use super::*;
 use crate::directory::{DirectoryCursor, DirectoryPackPlan};
+
+const LEVEL_SLACK: u64 = 64;
 
 #[derive(Default)]
 pub(super) struct Density {
     level: u8,
     next: Option<DirectoryCursor>,
-    expected_generation: Option<u64>,
-    dirty: bool,
-    complete: bool,
+    remaining: u64,
+}
+
+impl Density {
+    pub(super) fn resume(level: u8, next: Option<DirectoryCursor>, remaining: u64) -> Self {
+        Self {
+            level,
+            next,
+            remaining,
+        }
+    }
 }
 
 impl DiskState {
-    pub(super) fn density_step(
+    pub(super) fn pack_step(
         &mut self,
-        progress: &mut CompactionProgress,
-        work_limit: usize,
+        budget: MaintenanceBudget,
+        progress: &mut MaintenanceProgress,
     ) -> Result<bool, CoreError> {
-        let generation = self.selected.generation;
-        let density = &mut self.compact.density;
-        if density.expected_generation.is_none() && progress.work >= work_limit {
+        if self.compact.density.level >= self.selected.height {
+            return self.finish_cycle(budget, progress);
+        }
+        // Every successful step persists both its cursor and remaining work,
+        // including verified skips. A truncated key can repeat after reopen,
+        // but cannot reset this finite allowance or starve a later cycle.
+        if !can_mutate(budget, progress) {
             return Ok(false);
         }
-        if density
-            .expected_generation
-            .is_some_and(|old| old != generation)
-        {
-            if density.complete {
-                *density = Density::default();
+        let density = &self.compact.density;
+        let level = density.level;
+        let remaining = if density.remaining == 0 {
+            self.selected.entries.saturating_add(LEVEL_SLACK)
+        } else {
+            density.remaining
+        };
+        let lower = density
+            .next
+            .as_ref()
+            .map_or(DirectoryKey::table("\0"), DirectoryCursor::key);
+        let plan = DirectoryReader::new(self.arena.as_ref(), self.owner.admission.clone())
+            .pack_after(self.selected, level, lower)?;
+        progress.units += 1;
+        let truncated = remaining == 1 && plan.as_ref().is_some_and(|plan| plan.next().is_some());
+        let next_level = plan.as_ref().is_none_or(|plan| plan.next().is_none()) || truncated;
+        let cursor = if next_level {
+            (level + 1, CompactionCursor::NONE, 0)
+        } else {
+            (
+                level,
+                CompactionCursor::lower_bound(plan.as_ref().unwrap().next().unwrap().key())?,
+                remaining - 1,
+            )
+        };
+        if let Some(plan) = &plan {
+            if plan.references().1.is_some() {
+                self.compact.stats.density_pairs += 1;
+            }
+            if plan.needs_pack() {
+                self.maintain_pair(plan, cursor)?;
+                self.compact.stats.maintenance_commits += 1;
+                self.compact.stats.density_commits += 1;
             } else {
-                density.dirty = true;
+                self.publish_phase(|root| {
+                    root.advance_packing_cursor(cursor.0, cursor.1, cursor.2)
+                })?;
             }
+        } else {
+            self.publish_phase(|root| root.advance_packing_cursor(cursor.0, cursor.1, cursor.2))?;
         }
-        density.expected_generation = Some(generation);
-        while progress.work < work_limit && !self.compact.density.complete {
-            if self.compact.density.level >= self.selected.height {
-                progress.work += 1;
-                progress.density_passes += 1;
-                if self.compact.density.dirty {
-                    self.compact.density = Density {
-                        expected_generation: Some(self.selected.generation),
-                        ..Density::default()
-                    };
-                    progress.density_restarts += 1;
-                    continue;
-                }
-                self.compact.density.complete = true;
-                break;
-            }
-            let lower = self
-                .compact
-                .density
-                .next
-                .as_ref()
-                .map_or(DirectoryKey::table("\0"), DirectoryCursor::key);
-            // Packing must not fill or train the hot cache with a cold sweep.
-            let plan = DirectoryReader::new(self.arena.as_ref(), self.owner.admission.clone())
-                .pack_after(self.selected, self.compact.density.level, lower)?;
-            progress.work += 1;
-            if let Some(plan) = plan {
-                if plan.references().1.is_some() {
-                    progress.density_pairs += 1;
-                }
-                if plan.needs_pack() {
-                    self.maintain_pair(&plan)?;
-                    self.compact.density.expected_generation = Some(self.selected.generation);
-                    progress.maintenance_commits += 1;
-                    progress.density_commits += 1;
-                }
-                // The plan admitted this cursor before any preparation. A
-                // merged underfull page remains eligible for its next neighbor.
-                self.compact.density.next = plan.into_next();
+        progress.mutations += 1;
+        if truncated {
+            self.compact.stats.density_truncated_levels += 1;
+        }
+        self.compact.density = Density {
+            level: cursor.0,
+            next: if next_level {
+                None
             } else {
-                self.compact.density.next = None;
-            }
-            if self.compact.density.next.is_none() {
-                self.compact.density.level += 1;
-            }
-        }
-        progress.density_complete = self.compact.density.complete;
-        Ok(progress.density_complete)
+                plan.and_then(DirectoryPackPlan::into_next)
+            },
+            remaining: cursor.2,
+        };
+        Ok(true)
     }
 
-    fn maintain_pair(&mut self, plan: &DirectoryPackPlan) -> Result<(), CoreError> {
-        catch_unwind(AssertUnwindSafe(|| self.maintain_pair_inner(plan)))
+    fn maintain_pair(
+        &mut self,
+        plan: &DirectoryPackPlan,
+        cursor: (u8, CompactionCursor, u64),
+    ) -> Result<(), CoreError> {
+        catch_unwind(AssertUnwindSafe(|| self.maintain_pair_inner(plan, cursor)))
             .unwrap_or_else(|panic| Err(CoreError::unknown_commit(CorePanic::new(panic))))
     }
 
-    fn maintain_pair_inner(&mut self, plan: &DirectoryPackPlan) -> Result<(), CoreError> {
+    fn maintain_pair_inner(
+        &mut self,
+        plan: &DirectoryPackPlan,
+        cursor: (u8, CompactionCursor, u64),
+    ) -> Result<(), CoreError> {
         let workspace = self
             .owner
             .admission
@@ -101,11 +124,23 @@ impl DiskState {
             .map(NativeResidentLease::new)?;
         let mut directory_workspace =
             DirectoryWriteWorkspace::for_pack(self.owner.admission.clone())?;
-        let prepared = self.writer.prepare_maintenance(
+        let witness = self.selection_witness();
+        // Packing two neighbors is bounded like two edits of the selected tree.
+        let space = self.reserve_maintenance_space(&[MaintenanceOp::DirectoryOnly], 2)?;
+        let prepared = match self.writer.prepare_maintenance(
             self.owner.backend.as_ref(),
             &[MaintenanceOp::DirectoryOnly],
             &mut Roll(self.owner.clone()),
-        )?;
+        ) {
+            Ok(prepared) => prepared,
+            Err(original) if !self.writer.is_fenced() => {
+                self.owner
+                    .backend
+                    .cancel_transaction(space.group_id, space.batch_seq)?;
+                return Err(original);
+            }
+            Err(original) => return Err(original),
+        };
         self.owner.check()?;
         let private = self.pages.maintenance_private_view();
         let result = (|| {
@@ -117,6 +152,9 @@ impl DiskState {
         let root = match result {
             Ok(root) => root,
             Err(error) if error.is_capacity_denied() => {
+                self.owner
+                    .backend
+                    .finish_transaction(space.group_id, space.batch_seq)?;
                 self.writer.abort_prepared(
                     self.owner.backend.as_ref(),
                     prepared,
@@ -129,7 +167,7 @@ impl DiskState {
                 return Err(error);
             }
         };
-        self.finish_maintenance(prepared, root, workspace)?;
+        self.finish_maintenance(witness, prepared, root, workspace, &space, cursor)?;
         self.warm_maintenance_pages(root)
             .map_err(|error| error.into_unknown_commit())
     }

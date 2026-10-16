@@ -462,7 +462,9 @@ fn selected_snapshot_fork_keeps_old_root_after_update_delete_and_parent_drop() {
     drop(parent);
     let grandchild = child.fork().unwrap();
     drop(child);
-    database.inner.core.compact().unwrap();
+    database.inner.core.seal_files_for_test().unwrap();
+    let cycle = database.inner.core.complete_cycle_for_test().unwrap();
+    assert!(cycle.relocated_bytes > 0, "{cycle:?}");
     assert_eq!(
         grandchild
             .get_bytes(ROWS.name(), b"a", 32)

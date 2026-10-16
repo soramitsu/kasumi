@@ -13,9 +13,16 @@ segment and `0000000000000001.kvdir` for a directory arena. The group contract
 also recognizes checkpoint files; the current Core rejects roots carrying a
 checkpoint reference from the retired storage path.
 
-The current root magic is `KASUMI-KVROOT003`, the segment magic is
+The current root magic is `KASUMI-KVROOT005`, the segment magic is
 `KASUMI-KVSEG0004`, and directory pages use `KASUMI-KVDIR0002` inside
-`KASUMI-KVARENA01` arenas. Segment and arena files each have a 64 MiB bound.
+`KASUMI-KVARENA01` arenas. A `KASUMI-KVROOT005` slot carries the persisted
+compaction record (cycle, phase, frozen file cutoffs, baseline, immutable
+evacuation worklist, in-phase position and remaining Packing work budget) at bytes 2384..4080; the
+remainder before the checksum must be zero. Slots of the retired root formats
+001, 002, 003 and 004 are refused before their
+checksum is examined. There is no reader or migration for them: a group written
+by an earlier build does not open and must be recreated from a verified logical
+backup. Segment and arena files each have a 64 MiB bound.
 Segments have a 64-byte header; arenas have a 4 KiB header followed by immutable
 16 KiB directory pages. Page references include their SHA-256 digest. Directory
 leaves hold table markers and ordered keys with value locations, lengths,
@@ -136,19 +143,57 @@ whether it completed and whether the live set is fully resident.
 
 ## Maintenance and limits
 
-Compaction incrementally rotates the appenders, relocates old live values,
-packs sparse directory pages, and proves file reachability across current and
-pinned roots. Only a complete, still-current proof can publish garbage. Each
-unlink requires the selected mirrored root and confirmed parent synchronization
-before its garbage record and disk charge are released. Recovery rechecks
-recorded garbage before finishing an interrupted reclaim operation.
+Each group runs one persisted maintenance cycle,
+`Idle -> Evacuating -> Reclaiming -> Packing -> Idle`, recorded in the root.
 
-The table facade advances bounded maintenance before a new write after at
-least 1 MiB of append growth. `Core::compact()` synchronously finishes a cycle
-using bounded steps, so its total duration can scale with the dataset. Old
-snapshots retain reachable files; compaction can proceed while they remain
-open. Temporary copies and retained generations still require admitted disk
-headroom. Provider pressure can return a retryable capacity denial.
+- **Idle.** Bounded census steps measure the present segment and arena files
+  (one probe per identifier). A cycle begins when the measured bytes reach
+  `max(baseline * growth_percent / 100, baseline + slack_bytes)` or the file
+  count reaches the analogous file threshold, or when `request_compaction` asks
+  for one. Beginning is a single root publication that freezes the cutoffs one
+  below the newest confirmed segment and arena; it rolls and creates nothing.
+- **Evacuating.** Every leaf that names a value at or below the segment cutoff,
+  or lives in an arena at or below the arena cutoff, is rewritten once with its
+  path in one bounded maintenance batch. The cycle-start directory is an
+  immutable worklist; rank/select over authenticated subtree counts gives an
+  exact ordinal that each batch publishes durably. A fresh leaf without old
+  values needs only a root publication. Appends and in-range inserts cannot
+  extend the worklist, and reopen preserves progress for arbitrary long keys.
+  Directory retirement is refused until the phase transition clears this root.
+- **Reclaiming.** Sequential certified cohorts of at most 128 candidates prove
+  file unreachability across the current root and every live pin, then retire,
+  unlink and forget the unreferenced files. Foreground commits never restart or
+  invalidate a cohort: every install goes through one selection funnel that
+  advances the cohort's certified chain and stamps new pins.
+- **Packing.** One bounded density pass packs sparse pages level by level, with
+  each level capped at its starting entry count plus 64 plans. Every step
+  persists its cursor and remaining budget, including skips and level changes.
+  Reopen may revisit a truncated key prefix but cannot reset the finite budget.
+
+Each phase change is its own root publication; a reopen resumes from the record
+and never re-copies values a previous lifetime already relocated. Every
+maintenance data batch first reserves its complete `TransactionSpacePlan`, like
+a foreground commit.
+
+`Database::begin_write` runs one inline step (`MaintenancePolicy::inline_units`
+read units and `inline_mutations` publications, 32 and 1 by default) before its
+snapshot. `Database::run_maintenance(budget)` and `Core::run_maintenance` run
+one explicit step; the database form returns `MaintenanceStep::Busy` instead of
+waiting while a writer holds the write gate. `maintenance_status`,
+`configure_maintenance` and `request_compaction` observe and steer the cycle.
+Capacity pressure and other local refusals are reported as a deferral with a
+step-count backoff and never fail `begin_write` or a commit. I/O, corruption,
+unknown outcomes and owner failure fence the owner, as for any write.
+
+Retained size oscillates between the baseline `B` and about `max(2B, B +
+slack_bytes)` plus one cycle's transient, where `B` can reach about `(1 + 2h)`
+times the live directory plus the live values under saturated writes (each leaf
+rewrite copies its path). A cycle copies all live values and every old leaf.
+Files reachable only from pinned snapshots survive until the first cycle after
+their pins are released. On a full disk evacuation defers, and nothing can be
+reclaimed until it finishes: keep about `B` of headroom. A cohort walk must
+finish within one process lifetime for reclamation to progress across crash
+loops; the node worker provides that for managed stores.
 
 | Native Core bound | Limit |
 | --- | --- |
@@ -172,8 +217,11 @@ The native tests exercise whole-generation recovery at each injected commit
 effect, torn durable writes, owner callback panics, cache visibility after
 failed publication, multi-table snapshots and ordered iteration, capacity
 rollback, and close custody. Compaction and reclamation tests inject failures
-at relocation, publication, unlink, and garbage-forget boundaries, including
-held snapshots and values larger than maintenance workspace. Allocation tests
+at relocation, phase publication, cursor-carrying installs, retirement,
+unlink, and garbage-forget boundaries, including held snapshots, pins taken at
+intermediate roots and values larger than maintenance workspace. Whole-machine
+tests drive steady commit streams, crash loops and randomized interleavings
+with small file geometry and assert that retained files plateau. Allocation tests
 check cache and transaction accounting, and restart tests check that opening
 above admitted memory does not rebuild a resident key map.
 

@@ -168,6 +168,66 @@ pub(crate) struct CapacityObservation {
     pub retirement_bytes: u64,
     pub retirement_budget_bytes: u64,
 }
+/// One local group's retained `.kvseg`/`.kvdir` files and its persisted
+/// compaction cycle. File figures come from the store's last completed census
+/// and are `None` until one completes in the current process lifetime. The
+/// `_total` counters are process-lifetime counts of the open store.
+#[derive(Serialize)]
+pub(crate) struct StorageObservation {
+    pub measured: bool,
+    pub segment_files: Option<u64>,
+    pub segment_bytes: Option<u64>,
+    pub arena_files: Option<u64>,
+    pub arena_bytes: Option<u64>,
+    pub garbage_files: u64,
+    pub compaction_phase: &'static str,
+    pub compaction_cycle: u64,
+    pub compaction_baseline_bytes: u64,
+    pub compaction_baseline_files: u64,
+    pub compaction_trigger_bytes: u64,
+    pub compaction_trigger_files: u64,
+    pub snapshot_retained_files: u64,
+    pub snapshot_retained_bytes: u64,
+    pub reclaimed_files_total: u64,
+    pub reclaimed_bytes_total: u64,
+    pub relocated_bytes_total: u64,
+    pub reclaim_invalidations_total: u64,
+    pub capacity_deferrals_total: u64,
+    pub rejected_deferrals_total: u64,
+    /// `capacity` or `rejected` while the last maintenance step deferred.
+    pub last_deferral: Option<&'static str>,
+}
+impl From<&kasumi_store::StorageMaintenanceStatus> for StorageObservation {
+    fn from(status: &kasumi_store::StorageMaintenanceStatus) -> Self {
+        let measured = |value| status.measured.then_some(value);
+        Self {
+            measured: status.measured,
+            segment_files: measured(status.segment_files),
+            segment_bytes: measured(status.segment_bytes),
+            arena_files: measured(status.arena_files),
+            arena_bytes: measured(status.arena_bytes),
+            garbage_files: status.garbage_files,
+            compaction_phase: status.phase.as_str(),
+            compaction_cycle: status.cycle,
+            compaction_baseline_bytes: status.baseline_bytes,
+            compaction_baseline_files: status.baseline_files,
+            compaction_trigger_bytes: status.trigger_bytes,
+            compaction_trigger_files: status.trigger_files,
+            snapshot_retained_files: status.snapshot_retained_files,
+            snapshot_retained_bytes: status.snapshot_retained_bytes,
+            reclaimed_files_total: status.reclaimed_files_total,
+            reclaimed_bytes_total: status.reclaimed_bytes_total,
+            relocated_bytes_total: status.relocated_bytes_total,
+            reclaim_invalidations_total: status.reclaim_invalidations_total,
+            capacity_deferrals_total: status.capacity_deferrals_total,
+            rejected_deferrals_total: status.rejected_deferrals_total,
+            last_deferral: status.last_deferral.map(|deferral| match deferral {
+                kasumi_store::MaintenanceDeferral::Capacity => "capacity",
+                kasumi_store::MaintenanceDeferral::Rejected(_) => "rejected",
+            }),
+        }
+    }
+}
 #[derive(Serialize)]
 pub(crate) struct GroupObservation {
     pub tenant: String,
@@ -179,6 +239,7 @@ pub(crate) struct GroupObservation {
     pub retention: Option<RetentionObservation>,
     pub audit_maintenance: Option<kasumi_engine::AuditMaintenanceStatus>,
     pub capacity: Option<CapacityObservation>,
+    pub storage: Option<StorageObservation>,
 }
 pub(crate) struct LocalObservation {
     pub admission: AdmissionSnapshot,
@@ -814,6 +875,15 @@ impl Observation {
         );
         writeln!(out, "# TYPE kasumi_service_audit_maintenance_failures_total counter\nkasumi_service_audit_maintenance_failures_total {}", self.service_audit.maintenance_failures).unwrap();
         writeln!(out, "# TYPE kasumi_local_group_audit_maintenance_failures_total counter\n# TYPE kasumi_local_group_audit_maintenance_committed_segments_total counter").unwrap();
+        writeln!(
+            out,
+            "# TYPE kasumi_local_group_storage_reclaimed_files_total counter\n\
+             # TYPE kasumi_local_group_storage_reclaimed_bytes_total counter\n\
+             # TYPE kasumi_local_group_storage_relocated_bytes_total counter\n\
+             # TYPE kasumi_local_group_storage_reclaim_invalidations_total counter\n\
+             # TYPE kasumi_local_group_storage_maintenance_deferrals_total counter"
+        )
+        .unwrap();
         for group in &self.groups {
             let tenant = label(&group.tenant);
             macro_rules! group_gauge {
@@ -888,6 +958,68 @@ impl Observation {
                 );
                 group_gauge!("retirement_bytes", capacity.retirement_bytes);
                 group_gauge!("retirement_budget_bytes", capacity.retirement_budget_bytes);
+            }
+            if let Some(storage) = &group.storage {
+                group_gauge!("storage_measured", u8::from(storage.measured));
+                if let Some(files) = storage.segment_files {
+                    group_gauge!("storage_segment_files", files);
+                }
+                if let Some(bytes) = storage.segment_bytes {
+                    group_gauge!("storage_segment_bytes", bytes);
+                }
+                if let Some(files) = storage.arena_files {
+                    group_gauge!("storage_arena_files", files);
+                }
+                if let Some(bytes) = storage.arena_bytes {
+                    group_gauge!("storage_arena_bytes", bytes);
+                }
+                group_gauge!("storage_garbage_files", storage.garbage_files);
+                for phase in ["idle", "evacuating", "reclaiming", "packing"] {
+                    writeln!(
+                        out,
+                        "kasumi_local_group_storage_compaction_phase{{tenant=\"{tenant}\",phase=\"{phase}\"}} {}",
+                        u8::from(storage.compaction_phase == phase)
+                    )
+                    .unwrap();
+                }
+                group_gauge!("storage_compaction_cycle", storage.compaction_cycle);
+                group_gauge!(
+                    "storage_compaction_baseline_bytes",
+                    storage.compaction_baseline_bytes
+                );
+                group_gauge!(
+                    "storage_compaction_trigger_bytes",
+                    storage.compaction_trigger_bytes
+                );
+                group_gauge!(
+                    "storage_snapshot_retained_bytes",
+                    storage.snapshot_retained_bytes
+                );
+                for (name, value) in [
+                    ("reclaimed_files_total", storage.reclaimed_files_total),
+                    ("reclaimed_bytes_total", storage.reclaimed_bytes_total),
+                    ("relocated_bytes_total", storage.relocated_bytes_total),
+                    (
+                        "reclaim_invalidations_total",
+                        storage.reclaim_invalidations_total,
+                    ),
+                ] {
+                    writeln!(
+                        out,
+                        "kasumi_local_group_storage_{name}{{tenant=\"{tenant}\"}} {value}"
+                    )
+                    .unwrap();
+                }
+                for (class, value) in [
+                    ("capacity", storage.capacity_deferrals_total),
+                    ("rejected", storage.rejected_deferrals_total),
+                ] {
+                    writeln!(
+                        out,
+                        "kasumi_local_group_storage_maintenance_deferrals_total{{tenant=\"{tenant}\",class=\"{class}\"}} {value}"
+                    )
+                    .unwrap();
+                }
             }
         }
         writeln!(out, "# TYPE kasumi_backup_requests_total counter\n# TYPE kasumi_backup_requests_inflight gauge").unwrap();

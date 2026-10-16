@@ -1,10 +1,103 @@
 # Bounded compaction: leaf batches and directory density
 
-Status: **leaf batching and adjacent-page density implemented and component-tested;
-cache reconciliation, reclamation progress and production Core cutover open**.
-Updated 2026-09-30. This plan extends the internal maintenance foundation in
-[the storage design](disk-backed-storage-design.md); it does not qualify that
-foundation for production workloads or close the [cache goals](disk-backed-cache-goals.md).
+Status: **persisted maintenance cycle implemented (2026-10-09)**: leaf batching,
+adjacent-page density and certified reclamation run as one persisted
+`Idle -> Evacuating -> Reclaiming -> Packing -> Idle` machine per group, driven
+inline by `begin_write` and by the node worker. Cache reconciliation and
+production qualification remain open. This plan extends the internal maintenance
+foundation in [the storage design](disk-backed-storage-design.md); it does not
+qualify that foundation for production workloads or close the
+[cache goals](disk-backed-cache-goals.md). Sections below the cycle summary that
+describe density restarts, forced rotation and the 1 MiB trigger are historical.
+
+## Persisted cycle (`KASUMI-KVROOT005`)
+
+- **Persisted phases.** The root carries `CompactionRecord` (cycle, phase,
+  density level, frozen cutoffs, baseline, the Evacuating worklist root and
+  an in-phase cursor of at most
+  1,536 bytes: an exact worklist ordinal during Evacuating, or a full
+  table name plus row-key prefix as an inclusive lower bound during Packing). Each phase change is one mirrored root publication, so a torn write
+  selects the old or new record and an unknown outcome fences until reopen.
+  Evacuation progress is published with each maintenance batch, including
+  a root-only publication for skips; foreground installs preserve that exact
+  ordinal. Packing publishes its cursor and remaining per-level work budget with every step, including skips and level changes; foreground installs preserve them. Allocation,
+  retirement, forget and replay publications carry the record unchanged, and
+  `is_successor` refuses any other change. Formats `KASUMI-KVROOT003` and `KASUMI-KVROOT004` are
+  rejected with no reader or migration.
+- **Rotation-free cutoff.** Beginning a cycle freezes `(last_segment_id - 1,
+  last_directory_id - 1)` from the same root under the owner lock and creates
+  no file. Values written after the beginning land in the active segment or a
+  newer one, and pages in an arena at or above the newest confirmed one (a
+  reopened writer always rolls a fresh arena), so both are above the cutoffs.
+  `force_roll` survives only as a test entry point into the production roll.
+- **Evacuation.** Rank/select over the immutable cycle-start directory
+  selects an original key and its current leaf. Each successful batch
+  durably advances its exact worklist ordinal; foreground inserts cannot
+  extend the worklist. The phase ends with `Evacuating -> Reclaiming`
+  when the worklist is exhausted or no current key remains.
+- **Reclamation.** See the [reclamation follow-up](disk-reclamation-followup.md).
+  Completion publishes `Reclaiming -> Packing` with the new baseline: the
+  census at the start of reclamation minus the reclaimed files and bytes.
+- **Single density pass.** Packing resumes from the persisted level and cursor,
+  never restarts for foreground changes, and durably caps each level at the selected
+  entry count at its start plus 64 plans (a capped level counts as truncated).
+  Reopen may revisit a truncated key prefix but consumes the same remaining
+  budget, so repeated restarts cannot keep Packing alive indefinitely.
+  The next cycle packs ranges that foreground writes left sparse. Reaching the
+  root height publishes `Packing -> Idle`.
+- **Trigger.** While Idle, bounded census steps (one `exists` and `len` probe
+  per identifier from the reclaim floor) measure retained segment and arena
+  files after open and after every new file. A cycle is due when bytes reach
+  `max(B * growth_percent / 100, B + slack_bytes)` or files reach
+  `max(F * growth_percent / 100, F + slack_files)`, with the persisted baseline
+  `B`/`F` and the defaults 200 %, 256 MiB and 16 files, or when
+  `request_compaction` was called. A cycle begins only when a directory commit
+  exists, the cutoffs are not `(0, 0)` and the segment writer is at the newest
+  segment. A store whose last cycle completed therefore does not begin another
+  after reopen until it grows past the thresholds; the former trigger after
+  1 MiB of log growth since open is gone.
+- **Reservation.** Every leaf rewrite and pack reserves its complete
+  `TransactionSpacePlan` before effects, as `commit_inner` does: the segment
+  plan comes from `SegmentWriter::maintenance_transaction_space`, which shares
+  the record-length walk with ordinary batches, and the arena plan from
+  `transaction_page_bound(1)` for a leaf rewrite or `(2)` for a pack. A refused
+  reservation stops with no effect; a failed preparation cancels it; a
+  capacity-refused mutation finishes it and aborts the prepared prefix.
+- **Scheduling and errors.** `begin_write` runs one inline step (32 units, one
+  publication by default) and the node worker runs `{512 units, 1 publication}`
+  after every warm step. Capacity and other local refusals are deferrals with a
+  step-count backoff (256 and 65,536 steps); they never fail a write. I/O,
+  corruption, unknown outcomes and owner failure fence.
+
+Documented limits: a cycle copies every live value and every old leaf with its
+path; retained size oscillates between `B` and about `max(2B, B + slack)` plus
+the cycle transient, where `B` can approach `(1 + 2h)` times the live directory
+plus the live values under saturated writes; pinned files survive until the
+next cycle; on a full disk evacuation defers (it uses foreground admission, not
+the NodeDisk maintenance reserve) and only an operator response frees space;
+reclamation needs one cohort walk to finish within one process lifetime.
+The ROOT005 successor freezes the cycle-start authenticated directory root as
+an immutable worklist. Evacuation uses an exact persisted ordinal into that
+root, with rank/select through authenticated subtree counts. It selects each
+original key's current leaf and relocates only current old references; it never
+restores deleted or replaced values. Every successful batch consumes at least
+one original key. Neither tail appends nor insertions within the original key
+range extend the worklist. Long common-prefix keys are never truncated into an
+evacuation position. Skip-only progress has its own bounded root publication,
+so reopen after every successful step preserves progress.
+
+The worklist root remains byte-identical across every Evacuating publication.
+Starting a cycle requires an empty garbage list; all directory/segment retirement
+is refused during Evacuating, including decoded garbage. The durable transition
+to Reclaiming clears the worklist before ordinary complete reachability proofs
+can retire its now-unreferenced pages. ROOT004 and all earlier root formats are
+rejected directly. The root slot remains 4096 bytes; the worklist uses the
+existing canonical 96-byte directory-root encoding and the evacuation cursor
+uses a closed ordinal tag, separate from Packing's lower-bound key cursor.
+
+This source successor has focused local evidence; final-source full acceptance,
+independent review, canonical landing and Linux release qualification remain
+open. No existing installation is migrated or rewritten by this change.
 
 ## Historical per-record checkpoint
 
@@ -46,8 +139,8 @@ new arenas was insufficient; the new phase redistributes or merges their records
    table birth sequences and row sequences. The validated leaf and each ancestor
    are copied once per batch, followed by page sync, exact-root commit and root
    publication. An already fresh leaf without old value locations is skipped
-   without a maintenance commit. The cursor advances only after publication or
-   a verified skip; admission denial leaves the key eligible for retry.
+   without a data commit, but its exact ordinal still needs a mirrored root
+   publication. Admission denial leaves the same worklist position retryable.
 4. **Pack bounded neighboring ranges — implemented internally.** An admitted
    adjacent-page plan feeds one atomic replacement of both paths, including
    pairs across parent boundaries. Leaves and then internal levels are packed
@@ -163,7 +256,8 @@ bound from the current root; no physical path survives a publication. A removed
 level returns no plan, and the sweep checks the current root height as it proceeds.
 The cursor advances only after successful publication or a verified skip.
 
-The owner lock covers each preparation through publication, allowing foreground
+Historical (replaced by the single persisted pass above): the owner lock
+covers each preparation through publication, allowing foreground
 writes between bounded steps. Density records the expected selected generation
 and advances it after its own commits. A different observed generation marks an
 unfinished pass dirty. The pass continues from its logical cursor; at the end,
@@ -209,9 +303,9 @@ follow their original roots and retain their exact physical files. Cached old
 and new identities must remain hot when their charged memory fits; maintenance
 must not admit cold scan data under pressure.
 
-Periodic reclamation progress remains open and the following scheduling/proof
-proposal is unimplemented. Reclamation currently follows evacuation and a clean
-density pass. Scheduling it between bounded batches or output-arena cohorts could
+Historical (implemented since, see the cycle summary above): periodic
+reclamation progress was open and the following scheduling/proof proposal was
+unimplemented. Reclamation then followed evacuation and a clean density pass. Scheduling it between bounded batches or output-arena cohorts could
 limit temporary disk growth, but the existing reachability proof is invalidated
 by any root publication, so interleaving its scan with continual writes can starve it.
 Do not silently weaken that check. Before claiming foreground-compatible GC

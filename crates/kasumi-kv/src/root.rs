@@ -30,6 +30,12 @@
 //! checkpoint references may be retired, so neither checkpoint loading nor
 //! replay meets a missing segment. The last identifier of each kind is never
 //! allocated, so arithmetic on a decoded root never overflows.
+//!
+//! `KASUMI-KVROOT005` persists the compaction cycle, immutable evacuation
+//! worklist and exact ordinal (`root_compaction.rs`) at bytes 2384..4080; the
+//! remainder up to the checksum must be zero. Slots of the retired formats
+//! 001, 002, 003 and 004 are refused before their checksum is examined: there
+//! is no reader or migration for them.
 
 use crate::checkpoint::{CheckpointRef, CheckpointSummary};
 use crate::core::CoreError;
@@ -44,8 +50,22 @@ mod directory;
 pub(crate) use directory::DirectoryCommit;
 use directory::{DIRECTORY_AT, DIRECTORY_END, decode_directory, encode_directory};
 
+#[path = "root_compaction.rs"]
+mod compaction;
+use compaction::{
+    COMPACTION_AT, COMPACTION_END, compaction_successor, decode_compaction, encode_compaction,
+};
+pub(crate) use compaction::{CompactionCursor, CompactionPhase, CompactionRecord};
+
 pub const ROOT_SLOT_BYTES: usize = 4096;
-pub(crate) const ROOT_MAGIC: [u8; 16] = *b"KASUMI-KVROOT003";
+pub(crate) const ROOT_MAGIC: [u8; 16] = *b"KASUMI-KVROOT005";
+/// Root magics of formats this build never reads or migrates.
+const RETIRED_ROOT_MAGICS: [[u8; 16]; 4] = [
+    *b"KASUMI-KVROOT001",
+    *b"KASUMI-KVROOT002",
+    *b"KASUMI-KVROOT003",
+    *b"KASUMI-KVROOT004",
+];
 pub(crate) const MAX_GARBAGE: usize = 128;
 const CHECKPOINT_AT: usize = 72;
 const SEALED_AT: usize = 128;
@@ -70,7 +90,7 @@ impl RootSlot {
         }
     }
 
-    fn for_generation(generation: u64) -> Self {
+    pub(crate) fn for_generation(generation: u64) -> Self {
         if generation.is_multiple_of(2) {
             Self::A
         } else {
@@ -104,6 +124,8 @@ pub(crate) struct Superblock {
     directory: Option<DirectoryCommit>,
     /// Sorted, unique files awaiting unlink.
     garbage: Vec<GroupFile>,
+    /// The persisted maintenance cycle; see `root_compaction.rs`.
+    compaction: CompactionRecord,
 }
 
 /// How the root accounts for one present file.
@@ -169,6 +191,7 @@ impl Superblock {
             last_directory_id: 0,
             directory: None,
             garbage: Vec::new(),
+            compaction: CompactionRecord::GENESIS,
         }
     }
 
@@ -193,6 +216,11 @@ impl Superblock {
 
     pub(crate) fn last_segment_id(&self) -> u64 {
         self.last_segment_id
+    }
+
+    /// The next identifier each kind would allocate (segment, directory).
+    pub(crate) fn next_file_ids(&self) -> (u64, u64) {
+        (self.next_segment_id, self.next_directory_id)
     }
 
     pub(crate) fn checkpoint(&self) -> Option<CheckpointRef> {
@@ -676,7 +704,7 @@ impl Superblock {
         {
             return Some("root garbage list is invalid");
         }
-        None
+        self.compaction_invariant_violation()
     }
 
     pub(crate) fn encode(&self) -> Result<[u8; ROOT_SLOT_BYTES], CoreError> {
@@ -712,6 +740,7 @@ impl Superblock {
             bytes[at + 8..at + 16].copy_from_slice(&file.id.to_le_bytes());
         }
         encode_directory(self, &mut bytes[DIRECTORY_AT..DIRECTORY_END]);
+        encode_compaction(&self.compaction, &mut bytes[COMPACTION_AT..COMPACTION_END]);
         let checksum = crc32c(&bytes[..CHECKSUM_AT]);
         bytes[CHECKSUM_AT..].copy_from_slice(&checksum.to_le_bytes());
         Ok(bytes)
@@ -735,7 +764,10 @@ enum SlotImage {
 
 fn decode_slot(bytes: &[u8; ROOT_SLOT_BYTES]) -> Result<SlotImage, CoreError> {
     reject_legacy(bytes)?;
-    if bytes[..16] == *b"KASUMI-KVROOT001" || bytes[..16] == *b"KASUMI-KVROOT002" {
+    if RETIRED_ROOT_MAGICS
+        .iter()
+        .any(|magic| bytes[..16] == *magic)
+    {
         return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
             "retired root format is unsupported",
         )));
@@ -759,7 +791,7 @@ fn decode_slot(bytes: &[u8; ROOT_SLOT_BYTES]) -> Result<SlotImage, CoreError> {
         || bytes[GARBAGE_AT + garbage_count * GARBAGE_ENTRY_BYTES..DIRECTORY_AT]
             .iter()
             .any(|&byte| byte != 0)
-        || bytes[DIRECTORY_END..CHECKSUM_AT]
+        || bytes[COMPACTION_END..CHECKSUM_AT]
             .iter()
             .any(|&byte| byte != 0)
     {
@@ -819,6 +851,7 @@ fn decode_slot(bytes: &[u8; ROOT_SLOT_BYTES]) -> Result<SlotImage, CoreError> {
         &bytes[DIRECTORY_AT..DIRECTORY_END],
         bytes[24..40].try_into().expect("16 bytes"),
     )?;
+    let compaction = decode_compaction(&bytes[COMPACTION_AT..COMPACTION_END])?;
     let superblock = Superblock {
         generation: le_u64(&bytes[40..48]),
         group_id: bytes[24..40].try_into().expect("16 bytes"),
@@ -831,6 +864,7 @@ fn decode_slot(bytes: &[u8; ROOT_SLOT_BYTES]) -> Result<SlotImage, CoreError> {
         last_directory_id,
         directory,
         garbage,
+        compaction,
     };
     if let Some(reason) = superblock.invariant_violation() {
         return Err(CoreError::new(crate::CoreErrorCause::Corrupt(reason)));
@@ -1098,7 +1132,8 @@ fn publish(
 
 /// The next generation of one group that moves no allocation back, never
 /// replaces the checkpoint with an older one or moves its replay start back,
-/// and changes the sealed record only with a new segment intent.
+/// changes the sealed record only with a new segment intent, and changes the
+/// compaction record only by in-phase progress or one phase transition.
 fn is_successor(previous: &Superblock, next: &Superblock) -> bool {
     let checkpoint_regressed = previous.checkpoint.is_some_and(|current| {
         next.checkpoint.is_none_or(|reference| {
@@ -1115,6 +1150,7 @@ fn is_successor(previous: &Superblock, next: &Superblock) -> bool {
         && next.next_directory_id >= previous.next_directory_id
         && next.last_directory_id >= previous.last_directory_id
         && directory::directory_successor(previous.directory, next.directory)
+        && compaction_successor(previous, next)
         && !checkpoint_regressed
         && (next.next_segment_id != previous.next_segment_id || next.sealed == previous.sealed)
 }
@@ -1900,7 +1936,12 @@ mod tests {
 
     #[test]
     fn retired_root_slots_are_rejected_even_beside_current_root() {
-        for magic in [b"KASUMI-KVROOT001", b"KASUMI-KVROOT002"] {
+        for magic in [
+            b"KASUMI-KVROOT001",
+            b"KASUMI-KVROOT002",
+            b"KASUMI-KVROOT003",
+            b"KASUMI-KVROOT004",
+        ] {
             for slot in [RootSlot::A, RootSlot::B] {
                 let (group, root) = published(2);
                 let mut bytes = root.encode().unwrap();

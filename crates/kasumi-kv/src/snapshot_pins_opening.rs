@@ -73,6 +73,7 @@ impl SnapshotPinsOpening {
                         slots: self.backing.take().unwrap(),
                         epoch: 0,
                         serial: 0,
+                        coverage: None,
                     },
                     self.lease.as_ref().unwrap(),
                 ),

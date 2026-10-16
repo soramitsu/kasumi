@@ -105,52 +105,57 @@ fn seed(core: &Core) {
 }
 
 #[test]
-fn synchronous_compaction_returns_provider_pressure_without_spinning_or_fencing() {
-    // The page prefix fits the first 64 KiB credit chunk; this value needs
-    // real aggregate growth, including its exact-size fallback on refusal.
-    const VALUE_BYTES: usize = 96 << 10;
+fn explicit_run_reports_capacity_deferral_without_spinning() {
     let admission = Admission::new();
-    let c = Arc::new(core(InMemoryGroup::new(), admission.clone()));
+    let c = core(InMemoryGroup::new(), admission.clone());
     c.commit(&[
         Operation::create_table("rows"),
-        Operation::put("rows", b"a", vec![7; VALUE_BYTES]),
+        Operation::put("rows", b"a", vec![7; 4096]),
     ])
     .unwrap();
-    c.configure_cache(CacheConfig { byte_limit: 0 }).unwrap();
-    c.configure_cache(CacheConfig {
-        byte_limit: 4 << 20,
-    })
-    .unwrap();
-    let before = c.committed_position().unwrap();
-    admission.deny_cache_growth.store(true, Ordering::Release);
-    let (send, receive) = std::sync::mpsc::channel();
-    let task = c.clone();
-    let worker = std::thread::spawn(move || send.send(task.compact()).unwrap());
-    let result = receive.recv_timeout(std::time::Duration::from_secs(5));
-    // If a regression spins, remove the obstruction before joining the exact
-    // worker so the failing test never leaves an uncontrolled background loop.
-    admission.deny_cache_growth.store(false, Ordering::Release);
-    worker.join().unwrap();
-    assert!(
-        matches!(&(result.expect("compaction spun on provider refusal")), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::CapacityDenied)))
+    c.seal_files_for_test().unwrap();
+    c.request_compaction().unwrap();
+    // Every maintenance batch needs its fixed abort/replay workspace; refuse
+    // it. One explicit call reports the deferral instead of retrying.
+    admission.limit.store(
+        crate::segment::maintenance_workspace_bytes() - 1,
+        Ordering::Release,
     );
-    assert!(admission.cache_denials.load(Ordering::Acquire) >= 2);
-    assert_ne!(
-        c.committed_position().unwrap(),
-        before,
-        "denial preceded maintenance publication"
-    );
+    let budget = crate::MaintenanceBudget {
+        units: 1 << 20,
+        mutations: 1 << 20,
+    };
+    let first = c.run_maintenance(budget).unwrap();
+    assert_eq!(first.deferred, Some(crate::MaintenanceDeferral::Capacity));
+    assert_eq!(first.phase, crate::StorageCompactionPhase::Evacuating);
+    assert!(first.units < 8, "{first:?}");
     assert!(!c.is_fenced());
-    c.compact().unwrap();
+    // Within the backoff an explicit call does no work and returns at once.
+    let backed_off = c.run_maintenance(budget).unwrap();
+    assert_eq!((backed_off.units, backed_off.mutations), (0, 0));
+    assert_eq!(
+        backed_off.deferred,
+        Some(crate::MaintenanceDeferral::Capacity)
+    );
+    let status = c.maintenance_status().unwrap();
+    assert_eq!(status.capacity_deferrals_total, 1);
+    assert_eq!(
+        status.last_deferral,
+        Some(crate::MaintenanceDeferral::Capacity)
+    );
+    admission.limit.store(u64::MAX, Ordering::Release);
+    let cycle = c.complete_cycle_for_test().unwrap();
+    assert_eq!(cycle.relocated_bytes, 4096);
     let current = c.snapshot().unwrap();
     assert_eq!(
-        c.get_admitted(&current, "rows", b"a", VALUE_BYTES)
+        c.get_admitted(&current, "rows", b"a", 4096)
             .unwrap()
             .unwrap()
             .as_bytes(),
-        vec![7; VALUE_BYTES]
+        vec![7; 4096]
     );
     assert!(!c.is_fenced());
+    assert_eq!(c.maintenance_status().unwrap().last_deferral, None);
 }
 
 #[test]
@@ -222,7 +227,8 @@ fn snapshot_root_survives_overwrite_delete_and_later_table_birth() {
     assert!(!before.table_exists("later").unwrap());
     assert!(middle.table_exists("later").unwrap());
     assert!(!c.key_exists(&c.snapshot().unwrap(), "rows", b"a").unwrap());
-    c.compact().unwrap();
+    c.seal_files_for_test().unwrap();
+    assert!(c.complete_cycle_for_test().unwrap().relocated_bytes > 0);
     assert_eq!(
         c.get_admitted(&before, "rows", b"a", 3)
             .unwrap()
@@ -615,37 +621,26 @@ fn closed_snapshot_result_does_not_reenter_a_poisoned_state() {
 }
 
 #[test]
-fn preparatory_segment_roll_does_not_report_a_fabricated_commit() {
+fn maintenance_phase_publication_does_not_report_a_fabricated_commit() {
     let group = InMemoryGroup::new();
     let c = core(group.clone(), Admission::new());
     seed(&c);
-    let small_commit = c.committed_position().unwrap().unwrap();
-    c.prepare_write().unwrap();
-    assert_eq!(c.committed_position().unwrap(), Some(small_commit));
-    assert!(
-        !group
-            .exists(crate::group::GroupFile::segment(
-                small_commit.segment_id + 1
-            ))
-            .unwrap()
-    );
-    // Cross the automatic-maintenance threshold with one bounded large value.
-    c.commit(&[Operation::put(
-        "rows",
-        b"payload",
-        vec![0x24; (1 << 20) + 64],
-    )])
-    .unwrap();
+    c.seal_files_for_test().unwrap();
     let before = c.committed_position().unwrap().unwrap();
     let generation = c.generation().unwrap();
-    // Its one work unit starts evacuation by rolling the segment, without a
-    // new batch; physical progress must not masquerade as a published commit.
-    c.prepare_write().unwrap();
-    assert!(
-        group
-            .exists(crate::group::GroupFile::segment(before.segment_id + 1))
-            .unwrap()
-    );
+    let files = group.entries().unwrap();
+    c.request_compaction().unwrap();
+    // One mutation: the cycle's beginning is a root publication only. No
+    // file is created and no batch is committed or reported.
+    let progress = c
+        .run_maintenance(crate::MaintenanceBudget {
+            units: 1,
+            mutations: 1,
+        })
+        .unwrap();
+    assert!(progress.phase_changed);
+    assert_eq!(progress.phase, crate::StorageCompactionPhase::Evacuating);
+    assert_eq!(group.entries().unwrap(), files, "beginning created a file");
     assert_eq!(c.generation().unwrap(), generation);
     assert_eq!(c.committed_position().unwrap(), Some(before));
     let pin = c.snapshot().unwrap();
@@ -668,6 +663,10 @@ fn preparatory_segment_roll_does_not_report_a_fabricated_commit() {
     .unwrap();
     assert_eq!(reopened.generation().unwrap(), generation);
     assert_eq!(reopened.committed_position().unwrap(), Some(before));
+    assert_eq!(
+        reopened.maintenance_status().unwrap().phase,
+        crate::StorageCompactionPhase::Evacuating
+    );
     reopened
         .commit(&[Operation::put("rows", b"a", b"new")])
         .unwrap();

@@ -1920,10 +1920,8 @@ mod tests {
                 "installed credential is unavailable",
             ))
         };
-        let failure = OriginalRecoveryFailure::snapshot_at(
-            unavailable().into(),
-            RecoverStage::StorageOpen,
-        );
+        let failure =
+            OriginalRecoveryFailure::snapshot_at(unavailable().into(), RecoverStage::StorageOpen);
         assert_eq!(failure.source_stage(), Some(&RecoverStage::StorageOpen));
         let mut seat = RecoverySeat {
             failure: Some(failure),
@@ -1945,7 +1943,14 @@ mod tests {
             RecoverStage::StorageOpen,
         ));
         assert!(!seat.native_free_failure());
-        assert!(seat.failure.as_ref().unwrap().original().source_error().is_some());
+        assert!(
+            seat.failure
+                .as_ref()
+                .unwrap()
+                .original()
+                .source_error()
+                .is_some()
+        );
     }
 
     #[test]

@@ -71,7 +71,7 @@ pub(crate) fn maintenance_operation_bytes(
     }
 }
 
-fn validate_maintenance(
+pub(super) fn validate_maintenance(
     operations: &[MaintenanceOp<'_>],
     last_batch_seq: u64,
     capacity: u64,

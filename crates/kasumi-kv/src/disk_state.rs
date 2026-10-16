@@ -28,8 +28,8 @@ use crate::native_backend::BackendRef;
 use crate::native_owned_arc::NativeOwnedArc;
 use crate::page_cache::{CachedDirectoryBackend, NativeIdentity, NativeSharedCache};
 use crate::root::{
-    DirectoryCommit, MAX_GARBAGE, RootSelection, Superblock, publish_root, repair_mirror,
-    select_root,
+    CompactionCursor, DirectoryCommit, MAX_GARBAGE, RootSelection, Superblock, Unlinked,
+    publish_forget, publish_root, repair_mirror, select_root,
 };
 use crate::segment::{
     self, LogBounds, MAX_BATCH_OPERATIONS, ReplayStart, SealedSegment, SegmentRoll, SegmentWriter,
@@ -42,6 +42,14 @@ mod public;
 
 #[path = "disk_publish.rs"]
 mod publication;
+
+#[path = "disk_maintenance.rs"]
+mod maintenance;
+use maintenance::Maintenance;
+pub use maintenance::{
+    MaintenanceBudget, MaintenanceDeferral, MaintenancePolicy, MaintenanceProgress,
+    MaintenanceStep, StorageCompactionPhase, StorageMaintenanceStatus,
+};
 
 #[path = "disk_reclaim.rs"]
 mod reclamation;
@@ -113,11 +121,68 @@ impl RootOwner {
         Ok(self.lock()?.log_bounds())
     }
 
-    fn install(&self, commit: DirectoryCommit) -> Result<(), CoreError> {
+    /// Install `commit` as the successor of `source`, carrying in-phase
+    /// compaction progress. The selected directory must be exactly `source`.
+    /// Returns the replaced commit for the reclamation chain.
+    fn install(
+        &self,
+        source: DirectoryRoot,
+        commit: DirectoryCommit,
+        cursor: Option<(u8, CompactionCursor, u64)>,
+    ) -> Result<Option<DirectoryCommit>, CoreError> {
         let mut root = self.lock()?;
-        let next = root.install_directory(commit)?;
-        self.publish(&mut root, next)
+        let previous = root.directory();
+        if previous.map_or(empty_root(self.group_id), |commit| commit.root) != source {
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
+                "directory install does not follow the selected root",
+            )));
+        }
+        let mut next = root.install_directory(commit)?;
+        if let Some((level, cursor, remaining)) = cursor {
+            next = next.with_compaction_cursor(level, cursor, remaining)?;
+        }
+        self.publish(&mut root, next)?;
+        Ok(previous)
     }
+
+    /// Drop one recorded garbage file whose unlink `unlinked` proves. Any
+    /// failure leaves the owner unable to tell the record's state: fence.
+    fn forget(&self, current: &mut Superblock, unlinked: Unlinked) -> Result<(), CoreError> {
+        self.check()?;
+        match publish_forget(self.backend.as_ref(), current, unlinked) {
+            Ok(next) => {
+                self.check()?;
+                *current = next;
+                Ok(())
+            }
+            Err(error) => {
+                self.failed.store(true, Ordering::Release);
+                Err(error)
+            }
+        }
+    }
+}
+
+/// Minted from the selected root before a transaction builds its successor.
+/// Not `Clone`: one witness authorizes exactly one installation.
+pub(super) struct SelectionWitness {
+    source: DirectoryRoot,
+}
+
+fn reserve_transaction(
+    backend: &dyn SegmentGroupBackend,
+    plan: &crate::group::TransactionSpacePlan,
+) -> Result<(), CoreError> {
+    backend
+        .reserve_transaction(plan)
+        .map_err(|error| match error {
+            crate::group::TransactionReserveError::CapacityDenied => {
+                CoreError::new(crate::CoreErrorCause::CapacityDenied)
+            }
+            crate::group::TransactionReserveError::Failed(original) => {
+                CoreError::new(crate::CoreErrorCause::Io(original))
+            }
+        })
 }
 
 impl DirectoryArenaRoll for RootOwner {
@@ -163,6 +228,7 @@ pub(crate) struct DiskState {
     pins: SnapshotPins,
     reclaim: Reclamation,
     compact: Compaction,
+    maintenance: Maintenance,
     warmup: Warmup,
     auto_warm: AutoWarm,
     _lease: Option<NativeResidentLease>,
@@ -265,6 +331,58 @@ impl DiskState {
 
     pub(crate) fn is_fenced(&self) -> bool {
         self.owner.failed.load(Ordering::Acquire)
+    }
+
+    /// Test fixture: make every existing file older than the active ones
+    /// through the production roll paths, so the next cycle covers them.
+    #[cfg(test)]
+    pub(crate) fn seal_files_for_test(&mut self) -> Result<(), CoreError> {
+        self.arena.force_roll()?;
+        self.writer
+            .force_roll(self.owner.backend.as_ref(), &mut Roll(self.owner.clone()))
+    }
+
+    fn selection_witness(&self) -> SelectionWitness {
+        SelectionWitness {
+            source: self.selected,
+        }
+    }
+
+    /// The only post-open writer of `self.selected`. In one owner-lock hold
+    /// of this state it checks the witness, installs `commit` with the
+    /// in-phase compaction checkpoint (preserving it for foreground writes), selects
+    /// it, and advances an active reclamation cohort's certified chain and
+    /// stamped pin root. While a cohort is active, a new value below its
+    /// segment limit or an active arena below its arena limit invalidates the
+    /// cohort before installation; the write itself still proceeds.
+    fn install_selected(
+        &mut self,
+        witness: SelectionWitness,
+        commit: DirectoryCommit,
+        new_values: &[Option<ValueLocation>],
+        cursor: Option<(u8, CompactionCursor, u64)>,
+    ) -> Result<(), CoreError> {
+        if witness.source != self.selected {
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
+                "selection witness is stale",
+            )));
+        }
+        if let Some(limits) = self.reclaim.active_limits() {
+            let fresh_values = new_values
+                .iter()
+                .flatten()
+                .all(|value| value.segment_id >= limits.segment);
+            let fresh_pages = self
+                .arena
+                .active_arena_id()?
+                .is_none_or(|id| id >= limits.arena);
+            if !fresh_values || !fresh_pages {
+                self.invalidate_for_install()?;
+            }
+        }
+        let previous = self.owner.install(witness.source, commit, cursor)?;
+        self.selected = commit.root;
+        self.observe_install(previous, commit)
     }
 
     fn check_snapshot(&self, pin: &SnapshotPin) -> Result<DirectoryRoot, CoreError> {
@@ -453,6 +571,7 @@ impl DiskState {
             .map(NativeResidentLease::new)?;
         let mut directory_workspace =
             DirectoryWriteWorkspace::for_edits(self.owner.admission.clone())?;
+        let witness = self.selection_witness();
         // All proof buffers and snapshot coverage are acquired before any
         // private disk effect. Marking never changes cache membership/policy.
         *stage = "cache_publication_prepare";
@@ -520,17 +639,7 @@ impl DiskState {
             }
         };
         *stage = "transaction_reserve";
-        self.owner
-            .backend
-            .reserve_transaction(&plan)
-            .map_err(|error| match error {
-                crate::group::TransactionReserveError::CapacityDenied => {
-                    CoreError::new(crate::CoreErrorCause::CapacityDenied)
-                }
-                crate::group::TransactionReserveError::Failed(original) => {
-                    CoreError::new(crate::CoreErrorCause::Io(original))
-                }
-            })?;
+        reserve_transaction(self.owner.backend.as_ref(), &plan)?;
         *stage = "log_prepare";
         let mut roll = Roll(self.owner.clone());
         let prepared =
@@ -685,16 +794,16 @@ impl DiskState {
         // The log commit is durable. Any subsequent failure is indeterminate
         // to this caller and fences; reopen decides from that exact commit.
         *stage = "root_publication";
-        self.owner.install(commit).map_err(|error| match error {
-            _ if error.is_unknown_commit() => error,
-            _ => error.into_unknown_commit(),
-        })?;
+        self.install_selected(witness, commit, &committed.values, None)
+            .map_err(|error| match error {
+                _ if error.is_unknown_commit() => error,
+                _ => error.into_unknown_commit(),
+            })?;
         *stage = "transaction_settle";
         self.owner
             .backend
             .finish_transaction(plan.group_id, plan.batch_seq)
             .map_err(CoreError::unknown_io)?;
-        self.selected = root;
         self.warmup = Warmup::default();
         // Publication is durable before pruning or filling. Remove obsolete
         // identities first so old-plus-new overlap cannot displace fitting

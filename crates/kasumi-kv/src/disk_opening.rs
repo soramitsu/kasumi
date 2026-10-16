@@ -12,6 +12,7 @@ struct DiskTail {
     _writer: SegmentWriter,
     _reclaim: Reclamation,
     _compact: Compaction,
+    _maintenance: Maintenance,
     _warmup: Warmup,
     _auto_warm: AutoWarm,
 }
@@ -133,7 +134,23 @@ impl DiskOpening {
         )?;
         let backend = self.backend.as_ref().unwrap();
         let admission = self.admission.as_ref().unwrap();
-        superblock.visit_census(backend.as_ref(), |_| Ok(()))?;
+        // The reclaim floor is the lowest present (or pending) identifier of
+        // each kind; identifiers are never reused, so nothing below it exists.
+        let (next_segment, next_arena) = superblock.next_file_ids();
+        let mut floor = maintenance::FileFloor {
+            segment: superblock.pending_segment().unwrap_or(next_segment),
+            arena: superblock.pending_directory().unwrap_or(next_arena),
+        };
+        superblock.visit_census(backend.as_ref(), |entry| {
+            if let crate::root::CensusEntry::Present(file, _) = entry {
+                match file.kind {
+                    crate::group::FileKind::Segment => floor.segment = floor.segment.min(file.id),
+                    crate::group::FileKind::Directory => floor.arena = floor.arena.min(file.id),
+                    crate::group::FileKind::Checkpoint => {}
+                }
+            }
+            Ok(())
+        })?;
         if !mirrored {
             repair_mirror(backend.as_ref(), &superblock, slot)?;
         }
@@ -185,6 +202,8 @@ impl DiskOpening {
         let state = self.completed.as_mut().unwrap();
         state.writer = SegmentWriter::resume(group_id, &end);
         state.selected = selected;
+        state.reclaim.floor = floor;
+        state.compact = Compaction::resume(superblock.compaction(), &state.owner.admission)?;
         *state.owner.lock()? = superblock;
         state.finish_recorded_garbage()?;
         let _ = DirectoryReader::new(state.arena.as_ref(), state.owner.admission.clone()).next(
@@ -280,6 +299,7 @@ impl DiskOpening {
             pins: self.pins.take_completed().unwrap(),
             reclaim: Reclamation::default(),
             compact: Compaction::default(),
+            maintenance: Maintenance::default(),
             warmup: Warmup::default(),
             auto_warm: self.auto_warm.take().unwrap(),
             _lease: self.fixed.take(),
@@ -373,6 +393,7 @@ impl DiskOpening {
                 pins,
                 reclaim,
                 compact,
+                maintenance,
                 warmup,
                 auto_warm,
                 _lease,
@@ -388,6 +409,7 @@ impl DiskOpening {
                 _writer: writer,
                 _reclaim: reclaim,
                 _compact: compact,
+                _maintenance: maintenance,
                 _warmup: warmup,
                 _auto_warm: auto_warm,
             });

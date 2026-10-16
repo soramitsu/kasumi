@@ -1058,6 +1058,58 @@ impl RegisteredNodeOpening {
             .request_cache_warm_retry()
     }
 
+    /// One bounded step of the database's persisted compaction cycle. Returns
+    /// `Busy` instead of waiting while a writer holds the write gate; local
+    /// deferrals are reported in the progress, and only fatal maintenance
+    /// errors (which fence the database) are returned as errors.
+    pub fn run_maintenance(
+        &self,
+        budget: kasumi_kv::MaintenanceBudget,
+    ) -> Result<kasumi_kv::MaintenanceStep, kasumi_kv::StorageError> {
+        let owner = self.registration.owner();
+        let state = owner.state.lock();
+        if owner.stopped.load(Ordering::Acquire) || state.phase != NodeOpeningPhase::Open {
+            return Err(kasumi_kv::StorageError::DatabaseClosed);
+        }
+        state
+            .engine
+            .database()
+            .ok_or(kasumi_kv::StorageError::DatabaseClosed)?
+            .run_maintenance(budget)
+    }
+
+    /// Owner-checked retained-file and compaction-cycle observation.
+    pub fn maintenance_status(
+        &self,
+    ) -> Result<kasumi_kv::StorageMaintenanceStatus, kasumi_kv::StorageError> {
+        let owner = self.registration.owner();
+        let state = owner.state.lock();
+        if owner.stopped.load(Ordering::Acquire) || state.phase != NodeOpeningPhase::Open {
+            return Err(kasumi_kv::StorageError::DatabaseClosed);
+        }
+        state
+            .engine
+            .database()
+            .ok_or(kasumi_kv::StorageError::DatabaseClosed)?
+            .maintenance_status()
+    }
+
+    /// Begin a compaction cycle at the next maintenance step regardless of
+    /// the growth thresholds, unless nothing older than the newest files
+    /// exists yet.
+    pub fn request_compaction(&self) -> Result<(), kasumi_kv::StorageError> {
+        let owner = self.registration.owner();
+        let state = owner.state.lock();
+        if owner.stopped.load(Ordering::Acquire) || state.phase != NodeOpeningPhase::Open {
+            return Err(kasumi_kv::StorageError::DatabaseClosed);
+        }
+        state
+            .engine
+            .database()
+            .ok_or(kasumi_kv::StorageError::DatabaseClosed)?
+            .request_compaction()
+    }
+
     /// Fixed, closed operation shape with no user callback or raw transaction
     /// escape. The actual queued request is registered before any serial wait.
     /// Once registration succeeds, even a concurrent close returns the exact

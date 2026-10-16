@@ -602,6 +602,25 @@ impl WriterGate {
         *held = true;
         Ok(WriterLease { gate: this.clone() })
     }
+
+    /// Enter without waiting; `None` while a writer holds the gate.
+    fn try_enter(
+        this: &NativeOwnedArc<Self>,
+        closing: &AtomicBool,
+    ) -> Result<Option<WriterLease>, TransactionError> {
+        let mut held = this
+            .held
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if closing.load(Ordering::Acquire) {
+            return Err(StorageError::DatabaseClosed.into());
+        }
+        if *held {
+            return Ok(None);
+        }
+        *held = true;
+        Ok(Some(WriterLease { gate: this.clone() }))
+    }
 }
 
 struct WriterLease {
@@ -698,6 +717,36 @@ impl DatabaseTransactionAdmission {
             inner: self.inner.clone(),
         }
         .request_cache_warm_retry()
+    }
+    pub fn run_maintenance(
+        &self,
+        budget: crate::MaintenanceBudget,
+    ) -> Result<crate::MaintenanceStep, StorageError> {
+        Database {
+            inner: self.inner.clone(),
+        }
+        .run_maintenance(budget)
+    }
+    pub fn maintenance_status(&self) -> Result<crate::StorageMaintenanceStatus, StorageError> {
+        Database {
+            inner: self.inner.clone(),
+        }
+        .maintenance_status()
+    }
+    pub fn configure_maintenance(
+        &self,
+        policy: crate::MaintenancePolicy,
+    ) -> Result<(), StorageError> {
+        Database {
+            inner: self.inner.clone(),
+        }
+        .configure_maintenance(policy)
+    }
+    pub fn request_compaction(&self) -> Result<(), StorageError> {
+        Database {
+            inner: self.inner.clone(),
+        }
+        .request_compaction()
     }
 }
 
@@ -957,6 +1006,50 @@ impl Database {
         Ok(())
     }
 
+    /// One bounded step of the persisted compaction cycle under the write
+    /// gate. Returns `Busy` instead of waiting while a writer holds the gate;
+    /// local deferrals are reported in the progress, never as errors.
+    pub fn run_maintenance(
+        &self,
+        budget: crate::MaintenanceBudget,
+    ) -> Result<crate::MaintenanceStep, StorageError> {
+        let lease = match WriterGate::try_enter(&self.inner.gate, &self.inner.closing) {
+            Ok(Some(lease)) => lease,
+            Ok(None) => return Ok(crate::MaintenanceStep::Busy),
+            Err(TransactionError(error)) => return Err(error),
+        };
+        let progress = self.inner.core.run_maintenance(budget);
+        drop(lease);
+        Ok(crate::MaintenanceStep::Ran(progress?))
+    }
+
+    pub fn maintenance_status(&self) -> Result<crate::StorageMaintenanceStatus, StorageError> {
+        if self.inner.closing.load(Ordering::Acquire) {
+            return Err(StorageError::DatabaseClosed);
+        }
+        self.inner.core.maintenance_status().map_err(Into::into)
+    }
+
+    pub fn configure_maintenance(
+        &self,
+        policy: crate::MaintenancePolicy,
+    ) -> Result<(), StorageError> {
+        if self.inner.closing.load(Ordering::Acquire) {
+            return Err(StorageError::DatabaseClosed);
+        }
+        self.inner
+            .core
+            .configure_maintenance(policy)
+            .map_err(Into::into)
+    }
+
+    pub fn request_compaction(&self) -> Result<(), StorageError> {
+        if self.inner.closing.load(Ordering::Acquire) {
+            return Err(StorageError::DatabaseClosed);
+        }
+        self.inner.core.request_compaction().map_err(Into::into)
+    }
+
     pub fn transaction_admission(&self) -> DatabaseTransactionAdmission {
         DatabaseTransactionAdmission {
             inner: self.inner.clone(),
@@ -996,7 +1089,7 @@ impl Database {
 
     pub fn begin_write(&self) -> Result<WriteTransaction, TransactionError> {
         let lease = WriterGate::enter(&self.inner.gate, &self.inner.closing)?;
-        self.inner.core.prepare_write()?;
+        self.inner.core.maintain_before_write()?;
         let snapshot = SnapshotHandle::capture(&self.inner.core)?;
         if self.inner.closing.load(Ordering::Acquire) {
             return Err(StorageError::DatabaseClosed.into());
@@ -3466,6 +3559,10 @@ pub(crate) mod native_owned_arc_tests;
 #[cfg(test)]
 #[path = "read_fork_tests.rs"]
 pub(crate) mod read_fork_tests;
+
+#[cfg(test)]
+#[path = "database_maintenance_tests.rs"]
+mod database_maintenance_tests;
 
 #[path = "source_read_backing.rs"]
 pub(crate) mod source_read;

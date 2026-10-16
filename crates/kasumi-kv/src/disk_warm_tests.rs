@@ -213,15 +213,17 @@ fn independent_current_reader_churn_cannot_restart_a_stable_warm_pass() {
     assert_eq!(admission.used.load(Ordering::Acquire), 0);
 }
 
+/// One complete cycle over everything written so far, in eight-unit steps.
 fn finish_compact(state: &mut DiskState) {
-    for _ in 0..4096 {
-        let progress = state.compact_step(8).unwrap();
-        assert!(progress.work <= 8);
-        if progress.complete {
-            return;
-        }
-    }
-    panic!("small relocation fixture did not complete compaction");
+    seal_files(state);
+    let totals = drive_cycle(
+        state,
+        MaintenanceBudget {
+            units: 8,
+            mutations: 1,
+        },
+    );
+    assert!(totals.relocated > 0);
 }
 
 #[test]
@@ -332,17 +334,15 @@ fn cold_refill_shares_relocated_snapshot_versions_when_only_one_payload_fits() {
     assert_eq!(admission.used.load(Ordering::Acquire), 0);
 }
 
-fn finish_reclaim(state: &mut DiskState) -> usize {
-    let mut reclaimed = 0;
-    for _ in 0..4096 {
-        let progress = state.reclaim_step(8).unwrap();
-        assert!(progress.work <= 8);
-        reclaimed += progress.reclaimed;
-        if progress.complete {
-            return reclaimed;
-        }
-    }
-    panic!("small retired-root fixture did not complete reclamation");
+fn finish_reclaim(state: &mut DiskState) -> u64 {
+    drive_cycle(
+        state,
+        MaintenanceBudget {
+            units: 8,
+            mutations: 1,
+        },
+    )
+    .reclaimed_files
 }
 
 #[test]

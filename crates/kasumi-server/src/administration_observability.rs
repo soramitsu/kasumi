@@ -1,7 +1,7 @@
 use super::*;
 use crate::observability::{
     CapacityObservation, GroupObservation, LocalObservation, RetentionObservation,
-    archive_backlog_bytes,
+    StorageObservation, archive_backlog_bytes,
 };
 
 impl Administration {
@@ -34,6 +34,7 @@ impl Administration {
                 retention: None,
                 audit_maintenance: None,
                 capacity: None,
+                storage: None,
             };
             if let Some(managed) = managed {
                 if let Some(gate) = managed.store.storage_access().serving_gate() {
@@ -81,6 +82,13 @@ impl Administration {
                         archive_budget_bytes: budget.archive_bytes,
                     });
                     observation.audit_maintenance = managed.database.audit_maintenance_status();
+                    // A closed or fenced store has no current observation;
+                    // its other figures above still describe the group.
+                    observation.storage = managed
+                        .store
+                        .storage_maintenance_status()
+                        .ok()
+                        .map(|status| StorageObservation::from(&status));
                     observation.store_available = true;
                     stores.push(managed.store);
                 }
