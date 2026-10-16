@@ -216,7 +216,7 @@ To add a configured tenant named `beta`:
 3. On the lowest initial voter, issue `{"operation":"initialize_tenant","tenant":"beta"}`.
    Replicated initialization checks all three authenticated peers for identical
    prepared fingerprints. Missing or mismatched preparation refuses initialization.
-   Local mode performs the equivalent one-voter readiness check.
+   Local mode checks the initialized local journal and applied state without Raft.
 4. Obtain a fresh control topology version with control `status`. On the control
    leader, issue `{"operation":"activate_tenant","tenant":"beta","expected_topology_version":7}`.
    All required replicas must have rebuilt state and applied the expected

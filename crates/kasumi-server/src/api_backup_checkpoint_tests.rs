@@ -500,27 +500,20 @@ async fn native_backup_proof_is_admin_only_configured_and_verified_through_secur
         .unwrap();
     let node_id = control.node_id();
     let group = control.group().to_owned();
-    let peer_router = Arc::new(kasumi_raft::InProcessRouter::default());
-    let custody = kasumi_engine::RetiredCustody::open_replicated(
+    let custody = kasumi_engine::RetiredCustody::open_local(
         store,
         node_id,
-        group.clone(),
-        peer_router.clone(),
+        group,
         kasumi_raft::RaftGroupConfig::default(),
         fixture.audit.admission().clone(),
         fixture.audit.clone(),
     )
     .await
     .unwrap();
-    peer_router.register(group, node_id, custody.raft_group().unwrap().raft().clone());
-    custody
-        .raft_group()
-        .unwrap()
-        .raft()
-        .wait(Some(std::time::Duration::from_secs(10)))
-        .current_leader(node_id, "native custody leader")
-        .await
-        .unwrap();
+    let group = custody.raft_group().unwrap();
+    assert!(group.is_local());
+    assert!(group.try_raft().is_none());
+    group.linearizable_barrier().await.unwrap();
     fixture.registry.remove("tenant-a").unwrap();
     fixture
         .registry

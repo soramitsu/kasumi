@@ -325,7 +325,7 @@ impl Database {
         let fact = self
             .receiver_fact(operation, &request)?
             .ok_or_else(|| unknown("receiver outcome is not positively committed"))?;
-        let metrics = self.group.raft().metrics().borrow().clone();
+        let metrics = self.group.metrics();
         let generation = self.engine.generation()?;
         let origin = &generation.state.target_lifecycle[&generation.state.incarnation].origin;
         let membership = metrics.membership_config.membership();

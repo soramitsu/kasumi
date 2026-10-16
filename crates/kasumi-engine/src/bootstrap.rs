@@ -657,7 +657,7 @@ pub async fn initialize_replicated(
     if group.raft().is_initialized().await? {
         return Ok(());
     }
-    let id = group.raft().metrics().borrow().id;
+    let id = group.node_id();
     anyhow::ensure!(
         Some(&id) == bootstrap.voters.keys().next(),
         "only the designated voter may initialize"
@@ -868,7 +868,7 @@ fn persist_new_checked(
     check()
 }
 
-/// Open a single-voter tenant. On reopen, its persisted bootstrap is authoritative;
+/// Open a local tenant without a Raft runtime. On reopen, its persisted bootstrap is authoritative;
 /// caller-supplied creation defaults cannot change existing permissions or limits.
 /// The node must own exactly one live Database instance for each TenantStore.
 pub async fn open_local(

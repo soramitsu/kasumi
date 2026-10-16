@@ -2072,6 +2072,33 @@ impl FileOwner {
             .inspect_err(|_| self.disk.fail_locked(&mut state))
     }
 
+    /// Descriptor-level verification for reads and owner checks: the retained
+    /// descriptor is still the enrolled inode, linked exactly once under its
+    /// name in the retained parent. A read through this descriptor cannot
+    /// observe a substituted file, so the complete ancestor walk of `verify` is
+    /// kept for physical mutation, synchronization and identity observation.
+    fn verify_retained(&self, file: &File) -> io::Result<()> {
+        let result = (|| {
+            let metadata = stat_leaf(self.parent(), self.name(), self.identity.0)?;
+            if metadata.st_ino != self.identity.1
+                || Identity::of(&file.metadata()?) != self.identity
+            {
+                return Err(io::ErrorKind::InvalidData.into());
+            }
+            Ok(())
+        })();
+        result.map_err(|error| self.record_error(error))
+    }
+
+    fn check_retained(&self, file: &File) -> io::Result<()> {
+        let mut state = self.disk.lock_state();
+        if state.phase == NodeDiskPhase::Failed || !self.disk.device.lock().admission_ready() {
+            return Err(io::ErrorKind::Other.into());
+        }
+        self.verify_retained(file)
+            .inspect_err(|_| self.disk.fail_locked(&mut state))
+    }
+
     fn observe(&self, budget: &mut Budget) -> io::Result<()> {
         let file = budget.file.as_ref().expect("live persistent descriptor");
         self.check(file)?;
@@ -2376,13 +2403,17 @@ impl NodeDiskFile {
     /// owner is open, every failure latches the disk: identity substitution,
     /// an unexpected extent and uncertain shared admission are owner failures
     /// until drain and an accepted census, never a retryable busy state.
+    /// This verifies the retained descriptor and its name; every physical
+    /// mutation and synchronization still re-walks the complete ancestry.
     pub fn check_owner(&self) -> io::Result<()> {
         self.ensure_open()?;
         let budget = self.0.lock_budget()?;
         let file = budget.file.as_ref().ok_or(io::ErrorKind::BrokenPipe)?;
         // Verification failures latch inside check. A failed or uncertain
         // shared admission returns before verification and latches here.
-        self.0.check(file).inspect_err(|_| self.0.disk.fail())?;
+        self.0
+            .check_retained(file)
+            .inspect_err(|_| self.0.disk.fail())?;
         let mut state = self.0.disk.lock_state();
         self.0.check_enrollment(&mut state, &budget)?;
         if file
@@ -2695,7 +2726,7 @@ impl NodeDiskFile {
         self.ensure_open()?;
         let budget = self.0.lock_budget()?;
         let file = budget.file.as_ref().expect("live persistent descriptor");
-        self.0.check(file)?;
+        self.0.check_retained(file)?;
         Ok(file
             .metadata()
             .map_err(|error| {
@@ -2943,13 +2974,14 @@ impl NodeDiskFile {
             return Err(io::ErrorKind::Other.into());
         }
         self.0.check_enrollment(&mut state, &budget)?;
+        // The read goes through the retained descriptor, so it can only observe
+        // the enrolled inode; the ancestry is re-walked before mutations.
         let outcome = (|| -> io::Result<()> {
-            self.0.verify(file)?;
+            self.0.verify_retained(file)?;
             if file.metadata()?.len() != budget.actual_len {
                 return Err(io::ErrorKind::InvalidData.into());
             }
-            file.read_exact_at(out, offset)?;
-            self.0.verify(file)
+            file.read_exact_at(out, offset)
         })();
         outcome.map_err(|error| {
             self.0.disk.fail_locked(&mut state);

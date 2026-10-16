@@ -14,7 +14,7 @@ use std::sync::{Arc, atomic::Ordering};
 use tempfile::TempDir;
 
 struct Builder {
-    failure: std::sync::Mutex<Option<kasumi_store::ScratchOperationFailure>>,
+    failure: std::sync::Mutex<Option<kasumi_raft::test_utils::FixtureFailure>>,
     snapshot_root: std::sync::Mutex<Option<Arc<kasumi_raft::SnapshotBufferOwner>>>,
     // The same original fee outlives both mutexes and every deferred scope.
     cleanup: CleanupInventory,
@@ -34,7 +34,7 @@ impl Builder {
         use kasumi_store::NodeDiskMemoryAdmission;
         let memory = kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 32);
         let bytes = u64::try_from(std::mem::size_of::<
-            std::sync::Mutex<Option<kasumi_store::ScratchOperationFailure>>,
+            std::sync::Mutex<Option<kasumi_raft::test_utils::FixtureFailure>>,
         >())?
         .checked_add(u64::try_from(std::mem::size_of::<
             std::sync::Mutex<Option<Arc<kasumi_raft::SnapshotBufferOwner>>>,
@@ -58,7 +58,7 @@ impl Builder {
         Ok(result)
     }
 
-    fn retain(&self, original: kasumi_store::ScratchOperationFailure) -> StorageError<u64> {
+    fn retain(&self, original: kasumi_raft::test_utils::FixtureFailure) -> StorageError<u64> {
         let mut slot = self.failure.lock().unwrap();
         assert!(
             slot.is_none(),
@@ -68,7 +68,7 @@ impl Builder {
         StorageIOError::write(&RetainedConstructor).into()
     }
 
-    fn take_failure(&self) -> Option<kasumi_store::ScratchOperationFailure> {
+    fn take_failure(&self) -> Option<kasumi_raft::test_utils::FixtureFailure> {
         self.failure.lock().unwrap().take()
     }
 
@@ -933,7 +933,7 @@ impl StoreBuilder<TypeConfig, ConformanceLog, ConformanceMachine, StoreScope> fo
             let machine =
                 StateMachine::open(source, Arc::new(common::Backend::default()), snapshot_root)
                     .await?;
-            Ok::<_, kasumi_store::ScratchOperationFailure>((
+            Ok::<_, kasumi_raft::test_utils::FixtureFailure>((
                 StoreScope {
                     cleanup: self.cleanup.clone(),
                     index,

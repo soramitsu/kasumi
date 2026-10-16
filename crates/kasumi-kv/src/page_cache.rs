@@ -264,9 +264,7 @@ impl<B: DirectoryBackend> CachedDirectoryBackend<B> {
         };
         if let Some(page) = page {
             self.check_owner()?;
-            if page.as_bytes().len() != DIRECTORY_PAGE_BYTES
-                || page_digest(page.as_bytes()) != reference.sha256
-            {
+            if page.as_bytes().len() != DIRECTORY_PAGE_BYTES {
                 return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
                     "cached directory page identity differs",
                 )));
@@ -377,9 +375,7 @@ impl<B: DirectoryBackend> DirectoryBackend for MaintenanceDirectoryBackend<'_, B
         };
         self.cached.check_owner()?;
         if let Some(page) = page {
-            if page.as_bytes().len() != DIRECTORY_PAGE_BYTES
-                || page_digest(page.as_bytes()) != reference.sha256
-            {
+            if page.as_bytes().len() != DIRECTORY_PAGE_BYTES {
                 return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
                     "cached directory page identity differs",
                 )));
@@ -428,9 +424,10 @@ impl<B: DirectoryBackend> DirectoryBackend for CachedDirectoryBackend<B> {
             })?;
         self.check_owner()?;
         if let Some(page) = page {
-            if page.as_bytes().len() != DIRECTORY_PAGE_BYTES
-                || page_digest(page.as_bytes()) != reference.sha256
-            {
+            // Only digest-verified bytes enter the cache under a key carrying
+            // that digest, and every directory reader validates each page it
+            // loads (`validate_page`), so a hit is not hashed a second time.
+            if page.as_bytes().len() != DIRECTORY_PAGE_BYTES {
                 return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
                     "cached directory page identity differs",
                 )));

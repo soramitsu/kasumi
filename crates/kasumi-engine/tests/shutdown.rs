@@ -149,13 +149,9 @@ async fn full_shutdown_reopens_immediately_with_receipts_and_retained_plaintext(
             .await
             .unwrap();
         assert!(page.cursor.is_some());
-        database
-            .raft_group()
-            .raft()
-            .trigger()
-            .snapshot()
-            .await
-            .unwrap();
+        assert!(database.raft_group().is_local());
+        assert!(database.raft_group().try_raft().is_none());
+        database.raft_group().snapshot().await.unwrap();
         let (first, second) = tokio::join!(database.shutdown(), database.shutdown());
         first.unwrap();
         second.unwrap();

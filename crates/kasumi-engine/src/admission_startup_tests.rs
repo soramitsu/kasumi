@@ -1,4 +1,4 @@
-//! Exercise the facade census through a real, cancelled Raft constructor.
+//! Exercise the facade census through a real, cancelled local constructor.
 use super::*;
 use kasumi_raft::{RaftGroup, SnapshotBufferOwner, startup_test_utils::LocalStartupGate};
 use kasumi_types::drain::DrainCompletion;
@@ -91,7 +91,8 @@ async fn cancelled_local_startup_and_node_census_keep_actual_group_and_charges_u
     )?;
     let core = admission.memory().clone();
     let owner = admission.snapshot_buffer_owner()?;
-    let owner_bytes = SnapshotBufferOwner::required_bytes(kasumi_raft::SNAPSHOT_BUFFER_SLOTS)?;
+    let owner_bytes = SnapshotBufferOwner::required_bytes(kasumi_raft::SNAPSHOT_BUFFER_SLOTS)?
+        + kasumi_types::SharedBudgetCharge::required_bytes::<Reservation>()?;
     let owner_weak = Arc::downgrade(&owner);
     let gate = LocalStartupGate::install(&owner, OriginalStartupFailure(211).into())?;
     let node = storage.create_new(
@@ -126,7 +127,11 @@ async fn cancelled_local_startup_and_node_census_keep_actual_group_and_charges_u
         result = tokio::time::timeout(WAIT, gate.entered()) => result?,
     }
     assert!(gate.claim_is_live());
-    assert!(gate.router_is_alive());
+    assert!(!gate.router_is_alive());
+    assert!(
+        gate.raft().is_none(),
+        "local startup must not construct OpenRaft"
+    );
     drop(startup);
     drop(owner);
     assert!(
@@ -177,10 +182,7 @@ async fn cancelled_local_startup_and_node_census_keep_actual_group_and_charges_u
     );
     assert!(!gate.claim_is_live());
     assert!(!gate.router_is_alive());
-    let raft = gate.raft().expect("actual OpenRaft observer captured");
-    assert!(raft.metrics().borrow().running_state.is_err());
-    tokio::time::timeout(WAIT, raft.shutdown()).await??;
-    drop(raft);
+    assert!(gate.raft().is_none());
     drop(gate);
     assert!(
         owner_weak.upgrade().is_none(),
@@ -245,6 +247,12 @@ async fn cancelled_local_startup_and_node_census_keep_actual_group_and_charges_u
     node.shutdown().await?;
     replacement.drain_snapshot_startups().await?;
     drop(replacement);
+    // Native disposal and final registered-owner retirement are independent.
+    // Observe the census receipt before asserting complete charge release.
+    assert_eq!(
+        node.retire().retry(),
+        kasumi_store::StorageCensusDisposition::Retired
+    );
     assert_eq!(core.snapshot().reserved_bytes, core_base + metadata_bytes);
     Ok(())
 }

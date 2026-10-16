@@ -1,4 +1,4 @@
-//! Checked identity and clock preparation before any Database Raft startup.
+//! Checked identity and clock preparation before local or replicated Database startup.
 //! This owns construction inputs; retained startup children remain owned by
 //! SnapshotBufferOwner. It is not a replacement for the runtime startup census.
 use super::{Database, DatabaseClocks, SecurityAudit, TenantEngine};
@@ -77,7 +77,7 @@ impl DatabaseConstruction {
         let group =
             RaftGroup::local(node_id, name, self.stores.clone(), engine.clone(), buffers).await?;
         // No fallible operation or suspension follows the successful transfer
-        // of the retained Raft startup outcome into this Database owner.
+        // of the retained local startup outcome into this Database owner.
         Ok(self.finish(engine, group, true))
     }
 

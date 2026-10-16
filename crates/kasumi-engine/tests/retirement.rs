@@ -44,24 +44,20 @@ async fn reopen_custody(
         .unwrap();
     let id = control.node_id();
     let group = control.group().to_owned();
-    let router = Arc::new(kasumi_raft::InProcessRouter::default());
-    let custody = kasumi_engine::RetiredCustody::open_replicated(
+    let custody = kasumi_engine::RetiredCustody::open_local(
         store,
         id,
-        group.clone(),
-        router.clone(),
+        group,
         kasumi_raft::RaftGroupConfig::default(),
         audit.admission().clone(),
         audit,
     )
     .await
     .unwrap();
-    let raft = custody.raft_group().unwrap().raft();
-    router.register(group, id, raft.clone());
-    raft.wait(Some(std::time::Duration::from_secs(10)))
-        .current_leader(id, "existing custody voter")
-        .await
-        .unwrap();
+    let group = custody.raft_group().unwrap();
+    assert!(group.is_local());
+    assert!(group.try_raft().is_none());
+    group.linearizable_barrier().await.unwrap();
     custody
 }
 struct Fixture {
@@ -75,6 +71,12 @@ struct Fixture {
 }
 impl Fixture {
     async fn new() -> Self {
+        Self::new_with_runtime(false).await
+    }
+    async fn new_replicated() -> Self {
+        Self::new_with_runtime(true).await
+    }
+    async fn new_with_runtime(replicated: bool) -> Self {
         let directory = kasumi_store::test_utils::private_tempdir().unwrap();
         let physical =
             common::PhysicalFixture::new(&directory.path().join("node.kv"), Default::default());
@@ -93,19 +95,31 @@ impl Fixture {
         )
         .await
         .unwrap();
-        let db = kasumi_engine::test_utils::open_fixture(
-            kasumi_store::test_utils::initialize_custody_fixture(
-                store.clone(),
-                std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
-            )
-            .await
-            .unwrap(),
-            policy(),
-            Limits::default(),
-            audit.clone(),
+        let stores = kasumi_store::test_utils::initialize_custody_fixture(
+            store.clone(),
+            Arc::new(LocalKeyProvider::new([241; 32])),
         )
         .await
         .unwrap();
+        let db = if replicated {
+            kasumi_engine::test_utils::open_fixture_single_voter_raft(
+                stores,
+                policy(),
+                Limits::default(),
+                audit.clone(),
+            )
+            .await
+            .unwrap()
+        } else {
+            kasumi_engine::test_utils::open_fixture(
+                stores,
+                policy(),
+                Limits::default(),
+                audit.clone(),
+            )
+            .await
+            .unwrap()
+        };
         db.administer(
             context(),
             Operation::CreateCollection(CollectionDefinition {

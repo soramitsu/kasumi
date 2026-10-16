@@ -105,7 +105,7 @@ impl ControlQuorumFence {
             ));
         }
         drop(state);
-        let metrics = self.database.group.raft().metrics().borrow().clone();
+        let metrics = self.database.group.metrics();
         if metrics.id != self.node_id
             || metrics.current_leader != Some(self.node_id)
             || metrics.current_term != self.term
@@ -229,7 +229,7 @@ impl Database {
             )
         })?;
         let term = self.control_observation_barrier(&context, access).await?;
-        let metrics = self.group.raft().metrics().borrow().clone();
+        let metrics = self.group.metrics();
         let state = self.engine.generation()?;
         let control = state
             .state

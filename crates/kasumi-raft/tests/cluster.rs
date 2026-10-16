@@ -85,12 +85,10 @@ impl Cluster {
 
     async fn stop(&mut self, id: u64) -> FixtureResult<()> {
         self.router.unregister(GROUP, id);
-        self.nodes
-            .remove(&id)
-            .context("node missing")?
-            .group
-            .shutdown()
-            .await?;
+        let node = self.nodes.remove(&id).context("node missing")?;
+        let stores = node.group.storage_domains().clone();
+        node.group.shutdown().await?;
+        kasumi_store::test_utils::shutdown_owned_stores_fixture(&stores).await?;
         Ok(())
     }
 
@@ -350,6 +348,16 @@ async fn one_voter_acknowledgment_recovers_without_a_snapshot() -> FixtureResult
             common::snapshot_owner(),
         )
         .await?;
+        assert!(group.is_local());
+        assert!(group.try_raft().is_none());
+        assert!(
+            group
+                .storage_domains()
+                .custody()
+                .store()
+                .get("raft.meta", b"vote")?
+                .is_none()
+        );
         assert_eq!(
             group
                 .write(kasumi_raft::ApplicationProposal::generated(
@@ -360,6 +368,7 @@ async fn one_voter_acknowledgment_recovers_without_a_snapshot() -> FixtureResult
         );
         assert_eq!(backend.values(), vec![b"durable-local".to_vec()]);
         group.shutdown().await?;
+        kasumi_store::test_utils::shutdown_owned_stores_fixture(group.storage_domains()).await?;
     }
     let backend = Arc::new(common::Backend::default());
     let group = RaftGroup::local(
@@ -384,7 +393,7 @@ async fn fatal_snapshot_capture_blocks_even_local_generation_access() -> Fixture
     let path = dir.path().join("fatal-snapshot.kv");
     let store = common::store(&path, true, fixture_scratch.clone(), 1, GROUP).await?;
     let backend = Arc::new(common::Backend::default());
-    let group = RaftGroup::local(
+    let group = common::singleton_raft(
         1,
         GROUP.into(),
         store.clone(),
@@ -458,6 +467,7 @@ async fn fatal_snapshot_capture_blocks_even_local_generation_access() -> Fixture
             .iter()
             .any(|next| kasumi_types::drain::DrainIssueRef::ptr_eq(next, issue))
     );
+    kasumi_store::test_utils::shutdown_owned_stores_fixture(&store).await?;
     drop(group);
     drop(store);
 

@@ -108,6 +108,48 @@ impl<'engine> ApplyOwner<'engine> {
         &self.previous
     }
 
+    /// Genesis membership is log index zero, the same logical revision as
+    /// bootstrap. Replaying that exact boundary must still replace a covered
+    /// bootstrap source with its authenticated entry source. This constructor
+    /// copies the current state itself; callers cannot submit a same-revision
+    /// mutation through the ordinary accepted-generation boundary.
+    pub(super) fn accept_initial_metadata(
+        self,
+        position: &kasumi_raft::AppliedEntryContext,
+    ) -> anyhow::Result<AcceptedGeneration<'engine>> {
+        let previous = self.current();
+        anyhow::ensure!(
+            position.log_id.index == 0
+                && position.previous.is_none()
+                && previous.state.revision == self.engine.revision_base
+                && self
+                    .engine
+                    .current
+                    .load()
+                    .as_ref()
+                    .is_some_and(|current| { Arc::ptr_eq(current, &self.previous) }),
+            "initial metadata does not match the current bootstrap generation"
+        );
+        let candidate = Arc::new(Generation {
+            state: previous.state.clone(),
+            receipts: previous.receipts.clone(),
+            backup_bindings: previous.backup_bindings.clone(),
+            terminals: previous.terminals.clone(),
+            target_resolutions: previous.target_resolutions.clone(),
+            indexes: previous.indexes.clone(),
+            snapshot_accounting: previous.snapshot_accounting.clone(),
+            application_selection: std::sync::OnceLock::new(),
+            _read_reservations: vec![],
+        });
+        Ok(AcceptedGeneration {
+            candidate,
+            delta: PrimaryDelta {
+                changed: ChangedIds::new(),
+            },
+            owner: self,
+        })
+    }
+
     pub(super) fn accept(
         self,
         candidate: Arc<Generation>,

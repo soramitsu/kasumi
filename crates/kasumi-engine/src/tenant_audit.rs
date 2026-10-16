@@ -13,6 +13,15 @@ const MAX_COMMAND: usize = PREFIX.len() + 4 + MAX_REFERENCE + MAX_AUDIT_SEGMENT_
 // replicated archive root; snapshot dependencies remain the committed chain.
 const PREPARATION: &str = "engine.audit.preparation";
 
+fn audit_prune_needed(state: &TenantState) -> bool {
+    !state.retired
+        && state.pending_restore.is_none()
+        && state.limits.audit_retention.archive_backlog_bytes(
+            state.audit_retention.hot_bytes,
+            state.audit_retention.draining,
+        ) > 0
+}
+
 #[cfg(test)]
 pub(crate) fn encode(segment: &PreparedAuditSegment) -> anyhow::Result<Vec<u8>> {
     segment.reference.validate()?;
@@ -287,6 +296,13 @@ impl TenantEngine {
         self.prepare_audit_prune_inner()
     }
 
+    /// Cheap preflight for periodic maintenance. Preparation rechecks its own
+    /// generation after obtaining the proposal gate and archive workspace.
+    pub(crate) fn audit_prune_needed(&self) -> Result<bool> {
+        let generation = self.generation()?;
+        Ok(audit_prune_needed(&generation.state))
+    }
+
     /// Captures only shared immutable roots; at most one segment is serialized.
     /// The exact encrypted pending command survives publication uncertainty and
     /// restart. External publication must complete before Raft sees the command.
@@ -297,11 +313,7 @@ impl TenantEngine {
         let state = &generation.state;
         let retention = &state.audit_retention;
         let budget = &state.limits.audit_retention;
-        if state.retired
-            || state.pending_restore.is_some()
-            || retention.hot_bytes <= budget.drains_to()
-            || (!retention.draining && retention.hot_bytes < budget.starts_at())
-        {
+        if !audit_prune_needed(state) {
             return Ok(None);
         }
         let store = self

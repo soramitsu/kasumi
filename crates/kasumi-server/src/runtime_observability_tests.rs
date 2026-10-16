@@ -619,26 +619,29 @@ async fn protected_observability_tls_reports_actual_state_and_fences_release_imp
         200
     );
 
-    // Invalidate a held response through a real committed membership append.
-    // Control topology and data routing are unchanged, so their epochs alone
-    // would incorrectly release the old observation.
+    // Standalone execution rejects Raft membership operations without changing
+    // its readiness epoch or invalidating a held healthy response.
     let original = management.readiness_epoch().unwrap();
     let hold = gate(&telemetry).await;
     let pending = request(&client, &ready, &operator);
     entered(&hold).await;
-    database
-        .raft_group()
-        .raft()
-        .add_learner(2, kasumi_raft::BasicNode::new("127.0.0.1:9"), false)
-        .await
-        .unwrap();
+    assert!(database.raft_group().try_raft().is_none());
+    assert!(
+        database
+            .raft_group()
+            .add_learner(2, kasumi_raft::BasicNode::new("127.0.0.1:9"))
+            .await
+            .is_err()
+    );
     let changed = management.readiness_epoch().unwrap();
-    assert_eq!(changed.topology_version, original.topology_version);
-    assert_eq!(changed.installed_routes, original.installed_routes);
-    assert!(changed.actual_membership > original.actual_membership);
+    assert_eq!(changed, original);
     hold.release.notify_one();
-    withheld(pending, 503).await;
-    ready_response(&client, &ready, &operator, "control_membership_changed").await;
+    let response = pending.await.unwrap();
+    assert_eq!(response.status().as_u16(), 200);
+    assert_eq!(
+        response.json::<serde_json::Value>().await.unwrap()["ready"],
+        true
+    );
 
     // A complete quorum probe cannot certify a different committed voter set.
     let group = database.raft_group();
@@ -1211,7 +1214,7 @@ async fn protected_archive_outage_and_due_backlog() {
 }
 
 #[test]
-fn protected_tls_certifies_all_129_installed_healthy_groups_and_fences_membership_change() {
+fn protected_tls_certifies_all_129_installed_healthy_groups_and_rejects_raft_membership() {
     std::thread::Builder::new()
         .name("129 installed readiness groups".into())
         .stack_size(16 << 20)
@@ -1421,8 +1424,8 @@ async fn installed_healthy_group_coverage() {
         assert!(text.contains(expected), "metric absent: {expected}");
     }
 
-    // Change the actual Raft membership of a group outside the diagnostic page.
-    // A previously encoded healthy response must not pass its release fence.
+    // A standalone group outside the diagnostic page also rejects Raft
+    // membership changes while preserving the complete readiness certificate.
     let original = management.readiness_epoch().unwrap();
     let hold = gate(&telemetry).await;
     let pending = request(&client, &ready, &operator);
@@ -1434,17 +1437,22 @@ async fn installed_healthy_group_coverage() {
         held_coverage.status.ready() && held_coverage.token.is_some(),
         "held response did not start with a fresh complete healthy certificate"
     );
-    last.raft_group()
-        .raft()
-        .add_learner(2, kasumi_raft::BasicNode::new("127.0.0.1:9"), false)
-        .await
-        .unwrap();
+    assert!(last.raft_group().try_raft().is_none());
+    assert!(
+        last.raft_group()
+            .add_learner(2, kasumi_raft::BasicNode::new("127.0.0.1:9"))
+            .await
+            .is_err()
+    );
     let changed = management.readiness_epoch().unwrap();
-    assert_eq!(changed.topology_version, original.topology_version);
-    assert_eq!(changed.installed_routes, original.installed_routes);
-    assert!(changed.actual_membership > original.actual_membership);
+    assert_eq!(changed, original);
     hold.release.notify_one();
-    withheld(pending, 503).await;
+    let response = pending.await.unwrap();
+    assert_eq!(response.status().as_u16(), 200);
+    assert_eq!(
+        response.json::<serde_json::Value>().await.unwrap()["ready"],
+        true
+    );
     let refreshed = healthy(&client, &ready, &operator, &management).await;
     assert_eq!(refreshed["ready"], true);
     assert_eq!(

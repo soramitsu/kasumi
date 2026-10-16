@@ -41,11 +41,11 @@ impl Database {
                     if *stop.borrow() {
                         return Ok(());
                     }
-                    tokio::select! {
+                    let explicitly_woken = tokio::select! {
                         _ = stop.changed() => return Ok(()),
-                        _ = wake.notified() => {},
-                        _ = tokio::time::sleep(Duration::from_millis(250)) => {},
-                    }
+                        _ = wake.notified() => true,
+                        _ = tokio::time::sleep(Duration::from_millis(250)) => false,
+                    };
                     let Some(database) = weak.upgrade() else {
                         return Ok(());
                     };
@@ -60,9 +60,23 @@ impl Database {
                     if database.closing.load(Ordering::Acquire) {
                         return Ok(());
                     }
-                    let metrics = database.group.raft().metrics().borrow().clone();
-                    if metrics.current_leader != Some(metrics.id) {
+                    // An idle timer must not take the command gate or the
+                    // shared archive lane merely to discover an empty backlog.
+                    // Explicit wakes and failed observations retain the owned
+                    // preparation path and its original failure handling.
+                    if !explicitly_woken
+                        && database
+                            .engine
+                            .audit_prune_needed()
+                            .is_ok_and(|needed| !needed)
+                    {
                         continue;
+                    }
+                    if !database.group.is_local() {
+                        let metrics = database.group.metrics();
+                        if metrics.current_leader != Some(metrics.id) {
+                            continue;
+                        }
                     }
                     let Ok(registration) = database.work.begin(QueryCancellation::default()) else {
                         return Ok(());
@@ -608,11 +622,16 @@ mod tests {
             after_shutdown - crate::test_utils::reserved_payload_bytes(&admission),
             kasumi_raft::SnapshotBufferOwner::required_bytes(kasumi_raft::SNAPSHOT_BUFFER_SLOTS)
                 .unwrap()
+                + kasumi_types::SharedBudgetCharge::required_bytes::<Reservation>().unwrap()
         );
         drop(store);
         drop(audit);
         drop(engine);
         node.shutdown().await.unwrap();
+        assert_eq!(
+            node.retire().retry(),
+            kasumi_store::StorageCensusDisposition::Retired
+        );
         assert_eq!(
             crate::test_utils::reserved_payload_bytes(&admission),
             metadata_bytes

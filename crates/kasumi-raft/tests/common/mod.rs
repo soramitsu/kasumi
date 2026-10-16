@@ -204,3 +204,35 @@ pub fn snapshot_owner() -> Arc<kasumi_raft::SnapshotBufferOwner> {
     )
     .unwrap()
 }
+
+/// Explicit singleton consensus fixture for tests that exercise Raft internals.
+pub async fn singleton_raft(
+    id: u64,
+    group_name: String,
+    stores: Arc<kasumi_store::TenantStorageSet>,
+    backend: Arc<dyn StateMachineBackend>,
+    owner: Arc<kasumi_raft::SnapshotBufferOwner>,
+) -> kasumi_raft::test_utils::FixtureResult<kasumi_raft::RaftGroup> {
+    let group = kasumi_raft::RaftGroup::open(
+        id,
+        group_name,
+        stores,
+        backend,
+        Arc::new(kasumi_raft::InProcessRouter::default()),
+        kasumi_raft::RaftGroupConfig::default(),
+        owner,
+    )
+    .await?;
+    if !group.raft().is_initialized().await? {
+        group
+            .initialize(BTreeMap::from([(id, kasumi_raft::BasicNode::new("local"))]))
+            .await?;
+    }
+    group
+        .raft()
+        .wait(Some(std::time::Duration::from_secs(10)))
+        .current_leader(id, "singleton consensus fixture")
+        .await?;
+    group.linearizable_barrier().await?;
+    Ok(group)
+}

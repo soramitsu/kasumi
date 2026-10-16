@@ -340,15 +340,7 @@ async fn cancelled_local_initialization_drains_real_group_and_breaks_router_cycl
             .0,
         83
     );
-    assert!(
-        gate.router
-            .lock()
-            .unwrap()
-            .as_ref()
-            .unwrap()
-            .upgrade()
-            .is_none()
-    );
+    assert!(gate.router.lock().unwrap().is_none());
     assert!(
         gate.ownership
             .lock()
@@ -358,16 +350,7 @@ async fn cancelled_local_initialization_drains_real_group_and_breaks_router_cycl
             .upgrade()
             .is_none_or(|claim| !claim.load(Ordering::Acquire))
     );
-    let raft = gate
-        .raft
-        .lock()
-        .unwrap()
-        .take()
-        .unwrap()
-        .downcast::<crate::Raft>()
-        .map_err(|_| anyhow::anyhow!("startup fixture retained a different observer type"))?;
-    assert!(raft.metrics().borrow().running_state.is_err());
-    raft.shutdown().await?;
+    assert!(gate.raft.lock().unwrap().is_none());
     let reopened = crate::RaftGroup::local(
         1,
         "tenant-a".into(),
@@ -668,14 +651,28 @@ async fn panicked_core_closes_group_access_and_drains_complete_for_reopen() -> F
     )
     .await?;
     store.write_batch(&[], &crate::initial_storage_identity(1, "tenant-a")?)?;
-    let group = crate::RaftGroup::local(
+    let group = crate::RaftGroup::open(
         1,
         "tenant-a".into(),
         store.clone(),
         Arc::new(Backend),
+        Arc::new(crate::InProcessRouter::default()),
+        crate::RaftGroupConfig::default(),
         SnapshotBufferOwner::fixture(),
     )
     .await?;
+    group
+        .initialize(std::collections::BTreeMap::from([(
+            1,
+            crate::BasicNode::new("local"),
+        )]))
+        .await?;
+    group
+        .raft()
+        .wait(Some(WAIT))
+        .current_leader(1, "singleton fixture")
+        .await?;
+    group.linearizable_barrier().await?;
     group.check_access()?;
     assert_eq!(group.access_failure_class(), None);
     // A panicking core cannot publish its Fatal in metrics. Dropping its

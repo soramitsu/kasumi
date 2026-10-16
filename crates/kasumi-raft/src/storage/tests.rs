@@ -1142,3 +1142,165 @@ async fn coverage_writer_refuses_one_byte_past_reader_limit_before_staging() -> 
     assert_eq!(reopened.applied_state().await?.0, snapshot.meta.last_log_id);
     Ok(())
 }
+
+#[tokio::test]
+async fn local_journal_and_commit_cursor_share_one_crash_atomic_transaction() -> FixtureResult<()> {
+    use openraft::storage::RaftLogStorageExt;
+    let memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let directory = kasumi_store::test_utils::private_tempdir()?;
+    let scratch = kasumi_store::ScratchDisk::fixture(directory.path(), memory);
+    let persistent_directory = kasumi_store::test_utils::private_tempdir()?;
+    let persistent = kasumi_store::NodeDisk::fixture_for_path(
+        &persistent_directory.path().join("local-wal.kv"),
+        scratch.memory().clone(),
+    )?;
+    async fn reopen(
+        disk: FaultBackend,
+        scratch: Arc<kasumi_store::ScratchDisk>,
+        persistent: Arc<kasumi_store::NodeDisk>,
+        create: bool,
+    ) -> FixtureResult<Arc<TenantStorageSet>> {
+        let node = if create {
+            NodeStore::create_fixture_backend_on_disk(
+                disk,
+                kasumi_store::test_utils::storage_admission(),
+                persistent,
+                scratch,
+            )?
+        } else {
+            NodeStore::open_fixture_backend_on_disk(
+                disk,
+                kasumi_store::test_utils::storage_admission(),
+                persistent,
+                scratch,
+            )?
+        };
+        let key = Arc::new(LocalKeyProvider::new([7; 32]));
+        let application = if create {
+            TenantStore::initialize_catalog_fixture_with_clock(
+                node,
+                "snapshot-test".into(),
+                key,
+                Arc::new(ManualClock::new()),
+            )
+            .await?
+        } else {
+            TenantStore::open_existing_fixture_with_clock(
+                node,
+                "snapshot-test".into(),
+                key,
+                Arc::new(ManualClock::new()),
+            )
+            .await?
+        };
+        let custody_key = Arc::new(LocalKeyProvider::new([241; 32]));
+        let stores = if create {
+            kasumi_store::test_utils::initialize_custody_fixture(application, custody_key).await?
+        } else {
+            kasumi_store::test_utils::open_existing_custody_fixture(application, custody_key)
+                .await?
+        };
+        if create {
+            stores.write_batch(&[], &crate::initial_storage_identity(1, "snapshot-test")?)?;
+        }
+        Ok(stores)
+    }
+    let seed = FaultBackend::new();
+    let initial = reopen(seed.clone(), scratch.clone(), persistent.clone(), true).await?;
+    let mut log = LogStore::open(initial.clone(), 1).await?;
+    log.append_local(Entry {
+        log_id: LogId::default(),
+        payload: EntryPayload::Membership(openraft::Membership::from(
+            std::collections::BTreeMap::from([(1, crate::BasicNode::new("local"))]),
+        )),
+        initialization: None,
+    })
+    .await?;
+    let baseline = seed.crash();
+    drop(log);
+    initial.custody().store().shutdown().await.unwrap();
+    drop(initial);
+    fn command() -> Entry<TypeConfig> {
+        Entry {
+            log_id: LogId::new(openraft::CommittedLeaderId::new(1, 1), 1),
+            payload: EntryPayload::Normal(crate::RaftCommand::application(
+                b"whole-local-command".to_vec(),
+            )),
+            initialization: None,
+        }
+    }
+    let measured = baseline.crash();
+    let stores = reopen(measured.clone(), scratch.clone(), persistent.clone(), false).await?;
+    let mut log = LogStore::open(stores.clone(), 1).await?;
+    let before = measured.operations();
+    let before_syncs = measured.syncs();
+    log.append_local(command()).await?;
+    let operations = measured.operations() - before;
+    let local_syncs = measured.syncs() - before_syncs;
+    assert!(operations > 0 && local_syncs > 0);
+    drop(log);
+    stores.custody().store().shutdown().await.unwrap();
+    drop(stores);
+    let split = baseline.crash();
+    let stores = reopen(split.clone(), scratch.clone(), persistent.clone(), false).await?;
+    let mut log = LogStore::open(stores.clone(), 1).await?;
+    let before_syncs = split.syncs();
+    log.blocking_append([command()]).await?;
+    log.save_committed(Some(command().log_id)).await?;
+    assert!(
+        split.syncs() - before_syncs > local_syncs,
+        "local commit must remove the separate commit-cursor flush"
+    );
+    drop(log);
+    stores.custody().store().shutdown().await.unwrap();
+    drop(stores);
+    for failure in 0..=operations {
+        let disk = baseline.crash();
+        let stores = reopen(disk.clone(), scratch.clone(), persistent.clone(), false).await?;
+        let mut log = LogStore::open(stores.clone(), 1).await?;
+        disk.fail_after(failure);
+        let acknowledged = log.append_local(command()).await.is_ok();
+        let crash = disk.crash();
+        disk.disarm();
+        drop(log);
+        stores.custody().store().shutdown().await.unwrap();
+        drop(stores);
+        let recovered = reopen(crash, scratch.clone(), persistent.clone(), false).await?;
+        let mut log = LogStore::open(recovered.clone(), 1).await?;
+        let committed = log.read_committed().await?.unwrap();
+        let entries = log.try_get_log_entries(0..=1).await?;
+        assert_eq!(
+            entries.last().unwrap().log_id,
+            committed,
+            "torn journal/commit at operation {failure}"
+        );
+        assert!(committed.index == 0 || committed == command().log_id);
+        if acknowledged {
+            assert_eq!(
+                committed,
+                command().log_id,
+                "acknowledged entry lost at {failure}"
+            );
+        }
+        let backend = Arc::new(BytesBackend::default());
+        let mut machine = StateMachine::open(
+            recovered.clone(),
+            backend.clone(),
+            crate::SnapshotBufferOwner::fixture(),
+        )
+        .await?;
+        machine.apply(entries).await?;
+        assert_eq!(
+            backend.0.lock().unwrap().as_slice(),
+            if committed.index == 1 {
+                b"whole-local-command".as_slice()
+            } else {
+                b"".as_slice()
+            }
+        );
+        drop(machine);
+        drop(log);
+        recovered.custody().store().shutdown().await.unwrap();
+    }
+    Ok(())
+}

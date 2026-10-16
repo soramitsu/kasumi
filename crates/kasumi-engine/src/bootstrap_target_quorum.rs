@@ -164,7 +164,7 @@ impl TargetReplica {
         self.check(operation, LifecyclePhase::Initialize)?;
         let permit = permit.consume(self, operation)?;
         let group = self.database.raft_group();
-        let id = group.raft().metrics().borrow().id;
+        let id = group.node_id();
         snapshot_ensure!(
             Some(&id) == self.bootstrap.voters.keys().next(),
             "only the designated target voter may initialize"

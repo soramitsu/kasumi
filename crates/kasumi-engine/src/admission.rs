@@ -1915,7 +1915,8 @@ mod tests {
         let owner = node.snapshot_buffer_owner().unwrap();
         let charge =
             kasumi_raft::SnapshotBufferOwner::required_bytes(kasumi_raft::SNAPSHOT_BUFFER_SLOTS)
-                .unwrap();
+                .unwrap()
+                + kasumi_types::SharedBudgetCharge::required_bytes::<Reservation>().unwrap();
         assert_eq!(payload_bytes(&node), charge);
         let weak = Arc::downgrade(&owner);
         drop(owner);

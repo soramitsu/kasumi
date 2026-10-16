@@ -66,7 +66,7 @@ impl Database {
             .await
             .map_err(denied)?;
         self.target_access(operation)?;
-        let metrics = self.group.raft().metrics().borrow().clone();
+        let metrics = self.group.metrics();
         let generation = self.engine.generation()?;
         let entry = generation
             .state

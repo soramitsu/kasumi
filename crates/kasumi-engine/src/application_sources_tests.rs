@@ -92,6 +92,8 @@ impl Fixture {
                 + kasumi_raft::SnapshotBufferOwner::required_bytes(
                     kasumi_raft::SNAPSHOT_BUFFER_SLOTS
                 )?
+                + kasumi_types::SharedBudgetCharge::required_bytes::<crate::admission::Reservation>(
+                )?
         );
         Ok(Self {
             _directory: directory,
@@ -257,7 +259,7 @@ async fn selected_sources_canonical_failure_closes_parent_preserves_original_and
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn selected_sources_real_local_startup_publishes_entry_and_drains_surviving_generation()
+async fn selected_sources_local_command_publishes_entry_and_drains_surviving_generation()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
     let audit_store = kasumi_store::TenantStore::initialize_catalog_fixture(
@@ -289,6 +291,26 @@ async fn selected_sources_real_local_startup_publishes_entry_and_drains_survivin
         format!("selected-sources/{}", bootstrap.state.incarnation),
     )
     .await?;
+    assert!(database.raft_group().try_raft().is_none());
+    assert_eq!(
+        engine.generation()?.state.revision,
+        bootstrap.state.revision
+    );
+    // Standalone startup has no election no-op. A real command advances the
+    // selected source while the earlier immutable generation remains pinned.
+    database
+        .administer(
+            kasumi_types::RequestContext::trusted("selected-sources", "owner", [Action::Admin]),
+            kasumi_types::Operation::CreateCollection(kasumi_types::CollectionDefinition {
+                name: "docs".into(),
+                write_mode: kasumi_types::CollectionWriteMode::Mutable,
+                retention_class: kasumi_types::CollectionRetentionClass::Operational,
+                schema: serde_json::json!({"type": "object"}),
+                indexes: vec![],
+                strict_read_audit: false,
+            }),
+        )
+        .await?;
     let generation = engine.generation()?;
     assert!(generation.state.revision > bootstrap.state.revision);
     let initial = bootstrap.application_selection.get().unwrap().cell.clone();
@@ -1070,8 +1092,28 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
         source.stores.clone(),
         source_audit.clone(),
     )?
-    .start_local(source_engine.clone(), &source.image, 1, group.clone())
+    .start_replicated(
+        source_engine.clone(),
+        &source.image,
+        1,
+        group.clone(),
+        Arc::new(kasumi_raft::InProcessRouter::default()),
+        Default::default(),
+    )
     .await?;
+    source_db
+        .raft_group()
+        .initialize(std::collections::BTreeMap::from([(
+            1,
+            kasumi_raft::BasicNode::new("snapshot-source"),
+        )]))
+        .await?;
+    source_db
+        .raft_group()
+        .raft()
+        .wait(Some(std::time::Duration::from_secs(10)))
+        .current_leader(1, "replicated snapshot source leader")
+        .await?;
     let expected = source_db
         .raft_group()
         .linearizable_barrier()

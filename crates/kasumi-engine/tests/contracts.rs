@@ -1422,8 +1422,10 @@ async fn mixed_put_delete_receipt_reports_one_revision_for_every_target_and_repl
 }
 
 #[tokio::test]
-async fn actual_raft_writes_queries_and_snapshot_pagination() {
+async fn standalone_writes_queries_and_snapshot_pagination_without_raft() {
     let (_dir, _physical, db, _key, _store, audit) = database(false).await;
+    assert!(db.raft_group().is_local());
+    assert!(db.raft_group().try_raft().is_none());
     db.mutate(
         context("owner"),
         batch(
@@ -1748,13 +1750,22 @@ async fn shared_get_uses_the_same_audit_and_authorization_and_keeps_historical_v
 
 #[tokio::test]
 async fn strict_empty_discovery_is_audited_and_failed_audit_persistence_blocks_results() {
+    strict_empty_discovery_and_audit_failure(false).await;
+}
+
+#[tokio::test]
+async fn replicated_strict_audit_failure_preserves_actual_openraft_shutdown_cause() {
+    strict_empty_discovery_and_audit_failure(true).await;
+}
+
+async fn strict_empty_discovery_and_audit_failure(replicated: bool) {
     let audit_directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let physical = common::PhysicalFixture::new(
         &audit_directory.path().join("synthetic-owner"),
         Default::default(),
     );
     let backend = kasumi_store::test_utils::FaultBackend::new();
-    let node = NodeStore::open_fixture_backend_on_disk(
+    let node = NodeStore::create_fixture_backend_on_disk(
         backend.clone(),
         kasumi_store::test_utils::storage_admission(),
         physical.storage.persistent.clone(),
@@ -1788,19 +1799,31 @@ async fn strict_empty_discovery_is_audited_and_failed_audit_persistence_blocks_r
     )
     .await
     .unwrap();
-    let db = kasumi_engine::test_utils::open_fixture(
-        kasumi_store::test_utils::initialize_custody_fixture(
-            store,
-            std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
-        )
-        .await
-        .unwrap(),
-        policy(true),
-        Limits::default(),
-        audit.clone(),
+    let stores = kasumi_store::test_utils::initialize_custody_fixture(
+        store,
+        std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
     )
     .await
     .unwrap();
+    let db = if replicated {
+        kasumi_engine::test_utils::open_fixture_single_voter_raft(
+            stores,
+            policy(true),
+            Limits::default(),
+            audit.clone(),
+        )
+        .await
+        .unwrap()
+    } else {
+        kasumi_engine::test_utils::open_fixture(
+            stores,
+            policy(true),
+            Limits::default(),
+            audit.clone(),
+        )
+        .await
+        .unwrap()
+    };
     assert!(db.collections(&context("owner")).await.unwrap().is_empty());
     assert_eq!(
         db.engine()
@@ -1859,38 +1882,56 @@ async fn strict_empty_discovery_is_audited_and_failed_audit_persistence_blocks_r
         assert!(kasumi_types::drain::DrainIssueRef::ptr_eq(issue, again));
         assert_eq!(issue.instance(), 0);
     }
-    let expected = openraft::StorageError::<u64>::from_io_error(
-        openraft::ErrorSubject::Store,
-        openraft::ErrorVerb::Write,
-        std::io::Error::other("durable domain transaction failed; outcome may be unknown"),
-    );
     let background = failure
         .issues()
         .iter()
         .find(|issue| issue.component() == "background work result")
         .unwrap();
-    assert_eq!(background.error().to_string(), expected.to_string());
-    let runtime = failure
-        .issues()
-        .iter()
-        .find(|issue| issue.component() == "OpenRaft runtime")
-        .unwrap()
-        .error()
-        .downcast_ref::<openraft::error::ShutdownError<u64, tokio::task::JoinError>>()
-        .expect("original typed OpenRaft failure missing");
-    let Some(openraft::error::Fatal::StorageError(storage)) = runtime.core() else {
-        panic!(
-            "forced durable write did not retain its original core storage failure: {runtime:?}"
+    if replicated {
+        let runtime = failure
+            .issues()
+            .iter()
+            .find(|issue| issue.component() == "OpenRaft runtime")
+            .unwrap()
+            .error()
+            .downcast_ref::<openraft::error::ShutdownError<u64, tokio::task::JoinError>>()
+            .expect("original typed OpenRaft failure missing");
+        let Some(openraft::error::Fatal::StorageError(storage)) = runtime.core() else {
+            panic!(
+                "forced durable write did not retain its original core storage failure: {runtime:?}"
+            );
+        };
+        assert_eq!(background.error().to_string(), storage.to_string());
+        assert!(runtime.core_join_error().is_none());
+        assert!(runtime.ticker().is_none());
+        assert!(runtime.state_machine().is_none());
+        assert!(runtime.snapshot_builder().is_none());
+        assert!(runtime.replications().is_empty());
+        assert!(runtime.auxiliary().is_empty());
+        assert!(runtime.incoming_snapshot().is_none());
+    } else {
+        assert!(db.raft_group().try_raft().is_none());
+        let local = failure
+            .issues()
+            .iter()
+            .find(|issue| issue.component() == "Local storage worker")
+            .expect("original local worker storage failure missing");
+        let storage = local
+            .error()
+            .downcast_ref::<openraft::StorageError<u64>>()
+            .expect("original typed local storage failure missing");
+        assert!(storage.to_string().contains("injected storage failure"));
+        let background = background
+            .error()
+            .downcast_ref::<kasumi_types::drain::DrainFailure>()
+            .expect("background worker lost the original local drain report");
+        assert!(
+            background
+                .issues()
+                .iter()
+                .any(|issue| { kasumi_types::drain::DrainIssueRef::ptr_eq(issue, local) })
         );
-    };
-    assert_eq!(storage.to_string(), expected.to_string());
-    assert!(runtime.core_join_error().is_none());
-    assert!(runtime.ticker().is_none());
-    assert!(runtime.state_machine().is_none());
-    assert!(runtime.snapshot_builder().is_none());
-    assert!(runtime.replications().is_empty());
-    assert!(runtime.auxiliary().is_empty());
-    assert!(runtime.incoming_snapshot().is_none());
+    }
     assert!(db.raft_group().check_access().is_err());
     assert!(db.engine().generation().is_err());
     eprintln!("forced audit persistence failure retained after complete drain: {failure:?}");

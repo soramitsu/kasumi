@@ -23,6 +23,8 @@ as one durable operation.
 
 The same policy and data model works in an embedded Rust application, a
 standalone server, a three-voter OpenRaft deployment, native gRPC, and MCP.
+Embedded and standalone databases commit locally without running Raft; replicated
+deployments use Raft across their configured voters.
 Kasumi does not implement the Redis protocol; its APIs are designed around
 explicit receipts, authorization, and recoverable operations.
 

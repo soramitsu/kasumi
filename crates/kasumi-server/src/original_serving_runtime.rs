@@ -1882,13 +1882,7 @@ impl Administration {
         let Some(bootstrap) = &current.bootstrap else {
             return Ok(());
         };
-        if current
-            .database
-            .raft_group()
-            .raft()
-            .is_initialized()
-            .await?
-        {
+        if current.database.raft_group().is_initialized().await? {
             return Ok(());
         }
         let local = self

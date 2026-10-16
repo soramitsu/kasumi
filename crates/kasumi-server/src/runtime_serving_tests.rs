@@ -253,7 +253,7 @@ async fn original_tenant_reopens_after_key_outage_without_reviving_retained_hand
 enum OriginalClosure {
     SealDuringProposal,
     FailedProposalChild,
-    RaftCoreFatal,
+    LocalExecutorFatal,
 }
 
 async fn original_tenant_reopens_after(closure: OriginalClosure) {
@@ -291,15 +291,17 @@ async fn original_tenant_reopens_after(closure: OriginalClosure) {
     std::fs::remove_file(&application_credential).unwrap();
     let (causes, component): (&[&str], &str) = match closure {
         OriginalClosure::SealDuringProposal => {
-            // Hold the actual Raft core so one admitted write stays in flight
+            // Hold the actual local storage worker before its durable append
             // while its tenant key lease is sealed beneath it.
             let (release, blocked) = std::sync::mpsc::channel::<()>();
-            let (entered, core_blocked) = tokio::sync::oneshot::channel::<()>();
-            retained.raft_group().raft().external_request(move |_| {
-                let _ = entered.send(());
-                let _ = blocked.recv();
-            });
-            core_blocked.await.unwrap();
+            let (entered, worker_blocked) = tokio::sync::oneshot::channel::<()>();
+            retained
+                .raft_group()
+                .fixture_local_before_apply(Box::new(move || {
+                    let _ = entered.send(());
+                    let _ = blocked.recv();
+                }))
+                .unwrap();
             let writer = {
                 let database = retained.clone();
                 let context = context.clone();
@@ -309,6 +311,10 @@ async fn original_tenant_reopens_after(closure: OriginalClosure) {
                         .await
                 })
             };
+            tokio::time::timeout(Duration::from_secs(10), worker_blocked)
+                .await
+                .unwrap()
+                .unwrap();
             tokio::time::timeout(Duration::from_secs(10), async {
                 while retained.fixture_running_proposals() == 0 {
                     tokio::time::sleep(Duration::from_millis(10)).await;
@@ -336,11 +342,16 @@ async fn original_tenant_reopens_after(closure: OriginalClosure) {
             assert_eq!(failed.code, kasumi_types::ErrorCode::UnknownOutcome);
             (&["proposal_work_closed"], "background work result")
         }
-        OriginalClosure::RaftCoreFatal => {
+        OriginalClosure::LocalExecutorFatal => {
             retained
                 .raft_group()
-                .raft()
-                .external_request(|_| panic!("fixture Raft core fatal"));
+                .fixture_local_before_apply(Box::new(|| panic!("fixture local executor fatal")))
+                .unwrap();
+            let failed = retained
+                .administer(context.clone(), Operation::SetLimits(Limits::default()))
+                .await
+                .unwrap_err();
+            assert_eq!(failed.code, kasumi_types::ErrorCode::UnknownOutcome);
             tokio::time::timeout(Duration::from_secs(10), async {
                 while retained.check_serving().is_ok() {
                     tokio::time::sleep(Duration::from_millis(10)).await;
@@ -349,8 +360,12 @@ async fn original_tenant_reopens_after(closure: OriginalClosure) {
             .await
             .unwrap();
             (
-                &["raft_core_failed", "proposal_work_closed"],
-                "OpenRaft runtime",
+                &[
+                    "local_executor_failed",
+                    "proposal_work_closed",
+                    "state_machine_failed",
+                ],
+                "Local storage worker",
             )
         }
     };
@@ -456,8 +471,8 @@ async fn original_tenant_reopens_after_failed_proposal_child() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn original_tenant_reopens_after_raft_core_fatal() {
-    original_tenant_reopens_after(OriginalClosure::RaftCoreFatal).await;
+async fn original_tenant_reopens_after_local_executor_fatal() {
+    original_tenant_reopens_after(OriginalClosure::LocalExecutorFatal).await;
 }
 
 #[test]

@@ -302,10 +302,18 @@ fn directory_read_into_rejects_corrupt_cached_identity_before_copy_or_io() {
                 .unwrap(),
         );
         let mut out = [0xc3; DIRECTORY_PAGE_BYTES];
-        assert!(
-            matches!(&(cache.read_page(page, &mut out)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::Corrupt("cached directory page identity differs"))))
-        );
-        assert_eq!(out, [0xc3; DIRECTORY_PAGE_BYTES]);
+        if wrong_length {
+            assert!(
+                matches!(&(cache.read_page(page, &mut out)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::Corrupt("cached directory page identity differs"))))
+            );
+            assert_eq!(out, [0xc3; DIRECTORY_PAGE_BYTES]);
+        } else {
+            // A hit is not rehashed: only digest-verified bytes are inserted,
+            // and every directory reader's validate_page rejects these bytes.
+            cache.read_page(page, &mut out).unwrap();
+            assert_eq!(out, [9; DIRECTORY_PAGE_BYTES]);
+            assert_ne!(page_digest(&out), page.sha256);
+        }
         assert_eq!(backend.reads.load(Ordering::Relaxed), 0);
         drop(cache);
         assert_eq!(admission.used.load(Ordering::Acquire), 0);

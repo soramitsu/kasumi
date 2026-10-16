@@ -143,18 +143,16 @@ impl DatabaseRegistry {
             return None;
         }
         let database = self.database(context).ok()?;
+        if database.raft_group().is_local() {
+            return None;
+        }
         let generation = database.engine().generation().ok()?;
         if !generation.policy().grants.iter().any(|grant| {
             grant.principal == context.principal && !grant.actions.is_disjoint(&context.scopes)
         }) {
             return None;
         }
-        let leader = database
-            .raft_group()
-            .raft()
-            .metrics()
-            .borrow()
-            .current_leader?;
+        let leader = database.raft_group().metrics().current_leader?;
         self.approved_nodes
             .read()
             .ok()?

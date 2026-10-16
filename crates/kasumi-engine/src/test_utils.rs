@@ -296,6 +296,18 @@ pub async fn open_fixture_replicated(
     .await
 }
 
+/// Deliberate Raft fixture for consensus-specific tests, never a standalone
+/// application opener. This helper is absent from production builds.
+pub async fn open_fixture_single_voter_raft(
+    stores: Arc<TenantStorageSet>,
+    policy: Policy,
+    limits: Limits,
+    audit: Arc<SecurityAudit>,
+) -> std::result::Result<Arc<Database>, crate::SnapshotFailure> {
+    install_fixture_audit_placement(stores.application())?;
+    crate::bootstrap::fixtures::open_fixture_single_voter_raft(stores, policy, limits, audit).await
+}
+
 /// Preserve an explicit fixture payload cap while admitting the real core and
 /// its first runtime facade. An unspecified production-derived cap is unchanged.
 pub fn admission_config_with_bookkeeping(

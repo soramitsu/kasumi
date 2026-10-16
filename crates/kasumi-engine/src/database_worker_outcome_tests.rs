@@ -122,12 +122,9 @@ impl Fixture {
         let database = construction::DatabaseConstruction::new(stores, audit.clone())?
             .start_local(engine, &image, 1, format!("{name}/{incarnation}"))
             .await?;
-        database
-            .group
-            .raft()
-            .wait(Some(Duration::from_secs(5)))
-            .current_leader(1, "worker outcome fixture leader")
-            .await?;
+        assert!(database.group.is_local());
+        assert!(database.group.try_raft().is_none());
+        database.group.linearizable_barrier().await?;
         Ok(Self {
             directory,
             storage,
@@ -225,6 +222,42 @@ fn panic_issue(failure: &DrainFailure, component: &str) -> kasumi_types::drain::
             .is_panic()
     );
     issue.clone()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn idle_audit_timer_leaves_proposal_and_shared_preparation_capacity_free()
+-> crate::test_fixture_failure::FixtureResult<()> {
+    let fixture = Fixture::new("idle-audit").await?;
+    let database = &fixture.database;
+    assert!(!database.engine.audit_prune_needed()?);
+    let pool = database
+        .engine
+        .audit_maintenance
+        .lock()
+        .unwrap()
+        .clone()
+        .unwrap();
+    let permit = pool.preparation.acquire().await.unwrap();
+    assert!(
+        tokio::time::timeout(
+            Duration::from_millis(750),
+            database.worker_test_hooks.waiting_preparation.notified(),
+        )
+        .await
+        .is_err(),
+        "idle timer entered archive preparation without any backlog"
+    );
+    drop(
+        database
+            .proposal_gate
+            .try_lock()
+            .expect("idle timer held the proposal gate"),
+    );
+    assert_eq!(database.audit_preparation.child_finished().await, None);
+    drop(permit);
+    drop(pool);
+    database.shutdown().await?;
+    fixture.release().await
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -452,6 +485,7 @@ async fn database_shutdown_cancels_undispatched_shared_permit_wait_before_other_
         .clone()
         .unwrap();
     assert!(Arc::ptr_eq(&pool, &waiting_pool));
+    waiting.database.audit_worker_wake.notify_one();
     tokio::time::timeout(
         Duration::from_secs(5),
         waiting

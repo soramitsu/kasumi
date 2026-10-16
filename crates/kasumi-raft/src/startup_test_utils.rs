@@ -66,11 +66,8 @@ impl LocalStartupGate {
             .and_then(|raft| raft.downcast_ref::<crate::Raft>())
             .cloned()
     }
-    pub(crate) async fn pause(&self, group: &crate::RaftGroup) -> Result<()> {
-        *self.raft.lock().unwrap() = Some(Arc::new(group.raft.clone()));
-        *self.ownership.lock().unwrap() = Some(Arc::downgrade(&group.ownership));
-        let router: Arc<dyn Send + Sync> = group.local_route.as_ref().unwrap().0.clone();
-        *self.router.lock().unwrap() = Some(Arc::downgrade(&router));
+    pub(crate) async fn pause(&self, ownership: &Arc<AtomicBool>) -> Result<()> {
+        *self.ownership.lock().unwrap() = Some(Arc::downgrade(ownership));
         self.entered.notify_one();
         self.release.acquire().await.unwrap().forget();
         Err(self

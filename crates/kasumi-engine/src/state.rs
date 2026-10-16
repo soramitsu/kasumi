@@ -635,6 +635,17 @@ impl TenantEngine {
             .ok_or_else(|| anyhow::anyhow!("consensus metadata revision overflow"))?;
         let previous = apply.current();
         let response = kasumi_raft::AppliedResponse::application(Vec::new());
+        if revision == previous.state.revision
+            && position.log_id.index == 0
+            && self.application_sources.get().is_some()
+        {
+            return self.publish_prepared_generation(
+                apply.accept_initial_metadata(position)?,
+                response,
+                Some(position),
+                publisher,
+            );
+        }
         // Covered replay still crosses the adapter's publication barrier.
         if revision <= previous.state.revision {
             publisher.commit(response, &[])?;

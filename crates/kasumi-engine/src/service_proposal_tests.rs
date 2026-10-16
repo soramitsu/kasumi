@@ -176,7 +176,7 @@ async fn cancelled_submit_keeps_actual_proposal_until_original_identity_is_resol
 }
 
 #[tokio::test]
-async fn cancelled_database_shutdown_joins_actual_proposal_panic_before_raft_shutdown() {
+async fn cancelled_database_shutdown_joins_actual_proposal_panic_before_local_journal_shutdown() {
     struct PanickingProposalClock;
     impl CommandClock for PanickingProposalClock {
         fn now_ms(&self) -> Result<u64> {
@@ -213,7 +213,7 @@ async fn cancelled_database_shutdown_joins_actual_proposal_panic_before_raft_shu
     .await
     .unwrap();
     drop(drain);
-    // The cancelled waiter cannot stop the live Raft group while its admitted
+    // The cancelled waiter cannot stop the local journal while its admitted
     // proposal still owns the ordering gate and original command workspace.
     assert!(fixture.db.group.check_access().is_ok());
     drop(gate);
@@ -246,7 +246,7 @@ async fn cancelled_database_shutdown_joins_actual_proposal_panic_before_raft_shu
 
 #[tokio::test]
 async fn actual_raft_leadership_redirect_does_not_poison_proposal_custody() {
-    let fixture = CredentialFixture::new().await;
+    let fixture = CredentialFixture::new_replicated().await;
     let raft = fixture.db.group.raft();
     raft.runtime_config().elect(false);
     let gate = fixture.db.proposal_gate.lock().await;

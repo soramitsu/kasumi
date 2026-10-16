@@ -153,6 +153,27 @@ fn authorize_observation(
 }
 
 impl RetiredCustody {
+    pub async fn open_local(
+        custody: Arc<CustodyStore>,
+        node_id: u64,
+        group: String,
+        config: kasumi_raft::RaftGroupConfig,
+        admission: Arc<NodeAdmission>,
+        audit: Arc<SecurityAudit>,
+    ) -> std::result::Result<Arc<Self>, crate::SnapshotFailure> {
+        audit.require_admission(&admission)?;
+        admission.memory().require_store_memory(custody.store())?;
+        let group = CustodyRaftGroup::local(
+            node_id,
+            group,
+            custody,
+            config,
+            admission.snapshot_buffer_owner()?,
+        )
+        .await?;
+        Ok(Self::with_closed_group(group, admission, audit))
+    }
+
     pub async fn open_replicated(
         custody: Arc<CustodyStore>,
         node_id: u64,
@@ -173,7 +194,15 @@ impl RetiredCustody {
             admission.snapshot_buffer_owner()?,
         )
         .await?;
-        Ok(Arc::new(Self {
+        Ok(Self::with_closed_group(group, admission, audit))
+    }
+
+    fn with_closed_group(
+        group: CustodyRaftGroup,
+        admission: Arc<NodeAdmission>,
+        audit: Arc<SecurityAudit>,
+    ) -> Arc<Self> {
+        Arc::new(Self {
             group: CustodyGroup::Closed(group),
             admission,
             audit,
@@ -182,7 +211,7 @@ impl RetiredCustody {
             clock: Arc::new(SystemCommandClock),
             closing: AtomicBool::new(false),
             shutdown_report: tokio::sync::Mutex::new(DrainReport::default()),
-        }))
+        })
     }
     pub fn identity(&self) -> Result<(String, String)> {
         let view = self.group.view().map_err(unavailable)?;

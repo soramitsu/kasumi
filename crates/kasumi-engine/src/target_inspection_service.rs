@@ -68,7 +68,7 @@ impl Database {
             .await
             .map_err(denied)?;
         self.inspection_access(operation, input)?;
-        let metrics = self.group.raft().metrics().borrow().clone();
+        let metrics = self.group.metrics();
         let generation = self.engine.generation()?;
         let entry = generation
             .state
@@ -210,7 +210,7 @@ impl Database {
             inspection_intent: lease.commitment().intent.clone(),
             completion: expected.observation.completion.clone(),
             activation: Some(activation.clone()),
-            observer_node_id: self.group.raft().metrics().borrow().id,
+            observer_node_id: self.group.node_id(),
             observed_revision: generation.state.revision,
             observed_term: covered.term(),
         };

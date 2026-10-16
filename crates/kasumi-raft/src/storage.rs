@@ -233,6 +233,26 @@ impl LogStore {
         .map_err(err)
     }
 
+    pub(crate) async fn validate_local_membership(&self, id: u64) -> Result<(), StorageError<u64>> {
+        let retained = self.retained.clone();
+        self.read(move |store| {
+            let span = *retained
+                .lock()
+                .map_err(|_| anyhow::anyhow!("retained span lock poisoned"))?;
+            if let Some(span) = span {
+                for index in span.first.index..=span.last.index {
+                    let header = read_header(store, index)?;
+                    span.check_endpoint(header.log_id)?;
+                    if let HeaderPayload::Membership(membership) = &header.payload {
+                        crate::local::check_membership(membership, id)?;
+                    }
+                }
+            }
+            Ok(())
+        })
+        .await
+    }
+
     pub(crate) async fn bind_group(&self, group: String) -> Result<(), StorageError<u64>> {
         self.mutate(move |store| {
             let saved = load::<String>(store, META, b"group")?
@@ -444,6 +464,149 @@ impl VoteSaveObservation {
     }
 }
 
+impl LogStore {
+    pub(crate) async fn append_local(
+        &mut self,
+        entry: Entry<TypeConfig>,
+    ) -> Result<(), StorageError<u64>> {
+        self.append_entries([entry], true).await
+    }
+
+    async fn append_entries<I>(
+        &mut self,
+        entries: I,
+        commit_local: bool,
+    ) -> Result<(), StorageError<u64>>
+    where
+        I: IntoIterator<Item = Entry<TypeConfig>> + OptionalSend,
+        I::IntoIter: OptionalSend,
+    {
+        let entries = entries.into_iter().collect::<Vec<_>>();
+        if commit_local {
+            if entries.len() != 1 {
+                return Err(err("local append requires one entry"));
+            }
+        }
+        for entry in &entries {
+            if let EntryPayload::Normal(crate::RaftCommand::Application(input)) = &entry.payload {
+                input.bind_input(entry.log_id).map_err(err)?;
+            }
+        }
+        let bootstrap_sha256 =
+            load::<String>(&self.store, META, b"application_bootstrap_sha256").map_err(err)?;
+        let storage_binding_sha256 = self.domains.custody().binding().digest().map_err(err)?;
+        let writes = entries
+            .iter()
+            .map(|entry| {
+                crate::initialization_association::validate_entry(self.domains.custody(), entry)?;
+                let encoded = encode_entry(entry)?;
+                let (header, seed) = LogHeader::build(entry, &encoded)?;
+                header.validate()?;
+                let key = entry.log_id.index.to_be_bytes();
+                let closed = matches!(header.payload, HeaderPayload::Custody { .. });
+                let mut control = vec![put(HEADERS, &key, serde_json::to_vec(&header)?)];
+                if let Some(seed) = seed {
+                    control.push(put(
+                        SEEDS,
+                        &key,
+                        serde_json::to_vec(&RetainedSeed {
+                            header,
+                            seed,
+                            bootstrap_sha256: bootstrap_sha256
+                                .clone()
+                                .context("retirement seed lacks installed application bootstrap")?,
+                            storage_binding_sha256: storage_binding_sha256.clone(),
+                        })?,
+                    ));
+                } else {
+                    control.push(delete(SEEDS, key.to_vec()));
+                }
+                let application = if closed {
+                    control.push(put(CUSTODY_LOG, &key, encoded));
+                    self.domains.serving().map(|_| delete(LOG, key.to_vec()))
+                } else {
+                    control.push(delete(CUSTODY_LOG, key.to_vec()));
+                    if self.domains.serving().is_some() {
+                        Some(put(LOG, &key, encoded))
+                    } else {
+                        ensure!(
+                            !matches!(entry.payload, EntryPayload::Normal(_)),
+                            "payload log append forbidden in retired custody"
+                        );
+                        None
+                    }
+                };
+                Ok((application, control))
+            })
+            .collect::<Result<Vec<_>>>()
+            .map_err(err)?;
+        let retained = self.retained.clone();
+        let domains = self.domains.clone();
+        self.mutate(move |store| {
+            // OpenRaft may repopulate physical logs beneath a snapshot.
+            // That does not change the separately committed snapshot. Only
+            // an exact accepted retirement identity is immutable here.
+            if let Some(boundary) = crate::control::retired_boundary(domains.custody())? {
+                for entry in &entries {
+                    if entry.log_id.index > boundary.position.log_id.index
+                        && let EntryPayload::Normal(command) = &entry.payload
+                    {
+                        ensure!(
+                            command.custody_command()?.is_some(),
+                            "application log entry after permanent retirement"
+                        );
+                    }
+                }
+                for entry in entries
+                    .iter()
+                    .filter(|entry| entry.log_id.index == boundary.position.log_id.index)
+                {
+                    let retained: RetainedSeed =
+                        load(store, SEEDS, &entry.log_id.index.to_be_bytes())?
+                            .context("accepted retirement seed absent")?;
+                    retained.header.check_entry(entry, &encode_entry(entry)?)?;
+                }
+            }
+            if commit_local {
+                let previous = load::<Option<LogId<u64>>>(store, META, b"committed")?.flatten();
+                ensure!(
+                    Some(entries[0].log_id) > previous,
+                    "local committed cursor must advance"
+                );
+            }
+            let mut retained = retained
+                .lock()
+                .map_err(|_| anyhow::anyhow!("raft retained span lock poisoned"))?;
+            let mut batches = EntryBatches::new(*retained, &entries)?;
+            // Commit the overlap/suffix forward, then a prepended prefix
+            // backward. Every durable chunk remains contiguous after crash,
+            // including physical logs repopulated below a snapshot.
+            while let Some(range) = batches.next_range(&writes)? {
+                let mut data = Vec::new();
+                let mut control = Vec::new();
+                for (application, custody) in &writes[range.clone()] {
+                    data.extend(application.iter().cloned());
+                    control.extend(custody.iter().cloned());
+                }
+                let next = RetainedSpan::including(*retained, &entries[range])?;
+                if commit_local {
+                    // The local WAL entry and commit cursor share the same
+                    // durable transaction. There is no quorum to wait for.
+                    control.push(put(
+                        META,
+                        b"committed",
+                        serde_json::to_vec(&Some(entries[0].log_id))?,
+                    ));
+                }
+                domains.write_batch(&data, &control)?;
+                *retained = Some(next);
+            }
+            Ok(())
+        })
+        .await
+    }
+}
+
 impl RaftLogStorage<TypeConfig> for LogStore {
     type LogReader = Self;
 
@@ -529,109 +692,7 @@ impl RaftLogStorage<TypeConfig> for LogStore {
         I: IntoIterator<Item = Entry<TypeConfig>> + OptionalSend,
         I::IntoIter: OptionalSend,
     {
-        let entries = entries.into_iter().collect::<Vec<_>>();
-        for entry in &entries {
-            if let EntryPayload::Normal(crate::RaftCommand::Application(input)) = &entry.payload {
-                input.bind_input(entry.log_id).map_err(err)?;
-            }
-        }
-        let bootstrap_sha256 =
-            load::<String>(&self.store, META, b"application_bootstrap_sha256").map_err(err)?;
-        let storage_binding_sha256 = self.domains.custody().binding().digest().map_err(err)?;
-        let writes = entries
-            .iter()
-            .map(|entry| {
-                crate::initialization_association::validate_entry(self.domains.custody(), entry)?;
-                let encoded = encode_entry(entry)?;
-                let (header, seed) = LogHeader::build(entry, &encoded)?;
-                header.validate()?;
-                let key = entry.log_id.index.to_be_bytes();
-                let closed = matches!(header.payload, HeaderPayload::Custody { .. });
-                let mut control = vec![put(HEADERS, &key, serde_json::to_vec(&header)?)];
-                if let Some(seed) = seed {
-                    control.push(put(
-                        SEEDS,
-                        &key,
-                        serde_json::to_vec(&RetainedSeed {
-                            header,
-                            seed,
-                            bootstrap_sha256: bootstrap_sha256
-                                .clone()
-                                .context("retirement seed lacks installed application bootstrap")?,
-                            storage_binding_sha256: storage_binding_sha256.clone(),
-                        })?,
-                    ));
-                } else {
-                    control.push(delete(SEEDS, key.to_vec()));
-                }
-                let application = if closed {
-                    control.push(put(CUSTODY_LOG, &key, encoded));
-                    self.domains.serving().map(|_| delete(LOG, key.to_vec()))
-                } else {
-                    control.push(delete(CUSTODY_LOG, key.to_vec()));
-                    if self.domains.serving().is_some() {
-                        Some(put(LOG, &key, encoded))
-                    } else {
-                        ensure!(
-                            !matches!(entry.payload, EntryPayload::Normal(_)),
-                            "payload log append forbidden in retired custody"
-                        );
-                        None
-                    }
-                };
-                Ok((application, control))
-            })
-            .collect::<Result<Vec<_>>>()
-            .map_err(err)?;
-        let retained = self.retained.clone();
-        let domains = self.domains.clone();
-        let result = self
-            .mutate(move |store| {
-                // OpenRaft may repopulate physical logs beneath a snapshot.
-                // That does not change the separately committed snapshot. Only
-                // an exact accepted retirement identity is immutable here.
-                if let Some(boundary) = crate::control::retired_boundary(domains.custody())? {
-                    for entry in &entries {
-                        if entry.log_id.index > boundary.position.log_id.index
-                            && let EntryPayload::Normal(command) = &entry.payload
-                        {
-                            ensure!(
-                                command.custody_command()?.is_some(),
-                                "application log entry after permanent retirement"
-                            );
-                        }
-                    }
-                    for entry in entries
-                        .iter()
-                        .filter(|entry| entry.log_id.index == boundary.position.log_id.index)
-                    {
-                        let retained: RetainedSeed =
-                            load(store, SEEDS, &entry.log_id.index.to_be_bytes())?
-                                .context("accepted retirement seed absent")?;
-                        retained.header.check_entry(entry, &encode_entry(entry)?)?;
-                    }
-                }
-                let mut retained = retained
-                    .lock()
-                    .map_err(|_| anyhow::anyhow!("raft retained span lock poisoned"))?;
-                let mut batches = EntryBatches::new(*retained, &entries)?;
-                // Commit the overlap/suffix forward, then a prepended prefix
-                // backward. Every durable chunk remains contiguous after crash,
-                // including physical logs repopulated below a snapshot.
-                while let Some(range) = batches.next_range(&writes)? {
-                    let mut data = Vec::new();
-                    let mut control = Vec::new();
-                    for (application, custody) in &writes[range.clone()] {
-                        data.extend(application.iter().cloned());
-                        control.extend(custody.iter().cloned());
-                    }
-                    let next = RetainedSpan::including(*retained, &entries[range])?;
-                    domains.write_batch(&data, &control)?;
-                    *retained = Some(next);
-                }
-                Ok(())
-            })
-            .await;
+        let result = self.append_entries(entries, false).await;
         // Completion is sent only after the transactional store's durable commit.
         callback.log_io_completed(
             result

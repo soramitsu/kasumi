@@ -69,6 +69,52 @@ impl Installation {
         self.audit.shutdown().await.unwrap();
         self.node.shutdown().await.unwrap();
     }
+    async fn reopen(self) -> crate::test_fixture_failure::FixtureResult<Self> {
+        self.shutdown().await;
+        let Self {
+            directory,
+            storage,
+            node,
+            stores,
+            audit,
+            access,
+            incarnation,
+        } = self;
+        drop(stores);
+        drop(audit);
+        drop(node);
+        let node = storage.open_existing(
+            directory.path().join("persistent/node.kv"),
+            kasumi_store::test_utils::NODE_STORE_ID,
+        )?;
+        let stores = TenantStorageSet::open_existing(
+            node.clone(),
+            "tenant".into(),
+            Arc::new(LocalKeyProvider::new([21; 32])),
+            Arc::new(LocalKeyProvider::new([22; 32])),
+            access.clone(),
+        )
+        .await?;
+        crate::test_utils::install_local_replica_audit_placement(stores.application())?;
+        let audit_store = TenantStore::open_existing(
+            node.clone(),
+            crate::SECURITY_TENANT.into(),
+            Arc::new(LocalKeyProvider::new([23; 32])),
+            StorageAccess::security_audit(),
+        )
+        .await?;
+        let audit =
+            SecurityAudit::open(audit_store, Default::default(), storage.admission.clone())?;
+        Ok(Self {
+            directory,
+            storage,
+            node,
+            stores,
+            audit,
+            access,
+            incarnation,
+        })
+    }
     fn seed_bootstrap(&self) -> crate::test_fixture_failure::FixtureResult<()> {
         bind_deployment(&self.stores, b"local-v1")?;
         Ok(persist_new(&self.stores, &self.image()?)?)
@@ -501,6 +547,45 @@ async fn installed_engine_generation_rejects_closed_original_store()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn empty_local_reopens_without_an_election_noop_or_revision_change()
+-> crate::test_fixture_failure::FixtureResult<()> {
+    let fixture = Installation::new().await?;
+    let database = open_local_with_incarnation(
+        fixture.stores.clone(),
+        policy(),
+        Limits::default(),
+        fixture.audit.clone(),
+        fixture.incarnation,
+    )
+    .await?;
+    let revision = database.engine().generation()?.state.revision;
+    assert_eq!(revision, 0);
+    assert!(database.raft_group().try_raft().is_none());
+    database.shutdown().await?;
+    drop(database);
+    let fixture = fixture.reopen().await?;
+    let database = open_existing_local(
+        fixture.stores.clone(),
+        fixture.audit.clone(),
+        fixture.incarnation,
+    )
+    .await?;
+    assert!(database.raft_group().try_raft().is_none());
+    assert_eq!(database.engine().generation()?.state.revision, revision);
+    assert!(
+        database
+            .raft_group()
+            .linearizable_barrier()
+            .await?
+            .is_some()
+    );
+    database.shutdown().await?;
+    drop(database);
+    fixture.shutdown().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn existing_local_reopens_the_same_committed_standalone_after_complete_shutdown()
 -> crate::test_fixture_failure::FixtureResult<()> {
     use anyhow::Context as _;
@@ -519,6 +604,8 @@ async fn existing_local_reopens_the_same_committed_standalone_after_complete_shu
             original,
         },
     )?;
+    assert!(database.raft_group().is_local());
+    assert!(database.raft_group().try_raft().is_none());
     let context = RequestContext {
         authorization: RequestAuthorization::service_identity(),
         tenant: "tenant".into(),
@@ -528,7 +615,7 @@ async fn existing_local_reopens_the_same_committed_standalone_after_complete_shu
     };
     database
         .administer(
-            context,
+            context.clone(),
             Operation::CreateCollection(CollectionDefinition {
                 name: "retained".into(),
                 write_mode: CollectionWriteMode::Mutable,
@@ -540,6 +627,28 @@ async fn existing_local_reopens_the_same_committed_standalone_after_complete_shu
         )
         .await
         .context("local reopen fixture: create retained collection")?;
+    let mutation =
+        MutationBatch::new().upsert("retained", "durable", serde_json::json!({"value": 7}));
+    let receipt = database.mutate(context.clone(), mutation.clone()).await?;
+    assert_eq!(
+        database
+            .get(&context, "retained", "durable")
+            .await?
+            .expect("local journal committed the document")
+            .body,
+        serde_json::json!({"value": 7})
+    );
+    let destination = kasumi_store::FilesystemBackupDestination::new(
+        fixture.directory.path().join("persistent/backups"),
+        32 << 20,
+        fixture.storage.persistent.clone(),
+    )?;
+    let backup = database
+        .backup_checkpoint(context.clone(), &destination, uuid::Uuid::new_v4())
+        .await?;
+    database
+        .verify_backup_checkpoint(context.clone(), &destination, backup.backup_id())
+        .await?;
     let expected_revision = database.engine().generation()?.state.revision;
     database.shutdown().await?;
     drop(database);
@@ -585,11 +694,25 @@ async fn existing_local_reopens_the_same_committed_standalone_after_complete_shu
                 original,
             },
         )?;
+    assert!(reopened.raft_group().is_local());
+    assert!(reopened.raft_group().try_raft().is_none());
     let generation = reopened.engine().generation()?;
     assert_eq!(generation.state.incarnation, incarnation.to_string());
     assert_eq!(generation.state.revision, expected_revision);
     assert!(generation.state.collections.contains_key("retained"));
     drop(generation);
+    assert_eq!(
+        reopened
+            .get(&context, "retained", "durable")
+            .await?
+            .expect("local journal replay restored the document")
+            .body,
+        serde_json::json!({"value": 7})
+    );
+    assert_eq!(reopened.mutate(context.clone(), mutation).await?, receipt);
+    reopened
+        .verify_backup_checkpoint(context, &destination, backup.backup_id())
+        .await?;
     reopened.shutdown().await?;
     drop(reopened);
     stores.shutdown().await.unwrap();

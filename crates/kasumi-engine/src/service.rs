@@ -1137,7 +1137,7 @@ impl<'a> ResponseFence<'a> {
         }
         if let Some(lease) = &self.snapshot_lease
             && (!lease.live()
-                || lease.term != self.database.group.raft().metrics().borrow().current_term
+                || lease.term != self.database.group.current_term()
                 || lease.header.incarnation != generation.state.incarnation
                 || lease.header.policy_epoch != generation.state.policy_epoch
                 || lease.header.schema_epoch != generation.state.schema_epoch)
@@ -1213,7 +1213,7 @@ impl Database {
         clocks: DatabaseClocks,
         embedded: bool,
     ) -> Arc<Self> {
-        // Raft construction has already selected local or replicated semantics.
+        // Group construction has already selected local or replicated semantics.
         // Do not infer that mode from a second application-only storage read.
         let store = stores.application().clone();
         let database = Arc::new(Self {
@@ -1572,7 +1572,7 @@ impl Database {
                                 db.cursors.lock().unwrap_or_else(|p| p.into_inner()).retain(
                                     |_, c| !pressured && now.saturating_sub(c.created) < c.ttl,
                                 );
-                                let term = db.group.raft().metrics().borrow().current_term;
+                                let term = db.group.current_term();
                                 db.engine.leases.expire_idle(pressured, term);
                                 let serving = db.engine.generation().is_ok();
                                 drop(work);
@@ -1610,7 +1610,7 @@ impl Database {
                 #[cfg(any(test, feature = "test-utils"))]
                 eprintln!(
                     "kasumi-engine read quorum unavailable: cause={_cause:#}; metrics={:?}",
-                    self.group.raft().metrics().borrow(),
+                    self.group.metrics(),
                 );
                 Error::new(ErrorCode::Unavailable, "read quorum unavailable")
             })?;
@@ -2432,7 +2432,7 @@ impl Database {
             let leader_term = if self.embedded {
                 None
             } else {
-                let metrics = self.group.raft().metrics().borrow().clone();
+                let metrics = self.group.metrics();
                 if metrics.current_leader != Some(metrics.id) {
                     return Err(Error::new(
                         ErrorCode::Unavailable,
@@ -2477,7 +2477,7 @@ impl Database {
                 )?;
             }
             if let Some(term) = leader_term {
-                let metrics = self.group.raft().metrics().borrow().clone();
+                let metrics = self.group.metrics();
                 if metrics.current_leader != Some(metrics.id) || metrics.current_term != term {
                     return Err(Error::new(
                         ErrorCode::Unavailable,
@@ -2794,7 +2794,7 @@ impl Database {
                 "query limits changed during admission; retry",
             ));
         }
-        let term = self.group.raft().metrics().borrow().current_term;
+        let term = self.group.current_term();
         if request.page_size() == 0 || request.page_size() > state.limits.max_page_size {
             return Err(Error::new(
                 ErrorCode::InvalidArgument,

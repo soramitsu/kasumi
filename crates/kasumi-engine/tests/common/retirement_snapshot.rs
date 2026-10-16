@@ -9,7 +9,9 @@ use std::time::Duration;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn actual_retired_snapshot_only_replica_preserves_rotated_custody_after_encrypted_restart() {
-    let source = Fixture::new().await;
+    // Snapshot transfer and the recipient learner require an actual Raft
+    // source. Other retirement fixtures use the standalone local writer.
+    let source = Fixture::new_replicated().await;
     let bootstrap_rows = source.store.scan("engine.bootstrap").unwrap();
     assert!(bootstrap_rows.iter().any(|(key, _)| key == b"manifest"));
     for index in 0..32 {

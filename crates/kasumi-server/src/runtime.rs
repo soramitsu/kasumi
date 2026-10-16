@@ -1863,7 +1863,7 @@ impl NodeRuntime {
         if !bootstrap.voters.contains_key(&local) {
             return Ok(());
         }
-        if tenant.database.raft_group().raft().is_initialized().await? {
+        if tenant.database.raft_group().is_initialized().await? {
             return Ok(());
         }
         let group = format!("{}/{}", tenant.store.tenant(), bootstrap.incarnation);
@@ -2096,14 +2096,7 @@ impl NodeRuntime {
                 .database
                 .engine()
                 .authorize(&context, None, Action::Admin)?;
-            let metrics = self
-                .control
-                .database
-                .raft_group()
-                .raft()
-                .metrics()
-                .borrow()
-                .clone();
+            let metrics = self.control.database.raft_group().metrics();
             if metrics.current_leader == Some(metrics.id) {
                 let result = async {
                     plane.require_initialized(&context).await?;
@@ -4021,12 +4014,7 @@ mod lifecycle_tests {
     fn replica_diagnostics(databases: &[Arc<kasumi_engine::Database>]) -> String {
         databases
             .iter()
-            .map(|database| {
-                format!(
-                    "{:?}",
-                    database.raft_group().raft().metrics().borrow().clone()
-                )
-            })
+            .map(|database| format!("{:?}", database.raft_group().metrics()))
             .collect::<Vec<_>>()
             .join("\n")
     }
@@ -6863,12 +6851,10 @@ async fn prepare_retired_source(
             binding == b"local-v1" && id == 1,
             "replicated custody cannot use local transport"
         );
-        let router = Arc::new(kasumi_raft::InProcessRouter::default());
-        let custody = kasumi_engine::RetiredCustody::open_replicated(
+        let custody = kasumi_engine::RetiredCustody::open_local(
             store,
             id,
-            group.clone(),
-            router.clone(),
+            group,
             kasumi_raft::RaftGroupConfig {
                 raft: kasumi_raft::Config::default(),
                 limits: kasumi_raft::RaftLimits {
@@ -6885,15 +6871,6 @@ async fn prepare_retired_source(
             crate::startup_preparation::checkpoint(config.database_id, "retired-custody-owner");
             retired_source_tests::after_open(config.database_id, &custody).await?;
         }
-        router.register(
-            group,
-            id,
-            custody
-                .raft_group()
-                .context("closed custody group absent")?
-                .raft()
-                .clone(),
-        );
         Ok::<_, kasumi_engine::SnapshotFailure>(custody)
     }
 }

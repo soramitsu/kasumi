@@ -161,6 +161,8 @@ async fn initialized_standalone_serves_native_mcp_and_durable_credential_lifecyc
     )
     .await
     .unwrap();
+    assert!(runtime.control_database().raft_group().is_local());
+    assert!(runtime.control_database().raft_group().try_raft().is_none());
     assert!(
         NodeRuntime::open_using_storage(
             config.clone(),
@@ -170,6 +172,7 @@ async fn initialized_standalone_serves_native_mcp_and_durable_credential_lifecyc
         .await
         .is_err()
     );
+    let manager = runtime.administration_for_enrollment_test();
     let registry = runtime.registry().clone();
     let (stop, shutdown) = tokio::sync::watch::channel(false);
     let serving = tokio::spawn(runtime.serve(shutdown));
@@ -180,6 +183,49 @@ async fn initialized_standalone_serves_native_mcp_and_durable_credential_lifecyc
     })
     .await
     .unwrap();
+    let database = registry.database(&context("tenant-a")).unwrap();
+    assert!(database.raft_group().is_local());
+    assert!(database.raft_group().try_raft().is_none());
+    assert!(database.raft_group().is_initialized().await.unwrap());
+    assert!(
+        registry
+            .leader_hint(
+                &context("tenant-a"),
+                &kasumi_types::Error::new(kasumi_types::ErrorCode::Unavailable, "fixture"),
+            )
+            .is_none()
+    );
+    let status = manager
+        .execute_for_test(
+            context("tenant-a"),
+            crate::administration::ManagementCommand::Status {},
+        )
+        .await
+        .unwrap();
+    assert_eq!(status["node_id"], 1);
+    assert_eq!(status["mode"], "standalone");
+    assert_eq!(status["observation"], "local_committed_state");
+    for command in [
+        crate::administration::ManagementCommand::AddLearner { node_id: 2 },
+        crate::administration::ManagementCommand::ChangeMembership {
+            voters: BTreeSet::from([1, 2, 3]),
+        },
+        crate::administration::ManagementCommand::PublishMembership {
+            voters: BTreeSet::from([1, 2, 3]),
+        },
+    ] {
+        let error = manager
+            .execute_for_test(context("tenant-a"), command)
+            .await
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("Raft membership requires replicated mode")
+        );
+    }
+    drop(database);
+    drop(manager);
     registry
         .database(&context("tenant-a"))
         .unwrap()
@@ -434,6 +480,14 @@ async fn initialized_standalone_serves_native_mcp_and_durable_credential_lifecyc
         NodeRuntime::open_using_storage(config, crate::runtime::file_secret, storage.clone())
             .await
             .unwrap();
+    assert!(reopened.control_database().raft_group().is_local());
+    assert!(
+        reopened
+            .control_database()
+            .raft_group()
+            .try_raft()
+            .is_none()
+    );
     let reopened_registry = reopened.registry().clone();
     let (stop, shutdown) = tokio::sync::watch::channel(false);
     let serving = tokio::spawn(reopened.serve(shutdown));

@@ -178,14 +178,10 @@ async fn retired_runtime_reopens_current_custody_without_constructing_applicatio
     let kasumi_engine::InstalledRetirementSource::RetiredCustody(custody) = installed else {
         panic!("installed current custody route required")
     };
-    custody
-        .raft_group()
-        .unwrap()
-        .raft()
-        .wait(Some(Duration::from_secs(10)))
-        .current_leader(1, "cold custody leader")
-        .await
-        .unwrap();
+    let group = custody.raft_group().unwrap();
+    assert!(group.is_local());
+    assert!(group.try_raft().is_none());
+    group.linearizable_barrier().await.unwrap();
     assert!(
         custody
             .verify_retirement_receipt(context.clone(), &reference)

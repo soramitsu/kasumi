@@ -110,7 +110,7 @@ impl Database {
             .run(self.group.linearizable_barrier())
             .await
             .map_err(unknown)?;
-        let metrics = self.group.raft().metrics().borrow().clone();
+        let metrics = self.group.metrics();
         let membership = metrics.membership_config.membership();
         if !voters.contains_key(&metrics.id)
             || metrics.current_leader != Some(metrics.id)

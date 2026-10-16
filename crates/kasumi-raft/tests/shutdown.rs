@@ -19,7 +19,7 @@ const WAIT: Duration = Duration::from_secs(10);
 struct PausedSnapshot {
     inner: common::Backend,
     entered: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
-    release: Mutex<mpsc::Receiver<()>>,
+    release: Arc<Mutex<mpsc::Receiver<()>>>,
 }
 
 impl StateMachineBackend for PausedSnapshot {
@@ -38,15 +38,20 @@ impl StateMachineBackend for PausedSnapshot {
         &self,
     ) -> std::result::Result<kasumi_raft::CapturedSnapshot, kasumi_store::ScratchOperationFailure>
     {
-        if let Some(entered) = self.entered.lock().unwrap().take() {
-            let _ = entered.send(());
-            self.release
-                .lock()
-                .unwrap()
-                .recv_timeout(WAIT)
-                .map_err(anyhow::Error::from)?;
-        }
-        self.inner.capture_snapshot()
+        let captured = self.inner.capture_snapshot()?;
+        let entered = Mutex::new(self.entered.lock().unwrap().take());
+        let release = self.release.clone();
+        Ok(kasumi_raft::CapturedSnapshot::new(None, move |writer| {
+            if let Some(entered) = entered.lock().unwrap().take() {
+                let _ = entered.send(());
+                release
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(WAIT)
+                    .map_err(anyhow::Error::from)?;
+            }
+            captured.write(writer)
+        }))
     }
 
     fn validate_snapshot(
@@ -106,7 +111,7 @@ async fn shutdown_drains_snapshot_worker_before_releasing_group_or_file_ownershi
         Arc::new(PausedSnapshot {
             inner: common::Backend::default(),
             entered: Mutex::new(Some(entered)),
-            release: Mutex::new(wait),
+            release: Arc::new(Mutex::new(wait)),
         }),
         common::snapshot_owner(),
     )
@@ -118,13 +123,23 @@ async fn shutdown_drains_snapshot_worker_before_releasing_group_or_file_ownershi
         .await?;
     group.snapshot().await?;
     tokio::time::timeout(WAIT, ready).await??;
+    // Materializing the captured snapshot must not stall new local commits.
+    tokio::time::timeout(
+        WAIT,
+        group.write(kasumi_raft::ApplicationProposal::generated(
+            b"during-snapshot".to_vec(),
+        )),
+    )
+    .await??;
+    tokio::time::timeout(WAIT, group.linearizable_barrier()).await??;
 
-    // The vendored shutdown retains and joins the actual snapshot builder.
+    // Local shutdown retains and joins the actual snapshot worker.
     // Cancelling its waiter must leave that same child available to group drain.
-    let mut vendor_shutdown = Box::pin(group.raft().shutdown());
+    assert!(group.try_raft().is_none());
+    let mut vendor_shutdown = Box::pin(group.shutdown());
     assert!(
         poll_fn(|cx| Poll::Ready(vendor_shutdown.as_mut().poll(cx).is_pending())).await,
-        "vendor shutdown returned with a live snapshot worker"
+        "local shutdown returned with a live snapshot worker"
     );
     drop(vendor_shutdown);
     let mut shutting_down = Box::pin(group.shutdown());
@@ -166,7 +181,10 @@ async fn shutdown_drains_snapshot_worker_before_releasing_group_or_file_ownershi
         common::snapshot_owner(),
     )
     .await?;
-    assert_eq!(recovered.values(), vec![b"acknowledged".to_vec()]);
+    assert_eq!(
+        recovered.values(),
+        vec![b"acknowledged".to_vec(), b"during-snapshot".to_vec()]
+    );
     group.shutdown().await?;
     Ok(())
 }

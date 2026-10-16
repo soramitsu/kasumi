@@ -5,14 +5,23 @@ Kasumi's encrypted, immediately durable key-value store. It replicates typed com
 the engine owns deterministic authorization, validation, receipts, and complete
 generation publication.
 
-`RaftGroup::write` returns only after OpenRaft reports quorum persistence and the
-local backend finishes applying the command. A canceled or timed-out write has an
+In replicated mode, `RaftGroup::write` returns only after OpenRaft reports quorum
+persistence and the local backend finishes applying the command. In local mode,
+it returns after the serialized local journal is durable and application finishes.
+A canceled or timed-out write has an
 unknown outcome. Callers must retain application idempotency keys. Fresh reads
 must pass `linearizable_barrier` before capturing a resident generation.
 
-Every group retains its configured membership through restart and network cuts.
-`local` initializes a single voter only when the store has never been initialized;
-it does not rewrite an existing replicated group into a single voter.
+Replicated groups retain their configured membership through restart and network cuts.
+`local` starts a durable local writer without an OpenRaft runtime, elections,
+heartbeats, or peer transport. It keeps the existing journal encoding and singleton
+identity for restart compatibility with earlier standalone installations.
+Replicated deployment bindings and nonlocal membership are rejected before serving.
+Membership changes require replicated mode. `try_raft()` returns `None` for local
+groups; common status and storage operations use the group methods directly.
+Local journal appends commit their cursor in the same storage transaction, and
+snapshot serialization runs in a separate bounded worker so later writes can
+continue. Shutdown joins both workers, including work whose caller canceled.
 
 ## Persistence and recovery
 

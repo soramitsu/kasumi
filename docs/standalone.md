@@ -1,5 +1,19 @@
 # Standalone installation
 
+Standalone mode uses a serialized local journal and durable application commits.
+It does not start Raft, elect a leader, send heartbeats, or wait for a quorum.
+Use this mode for a single-machine installation. Existing standalone installations
+retain their encrypted journal, snapshots, identities, and receipts when reopened;
+do not reinitialize them to adopt this execution path. Replicated installations
+cannot be reopened as standalone.
+
+Each local journal entry and its commit cursor share one durable transaction;
+the application state is applied before the write succeeds. Snapshot serialization
+can overlap later writes, and compaction is triggered by journal growth rather
+than a consensus timer. Idle audit maintenance checks the retained backlog before
+acquiring command or archive capacity. Retired standalone custody also uses the
+local writer. Administrative `status` reports `"mode":"standalone"`.
+
 Build the production binary without fixture features, then initialize an absolute directory that does not already exist:
 
 ```sh

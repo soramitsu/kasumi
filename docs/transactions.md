@@ -154,7 +154,7 @@ it does not make a trusted host or its storage administrator untrusted.
 
 The [engine contracts](../crates/kasumi-engine/tests/contracts.rs) exercise stale
 versions, absence, phantoms, write skew, permission checks, receipt replay,
-append-only changes and actual local Raft snapshot reads concurrent with writes.
+append-only changes and actual local journal snapshot reads concurrent with writes.
 The [service unit test](../crates/kasumi-engine/src/service.rs) controls admission
 time and the proposal gate to cover expiry in the queue, canceled callers,
 inclusive deadline acceptance and durable replay after expiry. The

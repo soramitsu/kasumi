@@ -11,6 +11,12 @@ impl CredentialFixture {
         Self::new_for_tenant("credential-expiry").await
     }
     async fn new_for_tenant(tenant: &str) -> Self {
+        Self::new_with_runtime(tenant, false).await
+    }
+    async fn new_replicated() -> Self {
+        Self::new_with_runtime("credential-expiry", true).await
+    }
+    async fn new_with_runtime(tenant: &str, replicated: bool) -> Self {
         let directory = kasumi_store::test_utils::private_tempdir().unwrap();
         let (persistent_config, scratch_config) =
             crate::test_utils::fixture_disk_configs(directory.path()).unwrap();
@@ -60,19 +66,28 @@ impl CredentialFixture {
             }],
             strict_read_audit: false,
         };
-        let db = crate::test_utils::open_fixture(
-            kasumi_store::test_utils::initialize_custody_fixture(
-                store,
-                std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
-            )
-            .await
-            .unwrap(),
-            policy,
-            Limits::default(),
-            audit.clone(),
+        let stores = kasumi_store::test_utils::initialize_custody_fixture(
+            store.clone(),
+            std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
         )
         .await
         .unwrap();
+        let db = if replicated {
+            // Tests that inject leadership changes need an actual Raft runtime.
+            // Keep ordinary credential fixtures on the standalone path.
+            crate::test_utils::open_fixture_single_voter_raft(
+                stores,
+                policy,
+                Limits::default(),
+                audit.clone(),
+            )
+            .await
+            .unwrap()
+        } else {
+            crate::test_utils::open_fixture(stores, policy, Limits::default(), audit.clone())
+                .await
+                .unwrap()
+        };
         db.administer(
             context.clone(),
             Operation::CreateCollection(CollectionDefinition {

@@ -275,7 +275,7 @@ impl Database {
             .require_control(&state.state.incarnation)?;
         drop(state);
         self.barrier().await?;
-        let metrics = self.group.raft().metrics().borrow().clone();
+        let metrics = self.group.metrics();
         if metrics.membership_config.membership().voter_ids().count() < 3
             || metrics.current_term == 0
         {

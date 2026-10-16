@@ -224,7 +224,7 @@ impl Database {
                 #[cfg(any(test, feature = "test-utils"))]
                 eprintln!(
                     "backup publication original failure before proof release: {_original:?}; raft metrics: {:?}; retained apply: {:?}",
-                    self.group.raft().metrics().borrow(),
+                    self.group.metrics(),
                     crate::test_utils::retained_apply_diagnostic(&self.group),
                 );
                 crate::SnapshotFailure::from(Error::new(

@@ -838,11 +838,14 @@ impl Administration {
                 )
                 .await?;
                 let state = source.database.engine().generation()?;
+                let metrics = source.database.raft_group().metrics();
+                let control_metrics = self.control.raft_group().metrics();
                 Ok(
                     serde_json::json!({"incarnation":state.incarnation(),"revision":state.revision(),"suspended":state.suspended(),"pending_restore":state.pending_restore(),
-                    "observation":"local_committed_state","retired":state.retired(),"node_id":source.database.raft_group().raft().metrics().borrow().id,
-                    "leader":source.database.raft_group().raft().metrics().borrow().current_leader,
-                    "control_leader":self.control.raft_group().raft().metrics().borrow().current_leader,
+                    "mode":if source.database.raft_group().is_local() { "standalone" } else { "replicated" },
+                    "observation":"local_committed_state","retired":state.retired(),"node_id":metrics.id,
+                    "leader":metrics.current_leader,
+                    "control_leader":control_metrics.current_leader,
                     "control_topology_version": if context.tenant==crate::runtime::CONTROL_TENANT {
                         state.local_control_topology_version()
                     } else { None },
@@ -946,6 +949,13 @@ impl Administration {
             }
             ManagementCommand::AddLearner { node_id } => {
                 self.authorized(source, context, true).await?;
+                ensure!(
+                    !source.database.raft_group().is_local(),
+                    kasumi_types::Error::new(
+                        kasumi_types::ErrorCode::InvalidArgument,
+                        "Raft membership requires replicated mode"
+                    )
+                );
                 let topology = self.committed_topology()?;
                 let node = topology
                     .nodes
@@ -1008,16 +1018,17 @@ impl Administration {
             }
             ManagementCommand::ChangeMembership { voters } => {
                 self.authorized(source, context, true).await?;
+                ensure!(
+                    !source.database.raft_group().is_local(),
+                    kasumi_types::Error::new(
+                        kasumi_types::ErrorCode::InvalidArgument,
+                        "Raft membership requires replicated mode"
+                    )
+                );
                 let topology = self.committed_topology()?;
                 validate_voters(&topology, &voters)?;
                 topology.validate_voter_override(&context.tenant, &voters)?;
-                let metrics = source
-                    .database
-                    .raft_group()
-                    .raft()
-                    .metrics()
-                    .borrow()
-                    .clone();
+                let metrics = source.database.raft_group().metrics();
                 ensure!(
                     voters.iter().all(|id| metrics
                         .membership_config
@@ -1070,13 +1081,14 @@ impl Administration {
                 Ok(serde_json::json!({"changed":true,"publish_control_route_required":true}))
             }
             ManagementCommand::PublishMembership { voters } => {
-                let metrics = source
-                    .database
-                    .raft_group()
-                    .raft()
-                    .metrics()
-                    .borrow()
-                    .clone();
+                ensure!(
+                    !source.database.raft_group().is_local(),
+                    kasumi_types::Error::new(
+                        kasumi_types::ErrorCode::InvalidArgument,
+                        "Raft membership requires replicated mode"
+                    )
+                );
+                let metrics = source.database.raft_group().metrics();
                 ensure!(
                     metrics
                         .membership_config
@@ -1731,13 +1743,7 @@ fn provisioning_tenant(command: &ManagementCommand) -> Option<&str> {
     }
 }
 fn initialized(target: &ManagedTenant) -> bool {
-    let metrics = target
-        .database
-        .raft_group()
-        .raft()
-        .metrics()
-        .borrow()
-        .clone();
+    let metrics = target.database.raft_group().metrics();
     let membership = &metrics.membership_config;
     let configs = membership.membership().get_joint_config();
     let expected = target

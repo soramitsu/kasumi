@@ -73,6 +73,51 @@ pub async fn open_fixture_replicated(
     Ok(database)
 }
 
+/// Explicit one-voter Raft runtime for tests of consensus transport and snapshot
+/// formats. Ordinary fixtures and every standalone deployment use local storage.
+pub async fn open_fixture_single_voter_raft(
+    stores: Arc<TenantStorageSet>,
+    policy: Policy,
+    limits: Limits,
+    audit: Arc<SecurityAudit>,
+) -> std::result::Result<Arc<Database>, crate::SnapshotFailure> {
+    check(&stores)?;
+    let tenant = stores.application().tenant().to_owned();
+    let incarnation = uuid::Uuid::new_v4().to_string();
+    let group = format!("{tenant}/{incarnation}");
+    let engine = Arc::new(TenantEngine::new(tenant, incarnation, policy, limits)?);
+    let image = engine.logical_snapshot(stores.application().scratch_disk())?;
+    persist_new_checked(
+        &stores,
+        &image,
+        kasumi_raft::initial_storage_identity(1, &group)?,
+        || stores.check_access(),
+    )?;
+    engine.install_storage_access(stores.application())?;
+    let database = DatabaseConstruction::new(stores, audit)?
+        .start_replicated(
+            engine,
+            &image,
+            1,
+            group,
+            Arc::new(kasumi_raft::InProcessRouter::default()),
+            Default::default(),
+        )
+        .await?;
+    database
+        .raft_group()
+        .initialize(BTreeMap::from([(1, BasicNode::new("fixture"))]))
+        .await?;
+    database
+        .raft_group()
+        .raft()
+        .wait(Some(std::time::Duration::from_secs(5)))
+        .current_leader(1, "explicit single-voter Raft fixture")
+        .await
+        .map_err(anyhow::Error::from)?;
+    Ok(database)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

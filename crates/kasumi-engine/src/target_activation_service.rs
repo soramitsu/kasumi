@@ -68,7 +68,7 @@ impl Database {
             .await
             .map_err(denied)?;
         self.target_activation_access(operation)?;
-        let metrics = self.group.raft().metrics().borrow().clone();
+        let metrics = self.group.metrics();
         let generation = self.engine.generation()?;
         let entry = generation
             .state
@@ -342,7 +342,7 @@ impl Database {
         let observation = TargetActivationObservation {
             completion: expected.observation.completion.clone(),
             activation: fact.clone(),
-            observer_node_id: self.group.raft().metrics().borrow().id,
+            observer_node_id: self.group.node_id(),
             observed_revision: generation.state.revision,
             observed_term: covered.term(),
         };

@@ -94,6 +94,7 @@ pub use initialization_association::{
     CommittedInitializationAssociation, read_initialization_association,
 };
 mod lifetime;
+mod local;
 mod network;
 mod quorum;
 mod scratch_failure_inventory;
@@ -359,10 +360,11 @@ const READINESS_OBSERVATION_DEADLINE: Duration = Duration::from_millis(750);
 
 #[derive(Clone)]
 pub struct RaftGroup {
-    raft: Raft,
+    raft: Option<Raft>,
+    local: Option<Arc<local::LocalGroup<StateMachine>>>,
     id: u64,
     group: String,
-    transport: Arc<dyn RaftTransport>,
+    transport: Option<Arc<dyn RaftTransport>>,
     machine_failed: Arc<AtomicBool>,
     storage_drain: StorageDrain,
     proposal_storage_lease: Weak<lifetime::StorageLease>,
@@ -370,7 +372,6 @@ pub struct RaftGroup {
     shutdown_report: Arc<tokio::sync::Mutex<kasumi_types::drain::DrainReport>>,
     store: Arc<TenantStorageSet>,
     ownership: Arc<AtomicBool>,
-    local_route: Option<(Arc<InProcessRouter>, String, u64)>,
 }
 
 // NodeStore holds an exclusive OS file lock and returns one TenantStore per tenant.
@@ -429,7 +430,7 @@ fn claim_custody(store: &kasumi_store::CustodyStore) -> Result<Arc<AtomicBool>> 
             .get(&key)
             .and_then(Weak::upgrade)
             .is_some_and(|owner| owner.load(Ordering::Acquire)),
-        "tenant store already has a live Raft group; shut it down before reopening"
+        "tenant store already has a live execution group; shut it down before reopening"
     );
     let owner = Arc::new(AtomicBool::new(true));
     groups.insert(key, Arc::downgrade(&owner));
@@ -640,10 +641,11 @@ impl RaftGroup {
             }
         };
         Ok(Self {
-            raft,
+            raft: Some(raft),
+            local: None,
             id,
             group,
-            transport,
+            transport: Some(transport),
             machine_failed,
             storage_drain,
             proposal_storage_lease,
@@ -651,11 +653,11 @@ impl RaftGroup {
             shutdown_report: Default::default(),
             store,
             ownership,
-            local_route: None,
         })
     }
 
-    /// Creates/opens a one-voter group. It never rewrites an existing membership.
+    /// Opens a durable standalone writer, with no Raft runtime or elections.
+    /// Existing one-voter journals remain readable; clustered state is rejected.
     pub async fn local(
         id: u64,
         group: String,
@@ -684,55 +686,72 @@ impl RaftGroup {
         backend: Arc<dyn StateMachineBackend>,
         snapshot_buffers: Arc<SnapshotBufferOwner>,
     ) -> Result<Self, ScratchOperationFailure> {
-        let router = Arc::new(InProcessRouter::default());
-        let mut instance = Self::open_inner(
-            id,
-            group.clone(),
-            store,
-            backend,
-            router.clone(),
-            RaftGroupConfig::default(),
-            snapshot_buffers,
-            None,
-        )
-        .await?;
-        router.register(group.clone(), id, instance.raft.clone());
-        instance.local_route = Some((router, group, id));
-        let initialized = async {
+        if let Some(binding) = store.deployment_binding()? {
+            ensure!(
+                binding.as_bytes() == b"local-v1",
+                "replicated deployment cannot open in standalone mode"
+            );
+        }
+        if let Some(first) = control::first_applied_membership(store.custody().store())? {
+            if let control::HeaderPayload::Membership(membership) = &first.header.payload {
+                local::check_membership(membership, id)?;
+            }
+        }
+        let ownership = claim_store(&store)?;
+        snapshot_buffers
+            .bind_group_ownership(ownership.clone(), store.custody().store().clone())?;
+        let backend = Arc::new(OwnedBackend {
+            inner: backend,
+            _ownership: ownership.clone(),
+        });
+        let (storage_drain, lease) = StorageDrain::new();
+        let opened = async {
+            let log = LogStore::open_tracked(store.clone(), id, lease.clone()).await?;
+            log.bind_group(group.clone())
+                .await
+                .map_err(anyhow::Error::from)?;
+            let machine = StateMachine::open_tracked(
+                store.clone(),
+                backend,
+                RaftLimits::default(),
+                lease.clone(),
+                snapshot_buffers.clone(),
+            )
+            .await?;
+            let machine_failed = machine.failure_flag();
             #[cfg(any(test, feature = "test-utils"))]
             {
-                let gate = instance
-                    .snapshot_buffers
-                    .local_startup_gate
-                    .lock()
-                    .unwrap()
-                    .take();
+                let gate = snapshot_buffers.local_startup_gate.lock().unwrap().take();
                 if let Some(gate) = gate {
-                    gate.pause(&instance).await?;
+                    gate.pause(&ownership).await?;
                 }
             }
-            if !instance.raft.is_initialized().await? {
-                instance
-                    .initialize(BTreeMap::from([(id, BasicNode::new("local"))]))
-                    .await?;
-            }
-            instance
-                .raft
-                .wait(Some(Duration::from_secs(10)))
-                .current_leader(id, "local leader")
-                .await?;
-            instance.linearizable_barrier().await?;
-            Ok::<_, anyhow::Error>(())
+            let local = local::LocalGroup::open(id, log, machine, machine_failed.clone()).await?;
+            Ok::<_, ScratchOperationFailure>((local, machine_failed))
         }
         .await;
-        if let Err(error) = initialized {
-            let startup = instance.snapshot_buffers.record_startup_error(error);
-            // This is a live group: join its SDK children before draining the
-            // buffers and storage leases. The owner retains the startup issue.
-            return Err(ScratchOperationFailure::Operation(
-                instance.shutdown().await.err().unwrap_or(startup).into(),
-            ));
-        }
+        let proposal_storage_lease = Arc::downgrade(&lease);
+        drop(lease);
+        let (local, machine_failed) = match opened {
+            Ok(value) => value,
+            Err(error) => {
+                return Err(failed_startup(error, &snapshot_buffers, &storage_drain).await);
+            }
+        };
+        let instance = Self {
+            raft: None,
+            local: Some(Arc::new(local)),
+            id,
+            group,
+            transport: None,
+            machine_failed,
+            storage_drain,
+            proposal_storage_lease,
+            snapshot_buffers,
+            shutdown_report: Default::default(),
+            store,
+            ownership,
+        };
         Ok(instance)
     }
 
@@ -780,14 +799,64 @@ impl RaftGroup {
         self.snapshot_buffers.scratch_admission_capacity()
     }
 
+    /// The consensus handle for replicated groups. Standalone groups do not
+    /// construct one; use mode-neutral group operations for serving code.
     pub fn raft(&self) -> &Raft {
-        &self.raft
+        self.raft
+            .as_ref()
+            .expect("standalone groups have no Raft runtime")
+    }
+
+    pub fn try_raft(&self) -> Option<&Raft> {
+        self.raft.as_ref()
+    }
+
+    pub fn is_local(&self) -> bool {
+        self.local.is_some()
+    }
+
+    pub fn node_id(&self) -> u64 {
+        self.id
+    }
+
+    pub fn current_term(&self) -> u64 {
+        match &self.local {
+            Some(local) => local.current_term(),
+            None => self.raft().metrics().borrow().current_term,
+        }
+    }
+
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn fixture_local_before_apply(&self, hook: Box<dyn FnOnce() + Send>) -> Result<()> {
+        self.local
+            .as_ref()
+            .context("fixture hook requires standalone mode")?
+            .fixture_before_apply(hook)
+    }
+
+    /// Local values describe the durable writer and its journal position. They
+    /// carry no evidence of distributed agreement.
+    pub fn metrics(&self) -> openraft::RaftMetrics<u64, BasicNode> {
+        match &self.local {
+            Some(local) => local.metrics(),
+            None => self.raft().metrics().borrow().clone(),
+        }
+    }
+
+    pub async fn is_initialized(&self) -> Result<bool> {
+        self.check_access()?;
+        match &self.local {
+            Some(_) => Ok(true),
+            None => Ok(self.raft().is_initialized().await?),
+        }
     }
 
     /// Attach the installed node's bounded readiness invalidation target before
     /// publishing this group in routing. The same observer may be attached again.
     pub fn install_membership_observer(&self, observer: Arc<dyn MembershipObserver>) -> Result<()> {
-        self.raft.install_membership_observer(observer)?;
+        if let Some(raft) = &self.raft {
+            raft.install_membership_observer(observer)?;
+        }
         Ok(())
     }
 
@@ -802,10 +871,24 @@ impl RaftGroup {
     ) -> Result<bool> {
         use openraft::error::Fatal;
         let role = role.into();
+        if let Some(local) = &self.local {
+            if self.check_access().is_err() || local_id != self.id {
+                return Ok(false);
+            }
+            if let ReadinessRole::Voter(Some(expected)) = role {
+                if expected != BTreeSet::from([self.id]) {
+                    return Ok(false);
+                }
+            }
+            return Ok(matches!(
+                tokio::time::timeout(READINESS_OBSERVATION_DEADLINE, local.barrier()).await,
+                Ok(Ok(_))
+            ) && self.check_access().is_ok());
+        }
         if self.check_access().is_err() {
             return Ok(false);
         }
-        let term = self.raft.metrics().borrow().current_term;
+        let term = self.raft().metrics().borrow().current_term;
         let applied = match self.observe_within(READINESS_OBSERVATION_DEADLINE).await {
             Ok(applied) => applied,
             // A lost quorum, an unreachable or changed leader, a seal or a
@@ -814,7 +897,7 @@ impl RaftGroup {
             Err(error) if !failed_core(&error) => return Ok(false),
             Err(error) => return Err(error),
         };
-        if self.check_access().is_err() || self.raft.metrics().borrow().current_term != term {
+        if self.check_access().is_err() || self.raft().metrics().borrow().current_term != term {
             return Ok(false);
         }
         let result = self
@@ -826,7 +909,7 @@ impl RaftGroup {
             }
             Ok(healthy) => Ok(healthy
                 && self.check_access().is_ok()
-                && self.raft.metrics().borrow().current_term == term),
+                && self.raft().metrics().borrow().current_term == term),
             Err(error) => Err(error),
         }
     }
@@ -840,7 +923,7 @@ impl RaftGroup {
         role: ReadinessRole,
     ) -> Result<bool> {
         Ok(self
-            .raft
+            .raft()
             .with_raft_state(move |state| {
                 let membership = state.membership_state.effective();
                 let configurations = membership.membership().get_joint_config();
@@ -865,20 +948,26 @@ impl RaftGroup {
             .await?)
     }
 
-    /// Read-only observation barrier for any current member, including
-    /// followers and learners: see `quorum::observation_barrier`. It grants no
-    /// write authority; `write` and `linearizable_barrier` stay leader-only.
+    /// Orders standalone reads after admitted local writes. Replicated groups
+    /// observe current quorum for any member, including followers and learners:
+    /// see `quorum::observation_barrier`. It grants no replicated write authority.
     pub async fn observation_barrier(&self) -> Result<Option<LogId<u64>>> {
         self.observe_within(quorum::BARRIER_DEADLINE).await
     }
 
     async fn observe_within(&self, within: Duration) -> Result<Option<LogId<u64>>> {
+        if let Some(local) = &self.local {
+            self.check_access()?;
+            let applied = tokio::time::timeout(within, local.barrier()).await??;
+            self.check_access()?;
+            return Ok(applied);
+        }
         quorum::observation_barrier(
-            &self.raft,
+            self.raft(),
             quorum::ReadIndexRoute {
                 local: self.id,
                 group: &self.group,
-                transport: self.transport.as_ref(),
+                transport: self.transport.as_deref().expect("replicated transport"),
             },
             || self.check_access(),
             self.store.custody().store(),
@@ -894,15 +983,17 @@ impl RaftGroup {
 
     pub async fn initialize(&self, members: BTreeMap<u64, BasicNode>) -> Result<()> {
         self.check_proposal()?;
+        ensure!(!self.is_local(), "standalone membership is fixed");
         ensure!(!members.is_empty(), "membership cannot be empty");
-        self.raft
+        self.raft()
             .initialize(members)
             .await
             .context("initialize raft membership")?;
         Ok(())
     }
 
-    /// Success means quorum persistence followed by local atomic application.
+    /// Success means a durable local commit and atomic application. Replicated
+    /// groups additionally require quorum persistence before application.
     /// Timeout/cancellation does not imply rollback: retry with an application idempotency key.
     pub async fn write(&self, command: ApplicationProposal) -> Result<Vec<u8>> {
         self.check_proposal()
@@ -910,8 +1001,16 @@ impl RaftGroup {
         let command = command
             .admit(self.store.application(), &self.proposal_storage_lease)
             .inspect_err(|error| self.report_write_failure("application_admit", error))?;
+        if let Some(local) = &self.local {
+            let response = local
+                .write(RaftCommand::Application(command))
+                .await
+                .inspect_err(|error| self.report_write_failure("local_write", error))?;
+            self.check_access().context(PostCommitAccessLost)?;
+            return Ok(response);
+        }
         let response = self
-            .raft
+            .raft()
             .client_write(RaftCommand::Application(command))
             .await
             .map_err(anyhow::Error::from)
@@ -939,6 +1038,7 @@ impl RaftGroup {
         association: &kasumi_types::SignedTargetInitializationAssociation,
     ) -> Result<()> {
         self.check_proposal()?;
+        ensure!(!self.is_local(), "standalone membership is fixed");
         let bytes = serde_json::to_vec(association)?;
         initialization_association::decode(&bytes)?;
         ensure!(!members.is_empty(), "membership cannot be empty");
@@ -947,7 +1047,7 @@ impl RaftGroup {
             payload: openraft::EntryPayload::Membership(openraft::Membership::from(members)),
             initialization: Some(bytes),
         };
-        self.raft
+        self.raft()
             .initialize_with_entry(entry)
             .await
             .context("initialize target membership and cause")?;
@@ -960,8 +1060,13 @@ impl RaftGroup {
         seed: RetirementLogSeed,
     ) -> Result<Vec<u8>> {
         self.check_proposal()?;
+        if let Some(local) = &self.local {
+            let response = local.write(RaftCommand::retirement(command, seed)?).await?;
+            self.check_access().context(PostCommitAccessLost)?;
+            return Ok(response);
+        }
         let response = self
-            .raft
+            .raft()
             .client_write(RaftCommand::retirement(command, seed)?)
             .await?;
         self.check_access().context(PostCommitAccessLost)?;
@@ -990,16 +1095,22 @@ impl RaftGroup {
 
     pub async fn write_custody(&self, command: CustodyCommand) -> Result<Vec<u8>> {
         self.check_proposal()?;
+        if let Some(local) = &self.local {
+            return local.write(RaftCommand::custody(&command)?).await;
+        }
         let response = self
-            .raft
+            .raft()
             .client_write(RaftCommand::custody(&command)?)
             .await?;
         Ok(response.data)
     }
 
     pub async fn linearizable_barrier(&self) -> Result<Option<LogId<u64>>> {
+        if self.is_local() {
+            return self.observation_barrier().await;
+        }
         quorum::barrier(
-            &self.raft,
+            self.raft(),
             || self.check_access(),
             self.store.custody().store(),
             Some(self.store.application()),
@@ -1008,17 +1119,19 @@ impl RaftGroup {
     }
 
     pub async fn add_learner(&self, id: u64, node: BasicNode) -> Result<()> {
+        ensure!(!self.is_local(), "standalone membership is fixed");
         self.check_proposal()?;
-        self.raft.add_learner(id, node, true).await?;
+        self.raft().add_learner(id, node, true).await?;
         Ok(())
     }
 
     /// Remove one nonvoting member without changing unrelated learners or voters.
     pub async fn remove_learner(&self, id: u64) -> Result<()> {
+        ensure!(!self.is_local(), "standalone membership is fixed");
         self.check_proposal()?;
         ensure!(
             !self
-                .raft
+                .raft()
                 .metrics()
                 .borrow()
                 .membership_config
@@ -1026,7 +1139,7 @@ impl RaftGroup {
                 .any(|voter| voter == id),
             "remove voter through joint consensus before revocation"
         );
-        self.raft
+        self.raft()
             .change_membership(
                 openraft::ChangeMembers::RemoveNodes(BTreeSet::from([id])),
                 true,
@@ -1036,15 +1149,19 @@ impl RaftGroup {
     }
 
     pub async fn change_membership(&self, voters: BTreeSet<u64>) -> Result<()> {
+        ensure!(!self.is_local(), "standalone membership is fixed");
         self.check_proposal()?;
         ensure!(!voters.is_empty(), "membership cannot be empty");
-        self.raft.change_membership(voters, false).await?;
+        self.raft().change_membership(voters, false).await?;
         Ok(())
     }
 
     pub async fn snapshot(&self) -> Result<()> {
         self.check_access()?;
-        self.raft.trigger().snapshot().await?;
+        if let Some(local) = &self.local {
+            return local.snapshot().await;
+        }
+        self.raft().trigger().snapshot().await?;
         Ok(())
     }
 
@@ -1059,10 +1176,13 @@ impl RaftGroup {
         self.snapshot_buffers.check()?;
         ensure!(
             self.ownership.load(Ordering::Acquire),
-            "Raft group has shut down"
+            "execution group has shut down"
         );
         self.store.check_access()?;
-        ensure!(!self.core_ended(), "Raft core failed; recovery required");
+        ensure!(
+            !self.core_ended(),
+            "database execution failed; recovery required"
+        );
         ensure!(
             !self.machine_failed.load(Ordering::Acquire),
             "state machine unavailable; recovery required"
@@ -1073,7 +1193,10 @@ impl RaftGroup {
     /// A returned core publishes its Fatal in metrics. A panicked core cannot,
     /// but its task-owned metrics sender is dropped; both end this group.
     fn core_ended(&self) -> bool {
-        let metrics = self.raft.metrics();
+        if let Some(local) = &self.local {
+            return local.ended();
+        }
+        let metrics = self.raft().metrics();
         metrics.borrow().running_state.is_err() || metrics.has_changed().is_err()
     }
 
@@ -1087,7 +1210,11 @@ impl RaftGroup {
         } else if self.store.check_access().is_err() {
             Some("key_lease_sealed")
         } else if self.core_ended() {
-            Some("raft_core_failed")
+            Some(if self.is_local() {
+                "local_executor_failed"
+            } else {
+                "raft_core_failed"
+            })
         } else if self.machine_failed.load(Ordering::Acquire) {
             Some("state_machine_failed")
         } else {
@@ -1099,10 +1226,11 @@ impl RaftGroup {
         self.snapshot_buffers.seal_application_source_consumers();
         let mut report = self.shutdown_report.lock().await;
         let mut buffer_unresolved = None;
-        if let Some((router, group, id)) = &self.local_route {
-            router.unregister(group, *id);
-        }
-        if let Err(error) = self.raft.shutdown_gracefully().await {
+        if let Some(local) = &self.local {
+            if let Err(failure) = local.shutdown().await {
+                report.merge(&failure);
+            }
+        } else if let Err(error) = self.raft().shutdown_gracefully().await {
             report.record("OpenRaft runtime", 0, error.into());
         }
         if let Err(failure) = self.snapshot_buffers.drain_buffers().await {

@@ -73,9 +73,9 @@ Sources: [systemd execution settings](https://raw.githubusercontent.com/systemd/
 
 ## Placement, networking and credentials
 
-Local mode has one voter and survives recoverable local crashes with intact
-durable storage. Replicated mode has three voters per tenant and a separate
-three-voter control group. Give each voter an independent power/storage/network
+Local mode uses durable local commits without Raft and survives recoverable
+local crashes with intact durable storage. Replicated mode has three voters per
+tenant and a separate three-voter control group. Give each voter an independent power/storage/network
 failure domain. Merely assigning different strings to three processes on one
 host provides no such independence.
 

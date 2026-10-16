@@ -367,8 +367,7 @@ impl Resources {
         loop {
             for replica in &self.tenants[tenant].replicas {
                 let database = replica.database.get();
-                let metrics = database.raft_group().raft().metrics();
-                let metrics = metrics.borrow();
+                let metrics = database.raft_group().metrics();
                 if metrics.current_leader == Some(metrics.id) {
                     return Ok(database.clone());
                 }
@@ -446,7 +445,7 @@ impl Resources {
                     if !replica.unregister.observe(|| {
                         self.router.unregister(
                             &format!("{}/{}", context(tenant_index).tenant, bootstrap.incarnation),
-                            database.raft_group().raft().metrics().borrow().id,
+                            database.raft_group().node_id(),
                         );
                     }) {
                         return;

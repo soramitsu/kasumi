@@ -71,7 +71,7 @@ impl Database {
         let _cancel_on_drop = CancelOnDrop(cancellation.clone());
         let admitted_context = context.clone();
         let clock = self.clock.clone();
-        let term = self.group.raft().metrics().borrow().current_term;
+        let term = self.group.current_term();
         let node = self.admission().clone();
         let lease = self
             .snapshot_retention_work(cancellation, move |engine| {
@@ -116,7 +116,7 @@ impl Database {
     ) -> Result<Arc<LeaseHandle>> {
         let context = context.clone();
         let lease_id = lease_id.to_owned();
-        let term = self.group.raft().metrics().borrow().current_term;
+        let term = self.group.current_term();
         self.snapshot_retention_work(QueryCancellation::default(), move |engine| {
             engine
                 .leases
@@ -157,7 +157,7 @@ impl Database {
     ) -> Result<SelectedSnapshot> {
         let context = context.clone();
         let lease_id = lease_id.to_owned();
-        let term = self.group.raft().metrics().borrow().current_term;
+        let term = self.group.current_term();
         let node = self.admission().clone();
         let token = cancellation.clone();
         self.snapshot_retention_work(cancellation.clone(), move |engine| {
