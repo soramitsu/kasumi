@@ -1358,6 +1358,11 @@ pub struct ReadTransaction {
 }
 
 impl ReadTransaction {
+    /// The root generation this transaction selected.
+    pub fn generation(&self) -> u64 {
+        self.snapshot.generation()
+    }
+
     /// Independently own this exact selected native snapshot. This never
     /// captures the current root and never consumes another root-pin slot.
     /// The new backing is admitted through this database's actual provider;

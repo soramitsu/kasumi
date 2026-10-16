@@ -14,7 +14,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::core::{CoreError, StorageAdmission};
-use crate::directory::{DIRECTORY_PAGE_BYTES, DirectoryBackend, DirectoryPageRef, page_digest};
+use crate::directory::{
+    DIRECTORY_PAGE_BYTES, DirectoryBackend, DirectoryPageRef, PageCheck, page_digest,
+};
 use crate::group::{GroupFile, SegmentGroupBackend};
 use crate::native_backend::BackendRef;
 use crate::segment::{crc32c, le_u32, le_u64};
@@ -305,6 +307,11 @@ impl DirectoryBackend for DirectoryArenaBackend {
             )));
         }
         Ok(())
+    }
+
+    /// `read_page` refuses any page whose bytes differ from the reference digest.
+    fn page_check(&self) -> PageCheck {
+        PageCheck::Digest
     }
 
     fn append_page(&self, bytes: &[u8]) -> Result<DirectoryPageRef, CoreError> {

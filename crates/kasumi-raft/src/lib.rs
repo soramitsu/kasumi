@@ -70,6 +70,7 @@ pub use apply_publication::{
     TestPublicationState, with_application_publisher_bound_for_test,
     with_application_publisher_bound_observed_for_test, with_application_publisher_for_test,
 };
+mod capacity_refusal;
 mod control;
 mod entry;
 pub use entry::Entry;
@@ -150,8 +151,8 @@ use std::{
 pub use storage::{LogStore, StateMachine, recovery_snapshot_bytes};
 pub use timing::server_config;
 pub use write_errors::{
-    PostCommitAccessLost, is_application_write_capacity_denied, is_application_write_redirect,
-    is_post_commit_access_loss,
+    LocalAppendCapacityDenied, PostCommitAccessLost, is_application_write_capacity_denied,
+    is_application_write_redirect, is_post_commit_access_loss,
 };
 
 #[derive(Clone, Debug)]
@@ -832,6 +833,37 @@ impl RaftGroup {
             .as_ref()
             .context("fixture hook requires standalone mode")?
             .fixture_before_apply(hook)
+    }
+
+    /// Runs once inside the next standalone snapshot task, after its capture
+    /// and before its build.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn fixture_local_before_snapshot(&self, hook: Box<dyn FnOnce() + Send>) -> Result<()> {
+        self.local
+            .as_ref()
+            .context("fixture hook requires standalone mode")?
+            .fixture_before_snapshot(hook)
+    }
+
+    /// Entries the standalone writer appends between periodic snapshots.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub async fn fixture_local_snapshot_interval(&self, entries: u64) -> Result<()> {
+        self.local
+            .as_ref()
+            .context("fixture hook requires standalone mode")?
+            .fixture_snapshot_interval(entries)
+            .await
+    }
+
+    /// Wait for the standalone writer's current snapshot task. An error means
+    /// the task failed and fenced the writer, as the next snapshot would find.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub async fn fixture_local_snapshot_settled(&self) -> Result<()> {
+        self.local
+            .as_ref()
+            .context("fixture hook requires standalone mode")?
+            .fixture_snapshot_settled()
+            .await
     }
 
     /// Local values describe the durable writer and its journal position. They

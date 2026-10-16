@@ -1,11 +1,10 @@
 //! A single durable writer, without a consensus runtime. The existing journal
 //! encoding keeps older one-voter installations recoverable. Its positions are
 //! storage identities; no election, network peer, or quorum task is started.
-use crate::{BasicNode, Entry, LogId, LogStore, RaftCommand, TypeConfig};
+use crate::{BasicNode, Entry, LogId, LogStore, RaftCommand, TypeConfig, storage::LocalAppend};
 use anyhow::{Context, Result, ensure};
 use openraft::{
-    CommittedLeaderId, EntryPayload, Membership, RaftLogReader, RaftMetrics, RaftSnapshotBuilder,
-    ServerState,
+    CommittedLeaderId, EntryPayload, Membership, RaftLogReader, RaftMetrics, ServerState,
     storage::{RaftLogStorage, RaftStateMachine},
 };
 use std::{
@@ -18,6 +17,12 @@ use std::{
 
 type Metrics = RaftMetrics<u64, BasicNode>;
 type Worker = tokio::sync::Mutex<Option<tokio::task::JoinHandle<Result<()>>>>;
+#[cfg(any(test, feature = "test-utils"))]
+type FixtureHook = Arc<Mutex<Option<Box<dyn FnOnce() + Send>>>>;
+
+// Match the existing default journal retention threshold. Local compaction
+// requires no heartbeat or periodic background task.
+const SNAPSHOT_INTERVAL: u64 = 5000;
 
 pub(crate) struct LocalGroup<M: RaftStateMachine<TypeConfig>> {
     state: Arc<tokio::sync::Mutex<Option<LocalState<M>>>>,
@@ -29,6 +34,8 @@ pub(crate) struct LocalGroup<M: RaftStateMachine<TypeConfig>> {
     report: Arc<Mutex<kasumi_types::drain::DrainReport>>,
     #[cfg(any(test, feature = "test-utils"))]
     before_apply: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    #[cfg(any(test, feature = "test-utils"))]
+    before_snapshot: FixtureHook,
 }
 
 struct LocalState<M: RaftStateMachine<TypeConfig>> {
@@ -38,6 +45,41 @@ struct LocalState<M: RaftStateMachine<TypeConfig>> {
     term: u64,
     id: u64,
     snapshot_index: Option<u64>,
+    snapshot_interval: u64,
+}
+
+// What a snapshot task shares with its group.
+struct SnapshotWork {
+    metrics: Arc<Mutex<Metrics>>,
+    worker: Arc<Worker>,
+    failed: Arc<AtomicBool>,
+    report: Arc<Mutex<kasumi_types::drain::DrainReport>>,
+    #[cfg(any(test, feature = "test-utils"))]
+    before_build: FixtureHook,
+}
+
+/// What one standalone snapshot build left behind.
+pub(crate) enum LocalSnapshot {
+    /// Durably published, covering every entry through this position.
+    Published(Option<LogId<u64>>),
+    /// Refused for capacity before publishing. The published snapshot, the
+    /// applied state and the journal are unchanged; staged chunks are
+    /// crash-equivalent and removed by the next build or open.
+    Deferred,
+}
+
+/// A state machine's snapshot builder as the standalone writer runs it.
+pub(crate) trait LocalSnapshotBuilder {
+    fn build_local(
+        &mut self,
+    ) -> impl std::future::Future<Output = Result<LocalSnapshot, openraft::StorageError<u64>>> + Send;
+}
+
+// One appended entry, or a proof that capacity was refused before any of it
+// reached the journal.
+enum Appended {
+    Applied(Vec<u8>, LogId<u64>),
+    Refused,
 }
 
 // Lives in the actual worker, including across a cancelled request waiter.
@@ -67,7 +109,11 @@ pub(crate) fn check_membership(membership: &Membership<u64, BasicNode>, id: u64)
     Ok(())
 }
 
-impl<M: RaftStateMachine<TypeConfig> + Send + Sync + 'static> LocalGroup<M> {
+impl<M> LocalGroup<M>
+where
+    M: RaftStateMachine<TypeConfig> + Send + Sync + 'static,
+    M::SnapshotBuilder: LocalSnapshotBuilder,
+{
     pub(crate) async fn open(
         id: u64,
         mut log: LogStore,
@@ -145,13 +191,19 @@ impl<M: RaftStateMachine<TypeConfig> + Send + Sync + 'static> LocalGroup<M> {
             term,
             id,
             snapshot_index: applied.map(|log| log.index),
+            snapshot_interval: SNAPSHOT_INTERVAL,
         };
         if committed.is_none() {
-            state
+            let appended = state
                 .append(EntryPayload::Membership(Membership::from(BTreeMap::from(
                     [(id, BasicNode::new("local"))],
                 ))))
                 .await?;
+            // A refused first entry leaves an empty journal to initialize again.
+            ensure!(
+                matches!(appended, Appended::Applied(..)),
+                crate::LocalAppendCapacityDenied
+            );
         }
         let (last_applied, membership) = state.machine.applied_state().await?;
         check_membership(membership.membership(), id)?;
@@ -174,6 +226,8 @@ impl<M: RaftStateMachine<TypeConfig> + Send + Sync + 'static> LocalGroup<M> {
             report: Default::default(),
             #[cfg(any(test, feature = "test-utils"))]
             before_apply: Default::default(),
+            #[cfg(any(test, feature = "test-utils"))]
+            before_snapshot: Default::default(),
         })
     }
 
@@ -197,6 +251,66 @@ impl<M: RaftStateMachine<TypeConfig> + Send + Sync + 'static> LocalGroup<M> {
         );
         *installed = Some(hook);
         Ok(())
+    }
+
+    /// Runs once inside the next snapshot task, after its capture and before
+    /// its build.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub(crate) fn fixture_before_snapshot(&self, hook: Box<dyn FnOnce() + Send>) -> Result<()> {
+        let mut installed = self.before_snapshot.lock().unwrap();
+        ensure!(
+            installed.is_none(),
+            "local snapshot fixture hook already installed"
+        );
+        *installed = Some(hook);
+        Ok(())
+    }
+
+    /// Entries appended between periodic snapshots.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub(crate) async fn fixture_snapshot_interval(&self, entries: u64) -> Result<()> {
+        ensure!(entries > 0, "local snapshot interval must be positive");
+        self.check()?;
+        let mut worker = self.worker.lock().await;
+        self.finish_worker(&mut worker).await;
+        self.check()?;
+        self.state
+            .lock()
+            .await
+            .as_mut()
+            .context("local writer has shut down")?
+            .snapshot_interval = entries;
+        Ok(())
+    }
+
+    /// Join the write worker and then the current snapshot task, exactly as
+    /// the next snapshot would: a failed task has already fenced the writer.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub(crate) async fn fixture_snapshot_settled(&self) -> Result<()> {
+        let mut worker = self.worker.lock().await;
+        self.finish_worker(&mut worker).await;
+        let mut snapshot = self.snapshot_worker.lock().await;
+        finish_task(
+            &mut snapshot,
+            &self.failed,
+            &self.report,
+            "Local snapshot worker",
+        )
+        .await;
+        drop(snapshot);
+        drop(worker);
+        self.check()
+    }
+
+    fn snapshot_work(&self) -> SnapshotWork {
+        SnapshotWork {
+            metrics: self.metrics.clone(),
+            worker: self.snapshot_worker.clone(),
+            failed: self.failed.clone(),
+            report: self.report.clone(),
+            #[cfg(any(test, feature = "test-utils"))]
+            before_build: self.before_snapshot.clone(),
+        }
     }
 
     pub(crate) fn metrics(&self) -> Metrics {
@@ -238,8 +352,7 @@ impl<M: RaftStateMachine<TypeConfig> + Send + Sync + 'static> LocalGroup<M> {
         self.check()?;
         let metrics = self.metrics.clone();
         let failed = self.failed.clone();
-        let snapshot_worker = self.snapshot_worker.clone();
-        let report = self.report.clone();
+        let snapshot = self.snapshot_work();
         let (response, receive) = tokio::sync::oneshot::channel();
         #[cfg(any(test, feature = "test-utils"))]
         let before_apply = self.before_apply.lock().unwrap().take();
@@ -255,30 +368,35 @@ impl<M: RaftStateMachine<TypeConfig> + Send + Sync + 'static> LocalGroup<M> {
             if let Some(hook) = before_apply {
                 tokio::task::spawn_blocking(hook).await?;
             }
-            let (data, applied) = state.append(EntryPayload::Normal(command)).await?;
+            let (data, applied) = match state.append(EntryPayload::Normal(command)).await? {
+                Appended::Applied(data, applied) => (data, applied),
+                // Nothing reached the journal, so this command is rejected
+                // and the writer, its position and its applied state go on.
+                Appended::Refused => {
+                    fence.complete = true;
+                    let _ = response.send(Err(crate::LocalAppendCapacityDenied));
+                    return Ok(());
+                }
+            };
             {
                 let mut metrics = metrics.lock().unwrap_or_else(|p| p.into_inner());
                 metrics.last_applied = Some(applied);
                 metrics.last_log_index = Some(applied.index);
             }
-            // Match the existing default journal retention threshold. Local
-            // compaction requires no heartbeat or periodic background task.
             if state
                 .next_index
                 .saturating_sub(state.snapshot_index.map_or(0, |index| index + 1))
-                >= 5000
+                >= state.snapshot_interval
             {
-                state
-                    .schedule_snapshot(&metrics, &snapshot_worker, &failed, &report)
-                    .await?;
+                state.schedule_snapshot(&snapshot).await?;
             }
             fence.complete = true;
-            let _ = response.send(data);
+            let _ = response.send(Ok(data));
             Ok(())
         }));
         drop(worker);
         match receive.await {
-            Ok(response) => Ok(response),
+            Ok(response) => Ok(response?),
             Err(_) => {
                 let mut worker = self.worker.lock().await;
                 self.finish_worker(&mut worker).await;
@@ -322,21 +440,18 @@ impl<M: RaftStateMachine<TypeConfig> + Send + Sync + 'static> LocalGroup<M> {
         self.check()?;
         let mut state = self.state.clone().lock_owned().await;
         self.check()?;
-        let metrics = self.metrics.clone();
-        let snapshot_worker = self.snapshot_worker.clone();
-        let failed = self.failed.clone();
-        let report = self.report.clone();
+        let snapshot = self.snapshot_work();
         // Snapshot capture itself may dispatch blocking work. Retain that
         // coordinator too, so cancelling the trigger never abandons its work.
         *worker = Some(tokio::spawn(async move {
             let mut fence = WorkFence {
-                failed: failed.clone(),
+                failed: snapshot.failed.clone(),
                 complete: false,
             };
             state
                 .as_mut()
                 .context("local writer has shut down")?
-                .schedule_snapshot(&metrics, &snapshot_worker, &failed, &report)
+                .schedule_snapshot(&snapshot)
                 .await?;
             fence.complete = true;
             Ok(())
@@ -390,21 +505,25 @@ async fn finish_task(
     }
 }
 
-impl<M: RaftStateMachine<TypeConfig> + Send + Sync + 'static> LocalState<M> {
-    async fn schedule_snapshot(
-        &mut self,
-        metrics: &Arc<Mutex<Metrics>>,
-        worker: &Arc<Worker>,
-        failed: &Arc<AtomicBool>,
-        report: &Arc<Mutex<kasumi_types::drain::DrainReport>>,
-    ) -> Result<()> {
-        let mut worker = worker.lock().await;
+impl<M> LocalState<M>
+where
+    M: RaftStateMachine<TypeConfig> + Send + Sync + 'static,
+    M::SnapshotBuilder: LocalSnapshotBuilder,
+{
+    async fn schedule_snapshot(&mut self, work: &SnapshotWork) -> Result<()> {
+        let mut worker = work.worker.lock().await;
         if worker.as_ref().is_some_and(|task| !task.is_finished()) {
             return Ok(());
         }
-        finish_task(&mut worker, failed, report, "Local snapshot worker").await;
+        finish_task(
+            &mut worker,
+            &work.failed,
+            &work.report,
+            "Local snapshot worker",
+        )
+        .await;
         ensure!(
-            !failed.load(Ordering::Acquire),
+            !work.failed.load(Ordering::Acquire),
             "local snapshot requires recovery"
         );
         // Capture the roots while ordered with commands, then serialize and
@@ -413,29 +532,51 @@ impl<M: RaftStateMachine<TypeConfig> + Send + Sync + 'static> LocalState<M> {
         let mut builder = self.machine.get_snapshot_builder().await;
         self.snapshot_index = self.next_index.checked_sub(1);
         let mut log = self.log.clone();
-        let metrics = metrics.clone();
-        let failed = failed.clone();
+        let metrics = work.metrics.clone();
+        let failed = work.failed.clone();
+        #[cfg(any(test, feature = "test-utils"))]
+        let before_build = work.before_build.clone();
         *worker = Some(tokio::spawn(async move {
             let mut fence = WorkFence {
                 failed,
                 complete: false,
             };
-            let snapshot = builder.build_snapshot().await?;
-            let position = snapshot.meta.last_log_id;
-            drop(snapshot);
-            if let Some(position) = position {
-                log.purge(position).await?;
+            #[cfg(any(test, feature = "test-utils"))]
+            {
+                let hook = before_build.lock().unwrap().take();
+                if let Some(hook) = hook {
+                    tokio::task::spawn_blocking(hook).await?;
+                }
             }
-            let mut metrics = metrics.lock().unwrap_or_else(|p| p.into_inner());
-            metrics.snapshot = position;
-            metrics.purged = position;
+            match builder.build_local().await? {
+                LocalSnapshot::Published(position) => {
+                    // A purge refused for capacity keeps the rest of the
+                    // journal for a later snapshot to purge.
+                    let purged = match position {
+                        Some(position) => log.purge_local(position).await?,
+                        None => true,
+                    };
+                    if !purged {
+                        eprintln!("Kasumi local journal purge deferred: capacity refused");
+                    }
+                    let mut metrics = metrics.lock().unwrap_or_else(|p| p.into_inner());
+                    metrics.snapshot = position;
+                    if purged {
+                        metrics.purged = position;
+                    }
+                }
+                // The journal keeps every entry until a later snapshot covers it.
+                LocalSnapshot::Deferred => {
+                    eprintln!("Kasumi local snapshot deferred: capacity refused");
+                }
+            }
             fence.complete = true;
             Ok(())
         }));
         Ok(())
     }
 
-    async fn append(&mut self, payload: EntryPayload<TypeConfig>) -> Result<(Vec<u8>, LogId<u64>)> {
+    async fn append(&mut self, payload: EntryPayload<TypeConfig>) -> Result<Appended> {
         let next = self
             .next_index
             .checked_add(1)
@@ -450,7 +591,9 @@ impl<M: RaftStateMachine<TypeConfig> + Send + Sync + 'static> LocalState<M> {
             initialization: None,
         };
         let position = entry.log_id;
-        self.log.append_local(entry.clone()).await?;
+        if let LocalAppend::Refused = self.log.append_local(entry.clone()).await? {
+            return Ok(Appended::Refused);
+        }
         let response = self
             .machine
             .apply([entry])
@@ -458,6 +601,6 @@ impl<M: RaftStateMachine<TypeConfig> + Send + Sync + 'static> LocalState<M> {
             .pop()
             .context("local application returned no response")?;
         self.next_index = next;
-        Ok((response, position))
+        Ok(Appended::Applied(response, position))
     }
 }

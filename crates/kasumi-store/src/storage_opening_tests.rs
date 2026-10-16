@@ -2566,10 +2566,10 @@ async fn production_catalog_read_registers_child_and_retains_original_table_fail
         crate::test_utils::node_storage_config(),
     )
     .unwrap();
-    assert!(node.catalog("tenant").unwrap().is_none());
     assert_eq!(memory.storage_census().snapshot().readers, 0);
 
-    // Fail the required two-byte type-tag output from check_bytes_table.
+    // Fail the required two-byte type-tag output from check_bytes_table in
+    // this opening's first reader, which verifies the required table set.
     // Independent report, reader-cell and native snapshot grants must succeed
     // first; their ordering or sizes do not select this injection boundary.
     let table_output = native_output_bytes(2);
@@ -2625,6 +2625,39 @@ async fn production_catalog_read_registers_child_and_retains_original_table_fail
         opening.report().engine().settlement(),
         DatabaseOpenSettlement::DrainedWithFailure
     );
+}
+
+#[tokio::test]
+async fn readers_of_a_verified_generation_do_not_recheck_the_table_set() {
+    let directory = private_tempdir().unwrap();
+    let path = directory.path().join("verified-table-set.kv");
+    let (memory, _, _) = PausedRegistrationMemory::new();
+    let disk = retry_disk_registry(|| NodeDisk::fixture_for_path(&path, memory.clone())).unwrap();
+    let scratch_directory = private_tempdir().unwrap();
+    let scratch = ScratchDisk::fixture(scratch_directory.path(), memory.clone());
+    let node = NodeStore::create_new(
+        &path,
+        ID,
+        disk,
+        scratch,
+        crate::test_utils::node_storage_config(),
+    )
+    .unwrap();
+    assert!(node.catalog("tenant").unwrap().is_none());
+    // Tables are never dropped and a table's type never changes, so a reader
+    // of an already verified generation requests no type-tag output again.
+    let table_output = native_output_bytes(2);
+    memory
+        .fail_installed_bytes
+        .store(table_output, Ordering::Release);
+    assert!(node.catalog("tenant").unwrap().is_none());
+    assert_eq!(memory.fail_installed_denials.load(Ordering::Acquire), 0);
+    assert_eq!(
+        memory.fail_installed_bytes.swap(0, Ordering::AcqRel),
+        table_output
+    );
+    assert_eq!(memory.storage_census().snapshot().readers, 0);
+    node.shutdown().await.unwrap();
 }
 
 #[tokio::test]

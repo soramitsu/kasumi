@@ -159,7 +159,7 @@ fn point_membership_and_warming_reuse_one_buffer_without_new_admission() {
             );
             assert_eq!(
                 reader
-                    .contains_page_with_workspace(root, old_leaf, &old_bytes, &mut workspace)
+                    .contains_page_with_workspace(root, old_leaf, &old_bytes, PageCheck::Unchecked, &mut workspace)
                     .unwrap(),
                 root == old
             );
@@ -241,7 +241,7 @@ fn workspace_rejects_foreign_admission_and_failed_owner_before_io() {
         matches!(&(reader.get_with_workspace(root, DirectoryKey::table("t"), &mut workspace)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput(_))))
     );
     assert!(
-        matches!(&(reader.contains_page_with_workspace(root, reference, &bytes, &mut workspace)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput(_))))
+        matches!(&(reader.contains_page_with_workspace(root, reference, &bytes, PageCheck::Unchecked, &mut workspace)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput(_))))
     );
     assert!(
         matches!(&(reader.warm_generation_with_workspace(root, 0, &mut workspace)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput(_))))
@@ -253,7 +253,7 @@ fn workspace_rejects_foreign_admission_and_failed_owner_before_io() {
         matches!(&(reader.get_with_workspace(root, DirectoryKey::table("t"), &mut workspace)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
     );
     assert!(
-        matches!(&(reader.contains_page_with_workspace(root, reference, &bytes, &mut workspace)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+        matches!(&(reader.contains_page_with_workspace(root, reference, &bytes, PageCheck::Unchecked, &mut workspace)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
     );
     assert!(
         matches!(&(reader.warm_generation_with_workspace(root, 0, &mut workspace)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
@@ -282,7 +282,7 @@ fn reused_workspace_preserves_candidate_validation_and_parent_bounds() {
     };
     let before = backend.reads.load(AtomicOrdering::Relaxed);
     assert!(
-        matches!(&(reader.contains_page_with_workspace(empty_root(), bad_reference, &bad, &mut workspace)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::Corrupt(_))))
+        matches!(&(reader.contains_page_with_workspace(empty_root(), bad_reference, &bad, PageCheck::Unchecked, &mut workspace)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::Corrupt(_))))
     );
     assert_eq!(backend.reads.load(AtomicOrdering::Relaxed), before);
 
@@ -296,7 +296,7 @@ fn reused_workspace_preserves_candidate_validation_and_parent_bounds() {
         matches!(&(reader.get_with_workspace(invalid, DirectoryKey::table("t"), &mut workspace)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::Corrupt(_))))
     );
     assert!(
-        matches!(&(reader.contains_page_with_workspace(invalid, reference, &bytes, &mut workspace)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::Corrupt(_))))
+        matches!(&(reader.contains_page_with_workspace(invalid, reference, &bytes, PageCheck::Unchecked, &mut workspace)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::Corrupt(_))))
     );
     assert!(
         matches!(&(reader.warm_generation_with_workspace(invalid, 0, &mut workspace)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::Corrupt(_))))
@@ -357,7 +357,7 @@ fn reused_workspace_preserves_read_failures_and_post_io_owner_checks() {
                 .get_with_workspace(root, DirectoryKey::table("t"), &mut workspace)
                 .map(|_| ()),
             1 => reader
-                .contains_page_with_workspace(root, reference, &bytes, &mut workspace)
+                .contains_page_with_workspace(root, reference, &bytes, PageCheck::Unchecked, &mut workspace)
                 .map(|_| ()),
             _ => reader.warm_generation_with_workspace(root, 0, &mut workspace),
         };

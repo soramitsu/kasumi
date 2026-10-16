@@ -441,6 +441,11 @@ impl RetainedReadTransaction {
             .map_err(ReadAcquisitionFailure::after_native_return)
     }
 
+    /// The root generation this open reader selected.
+    pub fn generation(&self) -> Result<u64, BoundedReadError> {
+        Ok(self.readable()?.generation())
+    }
+
     fn readable(&self) -> Result<&ReadTransaction, BoundedReadError> {
         if self.settlement != ReadCloseSettlement::Open {
             return Err(BoundedReadError::Closed);

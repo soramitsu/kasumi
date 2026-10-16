@@ -66,7 +66,18 @@ fn value_bytes(level: u8) -> usize {
     }
 }
 
+#[cfg(test)]
+std::thread_local! {
+    static PAGE_DIGESTS: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+}
+
 pub(crate) fn page_digest(bytes: &[u8]) -> [u8; 32] {
+    #[cfg(test)]
+    PAGE_DIGESTS.with(|count| {
+        if let Some(current) = count.get() {
+            count.set(Some(current + 1));
+        }
+    });
     Sha256::digest(bytes).into()
 }
 const MAX_ENCODED_KEY: usize = KEY_HEADER_BYTES + MAX_TABLE_BYTES + MAX_KEY_BYTES;
@@ -116,6 +127,16 @@ impl DirectoryPageRef {
     }
 }
 
+/// What a backend's `read_page` has already verified for exactly the bytes
+/// it returns. Readers still check every page field against the selected root.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PageCheck {
+    /// Nothing; the reader also verifies the digest.
+    Unchecked,
+    /// The bytes have the reference's SHA-256 digest.
+    Digest,
+}
+
 /// Pages are append-only and identifiers must never be reused. An append
 /// returns the SHA-256 digest of exactly the supplied bytes. Synchronization must
 /// cover every page previously appended, including its arena's durable name.
@@ -124,6 +145,11 @@ pub(crate) trait DirectoryBackend: Send + Sync {
     fn read_page(&self, reference: DirectoryPageRef, out: &mut [u8]) -> Result<(), CoreError>;
     fn append_page(&self, bytes: &[u8]) -> Result<DirectoryPageRef, CoreError>;
     fn sync_pages(&self) -> Result<(), CoreError>;
+    /// A backend that verifies digests itself must do so for every page it
+    /// returns, including cache hits and fallback reads.
+    fn page_check(&self) -> PageCheck {
+        PageCheck::Unchecked
+    }
 }
 
 impl<T: DirectoryBackend + ?Sized> DirectoryBackend for &T {
@@ -135,6 +161,9 @@ impl<T: DirectoryBackend + ?Sized> DirectoryBackend for &T {
     }
     fn sync_pages(&self) -> Result<(), CoreError> {
         (**self).sync_pages()
+    }
+    fn page_check(&self) -> PageCheck {
+        (**self).page_check()
     }
 }
 
@@ -148,6 +177,9 @@ impl<T: DirectoryBackend + ?Sized> DirectoryBackend for Arc<T> {
     fn sync_pages(&self) -> Result<(), CoreError> {
         (**self).sync_pages()
     }
+    fn page_check(&self) -> PageCheck {
+        (**self).page_check()
+    }
 }
 
 impl<T: DirectoryBackend> DirectoryBackend for crate::native_owned_arc::NativeOwnedArc<T> {
@@ -156,6 +188,9 @@ impl<T: DirectoryBackend> DirectoryBackend for crate::native_owned_arc::NativeOw
     }
     fn append_page(&self, bytes: &[u8]) -> Result<DirectoryPageRef, CoreError> {
         (**self).append_page(bytes)
+    }
+    fn page_check(&self) -> PageCheck {
+        (**self).page_check()
     }
     fn sync_pages(&self) -> Result<(), CoreError> {
         (**self).sync_pages()
@@ -814,8 +849,20 @@ fn validate_page(
     root: DirectoryRoot,
     reference: DirectoryPageRef,
 ) -> Result<PageInfo, CoreError> {
+    validate_checked_page(bytes, root, reference, PageCheck::Unchecked)
+}
+
+/// Validate page bytes whose digest `check` says the backend already verified.
+fn validate_checked_page(
+    bytes: &[u8],
+    root: DirectoryRoot,
+    reference: DirectoryPageRef,
+    check: PageCheck,
+) -> Result<PageInfo, CoreError> {
     reference.validate()?;
-    if bytes.len() != DIRECTORY_PAGE_BYTES || page_digest(bytes) != reference.sha256 {
+    if bytes.len() != DIRECTORY_PAGE_BYTES
+        || (check == PageCheck::Unchecked && page_digest(bytes) != reference.sha256)
+    {
         return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
             "directory page digest differs",
         )));
@@ -1111,7 +1158,7 @@ impl<'a> DirectoryReader<'a> {
         self.admission
             .check_owner()
             .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?;
-        let info = validate_page(buffer, root, reference)?;
+        let info = validate_checked_page(buffer, root, reference, self.backend.page_check())?;
         bounds.check(buffer, info)?;
         Ok(info)
     }
@@ -1718,6 +1765,64 @@ mod tests {
         let reader = DirectoryReader::new(&backend, admission);
         assert!(
             matches!(&(reader.get(root, DirectoryKey::row("t", &long_key(0)))), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::Corrupt("directory page digest differs"))))
+        );
+    }
+
+    #[test]
+    fn verified_cache_hits_are_not_rehashed() {
+        use crate::cache::CacheConfig;
+        use crate::page_cache::CachedDirectoryBackend;
+
+        let backend = MemoryPages::default();
+        let admission = Admission::new(8 << 20);
+        let cached = CachedDirectoryBackend::new(
+            &backend,
+            admission.clone(),
+            GROUP,
+            CacheConfig {
+                byte_limit: 4 << 20,
+            },
+        );
+        let mut builder = DirectoryBuilder::new(&backend, admission.clone(), GROUP, 2).unwrap();
+        for id in 0..90 {
+            builder
+                .push(DirectoryKey::row("t", &long_key(id)), value(2, id as u64))
+                .unwrap();
+        }
+        let root = builder.finish().unwrap();
+        assert!(root.height >= 2);
+        let reader = DirectoryReader::new(&cached, admission);
+        let lookup = |root: DirectoryRoot| {
+            PAGE_DIGESTS.with(|count| count.set(Some(0)));
+            PARSED_ENTRIES.with(|count| count.set(Some(0)));
+            let found = reader.get(root, DirectoryKey::row("t", &long_key(45)));
+            let digests = PAGE_DIGESTS.with(|count| count.replace(None).unwrap());
+            let parsed = PARSED_ENTRIES.with(|count| count.replace(None).unwrap());
+            (found, digests, parsed)
+        };
+        // A miss verifies each page on the path once, before the cache retains it.
+        let (found, cold_digests, cold_parsed) = lookup(root);
+        assert_eq!(found.unwrap(), Some(value(2, 45)));
+        assert_eq!(cold_digests, root.height as usize);
+        // A hit is still fully validated against the root, without a digest.
+        let (found, warm_digests, warm_parsed) = lookup(root);
+        assert_eq!(found.unwrap(), Some(value(2, 45)));
+        assert_eq!(warm_digests, 0);
+        assert_eq!(warm_parsed, cold_parsed);
+        // Hits still apply the selected root's group and generation ceiling.
+        let (found, _, _) = lookup(DirectoryRoot {
+            group_id: [9; 16],
+            ..root
+        });
+        assert!(
+            matches!(&found, Err(error) if matches!(error.rejected_cause(), Some(crate::CoreErrorCause::Corrupt("directory page header is invalid"))))
+        );
+        let (found, _, _) = lookup(DirectoryRoot {
+            generation: 1,
+            ..root
+        });
+        assert!(
+            matches!(&found, Err(error) if matches!(error.rejected_cause(), Some(crate::CoreErrorCause::Corrupt("directory page bounds are invalid"))))
         );
     }
 

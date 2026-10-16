@@ -764,6 +764,7 @@ impl TenantStorageSet {
         // domain mutation holds only one lock and never acquires its peer.
         let _app_mutation = application.mutations.lock();
         let _custody_mutation = custody.mutations.lock();
+        let _binding_fence = custody.cached_rows.fence([BINDING_NS]);
         let saved = custody.get(BINDING_NS, BINDING_KEY)?;
         let (binding, pending) = {
             let app_state = application.state.read();
@@ -1027,6 +1028,12 @@ impl TenantStorageSet {
         self.check_access()?;
         let _app_mutation = application.mutations.lock();
         let _custody_mutation = custody.mutations.lock();
+        let _app_fence = application
+            .cached_rows
+            .fence_replacing(application_replacements, application_ops);
+        let _custody_fence = custody
+            .cached_rows
+            .fence_replacing(custody_replacements, custody_ops);
         if let Some(source) = source.as_deref() {
             source.require_prepared_store(application)?;
             source.require_prepared_store(custody)?;

@@ -216,6 +216,15 @@ impl LogStore {
         &self,
         f: impl FnOnce(&StorageHandle<TenantStore>) -> Result<T> + Send + 'static,
     ) -> Result<T, StorageError<u64>> {
+        self.mutate_original(f).await.map_err(err)
+    }
+
+    // The same ordered mutation, returning its original error so a standalone
+    // caller can tell a proven capacity refusal from a storage failure.
+    async fn mutate_original<T: Send + 'static>(
+        &self,
+        f: impl FnOnce(&StorageHandle<TenantStore>) -> Result<T> + Send + 'static,
+    ) -> Result<T> {
         let gate = self.io_gate.clone().lock_owned().await;
         let store = self.store.clone();
         let control = self.control_gate.clone();
@@ -228,9 +237,7 @@ impl LogStore {
                 .map_err(|_| anyhow::anyhow!("control publication lock poisoned"))?;
             f(&store)
         })
-        .await
-        .map_err(err)?
-        .map_err(err)
+        .await?
     }
 
     pub(crate) async fn validate_local_membership(&self, id: u64) -> Result<(), StorageError<u64>> {
@@ -464,12 +471,26 @@ impl VoteSaveObservation {
     }
 }
 
+/// One standalone journal append: its entry and commit cursor in one durable
+/// batch, or a proof that nothing reached the journal.
+pub(crate) enum LocalAppend {
+    Committed,
+    /// Capacity was refused before the batch, or the batch itself was refused
+    /// with no effect. The retained span and the commit cursor are unchanged.
+    Refused,
+}
+
 impl LogStore {
     pub(crate) async fn append_local(
         &mut self,
         entry: Entry<TypeConfig>,
-    ) -> Result<(), StorageError<u64>> {
-        self.append_entries([entry], true).await
+    ) -> Result<LocalAppend, StorageError<u64>> {
+        match self.append_original([entry], true).await {
+            Ok(()) => Ok(LocalAppend::Committed),
+            Err(error) => crate::capacity_refusal::take(error)
+                .map(|()| LocalAppend::Refused)
+                .map_err(err),
+        }
     }
 
     async fn append_entries<I>(
@@ -481,20 +502,27 @@ impl LogStore {
         I: IntoIterator<Item = Entry<TypeConfig>> + OptionalSend,
         I::IntoIter: OptionalSend,
     {
+        self.append_original(entries, commit_local)
+            .await
+            .map_err(err)
+    }
+
+    async fn append_original<I>(&mut self, entries: I, commit_local: bool) -> Result<()>
+    where
+        I: IntoIterator<Item = Entry<TypeConfig>> + OptionalSend,
+        I::IntoIter: OptionalSend,
+    {
         let entries = entries.into_iter().collect::<Vec<_>>();
         if commit_local {
-            if entries.len() != 1 {
-                return Err(err("local append requires one entry"));
-            }
+            ensure!(entries.len() == 1, "local append requires one entry");
         }
         for entry in &entries {
             if let EntryPayload::Normal(crate::RaftCommand::Application(input)) = &entry.payload {
-                input.bind_input(entry.log_id).map_err(err)?;
+                input.bind_input(entry.log_id)?;
             }
         }
-        let bootstrap_sha256 =
-            load::<String>(&self.store, META, b"application_bootstrap_sha256").map_err(err)?;
-        let storage_binding_sha256 = self.domains.custody().binding().digest().map_err(err)?;
+        let bootstrap_sha256 = load::<String>(&self.store, META, b"application_bootstrap_sha256")?;
+        let storage_binding_sha256 = self.domains.custody().binding().digest()?;
         let writes = entries
             .iter()
             .map(|entry| {
@@ -538,11 +566,10 @@ impl LogStore {
                 };
                 Ok((application, control))
             })
-            .collect::<Result<Vec<_>>>()
-            .map_err(err)?;
+            .collect::<Result<Vec<_>>>()?;
         let retained = self.retained.clone();
         let domains = self.domains.clone();
-        self.mutate(move |store| {
+        self.mutate_original(move |store| {
             // OpenRaft may repopulate physical logs beneath a snapshot.
             // That does not change the separately committed snapshot. Only
             // an exact accepted retirement identity is immutable here.
@@ -769,9 +796,31 @@ impl RaftLogStorage<TypeConfig> for LogStore {
     }
 
     async fn purge(&mut self, log_id: LogId<u64>) -> Result<(), StorageError<u64>> {
+        self.purge_original(log_id).await.map_err(err)
+    }
+}
+
+impl LogStore {
+    /// Purge the standalone journal through a published snapshot. `false`
+    /// means a capacity refusal stopped it after zero or more whole chunks,
+    /// each committed with its purge cursor: every remaining entry stays
+    /// retained for a later snapshot to purge.
+    pub(crate) async fn purge_local(
+        &mut self,
+        log_id: LogId<u64>,
+    ) -> Result<bool, StorageError<u64>> {
+        match self.purge_original(log_id).await {
+            Ok(()) => Ok(true),
+            Err(error) => crate::capacity_refusal::take(error)
+                .map(|()| false)
+                .map_err(err),
+        }
+    }
+
+    async fn purge_original(&self, log_id: LogId<u64>) -> Result<()> {
         let retained = self.retained.clone();
         let domains = self.domains.clone();
-        self.mutate(move |store| {
+        self.mutate_original(move |store| {
             let mut retained = retained
                 .lock()
                 .map_err(|_| anyhow::anyhow!("raft retained span lock poisoned"))?;
@@ -1412,10 +1461,85 @@ pub(crate) fn as_snapshot(
     })
 }
 
-impl RaftSnapshotBuilder<TypeConfig> for SnapshotBuilder {
-    async fn build_snapshot(&mut self) -> Result<Snapshot<TypeConfig>, StorageError<u64>> {
+// How a build returns the snapshot covering its capture. Consensus transfers
+// the encoded image in a snapshot buffer; the standalone writer needs only
+// the covered position, and nothing waits on an image it could defer.
+trait CoveringSnapshot: Sized + Send + 'static {
+    fn current(
+        snapshot: &SnapshotEnvelope,
+        limit: u64,
+        snapshot_buffers: &Arc<SnapshotBufferOwner>,
+    ) -> Result<Self>;
+    /// The covering value and the encoded image to stage.
+    fn captured(
+        snapshot: &SnapshotEnvelope,
+        limit: u64,
+        snapshot_buffers: &Arc<SnapshotBufferOwner>,
+    ) -> Result<(Self, SnapshotImage)>;
+    /// The outcome of a build refused for capacity, where it can be deferred.
+    fn deferred() -> Option<Self>;
+}
+impl CoveringSnapshot for Snapshot<TypeConfig> {
+    fn current(
+        snapshot: &SnapshotEnvelope,
+        limit: u64,
+        snapshot_buffers: &Arc<SnapshotBufferOwner>,
+    ) -> Result<Self> {
+        as_snapshot(snapshot, limit, snapshot_buffers)
+    }
+    fn captured(
+        snapshot: &SnapshotEnvelope,
+        limit: u64,
+        snapshot_buffers: &Arc<SnapshotBufferOwner>,
+    ) -> Result<(Self, SnapshotImage)> {
+        let transfer = as_snapshot(snapshot, limit, snapshot_buffers)?;
+        let image = transfer.snapshot.image()?;
+        Ok((transfer, image))
+    }
+    fn deferred() -> Option<Self> {
+        None
+    }
+}
+impl CoveringSnapshot for crate::local::LocalSnapshot {
+    fn current(
+        snapshot: &SnapshotEnvelope,
+        _limit: u64,
+        snapshot_buffers: &Arc<SnapshotBufferOwner>,
+    ) -> Result<Self> {
+        snapshot_buffers.check()?;
+        Ok(Self::Published(snapshot.meta.last_log_id))
+    }
+    fn captured(
+        snapshot: &SnapshotEnvelope,
+        limit: u64,
+        snapshot_buffers: &Arc<SnapshotBufferOwner>,
+    ) -> Result<(Self, SnapshotImage)> {
+        snapshot_buffers.check()?;
+        Ok((
+            Self::Published(snapshot.meta.last_log_id),
+            snapshot.encode(limit)?,
+        ))
+    }
+    fn deferred() -> Option<Self> {
+        Some(Self::Deferred)
+    }
+}
+
+impl SnapshotBuilder {
+    async fn build<O: CoveringSnapshot>(&mut self) -> Result<O, StorageError<u64>> {
         let gate = self.machine.snapshot_gate.clone().lock_owned().await;
-        let captured = self.captured.as_ref().map_err(err)?.clone();
+        let captured = match &self.captured {
+            Ok(captured) => captured.clone(),
+            // A capture refused for capacity left nothing to build.
+            Err(error) => {
+                return match O::deferred() {
+                    Some(deferred) if crate::capacity_refusal::scratch_refused(error) => {
+                        Ok(deferred)
+                    }
+                    _ => Err(err(error)),
+                };
+            }
+        };
         let domains = self.machine.domains.clone();
         let store = self.machine.store.clone();
         let limit = self.machine.limits.max_snapshot_bytes;
@@ -1423,85 +1547,126 @@ impl RaftSnapshotBuilder<TypeConfig> for SnapshotBuilder {
         let applied = self.machine.state.clone();
         let control = self.machine.control_gate.clone();
         let failed = self.machine.failure_flag();
-        tokio::task::spawn_blocking(
-            move || -> Result<Snapshot<TypeConfig>, ScratchOperationFailure> {
-                let scratch_guard = snapshot_buffers.scratch_failure_guard()?;
-                let result = (|| -> Result<_, ScratchOperationFailure> {
-                    let failure = StorageWorkFailure::new(failed.clone());
-                    let _gate = gate;
-                    ensure!(
-                        !failed.load(Ordering::Acquire),
-                        "state machine requires recovery"
-                    );
-                    domains.check_access()?;
-                    if let Some(current) = load_snapshot(&store, limit)?
-                        && current.meta.last_log_id.map(|id| id.index)
-                            >= captured.meta.last_log_id.map(|id| id.index)
-                    {
-                        validate_snapshot_coverage(&domains, &current, limit)?;
-                        if current.meta.last_log_id.map(|id| id.index)
-                            == captured.meta.last_log_id.map(|id| id.index)
-                        {
-                            ensure!(
-                                current.meta.last_log_id == captured.meta.last_log_id
-                                    && current.meta.last_membership
-                                        == captured.meta.last_membership,
-                                "snapshot log or membership identity differs at the same position"
-                            );
-                            crate::snapshot_custody::check_same_retirement(
-                                current.retirement.as_ref(),
-                                captured.retirement.as_ref(),
-                            )?;
+        tokio::task::spawn_blocking(move || -> Result<O, ScratchOperationFailure> {
+            let scratch_guard = match snapshot_buffers.scratch_failure_guard() {
+                Ok(guard) => guard,
+                Err(error) => {
+                    return match O::deferred() {
+                        Some(deferred) if crate::capacity_refusal::scratch_refused(&error) => {
+                            Ok(deferred)
                         }
-                        let snapshot = as_snapshot(&current, limit, &snapshot_buffers)?;
-                        failure.complete();
-                        return Ok(snapshot);
-                    }
-                    let logical = captured;
-                    let captured = SnapshotEnvelope {
-                        version: 2,
-                        kind: SnapshotKind::Application,
-                        meta: logical.meta.clone(),
-                        backend: {
-                            let mut spool = EncryptedSpool::new(store.scratch_disk(), limit)?;
-                            logical.backend.write(&mut spool)?;
-                            SnapshotImage::freeze(spool)?
-                        },
-                        retirement: logical.retirement.clone(),
-                        first_membership: logical.first_membership.clone(),
-                        initialization_association: logical.initialization_association.clone(),
+                        _ => Err(error),
                     };
-                    let snapshot = as_snapshot(&captured, limit, &snapshot_buffers)?;
-                    let mut pending =
-                        stage_snapshot(&domains, &snapshot.snapshot.image()?, limit, &captured)?;
-                    pending
-                        .application
-                        .extend(logical.backend.checkpoint_writes(
-                            &crate::SnapshotRestoreContext {
+                }
+            };
+            let failure = StorageWorkFailure::new(failed.clone());
+            let result = (|| -> Result<O, ScratchOperationFailure> {
+                let _gate = gate;
+                ensure!(
+                    !failed.load(Ordering::Acquire),
+                    "state machine requires recovery"
+                );
+                domains.check_access()?;
+                if let Some(current) = load_snapshot(&store, limit)?
+                    && current.meta.last_log_id.map(|id| id.index)
+                        >= captured.meta.last_log_id.map(|id| id.index)
+                {
+                    validate_snapshot_coverage(&domains, &current, limit)?;
+                    if current.meta.last_log_id.map(|id| id.index)
+                        == captured.meta.last_log_id.map(|id| id.index)
+                    {
+                        ensure!(
+                            current.meta.last_log_id == captured.meta.last_log_id
+                                && current.meta.last_membership == captured.meta.last_membership,
+                            "snapshot log or membership identity differs at the same position"
+                        );
+                        crate::snapshot_custody::check_same_retirement(
+                            current.retirement.as_ref(),
+                            captured.retirement.as_ref(),
+                        )?;
+                    }
+                    return Ok(O::current(&current, limit, &snapshot_buffers)?);
+                }
+                let logical = captured;
+                let captured = SnapshotEnvelope {
+                    version: 2,
+                    kind: SnapshotKind::Application,
+                    meta: logical.meta.clone(),
+                    backend: {
+                        let mut spool = EncryptedSpool::new(store.scratch_disk(), limit)?;
+                        logical.backend.write(&mut spool)?;
+                        SnapshotImage::freeze(spool)?
+                    },
+                    retirement: logical.retirement.clone(),
+                    first_membership: logical.first_membership.clone(),
+                    initialization_association: logical.initialization_association.clone(),
+                };
+                let (covering, image) = O::captured(&captured, limit, &snapshot_buffers)?;
+                let mut pending = stage_snapshot(&domains, &image, limit, &captured)?;
+                pending
+                    .application
+                    .extend(
+                        logical
+                            .backend
+                            .checkpoint_writes(&crate::SnapshotRestoreContext {
                                 mode: crate::SnapshotRestoreMode::Install,
                                 backend_sha256: captured.backend.sha256().into(),
                                 meta: captured.meta.clone(),
-                            },
-                        )?);
-                    let publication = applied
-                        .lock()
-                        .map_err(|_| anyhow::anyhow!("applied publication lock poisoned"))?;
-                    let control_publication = control
-                        .lock()
-                        .map_err(|_| anyhow::anyhow!("control publication lock poisoned"))?;
-                    publish_snapshot(&domains, pending, &captured, None)?;
-                    drop(control_publication);
-                    drop(publication);
-                    cleanup_snapshots(&store, limit)?;
-                    failure.complete();
-                    Ok(snapshot)
-                })();
-                scratch_guard.capture_result(result)
-            },
-        )
+                            })?,
+                    );
+                let publication = applied
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("applied publication lock poisoned"))?;
+                let control_publication = control
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("control publication lock poisoned"))?;
+                publish_snapshot(&domains, pending, &captured, None)?;
+                drop(control_publication);
+                drop(publication);
+                // Once the image is published its predecessor's chunks are
+                // garbage: the next build or open removes what a refused
+                // standalone cleanup leaves.
+                if let Err(error) = cleanup_snapshots(&store, limit) {
+                    match O::deferred() {
+                        Some(_) => crate::capacity_refusal::take(error)?,
+                        None => return Err(error.into()),
+                    }
+                }
+                Ok(covering)
+            })();
+            // A refusal before publication leaves the published snapshot, the
+            // applied state and the journal unchanged. Staged chunks are
+            // crash-equivalent: the next build or open removes them.
+            let result = match result {
+                Err(error) => match O::deferred() {
+                    Some(deferred) => {
+                        crate::capacity_refusal::take_scratch(error).map(|()| deferred)
+                    }
+                    None => Err(error),
+                },
+                built => built,
+            };
+            match &result {
+                Ok(_) => failure.complete(),
+                Err(_) => drop(failure),
+            }
+            scratch_guard.capture_result(result)
+        })
         .await
         .map_err(|error| self.machine.storage_failure(error))?
         .map_err(|error| self.machine.storage_failure(error))
+    }
+}
+
+impl RaftSnapshotBuilder<TypeConfig> for SnapshotBuilder {
+    async fn build_snapshot(&mut self) -> Result<Snapshot<TypeConfig>, StorageError<u64>> {
+        self.build().await
+    }
+}
+
+impl crate::local::LocalSnapshotBuilder for SnapshotBuilder {
+    async fn build_local(&mut self) -> Result<crate::local::LocalSnapshot, StorageError<u64>> {
+        self.build().await
     }
 }
 

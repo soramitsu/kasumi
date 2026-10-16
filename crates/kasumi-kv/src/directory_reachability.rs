@@ -69,23 +69,27 @@ impl DirectoryReader<'_> {
     /// The same exact membership proof with no new reservation or buffer
     /// allocation. Workspace ownership and all candidate/path checks still
     /// apply, including for empty roots and direct root-reference hits.
+    /// `check` is what the caller already verified for exactly these
+    /// candidate bytes, such as a resident entry of a verifying page cache.
     pub(crate) fn contains_page_with_workspace(
         &self,
         root: DirectoryRoot,
         candidate: DirectoryPageRef,
         bytes: &[u8],
+        check: PageCheck,
         workspace: &mut DirectoryReadWorkspace,
     ) -> Result<bool, CoreError> {
         workspace.check(&self.admission)?;
         let result = (|| {
             root.validate()?;
-            let info = validate_page(
+            let info = validate_checked_page(
                 bytes,
                 DirectoryRoot {
                     generation: u64::MAX,
                     ..root
                 },
                 candidate,
+                check,
             )?;
             self.contains_page_in(root, candidate, bytes, info, &mut workspace.buffer)
         })();

@@ -3,16 +3,16 @@ use anyhow::{Context, Result, ensure};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use jsonwebtoken::{Algorithm, EncodingKey, Header, encode, jwk::JwkSet};
 use kasumi_clock::EpochClock;
-use kasumi_store::{TenantStore, WriteOp, private_files};
+use kasumi_store::{NamespaceEpoch, TenantStore, WriteOp, private_files};
 use kasumi_types::{
     Action, CreateCredential, CredentialLiveness, CredentialStatus, Error, ErrorCode,
     IssuedCredential, RenewCredential, exact_json::decode_exact,
 };
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashMap},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, PoisonError},
 };
 use uuid::Uuid;
 use zeroize::{Zeroize, Zeroizing};
@@ -205,6 +205,48 @@ pub struct LocalCredentials {
     audience: String,
     clock: Arc<EpochClock>,
     mutation: Mutex<()>,
+    statuses: StatusCache,
+}
+
+/// Decoded family statuses for the authorization and liveness checks that
+/// every request repeats. A status is tagged with the store's FAMILIES write
+/// epoch sampled before its read and is served only while that epoch is still
+/// equal and even, so it is exactly the committed row; any write of the
+/// namespace by any writer of this store retires it. A hit still requires the
+/// store's current key access.
+struct StatusCache {
+    families: NamespaceEpoch,
+    rows: Mutex<HashMap<Uuid, (u64, CredentialStatus)>>,
+}
+const MAX_CACHED_STATUSES: usize = 1024;
+impl StatusCache {
+    /// The epoch a store read is tagged with, and the current cached status.
+    fn get(&self, family: Uuid) -> (u64, Option<CredentialStatus>) {
+        let epoch = self.families.current();
+        if epoch % 2 != 0 {
+            return (epoch, None);
+        }
+        let rows = self.rows.lock().unwrap_or_else(PoisonError::into_inner);
+        let status = rows
+            .get(&family)
+            .filter(|(at, _)| *at == epoch)
+            .map(|(_, status)| status.clone());
+        (epoch, status)
+    }
+    /// Retain a status read since `epoch` was sampled, unless a write began.
+    fn insert(&self, epoch: u64, family: Uuid, status: &CredentialStatus) {
+        if epoch % 2 != 0 || self.families.current() != epoch {
+            return;
+        }
+        let mut rows = self.rows.lock().unwrap_or_else(PoisonError::into_inner);
+        if rows.len() >= MAX_CACHED_STATUSES {
+            rows.retain(|_, (at, _)| *at == epoch);
+            if rows.len() >= MAX_CACHED_STATUSES {
+                rows.clear();
+            }
+        }
+        rows.insert(family, (epoch, status.clone()));
+    }
 }
 impl LocalCredentials {
     #[cfg(test)]
@@ -233,6 +275,10 @@ impl LocalCredentials {
             "credential records require separate security storage"
         );
         Signers::read(&signer_file)?;
+        let statuses = StatusCache {
+            families: store.namespace_epoch(FAMILIES)?,
+            rows: Mutex::default(),
+        };
         Ok(Arc::new(Self {
             store,
             signer_file,
@@ -240,14 +286,22 @@ impl LocalCredentials {
             audience,
             clock: EpochClock::system()?,
             mutation: Mutex::new(()),
+            statuses,
         }))
     }
     pub fn status(&self, family: Uuid) -> Result<CredentialStatus> {
+        let (epoch, cached) = self.statuses.get(family);
+        if let Some(status) = cached {
+            self.store.check_access()?;
+            return Ok(status);
+        }
         let bytes = self
             .store
             .get_bounded(FAMILIES, family.as_bytes(), MAX_RECORD)?
             .ok_or_else(|| Error::new(ErrorCode::NotFound, "credential family not found"))?;
-        Self::family(&bytes).context(InvalidFamilyRecord)
+        let status = Self::family(&bytes).context(InvalidFamilyRecord)?;
+        self.statuses.insert(epoch, family, &status);
+        Ok(status)
     }
     fn authorization_status(&self, family: Uuid) -> kasumi_types::Result<CredentialStatus> {
         self.status(family)

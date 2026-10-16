@@ -1536,3 +1536,58 @@ async fn empty_namespace_replacements_roll_back_both_domains_when_real_source_is
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn paired_identities_are_retained_once_present_and_still_require_access() -> Result<()> {
+    let memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = crate::test_utils::private_tempdir()?;
+    let scratch = crate::ScratchDisk::fixture(scratch_directory.path(), memory.clone());
+    let directory = crate::test_utils::private_tempdir()?;
+    let stores = initialize_pair_fixture(
+        NodeStore::create_new_fixture(
+            directory.path().join("identity-cache.kv"),
+            crate::test_utils::NODE_STORE_ID,
+            memory,
+            scratch.clone(),
+        )
+        .expect("bounded node fixture setup succeeds"),
+    )
+    .await?;
+    let app = stores.application();
+    let custody = stores.custody().store();
+    let app_epoch = app.namespace_epoch(DEPLOYMENT_NS)?;
+    let custody_epoch = custody.namespace_epoch(DEPLOYMENT_NS)?;
+    assert!(
+        app.get_write_once_identity(DEPLOYMENT_NS, DEPLOYMENT_KEY, 64)?
+            .is_none()
+    );
+    let deployment = WriteOp::put(DEPLOYMENT_NS, DEPLOYMENT_KEY, b"replicated-a");
+    stores.write_batch(
+        std::slice::from_ref(&deployment),
+        std::slice::from_ref(&deployment),
+    )?;
+    // A paired publication fences the namespace in both of its stores.
+    assert_eq!((app_epoch.current(), custody_epoch.current()), (2, 2));
+    for _ in 0..2 {
+        assert_eq!(
+            app.get_write_once_identity(DEPLOYMENT_NS, DEPLOYMENT_KEY, 64)?
+                .as_deref()
+                .map(Vec::as_slice),
+            Some(b"replicated-a".as_slice())
+        );
+    }
+    assert!(
+        app.get_write_once_identity(DEPLOYMENT_NS, DEPLOYMENT_KEY, 4)
+            .is_err()
+    );
+    assert!(
+        app.get_write_once_identity("ordinary", b"key", 64)
+            .is_err()
+    );
+    app.seal();
+    assert!(
+        app.get_write_once_identity(DEPLOYMENT_NS, DEPLOYMENT_KEY, 64)
+            .is_err()
+    );
+    Ok(())
+}

@@ -33,6 +33,8 @@ pub use backup_sessions::{
     verify_backup_session,
 };
 pub use cache_warmer::CacheWorkerStatus;
+mod cached_rows;
+pub use cached_rows::NamespaceEpoch;
 use catalog_read_budget::AdmittedKeyCatalog;
 pub use kasumi_kv::{
     MaintenanceBudget, MaintenanceDeferral, MaintenanceProgress, MaintenanceStep,
@@ -1933,6 +1935,7 @@ pub struct TenantStore {
             ),
         >,
     >,
+    cached_rows: cached_rows::CachedRows,
 }
 
 #[derive(Default)]
@@ -2026,6 +2029,7 @@ impl TenantStore {
             background: AsyncMutex::new(BackgroundTasks::default()),
             audit_placement: Mutex::new(None),
             live_trust: Mutex::new(BTreeMap::new()),
+            cached_rows: Default::default(),
         })
     }
 

@@ -32,6 +32,9 @@ impl<'a> NamespaceReplacement<'a> {
             source: Some(source),
         }
     }
+    pub(crate) fn namespace(&self) -> &'a str {
+        self.namespace
+    }
 }
 
 /// A stable database root with access rechecked for every decrypted record.
@@ -173,6 +176,7 @@ impl TenantStore {
         let _access = AccessGuard(self);
         self.check_access()?;
         let _mutation = self.mutations.lock();
+        let _fence = self.cached_rows.fence_replacing(replacements, operations);
         self.node.with_registered_write(
             &mut (),
             |tx, _| {

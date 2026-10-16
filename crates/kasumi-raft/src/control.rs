@@ -708,6 +708,17 @@ pub(crate) fn load<T: DeserializeOwned + Serialize>(
         .transpose()
 }
 
+/// The store retains this write-once consensus identity after its first read.
+fn load_identity<T: DeserializeOwned + Serialize>(
+    store: &TenantStore,
+    key: &[u8],
+) -> Result<Option<T>> {
+    store
+        .get_write_once_identity(META, key, 2 << 20)?
+        .map(|bytes| decode_canonical(&bytes))
+        .transpose()
+}
+
 pub(crate) fn committed_coverage(store: &TenantStore) -> Result<Option<LogId<u64>>> {
     committed_coverage_at(&mut &*store)
 }
@@ -794,11 +805,16 @@ impl ControlLog {
     }
 
     pub fn installed(custody: Arc<CustodyStore>) -> Result<Option<Self>> {
-        let node_id = load::<u64>(custody.store(), META, b"node_id")?;
-        let group = load::<String>(custody.store(), META, b"group")?;
+        let node_id = load_identity::<u64>(custody.store(), b"node_id")?;
+        let group = load_identity::<String>(custody.store(), b"group")?;
         match (node_id, group) {
             (None, None) => Ok(None),
-            (Some(node_id), Some(group)) => Self::open(custody, node_id, group).map(Some),
+            // `open` would only re-read this same write-once identity.
+            (Some(node_id), Some(group)) => Ok(Some(Self {
+                custody,
+                group,
+                node_id,
+            })),
             _ => anyhow::bail!("installed consensus identity is incomplete"),
         }
     }
@@ -814,11 +830,11 @@ impl ControlLog {
     pub fn open(custody: Arc<CustodyStore>, node_id: u64, group: String) -> Result<Self> {
         let store = custody.store();
         ensure!(
-            load::<u64>(store, META, b"node_id")? == Some(node_id),
+            load_identity::<u64>(store, b"node_id")? == Some(node_id),
             "control node identity differs"
         );
         ensure!(
-            load::<String>(store, META, b"group")?.as_ref() == Some(&group),
+            load_identity::<String>(store, b"group")?.as_ref() == Some(&group),
             "control group identity differs"
         );
         Ok(Self {

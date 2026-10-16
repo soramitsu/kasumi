@@ -240,6 +240,9 @@ struct OpeningState {
     tables_reserved: bool,
     tables_request: Option<StorageOwnerId>,
     existing_tables_verified: bool,
+    // Tables are never dropped and a table's type never changes, so every
+    // root this opening selects at or after this generation has both tables.
+    tables_verified_at: Option<u64>,
     ready_publication: Observation<anyhow::Error>,
     acquisition: Observation<anyhow::Error>,
     opening_outer: Observation<std::convert::Infallible>,
@@ -612,6 +615,7 @@ impl RegisteredNodeOpening {
                             tables_reserved: false,
                             tables_request: None,
                             existing_tables_verified: false,
+                            tables_verified_at: None,
                             ready_publication: Observation::NotEntered,
                             acquisition: Observation::NotEntered,
                             opening_outer: Observation::NotEntered,
@@ -689,6 +693,7 @@ impl RegisteredNodeOpening {
                         tables_reserved: false,
                         tables_request: None,
                         existing_tables_verified: false,
+                        tables_verified_at: None,
                         ready_publication: Observation::NotEntered,
                         acquisition: Observation::NotEntered,
                         opening_outer: Observation::NotEntered,

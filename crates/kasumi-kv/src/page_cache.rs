@@ -7,8 +7,10 @@
 //! reference. Unchanged COW pages therefore share one allocation across roots,
 //! while a different arena, page address or digest cannot alias a hit.
 //!
-//! This cache only retains immutable bytes. Directory readers still validate
-//! the selected root, page generation, digest and parent bounds on every hit.
+//! This cache only retains immutable bytes, each digest-verified once before
+//! it is returned or retained, so readers do not hash a hit again. Directory
+//! readers still validate the selected root, page generation and parent bounds
+//! on every hit.
 //! Current authorization and key-access checks remain the enclosing reader's
 //! responsibility. The physical owner is checked before hits and after loads.
 //! Appends do not warm the cache. Mutators use the private view: existing
@@ -25,7 +27,9 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use crate::cache::CachedBytes;
 use crate::cache::{CacheConfig, CacheLoadError, CacheStats, NativeCache};
 use crate::core::{CoreError, StorageAdmission};
-use crate::directory::{DIRECTORY_PAGE_BYTES, DirectoryBackend, DirectoryPageRef, page_digest};
+use crate::directory::{
+    DIRECTORY_PAGE_BYTES, DirectoryBackend, DirectoryPageRef, PageCheck, page_digest,
+};
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 pub(crate) enum NativeIdentity {
@@ -228,13 +232,17 @@ impl<B: DirectoryBackend> CachedDirectoryBackend<B> {
         })
     }
 
+    /// Every page this adapter returns or retains passes here first, so each
+    /// view reports `PageCheck::Digest` and readers never re-hash a hit.
     fn read_verified(&self, reference: DirectoryPageRef, out: &mut [u8]) -> Result<(), CoreError> {
         self.check_owner()?;
         self.backend.read_page(reference, out)?;
         // A backend may fail/expire its retained owner while fulfilling I/O.
         // Never install or return those bytes under the earlier owner check.
         self.check_owner()?;
-        if page_digest(out) != reference.sha256 {
+        if self.backend.page_check() == PageCheck::Unchecked
+            && page_digest(out) != reference.sha256
+        {
             return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
                 "directory page digest differs",
             )));
@@ -318,6 +326,10 @@ impl<B: DirectoryBackend> DirectoryBackend for PrivateDirectoryBackend<'_, B> {
     fn sync_pages(&self) -> Result<(), CoreError> {
         self.cached.sync_pages()
     }
+
+    fn page_check(&self) -> PageCheck {
+        PageCheck::Digest
+    }
 }
 
 pub(crate) struct PublicationDirectoryBackend<'a, B: DirectoryBackend> {
@@ -335,6 +347,10 @@ impl<B: DirectoryBackend> DirectoryBackend for PublicationDirectoryBackend<'_, B
 
     fn sync_pages(&self) -> Result<(), CoreError> {
         self.cached.sync_pages()
+    }
+
+    fn page_check(&self) -> PageCheck {
+        PageCheck::Digest
     }
 }
 
@@ -401,6 +417,10 @@ impl<B: DirectoryBackend> DirectoryBackend for MaintenanceDirectoryBackend<'_, B
     fn sync_pages(&self) -> Result<(), CoreError> {
         self.cached.sync_pages()
     }
+
+    fn page_check(&self) -> PageCheck {
+        PageCheck::Digest
+    }
 }
 
 impl<B: DirectoryBackend> DirectoryBackend for CachedDirectoryBackend<B> {
@@ -425,8 +445,7 @@ impl<B: DirectoryBackend> DirectoryBackend for CachedDirectoryBackend<B> {
         self.check_owner()?;
         if let Some(page) = page {
             // Only digest-verified bytes enter the cache under a key carrying
-            // that digest, and every directory reader validates each page it
-            // loads (`validate_page`), so a hit is not hashed a second time.
+            // that digest, so readers validate a hit without hashing it again.
             if page.as_bytes().len() != DIRECTORY_PAGE_BYTES {
                 return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
                     "cached directory page identity differs",
@@ -459,6 +478,10 @@ impl<B: DirectoryBackend> DirectoryBackend for CachedDirectoryBackend<B> {
         self.check_owner()?;
         self.backend.sync_pages()?;
         self.check_owner()
+    }
+
+    fn page_check(&self) -> PageCheck {
+        PageCheck::Digest
     }
 }
 

@@ -150,6 +150,7 @@ impl EncryptedTrust {
         let state = self.store.state.read();
         self.store.require_access(&state)?;
         let catalog = self.store.catalog.read();
+        let _fence = self.store.cached_rows.fence_operations(&operations);
         self.store.node.with_registered_write(
             &mut (),
             |tx, _| {

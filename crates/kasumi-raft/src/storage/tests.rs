@@ -1208,14 +1208,16 @@ async fn local_journal_and_commit_cursor_share_one_crash_atomic_transaction() ->
     let seed = FaultBackend::new();
     let initial = reopen(seed.clone(), scratch.clone(), persistent.clone(), true).await?;
     let mut log = LogStore::open(initial.clone(), 1).await?;
-    log.append_local(Entry {
-        log_id: LogId::default(),
-        payload: EntryPayload::Membership(openraft::Membership::from(
-            std::collections::BTreeMap::from([(1, crate::BasicNode::new("local"))]),
-        )),
-        initialization: None,
-    })
-    .await?;
+    let membership = log
+        .append_local(Entry {
+            log_id: LogId::default(),
+            payload: EntryPayload::Membership(openraft::Membership::from(
+                std::collections::BTreeMap::from([(1, crate::BasicNode::new("local"))]),
+            )),
+            initialization: None,
+        })
+        .await?;
+    assert!(matches!(membership, LocalAppend::Committed));
     let baseline = seed.crash();
     drop(log);
     initial.custody().store().shutdown().await.unwrap();
@@ -1234,7 +1236,10 @@ async fn local_journal_and_commit_cursor_share_one_crash_atomic_transaction() ->
     let mut log = LogStore::open(stores.clone(), 1).await?;
     let before = measured.operations();
     let before_syncs = measured.syncs();
-    log.append_local(command()).await?;
+    assert!(matches!(
+        log.append_local(command()).await?,
+        LocalAppend::Committed
+    ));
     let operations = measured.operations() - before;
     let local_syncs = measured.syncs() - before_syncs;
     assert!(operations > 0 && local_syncs > 0);
@@ -1259,7 +1264,10 @@ async fn local_journal_and_commit_cursor_share_one_crash_atomic_transaction() ->
         let stores = reopen(disk.clone(), scratch.clone(), persistent.clone(), false).await?;
         let mut log = LogStore::open(stores.clone(), 1).await?;
         disk.fail_after(failure);
-        let acknowledged = log.append_local(command()).await.is_ok();
+        let acknowledged = matches!(
+            log.append_local(command()).await,
+            Ok(LocalAppend::Committed)
+        );
         let crash = disk.crash();
         disk.disarm();
         drop(log);

@@ -9,7 +9,7 @@
 
 use super::*;
 use crate::cache::{CacheCandidate, CacheCursor};
-use crate::directory::{DirectoryPageRef, DirectoryReadWorkspace};
+use crate::directory::{DirectoryPageRef, DirectoryReadWorkspace, PageCheck};
 use crate::snapshot_pins::SnapshotRoots;
 
 /// Fixed proof scratch that a publisher can admit before preparing records.
@@ -337,10 +337,12 @@ impl DiskState {
                     sha256,
                 };
                 for root in roots {
+                    // The cache retains only digest-verified page bytes.
                     if reader.contains_page_with_workspace(
                         root,
                         reference,
                         candidate.bytes.as_bytes(),
+                        PageCheck::Digest,
                         &mut workspace.directory,
                     )? {
                         return Ok(true);

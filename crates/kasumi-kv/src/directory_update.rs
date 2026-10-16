@@ -408,7 +408,8 @@ impl Editor<'_> {
             self.admission
                 .check_owner()
                 .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?;
-            let info = validate_page(input, root, frame.reference)?;
+            let info =
+                validate_checked_page(input, root, frame.reference, self.backend.page_check())?;
             if info != frame.info {
                 return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
                     "directory parent changed during leaf rewrite",
@@ -677,7 +678,8 @@ impl Editor<'_> {
             self.admission
                 .check_owner()
                 .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?;
-            let info = validate_page(input, root, frame.reference)?;
+            let info =
+                validate_checked_page(input, root, frame.reference, self.backend.page_check())?;
             // The complete immutable reference was checked against ancestor
             // ranges on descent. Re-reading it cannot change its canonical
             // body or child choices; reject inconsistent backend results.

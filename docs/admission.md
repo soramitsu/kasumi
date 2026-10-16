@@ -130,6 +130,25 @@ ledger slots) and the 256 snapshot pins of a node database (one per live
 selected Generation, which includes every in-flight request's Generation and
 every snapshot lease, and one per transient planner or capture reader).
 
+The standalone writer's own storage work runs outside any committed apply and
+spends no escrow: the journal append before an entry commits, and the periodic
+snapshot (every 5000 entries) that builds beside later appends. Admission may
+refuse either, and a refusal does not close the tenant. Only a typed proof that
+the refused operation had no effect counts: an admission refusal for native
+memory, a disk allowance or a census slot, returned before any reader, writer,
+file or transaction exists; an Engine `ResourceExhausted`; a registered write
+whose denial Store settled, or whose native begin was refused for capacity; and
+a routine read refusal Store retires, other than a bound violation. I/O
+failures, corruption, unknown commits and every other error still fence the
+writer. A refused append is a definite rejection. Nothing reached the journal,
+the writer keeps its position, and the proposer returns `ResourceExhausted`, so
+the same idempotency key can retry. A refused snapshot build is deferred. The
+published snapshot, the applied state and the journal stay as they were. Staged
+chunks are crash-equivalent and removed by the next build or open, and the next
+periodic snapshot covers every retained entry. A refused purge keeps the chunks
+it already committed with their purge cursor and leaves the rest for a later
+snapshot. Retired custody snapshots still fence on any failure.
+
 Queries have a five-second deadline and four workers per tenant, in addition to
 the shared governor. Cooperative checkpoints cover candidate traversal, scans,
 array membership, sorting comparisons, grouping, projection, term expansion, and

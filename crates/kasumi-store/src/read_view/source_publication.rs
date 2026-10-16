@@ -26,6 +26,7 @@ impl TenantStore {
         reject_unpaired_identity_ops(operations)?;
         self.check_access()?;
         let _mutation = self.mutations.lock();
+        let _fence = self.cached_rows.fence_operations(operations);
         if let Some(source) = source.as_deref() {
             source.require_prepared_store(self)?;
         }

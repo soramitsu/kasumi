@@ -538,7 +538,12 @@ impl Context<'_> {
         self.admission
             .check_owner()
             .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?;
-        let info = validate_page(self.input, self.root, frame.reference)?;
+        let info = validate_checked_page(
+            self.input,
+            self.root,
+            frame.reference,
+            self.backend.page_check(),
+        )?;
         if info != frame.info || info.level == 0 {
             return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
                 "packing parent changed",

@@ -272,6 +272,15 @@ impl RaftSnapshotBuilder<TypeConfig> for CustodySnapshotBuilder {
         .map_err(|error| self.machine.failure(error))
     }
 }
+// Retired custody keeps its contract: any failed build fences the writer.
+impl crate::local::LocalSnapshotBuilder for CustodySnapshotBuilder {
+    async fn build_local(&mut self) -> Result<crate::local::LocalSnapshot, StorageError<u64>> {
+        let snapshot = self.build_snapshot().await?;
+        Ok(crate::local::LocalSnapshot::Published(
+            snapshot.meta.last_log_id,
+        ))
+    }
+}
 impl RaftStateMachine<TypeConfig> for CustodyMachine {
     type SnapshotBuilder = CustodySnapshotBuilder;
     async fn applied_state(

@@ -399,16 +399,28 @@ impl ReaderRequest {
         state.phase = NodeReadPhase::Tables;
         state.tables = Observation::Entered;
         let transaction = state.transaction.as_ref().expect("installed reader");
-        state.tables = match transaction
-            .check_bytes_table(crate::CATALOG)
-            .map_err(NodeReadTablesError::Catalog)
-            .and_then(|_| {
-                transaction
-                    .check_bytes_table(crate::RECORDS)
-                    .map_err(NodeReadTablesError::Records)
-            }) {
-            Ok(()) => Observation::Returned(Ok(())),
-            Err(error) => Observation::Returned(Err(error)),
+        let generation = transaction.generation().ok();
+        let verified = generation.is_some_and(|generation| {
+            owner
+                .state
+                .lock()
+                .tables_verified_at
+                .is_some_and(|at| at <= generation)
+        });
+        state.tables = if verified {
+            Observation::Returned(Ok(()))
+        } else {
+            match transaction
+                .check_bytes_table(crate::CATALOG)
+                .map_err(NodeReadTablesError::Catalog)
+                .and_then(|_| {
+                    transaction
+                        .check_bytes_table(crate::RECORDS)
+                        .map_err(NodeReadTablesError::Records)
+                }) {
+                Ok(()) => Observation::Returned(Ok(())),
+                Err(error) => Observation::Returned(Err(error)),
+            }
         };
         if !state.tables.success() {
             state.phase = NodeReadPhase::Failed;
@@ -417,6 +429,13 @@ impl ReaderRequest {
         let mut opening = owner.state.lock();
         if matches!(opening.mode, NodeOpeningMode::Existing) {
             opening.existing_tables_verified = true;
+        }
+        if let Some(generation) = generation {
+            opening.tables_verified_at = Some(
+                opening
+                    .tables_verified_at
+                    .map_or(generation, |at| at.min(generation)),
+            );
         }
         state.phase = NodeReadPhase::Active;
     }

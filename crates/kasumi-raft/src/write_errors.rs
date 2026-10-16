@@ -14,14 +14,28 @@ pub fn is_application_write_redirect(error: &anyhow::Error) -> bool {
     )
 }
 
-/// This exact API error is emitted before OpenRaft appends or dispatches the
-/// proposed entry. Fatal construction errors and other failures remain opaque.
+/// These exact errors are emitted before OpenRaft appends or dispatches the
+/// proposed entry, or before the standalone writer's journal holds any of it.
+/// Fatal construction errors and other failures remain opaque.
 pub fn is_application_write_capacity_denied(error: &anyhow::Error) -> bool {
     matches!(
         error.downcast_ref::<RaftError<u64, ClientWriteError<u64, BasicNode>>>(),
         Some(RaftError::APIError(ClientWriteError::TaskCapacity(_)))
-    )
+    ) || error.downcast_ref::<LocalAppendCapacityDenied>().is_some()
 }
+
+/// The standalone writer was refused capacity while appending this entry, and
+/// the refusal proves nothing reached its journal: the entry was neither
+/// committed nor applied, the writer keeps serving, and its next entry takes
+/// the same position. A definite rejection, never an uncertain outcome.
+#[derive(Debug)]
+pub struct LocalAppendCapacityDenied;
+impl std::fmt::Display for LocalAppendCapacityDenied {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("standalone journal append refused for capacity; nothing was written")
+    }
+}
+impl std::error::Error for LocalAppendCapacityDenied {}
 
 /// OpenRaft committed and locally applied the entry, then this group lost
 /// access before its result could be released. The effect may be durable:
@@ -120,6 +134,17 @@ mod tests {
         )));
         assert!(!is_application_write_capacity_denied(&anyhow::anyhow!(
             "retained task capacity exhausted (limit: 4, needed: 2)"
+        )));
+    }
+
+    #[test]
+    fn local_append_capacity_denial_is_typed_and_never_inferred_from_text() {
+        let denied = anyhow::Error::new(LocalAppendCapacityDenied).context("local write");
+        assert!(is_application_write_capacity_denied(&denied));
+        assert!(!is_application_write_redirect(&denied));
+        assert!(!is_post_commit_access_loss(&denied));
+        assert!(!is_application_write_capacity_denied(&anyhow::anyhow!(
+            "standalone journal append refused for capacity; nothing was written"
         )));
     }
 }
